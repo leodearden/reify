@@ -17,8 +17,7 @@ fn resolve_initial_file_path_relative_existing_returns_canonical() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("mydesign.ri");
     std::fs::write(&file, "structure Foo {}").unwrap();
-    let expected = std::fs::canonicalize(&file)
-        .unwrap();
+    let expected = std::fs::canonicalize(&file).unwrap();
 
     let _guard = cwd_lock().lock().unwrap();
     let original = std::env::current_dir().unwrap();
@@ -109,4 +108,3 @@ fn resolve_initial_file_path_nonexistent_ri_returns_some_fallback() {
         "Fallback should be the original path string"
     );
 }
-

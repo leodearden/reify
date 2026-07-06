@@ -57,10 +57,8 @@ impl FileWatcher {
             move |res: Result<Event, notify::Error>| {
                 if let Ok(event) = res {
                     let is_remove = matches!(event.kind, EventKind::Remove(_));
-                    let is_change = matches!(
-                        event.kind,
-                        EventKind::Create(_) | EventKind::Modify(_)
-                    );
+                    let is_change =
+                        matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_));
 
                     if !is_remove && !is_change {
                         return;

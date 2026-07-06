@@ -17,10 +17,13 @@ use tracing::warn;
 use tauri::{Emitter, Manager};
 
 use reify_constraints::SimpleConstraintChecker;
+use reify_eval::SolverProgressSink;
 use reify_gui::commands::AppState;
 use reify_gui::diff::{StateDelta, compute_delta, delta_to_events};
-use reify_gui::engine::{AutoResolveEmitter, EngineSession, FeaCaseEmitter, FeaDiagnosticsEmitter, ModeShapeFrameEmitter, WarmPoolEventEmitter};
-use reify_eval::SolverProgressSink;
+use reify_gui::engine::{
+    AutoResolveEmitter, EngineSession, FeaCaseEmitter, FeaDiagnosticsEmitter,
+    ModeShapeFrameEmitter, WarmPoolEventEmitter,
+};
 use reify_gui::event_bus::emit_typed;
 use reify_gui::lsp_bridge::LspBridge;
 use reify_gui::types::EvaluationStatus;
@@ -554,8 +557,11 @@ fn debug_response(
 /// - `claude-tool-call`, `claude-tool-result`
 /// - `claude-done`, `claude-error`
 ///
-/// `reify_` prefixed tool calls are intercepted and executed in-process
-/// via the MCP registry before a `tool_result` is written back to the sidecar.
+/// Tool calls (including any `reify_` prefixed names) are forwarded to the
+/// frontend as `claude-tool-call` events only; there is no in-process engine-
+/// mutating interception here (deleted per gui-state-sync PRD L8). A future
+/// properly-wired, synced re-introduction of engine-mutating sidecar tools is
+/// owned by docs/prds/v0_6/ai-native-editing.md.
 #[tauri::command]
 async fn claude_send_message(
     app: tauri::AppHandle,
@@ -563,8 +569,6 @@ async fn claude_send_message(
     text: String,
     context: Option<reify_gui::claude_bridge::MessageContext>,
 ) -> Result<String, String> {
-    use std::sync::Arc;
-
     // Resolve the sidecar binary path. Tauri's externalBin (declared in
     // tauri.conf.json) copies the sidecar binary to `<resource_dir>/<basename>`
     // in both dev (`target/<profile>/reify-sidecar`) and bundled builds —
@@ -596,8 +600,6 @@ async fn claude_send_message(
         .filter(|p| p.exists());
 
     let app_for_events = app.clone();
-    let engine = Arc::clone(&state.engine);
-    let selection = Arc::clone(&state.selection);
 
     // Lazily spawn the sidecar (if not running) and wait for it to become ready.
     reify_gui::claude_bridge::ensure_sidecar_ready(
@@ -605,18 +607,14 @@ async fn claude_send_message(
         move || {
             let path = sidecar_path;
             let app_c = app_for_events;
-            let eng = engine;
-            let sel = selection;
             let ws = workspace;
             let le = landlock_exec_path;
             async move {
                 reify_gui::claude_bridge::spawn_sidecar_impl(
                     &path,
-                    eng,
                     move |name, payload| {
                         app_c.emit(&name, payload).ok();
                     },
-                    sel,
                     &ws,
                     le.as_deref(),
                 )
@@ -692,9 +690,7 @@ fn cancel_solve(state: tauri::State<'_, AppState>) -> Result<(), String> {
 /// `None` means the active case has never been set (engine defaults to
 /// lex-first). Returns `Some(name)` after a `set_active_fea_case` call.
 #[tauri::command]
-fn get_active_fea_case(
-    state: tauri::State<'_, AppState>,
-) -> Result<Option<String>, String> {
+fn get_active_fea_case(state: tauri::State<'_, AppState>) -> Result<Option<String>, String> {
     reify_gui::commands::get_active_fea_case_impl(&state.engine)
 }
 
@@ -740,9 +736,7 @@ fn main() {
     let mut session = session;
     let mut initial_file: Option<std::path::PathBuf> = None;
     if let Some(path_str) = std::env::args().nth(1) {
-        if let Some(canonical_path) =
-            reify_gui::commands::resolve_initial_file_path(&path_str)
-        {
+        if let Some(canonical_path) = reify_gui::commands::resolve_initial_file_path(&path_str) {
             if let Err(e) = session.load_file(&canonical_path) {
                 eprintln!(
                     "Warning: failed to load initial file {}: {}",
@@ -842,9 +836,9 @@ fn main() {
             // Install the solve-cancellation sink so cancel_solve_impl can reach
             // the in-flight FEA handle (task γ/4086).  The sink holds the same
             // Arc as AppState.pending_solve_cancel — writes are visible to reads.
-            let solve_cancel_sink = Arc::new(
-                reify_gui::commands::PendingSolveCancelSink::new(Arc::clone(&solve_cancel_slot)),
-            );
+            let solve_cancel_sink = Arc::new(reify_gui::commands::PendingSolveCancelSink::new(
+                Arc::clone(&solve_cancel_slot),
+            ));
             if let Ok(mut session) = engine_arc.lock() {
                 session.set_solve_cancel_sink(solve_cancel_sink);
             }
@@ -877,7 +871,12 @@ fn main() {
                         eprintln!("Debug server failed: {e}");
                     }
                 });
-                eprintln!("REIFY_DEBUG=1: debug server starting on {}", reify_gui::debug_server::debug_endpoint_url(reify_gui::debug_server::resolve_debug_port()));
+                eprintln!(
+                    "REIFY_DEBUG=1: debug server starting on {}",
+                    reify_gui::debug_server::debug_endpoint_url(
+                        reify_gui::debug_server::resolve_debug_port()
+                    )
+                );
             }
 
             // Notify the frontend of the kernel availability at startup.

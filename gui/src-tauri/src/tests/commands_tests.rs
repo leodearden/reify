@@ -1144,13 +1144,8 @@ fn debug_mcp_selective_demand_boundary_rows_2_3_4() {
     //    OBSERVED channel against the FULL production eval-set (no selective
     //    enforcement), so the hidden realization is counted in would_prune. ─────
     let obs = load_session();
-    sync_observed_demand_impl(
-        &obs,
-        &[body_a_key.to_string()],
-        &[sb_cell.to_string()],
-        &[],
-    )
-    .expect("sync_observed_demand_impl");
+    sync_observed_demand_impl(&obs, &[body_a_key.to_string()], &[sb_cell.to_string()], &[])
+        .expect("sync_observed_demand_impl");
     set_parameter_impl(&obs, w_cell, "12mm").expect("observed-channel edit");
     let obs_es = {
         let mut guard = obs.lock().expect("session lock");
@@ -1173,11 +1168,8 @@ fn debug_mcp_selective_demand_boundary_rows_2_3_4() {
     // ── row 4 (un-hide refresh): re-admit body_b → it re-realizes to the CURRENT
     //    param with no stale handle. The oracle is a FRESH cold full-scope build
     //    at the post-un-hide param (content oracle, per the δ redemand test). ───
-    sync_demand_impl(
-        &session,
-        &[body_a_key.to_string(), body_b_key.to_string()],
-    )
-    .expect("un-hide sync_demand");
+    sync_demand_impl(&session, &[body_a_key.to_string(), body_b_key.to_string()])
+        .expect("un-hide sync_demand");
     // A fresh edit under the now-full cone re-realizes body_b and recomputes sb.
     set_parameter_impl(&session, w_cell, "25mm").expect("post-un-hide edit");
 
@@ -1211,8 +1203,7 @@ fn debug_mcp_selective_demand_boundary_rows_2_3_4() {
     // (b) content oracle: sb recomputes to the CURRENT param, byte-matching a
     //     fresh cold full-scope build at the same param (no stale value).
     let oracle = load_session();
-    let oracle_state =
-        set_parameter_impl(&oracle, w_cell, "25mm").expect("oracle full-scope edit");
+    let oracle_state = set_parameter_impl(&oracle, w_cell, "25mm").expect("oracle full-scope edit");
     let oracle_sb = oracle_state
         .values
         .iter()
@@ -1480,8 +1471,8 @@ fn open_file_engine_impl_files_path_is_canonical_absolute() {
 /// the slot so it is not double-cancelled by a follow-on command invocation.
 #[test]
 fn cancel_solve_impl_fires_published_handle_and_clears_slot() {
-    use reify_eval::CancellationHandle;
     use crate::commands::cancel_solve_impl;
+    use reify_eval::CancellationHandle;
 
     let session = make_session();
     let handle = CancellationHandle::new();
@@ -1498,10 +1489,20 @@ fn cancel_solve_impl_fires_published_handle_and_clears_slot() {
     };
 
     let result = cancel_solve_impl(&state);
-    assert!(result.is_ok(), "cancel_solve_impl must return Ok; got: {:?}", result);
-    assert!(handle.is_cancelled(), "CancellationHandle must be cancelled after cancel_solve_impl");
+    assert!(
+        result.is_ok(),
+        "cancel_solve_impl must return Ok; got: {:?}",
+        result
+    );
+    assert!(
+        handle.is_cancelled(),
+        "CancellationHandle must be cancelled after cancel_solve_impl"
+    );
     let slot = state.pending_solve_cancel.lock().unwrap();
-    assert!(slot.is_none(), "pending_solve_cancel slot must be cleared after cancel_solve_impl");
+    assert!(
+        slot.is_none(),
+        "pending_solve_cancel slot must be cleared after cancel_solve_impl"
+    );
 }
 
 /// `cancel_solve_impl` returns `Ok(())` when the slot is empty (no solve in flight).
@@ -1523,7 +1524,11 @@ fn cancel_solve_impl_returns_ok_when_slot_empty() {
     };
 
     let result = cancel_solve_impl(&state);
-    assert!(result.is_ok(), "cancel_solve_impl must return Ok when slot is empty; got: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "cancel_solve_impl must return Ok when slot is empty; got: {:?}",
+        result
+    );
 }
 
 // ── Task 4086 step-7: RED — production sink + consumer interplay ──
@@ -1543,9 +1548,9 @@ fn cancel_solve_impl_returns_ok_when_slot_empty() {
 /// and drives the two lifecycle calls manually without a full EngineSession.
 #[test]
 fn pending_solve_cancel_sink_sets_then_clears_slot() {
-    use reify_eval::CancellationHandle;
     use crate::commands::PendingSolveCancelSink;
     use crate::engine::SolveCancellationSink;
+    use reify_eval::CancellationHandle;
 
     let slot: Arc<Mutex<Option<CancellationHandle>>> = Arc::new(Mutex::new(None));
     let sink = PendingSolveCancelSink::new(slot.clone());
@@ -1584,9 +1589,9 @@ fn pending_solve_cancel_sink_sets_then_clears_slot() {
 /// Arc as the producer.
 #[test]
 fn pending_solve_cancel_cancelled_by_consumer_during_solve() {
-    use reify_eval::CancellationHandle;
-    use crate::commands::{cancel_solve_impl, PendingSolveCancelSink};
+    use crate::commands::{PendingSolveCancelSink, cancel_solve_impl};
     use crate::engine::SolveCancellationSink;
+    use reify_eval::CancellationHandle;
 
     let slot: Arc<Mutex<Option<CancellationHandle>>> = Arc::new(Mutex::new(None));
     let sink = PendingSolveCancelSink::new(slot.clone());
@@ -1610,7 +1615,11 @@ fn pending_solve_cancel_cancelled_by_consumer_during_solve() {
 
     // cancel_solve_impl must: (1) cancel the handle, (2) clear the slot.
     let result = cancel_solve_impl(&state);
-    assert!(result.is_ok(), "cancel_solve_impl must return Ok; got: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "cancel_solve_impl must return Ok; got: {:?}",
+        result
+    );
     assert!(
         handle.is_cancelled(),
         "CancellationHandle must be cancelled after cancel_solve_impl fires it"
@@ -1761,12 +1770,13 @@ fn reload_for_watch_impl_failure_returns_ok_with_diagnostic_and_staleness() {
 
     // Record the mesh count from the pre-failure good state.
     let good_mesh_count = crate::engine_lock::with_engine_lock(&engine, |s| {
-        s.build_gui_state()
-            .map(|gs| gs.meshes.len())
-            .unwrap_or(0)
+        s.build_gui_state().map(|gs| gs.meshes.len()).unwrap_or(0)
     })
     .expect("with_engine_lock should not panic");
-    assert!(good_mesh_count > 0, "test fixture must have non-empty meshes");
+    assert!(
+        good_mesh_count > 0,
+        "test fixture must have non-empty meshes"
+    );
 
     // Force a failure with invalid source (compile error — reliable Err path).
     let result =
@@ -1927,10 +1937,7 @@ fn watcher_failure_surfaces_compile_diagnostics_event() {
 fn make_simple_multi_case_values() -> reify_ir::ValueMap {
     use reify_ir::Value;
     use reify_test_support::multi_case_result_value;
-    let mcr = multi_case_result_value(&[
-        ("operating", Value::Int(1)),
-        ("overload", Value::Int(2)),
-    ]);
+    let mcr = multi_case_result_value(&[("operating", Value::Int(1)), ("overload", Value::Int(2))]);
     let mut map = reify_ir::ValueMap::new();
     map.insert(reify_core::ValueCellId::new("Bracket", "result"), mcr);
     map
@@ -1939,8 +1946,8 @@ fn make_simple_multi_case_values() -> reify_ir::ValueMap {
 /// set_active_fea_case_impl / get_active_fea_case_impl command-layer contract.
 #[test]
 fn set_and_get_active_fea_case_impl_contract() {
-    use reify_eval::CheckResult;
-    use crate::commands::{get_active_fea_case_impl, set_active_fea_case_impl}; // FAILS TO COMPILE
+    use crate::commands::{get_active_fea_case_impl, set_active_fea_case_impl};
+    use reify_eval::CheckResult; // FAILS TO COMPILE
 
     // Build a loaded session and inject a multi-case CheckResult.
     let mut session = make_loaded_session();
@@ -1981,8 +1988,9 @@ fn set_and_get_active_fea_case_impl_contract() {
         .expect("set_active_fea_case_impl with unknown case must not return Err (falls back to lex-first)");
     // After setting an unknown case, get returns Some("nonexistent_case")
     // (the name is stored as-is; apply_fea_channels uses lex-first as the fallback).
-    let active_unknown = get_active_fea_case_impl(&engine) // FAILS TO COMPILE
-        .expect("get_active_fea_case_impl must succeed after unknown-case set");
+    let active_unknown =
+        get_active_fea_case_impl(&engine) // FAILS TO COMPILE
+            .expect("get_active_fea_case_impl must succeed after unknown-case set");
     assert_eq!(
         active_unknown,
         Some("nonexistent_case".to_string()),

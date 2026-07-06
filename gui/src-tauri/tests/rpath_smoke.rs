@@ -42,7 +42,11 @@ fn reify_gui_binary_does_not_link_conda_occt_7_9() {
         leaks_7_9.is_empty(),
         "{exe} NEEDS conda-forge OCCT 7.9 libs:\n{leaks}\n\nFull NEEDED \
          libTK* lines:\n{all}",
-        leaks = leaks_7_9.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n"),
+        leaks = leaks_7_9
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n"),
         all = needed_tk.join("\n"),
     );
 }
@@ -57,7 +61,10 @@ fn readelf_d(path: &str) -> Option<String> {
         Err(e) => panic!("readelf invocation failed: {e}"),
     };
     if !output.status.success() {
-        eprintln!("readelf -d exited non-zero (status={:?}); skipping", output.status);
+        eprintln!(
+            "readelf -d exited non-zero (status={:?}); skipping",
+            output.status
+        );
         return None;
     }
     Some(String::from_utf8_lossy(&output.stdout).into_owned())

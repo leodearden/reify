@@ -293,7 +293,9 @@ fn engine_state_json_clean_engine_has_expected_shape() {
     );
 
     // Meshes must be non-empty (bracket source produces geometry).
-    let meshes = result["meshes"].as_array().expect("meshes must be an array");
+    let meshes = result["meshes"]
+        .as_array()
+        .expect("meshes must be an array");
     assert!(
         !meshes.is_empty(),
         "meshes must be non-empty for a freshly-loaded engine"
@@ -351,7 +353,9 @@ fn engine_state_json_after_record_reload_error_exposes_staleness() {
     );
 
     // Meshes must still be the last-good non-empty set.
-    let meshes = result["meshes"].as_array().expect("meshes must be an array");
+    let meshes = result["meshes"]
+        .as_array()
+        .expect("meshes must be an array");
     assert!(
         !meshes.is_empty(),
         "meshes must be non-empty (last-good retained) after record_reload_error"
@@ -398,8 +402,13 @@ fn capstone_engine_state_json_after_failing_reload_shows_stale_with_last_good_me
             result["reload_error"].is_null(),
             "clean engine must have null reload_error"
         );
-        let meshes = result["meshes"].as_array().expect("meshes must be an array");
-        assert!(!meshes.is_empty(), "clean engine must have non-empty meshes");
+        let meshes = result["meshes"]
+            .as_array()
+            .expect("meshes must be an array");
+        assert!(
+            !meshes.is_empty(),
+            "clean engine must have non-empty meshes"
+        );
         meshes.len()
     };
 
@@ -485,14 +494,15 @@ fn engine_state_json_failed_edits_keep_content_consistent_and_reset_diagnostics(
         "box(width, height, bogus_thk)",
     );
     // editB: replace volume computation to introduce unresolved name `mystery_vol`
-    let edit_b = bracket_source().replace(
-        "width * height * thickness",
-        "width * height * mystery_vol",
-    );
+    let edit_b =
+        bracket_source().replace("width * height * thickness", "width * height * mystery_vol");
 
     // ── (a) Apply failing editA ────────────────────────────────────────────────
     let result_a = crate::commands::update_source_impl(&engine, "bracket.ri", &edit_a);
-    assert!(result_a.is_err(), "editA must fail (unresolved name bogus_thk)");
+    assert!(
+        result_a.is_err(),
+        "editA must fail (unresolved name bogus_thk)"
+    );
 
     let state_a = {
         let mut session = engine.lock().unwrap();
@@ -505,9 +515,17 @@ fn engine_state_json_failed_edits_keep_content_consistent_and_reset_diagnostics(
         serde_json::Value::Bool(true),
         "stale must be true after editA"
     );
-    let files_a = state_a["files"].as_array().expect("files must be an array after editA");
-    assert_eq!(files_a.len(), 1, "files must have exactly one entry after editA");
-    let content_a = files_a[0]["content"].as_str().expect("files[0].content must be a string after editA");
+    let files_a = state_a["files"]
+        .as_array()
+        .expect("files must be an array after editA");
+    assert_eq!(
+        files_a.len(),
+        1,
+        "files must have exactly one entry after editA"
+    );
+    let content_a = files_a[0]["content"]
+        .as_str()
+        .expect("files[0].content must be a string after editA");
     assert!(
         content_a.contains("bogus_thk"),
         "files[0].content after editA must contain 'bogus_thk'; got: {:?}",
@@ -523,13 +541,19 @@ fn engine_state_json_failed_edits_keep_content_consistent_and_reset_diagnostics(
         "compile_diagnostics must be non-empty after editA"
     );
     assert!(
-        diags_a.iter().any(|d| d["message"].as_str().is_some_and(|m| m.contains("bogus_thk"))),
-        "compile_diagnostics after editA must reference 'bogus_thk'; got: {:?}", diags_a
+        diags_a.iter().any(|d| d["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("bogus_thk"))),
+        "compile_diagnostics after editA must reference 'bogus_thk'; got: {:?}",
+        diags_a
     );
 
     // ── (b) Apply failing editB ────────────────────────────────────────────────
     let result_b = crate::commands::update_source_impl(&engine, "bracket.ri", &edit_b);
-    assert!(result_b.is_err(), "editB must fail (unresolved name mystery_vol)");
+    assert!(
+        result_b.is_err(),
+        "editB must fail (unresolved name mystery_vol)"
+    );
 
     let state_b = {
         let mut session = engine.lock().unwrap();
@@ -544,9 +568,17 @@ fn engine_state_json_failed_edits_keep_content_consistent_and_reset_diagnostics(
     );
 
     // files must now carry editB's buffer (NOT editA's).
-    let files_b = state_b["files"].as_array().expect("files must be an array after editB");
-    assert_eq!(files_b.len(), 1, "files must have exactly one entry after editB");
-    let content_b = files_b[0]["content"].as_str().expect("files[0].content must be a string after editB");
+    let files_b = state_b["files"]
+        .as_array()
+        .expect("files must be an array after editB");
+    assert_eq!(
+        files_b.len(),
+        1,
+        "files must have exactly one entry after editB"
+    );
+    let content_b = files_b[0]["content"]
+        .as_str()
+        .expect("files[0].content must be a string after editB");
     assert!(
         content_b.contains("mystery_vol"),
         "files[0].content after editB must contain 'mystery_vol'; got: {:?}",
@@ -567,11 +599,16 @@ fn engine_state_json_failed_edits_keep_content_consistent_and_reset_diagnostics(
         "compile_diagnostics must be non-empty after editB"
     );
     assert!(
-        diags_b.iter().any(|d| d["message"].as_str().is_some_and(|m| m.contains("mystery_vol"))),
-        "compile_diagnostics after editB must reference 'mystery_vol'; got: {:?}", diags_b
+        diags_b.iter().any(|d| d["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("mystery_vol"))),
+        "compile_diagnostics after editB must reference 'mystery_vol'; got: {:?}",
+        diags_b
     );
     assert!(
-        !diags_b.iter().any(|d| d["message"].as_str().is_some_and(|m| m.contains("bogus_thk"))),
+        !diags_b.iter().any(|d| d["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("bogus_thk"))),
         "compile_diagnostics after editB must NOT reference 'bogus_thk' (stale diag must be gone)"
     );
 
@@ -601,20 +638,32 @@ fn engine_state_json_failed_edits_keep_content_consistent_and_reset_diagnostics(
         .expect("compile_diagnostics must be an array after fix");
     assert!(
         diags_c.is_empty(),
-        "compile_diagnostics must be empty after successful fix; got: {:?}", diags_c
+        "compile_diagnostics must be empty after successful fix; got: {:?}",
+        diags_c
     );
 
     // files[0].content must equal the original bracket source.
-    let files_c = state_c["files"].as_array().expect("files must be an array after fix");
-    assert_eq!(files_c.len(), 1, "files must have exactly one entry after fix");
-    let content_c = files_c[0]["content"].as_str().expect("files[0].content must be a string after fix");
+    let files_c = state_c["files"]
+        .as_array()
+        .expect("files must be an array after fix");
     assert_eq!(
-        content_c, bracket_source(),
+        files_c.len(),
+        1,
+        "files must have exactly one entry after fix"
+    );
+    let content_c = files_c[0]["content"]
+        .as_str()
+        .expect("files[0].content must be a string after fix");
+    assert_eq!(
+        content_c,
+        bracket_source(),
         "files[0].content after fix must equal the original bracket source"
     );
 
     // meshes must be non-empty (successfully re-compiled).
-    let meshes_c = state_c["meshes"].as_array().expect("meshes must be an array after fix");
+    let meshes_c = state_c["meshes"]
+        .as_array()
+        .expect("meshes must be an array after fix");
     assert!(
         !meshes_c.is_empty(),
         "meshes must be non-empty after successful fix"

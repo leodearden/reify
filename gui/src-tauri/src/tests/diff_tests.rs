@@ -1058,7 +1058,10 @@ fn delta_to_events_omits_new_shell_fields_for_default_mesh() {
         fea_convergence: None,
     };
     let new = crate::types::GuiState {
-        meshes: vec![sample_mesh("Bracket.body", vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0])],
+        meshes: vec![sample_mesh(
+            "Bracket.body",
+            vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        )],
         values: vec![],
         constraints: vec![],
         files: vec![],
@@ -1081,7 +1084,11 @@ fn delta_to_events_omits_new_shell_fields_for_default_mesh() {
         .iter()
         .filter(|(name, _)| name == "mesh-update")
         .collect();
-    assert_eq!(mesh_events.len(), 1, "expected exactly one mesh-update event");
+    assert_eq!(
+        mesh_events.len(),
+        1,
+        "expected exactly one mesh-update event"
+    );
     let payload = &mesh_events[0].1;
 
     // The three new shell fields must be absent for a default MeshData

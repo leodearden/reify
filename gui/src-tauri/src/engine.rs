@@ -7,16 +7,17 @@ use std::sync::Arc;
 use tracing::warn;
 
 use reify_compiler::{CompiledModule, EntityKind, ValueCellKind, find_template};
-use reify_eval::cache::NodeId;
-use reify_eval::tolerance_combine::{
-    OutputTarget, conforms_to_output, extract_output_export_spec,
-};
-use reify_eval::{CancellationHandle, CheckResult, Engine};
 use reify_core::{
-    ContentHash, ConstraintNodeId, DimensionVector, ModulePath, RealizationNodeId, Severity,
+    ConstraintNodeId, ContentHash, DimensionVector, ModulePath, RealizationNodeId, Severity,
     ValueCellId,
 };
-use reify_ir::{CompiledExprKind, ConstraintChecker, DeterminacyState, ExportFormat, GeometryKernel, Satisfaction, Value, ValueMap};
+use reify_eval::cache::NodeId;
+use reify_eval::tolerance_combine::{OutputTarget, conforms_to_output, extract_output_export_spec};
+use reify_eval::{CancellationHandle, CheckResult, Engine};
+use reify_ir::{
+    CompiledExprKind, ConstraintChecker, DeterminacyState, ExportFormat, GeometryKernel,
+    Satisfaction, Value, ValueMap,
+};
 
 #[cfg(test)]
 use reify_ir::ConstraintSolver;
@@ -280,10 +281,8 @@ mod core_state {
             file_path: FilePathUpdate,
         ) {
             self.source_map.clear();
-            self.source_map.insert(
-                super::module_key(module_name),
-                source.to_string(),
-            );
+            self.source_map
+                .insert(super::module_key(module_name), source.to_string());
             self.module_name = Some(module_name.to_string());
             self.compiled = Some(compiled);
             self.last_check = Some(check_result);
@@ -1315,9 +1314,7 @@ impl EngineSession {
         }
         // Install the same handle on the engine so the trampoline can poll it
         // via the thread-local dispatch context (task 4079 step-10).
-        self.core
-            .engine_mut()
-            .set_active_solve_cancel(Some(handle));
+        self.core.engine_mut().set_active_solve_cancel(Some(handle));
         // Guard fires solve_finished() on drop — covers ? early-returns and panics.
         let _guard = SolveFinishedGuard(sink_arc);
         let result = f(self);
@@ -1366,15 +1363,21 @@ impl EngineSession {
         let r = self.core.engine_mut().check(compiled);
         // Commit first — all emitters below read via last_check(), matching production.
         self.core.commit_check(r);
-        self.emit_auto_resolve_if_any(self.core.last_check().expect(
-            "check_and_emit_for_test: last_check must be Some after commit_check",
-        ));
-        self.emit_fea_case_if_any(self.core.last_check().expect(
-            "check_and_emit_for_test: last_check must be Some after commit_check",
-        ));
-        self.emit_mode_shape_frames_if_any(self.core.last_check().expect(
-            "check_and_emit_for_test: last_check must be Some after commit_check",
-        ));
+        self.emit_auto_resolve_if_any(
+            self.core
+                .last_check()
+                .expect("check_and_emit_for_test: last_check must be Some after commit_check"),
+        );
+        self.emit_fea_case_if_any(
+            self.core
+                .last_check()
+                .expect("check_and_emit_for_test: last_check must be Some after commit_check"),
+        );
+        self.emit_mode_shape_frames_if_any(
+            self.core
+                .last_check()
+                .expect("check_and_emit_for_test: last_check must be Some after commit_check"),
+        );
         self.emit_fea_diagnostics();
         self.drain_and_emit_warm_pool_events();
     }
@@ -1558,8 +1561,7 @@ impl EngineSession {
             .values
             .iter()
             .filter_map(|(id, value)| {
-                reify_eval::multi_load_dispatch::detect_multi_case_result(value)
-                    .map(|d| (id, d))
+                reify_eval::multi_load_dispatch::detect_multi_case_result(value).map(|d| (id, d))
             })
             .min_by(|(a, _), (b, _)| a.cmp(b))
         {
@@ -1590,10 +1592,11 @@ impl EngineSession {
         };
 
         // Find the first BucklingResult StructureInstance in check.values.
-        let (base_f64, modes_displaced, eigenvalues) = match Self::extract_buckling_data(&check.values) {
-            Some(d) => d,
-            None => return,
-        };
+        let (base_f64, modes_displaced, eigenvalues) =
+            match Self::extract_buckling_data(&check.values) {
+                Some(d) => d,
+                None => return,
+            };
 
         let n = base_f64.len(); // 3 · n_nodes
 
@@ -1667,9 +1670,16 @@ impl EngineSession {
                 Some(Value::List(v)) => v,
                 _ => continue,
             };
-            let base_f64: Vec<f64> = base_list.iter().filter_map(|v| {
-                if let Value::Real(r) = v { Some(*r) } else { None }
-            }).collect();
+            let base_f64: Vec<f64> = base_list
+                .iter()
+                .filter_map(|v| {
+                    if let Value::Real(r) = v {
+                        Some(*r)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
             if base_f64.len() != base_list.len() || base_f64.is_empty() {
                 continue;
             }
@@ -1687,24 +1697,44 @@ impl EngineSession {
             for mode_val in modes_list.iter() {
                 let mode_data = match mode_val {
                     Value::StructureInstance(d) => d,
-                    _ => { all_ok = false; break; }
+                    _ => {
+                        all_ok = false;
+                        break;
+                    }
                 };
                 // Extract eigenvalue (task 4072): must be Value::Real.
                 let eigenvalue = match mode_data.fields.get(&"eigenvalue".to_string()) {
                     Some(Value::Real(r)) => *r,
-                    _ => { all_ok = false; break; }
+                    _ => {
+                        all_ok = false;
+                        break;
+                    }
                 };
                 let mode_shape_map = match mode_data.fields.get(&"mode_shape".to_string()) {
                     Some(Value::Map(m)) => m,
-                    _ => { all_ok = false; break; }
+                    _ => {
+                        all_ok = false;
+                        break;
+                    }
                 };
-                let disp_list = match mode_shape_map.get(&Value::String("displaced_positions".to_string())) {
-                    Some(Value::List(v)) => v,
-                    _ => { all_ok = false; break; }
-                };
-                let disp_f64: Vec<f64> = disp_list.iter().filter_map(|v| {
-                    if let Value::Real(r) = v { Some(*r) } else { None }
-                }).collect();
+                let disp_list =
+                    match mode_shape_map.get(&Value::String("displaced_positions".to_string())) {
+                        Some(Value::List(v)) => v,
+                        _ => {
+                            all_ok = false;
+                            break;
+                        }
+                    };
+                let disp_f64: Vec<f64> = disp_list
+                    .iter()
+                    .filter_map(|v| {
+                        if let Value::Real(r) = v {
+                            Some(*r)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
                 if disp_f64.len() != base_f64.len() {
                     all_ok = false;
                     break;
@@ -1731,10 +1761,15 @@ impl EngineSession {
         let (mut min_x, mut min_y, mut min_z) = (f64::MAX, f64::MAX, f64::MAX);
         let (mut max_x, mut max_y, mut max_z) = (f64::MIN, f64::MIN, f64::MIN);
         for chunk in base.chunks(3) {
-            if chunk.len() < 3 { continue; }
-            min_x = min_x.min(chunk[0]); max_x = max_x.max(chunk[0]);
-            min_y = min_y.min(chunk[1]); max_y = max_y.max(chunk[1]);
-            min_z = min_z.min(chunk[2]); max_z = max_z.max(chunk[2]);
+            if chunk.len() < 3 {
+                continue;
+            }
+            min_x = min_x.min(chunk[0]);
+            max_x = max_x.max(chunk[0]);
+            min_y = min_y.min(chunk[1]);
+            max_y = max_y.max(chunk[1]);
+            min_z = min_z.min(chunk[2]);
+            max_z = max_z.max(chunk[2]);
         }
         let dx = max_x - min_x;
         let dy = max_y - min_y;
@@ -1897,7 +1932,14 @@ impl EngineSession {
         // Atomically commit all state after check() succeeds.
         // Preserve file_path: load_from_source has no file on disk; keep any
         // existing file_path from a prior load_file call.
-        self.commit_state(parsed, compiled, check_result, module_name, source, FilePathUpdate::Preserve);
+        self.commit_state(
+            parsed,
+            compiled,
+            check_result,
+            module_name,
+            source,
+            FilePathUpdate::Preserve,
+        );
 
         // Emit auto-resolve events after committing state.
         //
@@ -2119,7 +2161,14 @@ impl EngineSession {
         // `path.to_path_buf()` is evaluated as a call argument — before the callee body
         // runs — so a panic in `to_path_buf()` lands in the pre-commit window: none of
         // the five fields are written.  Atomic-commit invariant: see engine.rs:30-44.
-        self.commit_state(parsed, compiled, check_result, module_name, &source, FilePathUpdate::Set(path.to_path_buf()));
+        self.commit_state(
+            parsed,
+            compiled,
+            check_result,
+            module_name,
+            &source,
+            FilePathUpdate::Set(path.to_path_buf()),
+        );
         // Emit AFTER all state is committed — cross-cutting ordering invariant.
         self.emit_auto_resolve_if_any(self.core.last_check().expect(
             "emit_auto_resolve_if_any: last_check must be Some after commit_state — see ordering invariant",
@@ -2171,7 +2220,9 @@ impl EngineSession {
             .to_owned();
         let module_name = module_name_owned.as_str();
 
-        let (parsed, compiled) = if let Some(entry_path) = self.core.file_path().map(|p| p.to_path_buf()) {
+        let (parsed, compiled) = if let Some(entry_path) =
+            self.core.file_path().map(|p| p.to_path_buf())
+        {
             // Multi-file flow — same as load_file. Preserves the import graph
             // resolved at load_file time so dirty-buffer edits don't silently drop
             // imports.  Both module_name and the project-root anchor come from
@@ -2199,7 +2250,14 @@ impl EngineSession {
         // Atomically commit all state after check() succeeds.
         // Preserve file_path: update_source does not change which file is loaded;
         // Preserve keeps the file_path set by the prior load_file call.
-        self.commit_state(parsed, compiled, check_result, module_name, content, FilePathUpdate::Preserve);
+        self.commit_state(
+            parsed,
+            compiled,
+            check_result,
+            module_name,
+            content,
+            FilePathUpdate::Preserve,
+        );
 
         // Emit AFTER all state is committed — cross-cutting ordering invariant.
         self.emit_auto_resolve_if_any(self.core.last_check().expect(
@@ -2313,7 +2371,8 @@ impl EngineSession {
         // A panic between the core commit and the cache updates below leaves core fields
         // consistent (at new values) while caches may be stale — that is tolerated per
         // engine_lock.rs:30-34 ("other fields are caches that tolerate partial state").
-        self.core.commit_state(compiled, check_result, module_name, source, file_path);
+        self.core
+            .commit_state(compiled, check_result, module_name, source, file_path);
         // Invalidate def preview cache — new module may have different content hashes.
         self.def_preview_cache.clear();
         // Cache the parse result so get_containing_definition can avoid re-parsing
@@ -2517,10 +2576,7 @@ impl EngineSession {
         if self.compile_failure.is_none()
             && let Some(msg) = &self.last_reload_error
         {
-            let file_path = self
-                .resolve_source()
-                .map(|(k, _)| k)
-                .unwrap_or("<unknown>");
+            let file_path = self.resolve_source().map(|(k, _)| k).unwrap_or("<unknown>");
             compile_diagnostics.push(DiagnosticInfo {
                 file_path: file_path.to_owned(),
                 line: 1,
@@ -2609,10 +2665,7 @@ impl EngineSession {
             if self.compile_failure.is_none()
                 && let Some(msg) = &self.last_reload_error
             {
-                let file_path = self
-                    .resolve_source()
-                    .map(|(k, _)| k)
-                    .unwrap_or("<unknown>");
+                let file_path = self.resolve_source().map(|(k, _)| k).unwrap_or("<unknown>");
                 compile_diagnostics_early.push(DiagnosticInfo {
                     file_path: file_path.to_owned(),
                     line: 1,
@@ -2698,241 +2751,248 @@ impl EngineSession {
             compiled.and_then(|c| engine.tessellate_snapshot(c))
         };
 
-        let (meshes, tessellation_diagnostics, display_panes, display_appearance) = match tess_result {
-            Some(result) => {
-                // Map tessellation diagnostics → DiagnosticInfo and emit backend
-                // log entries so headless/CI runs still surface these via tracing.
-                let tess_diags = if result.diagnostics.is_empty() {
-                    Vec::new()
-                } else {
-                    // Log each diagnostic before mapping so stderr/tracing output
-                    // is available even when the GUI channel is not subscribed.
-                    for diag in &result.diagnostics {
-                        warn!(severity = diag.severity.as_wire_str(), message = %diag.message, "tessellation diagnostic");
-                    }
-                    // Resolve source for span lookup. When source is unavailable (e.g.
-                    // break_*_for_test helpers), we still produce DiagnosticInfo but tag
-                    // code = "unresolved-source" so frontends can distinguish reliable from
-                    // unreliable positions. Borrows from `self` — no allocation on the
-                    // happy path; the "<unknown>"/"" fallback is zero-length static strs.
-                    let resolved = self.resolve_source();
-                    let unresolved = resolved.is_none();
-                    let (file_path, source): (&str, &str) = resolved.unwrap_or(("<unknown>", ""));
-                    let mut diags = diagnostics_to_info(&result.diagnostics, file_path, source);
-                    if unresolved {
-                        for d in &mut diags {
-                            if d.code.is_none() {
-                                d.code = Some("unresolved-source".to_owned());
+        let (meshes, tessellation_diagnostics, display_panes, display_appearance) =
+            match tess_result {
+                Some(result) => {
+                    // Map tessellation diagnostics → DiagnosticInfo and emit backend
+                    // log entries so headless/CI runs still surface these via tracing.
+                    let tess_diags = if result.diagnostics.is_empty() {
+                        Vec::new()
+                    } else {
+                        // Log each diagnostic before mapping so stderr/tracing output
+                        // is available even when the GUI channel is not subscribed.
+                        for diag in &result.diagnostics {
+                            warn!(severity = diag.severity.as_wire_str(), message = %diag.message, "tessellation diagnostic");
+                        }
+                        // Resolve source for span lookup. When source is unavailable (e.g.
+                        // break_*_for_test helpers), we still produce DiagnosticInfo but tag
+                        // code = "unresolved-source" so frontends can distinguish reliable from
+                        // unreliable positions. Borrows from `self` — no allocation on the
+                        // happy path; the "<unknown>"/"" fallback is zero-length static strs.
+                        let resolved = self.resolve_source();
+                        let unresolved = resolved.is_none();
+                        let (file_path, source): (&str, &str) =
+                            resolved.unwrap_or(("<unknown>", ""));
+                        let mut diags = diagnostics_to_info(&result.diagnostics, file_path, source);
+                        if unresolved {
+                            for d in &mut diags {
+                                if d.code.is_none() {
+                                    d.code = Some("unresolved-source".to_owned());
+                                }
                             }
                         }
-                    }
-                    diags
-                };
-                // T6 (task 3904) complete: `default_visible` is surfaced to the
-                // GUI via the entity-tree realization nodes — NOT through MeshData.
-                // `get_entity_tree` → `build_template_node` computes
-                // `default_visible = !(aux_ancestor || real.is_aux)` per the
-                // shared contract anchor `geometry_ops::surface_subtree`. The frontend
-                // `defaultVisibilityFor` reads the realization node's flag and
-                // returns 'hidden' for aux bodies, driving `meshManager.setVisibility`
-                // and thus `getSceneMeshes()` / `viewport_state.meshCount`.
-                // `MeshData` intentionally stays visibility-free: the frontend
-                // never consults mesh visibility directly.
+                        diags
+                    };
+                    // T6 (task 3904) complete: `default_visible` is surfaced to the
+                    // GUI via the entity-tree realization nodes — NOT through MeshData.
+                    // `get_entity_tree` → `build_template_node` computes
+                    // `default_visible = !(aux_ancestor || real.is_aux)` per the
+                    // shared contract anchor `geometry_ops::surface_subtree`. The frontend
+                    // `defaultVisibilityFor` reads the realization node's flag and
+                    // returns 'hidden' for aux bodies, driving `meshManager.setVisibility`
+                    // and thus `getSceneMeshes()` / `viewport_state.meshCount`.
+                    // `MeshData` intentionally stays visibility-free: the frontend
+                    // never consults mesh visibility directly.
 
-                // ── #4898: build material+coating+finish_process→appearance lookup ──
-                // (extends β/4771 §7.1 to cover the full §7.3 functional precedence)
-                //
-                // Pass 1: gather per-member `material`, `coating`, `finish_process`
-                // cells from `result.values` by entity string.  We accumulate ANY
-                // producer member (do NOT gate on a `material` cell being present)
-                // so that coating-only bodies resolve via Layer 1 even without a
-                // material cell (precedence: coating > finish_process > material;
-                // see resolve_appearance_opt in appearance.rs).
-                //
-                // Pass 2: for each entity build a synthetic `Body` StructureInstance
-                // carrying all gathered producer fields, then call
-                // `resolve_appearance_opt`.  Mirrors the 3MF `__self` pattern
-                // (resolve_export_body_color in engine_build.rs): one body with all
-                // producer fields → resolve_appearance.  `resolve_appearance_opt`
-                // ignores non-producer
-                // fields, so the synthetic body yields identical results to a full
-                // StructureInstance.
-                //
-                // `result.values` is borrowed here (immutable); `result.meshes` is
-                // consumed in the `.into_iter()` below (Rust partial-move is OK).
-                let by_entity: HashMap<String, crate::types::MeshAppearance> = {
-                    use reify_eval::appearance::resolve_appearance_opt;
-                    use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
-                    let mut app_diags: Vec<Diagnostic> = Vec::new();
+                    // ── #4898: build material+coating+finish_process→appearance lookup ──
+                    // (extends β/4771 §7.1 to cover the full §7.3 functional precedence)
+                    //
+                    // Pass 1: gather per-member `material`, `coating`, `finish_process`
+                    // cells from `result.values` by entity string.  We accumulate ANY
+                    // producer member (do NOT gate on a `material` cell being present)
+                    // so that coating-only bodies resolve via Layer 1 even without a
+                    // material cell (precedence: coating > finish_process > material;
+                    // see resolve_appearance_opt in appearance.rs).
+                    //
+                    // Pass 2: for each entity build a synthetic `Body` StructureInstance
+                    // carrying all gathered producer fields, then call
+                    // `resolve_appearance_opt`.  Mirrors the 3MF `__self` pattern
+                    // (resolve_export_body_color in engine_build.rs): one body with all
+                    // producer fields → resolve_appearance.  `resolve_appearance_opt`
+                    // ignores non-producer
+                    // fields, so the synthetic body yields identical results to a full
+                    // StructureInstance.
+                    //
+                    // `result.values` is borrowed here (immutable); `result.meshes` is
+                    // consumed in the `.into_iter()` below (Rust partial-move is OK).
+                    let by_entity: HashMap<String, crate::types::MeshAppearance> = {
+                        use reify_eval::appearance::resolve_appearance_opt;
+                        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+                        let mut app_diags: Vec<Diagnostic> = Vec::new();
 
-                    // Pass 1: gather producer fields by entity.
-                    let mut gathered: HashMap<String, Vec<(String, Value)>> =
-                        HashMap::new();
-                    for (id, cell_val) in result.values.iter() {
-                        if matches!(
-                            id.member.as_str(),
-                            "material" | "coating" | "finish_process"
-                        ) {
-                            gathered
-                                .entry(id.entity.clone())
-                                .or_default()
-                                .push((id.member.clone(), cell_val.clone()));
+                        // Pass 1: gather producer fields by entity.
+                        let mut gathered: HashMap<String, Vec<(String, Value)>> = HashMap::new();
+                        for (id, cell_val) in result.values.iter() {
+                            if matches!(
+                                id.member.as_str(),
+                                "material" | "coating" | "finish_process"
+                            ) {
+                                gathered
+                                    .entry(id.entity.clone())
+                                    .or_default()
+                                    .push((id.member.clone(), cell_val.clone()));
+                            }
                         }
-                    }
 
-                    // Pass 2: build synthetic body per entity and resolve appearance.
-                    let mut map: HashMap<String, crate::types::MeshAppearance> =
-                        HashMap::new();
-                    for (entity, fields) in gathered {
-                        let body_fields: PersistentMap<String, Value> =
-                            fields.into_iter().collect();
-                        let body =
-                            Value::StructureInstance(Box::new(StructureInstanceData {
+                        // Pass 2: build synthetic body per entity and resolve appearance.
+                        let mut map: HashMap<String, crate::types::MeshAppearance> = HashMap::new();
+                        for (entity, fields) in gathered {
+                            let body_fields: PersistentMap<String, Value> =
+                                fields.into_iter().collect();
+                            let body = Value::StructureInstance(Box::new(StructureInstanceData {
                                 type_id: StructureTypeId(u32::MAX),
                                 type_name: "Body".to_string(),
                                 version: 1,
                                 fields: body_fields,
                             }));
-                        if let Some(app) = resolve_appearance_opt(&body) {
-                            map.insert(
-                                entity,
-                                project_appearance(&app, &mut app_diags),
+                            if let Some(app) = resolve_appearance_opt(&body) {
+                                map.insert(entity, project_appearance(&app, &mut app_diags));
+                            }
+                        }
+
+                        for diag in &app_diags {
+                            warn!(
+                                severity = diag.severity.as_wire_str(),
+                                message = %diag.message,
+                                "material appearance diagnostic"
+                            );
+                        }
+                        map
+                    };
+
+                    let mut meshes: Vec<MeshData> = result
+                        .meshes
+                        .into_iter()
+                        .map(|surface| {
+                            // Extract entity prefix (everything before "#realization[") to
+                            // look up the pre-built material appearance. Mirrors entity_path
+                            // join convention from collect_display_routing (:3515-3529).
+                            let entity_prefix = match surface.entity_path.find("#realization[") {
+                                Some(pos) => surface.entity_path[..pos].to_owned(),
+                                None => surface.entity_path.clone(),
+                            };
+                            let appearance = by_entity.get(&entity_prefix).cloned();
+                            MeshData {
+                                entity_path: surface.entity_path,
+                                vertices: surface.mesh.vertices,
+                                indices: surface.mesh.indices,
+                                normals: surface.mesh.normals,
+                                scalar_channels: std::collections::HashMap::new(),
+                                displaced_positions: None,
+                                element_kind: None,
+                                region_tags: None,
+                                element_index: None,
+                                vector_channels: std::collections::HashMap::new(),
+                                appearance,
+                            }
+                        })
+                        .collect();
+                    // Development-time drift guard: warn when a material-bearing entity
+                    // had no mesh whose entity_path prefix matches its key.  A silent
+                    // miss causes that entity's material to produce appearance: None
+                    // instead of Some(…), which is the inverse of the §7.1 intent and
+                    // invisible without this signal.  Gated to debug builds because the
+                    // O(|by_entity| × |meshes|) scan is non-trivial on large scenes.
+                    #[cfg(debug_assertions)]
+                    for entity_key in by_entity.keys() {
+                        let consumed = meshes.iter().any(|m| {
+                            m.entity_path
+                                .split("#realization[")
+                                .next()
+                                .is_some_and(|p| p == entity_key)
+                        });
+                        if !consumed {
+                            warn!(
+                                entity = %entity_key,
+                                "material appearance: entity key matched no mesh prefix — \
+                                 possible entity_path/material-cell join drift; \
+                                 appearance will be None for this entity"
                             );
                         }
                     }
-
-                    for diag in &app_diags {
-                        warn!(
-                            severity = diag.severity.as_wire_str(),
-                            message = %diag.message,
-                            "material appearance diagnostic"
+                    // Cache bare tessellation geometry ONLY for FEA scenes: when a
+                    // MultiCaseResult or single-case ElasticResult is present in the
+                    // evaluated values, `set_active_fea_case` needs the cached bare-mesh
+                    // buffers (vertices/indices/normals) to re-source channels without
+                    // re-tessellating.  Non-FEA scenes skip the O(mesh bytes) clone so
+                    // they don't pay the cost of a feature they never use.
+                    // A non-FEA scene that later acquires FEA values must go through
+                    // `build_gui_state` again (as always happens in production via the
+                    // normal commit_state → build_gui_state path) before case-switching.
+                    let has_fea = self
+                        .core
+                        .last_check()
+                        .map(|check| values_have_fea_data(&check.values))
+                        .unwrap_or(false);
+                    if has_fea {
+                        self.tess_mesh_cache = Some(
+                            meshes
+                                .iter()
+                                .map(|m| MeshData {
+                                    entity_path: m.entity_path.clone(),
+                                    vertices: m.vertices.clone(),
+                                    indices: m.indices.clone(),
+                                    normals: m.normals.clone(),
+                                    scalar_channels: std::collections::HashMap::new(),
+                                    displaced_positions: None,
+                                    element_kind: None,
+                                    region_tags: None,
+                                    element_index: None,
+                                    vector_channels: std::collections::HashMap::new(),
+                                    appearance: None,
+                                })
+                                .collect(),
+                        );
+                    } else {
+                        // Invalidate any stale cache from a prior FEA scene so a
+                        // subsequent set_active_fea_case on a non-FEA scene does not
+                        // serve geometry from the wrong model.
+                        self.tess_mesh_cache = None;
+                    }
+                    self.tess_diag_cache = tess_diags.clone();
+                    // Populate per-vertex FEA scalar/displacement channels when an
+                    // ElasticResult is present in the evaluated values.  The helper
+                    // returns early when no ElasticResult is found (negligible
+                    // overhead: one ValueMap scan), so non-FEA scenes pay no
+                    // tessellation-path cost.  Pass active_fea_case so multi-case
+                    // results sample the correct case; None falls back to lex-first.
+                    if let Some(check) = self.core.last_check() {
+                        apply_fea_channels(
+                            &mut meshes,
+                            &check.values,
+                            self.active_fea_case.as_deref(),
                         );
                     }
-                    map
-                };
-
-                let mut meshes: Vec<MeshData> = result
-                    .meshes
-                    .into_iter()
-                    .map(|surface| {
-                        // Extract entity prefix (everything before "#realization[") to
-                        // look up the pre-built material appearance. Mirrors entity_path
-                        // join convention from collect_display_routing (:3515-3529).
-                        let entity_prefix = match surface.entity_path.find("#realization[") {
-                            Some(pos) => surface.entity_path[..pos].to_owned(),
-                            None => surface.entity_path.clone(),
-                        };
-                        let appearance = by_entity.get(&entity_prefix).cloned();
-                        MeshData {
-                            entity_path: surface.entity_path,
-                            vertices: surface.mesh.vertices,
-                            indices: surface.mesh.indices,
-                            normals: surface.mesh.normals,
-                            scalar_channels: std::collections::HashMap::new(),
-                            displaced_positions: None,
-                            element_kind: None,
-                            region_tags: None,
-                            element_index: None,
-                            vector_channels: std::collections::HashMap::new(),
-                            appearance,
-                        }
-                    })
-                    .collect();
-                // Development-time drift guard: warn when a material-bearing entity
-                // had no mesh whose entity_path prefix matches its key.  A silent
-                // miss causes that entity's material to produce appearance: None
-                // instead of Some(…), which is the inverse of the §7.1 intent and
-                // invisible without this signal.  Gated to debug builds because the
-                // O(|by_entity| × |meshes|) scan is non-trivial on large scenes.
-                #[cfg(debug_assertions)]
-                for entity_key in by_entity.keys() {
-                    let consumed = meshes.iter().any(|m| {
-                        m.entity_path
-                            .split("#realization[")
-                            .next()
-                            .is_some_and(|p| p == entity_key)
-                    });
-                    if !consumed {
-                        warn!(
-                            entity = %entity_key,
-                            "material appearance: entity key matched no mesh prefix — \
-                             possible entity_path/material-cell join drift; \
-                             appearance will be None for this entity"
-                        );
-                    }
+                    // Populate shell-extract channels (element_kind, region_tags,
+                    // vonMises_top/mid/bottom, per-face normals) for shell-classified
+                    // bodies, replacing their displayed geometry with the extraction
+                    // mid-surface. `shell_gui_mesh_data` returns owned data (the
+                    // &Engine borrow ends at the call), so it does not conflict with
+                    // the mutable `meshes` borrow; it scans the engine graph + cache
+                    // and returns an empty Vec for non-shell scenes (one graph scan),
+                    // so non-shell scenes are unaffected.
+                    let shell_views = self.core.engine().shell_gui_mesh_data();
+                    apply_shell_channels(&mut meshes, &shell_views);
+                    // Walk Output occurrence subs to build display_panes routing.
+                    // Uses &result.values (disjoint from the moved result.meshes field).
+                    // Immutable self.core borrows are safe here: the mutable engine
+                    // borrow from tessellate_snapshot was released above.
+                    let (display_panes, display_appearance) = {
+                        let compiled = self.core.compiled().unwrap();
+                        let prelude = self.core.engine().prelude();
+                        collect_display_routing(compiled, prelude, &result.values)
+                    };
+                    (meshes, tess_diags, display_panes, display_appearance)
                 }
-                // Cache bare tessellation geometry ONLY for FEA scenes: when a
-                // MultiCaseResult or single-case ElasticResult is present in the
-                // evaluated values, `set_active_fea_case` needs the cached bare-mesh
-                // buffers (vertices/indices/normals) to re-source channels without
-                // re-tessellating.  Non-FEA scenes skip the O(mesh bytes) clone so
-                // they don't pay the cost of a feature they never use.
-                // A non-FEA scene that later acquires FEA values must go through
-                // `build_gui_state` again (as always happens in production via the
-                // normal commit_state → build_gui_state path) before case-switching.
-                let has_fea = self.core.last_check()
-                    .map(|check| values_have_fea_data(&check.values))
-                    .unwrap_or(false);
-                if has_fea {
-                    self.tess_mesh_cache = Some(meshes.iter().map(|m| MeshData {
-                        entity_path: m.entity_path.clone(),
-                        vertices: m.vertices.clone(),
-                        indices: m.indices.clone(),
-                        normals: m.normals.clone(),
-                        scalar_channels: std::collections::HashMap::new(),
-                        displaced_positions: None,
-                        element_kind: None,
-                        region_tags: None,
-                        element_index: None,
-                        vector_channels: std::collections::HashMap::new(),
-                        appearance: None,
-                    }).collect());
-                } else {
-                    // Invalidate any stale cache from a prior FEA scene so a
-                    // subsequent set_active_fea_case on a non-FEA scene does not
-                    // serve geometry from the wrong model.
-                    self.tess_mesh_cache = None;
+                None => {
+                    // No tessellation result (no compiled module or no realizations).
+                    // Populate caches with empty data so set_active_fea_case can
+                    // safely clone them without checking for None.
+                    self.tess_mesh_cache = Some(Vec::new());
+                    self.tess_diag_cache = Vec::new();
+                    (Vec::new(), Vec::new(), Vec::new(), Vec::new())
                 }
-                self.tess_diag_cache = tess_diags.clone();
-                // Populate per-vertex FEA scalar/displacement channels when an
-                // ElasticResult is present in the evaluated values.  The helper
-                // returns early when no ElasticResult is found (negligible
-                // overhead: one ValueMap scan), so non-FEA scenes pay no
-                // tessellation-path cost.  Pass active_fea_case so multi-case
-                // results sample the correct case; None falls back to lex-first.
-                if let Some(check) = self.core.last_check() {
-                    apply_fea_channels(&mut meshes, &check.values, self.active_fea_case.as_deref());
-                }
-                // Populate shell-extract channels (element_kind, region_tags,
-                // vonMises_top/mid/bottom, per-face normals) for shell-classified
-                // bodies, replacing their displayed geometry with the extraction
-                // mid-surface. `shell_gui_mesh_data` returns owned data (the
-                // &Engine borrow ends at the call), so it does not conflict with
-                // the mutable `meshes` borrow; it scans the engine graph + cache
-                // and returns an empty Vec for non-shell scenes (one graph scan),
-                // so non-shell scenes are unaffected.
-                let shell_views = self.core.engine().shell_gui_mesh_data();
-                apply_shell_channels(&mut meshes, &shell_views);
-                // Walk Output occurrence subs to build display_panes routing.
-                // Uses &result.values (disjoint from the moved result.meshes field).
-                // Immutable self.core borrows are safe here: the mutable engine
-                // borrow from tessellate_snapshot was released above.
-                let (display_panes, display_appearance) = {
-                    let compiled = self.core.compiled().unwrap();
-                    let prelude = self.core.engine().prelude();
-                    collect_display_routing(compiled, prelude, &result.values)
-                };
-                (meshes, tess_diags, display_panes, display_appearance)
-            }
-            None => {
-                // No tessellation result (no compiled module or no realizations).
-                // Populate caches with empty data so set_active_fea_case can
-                // safely clone them without checking for None.
-                self.tess_mesh_cache = Some(Vec::new());
-                self.tess_diag_cache = Vec::new();
-                (Vec::new(), Vec::new(), Vec::new(), Vec::new())
-            },
-        };
+            };
 
         // Build files and compile diagnostics via shared helpers.
         // See `build_files_with_live_edit` and `build_compile_diagnostics` for
@@ -3357,10 +3417,7 @@ impl EngineSession {
         // stdlib units, etc.) is available during evaluation, then replace the
         // templates list with only the one definition we want to preview.
         let preview_module = {
-            let compiled = self
-                .core
-                .compiled()
-                .expect("compiled was Some in Phase 1");
+            let compiled = self.core.compiled().expect("compiled was Some in Phase 1");
             let template = compiled
                 .templates
                 .iter()
@@ -3497,7 +3554,14 @@ impl EngineSession {
         let line_offsets = self.line_offsets_cache.as_deref()?;
         let compiled = self.core.compiled()?;
 
-        reify_eval::resolve_entity_at_source_position(compiled, parsed, source, line_offsets, line, col)
+        reify_eval::resolve_entity_at_source_position(
+            compiled,
+            parsed,
+            source,
+            line_offsets,
+            line,
+            col,
+        )
     }
 }
 
@@ -3615,9 +3679,8 @@ fn build_values(
             // `build_values` call. If profiling identifies this as a hotspot,
             // consider a single-pass batch over the origins side-map + graph.
             let reason = match &val {
-                reify_ir::Value::Undef => engine.and_then(|e| {
-                    reify_eval::format_undef_causes(&e.trace_undef_causes(&cell.id))
-                }),
+                reify_ir::Value::Undef => engine
+                    .and_then(|e| reify_eval::format_undef_causes(&e.trace_undef_causes(&cell.id))),
                 _ => None,
             };
             values.push(ValueData {
@@ -3734,8 +3797,8 @@ fn collect_display_routing(
     for template in &module.templates {
         for sub in &template.sub_components {
             // Gate 1: resolve occurrence template — module first, then prelude.
-            let Some(occ_template) = find_template(&module.templates, &sub.structure_name)
-                .or_else(|| {
+            let Some(occ_template) =
+                find_template(&module.templates, &sub.structure_name).or_else(|| {
                     prelude
                         .iter()
                         .find_map(|pm| find_template(&pm.templates, &sub.structure_name))
@@ -3785,9 +3848,9 @@ fn collect_display_routing(
                     _ => None,
                 })
                 .and_then(|v| match v {
-                    Value::GeometryHandle { realization_ref, .. } => {
-                        Some(realization_ref.to_string())
-                    }
+                    Value::GeometryHandle {
+                        realization_ref, ..
+                    } => Some(realization_ref.to_string()),
                     _ => None,
                 });
 
@@ -3800,7 +3863,10 @@ fn collect_display_routing(
 
             match subject_path {
                 Some(subject) => {
-                    directives.push(DisplayDirective { subject: subject.clone(), pane });
+                    directives.push(DisplayDirective {
+                        subject: subject.clone(),
+                        pane,
+                    });
                     if has_explicit_style {
                         let style = extract_display_style_data(instance);
                         appearances.push(AppearanceDirective { subject, style });
@@ -3848,9 +3914,15 @@ fn extract_display_style_data(display_output: &Value) -> DisplayStyleData {
                     opacity = to_f32(v);
                 }
                 if let Some(Value::StructureInstance(cd)) = d.fields.get("color") {
-                    if let Some(v) = cd.fields.get("r") { r = to_f32(v); }
-                    if let Some(v) = cd.fields.get("g") { g = to_f32(v); }
-                    if let Some(v) = cd.fields.get("b") { b = to_f32(v); }
+                    if let Some(v) = cd.fields.get("r") {
+                        r = to_f32(v);
+                    }
+                    if let Some(v) = cd.fields.get("g") {
+                        g = to_f32(v);
+                    }
+                    if let Some(v) = cd.fields.get("b") {
+                        b = to_f32(v);
+                    }
                 }
                 if let Some(Value::Enum { variant, .. }) = d.fields.get("finish") {
                     finish = match variant.as_str() {
@@ -3881,7 +3953,12 @@ fn extract_display_style_data(display_output: &Value) -> DisplayStyleData {
         }
     }
 
-    DisplayStyleData { color: [r, g, b, opacity], finish, opacity, wireframe }
+    DisplayStyleData {
+        color: [r, g, b, opacity],
+        finish,
+        opacity,
+        wireframe,
+    }
 }
 
 /// Project an `Appearance` StructureInstance to a `MeshAppearance` value.
@@ -3894,7 +3971,10 @@ fn extract_display_style_data(display_output: &Value) -> DisplayStyleData {
 /// from `extract_display_style_data` which handles the layer-3 DisplayStyle
 /// override channel.  Color is normalized `resolve_color` bytes/255 with
 /// alpha=1.0 (opacity is a DisplayStyle field, not a material property).
-pub(crate) fn project_appearance(appearance: &Value, diags: &mut Vec<Diagnostic>) -> crate::types::MeshAppearance {
+pub(crate) fn project_appearance(
+    appearance: &Value,
+    diags: &mut Vec<Diagnostic>,
+) -> crate::types::MeshAppearance {
     use reify_eval::appearance::resolve_color;
     use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
 
@@ -3955,7 +4035,12 @@ pub(crate) fn project_appearance(appearance: &Value, diags: &mut Vec<Diagnostic>
 
     let rgb = resolve_color(&color_val, diags);
     crate::types::MeshAppearance {
-        color: [rgb.r as f32 / 255.0, rgb.g as f32 / 255.0, rgb.b as f32 / 255.0, 1.0],
+        color: [
+            rgb.r as f32 / 255.0,
+            rgb.g as f32 / 255.0,
+            rgb.b as f32 / 255.0,
+            1.0,
+        ],
         metalness,
         roughness,
         finish,
@@ -4492,10 +4577,9 @@ fn resolve_driving_params_from_ast(
             match bind_value {
                 BindValue::Param(value_cell_name) => {
                     // The value side must be a Param cell (not a Let or Auto).
-                    let is_param = template
-                        .value_cells
-                        .iter()
-                        .any(|c| c.id.member == value_cell_name && matches!(c.kind, ValueCellKind::Param));
+                    let is_param = template.value_cells.iter().any(|c| {
+                        c.id.member == value_cell_name && matches!(c.kind, ValueCellKind::Param)
+                    });
                     if !is_param {
                         continue;
                     }
@@ -4614,7 +4698,13 @@ fn resolve_driving_params_from_ast(
                         if let Some(jd) = desc.joints.get_mut(joint_index) {
                             // Refine the binding to LiteralBound using the joint cell name
                             // (not the index-based default) — first-wins guard.
-                            if matches!(jd.binding, JointBinding::LiteralBound { initial_value_si: None, .. }) {
+                            if matches!(
+                                jd.binding,
+                                JointBinding::LiteralBound {
+                                    initial_value_si: None,
+                                    ..
+                                }
+                            ) {
                                 jd.binding = JointBinding::LiteralBound {
                                     synth_param_name: format!("__joint_{joint_cell_name}_v"),
                                     initial_value_si,
@@ -4643,10 +4733,7 @@ fn resolve_driving_params_from_ast(
 /// carried an identical ~25-line recursion body.  `walk_function_calls`
 /// centralises that skeleton so a third AST-driven feature can register its
 /// match logic via the callback without duplicating the traversal again.
-fn walk_function_calls(
-    expr: &reify_ast::Expr,
-    on_call: &mut dyn FnMut(&str, &[reify_ast::Expr]),
-) {
+fn walk_function_calls(expr: &reify_ast::Expr, on_call: &mut dyn FnMut(&str, &[reify_ast::Expr])) {
     use reify_ast::ExprKind;
     match &expr.kind {
         ExprKind::FunctionCall { name, args, .. } => {
@@ -5012,7 +5099,14 @@ pub(crate) fn build_template_node(
             } else {
                 // Thread aux_ancestor: if this sub is aux OR an ancestor was aux,
                 // all descendants inherit default_visible = false.
-                build_template_node(child_template, &sub_path, compiled, engine, aux_ancestor || sub.is_aux).children
+                build_template_node(
+                    child_template,
+                    &sub_path,
+                    compiled,
+                    engine,
+                    aux_ancestor || sub.is_aux,
+                )
+                .children
             }
         } else {
             vec![]
@@ -5288,15 +5382,21 @@ impl EngineSession {
         self.compile_failure = None;
         self.last_reload_error = None;
         // Emit ordering mirrors the emit-ordering block in load_from_source.
-        self.emit_auto_resolve_if_any(self.core.last_check().expect(
-            "emit_auto_resolve_if_any: last_check must be Some after commit_state",
-        ));
-        self.emit_fea_case_if_any(self.core.last_check().expect(
-            "emit_fea_case_if_any: last_check must be Some after commit_state",
-        ));
-        self.emit_mode_shape_frames_if_any(self.core.last_check().expect(
-            "emit_mode_shape_frames_if_any: last_check must be Some after commit_state",
-        ));
+        self.emit_auto_resolve_if_any(
+            self.core
+                .last_check()
+                .expect("emit_auto_resolve_if_any: last_check must be Some after commit_state"),
+        );
+        self.emit_fea_case_if_any(
+            self.core
+                .last_check()
+                .expect("emit_fea_case_if_any: last_check must be Some after commit_state"),
+        );
+        self.emit_mode_shape_frames_if_any(
+            self.core.last_check().expect(
+                "emit_mode_shape_frames_if_any: last_check must be Some after commit_state",
+            ),
+        );
         self.drain_and_emit_warm_pool_events();
         self.build_gui_state()
     }
@@ -5636,9 +5736,7 @@ fn format_expr(expr: &reify_ir::CompiledExpr) -> String {
                 reify_ir::DeterminacyPredicateKind::Determined => "determined",
                 reify_ir::DeterminacyPredicateKind::Undetermined => "undetermined",
                 reify_ir::DeterminacyPredicateKind::Constrained => "constrained",
-                reify_ir::DeterminacyPredicateKind::PartiallyDetermined => {
-                    "partially_determined"
-                }
+                reify_ir::DeterminacyPredicateKind::PartiallyDetermined => "partially_determined",
             };
             format!("{}({})", fn_name, cell.member)
         }
@@ -5698,8 +5796,7 @@ fn format_expr(expr: &reify_ir::CompiledExpr) -> String {
             ordered_args,
             ..
         } => {
-            let arg_strs: Vec<String> =
-                ordered_args.iter().map(|(_, e)| format_expr(e)).collect();
+            let arg_strs: Vec<String> = ordered_args.iter().map(|(_, e)| format_expr(e)).collect();
             format!("{}({})", type_name, arg_strs.join(", "))
         }
         // task 4118 (γ): the Selector→List<Geometry> coercion is compiler-
@@ -6006,9 +6103,9 @@ pub(crate) fn extract_elastic_result_fields(
 /// that warrants caching the tessellation geometry for case-switching.
 fn values_have_fea_data(values: &reify_ir::ValueMap) -> bool {
     extract_elastic_result_fields(values).is_some()
-        || values.iter().any(|(_, v)| {
-            reify_eval::multi_load_dispatch::detect_multi_case_result(v).is_some()
-        })
+        || values
+            .iter()
+            .any(|(_, v)| reify_eval::multi_load_dispatch::detect_multi_case_result(v).is_some())
 }
 
 /// Extract stress and displacement `SampledField` references from a single
@@ -6035,21 +6132,25 @@ fn resolve_elastic_result_sampled_fields(
     };
 
     let stress_sf = match data.fields.get("stress") {
-        Some(Value::Field { source: FieldSourceKind::Sampled, lambda, .. }) => {
-            match lambda.as_ref() {
-                Value::SampledField(sf) => sf,
-                _ => return None,
-            }
-        }
+        Some(Value::Field {
+            source: FieldSourceKind::Sampled,
+            lambda,
+            ..
+        }) => match lambda.as_ref() {
+            Value::SampledField(sf) => sf,
+            _ => return None,
+        },
         _ => return None,
     };
     let disp_sf = match data.fields.get("displacement") {
-        Some(Value::Field { source: FieldSourceKind::Sampled, lambda, .. }) => {
-            match lambda.as_ref() {
-                Value::SampledField(sf) => sf,
-                _ => return None,
-            }
-        }
+        Some(Value::Field {
+            source: FieldSourceKind::Sampled,
+            lambda,
+            ..
+        }) => match lambda.as_ref() {
+            Value::SampledField(sf) => sf,
+            _ => return None,
+        },
         _ => return None,
     };
     // error_indicator is Option<Field<Point3<Length>, Pressure>> in the DSL
@@ -6060,12 +6161,14 @@ fn resolve_elastic_result_sampled_fields(
     // source) resolves to None here.
     let error_indicator_sf = match data.fields.get("error_indicator") {
         Some(Value::Option(Some(boxed))) => match boxed.as_ref() {
-            Value::Field { source: FieldSourceKind::Sampled, lambda, .. } => {
-                match lambda.as_ref() {
-                    Value::SampledField(sf) => Some(sf),
-                    _ => None,
-                }
-            }
+            Value::Field {
+                source: FieldSourceKind::Sampled,
+                lambda,
+                ..
+            } => match lambda.as_ref() {
+                Value::SampledField(sf) => Some(sf),
+                _ => None,
+            },
             _ => None,
         },
         _ => None,
@@ -6095,9 +6198,7 @@ fn resolve_active_multi_case_value<'a>(
 
     // Resolve the case name to use: the requested name if it exists, else lex-first.
     let case_name_to_use: String = match active_case {
-        Some(name) if detected.available_cases.contains(&name.to_string()) => {
-            name.to_string()
-        }
+        Some(name) if detected.available_cases.contains(&name.to_string()) => name.to_string(),
         _ => detected.active_case_id,
     };
 
@@ -6202,9 +6303,14 @@ pub(crate) fn extract_fea_convergence(
     };
     match data.fields.get("convergence_status") {
         Some(Value::Enum { variant, .. }) if variant == "Converged" => {
-            Some(crate::types::FeaConvergenceInfo { converged: true, reason: None })
+            Some(crate::types::FeaConvergenceInfo {
+                converged: true,
+                reason: None,
+            })
         }
-        Some(Value::Enum { variant, payload, .. }) if variant == "NotConverged" => {
+        Some(Value::Enum {
+            variant, payload, ..
+        }) if variant == "NotConverged" => {
             let reason = payload.iter().find_map(|(name, v)| {
                 if name != "reason" {
                     return None;
@@ -6214,7 +6320,10 @@ pub(crate) fn extract_fea_convergence(
                     _ => None,
                 }
             });
-            Some(crate::types::FeaConvergenceInfo { converged: false, reason })
+            Some(crate::types::FeaConvergenceInfo {
+                converged: false,
+                reason,
+            })
         }
         _ => None,
     }
@@ -6263,9 +6372,9 @@ pub(crate) fn apply_fea_channels(
             triple
         } else {
             // Scan all cells for the first MultiCaseResult-shaped value.
-            let multi_triple = values.iter().find_map(|(_, cell_val)| {
-                try_extract_from_multi_case_cell(cell_val, active_case)
-            });
+            let multi_triple = values
+                .iter()
+                .find_map(|(_, cell_val)| try_extract_from_multi_case_cell(cell_val, active_case));
             match multi_triple {
                 Some(triple) => triple,
                 None => return,
@@ -6280,7 +6389,11 @@ pub(crate) fn apply_fea_channels(
         .cloned()
         .filter(|s| s.is_finite() && *s > 0.0)
         .fold(f64::MAX, f64::min);
-    let tol = if min_spacing < f64::MAX { min_spacing * 0.01 } else { 1e-9 };
+    let tol = if min_spacing < f64::MAX {
+        min_spacing * 0.01
+    } else {
+        1e-9
+    };
 
     for mesh in meshes.iter_mut() {
         let vertex_count = mesh.vertices.len() / 3;
@@ -6307,7 +6420,8 @@ pub(crate) fn apply_fea_channels(
         mesh.scalar_channels.insert("vonMises".to_string(), vm_vec);
         mesh.displaced_positions = Some(disp_vec);
         if error_indicator_sf.is_some() {
-            mesh.scalar_channels.insert("errorIndicator".to_string(), ei_vec);
+            mesh.scalar_channels
+                .insert("errorIndicator".to_string(), ei_vec);
         }
     }
 }
@@ -6419,8 +6533,10 @@ mod display_style_extract_tests {
 
     /// Build a `Value::StructureInstance` from a list of `(name, value)` pairs.
     fn make_si(type_name: &str, pairs: &[(&str, Value)]) -> Value {
-        let fields: PersistentMap<String, Value> =
-            pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
+        let fields: PersistentMap<String, Value> = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect();
         Value::StructureInstance(Box::new(StructureInstanceData {
             type_id: StructureTypeId(0),
             type_name: type_name.to_string(),
@@ -6440,7 +6556,10 @@ mod display_style_extract_tests {
     #[test]
     fn extract_display_style_data_tolerates_dimensionless_scalar_fields() {
         let dim = DimensionVector::DIMENSIONLESS;
-        let scalar = |v: f64| Value::Scalar { si_value: v, dimension: dim };
+        let scalar = |v: f64| Value::Scalar {
+            si_value: v,
+            dimension: dim,
+        };
 
         // Color(r=0.8, g=0.6, b=0.4) expressed via dimensionless Scalar values.
         let color_si = make_si(
@@ -6453,7 +6572,14 @@ mod display_style_extract_tests {
             &[
                 ("color", color_si),
                 ("opacity", scalar(0.75)),
-                ("finish", Value::Enum { type_name: "Finish".to_string(), variant: "Gloss".to_string(), payload: vec![] }),
+                (
+                    "finish",
+                    Value::Enum {
+                        type_name: "Finish".to_string(),
+                        variant: "Gloss".to_string(),
+                        payload: vec![],
+                    },
+                ),
                 ("wireframe", Value::Bool(false)),
             ],
         );
@@ -6488,4 +6614,3 @@ mod display_style_extract_tests {
         assert!(!result.wireframe, "wireframe must be false");
     }
 }
-

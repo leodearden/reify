@@ -37,9 +37,7 @@ impl DebugTransport {
     /// Allocate a new request id and insert the sender into `pending`.
     /// Returns `(id, receiver)` — the caller awaits the receiver to get the
     /// response, and the id is what the resolver passes back via resolve().
-    pub fn create_request(
-        &self,
-    ) -> Result<(u64, tokio::sync::oneshot::Receiver<String>), String> {
+    pub fn create_request(&self) -> Result<(u64, tokio::sync::oneshot::Receiver<String>), String> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.pending
@@ -80,9 +78,9 @@ impl Default for DebugTransport {
 // optional `tauri` dependency).
 
 #[cfg(feature = "gui")]
-use std::time::Duration;
-#[cfg(feature = "gui")]
 use serde_json::Value;
+#[cfg(feature = "gui")]
+use std::time::Duration;
 #[cfg(feature = "gui")]
 use tauri::{AppHandle, Emitter, Runtime, Wry};
 

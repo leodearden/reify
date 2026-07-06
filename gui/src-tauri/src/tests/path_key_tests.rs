@@ -30,7 +30,10 @@ fn canonicalize_returns_absolute_realpath_for_cwd_relative() {
 
     std::env::set_current_dir(&original).unwrap();
 
-    assert_eq!(result, expected, "relative path should resolve to canonical absolute path");
+    assert_eq!(
+        result, expected,
+        "relative path should resolve to canonical absolute path"
+    );
 }
 
 /// (b) `./foo.ri`, `foo.ri`, and the absolute path to the same on-disk file

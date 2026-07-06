@@ -532,7 +532,10 @@ fn format_value_field() {
 fn format_value_lambda() {
     let v = Value::Lambda {
         params: vec![],
-        body: Box::new(reify_ir::CompiledExpr::literal(Value::Undef, Type::dimensionless_scalar())),
+        body: Box::new(reify_ir::CompiledExpr::literal(
+            Value::Undef,
+            Type::dimensionless_scalar(),
+        )),
         captures: reify_ir::ValueMap::default(),
     };
     assert_eq!(format_value(&v), ("<lambda>".to_string(), String::new()));
@@ -730,7 +733,9 @@ fn serialize_finite_f32_vec_non_finite_at_later_position_still_causes_error() {
 
 #[test]
 fn persistent_view_state_serde_roundtrip() {
-    use crate::types::{CameraStateData, PersistentViewState, ViewDefinitionData, ViewportLayoutData};
+    use crate::types::{
+        CameraStateData, PersistentViewState, ViewDefinitionData, ViewportLayoutData,
+    };
 
     let mut cameras = std::collections::HashMap::new();
     cameras.insert(
@@ -1575,7 +1580,7 @@ fn vector_channels_nan_causes_error_with_channel_key() {
     let mesh = MeshData {
         entity_path: "test".to_string(),
         vertices: vec![0.0, 0.0, 0.0], // 1 vertex
-        indices: vec![],                // 0 faces; per-vertex len=3 satisfies contract
+        indices: vec![],               // 0 faces; per-vertex len=3 satisfies contract
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
         displaced_positions: None,
@@ -1646,7 +1651,10 @@ fn vector_channels_neg_infinity_causes_error_with_channel_key() {
     use std::collections::HashMap;
 
     let mut vc = HashMap::new();
-    vc.insert("shell_normal".to_string(), vec![f32::NEG_INFINITY, 0.0, 0.0]);
+    vc.insert(
+        "shell_normal".to_string(),
+        vec![f32::NEG_INFINITY, 0.0, 0.0],
+    );
 
     let mesh = MeshData {
         entity_path: "test".to_string(),
@@ -1698,7 +1706,7 @@ fn meshdata_rejects_vector_channel_with_invalid_length() {
     let mesh = MeshData {
         entity_path: "test".to_string(),
         vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0], // 3 vertices
-        indices: vec![0, 1, 2],                                          // 1 face
+        indices: vec![0, 1, 2],                                      // 1 face
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
         displaced_positions: None,
@@ -1745,7 +1753,7 @@ fn vector_channels_per_face_suffix_enforces_face_count_length() {
     let mesh = MeshData {
         entity_path: "test".to_string(),
         vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0], // 3 vertices
-        indices: vec![0, 1, 2],                                          // 1 face
+        indices: vec![0, 1, 2],                                      // 1 face
         normals: None,
         scalar_channels: std::collections::HashMap::new(),
         displaced_positions: None,
@@ -1844,14 +1852,19 @@ fn auto_resolve_iteration_serializes_with_expected_field_set() {
     let v = serde_json::to_value(&iter).unwrap();
 
     // Top-level keys must exist
-    assert!(v.get("iteration").is_some(), "iteration key must be present");
-    assert!(v.get("parameters").is_some(), "parameters key must be present");
-    assert!(v.get("constraints").is_some(), "constraints key must be present");
-    assert_eq!(
-        v["iteration"],
-        json!(0),
-        "iteration must be 0"
+    assert!(
+        v.get("iteration").is_some(),
+        "iteration key must be present"
     );
+    assert!(
+        v.get("parameters").is_some(),
+        "parameters key must be present"
+    );
+    assert!(
+        v.get("constraints").is_some(),
+        "constraints key must be present"
+    );
+    assert_eq!(v["iteration"], json!(0), "iteration must be 0");
     assert_eq!(
         v["driving_metric"],
         json!("max_von_mises"),
@@ -2071,7 +2084,9 @@ fn mesh_data_element_kind_some_serializes_with_field() {
         appearance: None,
     };
     let v = serde_json::to_value(&mesh).unwrap();
-    let ek = v.get("element_kind").expect("element_kind must be present in JSON");
+    let ek = v
+        .get("element_kind")
+        .expect("element_kind must be present in JSON");
     assert!(ek.is_array(), "element_kind must serialize as a JSON array");
     let arr = ek.as_array().unwrap();
     assert_eq!(arr.len(), 2, "element_kind array must have 2 elements");
@@ -2100,7 +2115,9 @@ fn mesh_data_region_tags_some_serializes_with_field() {
         appearance: None,
     };
     let v = serde_json::to_value(&mesh).unwrap();
-    let rt = v.get("region_tags").expect("region_tags must be present in JSON");
+    let rt = v
+        .get("region_tags")
+        .expect("region_tags must be present in JSON");
     assert!(rt.is_array(), "region_tags must serialize as a JSON array");
     let arr = rt.as_array().unwrap();
     assert_eq!(arr.len(), 2, "region_tags array must have 2 elements");
@@ -2134,11 +2151,20 @@ fn mesh_data_vector_channels_populated_serializes_with_field() {
         appearance: None,
     };
     let v = serde_json::to_value(&mesh).unwrap();
-    let vc_json = v.get("vector_channels").expect("vector_channels must be present in JSON");
-    assert!(vc_json.is_object(), "vector_channels must serialize as a JSON object");
-    let ch = vc_json.get("shell_normal_per_face")
+    let vc_json = v
+        .get("vector_channels")
+        .expect("vector_channels must be present in JSON");
+    assert!(
+        vc_json.is_object(),
+        "vector_channels must serialize as a JSON object"
+    );
+    let ch = vc_json
+        .get("shell_normal_per_face")
         .expect("shell_normal_per_face key must be present");
-    assert!(ch.is_array(), "vector channel must serialize as a JSON array");
+    assert!(
+        ch.is_array(),
+        "vector channel must serialize as a JSON array"
+    );
     assert_eq!(
         ch.as_array().unwrap().len(),
         6,
@@ -2196,11 +2222,19 @@ fn warm_pool_event_serializes_with_expected_field_set() {
         node_id: "Body.thickness".to_string(),
     };
     let v = serde_json::to_value(&evicted).expect("WarmPoolEvent must serialize");
-    assert_eq!(v, json!({"kind": "evicted", "size_bytes": 1024, "node_id": "Body.thickness"}),
-        "evicted: exact JSON shape mismatch");
+    assert_eq!(
+        v,
+        json!({"kind": "evicted", "size_bytes": 1024, "node_id": "Body.thickness"}),
+        "evicted: exact JSON shape mismatch"
+    );
     // Top-level key set must be exactly {kind, size_bytes, node_id} — no extras.
     let obj = v.as_object().unwrap();
-    assert_eq!(obj.len(), 3, "evicted must have exactly 3 top-level keys, got {:?}", obj.keys().collect::<Vec<_>>());
+    assert_eq!(
+        obj.len(),
+        3,
+        "evicted must have exactly 3 top-level keys, got {:?}",
+        obj.keys().collect::<Vec<_>>()
+    );
 
     // (b) Donated variant serializes identically (only kind differs).
     let donated = WarmPoolEvent {
@@ -2209,8 +2243,11 @@ fn warm_pool_event_serializes_with_expected_field_set() {
         node_id: "Plate.width".to_string(),
     };
     let v2 = serde_json::to_value(&donated).expect("WarmPoolEvent must serialize");
-    assert_eq!(v2, json!({"kind": "donated", "size_bytes": 4096, "node_id": "Plate.width"}),
-        "donated: exact JSON shape mismatch");
+    assert_eq!(
+        v2,
+        json!({"kind": "donated", "size_bytes": 4096, "node_id": "Plate.width"}),
+        "donated: exact JSON shape mismatch"
+    );
 
     // (c) Round-trip via serde_json::from_value preserves all fields.
     let rt: WarmPoolEvent = serde_json::from_value(v2.clone()).expect("must deserialize");
@@ -2220,9 +2257,9 @@ fn warm_pool_event_serializes_with_expected_field_set() {
 
     // (d) from_engine_event: WarmPoolEvent::Evicted maps to kind="evicted", correct size_bytes
     //     and node_id stringified via NodeId Display.
+    use reify_core::ValueCellId;
     use reify_eval::cache::NodeId;
     use reify_eval::warm_pool::WarmPoolEvent as EngineWarmPoolEvent;
-    use reify_core::ValueCellId;
 
     let victim = NodeId::Value(ValueCellId::new("Body", "thickness"));
     let eng_ev = EngineWarmPoolEvent::Evicted {
@@ -2234,7 +2271,11 @@ fn warm_pool_event_serializes_with_expected_field_set() {
     assert_eq!(ipc.size_bytes, 512u64);
     // node_id is NodeId::Display — must be non-empty and contain "thickness"
     assert!(!ipc.node_id.is_empty(), "node_id must not be empty");
-    assert!(ipc.node_id.contains("thickness"), "node_id must contain 'thickness', got: {}", ipc.node_id);
+    assert!(
+        ipc.node_id.contains("thickness"),
+        "node_id must contain 'thickness', got: {}",
+        ipc.node_id
+    );
 
     // (e) from_engine_event: WarmPoolEvent::Donated maps to kind="donated".
     let donor = NodeId::Value(ValueCellId::new("Plate", "width"));
@@ -2245,7 +2286,11 @@ fn warm_pool_event_serializes_with_expected_field_set() {
     let ipc2 = WarmPoolEvent::from_engine_event(&eng_donated);
     assert_eq!(ipc2.kind, "donated");
     assert_eq!(ipc2.size_bytes, 8192u64);
-    assert!(ipc2.node_id.contains("width"), "node_id must contain 'width', got: {}", ipc2.node_id);
+    assert!(
+        ipc2.node_id.contains("width"),
+        "node_id must contain 'width', got: {}",
+        ipc2.node_id
+    );
 }
 
 #[test]
@@ -2253,11 +2298,7 @@ fn fea_case_changed_serializes_to_expected_json_shape() {
     // Pins PRD §3.2 field-name-exactness: no rename_all, field names match TS exactly.
     let payload = crate::types::FeaCaseChanged {
         active_case_id: "operating".into(),
-        available_cases: vec![
-            "operating".into(),
-            "overload".into(),
-            "transport".into(),
-        ],
+        available_cases: vec!["operating".into(), "overload".into(), "transport".into()],
     };
     let v = serde_json::to_value(&payload).unwrap();
     assert_eq!(
@@ -2369,7 +2410,10 @@ fn joint_binding_param_bound_round_trips() {
     );
 
     let back: JointBinding = serde_json::from_value(v).expect("deserialize ParamBound");
-    assert_eq!(back, binding, "ParamBound must round-trip without data loss");
+    assert_eq!(
+        back, binding,
+        "ParamBound must round-trip without data loss"
+    );
 }
 
 /// `JointBinding::LiteralBound` round-trips through `serde_json::to_value` /
@@ -2488,7 +2532,11 @@ fn tensegrity_wire_data_serializes_with_expected_keys() {
         z2: 0.0,
     };
     let v = serde_json::to_value(&wire).unwrap();
-    assert_eq!(v["entity_path"], json!("TPrism"), "entity_path must be 'TPrism'");
+    assert_eq!(
+        v["entity_path"],
+        json!("TPrism"),
+        "entity_path must be 'TPrism'"
+    );
     assert_eq!(v["kind"], json!("strut"), "kind must be 'strut'");
     assert_eq!(v["x1"], json!(1.0), "x1 must be 1.0");
     assert_eq!(v["y1"], json!(0.0), "y1 must be 0.0");
@@ -2509,8 +2557,12 @@ fn gui_state_tensegrity_wires_serializes_as_array() {
     let wire = TensegrityWireData {
         entity_path: "TPrism".to_string(),
         kind: "cable".to_string(),
-        x1: 1.0, y1: 0.0, z1: 1.0,
-        x2: -0.5, y2: 0.866, z2: 1.0,
+        x1: 1.0,
+        y1: 0.0,
+        z1: 1.0,
+        x2: -0.5,
+        y2: 0.866,
+        z2: 1.0,
     };
     let state = GuiState {
         meshes: vec![],
@@ -2642,12 +2694,20 @@ fn solver_progress_serializes_to_expected_json_shape() {
     );
 
     // (c) Round-trip from the 3-key wire shape (no eta_ms) preserves None.
-    let rt: SolverProgress = serde_json::from_value(v2.clone()).expect("must deserialize 3-key shape");
+    let rt: SolverProgress =
+        serde_json::from_value(v2.clone()).expect("must deserialize 3-key shape");
     assert_eq!(rt.solver_kind, "cg");
     assert_eq!(rt.iter, 3);
-    assert!((rt.residual - 5.0e-4_f64).abs() < f64::EPSILON * 100.0,
-        "residual round-trip mismatch: {} vs {}", rt.residual, 5.0e-4_f64);
-    assert_eq!(rt.eta_ms, None, "eta_ms must be None when absent from wire shape");
+    assert!(
+        (rt.residual - 5.0e-4_f64).abs() < f64::EPSILON * 100.0,
+        "residual round-trip mismatch: {} vs {}",
+        rt.residual,
+        5.0e-4_f64
+    );
+    assert_eq!(
+        rt.eta_ms, None,
+        "eta_ms must be None when absent from wire shape"
+    );
 }
 
 // ── task-3458 step-3: ModeShapeFrame IPC struct serde round-trip ─────────────
@@ -2678,8 +2738,7 @@ fn mode_shape_frame_serde_round_trip_with_exact_key_names() {
     };
 
     // (a) Serialize.
-    let v = serde_json::to_value(&frame)
-        .expect("ModeShapeFrame must serialize without error");
+    let v = serde_json::to_value(&frame).expect("ModeShapeFrame must serialize without error");
 
     // (b) Exact JSON key names (no rename_all).
     assert_eq!(
@@ -2702,16 +2761,25 @@ fn mode_shape_frame_serde_round_trip_with_exact_key_names() {
     );
 
     // Confirm each key is present with the exact name.
-    assert!(obj.contains_key("mode_index"),          "key 'mode_index' must be present");
-    assert!(obj.contains_key("phase"),               "key 'phase' must be present");
-    assert!(obj.contains_key("displaced_positions"), "key 'displaced_positions' must be present");
+    assert!(
+        obj.contains_key("mode_index"),
+        "key 'mode_index' must be present"
+    );
+    assert!(obj.contains_key("phase"), "key 'phase' must be present");
+    assert!(
+        obj.contains_key("displaced_positions"),
+        "key 'displaced_positions' must be present"
+    );
 
     // (d) Deserialize back → identity.
     let rt: ModeShapeFrame = serde_json::from_value(v.clone())
         .expect("ModeShapeFrame must deserialize from its own JSON");
     assert_eq!(rt.mode_index, 2, "mode_index must survive round-trip");
-    assert!((rt.phase - 0.75_f32).abs() < f32::EPSILON * 10.0,
-        "phase round-trip mismatch: {} vs 0.75", rt.phase);
+    assert!(
+        (rt.phase - 0.75_f32).abs() < f32::EPSILON * 10.0,
+        "phase round-trip mismatch: {} vs 0.75",
+        rt.phase
+    );
     assert_eq!(
         rt.displaced_positions,
         vec![1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0],
@@ -2739,8 +2807,8 @@ fn mode_shape_frame_peak_eigenvalue_serializes_with_4_keys() {
         eigenvalue: Some(1234.5_f64),
     };
 
-    let v = serde_json::to_value(&frame)
-        .expect("ModeShapeFrame (peak) must serialize without error");
+    let v =
+        serde_json::to_value(&frame).expect("ModeShapeFrame (peak) must serialize without error");
 
     // "eigenvalue" key present with correct value.
     assert_eq!(
@@ -2759,9 +2827,13 @@ fn mode_shape_frame_peak_eigenvalue_serializes_with_4_keys() {
     );
 
     // Round-trip.
-    let rt: ModeShapeFrame = serde_json::from_value(v)
-        .expect("peak ModeShapeFrame must deserialize from its own JSON");
-    assert_eq!(rt.eigenvalue, Some(1234.5_f64), "eigenvalue must survive round-trip");
+    let rt: ModeShapeFrame =
+        serde_json::from_value(v).expect("peak ModeShapeFrame must deserialize from its own JSON");
+    assert_eq!(
+        rt.eigenvalue,
+        Some(1234.5_f64),
+        "eigenvalue must survive round-trip"
+    );
     assert_eq!(rt.mode_index, 1);
     assert!((rt.phase - 1.0_f32).abs() < f32::EPSILON);
 }
@@ -2783,8 +2855,7 @@ fn mode_shape_frame_base_eigenvalue_none_omits_key() {
         eigenvalue: None,
     };
 
-    let v = serde_json::to_value(&frame)
-        .expect("base ModeShapeFrame must serialize without error");
+    let v = serde_json::to_value(&frame).expect("base ModeShapeFrame must serialize without error");
 
     // The "eigenvalue" key must be absent.
     let obj = v.as_object().unwrap();
@@ -2803,9 +2874,12 @@ fn mode_shape_frame_base_eigenvalue_none_omits_key() {
     );
 
     // Round-trip: a 3-key JSON payload must deserialize with eigenvalue=None.
-    let rt: ModeShapeFrame = serde_json::from_value(v)
-        .expect("base ModeShapeFrame must deserialize from 3-key JSON");
-    assert_eq!(rt.eigenvalue, None, "absent 'eigenvalue' key must deserialize to None");
+    let rt: ModeShapeFrame =
+        serde_json::from_value(v).expect("base ModeShapeFrame must deserialize from 3-key JSON");
+    assert_eq!(
+        rt.eigenvalue, None,
+        "absent 'eigenvalue' key must deserialize to None"
+    );
 }
 
 // ── Tensegrity-β step-1: TensegritySurfaceData serde wire-shape tests ────────
@@ -2835,7 +2909,11 @@ fn tensegrity_surface_data_serializes_with_expected_keys() {
         z2: 0.0,
     };
     let v = serde_json::to_value(&surface).unwrap();
-    assert_eq!(v["entity_path"], json!("TPatch"), "entity_path must be 'TPatch'");
+    assert_eq!(
+        v["entity_path"],
+        json!("TPatch"),
+        "entity_path must be 'TPatch'"
+    );
     assert_eq!(v["kind"], json!("membrane"), "kind must be 'membrane'");
     assert_eq!(v["i0"], json!(0), "i0 must be 0");
     assert_eq!(v["i1"], json!(1), "i1 must be 1");
@@ -2862,10 +2940,18 @@ fn gui_state_tensegrity_surfaces_serializes_as_array() {
     let surface = TensegritySurfaceData {
         entity_path: "TPatch".to_string(),
         kind: "membrane".to_string(),
-        i0: 0, i1: 1, i2: 2,
-        x0: 0.0, y0: 0.0, z0: 0.0,
-        x1: 1.0, y1: 0.0, z1: 0.0,
-        x2: 0.5, y2: 0.866, z2: 0.0,
+        i0: 0,
+        i1: 1,
+        i2: 2,
+        x0: 0.0,
+        y0: 0.0,
+        z0: 0.0,
+        x1: 1.0,
+        y1: 0.0,
+        z1: 0.0,
+        x2: 0.5,
+        y2: 0.866,
+        z2: 0.0,
     };
     let state = GuiState {
         meshes: vec![],
@@ -3002,7 +3088,10 @@ fn value_data_last_substantive_value_some_serializes_and_round_trips() {
     let v = serde_json::to_value(&val).unwrap();
     assert_eq!(v["last_substantive_value"], json!("42 mm"));
     let back: ValueData = serde_json::from_value(v).unwrap();
-    assert_eq!(back, val, "ValueData must round-trip with last_substantive_value");
+    assert_eq!(
+        back, val,
+        "ValueData must round-trip with last_substantive_value"
+    );
 }
 
 /// Older payload without the `last_substantive_value` key must deserialize
@@ -3056,11 +3145,18 @@ fn mesh_data_appearance_some_round_trips() {
     let v = serde_json::to_value(&mesh).expect("serialize should succeed");
 
     // `appearance` key must be present in the serialized JSON.
-    let app_json = v.get("appearance").expect("appearance key must be present in JSON");
-    assert!(app_json.is_object(), "appearance must serialize as a JSON object");
+    let app_json = v
+        .get("appearance")
+        .expect("appearance key must be present in JSON");
+    assert!(
+        app_json.is_object(),
+        "appearance must serialize as a JSON object"
+    );
 
     // color: 4-element array; f32-exact comparison via round-trip cast.
-    let color_arr = app_json["color"].as_array().expect("color must be an array");
+    let color_arr = app_json["color"]
+        .as_array()
+        .expect("color must be an array");
     assert_eq!(color_arr.len(), 4, "color array must have 4 elements");
     assert_eq!(color_arr[0].as_f64().unwrap() as f32, 0.1_f32);
     assert_eq!(color_arr[1].as_f64().unwrap() as f32, 0.2_f32);
@@ -3117,7 +3213,10 @@ fn mesh_data_appearance_none_omitted_and_back_compat() {
         "normals": null
     });
     let decoded: MeshData = serde_json::from_value(raw).expect("deserialize should succeed");
-    assert_eq!(decoded.appearance, None, "missing appearance key must deserialize as None");
+    assert_eq!(
+        decoded.appearance, None,
+        "missing appearance key must deserialize as None"
+    );
 }
 
 // ── appearance-viewport-egress γ: AppearanceDirective / DisplayStyleData serde ─
@@ -3144,7 +3243,10 @@ fn appearance_directive_round_trips() {
     let v = serde_json::to_value(&directive).expect("AppearanceDirective serialize should succeed");
 
     // subject field
-    assert_eq!(v["subject"], "MyPart#realization[0]", "subject must round-trip");
+    assert_eq!(
+        v["subject"], "MyPart#realization[0]",
+        "subject must round-trip"
+    );
 
     // style.color: 4-element array with f32-exact values
     let color_arr = v["style"]["color"]
@@ -3173,12 +3275,22 @@ fn appearance_directive_round_trips() {
         "round-trip subject must be preserved"
     );
     assert_eq!(
-        back.style.color, [0.96_f32, 0.95, 0.88, 0.5],
+        back.style.color,
+        [0.96_f32, 0.95, 0.88, 0.5],
         "round-trip color must be preserved"
     );
-    assert_eq!(back.style.finish, 2u8, "round-trip finish must be preserved");
-    assert_eq!(back.style.opacity, 0.5_f32, "round-trip opacity must be preserved");
-    assert!(back.style.wireframe, "round-trip wireframe must be preserved");
+    assert_eq!(
+        back.style.finish, 2u8,
+        "round-trip finish must be preserved"
+    );
+    assert_eq!(
+        back.style.opacity, 0.5_f32,
+        "round-trip opacity must be preserved"
+    );
+    assert!(
+        back.style.wireframe,
+        "round-trip wireframe must be preserved"
+    );
 }
 
 /// `GuiState.display_appearance` serializes as a JSON array (non-empty and empty cases).
@@ -3240,7 +3352,11 @@ fn gui_state_display_appearance_serializes_as_array() {
     let earr = ev["display_appearance"]
         .as_array()
         .expect("display_appearance must serialize as a JSON array when empty");
-    assert_eq!(earr.len(), 0, "empty display_appearance must serialize as empty array");
+    assert_eq!(
+        earr.len(),
+        0,
+        "empty display_appearance must serialize as empty array"
+    );
 }
 
 /// Back-compat: a `GuiState` JSON payload OMITTING `display_appearance` must
@@ -3259,8 +3375,8 @@ fn gui_state_deserialises_without_display_appearance_field() {
         "tessellation_diagnostics": [],
         "compile_diagnostics": []
     }"#;
-    let state: GuiState =
-        serde_json::from_str(json).expect("GuiState without display_appearance must deserialise OK");
+    let state: GuiState = serde_json::from_str(json)
+        .expect("GuiState without display_appearance must deserialise OK");
     assert!(
         state.display_appearance.is_empty(),
         "display_appearance must default to [] when omitted from JSON payload; got {:?}",
@@ -3276,9 +3392,9 @@ fn gui_state_deserialises_without_display_appearance_field() {
 /// modes in canonical TranslationX..RotationZ order.
 #[test]
 fn fea_diagnostics_from_structured_unconstrained_maps_all_six_modes() {
-    use reify_eval::compute_targets::fea_diagnostics::{DofDirection, FeaDiagnosticDetail};
-    use reify_eval::StructuredComputeDetail;
     use crate::types::{DofDirectionInfo, FeaDiagnosticInfo, fea_diagnostics_from_structured};
+    use reify_eval::StructuredComputeDetail;
+    use reify_eval::compute_targets::fea_diagnostics::{DofDirection, FeaDiagnosticDetail};
 
     let detail = StructuredComputeDetail::Fea(FeaDiagnosticDetail::Unconstrained {
         rigid_body_modes: DofDirection::all_rigid_body_modes().into(),
@@ -3303,9 +3419,9 @@ fn fea_diagnostics_from_structured_unconstrained_maps_all_six_modes() {
 /// ProblemElements: ElementId(N) must be flattened to bare usize N at the IPC boundary.
 #[test]
 fn fea_diagnostics_from_structured_problem_elements_flattens_element_id_to_usize() {
-    use reify_eval::compute_targets::fea_diagnostics::{ElementId, FeaDiagnosticDetail};
-    use reify_eval::StructuredComputeDetail;
     use crate::types::{FeaDiagnosticInfo, fea_diagnostics_from_structured};
+    use reify_eval::StructuredComputeDetail;
+    use reify_eval::compute_targets::fea_diagnostics::{ElementId, FeaDiagnosticDetail};
 
     let detail = StructuredComputeDetail::Fea(FeaDiagnosticDetail::ProblemElements {
         ids: vec![ElementId(3), ElementId(5)],
@@ -3321,9 +3437,9 @@ fn fea_diagnostics_from_structured_problem_elements_flattens_element_id_to_usize
 /// UnresolvedSelector: selector_path must round-trip verbatim.
 #[test]
 fn fea_diagnostics_from_structured_unresolved_selector_round_trips() {
-    use reify_eval::compute_targets::fea_diagnostics::FeaDiagnosticDetail;
-    use reify_eval::StructuredComputeDetail;
     use crate::types::{FeaDiagnosticInfo, fea_diagnostics_from_structured};
+    use reify_eval::StructuredComputeDetail;
+    use reify_eval::compute_targets::fea_diagnostics::FeaDiagnosticDetail;
 
     let detail = StructuredComputeDetail::Fea(FeaDiagnosticDetail::UnresolvedSelector {
         selector_path: "top".to_string(),
@@ -3406,8 +3522,13 @@ fn mesh_data_element_index_some_serializes_with_field() {
         appearance: None,
     };
     let v = serde_json::to_value(&mesh).unwrap();
-    let ei = v.get("element_index").expect("element_index must be present in JSON");
-    assert!(ei.is_array(), "element_index must serialize as a JSON array");
+    let ei = v
+        .get("element_index")
+        .expect("element_index must be present in JSON");
+    assert!(
+        ei.is_array(),
+        "element_index must serialize as a JSON array"
+    );
     let arr = ei.as_array().unwrap();
     assert_eq!(arr.len(), 2, "element_index array must have 2 elements");
     assert_eq!(arr[0], serde_json::json!(7), "element_index[0] must be 7");
@@ -3494,7 +3615,10 @@ fn mesh_data_element_index_length_mismatch_errors() {
 #[test]
 fn fea_convergence_info_serde_round_trip() {
     let cases = vec![
-        FeaConvergenceInfo { converged: true, reason: None },
+        FeaConvergenceInfo {
+            converged: true,
+            reason: None,
+        },
         FeaConvergenceInfo {
             converged: false,
             reason: Some("MaxDofs".to_string()),
@@ -3511,7 +3635,10 @@ fn fea_convergence_info_serde_round_trip() {
 /// `reason: None` must be omitted from the JSON wire (skip_serializing_if).
 #[test]
 fn fea_convergence_info_reason_none_omitted_from_wire() {
-    let info = FeaConvergenceInfo { converged: true, reason: None };
+    let info = FeaConvergenceInfo {
+        converged: true,
+        reason: None,
+    };
     let v = serde_json::to_value(&info).expect("serialize should succeed");
     assert!(
         v.get("reason").is_none(),
@@ -3578,7 +3705,9 @@ fn gui_state_fea_convergence_some_serializes_with_field() {
         }),
     };
     let v = serde_json::to_value(&state).expect("serialize should succeed");
-    let fc = v.get("fea_convergence").expect("fea_convergence must be present when Some");
+    let fc = v
+        .get("fea_convergence")
+        .expect("fea_convergence must be present when Some");
     assert_eq!(fc.get("converged"), Some(&json!(false)));
     assert_eq!(fc.get("reason"), Some(&json!("MaxDofs")));
 }

@@ -150,9 +150,8 @@ pub fn update_source_impl(
     path: &str,
     content: &str,
 ) -> Result<GuiState, String> {
-    let result =
-        crate::engine_lock::with_engine_lock(engine, |s| s.update_source(path, content))
-            .and_then(std::convert::identity);
+    let result = crate::engine_lock::with_engine_lock(engine, |s| s.update_source(path, content))
+        .and_then(std::convert::identity);
     if let Err(ref msg) = result {
         // Record the reload error so is_stale() / build_gui_state() reflect the failure.
         // Ignore the Result of this second lock: it can only fail if the mutex was
@@ -608,7 +607,10 @@ impl PendingSolveCancelSink {
 
 impl crate::engine::SolveCancellationSink for PendingSolveCancelSink {
     fn solve_started(&self, handle: CancellationHandle) {
-        let mut guard = self.slot.lock().expect("pending_solve_cancel mutex poisoned");
+        let mut guard = self
+            .slot
+            .lock()
+            .expect("pending_solve_cancel mutex poisoned");
         // Invariant: slot must be empty because publishing is serialized under the
         // session mutex (at most one solve at a time).  Panics in debug builds.
         debug_assert!(
@@ -664,9 +666,7 @@ pub fn cancel_solve_impl(state: &AppState) -> Result<(), String> {
 /// when the active case has never been set (the engine will use the lex-first
 /// BTreeMap key as the default); returns `Ok(Some(name))` after a successful
 /// `set_active_fea_case_impl` call.
-pub fn get_active_fea_case_impl(
-    engine: &Mutex<EngineSession>,
-) -> Result<Option<String>, String> {
+pub fn get_active_fea_case_impl(engine: &Mutex<EngineSession>) -> Result<Option<String>, String> {
     crate::engine_lock::with_engine_lock(engine, |s| s.get_active_fea_case())
 }
 

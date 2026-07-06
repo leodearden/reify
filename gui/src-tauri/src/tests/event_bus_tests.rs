@@ -22,9 +22,6 @@
 #[cfg(feature = "gui")]
 #[test]
 fn convention_smoke_emit_typed_signature_compiles() {
-    let _: fn(
-        &tauri::AppHandle,
-        &str,
-        &String,
-    ) -> Result<(), tauri::Error> = crate::event_bus::emit_typed::<String>;
+    let _: fn(&tauri::AppHandle, &str, &String) -> Result<(), tauri::Error> =
+        crate::event_bus::emit_typed::<String>;
 }

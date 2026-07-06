@@ -537,23 +537,16 @@ fn builder_with_both_options() {
 fn mcp_config_struct_stores_fields() {
     use crate::claude_bridge::McpConfig;
 
-    let session = make_loaded_session();
-    let engine = Arc::new(Mutex::new(session));
-    let selection = Arc::new(RwLock::new(SelectionInfo::default()));
     let sink_called = Arc::new(Mutex::new(false));
     let sink_clone = sink_called.clone();
 
     let config = McpConfig {
-        engine: engine.clone(),
         event_emitter: Arc::new(move |_name: String, _payload: serde_json::Value| {
             *sink_clone.lock().unwrap() = true;
         }),
-        selection: selection.clone(),
     };
 
-    // Assert all three fields are accessible and hold the right values
-    assert!(Arc::ptr_eq(&config.engine, &engine));
-    assert!(Arc::ptr_eq(&config.selection, &selection));
+    // Assert the event_emitter field is accessible and invokable
     (config.event_emitter)("test".to_string(), serde_json::json!({}));
     assert!(*sink_called.lock().unwrap());
 }

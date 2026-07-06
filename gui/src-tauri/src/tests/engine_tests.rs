@@ -3,18 +3,23 @@ use std::sync::atomic::Ordering;
 
 use reify_compiler::find_template;
 use reify_constraints::SimpleConstraintChecker;
+use reify_ir::ExportFormat;
 use reify_test_support::{
     CountingSubscriberBuilder, FailingMockGeometryKernel, MockConstraintSolver, MockGeometryKernel,
     bracket_source, bracket_source_violating, bracket_source_with_width,
     warn_source_with_unknown_port_type, warn_source_with_unknown_port_type_with_width,
 };
-use reify_ir::ExportFormat;
 
 use reify_core::{DiagnosticInfo, ModulePath, SourceLocationInfo, Type, ValueCellId};
 
-use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, gt, literal, mm, value_ref};
+use reify_test_support::{
+    CompiledModuleBuilder, TopologyTemplateBuilder, gt, literal, mm, value_ref,
+};
 
-use crate::engine::{CompileFailure, CompileFailureKind, CoreState, EngineSession, build_constraints, build_template_node, module_key, parse_value_string};
+use crate::engine::{
+    CompileFailure, CompileFailureKind, CoreState, EngineSession, build_constraints,
+    build_template_node, module_key, parse_value_string,
+};
 use crate::mcp_context::TauriToolContext;
 use crate::types::EntityTreeNode;
 
@@ -7724,8 +7729,8 @@ fn engine_session_no_auto_resolve_emission_when_solver_returns_empty_solved() {
         .build();
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None)
-        .with_solver_for_test(Box::new(solver));
+    let mut session =
+        EngineSession::new(Box::new(checker), None).with_solver_for_test(Box::new(solver));
 
     let recorder = RecordingEmitter::new();
     let events = Arc::clone(&recorder.events);
@@ -7769,8 +7774,8 @@ fn engine_session_auto_resolve_iteration_parameter_payload_matches_resolved_valu
         .build();
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None)
-        .with_solver_for_test(Box::new(solver));
+    let mut session =
+        EngineSession::new(Box::new(checker), None).with_solver_for_test(Box::new(solver));
 
     let recorder = RecordingEmitter::new();
     let events = Arc::clone(&recorder.events);
@@ -7832,8 +7837,8 @@ fn engine_session_auto_resolve_constraint_progress_projects_satisfaction_to_bool
         .build();
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None)
-        .with_solver_for_test(Box::new(solver));
+    let mut session =
+        EngineSession::new(Box::new(checker), None).with_solver_for_test(Box::new(solver));
 
     let recorder = RecordingEmitter::new();
     let events = Arc::clone(&recorder.events);
@@ -7848,8 +7853,14 @@ fn engine_session_auto_resolve_constraint_progress_projects_satisfaction_to_bool
         assert_eq!(iter.constraints.len(), 2, "must have 2 constraint entries");
         let satisfied = iter.constraints.values().filter(|c| c.satisfied).count();
         let violated = iter.constraints.values().filter(|c| !c.satisfied).count();
-        assert_eq!(satisfied, 1, "exactly one constraint should be satisfied (> 2mm at 5mm)");
-        assert_eq!(violated, 1, "exactly one constraint should be violated (> 10mm at 5mm)");
+        assert_eq!(
+            satisfied, 1,
+            "exactly one constraint should be satisfied (> 2mm at 5mm)"
+        );
+        assert_eq!(
+            violated, 1,
+            "exactly one constraint should be violated (> 10mm at 5mm)"
+        );
     } else {
         panic!("events[1] must be Iteration");
     }
@@ -7881,8 +7892,8 @@ fn engine_session_auto_resolve_emitter_fires_start_iter_complete_when_solver_res
         .build();
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None)
-        .with_solver_for_test(Box::new(solver));
+    let mut session =
+        EngineSession::new(Box::new(checker), None).with_solver_for_test(Box::new(solver));
 
     let recorder = RecordingEmitter::new();
     let events = Arc::clone(&recorder.events);
@@ -7917,7 +7928,10 @@ fn engine_session_auto_resolve_emitter_fires_start_iter_complete_when_solver_res
             "parameters must contain 'S.thickness', got keys: {:?}",
             iter.parameters.keys().collect::<Vec<_>>()
         );
-        assert!(!iter.constraints.is_empty(), "constraints must be non-empty");
+        assert!(
+            !iter.constraints.is_empty(),
+            "constraints must be non-empty"
+        );
     }
 }
 
@@ -7953,8 +7967,8 @@ fn engine_session_auto_resolve_emitter_fires_on_set_parameter_when_solver_presen
         .build();
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None)
-        .with_solver_for_test(Box::new(solver));
+    let mut session =
+        EngineSession::new(Box::new(checker), None).with_solver_for_test(Box::new(solver));
 
     let recorder = RecordingEmitter::new();
     let events = Arc::clone(&recorder.events);
@@ -7968,7 +7982,9 @@ fn engine_session_auto_resolve_emitter_fires_on_set_parameter_when_solver_presen
     events.lock().unwrap().clear();
 
     // Changing S.x dirties the constraint (which reads S.x) → solver re-runs → emit fires.
-    session.set_parameter("S.x", "10mm").expect("set_parameter should succeed");
+    session
+        .set_parameter("S.x", "10mm")
+        .expect("set_parameter should succeed");
 
     let events = events.lock().unwrap();
     assert_eq!(
@@ -7977,9 +7993,18 @@ fn engine_session_auto_resolve_emitter_fires_on_set_parameter_when_solver_presen
         "set_parameter must emit [Start, Iteration, Complete], got {} events",
         events.len()
     );
-    assert!(matches!(events[0], EmitEvent::Start), "event[0] must be Start");
-    assert!(matches!(events[1], EmitEvent::Iteration(_)), "event[1] must be Iteration");
-    assert!(matches!(events[2], EmitEvent::Complete), "event[2] must be Complete");
+    assert!(
+        matches!(events[0], EmitEvent::Start),
+        "event[0] must be Start"
+    );
+    assert!(
+        matches!(events[1], EmitEvent::Iteration(_)),
+        "event[1] must be Iteration"
+    );
+    assert!(
+        matches!(events[2], EmitEvent::Complete),
+        "event[2] must be Complete"
+    );
 }
 
 /// Non-Scalar resolved auto-param emits NaN sentinel instead of being silently dropped.
@@ -7993,8 +8018,8 @@ fn engine_session_auto_resolve_emitter_fires_on_set_parameter_when_solver_presen
 /// the parameters HashMap won't contain the key. Step-5 impl makes it green.
 #[test]
 fn engine_session_auto_resolve_emitter_emits_nan_sentinel_for_non_scalar_resolved_param() {
-    use std::sync::Arc;
     use reify_ir::Value;
+    use std::sync::Arc;
 
     let thickness_id = ValueCellId::new("S", "thickness");
     let mut solved = std::collections::HashMap::new();
@@ -8017,8 +8042,8 @@ fn engine_session_auto_resolve_emitter_emits_nan_sentinel_for_non_scalar_resolve
         .build();
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None)
-        .with_solver_for_test(Box::new(solver));
+    let mut session =
+        EngineSession::new(Box::new(checker), None).with_solver_for_test(Box::new(solver));
 
     let recorder = RecordingEmitter::new();
     let events = Arc::clone(&recorder.events);
@@ -8033,8 +8058,14 @@ fn engine_session_auto_resolve_emitter_emits_nan_sentinel_for_non_scalar_resolve
         "expected [Start, Iteration, Complete] even for non-Scalar param, got {} events",
         events.len()
     );
-    assert!(matches!(events[0], EmitEvent::Start), "event[0] must be Start");
-    assert!(matches!(events[2], EmitEvent::Complete), "event[2] must be Complete");
+    assert!(
+        matches!(events[0], EmitEvent::Start),
+        "event[0] must be Start"
+    );
+    assert!(
+        matches!(events[2], EmitEvent::Complete),
+        "event[2] must be Complete"
+    );
 
     if let EmitEvent::Iteration(ref iter) = events[1] {
         let param = iter
@@ -8072,16 +8103,13 @@ fn engine_session_auto_resolve_emitter_emits_nan_sentinel_for_non_scalar_resolve
 /// display: "5mm" }` rather than treating the outer Option as a non-scalar.
 #[test]
 fn engine_session_auto_resolve_emitter_emits_real_entry_for_option_some_scalar_resolved_param() {
-    use std::sync::Arc;
     use reify_ir::Value;
+    use std::sync::Arc;
 
     let thickness_id = ValueCellId::new("S", "thickness");
     let mut solved = std::collections::HashMap::new();
     // Inject an Option(Some(Scalar)) value — must recurse to a real entry.
-    solved.insert(
-        thickness_id.clone(),
-        Value::Option(Some(Box::new(mm(5.0)))),
-    );
+    solved.insert(thickness_id.clone(), Value::Option(Some(Box::new(mm(5.0)))));
     let solver = MockConstraintSolver::new_solved(solved);
 
     let template = TopologyTemplateBuilder::new("S")
@@ -8099,8 +8127,8 @@ fn engine_session_auto_resolve_emitter_emits_real_entry_for_option_some_scalar_r
         .build();
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None)
-        .with_solver_for_test(Box::new(solver));
+    let mut session =
+        EngineSession::new(Box::new(checker), None).with_solver_for_test(Box::new(solver));
 
     let recorder = RecordingEmitter::new();
     let events = Arc::clone(&recorder.events);
@@ -8115,14 +8143,19 @@ fn engine_session_auto_resolve_emitter_emits_real_entry_for_option_some_scalar_r
         "expected [Start, Iteration, Complete] for Option(Some(Scalar)) param, got {} events",
         events.len()
     );
-    assert!(matches!(events[0], EmitEvent::Start), "event[0] must be Start");
-    assert!(matches!(events[2], EmitEvent::Complete), "event[2] must be Complete");
+    assert!(
+        matches!(events[0], EmitEvent::Start),
+        "event[0] must be Start"
+    );
+    assert!(
+        matches!(events[2], EmitEvent::Complete),
+        "event[2] must be Complete"
+    );
 
     if let EmitEvent::Iteration(ref iter) = events[1] {
-        let param = iter
-            .parameters
-            .get("S.thickness")
-            .expect("S.thickness must be in parameters — Option(Some(Scalar)) must recurse to a real entry");
+        let param = iter.parameters.get("S.thickness").expect(
+            "S.thickness must be in parameters — Option(Some(Scalar)) must recurse to a real entry",
+        );
         assert!(
             !param.value.is_nan(),
             "Option(Some(Scalar)) must produce a real value (not NaN), got {}",
@@ -8176,8 +8209,8 @@ fn engine_session_auto_resolve_emitter_fires_through_load_from_source_real_path(
     let solver = MockConstraintSolver::new_solved(solved);
 
     let checker = SimpleConstraintChecker;
-    let mut session = EngineSession::new(Box::new(checker), None)
-        .with_solver_for_test(Box::new(solver));
+    let mut session =
+        EngineSession::new(Box::new(checker), None).with_solver_for_test(Box::new(solver));
 
     let recorder = RecordingEmitter::new();
     let events = Arc::clone(&recorder.events);
@@ -8194,9 +8227,18 @@ fn engine_session_auto_resolve_emitter_fires_through_load_from_source_real_path(
         "load_from_source must emit [Start, Iteration, Complete], got {} events",
         events.len()
     );
-    assert!(matches!(events[0], EmitEvent::Start), "event[0] must be Start");
-    assert!(matches!(events[1], EmitEvent::Iteration(_)), "event[1] must be Iteration");
-    assert!(matches!(events[2], EmitEvent::Complete), "event[2] must be Complete");
+    assert!(
+        matches!(events[0], EmitEvent::Start),
+        "event[0] must be Start"
+    );
+    assert!(
+        matches!(events[1], EmitEvent::Iteration(_)),
+        "event[1] must be Iteration"
+    );
+    assert!(
+        matches!(events[2], EmitEvent::Complete),
+        "event[2] must be Complete"
+    );
 
     if let EmitEvent::Iteration(ref iter) = events[1] {
         assert!(
@@ -8283,10 +8325,16 @@ fn engine_session_exposes_core_state_with_read_accessors() {
     let core: &CoreState = session.core_state_for_test();
 
     // compiled() must be Some after a successful load
-    assert!(core.compiled().is_some(), "compiled should be Some after load");
+    assert!(
+        core.compiled().is_some(),
+        "compiled should be Some after load"
+    );
 
     // last_check() must be Some after a successful load
-    assert!(core.last_check().is_some(), "last_check should be Some after load");
+    assert!(
+        core.last_check().is_some(),
+        "last_check should be Some after load"
+    );
 
     // module_name() must be Some("bracket")
     assert_eq!(
@@ -8356,7 +8404,10 @@ fn set_parameter_updates_only_last_check_via_commit_check() {
     // The other five core fields must be byte-for-byte identical to the pre-call
     // snapshot — commit_check must not touch anything other than last_check.
     assert_eq!(
-        session.core_state_for_test().module_name().map(|s| s.to_string()),
+        session
+            .core_state_for_test()
+            .module_name()
+            .map(|s| s.to_string()),
         pre_module_name,
         "module_name must not change after set_parameter"
     );
@@ -8372,12 +8423,14 @@ fn set_parameter_updates_only_last_check_via_commit_check() {
         .cloned()
         .collect();
     assert_eq!(
-        post_source_map_keys,
-        pre_source_map_keys,
+        post_source_map_keys, pre_source_map_keys,
         "source_map keys must not change after set_parameter"
     );
     assert_eq!(
-        session.core_state_for_test().file_path().map(|p| p.to_path_buf()),
+        session
+            .core_state_for_test()
+            .file_path()
+            .map(|p| p.to_path_buf()),
         pre_file_path,
         "file_path must not change after set_parameter"
     );
@@ -8552,10 +8605,10 @@ impl crate::engine::WarmPoolEventEmitter for RecordingWarmPoolEventEmitter {
 /// exist yet (all added in step-6).
 #[test]
 fn engine_session_warm_pool_event_emitter_captures_donated_and_evicted_events() {
-    use std::sync::Arc;
-    use reify_ir::OpaqueState;
-    use reify_eval::cache::NodeId;
     use reify_core::ValueCellId;
+    use reify_eval::cache::NodeId;
+    use reify_ir::OpaqueState;
+    use std::sync::Arc;
 
     let checker = reify_constraints::SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
@@ -8574,8 +8627,12 @@ fn engine_session_warm_pool_event_emitter_captures_donated_and_evicted_events() 
     let node_b = NodeId::Value(ValueCellId::new("Plate", "width"));
 
     // Donate two nodes: node_a fits (size=1, budget=1), node_b evicts node_a.
-    session.warm_pool_mut_for_test().donate(node_a.clone(), OpaqueState::new(1i32, 1));
-    session.warm_pool_mut_for_test().donate(node_b.clone(), OpaqueState::new(2i32, 1));
+    session
+        .warm_pool_mut_for_test()
+        .donate(node_a.clone(), OpaqueState::new(1i32, 1));
+    session
+        .warm_pool_mut_for_test()
+        .donate(node_b.clone(), OpaqueState::new(2i32, 1));
 
     // Drain and emit.
     session.drain_and_emit_warm_pool_events_for_test();
@@ -8704,12 +8761,12 @@ impl crate::engine::FeaCaseEmitter for RecordingFeaCaseEmitter {
 /// `emit_fea_case_for_test_with_result` do not exist yet.
 #[test]
 fn fea_case_emitter_fires_when_multi_case_value_present() {
-    use std::sync::Arc;
-    use reify_eval::CheckResult;
     use reify_core::ValueCellId;
+    use reify_eval::CheckResult;
+    use reify_ir::Value;
     use reify_ir::ValueMap;
     use reify_test_support::multi_case_result_value;
-    use reify_ir::Value;
+    use std::sync::Arc;
 
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
@@ -8721,7 +8778,10 @@ fn fea_case_emitter_fires_when_multi_case_value_present() {
     // Build a hand-crafted CheckResult whose values map contains one MultiCaseResult cell.
     let mut values = ValueMap::new();
     let cell_id = ValueCellId::new("S", "result");
-    values.insert(cell_id, multi_case_result_value(&[("A", Value::Int(1)), ("B", Value::Int(2))]));
+    values.insert(
+        cell_id,
+        multi_case_result_value(&[("A", Value::Int(1)), ("B", Value::Int(2))]),
+    );
 
     let check = CheckResult {
         values,
@@ -8734,8 +8794,16 @@ fn fea_case_emitter_fires_when_multi_case_value_present() {
     session.emit_fea_case_for_test_with_result(&check);
 
     let events = captured.lock().unwrap();
-    assert_eq!(events.len(), 1, "expected exactly one fea-case-changed event, got {}", events.len());
-    assert_eq!(events[0].active_case_id, "A", "active_case_id must be lex-smallest 'A'");
+    assert_eq!(
+        events.len(),
+        1,
+        "expected exactly one fea-case-changed event, got {}",
+        events.len()
+    );
+    assert_eq!(
+        events[0].active_case_id, "A",
+        "active_case_id must be lex-smallest 'A'"
+    );
     assert_eq!(
         events[0].available_cases,
         vec!["A".to_string(), "B".to_string()],
@@ -8751,11 +8819,11 @@ fn fea_case_emitter_fires_when_multi_case_value_present() {
 /// `emit_fea_case_for_test_with_result` do not exist yet.
 #[test]
 fn fea_case_emitter_no_fire_when_no_multi_case() {
-    use std::sync::Arc;
-    use reify_eval::CheckResult;
     use reify_core::ValueCellId;
-    use reify_ir::ValueMap;
+    use reify_eval::CheckResult;
     use reify_ir::Value;
+    use reify_ir::ValueMap;
+    use std::sync::Arc;
 
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
@@ -8779,7 +8847,10 @@ fn fea_case_emitter_no_fire_when_no_multi_case() {
     session.emit_fea_case_for_test_with_result(&check);
 
     let events = captured.lock().unwrap();
-    assert!(events.is_empty(), "no events should fire for a non-MultiCaseResult cell");
+    assert!(
+        events.is_empty(),
+        "no events should fire for a non-MultiCaseResult cell"
+    );
 }
 
 /// (c) fea_case_emitter_re_fires_on_each_check.
@@ -8795,12 +8866,12 @@ fn fea_case_emitter_no_fire_when_no_multi_case() {
 /// `emit_fea_case_for_test_with_result` do not exist yet.
 #[test]
 fn fea_case_emitter_re_fires_on_each_check() {
-    use std::sync::Arc;
-    use reify_eval::CheckResult;
     use reify_core::ValueCellId;
+    use reify_eval::CheckResult;
+    use reify_ir::Value;
     use reify_ir::ValueMap;
     use reify_test_support::multi_case_result_value;
-    use reify_ir::Value;
+    use std::sync::Arc;
 
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
@@ -8886,8 +8957,8 @@ fn fea_case_emitter_wires_through_real_commit_path() {
 fn make_single_body_mechanism_map(
     joint_kind: &str,
 ) -> std::collections::BTreeMap<reify_ir::Value, reify_ir::Value> {
-    use std::collections::BTreeMap;
     use reify_ir::Value;
+    use std::collections::BTreeMap;
 
     let mut joint_map: BTreeMap<Value, Value> = BTreeMap::new();
     joint_map.insert(
@@ -8958,10 +9029,10 @@ fn extract_joint_descriptor_assigns_kind_based_binding_defaults_coupling() {
 /// with 3 distinct joints and check the third one.
 #[test]
 fn extract_joint_descriptor_assigns_kind_based_binding_defaults_prismatic() {
-    use std::collections::BTreeMap;
     use crate::engine::extract_joints_from_mechanism;
     use crate::types::JointBinding;
     use reify_ir::Value;
+    use std::collections::BTreeMap;
 
     // Build a mechanism with 3 distinct prismatic joints so the third has joint_index=2.
     let make_prismatic = |tag: u8| -> Value {
@@ -8971,10 +9042,7 @@ fn extract_joint_descriptor_assigns_kind_based_binding_defaults_prismatic() {
             Value::String("prismatic".to_string()),
         );
         // Use a unique tag key to ensure structural inequality for deduplication.
-        joint_map.insert(
-            Value::String("_tag".to_string()),
-            Value::Int(tag as i64),
-        );
+        joint_map.insert(Value::String("_tag".to_string()), Value::Int(tag as i64));
         Value::Map(joint_map)
     };
 
@@ -9150,9 +9218,8 @@ fn get_mechanism_descriptors_literal_bind_with_unsupported_unit_yields_none_and_
         .target_prefix("reify_gui::engine::literal_bind")
         .build();
 
-    let descriptors = tracing::subscriber::with_default(subscriber, || {
-        session.get_mechanism_descriptors()
-    });
+    let descriptors =
+        tracing::subscriber::with_default(subscriber, || session.get_mechanism_descriptors());
 
     let debug_count = counters[&tracing::Level::DEBUG].load(std::sync::atomic::Ordering::Acquire);
     assert_eq!(
@@ -9168,7 +9235,13 @@ fn get_mechanism_descriptors_literal_bind_with_unsupported_unit_yields_none_and_
     let joint = &m1_desc.joints[0];
 
     assert!(
-        matches!(joint.binding, crate::types::JointBinding::LiteralBound { initial_value_si: None, .. }),
+        matches!(
+            joint.binding,
+            crate::types::JointBinding::LiteralBound {
+                initial_value_si: None,
+                ..
+            }
+        ),
         "unsupported unit must produce LiteralBound with initial_value_si=None; got {:?}",
         joint.binding
     );
@@ -9266,7 +9339,9 @@ fn get_mechanism_descriptors_bind_on_fixed_joint_does_not_promote_binding() {
     let mut session = make_session();
     let err = session
         .load_from_source(SNAPSHOT_FIXED_JOINT_WITH_PARAM_SOURCE, "kinematic")
-        .expect_err("bind(fixed, param) must be rejected at compile time with E_MECHANISM_NONDRIVING_JOINT");
+        .expect_err(
+            "bind(fixed, param) must be rejected at compile time with E_MECHANISM_NONDRIVING_JOINT",
+        );
 
     assert!(
         err.contains("DrivingJoint") || err.contains("Fixed"),
@@ -9488,7 +9563,10 @@ fn make_buckling_result_value(n_modes: usize) -> reify_ir::Value {
             .into_iter()
             .collect();
             let mode_fields: PersistentMap<String, Value> = [
-                ("eigenvalue".to_string(), Value::Real((k + 1) as f64 * 1000.0)),
+                (
+                    "eigenvalue".to_string(),
+                    Value::Real((k + 1) as f64 * 1000.0),
+                ),
                 ("mode_shape".to_string(), Value::Map(mode_shape_map)),
             ]
             .into_iter()
@@ -9505,10 +9583,10 @@ fn make_buckling_result_value(n_modes: usize) -> reify_ir::Value {
     let base_val: Vec<Value> = base_positions.iter().map(|&v| Value::Real(v)).collect();
 
     let result_fields: PersistentMap<String, Value> = [
-        ("modes".to_string(),               Value::List(modes_list)),
-        ("converged".to_string(),           Value::Bool(true)),
-        ("iterations".to_string(),          Value::Int(0)),
-        ("pre_stress".to_string(),          Value::Undef),
+        ("modes".to_string(), Value::List(modes_list)),
+        ("converged".to_string(), Value::Bool(true)),
+        ("iterations".to_string(), Value::Int(0)),
+        ("pre_stress".to_string(), Value::Undef),
         ("base_node_positions".to_string(), Value::List(base_val)),
     ]
     .into_iter()
@@ -9538,10 +9616,10 @@ fn make_buckling_result_value(n_modes: usize) -> reify_ir::Value {
 /// do not exist yet.
 #[test]
 fn mode_shape_frame_emitter_fires_for_buckling_result_two_modes() {
-    use std::sync::Arc;
-    use reify_eval::CheckResult;
     use reify_core::ValueCellId;
+    use reify_eval::CheckResult;
     use reify_ir::ValueMap;
+    use std::sync::Arc;
 
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
@@ -9578,7 +9656,11 @@ fn mode_shape_frame_emitter_fires_for_buckling_result_two_modes() {
 
     // Exactly one base frame (phase == 0.0).
     let base_frames: Vec<_> = frames.iter().filter(|f| f.phase == 0.0).collect();
-    assert_eq!(base_frames.len(), 1, "expected exactly 1 base frame (phase=0.0)");
+    assert_eq!(
+        base_frames.len(),
+        1,
+        "expected exactly 1 base frame (phase=0.0)"
+    );
     assert_eq!(
         base_frames[0].displaced_positions.len(),
         6,
@@ -9588,9 +9670,19 @@ fn mode_shape_frame_emitter_fires_for_buckling_result_two_modes() {
     // Two peak frames (phase == 1.0), mode_index ascending 0, 1.
     let mut peak_frames: Vec<_> = frames.iter().filter(|f| f.phase == 1.0).collect();
     peak_frames.sort_by_key(|f| f.mode_index);
-    assert_eq!(peak_frames.len(), 2, "expected exactly 2 peak frames (phase=1.0)");
-    assert_eq!(peak_frames[0].mode_index, 0, "first peak frame must have mode_index=0");
-    assert_eq!(peak_frames[1].mode_index, 1, "second peak frame must have mode_index=1");
+    assert_eq!(
+        peak_frames.len(),
+        2,
+        "expected exactly 2 peak frames (phase=1.0)"
+    );
+    assert_eq!(
+        peak_frames[0].mode_index, 0,
+        "first peak frame must have mode_index=0"
+    );
+    assert_eq!(
+        peak_frames[1].mode_index, 1,
+        "second peak frame must have mode_index=1"
+    );
 
     // Each peak frame has the right length and differs from base frame.
     let base_pos = &base_frames[0].displaced_positions;
@@ -9609,8 +9701,7 @@ fn mode_shape_frame_emitter_fires_for_buckling_result_two_modes() {
     // ── task-4072 step-3: eigenvalue threading assertions ──────────────────
     // (e) Base frame eigenvalue must be None.
     assert_eq!(
-        base_frames[0].eigenvalue,
-        None,
+        base_frames[0].eigenvalue, None,
         "base frame (phase=0.0) must have eigenvalue=None"
     );
 
@@ -9638,8 +9729,8 @@ fn mode_shape_frame_emitter_fires_for_buckling_result_two_modes() {
 /// **RED at step-5**: compile-fails for the same reason as (a).
 #[test]
 fn mode_shape_frame_emitter_no_fire_when_no_emitter() {
-    use reify_eval::CheckResult;
     use reify_core::ValueCellId;
+    use reify_eval::CheckResult;
     use reify_ir::ValueMap;
 
     let checker = SimpleConstraintChecker;
@@ -9670,10 +9761,10 @@ fn mode_shape_frame_emitter_no_fire_when_no_emitter() {
 /// **RED at step-5**: compile-fails for the same reason as (a).
 #[test]
 fn mode_shape_frame_emitter_no_fire_when_no_buckling_result() {
-    use std::sync::Arc;
-    use reify_eval::CheckResult;
     use reify_core::ValueCellId;
-    use reify_ir::{ValueMap, Value};
+    use reify_eval::CheckResult;
+    use reify_ir::{Value, ValueMap};
+    use std::sync::Arc;
 
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
@@ -9727,7 +9818,10 @@ fn make_buckling_result_custom(
             .into_iter()
             .collect();
             let mode_fields: PersistentMap<String, Value> = [
-                ("eigenvalue".to_string(), Value::Real((k + 1) as f64 * 1000.0)),
+                (
+                    "eigenvalue".to_string(),
+                    Value::Real((k + 1) as f64 * 1000.0),
+                ),
                 ("mode_shape".to_string(), Value::Map(mode_shape_map)),
             ]
             .into_iter()
@@ -9744,10 +9838,10 @@ fn make_buckling_result_custom(
     let base_val: Vec<Value> = base_positions.iter().map(|&v| Value::Real(v)).collect();
 
     let result_fields: PersistentMap<String, Value> = [
-        ("modes".to_string(),               Value::List(modes_list)),
-        ("converged".to_string(),           Value::Bool(true)),
-        ("iterations".to_string(),          Value::Int(0)),
-        ("pre_stress".to_string(),          Value::Undef),
+        ("modes".to_string(), Value::List(modes_list)),
+        ("converged".to_string(), Value::Bool(true)),
+        ("iterations".to_string(), Value::Int(0)),
+        ("pre_stress".to_string(), Value::Undef),
         ("base_node_positions".to_string(), Value::List(base_val)),
     ]
     .into_iter()
@@ -9777,10 +9871,10 @@ fn make_buckling_result_custom(
 /// calculation so a regression in any of them fails loudly rather than silently.
 #[test]
 fn mode_shape_scale_verified_geometry_matches_hand_computed() {
-    use std::sync::Arc;
-    use reify_eval::CheckResult;
     use reify_core::ValueCellId;
+    use reify_eval::CheckResult;
     use reify_ir::ValueMap;
+    use std::sync::Arc;
 
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
@@ -9814,8 +9908,14 @@ fn mode_shape_scale_verified_geometry_matches_hand_computed() {
     // 1 base frame + 1 peak frame = 2 total.
     assert_eq!(frames.len(), 2, "expected 2 frames (1 base + 1 peak)");
 
-    let base_frame  = frames.iter().find(|f| f.phase == 0.0).expect("base frame missing");
-    let peak_frame  = frames.iter().find(|f| f.phase == 1.0).expect("peak frame missing");
+    let base_frame = frames
+        .iter()
+        .find(|f| f.phase == 0.0)
+        .expect("base frame missing");
+    let peak_frame = frames
+        .iter()
+        .find(|f| f.phase == 1.0)
+        .expect("peak frame missing");
 
     // Base frame carries the undeformed positions verbatim.
     let expected_base: Vec<f32> = base.iter().map(|&v| v as f32).collect();
@@ -9852,10 +9952,10 @@ fn mode_shape_scale_verified_geometry_matches_hand_computed() {
 ///   Expected peak = base + 1.0 × displacement = (6,5,5).
 #[test]
 fn mode_shape_scale_degenerate_fallback() {
-    use std::sync::Arc;
-    use reify_eval::CheckResult;
     use reify_core::ValueCellId;
+    use reify_eval::CheckResult;
     use reify_ir::ValueMap;
+    use std::sync::Arc;
 
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
@@ -9888,7 +9988,10 @@ fn mode_shape_scale_degenerate_fallback() {
         let frames = captured.lock().unwrap();
         assert_eq!(frames.len(), 2, "zero-disp: expected 2 frames");
 
-        let peak_frame = frames.iter().find(|f| f.phase == 1.0).expect("peak frame missing");
+        let peak_frame = frames
+            .iter()
+            .find(|f| f.phase == 1.0)
+            .expect("peak frame missing");
         // With scale=1.0 and displacement=0, peak == base.
         let expected: Vec<f32> = base.iter().map(|&v| v as f32).collect();
         assert_eq!(
@@ -9924,7 +10027,10 @@ fn mode_shape_scale_degenerate_fallback() {
         let frames = captured.lock().unwrap();
         assert_eq!(frames.len(), 2, "single-node: expected 2 frames");
 
-        let peak_frame = frames.iter().find(|f| f.phase == 1.0).expect("peak frame missing");
+        let peak_frame = frames
+            .iter()
+            .find(|f| f.phase == 1.0)
+            .expect("peak frame missing");
         // scale=1.0 fallback → peak = base + 1.0 × [1,0,0] = [6,5,5].
         let expected: Vec<f32> = disp0.iter().map(|&v| v as f32).collect();
         let eps = 1e-5_f32;
@@ -9982,7 +10088,10 @@ fn cantilever_fixture_realizes_body() {
         .expect("FeaCantileverSmoke template must exist in compiled module");
 
     assert!(
-        template.realizations.iter().any(|r| r.name.as_deref() == Some("body")),
+        template
+            .realizations
+            .iter()
+            .any(|r| r.name.as_deref() == Some("body")),
         "FeaCantileverSmoke must have a realization named 'body' (from `let body = box(...)`); \
          fixture is missing the body binding. Present realizations: {:?}",
         template
@@ -10032,10 +10141,9 @@ fn register_compute_fns_dispatch_yields_real_elastic_result() {
         .expect("last_check_for_test must be Some after load_from_source");
 
     let result_cell = ValueCellId::new("FeaCantileverSmoke", "result");
-    let result_val = check
-        .values
-        .get(&result_cell)
-        .unwrap_or_else(|| panic!("cell FeaCantileverSmoke.result not found in CheckResult.values"));
+    let result_val = check.values.get(&result_cell).unwrap_or_else(|| {
+        panic!("cell FeaCantileverSmoke.result not found in CheckResult.values")
+    });
 
     // Extract max_von_mises from the ElasticResult (Value::StructureInstance).
     let mvm = match result_val {
@@ -10043,10 +10151,12 @@ fn register_compute_fns_dispatch_yields_real_elastic_result() {
             .fields
             .get(&"max_von_mises".to_string())
             .cloned()
-            .unwrap_or_else(|| panic!(
-                "max_von_mises field not found in ElasticResult; fields: {:?}",
-                data.fields.keys().collect::<Vec<_>>()
-            )),
+            .unwrap_or_else(|| {
+                panic!(
+                    "max_von_mises field not found in ElasticResult; fields: {:?}",
+                    data.fields.keys().collect::<Vec<_>>()
+                )
+            }),
         other => panic!(
             "expected FeaCantileverSmoke.result to be Value::StructureInstance, got: {:?}",
             other
@@ -10055,7 +10165,10 @@ fn register_compute_fns_dispatch_yields_real_elastic_result() {
 
     // max_von_mises must be a Scalar with dimension PRESSURE, not Undef.
     let (si_value, dimension) = match &mvm {
-        Value::Scalar { si_value, dimension } => (*si_value, *dimension),
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => (*si_value, *dimension),
         other => panic!(
             "expected max_von_mises to be Value::Scalar {{ ... }}, got: {:?}",
             other
@@ -10330,14 +10443,14 @@ fn set_parameter_edit_check_err_still_fires_solve_finished() {
 ///   (1,1,1)→7: [22.0,23.0,24.0]  (in-solid)
 fn make_3d_stride3_field() -> reify_ir::SampledField {
     let mut data = Vec::with_capacity(24);
-    data.extend_from_slice(&[1.0f64, 2.0, 3.0]);    // (0,0,0)
-    data.extend_from_slice(&[4.0, 5.0, 6.0]);        // (0,0,1)
-    data.extend_from_slice(&[7.0, 8.0, 9.0]);        // (0,1,0)
-    data.extend_from_slice(&[10.0, 11.0, 12.0]);     // (0,1,1)
-    data.extend_from_slice(&[13.0, 14.0, 15.0]);     // (1,0,0)
-    data.extend_from_slice(&[16.0, 17.0, 18.0]);     // (1,0,1)
+    data.extend_from_slice(&[1.0f64, 2.0, 3.0]); // (0,0,0)
+    data.extend_from_slice(&[4.0, 5.0, 6.0]); // (0,0,1)
+    data.extend_from_slice(&[7.0, 8.0, 9.0]); // (0,1,0)
+    data.extend_from_slice(&[10.0, 11.0, 12.0]); // (0,1,1)
+    data.extend_from_slice(&[13.0, 14.0, 15.0]); // (1,0,0)
+    data.extend_from_slice(&[16.0, 17.0, 18.0]); // (1,0,1)
     data.extend_from_slice(&[f64::NAN, f64::NAN, f64::NAN]); // (1,1,0) out-of-solid
-    data.extend_from_slice(&[22.0, 23.0, 24.0]);     // (1,1,1)
+    data.extend_from_slice(&[22.0, 23.0, 24.0]); // (1,1,1)
     reify_ir::SampledField {
         name: "test_field".to_string(),
         kind: reify_ir::SampledGridKind::Regular3D,
@@ -10443,8 +10556,14 @@ fn make_stress_field() -> reify_ir::SampledField {
 fn scalar_channel_oob_sentinel_is_negative_one_and_finite() {
     let s = crate::types::SCALAR_CHANNEL_OOB_SENTINEL;
     assert_eq!(s, -1.0_f32, "sentinel must be exactly -1.0");
-    assert!(s.is_finite(), "sentinel must be finite (required for wire guard)");
-    assert!(s < 0.0, "sentinel must be negative (von Mises ≥ 0 physically)");
+    assert!(
+        s.is_finite(),
+        "sentinel must be finite (required for wire guard)"
+    );
+    assert!(
+        s < 0.0,
+        "sentinel must be negative (von Mises ≥ 0 physically)"
+    );
 }
 
 /// von_mises_sample at the uniaxial (0,0,0) node returns the correct von Mises value.
@@ -10505,13 +10624,13 @@ fn von_mises_sample_out_of_solid_returns_sentinel() {
 fn make_disp_field() -> reify_ir::SampledField {
     let mut data = Vec::with_capacity(8 * 3);
     data.extend_from_slice(&[0.01_f64, 0.02, 0.03]); // (0,0,0)
-    data.extend_from_slice(&[0.0_f64; 3]);            // (0,0,1)
-    data.extend_from_slice(&[0.0_f64; 3]);            // (0,1,0)
-    data.extend_from_slice(&[0.0_f64; 3]);            // (0,1,1)
-    data.extend_from_slice(&[0.0_f64; 3]);            // (1,0,0)
-    data.extend_from_slice(&[0.0_f64; 3]);            // (1,0,1)
-    data.extend_from_slice(&[f64::NAN; 3]);           // (1,1,0) out-of-solid
-    data.extend_from_slice(&[0.0_f64; 3]);            // (1,1,1)
+    data.extend_from_slice(&[0.0_f64; 3]); // (0,0,1)
+    data.extend_from_slice(&[0.0_f64; 3]); // (0,1,0)
+    data.extend_from_slice(&[0.0_f64; 3]); // (0,1,1)
+    data.extend_from_slice(&[0.0_f64; 3]); // (1,0,0)
+    data.extend_from_slice(&[0.0_f64; 3]); // (1,0,1)
+    data.extend_from_slice(&[f64::NAN; 3]); // (1,1,0) out-of-solid
+    data.extend_from_slice(&[0.0_f64; 3]); // (1,1,1)
 
     reify_ir::SampledField {
         name: "displacement".to_string(),
@@ -10538,7 +10657,8 @@ fn displaced_sample_in_bounds_applies_displacement() {
         assert!(
             (result[i] - expected[i]).abs() < 1e-5,
             "displaced_sample[{i}]: expected {}, got {}",
-            expected[i], result[i]
+            expected[i],
+            result[i]
         );
     }
 }
@@ -10554,7 +10674,8 @@ fn displaced_sample_oob_returns_original() {
         assert!(
             (result[i] - expected[i]).abs() < 1e-7,
             "OOB displaced_sample[{i}]: expected {}, got {}",
-            expected[i], result[i]
+            expected[i],
+            result[i]
         );
     }
 }
@@ -10571,7 +10692,8 @@ fn displaced_sample_out_of_solid_returns_original() {
         assert!(
             (result[i] - expected[i]).abs() < 1e-5,
             "out-of-solid displaced_sample[{i}]: expected {}, got {}",
-            expected[i], result[i]
+            expected[i],
+            result[i]
         );
     }
 }
@@ -10676,9 +10798,9 @@ fn make_test_mesh_data() -> crate::types::MeshData {
     crate::types::MeshData {
         entity_path: "test_body".to_string(),
         vertices: vec![
-            0.05_f32, 0.05, 0.05,   // v0: in-bounds
-            1.0_f32,  0.0,  0.0,    // v1: in-bounds
-            2.0_f32,  0.0,  0.0,    // v2: OOB
+            0.05_f32, 0.05, 0.05, // v0: in-bounds
+            1.0_f32, 0.0, 0.0, // v1: in-bounds
+            2.0_f32, 0.0, 0.0, // v2: OOB
         ],
         indices: vec![0, 1, 2],
         normals: None,
@@ -10797,14 +10919,14 @@ fn apply_fea_channels_without_elastic_result_leaves_meshes_untouched() {
 /// All other nodes: 1.0 Pa.
 fn make_scalar_field() -> reify_ir::SampledField {
     let data = vec![
-        5.0_f64, // (0,0,0)
-        1.0,     // (0,0,1)
-        1.0,     // (0,1,0)
-        1.0,     // (0,1,1)
-        1.0,     // (1,0,0)
-        1.0,     // (1,0,1)
+        5.0_f64,  // (0,0,0)
+        1.0,      // (0,0,1)
+        1.0,      // (0,1,0)
+        1.0,      // (0,1,1)
+        1.0,      // (1,0,0)
+        1.0,      // (1,0,1)
         f64::NAN, // (1,1,0) out-of-solid
-        1.0,     // (1,1,1)
+        1.0,      // (1,1,1)
     ];
     reify_ir::SampledField {
         name: "error_indicator".to_string(),
@@ -10890,18 +11012,19 @@ fn extract_elastic_result_fields_with_error_indicator_returns_some_third_element
     let (_, _, error_indicator) = crate::engine::extract_elastic_result_fields(&map)
         .expect("should find ElasticResult with stress and displacement fields");
     let eind_sf = error_indicator.expect("error_indicator must be Some when populated");
-    assert_eq!(eind_sf.data.len(), 8, "error_indicator field must have 8*1 data entries");
+    assert_eq!(
+        eind_sf.data.len(),
+        8,
+        "error_indicator field must have 8*1 data entries"
+    );
 }
 
 /// `extract_elastic_result_fields` returns `None` for the 3rd tuple element
 /// when `error_indicator` is `Option(None)` (the non-adaptive default).
 #[test]
 fn extract_elastic_result_fields_with_none_error_indicator_returns_none_third_element() {
-    let map = make_elastic_result_value_map_with_indicator(
-        make_stress_field(),
-        make_disp_field(),
-        None,
-    );
+    let map =
+        make_elastic_result_value_map_with_indicator(make_stress_field(), make_disp_field(), None);
     let (_, _, error_indicator) = crate::engine::extract_elastic_result_fields(&map)
         .expect("should find ElasticResult with stress and displacement fields");
     assert!(
@@ -10957,7 +11080,11 @@ fn apply_fea_channels_with_error_indicator_fills_error_indicator_channel() {
         .scalar_channels
         .get("errorIndicator")
         .expect("errorIndicator channel must exist when error_indicator is populated");
-    assert_eq!(ei.len(), vertex_count, "errorIndicator len must == vertex_count");
+    assert_eq!(
+        ei.len(),
+        vertex_count,
+        "errorIndicator len must == vertex_count"
+    );
 
     // v0 (0.05,0.05,0.05) is nearest node (0,0,0) -> make_scalar_field's 5.0 Pa.
     assert!(
@@ -11020,14 +11147,13 @@ fn make_elastic_result_value_map_with_convergence(
     let mut fields = reify_ir::PersistentMap::new();
     fields.insert("convergence_status".to_string(), convergence_status);
 
-    let elastic_instance = reify_ir::Value::StructureInstance(Box::new(
-        reify_ir::StructureInstanceData {
+    let elastic_instance =
+        reify_ir::Value::StructureInstance(Box::new(reify_ir::StructureInstanceData {
             type_id: reify_ir::StructureTypeId(0),
             type_name: "ElasticResult".to_string(),
             version: 1,
             fields,
-        },
-    ));
+        }));
 
     let mut map = reify_ir::ValueMap::new();
     let cell_id = reify_core::ValueCellId::new("FeaCantileverSmoke", "result");
@@ -11081,7 +11207,10 @@ fn extract_fea_convergence_converged_returns_some_with_no_reason() {
 
     assert_eq!(
         result,
-        Some(crate::types::FeaConvergenceInfo { converged: true, reason: None })
+        Some(crate::types::FeaConvergenceInfo {
+            converged: true,
+            reason: None
+        })
     );
 }
 
@@ -11153,10 +11282,20 @@ fn apply_shell_channels_populates_matching_mesh() {
     let mesh = &meshes[0];
     let vertex_count = mesh.vertices.len() / 3;
     let face_count = mesh.indices.len() / 3;
-    assert_eq!(vertex_count, 4, "vertices replaced by the 4-vertex mid-surface");
-    assert_eq!(face_count, 2, "indices replaced by the 2-triangle mid-surface");
+    assert_eq!(
+        vertex_count, 4,
+        "vertices replaced by the 4-vertex mid-surface"
+    );
+    assert_eq!(
+        face_count, 2,
+        "indices replaced by the 2-triangle mid-surface"
+    );
 
-    assert_eq!(mesh.element_kind, Some(vec![1, 1]), "element_kind all-shell");
+    assert_eq!(
+        mesh.element_kind,
+        Some(vec![1, 1]),
+        "element_kind all-shell"
+    );
     assert_eq!(mesh.region_tags, Some(vec![0, 1]), "region_tags == labels");
     // task #4883: per-face identity element_index populated for shell bodies
     assert_eq!(
@@ -11230,7 +11369,11 @@ fn apply_shell_channels_leaves_non_matching_mesh_untouched() {
         mesh.vector_channels.is_empty(),
         "non-matching mesh gets no vector channels"
     );
-    assert_eq!(mesh.vertices.len(), 9, "non-matching mesh geometry unchanged");
+    assert_eq!(
+        mesh.vertices.len(),
+        9,
+        "non-matching mesh geometry unchanged"
+    );
 }
 
 // ── Task 3598 step-7: RED — element_kind_count histogram ──────────────────────
@@ -11385,7 +11528,9 @@ fn build_gui_state_fea_cantilever_smoke_has_von_mises_and_displaced_positions() 
         vertex_count
     );
 
-    let has_real_stress = vm.iter().any(|&v| v != crate::types::SCALAR_CHANNEL_OOB_SENTINEL && v >= 0.0);
+    let has_real_stress = vm
+        .iter()
+        .any(|&v| v != crate::types::SCALAR_CHANNEL_OOB_SENTINEL && v >= 0.0);
     assert!(
         has_real_stress,
         "at least one vonMises value must be non-sentinel (in-bounds vertex has real FEA stress); got: {:?}",
@@ -11722,10 +11867,11 @@ impl RecordingSolverProgressSink {
 
 impl reify_eval::SolverProgressSink for RecordingSolverProgressSink {
     fn on_iteration(&self, update: &reify_eval::SolverProgressUpdate) {
-        self.updates
-            .lock()
-            .unwrap()
-            .push((update.solver_kind.to_string(), update.iter, update.residual));
+        self.updates.lock().unwrap().push((
+            update.solver_kind.to_string(),
+            update.iter,
+            update.residual,
+        ));
     }
 }
 
@@ -11841,12 +11987,17 @@ fn staleness_api_clean_after_successful_load() {
         .load_from_source(bracket_source(), "bracket")
         .expect("initial load should succeed");
 
-    assert!(!session.is_stale(), "newly-loaded session must not be stale");
+    assert!(
+        !session.is_stale(),
+        "newly-loaded session must not be stale"
+    );
     assert!(
         session.reload_error().is_none(),
         "newly-loaded session must have no reload error"
     );
-    let state = session.build_gui_state().expect("build_gui_state should succeed");
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state should succeed");
     assert!(
         state.compile_diagnostics.is_empty(),
         "clean load must have no compile_diagnostics; got {:?}",
@@ -11870,7 +12021,9 @@ fn staleness_api_record_reload_error_appends_diagnostic() {
         .expect("initial load should succeed");
 
     // Capture the last-good counts for regression.
-    let good_state = session.build_gui_state().expect("build_gui_state pre-error should succeed");
+    let good_state = session
+        .build_gui_state()
+        .expect("build_gui_state pre-error should succeed");
     assert!(
         !good_state.meshes.is_empty(),
         "bracket source must produce non-empty meshes"
@@ -11881,7 +12034,10 @@ fn staleness_api_record_reload_error_appends_diagnostic() {
     // Inject a reload error (simulates what commands::update_source_impl will do on Err).
     session.record_reload_error("boom".to_string());
 
-    assert!(session.is_stale(), "session must be stale after record_reload_error");
+    assert!(
+        session.is_stale(),
+        "session must be stale after record_reload_error"
+    );
     assert_eq!(
         session.reload_error(),
         Some("boom"),
@@ -11990,7 +12146,10 @@ fn staleness_api_cleared_after_successful_reload() {
 
     // Make stale.
     session.record_reload_error("transient error".to_string());
-    assert!(session.is_stale(), "session must be stale before the test assertion");
+    assert!(
+        session.is_stale(),
+        "session must be stale before the test assertion"
+    );
 
     // Successful reload should clear staleness (commit_state clears last_reload_error).
     session
@@ -12006,7 +12165,9 @@ fn staleness_api_cleared_after_successful_reload() {
         "reload_error must be None after a successful reload"
     );
 
-    let state = session.build_gui_state().expect("build_gui_state should succeed");
+    let state = session
+        .build_gui_state()
+        .expect("build_gui_state should succeed");
     let has_reload_error_diag = state
         .compile_diagnostics
         .iter()
@@ -12039,9 +12200,15 @@ fn build_gui_state_live_edit_failure_content_matches_diagnostics() {
     // (2) Produce a failing live edit: replace `thickness` in the box() call with an
     //     unresolved name `bogus_thk` — this triggers a compile-phase
     //     UnresolvedName error with line/col pointing into the edited buffer.
-    let edited = bracket_source().replace("box(width, height, thickness)", "box(width, height, bogus_thk)");
+    let edited = bracket_source().replace(
+        "box(width, height, thickness)",
+        "box(width, height, bogus_thk)",
+    );
     let result = session.update_source("bracket.ri", &edited);
-    assert!(result.is_err(), "edited source with unresolved name must return Err");
+    assert!(
+        result.is_err(),
+        "edited source with unresolved name must return Err"
+    );
 
     // (3) compile_failure should record a LiveEdit failure (compiled was Some before).
     let failure = session
@@ -12134,9 +12301,15 @@ fn build_gui_state_cold_start_failure_surfaces_failing_source() {
 
     // (1) Attempt a cold-start load with a failing source: replace `thickness` in the
     //     box() call with an unresolved name `bogus_thk`.
-    let bad = bracket_source().replace("box(width, height, thickness)", "box(width, height, bogus_thk)");
+    let bad = bracket_source().replace(
+        "box(width, height, thickness)",
+        "box(width, height, bogus_thk)",
+    );
     let result = session.load_from_source(&bad, "bracket");
-    assert!(result.is_err(), "bad source must return Err from load_from_source");
+    assert!(
+        result.is_err(),
+        "bad source must return Err from load_from_source"
+    );
 
     // (2) compile_failure should record a ColdStart failure (compiled was None).
     let failure = session
@@ -12233,7 +12406,10 @@ fn build_gui_state_live_edit_multi_file_entry_key_overridden() {
         .build_gui_state()
         .expect("build_gui_state should succeed before failing edit");
     assert!(
-        good_state.values.iter().any(|v| v.name == "x" && v.entity_path == "Helper"),
+        good_state
+            .values
+            .iter()
+            .any(|v| v.name == "x" && v.entity_path == "Helper"),
         "pre-condition: Helper.x must be present before the failing edit"
     );
 
@@ -12242,7 +12418,10 @@ fn build_gui_state_live_edit_multi_file_entry_key_overridden() {
     // reference produces a compile-phase UnresolvedName error.
     let bad_main = "import helper\nstructure Top { sub h = Helper()\nlet broken = bogus_var }\n";
     let result = session.update_source(main_path.to_str().unwrap(), bad_main);
-    assert!(result.is_err(), "update_source with bogus_var must return Err");
+    assert!(
+        result.is_err(),
+        "update_source with bogus_var must return Err"
+    );
 
     // compile_failure must be LiveEdit (compiled was Some before the failure).
     let failure = session
@@ -12287,7 +12466,10 @@ fn build_gui_state_live_edit_multi_file_entry_key_overridden() {
 
     // compile_diagnostics must contain an Error referencing the bad identifier.
     assert!(
-        state.compile_diagnostics.iter().any(|d| d.severity == "Error"),
+        state
+            .compile_diagnostics
+            .iter()
+            .any(|d| d.severity == "Error"),
         "compile_diagnostics must have at least one Error; got: {:?}",
         state.compile_diagnostics
     );
@@ -12324,9 +12506,15 @@ fn build_gui_state_live_edit_else_push_branch_key_not_in_source_map() {
     // derived from the path argument → "different_module".
     // compile_failure.file_key = module_key("different_module") = "different_module.ri"
     // which is NOT in source_map (which only has "bracket.ri").
-    let bad = bracket_source().replace("box(width, height, thickness)", "box(width, height, bogus_dim)");
+    let bad = bracket_source().replace(
+        "box(width, height, thickness)",
+        "box(width, height, bogus_dim)",
+    );
     let result = session.update_source("different_module.ri", &bad);
-    assert!(result.is_err(), "update_source with bogus_dim must return Err");
+    assert!(
+        result.is_err(),
+        "update_source with bogus_dim must return Err"
+    );
 
     // compile_failure must be LiveEdit with file_key "different_module.ri".
     let failure = session
@@ -12354,14 +12542,22 @@ fn build_gui_state_live_edit_else_push_branch_key_not_in_source_map() {
     );
 
     // Find each entry by path (order not guaranteed).
-    let bracket_entry = state.files.iter().find(|f| f.path == "bracket.ri")
+    let bracket_entry = state
+        .files
+        .iter()
+        .find(|f| f.path == "bracket.ri")
         .expect("files must contain 'bracket.ri' (last-good source_map entry)");
-    let diff_entry = state.files.iter().find(|f| f.path == "different_module.ri")
+    let diff_entry = state
+        .files
+        .iter()
+        .find(|f| f.path == "different_module.ri")
         .expect("files must contain 'different_module.ri' (else-push from compile_failure)");
 
     // "bracket.ri" must retain the last-good (original) source.
     assert!(
-        bracket_entry.content.contains("box(width, height, thickness)"),
+        bracket_entry
+            .content
+            .contains("box(width, height, thickness)"),
         "bracket.ri entry must retain last-good content (original box call); \
          got: {:?}",
         &bracket_entry.content.chars().take(100).collect::<String>()
@@ -12411,7 +12607,10 @@ fn build_gui_state_live_edit_same_file_content_is_failing_buffer_warning_positio
         .build_gui_state()
         .expect("build_gui_state should return Ok for the good compile");
     assert!(
-        good_state.compile_diagnostics.iter().any(|d| d.severity == "Warning"),
+        good_state
+            .compile_diagnostics
+            .iter()
+            .any(|d| d.severity == "Warning"),
         "pre-condition: compile_diagnostics must contain a Warning after loading warn source; \
          got: {:?}",
         good_state.compile_diagnostics
@@ -12422,7 +12621,10 @@ fn build_gui_state_live_edit_same_file_content_is_failing_buffer_warning_positio
     // so the Warning's line 2 position falls outside the new content.
     let bad = "structure def S { let invalid = totally_bogus_ref }";
     let result = session.update_source("warn.ri", bad);
-    assert!(result.is_err(), "update_source with totally_bogus_ref must return Err");
+    assert!(
+        result.is_err(),
+        "update_source with totally_bogus_ref must return Err"
+    );
 
     // compile_failure must be LiveEdit with file_key "warn.ri" (same file).
     let failure = session
@@ -12455,13 +12657,19 @@ fn build_gui_state_live_edit_same_file_content_is_failing_buffer_warning_positio
 
     // Both Warning (from last-good) and Error (from live edit) must be present.
     assert!(
-        state.compile_diagnostics.iter().any(|d| d.severity == "Warning"),
+        state
+            .compile_diagnostics
+            .iter()
+            .any(|d| d.severity == "Warning"),
         "compile_diagnostics must contain the prior Warning (carried over from last-good compile); \
          got: {:?}",
         state.compile_diagnostics
     );
     assert!(
-        state.compile_diagnostics.iter().any(|d| d.severity == "Error"),
+        state
+            .compile_diagnostics
+            .iter()
+            .any(|d| d.severity == "Error"),
         "compile_diagnostics must contain the live-edit Error; got: {:?}",
         state.compile_diagnostics
     );
@@ -12580,7 +12788,7 @@ fn make_overload_stress_field() -> reify_ir::SampledField {
     data.extend_from_slice(&[0.0_f64; 9]); // (1,0,0)
     data.extend_from_slice(&[0.0_f64; 9]); // (1,0,1)
     let nan9 = [f64::NAN; 9];
-    data.extend_from_slice(&nan9);          // (1,1,0): NaN out-of-solid
+    data.extend_from_slice(&nan9); // (1,1,0): NaN out-of-solid
     data.extend_from_slice(&[0.0_f64; 9]); // (1,1,1)
 
     reify_ir::SampledField {
@@ -12685,11 +12893,13 @@ fn apply_fea_channels_multi_case_active_overload_uses_overload_case() {
     );
     // Both in-bounds → neither should equal the OOB sentinel.
     assert_ne!(
-        vm_op[0], crate::types::SCALAR_CHANNEL_OOB_SENTINEL,
+        vm_op[0],
+        crate::types::SCALAR_CHANNEL_OOB_SENTINEL,
         "operating in-bounds v0 must not equal OOB sentinel"
     );
     assert_ne!(
-        vm_ov[0], crate::types::SCALAR_CHANNEL_OOB_SENTINEL,
+        vm_ov[0],
+        crate::types::SCALAR_CHANNEL_OOB_SENTINEL,
         "overload in-bounds v0 must not equal OOB sentinel"
     );
 }
@@ -12715,7 +12925,10 @@ fn apply_fea_channels_single_case_top_level_unchanged_regression() {
         .get("vonMises")
         .expect("single-case top-level ElasticResult must fill vonMises");
     assert_eq!(vm.len(), vertex_count);
-    assert!(vm[0] >= 0.0, "in-bounds vertex must have non-negative von Mises");
+    assert!(
+        vm[0] >= 0.0,
+        "in-bounds vertex must have non-negative von Mises"
+    );
     assert_eq!(vm[2], crate::types::SCALAR_CHANNEL_OOB_SENTINEL);
 
     let dp = mesh
@@ -12761,7 +12974,10 @@ fn engine_session_active_fea_case_default_then_switch() {
         .expect("load_from_source must succeed for bracket_source");
 
     let tess_count_after_load = tess_arc.lock().unwrap().len();
-    assert!(tess_count_after_load > 0, "initial load must produce ≥1 tessellation call");
+    assert!(
+        tess_count_after_load > 0,
+        "initial load must produce ≥1 tessellation call"
+    );
 
     // Inject a MultiCaseResult CheckResult with "operating" (100 MPa) and
     // "overload" (200 MPa) Sampled-field ElasticResult cases.
@@ -12779,23 +12995,32 @@ fn engine_session_active_fea_case_default_then_switch() {
     // Rebuild GuiState with FEA values so tess_mesh_cache is populated (FEA-gated).
     // In production, build_gui_state is always called after check() returns FEA data;
     // inject_check_for_test is test-only and does not trigger a rebuild automatically.
-    let fea_state = session.build_gui_state()
+    let fea_state = session
+        .build_gui_state()
         .expect("build_gui_state must succeed with injected FEA check");
     let tess_count_after_rebuild = tess_arc.lock().unwrap().len();
     assert!(
         tess_count_after_rebuild >= tess_count_after_load,
         "rebuild tessellates again (tess_count_after_load={}, tess_count_after_rebuild={})",
-        tess_count_after_load, tess_count_after_rebuild
+        tess_count_after_load,
+        tess_count_after_rebuild
     );
 
     // Capture vertices from the FEA-enabled rebuild (these are what the cache holds).
-    let vertices_before: Vec<f32> = fea_state.meshes.iter()
+    let vertices_before: Vec<f32> = fea_state
+        .meshes
+        .iter()
         .flat_map(|m| m.vertices.iter().cloned())
         .collect();
-    let indices_before: Vec<u32> = fea_state.meshes.iter()
+    let indices_before: Vec<u32> = fea_state
+        .meshes
+        .iter()
         .flat_map(|m| m.indices.iter().cloned())
         .collect();
-    assert!(!vertices_before.is_empty(), "MockGeometryKernel must produce vertices for bracket body");
+    assert!(
+        !vertices_before.is_empty(),
+        "MockGeometryKernel must produce vertices for bracket body"
+    );
 
     // (a) Initial active case is None — lex-first "operating" is the implicit default.
     assert_eq!(session.get_active_fea_case(), None); // FAILS TO COMPILE (step-4 adds this)
@@ -12814,10 +13039,14 @@ fn engine_session_active_fea_case_default_then_switch() {
 
     // (d) Vertices/indices are byte-identical — tessellation was NOT repeated
     // (set_active_fea_case serves geometry from tess_mesh_cache, no kernel call).
-    let vertices_after: Vec<f32> = state_overload.meshes.iter()
+    let vertices_after: Vec<f32> = state_overload
+        .meshes
+        .iter()
         .flat_map(|m| m.vertices.iter().cloned())
         .collect();
-    let indices_after: Vec<u32> = state_overload.meshes.iter()
+    let indices_after: Vec<u32> = state_overload
+        .meshes
+        .iter()
         .flat_map(|m| m.indices.iter().cloned())
         .collect();
     assert_eq!(
@@ -12839,21 +13068,32 @@ fn engine_session_active_fea_case_default_then_switch() {
     // (c) scalar_channels["vonMises"] reflects "overload" (200 MPa at vertex 0).
     // MockGeometryKernel vertex 0 is at [0,0,0]; overload stress field has
     // 200e6 Pa uniaxial at node (0,0,0) → von Mises ≈ 200e6 Pa.
-    let mesh_overload = state_overload.meshes.first()
+    let mesh_overload = state_overload
+        .meshes
+        .first()
         .expect("must have at least one mesh after set_active_fea_case('overload')");
-    let vm_overload = mesh_overload.scalar_channels.get("vonMises")
+    let vm_overload = mesh_overload
+        .scalar_channels
+        .get("vonMises")
         .expect("mesh must have vonMises channel after set_active_fea_case('overload')");
     let vertex_count = vertices_before.len() / 3; // 3 floats per vertex
-    assert_eq!(vm_overload.len(), vertex_count,
-        "vonMises channel length must equal vertex count ({vertex_count})");
+    assert_eq!(
+        vm_overload.len(),
+        vertex_count,
+        "vonMises channel length must equal vertex count ({vertex_count})"
+    );
 
     // Switch back to "operating" to verify the channels differ between cases.
     let state_operating = session
         .set_active_fea_case("operating")
         .expect("set_active_fea_case('operating') must succeed");
-    let mesh_operating = state_operating.meshes.first()
+    let mesh_operating = state_operating
+        .meshes
+        .first()
         .expect("must have at least one mesh after set_active_fea_case('operating')");
-    let vm_operating = mesh_operating.scalar_channels.get("vonMises")
+    let vm_operating = mesh_operating
+        .scalar_channels
+        .get("vonMises")
         .expect("mesh must have vonMises channel for 'operating' case");
 
     // Overload (200 MPa) must produce a larger von Mises value at vertex 0 than
@@ -12862,7 +13102,8 @@ fn engine_session_active_fea_case_default_then_switch() {
     assert!(
         vm_overload[0] > vm_operating[0] + 1.0_f32,
         "overload vonMises[0] ({:.0}) must exceed operating vonMises[0] ({:.0}) by >1 Pa (ratio ~2×)",
-        vm_overload[0], vm_operating[0]
+        vm_overload[0],
+        vm_operating[0]
     );
 }
 
@@ -12911,8 +13152,7 @@ fn gui_fixture_multi_case_bracket_produces_three_case_result() {
         .values
         .iter()
         .filter_map(|(id, v)| {
-            reify_eval::multi_load_dispatch::detect_multi_case_result(v)
-                .map(|d| (id, d))
+            reify_eval::multi_load_dispatch::detect_multi_case_result(v).map(|d| (id, d))
         })
         .next()
         .unwrap_or_else(|| {
@@ -12926,7 +13166,11 @@ fn gui_fixture_multi_case_bracket_produces_three_case_result() {
     // Available cases must be exactly ["operating", "overload", "transport"].
     assert_eq!(
         detected.available_cases,
-        vec!["operating".to_string(), "overload".to_string(), "transport".to_string()],
+        vec![
+            "operating".to_string(),
+            "overload".to_string(),
+            "transport".to_string()
+        ],
         "cell {cell_id:?}: available_cases mismatch"
     );
 
@@ -12963,9 +13207,9 @@ fn gui_fixture_multi_case_bracket_produces_three_case_result() {
         };
 
         // The `stress` field must be a Sampled Field (non-Undef).
-        let stress_val = er_fields
-            .get("stress")
-            .unwrap_or_else(|| panic!("case \"{case_name}\": stress field missing from ElasticResult"));
+        let stress_val = er_fields.get("stress").unwrap_or_else(|| {
+            panic!("case \"{case_name}\": stress field missing from ElasticResult")
+        });
         match stress_val {
             Value::Field { source, .. } => {
                 assert!(
@@ -13260,8 +13504,8 @@ structure def TOnly {
 /// after the sort is added in step-2.
 #[test]
 fn build_constraints_sorts_constraints_by_node_id() {
-    use reify_eval::{CheckResult, ConstraintCheckEntry};
     use reify_core::ConstraintNodeId;
+    use reify_eval::{CheckResult, ConstraintCheckEntry};
     use reify_ir::{Satisfaction, ValueMap};
 
     // Minimal empty CompiledModule — template lookup returns None for all entries,
@@ -13307,7 +13551,11 @@ fn build_constraints_sorts_constraints_by_node_id() {
     let node_ids: Vec<String> = result.iter().map(|c| c.node_id.clone()).collect();
     assert_eq!(
         node_ids,
-        vec!["Alpha#constraint[0]", "Mid#constraint[0]", "Zeta#constraint[0]"],
+        vec![
+            "Alpha#constraint[0]",
+            "Mid#constraint[0]",
+            "Zeta#constraint[0]"
+        ],
         "build_constraints must return ConstraintData in ascending node_id order \
          regardless of constraint_results insertion order"
     );
@@ -13568,7 +13816,10 @@ fn sync_demand_populates_production_demand_selectively() {
     }
 
     // (d) UNPARSEABLE key: skipped (warn, not panic) — body_a's cone is unchanged.
-    session.sync_demand(&["not a valid realization key".to_string(), body_a_key.clone()]);
+    session.sync_demand(&[
+        "not a valid realization key".to_string(),
+        body_a_key.clone(),
+    ]);
     {
         let engine = session.core_state_for_test().engine();
         assert_eq!(
@@ -13608,9 +13859,9 @@ fn sync_demand_populates_production_demand_selectively() {
 /// `build_gui_state` must already report `sb` as Pending with its prior value.
 #[test]
 fn build_values_populates_last_substantive_value_for_pruned_pending_cell() {
+    use crate::types::format_value;
     use reify_core::RealizationNodeId;
     use reify_eval::cache::NodeId;
-    use crate::types::format_value;
 
     const SRC: &str = r#"pub structure SelectiveMultiBody {
     param w : Length = 10mm
@@ -13729,8 +13980,10 @@ structure def BearingAssembly {
     let kernel = MockGeometryKernel::new();
     let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
 
-    let result = session
-        .load_from_source(BEARING_CONSTRAINT_SELECT_SOURCE, "bearing_constraint_select");
+    let result = session.load_from_source(
+        BEARING_CONSTRAINT_SELECT_SOURCE,
+        "bearing_constraint_select",
+    );
 
     // Under the stub the compile would emit AutoTypeParamAmbiguous → has_errors → Err.
     // Under the real checker only ThinSeal survives → Selected → no Errors → Ok.
@@ -13747,9 +14000,7 @@ structure def BearingAssembly {
     let ambiguous_diags: Vec<&str> = state
         .compile_diagnostics
         .iter()
-        .filter(|d| {
-            d.message.contains("multiple feasible") || d.message.contains("Ambiguous")
-        })
+        .filter(|d| d.message.contains("multiple feasible") || d.message.contains("Ambiguous"))
         .map(|d| d.message.as_str())
         .collect();
     assert!(
@@ -13815,8 +14066,8 @@ structure UndefEpsilonTest {
 /// `ValueData`→`ParameterInfo` mapping in `mcp_context.rs`.
 #[test]
 fn get_parameters_mcp_carries_reason_for_unbound_param() {
-    use std::sync::{Arc, Mutex};
     use reify_mcp::ReifyToolContext;
+    use std::sync::{Arc, Mutex};
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
@@ -14056,8 +14307,11 @@ fn build_gui_state_extracts_display_routing_happy_path() {
     );
 
     // (b) inv.1: every subject joins to a rendered mesh (no dangling directives)
-    let mesh_paths: std::collections::HashSet<&str> =
-        state.meshes.iter().map(|m| m.entity_path.as_str()).collect();
+    let mesh_paths: std::collections::HashSet<&str> = state
+        .meshes
+        .iter()
+        .map(|m| m.entity_path.as_str())
+        .collect();
     for d in &state.display_panes {
         assert!(
             mesh_paths.contains(d.subject.as_str()),
@@ -14069,10 +14323,13 @@ fn build_gui_state_extracts_display_routing_happy_path() {
 
     // (c) inv.2 default pane: dd has pane==0 (same as da)
     let pane_counts: std::collections::HashMap<i32, usize> =
-        state.display_panes.iter().fold(std::collections::HashMap::new(), |mut m, d| {
-            *m.entry(d.pane).or_insert(0) += 1;
-            m
-        });
+        state
+            .display_panes
+            .iter()
+            .fold(std::collections::HashMap::new(), |mut m, d| {
+                *m.entry(d.pane).or_insert(0) += 1;
+                m
+            });
     assert_eq!(
         pane_counts.get(&0).copied().unwrap_or(0),
         2,
@@ -14125,8 +14382,7 @@ fn build_gui_state_display_only_gate_excludes_stl_output() {
         state.display_panes
     );
     assert_eq!(
-        state.display_panes[0].pane,
-        1,
+        state.display_panes[0].pane, 1,
         "the single directive must have pane==1 (from DisplayOutput); got {:?}",
         state.display_panes[0]
     );
@@ -14206,15 +14462,17 @@ fn build_gui_state_drops_display_output_with_unresolved_subject() {
 
     // The surviving directive is `da` (pane==0), not `db` (pane==1).
     assert_eq!(
-        state.display_panes[0].pane,
-        0,
+        state.display_panes[0].pane, 0,
         "surviving directive must be da with pane==0; got {:?}",
         state.display_panes[0]
     );
 
     // inv.1 join-key: surviving subject must map to a rendered mesh (no dangling).
-    let mesh_paths: std::collections::HashSet<&str> =
-        state.meshes.iter().map(|m| m.entity_path.as_str()).collect();
+    let mesh_paths: std::collections::HashSet<&str> = state
+        .meshes
+        .iter()
+        .map(|m| m.entity_path.as_str())
+        .collect();
     assert!(
         mesh_paths.contains(state.display_panes[0].subject.as_str()),
         "surviving directive subject '{}' has no mesh; mesh_paths={:?}",
@@ -14266,8 +14524,11 @@ fn build_gui_state_extracts_display_appearance_happy_path() {
     let dir = &state.display_appearance[0];
 
     // (b) inv.1: subject join-key is present in state.meshes
-    let mesh_paths: std::collections::HashSet<&str> =
-        state.meshes.iter().map(|m| m.entity_path.as_str()).collect();
+    let mesh_paths: std::collections::HashSet<&str> = state
+        .meshes
+        .iter()
+        .map(|m| m.entity_path.as_str())
+        .collect();
     assert!(
         mesh_paths.contains(dir.subject.as_str()),
         "AppearanceDirective subject '{}' has no corresponding mesh; paths={:?}",
@@ -14277,16 +14538,40 @@ fn build_gui_state_extracts_display_appearance_happy_path() {
 
     // (c) color: [r, g, b, opacity] with f32 tolerance
     let eps = 1e-4_f32;
-    assert!((dir.style.color[0] - 0.96_f32).abs() < eps, "color[0] (r) expected ~0.96, got {}", dir.style.color[0]);
-    assert!((dir.style.color[1] - 0.95_f32).abs() < eps, "color[1] (g) expected ~0.95, got {}", dir.style.color[1]);
-    assert!((dir.style.color[2] - 0.88_f32).abs() < eps, "color[2] (b) expected ~0.88, got {}", dir.style.color[2]);
-    assert!((dir.style.color[3] - 0.5_f32).abs() < eps,  "color[3] (opacity) expected ~0.5, got {}", dir.style.color[3]);
+    assert!(
+        (dir.style.color[0] - 0.96_f32).abs() < eps,
+        "color[0] (r) expected ~0.96, got {}",
+        dir.style.color[0]
+    );
+    assert!(
+        (dir.style.color[1] - 0.95_f32).abs() < eps,
+        "color[1] (g) expected ~0.95, got {}",
+        dir.style.color[1]
+    );
+    assert!(
+        (dir.style.color[2] - 0.88_f32).abs() < eps,
+        "color[2] (b) expected ~0.88, got {}",
+        dir.style.color[2]
+    );
+    assert!(
+        (dir.style.color[3] - 0.5_f32).abs() < eps,
+        "color[3] (opacity) expected ~0.5, got {}",
+        dir.style.color[3]
+    );
 
     // (d) finish: 2 = Gloss
-    assert_eq!(dir.style.finish, 2u8, "finish must be 2 (Gloss); got {}", dir.style.finish);
+    assert_eq!(
+        dir.style.finish, 2u8,
+        "finish must be 2 (Gloss); got {}",
+        dir.style.finish
+    );
 
     // (e) opacity
-    assert!((dir.style.opacity - 0.5_f32).abs() < eps, "opacity expected ~0.5, got {}", dir.style.opacity);
+    assert!(
+        (dir.style.opacity - 0.5_f32).abs() < eps,
+        "opacity expected ~0.5, got {}",
+        dir.style.opacity
+    );
 
     // (f) wireframe
     assert!(dir.style.wireframe, "wireframe must be true");
@@ -14336,8 +14621,11 @@ fn build_gui_state_drops_dangling_appearance_directive() {
 
     // The surviving directive is da (realized subject: a)
     let dir = &state.display_appearance[0];
-    let mesh_paths: std::collections::HashSet<&str> =
-        state.meshes.iter().map(|m| m.entity_path.as_str()).collect();
+    let mesh_paths: std::collections::HashSet<&str> = state
+        .meshes
+        .iter()
+        .map(|m| m.entity_path.as_str())
+        .collect();
     assert!(
         mesh_paths.contains(dir.subject.as_str()),
         "surviving AppearanceDirective subject '{}' has no mesh; paths={:?}",
@@ -14345,7 +14633,11 @@ fn build_gui_state_drops_dangling_appearance_directive() {
         mesh_paths
     );
     // finish==0 (Matte) confirms this is da, not db
-    assert_eq!(dir.style.finish, 0u8, "surviving directive must be da (Matte=0); got {}", dir.style.finish);
+    assert_eq!(
+        dir.style.finish, 0u8,
+        "surviving directive must be da (Matte=0); got {}",
+        dir.style.finish
+    );
 }
 
 // ── PRD-2 γ: display_appearance explicit-style gate ───────────────────────────
@@ -14399,7 +14691,8 @@ fn build_gui_state_display_appearance_empty_when_style_defaulted() {
     // (b) No DisplayOutput at all → display_appearance is also empty.
     let checker2 = reify_constraints::SimpleConstraintChecker;
     let kernel2 = reify_test_support::MockGeometryKernel::new();
-    let mut session2 = crate::engine::EngineSession::new(Box::new(checker2), Some(Box::new(kernel2)));
+    let mut session2 =
+        crate::engine::EngineSession::new(Box::new(checker2), Some(Box::new(kernel2)));
 
     let state2 = session2
         .load_from_source(bracket_source(), "bracket")
@@ -14445,7 +14738,10 @@ fn examples_multi_pane_viewport_realizes_section8_display_routing() {
     // Read the committed example via CARGO_MANIFEST_DIR (= gui/src-tauri at test time).
     // ../../examples resolves to the repo-root examples/ directory — same idiom as
     // crates/reify-compiler/tests/examples_smoke.rs (EXAMPLES_DIR).
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/multi_pane_viewport.ri");
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/multi_pane_viewport.ri"
+    );
     let contents = std::fs::read_to_string(path)
         .expect("examples/multi_pane_viewport.ri must exist (created in step-2)");
 
@@ -14474,7 +14770,11 @@ fn examples_multi_pane_viewport_realizes_section8_display_routing() {
         state.meshes.len() >= 3,
         "expected at least 3 realized meshes (a, b, c boxes); got {} meshes: {:?}",
         state.meshes.len(),
-        state.meshes.iter().map(|m| m.entity_path.as_str()).collect::<Vec<_>>()
+        state
+            .meshes
+            .iter()
+            .map(|m| m.entity_path.as_str())
+            .collect::<Vec<_>>()
     );
 
     // (c) display_panes.len() == 4 — da/db/dc/dd kept; dx (dangling) dropped.
@@ -14487,10 +14787,13 @@ fn examples_multi_pane_viewport_realizes_section8_display_routing() {
 
     // Build pane-count map for assertions (d)/(e)/(f).
     let pane_counts: std::collections::HashMap<i32, usize> =
-        state.display_panes.iter().fold(std::collections::HashMap::new(), |mut m, d| {
-            *m.entry(d.pane).or_insert(0) += 1;
-            m
-        });
+        state
+            .display_panes
+            .iter()
+            .fold(std::collections::HashMap::new(), |mut m, d| {
+                *m.entry(d.pane).or_insert(0) += 1;
+                m
+            });
 
     // (d) Exactly 2 directives on pane 0 (da + dd default; inv.2 back-compat rows 2/4).
     assert_eq!(
@@ -14517,8 +14820,11 @@ fn examples_multi_pane_viewport_realizes_section8_display_routing() {
     );
 
     // (g) inv.1 join-key: every surviving directive.subject must join to a realized mesh.
-    let mesh_paths: std::collections::HashSet<&str> =
-        state.meshes.iter().map(|m| m.entity_path.as_str()).collect();
+    let mesh_paths: std::collections::HashSet<&str> = state
+        .meshes
+        .iter()
+        .map(|m| m.entity_path.as_str())
+        .collect();
     for d in &state.display_panes {
         assert!(
             mesh_paths.contains(d.subject.as_str()),
@@ -14531,13 +14837,12 @@ fn examples_multi_pane_viewport_realizes_section8_display_routing() {
 
     // (h) Serde round-trip: GuiState serialises and deserialises with display_panes intact
     //     (addendum (1) applied to the real committed-artifact list).
-    let json = serde_json::to_string(&state)
-        .expect("GuiState serde_json::to_string should succeed");
-    let back: crate::types::GuiState = serde_json::from_str(&json)
-        .expect("GuiState serde_json::from_str should succeed");
+    let json =
+        serde_json::to_string(&state).expect("GuiState serde_json::to_string should succeed");
+    let back: crate::types::GuiState =
+        serde_json::from_str(&json).expect("GuiState serde_json::from_str should succeed");
     assert_eq!(
-        back.display_panes,
-        state.display_panes,
+        back.display_panes, state.display_panes,
         "GuiState.display_panes must round-trip through serde_json unchanged"
     );
 }
@@ -14577,7 +14882,11 @@ fn make_appearance_val(
         ("color".to_string(), color_val),
         (
             "finish".to_string(),
-            Value::Enum { type_name: "Finish".to_string(), variant: finish.to_string(), payload: vec![] },
+            Value::Enum {
+                type_name: "Finish".to_string(),
+                variant: finish.to_string(),
+                payload: vec![],
+            },
         ),
         ("metalness".to_string(), Value::Real(metalness)),
         ("roughness".to_string(), Value::Real(roughness)),
@@ -14597,8 +14906,8 @@ fn make_appearance_val(
 /// Fails to compile until step-4 (β) adds `project_appearance` to engine.rs.
 #[test]
 fn project_appearance_explicit_color_gloss() {
-    use reify_core::Diagnostic;
     use crate::types::MeshAppearance;
+    use reify_core::Diagnostic;
 
     let app = make_appearance_val(0.4, 0.4, 0.42, "Gloss", 0.2, 0.3);
     let mut diags: Vec<Diagnostic> = Vec::new();
@@ -14607,10 +14916,18 @@ fn project_appearance_explicit_color_gloss() {
     let expected_color = [102.0f32 / 255.0, 102.0f32 / 255.0, 107.0f32 / 255.0, 1.0f32];
     assert_eq!(
         result,
-        MeshAppearance { color: expected_color, metalness: 0.2, roughness: 0.3, finish: 2 },
+        MeshAppearance {
+            color: expected_color,
+            metalness: 0.2,
+            roughness: 0.3,
+            finish: 2
+        },
         "Gloss→2; color 0.4→102, 0.42→107; metalness/roughness passthrough"
     );
-    assert!(diags.is_empty(), "no diags for valid appearance, got: {diags:#?}");
+    assert!(
+        diags.is_empty(),
+        "no diags for valid appearance, got: {diags:#?}"
+    );
 }
 
 /// project_appearance: default-shaped Appearance (r=g=b=0.7, Satin, metalness=0.0, roughness=0.5)
@@ -14619,8 +14936,8 @@ fn project_appearance_explicit_color_gloss() {
 /// Fails to compile until step-4 (β) adds `project_appearance` to engine.rs.
 #[test]
 fn project_appearance_default_appearance_satin() {
-    use reify_core::Diagnostic;
     use crate::types::MeshAppearance;
+    use reify_core::Diagnostic;
 
     let app = make_appearance_val(0.7, 0.7, 0.7, "Satin", 0.0, 0.5);
     let mut diags: Vec<Diagnostic> = Vec::new();
@@ -14628,8 +14945,16 @@ fn project_appearance_default_appearance_satin() {
 
     // 0.7f64 * 255.0 = 178.5 (exact in IEEE754); round() half-away-from-zero → 179.
     let n = 179.0f32 / 255.0;
-    let expected = MeshAppearance { color: [n, n, n, 1.0], metalness: 0.0, roughness: 0.5, finish: 1 };
-    assert_eq!(result, expected, "default grey (0.7→179/255), Satin→1, metalness 0.0, roughness 0.5");
+    let expected = MeshAppearance {
+        color: [n, n, n, 1.0],
+        metalness: 0.0,
+        roughness: 0.5,
+        finish: 1,
+    };
+    assert_eq!(
+        result, expected,
+        "default grey (0.7→179/255), Satin→1, metalness 0.0, roughness 0.5"
+    );
     assert!(diags.is_empty(), "no diags, got: {diags:#?}");
 }
 
@@ -14678,14 +15003,23 @@ fn build_gui_state_appearance_from_material_vs_none_for_raw_box() {
     let steel_mesh = steel_mesh.unwrap_or_else(|| {
         panic!(
             "expected mesh with entity_path 'SteelPart#realization[...'; got: {:?}",
-            state.meshes.iter().map(|m| &m.entity_path).collect::<Vec<_>>()
+            state
+                .meshes
+                .iter()
+                .map(|m| &m.entity_path)
+                .collect::<Vec<_>>()
         )
     });
 
     // Plain Material (no explicit appearance arg) uses default Appearance(): r=g=b=0.7.
     // clamp_round(0.7) = round(0.7 * 255.0) = round(178.5) = 179 (IEEE754 half-away-from-zero).
     let n = 179.0f32 / 255.0;
-    let expected_steel = MeshAppearance { color: [n, n, n, 1.0], metalness: 0.0, roughness: 0.5, finish: 1 };
+    let expected_steel = MeshAppearance {
+        color: [n, n, n, 1.0],
+        metalness: 0.0,
+        roughness: 0.5,
+        finish: 1,
+    };
     assert_eq!(
         steel_mesh.appearance,
         Some(expected_steel),
@@ -14704,12 +15038,15 @@ fn build_gui_state_appearance_from_material_vs_none_for_raw_box() {
         .unwrap_or_else(|| {
             panic!(
                 "RawBox must tessellate into a display mesh; got paths: {:?}",
-                state.meshes.iter().map(|m| &m.entity_path).collect::<Vec<_>>()
+                state
+                    .meshes
+                    .iter()
+                    .map(|m| &m.entity_path)
+                    .collect::<Vec<_>>()
             )
         });
     assert_eq!(
-        raw_mesh.appearance,
-        None,
+        raw_mesh.appearance, None,
         "RawBox (material-less) must yield None (PRD §7.1 invariant); got {:?}",
         raw_mesh.appearance
     );
@@ -14805,13 +15142,20 @@ fn examples_appearance_viewport_egress_realizes_section8_appearance_contract() {
     let steel_mesh = state
         .meshes
         .iter()
-        .find(|m| m.entity_path.starts_with("AppearanceViewportEgress#realization["))
+        .find(|m| {
+            m.entity_path
+                .starts_with("AppearanceViewportEgress#realization[")
+        })
         .unwrap_or_else(|| {
             panic!(
                 "expected mesh with entity_path starting with \
                  'AppearanceViewportEgress#realization['; \
                  got: {:?}",
-                state.meshes.iter().map(|m| &m.entity_path).collect::<Vec<_>>()
+                state
+                    .meshes
+                    .iter()
+                    .map(|m| &m.entity_path)
+                    .collect::<Vec<_>>()
             )
         });
 
@@ -14828,19 +15172,25 @@ fn examples_appearance_viewport_egress_realizes_section8_appearance_contract() {
     let raw_mesh = state
         .meshes
         .iter()
-        .find(|m| m.entity_path.starts_with("AppearanceViewportEgress.raw#realization["))
+        .find(|m| {
+            m.entity_path
+                .starts_with("AppearanceViewportEgress.raw#realization[")
+        })
         .unwrap_or_else(|| {
             panic!(
                 "expected raw box mesh with entity_path starting with \
                  'AppearanceViewportEgress.raw#realization['; \
                  got: {:?}",
-                state.meshes.iter().map(|m| &m.entity_path).collect::<Vec<_>>()
+                state
+                    .meshes
+                    .iter()
+                    .map(|m| &m.entity_path)
+                    .collect::<Vec<_>>()
             )
         });
 
     assert_eq!(
-        raw_mesh.appearance,
-        None,
+        raw_mesh.appearance, None,
         "B2: raw box (material-less) must yield None (PRD §7.1); got {:?}",
         raw_mesh.appearance
     );
@@ -14859,8 +15209,11 @@ fn examples_appearance_viewport_egress_realizes_section8_appearance_contract() {
     let dir = &state.display_appearance[0];
 
     // B3 (a): subject must join to a realized mesh entity_path (inv.1 no-dangling).
-    let mesh_paths: std::collections::HashSet<&str> =
-        state.meshes.iter().map(|m| m.entity_path.as_str()).collect();
+    let mesh_paths: std::collections::HashSet<&str> = state
+        .meshes
+        .iter()
+        .map(|m| m.entity_path.as_str())
+        .collect();
     assert!(
         mesh_paths.contains(dir.subject.as_str()),
         "B3: AppearanceDirective subject '{}' has no corresponding mesh; paths={:?}",
@@ -14872,7 +15225,8 @@ fn examples_appearance_viewport_egress_realizes_section8_appearance_contract() {
     // geometry is a DIRECT param → subject resolves to "AppearanceViewportEgress#realization[…]"
     // which equals the B1 mesh entity_path — the B1+B3 join.
     assert!(
-        dir.subject.starts_with("AppearanceViewportEgress#realization["),
+        dir.subject
+            .starts_with("AppearanceViewportEgress#realization["),
         "B3: directive subject '{}' must be the AppearanceViewportEgress geometry mesh \
          (starts with 'AppearanceViewportEgress#realization[')",
         dir.subject
@@ -14900,7 +15254,11 @@ fn examples_appearance_viewport_egress_realizes_section8_appearance_contract() {
         "B3: color[3] (opacity/alpha) expected ~0.5, got {}",
         dir.style.color[3]
     );
-    assert_eq!(dir.style.finish, 2u8, "B3: finish must be 2 (Gloss); got {}", dir.style.finish);
+    assert_eq!(
+        dir.style.finish, 2u8,
+        "B3: finish must be 2 (Gloss); got {}",
+        dir.style.finish
+    );
     assert!(
         (dir.style.opacity - 0.5_f32).abs() < eps,
         "B3: opacity expected ~0.5, got {}",
@@ -14912,8 +15270,8 @@ fn examples_appearance_viewport_egress_realizes_section8_appearance_contract() {
     //
     // GuiState → JSON → GuiState: steel mesh appearance must survive as Some(…)
     // and the AppearanceDirective must round-trip with byte-identical field values.
-    let json = serde_json::to_string(&state)
-        .expect("GuiState serde_json::to_string should succeed");
+    let json =
+        serde_json::to_string(&state).expect("GuiState serde_json::to_string should succeed");
     let back: crate::types::GuiState =
         serde_json::from_str(&json).expect("GuiState serde_json::from_str should succeed");
 
@@ -14921,7 +15279,10 @@ fn examples_appearance_viewport_egress_realizes_section8_appearance_contract() {
     let steel_back = back
         .meshes
         .iter()
-        .find(|m| m.entity_path.starts_with("AppearanceViewportEgress#realization["))
+        .find(|m| {
+            m.entity_path
+                .starts_with("AppearanceViewportEgress#realization[")
+        })
         .expect("steel mesh must survive serde round-trip");
     assert_eq!(
         steel_back.appearance,
@@ -14967,10 +15328,10 @@ fn examples_appearance_viewport_egress_realizes_section8_appearance_contract() {
 /// RED until step-4 populates fea_diagnostics in the build_gui_state success literal.
 #[test]
 fn build_gui_state_fea_diagnostics_populated_from_unconstrained_structured_detail() {
-    use reify_eval::CheckResult;
-    use reify_eval::compute_targets::fea_diagnostics::{DofDirection, FeaDiagnosticDetail};
-    use reify_eval::StructuredComputeDetail;
     use crate::types::{DofDirectionInfo, FeaDiagnosticInfo};
+    use reify_eval::CheckResult;
+    use reify_eval::StructuredComputeDetail;
+    use reify_eval::compute_targets::fea_diagnostics::{DofDirection, FeaDiagnosticDetail};
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
@@ -15023,10 +15384,10 @@ fn build_gui_state_fea_diagnostics_populated_from_unconstrained_structured_detai
 /// RED until step-4 populates fea_diagnostics in the build_gui_state success literal.
 #[test]
 fn build_gui_state_fea_diagnostics_populated_and_channels_empty_on_failed_solve() {
-    use reify_eval::CheckResult;
-    use reify_eval::compute_targets::fea_diagnostics::{ElementId, FeaDiagnosticDetail};
-    use reify_eval::StructuredComputeDetail;
     use crate::types::FeaDiagnosticInfo;
+    use reify_eval::CheckResult;
+    use reify_eval::StructuredComputeDetail;
+    use reify_eval::compute_targets::fea_diagnostics::{ElementId, FeaDiagnosticDetail};
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
@@ -15061,7 +15422,8 @@ fn build_gui_state_fea_diagnostics_populated_and_channels_empty_on_failed_solve(
             mesh.scalar_channels.is_empty(),
             "mesh '{}' must have empty scalar_channels on failed-solve path; \
              got: {:?}",
-            mesh.entity_path, mesh.scalar_channels.keys().collect::<Vec<_>>()
+            mesh.entity_path,
+            mesh.scalar_channels.keys().collect::<Vec<_>>()
         );
         assert!(
             mesh.displaced_positions.is_none(),
@@ -15093,10 +15455,10 @@ fn build_gui_state_fea_diagnostics_populated_and_channels_empty_on_failed_solve(
 /// RED until step-6 populates fea_diagnostics in the set_active_fea_case literal.
 #[test]
 fn set_active_fea_case_carries_fea_diagnostics_from_structured_detail() {
-    use reify_eval::CheckResult;
-    use reify_eval::compute_targets::fea_diagnostics::{DofDirection, FeaDiagnosticDetail};
-    use reify_eval::StructuredComputeDetail;
     use crate::types::{DofDirectionInfo, FeaDiagnosticInfo};
+    use reify_eval::CheckResult;
+    use reify_eval::StructuredComputeDetail;
+    use reify_eval::compute_targets::fea_diagnostics::{DofDirection, FeaDiagnosticDetail};
 
     let checker = SimpleConstraintChecker;
     let kernel = MockGeometryKernel::new();
@@ -15184,11 +15546,11 @@ impl crate::engine::FeaDiagnosticsEmitter for RecordingFeaDiagnosticsEmitter {
 /// and emit_fea_diagnostics_for_test do not exist yet.
 #[test]
 fn fea_diagnostics_emitter_fires_unconstrained_modes() {
-    use std::sync::Arc;
-    use reify_eval::CheckResult;
-    use reify_eval::compute_targets::fea_diagnostics::{DofDirection, FeaDiagnosticDetail};
-    use reify_eval::StructuredComputeDetail;
     use crate::types::{DofDirectionInfo, FeaDiagnosticInfo};
+    use reify_eval::CheckResult;
+    use reify_eval::StructuredComputeDetail;
+    use reify_eval::compute_targets::fea_diagnostics::{DofDirection, FeaDiagnosticDetail};
+    use std::sync::Arc;
 
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
@@ -15247,8 +15609,8 @@ fn fea_diagnostics_emitter_fires_unconstrained_modes() {
 /// and emit_fea_diagnostics_for_test do not exist yet.
 #[test]
 fn fea_diagnostics_emitter_fires_empty_for_no_diagnostics() {
-    use std::sync::Arc;
     use reify_eval::CheckResult;
+    use std::sync::Arc;
 
     let checker = SimpleConstraintChecker;
     let mut session = EngineSession::new(Box::new(checker), None);
@@ -15419,7 +15781,11 @@ fn build_gui_state_surfaces_finish_process_polished_as_gloss() {
         .unwrap_or_else(|| {
             panic!(
                 "expected mesh with entity_path 'PolishedSteel#realization[...'; got: {:?}",
-                state.meshes.iter().map(|m| &m.entity_path).collect::<Vec<_>>()
+                state
+                    .meshes
+                    .iter()
+                    .map(|m| &m.entity_path)
+                    .collect::<Vec<_>>()
             )
         });
 
@@ -15484,7 +15850,11 @@ fn build_gui_state_surfaces_coating_anodize_dark() {
         .unwrap_or_else(|| {
             panic!(
                 "expected mesh with entity_path 'AnodizedAl#realization[...'; got: {:?}",
-                state.meshes.iter().map(|m| &m.entity_path).collect::<Vec<_>>()
+                state
+                    .meshes
+                    .iter()
+                    .map(|m| &m.entity_path)
+                    .collect::<Vec<_>>()
             )
         });
 
@@ -15548,7 +15918,11 @@ fn build_gui_state_coating_wins_over_finish_process() {
         .unwrap_or_else(|| {
             panic!(
                 "expected mesh with entity_path 'CoatAndPolish#realization[...'; got: {:?}",
-                state.meshes.iter().map(|m| &m.entity_path).collect::<Vec<_>>()
+                state
+                    .meshes
+                    .iter()
+                    .map(|m| &m.entity_path)
+                    .collect::<Vec<_>>()
             )
         });
 
@@ -15611,7 +15985,11 @@ fn build_gui_state_coating_only_no_material_resolves() {
         .unwrap_or_else(|| {
             panic!(
                 "expected mesh with entity_path 'CoatedBox#realization[...'; got: {:?}",
-                state.meshes.iter().map(|m| &m.entity_path).collect::<Vec<_>>()
+                state
+                    .meshes
+                    .iter()
+                    .map(|m| &m.entity_path)
+                    .collect::<Vec<_>>()
             )
         });
 
@@ -15678,7 +16056,11 @@ fn build_gui_state_uncoated_coating_with_material_resolves_material() {
         .unwrap_or_else(|| {
             panic!(
                 "expected mesh with entity_path 'UncoatedWithMat#realization[...'; got: {:?}",
-                state.meshes.iter().map(|m| &m.entity_path).collect::<Vec<_>>()
+                state
+                    .meshes
+                    .iter()
+                    .map(|m| &m.entity_path)
+                    .collect::<Vec<_>>()
             )
         });
 
@@ -15741,15 +16123,18 @@ fn build_gui_state_finish_process_without_material_resolves_none() {
         .unwrap_or_else(|| {
             panic!(
                 "expected mesh with entity_path 'PolishedBox#realization[...'; got: {:?}",
-                state.meshes.iter().map(|m| &m.entity_path).collect::<Vec<_>>()
+                state
+                    .meshes
+                    .iter()
+                    .map(|m| &m.entity_path)
+                    .collect::<Vec<_>>()
             )
         });
 
     // finish_process without material: Layer 2 requires mat_app (from material Layer 3),
     // but there is no material field → mat_app = None → Layer 2 falls through → None.
     assert_eq!(
-        mesh.appearance,
-        None,
+        mesh.appearance, None,
         "PolishedBox (no material) must yield None — finish_process requires material_app; \
          got {:?}",
         mesh.appearance
@@ -15869,7 +16254,11 @@ fn examples_surface_finish_viewport_renders_functional_finish() {
             panic!(
                 "expected mesh with entity_path starting with \
                  'PolishedSteelBody#realization['; got: {:?}",
-                state.meshes.iter().map(|m| &m.entity_path).collect::<Vec<_>>()
+                state
+                    .meshes
+                    .iter()
+                    .map(|m| &m.entity_path)
+                    .collect::<Vec<_>>()
             )
         });
 
@@ -15890,7 +16279,11 @@ fn examples_surface_finish_viewport_renders_functional_finish() {
             panic!(
                 "expected mesh with entity_path starting with \
                  'AnodizedBody#realization['; got: {:?}",
-                state.meshes.iter().map(|m| &m.entity_path).collect::<Vec<_>>()
+                state
+                    .meshes
+                    .iter()
+                    .map(|m| &m.entity_path)
+                    .collect::<Vec<_>>()
             )
         });
 
@@ -15941,7 +16334,11 @@ fn examples_surface_finish_viewport_display_override_beats_functional() {
             panic!(
                 "expected mesh with entity_path starting with \
                  'OverriddenBody#realization['; got: {:?}",
-                state.meshes.iter().map(|m| &m.entity_path).collect::<Vec<_>>()
+                state
+                    .meshes
+                    .iter()
+                    .map(|m| &m.entity_path)
+                    .collect::<Vec<_>>()
             )
         });
 
@@ -15955,8 +16352,11 @@ fn examples_surface_finish_viewport_display_override_beats_functional() {
     );
 
     // ── (b) display_appearance has exactly one OverriddenBody directive (no-dangling) ──
-    let mesh_paths: std::collections::HashSet<&str> =
-        state.meshes.iter().map(|m| m.entity_path.as_str()).collect();
+    let mesh_paths: std::collections::HashSet<&str> = state
+        .meshes
+        .iter()
+        .map(|m| m.entity_path.as_str())
+        .collect();
 
     let overridden_directives: Vec<_> = state
         .display_appearance
@@ -16013,7 +16413,10 @@ fn examples_surface_finish_viewport_display_override_beats_functional() {
         "override style.opacity expected ~1.0; got {}",
         dir.style.opacity
     );
-    assert!(!dir.style.wireframe, "override style.wireframe must be false");
+    assert!(
+        !dir.style.wireframe,
+        "override style.wireframe must be false"
+    );
 }
 
 // ---- task 3965 step-5: AffineMap example GUI viewport backstop -------------
@@ -16072,7 +16475,11 @@ fn examples_affine_tapered_spacer_renders_deformed_solid() {
             panic!(
                 "expected a mesh with entity_path starting with \
                  'TaperedSpacer#realization['; got: {:?}",
-                state.meshes.iter().map(|m| &m.entity_path).collect::<Vec<_>>()
+                state
+                    .meshes
+                    .iter()
+                    .map(|m| &m.entity_path)
+                    .collect::<Vec<_>>()
             )
         });
     assert!(
@@ -16080,4 +16487,3 @@ fn examples_affine_tapered_spacer_renders_deformed_solid() {
         "TaperedSpacer deformed-solid mesh payload must be non-empty"
     );
 }
-

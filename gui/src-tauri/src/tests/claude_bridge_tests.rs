@@ -522,16 +522,8 @@ async fn claude_send_message_impl_errors_when_sidecar_not_ready() {
 /// and writes a `tool_result` back; passes once the interception is deleted.
 #[tokio::test]
 async fn reify_prefixed_tool_call_is_forwarded_not_intercepted() {
-    use crate::engine::EngineSession;
-    use reify_constraints::SimpleConstraintChecker;
-    use reify_test_support::MockGeometryKernel;
     use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
-
-    let checker = SimpleConstraintChecker;
-    let kernel = MockGeometryKernel::new();
-    let session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
-    let engine = Arc::new(std::sync::Mutex::new(session));
 
     let (stdin_writer, mut stdin_reader) = tokio::io::duplex(4096);
     let (mut stdout_writer, stdout_reader) = tokio::io::duplex(4096);
@@ -540,16 +532,13 @@ async fn reify_prefixed_tool_call_is_forwarded_not_intercepted() {
 
     let events = Arc::new(std::sync::Mutex::new(vec![]));
     let events_clone = Arc::clone(&events);
-    let selection = Arc::new(std::sync::RwLock::new(reify_mcp::SelectionInfo::default()));
     let _handle = SidecarHandle::from_parts_with_mcp(
         stdin_writer,
         reader,
         state,
-        engine,
         move |name: String, payload: serde_json::Value| {
             events_clone.lock().unwrap().push((name, payload));
         },
-        selection,
     );
 
     // Inject a reify_ tool_call from simulated sidecar stdout.
@@ -594,342 +583,10 @@ async fn reify_prefixed_tool_call_is_forwarded_not_intercepted() {
              deleted per docs/prds/v0_6/ai-native-editing.md), but got {n} bytes: {}",
             String::from_utf8_lossy(&buf[..n])
         ),
-        Ok(Err(e)) => panic!(
-            "Unexpected IO error while checking for absence of tool_result write-back: {e}"
-        ),
+        Ok(Err(e)) => {
+            panic!("Unexpected IO error while checking for absence of tool_result write-back: {e}")
+        }
     }
-
-    drop(stdout_writer);
-}
-
-#[tokio::test]
-async fn from_parts_with_mcp_intercepts_reify_tool_calls() {
-    use crate::engine::EngineSession;
-    use reify_constraints::SimpleConstraintChecker;
-    use reify_test_support::MockGeometryKernel;
-    use std::sync::Arc;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
-
-    // Set up engine for MCP dispatch
-    let checker = SimpleConstraintChecker;
-    let kernel = MockGeometryKernel::new();
-    let session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
-    let engine = Arc::new(std::sync::Mutex::new(session));
-
-    // stdin_writer: Rust writes here → sidecar reads it (we read from stdin_reader to inspect)
-    // stdout_writer: simulates sidecar writing → Rust reader task processes it
-    let (stdin_writer, mut stdin_reader) = tokio::io::duplex(4096);
-    let (mut stdout_writer, stdout_reader) = tokio::io::duplex(4096);
-    let reader = BufReader::new(stdout_reader);
-    let state = Arc::new(tokio::sync::Mutex::new(SidecarState::Ready));
-
-    // from_parts_with_mcp wires up both event sink and MCP tool interception
-    let events = Arc::new(std::sync::Mutex::new(vec![]));
-    let events_clone = Arc::clone(&events);
-    let selection = Arc::new(std::sync::RwLock::new(reify_mcp::SelectionInfo::default()));
-    let _handle = SidecarHandle::from_parts_with_mcp(
-        stdin_writer,
-        reader,
-        state,
-        engine,
-        move |name: String, payload: serde_json::Value| {
-            events_clone.lock().unwrap().push((name, payload));
-        },
-        selection,
-    );
-
-    // Inject a reify_ tool_call from simulated sidecar stdout
-    let tool_call = r#"{"type":"tool_call","id":"msg-1","tool_name":"reify_get_diagnostics","tool_input":{},"tool_use_id":"tu-diag"}"#;
-    stdout_writer
-        .write_all(format!("{}\n", tool_call).as_bytes())
-        .await
-        .unwrap();
-
-    // Allow reader task to process the tool_call and run the spawned MCP handler
-    for _ in 0..100 {
-        tokio::task::yield_now().await;
-    }
-
-    // Verify the tool_call event was emitted to the event sink
-    {
-        let emitted = events.lock().unwrap();
-        assert!(
-            emitted.iter().any(|(name, _)| name == "claude-tool-call"),
-            "Expected claude-tool-call event in sink, got: {:?}",
-            emitted.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()
-        );
-    }
-
-    // Verify tool_result was written back to sidecar stdin
-    let mut buf = vec![0u8; 4096];
-    let n = stdin_reader.read(&mut buf).await.unwrap_or(0);
-    assert!(
-        n > 0,
-        "Expected tool_result to be written back to sidecar stdin"
-    );
-    let written = std::str::from_utf8(&buf[..n]).unwrap();
-    // The response should be a tool_result JSON line
-    let json_val: serde_json::Value =
-        serde_json::from_str(written.trim()).unwrap_or(serde_json::json!(null));
-    assert_eq!(
-        json_val["type"], "tool_result",
-        "Expected tool_result type, got: {}",
-        written
-    );
-    assert_eq!(json_val["tool_name"], "reify_get_diagnostics");
-    assert_eq!(
-        json_val["tool_use_id"], "tu-diag",
-        "tool_use_id must be echoed from the tool_call outbound"
-    );
-
-    drop(stdout_writer);
-}
-
-#[tokio::test]
-async fn from_parts_with_mcp_threads_selection_into_tool_result() {
-    use crate::engine::EngineSession;
-    use reify_constraints::SimpleConstraintChecker;
-    use reify_test_support::MockGeometryKernel;
-    use std::sync::Arc;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
-
-    let checker = SimpleConstraintChecker;
-    let kernel = MockGeometryKernel::new();
-    let session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
-    let engine = Arc::new(std::sync::Mutex::new(session));
-
-    let (stdin_writer, mut stdin_reader) = tokio::io::duplex(4096);
-    let (mut stdout_writer, stdout_reader) = tokio::io::duplex(4096);
-    let reader = BufReader::new(stdout_reader);
-    let state = Arc::new(tokio::sync::Mutex::new(SidecarState::Ready));
-
-    let events = Arc::new(std::sync::Mutex::new(vec![]));
-    let events_clone = Arc::clone(&events);
-
-    // Pre-populate selection with concrete values
-    let selection = Arc::new(std::sync::RwLock::new(reify_mcp::SelectionInfo {
-        selected_entity: Some("Bracket".to_string()),
-        selected_entities: vec![],
-        hovered_entity: Some("Bracket.width".to_string()),
-    }));
-    let _handle = SidecarHandle::from_parts_with_mcp(
-        stdin_writer,
-        reader,
-        state,
-        engine,
-        move |name: String, payload: serde_json::Value| {
-            events_clone.lock().unwrap().push((name, payload));
-        },
-        selection,
-    );
-
-    // Inject a reify_get_selection tool_call
-    let tool_call = r#"{"type":"tool_call","id":"msg-sel","tool_name":"reify_get_selection","tool_input":{},"tool_use_id":"tu-sel"}"#;
-    stdout_writer
-        .write_all(format!("{}\n", tool_call).as_bytes())
-        .await
-        .unwrap();
-
-    for _ in 0..100 {
-        tokio::task::yield_now().await;
-    }
-
-    // Verify tool_result contains the pre-populated selection data
-    let mut buf = vec![0u8; 4096];
-    let n = stdin_reader.read(&mut buf).await.unwrap_or(0);
-    assert!(
-        n > 0,
-        "Expected tool_result to be written back to sidecar stdin"
-    );
-    let written = std::str::from_utf8(&buf[..n]).unwrap();
-    let json_val: serde_json::Value =
-        serde_json::from_str(written.trim()).unwrap_or(serde_json::json!(null));
-    assert_eq!(
-        json_val["type"], "tool_result",
-        "Expected tool_result type, got: {}",
-        written
-    );
-    assert_eq!(json_val["tool_name"], "reify_get_selection");
-    assert_eq!(
-        json_val["tool_use_id"], "tu-sel",
-        "tool_use_id must be echoed from the tool_call outbound"
-    );
-
-    let selection_result = &json_val["result"];
-    assert_eq!(
-        selection_result["selected_entity"], "Bracket",
-        "Selection should contain pre-populated selected_entity, got: {}",
-        json_val
-    );
-    assert_eq!(
-        selection_result["hovered_entity"], "Bracket.width",
-        "Selection should contain pre-populated hovered_entity, got: {}",
-        json_val
-    );
-
-    drop(stdout_writer);
-}
-
-#[tokio::test]
-async fn from_parts_with_mcp_wires_event_emitter_into_tool_context() {
-    use crate::engine::EngineSession;
-    use reify_constraints::SimpleConstraintChecker;
-    use reify_test_support::MockGeometryKernel;
-    use std::sync::Arc;
-    use tokio::io::{AsyncWriteExt, BufReader};
-
-    // Set up engine for MCP dispatch
-    let checker = SimpleConstraintChecker;
-    let kernel = MockGeometryKernel::new();
-    let session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
-    let engine = Arc::new(std::sync::Mutex::new(session));
-
-    // stdin_writer: Rust writes tool_result here (we don't read it in this test)
-    // stdout_writer: simulates sidecar writing tool_call → Rust reader task processes it
-    let (stdin_writer, _stdin_reader) = tokio::io::duplex(4096);
-    let (mut stdout_writer, stdout_reader) = tokio::io::duplex(4096);
-    let reader = BufReader::new(stdout_reader);
-    let state = Arc::new(tokio::sync::Mutex::new(SidecarState::Ready));
-
-    // Collect emitted events so we can assert on navigation events.
-    // A Notify signals deterministically when focus-entity arrives, avoiding
-    // wall-clock polling that can be flaky under CI load.
-    let notify = Arc::new(tokio::sync::Notify::new());
-    let notify_clone = Arc::clone(&notify);
-    let events = Arc::new(std::sync::Mutex::new(vec![]));
-    let events_clone = Arc::clone(&events);
-    let selection = Arc::new(std::sync::RwLock::new(reify_mcp::SelectionInfo::default()));
-    let _handle = SidecarHandle::from_parts_with_mcp(
-        stdin_writer,
-        reader,
-        state,
-        engine,
-        move |name: String, payload: serde_json::Value| {
-            events_clone.lock().unwrap().push((name.clone(), payload));
-            if name == "focus-entity" {
-                notify_clone.notify_one();
-            }
-        },
-        selection,
-    );
-
-    // Register the waiter BEFORE writing the tool call to avoid a race where
-    // notify_one() fires before notified() starts listening.
-    let notified = notify.notified();
-
-    // Inject a reify_focus_entity tool_call from simulated sidecar stdout
-    let tool_call = r#"{"type":"tool_call","id":"msg-focus","tool_name":"reify_focus_entity","tool_input":{"entity_path":"Bracket"},"tool_use_id":"tu-focus"}"#;
-    stdout_writer
-        .write_all(format!("{}\n", tool_call).as_bytes())
-        .await
-        .unwrap();
-
-    // Wait deterministically for focus-entity to arrive (5 s is generous for CI).
-    tokio::time::timeout(std::time::Duration::from_secs(5), notified)
-        .await
-        .expect("timed out waiting for focus-entity event from MCP tool");
-
-    // Verify the outbound claude-tool-call event was emitted (sanity: proves reader processed it)
-    {
-        let emitted = events.lock().unwrap();
-        assert!(
-            emitted.iter().any(|(name, _)| name == "claude-tool-call"),
-            "Expected claude-tool-call event in sink, got: {:?}",
-            emitted.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()
-        );
-    }
-
-    // The regression guard: focus-entity event must reach the events sink via the wired emitter.
-    // This fails when TauriToolContext is built without .with_event_emitter(...).
-    {
-        let emitted = events.lock().unwrap();
-        assert!(
-            emitted.iter().any(|(name, payload)| name == "focus-entity"
-                && payload == &serde_json::json!("Bracket")),
-            "Expected focus-entity event with payload \"Bracket\" in sink, got: {:?}",
-            emitted
-                .iter()
-                .map(|(n, p)| format!("({n}, {p})"))
-                .collect::<Vec<_>>()
-        );
-    }
-
-    drop(stdout_writer);
-}
-
-#[tokio::test]
-async fn tool_result_write_failure_emits_claude_error_event() {
-    use crate::engine::EngineSession;
-    use reify_constraints::SimpleConstraintChecker;
-    use reify_test_support::MockGeometryKernel;
-    use std::sync::Arc;
-    use tokio::io::{AsyncWriteExt, BufReader};
-
-    // Set up engine for MCP dispatch
-    let checker = SimpleConstraintChecker;
-    let kernel = MockGeometryKernel::new();
-    let session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
-    let engine = Arc::new(std::sync::Mutex::new(session));
-
-    // stdin_writer: Rust writes tool_result here → sidecar would read it.
-    // Drop stdin_reader immediately so any write to stdin_writer will fail (broken pipe).
-    let (stdin_writer, stdin_reader) = tokio::io::duplex(4096);
-    drop(stdin_reader);
-
-    // stdout_writer: simulates sidecar writing tool_call → Rust reader task processes it.
-    let (mut stdout_writer, stdout_reader) = tokio::io::duplex(4096);
-    let reader = BufReader::new(stdout_reader);
-    let state = Arc::new(tokio::sync::Mutex::new(SidecarState::Ready));
-
-    let events = Arc::new(std::sync::Mutex::new(vec![]));
-    let events_clone = Arc::clone(&events);
-    let selection = Arc::new(std::sync::RwLock::new(reify_mcp::SelectionInfo::default()));
-
-    let _handle = SidecarHandle::from_parts_with_mcp(
-        stdin_writer,
-        reader,
-        state,
-        engine,
-        move |name: String, payload: serde_json::Value| {
-            events_clone.lock().unwrap().push((name, payload));
-        },
-        selection,
-    );
-
-    // Inject a reify_ tool_call from simulated sidecar stdout.
-    // The MCP handler will try to write the tool_result back to stdin_writer,
-    // which will fail because stdin_reader was dropped.
-    let tool_call = r#"{"type":"tool_call","id":"msg-fail","tool_name":"reify_get_diagnostics","tool_input":{},"tool_use_id":"tu-fail"}"#;
-    stdout_writer
-        .write_all(format!("{}\n", tool_call).as_bytes())
-        .await
-        .unwrap();
-
-    // Allow reader task + spawned MCP handler to execute and observe the write failure.
-    for _ in 0..200 {
-        tokio::task::yield_now().await;
-    }
-
-    // Verify the event sink contains a claude-error event with a relevant message.
-    let emitted = events.lock().unwrap();
-    let error_event = emitted.iter().find(|(name, _)| name == "claude-error");
-    assert!(
-        error_event.is_some(),
-        "Expected claude-error event in sink after write failure, got: {:?}",
-        emitted.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()
-    );
-    let (_, payload) = error_event.unwrap();
-    let msg = payload["message"].as_str().unwrap_or("");
-    assert!(
-        msg.contains("failed to send tool result to sidecar"),
-        "Expected error message to contain 'failed to send tool result to sidecar', got: {:?}",
-        msg
-    );
-    assert_eq!(
-        payload["id"].as_str().unwrap(),
-        "msg-fail",
-        "error event should carry the original tool_call id"
-    );
 
     drop(stdout_writer);
 }
@@ -1023,17 +680,8 @@ async fn crash_detection_sets_state_to_crashed_on_eof() {
 // event_emitter_for_exit) into the on_exit closure would be caught here.
 #[tokio::test]
 async fn from_parts_with_mcp_emits_sidecar_crashed_on_eof() {
-    use crate::engine::EngineSession;
-    use reify_constraints::SimpleConstraintChecker;
-    use reify_test_support::MockGeometryKernel;
     use std::sync::Arc;
     use tokio::io::BufReader;
-
-    let checker = SimpleConstraintChecker;
-    let kernel = MockGeometryKernel::new();
-    let session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
-    let engine = Arc::new(std::sync::Mutex::new(session));
-    let selection = Arc::new(std::sync::RwLock::new(reify_mcp::SelectionInfo::default()));
 
     let events: Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>> =
         Arc::new(std::sync::Mutex::new(vec![]));
@@ -1048,11 +696,9 @@ async fn from_parts_with_mcp_emits_sidecar_crashed_on_eof() {
         stdin_writer,
         reader,
         state,
-        engine,
         move |name: String, payload: serde_json::Value| {
             events_clone.lock().unwrap().push((name, payload));
         },
-        selection,
     );
 
     // Drop data_writer to simulate sidecar crash (EOF on reader).
@@ -1842,23 +1488,11 @@ async fn shutdown_sidecar_kills_and_clears_handle() {
 
 #[tokio::test]
 async fn spawn_sidecar_impl_returns_error_for_missing_binary() {
-    use crate::engine::EngineSession;
-    use reify_constraints::SimpleConstraintChecker;
-    use reify_test_support::MockGeometryKernel;
     use std::path::Path;
-    use std::sync::Arc;
 
-    let checker = SimpleConstraintChecker;
-    let kernel = MockGeometryKernel::new();
-    let session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
-    let engine = Arc::new(std::sync::Mutex::new(session));
-
-    let selection = Arc::new(std::sync::RwLock::new(reify_mcp::SelectionInfo::default()));
     let result = spawn_sidecar_impl(
         Path::new("/tmp/no-such-sidecar-binary"),
-        engine,
         |_name: String, _payload: serde_json::Value| {},
-        selection,
         Path::new("/tmp/test-ws"),
         None,
     )
@@ -1875,24 +1509,12 @@ async fn spawn_sidecar_impl_returns_error_for_missing_binary() {
 
 #[tokio::test]
 async fn spawn_sidecar_impl_returns_handle_for_valid_binary() {
-    use crate::engine::EngineSession;
-    use reify_constraints::SimpleConstraintChecker;
-    use reify_test_support::MockGeometryKernel;
     use std::path::Path;
-    use std::sync::Arc;
-
-    let checker = SimpleConstraintChecker;
-    let kernel = MockGeometryKernel::new();
-    let session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
-    let engine = Arc::new(std::sync::Mutex::new(session));
 
     // /bin/cat keeps stdin open and produces no unexpected stdout — ideal minimal live process
-    let selection = Arc::new(std::sync::RwLock::new(reify_mcp::SelectionInfo::default()));
     let result = spawn_sidecar_impl(
         Path::new("/bin/cat"),
-        engine,
         |_name: String, _payload: serde_json::Value| {},
-        selection,
         Path::new("/tmp/test-ws"),
         None,
     )
@@ -3422,23 +3044,11 @@ mod apply_sidecar_env_tests {
 // spawn_sidecar_impl signature test (step-15c)
 #[tokio::test]
 async fn spawn_sidecar_impl_with_workspace_and_no_landlock_returns_error_for_missing_binary() {
-    use crate::engine::EngineSession;
-    use reify_constraints::SimpleConstraintChecker;
-    use reify_test_support::MockGeometryKernel;
     use std::path::Path;
-    use std::sync::Arc;
-
-    let checker = SimpleConstraintChecker;
-    let kernel = MockGeometryKernel::new();
-    let session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
-    let engine = Arc::new(std::sync::Mutex::new(session));
-    let selection = Arc::new(std::sync::RwLock::new(reify_mcp::SelectionInfo::default()));
 
     let result = spawn_sidecar_impl(
         Path::new("/tmp/no-such-binary"),
-        engine,
         |_name: String, _payload: serde_json::Value| {},
-        selection,
         Path::new("/tmp/ws"),
         None,
     )
