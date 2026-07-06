@@ -2369,9 +2369,10 @@ pub enum DiagnosticCode {
     /// (Add/Sub operator-level mismatch) or `ObjectiveConflict` (opposite-sense
     /// terms over the same unit) because the semantics differ: this code
     /// covers same-sense or unrelated-sense multi-term `WeightedSum` folds
-    /// whose terms are not commensurable at all — summing them (`term.weight
-    /// * v` after `v = eval_expr(term.expr).as_f64()` strips the dimension)
-    /// produces a physically meaningless scalar with no prior diagnostic.
+    /// whose terms are not commensurable at all — summing them (each term
+    /// contributes its weight times `v = eval_expr(term.expr).as_f64()`, which
+    /// strips the dimension) produces a physically meaningless scalar with no
+    /// prior diagnostic.
     ///
     /// The PRD-prose mnemonic for this code is `E_OBJECTIVE_MIXED_DIMENSION`
     /// (severity convention: `E_*` → Error).
