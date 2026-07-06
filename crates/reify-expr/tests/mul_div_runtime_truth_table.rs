@@ -297,6 +297,9 @@ fn mul_real_times_scalar_preserves_dimension() {
 
 // ── MUL: Complex arms (commutative) ─────────────────────────────────────────
 
+/// INTENTIONAL (lib.rs:4361-4377): `Complex × Complex` computes
+/// `(ac-bd) + (ad+bc)i` and MULTIPLIES dimensions via `DimensionVector::mul`
+/// (add exponents) — `LENGTH.mul(&TIME)`, not preserved from either operand.
 #[test]
 fn mul_complex_length_times_complex_time_yields_multiplied_dims() {
     // (2+3i){LENGTH} * (5+7i){TIME}: re = 2*5 - 3*7 = -11, im = 2*7 + 3*5 = 29.
@@ -316,6 +319,10 @@ fn mul_complex_length_times_complex_time_yields_multiplied_dims() {
     }
 }
 
+/// INTENTIONAL (lib.rs:4418-4444): `Complex × Scalar` scales `re`/`im` by the
+/// Scalar's `si_value` and MULTIPLIES dimensions (`cd.mul(sd)`) — like
+/// Complex×Complex, dimensions combine rather than being preserved from the
+/// Complex operand alone.
 #[test]
 fn mul_complex_times_scalar_dims_multiply() {
     // (2+3i){LENGTH} * 5{TIME}: re = 2*5 = 10, im = 3*5 = 15.
@@ -335,7 +342,10 @@ fn mul_complex_times_scalar_dims_multiply() {
     }
 }
 
-/// Commutative counterpart of `mul_complex_times_scalar_dims_multiply`.
+/// INTENTIONAL (lib.rs:4418-4444): commutative counterpart of
+/// `mul_complex_times_scalar_dims_multiply` — `(Complex, Scalar) | (Scalar, Complex)`
+/// is a single match arm binding `cd`/`sd` to whichever operand holds them,
+/// so both orders produce the identical dims-multiplied result.
 #[test]
 fn mul_scalar_times_complex_dims_multiply() {
     let a = sc(5.0, DimensionVector::TIME);
@@ -354,6 +364,9 @@ fn mul_scalar_times_complex_dims_multiply() {
     }
 }
 
+/// INTENTIONAL (lib.rs:4445-4451): `Complex × Int` scales `re`/`im` by the
+/// dimensionless Int and PRESERVES the Complex's dimension unchanged —
+/// contrast with Complex×Complex/Complex×Scalar, where dimensions multiply.
 #[test]
 fn mul_complex_times_int_preserves_dimension() {
     let a = cx(2.0, 3.0, DimensionVector::LENGTH);
@@ -368,7 +381,9 @@ fn mul_complex_times_int_preserves_dimension() {
     }
 }
 
-/// Commutative counterpart of `mul_complex_times_int_preserves_dimension`.
+/// INTENTIONAL (lib.rs:4445-4451): commutative counterpart of
+/// `mul_complex_times_int_preserves_dimension` — `(Complex, Int) | (Int, Complex)`
+/// is a single match arm, so both orders share one code path.
 #[test]
 fn mul_int_times_complex_preserves_dimension() {
     let b = cx(2.0, 3.0, DimensionVector::LENGTH);
@@ -383,6 +398,8 @@ fn mul_int_times_complex_preserves_dimension() {
     }
 }
 
+/// INTENTIONAL (lib.rs:4452-4458): `Complex × Real` scales `re`/`im` by the
+/// dimensionless Real and PRESERVES the Complex's dimension unchanged.
 #[test]
 fn mul_complex_times_real_preserves_dimension() {
     let a = cx(2.0, 3.0, DimensionVector::LENGTH);
@@ -397,7 +414,9 @@ fn mul_complex_times_real_preserves_dimension() {
     }
 }
 
-/// Commutative counterpart of `mul_complex_times_real_preserves_dimension`.
+/// INTENTIONAL (lib.rs:4452-4458): commutative counterpart of
+/// `mul_complex_times_real_preserves_dimension` — `(Complex, Real) | (Real, Complex)`
+/// is a single match arm, so both orders share one code path.
 #[test]
 fn mul_real_times_complex_preserves_dimension() {
     let b = cx(2.0, 3.0, DimensionVector::LENGTH);
