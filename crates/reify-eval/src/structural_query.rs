@@ -623,14 +623,21 @@ pub(crate) fn apply_trait_filters(
 /// dimension preservation, Undef-poisoning, and empty-list -> typed-zero
 /// (`Scalar{0.0, MONEY}`, not Undef / dimensionless `Real(0)`).
 ///
-/// NOTE: this step does not yet filter `elems` to `Costed`-conformers (a
-/// non-Costed element's `line_cost` cell does not exist, so it resolves to
-/// Undef and poisons the `.sum`) — the Costed-conformance filter is added in
-/// step-6 (extends this function to take a `trait_registry`).
-pub(crate) fn apply_cost_aggregation(expr: &mut CompiledExpr, all_templates: &[TopologyTemplate]) {
+/// Elements are first filtered to `Costed`-conformers — identical
+/// conformance logic to [`apply_trait_filters`] (`find_template` +
+/// `satisfies_trait_bound(&t.trait_bounds, "Costed", trait_registry)`), so a
+/// non-Costed structural node is dropped BEFORE any `line_cost` ValueRef is
+/// emitted and can never poison the sum with Undef. `cost(...)` performs
+/// this filter internally, independent of any explicit `filter(_, Costed)`
+/// the user already wrote — the double Costed filter is idempotent.
+pub(crate) fn apply_cost_aggregation(
+    expr: &mut CompiledExpr,
+    all_templates: &[TopologyTemplate],
+    trait_registry: &HashMap<String, &CompiledTrait>,
+) {
     // Post-order walk: recurse into children FIRST, mirroring apply_trait_filters.
     walk_children_mut(expr, &mut |child| {
-        apply_cost_aggregation(child, all_templates);
+        apply_cost_aggregation(child, all_templates, trait_registry);
     });
 
     let is_cost_call = matches!(&expr.kind,
@@ -656,7 +663,23 @@ pub(crate) fn apply_cost_aggregation(expr: &mut CompiledExpr, all_templates: &[T
         dimension: DimensionVector::MONEY,
     };
 
-    let refs: Vec<CompiledExpr> = elems
+    // Costed-conformance filter (same check as apply_trait_filters, hard-coded
+    // to "Costed"): keep only descendants whose structure conforms, so a
+    // non-Costed node's absent line_cost cell never poisons the sum.
+    let kept: Vec<CompiledExpr> = elems
+        .into_iter()
+        .filter(|e| {
+            if let Type::StructureRef(tn) = &e.result_type {
+                find_template(all_templates, tn)
+                    .map(|t| satisfies_trait_bound(&t.trait_bounds, "Costed", trait_registry))
+                    .unwrap_or(false)
+            } else {
+                false
+            }
+        })
+        .collect();
+
+    let refs: Vec<CompiledExpr> = kept
         .into_iter()
         .map(|e| match e.kind {
             CompiledExprKind::Literal(Value::String(path)) => {
