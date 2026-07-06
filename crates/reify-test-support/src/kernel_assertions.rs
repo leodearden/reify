@@ -364,4 +364,87 @@ mod tests {
             "assert_query_many_length_invariant must panic when query_many violates the length invariant"
         );
     }
+
+    /// All-error kernel whose `extract_edges`/`extract_faces`/`extract_vertices`
+    /// each mint a fresh id on every call, violating the determinism the real
+    /// contract requires (idempotent per parent handle).
+    struct UnstableExtractKernel {
+        counter: u64,
+    }
+
+    impl UnstableExtractKernel {
+        fn new() -> Self {
+            Self { counter: 0 }
+        }
+
+        fn next_id(&mut self) -> GeometryHandleId {
+            let id = self.counter;
+            self.counter += 1;
+            GeometryHandleId(id)
+        }
+    }
+
+    impl GeometryKernel for UnstableExtractKernel {
+        fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+            Err(GeometryError::OperationFailed(STUB_MSG.into()))
+        }
+
+        fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
+            Err(QueryError::QueryFailed(STUB_MSG.into()))
+        }
+
+        fn export(
+            &self,
+            _handle: GeometryHandleId,
+            _format: ExportFormat,
+            _writer: &mut dyn std::io::Write,
+        ) -> Result<(), ExportError> {
+            Err(ExportError::FormatError(STUB_MSG.into()))
+        }
+
+        fn tessellate(
+            &self,
+            _handle: GeometryHandleId,
+            _tolerance: f64,
+        ) -> Result<Mesh, TessError> {
+            Err(TessError::TessellationFailed(STUB_MSG.into()))
+        }
+
+        fn extract_edges(
+            &mut self,
+            _handle: GeometryHandleId,
+        ) -> Result<Vec<GeometryHandleId>, QueryError> {
+            Ok(vec![self.next_id()])
+        }
+
+        fn extract_faces(
+            &mut self,
+            _handle: GeometryHandleId,
+        ) -> Result<Vec<GeometryHandleId>, QueryError> {
+            Ok(vec![self.next_id()])
+        }
+
+        fn extract_vertices(
+            &mut self,
+            _handle: GeometryHandleId,
+        ) -> Result<Vec<GeometryHandleId>, QueryError> {
+            Ok(vec![self.next_id()])
+        }
+    }
+
+    #[test]
+    fn extract_determinism_helper_passes_conforming_and_catches_unstable() {
+        // TestStubKernel inherits the trait default extract_*, which always
+        // returns the same Err — must not panic.
+        super::assert_extract_determinism(&mut TestStubKernel::new(), GeometryHandleId(1));
+
+        // UnstableExtractKernel mints a fresh id every call — must panic.
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            super::assert_extract_determinism(&mut UnstableExtractKernel::new(), GeometryHandleId(1));
+        }));
+        assert!(
+            result.is_err(),
+            "assert_extract_determinism must panic when extract_* is not idempotent per handle"
+        );
+    }
 }
