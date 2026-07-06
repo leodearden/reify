@@ -1084,20 +1084,22 @@ impl EngineSession {
 
     /// Install a fea-case-changed event emitter on this session.
     ///
-    /// After installation, every `emit_fea_case_if_any` call (co-located with
-    /// `emit_auto_resolve_if_any` at all 4 production sites + the test helper)
-    /// fires `changed(FeaCaseChanged)` when a `MultiCaseResult`-shaped value is
-    /// detected in `CheckResult.values`. Replaces any previously installed emitter.
+    /// After installation, every `emit_fea_case_if_any` call — co-located with
+    /// `emit_auto_resolve_if_any` inside the single `post_engine_call_telemetry`
+    /// choke-point (INV-GUI-2) — fires `changed(FeaCaseChanged)` when a
+    /// `MultiCaseResult`-shaped value is detected in `CheckResult.values`.
+    /// Replaces any previously installed emitter.
     pub fn set_fea_case_emitter(&mut self, emitter: Arc<dyn FeaCaseEmitter>) {
         self.fea_case_emitter = Some(emitter);
     }
 
     /// Install a fea-diagnostics-changed event emitter on this session (task #4884).
     ///
-    /// After installation, every `emit_fea_diagnostics` call (co-located at all 4
-    /// mutating production sites + the test helper) fires `changed(Vec<FeaDiagnosticInfo>)`
-    /// with a full-list snapshot — including the empty list, to clear a stale overlay.
-    /// Replaces any previously installed emitter.
+    /// After installation, every `emit_fea_diagnostics` call — co-located inside
+    /// the single `post_engine_call_telemetry` choke-point (INV-GUI-2) — fires
+    /// `changed(Vec<FeaDiagnosticInfo>)` with a full-list snapshot — including
+    /// the empty list, to clear a stale overlay. Replaces any previously
+    /// installed emitter.
     pub fn set_fea_diagnostics_emitter(&mut self, emitter: Arc<dyn FeaDiagnosticsEmitter>) {
         self.fea_diagnostics_emitter = Some(emitter);
     }
@@ -1366,17 +1368,7 @@ impl EngineSession {
         let r = self.core.engine_mut().check(compiled);
         // Commit first — all emitters below read via last_check(), matching production.
         self.core.commit_check(r);
-        self.emit_auto_resolve_if_any(self.core.last_check().expect(
-            "check_and_emit_for_test: last_check must be Some after commit_check",
-        ));
-        self.emit_fea_case_if_any(self.core.last_check().expect(
-            "check_and_emit_for_test: last_check must be Some after commit_check",
-        ));
-        self.emit_mode_shape_frames_if_any(self.core.last_check().expect(
-            "check_and_emit_for_test: last_check must be Some after commit_check",
-        ));
-        self.emit_fea_diagnostics();
-        self.drain_and_emit_warm_pool_events();
+        self.post_engine_call_telemetry();
     }
 
     /// Drive `emit_fea_case_if_any` with a pre-built `CheckResult` in tests.
@@ -1387,6 +1379,39 @@ impl EngineSession {
     #[cfg(test)]
     pub(crate) fn emit_fea_case_for_test_with_result(&self, check: &CheckResult) {
         self.emit_fea_case_if_any(check);
+    }
+
+    /// The single post-engine-call telemetry choke-point (INV-GUI-2).
+    ///
+    /// Every engine-mutating entry point (`check_and_emit_for_test`,
+    /// `load_from_source`, `set_parameter`, `load_file`, `update_source`,
+    /// `load_from_compiled`) calls this ONE method after committing state,
+    /// instead of hand-rolling its own copy of the five-call emit sequence.
+    /// Collapsing to a single call site means no future entry point can forget
+    /// an emitter — see `emit_quintet_routed_through_single_choke_point` for the
+    /// structural guard that locks this in.
+    ///
+    /// Reads `self.core.last_check()` once into a local: every constituent
+    /// emit-helper below reads from that same committed `CheckResult`, matching
+    /// the ordering invariant each call site already established (emit AFTER
+    /// state is committed). Fires, in order: auto-resolve → fea-case →
+    /// mode-shape frames → fea-diagnostics → warm-pool drain.
+    ///
+    /// Note on the receiver type: this must be `&mut self` (the warm-pool drain
+    /// needs `&mut self`), so it deliberately does NOT take `check: &CheckResult`
+    /// as a parameter — a caller-supplied borrow of `self.core` would alias the
+    /// `&mut self` receiver for the duration of the call. Reading `last_check()`
+    /// into a local instead lets NLL end that shared borrow after its last use
+    /// (`emit_mode_shape_frames_if_any`), before the `&mut self` drain call.
+    fn post_engine_call_telemetry(&mut self) {
+        let check = self.core.last_check().expect(
+            "post_engine_call_telemetry: last_check must be Some after state commit — see cross-cutting ordering invariant",
+        );
+        self.emit_auto_resolve_if_any(check);
+        self.emit_fea_case_if_any(check);
+        self.emit_mode_shape_frames_if_any(check);
+        self.emit_fea_diagnostics();
+        self.drain_and_emit_warm_pool_events();
     }
 
     /// Emit a `fea-diagnostics-changed` event carrying the current full list of
@@ -1483,21 +1508,13 @@ impl EngineSession {
     /// and forward the translated IPC events to the installed
     /// [`WarmPoolEventEmitter`] (if any).
     ///
-    /// Called after each engine call site that may produce donations or
-    /// evictions (check, edit_check, build, tessellate_snapshot, etc.) — the
-    /// same sites that invoke [`Self::emit_auto_resolve_if_any`].
+    /// Called via the single [`Self::post_engine_call_telemetry`] choke-point
+    /// (INV-GUI-2) alongside [`Self::emit_auto_resolve_if_any`], after each
+    /// engine call site that may produce donations or evictions (check,
+    /// edit_check, build, tessellate_snapshot, etc.).
     ///
     /// When no emitter is installed, the drain still records events on the
     /// journal (M-010 wiring) but no IPC emission occurs.
-    ///
-    /// # Design note (follow-up opportunity)
-    ///
-    /// The five call sites that pair `emit_auto_resolve_if_any` + this method
-    /// are shaping into a "post-engine-call telemetry drain" pattern.  A future
-    /// refactor could extract a single `post_engine_call_telemetry(&self, check:
-    /// &CheckResult)` helper so new engine entry points can't forget to drain
-    /// warm-pool events and silently lose telemetry.  Tracked in task review
-    /// suggestion #4 (task 3541 amendment pass).
     fn drain_and_emit_warm_pool_events(&mut self) {
         let raw_events = self.core.engine_mut().drain_and_record_warm_pool_events();
         if let Some(emitter) = &self.warm_pool_event_emitter {
@@ -1906,17 +1923,7 @@ impl EngineSession {
         // session state mutations are committed.  Combined with `core.commit_state` /
         // `core.commit_check` writing `last_check` unconditionally, a panic during state
         // commit cannot leak phantom auto-resolve events to the GUI.
-        self.emit_auto_resolve_if_any(self.core.last_check().expect(
-            "emit_auto_resolve_if_any: last_check must be Some after commit_state — see ordering invariant",
-        ));
-        self.emit_fea_case_if_any(self.core.last_check().expect(
-            "emit_fea_case_if_any: last_check must be Some after commit_state — see ordering invariant",
-        ));
-        self.emit_mode_shape_frames_if_any(self.core.last_check().expect(
-            "emit_mode_shape_frames_if_any: last_check must be Some after commit_state — see ordering invariant",
-        ));
-        self.emit_fea_diagnostics();
-        self.drain_and_emit_warm_pool_events();
+        self.post_engine_call_telemetry();
 
         self.build_gui_state()
     }
@@ -1960,17 +1967,7 @@ impl EngineSession {
         // Commit state first; emit_auto_resolve_if_any reads back via last_check()
         // so it fires AFTER all mutations are complete — cross-cutting ordering invariant.
         self.core.commit_check(check_result);
-        self.emit_auto_resolve_if_any(self.core.last_check().expect(
-            "emit_auto_resolve_if_any: last_check must be Some after commit_check — see ordering invariant",
-        ));
-        self.emit_fea_case_if_any(self.core.last_check().expect(
-            "emit_fea_case_if_any: last_check must be Some after commit_check — see ordering invariant",
-        ));
-        self.emit_mode_shape_frames_if_any(self.core.last_check().expect(
-            "emit_mode_shape_frames_if_any: last_check must be Some after commit_check — see ordering invariant",
-        ));
-        self.emit_fea_diagnostics();
-        self.drain_and_emit_warm_pool_events();
+        self.post_engine_call_telemetry();
         self.build_gui_state()
     }
 
@@ -2121,17 +2118,7 @@ impl EngineSession {
         // the five fields are written.  Atomic-commit invariant: see engine.rs:30-44.
         self.commit_state(parsed, compiled, check_result, module_name, &source, FilePathUpdate::Set(path.to_path_buf()));
         // Emit AFTER all state is committed — cross-cutting ordering invariant.
-        self.emit_auto_resolve_if_any(self.core.last_check().expect(
-            "emit_auto_resolve_if_any: last_check must be Some after commit_state — see ordering invariant",
-        ));
-        self.emit_fea_case_if_any(self.core.last_check().expect(
-            "emit_fea_case_if_any: last_check must be Some after commit_state — see ordering invariant",
-        ));
-        self.emit_mode_shape_frames_if_any(self.core.last_check().expect(
-            "emit_mode_shape_frames_if_any: last_check must be Some after commit_state — see ordering invariant",
-        ));
-        self.emit_fea_diagnostics();
-        self.drain_and_emit_warm_pool_events();
+        self.post_engine_call_telemetry();
         self.build_gui_state()
     }
 
@@ -2202,17 +2189,7 @@ impl EngineSession {
         self.commit_state(parsed, compiled, check_result, module_name, content, FilePathUpdate::Preserve);
 
         // Emit AFTER all state is committed — cross-cutting ordering invariant.
-        self.emit_auto_resolve_if_any(self.core.last_check().expect(
-            "emit_auto_resolve_if_any: last_check must be Some after commit_state — see ordering invariant",
-        ));
-        self.emit_fea_case_if_any(self.core.last_check().expect(
-            "emit_fea_case_if_any: last_check must be Some after commit_state — see ordering invariant",
-        ));
-        self.emit_mode_shape_frames_if_any(self.core.last_check().expect(
-            "emit_mode_shape_frames_if_any: last_check must be Some after commit_state — see ordering invariant",
-        ));
-        self.emit_fea_diagnostics();
-        self.drain_and_emit_warm_pool_events();
+        self.post_engine_call_telemetry();
 
         self.build_gui_state()
     }
@@ -5288,16 +5265,7 @@ impl EngineSession {
         self.compile_failure = None;
         self.last_reload_error = None;
         // Emit ordering mirrors the emit-ordering block in load_from_source.
-        self.emit_auto_resolve_if_any(self.core.last_check().expect(
-            "emit_auto_resolve_if_any: last_check must be Some after commit_state",
-        ));
-        self.emit_fea_case_if_any(self.core.last_check().expect(
-            "emit_fea_case_if_any: last_check must be Some after commit_state",
-        ));
-        self.emit_mode_shape_frames_if_any(self.core.last_check().expect(
-            "emit_mode_shape_frames_if_any: last_check must be Some after commit_state",
-        ));
-        self.drain_and_emit_warm_pool_events();
+        self.post_engine_call_telemetry();
         self.build_gui_state()
     }
 
