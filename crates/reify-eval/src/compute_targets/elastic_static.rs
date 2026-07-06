@@ -8819,4 +8819,26 @@ mod tests {
              construction-site span"
         );
     }
+
+    // ── task 5080 (PRD compute-fea-hardening D2): Result-ify SI/Real leaf
+    // extractors — each RED test feeds a malformed `Value` and asserts `Err`
+    // instead of a panic. External behavior is unchanged (call sites still
+    // panic via a `.unwrap_or_else(|e| panic!("{e}"))` bridging shim); only
+    // the internal signature becomes `Result`. ────────────────────────────
+
+    /// step-1 RED: `extract_scalar_si` must reject a non-Scalar `Value` with
+    /// `Err(FeaValueShapeError::ExpectedScalar { .. })` instead of panicking.
+    ///
+    /// RED: `extract_scalar_si` currently returns a bare `f64`, so matching
+    /// `Err(..)` fails to type-check until step-2 converts it to
+    /// `Result<f64, FeaValueShapeError>`.
+    #[test]
+    fn extract_scalar_si_rejects_non_scalar() {
+        let res = extract_scalar_si(&Value::Real(3.0));
+        assert!(
+            matches!(res, Err(FeaValueShapeError::ExpectedScalar { .. })),
+            "expected Err(ExpectedScalar) for a non-Scalar Value, got: {:?}",
+            res
+        );
+    }
 }
