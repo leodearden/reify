@@ -755,6 +755,16 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             if function_name == "map_or" && args.len() == 3 {
                 return eval_map_or(args, ctx);
             }
+            // map_err: ctx-aware Result arrow-type combinator (task
+            // result-fallback Layer-B γ #4037), mirroring map_or above. Must
+            // APPLY its lambda argument `f` to the Err payload, which needs
+            // the EvalContext — so it lives here rather than in the pure
+            // `option_recovery` module (INV-1). `is_combinator` deliberately
+            // omits `map_err`, so it always falls through to this gate.
+            // See `eval_map_err` for the full semantics.
+            if function_name == "map_err" && args.len() == 2 {
+                return eval_map_err(args, ctx);
+            }
             eval_user_function_call(function_name, args, ctx)
         }
 
@@ -2935,6 +2945,69 @@ fn eval_map_or(args: &[CompiledExpr], ctx: &EvalContext) -> Value {
         // undef subject (Kleene INV-2) — propagate Undef; neither branch evaluated.
         Value::Undef => Value::Undef,
         // non-Option subject (type error) — degrade gracefully; neither branch evaluated.
+        _ => Value::Undef,
+    }
+}
+
+/// Evaluate the `map_err(r, f)` arrow-type combinator (task result-fallback
+/// Layer-B γ #4037).
+///
+/// Kept in its own function — deliberately NOT inlined into `eval_expr`'s
+/// `UserFunctionCall` arm — mirroring the `eval_map_or` / `eval_solve_load_cases`
+/// / `option_recovery::eval_combinator` intercept convention (the arm
+/// delegates; the logic lives in a helper, keeping recursive `eval_expr`
+/// stack frames small).
+///
+/// Unlike the pure `option_recovery` combinators (INV-1), map_err must APPLY
+/// its function argument `f` to the unwrapped `Err` payload, which needs the
+/// `EvalContext` (`apply_lambda` — recursion depth, scope, captures); hence it
+/// lives here rather than in the pure path.
+///
+///   subject=Ok{value:x}    -> subject unchanged             (f NOT applied)
+///   subject=Err{error:e}   -> Err{error: apply_lambda(f, [e])} (f APPLIED)
+///   subject=undef          -> Undef                          (Kleene INV-2)
+///   other (non-Result)     -> Undef                          (graceful type-error)
+///
+/// The `.ri` body is a typecheck-only placeholder `{ r }`; correct runtime
+/// behaviour lives entirely here (same convention as the sibling combinators
+/// in `option_recovery.rs`).
+///
+/// Evaluation is LAZY: `f` (args[1]) is only evaluated in the `Err` arm,
+/// mirroring `eval_map_or`'s laziness convention (the Ok-case never evaluates
+/// `f`, so a failing/side-effecting `f` expression never runs when unneeded).
+///
+/// Precondition: `args.len() == 2` (guaranteed by the caller's arity gate).
+fn eval_map_err(args: &[CompiledExpr], ctx: &EvalContext) -> Value {
+    let subject = eval_expr(&args[0], ctx);
+    match subject {
+        // Ok{..} -> return the subject unchanged; `f` (args[1]) is NOT evaluated.
+        Value::Enum {
+            ref type_name,
+            ref variant,
+            ..
+        } if type_name == "Result" && variant == "Ok" => subject,
+        // Err{error:e} -> apply f to the error payload, rebuild Err with the mapped value.
+        Value::Enum {
+            ref type_name,
+            ref variant,
+            ref payload,
+        } if type_name == "Result" && variant == "Err" => {
+            let f = eval_expr(&args[1], ctx);
+            let error_val = payload
+                .iter()
+                .find(|(field, _)| field == "error")
+                .map(|(_, v)| v.clone())
+                .unwrap_or(Value::Undef);
+            let mapped = apply_lambda(&f, &[error_val], ctx);
+            Value::Enum {
+                type_name: type_name.clone(),
+                variant: variant.clone(),
+                payload: vec![("error".to_string(), mapped)],
+            }
+        }
+        // undef subject (Kleene INV-2) — propagate Undef; f is NOT evaluated.
+        Value::Undef => Value::Undef,
+        // non-Result subject (type error) — degrade gracefully; f is NOT evaluated.
         _ => Value::Undef,
     }
 }
