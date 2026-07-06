@@ -6514,4 +6514,34 @@ mod tests {
             .expect("all-finite input must return Some(order)");
         assert_eq!(identity_order, vec![0, 1, 2]);
     }
+
+    /// step-3 (RED → GREEN in step-4): a non-finite frequency must fail
+    /// closed — `frequency_ascending_order` skips the resort (returns
+    /// `None`, so the caller preserves the eigensolver's own ascending-|λ|
+    /// order instead of resorting around the NaN) and emits a WARN, rather
+    /// than letting `partial_cmp(...).unwrap_or(Ordering::Equal)` silently
+    /// treat NaN as equal-to-everything and scramble the ascending-
+    /// frequency order this resort exists to guarantee.
+    #[test]
+    fn frequency_ascending_order_skips_resort_and_warns_on_non_finite() {
+        use reify_test_support::warn_capturing_subscriber;
+
+        // Inoculate against tracing's per-callsite Interest cache — see
+        // `prime_tracing_callsite_cache` in reify-test-support for why.
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+
+        tracing::subscriber::with_default(subscriber, || {
+            let order = super::frequency_ascending_order(&[1.0, f64::NAN, 2.0]);
+            assert!(
+                order.is_none(),
+                "non-finite frequency must skip the resort (None), so the \
+                 caller preserves the eigensolver's own order rather than \
+                 scrambling it around the NaN"
+            );
+        });
+
+        capture.assert_count_and_any_message_contains(1, "non-finite");
+    }
 }
