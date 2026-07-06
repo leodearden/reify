@@ -3381,12 +3381,12 @@ fn classify_material(val: &Value) -> MaterialModel {
 
     match data.type_name.as_str() {
         "OrthotropicMaterial" => {
-            let e1 = scalar_si_field(data, "e1");
-            let e2 = scalar_si_field(data, "e2");
-            let e3 = scalar_si_field(data, "e3");
-            let g12 = scalar_si_field(data, "g12");
-            let g13 = scalar_si_field(data, "g13");
-            let g23 = scalar_si_field(data, "g23");
+            let e1 = scalar_si_field(data, "e1").unwrap_or_else(|e| panic!("{e}"));
+            let e2 = scalar_si_field(data, "e2").unwrap_or_else(|e| panic!("{e}"));
+            let e3 = scalar_si_field(data, "e3").unwrap_or_else(|e| panic!("{e}"));
+            let g12 = scalar_si_field(data, "g12").unwrap_or_else(|e| panic!("{e}"));
+            let g13 = scalar_si_field(data, "g13").unwrap_or_else(|e| panic!("{e}"));
+            let g23 = scalar_si_field(data, "g23").unwrap_or_else(|e| panic!("{e}"));
             let nu12 = real_field(data, "nu12");
             let nu13 = real_field(data, "nu13");
             let nu23 = real_field(data, "nu23");
@@ -3405,11 +3405,11 @@ fn classify_material(val: &Value) -> MaterialModel {
             MaterialModel::Anisotropic(aniso)
         }
         "TransverseIsotropicMaterial" => {
-            let e_in_plane = scalar_si_field(data, "e_in_plane");
-            let e_axial = scalar_si_field(data, "e_axial");
+            let e_in_plane = scalar_si_field(data, "e_in_plane").unwrap_or_else(|e| panic!("{e}"));
+            let e_axial = scalar_si_field(data, "e_axial").unwrap_or_else(|e| panic!("{e}"));
             let nu_in_plane = real_field(data, "nu_in_plane");
             let nu_axial = real_field(data, "nu_axial");
-            let g_axial = scalar_si_field(data, "g_axial");
+            let g_axial = scalar_si_field(data, "g_axial").unwrap_or_else(|e| panic!("{e}"));
             let law = TransverseIsotropicMaterial {
                 e_in_plane,
                 e_axial,
@@ -3701,12 +3701,12 @@ fn anisotropic_material_from_value(val: &Value) -> AnisotropicMaterial {
     match law_data.type_name.as_str() {
         "OrthotropicMaterial" => {
             let law = OrthotropicMaterial {
-                e1:   scalar_si_field(law_data, "e1"),
-                e2:   scalar_si_field(law_data, "e2"),
-                e3:   scalar_si_field(law_data, "e3"),
-                g12:  scalar_si_field(law_data, "g12"),
-                g13:  scalar_si_field(law_data, "g13"),
-                g23:  scalar_si_field(law_data, "g23"),
+                e1:   scalar_si_field(law_data, "e1").unwrap_or_else(|e| panic!("{e}")),
+                e2:   scalar_si_field(law_data, "e2").unwrap_or_else(|e| panic!("{e}")),
+                e3:   scalar_si_field(law_data, "e3").unwrap_or_else(|e| panic!("{e}")),
+                g12:  scalar_si_field(law_data, "g12").unwrap_or_else(|e| panic!("{e}")),
+                g13:  scalar_si_field(law_data, "g13").unwrap_or_else(|e| panic!("{e}")),
+                g23:  scalar_si_field(law_data, "g23").unwrap_or_else(|e| panic!("{e}")),
                 nu12: real_field(law_data, "nu12"),
                 nu13: real_field(law_data, "nu13"),
                 nu23: real_field(law_data, "nu23"),
@@ -3715,11 +3715,11 @@ fn anisotropic_material_from_value(val: &Value) -> AnisotropicMaterial {
         }
         "TransverseIsotropicMaterial" => {
             let law = TransverseIsotropicMaterial {
-                e_in_plane:  scalar_si_field(law_data, "e_in_plane"),
-                e_axial:     scalar_si_field(law_data, "e_axial"),
+                e_in_plane:  scalar_si_field(law_data, "e_in_plane").unwrap_or_else(|e| panic!("{e}")),
+                e_axial:     scalar_si_field(law_data, "e_axial").unwrap_or_else(|e| panic!("{e}")),
                 nu_in_plane: real_field(law_data, "nu_in_plane"),
                 nu_axial:    real_field(law_data, "nu_axial"),
-                g_axial:     scalar_si_field(law_data, "g_axial"),
+                g_axial:     scalar_si_field(law_data, "g_axial").unwrap_or_else(|e| panic!("{e}")),
             };
             AnisotropicMaterial::from_law(&law, frame)
         }
@@ -3732,14 +3732,20 @@ fn anisotropic_material_from_value(val: &Value) -> AnisotropicMaterial {
 }
 
 /// Read a `Value::Scalar { si_value, .. }` field from a StructureInstance.
-fn scalar_si_field(data: &StructureInstanceData, key: &str) -> f64 {
+fn scalar_si_field(
+    data: &StructureInstanceData,
+    key: &'static str,
+) -> Result<f64, FeaValueShapeError> {
     match data.fields.get(key) {
-        Some(Value::Scalar { si_value, .. }) => *si_value,
-        other => panic!(
-            "solve_elastic_static_trampoline: expected field {:?} to be \
-             Value::Scalar, got: {:?}",
-            key, other
-        ),
+        Some(Value::Scalar { si_value, .. }) => Ok(*si_value),
+        Some(other) => Err(FeaValueShapeError::ExpectedScalar {
+            context: "scalar_si_field",
+            got: format!("{other:?}"),
+        }),
+        None => Err(FeaValueShapeError::MissingField {
+            context: "scalar_si_field",
+            field: key,
+        }),
     }
 }
 
