@@ -966,4 +966,16 @@ mod tests {
             "assert_dangling_reference_taxonomy must panic when given a stub kernel in place of a real kernel"
         );
     }
+
+    // The both-arms-from-one-source suite self-test: instantiate
+    // `assert_kernel_contract!` for a conforming stub and a conforming
+    // real-like kernel. Once the macro exists, each instantiation expands
+    // to separately-named `#[test]` fns that must pass under whatever cfg
+    // this crate is built with.
+    crate::assert_kernel_contract!(stub; TestStubKernel::new, "TestStub");
+    crate::assert_kernel_contract!(real; TestRealKernel::new, valid_op = GeometryOp::Box {
+        width: Value::Real(10.0),
+        height: Value::Real(10.0),
+        depth: Value::Real(10.0),
+    });
 }
