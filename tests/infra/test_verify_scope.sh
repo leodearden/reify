@@ -762,12 +762,16 @@ assert "VS-neg: plan lacks test_verify_*.sh glob (reify-doc not in artifact map)
     bash -c '! printf "%s\n" "$1" | grep -qE "tests/infra/test_verify_\*\.sh"' _ "$PLAN_VS_NEG"
 
 # ---------------------------------------------------------------------------
-# Scenario VS-incl: verify.sh change WITH --include-infra -> wholesale run_all.sh
-# present, selective test_verify_*.sh loop ABSENT (no double-run).
-# RED until step-4: step-2 emits the selective loop regardless of INCLUDE_INFRA.
+# Scenario VS-incl: verify.sh change WITH --include-infra (role=task) ->
+# wholesale run_all.sh ABSENT (task 5125: full pool suite moved to the merge
+# tier), selective test_verify_*.sh loop PRESENT instead (no double-run;
+# exactly-one: {full pool, selective infra}).
+# RED until step-3 (task 5125): verify.sh still gates run_all.sh on
+# INCLUDE_INFRA, so today's plan has run_all.sh present / selective loop
+# absent — the exact inversion this task fixes.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Scenario VS-incl: verify.sh change + --include-infra -> run_all.sh present, no selective loop (RED until step-4) ---"
+echo "--- Scenario VS-incl: verify.sh change + --include-infra (role=task) -> run_all.sh ABSENT, selective loop PRESENT (RED until step-3) ---"
 
 # plan_for_vs_change_incl — like plan_for_vs_change but passes --include-infra.
 # Reuses FIX_VS (restored to main by plan_for_vs_change above).
@@ -782,10 +786,10 @@ plan_for_vs_change_incl() {
 }
 
 plan_for_vs_change_incl
-assert "VS-incl: wholesale run_all.sh present (--include-infra fires)" \
-    plan_has 'tests/infra/run_all\.sh'
-assert "VS-incl: selective test_verify_*.sh loop ABSENT (no double-run under --include-infra)" \
-    plan_lacks 'tests/infra/test_verify_\*\.sh'
+assert "VS-incl: wholesale run_all.sh ABSENT (role=task; full pool moved to merge tier, task 5125)" \
+    plan_lacks 'tests/infra/run_all\.sh'
+assert "VS-incl: selective test_verify_*.sh loop PRESENT (role=task pole; no double-run)" \
+    plan_has 'tests/infra/test_verify_\*\.sh'
 
 # ===========================================================================
 # DS-* scenarios: doc-sync infra-map citing-test subset (task 4955)

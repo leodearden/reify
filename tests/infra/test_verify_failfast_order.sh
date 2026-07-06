@@ -29,7 +29,12 @@ echo "=== verify.sh fail-fast ordering tests (task 4448) ==="
 MERGE_TEST_PLAN="$(DF_VERIFY_ROLE=merge bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan | grep -v '^#')"
 ALL_PLAN="$(bash "$REPO_ROOT/scripts/verify.sh" all --scope all --include-infra --print-plan | grep -v '^#')"
 PLAIN_TEST_PLAN="$(bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan | grep -v '^#')"
-export MERGE_TEST_PLAN ALL_PLAN PLAIN_TEST_PLAN
+# task 5125: merge-tier capture — action=all, role=merge, NO --include-infra
+# (mirrors hooks/pre-merge-commit:39 exactly). The wholesale run_all.sh pool
+# now lives here (gated on DF_VERIFY_ROLE=merge), not on the role=task
+# INCLUDE_INFRA tier.
+MERGE_ALL_PLAN="$(DF_VERIFY_ROLE=merge bash "$REPO_ROOT/scripts/verify.sh" all --scope all --print-plan | grep -v '^#')"
+export MERGE_TEST_PLAN ALL_PLAN PLAIN_TEST_PLAN MERGE_ALL_PLAN
 
 # ===========================================================================
 # Test 1: #4446 deliverable — merge-role test plan: npm typecheck BEFORE psi-gate
@@ -191,42 +196,54 @@ assert "plain test plan: npm run typecheck present and before psi-gate" \
 # Test 6: task #4624 — reify-audit release pre-step ordered BEFORE run_all.sh
 #          and run_all.sh line carries REIFY_AUDIT_NO_COLD_BUILD=1
 #
+# task 5125: the pre-step + run_all.sh pairing MOVED to the merge tier
+# (DF_VERIFY_ROLE=merge) — the wholesale pool suite no longer runs on the
+# per-task INCLUDE_INFRA tier (fixes M-way shared-pool contention). Assertions
+# (a)-(d) now read MERGE_ALL_PLAN instead of ALL_PLAN; (e) is a new drift
+# guard confirming the role=task ALL_PLAN no longer carries the wholesale
+# suite.
+#
 # Hermetic: --print-plan never runs cargo.
-# FAIL until impl-verify-prestep adds the pre-step and env token.
+# RED until step-3 (task 5125) restructures build_plan's role gating.
 # ===========================================================================
 echo ""
-echo "--- Test 6 (#4624): reify-audit pre-step before run_all.sh + env token ---"
+echo "--- Test 6 (#4624/5125): reify-audit pre-step before run_all.sh + env token (merge tier) ---"
 
-# (a) pre-step line is present in the all-plan (contains `cargo build --release`
-#     and `-p reify-audit`)
-assert "all plan: reify-audit release pre-step line present (cargo build --release -p reify-audit)" \
-    bash -c 'printf "%s\n" "$1" | grep -q "cargo build --release" && printf "%s\n" "$1" | grep "cargo build --release" | grep -q "\-p reify-audit"' _ "$ALL_PLAN"
+# (a) pre-step line is present in the merge-all-plan (contains `cargo build
+#     --release` and `-p reify-audit`)
+assert "merge-all plan: reify-audit release pre-step line present (cargo build --release -p reify-audit)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "cargo build --release" && printf "%s\n" "$1" | grep "cargo build --release" | grep -q "\-p reify-audit"' _ "$MERGE_ALL_PLAN"
 
 # (b) pre-step index < run_all.sh line index
-assert "all plan: reify-audit pre-step index < run_all.sh index (pre-step ordered before suite)" \
+assert "merge-all plan: reify-audit pre-step index < run_all.sh index (pre-step ordered before suite)" \
     bash -c '
         PRE_IDX=$(printf "%s\n" "$1" | grep -n "cargo build --release" | grep "\-p reify-audit" | head -1 | cut -d: -f1)
         RUN_IDX=$(printf "%s\n" "$1" | grep -n "run_all\.sh" | head -1 | cut -d: -f1)
         [ -n "$PRE_IDX" ] && [ -n "$RUN_IDX" ] && [ "$PRE_IDX" -lt "$RUN_IDX" ]
-    ' _ "$ALL_PLAN"
+    ' _ "$MERGE_ALL_PLAN"
 
 # (c) pre-step line does NOT contain `run_all.sh` (it is a separate plan line)
 #     and does NOT contain `20m` (its own bounded timeout must differ from the
-#     20m run_all wall, so we know it is the pre-step, not the walled line)
-assert "all plan: reify-audit pre-step line is separate from run_all.sh (no 'run_all.sh' on the cargo line)" \
+#     run_all wall, so we know it is the pre-step, not the walled line)
+assert "merge-all plan: reify-audit pre-step line is separate from run_all.sh (no 'run_all.sh' on the cargo line)" \
     bash -c '
         PRE_LINE=$(printf "%s\n" "$1" | grep "cargo build --release" | grep "\-p reify-audit" | head -1)
         echo "$PRE_LINE" | grep -qv "run_all\.sh"
-    ' _ "$ALL_PLAN"
+    ' _ "$MERGE_ALL_PLAN"
 
-assert "all plan: reify-audit pre-step line does not contain '20m' (timeout distinct from run_all wall)" \
+assert "merge-all plan: reify-audit pre-step line does not contain '20m' (timeout distinct from run_all wall)" \
     bash -c '
         PRE_LINE=$(printf "%s\n" "$1" | grep "cargo build --release" | grep "\-p reify-audit" | head -1)
         echo "$PRE_LINE" | grep -qv "20m"
-    ' _ "$ALL_PLAN"
+    ' _ "$MERGE_ALL_PLAN"
 
 # (d) run_all.sh plan line carries REIFY_AUDIT_NO_COLD_BUILD=1 (backstop armed)
-assert "all plan: run_all.sh line carries REIFY_AUDIT_NO_COLD_BUILD=1" \
-    bash -c 'printf "%s\n" "$1" | grep "run_all\.sh" | grep -q "REIFY_AUDIT_NO_COLD_BUILD=1"' _ "$ALL_PLAN"
+assert "merge-all plan: run_all.sh line carries REIFY_AUDIT_NO_COLD_BUILD=1" \
+    bash -c 'printf "%s\n" "$1" | grep "run_all\.sh" | grep -q "REIFY_AUDIT_NO_COLD_BUILD=1"' _ "$MERGE_ALL_PLAN"
+
+# (e) task 5125: role=task ALL_PLAN (--include-infra, no DF_VERIFY_ROLE) no
+#     longer carries the wholesale suite — it moved to the merge tier above.
+assert "all plan (role=task): LACKS run_all.sh (wholesale suite moved to merge tier, task 5125)" \
+    bash -c '! printf "%s\n" "$1" | grep -q "run_all\.sh"' _ "$ALL_PLAN"
 
 test_summary
