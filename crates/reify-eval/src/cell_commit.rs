@@ -57,7 +57,12 @@ impl DeterminacyRule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reify_ir::{DeterminacyState, Value};
+    use reify_core::{ValueCellId, VersionId};
+    use reify_ir::{DeterminacyState, PersistentMap, Value, ValueMap};
+
+    use crate::cache::{CacheStore, CachedResult, EvalOutcome, NodeId};
+    use crate::deps::DependencyTrace;
+    use crate::journal::{EventJournal, EventKind};
 
     /// Pins INV-EVAL-1's "divergence encoded, not erased" invariant: the
     /// recorded `DeterminacyState` is driven by which `DeterminacyRule` was
@@ -99,5 +104,75 @@ mod tests {
             DeterminacyRule::DeriveFromValue.resolve(&Value::Bool(true)),
             DeterminacyState::Determined
         );
+    }
+
+    /// Pins the atomic 4-leg commit on `CacheLeg::Record`: a single
+    /// `commit_cell_result` call must write values, snapshot, cache, AND
+    /// journal — no leg may be silently skipped when the caller asks for a
+    /// full record (INV-EVAL-1: no path writes a subset by omission).
+    #[test]
+    fn commit_record_writes_all_four_legs() {
+        let mut values = ValueMap::new();
+        let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::new();
+        let mut cache = CacheStore::new();
+        let mut journal = EventJournal::new();
+        let node = ValueCellId::new("Body", "w");
+
+        let outcome = commit_cell_result(
+            CommitLegs {
+                values: &mut values,
+                snapshot_values: &mut snapshot_values,
+                cache: &mut cache,
+                journal: &mut journal,
+            },
+            node.clone(),
+            Value::Bool(true),
+            DeterminacyRule::DeriveFromValue,
+            TraceSource::ColdEval,
+            DependencyTrace::default(),
+            VersionId(1),
+            CacheLeg::Record,
+        );
+
+        // values leg
+        assert_eq!(values.get(&node), Some(&Value::Bool(true)));
+
+        // snapshot leg
+        assert_eq!(
+            snapshot_values.get(&node),
+            Some(&(Value::Bool(true), DeterminacyState::Determined))
+        );
+
+        // cache leg
+        let node_id = NodeId::Value(node.clone());
+        let entry = cache
+            .get(&node_id)
+            .expect("CacheLeg::Record must write a cache entry");
+        match &entry.result {
+            CachedResult::Value(v, d) => {
+                assert_eq!(*v, Value::Bool(true));
+                assert_eq!(*d, DeterminacyState::Determined);
+            }
+            other => panic!("expected CachedResult::Value, got {other:?}"),
+        }
+        assert_eq!(entry.basis_version, VersionId(1));
+
+        // journal leg: Started then Completed recorded for this node.
+        let events = journal.events_for_node(&node_id);
+        assert_eq!(
+            events.len(),
+            2,
+            "expected exactly Started + Completed, got {events:?}"
+        );
+        assert!(matches!(events[0].kind, EventKind::Started));
+        assert!(matches!(events[1].kind, EventKind::Completed { .. }));
+
+        // Returned CommitOutcome mirrors what was written to all four legs.
+        assert_eq!(outcome.value, Value::Bool(true));
+        assert_eq!(outcome.determinacy, DeterminacyState::Determined);
+        assert_eq!(outcome.cache_outcome, Some(EvalOutcome::Changed));
+        assert_eq!(outcome.skip_reason, None);
+        assert_eq!(outcome.trace_source, TraceSource::ColdEval);
     }
 }
