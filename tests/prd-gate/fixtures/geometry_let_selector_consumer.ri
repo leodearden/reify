@@ -2,12 +2,19 @@
 // docs/prds/v0_6/eval-uniform-dependency-handling.md, tasks α/δ premise).
 //
 // A structure def template containing a geometry let (`loc_box`), a selector
-// let reading it by name (`loc = faces_by_normal(loc_box, ...)`), and a
+// let reading it by name (`loc = faces_by_normal(loc_box, dir, tol)`), and a
 // consumer let reading `loc`. The α/δ decompose leaves assert this shape
 // parses (tree-sitter) and passes `reify check` today.
+//
+// `faces_by_normal` is the canonical 3-arg form (solid, direction, tol): it is
+// a kernel-free symbolic-eval-wired leaf ctor, so over the symbolic `loc_box`
+// handle it mints a `Value::Selector` on the pure eval() surface (non-Undef) —
+// i.e. `loc` resolves and is NOT a stale-Undef violation post-γ. (The earlier
+// 2-arg shape here was malformed — it tripped the arity gate to Undef, which
+// post-γ value-cell lowering correctly surfaced as a violation.)
 
 structure def GeometryLetSelectorConsumer {
     let loc_box = box(50mm, 30mm, 10mm)
-    let loc = faces_by_normal(loc_box, vec3(0mm, 0mm, 1mm))
+    let loc = faces_by_normal(loc_box, vec3(0.0, 0.0, 1.0), 1deg)
     let probe = loc
 }

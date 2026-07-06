@@ -72,24 +72,35 @@ pub struct StaleUndefViolation {
 ///    construction, whether or not `build()` was ever called — a standing
 ///    surface gap, not staleness;
 /// 8. `c`'s `default_expr` does not require build()-only resolution
-///    anywhere in its tree — a geometry-consumer builtin call
-///    (`geometry_ops::is_geometry_consumer_call`: `volume`, `centroid`,
-///    `moment_of_inertia`, …), a named-leaf selector constructor call
-///    (`geometry_ops::is_named_leaf_selector_ctor_call`: `face`, `edge`,
-///    `solid_body`, `vertex` — task γ / #4954 fallout: these resolve only
-///    via a realized kernel handle, never on the pure eval surface, but
-///    were masked pre-γ by clause 4's missing-producer exemption for their
-///    geometry-let target), or an ad-hoc topology selector
-///    (`CompiledExprKind::AdHocSelector`, e.g. `body @ face("top")`,
-///    resolved only by `engine_build.rs`'s `post_process_ad_hoc_selectors`)
-///    — checked anywhere in the expr tree AND, transitively, inside the
-///    body of any `UserFunctionCall` callee (e.g. a stdlib helper like
-///    `body_mass_props` that calls `volume(...)` internally — the call-site
-///    expr alone doesn't show it) — another α-sanctioned exclusion-set
-///    refinement (§11 Q4, broad corpus scope). These are documented
-///    (`engine_eval.rs`'s `detect_unresolved_geometry_consumers`, task
-///    #4651 R1a; `ad_hoc_face_selector.ri`'s header comment) to require a
-///    realized geometry kernel and resolve only via `build()`/
+///    anywhere in its tree. Recognised via two complementary mechanisms
+///    (see [`is_build_only_dispatch_call`]). The primary one is a DERIVED
+///    STRUCTURAL rule (task γ / #4954): a call that *consumes* a geometry/
+///    selector value (`geometry_ops::consumes_geometry_or_selector` — keyed
+///    on argument static types) but is NOT one of the kernel-free symbolic-
+///    eval-wired selector ctors
+///    (`geometry_ops::is_symbolic_eval_wired_selector_ctor`, the single
+///    EVAL_WIRED map) resolves only against a realized kernel; likewise a
+///    feature→datum projection (`geometry_ops::is_feature_datum_projection_call`)
+///    or an ad-hoc topology selector (`CompiledExprKind::AdHocSelector`,
+///    e.g. `body @ face("top")`). This rule CLOSES the class the old name
+///    lists missed — `face`/`edge`/`solid_body`/`vertex` named-leaf ctors,
+///    composition `union`/`intersect`/`difference`, GD&T `max_deviation`,
+///    `split`, `feature`, the conformance queries, and any FUTURE geometry-
+///    arg consumer — with no per-name upkeep, while the eval-wired guard
+///    keeps the net tight (a well-formed `faces_by_normal` &c. that stays
+///    `Undef` is a real bug, not exempt). The kernel geometry-query family
+///    (`is_geometry_consumer_call`: `volume`/`centroid`/…, `angle`) and the
+///    kinematic/dynamics queries stay REGISTRY-keyed: they are build()-only
+///    but consume ABSTRACTED handles (direction vectors, mechanism snapshots,
+///    body-ids), not a geometry-typed arg the structural rule can see — a
+///    bounded, stable set, unlike the open-ended geometry-consumer class the
+///    structural rule absorbs. Checked anywhere in the expr tree AND,
+///    transitively, inside the body of any `UserFunctionCall` callee (e.g. a
+///    stdlib helper like `body_mass_props` that calls `volume(...)`
+///    internally — the call-site expr alone doesn't show it). Such calls are
+///    documented (`engine_eval.rs`'s `detect_unresolved_geometry_consumers`,
+///    task #4651 R1a; `ad_hoc_face_selector.ri`'s header comment) to require
+///    a realized geometry kernel and resolve only via `build()`/
 ///    `tessellate()`, never on the kernel-less `eval()`/`eval_cached()`
 ///    surface this checker runs against.
 pub fn check_no_stale_undef(
@@ -245,45 +256,77 @@ impl crate::Engine {
     }
 }
 
-/// Function names dispatched exclusively by `dynamics_ops.rs`'s
-/// `try_eval_body_mass_props` — called only from `engine_build.rs`'s
-/// post-process pass, never from plain `eval()`/`eval_cached()`. Mirrors
-/// `reify_compiler::units::DYNAMICS_QUERY_NAMES` (units.rs:870), which
-/// `dynamics_ops.rs` itself does not import cross-crate either (it
-/// hand-checks `function.name != "body_mass_props"` at dynamics_ops.rs:379)
-/// — kept as its own small literal here rather than threading a new
-/// cross-crate `pub` export through `reify-compiler` (whose `units` module
-/// is private) for one name.
+/// Query-family name registries for build()-only ops that consume ABSTRACTED
+/// handles (mechanism snapshots, body-ids), NOT a raw geometry/selector value
+/// — so the structural [`geometry_ops::consumes_geometry_or_selector`] rule
+/// cannot see them and they are keyed by name. Mirror the build-path dispatch
+/// tables (`reify_compiler::units::DYNAMICS_QUERY_NAMES`, units.rs:870;
+/// `try_eval_kinematic_query`'s `KinematicHelper` arms) — kept as small local
+/// literals rather than threading cross-crate `pub` exports for a handful of
+/// names.
 const DYNAMICS_QUERY_NAMES: &[&str] = &["body_mass_props"];
-
-/// Function names dispatched exclusively by `geometry_ops.rs`'s
-/// `try_eval_kinematic_query` (`KinematicHelper`, geometry_ops.rs:4131-4133)
-/// — again only reachable from the build()-integrated post-process pass,
-/// never plain `eval()`. No canonical exported name list exists for this
-/// family (unlike `DYNAMICS_QUERY_NAMES`); this mirrors the match arms at
-/// that call site.
 const KINEMATIC_QUERY_NAMES: &[&str] = &["interferes", "interferes_with", "min_clearance"];
 
 /// `true` iff `expr` (a single node, NOT a tree — callers walk the tree) is
 /// itself a call that can only be resolved by a build()-integrated
-/// post-process pass: a geometry-consumer builtin
-/// (`geometry_ops::is_geometry_consumer_call`), a feature→datum projection
-/// method call (`geometry_ops::is_feature_datum_projection_call`, e.g.
-/// `feature.axis`/`.plane`/`.point`/`.dir` — task γ / #4954 boundary row), a
-/// named-leaf selector constructor call
-/// (`geometry_ops::is_named_leaf_selector_ctor_call`: `face`/`edge`/
-/// `solid_body`/`vertex` — also a task γ / #4954 boundary row: these require
-/// a realized kernel handle and were previously masked by clause 4's
-/// missing-producer exemption before geometry lets had their own value
-/// cell), a dynamics or kinematic query (`DYNAMICS_QUERY_NAMES` /
-/// `KINEMATIC_QUERY_NAMES`), or an ad-hoc topology selector
-/// (`CompiledExprKind::AdHocSelector`, e.g. `body @ face("top")`).
+/// post-process pass. Clause 8 recognises the build-only class via two
+/// complementary mechanisms:
+///
+/// 1. Structural node-kinds: an ad-hoc topology selector
+///    (`CompiledExprKind::AdHocSelector`, e.g. `body @ face("top")`) and a
+///    feature→datum projection method call
+///    (`geometry_ops::is_feature_datum_projection_call`, e.g. `feature.axis`/
+///    `.plane`/`.point`/`.dir`, gated on the receiver's static type).
+///
+/// 2. The DERIVED STRUCTURAL RULE (task γ / #4954): a call that *consumes* a
+///    geometry/selector value ([`geometry_ops::consumes_geometry_or_selector`],
+///    keyed on argument static types) but is NOT one of the kernel-free
+///    symbolic-eval-wired selector ctors
+///    ([`geometry_ops::is_symbolic_eval_wired_selector_ctor`], the single
+///    EVAL_WIRED map). This CLOSES the class the old clause-8 name lists
+///    missed — composition `union`/`intersect`/`difference`, the `face`/
+///    `edge`/`solid_body`/`vertex` named-leaf ctors, GD&T `max_deviation`,
+///    `split`, `feature`, the conformance queries, AND any future geometry-arg
+///    consumer — with no per-name upkeep. The eval-wired guard keeps the α net
+///    tight: a well-formed leaf ctor (`faces_by_normal` &c.) still `Undef`
+///    post-eval with all deps resolved is a genuine arity/scheduling bug and
+///    stays a violation, NOT an exemption.
+///
+/// 3. Registry recognition for the kernel geometry-query family
+///    (`geometry_ops::is_geometry_consumer_call` — `volume`/`centroid`/… and
+///    `angle` over direction vectors) and the kinematic/dynamics queries
+///    (`KINEMATIC_QUERY_NAMES`/`DYNAMICS_QUERY_NAMES`). These are build()-only
+///    but consume ABSTRACTED handles (direction vectors, mechanism snapshots,
+///    body-ids) — NOT a geometry-typed arg — so the structural rule (2) cannot
+///    see them; they are a bounded, stable set keyed by their dispatch
+///    registries. (The whack-a-mole risk — an open-ended stream of NEW
+///    geometry consumers — is what rule (2) structurally absorbs; these
+///    families do not grow that way.)
+///
+/// Before task γ (#4954) a selector/query consumer of a top-level geometry
+/// LET was exempted upstream via clause 4's "missing producer" path (geometry
+/// lets had no value cell of their own); pairing every geometry let with a
+/// real value cell (γ) made the dependency genuinely resolved (via the R3d
+/// symbolic-handle mint), exposing this whole build-only class to clause 8
+/// for the first time.
 fn is_build_only_dispatch_call(expr: &reify_ir::CompiledExpr) -> bool {
-    if crate::geometry_ops::is_geometry_consumer_call(expr)
+    // (1) Structural node-kinds: always build()-only.
+    if matches!(expr.kind, CompiledExprKind::AdHocSelector { .. })
         || crate::geometry_ops::is_feature_datum_projection_call(expr)
-        || crate::geometry_ops::is_named_leaf_selector_ctor_call(expr)
-        || matches!(expr.kind, CompiledExprKind::AdHocSelector { .. })
     {
+        return true;
+    }
+    // (2) Derived structural rule: consumes a geometry/selector value, yet is
+    // not resolved by the kernel-free symbolic-eval pass ⇒ build()-only.
+    if crate::geometry_ops::consumes_geometry_or_selector(expr)
+        && !crate::geometry_ops::is_symbolic_eval_wired_selector_ctor(expr)
+    {
+        return true;
+    }
+    // (3) Registry-keyed query families over abstracted handles (no
+    // geometry-typed arg for (2) to see): kernel geometry queries (incl.
+    // `angle`), kinematics, dynamics.
+    if crate::geometry_ops::is_geometry_consumer_call(expr) {
         return true;
     }
     matches!(
@@ -778,5 +821,175 @@ mod tests {
              got {violations:?}"
         );
         assert_eq!(violations[0].cell, consumer_id);
+    }
+
+    // ── Clause 8: derived structural build-only classifier (task γ / #4954) ───
+
+    /// A `FunctionCall` node named `name` whose args are `ValueRef`s of the
+    /// given `arg_types` (the predicate keys on arg *types*, not values).
+    fn fn_call(name: &str, arg_types: &[Type]) -> CompiledExpr {
+        let args = arg_types
+            .iter()
+            .enumerate()
+            .map(|(i, ty)| {
+                CompiledExpr::value_ref(ValueCellId::new("T", format!("a{i}")), ty.clone())
+            })
+            .collect();
+        CompiledExpr {
+            kind: CompiledExprKind::FunctionCall {
+                function: reify_ir::ResolvedFunction {
+                    name: name.to_string(),
+                    qualified_name: format!("std::{name}"),
+                },
+                args,
+            },
+            result_type: Type::Bool,
+            content_hash: ContentHash::of_str(name),
+        }
+    }
+
+    /// A `MethodCall` node `<receiver>.<method>()` whose receiver is a
+    /// `ValueRef` of `recv_type`.
+    fn method_call(recv_type: Type, method: &str) -> CompiledExpr {
+        CompiledExpr {
+            kind: CompiledExprKind::MethodCall {
+                object: Box::new(CompiledExpr::value_ref(
+                    ValueCellId::new("T", "recv"),
+                    recv_type,
+                )),
+                method: method.to_string(),
+                args: vec![],
+            },
+            result_type: Type::Bool,
+            content_hash: ContentHash::of_str(method),
+        }
+    }
+
+    /// Pins clause 8's two-mechanism build-only classifier (task γ / #4954):
+    /// (2) the DERIVED STRUCTURAL rule catches geometry/selector-arg consumers
+    /// that are not eval-wired — closing the open-ended class the old name
+    /// lists missed; (3) the REGISTRY path still catches build-only query
+    /// families that consume abstracted handles (no geometry-typed arg). Also
+    /// pins that the α net stays TIGHT for eval-wired ctors and scalar ops.
+    #[test]
+    fn clause8_build_only_classifier() {
+        let geom = Type::Geometry;
+        let sel = Type::Selector(reify_core::ty::SelectorKind::Face);
+        // A deliberately NON-geometry arg type, to prove a classification is
+        // NOT relying on the structural "consumes geometry/selector" rule.
+        let scalar = Type::length();
+
+        // (2) STRUCTURAL — geometry-arg consumers, keyed by arg type. These
+        // close the class the old clause-8 name lists kept missing.
+        for name in [
+            // query family that takes a geometry arg
+            "volume",
+            "area",
+            "centroid",
+            "bounding_box",
+            "adjacent_faces",
+            "normal",
+            "closest_point",
+            "shared_edges",
+            "siblings_of_face",
+            "ancestor_faces_of_edge",
+            "length",
+            "perimeter",
+            "curvature",
+            "center_of_mass",
+            "moment_of_inertia",
+            "distance",
+            "contains",
+            "intersects",
+            "geo_equiv",
+            "is_on",
+            "angle_between_surfaces",
+            // named-leaf ctors (the interim WIP name list — now structural)
+            "face",
+            "edge",
+            "solid_body",
+            "vertex",
+            // GD&T + set-ops + conformance the name lists never covered
+            "max_deviation",
+            "split",
+            "feature",
+            "is_watertight",
+            "is_manifold",
+            "is_orientable",
+            "is_closed",
+            "is_connected",
+            "is_bounded",
+        ] {
+            assert!(
+                is_build_only_dispatch_call(&fn_call(name, std::slice::from_ref(&geom))),
+                "{name}(geometry) must classify build-only (structural rule)"
+            );
+        }
+        // (2) STRUCTURAL — composition selectors, keyed by selector-typed args.
+        for name in ["union", "intersect", "difference"] {
+            assert!(
+                is_build_only_dispatch_call(&fn_call(name, &[sel.clone(), sel.clone()])),
+                "{name}(selector, selector) must classify build-only (structural)"
+            );
+        }
+
+        // (3) REGISTRY — build-only query families that consume ABSTRACTED
+        // handles (direction vectors, mechanism snapshots, body-ids), NOT a
+        // geometry-typed arg. Tested with a non-geometry arg on purpose: the
+        // structural rule cannot see them, so the registry path must.
+        for name in [
+            "angle",           // over direction vectors
+            "body_mass_props", // dynamics
+            "interferes",      // kinematic — over a mechanism snapshot
+            "interferes_with",
+            "min_clearance",
+        ] {
+            assert!(
+                is_build_only_dispatch_call(&fn_call(name, std::slice::from_ref(&scalar))),
+                "{name}(non-geometry) must classify build-only (registry)"
+            );
+        }
+
+        // NET STAYS TIGHT: kernel-free symbolic-eval-wired leaf ctors are NOT
+        // build-only — a well-formed one still Undef is a genuine arity/
+        // scheduling bug that must remain a violation, not be exempted.
+        for name in [
+            "faces",
+            "edges",
+            "faces_by_normal",
+            "faces_by_area",
+            "edges_by_length",
+            "vertices",
+            "mid_surface",
+            "created_by_feature",
+        ] {
+            assert!(
+                !is_build_only_dispatch_call(&fn_call(name, std::slice::from_ref(&geom))),
+                "{name}(geometry) is eval-wired — must NOT be exempted"
+            );
+        }
+
+        // Non-geometry, non-registry calls are never build-only (α net for
+        // scalar ops — a real stale Undef here must still be reported).
+        assert!(
+            !is_build_only_dispatch_call(&fn_call("sqrt", std::slice::from_ref(&scalar))),
+            "a scalar op with no geometry/selector arg must NOT be exempted"
+        );
+        assert!(
+            !is_build_only_dispatch_call(&fn_call("single", &[])),
+            "a zero-arg non-registry call consumes nothing — not build-only"
+        );
+
+        // Feature→datum projection: a MethodCall on a geometry/selector receiver
+        // is build-only (the narrow, receiver-type-gated structural node-kind).
+        assert!(
+            is_build_only_dispatch_call(&method_call(geom.clone(), "axis")),
+            "feature.axis on a geometry receiver must classify build-only"
+        );
+        // A pure datum→datum projection (non-geometry receiver) is NOT build-only.
+        assert!(
+            !is_build_only_dispatch_call(&method_call(scalar.clone(), "dir")),
+            "a method call on a non-geometry receiver must NOT be exempted"
+        );
     }
 }
