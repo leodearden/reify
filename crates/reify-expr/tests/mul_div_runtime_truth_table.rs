@@ -122,12 +122,15 @@ fn xform(rotation: Value, tx: f64, ty: f64, tz: f64) -> Value {
 
 // ── MUL: numeric + Scalar core arms ─────────────────────────────────────────
 
+/// INTENTIONAL (lib.rs:4356): `Int × Int → Int`, exact integer product —
+/// observed output matches the pre-execution prediction exactly.
 #[test]
 fn mul_int_int_yields_int() {
     let result = eval_binop(BinOp::Mul, Value::Int(6), Value::Int(7));
     assert_eq!(result, Value::Int(42));
 }
 
+/// INTENTIONAL (lib.rs:4357): `Real × Real → Real`.
 #[test]
 fn mul_real_real_yields_real() {
     let result = eval_binop(BinOp::Mul, Value::Real(2.5), Value::Real(4.0));
@@ -137,6 +140,8 @@ fn mul_real_real_yields_real() {
     }
 }
 
+/// INTENTIONAL (lib.rs:4358): `Int × Real → Real` — the dimensionless Int
+/// widens to `f64` and multiplies directly.
 #[test]
 fn mul_int_real_yields_real() {
     let result = eval_binop(BinOp::Mul, Value::Int(3), Value::Real(2.5));
@@ -146,6 +151,9 @@ fn mul_int_real_yields_real() {
     }
 }
 
+/// INTENTIONAL (lib.rs:4358): `Real × Int → Real` — commutative counterpart
+/// of `mul_int_real_yields_real`; both orders are the same match arm
+/// (`(Int, Real) | (Real, Int)`).
 #[test]
 fn mul_real_int_yields_real() {
     let result = eval_binop(BinOp::Mul, Value::Real(2.5), Value::Int(3));
@@ -155,6 +163,11 @@ fn mul_real_int_yields_real() {
     }
 }
 
+/// INTENTIONAL (lib.rs:4378-4388): `Scalar × Scalar` multiplies `si_value`
+/// and combines dimensions via `DimensionVector::mul` (add exponents) through
+/// `Value::from_real_scalar` — `LENGTH.mul(&LENGTH) == AREA`, so the
+/// non-cancelling case stays a `Scalar` (contrast with the cancelling case
+/// below, which collapses to `Real`).
 #[test]
 fn mul_scalar_length_times_scalar_length_yields_scalar_area() {
     let result = eval_binop(BinOp::Mul, Value::length(3.0), Value::length(4.0));
@@ -177,9 +190,13 @@ fn mul_scalar_length_times_scalar_length_yields_scalar_area() {
     }
 }
 
-/// Cancelling dimensions: (1/LENGTH) * LENGTH = DIMENSIONLESS, so
-/// `Value::from_real_scalar` collapses the product to `Value::Real` rather
-/// than `Value::Scalar { dimension: DIMENSIONLESS, .. }`.
+/// INTENTIONAL (lib.rs:4378-4388, `Value::from_real_scalar` at
+/// value.rs:1557): same `Scalar × Scalar` arm as
+/// `mul_scalar_length_times_scalar_length_yields_scalar_area`, but with
+/// cancelling dimensions: `(1/LENGTH).mul(&LENGTH) == DIMENSIONLESS`, so
+/// `Value::from_real_scalar` collapses the product to `Value::Real` —
+/// CONFIRMED observed output is `Value::Real`, NOT
+/// `Value::Scalar { dimension: DIMENSIONLESS, .. }`.
 #[test]
 fn mul_scalar_inverse_length_times_scalar_length_collapses_to_real() {
     let inverse_length = sc(2.0, DimensionVector::DIMENSIONLESS.div(&DimensionVector::LENGTH));
@@ -193,6 +210,9 @@ fn mul_scalar_inverse_length_times_scalar_length_collapses_to_real() {
     }
 }
 
+/// INTENTIONAL (lib.rs:4389-4403): `Scalar × Int` scales `si_value` by the
+/// dimensionless Int and preserves the Scalar's dimension unchanged (no
+/// `DimensionVector` arithmetic — the Int contributes no dimension).
 #[test]
 fn mul_scalar_times_int_preserves_dimension() {
     let result = eval_binop(BinOp::Mul, Value::length(5.0), Value::Int(3));
@@ -211,7 +231,10 @@ fn mul_scalar_times_int_preserves_dimension() {
     }
 }
 
-/// Commutative counterpart of `mul_scalar_times_int_preserves_dimension`.
+/// INTENTIONAL (lib.rs:4389-4403): commutative counterpart of
+/// `mul_scalar_times_int_preserves_dimension` — `(Scalar, Int) | (Int, Scalar)`
+/// is a single match arm, so both operand orders share one code path and
+/// produce the identical preserved-dimension result.
 #[test]
 fn mul_int_times_scalar_preserves_dimension() {
     let result = eval_binop(BinOp::Mul, Value::Int(3), Value::length(5.0));
@@ -230,6 +253,8 @@ fn mul_int_times_scalar_preserves_dimension() {
     }
 }
 
+/// INTENTIONAL (lib.rs:4404-4417): `Scalar × Real` scales `si_value` by the
+/// dimensionless Real and preserves the Scalar's dimension unchanged.
 #[test]
 fn mul_scalar_times_real_preserves_dimension() {
     let result = eval_binop(BinOp::Mul, Value::length(5.0), Value::Real(2.0));
@@ -248,7 +273,10 @@ fn mul_scalar_times_real_preserves_dimension() {
     }
 }
 
-/// Commutative counterpart of `mul_scalar_times_real_preserves_dimension`.
+/// INTENTIONAL (lib.rs:4404-4417): commutative counterpart of
+/// `mul_scalar_times_real_preserves_dimension` — `(Scalar, Real) | (Real, Scalar)`
+/// is a single match arm, so both operand orders share one code path and
+/// produce the identical preserved-dimension result.
 #[test]
 fn mul_real_times_scalar_preserves_dimension() {
     let result = eval_binop(BinOp::Mul, Value::Real(2.0), Value::length(5.0));
