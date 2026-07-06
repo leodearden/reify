@@ -406,6 +406,42 @@ mod tests {
     param material: Material = Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)
 }"#;
 
+    /// Inline FEA-bearing fixture (PRD `compute-fea-hardening.md` task C1,
+    /// INV-FEA-1). Mirrors the shape of
+    /// `crates/reify-cli/tests/fixtures/fea_cantilever_violated.ri` (same
+    /// solve setup: material / point load / fixed support / `solve_elastic_
+    /// static` / `let peak_stress = result.max_von_mises` / FEA-result
+    /// constraints) but omits that fixture's `let body = box(...)` geometry
+    /// realization — the LSP path attaches no geometry kernel and has no
+    /// STEP-file exit-code gate, and `solve_elastic_static` takes scalar
+    /// dims (not a `Solid`), so `box` is unnecessary here.
+    ///
+    /// Deliberately FEA-only: no geometry/dimensional constraint exists that
+    /// could be genuinely `Violated`, so a "zero Violated" assertion over
+    /// this fixture holds by construction, not by coincidence.
+    ///
+    /// Reused by `fea_bearing_constraint_produces_no_false_violation_or_false_pass`
+    /// below, and intended for reuse by the follow-up hint-diagnostic task
+    /// (C2) — keep this fixture FEA-only if extending it.
+    const FEA_BEARING_SRC: &str = r#"structure FeaBearing {
+    param length : Length = 1000mm
+    param width  : Length = 100mm
+    param height : Length = 100mm
+
+    let material = Steel_AISI_1045()
+    let tip_load = PointLoad(point: "tip", force: 1000.0)
+    let mount = FixedSupport(target: "root")
+
+    let result = solve_elastic_static(
+        material, length, width, height, [tip_load], [mount], ElasticOptions()
+    )
+
+    let peak_stress = result.max_von_mises
+
+    constraint peak_stress < 1MPa
+    constraint peak_stress < 100MPa
+}"#;
+
     #[test]
     fn valid_bracket_source_no_errors() {
         let source = reify_test_support::bracket_source();
@@ -2025,6 +2061,106 @@ structure S {
             "constraint-violation source must produce ZERO 'computation-failed' diagnostics \
              (arch §9.3 separation); got: {:#?}",
             computation_failed_diags
+        );
+    }
+
+    /// Posture lock (PRD `compute-fea-hardening.md` task C1, INV-FEA-1): an
+    /// FEA-bearing source must produce NO false violation and NO false pass
+    /// under `compute_diagnostics` / `compute_diagnostics_with_state`.
+    ///
+    /// This is the LSP-side analog of the CLI posture-lock
+    /// `check_fea_violated_constraint_is_not_gated`
+    /// (`crates/reify-cli/tests/cli_build_fea.rs`): both LSP entry points
+    /// build a bare `Engine::new(SimpleConstraintChecker, None)` and never
+    /// register compute trampolines (see the trampoline-free posture doc on
+    /// `compute_diagnostics_with_state` above), so the `@optimized`
+    /// `solve_elastic_static` call body-inlines to `undef` and the
+    /// FEA-result constraints evaluate `Satisfaction::Indeterminate` — which
+    /// is neither a violation nor a pass.
+    ///
+    /// This test is GREEN before AND after being written: it locks
+    /// pre-existing gate behaviour (the two `Satisfaction::Violated` gates
+    /// above, at the `violated_messages` construction and the span-aware
+    /// ERROR emission, already skip `Indeterminate`). The RED counterfactual
+    /// this lock guards: mutating either gate to treat `Indeterminate` as
+    /// `Violated` (false violation), or the FEA constraint mis-evaluating to
+    /// `Satisfied` (false pass), fails this test.
+    #[test]
+    fn fea_bearing_constraint_produces_no_false_violation_or_false_pass() {
+        let uri = test_uri();
+
+        // (a) LSP surface / no false violation: neither entry point may emit
+        // a diagnostic whose (lowercased) message contains "violated" — the
+        // substring shared by both emitted violation formats (`constraint
+        // {id} violated` and `constraint violated: {label}`). We deliberately
+        // do NOT assert "no ERROR diagnostics": the engine-owned
+        // Error-severity "no registered compute trampoline (falling back to
+        // body-inlining)" diagnostic is surfaced by design under the
+        // trampoline-free posture.
+        let stateless_diags = compute_diagnostics(FEA_BEARING_SRC, &uri);
+        let stateless_violated: Vec<_> = stateless_diags
+            .iter()
+            .filter(|d| d.message.to_lowercase().contains("violated"))
+            .collect();
+        assert!(
+            stateless_violated.is_empty(),
+            "compute_diagnostics must not report a false violation for an \
+             Indeterminate FEA constraint; got: {stateless_violated:#?}"
+        );
+
+        let mut state = EvalState::new();
+        let stateful_result = compute_diagnostics_with_state(&mut state, FEA_BEARING_SRC, &uri);
+        let stateful_violated: Vec<_> = stateful_result
+            .diagnostics
+            .iter()
+            .filter(|d| d.message.to_lowercase().contains("violated"))
+            .collect();
+        assert!(
+            stateful_violated.is_empty(),
+            "compute_diagnostics_with_state must not report a false violation \
+             for an Indeterminate FEA constraint; got: {stateful_violated:#?}"
+        );
+
+        // (b) No false pass / genuinely indeterminate: re-run the shared
+        // parse -> compile -> check pipeline directly (the LSP analog of the
+        // CLI lock's stdout "INDETERMINATE" assertion — compute_diagnostics
+        // only emits diagnostics for problems, so it has no positive
+        // "satisfied" signal and "no false pass" cannot be read off its Vec
+        // output alone). Zero Violated (true by construction — the fixture
+        // is FEA-only) AND at least one Indeterminate proves the FEA
+        // constraint is present and genuinely indeterminate: neither a false
+        // violation, nor a false pass, nor silently all-Satisfied.
+        let parsed =
+            reify_compiler::parse_with_stdlib(FEA_BEARING_SRC, ModulePath::single("test"));
+        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let checker = SimpleConstraintChecker;
+        let mut engine = reify_eval::Engine::new(Box::new(checker), None);
+        let check_result = engine.check(&compiled);
+
+        let violated_count = check_result
+            .constraint_results
+            .iter()
+            .filter(|e| e.satisfaction == Satisfaction::Violated)
+            .count();
+        let indeterminate_count = check_result
+            .constraint_results
+            .iter()
+            .filter(|e| e.satisfaction == Satisfaction::Indeterminate)
+            .count();
+
+        assert_eq!(
+            violated_count, 0,
+            "FEA-only fixture must have zero Violated constraints; got \
+             constraint_results: {:#?}",
+            check_result.constraint_results
+        );
+        assert!(
+            indeterminate_count >= 1,
+            "expected >= 1 Indeterminate constraint (FEA-result constraint \
+             under the trampoline-free posture); got 0 — the constraint may \
+             be silently Satisfied (false pass) or missing entirely. \
+             constraint_results: {:#?}",
+            check_result.constraint_results
         );
     }
 }
