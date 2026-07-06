@@ -567,12 +567,13 @@ pub fn per_stage_tolerance_for_plan(plan: &DispatchPlan, requested_tol: f64) -> 
 /// a `(from, to)` repr pair to the concrete kernel work the conversion executor
 /// must run.
 ///
-/// v0.3 ε ships exactly one projection — `BRep → Mesh` via the source kernel's
-/// `GeometryKernel::tessellate` — so the enum has a single variant today. It is
-/// a closed enum (not a bare bool) so that future conversions (`Mesh → Sdf`,
-/// voxelisation, …) extend it by adding variants and rows to
-/// [`v03_conversion_projection`], with the executor's `match` forcing every
-/// call site to handle the new shape.
+/// v0.3 ships three projections — `BRep → Mesh` via the source kernel's
+/// `GeometryKernel::tessellate`, `Mesh → Voxel` via the target kernel's
+/// `ingest_mesh`, and `Voxel → Mesh` via the source kernel's marching-cubes
+/// surface call — so the enum has three variants today. It is a closed enum
+/// (not a bare bool) so that future conversions (`Mesh → Sdf`, …) extend it by
+/// adding variants and rows to [`v03_conversion_projection`], with the
+/// executor's `match` forcing every call site to handle the new shape.
 // `#[allow(dead_code)]`: constructed/consumed only from `#[cfg(test)]` until the
 // conversion executor in `execute_realization_ops` wires it into the non-test
 // build path (task 4050 step-8). Mirrors the `compute_demanded_reprs`
@@ -591,6 +592,14 @@ pub(crate) enum ConversionProjection {
     /// direct input). `ingest_mesh` on the OpenVDB kernel converts the interchange
     /// mesh into a voxel grid on ingest, so no separate voxelise call is needed.
     Voxelize,
+    /// Surface a Voxel handle into a mesh via marching cubes — the
+    /// `Voxel → Mesh` realisation (task γ / 5001). The executor calls the
+    /// source kernel's `GeometryKernel::realize_mesh_from_voxel(handle,
+    /// iso_level, adaptive)` to produce the mesh, keying the intermediate
+    /// cache with `GeometryKernel::surface_options_content_hash(iso_level,
+    /// adaptive)` instead of `NO_OPTIONS` (the options-carrying counterpart
+    /// of `Tessellate`, which has no options to thread).
+    MarchingCubes,
 }
 
 /// Classifies a single conversion stage `(from, to)` into the v0.3-β-executable
@@ -601,9 +610,11 @@ pub(crate) enum ConversionProjection {
 /// `None` surfaces as the realization-failed diagnostic (NOT a panic) — the
 /// plan named a crossing the current β slice cannot execute.
 ///
-/// v0.3 β supports exactly two crossings:
+/// v0.3 supports exactly three crossings:
 /// - `(BRep, Mesh) ⇒ Tessellate` — BRep→Mesh via source kernel `tessellate`.
 /// - `(Mesh, Voxel) ⇒ Voxelize` — Mesh→Voxel via target kernel `ingest_mesh`.
+/// - `(Voxel, Mesh) ⇒ MarchingCubes` — Voxel→Mesh via source kernel
+///   marching-cubes surfacing (task γ / 5001).
 ///
 /// Every other ordered pair returns `None`. Adding a conversion to β means
 /// adding a [`ConversionProjection`] variant and a row to the match below.
@@ -617,6 +628,7 @@ pub(crate) fn v03_conversion_projection(
     match (from, to) {
         (ReprKind::BRep, ReprKind::Mesh) => Some(ConversionProjection::Tessellate),
         (ReprKind::Mesh, ReprKind::Voxel) => Some(ConversionProjection::Voxelize),
+        (ReprKind::Voxel, ReprKind::Mesh) => Some(ConversionProjection::MarchingCubes),
         _ => None,
     }
 }
@@ -1771,26 +1783,29 @@ mod tests {
         );
     }
 
-    /// Task 4050 (steps 5/6) + task 4422 (β): [`v03_conversion_projection`]
-    /// classifies a single conversion stage `(from, to)` into the
-    /// v0.3-β-executable projection.
+    /// Task 4050 (steps 5/6) + task 4422 (β) + task 5001 (γ):
+    /// [`v03_conversion_projection`] classifies a single conversion stage
+    /// `(from, to)` into the v0.3-executable projection.
     ///
-    /// β supports exactly TWO conversion shapes:
+    /// v0.3 supports exactly THREE conversion shapes:
     /// - `(BRep, Mesh)` ⇒ `Tessellate` — the source kernel tessellates its
     ///   BRep handle into a mesh, which the target kernel then ingests via
     ///   `ingest_mesh`.
     /// - `(Mesh, Voxel)` ⇒ `Voxelize` — the target kernel voxelises the
     ///   interchange mesh via `ingest_mesh` (producing a voxel grid).
+    /// - `(Voxel, Mesh)` ⇒ `MarchingCubes` — the source kernel surfaces its
+    ///   Voxel handle into a mesh via marching cubes (task γ / 5001).
     ///
     /// EVERY other ordered `(from, to)` pair over the four [`ReprKind`]
-    /// variants is NOT runnable in β and must classify as `None`, so the
+    /// variants is NOT runnable and must classify as `None`, so the
     /// conversion executor surfaces it as a realization-failed diagnostic
     /// rather than attempting (or panicking on) an unsupported stage.
     ///
-    /// Exhaustively pins all 16 ordered pairs: the two supported cells return
-    /// `Some(Tessellate)` for `(BRep, Mesh)` and `Some(Voxelize)` for
-    /// `(Mesh, Voxel)`; the other 14 return `None`. Adding a new conversion
-    /// to β means adding a [`ConversionProjection`] variant and a row to
+    /// Exhaustively pins all 16 ordered pairs: the three supported cells
+    /// return `Some(Tessellate)` for `(BRep, Mesh)`, `Some(Voxelize)` for
+    /// `(Mesh, Voxel)`, and `Some(MarchingCubes)` for `(Voxel, Mesh)`; the
+    /// other 13 return `None`. Adding a new conversion means adding a
+    /// [`ConversionProjection`] variant and a row to
     /// `v03_conversion_projection`, and updating this table explicitly.
     #[test]
     fn v03_conversion_projection_supports_brep_to_mesh_and_mesh_to_voxel() {
@@ -1820,11 +1835,19 @@ mod tests {
                         "(Mesh, Voxel) must classify as the Voxelize projection \
                          (Mesh→Voxel realised by target kernel ingest_mesh)",
                     );
+                } else if from == ReprKind::Voxel && to == ReprKind::Mesh {
+                    assert_eq!(
+                        got,
+                        Some(ConversionProjection::MarchingCubes),
+                        "(Voxel, Mesh) must classify as the MarchingCubes projection \
+                         (Voxel→Mesh realised by source kernel marching-cubes surfacing)",
+                    );
                 } else {
                     assert_eq!(
                         got, None,
-                        "({from:?}, {to:?}) is not β-executable and must classify \
-                         as None (only BRep→Mesh and Mesh→Voxel are supported in v0.3-β)",
+                        "({from:?}, {to:?}) is not executable and must classify \
+                         as None (only BRep→Mesh, Mesh→Voxel, and Voxel→Mesh are \
+                         supported in v0.3)",
                     );
                 }
             }

@@ -6767,6 +6767,19 @@ impl Engine {
                                                 ));
                                             }
                                         }
+                                        Some(ConversionProjection::MarchingCubes) => {
+                                            // Full handling (Phase-1 gate relaxation to
+                                            // accept a MarchingCubes source alongside
+                                            // Tessellate, iso_level/adaptive extraction,
+                                            // and Phase-2 marching-cubes production)
+                                            // lands in a later step of task 5001. Until
+                                            // then, leaving `tessellate_source` unset
+                                            // here means a MarchingCubes-only chain
+                                            // still falls through to the "no Tessellate
+                                            // stage" diagnostic below — unchanged
+                                            // graceful-degradation behavior from before
+                                            // the MarchingCubes variant existed.
+                                        }
                                     }
                                 }
                                 if conversion_error.is_none() && tessellate_source.is_none() {
