@@ -275,6 +275,16 @@ pub struct NodeCache {
     /// Failed entries do NOT set this field — a Failed node is itself the
     /// chain root, not a forwarder.
     pub pending_cause: Option<NodeId>,
+    /// The cell's runtime diagnostics captured at evaluation time (task κ,
+    /// `eval-cell-commit-substrate.md` §2.7, INV-EVAL-3 "data").
+    ///
+    /// Replayed on cache-hit serves by task μ so a per-cell-branch warning
+    /// is not silently dropped on a cache hit (the 2259/2267
+    /// "fast-path-swallow" class). Empty when no diagnostics were recorded
+    /// for this node. NOT part of `result_hash` — diagnostics are metadata,
+    /// not result content, so two results that are otherwise identical
+    /// still early-cutoff-match regardless of attached diagnostics.
+    pub diagnostics: Vec<Diagnostic>,
 }
 
 impl Clone for NodeCache {
@@ -291,6 +301,7 @@ impl Clone for NodeCache {
             // pairing invariant called out on the field.
             cost_per_byte: 0.0,
             pending_cause: self.pending_cause.clone(),
+            diagnostics: Vec::new(),
         }
     }
 }
@@ -300,12 +311,31 @@ impl NodeCache {
     ///
     /// `pending_cause` defaults to `None`; the diagnostic chain is populated
     /// by [`CacheStore::mark_pending_with_cause`] at the wire site, not by
-    /// this constructor.
+    /// this constructor. `diagnostics` defaults to an empty vec — use
+    /// [`NodeCache::new_with_diagnostics`] to construct an entry that
+    /// carries the cell's runtime diagnostics.
     pub fn new(
         result: CachedResult,
         freshness: Freshness,
         dependency_trace: DependencyTrace,
         basis_version: VersionId,
+    ) -> Self {
+        Self::new_with_diagnostics(result, freshness, dependency_trace, basis_version, Vec::new())
+    }
+
+    /// Create a new cache entry carrying an explicit set of runtime
+    /// diagnostics, automatically computing the result hash.
+    ///
+    /// This is the required-arg constructor task μ wires real diagnostics
+    /// through — passing `diagnostics` explicitly (rather than defaulting
+    /// it) means no construction path can forget it. `pending_cause`
+    /// defaults to `None`, matching [`NodeCache::new`].
+    pub fn new_with_diagnostics(
+        result: CachedResult,
+        freshness: Freshness,
+        dependency_trace: DependencyTrace,
+        basis_version: VersionId,
+        diagnostics: Vec<Diagnostic>,
     ) -> Self {
         let result_hash = result.content_hash();
         Self {
@@ -317,6 +347,7 @@ impl NodeCache {
             warm_state: None,
             cost_per_byte: 0.0,
             pending_cause: None,
+            diagnostics,
         }
     }
 }
@@ -733,6 +764,7 @@ impl CacheStore {
                 warm_state: None,
                 cost_per_byte: 0.0,
                 pending_cause: None,
+                diagnostics: Vec::new(),
             },
         );
         EvalOutcome::Changed
@@ -1106,6 +1138,7 @@ impl CacheStore {
                         warm_state: None,
                         cost_per_byte: 0.0,
                         pending_cause: Some(NodeId::Compute(c_id.clone())),
+                        diagnostics: Vec::new(),
                     },
                 );
                 self.pending_transition_count += 1;
@@ -5282,6 +5315,7 @@ mod tests {
                 warm_state: Some(OpaqueState::new(7i32, 4)),
                 cost_per_byte: 0.9,
                 pending_cause: None,
+                diagnostics: Vec::new(),
             },
         );
 
