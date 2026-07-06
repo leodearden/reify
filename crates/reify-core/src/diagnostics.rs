@@ -2194,6 +2194,46 @@ pub enum DiagnosticCode {
     /// PRD mnemonic: `E_TYPE_ARG_BOUND`.
     /// See `docs/prds/type-args-and-assoc-type-projection.md` §4.2, §9.
     TypeArgBound,
+    /// Origin: `crates/reify-compiler/src/type_resolution.rs`
+    /// (`resolve_type_expr_with_aliases_kinded`, the trait-with-args
+    /// intercept arm placed immediately after the 4603 structure-with-args
+    /// arm and before simple-name resolution).
+    ///
+    /// Emitted as a `Severity::Error` when a type annotation of the form
+    /// `name<args…>` names a **trait** (`name` ∈ `trait_names`) together with
+    /// one or more type arguments. Trait type-arguments are not yet
+    /// supported by the language; before this code existed, the resolver
+    /// fell through to the simple-name path and silently produced a bare
+    /// `Type::TraitObject(name)` with the arguments dropped and no
+    /// diagnostic. A single label is attached at the type-expression span,
+    /// and the resolver returns `Some(Type::Error)` (poison, anti-cascade —
+    /// the `BareScalarType` pattern) so exactly one clean diagnostic is seen
+    /// per occurrence.
+    ///
+    /// Canonical message form (the `E_TYPE_ARG_ON_TRAIT:` mnemonic is
+    /// embedded in the message text itself, since `DiagnosticCode` has no
+    /// code→mnemonic map and the CLI signal must be stderr-visible):
+    ///   `"E_TYPE_ARG_ON_TRAIT: trait '<name>' does not accept type
+    ///    arguments (given '<args-as-written>'); trait type-arguments are
+    ///    not yet supported"`
+    /// with the trait name and its type argument(s) rendered as written
+    /// (via `TypeExpr`'s `Display` impl).
+    ///
+    /// Empty `type_args` keeps `Type::TraitObject` resolution byte-identical
+    /// (this code is not emitted in that case). Structures keep the 4603
+    /// `Type::Applied` path checked by [`TypeArgArity`] / [`TypeArgBound`] —
+    /// the structure arm runs first, so a name that is both a structure and
+    /// a trait with args resolves via `Type::Applied`, not this rejection.
+    ///
+    /// Distinct from [`TypeArgArity`] / [`TypeArgBound`] (structure-only
+    /// `Type::Applied`-path arity/bound codes; this code instead fires on
+    /// the trait-name path, before any `Type::Applied` is ever constructed)
+    /// and from [`UnresolvedType`] (a name-resolution failure — here the
+    /// name resolves fine, its type arguments are the problem).
+    ///
+    /// PRD mnemonic: `E_TYPE_ARG_ON_TRAIT`.
+    /// See `docs/prds/v0_6/compiler-type-hygiene.md` §3 decision 1, §7.1.
+    TypeArgOnTrait,
     /// Origin: `crates/reify-compiler/src/expr.rs` (BinOp::Pow + Scalar branch).
     ///
     /// Emitted as a `Severity::Error` when a dimensioned (`Scalar<Q>`) value is
