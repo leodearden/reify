@@ -447,6 +447,10 @@ fn rotation_90z() -> Value {
     }
 }
 
+/// INTENTIONAL (lib.rs:4459-4464): `Tensor × scalar-like` scales each
+/// component via `scale_components(.., eval_mul, Value::Tensor)` — the guard
+/// only excludes `Value::Tensor` itself, so Int/Real/Scalar all qualify as
+/// "scalar-like" here.
 #[test]
 fn mul_tensor_times_int_yields_scaled_tensor() {
     let t = tensor1(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
@@ -466,7 +470,10 @@ fn mul_tensor_times_int_yields_scaled_tensor() {
     }
 }
 
-/// Commutative counterpart of `mul_tensor_times_int_yields_scaled_tensor`.
+/// INTENTIONAL (lib.rs:4459-4464): commutative counterpart of
+/// `mul_tensor_times_int_yields_scaled_tensor` — `(Tensor, scalar) | (scalar, Tensor)`
+/// is a single match arm (guarded only by "not `Tensor`"), so both operand
+/// orders share one code path.
 #[test]
 fn mul_int_times_tensor_yields_scaled_tensor() {
     let t = tensor1(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
@@ -486,6 +493,10 @@ fn mul_int_times_tensor_yields_scaled_tensor() {
     }
 }
 
+/// INTENTIONAL (lib.rs:4465-4473): `Vector × scalar-like` scales each
+/// `Scalar` component via `scale_components`, preserving each component's
+/// dimension — the guard excludes `Vector | Point | Tensor | Transform`, so
+/// Int/Real/Scalar all qualify.
 #[test]
 fn mul_vector_times_int_yields_scaled_vector() {
     let v = vec3(DimensionVector::LENGTH, 1.0, 2.0, 3.0);
@@ -513,7 +524,9 @@ fn mul_vector_times_int_yields_scaled_vector() {
     }
 }
 
-/// Commutative counterpart of `mul_vector_times_int_yields_scaled_vector`.
+/// INTENTIONAL (lib.rs:4465-4473): commutative counterpart of
+/// `mul_vector_times_int_yields_scaled_vector` — `(Vector, scalar) | (scalar, Vector)`
+/// is a single match arm, so both operand orders share one code path.
 #[test]
 fn mul_int_times_vector_yields_scaled_vector() {
     let v = vec3(DimensionVector::LENGTH, 1.0, 2.0, 3.0);
@@ -541,6 +554,10 @@ fn mul_int_times_vector_yields_scaled_vector() {
     }
 }
 
+/// INTENTIONAL (lib.rs:4474-4484): `Point × scalar-like` scales each `Scalar`
+/// component via `scale_components`, same shape as the Vector arm. Source
+/// comment flags this as "a pragmatic deviation from strict affine rules,
+/// needed for weighted interpolation and barycentric coordinates".
 #[test]
 fn mul_point_times_int_yields_scaled_point() {
     let p = pt3(DimensionVector::LENGTH, 1.0, 2.0, 3.0);
@@ -568,7 +585,9 @@ fn mul_point_times_int_yields_scaled_point() {
     }
 }
 
-/// Commutative counterpart of `mul_point_times_int_yields_scaled_point`.
+/// INTENTIONAL (lib.rs:4474-4484): commutative counterpart of
+/// `mul_point_times_int_yields_scaled_point` — `(Point, scalar) | (scalar, Point)`
+/// is a single match arm, so both operand orders share one code path.
 #[test]
 fn mul_int_times_point_yields_scaled_point() {
     let p = pt3(DimensionVector::LENGTH, 1.0, 2.0, 3.0);
@@ -596,6 +615,9 @@ fn mul_int_times_point_yields_scaled_point() {
     }
 }
 
+/// INTENTIONAL (lib.rs:4485-4505): `Transform × Vector` applies rotation
+/// ONLY (translation is deliberately ignored for vectors — a vector is a
+/// free/direction quantity, not a position). Shape is `Vector → Vector`.
 /// Identity transform * vector returns the same vector exactly (identity
 /// quaternion rotation is exact under IEEE 754 — no rounding).
 #[test]
@@ -606,8 +628,11 @@ fn mul_identity_transform_times_vector_yields_same_vector() {
     assert_eq!(result, v);
 }
 
-/// 90-degree Z rotation applied to (1,0,0) yields (0,1,0); the transform's
-/// large translation is ignored (Transform * Vector is rotation-only).
+/// INTENTIONAL (lib.rs:4485-4505): same arm as
+/// `mul_identity_transform_times_vector_yields_same_vector`, exercised with a
+/// non-trivial rotation. 90-degree Z rotation applied to (1,0,0) yields
+/// (0,1,0); the transform's large translation is ignored (Transform * Vector
+/// is rotation-only — confirms translation is NOT consulted).
 #[test]
 fn mul_transform_90z_times_vector_rotates_ignoring_translation() {
     let v = vec3(DimensionVector::LENGTH, 1.0, 0.0, 0.0);
@@ -626,8 +651,11 @@ fn mul_transform_90z_times_vector_rotates_ignoring_translation() {
     }
 }
 
-/// 90-degree Z rotation + (10,20,30) translation applied to point (1,0,0):
-/// rotate(1,0,0) -> (0,1,0), then + (10,20,30) = (10,21,30).
+/// INTENTIONAL (lib.rs:4506-4544): `Transform × Point` applies rotation THEN
+/// ADDS translation — contrast with Transform×Vector, where translation is
+/// ignored. Shape is `Point → Point`. 90-degree Z rotation + (10,20,30)
+/// translation applied to point (1,0,0): rotate(1,0,0) -> (0,1,0), then +
+/// (10,20,30) = (10,21,30).
 #[test]
 fn mul_transform_90z_times_point_rotates_and_translates() {
     let p = pt3(DimensionVector::LENGTH, 1.0, 0.0, 0.0);
@@ -646,8 +674,11 @@ fn mul_transform_90z_times_point_rotates_and_translates() {
     }
 }
 
-/// Compose (R1,t1)*(R2,t2) = (R1*R2, R1*t2+t1). R1 = 90Z, t1 = (10,0,0),
-/// R2 = identity, t2 = (1,0,0). Result rotation = 90Z, result translation =
+/// INTENTIONAL (lib.rs:4545-4626): `Transform × Transform` composes rotations
+/// (quaternion product, normalized) and translations
+/// (`R1 * t2 + t1`) — shape is `Transform → Transform`. Compose
+/// (R1,t1)*(R2,t2) = (R1*R2, R1*t2+t1). R1 = 90Z, t1 = (10,0,0), R2 =
+/// identity, t2 = (1,0,0). Result rotation = 90Z, result translation =
 /// 90Z*(1,0,0) + (10,0,0) = (0,1,0) + (10,0,0) = (10,1,0).
 #[test]
 fn mul_transform_times_transform_composes() {
