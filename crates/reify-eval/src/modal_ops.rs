@@ -438,23 +438,19 @@ pub(crate) fn eigensolve_modal(
     // order and displace the fundamental. A stable sort by frequency is a no-op
     // in the normal case but makes the ordering self-enforcing rather than
     // dependent on the solver invariant (suggestion 3 / architecture).
-    let mut order: Vec<usize> = (0..n_modes_out).collect();
-    order.sort_by(|&a, &b| {
-        frequencies[a]
-            .partial_cmp(&frequencies[b])
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    if order.iter().enumerate().any(|(i, &src)| i != src) {
-        frequencies = permute_by(frequencies, &order);
-        eigenvalues = permute_by(eigenvalues, &order);
-        participation_mass = permute_by(participation_mass, &order);
-        phi_free = permute_by(phi_free, &order);
-        phi_full = permute_by(phi_full, &order);
+    if let Some(order) = frequency_ascending_order(&frequencies) {
+        if order.iter().enumerate().any(|(i, &src)| i != src) {
+            frequencies = permute_by(frequencies, &order);
+            eigenvalues = permute_by(eigenvalues, &order);
+            participation_mass = permute_by(participation_mass, &order);
+            phi_free = permute_by(phi_free, &order);
+            phi_full = permute_by(phi_full, &order);
+        }
+        debug_assert!(
+            frequencies.windows(2).all(|w| w[0] <= w[1]),
+            "modal frequencies must be sorted ascending after the reorder",
+        );
     }
-    debug_assert!(
-        frequencies.windows(2).all(|w| w[0] <= w[1]),
-        "modal frequencies must be sorted ascending after the reorder",
-    );
 
     // ---- Diagnostics (message-based, code: None; design_decision #6) ------
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
@@ -670,6 +666,20 @@ fn permute_by<T: Default>(mut items: Vec<T>, order: &[usize]) -> Vec<T> {
         .iter()
         .map(|&i| std::mem::take(&mut items[i]))
         .collect()
+}
+
+/// Compute the permutation that reorders `frequencies` ascending, for
+/// [`permute_by`] to apply in lockstep across `eigensolve_modal`'s five
+/// per-mode arrays (frequencies, eigenvalues, participation_mass, phi_free,
+/// phi_full).
+fn frequency_ascending_order(frequencies: &[f64]) -> Option<Vec<usize>> {
+    let mut order: Vec<usize> = (0..frequencies.len()).collect();
+    order.sort_by(|&a, &b| {
+        frequencies[a]
+            .partial_cmp(&frequencies[b])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    Some(order)
 }
 
 /// Solve the generalized symmetric eigenproblem `K_free φ = λ M_free φ`,
