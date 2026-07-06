@@ -5455,6 +5455,76 @@ pub(crate) fn fixup_option_none_for_let(
 }
 
 // ---------------------------------------------------------------------------
+// Param value-cell decl construction (shared auto_free/param decl-building
+// block, task ζ #5058, PRD compiler-type-hygiene.md §2 dup (e) / §3 decision
+// 10). Single home for the `ValueCellDecl` construction previously
+// copy-pasted at three sites: top-level structure params (entity.rs),
+// port-member params (entity.rs), and guarded-member params (guards.rs,
+// reached via `pub(crate) use entity::*`).
+// ---------------------------------------------------------------------------
+
+/// Build the `ValueCellDecl` for a `param` member, shared by all three
+/// param-decl sites (top-level structure params, port-member params, and
+/// guarded-member params).
+///
+/// Fixes the fields identical across all three sites (`is_aux: false`, the
+/// `Auto`-vs-`Param` branch shape keyed on `auto_free`) and parameterizes the
+/// three axes that differ (`visibility`, `solver_hints`, and default-value
+/// compilation via `compile_default`).
+///
+/// On the auto branch (`auto_free = Some(free)`) `compile_default` is NOT
+/// invoked — `default_expr` is unconditionally `None` — matching the
+/// original duplicated code at all three sites, none of which ever compiled
+/// a default expression for an auto param. On the non-auto branch
+/// (`auto_free = None`), `compile_default` is invoked exactly once with a
+/// `&Type` view of `cell_type` (passed by reference so the caller's
+/// compile/fixup/type-check logic can use it before `cell_type` is moved
+/// into the returned decl) and its return value becomes `default_expr`
+/// verbatim.
+///
+/// `compile_default` encapsulates each call site's own compile-expr variant
+/// (`compile_expr_with_expected` at the two entity.rs sites vs.
+/// `compile_expr_guarded` at the guards.rs site), the `fixup_option_none_for_param`
+/// call, and — at the two entity.rs sites only — the `check_param_default_type`
+/// cross-check. `guards.rs`'s guarded param never calls `check_param_default_type`
+/// today, so keeping that check inside the closure (rather than hoisting it into
+/// this helper) preserves each site's exact diagnostic surface.
+pub(crate) fn build_param_value_cell_decl(
+    id: ValueCellId,
+    auto_free: Option<bool>,
+    cell_type: Type,
+    visibility: Visibility,
+    solver_hints: Vec<SolverHint>,
+    span: SourceSpan,
+    compile_default: impl FnOnce(&Type) -> Option<CompiledExpr>,
+) -> ValueCellDecl {
+    if let Some(free) = auto_free {
+        ValueCellDecl {
+            id,
+            kind: ValueCellKind::Auto { free },
+            visibility,
+            is_aux: false,
+            cell_type,
+            default_expr: None,
+            solver_hints,
+            span,
+        }
+    } else {
+        let default_expr = compile_default(&cell_type);
+        ValueCellDecl {
+            id,
+            kind: ValueCellKind::Param,
+            visibility,
+            is_aux: false,
+            cell_type,
+            default_expr,
+            solver_hints,
+            span,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Constraint-instantiation expansion (shared by `MemberDecl::ConstraintInst`
 // and the `forall` `ConstraintBody::Instantiation` branch in
 // `forall_elaborate.rs`)
