@@ -253,3 +253,22 @@ fn warn_mode_report_lists_the_six_currently_unwired_fields() {
         ]
     );
 }
+
+/// The sorted warn-mode debt ledger: every `allowlist` field plus every
+/// `table` field classified `FullReloadOnly` — i.e. every field not live on
+/// a param edit today. L2/L3 shrink this list as they clear allowlist
+/// entries and wire live sync mechanisms.
+fn currently_unwired_fields(
+    table: &BTreeMap<&'static str, SyncMechanism>,
+    allowlist: &BTreeMap<&'static str, &'static str>,
+) -> Vec<String> {
+    let mut fields: Vec<String> = allowlist.keys().map(|k| k.to_string()).collect();
+    fields.extend(
+        table
+            .iter()
+            .filter(|(_, mechanism)| matches!(mechanism, SyncMechanism::FullReloadOnly(_)))
+            .map(|(k, _)| k.to_string()),
+    );
+    fields.sort();
+    fields
+}
