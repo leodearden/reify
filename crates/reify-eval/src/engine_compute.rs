@@ -806,7 +806,7 @@ mod tests {
 
     use crate::Engine;
     use crate::engine_compute::{
-        ComputeFn, ComputeOutcome, RealizationReadHandle, RealizedContent,
+        ComputeFn, ComputeOutcome, RealizationReadHandle, RealizedContent, panic_payload_message,
     };
     use crate::graph::CancellationHandle;
 
@@ -4167,5 +4167,97 @@ mod tests {
         let mut inputs = baseline_elastic_static_inputs();
         inputs[4] = Value::Undef;
         assert_elastic_static_input_yields_failed(inputs);
+    }
+
+    // ── Task #5079 step-3: RED — diagnostic enrichment ──────────────────────
+    //
+    // `panic_payload_message` does not exist yet (test (h) below is a compile
+    // error until step-4 adds it), and step-2's generic message
+    // ("compute trampoline '<t>' panicked") does not contain the panic
+    // payload text (tests (i)/(j) below), so this whole section is RED on
+    // two counts until step-4 lands the helper and interpolates its output.
+
+    /// (h) `panic_payload_message` must extract the payload text from both
+    /// `&str` and `String` panic payloads, and fall back to a fixed message
+    /// for any other payload type.
+    #[test]
+    fn panic_payload_message_extracts_str_string_and_falls_back() {
+        let str_payload: Box<dyn std::any::Any + Send> = Box::new("boom_str");
+        assert_eq!(panic_payload_message(str_payload.as_ref()), "boom_str");
+
+        let string_payload: Box<dyn std::any::Any + Send> =
+            Box::new(String::from("boom_string"));
+        assert_eq!(panic_payload_message(string_payload.as_ref()), "boom_string");
+
+        let other_payload: Box<dyn std::any::Any + Send> = Box::new(42i32);
+        assert_eq!(
+            panic_payload_message(other_payload.as_ref()),
+            "<non-string panic payload>"
+        );
+    }
+
+    /// (i) The `Failed` diagnostic message for a `&str`-payload panic must
+    /// additionally CONTAIN the panic payload text itself, not just the
+    /// target name and "panicked".
+    #[test]
+    fn invoke_compute_trampoline_str_panic_message_contains_payload() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn("test::panic_str", panics_str_fn as ComputeFn);
+
+        let result = engine.invoke_compute_trampoline(
+            "test::panic_str",
+            &[Value::Int(0)],
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        );
+
+        match result {
+            Some(ComputeOutcome::Failed { diagnostics, .. }) => {
+                assert!(
+                    diagnostics.iter().any(|d| d.message.contains("boom_str")),
+                    "expected the Failed diagnostic message to contain the panic \
+                     payload text \"boom_str\", got {diagnostics:?}",
+                );
+            }
+            other => panic!(
+                "expected Some(ComputeOutcome::Failed {{ .. }}) after a panicking \
+                 trampoline, got {other:?}"
+            ),
+        }
+    }
+
+    /// (j) Likewise for a `String`-payload panic: the `Failed` diagnostic
+    /// message must CONTAIN the panic payload text.
+    #[test]
+    fn invoke_compute_trampoline_string_panic_message_contains_payload() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn("test::panic_string", panics_string_fn as ComputeFn);
+
+        let result = engine.invoke_compute_trampoline(
+            "test::panic_string",
+            &[Value::Int(0)],
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        );
+
+        match result {
+            Some(ComputeOutcome::Failed { diagnostics, .. }) => {
+                assert!(
+                    diagnostics
+                        .iter()
+                        .any(|d| d.message.contains("boom_string")),
+                    "expected the Failed diagnostic message to contain the panic \
+                     payload text \"boom_string\", got {diagnostics:?}",
+                );
+            }
+            other => panic!(
+                "expected Some(ComputeOutcome::Failed {{ .. }}) after a panicking \
+                 trampoline, got {other:?}"
+            ),
+        }
     }
 }
