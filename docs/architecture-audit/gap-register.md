@@ -598,14 +598,14 @@ Primary: `docs/prds/v0_3/geometry-handle-runtime.md` (resolves cluster C-28 / GR
 | Field | Value |
 |---|---|
 | Mechanism | `solve_loop_closure_with_diagnostics` wired but bypassed by `snapshot()` / `sweep()`; typed diagnostic variants reserved but never reach `EvalResult`; `is_singular` flag never on Snapshot Map |
-| State | **PARTIAL / FICTION** (diagnostic infrastructure shipped; user surface bypassed) |
+| State | **WIRED** (2026-07-06: KCC Phase α task 3580 landed — `snapshot()`/`sweep()` now route through `solve_loop_closure_with_diagnostics`; `is_singular` + typed diagnostic surfaced) |
 | Failure mode | F4 |
 | Evidence | `findings/kinematic-constraints-v02.md` M-009, M-010, M-011; `findings/kinematic-constraints-toplevel.md` M-007 (closed-chain) |
 | Cited by PRDs | kinematic-constraints-v02, kinematic-constraints-toplevel |
-| Blocks tasks | Per cluster C-37; **task #3471 filed** |
-| Disposition | **fix-now → task #3471 filed** ("Kinematic singularity: route snapshot()/sweep() through solve_loop_closure_with_diagnostics; surface is_singular + typed diagnostic"). Leaf observable: near-singular kinematic snapshot returns `Snapshot.is_singular=true` AND `EvalResult` diagnostic stream contains typed `KinematicSingular` entry. |
+| Blocks tasks | Per cluster C-37; resolved by **task #3580** |
+| Disposition | **fix-now resolved by `docs/prds/v0_3/kinematic-constraints-completion.md` Phase α (task 3580)** ("route snapshot()/sweep() through solve_loop_closure_with_diagnostics; surface is_singular + typed diagnostic"); landed on main at `186b50f52a`. The previously-cited **task #3471 cite is stale — stripped**: per task 3844's note, 3471 was ID-recycled/unrelated post-SIGABRT recovery; the real singularity work landed as task 3580, not 3471. Mechanisms **M-009/M-010/M-011** (and toplevel **M-007** closed-chain) are now WIRED, provenance → task 3580. |
 | Discovered | 2026-05-12 architecture audit |
-| Notes | Phase-3 synthesis §5e flagged kinematic-toplevel M-007 as one of the "task done; runtime contract absent" sites — the v0.1 closed-chain contract was subsumed by v0.2 without retiring the v0.1 promise. |
+| Notes | Phase-3 synthesis §5e flagged kinematic-toplevel M-007 as one of the "task done; runtime contract absent" sites — the v0.1 closed-chain contract was subsumed by v0.2 without retiring the v0.1 promise. Resolved as part of the `docs/prds/v0_3/kinematic-constraints-completion.md` decomposition Phase α; see that PRD's §4 and §15 (gap-register companion edits, applied by task θ = 3847, this edit). |
 
 ### GR-040 — Method-call AST shape absent (cluster C-38)
 
