@@ -1797,6 +1797,18 @@ mod tests {
         assert!(is_geometry_function("offset_solid"));
     }
 
+    /// `offset_surface` (θ, task 4192) offsets a face along its normal by a
+    /// scalar distance (Skin mode of `BRepOffsetAPI_MakeOffsetShape`, distinct
+    /// from `offset_solid`'s `PerformBySimple` solid mode), producing a fresh
+    /// Surface. It must be recognised as a geometry-handle producer so the
+    /// compiler dispatches it through `compile_geometry_call` / `compile_modify_op`.
+    /// RED until step-6 adds "offset_surface" to GEOMETRY_FUNCTION_NAMES.
+    #[test]
+    fn compile_geometry_offset_surface_recognized() {
+        assert!(is_geometry_function("offset_surface"));
+        assert!(GEOMETRY_FUNCTION_NAMES.contains(&"offset_surface"));
+    }
+
     #[test]
     fn compile_geometry_fillet_all_recognized() {
         assert!(is_geometry_function("fillet_all"));
