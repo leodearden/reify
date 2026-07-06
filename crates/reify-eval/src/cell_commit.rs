@@ -179,7 +179,7 @@ pub(crate) fn commit_cell_result(
             );
             (Some(outcome), None)
         }
-        CacheLeg::Skip(_) => unimplemented!("CacheLeg::Skip — #5038"),
+        CacheLeg::Skip(reason) => (None, Some(reason)),
     };
 
     journal.record(EvalEvent {
