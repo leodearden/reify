@@ -1,6 +1,7 @@
 //! Integration gate for task δ (#5020): coherent multi-aspect objective solves
-//! + negative rejection, exercised via the SHIPPED `examples/multi_aspect_objective.ri`
-//! (BT4 positive) and `examples/multi_aspect_objective_mixed.ri` (BT1 negative).
+//! and negative rejection, exercised via the SHIPPED
+//! `examples/multi_aspect_objective.ri` (BT4 positive) and
+//! `examples/multi_aspect_objective_mixed.ri` (BT1 negative).
 //!
 //! PRD: `docs/prds/v0_6/multi-aspect-objective-units-coherence.md`.
 //!

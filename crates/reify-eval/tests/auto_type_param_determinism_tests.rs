@@ -170,6 +170,18 @@ const SKIP_SET: &[(&str, &str)] = &[
          CLI-only-diagnostic and are intentionally NOT skipped. \
          Mirrored from examples_smoke.rs::SKIP_SET (task 3980 ε).",
     ),
+    (
+        "multi_aspect_objective_mixed.ri",
+        "PRD δ (#5020) BT1 negative fixture — intentionally emits \
+         E_OBJECTIVE_MIXED_DIMENSION (ObjectiveDimensionIncoherent) at compile: two \
+         same-sense minimize decls over incommensurable dimensions (Money cost, Mass \
+         mass) lower to a 2-term WeightedSum that fails α's units-coherence guard — \
+         check_source_with_stdlib panics on compile errors. Positive (coherent) \
+         coverage lives in the sibling multi_aspect_objective.ri (NOT skipped) and \
+         both are exercised end-to-end by \
+         crates/reify-eval/tests/multi_aspect_objective_example_e2e.rs. \
+         Mirrored from examples_smoke.rs::SKIP_SET (task δ #5020).",
+    ),
 ];
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
