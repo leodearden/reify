@@ -3490,6 +3490,57 @@ fn classify_material_as_printed_zones(lambda: &Value) -> MaterialModel {
     MaterialModel::Heterogeneous(field)
 }
 
+/// Errors produced by the FEA `Value`-shape leaf extractors/classifiers when
+/// the input does not match the expected shape (PRD compute-fea-hardening
+/// §C3).
+///
+/// This module's extract/classify helpers are being migrated (tasks D2-D9)
+/// from "panic on malformed `Value`" to `Result<_, FeaValueShapeError>`. Task
+/// D2 (this task) only Result-ifies the leaf extractors (`extract_scalar_si`,
+/// `scalar_si_field`, `real_field`, `extract_point3_si`, `extract_vec3_si`);
+/// every call site still bridges with `.unwrap_or_else(|e| panic!("{e}"))`,
+/// so external behavior is unchanged until D9 removes the shims and reports
+/// the first error as a diagnostic naming the offending arg.
+#[allow(dead_code)] // ExpectedStructureInstance is constructed by D3/D5/D7, not D2
+#[derive(Debug, Clone, PartialEq)]
+enum FeaValueShapeError {
+    /// Expected a `Value::StructureInstance`, got something else.
+    ExpectedStructureInstance { context: &'static str, got: String },
+    /// Expected a `Value::Scalar { .. }`, got something else.
+    ExpectedScalar { context: &'static str, got: String },
+    /// Expected a `Value::Real`, got something else.
+    ExpectedReal { context: &'static str, got: String },
+    /// Expected an ordered component sequence (`Value::List`/`Point`/`Vector`),
+    /// got something else, or the wrong arity.
+    ExpectedList { context: &'static str, got: String },
+    /// A required `StructureInstance` field was absent.
+    MissingField { context: &'static str, field: &'static str },
+}
+
+impl std::fmt::Display for FeaValueShapeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FeaValueShapeError::ExpectedStructureInstance { context, got } => write!(
+                f,
+                "expected Value::StructureInstance for {context}, got {got}"
+            ),
+            FeaValueShapeError::ExpectedScalar { context, got } => {
+                write!(f, "expected Value::Scalar for {context}, got {got}")
+            }
+            FeaValueShapeError::ExpectedReal { context, got } => {
+                write!(f, "expected Value::Real for {context}, got {got}")
+            }
+            FeaValueShapeError::ExpectedList { context, got } => write!(
+                f,
+                "expected a list-shaped Value (List/Point/Vector) for {context}, got {got}"
+            ),
+            FeaValueShapeError::MissingField { context, field } => {
+                write!(f, "missing field {field:?} for {context}")
+            }
+        }
+    }
+}
+
 /// Extract `[f64; 3]` SI values from a `Value::Point([Scalar<Length>, ...])`.
 ///
 /// Used to parse `aabb_min` and `aabb_max` from the AsPrintedZones lambda.
