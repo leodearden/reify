@@ -294,3 +294,120 @@ fn mul_real_times_scalar_preserves_dimension() {
         other => panic!("expected Scalar, got {:?}", other),
     }
 }
+
+// ── MUL: Complex arms (commutative) ─────────────────────────────────────────
+
+#[test]
+fn mul_complex_length_times_complex_time_yields_multiplied_dims() {
+    // (2+3i){LENGTH} * (5+7i){TIME}: re = 2*5 - 3*7 = -11, im = 2*7 + 3*5 = 29.
+    let a = cx(2.0, 3.0, DimensionVector::LENGTH);
+    let b = cx(5.0, 7.0, DimensionVector::TIME);
+    let result = eval_binop(BinOp::Mul, a, b);
+    match result {
+        Value::Complex { re, im, dimension } => {
+            assert_eq!(
+                dimension,
+                DimensionVector::LENGTH.mul(&DimensionVector::TIME)
+            );
+            assert!((re - -11.0).abs() < 1e-12, "re = {re}, expected ~-11.0");
+            assert!((im - 29.0).abs() < 1e-12, "im = {im}, expected ~29.0");
+        }
+        other => panic!("expected Complex, got {:?}", other),
+    }
+}
+
+#[test]
+fn mul_complex_times_scalar_dims_multiply() {
+    // (2+3i){LENGTH} * 5{TIME}: re = 2*5 = 10, im = 3*5 = 15.
+    let a = cx(2.0, 3.0, DimensionVector::LENGTH);
+    let b = sc(5.0, DimensionVector::TIME);
+    let result = eval_binop(BinOp::Mul, a, b);
+    match result {
+        Value::Complex { re, im, dimension } => {
+            assert_eq!(
+                dimension,
+                DimensionVector::LENGTH.mul(&DimensionVector::TIME)
+            );
+            assert!((re - 10.0).abs() < 1e-12, "re = {re}, expected ~10.0");
+            assert!((im - 15.0).abs() < 1e-12, "im = {im}, expected ~15.0");
+        }
+        other => panic!("expected Complex, got {:?}", other),
+    }
+}
+
+/// Commutative counterpart of `mul_complex_times_scalar_dims_multiply`.
+#[test]
+fn mul_scalar_times_complex_dims_multiply() {
+    let a = sc(5.0, DimensionVector::TIME);
+    let b = cx(2.0, 3.0, DimensionVector::LENGTH);
+    let result = eval_binop(BinOp::Mul, a, b);
+    match result {
+        Value::Complex { re, im, dimension } => {
+            assert_eq!(
+                dimension,
+                DimensionVector::LENGTH.mul(&DimensionVector::TIME)
+            );
+            assert!((re - 10.0).abs() < 1e-12, "re = {re}, expected ~10.0");
+            assert!((im - 15.0).abs() < 1e-12, "im = {im}, expected ~15.0");
+        }
+        other => panic!("expected Complex, got {:?}", other),
+    }
+}
+
+#[test]
+fn mul_complex_times_int_preserves_dimension() {
+    let a = cx(2.0, 3.0, DimensionVector::LENGTH);
+    let result = eval_binop(BinOp::Mul, a, Value::Int(4));
+    match result {
+        Value::Complex { re, im, dimension } => {
+            assert_eq!(dimension, DimensionVector::LENGTH);
+            assert!((re - 8.0).abs() < 1e-12, "re = {re}, expected ~8.0");
+            assert!((im - 12.0).abs() < 1e-12, "im = {im}, expected ~12.0");
+        }
+        other => panic!("expected Complex, got {:?}", other),
+    }
+}
+
+/// Commutative counterpart of `mul_complex_times_int_preserves_dimension`.
+#[test]
+fn mul_int_times_complex_preserves_dimension() {
+    let b = cx(2.0, 3.0, DimensionVector::LENGTH);
+    let result = eval_binop(BinOp::Mul, Value::Int(4), b);
+    match result {
+        Value::Complex { re, im, dimension } => {
+            assert_eq!(dimension, DimensionVector::LENGTH);
+            assert!((re - 8.0).abs() < 1e-12, "re = {re}, expected ~8.0");
+            assert!((im - 12.0).abs() < 1e-12, "im = {im}, expected ~12.0");
+        }
+        other => panic!("expected Complex, got {:?}", other),
+    }
+}
+
+#[test]
+fn mul_complex_times_real_preserves_dimension() {
+    let a = cx(2.0, 3.0, DimensionVector::LENGTH);
+    let result = eval_binop(BinOp::Mul, a, Value::Real(1.5));
+    match result {
+        Value::Complex { re, im, dimension } => {
+            assert_eq!(dimension, DimensionVector::LENGTH);
+            assert!((re - 3.0).abs() < 1e-12, "re = {re}, expected ~3.0");
+            assert!((im - 4.5).abs() < 1e-12, "im = {im}, expected ~4.5");
+        }
+        other => panic!("expected Complex, got {:?}", other),
+    }
+}
+
+/// Commutative counterpart of `mul_complex_times_real_preserves_dimension`.
+#[test]
+fn mul_real_times_complex_preserves_dimension() {
+    let b = cx(2.0, 3.0, DimensionVector::LENGTH);
+    let result = eval_binop(BinOp::Mul, Value::Real(1.5), b);
+    match result {
+        Value::Complex { re, im, dimension } => {
+            assert_eq!(dimension, DimensionVector::LENGTH);
+            assert!((re - 3.0).abs() < 1e-12, "re = {re}, expected ~3.0");
+            assert!((im - 4.5).abs() < 1e-12, "im = {im}, expected ~4.5");
+        }
+        other => panic!("expected Complex, got {:?}", other),
+    }
+}
