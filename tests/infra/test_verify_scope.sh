@@ -792,6 +792,92 @@ assert "VS-incl: selective test_verify_*.sh loop PRESENT (role=task pole; no dou
     plan_has 'tests/infra/test_verify_\*\.sh'
 
 # ===========================================================================
+# VS-map-* scenarios: task 5125 broadened verify-pipeline-infra-tests.txt
+# coverage. Each changes (or creates) one newly-mapped artifact on a fresh
+# task-branch (role=task, --scope branch, NO --include-infra) and asserts its
+# selective glob is selected. The negative control for "unmapped artifact ->
+# no selection" is already established by Scenario VS-neg above; these
+# scenarios only need the positive per-row assertion.
+#
+# RED until step-5: scripts/verify-pipeline-infra-tests.txt does not yet map
+# these artifacts, so select_infra_tests() selects nothing for them.
+# ===========================================================================
+echo ""
+echo "=== VS-map-* scenarios: broadened infra-map coverage (task 5125) ==="
+
+# plan_for_vs_map_append <fixture-relpath> — on a fresh task-branch off
+# FIX_VS, append a sentinel comment to an EXISTING fixture file (already
+# copied in by make_branch_fixture), commit, and capture the selective
+# (no --include-infra) plan into PLAN_OUT. Mirrors plan_for_vs_change.
+plan_for_vs_map_append() {
+    local _f="$1"
+    git -C "$FIX_VS" checkout -q -b task-branch
+    echo "# task-5125 map-coverage sentinel" >> "$FIX_VS/$_f"
+    git -C "$FIX_VS" add "$_f"
+    git -C "$FIX_VS" commit -q -m "task changes"
+    PLAN_OUT="$(cd "$FIX_VS" && bash scripts/verify.sh all --profile debug --scope branch --print-plan 2>/dev/null)" || true
+    git -C "$FIX_VS" checkout -q main
+    git -C "$FIX_VS" branch -q -D task-branch
+}
+
+# plan_for_vs_map_new <fixture-relpath> — on a fresh task-branch off FIX_VS,
+# CREATE a new file at a mapped path (not present in the fixture), commit,
+# and capture the selective (no --include-infra) plan into PLAN_OUT.
+plan_for_vs_map_new() {
+    local _f="$1"
+    git -C "$FIX_VS" checkout -q -b task-branch
+    mkdir -p "$FIX_VS/$(dirname "$_f")"
+    printf 'x\n' > "$FIX_VS/$_f"
+    git -C "$FIX_VS" add "$_f"
+    git -C "$FIX_VS" commit -q -m "task changes"
+    PLAN_OUT="$(cd "$FIX_VS" && bash scripts/verify.sh all --profile debug --scope branch --print-plan 2>/dev/null)" || true
+    git -C "$FIX_VS" checkout -q main
+    git -C "$FIX_VS" branch -q -D task-branch
+}
+
+echo ""
+echo "--- Scenario VS-map-occt: scripts/occt-scope-lib.sh changed -> test_verify_*.sh selected (RED until step-5) ---"
+plan_for_vs_map_append scripts/occt-scope-lib.sh
+assert "VS-map-occt: plan contains test_verify_*.sh glob literal" \
+    plan_has 'tests/infra/test_verify_\*\.sh'
+
+echo ""
+echo "--- Scenario VS-map-affected: scripts/affected-crates-lib.sh changed -> test_verify_*.sh selected (RED until step-5) ---"
+plan_for_vs_map_append scripts/affected-crates-lib.sh
+assert "VS-map-affected: plan contains test_verify_*.sh glob literal" \
+    plan_has 'tests/infra/test_verify_\*\.sh'
+
+echo ""
+echo "--- Scenario VS-map-release: scripts/release-scope-lib.sh changed -> test_verify_*.sh selected (RED until step-5) ---"
+plan_for_vs_map_append scripts/release-scope-lib.sh
+assert "VS-map-release: plan contains test_verify_*.sh glob literal" \
+    plan_has 'tests/infra/test_verify_\*\.sh'
+
+echo ""
+echo "--- Scenario VS-map-cpuadmit: scripts/cpu-admit.sh changed -> test_verify_*.sh selected (RED until step-5) ---"
+plan_for_vs_map_append scripts/cpu-admit.sh
+assert "VS-map-cpuadmit: plan contains test_verify_*.sh glob literal" \
+    plan_has 'tests/infra/test_verify_\*\.sh'
+
+echo ""
+echo "--- Scenario VS-map-runall: tests/infra/run_all.sh created -> test_run_all*.sh selected (RED until step-5) ---"
+plan_for_vs_map_new tests/infra/run_all.sh
+assert "VS-map-runall: plan contains test_run_all*.sh glob literal" \
+    plan_has 'tests/infra/test_run_all\*\.sh'
+
+echo ""
+echo "--- Scenario VS-map-land: scripts/land.sh created -> test_land_*.sh selected (RED until step-5) ---"
+plan_for_vs_map_new scripts/land.sh
+assert "VS-map-land: plan contains test_land_*.sh glob literal" \
+    plan_has 'tests/infra/test_land_\*\.sh'
+
+echo ""
+echo "--- Scenario VS-map-premerge: hooks/pre-merge-commit created -> test_hooks_call_verify.sh selected (RED until step-5) ---"
+plan_for_vs_map_new hooks/pre-merge-commit
+assert "VS-map-premerge: plan contains test_hooks_call_verify.sh glob literal" \
+    plan_has 'tests/infra/test_hooks_call_verify\.sh'
+
+# ===========================================================================
 # DS-* scenarios: doc-sync infra-map citing-test subset (task 4955)
 #
 # scripts/verify-pipeline-infra-tests.txt maps doc-sync docs (task 4955's
