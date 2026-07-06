@@ -85,6 +85,25 @@ impl ComputeDispatchRegistry {
     }
 }
 
+// Task #5079 / PRD compute-fea-hardening.md D1 (Contract C2): the
+// `catch_unwind` crash-safety floor in `Engine::invoke_compute_trampoline`
+// below is a documented no-op under `panic = "abort"` (the process would
+// still abort instead of converting a panicking `ComputeFn` into
+// `ComputeOutcome::Failed`). No `panic = "abort"` override exists anywhere
+// in the workspace today, so this cfg is inert — but it is a hard
+// compile-time tripwire against a *future* profile silently reintroducing
+// `abort` (e.g. for binary-size reasons) and defeating this hardening with
+// no other test signal.
+#[cfg(panic = "abort")]
+compile_error!(
+    "reify-eval requires panic = \"unwind\": Engine::invoke_compute_trampoline's \
+     catch_unwind crash-safety floor (task #5079) is a no-op under panic = \"abort\" and \
+     would silently stop converting panicking ComputeFn calls into \
+     ComputeOutcome::Failed. If this crate must build with panic = \"abort\", the \
+     hardening needs a different mechanism (e.g. isolating dispatch in a subprocess) \
+     before this guard can be removed."
+);
+
 impl crate::Engine {
     /// Invoke the registered compute trampoline for `target` with the supplied
     /// inputs and the **caller-provided** cancellation handle.
@@ -121,6 +140,19 @@ impl crate::Engine {
         // panic hook is intentionally NOT suppressed here — genuine-bug
         // backtraces must still print to stderr (PRD resolved decision); the
         // floor is "survive with a diagnostic," not "silent".
+        //
+        // Accepted limitation (shared-state consistency): `catch_unwind`
+        // restores control flow but does NOT roll back side effects a
+        // trampoline performed before panicking. Every trampoline registered
+        // today (elastic_static, buckling, modal, shell-extract, …) panics
+        // only during read-only input extraction, before any mesh/solve or
+        // cache/registry mutation, so no inconsistent shared state survives
+        // a caught panic. A future trampoline that mutates shared state (a
+        // poisoned `Mutex`, a partially-populated warm-state slot, a global
+        // registry) BEFORE any fallible step would silently violate this
+        // assumption — such a trampoline must reorder its mutation to after
+        // all fallible extraction, or this dispatcher needs a stronger
+        // recovery story than "convert to Failed".
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             f(
                 value_inputs,
@@ -4118,10 +4150,14 @@ mod tests {
 
     /// Shared assertion: registering `solve_elastic_static_trampoline` under
     /// `"test::elastic_static"` and invoking it with `inputs` must return
-    /// `Some(ComputeOutcome::Failed{..})` — the assertion returning at all
-    /// proves no panic escaped the test process (RED today: without
-    /// catch_unwind the panic unwinds through `invoke_compute_trampoline`
-    /// into this fn, failing the test).
+    /// `Some(ComputeOutcome::Failed{..})` with a diagnostic naming the
+    /// target and "panicked" — not merely `matches!(.., Some(Failed{..}))`,
+    /// which input extraction could also satisfy via a graceful (non-panic)
+    /// `Failed` return and would leave this test green without the
+    /// trampoline ever having panicked. Asserting the "panicked" wording
+    /// (only ever emitted by `invoke_compute_trampoline`'s `catch_unwind`
+    /// `Err` arm, per tests (a)/(b) above) is what actually pins this test
+    /// to the crash-safety mechanism under change.
     fn assert_elastic_static_input_yields_failed(inputs: Vec<Value>) {
         let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
         engine.register_compute_fn(
@@ -4138,11 +4174,22 @@ mod tests {
             &CancellationHandle::new(),
         );
 
-        assert!(
-            matches!(result, Some(ComputeOutcome::Failed { .. })),
-            "expected Some(ComputeOutcome::Failed {{ .. }}) for a single-Undef arg, \
-             got {result:?}",
-        );
+        match result {
+            Some(ComputeOutcome::Failed { diagnostics, .. }) => {
+                assert!(
+                    diagnostics.iter().any(|d| d.severity == reify_core::Severity::Error
+                        && d.message.contains("test::elastic_static")
+                        && d.message.contains("panicked")),
+                    "expected an Error diagnostic naming the target and \"panicked\" \
+                     (i.e. caught by catch_unwind, not a graceful Failed return that \
+                     never panicked), got {diagnostics:?}",
+                );
+            }
+            other => panic!(
+                "expected Some(ComputeOutcome::Failed {{ .. }}) for a single-Undef arg, \
+                 got {other:?}"
+            ),
+        }
     }
 
     /// (c) Undef material [0] → `classify_material`/`extract_material` panic
