@@ -49,6 +49,14 @@
 # lib, slot-acquire lib, cpu-admit lib, load-tolerance lib, flock) is present;
 # otherwise run_all.sh falls back to the legacy fully-serial for-loop.
 #
+# Discovery/partition diagnostic guard (task #5123, esc-5080-9): a scoped ERR
+# trap wraps the pool path's discovery -> partition -> workdir-setup block
+# (before Phase 1 spawns anything) so a failure there prints an actionable
+# `ERROR: run_all.sh pool: ...` diagnostic -- failing command, exit code,
+# loadavg, PSI avg10 -- instead of dying silently right after the `INFO:
+# run_all.sh pool: N=` line, then re-raises the same exit code. See
+# _ra_discovery_diag below.
+#
 # Knobs:
 #   REIFY_RUN_ALL_POOL_CONCURRENCY  N (default: max(1, nproc/2); never a
 #                                   frozen host-baked count -- resolved at
@@ -411,6 +419,11 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     # idiom. Only emitted on the pool path (not the all-serial fallback).
     echo "INFO: run_all.sh pool: N=${_H2_POOL_N} lock=${_H2_POOL_LOCK}" >&2
 
+    # Discovery/partition/pool-workdir-setup diagnostic guard (task #5123,
+    # esc-5080-9): scoped to exactly this block, cleared right after the
+    # workdir/EXIT-trap setup below -- see _ra_discovery_diag for why.
+    trap '_ra_discovery_diag "$?" "$LINENO" "$BASH_COMMAND"' ERR
+
     # -- Discovery + partition (pool vs serial; unclassified fail-safes serial) --
     _h2_discovered_list=()
     while IFS= read -r _h2_name; do
@@ -462,6 +475,10 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
 
     _H2_WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/reify-run-all-pool.XXXXXX")"
     trap 'rm -rf "$_H2_WORKDIR"' EXIT
+
+    # Discovery/partition/pool-workdir-setup guard ends here -- clear before
+    # the PSI-gate definition and Phases 1-3 so it never wraps them.
+    trap - ERR
 
     # -- PSI soft-gate (parent-side, before each pool spawn) ---------------------
     # Paces pool spawns under sustained CPU pressure without ever reducing N,
