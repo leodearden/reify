@@ -6486,4 +6486,22 @@ mod tests {
         );
     }
 
+    /// step-1 (RED → GREEN in step-2): `frequency_ascending_order` returns the
+    /// permutation that sorts frequencies ascending — the same reorder the
+    /// :454-457 debug_assert exists to enforce after `eigensolve_modal` applies
+    /// it via `permute_by`.
+    #[test]
+    fn frequency_ascending_order_sorts_finite_frequencies_ascending() {
+        let freqs = [2.0, 1.0, 3.0];
+        let order = super::frequency_ascending_order(&freqs)
+            .expect("all-finite input must return Some(order)");
+        let sorted: Vec<f64> = order.iter().map(|&i| freqs[i]).collect();
+        assert_eq!(sorted, vec![1.0, 2.0, 3.0]);
+
+        // Already-ascending input must yield the identity order.
+        let ascending = [1.0, 2.0, 3.0];
+        let identity_order = super::frequency_ascending_order(&ascending)
+            .expect("all-finite input must return Some(order)");
+        assert_eq!(identity_order, vec![0, 1, 2]);
+    }
 }
