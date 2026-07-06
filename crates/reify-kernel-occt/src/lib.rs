@@ -473,9 +473,12 @@ const LOCAL_FEATURE_OP_ACCESSORS: SixBufferHistoryAccessors<ffi::ffi::LocalFeatu
 pub struct OcctKernel {
     shapes: HashMap<u64, cxx::UniquePtr<ffi::ffi::OcctShape>>,
     /// Per-handle BRepKind, populated alongside `shapes` in `store_with_repr`.
-    /// Looked up via the public `repr_of(id)` accessor. Warm-start does not
-    /// repopulate this map (best-effort: post-restore queries return `None`
-    /// until the handle is re-stored locally).
+    /// Looked up via the public `repr_of(id)` accessor. Persisted and
+    /// restored in lock-step with `shapes` across warm-start (see
+    /// `warm_state` / `with_warm_state`): entries missing at restore time
+    /// (e.g. because the shape failed to serialize) fall back to
+    /// `BRepKind::Solid`, matching the implicit default in
+    /// [`Self::store`].
     reprs: HashMap<u64, BRepKind>,
     /// Idempotency cache for [`Self::extract_edges`]: parent handle id →
     /// previously-minted edge handle list (in canonical
