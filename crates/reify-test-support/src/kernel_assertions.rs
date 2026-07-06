@@ -484,6 +484,42 @@ pub fn assert_all_error_taxonomy<K: GeometryKernel + ?Sized>(kernel: &mut K, sub
     }
 }
 
+/// Assert the REAL-arm dangling-handle taxonomy (the mode-dependent axis
+/// for a genuine kernel): the two verified `reify-kernel-occt` mappings —
+/// `execute` on an operand it never produced returns
+/// `GeometryError::InvalidReference`, and `query` on a handle it never
+/// produced returns `QueryError::InvalidHandle`.
+///
+/// Only these two mappings are asserted (not `export`/`tessellate`
+/// variants): θ cannot depend on a kernel crate to observe real OCCT, so
+/// pinning unverified variants here risks red-ing ι's real instantiation.
+/// See [`assert_all_error_taxonomy`] for the STUB-arm counterpart.
+///
+/// Panics with the observed variant on mismatch.
+pub fn assert_dangling_reference_taxonomy<K: GeometryKernel + ?Sized>(
+    kernel: &mut K,
+    dangling: GeometryHandleId,
+) {
+    match kernel.execute(&GeometryOp::Union {
+        left: dangling,
+        right: dangling,
+    }) {
+        Err(GeometryError::InvalidReference(_)) => {}
+        other => panic!(
+            "expected Err(GeometryError::InvalidReference(_)) from execute on a dangling handle, got {:?}",
+            other
+        ),
+    }
+
+    match kernel.query(&GeometryQuery::Volume(dangling)) {
+        Err(QueryError::InvalidHandle(_)) => {}
+        other => panic!(
+            "expected Err(QueryError::InvalidHandle(_)) from query on a dangling handle, got {:?}",
+            other
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use reify_ir::{ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value};
