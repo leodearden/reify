@@ -125,9 +125,14 @@ fn extract_metrics(mesh: &VolumeMesh, source: &VolumeMesh) -> (f64, f64) {
         // Pass only happens on an empty mesh — return zeros (caller is
         // expected to not pass empty meshes; this is purely defensive).
         QualityVerdict::Pass => (0.0, 0.0),
-        // Sentinel: calibration fixtures (plate-with-hole, L-bracket) are
-        // always tet — Unsupported is unreachable here in practice.
-        QualityVerdict::Unsupported => (0.0, 0.0),
+        // Calibration fixtures (plate-with-hole, L-bracket) are always tet,
+        // so this verdict is asserted impossible here — unlike the `Pass`
+        // arm above (a genuinely expected empty-mesh case), silently
+        // returning sentinel zeros would let a fixture regression pass
+        // through the AR/SJ calibration assertions instead of failing loudly.
+        QualityVerdict::Unsupported => {
+            unreachable!("extract_metrics: calibration fixtures are always tet, got Unsupported")
+        }
     }
 }
 
