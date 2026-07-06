@@ -3309,57 +3309,45 @@ pub(crate) fn compile_entity(
 
                             let auto_free = param.default.as_ref().and_then(extract_auto_free);
 
-                            let decl = if let Some(free) = auto_free {
-                                ValueCellDecl {
-                                    id,
-                                    kind: ValueCellKind::Auto { free },
-                                    visibility: Visibility::Public,
-                                    is_aux: false,
-                                    cell_type,
-                                    default_expr: None,
-                                    solver_hints: Vec::new(),
-                                    span: param.span,
-                                }
-                            } else {
-                                let default_expr = param.default.as_ref().map(|expr| {
+                            let decl = build_param_value_cell_decl(
+                                id,
+                                auto_free,
+                                cell_type,
+                                Visibility::Public,
+                                Vec::new(),
+                                param.span,
+                                |ct| {
                                     // Thread the declared annotation as `expected_type`
                                     // (task γ #4031) ONLY when the param is explicitly
                                     // typed — mirrors Site 1 / the let seam's Some-gating.
-                                    let mut compiled = compile_expr_with_expected(
-                                        expr,
-                                        &scope,
-                                        enum_defs,
-                                        functions,
+                                    let default_expr = param.default.as_ref().map(|expr| {
+                                        let mut compiled = compile_expr_with_expected(
+                                            expr,
+                                            &scope,
+                                            enum_defs,
+                                            functions,
+                                            diagnostics,
+                                            param.type_expr.is_some().then_some(ct),
+                                        );
+                                        fixup_option_none_for_param(&mut compiled, ct);
+                                        compiled
+                                    });
+
+                                    // Site 2: port-member param declared-vs-initializer check.
+                                    // Pass `param.type_expr.is_some()` to suppress the check for
+                                    // untyped params whose cell_type is only a dimensionless-scalar fallback.
+                                    check_param_default_type(
+                                        &param.name,
+                                        ct,
+                                        param.type_expr.is_some(),
+                                        default_expr.as_ref(),
+                                        param.span,
                                         diagnostics,
-                                        param.type_expr.is_some().then_some(&cell_type),
                                     );
-                                    fixup_option_none_for_param(&mut compiled, &cell_type);
-                                    compiled
-                                });
 
-                                // Site 2: port-member param declared-vs-initializer check.
-                                // Pass `param.type_expr.is_some()` to suppress the check for
-                                // untyped params whose cell_type is only a dimensionless-scalar fallback.
-                                check_param_default_type(
-                                    &param.name,
-                                    &cell_type,
-                                    param.type_expr.is_some(),
-                                    default_expr.as_ref(),
-                                    param.span,
-                                    diagnostics,
-                                );
-
-                                ValueCellDecl {
-                                    id,
-                                    kind: ValueCellKind::Param,
-                                    visibility: Visibility::Public,
-                                    is_aux: false,
-                                    cell_type,
-                                    default_expr,
-                                    solver_hints: Vec::new(),
-                                    span: param.span,
-                                }
-                            };
+                                    default_expr
+                                },
+                            );
                             port_members.push(decl);
                         }
                         reify_ast::MemberDecl::Let(let_decl) => {
