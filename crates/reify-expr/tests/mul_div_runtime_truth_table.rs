@@ -1110,3 +1110,172 @@ fn div_scalar_by_vector_is_undef() {
     let result = eval_binop(BinOp::Div, Value::length(10.0), v);
     assert!(result.is_undef(), "expected Undef, got {:?}", result);
 }
+
+// ── STRUCTURAL-Undef set (both ops) + data-driven contrast ──────────────────
+
+/// `Vector × Vector → Undef`: no arm matches two `Vector` operands (the
+/// scale-arms all guard the *other* operand away from `Vector`), so this
+/// falls to the `_ => Undef` tail (lib.rs:4627).
+#[test]
+fn mul_vector_times_vector_is_undef() {
+    let a = vec3(DimensionVector::LENGTH, 1.0, 2.0, 3.0);
+    let b = vec3(DimensionVector::LENGTH, 4.0, 5.0, 6.0);
+    let result = eval_binop(BinOp::Mul, a, b);
+    assert!(result.is_undef(), "expected Undef, got {:?}", result);
+}
+
+/// `Tensor × Tensor → Undef`: the Tensor scale-arm's guard excludes a
+/// `Tensor` "scalar" operand, so two Tensors fall to `_ => Undef`
+/// (lib.rs:4627).
+#[test]
+fn mul_tensor_times_tensor_is_undef() {
+    let a = tensor1(vec![Value::Int(1), Value::Int(2)]);
+    let b = tensor1(vec![Value::Int(3), Value::Int(4)]);
+    let result = eval_binop(BinOp::Mul, a, b);
+    assert!(result.is_undef(), "expected Undef, got {:?}", result);
+}
+
+/// `Point × Point → Undef`: same shape as `Vector × Vector` — the Point
+/// scale-arm's guard excludes a `Point` "scalar" operand.
+#[test]
+fn mul_point_times_point_is_undef() {
+    let a = pt3(DimensionVector::LENGTH, 1.0, 2.0, 3.0);
+    let b = pt3(DimensionVector::LENGTH, 4.0, 5.0, 6.0);
+    let result = eval_binop(BinOp::Mul, a, b);
+    assert!(result.is_undef(), "expected Undef, got {:?}", result);
+}
+
+/// `Matrix × Int → Undef`: `Value::Matrix` has no arm anywhere in
+/// `eval_mul` — every operand kind is enumerated (Int/Real/Complex/Scalar/
+/// Tensor/Vector/Point/Transform) and Matrix is not among them.
+#[test]
+fn mul_matrix_times_int_is_undef() {
+    let m = matrix2(vec![
+        vec![Value::Int(1), Value::Int(2)],
+        vec![Value::Int(3), Value::Int(4)],
+    ]);
+    let result = eval_binop(BinOp::Mul, m, Value::Int(2));
+    assert!(result.is_undef(), "expected Undef, got {:?}", result);
+}
+
+/// `Matrix × Scalar → Undef`: same absence of a `Value::Matrix` arm as
+/// `mul_matrix_times_int_is_undef`, with a dimensioned Scalar operand
+/// instead of a bare Int.
+#[test]
+fn mul_matrix_times_scalar_is_undef() {
+    let m = matrix2(vec![
+        vec![Value::Int(1), Value::Int(2)],
+        vec![Value::Int(3), Value::Int(4)],
+    ]);
+    let result = eval_binop(BinOp::Mul, m, Value::length(2.0));
+    assert!(result.is_undef(), "expected Undef, got {:?}", result);
+}
+
+/// `List × Int → Undef`: `Value::List` has no arm in `eval_mul`.
+#[test]
+fn mul_list_times_int_is_undef() {
+    let list = Value::List(vec![Value::Int(1), Value::Int(2)]);
+    let result = eval_binop(BinOp::Mul, list, Value::Int(2));
+    assert!(result.is_undef(), "expected Undef, got {:?}", result);
+}
+
+/// `String × Int → Undef`: `Value::String` has no arm in `eval_mul`.
+#[test]
+fn mul_string_times_int_is_undef() {
+    let s = Value::String("abc".to_string());
+    let result = eval_binop(BinOp::Mul, s, Value::Int(2));
+    assert!(result.is_undef(), "expected Undef, got {:?}", result);
+}
+
+/// `Bool × Int → Undef`: `Value::Bool` has no arm in `eval_mul`.
+#[test]
+fn mul_bool_times_int_is_undef() {
+    let result = eval_binop(BinOp::Mul, Value::Bool(true), Value::Int(2));
+    assert!(result.is_undef(), "expected Undef, got {:?}", result);
+}
+
+/// ORDER-SENSITIVE: `Vector × Transform → Undef` — contrast with
+/// `mul_identity_transform_times_vector_yields_same_vector` /
+/// `mul_transform_90z_times_vector_rotates_ignoring_translation` (step-5),
+/// where `Transform × Vector` (the OTHER order) IS intentional. The
+/// `(Transform, Vector)` arm only matches with Transform first; the Vector
+/// scale-arm's guard excludes a `Transform` "scalar" operand in EITHER
+/// position, so `Vector × Transform` falls to `_ => Undef`.
+#[test]
+fn mul_vector_times_transform_is_undef() {
+    let v = vec3(DimensionVector::LENGTH, 1.0, 0.0, 0.0);
+    let t = xform(rotation_90z(), 100.0, 200.0, 300.0);
+    let result = eval_binop(BinOp::Mul, v, t);
+    assert!(result.is_undef(), "expected Undef, got {:?}", result);
+}
+
+/// `Matrix / Int → Undef`: `Value::Matrix` has no arm in `eval_div` either
+/// (same absence as `eval_mul`).
+#[test]
+fn div_matrix_by_int_is_undef() {
+    let m = matrix2(vec![
+        vec![Value::Int(1), Value::Int(2)],
+        vec![Value::Int(3), Value::Int(4)],
+    ]);
+    let result = eval_binop(BinOp::Div, m, Value::Int(2));
+    assert!(result.is_undef(), "expected Undef, got {:?}", result);
+}
+
+/// `List / Int → Undef`: `Value::List` has no arm in `eval_div`.
+#[test]
+fn div_list_by_int_is_undef() {
+    let list = Value::List(vec![Value::Int(1), Value::Int(2)]);
+    let result = eval_binop(BinOp::Div, list, Value::Int(2));
+    assert!(result.is_undef(), "expected Undef, got {:?}", result);
+}
+
+/// `String / Int → Undef`: `Value::String` has no arm in `eval_div`.
+#[test]
+fn div_string_by_int_is_undef() {
+    let s = Value::String("abc".to_string());
+    let result = eval_binop(BinOp::Div, s, Value::Int(2));
+    assert!(result.is_undef(), "expected Undef, got {:?}", result);
+}
+
+/// `Bool / Int → Undef`: `Value::Bool` has no arm in `eval_div`.
+#[test]
+fn div_bool_by_int_is_undef() {
+    let result = eval_binop(BinOp::Div, Value::Bool(true), Value::Int(2));
+    assert!(result.is_undef(), "expected Undef, got {:?}", result);
+}
+
+/// `Real / Vector → Undef`: the Vector arm in `eval_div` only matches with
+/// `Vector` as the numerator (`lv`); a bare `Real` numerator over a `Vector`
+/// denominator matches no arm. `Value::as_f64()` returns `None` for a
+/// `Vector`, so the early div-by-zero guard does not fire either — this
+/// reaches the `_ => Undef` tail purely structurally.
+#[test]
+fn div_real_by_vector_is_undef() {
+    let v = vec3(DimensionVector::LENGTH, 1.0, 2.0, 3.0);
+    let result = eval_binop(BinOp::Div, Value::Real(10.0), v);
+    assert!(result.is_undef(), "expected Undef, got {:?}", result);
+}
+
+/// DATA-DRIVEN contrast: `Int / 0 → Undef`. Unlike the STRUCTURAL rows
+/// above (undefined for ANY value of that operand kind), this Undef is
+/// caused by the DIVISOR'S VALUE being zero — the early universal
+/// div-by-zero guard (lib.rs:4633-4637) fires before the main match, and
+/// even without it the `(Int, Int)` arm has its own `*b == 0` check
+/// (lib.rs:4641-4642). `Int / <nonzero Int>` is intentional (pinned in
+/// step-7); only the zero divisor makes this row Undef.
+#[test]
+fn div_int_by_zero_is_undef() {
+    let result = eval_binop(BinOp::Div, Value::Int(5), Value::Int(0));
+    assert!(result.is_undef(), "expected Undef, got {:?}", result);
+}
+
+/// DATA-DRIVEN contrast: `Scalar / 0 → Undef`, same cause as
+/// `div_int_by_zero_is_undef` — the early universal div-by-zero guard
+/// (lib.rs:4633-4637) fires because the Int divisor's value is zero, before
+/// ever reaching the `Scalar / Int` arm. `Scalar / <nonzero Int>` is
+/// intentional and dimension-preserving (pinned in step-7).
+#[test]
+fn div_scalar_by_zero_is_undef() {
+    let result = eval_binop(BinOp::Div, Value::length(5.0), Value::Int(0));
+    assert!(result.is_undef(), "expected Undef, got {:?}", result);
+}
