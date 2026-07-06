@@ -45,7 +45,7 @@
 use std::collections::HashMap;
 
 use reify_compiler::{CompiledTrait, TopologyTemplate, find_template, satisfies_trait_bound};
-use reify_core::{Diagnostic, Type};
+use reify_core::{Diagnostic, DimensionVector, Type, ValueCellId};
 use reify_ir::{CompiledExpr, CompiledExprKind, Value, ValueMap};
 
 /// Build a `HashMap<String, &CompiledTrait>` from an ordered sequence of
@@ -600,6 +600,74 @@ pub(crate) fn apply_trait_filters(
 
         *expr = CompiledExpr::list_literal(kept, list_type);
     }
+}
+
+/// Apply the `cost(entity_ref_list)` subtree-cost aggregation builtin (task
+/// 5015, M-WHOLE γ) to `FunctionCall { name == "cost", args: [a0] }` nodes
+/// produced by the compiler intercept (`crates/reify-compiler/src/expr.rs`).
+///
+/// Recursively walks `expr` (same arm coverage as `expand_structural_query` /
+/// `apply_trait_filters`; MUST run AFTER both, so `self.descendants` / any
+/// explicit `filter(...)` has already been reduced to a `ListLiteral` of
+/// entity-ref literals).
+///
+/// When `a0.kind` is a `ListLiteral(elems)`, each element
+/// `Literal(Value::String(path), StructureRef(_))` is rewritten to
+/// `ValueRef(ValueCellId(path, "line_cost"))` typed `Scalar<MONEY>` — EXACTLY
+/// what `self.<sub>.line_cost` compiles to today (expr.rs:3623-3661), so it
+/// resolves against the scoped cell elaboration already populates for
+/// depth-1 subs and collection elements. The refs are collected into a
+/// `List<Scalar<MONEY>>` list_literal and wrapped in a `MethodCall { method:
+/// "sum" }` typed `Scalar<MONEY>` so the landed `.sum` reduction
+/// (reify-expr/src/lib.rs:3523) does the addition — inheriting Money-
+/// dimension preservation, Undef-poisoning, and empty-list -> typed-zero
+/// (`Scalar{0.0, MONEY}`, not Undef / dimensionless `Real(0)`).
+///
+/// NOTE: this step does not yet filter `elems` to `Costed`-conformers (a
+/// non-Costed element's `line_cost` cell does not exist, so it resolves to
+/// Undef and poisons the `.sum`) — the Costed-conformance filter is added in
+/// step-6 (extends this function to take a `trait_registry`).
+pub(crate) fn apply_cost_aggregation(expr: &mut CompiledExpr, all_templates: &[TopologyTemplate]) {
+    // Post-order walk: recurse into children FIRST, mirroring apply_trait_filters.
+    walk_children_mut(expr, &mut |child| {
+        apply_cost_aggregation(child, all_templates);
+    });
+
+    let is_cost_call = matches!(&expr.kind,
+        CompiledExprKind::FunctionCall { function, args }
+        if function.name == "cost"
+            && args.len() == 1
+            && matches!(&args[0].kind, CompiledExprKind::ListLiteral(_))
+    );
+
+    if !is_cost_call {
+        return;
+    }
+
+    let elems = match &expr.kind {
+        CompiledExprKind::FunctionCall { args, .. } => match &args[0].kind {
+            CompiledExprKind::ListLiteral(e) => e.clone(),
+            _ => unreachable!(),
+        },
+        _ => unreachable!(),
+    };
+
+    let money_scalar = Type::Scalar {
+        dimension: DimensionVector::MONEY,
+    };
+
+    let refs: Vec<CompiledExpr> = elems
+        .into_iter()
+        .map(|e| match e.kind {
+            CompiledExprKind::Literal(Value::String(path)) => {
+                CompiledExpr::value_ref(ValueCellId::new(path, "line_cost"), money_scalar.clone())
+            }
+            _ => unreachable!("entity_ref_element always emits Literal(Value::String(_))"),
+        })
+        .collect();
+
+    let list = CompiledExpr::list_literal(refs, Type::List(Box::new(money_scalar.clone())));
+    *expr = CompiledExpr::method_call(list, "sum".to_string(), vec![], money_scalar);
 }
 
 /// Expand structural-query placeholders (`self.members`, `self.descendants`,

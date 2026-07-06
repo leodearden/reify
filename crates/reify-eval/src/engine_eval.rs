@@ -3468,6 +3468,11 @@ impl Engine {
                     &module.templates,
                     &sq_trait_registry,
                 );
+                // task 5015 (M-WHOLE γ): rewrite cost(list_literal) nodes to
+                // [ValueRef(line_cost) ...].sum. MUST run after apply_trait_filters
+                // so self.descendants/any explicit filter(...) is already a
+                // list_literal of entity-refs.
+                crate::structural_query::apply_cost_aggregation(&mut expanded, &module.templates);
                 let val = reify_expr::eval_expr(
                     &expanded,
                     &eval_ctx_with_meta(&values, &functions, &self.meta_map)
