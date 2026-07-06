@@ -109,13 +109,36 @@ impl crate::Engine {
         cancellation: &CancellationHandle,
     ) -> Option<ComputeOutcome> {
         let f = self.compute_registry.fns.get(target).copied()?;
-        Some(f(
-            value_inputs,
-            realization_inputs,
-            options,
-            prior_warm_state,
-            cancellation,
-        ))
+        // Task #5079 (INV-FEA-2 / PRD compute-fea-hardening.md D1, Contract
+        // C2): guard the single generic compute-dispatch point so a
+        // panicking `ComputeFn` becomes `ComputeOutcome::Failed` instead of
+        // unwinding out of the CLI and aborting the process. Every
+        // registered trampoline is invoked through this one method, so
+        // guarding here protects all of them uniformly. `AssertUnwindSafe`
+        // is sound: every captured value (`&[Value]`, `&Value`,
+        // `Option<&OpaqueState>`, `&CancellationHandle`) is a shared
+        // reference, none mutated across the unwind boundary. The default
+        // panic hook is intentionally NOT suppressed here — genuine-bug
+        // backtraces must still print to stderr (PRD resolved decision); the
+        // floor is "survive with a diagnostic," not "silent".
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            f(
+                value_inputs,
+                realization_inputs,
+                options,
+                prior_warm_state,
+                cancellation,
+            )
+        }));
+        Some(match result {
+            Ok(outcome) => outcome,
+            Err(_payload) => ComputeOutcome::Failed {
+                diagnostics: vec![Diagnostic::error(format!(
+                    "compute trampoline '{target}' panicked"
+                ))],
+                structured_detail: vec![],
+            },
+        })
     }
 
     /// Run the full in-flight ComputeNode dispatch lifecycle for `c_id` —
