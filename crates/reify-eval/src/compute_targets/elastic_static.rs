@@ -3573,25 +3573,30 @@ fn extract_point3_si(val: &Value) -> Result<[f64; 3], FeaValueShapeError> {
 /// Extract `[f64; 3]` SI values from a `Value::Vector([Scalar<Length>, ...])`.
 ///
 /// Used to parse MaterialFrame axis vectors from the AsPrintedZones lambda.
-fn extract_vec3_si(val: &Value) -> [f64; 3] {
+fn extract_vec3_si(val: &Value) -> Result<[f64; 3], FeaValueShapeError> {
     let comps = match val {
         Value::Vector(v) => v,
-        other => panic!(
-            "solve_elastic_static_trampoline: expected Vector3<Length>, got: {:?}",
-            other
-        ),
+        other => {
+            return Err(FeaValueShapeError::ExpectedList {
+                context: "extract_vec3_si (Vector3<Length>)",
+                got: format!("{other:?}"),
+            })
+        }
     };
     if comps.len() < 3 {
-        panic!(
-            "solve_elastic_static_trampoline: Vector3 has {} components, expected 3",
-            comps.len()
-        );
+        return Err(FeaValueShapeError::ExpectedList {
+            context: "extract_vec3_si",
+            got: format!("Vector with {} components", comps.len()),
+        });
     }
-    [
-        match &comps[0] { Value::Scalar { si_value, .. } => *si_value, v => panic!("expected Scalar in Vector3, got {:?}", v) },
-        match &comps[1] { Value::Scalar { si_value, .. } => *si_value, v => panic!("expected Scalar in Vector3, got {:?}", v) },
-        match &comps[2] { Value::Scalar { si_value, .. } => *si_value, v => panic!("expected Scalar in Vector3, got {:?}", v) },
-    ]
+    let comp = |v: &Value| match v {
+        Value::Scalar { si_value, .. } => Ok(*si_value),
+        other => Err(FeaValueShapeError::ExpectedScalar {
+            context: "extract_vec3_si component",
+            got: format!("{other:?}"),
+        }),
+    };
+    Ok([comp(&comps[0])?, comp(&comps[1])?, comp(&comps[2])?])
 }
 
 /// Extract `ZoneProcessParams` from the 7-element `params` list in the
@@ -3672,13 +3677,16 @@ fn anisotropic_material_from_value(val: &Value) -> AnisotropicMaterial {
         };
         let x = extract_vec3_si(frame_data.fields.get("x_axis").unwrap_or_else(|| {
             panic!("solve_elastic_static_trampoline: MaterialFrame missing 'x_axis'")
-        }));
+        }))
+        .unwrap_or_else(|e| panic!("{e}"));
         let y = extract_vec3_si(frame_data.fields.get("y_axis").unwrap_or_else(|| {
             panic!("solve_elastic_static_trampoline: MaterialFrame missing 'y_axis'")
-        }));
+        }))
+        .unwrap_or_else(|e| panic!("{e}"));
         let z = extract_vec3_si(frame_data.fields.get("z_axis").unwrap_or_else(|| {
             panic!("solve_elastic_static_trampoline: MaterialFrame missing 'z_axis'")
-        }));
+        }))
+        .unwrap_or_else(|e| panic!("{e}"));
         // Columns = local basis vectors in global: frame[row][col] = global-row-component
         // of local-col-axis.  rotate_voigt reads rows as direction cosines of global
         // axes in local coords (R[i] = global-i in local), which is the TRANSPOSE of
