@@ -490,4 +490,59 @@ mod tests {
             "assert_extract_determinism must panic when extract_* is not idempotent per handle"
         );
     }
+
+    /// Kernel that silently accepts any handle — including one it never
+    /// produced via `execute` — instead of reporting it as invalid. Models
+    /// a kernel that skips handle validation entirely.
+    struct AcceptsDanglingKernel;
+
+    impl GeometryKernel for AcceptsDanglingKernel {
+        fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+            Ok(GeometryHandle {
+                id: GeometryHandleId(0),
+                repr: None,
+            })
+        }
+
+        fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
+            Ok(Value::Real(0.0))
+        }
+
+        fn export(
+            &self,
+            _handle: GeometryHandleId,
+            _format: ExportFormat,
+            _writer: &mut dyn std::io::Write,
+        ) -> Result<(), ExportError> {
+            Ok(())
+        }
+
+        fn tessellate(
+            &self,
+            _handle: GeometryHandleId,
+            _tolerance: f64,
+        ) -> Result<Mesh, TessError> {
+            Ok(Mesh {
+                vertices: Vec::new(),
+                indices: Vec::new(),
+                normals: None,
+            })
+        }
+    }
+
+    #[test]
+    fn dangling_is_err_helper_passes_stub_and_catches_accepting_kernel() {
+        // TestStubKernel errors unconditionally, including for a dangling
+        // handle — must not panic.
+        super::assert_dangling_handle_is_err(&mut TestStubKernel::new(), GeometryHandleId(999));
+
+        // AcceptsDanglingKernel returns Ok for a handle it never created — must panic.
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            super::assert_dangling_handle_is_err(&mut AcceptsDanglingKernel, GeometryHandleId(999));
+        }));
+        assert!(
+            result.is_err(),
+            "assert_dangling_handle_is_err must panic when the kernel accepts a dangling handle"
+        );
+    }
 }
