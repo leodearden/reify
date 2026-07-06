@@ -182,3 +182,44 @@ fn fully_populated_gui_state() -> GuiState {
         fea_convergence: None,
     }
 }
+
+/// Reverse coverage: every key named in `classification_table()` or
+/// `known_stale_allowlist()` must actually appear in the reflected key set.
+/// This catches (a) a field silently dropped from the reflected set by
+/// `skip_serializing_if` while still sitting in the table/allowlist, and
+/// (b) a stale table/allowlist entry for a field that no longer exists —
+/// neither of which the forward check (`every_gui_state_field_is_classified_or_allowlisted`)
+/// can see, since a missing key never trips it.
+#[test]
+fn fixture_reflects_every_classified_and_allowlisted_field() {
+    use std::collections::BTreeSet;
+
+    let state = fully_populated_gui_state();
+    let reflected: BTreeSet<String> = serde_json::to_value(&state)
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
+
+    let table = classification_table();
+    let allowlist = known_stale_allowlist();
+    let expected: BTreeSet<String> = table
+        .keys()
+        .chain(allowlist.keys())
+        .map(|k| k.to_string())
+        .collect();
+
+    assert_eq!(
+        reflected, expected,
+        "the fixture must reflect exactly the fields named in the classification table and allowlist"
+    );
+
+    for (field, reference) in &allowlist {
+        assert!(
+            !reference.is_empty(),
+            "allowlist entry for '{field}' must name a non-empty clearing-task reference"
+        );
+    }
+}
