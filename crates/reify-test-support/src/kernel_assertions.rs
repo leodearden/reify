@@ -303,6 +303,60 @@ pub fn assert_extract_determinism<K: GeometryKernel + ?Sized>(kernel: &mut K, ha
     );
 }
 
+/// Assert that a never-created ("dangling") handle is rejected with an
+/// `Err(_)` by every method that takes a handle as input — `execute`
+/// (embedded as an operand), `query`, `export`, and `tessellate`. A
+/// conforming kernel must never silently succeed (`Ok`) on a handle it
+/// never produced via a prior `execute` call.
+///
+/// This is the shared, mode-independent axis of the contract: both a
+/// STUB kernel (everything errors) and a REAL kernel (only invalid input
+/// errors) must reject a dangling handle — they differ only in which
+/// error *variant* they report (see [`assert_all_error_taxonomy`] and
+/// [`assert_dangling_reference_taxonomy`] for the mode-specific variant
+/// checks).
+///
+/// Panics naming the offending method if it returns `Ok` for `dangling`.
+pub fn assert_dangling_handle_is_err<K: GeometryKernel + ?Sized>(
+    kernel: &mut K,
+    dangling: GeometryHandleId,
+) {
+    match kernel.execute(&GeometryOp::Union {
+        left: dangling,
+        right: dangling,
+    }) {
+        Err(_) => {}
+        Ok(handle) => panic!(
+            "execute on a dangling handle {:?} must return Err(_), got Ok({:?})",
+            dangling, handle
+        ),
+    }
+
+    match kernel.query(&GeometryQuery::Volume(dangling)) {
+        Err(_) => {}
+        Ok(value) => panic!(
+            "query on a dangling handle {:?} must return Err(_), got Ok({:?})",
+            dangling, value
+        ),
+    }
+
+    match kernel.export(dangling, ExportFormat::Step, &mut Vec::new()) {
+        Err(_) => {}
+        Ok(()) => panic!(
+            "export on a dangling handle {:?} must return Err(_), got Ok(())",
+            dangling
+        ),
+    }
+
+    match kernel.tessellate(dangling, 0.1) {
+        Err(_) => {}
+        Ok(mesh) => panic!(
+            "tessellate on a dangling handle {:?} must return Err(_), got Ok({:?})",
+            dangling, mesh
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use reify_ir::{ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value};
