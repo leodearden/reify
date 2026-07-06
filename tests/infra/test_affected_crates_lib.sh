@@ -21,6 +21,11 @@
 #      direct dev-dependent (reify-eval) that does compile OCCT
 #  12. (task 4938) tests/infra/* non-crate allowlist composes with crate
 #      accumulation in a mixed diff (narrows; does not force ALL)
+#  13. (task 4938 amendment) drift guard: affected_crates(occt-seed) equals
+#      occt_touching_set — the two are independently-implemented copies of
+#      the same compile-closure algorithm (scripts/occt-scope-lib.sh:59-109),
+#      and this cross-check fails loudly instead of letting them silently
+#      diverge
 
 set -euo pipefail
 
@@ -32,6 +37,13 @@ source "$SCRIPT_DIR/test_helpers.sh"
 
 [ -f "$REPO_ROOT/scripts/affected-crates-lib.sh" ] || { echo "ERROR: affected-crates-lib.sh not found at $REPO_ROOT/scripts/affected-crates-lib.sh"; exit 1; }
 source "$REPO_ROOT/scripts/affected-crates-lib.sh"
+
+# Also source occt-scope-lib.sh (read-only usage — sourcing, not editing) so
+# this file can cross-check _reverse_closure's ported compile-closure
+# algorithm against occt_touching_set's independent implementation of the
+# same model. See the drift-guard assertion below.
+[ -f "$REPO_ROOT/scripts/occt-scope-lib.sh" ] || { echo "ERROR: occt-scope-lib.sh not found at $REPO_ROOT/scripts/occt-scope-lib.sh"; exit 1; }
+source "$REPO_ROOT/scripts/occt-scope-lib.sh"
 
 echo "=== affected-crates-lib drift tests ==="
 
@@ -164,6 +176,33 @@ assert "OCCT-seed closure contains reify-kernel-occt (the seed itself)" \
 
 assert "OCCT-seed closure contains reify-eval (direct dev-dependent whose own tests compile OCCT)" \
     _check_contains reify-eval crates/reify-kernel-occt/src/lib.rs
+
+# ---------------------------------------------------------------------------
+# Amendment (code-review follow-up): drift guard between the two independent
+# implementations of the normal/dev compile-closure algorithm.
+#
+# _reverse_closure (scripts/affected-crates-lib.sh) and occt_touching_set
+# (scripts/occt-scope-lib.sh:59-109) each embed their own copy of the
+# adj_normal/adj_dev + normal_closure Python (the PRD calls this "reused
+# verbatim and parameterized" — docs/prds/verify-scope-contract.md §3). A
+# shared-helper extraction was proposed in review, but doing so would require
+# editing scripts/occt-scope-lib.sh, which this task does not hold a lock on
+# (out of scope here; escalated as follow-up work). Until that extraction
+# happens, this equality check is the mitigation: it fails loudly the moment
+# either copy's dep_kinds handling diverges, rather than letting the two
+# implementations silently disagree about scope.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Drift guard: affected_crates(occt-seed) == occt_touching_set ---"
+
+_check_occt_seed_matches_touching_set() {
+    local from_affected from_occt
+    from_affected="$(affected_crates crates/reify-kernel-occt/src/lib.rs | sort -u)"
+    from_occt="$(occt_touching_set | sort -u)"
+    [ "$from_affected" = "$from_occt" ]
+}
+assert "affected_crates(occt-seed) equals occt_touching_set (no drift between the two implementations)" \
+    _check_occt_seed_matches_touching_set
 
 # ---------------------------------------------------------------------------
 # Task 4938 Fix #2 composition guard: the tests/infra/* non-crate allowlist

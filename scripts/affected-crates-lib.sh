@@ -100,6 +100,18 @@ _file_to_crate() {
 #     normal_closure(each DIRECT dev-dep of member)
 #   - a member is affected iff its compiled set intersects the seed ids
 #
+# NOTE (code-review follow-up, task 4938): this is a physical duplicate of
+# occt_touching_set's Python (scripts/occt-scope-lib.sh:59-109), not a shared
+# implementation — if cargo's dep_kinds semantics or this closure algorithm
+# ever change, BOTH copies must be updated in lockstep. Extracting a single
+# shared helper (e.g. a common script invoked by both libraries) would
+# require editing scripts/occt-scope-lib.sh, which is outside the locked
+# scope of this task (scripts/affected-crates-lib.sh,
+# tests/infra/test_affected_crates_lib.sh only) — tracked as follow-up work.
+# In the meantime, tests/infra/test_affected_crates_lib.sh asserts
+# affected_crates(occt-seed) == occt_touching_set as a drift guard: any
+# future divergence between the two copies fails that assertion loudly.
+#
 # On any cargo failure or python error, prints ALL (C5).
 _reverse_closure() {
     local seeds
