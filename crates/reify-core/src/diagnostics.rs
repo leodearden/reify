@@ -2341,6 +2341,41 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic is `E_OBJECTIVE_CONFLICT`
     /// (severity convention: `E_*` → Error).
     ObjectiveConflict,
+    /// Origin: `crates/reify-compiler/src/entity.rs` (objective-build site,
+    /// task α #5018 — PRD
+    /// `docs/prds/v0_6/multi-aspect-objective-units-coherence.md`).
+    ///
+    /// Canonical message prefix: `"E_OBJECTIVE_MIXED_DIMENSION: ..."`, naming
+    /// both the first term's dimension and the offending differing dimension
+    /// (e.g. `"...objective terms have incoherent dimensions: 'Money' vs
+    /// 'Mass'..."`), with a primary label on the offending term's span and a
+    /// secondary label on the first term's span.
+    ///
+    /// Emitted as a `Severity::Error` when an entity's `ObjectiveSet` has
+    /// `combination == WeightedSum`, more than one term, and
+    /// `reify_ir::objective_terms_coherent(&obj.terms)` returns
+    /// `Err(DimensionIncoherence { .. })` — i.e. not every term's
+    /// `expr.result_type` shares the same `DimensionVector` (PRD D2/I-UNITS:
+    /// "all terms share ONE dimension", not "each term dimensionless"). This
+    /// is a STATIC check (no eval) so it fires at compile time, before any
+    /// solve — covering every authored multi-term objective.
+    ///
+    /// Correctly excluded cases (mirroring `ObjectiveConflict`'s exclusions):
+    /// - A single objective (no multi-term fold to be incoherent).
+    /// - Multi-term sets that are all the same dimension, including all-Money
+    ///   (the shipped single-aspect-cost pattern) and all-dimensionless.
+    ///
+    /// A dedicated code is minted rather than reusing `DimensionMismatch`
+    /// (Add/Sub operator-level mismatch) or `ObjectiveConflict` (opposite-sense
+    /// terms over the same unit) because the semantics differ: this code
+    /// covers same-sense or unrelated-sense multi-term `WeightedSum` folds
+    /// whose terms are not commensurable at all — summing them (`term.weight
+    /// * v` after `v = eval_expr(term.expr).as_f64()` strips the dimension)
+    /// produces a physically meaningless scalar with no prior diagnostic.
+    ///
+    /// The PRD-prose mnemonic for this code is `E_OBJECTIVE_MIXED_DIMENSION`
+    /// (severity convention: `E_*` → Error).
+    ObjectiveDimensionIncoherent,
     /// Origin: `crates/reify-eval/src/engine_eval.rs::detect_scope_coupling`.
     ///
     /// Severity: Warning — detection-only; no automatic fixup is attempted.
