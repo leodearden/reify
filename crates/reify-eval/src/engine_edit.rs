@@ -5968,4 +5968,117 @@ mod tests {
             "edit_param reseed: y must be 0.015 m (15mm = x + 5mm); got {y_val:?}",
         );
     }
+
+    /// [Re-homed from `reify-eval/tests/concurrent.rs:923`
+    /// (`resolve_concurrent_edit_skips_solve_when_no_auto_group_constraints_are_dirty`),
+    /// task ξ (#5046), ahead of task ο's deletion of the dead concurrent
+    /// stack.] Regression guard for the `constraints_dirty` short-circuit
+    /// inside `edit_param` (engine_edit.rs:1315): editing a param that does
+    /// NOT dirty any constraint referencing an auto group must NOT
+    /// re-invoke the solver — the live twin of `resolve_concurrent_edit`'s
+    /// identical guard.
+    ///
+    /// Template: `auto x` (length), `constraint 0: x > 2mm` (literal, no
+    /// reference to `a`), `param a = mm(3.0)`, `let b = a * 2`. Editing `a`
+    /// dirties `b` but NOT constraint 0 (which only reads `x` and a
+    /// literal) — so the solver must not run a second time.
+    ///
+    /// Uses `MultiCallSpyConstraintSolver` seeded `[Solved{x: mm(5.0)},
+    /// Solved{x: mm(999.0)}]`; if the guard fails to fire, the bogus second
+    /// value (mm(999.0)) would leak into `resolved_params`, and the spy's
+    /// captured-problems count would be 2 instead of 1.
+    #[test]
+    fn edit_param_skips_solve_when_no_auto_group_constraints_are_dirty() {
+        use std::collections::HashMap;
+
+        use reify_core::ModulePath;
+        use reify_ir::{BinOp, SolveResult};
+        use reify_test_support::mocks::{MockConstraintChecker, MultiCallSpyConstraintSolver};
+        use reify_test_support::{
+            CompiledModuleBuilder, TopologyTemplateBuilder, binop, gt, literal, mm, value_ref,
+        };
+
+        let x_id = ValueCellId::new("Q", "x");
+        let a_id = ValueCellId::new("Q", "a");
+
+        // Template: auto x, constraint x > 2mm (literal, no reference to a),
+        //           param a = mm(3.0), let b = a * 2.
+        let template = TopologyTemplateBuilder::new("Q")
+            .auto_param("Q", "x", Type::length())
+            // constraint references only x (not a) and a literal mm(2.0)
+            .constraint("Q", 0, None, gt(value_ref("Q", "x"), literal(mm(2.0))))
+            .param("Q", "a", Type::length(), Some(literal(mm(3.0))))
+            .let_binding(
+                "Q",
+                "b",
+                Type::length(),
+                binop(BinOp::Mul, value_ref("Q", "a"), literal(Value::Real(2.0))),
+            )
+            .build();
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(template)
+            .build();
+
+        // Spy solver:
+        //   call 1 (cold eval)       → x = mm(5.0)
+        //   call 2 (erroneous solve) → x = mm(999.0)  ← bogus; leaks into result if guard fails
+        let mut cold_solved: HashMap<ValueCellId, Value> = HashMap::new();
+        cold_solved.insert(x_id.clone(), mm(5.0));
+
+        let mut bogus_solved: HashMap<ValueCellId, Value> = HashMap::new();
+        bogus_solved.insert(x_id.clone(), mm(999.0));
+
+        let spy = MultiCallSpyConstraintSolver::new(vec![
+            SolveResult::Solved {
+                values: cold_solved,
+                unique: true,
+            },
+            // If the solver is incorrectly called a second time, mm(999.0) would
+            // appear in result.resolved_params — any emptiness assertion would fail loudly.
+            SolveResult::Solved {
+                values: bogus_solved,
+                unique: true,
+            },
+        ]);
+
+        // Capture the shared call-counter handle BEFORE moving spy into the engine.
+        let captured = spy.captured_problems();
+
+        let mut engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None)
+            .with_solver(Box::new(spy));
+
+        // Cold eval: solver call 1 → x = mm(5.0)
+        let _cold = engine.eval(&module);
+
+        // edit_param: change a → mm(5.0). Dirty cone from a: b (let binding) —
+        // constraint 0 does NOT reference a, so the `constraints_dirty` guard
+        // fires and the solver must NOT be re-invoked.
+        let result = engine
+            .edit_param(a_id.clone(), mm(5.0))
+            .expect("edit_param must succeed");
+
+        // (a) The solver must have been called exactly once (cold eval only).
+        //     If the constraints_dirty guard fails, a second call would push a second
+        //     entry into `captured` AND leak mm(999.0) into result.resolved_params.
+        assert_eq!(
+            captured.lock().unwrap().len(),
+            1,
+            "solver should have been called exactly once (cold eval), but was called {} times \
+             — the constraints_dirty guard inside edit_param is not firing",
+            captured.lock().unwrap().len()
+        );
+
+        // (b) result.resolved_params is empty (no solver ran during the edit).
+        assert!(
+            result.resolved_params.is_empty(),
+            "resolved_params should be empty when no constraint is dirty (got {:?})",
+            result.resolved_params
+        );
+        // (c) result.diagnostics is empty.
+        assert!(
+            result.diagnostics.is_empty(),
+            "diagnostics should be empty when no constraint is dirty (got {:?})",
+            result.diagnostics
+        );
+    }
 }
