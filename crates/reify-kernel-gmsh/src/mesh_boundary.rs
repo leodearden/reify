@@ -516,6 +516,17 @@ fn run_meshing_with_entity_queries(
 /// Find the handle in `candidates` whose anchor is closest to `query_anchor`
 /// (Euclidean squared distance). Returns `None` if `candidates` is empty or
 /// the nearest distance exceeds `tol_sq`.
+///
+/// # Fail-closed NaN policy (INV-FEA-3)
+///
+/// Candidates whose squared distance to `query_anchor` is non-finite (NaN or
+/// ±Inf) are excluded from matching — a non-finite distance can never be the
+/// nearest match, so it is dropped rather than treated as an equally-near
+/// tie. When one or more candidates are excluded this way, exactly one WARN
+/// event is emitted at `reify_kernel_gmsh::mesh_boundary` (filterable via
+/// `RUST_LOG=reify_kernel_gmsh::mesh_boundary=warn`) so upstream mesh
+/// pathology in anchor coordinates surfaces to operators instead of being
+/// silently dropped.
 fn find_closest_anchor(
     query_anchor: [f64; 3],
     candidates: &[(GeometryHandleId, [f64; 3])],
@@ -524,17 +535,31 @@ fn find_closest_anchor(
     if tol_sq <= 0.0 {
         return None;
     }
-    candidates
+    let scored: Vec<(f64, GeometryHandleId)> = candidates
         .iter()
         .map(|(handle, anchor)| {
             let dx = query_anchor[0] - anchor[0];
             let dy = query_anchor[1] - anchor[1];
             let dz = query_anchor[2] - anchor[2];
-            let d2 = dx * dx + dy * dy + dz * dz;
-            (d2, *handle)
+            (dx * dx + dy * dy + dz * dz, *handle)
         })
-        .filter(|&(d2, _)| d2 < tol_sq)
-        .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
+        .collect();
+
+    if scored.iter().any(|&(d2, _)| !d2.is_finite()) {
+        tracing::warn!(
+            target: "reify_kernel_gmsh::mesh_boundary",
+            reason = "non_finite_anchor_distance",
+            n_candidates = candidates.len(),
+            "find_closest_anchor: excluding candidate(s) with non-finite squared distance \
+             (likely upstream pathology in mesh anchor coordinates); a non-finite distance \
+             can never be the nearest match"
+        );
+    }
+
+    scored
+        .into_iter()
+        .filter(|&(d2, _)| d2.is_finite() && d2 < tol_sq)
+        .min_by(|a, b| a.0.total_cmp(&b.0))
         .map(|(_, handle)| handle)
 }
 
