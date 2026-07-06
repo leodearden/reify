@@ -30,12 +30,12 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use reify_eval::{DispatchPlan, dispatcher, kernel_registry};
+use reify_eval::{DispatchPlan, NO_OPTIONS, dispatcher, kernel_registry};
 use reify_ir::{
     CapabilityDescriptor, GeometryKernel, KernelId, Mesh, Operation, ReprKind,
 };
 #[cfg(not(has_openvdb))]
-use reify_ir::GeometryError;
+use reify_ir::{GeometryError, GeometryHandleId};
 use reify_kernel_openvdb::register::openvdb_capability_descriptor;
 use reify_kernel_openvdb::OpenVdbKernel;
 
@@ -344,5 +344,124 @@ fn openvdb_dispatches_voxel_to_mesh_conversion_stage() {
         plan.conversions,
         vec![(KernelId::OpenVdb, ReprKind::Voxel, ReprKind::Mesh)],
         "two-stage chain must produce conversions [(openvdb, Voxel, Mesh)]",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Voxel→Mesh options-threading seam (task γ / 5001, step-3 RED / step-4 GREEN)
+// ---------------------------------------------------------------------------
+
+/// Task γ (5001) — the options-threading seam for the executable `(Voxel,
+/// Mesh)` marching-cubes conversion stage. Two NEW `GeometryKernel` trait
+/// methods must exist: `realize_mesh_from_voxel(handle, iso_level, adaptive)`
+/// (the options-carrying counterpart of `tessellate`, which hard-codes
+/// `MarchingCubesOptions::default()`) and
+/// `surface_options_content_hash(iso_level, adaptive)` (the single source of
+/// truth for the intermediate `RealizationCache` key, delegating to
+/// `MarchingCubesOptions::content_hash()`'s ESC-3433-117 domain tag).
+///
+/// # What this test pins
+///
+/// Builds a real voxel grid via `ingest_mesh` on the canonical closed 2.0 mm
+/// cube (identical fixture to `openvdb_two_stage_chain_voxelize_primitive_executes`
+/// above), then:
+/// - (a) `realize_mesh_from_voxel(handle, 0.0, false)` returns `Ok(mesh)` with
+///   non-empty vertices under `cfg(has_openvdb)` (the grid is actually
+///   surfaced, not degraded), or `Err(GeometryError::OperationFailed(_))`
+///   under `cfg(not(has_openvdb))` (C-4 graceful degradation — the stub
+///   inherits the trait default).
+/// - (b) `surface_options_content_hash(0.0, false) !=
+///   surface_options_content_hash(0.5, false)` — two distinct `iso_level`
+///   values must key distinct `RealizationCache` slots (C-2 options
+///   threading) — and neither aliases `reify_eval::NO_OPTIONS` (the sentinel
+///   a bare-default read would otherwise collide with).
+///
+/// RED: `GeometryKernel::realize_mesh_from_voxel` and
+/// `GeometryKernel::surface_options_content_hash` do not exist yet (compile
+/// error).
+#[test]
+fn openvdb_realizes_mesh_from_voxel_with_distinct_options_hashes() {
+    // Closed 2.0 mm box mesh centred at the origin (8 corners, 12
+    // outward-wound triangles) — identical fixture to
+    // `openvdb_two_stage_chain_voxelize_primitive_executes` above.
+    #[allow(clippy::approx_constant)]
+    let cube = Mesh {
+        vertices: vec![
+            -1.0_f32, -1.0, -1.0, // 0
+             1.0,     -1.0, -1.0, // 1
+             1.0,      1.0, -1.0, // 2
+            -1.0,      1.0, -1.0, // 3
+            -1.0,     -1.0,  1.0, // 4
+             1.0,     -1.0,  1.0, // 5
+             1.0,      1.0,  1.0, // 6
+            -1.0,      1.0,  1.0, // 7
+        ],
+        #[rustfmt::skip]
+        indices: vec![
+            // Bottom (-Z)
+            0, 2, 1,  0, 3, 2,
+            // Top (+Z)
+            4, 5, 6,  4, 6, 7,
+            // Front (-Y)
+            0, 1, 5,  0, 5, 4,
+            // Back (+Y)
+            2, 3, 7,  2, 7, 6,
+            // Left (-X)
+            0, 4, 7,  0, 7, 3,
+            // Right (+X)
+            1, 2, 6,  1, 6, 5,
+        ],
+        normals: None,
+    };
+
+    let mut k = OpenVdbKernel::new();
+    let grid = GeometryKernel::ingest_mesh(&mut k, &cube);
+
+    // --- (a) realize_mesh_from_voxel: options-threaded marching cubes ------
+    #[cfg(has_openvdb)]
+    {
+        let handle = grid
+            .expect("ingest_mesh must succeed for a valid closed box under cfg(has_openvdb)")
+            .id;
+        let mesh = GeometryKernel::realize_mesh_from_voxel(&k, handle, 0.0, false).expect(
+            "realize_mesh_from_voxel must return Ok(Mesh) for a valid voxel grid \
+             under cfg(has_openvdb)",
+        );
+        assert!(
+            !mesh.vertices.is_empty(),
+            "realize_mesh_from_voxel must return a non-empty mesh for a closed-cube \
+             voxel grid",
+        );
+    }
+    #[cfg(not(has_openvdb))]
+    {
+        // Stub kernel: ingest_mesh already degrades (see
+        // `openvdb_two_stage_chain_voxelize_primitive_executes`); the handle
+        // value is irrelevant since the trait default errors unconditionally.
+        let _ = grid;
+        let r = GeometryKernel::realize_mesh_from_voxel(&k, GeometryHandleId(0), 0.0, false);
+        assert!(
+            matches!(r, Err(GeometryError::OperationFailed(_))),
+            "realize_mesh_from_voxel must degrade to OperationFailed on the stub \
+             kernel, got {:?}",
+            r,
+        );
+    }
+
+    // --- (b) surface_options_content_hash: distinct iso -> distinct hash ---
+    let hash_a = GeometryKernel::surface_options_content_hash(&k, 0.0, false);
+    let hash_b = GeometryKernel::surface_options_content_hash(&k, 0.5, false);
+    assert_ne!(
+        hash_a, hash_b,
+        "two distinct iso_level values must produce distinct \
+         surface_options_content_hash results",
+    );
+    assert_ne!(
+        hash_a, NO_OPTIONS,
+        "surface_options_content_hash(0.0, false) must not alias the NO_OPTIONS sentinel",
+    );
+    assert_ne!(
+        hash_b, NO_OPTIONS,
+        "surface_options_content_hash(0.5, false) must not alias the NO_OPTIONS sentinel",
     );
 }
