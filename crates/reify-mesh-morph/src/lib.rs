@@ -276,6 +276,20 @@ pub fn compose_morph(
     // VolumeMesh upstream (Step 3), so `morphed` is always tet by the time
     // quality_check runs here. Kept so the seam stays total (never panics)
     // if that upstream ordering ever changes.
+    //
+    // Deliberately records no diagnostic counter here, unlike the sibling
+    // Ineligible / Panicked / HardFail / SoftFail arms: there is no
+    // `MorphOutcome` bucket for this case, and adding one would grow the
+    // public `DiagnosticSnapshot` surface for a branch that cannot fire
+    // through any constructible `compose_morph` input today (so a counter
+    // increment here could never be pinned by a test either). The failure
+    // is still surfaced to the caller via the structured
+    // `Err(MorphFailure::SolverError(_))` below, so this is a
+    // silent-from-diagnostics choice, not a silent-from-the-API one.
+    // `record_quality_remesh`'s own `Unsupported` arm encodes the same
+    // defensive doctrine as a `debug_assert!` instead of a counter: that
+    // recorder must never observe `Unsupported` because this early return
+    // always intercepts it first.
     if matches!(verdict, QualityVerdict::Unsupported) {
         return Err(MorphFailure::SolverError(SolverErrorPayload::new(
             "quality_check: non-tet (hex/wedge) VolumeMesh unsupported",
