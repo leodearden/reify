@@ -256,26 +256,58 @@ pub const DORFLER_THETA: f64 = 0.5;
 ///    soon as the running sum reaches `theta * total`.
 /// 4. Return the marked indices sorted **ascending**.
 ///
+/// # Fail-closed: non-finite indicators are excluded, not ordered
+///
+/// A NaN error indicator poisons `total` (`Σ` includes a NaN ⇒ NaN) and
+/// scrambles `partial_cmp`-based ordering (NaN compares `Equal` against every
+/// value); an infinite indicator poisons `total` to `±Inf`, which either
+/// marks every element (`+Inf` ⇒ `cumulative >= threshold` never trips) or
+/// marks none (`-Inf` ⇒ `cumulative(0) >= -Inf` trips immediately) — in
+/// either case producing a marked set that does not reflect the finite error
+/// field. This is upstream pathology in the solve's error indicator, not a
+/// condition [`mark_dorfler`] can silently paper over: every non-finite
+/// indicator is excluded from both `total` and the sort order (so it can
+/// never be marked), a single WARN is emitted, and the finite sub-problem is
+/// marked exactly as if the non-finite entries were never present. Mirrors
+/// the fail-closed guard in
+/// [`through_thickness_check`](reify_kernel_gmsh::through_thickness::through_thickness_check).
+///
 /// # Edge cases
 ///
 /// An empty slice and an all-zero indicator vector both return an empty `Vec`:
 /// when `total == 0` the threshold is `0`, and the empty set already satisfies
 /// `cumulative(0) >= theta * 0`, so no element is marked. A zero-error field
 /// (e.g. the Zienkiewicz patch test) therefore triggers no wasted refinement,
-/// consistent with [`crate::error_estimator`]'s zero-energy guard.
+/// consistent with [`crate::error_estimator`]'s zero-energy guard. Non-finite
+/// indicators compose with this: excluded per the fail-closed policy above
+/// rather than contributing to `total`, so an all-non-finite slice behaves
+/// like an all-zero one — an empty marked set, plus the single WARN.
 pub fn mark_dorfler(indicators: &[f64], theta: f64) -> Vec<usize> {
-    let total: f64 = indicators.iter().sum();
+    let n_non_finite = indicators.iter().filter(|v| !v.is_finite()).count();
+    if n_non_finite > 0 {
+        tracing::warn!(
+            target: "reify_solver_elastic::adaptive",
+            reason = "non_finite_indicator",
+            n_non_finite = n_non_finite,
+            n_indicators = indicators.len(),
+            "Dörfler marking: excluded non-finite error indicator(s) from the \
+             marked set (likely upstream pathology in the solve's error \
+             field); finite indicators still marked per the Dörfler threshold"
+        );
+    }
+
+    let total: f64 = indicators.iter().filter(|v| v.is_finite()).sum();
     let threshold = theta * total;
 
     // Indices sorted by (indicator desc, index asc) — a total order, so the
-    // result is deterministic regardless of sort stability.
-    let mut order: Vec<usize> = (0..indicators.len()).collect();
-    order.sort_by(|&a, &b| {
-        indicators[b]
-            .partial_cmp(&indicators[a])
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then(a.cmp(&b))
-    });
+    // result is deterministic regardless of sort stability. Non-finite
+    // indicators are excluded here (see "Fail-closed" above), so every
+    // remaining value is finite and `total_cmp` is both panic-free and
+    // byte-identical to the old partial_cmp-based order.
+    let mut order: Vec<usize> = (0..indicators.len())
+        .filter(|&i| indicators[i].is_finite())
+        .collect();
+    order.sort_by(|&a, &b| indicators[b].total_cmp(&indicators[a]).then(a.cmp(&b)));
 
     let mut cumulative = 0.0_f64;
     let mut marked: Vec<usize> = Vec::new();
