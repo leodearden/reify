@@ -1474,5 +1474,132 @@ else
     assert "T18c: all-pass run Summary carries NO flaky-retried clause (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
 fi
 
+# -- Test 19: pool discovery/partition-stage death emits a root-cause diagnostic
+# (task #5123, esc-5080-9): under fleet-wide host overload, run_all.sh's pool
+# path was observed to die IMMEDIATELY after the "INFO: run_all.sh pool: N="
+# line with ZERO diagnostic -- no per-test headers, no Summary, no FAILED
+# list, just exit 1 -- because an unguarded command in the discovery/
+# partition/pool-setup block returned nonzero under `set -euo pipefail`.
+# Proves the new discovery/partition guard (a scoped ERR trap) surfaces an
+# actionable root cause -- failing command, exit code, loadavg, PSI avg10 --
+# AFTER the INFO line while re-raising the exact same nonzero exit code, and
+# that a normal (non-poisoned) pool run emits no such diagnostic at all.
+echo ""
+echo "--- Test 19: pool discovery/partition-stage death diagnostic ---"
+
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+    TMPDIR_T19="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T19")
+
+    MANIFEST_T19="$TMPDIR_T19/classification.manifest"
+    printf 'test_pool_1.sh pool\n' > "$MANIFEST_T19"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T19/test_pool_1.sh"
+    chmod +x "$TMPDIR_T19/test_pool_1.sh"
+
+    # Hot PSI fixture (Test 11 idiom) -- a KNOWN avg10 so assertion 19f can
+    # key on a concrete value instead of merely "some digits are present".
+    PSI_HOT_T19="$TMPDIR_T19/psi_hot"
+    printf 'some avg10=95.00 avg60=90.00 avg300=80.00 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' > "$PSI_HOT_T19"
+
+    # Poisoned TMPDIR: a NONEXISTENT NESTED path (never mkdir'd). Discovery
+    # and partition (pure in-memory) are unaffected; the block's workdir
+    # `mktemp -d "${TMPDIR}/reify-run-all-pool.XXXXXX"` is the ONLY
+    # TMPDIR-dependent command in the guarded block, so it fails
+    # deterministically while everything upstream of it succeeds.
+    # REIFY_RUN_ALL_POOL_LOCK is pinned to a GOOD path so the pre-block
+    # `_H2_POOL_LOCK` default (which also falls back to TMPDIR) is
+    # untouched -- the poisoning must reach exactly one command.
+    TMPDIR_T19_POISON="$TMPDIR_T19/nope/deeper"
+
+    t19_rc=0
+    t19_out="$(TMPDIR="$TMPDIR_T19_POISON" \
+        RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T19" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T19/pool.lock" \
+        REIFY_RUN_ALL_POOL_PSI_PROC_PATH="$PSI_HOT_T19" \
+        bash "$RUN_ALL" "$TMPDIR_T19" 2>&1)" || t19_rc=$?
+
+    # 19a: re-raise preserved -- run_all.sh still exits nonzero (regression
+    # lock: green both before and after the fix).
+    assert "T19a: run_all.sh still exits nonzero on discovery/partition-stage death" \
+        test "$t19_rc" -ne 0
+
+    # 19b: the guard's own stage marker is present (RED before the fix --
+    # mktemp's native stderr error has no such marker).
+    if grep -qE 'ERROR: run_all\.sh pool: discovery/partition' <<<"$t19_out"; then
+        assert "T19b: discovery/partition guard marker is present" true
+    else
+        assert "T19b: discovery/partition guard marker is present (got: $t19_out)" false
+    fi
+
+    # 19c: the marker names the failing command (mktemp).
+    if grep -qE 'discovery/partition.*command:.*mktemp' <<<"$t19_out"; then
+        assert "T19c: marker names the failing command (mktemp)" true
+    else
+        assert "T19c: marker names the failing command (mktemp) (got: $t19_out)" false
+    fi
+
+    # 19d: the marker carries the exit code / re-raise value.
+    if grep -qE 'discovery/partition.*exit[[:space:]]+[0-9]' <<<"$t19_out"; then
+        assert "T19d: marker carries the exit code" true
+    else
+        assert "T19d: marker carries the exit code (got: $t19_out)" false
+    fi
+
+    # 19e: a run_all.sh pool: diagnostic line reports loadavg.
+    if grep -qE 'run_all\.sh pool:.*loadavg=' <<<"$t19_out"; then
+        assert "T19e: diagnostic reports loadavg=" true
+    else
+        assert "T19e: diagnostic reports loadavg= (got: $t19_out)" false
+    fi
+
+    # 19f: the diagnostic surfaces the fixture PSI value (proves PSI avg10
+    # was actually read, not just a static field name).
+    if grep -qE 'run_all\.sh pool:.*avg10=95\.00' <<<"$t19_out"; then
+        assert "T19f: diagnostic surfaces the fixture PSI avg10 (95.00)" true
+    else
+        assert "T19f: diagnostic surfaces the fixture PSI avg10 (95.00) (got: $t19_out)" false
+    fi
+
+    # 19g: ordering -- the guard marker prints AFTER the INFO line (root
+    # cause surfaced, not a silent death right after INFO).
+    t19_info_line="$(grep -nE 'INFO: run_all\.sh pool: N=' <<<"$t19_out" | head -1 | cut -d: -f1)" || true
+    t19_marker_line="$(grep -nE 'ERROR: run_all\.sh pool: discovery/partition' <<<"$t19_out" | head -1 | cut -d: -f1)" || true
+    if [ -n "$t19_info_line" ] && [ -n "$t19_marker_line" ] && [ "$t19_marker_line" -gt "$t19_info_line" ]; then
+        assert "T19g: guard marker prints after the INFO line" true
+    else
+        assert "T19g: guard marker prints after the INFO line (info: ${t19_info_line:-MISSING}, marker: ${t19_marker_line:-MISSING})" false
+    fi
+
+    # 19h: happy-path non-regression -- a GOOD TMPDIR over the SAME fixture
+    # emits NO discovery/partition marker and exits 0.
+    TMPDIR_T19_GOOD="$TMPDIR_T19/good-tmp"
+    mkdir -p "$TMPDIR_T19_GOOD"
+    t19h_rc=0
+    t19h_out="$(TMPDIR="$TMPDIR_T19_GOOD" \
+        RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T19" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T19/pool-good.lock" \
+        REIFY_RUN_ALL_POOL_PSI_PROC_PATH="$PSI_HOT_T19" \
+        bash "$RUN_ALL" "$TMPDIR_T19" 2>&1)" || t19h_rc=$?
+
+    if ! grep -qE 'ERROR: run_all\.sh pool: discovery/partition' <<<"$t19h_out"; then
+        assert "T19h: normal pool run emits NO discovery/partition marker" true
+    else
+        assert "T19h: normal pool run emits NO discovery/partition marker (got: $t19h_out)" false
+    fi
+
+    assert "T19h: normal pool run exits 0" \
+        test "$t19h_rc" -eq 0
+else
+    assert "T19a: run_all.sh still exits nonzero on discovery/partition-stage death (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T19b: discovery/partition guard marker is present (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T19c: marker names the failing command (mktemp) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T19d: marker carries the exit code (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T19e: diagnostic reports loadavg= (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T19f: diagnostic surfaces the fixture PSI avg10 (95.00) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T19g: guard marker prints after the INFO line (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T19h: normal pool run emits NO discovery/partition marker (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T19h: normal pool run exits 0 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+fi
+
 # -- Summary --------------------------------------------------------------------
 test_summary
