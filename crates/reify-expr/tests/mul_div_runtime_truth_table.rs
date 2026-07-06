@@ -1301,3 +1301,56 @@ fn div_scalar_by_zero_is_undef() {
     let result = eval_binop(BinOp::Div, Value::length(5.0), Value::Int(0));
     assert!(result.is_undef(), "expected Undef, got {:?}", result);
 }
+
+// ── Degenerate scale_components shapes + Matrix open-question ──────────────
+
+/// `Tensor([Int,Int]) × Vector([len,len,len])`: pins the CURRENT shape
+/// reached via the broad `(Tensor, non-Tensor)` guard (lib.rs:4459-4464) —
+/// `scale_components` (lib.rs:3892-3915) maps `eval_mul(component, Vector)`
+/// over each `Tensor` component, and since `Int × Vector` is ITSELF an
+/// intentional scale arm (4465-4473), each mapped result is a `Value::Vector`
+/// — so the overall result is a NON-Undef `Value::Tensor` whose elements are
+/// `Value::Vector` (nested tensor-of-vectors), not a shape any caller
+/// designed for.
+#[test]
+fn mul_tensor_times_vector_yields_nested_tensor_of_vectors() {
+    let t = tensor1(vec![Value::Int(1), Value::Int(2)]);
+    let v = vec3(DimensionVector::LENGTH, 1.0, 2.0, 3.0);
+    let result = eval_binop(BinOp::Mul, t, v);
+    match result {
+        Value::Tensor(items) => {
+            assert_eq!(items.len(), 2, "expected 2 Tensor elements");
+            match &items[0] {
+                Value::Vector(inner) => assert_eq!(inner.len(), 3),
+                other => panic!("expected nested Vector element, got {:?}", other),
+            }
+        }
+        other => panic!("expected Tensor, got {:?}", other),
+    }
+}
+
+/// `Matrix × Real → Undef`: rounds out the Mul-side Matrix sweep alongside
+/// `mul_matrix_times_int_is_undef` / `mul_matrix_times_scalar_is_undef`
+/// (step-11/12) — `Value::Matrix` has no arm for ANY right-hand operand kind.
+#[test]
+fn mul_matrix_times_real_is_undef() {
+    let m = matrix2(vec![
+        vec![Value::Int(1), Value::Int(2)],
+        vec![Value::Int(3), Value::Int(4)],
+    ]);
+    let result = eval_binop(BinOp::Mul, m, Value::Real(2.0));
+    assert!(result.is_undef(), "expected Undef, got {:?}", result);
+}
+
+/// `Int × Matrix → Undef`: commutative check — swapping the operand order
+/// from `mul_matrix_times_int_is_undef` still finds no arm, since NEITHER
+/// position of `Value::Matrix` is enumerated anywhere in `eval_mul`.
+#[test]
+fn mul_int_times_matrix_is_undef() {
+    let m = matrix2(vec![
+        vec![Value::Int(1), Value::Int(2)],
+        vec![Value::Int(3), Value::Int(4)],
+    ]);
+    let result = eval_binop(BinOp::Mul, Value::Int(2), m);
+    assert!(result.is_undef(), "expected Undef, got {:?}", result);
+}
