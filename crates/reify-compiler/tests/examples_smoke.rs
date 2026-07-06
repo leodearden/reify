@@ -109,6 +109,16 @@ const SKIP_SET: &[(&str, &str)] = &[
          binary. The siblings (producer.ri, mismatch_variant.ri) are self-contained / \
          CLI-only-diagnostic and are intentionally NOT skipped.",
     ),
+    (
+        "multi_aspect_objective_mixed.ri",
+        "PRD δ (#5020) BT1 negative fixture — intentionally emits \
+         E_OBJECTIVE_MIXED_DIMENSION (ObjectiveDimensionIncoherent) at compile: two \
+         same-sense minimize decls over incommensurable dimensions (Money cost, Mass \
+         mass) lower to a 2-term WeightedSum that fails α's units-coherence guard. \
+         Positive (coherent) coverage lives in the sibling multi_aspect_objective.ri \
+         (NOT skipped) and both are exercised end-to-end by \
+         crates/reify-eval/tests/multi_aspect_objective_example_e2e.rs.",
+    ),
 ];
 
 /// Bulk smoke: walk `examples/*.ri`, parse each file and compile it with the

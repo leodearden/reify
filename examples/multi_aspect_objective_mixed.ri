@@ -1,0 +1,24 @@
+module multi_aspect_objective_mixed
+
+// PRD δ (#5020) / BT1 NEGATIVE fixture
+// (docs/prds/v0_6/multi-aspect-objective-units-coherence.md).
+//
+// This file INTENTIONALLY fails `reify check`: two same-sense mixed-dimension
+// `minimize` decls (Money `cost`, Mass `mass`) lower to a 2-term `WeightedSum`
+// whose terms do NOT share one dimension — α's compile-time coherence guard
+// (`DiagnosticCode::ObjectiveDimensionIncoherent`) rejects it with
+// `E_OBJECTIVE_MIXED_DIMENSION`, naming both dimensions.
+//
+// Do NOT "fix" this file to compile clean — it is a negative fixture, listed
+// in `crates/reify-compiler/tests/examples_smoke.rs::SKIP_SET`. Its diagnostic
+// is asserted by
+// `crates/reify-eval/tests/multi_aspect_objective_example_e2e.rs::multi_aspect_objective_mixed_negative_emits_e_objective_mixed_dimension`.
+// Positive (coherent) multi-aspect coverage lives in the sibling
+// `multi_aspect_objective.ri`.
+structure MixedObjective {
+    param cost : Money = auto
+    param mass : Mass = auto
+
+    minimize cost
+    minimize mass
+}
