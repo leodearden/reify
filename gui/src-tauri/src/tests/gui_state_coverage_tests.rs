@@ -88,3 +88,26 @@ fn check_field_coverage_honors_allowlist() {
         .expect_err("'ghost' is in neither the table nor the allowlist");
     assert_eq!(err, vec!["ghost".to_string()]);
 }
+
+/// The acceptance harness (forward direction): every field reflected off a
+/// fully-populated `GuiState` must be either classified in
+/// `classification_table()` or named on `known_stale_allowlist()`. This is
+/// the check that fails the build when a new, unclassified field is added
+/// to `GuiState` without updating this lint.
+#[test]
+fn every_gui_state_field_is_classified_or_allowlisted() {
+    let state = fully_populated_gui_state();
+    let keys: Vec<String> = serde_json::to_value(&state)
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
+
+    assert_eq!(
+        check_field_coverage(&keys, &classification_table(), &known_stale_allowlist()),
+        Ok(()),
+        "every GuiState field must be classified or on the known-stale allowlist"
+    );
+}
