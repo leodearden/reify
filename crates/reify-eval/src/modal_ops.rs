@@ -429,6 +429,9 @@ pub(crate) fn eigensolve_modal(
         phi_full.push(phi_u);
     }
 
+    // ---- Diagnostics (message-based, code: None; design_decision #6) ------
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
     // ---- Enforce the ascending-frequency contract explicitly --------------
     // stdlib `first_frequency`/`mode_frequency` and the ModalResult contract
     // require modes[0] to be the fundamental. The eigensolver returns eigenpairs
@@ -450,10 +453,15 @@ pub(crate) fn eigensolve_modal(
             frequencies.windows(2).all(|w| w[0] <= w[1]),
             "modal frequencies must be sorted ascending after the reorder",
         );
+    } else {
+        // Fail-closed: surface the pathology structurally, not only via the
+        // transient WARN log inside frequency_ascending_order — a NaN ω does
+        // not trip the rigid-body check below (NaN comparisons are always
+        // `false`), so without this a caller inspecting `diagnostics` would
+        // see no evidence of the non-finite frequency (suggestion 1 /
+        // robustness).
+        diagnostics.push(non_finite_frequency_diagnostic(frequencies.len()));
     }
-
-    // ---- Diagnostics (message-based, code: None; design_decision #6) ------
-    let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
     // Rigid-body / spurious near-zero modes: ω ≈ 0 signals an under-constrained
     // model. RIGID_BODY_OMEGA_TOL sits in the wide gap between rigid modes
@@ -700,6 +708,25 @@ fn frequency_ascending_order(frequencies: &[f64]) -> Option<Vec<usize>> {
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     Some(order)
+}
+
+/// The [`ModalCoreResult::diagnostics`] entry pushed when
+/// [`frequency_ascending_order`] fail-closes (returns `None`) on a
+/// non-finite frequency. That function only emits a transient
+/// `tracing::warn!`, which a caller inspecting the returned
+/// `ModalCoreResult` would never see — a NaN angular frequency does not trip
+/// `is_rigid_body_mode` (NaN comparisons are always `false`), and the
+/// convergence diagnostic is unrelated, so without this the pathology would
+/// surface nowhere in the structured result (suggestion 1 / robustness).
+fn non_finite_frequency_diagnostic(n_modes: usize) -> Diagnostic {
+    Diagnostic::warning(format!(
+        "W_ModalNonFiniteFrequency: encountered a non-finite (NaN/±∞) \
+         frequency among the {n_modes} solved modes; the ascending-frequency \
+         resort was skipped and the eigensolver's raw ascending-|λ| order was \
+         preserved instead. This indicates a numerical pathology upstream of \
+         the eigensolve (e.g. an ill-conditioned or non-PSD stiffness/mass \
+         assembly) — treat this result's mode ordering as unverified."
+    ))
 }
 
 /// Solve the generalized symmetric eigenproblem `K_free φ = λ M_free φ`,
@@ -6533,6 +6560,23 @@ mod tests {
         let identity_order = super::frequency_ascending_order(&ascending)
             .expect("all-finite input must return Some(order)");
         assert_eq!(identity_order, vec![0, 1, 2]);
+
+        // Equal-frequency modes must retain their original relative order.
+        // The comment above eigensolve_modal's resort call relies on this
+        // stable-sort contract ("A stable sort by frequency is a no-op in
+        // the normal case") — an unstable sort could still produce an
+        // ascending-value permutation while swapping tied modes, which this
+        // assertion (checking the order itself, not just the sorted values)
+        // would catch and a value-only check would not.
+        let with_ties = [1.0, 1.0, 0.5];
+        let tie_order = super::frequency_ascending_order(&with_ties)
+            .expect("all-finite input must return Some(order)");
+        assert_eq!(
+            tie_order,
+            vec![2, 0, 1],
+            "equal-frequency entries (indices 0 and 1) must keep their \
+             original relative order after the ascending resort (stable sort)"
+        );
     }
 
     /// step-3 (RED → GREEN in step-4): a non-finite frequency must fail
@@ -6563,5 +6607,24 @@ mod tests {
         });
 
         capture.assert_count_and_any_message_contains(1, "non-finite");
+    }
+
+    /// suggestion 1 (robustness, amendment pass): when
+    /// `frequency_ascending_order` fail-closes, `eigensolve_modal` must
+    /// surface the pathology structurally on `ModalCoreResult.diagnostics`
+    /// (not only via the transient WARN log tested above) so a caller
+    /// inspecting the result — rather than log output — can detect it.
+    #[test]
+    fn non_finite_frequency_diagnostic_flags_the_pathology_as_a_warning() {
+        let diag = super::non_finite_frequency_diagnostic(5);
+        assert!(
+            diag.severity == Severity::Warning
+                && diag.message.starts_with("W_ModalNonFiniteFrequency"),
+            "expected a W_ModalNonFiniteFrequency warning; got {diag:?}"
+        );
+        assert!(
+            diag.message.contains('5'),
+            "diagnostic should name the solved-mode count for context; got {diag:?}"
+        );
     }
 }
