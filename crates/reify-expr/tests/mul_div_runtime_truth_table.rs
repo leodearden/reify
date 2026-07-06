@@ -119,3 +119,150 @@ fn xform(rotation: Value, tx: f64, ty: f64, tz: f64) -> Value {
         ])),
     }
 }
+
+// ── MUL: numeric + Scalar core arms ─────────────────────────────────────────
+
+#[test]
+fn mul_int_int_yields_int() {
+    let result = eval_binop(BinOp::Mul, Value::Int(6), Value::Int(7));
+    assert_eq!(result, Value::Int(42));
+}
+
+#[test]
+fn mul_real_real_yields_real() {
+    let result = eval_binop(BinOp::Mul, Value::Real(2.5), Value::Real(4.0));
+    match result {
+        Value::Real(v) => assert!((v - 10.0).abs() < 1e-12, "v = {v}, expected ~10.0"),
+        other => panic!("expected Real, got {:?}", other),
+    }
+}
+
+#[test]
+fn mul_int_real_yields_real() {
+    let result = eval_binop(BinOp::Mul, Value::Int(3), Value::Real(2.5));
+    match result {
+        Value::Real(v) => assert!((v - 7.5).abs() < 1e-12, "v = {v}, expected ~7.5"),
+        other => panic!("expected Real, got {:?}", other),
+    }
+}
+
+#[test]
+fn mul_real_int_yields_real() {
+    let result = eval_binop(BinOp::Mul, Value::Real(2.5), Value::Int(3));
+    match result {
+        Value::Real(v) => assert!((v - 7.5).abs() < 1e-12, "v = {v}, expected ~7.5"),
+        other => panic!("expected Real, got {:?}", other),
+    }
+}
+
+#[test]
+fn mul_scalar_length_times_scalar_length_yields_scalar_area() {
+    let result = eval_binop(BinOp::Mul, Value::length(3.0), Value::length(4.0));
+    match result {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(
+                dimension,
+                DimensionVector::LENGTH.mul(&DimensionVector::LENGTH)
+            );
+            assert_eq!(dimension, DimensionVector::AREA);
+            assert!(
+                (si_value - 12.0).abs() < 1e-12,
+                "si_value = {si_value}, expected ~12.0"
+            );
+        }
+        other => panic!("expected Scalar, got {:?}", other),
+    }
+}
+
+/// Cancelling dimensions: (1/LENGTH) * LENGTH = DIMENSIONLESS, so
+/// `Value::from_real_scalar` collapses the product to `Value::Real` rather
+/// than `Value::Scalar { dimension: DIMENSIONLESS, .. }`.
+#[test]
+fn mul_scalar_inverse_length_times_scalar_length_collapses_to_real() {
+    let inverse_length = sc(2.0, DimensionVector::DIMENSIONLESS.div(&DimensionVector::LENGTH));
+    let result = eval_binop(BinOp::Mul, inverse_length, Value::length(4.0));
+    match result {
+        Value::Real(v) => assert!((v - 8.0).abs() < 1e-12, "v = {v}, expected ~8.0"),
+        other => panic!(
+            "expected Real (from_real_scalar dimensionless collapse), got {:?}",
+            other
+        ),
+    }
+}
+
+#[test]
+fn mul_scalar_times_int_preserves_dimension() {
+    let result = eval_binop(BinOp::Mul, Value::length(5.0), Value::Int(3));
+    match result {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(dimension, DimensionVector::LENGTH);
+            assert!(
+                (si_value - 15.0).abs() < 1e-12,
+                "si_value = {si_value}, expected ~15.0"
+            );
+        }
+        other => panic!("expected Scalar, got {:?}", other),
+    }
+}
+
+/// Commutative counterpart of `mul_scalar_times_int_preserves_dimension`.
+#[test]
+fn mul_int_times_scalar_preserves_dimension() {
+    let result = eval_binop(BinOp::Mul, Value::Int(3), Value::length(5.0));
+    match result {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(dimension, DimensionVector::LENGTH);
+            assert!(
+                (si_value - 15.0).abs() < 1e-12,
+                "si_value = {si_value}, expected ~15.0"
+            );
+        }
+        other => panic!("expected Scalar, got {:?}", other),
+    }
+}
+
+#[test]
+fn mul_scalar_times_real_preserves_dimension() {
+    let result = eval_binop(BinOp::Mul, Value::length(5.0), Value::Real(2.0));
+    match result {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(dimension, DimensionVector::LENGTH);
+            assert!(
+                (si_value - 10.0).abs() < 1e-12,
+                "si_value = {si_value}, expected ~10.0"
+            );
+        }
+        other => panic!("expected Scalar, got {:?}", other),
+    }
+}
+
+/// Commutative counterpart of `mul_scalar_times_real_preserves_dimension`.
+#[test]
+fn mul_real_times_scalar_preserves_dimension() {
+    let result = eval_binop(BinOp::Mul, Value::Real(2.0), Value::length(5.0));
+    match result {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(dimension, DimensionVector::LENGTH);
+            assert!(
+                (si_value - 10.0).abs() < 1e-12,
+                "si_value = {si_value}, expected ~10.0"
+            );
+        }
+        other => panic!("expected Scalar, got {:?}", other),
+    }
+}
