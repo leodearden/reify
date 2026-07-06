@@ -13248,6 +13248,59 @@ structure Assembly {
         );
     }
 
+    /// Task 5001 (γ): pins [`reify_test_support::mocks::MockGeometryKernel`]'s
+    /// new `realize_mesh_from_voxel` / `surface_options_content_hash`
+    /// overrides — the mock counterpart of the real `OpenVdbKernel` overrides
+    /// added in step-4, giving the mock a well-behaved options-carrying
+    /// Voxel→Mesh source for any future conversion-executor test that needs
+    /// one.
+    ///
+    /// Driven directly against the mock (not through
+    /// `execute_realization_ops`): a same-call `available_for_op == {Voxel}`
+    /// with `demanded_repr == Mesh` is architecturally unreachable there —
+    /// `demanded_repr` is a single parameter shared by every op in one call
+    /// (engine_build.rs `execute_realization_ops` loop), and `dispatch`'s BFS
+    /// (dispatcher.rs) only returns `Some(plan)` when a popped state's repr
+    /// exactly equals that one `demanded` value — so a preceding op can only
+    /// ever produce `demanded_repr` itself or `ReprKind::BRep` (the `.or_else`
+    /// fallback target), never a third repr for a later op to consume. See
+    /// `.task/plan.json` step-5 for the full proof; the primary
+    /// user-observable signal for the seam is
+    /// `openvdb_realize_mesh_from_voxel_and_options_hash_thread_correctly`
+    /// (dispatcher_integration.rs), which hand-seeds `{Voxel}` via a direct
+    /// `dispatcher::dispatch` call and so does not share this constraint.
+    #[test]
+    fn mock_geometry_kernel_realize_mesh_from_voxel_and_options_hash() {
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let k = MockGeometryKernel::new();
+
+        let mesh = GeometryKernel::realize_mesh_from_voxel(&k, GeometryHandleId(1), 0.0, false)
+            .expect("MockGeometryKernel::realize_mesh_from_voxel must return Ok");
+        assert!(
+            !mesh.vertices.is_empty(),
+            "MockGeometryKernel::realize_mesh_from_voxel must return a non-empty mesh"
+        );
+
+        let hash_a = GeometryKernel::surface_options_content_hash(&k, 0.0, false);
+        let hash_b = GeometryKernel::surface_options_content_hash(&k, 0.5, false);
+        assert_ne!(
+            hash_a, hash_b,
+            "two distinct iso_level values must hash to distinct \
+             surface_options_content_hash keys"
+        );
+        assert_ne!(
+            hash_a,
+            crate::realization_cache::NO_OPTIONS,
+            "surface_options_content_hash must never alias the NO_OPTIONS sentinel"
+        );
+        assert_ne!(
+            hash_b,
+            crate::realization_cache::NO_OPTIONS,
+            "surface_options_content_hash must never alias the NO_OPTIONS sentinel"
+        );
+    }
+
     // ── cross-kernel conversion executor tests (task 4050 step-7) ─────────────
     //
     // These drive the multi-stage conversion executor + the Mesh→BRep dispatch
