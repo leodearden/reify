@@ -20,7 +20,7 @@
 //! ```
 //!
 //! `$factory` must be an expression that produces a value implementing
-//! [`::reify_types::GeometryKernel`] when called as `$factory()`.
+//! [`::reify_ir::GeometryKernel`] when called as `$factory()`.
 //! `$substr` is a string literal; the generated tests assert that every error
 //! message returned by the kernel contains this substring.
 //!
@@ -37,9 +37,28 @@
 //! 3. `stub_kernel_query_export_tessellate_all_error` — asserts that `query`,
 //!    `export`, and `tessellate` return their respective error variants with
 //!    messages containing `$substr`.
+//!
+//! # Superseded by `assert_kernel_contract!`
+//!
+//! [`assert_kernel_contract!`] is the shared, cross-cfg successor to this
+//! macro: one suite source (this file's `pub fn assert_*` helpers) that a
+//! consumer instantiates for either a `stub` kernel (`not(has_occt)`) or a
+//! `real` kernel (`has_occt`). It covers this macro's all-error taxonomy
+//! plus the `query_many` length invariant and `extract_*` stability, and
+//! adds the `real` arm this macro has no equivalent for.
+//!
+//! `assert_stub_kernel_errors!` is retained byte-for-byte for its existing
+//! `reify-kernel-openvdb`/`reify-kernel-gmsh` consumers; migrating them to
+//! `assert_kernel_contract!(stub; ..)` is a follow-up. New consumers
+//! (starting with the OCCT kernel, task ι) should use
+//! [`assert_kernel_contract!`] instead of this macro.
 
-/// Assert the all-error stub-kernel contract for a [`::reify_types::GeometryKernel`]
+/// Assert the all-error stub-kernel contract for a [`::reify_ir::GeometryKernel`]
 /// implementation by generating three independent `#[test]` functions.
+///
+/// Superseded by [`assert_kernel_contract!`] for new consumers; retained
+/// unchanged for its existing `reify-kernel-openvdb`/`reify-kernel-gmsh`
+/// call sites (see the module-level docs).
 ///
 /// # Signature
 ///
@@ -520,6 +539,172 @@ pub fn assert_dangling_reference_taxonomy<K: GeometryKernel + ?Sized>(
     }
 }
 
+/// Assert the shared, cross-cfg `GeometryKernel` contract — error
+/// taxonomy, the `query_many` length invariant, and `extract_*`
+/// stability — by generating a set of independently-named `#[test]`
+/// functions from a single suite source. A consumer instantiates this
+/// once per kernel, in whichever cfg (`has_occt` / `not(has_occt)`) that
+/// kernel builds under; a stub/real taxonomy divergence fails whichever
+/// generated test observes it.
+///
+/// See the module-level docs for how this relates to
+/// [`assert_stub_kernel_errors!`].
+///
+/// # Arms
+///
+/// - `assert_kernel_contract!(stub; $factory, $substr);` — for an
+///   all-error stub kernel. `$factory` is a callable expression producing
+///   a fresh kernel (e.g. `FidgetKernel::new`); `$substr` is a string
+///   literal every error message must contain. Runs
+///   [`assert_all_error_taxonomy`], [`assert_query_many_length_invariant`],
+///   [`assert_extract_determinism`], and [`assert_dangling_handle_is_err`].
+/// - `assert_kernel_contract!(real; $factory, valid_op = $op);` — for a
+///   kernel that only fails on invalid input. `$op` is a
+///   [`::reify_ir::GeometryOp`] expression that `$factory()` can execute
+///   successfully; used to obtain a valid handle for the
+///   `query_many`/`extract_*` checks. Runs
+///   [`assert_dangling_reference_taxonomy`], [`assert_dangling_handle_is_err`],
+///   an `$op`-executes-`Ok` check, [`assert_query_many_length_invariant`],
+///   and [`assert_extract_determinism`].
+///
+/// Both arms also generate a `Send + Sync` + `Box<dyn GeometryKernel>`
+/// upcast test, mirroring [`assert_stub_kernel_errors!`]'s first test.
+///
+/// # Instantiation pattern (task ι, the OCCT-adoption leaf this suite
+/// exists for)
+///
+/// ```ignore
+/// #[cfg(test)]
+/// mod tests {
+///     #[cfg(has_occt)]
+///     reify_test_support::assert_kernel_contract!(
+///         real;
+///         OcctKernel::new,
+///         valid_op = ::reify_ir::GeometryOp::Box {
+///             width: Value::Real(10.0),
+///             height: Value::Real(10.0),
+///             depth: Value::Real(10.0),
+///         },
+///     );
+///
+///     #[cfg(not(has_occt))]
+///     reify_test_support::assert_kernel_contract!(stub; OcctKernel::new, "OCCT");
+/// }
+/// ```
+#[macro_export]
+macro_rules! assert_kernel_contract {
+    (stub; $factory:expr, $substr:literal $(,)?) => {
+        /// Compile-time `Send + Sync` pin and `Box<dyn GeometryKernel>` upcast.
+        #[test]
+        fn kernel_contract_stub_send_sync_and_box_upcast() {
+            fn assert_send_sync<T: ::core::marker::Send + ::core::marker::Sync>(_: &T) {}
+            let kernel = ($factory)();
+            assert_send_sync(&kernel);
+            let _boxed: ::std::boxed::Box<dyn ::reify_ir::GeometryKernel> =
+                ::std::boxed::Box::new(kernel);
+        }
+
+        /// See [`$crate::kernel_assertions::assert_all_error_taxonomy`].
+        #[test]
+        fn kernel_contract_stub_all_error_taxonomy() {
+            let mut kernel = ($factory)();
+            $crate::kernel_assertions::assert_all_error_taxonomy(&mut kernel, $substr);
+        }
+
+        /// See [`$crate::kernel_assertions::assert_query_many_length_invariant`].
+        #[test]
+        fn kernel_contract_stub_query_many_length_invariant() {
+            let kernel = ($factory)();
+            $crate::kernel_assertions::assert_query_many_length_invariant(
+                &kernel,
+                ::reify_ir::GeometryHandleId(1),
+            );
+        }
+
+        /// See [`$crate::kernel_assertions::assert_extract_determinism`].
+        #[test]
+        fn kernel_contract_stub_extract_determinism() {
+            let mut kernel = ($factory)();
+            $crate::kernel_assertions::assert_extract_determinism(
+                &mut kernel,
+                ::reify_ir::GeometryHandleId(1),
+            );
+        }
+
+        /// See [`$crate::kernel_assertions::assert_dangling_handle_is_err`].
+        #[test]
+        fn kernel_contract_stub_dangling_handle_is_err() {
+            let mut kernel = ($factory)();
+            $crate::kernel_assertions::assert_dangling_handle_is_err(
+                &mut kernel,
+                ::reify_ir::GeometryHandleId(u64::MAX),
+            );
+        }
+    };
+
+    (real; $factory:expr, valid_op = $op:expr $(,)?) => {
+        /// Compile-time `Send + Sync` pin and `Box<dyn GeometryKernel>` upcast.
+        #[test]
+        fn kernel_contract_real_send_sync_and_box_upcast() {
+            fn assert_send_sync<T: ::core::marker::Send + ::core::marker::Sync>(_: &T) {}
+            let kernel = ($factory)();
+            assert_send_sync(&kernel);
+            let _boxed: ::std::boxed::Box<dyn ::reify_ir::GeometryKernel> =
+                ::std::boxed::Box::new(kernel);
+        }
+
+        /// See [`$crate::kernel_assertions::assert_dangling_reference_taxonomy`].
+        #[test]
+        fn kernel_contract_real_dangling_reference_taxonomy() {
+            let mut kernel = ($factory)();
+            $crate::kernel_assertions::assert_dangling_reference_taxonomy(
+                &mut kernel,
+                ::reify_ir::GeometryHandleId(u64::MAX),
+            );
+        }
+
+        /// See [`$crate::kernel_assertions::assert_dangling_handle_is_err`].
+        #[test]
+        fn kernel_contract_real_dangling_handle_is_err() {
+            let mut kernel = ($factory)();
+            $crate::kernel_assertions::assert_dangling_handle_is_err(
+                &mut kernel,
+                ::reify_ir::GeometryHandleId(u64::MAX),
+            );
+        }
+
+        /// `valid_op` must execute `Ok` on a fresh kernel from `$factory`.
+        #[test]
+        fn kernel_contract_real_valid_op_executes_ok() {
+            let mut kernel = ($factory)();
+            let result = ::reify_ir::GeometryKernel::execute(&mut kernel, &($op));
+            assert!(
+                result.is_ok(),
+                "valid_op must execute Ok on a fresh kernel from $factory, got {:?}",
+                result
+            );
+        }
+
+        /// See [`$crate::kernel_assertions::assert_query_many_length_invariant`].
+        #[test]
+        fn kernel_contract_real_query_many_length_invariant() {
+            let mut kernel = ($factory)();
+            let handle = ::reify_ir::GeometryKernel::execute(&mut kernel, &($op))
+                .expect("valid_op must execute Ok to produce a probe handle");
+            $crate::kernel_assertions::assert_query_many_length_invariant(&kernel, handle.id);
+        }
+
+        /// See [`$crate::kernel_assertions::assert_extract_determinism`].
+        #[test]
+        fn kernel_contract_real_extract_determinism() {
+            let mut kernel = ($factory)();
+            let handle = ::reify_ir::GeometryKernel::execute(&mut kernel, &($op))
+                .expect("valid_op must execute Ok to produce a probe handle");
+            $crate::kernel_assertions::assert_extract_determinism(&mut kernel, handle.id);
+        }
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use reify_ir::{ExportError, ExportFormat, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, Mesh, QueryError, TessError, Value};
@@ -867,10 +1052,10 @@ mod tests {
 
     impl GeometryKernel for TestRealKernel {
         fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
-            if let GeometryOp::Union { left, .. } = op {
-                if !self.handles.contains(left) {
-                    return Err(GeometryError::InvalidReference(*left));
-                }
+            if let GeometryOp::Union { left, .. } = op
+                && !self.handles.contains(left)
+            {
+                return Err(GeometryError::InvalidReference(*left));
             }
             let id = self.fresh_handle();
             Ok(GeometryHandle {
