@@ -84,15 +84,21 @@ _file_to_crate() {
 }
 
 # _reverse_closure — read seed crate names from stdin (one per line), emit the
-# BFS reverse-dependency closure (seeds + all workspace crates that transitively
-# depend on them), sorted-unique, one per line.
+# cargo-accurate affected workspace-crate set (seeds plus every workspace
+# crate whose test-compile-closure pulls in a seed), sorted-unique, one per
+# line.
 #
-# Technique mirrors occt-scope-lib.sh:occt_touching_set (lines 59-110):
+# Technique mirrors occt-scope-lib.sh:occt_touching_set (lines 59-109), ported
+# from the forward ("what does X pull in") question to the reverse ("which
+# crates pull in a seed") question by parameterizing on the stdin seed ids
+# instead of a hardcoded occt_ids set:
 #   - single `cargo metadata --format-version 1` piped into python3
-#   - reverse adjacency R[dep_id] += pkg_id over workspace-internal edges of
-#     ALL kinds (null/build/dev)
-#   - BFS from the seed IDs, inclusive
-#   - intersect with workspace_members, print sorted-unique names
+#   - separate adjacency maps: adj_normal (kind null/'build', compiled
+#     transitively) vs adj_dev (kind 'dev' — dev-deps do NOT propagate
+#     transitively, so only the DIRECT dev-deps of the tested crate matter)
+#   - for each workspace member, compiled = normal_closure(member) UNION
+#     normal_closure(each DIRECT dev-dep of member)
+#   - a member is affected iff its compiled set intersects the seed ids
 #
 # On any cargo failure or python error, prints ALL (C5).
 _reverse_closure() {
@@ -117,33 +123,51 @@ try:
     for p in m['packages']:
         name_to_ids.setdefault(p['name'], []).append(p['id'])
 
-    # Build reverse adjacency over workspace-internal edges, all dep kinds.
-    # R[dep_id] = set of pkg_ids in workspace that depend on dep_id.
-    rev = {}
+    # Build separate adjacency maps for normal/build vs dev deps.
+    # dep_kinds[].kind: null -> normal, 'build' -> build dep, 'dev' -> dev dep.
+    # We must NOT conflate them: dev-deps of a transitive dep are never
+    # compiled when testing a crate that only has a normal dep on it.
+    adj_normal = {}  # kind=null or kind='build' (compiled transitively)
+    adj_dev = {}     # kind='dev' (only the DIRECT dev-deps of the tested crate matter)
     for node in m['resolve']['nodes']:
-        if node['id'] not in members:
-            continue
+        adj_normal[node['id']] = set()
+        adj_dev[node['id']] = set()
         for d in node['deps']:
-            if d['pkg'] not in members:
-                continue
-            rev.setdefault(d['pkg'], set()).add(node['id'])
+            kinds = {dk.get('kind') for dk in d.get('dep_kinds', [])}
+            if None in kinds or 'build' in kinds:
+                adj_normal[node['id']].add(d['pkg'])
+            if 'dev' in kinds:
+                adj_dev[node['id']].add(d['pkg'])
 
-    # BFS from all IDs matching any seed name, inclusive.
+    def normal_closure(start):
+        '''All packages reachable via normal/build edges only.'''
+        visited, queue = set(), [start]
+        while queue:
+            curr = queue.pop()
+            if curr in visited:
+                continue
+            visited.add(curr)
+            queue.extend(adj_normal.get(curr, []))
+        return visited
+
     seed_ids = set()
     for sn in seed_names:
         seed_ids.update(name_to_ids.get(sn, []))
 
-    visited = set(seed_ids)
-    queue = list(seed_ids)
-    while queue:
-        curr = queue.pop()
-        for dep_on_curr in rev.get(curr, []):
-            if dep_on_curr not in visited:
-                visited.add(dep_on_curr)
-                queue.append(dep_on_curr)
+    result = []
+    for pkg_id in members:
+        # A crate's test compilation includes:
+        #   - normal/build closure of the crate itself, PLUS
+        #   - normal/build closure of each DIRECT dev-dep of the crate
+        # Dev-deps of transitive normal deps do NOT propagate (Cargo does not
+        # propagate dev-deps transitively).
+        compiled = normal_closure(pkg_id)
+        for dev_dep_id in adj_dev.get(pkg_id, []):
+            compiled |= normal_closure(dev_dep_id)
+        if compiled & seed_ids:
+            result.append(id_to_name[pkg_id])
 
-    result = sorted({id_to_name[i] for i in visited if i in members})
-    for name in result:
+    for name in sorted(set(result)):
         print(name)
 except Exception:
     print('ALL')
