@@ -156,16 +156,14 @@ fn known_stale_allowlist() -> BTreeMap<&'static str, &'static str> {
     allowlist
 }
 
-/// A `GuiState` fixture intended to exercise every field's serde key.
-///
-/// NOTE: `fea_convergence` carries `#[serde(skip_serializing_if =
-/// "Option::is_none")]` (types.rs), so leaving it `None` here means its key
-/// is silently ABSENT from the reflected set below — this is the gotcha the
-/// reverse-coverage test (`fixture_reflects_every_classified_and_allowlisted_field`)
-/// catches. `demand_prune_measurement` has no `skip_serializing_if`, so its
-/// key always reflects (as `null` when `None`). Both are populated `Some(...)`
-/// in a later step once the reverse check demands it.
+/// A `GuiState` fixture with every field populated so all 13 serde keys
+/// reflect — including `fea_convergence`, which carries
+/// `#[serde(skip_serializing_if = "Option::is_none")]` (types.rs) and so
+/// would otherwise vanish from the reflected set (the gotcha caught by
+/// `fixture_reflects_every_classified_and_allowlisted_field`).
 fn fully_populated_gui_state() -> GuiState {
+    use crate::types::{DemandPruneMeasurementDto, FeaConvergenceInfo, WouldPruneByKindDto};
+
     GuiState {
         meshes: vec![],
         values: vec![],
@@ -175,11 +173,24 @@ fn fully_populated_gui_state() -> GuiState {
         compile_diagnostics: vec![],
         tensegrity_wires: vec![],
         tensegrity_surfaces: vec![],
-        demand_prune_measurement: None,
+        demand_prune_measurement: Some(DemandPruneMeasurementDto {
+            eval_set_size: 0,
+            observed_retained: 0,
+            would_prune: WouldPruneByKindDto {
+                value: 0,
+                constraint: 0,
+                realization: 0,
+                resolution: 0,
+                compute: 0,
+            },
+        }),
         display_panes: vec![],
         display_appearance: vec![],
         fea_diagnostics: vec![],
-        fea_convergence: None,
+        fea_convergence: Some(FeaConvergenceInfo {
+            converged: true,
+            reason: None,
+        }),
     }
 }
 
