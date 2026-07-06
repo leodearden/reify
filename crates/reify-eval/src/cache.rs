@@ -5761,4 +5761,31 @@ mod tests {
             "NodeCache::new must default diagnostics to an empty vec"
         );
     }
+
+    /// `Clone` must PRESERVE `diagnostics` — they are replay content (task μ
+    /// will replay them on cache-hit serves), not a transient optimization
+    /// hint like `warm_state`/`cost_per_byte`. Parallels
+    /// `node_cache_clone_drops_cost_per_byte_to_zero` but asserts the
+    /// OPPOSITE semantics for this field.
+    #[test]
+    fn node_cache_clone_preserves_diagnostics() {
+        let entry = NodeCache::new_with_diagnostics(
+            CachedResult::Value(reify_ir::Value::Int(1), reify_ir::DeterminacyState::Determined),
+            Freshness::Final,
+            DependencyTrace::default(),
+            VersionId(1),
+            vec![reify_core::Diagnostic::warning("carried")],
+        );
+
+        let cloned = entry.clone();
+        assert_eq!(
+            cloned.diagnostics.len(),
+            1,
+            "Clone must PRESERVE diagnostics — they are replay content, not a transient hint"
+        );
+        assert_eq!(
+            cloned.diagnostics[0].message, "carried",
+            "Clone must PRESERVE diagnostics — they are replay content, not a transient hint"
+        );
+    }
 }
