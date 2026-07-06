@@ -12,6 +12,48 @@
 //! existing call sites (`engine_eval.rs`, `engine_edit.rs`, ...) onto this
 //! primitive is out of scope here — see PRD leaves γ/δ/ε/ι.
 
+use reify_ir::{DeterminacyState, Value};
+
+/// The rule that determines a committed cell's [`DeterminacyState`] from its
+/// evaluated [`Value`]. Encodes today's three implicit determinacy rules as
+/// explicit, typed variants so a future edit cannot silently erase the
+/// intentional divergence between them (INV-EVAL-1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeterminacyRule {
+    /// Main-pass let/param binds: stamps `Determined` unconditionally,
+    /// regardless of whether the evaluated value is `Value::Undef`. See
+    /// `evaluate_params_and_lets_unified` / the `group.members` arm of
+    /// `Engine::eval` (engine_eval.rs ~:300).
+    UnconditionalDetermined,
+    /// The `reeval_cone_cell` rule (engine_eval.rs:4934-4937) and the
+    /// `DeterminacyPredicate` family (engine_eval.rs:4317,4356): maps
+    /// `Value::Undef` to `Undetermined`, everything else to `Determined`.
+    /// Intentionally diverges from `UnconditionalDetermined` — the doc
+    /// comment at engine_eval.rs:4883-4897 states a future reader should NOT
+    /// collapse the two rules together.
+    DeriveFromValue,
+    /// Rejected-override-with-no-default, or a solver-owned Auto cell still
+    /// awaiting a solve: always `Undetermined`, regardless of value.
+    Undetermined,
+}
+
+impl DeterminacyRule {
+    /// Resolves the [`DeterminacyState`] to record for `value` under this
+    /// rule. This is the single site encoding all three rules; migration
+    /// call sites select a rule and never re-derive a `DeterminacyState`
+    /// inline.
+    pub fn resolve(self, value: &Value) -> DeterminacyState {
+        match self {
+            DeterminacyRule::UnconditionalDetermined => DeterminacyState::Determined,
+            DeterminacyRule::DeriveFromValue => match value {
+                Value::Undef => DeterminacyState::Undetermined,
+                _ => DeterminacyState::Determined,
+            },
+            DeterminacyRule::Undetermined => DeterminacyState::Undetermined,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
