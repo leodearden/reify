@@ -74,4 +74,14 @@ pub fn map_err<T, E, F>(r: Result<T, E>, f: (E) -> F) -> Result<T, F> { r }
 /// Convert `o` to a `Result`: `some(x) → Ok{value:x}`, `none → Err{error:err}`
 /// (the standard Option→Result bridge; and `undef → undef`, Kleene
 /// propagation).
-pub fn ok_or<T, E>(o: Option<T>, err: E) -> Result<T, E> { Err { error: err } }
+///
+/// Placeholder body returns `err` directly (NOT `Err { error: err }`):
+/// variant-construction payload fields must be compile-time literals
+/// (variant_construct.rs's v1 non-constant-payload restriction), and `err` is
+/// a runtime param reference, so constructing `Err { error: err }` here draws
+/// an Error diagnostic ("non-constant payload value for field 'error'").
+/// result_type is derived from call-site signature substitution independent
+/// of the body (exactly as every other combinator above), so a bare param
+/// reference is a safe, minimal placeholder — the real Option→Result bridge
+/// runs in eval (option_recovery.rs's eval_ok_or, step 4).
+pub fn ok_or<T, E>(o: Option<T>, err: E) -> Result<T, E> { err }
