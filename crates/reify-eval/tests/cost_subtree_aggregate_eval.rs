@@ -209,3 +209,82 @@ fn cost_subtree_aggregate_empty_is_money_typed_zero() {
     });
     assert_money_eq(val, 0.0, "NoCost.total");
 }
+
+// ─── step-7: end-to-end example fixture (RED until step-8 creates the file) ─
+
+const EXAMPLE_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../examples/cost_subtree_aggregate.ri"
+);
+
+/// Reads `examples/cost_subtree_aggregate.ri`, compiles, and evaluates it.
+///
+/// The example exercises ALL depth-1 paths in one model: direct Costed subs
+/// (`bolt`: CapScrew, `mount`: MotorMount), a top-level `List<CapScrew>`
+/// collection (`screws`, count fixed to 2 by a constraint), and a non-Costed
+/// structural node (`bracket`: Bracket) that must be excluded.
+///
+/// Hand-derived total: bolt 2.88 + mount 34.00 + screws[0..1] 2*2.88=5.76
+/// = 42.64 USD (bracket excluded).
+///
+/// Also asserts the EXPLICIT-FILTER passthrough form
+/// `cost(filter(self.descendants, Costed))` equals the bare
+/// `cost(self.descendants)` total — confirming composition with
+/// `apply_trait_filters` and that the double Costed filter is idempotent.
+///
+/// RED today: `examples/cost_subtree_aggregate.ri` does not exist —
+/// `read_to_string` fails.
+#[test]
+fn example_cost_subtree_aggregate_ri_evals_expected_total() {
+    let source = std::fs::read_to_string(EXAMPLE_PATH).unwrap_or_else(|e| {
+        panic!(
+            "failed to read examples/cost_subtree_aggregate.ri (created by step-8): {}",
+            e
+        )
+    });
+
+    let compiled = parse_and_compile_with_stdlib(&source);
+    let mut engine = make_simple_engine();
+    let result = engine.eval(&compiled);
+    let eval_errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        eval_errors.is_empty(),
+        "expected zero Error diagnostics evaluating cost_subtree_aggregate.ri, got: {:#?}",
+        eval_errors
+    );
+
+    let subtree_cost_id = ValueCellId::new("Subassembly", "subtree_cost");
+    let subtree_cost = result.values.get(&subtree_cost_id).unwrap_or_else(|| {
+        panic!(
+            "Subassembly.subtree_cost not found in eval result; available cells: {:?}",
+            result.values.iter().map(|(k, _)| k).collect::<Vec<_>>()
+        )
+    });
+    assert_money_eq(subtree_cost, 42.64, "Subassembly.subtree_cost");
+
+    let subtree_cost_filtered_id = ValueCellId::new("Subassembly", "subtree_cost_filtered");
+    let subtree_cost_filtered = result
+        .values
+        .get(&subtree_cost_filtered_id)
+        .unwrap_or_else(|| {
+            panic!(
+                "Subassembly.subtree_cost_filtered not found in eval result; available cells: {:?}",
+                result.values.iter().map(|(k, _)| k).collect::<Vec<_>>()
+            )
+        });
+    assert_money_eq(
+        subtree_cost_filtered,
+        42.64,
+        "Subassembly.subtree_cost_filtered",
+    );
+
+    assert_eq!(
+        subtree_cost, subtree_cost_filtered,
+        "cost(self.descendants) and cost(filter(self.descendants, Costed)) \
+         should be equal (idempotent double Costed filter)"
+    );
+}
