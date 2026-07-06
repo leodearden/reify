@@ -1318,41 +1318,59 @@ build_plan() {
     if [ "$INCLUDE_INFRA" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
         if [ "$DO_TEST" -eq 1 ]; then
             add "if test -f tests/sync_comments_test.sh; then timeout --kill-after=60 10m bash tests/sync_comments_test.sh; else echo 'WARNING: sync_comments_test.sh not found, skipping'; fi"
-            # task #4624: pre-build reify-audit OUTSIDE the run_all.sh wall (30m).
-            # By the time run_all.sh runs, target/release/{reify-audit,ptodo-baseline-gen}
-            # are fresh so the in-wall freshness guard finds them fresh and skips the cold
-            # build.  sccache (RUSTC_WRAPPER) makes this cheap when already cached.
-            # Timeout is 10m (distinct from the run_all wall) so the plan-shape test can assert
-            # the pre-step is not the walled run_all.sh line.
-            #
-            # ADMISSION CONTROLS: this pre-step runs OUTSIDE compile_gate()/psi_gate().
-            # Rationale: (1) DF_VERIFY_ROLE=merge is exempt from all gates anyway;
-            # (2) sccache makes this a no-op when warm; (3) this plan line emits in the
-            # infra block — after all main Rust compile phases — so it does not race with
-            # the compile-gate window that guards clippy/check; (4) the CLAUDE.md
-            # admission-control invariant is for task×compile contention during the
-            # main psi-gate/slot region, which this small pre-build does not enter.
-            add "if test -f crates/reify-audit/Cargo.toml; then timeout --kill-after=60 10m ${CARGO_PRIO}cargo build --release -q -p reify-audit; fi"
-            # Positive assertion: if the Cargo.toml exists but the pre-build did not
-            # produce the binary, abort loudly rather than silently degrading to SKIP.
-            # Guards against the pre-step being removed or reordered without updating
-            # the REIFY_AUDIT_NO_COLD_BUILD backstop below.  Only fires if the
-            # pre-step is present (Cargo.toml guard matches) but produces no output.
-            add "if test -f crates/reify-audit/Cargo.toml && [ ! -f target/release/reify-audit ]; then echo 'ERROR(#4624): reify-audit binary missing after pre-build step — PTODO gate will silently SKIP; restore the pre-step above or remove this check deliberately' >&2; false; fi"
-            # Arm the budget-safe backstop: REIFY_AUDIT_NO_COLD_BUILD=1 tells the
-            # freshness guard to skip rather than cold-build if somehow the pre-step
-            # above was bypassed or narrowed (defense-in-depth; maps to SKIP exit 0).
-            # task #3810/esc-3810-4: bumped 20m -> 30m. The infra suite grew past
-            # the 20m wall after the warm-lane CoW-pool tests landed (they auto-run
-            # heavy cargo blocks when TMPDIR is XFS-reflink, i.e. on the merge worker),
-            # tipping a suite already near its budget over the wall (exit 124). 30m
-            # restores headroom for the full --scope all / merge gate.
-            add "if test -f tests/infra/run_all.sh; then REIFY_AUDIT_NO_COLD_BUILD=1 timeout --kill-after=60 30m bash tests/infra/run_all.sh; fi"
         fi
         if [ "$DO_LINT" -eq 1 ]; then
             add "if test -f scripts/test_pm_standardization.sh; then timeout --kill-after=60 10m bash scripts/test_pm_standardization.sh; else echo 'WARNING: test_pm_standardization.sh not found, skipping'; fi"
             add "if test -f scripts/check_event_inventory.sh; then timeout --kill-after=60 5m bash scripts/check_event_inventory.sh; else echo 'WARNING: check_event_inventory.sh not found, skipping'; fi"
         fi
+    fi
+
+    # Wholesale infra pool suite (task 5125): MERGE TIER ONLY. hooks/pre-merge-commit
+    # runs `DF_VERIFY_ROLE=merge verify.sh all --profile both --scope all` WITHOUT
+    # --include-infra, while EVERY per-task lane passes --include-infra — so gating
+    # run_all.sh on INCLUDE_INFRA (as before) ran the full 103-test suite on every
+    # task lane and NEVER at merge, starving the shared 16-slot pool (M-way
+    # contention -> 30m timeout -> exit 124 -> BLOCKED). Gating on role instead
+    # makes DF_VERIFY_ROLE=merge (stamped by both merge seams: hooks/pre-merge-commit
+    # and the dark-factory merge-verify command) the single source of truth: the
+    # full pool runs exactly once, at merge; per-task lanes get the cheap selective
+    # subset below instead (exactly-one invariant, INV-5).
+    #
+    # FAIL-FAST: emitted BEFORE add_test_passes (task #4448).
+    if [ "$DF_VERIFY_ROLE" = "merge" ] && [ "$RUN_RUST" -eq 1 ] && [ "$DO_TEST" -eq 1 ]; then
+        # task #4624: pre-build reify-audit OUTSIDE the run_all.sh wall (30m).
+        # By the time run_all.sh runs, target/release/{reify-audit,ptodo-baseline-gen}
+        # are fresh so the in-wall freshness guard finds them fresh and skips the cold
+        # build.  sccache (RUSTC_WRAPPER) makes this cheap when already cached.
+        # Timeout is 10m (distinct from the run_all wall) so the plan-shape test can assert
+        # the pre-step is not the walled run_all.sh line.
+        #
+        # ADMISSION CONTROLS: this pre-step runs OUTSIDE compile_gate()/psi_gate().
+        # Rationale: (1) DF_VERIFY_ROLE=merge is exempt from all gates anyway;
+        # (2) sccache makes this a no-op when warm; (3) this plan line emits in the
+        # infra block — after all main Rust compile phases — so it does not race with
+        # the compile-gate window that guards clippy/check; (4) the CLAUDE.md
+        # admission-control invariant is for task×compile contention during the
+        # main psi-gate/slot region, which this small pre-build does not enter.
+        add "if test -f crates/reify-audit/Cargo.toml; then timeout --kill-after=60 10m ${CARGO_PRIO}cargo build --release -q -p reify-audit; fi"
+        # Positive assertion: if the Cargo.toml exists but the pre-build did not
+        # produce the binary, abort loudly rather than silently degrading to SKIP.
+        # Guards against the pre-step being removed or reordered without updating
+        # the REIFY_AUDIT_NO_COLD_BUILD backstop below.  Only fires if the
+        # pre-step is present (Cargo.toml guard matches) but produces no output.
+        add "if test -f crates/reify-audit/Cargo.toml && [ ! -f target/release/reify-audit ]; then echo 'ERROR(#4624): reify-audit binary missing after pre-build step — PTODO gate will silently SKIP; restore the pre-step above or remove this check deliberately' >&2; false; fi"
+        # Arm the budget-safe backstop: REIFY_AUDIT_NO_COLD_BUILD=1 tells the
+        # freshness guard to skip rather than cold-build if somehow the pre-step
+        # above was bypassed or narrowed (defense-in-depth; maps to SKIP exit 0).
+        # task #3810/esc-3810-4: bumped 20m -> 30m. The infra suite grew past
+        # the 20m wall after the warm-lane CoW-pool tests landed (they auto-run
+        # heavy cargo blocks when TMPDIR is XFS-reflink, i.e. on the merge worker),
+        # tipping a suite already near its budget over the wall (exit 124). 30m
+        # restores headroom for the full --scope all / merge gate.
+        # REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 (task 5125): host-exclusive tests
+        # (declared in tests/infra/run-all-classification.manifest) stay on their
+        # cold `--scope host-infra` lane instead of double-running here.
+        add "if test -f tests/infra/run_all.sh; then REIFY_AUDIT_NO_COLD_BUILD=1 REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 timeout --kill-after=60 30m bash tests/infra/run_all.sh; fi"
     fi
 
     # Selective infra injection (task 4523): task-level path runs the infra
@@ -1363,9 +1381,11 @@ build_plan() {
     # set -f / set +f prevents the shell from pathname-expanding the token
     # during loop iteration here at build time, so the literal glob string
     # (e.g. tests/infra/test_verify_*.sh) always reaches the emitted plan.
-    # Suppressed when INCLUDE_INFRA=1: run_all.sh already runs the full suite
-    # (a superset), so the selective subset would double-run hermetic tests.
-    if [ "$DO_TEST" -eq 1 ] && [ -n "$SELECTED_INFRA_GLOBS" ] && [ "$INCLUDE_INFRA" -eq 0 ]; then
+    # Suppressed when DF_VERIFY_ROLE=merge (task 5125): run_all.sh already runs
+    # the full suite there (a superset), so the selective subset would
+    # double-run hermetic tests. Exactly-one invariant (INV-5): every verify
+    # runs either the full pool (merge) XOR the selective subset (task/offline).
+    if [ "$DO_TEST" -eq 1 ] && [ -n "$SELECTED_INFRA_GLOBS" ] && [ "$DF_VERIFY_ROLE" != "merge" ]; then
         local _glob
         set -f  # disable pathname expansion: keep glob tokens as literals
         for _glob in $SELECTED_INFRA_GLOBS; do
