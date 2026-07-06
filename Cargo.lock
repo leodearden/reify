@@ -4417,6 +4417,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "reify-eval-fea-tests"
+version = "0.1.0"
+dependencies = [
+ "reify-compiler",
+ "reify-constraints",
+ "reify-core",
+ "reify-eval",
+ "reify-ir",
+ "reify-stdlib",
+ "reify-syntax",
+ "reify-test-support",
+ "tempfile",
+]
+
+[[package]]
 name = "reify-expr"
 version = "0.1.0"
 dependencies = [

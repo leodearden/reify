@@ -1,0 +1,27 @@
+[package]
+name = "reify-eval-fea-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Engine-driven synthetic-mesh FEA e2e tests (OCCT-free; Lever P of docs/prds/reify-eval-fea-decomposition.md)"
+
+[dependencies]
+
+[dev-dependencies]
+# test-instrumentation gates Engine::cache_store()/cache_store_mut() (used by
+# modal_compute_node.rs / simulate_trajectory_compute_node.rs to seed/inspect
+# warm-state cache entries). Those accessors are `#[cfg(any(test, feature =
+# "test-instrumentation"))]` in engine_admin.rs; `cfg(test)` only applies when
+# reify-eval is the crate under test, not when it's a dev-dep of another crate,
+# so the feature must be requested explicitly here (mirrors reify-eval's own
+# self-dev-dep at crates/reify-eval/Cargo.toml:74).
+reify-eval = { workspace = true, features = ["test-instrumentation"] }
+reify-test-support = { workspace = true, features = ["eval-helpers"] }
+reify-core.workspace = true
+reify-ir.workspace = true
+reify-constraints.workspace = true
+reify-compiler.workspace = true
+reify-stdlib.workspace = true
+reify-syntax.workspace = true
+tempfile.workspace = true

@@ -67,7 +67,7 @@ _priority_for() {
 # This makes assertions simple test -n / test -gt checks on already-resolved values.
 # ---------------------------------------------------------------------------
 P_T0A="$(_priority_for reify-eval tensegrity_t0a)"
-P_FEA="$(_priority_for reify-eval fea_diagnostics_e2e)"
+P_FEA="$(_priority_for reify-eval-fea-tests fea_diagnostics_e2e)"
 P_REPR="$(_priority_for reify-eval representation_within_assertion)"
 P_ANAL="$(_priority_for reify-solver-elastic analytical_validation)"
 P_DET="$(_priority_for reify-solver-elastic determinism)"
@@ -81,7 +81,7 @@ echo "--- Assertion A: priority override present for each slow binary ---"
 assert "nextest.toml: priority override exists for package(reify-eval) & binary(tensegrity_t0a)" \
     test -n "$P_T0A"
 
-assert "nextest.toml: priority override exists for package(reify-eval) & binary(fea_diagnostics_e2e)" \
+assert "nextest.toml: priority override exists for package(reify-eval-fea-tests) & binary(fea_diagnostics_e2e)" \
     test -n "$P_FEA"
 
 assert "nextest.toml: priority override exists for package(reify-eval) & binary(representation_within_assertion)" \
@@ -117,7 +117,7 @@ _TMP_CFG="$(REIFY_OCCT_NEXTEST_MAX_THREADS=24 bash "$GEN_CFG")"
 
 # Precompute values from the generated config in the current shell.
 _C_T0A="$(_priority_for_file "$_TMP_CFG" reify-eval tensegrity_t0a)"
-_C_FEA="$(_priority_for_file "$_TMP_CFG" reify-eval fea_diagnostics_e2e)"
+_C_FEA="$(_priority_for_file "$_TMP_CFG" reify-eval-fea-tests fea_diagnostics_e2e)"
 _C_REPR="$(_priority_for_file "$_TMP_CFG" reify-eval representation_within_assertion)"
 _C_ANAL="$(_priority_for_file "$_TMP_CFG" reify-solver-elastic analytical_validation)"
 _C_DET="$(_priority_for_file "$_TMP_CFG" reify-solver-elastic determinism)"
@@ -152,8 +152,8 @@ echo "--- Assertion D: drift-guard — filter package+binary names map to real t
 assert "crates/reify-eval/tests/tensegrity_t0a.rs exists on disk (filter not dangling)" \
     test -f "$REPO_ROOT/crates/reify-eval/tests/tensegrity_t0a.rs"
 
-assert "crates/reify-eval/tests/fea_diagnostics_e2e.rs exists on disk (filter not dangling)" \
-    test -f "$REPO_ROOT/crates/reify-eval/tests/fea_diagnostics_e2e.rs"
+assert "crates/reify-eval-fea-tests/tests/fea_diagnostics_e2e.rs exists on disk (filter not dangling)" \
+    test -f "$REPO_ROOT/crates/reify-eval-fea-tests/tests/fea_diagnostics_e2e.rs"
 
 assert "crates/reify-eval/tests/representation_within_assertion.rs exists on disk (filter not dangling)" \
     test -f "$REPO_ROOT/crates/reify-eval/tests/representation_within_assertion.rs"

@@ -45,10 +45,10 @@ test-group = 'occt'
 #
 # tensegrity_t0a: top tier (priority = 100) — the >180s straggler that defines
 #   the critical path; must start FIRST, before everything else.
-# fea_diagnostics_e2e, representation_within_assertion (reify-eval),
-# analytical_validation, determinism (reify-solver-elastic): secondary tier
-#   (priority = 50) — still schedule early but yield the first slot to the
-#   straggler.
+# fea_diagnostics_e2e (reify-eval-fea-tests), representation_within_assertion
+# (reify-eval), analytical_validation, determinism (reify-solver-elastic):
+# secondary tier (priority = 50) — still schedule early but yield the first
+#   slot to the straggler.
 #
 # Drift guard: tests/infra/test_nextest_slow_priority.sh asserts that each
 # filter resolves to a real crates/<pkg>/tests/<bin>.rs on disk so a typo or
@@ -71,7 +71,7 @@ filter = 'package(reify-eval) & binary(tensegrity_t0a)'
 priority = 100
 
 [[profile.default.overrides]]
-filter = 'package(reify-eval) & binary(fea_diagnostics_e2e)'
+filter = 'package(reify-eval-fea-tests) & binary(fea_diagnostics_e2e)'
 priority = 50
 
 [[profile.default.overrides]]
