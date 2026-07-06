@@ -49,9 +49,10 @@ pub use color::Rgb8;
 pub use boundary_attachment::{BoundaryAssociation, NodeAttachment};
 pub use constraint::{
     AutoParam, ConstraintChecker, ConstraintDiagnostics, ConstraintDomain, ConstraintInput,
-    ConstraintResult, ConstraintSolver, ObjectiveCombination, ObjectiveProvenance, ObjectiveSense,
-    ObjectiveSet, ObjectiveTerm, OptimizedImpl, OptimizedImplInput,
-    OptimizedImplOutput, ResolutionProblem, SolveResult, TermContribution,
+    ConstraintResult, ConstraintSolver, DimensionIncoherence, ObjectiveCombination,
+    ObjectiveProvenance, ObjectiveSense, ObjectiveSet, ObjectiveTerm, OptimizedImpl,
+    OptimizedImplInput, OptimizedImplOutput, ResolutionProblem, SolveResult, TermContribution,
+    dimension_of, objective_terms_coherent,
 };
 pub use expr::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, CompiledMatchArm,

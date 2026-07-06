@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use reify_core::diagnostics::Diagnostic;
 use crate::expr::{CompiledExpr, CompiledFunction};
+use reify_core::dimension::DimensionVector;
 use reify_core::identity::{ConstraintNodeId, ValueCellId};
 use crate::persistent::PersistentMap;
 use reify_core::ty::Type;
@@ -148,6 +149,81 @@ impl ObjectiveSet {
             cost_robustness_lambda: Some(lambda),
         }
     }
+}
+
+/// Extracts the `DimensionVector` from a `Type`, defaulting to `DIMENSIONLESS`
+/// for any non-`Scalar` type. STATIC (no eval) — reads only `Type::Scalar { dimension }`.
+///
+/// Canonical shared home (PRD `docs/prds/v0_6/multi-aspect-objective-units-coherence.md`
+/// task α, #5018) for this extraction, reachable from reify-compiler (compile-time gate),
+/// reify-constraints / reify-eval (fold-site backstops), and any future solve-time
+/// consumer (e.g. #4785's merged cross-scope objective builder). The pre-existing
+/// private copy in `reify-constraints/src/solver.rs` (`dimension_of`, serving the hot
+/// `AutoParam.param_type` extraction path in `build_trial_values`) is intentionally left
+/// in place — de-duplicating that copy is out of scope for this task (see design notes).
+pub fn dimension_of(ty: &Type) -> DimensionVector {
+    match ty {
+        Type::Scalar { dimension } => *dimension,
+        _ => DimensionVector::DIMENSIONLESS,
+    }
+}
+
+/// Reports that a multi-term `ObjectiveSet` failed the units-coherence check
+/// (PRD D2/I-UNITS, task α #5018, diagnostic `E_OBJECTIVE_MIXED_DIMENSION`).
+///
+/// `first` is the reference dimension (that of `terms[0]`); `offending` is the
+/// differing dimension found at `term_index` — the first term (scanning from
+/// index 1) whose `dimension_of(&term.expr.result_type)` differs from `first`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DimensionIncoherence {
+    /// The dimension of the first term — the reference dimension for the set.
+    pub first: DimensionVector,
+    /// The differing dimension found at `term_index`.
+    pub offending: DimensionVector,
+    /// Index into the checked `terms` slice of the first offending term.
+    pub term_index: usize,
+}
+
+/// Checks that a multi-objective set's terms are units-coherent (PRD D2/I-UNITS,
+/// task α #5018): a `WeightedSum` with more than one term is coherent iff
+/// `dimension_of(term.expr.result_type)` is equal across ALL terms.
+///
+/// The rule is "all terms share ONE dimension" — NOT "each term dimensionless".
+/// A strict-dimensionless rule would regress shipped single-aspect Money
+/// objectives (`minimize cost`). This predicate accepts: empty term lists,
+/// single-term sets, and multi-term sets that are all-Money, all-Mass, or any
+/// other single shared dimension (including all-dimensionless). It rejects
+/// only genuinely mixed multi-term sets (e.g. one Money term + one Mass term).
+///
+/// This check is STATIC — it reads only `term.expr.result_type`, never
+/// evaluates the expression — so it can run at compile time, before any solve.
+///
+/// This is the single shared seam consumed by:
+/// - the reify-compiler compile-time gate (`check_objective_dimension_coherence`,
+///   which emits `E_OBJECTIVE_MIXED_DIMENSION` — the sole user-facing diagnostic);
+/// - the non-diagnosing `debug_assert!` backstops at the three triplicated
+///   objective-fold sites (`reify-constraints/src/solver.rs::eval_objective_set`,
+///   `reify-constraints/src/registry.rs::eval_rank_cost`,
+///   `reify-eval/src/engine_eval.rs::objective_term_contributions`);
+/// - any future solve-time consumer that builds an `ObjectiveSet` outside the
+///   authored-objective compile path (e.g. #4785's merged cross-scope objective
+///   builder), which MUST call this helper rather than spawning a fourth fold site.
+pub fn objective_terms_coherent(terms: &[ObjectiveTerm]) -> Result<(), DimensionIncoherence> {
+    let Some(first_term) = terms.first() else {
+        return Ok(());
+    };
+    let first = dimension_of(&first_term.expr.result_type);
+    for (term_index, term) in terms.iter().enumerate().skip(1) {
+        let offending = dimension_of(&term.expr.result_type);
+        if offending != first {
+            return Err(DimensionIncoherence {
+                first,
+                offending,
+                term_index,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// The realised contribution of a single `ObjectiveTerm` after solve (PRD §3.5 item 3, task θ #4015).
