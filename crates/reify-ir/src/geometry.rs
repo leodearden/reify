@@ -10637,4 +10637,34 @@ mod tests {
         assert!(welded.raw_welded);
         assert_eq!(welded.weld_merged_verts, 0);
     }
+
+    #[test]
+    fn validate_rejects_non_finite() {
+        // A NaN vertex coordinate on vertex 1 (x-component).
+        let mut nan_vertex_mesh = welded_tetra_mesh();
+        nan_vertex_mesh.vertices[1 * 3] = f32::NAN;
+        let err = nan_vertex_mesh
+            .validate(0.0)
+            .expect_err("a mesh with a NaN vertex coordinate must fail the mesh contract");
+        assert_eq!(err.invariant, MeshInvariant::Finite);
+        assert!(err.counts.nan_verts >= 1);
+        match err.witness {
+            MeshWitness::Vertex { index, .. } => {
+                assert_eq!(index, 1, "witness must name the offending vertex")
+            }
+            other => panic!("expected MeshWitness::Vertex naming the offender, got {other:?}"),
+        }
+
+        // A +Inf normal component (y-component of vertex 2's normal) — the
+        // vertex positions themselves stay all-finite.
+        let mut inf_normal_mesh = welded_tetra_mesh();
+        let normal_len = inf_normal_mesh.vertices.len();
+        inf_normal_mesh.normals = Some(vec![0.0_f32; normal_len]);
+        inf_normal_mesh.normals.as_mut().unwrap()[2 * 3 + 1] = f32::INFINITY;
+        let err = inf_normal_mesh
+            .validate(0.0)
+            .expect_err("a mesh with a +Inf normal component must fail the mesh contract");
+        assert_eq!(err.invariant, MeshInvariant::Finite);
+        assert!(err.counts.nan_verts >= 1);
+    }
 }
