@@ -393,3 +393,252 @@ fn merged_cluster_objective_passed_through_opaquely() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// step-09/10: determinism + back-compat guards (BT5, BT6/INV-2, over-cap).
+// ---------------------------------------------------------------------------
+
+/// Run `engine.eval` once against `module` with a FRESH engine + spy, and
+/// return the first captured merged problem's `auto_params` id-sequence plus
+/// the run's `resolved_params` -- used to compare two independent runs.
+fn run_merged_cluster_once(
+    module: &CompiledModule,
+) -> (Vec<ValueCellId>, HashMap<ValueCellId, Value>) {
+    let a_k = ValueCellId::new("A", "k");
+    let b_m = ValueCellId::new("B", "m");
+
+    let mut solved = HashMap::new();
+    solved.insert(a_k.clone(), mm(3.0));
+    solved.insert(b_m.clone(), mm(7.0));
+
+    let spy = MultiCallSpyConstraintSolver::new(vec![SolveResult::Solved {
+        values: solved,
+        unique: true,
+    }]);
+    let captured = spy.captured_problems();
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+    let result = engine.eval(module);
+
+    let problems = captured.lock().unwrap();
+    let ids: Vec<ValueCellId> = problems[0]
+        .auto_params
+        .iter()
+        .map(|ap| ap.id.clone())
+        .collect();
+    (ids, result.resolved_params)
+}
+
+/// (BT5) Running `engine.eval` twice on the SAME within-cap {A, B} cluster,
+/// with a fresh engine + spy each run, must produce byte-identical merged
+/// `auto_params` id-sequences and identical `resolved_params`.
+///
+/// The merged auto-param union ordering is a pure function of
+/// `cluster.scopes` (already ascending) x each scope's declaration-order
+/// `value_cells` -- no HashMap/HashSet iteration in the ordering path (a set
+/// is used only for constraint-filtering membership tests, never to drive
+/// order). A leak in that discipline would show up as run-to-run reordering.
+#[test]
+fn merged_cluster_auto_param_ordering_is_deterministic_across_runs() {
+    let module = two_cycle_cluster_module();
+
+    let (ids1, resolved1) = run_merged_cluster_once(&module);
+    let (ids2, resolved2) = run_merged_cluster_once(&module);
+
+    assert_eq!(
+        ids1, ids2,
+        "merged auto_params ordering must be byte-identical across \
+         independent runs on the same cluster; got {:?} vs {:?}",
+        ids1, ids2,
+    );
+    assert_eq!(
+        resolved1, resolved2,
+        "resolved_params must be identical across independent runs on the \
+         same cluster; got {:?} vs {:?}",
+        resolved1, resolved2,
+    );
+}
+
+/// (BT6/INV-2) An UNCOUPLED 2-scope module -- each scope constrains only its
+/// own auto cell, no cross-scope reads at all -- forms no cluster, so the
+/// merged path must never be taken: the engine dispatches ONE solve PER
+/// scope (2 total), and each call's `ResolutionProblem.auto_params` carries
+/// ONLY that scope's own auto id, never a cross-scope union.
+///
+/// Both canned solves return the SAME combined map (X.a and Y.b together) --
+/// `MultiCallSpyConstraintSolver` repeats the last/only sequence entry for
+/// every call, so this sidesteps any assumption about which scope's solve
+/// the driver dispatches first while still exercising real ID-keyed
+/// write-back for both cells.
+#[test]
+fn uncoupled_module_solves_per_template_not_merged() {
+    let x = TopologyTemplateBuilder::new("X")
+        .auto_param("X", "a", Type::length())
+        .constraint("X", 0, None, gt(value_ref("X", "a"), literal(mm(0.0))))
+        .build();
+    let y = TopologyTemplateBuilder::new("Y")
+        .auto_param("Y", "b", Type::length())
+        .constraint("Y", 0, None, gt(value_ref("Y", "b"), literal(mm(0.0))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(x)
+        .template(y)
+        .build();
+
+    let x_a = ValueCellId::new("X", "a");
+    let y_b = ValueCellId::new("Y", "b");
+
+    let mut combined = HashMap::new();
+    combined.insert(x_a.clone(), mm(5.0));
+    combined.insert(y_b.clone(), mm(9.0));
+
+    let spy = MultiCallSpyConstraintSolver::new(vec![SolveResult::Solved {
+        values: combined,
+        unique: true,
+    }]);
+    let captured = spy.captured_problems();
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+    let result = engine.eval(&module);
+
+    let problems = captured.lock().unwrap();
+    assert_eq!(
+        problems.len(),
+        2,
+        "an uncoupled 2-scope module must dispatch ONE solve PER scope (2 \
+         total), never a single merged cross-scope solve; got {} call(s)",
+        problems.len(),
+    );
+
+    let ids0: Vec<ValueCellId> = problems[0].auto_params.iter().map(|ap| ap.id.clone()).collect();
+    let ids1: Vec<ValueCellId> = problems[1].auto_params.iter().map(|ap| ap.id.clone()).collect();
+    assert!(
+        (ids0 == vec![x_a.clone()] && ids1 == vec![y_b.clone()])
+            || (ids0 == vec![y_b.clone()] && ids1 == vec![x_a.clone()]),
+        "each per-template solve must carry ONLY its own scope's single auto \
+         id -- no cross-scope union; got {:?} then {:?}",
+        ids0, ids1,
+    );
+    drop(problems);
+
+    assert_eq!(
+        result.resolved_params.get(&x_a),
+        Some(&mm(5.0)),
+        "X.a must resolve from its own per-template solve",
+    );
+    assert_eq!(
+        result.resolved_params.get(&y_b),
+        Some(&mm(9.0)),
+        "Y.b must resolve from its own per-template solve",
+    );
+}
+
+/// Auto cells per scope in the over-cap fixture below: comfortably over the
+/// `pub(crate) WHOLE_MODEL_CLUSTER_DIM_CAP` (12) -- mirrors
+/// coupling_approximated.rs's `OVER_CAP_AUTOS`, since this external test
+/// crate cannot read the private cap constant either.
+const OVER_CAP_AUTOS: usize = 20;
+
+/// Add `n` auto cells (`<entity>.a0..a{n-1}`) to a template builder. Mirrors
+/// coupling_approximated.rs's `with_n_autos` helper exactly.
+fn with_n_autos(
+    mut b: TopologyTemplateBuilder,
+    entity: &str,
+    n: usize,
+) -> TopologyTemplateBuilder {
+    for i in 0..n {
+        b = b.auto_param(entity, &format!("a{i}"), Type::length());
+    }
+    b
+}
+
+/// (over-cap back-compat) A 2-cycle {Alpha, Beta} whose merged dim
+/// (2 * OVER_CAP_AUTOS = 40) exceeds the cap degrades to
+/// `ClusterDisposition::ApproximatedFallback` (α; confirmed by
+/// resolve_order.rs's `over_cap_two_cycle_degrades_to_approximated_fallback`
+/// and coupling_approximated.rs's `over_cap_cycle_emits_coupling_approximated`)
+/// -- β must NOT merge it. It must still solve per-template exactly as
+/// pre-β: one solve call per scope, each scope's own auto cells resolved.
+///
+/// As above, both canned solves return the SAME combined map so the
+/// assertions don't depend on which scope's solve the driver dispatches
+/// first.
+#[test]
+fn over_cap_cluster_still_solves_per_template() {
+    let alpha = with_n_autos(TopologyTemplateBuilder::new("Alpha"), "Alpha", OVER_CAP_AUTOS)
+        .constraint("Alpha", 0, None, gt(value_ref("Beta", "a0"), literal(mm(0.0))))
+        .build();
+    let beta = with_n_autos(TopologyTemplateBuilder::new("Beta"), "Beta", OVER_CAP_AUTOS)
+        .constraint("Beta", 0, None, gt(value_ref("Alpha", "a0"), literal(mm(0.0))))
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(alpha)
+        .template(beta)
+        .build();
+
+    let alpha_ids: Vec<ValueCellId> = (0..OVER_CAP_AUTOS)
+        .map(|i| ValueCellId::new("Alpha", &format!("a{i}")))
+        .collect();
+    let beta_ids: Vec<ValueCellId> = (0..OVER_CAP_AUTOS)
+        .map(|i| ValueCellId::new("Beta", &format!("a{i}")))
+        .collect();
+
+    let mut combined: HashMap<ValueCellId, Value> = HashMap::new();
+    for id in &alpha_ids {
+        combined.insert(id.clone(), mm(1.0));
+    }
+    for id in &beta_ids {
+        combined.insert(id.clone(), mm(2.0));
+    }
+
+    let spy = MultiCallSpyConstraintSolver::new(vec![SolveResult::Solved {
+        values: combined,
+        unique: true,
+    }]);
+    let captured = spy.captured_problems();
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+    let result = engine.eval(&module);
+
+    let problems = captured.lock().unwrap();
+    assert_eq!(
+        problems.len(),
+        2,
+        "an over-cap (ApproximatedFallback) cluster must still solve \
+         per-template -- one call per scope, never a merged cross-scope \
+         solve; got {} call(s)",
+        problems.len(),
+    );
+
+    let ids0: Vec<ValueCellId> = problems[0].auto_params.iter().map(|ap| ap.id.clone()).collect();
+    let ids1: Vec<ValueCellId> = problems[1].auto_params.iter().map(|ap| ap.id.clone()).collect();
+    assert!(
+        (ids0 == alpha_ids && ids1 == beta_ids) || (ids0 == beta_ids && ids1 == alpha_ids),
+        "each per-template solve must carry ONLY its own scope's {} auto ids \
+         -- no cross-scope union with the other scope; got {} then {} ids",
+        OVER_CAP_AUTOS, ids0.len(), ids1.len(),
+    );
+    drop(problems);
+
+    for id in &alpha_ids {
+        assert_eq!(
+            result.resolved_params.get(id),
+            Some(&mm(1.0)),
+            "{id:?} must resolve to Alpha's own per-template solve result, \
+             matching the pre-β frozen-cascade path",
+        );
+    }
+    for id in &beta_ids {
+        assert_eq!(
+            result.resolved_params.get(id),
+            Some(&mm(2.0)),
+            "{id:?} must resolve to Beta's own per-template solve result, \
+             matching the pre-β frozen-cascade path",
+        );
+    }
+}
