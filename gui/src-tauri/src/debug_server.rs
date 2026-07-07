@@ -3328,4 +3328,72 @@ mod tests {
              'FeaMultiCaseBracket.length', which set_parameter never touched"
         );
     }
+
+    // ── Task 5035 step-4: RED — open_file/load_fixture baseline refresh must
+    // route through compute_delta (INV-GUI-2) ──
+    //
+    // `open_source_into_engine_and_refresh_baseline` (added in step-5) mirrors
+    // `open_path_into_engine`'s engine block (update_source + build_gui_state)
+    // but additionally refreshes `last_state` via `compute_delta`. This is the
+    // two-way boundary counterpart to `debug_mutation_leaves_delta_baseline_stale_today`
+    // (step-1): identical scenario, but proving CORRECT (minimal) deltas once
+    // routed through the refresh helper instead of the raw, unrefreshed
+    // `run_on_engine` block.
+    //
+    // FAILS TO COMPILE until step-5 adds
+    // `open_source_into_engine_and_refresh_baseline`.
+    #[tokio::test]
+    async fn open_source_refresh_helper_keeps_baseline_fresh() {
+        use reify_test_support::bracket_source;
+
+        // make_test_engine() pre-loads bracket_source() at module path
+        // "bracket" already; the helper under test re-drives update_source
+        // (mirroring what open_path_into_engine always does on open/
+        // load-fixture), exercising the same code path a debug-driven
+        // open_file/load_fixture call would.
+        let engine = crate::tests::make_test_engine();
+
+        // Pre-debug delta baseline (S0): cold, no command has run yet.
+        let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+            std::sync::Mutex::new(None);
+
+        // Debug-driven mutation: open/load bracket_source() via the
+        // NOT-YET-EXISTING refresh helper (S0 -> S1).
+        let content = bracket_source();
+        let s1 =
+            open_source_into_engine_and_refresh_baseline(&engine, &last_state, "bracket", content)
+                .await
+                .expect("open_source_into_engine_and_refresh_baseline must return Ok");
+        assert!(
+            !s1.values.is_empty(),
+            "open_source_into_engine_and_refresh_baseline must return GuiState with >= 1 value"
+        );
+
+        // The helper must refresh the baseline in the same call — the caller
+        // makes no separate compute_delta call.
+        assert_eq!(
+            *last_state.lock().unwrap(),
+            Some(s1.clone()),
+            "open_source_into_engine_and_refresh_baseline must refresh last_state to S1"
+        );
+
+        // A normal command now runs: set_parameter changes exactly one cell.
+        let s2 = crate::commands::set_parameter_impl(&engine, "Bracket.thickness", "9mm")
+            .expect("set_parameter_impl must succeed");
+
+        // The normal command's delta is computed against the FRESH (S1)
+        // baseline, so it must be minimal: it must NOT re-report the
+        // untouched 'Bracket.height' — step-1's characterization test proved
+        // a STALE (None) baseline WOULD incorrectly re-report it.
+        let delta = crate::diff::compute_delta(&last_state, &s2);
+        assert!(
+            !delta
+                .changed_values
+                .iter()
+                .any(|v| v.cell_id == "Bracket.height"),
+            "fresh-baseline delta must be MINIMAL: it must NOT re-report \
+             'Bracket.height', which set_parameter never touched (step-1 \
+             shows a stale baseline WOULD incorrectly include it)"
+        );
+    }
 }
