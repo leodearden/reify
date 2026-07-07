@@ -1601,5 +1601,108 @@ else
     assert "T19h: normal pool run exits 0 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
 fi
 
+# -- Test 20: H2 Phase-1 bounded worker-pool throttle (wait -n) -----------------
+# Task #5129 (PRD docs/prds/run-all-pool-contention-tiering-fix.md §9 L1):
+# proves the Phase-1 pool spawn loop bounds its own fork footprint to the
+# resolved pool concurrency N via a `wait -n` worker-SHELL throttle, instead
+# of forking every pool member at once (the esc-5029/3848 fork-storm). The
+# throttle caps PARENT-side live worker shells, which a post-slot_acquire
+# body-level counter cannot observe (slot_acquire already caps test-body
+# concurrency at N in both the throttled and un-throttled cases) -- so the
+# peak is asserted via the new parent-side `_h2_active` high-water-mark INFO
+# line, cross-checked against the Test-9-style real-overlap mock counter and
+# a behavioral (not source-grep) proof that slot_acquire still fires.
+echo ""
+echo "--- Test 20: H2 Phase-1 bounded worker-pool throttle (wait -n) ---"
+
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+    TMPDIR_T20="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T20")
+
+    # Fixture: 6 `pool` members, REIFY_RUN_ALL_POOL_CONCURRENCY=2 (N=2) --
+    # members > N so the throttle is actually exercised; a fork-storm
+    # regression (no throttle) would peak at 6 concurrent worker shells.
+    MANIFEST_T20="$TMPDIR_T20/classification.manifest"
+    cat > "$MANIFEST_T20" <<'EOF'
+test_pool_1.sh pool
+test_pool_2.sh pool
+test_pool_3.sh pool
+test_pool_4.sh pool
+test_pool_5.sh pool
+test_pool_6.sh pool
+EOF
+
+    CNT_T20="$TMPDIR_T20/counters"
+    mkdir -p "$CNT_T20"
+
+    # Reuse Test 9's flock CUR/MAX + ARRIVED-barrier pool mock verbatim (all
+    # 6 members pass -- this test is about spawn-footprint/observability,
+    # not failure classification).
+    _h2t9_write_pool_mock "$TMPDIR_T20/test_pool_1.sh" 0
+    _h2t9_write_pool_mock "$TMPDIR_T20/test_pool_2.sh" 0
+    _h2t9_write_pool_mock "$TMPDIR_T20/test_pool_3.sh" 0
+    _h2t9_write_pool_mock "$TMPDIR_T20/test_pool_4.sh" 0
+    _h2t9_write_pool_mock "$TMPDIR_T20/test_pool_5.sh" 0
+    _h2t9_write_pool_mock "$TMPDIR_T20/test_pool_6.sh" 0
+
+    SLOT_LOG_T20="$TMPDIR_T20/slot-events.log"
+
+    t20_rc=0
+    t20_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+        RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T20" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T20/pool-semaphore.lock" \
+        REIFY_RUN_ALL_POOL_CONCURRENCY=2 \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        REIFY_SLOT_EVENT_LOG="$SLOT_LOG_T20" \
+        H2_T9_LOAD_LIB="$LOAD_TOLERANCE_LIB_T9" \
+        H2_T9_POOL_LOCK="$CNT_T20/pool.lock" \
+        H2_T9_POOL_CUR="$CNT_T20/pool.cur" \
+        H2_T9_POOL_MAX="$CNT_T20/pool.max" \
+        H2_T9_POOL_ARRIVED="$CNT_T20/pool.arrived" \
+        H2_T9_POLL_BASE=100 \
+        H2_T9_ARRIVE_THRESHOLD=2 \
+        bash "$RUN_ALL" "$TMPDIR_T20" 2>&1)" || t20_rc=$?
+
+    t20_peak="$(grep -oE 'shells=[0-9]+' <<<"$t20_out" | head -1 | cut -d= -f2)" || true
+
+    if [ -n "$t20_peak" ] && [ "$t20_peak" -le 2 ] 2>/dev/null; then
+        assert "T20a: peak concurrent worker shells <= 2 (the throttle cap; got: $t20_peak)" true
+    else
+        assert "T20a: peak concurrent worker shells <= 2 (the throttle cap) (got: $t20_out)" false
+    fi
+
+    if [ -n "$t20_peak" ] && [ "$t20_peak" -ge 2 ] 2>/dev/null; then
+        assert "T20b: peak concurrent worker shells >= 2 (INV-3 at the worker-shell level; got: $t20_peak)" true
+    else
+        assert "T20b: peak concurrent worker shells >= 2 (INV-3 at the worker-shell level) (got: $t20_out)" false
+    fi
+
+    t20_pool_max="$(cat "$CNT_T20/pool.max" 2>/dev/null || echo 0)"
+    assert "T20c: mock CUR/MAX real-overlap counter shows max-concurrency >= 2 (got: $t20_pool_max)" \
+        test "$t20_pool_max" -ge 2
+
+    if [ -s "$SLOT_LOG_T20" ] && grep -q 'ACQUIRE' "$SLOT_LOG_T20"; then
+        assert "T20d: REIFY_SLOT_EVENT_LOG contains an ACQUIRE entry (slot_acquire still the host-global gate, INV-1)" true
+    else
+        assert "T20d: REIFY_SLOT_EVENT_LOG contains an ACQUIRE entry (slot_acquire still the host-global gate, INV-1) (got: $(cat "$SLOT_LOG_T20" 2>/dev/null))" false
+    fi
+
+    if [[ "$t20_out" == *"=== Summary: 6 discovered, 0 failed ==="* ]]; then
+        assert "T20e: byte-exact Summary line (6 discovered, 0 failed)" true
+    else
+        assert "T20e: byte-exact Summary line (6 discovered, 0 failed) (got: $t20_out)" false
+    fi
+
+    assert "T20f: run_all.sh exits 0 (all 6 pool members pass)" \
+        test "$t20_rc" -eq 0
+else
+    assert "T20a: peak concurrent worker shells <= 2 (the throttle cap) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T20b: peak concurrent worker shells >= 2 (INV-3 at the worker-shell level) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T20c: mock CUR/MAX real-overlap counter shows max-concurrency >= 2 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T20d: REIFY_SLOT_EVENT_LOG contains an ACQUIRE entry (slot_acquire still the host-global gate, INV-1) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T20e: byte-exact Summary line (6 discovered, 0 failed) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T20f: run_all.sh exits 0 (all 6 pool members pass) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+fi
+
 # -- Summary --------------------------------------------------------------------
 test_summary
