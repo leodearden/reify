@@ -3876,6 +3876,31 @@ impl Engine {
             // uncoupled scopes are absent from this map, so they fall through
             // to the unchanged per-template branch below (§5.2 "scopes outside
             // the cluster remain frozen constants exactly as today").
+            //
+            // Scope decision — cold path only: this dispatch loop lives in the
+            // cold `eval()` driver (ε's `reify eval` gate). `eval_cached` calls
+            // `resolve_order_ordering_only`, which returns NO clusters (see that
+            // call site's comment below), so the warm/incremental path never
+            // reaches a `MergedSolve` membership to dispatch and keeps solving
+            // per-template, unchanged. Wiring clusters into the warm path is a
+            // deferred follow-up, not a gap introduced here — no regression,
+            // since `eval_cached` already skipped cluster work before β existed.
+            // TODO(#5118): wire MergedSolve cluster co-solve into warm
+            // eval_cached() to close this cold/warm divergence (filed from the
+            // esc-5014-10 deferral recorded in this task's plan.json).
+            //
+            // Scope decision — W_SCOPE_COUPLING left as-is: the generic cycle
+            // warning extended into `diagnostics` below (from
+            // `ro.coupling_diagnostics`, computed in resolve_order.rs) still
+            // fires unconditionally for a within-cap SCC even though this loop
+            // now genuinely merges and solves it for real. β does not touch
+            // resolve_order.rs's emission — graduating that warning to reflect
+            // the merged-solve reality is a diagnostic-accuracy refinement,
+            // cleanest once δ's real solver + ε exercise this path end-to-end.
+            // β's module scope is the driver loop, not the diagnostic pass; the
+            // warning ("may be approximate") is at worst mildly stale, never
+            // wrong, and this keeps scope_coupling.rs/coupling_approximated.rs
+            // green.
             let cluster_of_scope: HashMap<usize, usize> = ro
                 .clusters
                 .iter()
@@ -5476,6 +5501,15 @@ impl Engine {
         // `ro.clusters` (W_COUPLING_APPROXIMATED is emitted only from the cold
         // eval() path), so use the ordering-only entry point to skip the pre-solve
         // cluster computation that would otherwise be recomputed and discarded here.
+        //
+        // M-WHOLE β (#5014): consequently, the merged cross-scope solve (cold
+        // `eval()` only — see `dispatch_merged_cluster_solve` and its call site's
+        // "Scope decision — cold path only" note) never engages here either: with
+        // no `ro.clusters` there is no `MergedSolve` membership to dispatch, so
+        // every scope keeps solving per-template on this path, unchanged. Wiring
+        // clusters into the warm incremental-recompute path is a deferred
+        // follow-up, not a regression — eval_cached already skipped cluster work
+        // before β existed. TODO(#5118) tracks closing this cold/warm divergence.
         let ro = crate::resolve_order::resolve_order_ordering_only(&module.templates);
 
         for template in &module.templates {
