@@ -510,8 +510,19 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     }
 
     # -- Phase 1: pool (concurrent, bounded by the host-global semaphore) --------
+    # Bounded worker-pool throttle (task #5129, esc-5029/3848 fork-storm): cap
+    # the number of LIVE worker SHELLS at _H2_POOL_N (the same resolved pool
+    # concurrency bound slot_acquire uses below -- no new constant). This
+    # bounds the PARENT's own fork footprint; slot_acquire remains the
+    # host-global concurrency gate inside the worker body, unchanged (INV-1).
     _h2_pids=()
+    _h2_active=0
+    _h2_peak=0
     for _h2_name in "${_h2_pool_members[@]}"; do
+        while [ "$_h2_active" -ge "$_H2_POOL_N" ]; do
+            wait -n 2>/dev/null || true
+            _h2_active=$((_h2_active - 1))
+        done
         _h2_psi_gate
         _h2_i="${_h2_index_of[$_h2_name]}"
         (
@@ -529,9 +540,14 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
             exit 0
         ) &
         _h2_pids+=($!)
+        _h2_active=$((_h2_active + 1))
+        [ "$_h2_active" -gt "$_h2_peak" ] && _h2_peak=$_h2_active
     done
     if [ "${#_h2_pids[@]}" -gt 0 ]; then
         wait "${_h2_pids[@]}" 2>/dev/null || true
+    fi
+    if [ "${#_h2_pool_members[@]}" -gt 0 ]; then
+        echo "INFO: run_all.sh pool: Phase-1 peak concurrent worker shells=${_h2_peak} (limit ${_H2_POOL_N})" >&2
     fi
 
     # -- Phase 2: serial (foreground, one at a time, discovered order) -----------
