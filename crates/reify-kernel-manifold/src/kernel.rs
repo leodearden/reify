@@ -2230,4 +2230,130 @@ mod tests {
             );
         }
     }
+
+    /// [step-2 / task μ2 #5113] Shared persist/clear/rebuild taxonomy for the
+    /// per-kernel state inventory (INV-GEO-3,
+    /// `docs/prds/kernel-seam-contracts.md` §6). Each per-handle side table
+    /// (or counter) of a `GeometryKernel` adapter is classified as one of:
+    /// - `Persist` — survives a warm-state swap verbatim;
+    /// - `Clear` — reset to empty on a warm-state swap;
+    /// - `Rebuild` — recomputed from the swapped-in state.
+    ///
+    /// `ManifoldKernel` has no warm-state/restore path (see the
+    /// `extracted_faces` field doc at kernel.rs:111-117), so every one of its
+    /// fields classifies as `Persist` below and `Clear`/`Rebuild` are unused
+    /// by manifold; they exist for shared vocabulary with the occt/gmsh
+    /// state-inventory leaves (`docs/prds/kernel-seam-contracts.md` §12,
+    /// leaves κ and μ3).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum StateDisposition {
+        Persist,
+        Clear,
+        Rebuild,
+    }
+
+    /// Binds a field reference to its `(name, disposition)` classification.
+    ///
+    /// The `_field` argument is intentionally unread beyond being passed by
+    /// reference: its sole purpose is to force every field bound by
+    /// [`manifold_state_inventory`]'s exhaustive destructure to be
+    /// *consumed* (passed somewhere), so an unclassified new field trips
+    /// `unused_variables` under `-D warnings` rather than compiling silently.
+    fn entry<T>(
+        _field: &T,
+        name: &'static str,
+        disposition: StateDisposition,
+    ) -> (&'static str, StateDisposition) {
+        (name, disposition)
+    }
+
+    /// Per-kernel state inventory for `ManifoldKernel` (INV-GEO-3 leaf μ2).
+    ///
+    /// # Compile-time drift guard
+    ///
+    /// The destructure below is EXHAUSTIVE (no `..` spread): it binds every
+    /// field of `ManifoldKernel` by name. Adding a field to `ManifoldKernel`
+    /// without updating this function becomes a hard compile error:
+    /// - E0027 "pattern does not mention field `<new_field>`" on the `let`
+    ///   destructure below (forces adding the field to the pattern);
+    /// - `unused_variables` under the enforced `-D warnings`
+    ///   (`cargo clippy --workspace --all-targets -- -D warnings`) once the
+    ///   field IS added to the pattern but not yet passed to [`entry`]
+    ///   (forces an actual classification, not just acknowledgment);
+    /// - the fixed-size return type `[(&'static str, StateDisposition); 4]`
+    ///   must also grow to match the new element count.
+    ///
+    /// # Classification (all four fields → `Persist`)
+    ///
+    /// `ManifoldKernel` is append-only and has no warm-state/restore path
+    /// (see the `extracted_faces` field doc at kernel.rs:111-117: "No
+    /// invalidation needed" — a given parent handle's mesh is immutable for
+    /// the kernel's lifetime). Handle-id stability requires `shapes`,
+    /// `sub_shapes`, and `extracted_faces` to survive verbatim (rebuilding
+    /// `extracted_faces` would mint fresh child ids and break
+    /// `resolve_unique_by_attribute`), and `next_id` must survive to prevent
+    /// id reuse/aliasing across the shared id space. This deliberately
+    /// diverges from `OcctKernel`, which clears its `extracted_*` caches on
+    /// warm restore.
+    fn manifold_state_inventory(k: &ManifoldKernel) -> [(&'static str, StateDisposition); 4] {
+        let ManifoldKernel { shapes, sub_shapes, next_id, extracted_faces } = k;
+        [
+            entry(shapes, "shapes", StateDisposition::Persist),
+            entry(sub_shapes, "sub_shapes", StateDisposition::Persist),
+            entry(next_id, "next_id", StateDisposition::Persist),
+            entry(extracted_faces, "extracted_faces", StateDisposition::Persist),
+        ]
+    }
+
+    /// [RED step-1 / task μ2 #5113] Completeness test for the INV-GEO-3
+    /// per-kernel state-inventory drift guard
+    /// (`docs/prds/kernel-seam-contracts.md` §6 + §12 leaf μ2).
+    ///
+    /// `manifold_state_inventory` must classify EVERY field of
+    /// `ManifoldKernel` via an exhaustive, no-wildcard struct destructure, so
+    /// this test asserts:
+    /// (a) completeness — the returned names equal exactly
+    ///     `{"shapes", "sub_shapes", "next_id", "extracted_faces"}`, array
+    ///     length 4, no duplicates;
+    /// (b) every field's disposition is `StateDisposition::Persist` —
+    ///     `ManifoldKernel` is append-only with no invalidation path (see the
+    ///     `extracted_faces` field doc at kernel.rs:111-117), so nothing is
+    ///     ever cleared or rebuilt;
+    /// (c) the full persist/clear/rebuild taxonomy vocabulary is
+    ///     constructible (`Clear`/`Rebuild` are unused by manifold today but
+    ///     exist for parity with the occt/gmsh state-inventory leaves).
+    ///
+    /// Fails to compile until step-2 adds `StateDisposition` and
+    /// `manifold_state_inventory`.
+    #[test]
+    fn manifold_state_inventory_classifies_every_side_table() {
+        let kernel = ManifoldKernel::new();
+        let inventory = manifold_state_inventory(&kernel);
+
+        assert_eq!(inventory.len(), 4, "inventory must classify exactly 4 fields");
+
+        let mut names: Vec<&str> = inventory.iter().map(|(name, _)| *name).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(
+            names,
+            vec!["extracted_faces", "next_id", "shapes", "sub_shapes"],
+            "inventory must cover exactly ManifoldKernel's 4 fields, with no duplicates"
+        );
+
+        for (name, disposition) in &inventory {
+            assert_eq!(
+                *disposition,
+                StateDisposition::Persist,
+                "field `{name}` must be classified Persist: ManifoldKernel is append-only \
+                 with no invalidation path (kernel.rs:111-117)"
+            );
+        }
+
+        // Pin the shared persist/clear/rebuild taxonomy vocabulary once, even
+        // though manifold classifies every field as `Persist`: `Clear` and
+        // `Rebuild` exist for parity with the occt/gmsh state-inventory leaves.
+        let _taxonomy =
+            [StateDisposition::Persist, StateDisposition::Clear, StateDisposition::Rebuild];
+    }
 }
