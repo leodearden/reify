@@ -1395,6 +1395,16 @@ impl EngineSession {
     /// `fea_diagnostics_emitter_fires_on_set_parameter`), which fails if that
     /// entry point ever stops routing through here.
     ///
+    /// Accepted tradeoff (awareness, not enforcement): the entry-point list
+    /// above is not enumerated anywhere the compiler checks. A brand-new
+    /// engine-mutating entry point requires two manual steps — call
+    /// `self.post_engine_call_telemetry()` after committing state, AND add a
+    /// matching `<name>_emits_fea_diagnostics` behavioral test to the
+    /// `FeaDiagnosticsEmitter tests` cluster in `tests/engine_tests.rs`
+    /// (mirror `load_from_compiled_emits_fea_diagnostics`). Skip either step
+    /// and telemetry is silently lost — nothing fails CI until that test
+    /// exists.
+    ///
     /// Reads `self.core.last_check()` once into a local: every constituent
     /// emit-helper below reads from that same committed `CheckResult`, matching
     /// the ordering invariant each call site already established (emit AFTER
