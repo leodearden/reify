@@ -2848,11 +2848,7 @@ fn nearest_node(nodes: &[[f64; 3]], target: [f64; 3]) -> usize {
     nodes
         .iter()
         .enumerate()
-        .min_by(|(_, a), (_, b)| {
-            dist2(a)
-                .partial_cmp(&dist2(b))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
+        .min_by(|(_, a), (_, b)| dist2(a).total_cmp(&dist2(b)))
         .map(|(i, _)| i)
         .expect("beam mesh has at least one node")
 }
