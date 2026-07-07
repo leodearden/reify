@@ -84,6 +84,21 @@
 #                                      empty/"0"/garbage) runs the full
 #                                      discovered set unchanged -- default 0,
 #                                      strictly additive on landing.
+#   REIFY_RUN_ALL_POOL_FORK_FAIL_MEMBER   fault-injection seam (task #5129):
+#                                      when set to a pool-bucket member's
+#                                      basename, that ONE member is degraded
+#                                      to a failure instead of spawned (see
+#                                      _h2_degrade_member) -- the suite still
+#                                      completes with the normal Summary/
+#                                      FAILED contract. Empirically, a real
+#                                      fork() EAGAIN is uncatchable/fatal in
+#                                      bash (exit 254 even under `set +e`), so
+#                                      this seam is how the graceful-degrade
+#                                      path is exercised deterministically;
+#                                      the `wait -n` worker-pool throttle
+#                                      above is the actual fork-storm defense.
+#                                      Unset by default -- test-only, never
+#                                      set in normal operation.
 
 set -euo pipefail
 
@@ -509,6 +524,26 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
         return 0
     }
 
+    # -- Fork-EAGAIN degrade path (task #5129, esc-3848) -------------------------
+    # A real async `( ) &` fork EAGAIN is uncatchable/fatal in bash (verified
+    # empirically on this host, bash 5.2: the shell prints "fork: Resource
+    # temporarily unavailable" and exits 254 regardless of `set +e`/
+    # `|| rc=$?`) -- reproducing it requires exhausting the host's process
+    # limit, which would also kill the test harness. The bounded `wait -n`
+    # throttle above is therefore the REAL fork-storm defense; this helper
+    # makes the graceful single-member degrade contract explicit and
+    # deterministically testable via the REIFY_RUN_ALL_POOL_FORK_FAIL_MEMBER
+    # fault-injection seam below (also the landing spot for any future
+    # catchable spawn-failure signal). Routes the failure through the
+    # EXISTING per-member .out/.rc protocol so Phases 2/2.5/3 (serial retry,
+    # FLAKY ledger, discovered-order replay) consume it unchanged (INV-2).
+    _h2_degrade_member() {
+        local _name="$1" _idx="$2"
+        echo "ERROR: run_all.sh pool: fork() EAGAIN for ${_name} under load -- degrading this member to a failure (esc-3848 class; suite continues)" >&2
+        echo "run_all.sh pool: fork() EAGAIN for ${_name} -- degraded to a failure" > "$_H2_WORKDIR/${_idx}.out"
+        echo 1 > "$_H2_WORKDIR/${_idx}.rc"
+    }
+
     # -- Phase 1: pool (concurrent, bounded by the host-global semaphore) --------
     # Bounded worker-pool throttle (task #5129, esc-5029/3848 fork-storm): cap
     # the number of LIVE worker SHELLS at _H2_POOL_N (the same resolved pool
@@ -519,12 +554,20 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     _h2_active=0
     _h2_peak=0
     for _h2_name in "${_h2_pool_members[@]}"; do
+        _h2_i="${_h2_index_of[$_h2_name]}"
+
+        # Fault-injection seam (test-only, esc-3848 class): degrade this ONE
+        # member instead of spawning it -- see _h2_degrade_member above.
+        if [ -n "${REIFY_RUN_ALL_POOL_FORK_FAIL_MEMBER:-}" ] && [ "$_h2_name" = "$REIFY_RUN_ALL_POOL_FORK_FAIL_MEMBER" ]; then
+            _h2_degrade_member "$_h2_name" "$_h2_i"
+            continue
+        fi
+
         while [ "$_h2_active" -ge "$_H2_POOL_N" ]; do
             wait -n 2>/dev/null || true
             _h2_active=$((_h2_active - 1))
         done
         _h2_psi_gate
-        _h2_i="${_h2_index_of[$_h2_name]}"
         (
             _h2_child_rc=0
             _h2_slot_rc=0
