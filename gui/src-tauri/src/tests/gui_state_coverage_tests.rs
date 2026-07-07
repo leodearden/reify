@@ -10,8 +10,9 @@
 // Tests are progressively added across steps 1–10 of the plan. This file is
 // intentionally sparse at pre-1 — content grows with each step.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
+use crate::diff::StateDelta;
 use crate::types::GuiState;
 
 /// How a `GuiState` field's value reaches the frontend.
@@ -91,6 +92,21 @@ fn check_field_coverage_honors_allowlist() {
     assert_eq!(err, vec!["ghost".to_string()]);
 }
 
+/// Reflects the serde-JSON object keys of a `GuiState` value — the field
+/// names that actually appear on the wire. For a field carrying
+/// `#[serde(skip_serializing_if = ...)]` (e.g. `fea_convergence`), this
+/// excludes the key entirely when the field is left at its skipped value.
+/// Shared by the forward and reverse coverage checks below.
+fn reflected_keys(state: &GuiState) -> BTreeSet<String> {
+    serde_json::to_value(state)
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect()
+}
+
 /// The acceptance harness (forward direction): every field reflected off a
 /// fully-populated `GuiState` must be either classified in
 /// `classification_table()` or named on `known_stale_allowlist()`. This is
@@ -99,7 +115,52 @@ fn check_field_coverage_honors_allowlist() {
 #[test]
 fn every_gui_state_field_is_classified_or_allowlisted() {
     let state = fully_populated_gui_state();
-    let keys: Vec<String> = serde_json::to_value(&state)
+    let keys: Vec<String> = reflected_keys(&state).into_iter().collect();
+
+    assert_eq!(
+        check_field_coverage(&keys, &classification_table(), &known_stale_allowlist()),
+        Ok(()),
+        "every GuiState field must be classified or on the known-stale allowlist"
+    );
+}
+
+/// A hardcoded tripwire on `GuiState`'s total field count, independent of
+/// `classification_table()`/`known_stale_allowlist()`. Adding (or removing) a
+/// field to/from `GuiState` changes how many keys `reflected_keys` produces
+/// for a fully-populated fixture, so this goes red and forces a deliberate
+/// bump here — plus a look at whether the new field needs classifying —
+/// rather than silently drifting.
+///
+/// This does NOT, on its own, catch a field that both (a) carries
+/// `#[serde(skip_serializing_if = ...)]` and (b) is left at its skipped
+/// value in `fully_populated_gui_state()`: such a field never reflects, so
+/// the count would not move. That residual gap is why `fully_populated_gui_state`'s
+/// doc comment requires every `Option`/`skip_serializing_if` field to be set
+/// to `Some(...)`.
+const EXPECTED_GUI_STATE_FIELD_COUNT: usize = 13;
+
+#[test]
+fn fully_populated_fixture_has_expected_field_count() {
+    let reflected = reflected_keys(&fully_populated_gui_state());
+    assert_eq!(
+        reflected.len(),
+        EXPECTED_GUI_STATE_FIELD_COUNT,
+        "GuiState's reflected field count changed (now {reflected:?}) — update \
+         EXPECTED_GUI_STATE_FIELD_COUNT and classify the new/removed field in \
+         classification_table() or known_stale_allowlist()"
+    );
+}
+
+/// Cross-checks the `Diffed` classification against `StateDelta`'s real
+/// field set (diff.rs) instead of trusting the classification table's
+/// comment. Each `Diffed` `GuiState` field is expected to have a
+/// `changed_<field>` counterpart on `StateDelta`, per the naming convention
+/// both `StateDelta::full` and `diff_gui_state` follow — so a `Diffed` entry
+/// can't silently drift out of sync with the actual diff channel.
+#[test]
+fn diffed_classification_matches_state_delta_fields() {
+    let delta = StateDelta::full(&fully_populated_gui_state());
+    let delta_keys: BTreeSet<String> = serde_json::to_value(&delta)
         .unwrap()
         .as_object()
         .unwrap()
@@ -107,11 +168,16 @@ fn every_gui_state_field_is_classified_or_allowlisted() {
         .cloned()
         .collect();
 
-    assert_eq!(
-        check_field_coverage(&keys, &classification_table(), &known_stale_allowlist()),
-        Ok(()),
-        "every GuiState field must be classified or on the known-stale allowlist"
-    );
+    for (field, mechanism) in classification_table() {
+        if mechanism == SyncMechanism::Diffed {
+            let expected_key = format!("changed_{field}");
+            assert!(
+                delta_keys.contains(&expected_key),
+                "GuiState field '{field}' is classified Diffed but StateDelta has no \
+                 '{expected_key}' field — diff.rs may have drifted from this classification"
+            );
+        }
+    }
 }
 
 /// Classifies each `GuiState` field with how its value reaches the frontend
@@ -143,16 +209,34 @@ fn classification_table() -> BTreeMap<&'static str, SyncMechanism> {
     table
 }
 
+/// Validates a clearing-task reference is non-empty at construction, so the
+/// known-stale ledger's "every entry names its clearing task" guarantee is
+/// structural (enforced wherever the reference is built) rather than a
+/// separate runtime assertion re-checking the same hardcoded literals.
+fn clearing_task_reference(reference: &'static str) -> &'static str {
+    assert!(
+        !reference.is_empty(),
+        "clearing-task reference must be non-empty"
+    );
+    reference
+}
+
 /// Fields known to be stale (not wired to any live sync mechanism today),
 /// each mapped to a non-empty reference naming the task that clears it —
 /// L2 clears the four tensegrity/display fields, L3 clears `fea_convergence`.
 fn known_stale_allowlist() -> BTreeMap<&'static str, &'static str> {
     let mut allowlist = BTreeMap::new();
-    allowlist.insert("tensegrity_wires", "cleared by L2");
-    allowlist.insert("tensegrity_surfaces", "cleared by L2");
-    allowlist.insert("display_panes", "cleared by L2");
-    allowlist.insert("display_appearance", "cleared by L2");
-    allowlist.insert("fea_convergence", "cleared by L3");
+    allowlist.insert("tensegrity_wires", clearing_task_reference("cleared by L2"));
+    allowlist.insert(
+        "tensegrity_surfaces",
+        clearing_task_reference("cleared by L2"),
+    );
+    allowlist.insert("display_panes", clearing_task_reference("cleared by L2"));
+    allowlist.insert(
+        "display_appearance",
+        clearing_task_reference("cleared by L2"),
+    );
+    allowlist.insert("fea_convergence", clearing_task_reference("cleared by L3"));
     allowlist
 }
 
@@ -203,16 +287,8 @@ fn fully_populated_gui_state() -> GuiState {
 /// can see, since a missing key never trips it.
 #[test]
 fn fixture_reflects_every_classified_and_allowlisted_field() {
-    use std::collections::BTreeSet;
-
     let state = fully_populated_gui_state();
-    let reflected: BTreeSet<String> = serde_json::to_value(&state)
-        .unwrap()
-        .as_object()
-        .unwrap()
-        .keys()
-        .cloned()
-        .collect();
+    let reflected = reflected_keys(&state);
 
     let table = classification_table();
     let allowlist = known_stale_allowlist();
@@ -226,13 +302,6 @@ fn fixture_reflects_every_classified_and_allowlisted_field() {
         reflected, expected,
         "the fixture must reflect exactly the fields named in the classification table and allowlist"
     );
-
-    for (field, reference) in &allowlist {
-        assert!(
-            !reference.is_empty(),
-            "allowlist entry for '{field}' must name a non-empty clearing-task reference"
-        );
-    }
 }
 
 /// The warn-mode debt ledger: `currently_unwired_fields` must report exactly
@@ -258,17 +327,35 @@ fn warn_mode_report_lists_the_six_currently_unwired_fields() {
 /// `table` field classified `FullReloadOnly` — i.e. every field not live on
 /// a param edit today. L2/L3 shrink this list as they clear allowlist
 /// entries and wire live sync mechanisms.
+///
+/// Collected through a `BTreeSet` so a field that is (transiently) both
+/// allowlisted AND classified `FullReloadOnly` is reported once, not twice.
 fn currently_unwired_fields(
     table: &BTreeMap<&'static str, SyncMechanism>,
     allowlist: &BTreeMap<&'static str, &'static str>,
 ) -> Vec<String> {
-    let mut fields: Vec<String> = allowlist.keys().map(|k| k.to_string()).collect();
+    let mut fields: BTreeSet<String> = allowlist.keys().map(|k| k.to_string()).collect();
     fields.extend(
         table
             .iter()
             .filter(|(_, mechanism)| matches!(mechanism, SyncMechanism::FullReloadOnly(_)))
             .map(|(k, _)| k.to_string()),
     );
-    fields.sort();
-    fields
+    fields.into_iter().collect()
+}
+
+/// A field that is both allowlisted and `FullReloadOnly`-classified (a
+/// plausible transient state mid-migration) must be reported exactly once,
+/// not once per source.
+#[test]
+fn currently_unwired_fields_dedupes_overlapping_entries() {
+    let mut table: BTreeMap<&'static str, SyncMechanism> = BTreeMap::new();
+    table.insert("overlap_field", SyncMechanism::FullReloadOnly("debug only"));
+    let mut allowlist: BTreeMap<&'static str, &'static str> = BTreeMap::new();
+    allowlist.insert("overlap_field", "cleared by L2");
+
+    assert_eq!(
+        currently_unwired_fields(&table, &allowlist),
+        vec!["overlap_field".to_string()]
+    );
 }
