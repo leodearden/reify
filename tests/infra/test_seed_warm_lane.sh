@@ -1655,4 +1655,64 @@ assert "P2: build/ahash-CCCC/root-output reads the lane's OUT_DIR (no FOREIGN su
     bash -c '[ "$(cat "$1")" = "'"$P_LANE_RP"'/target/debug/build/ahash-CCCC/out" ]' \
     _ "$P_LANE/target/debug/build/ahash-CCCC/root-output"
 
+# P-abs: buildroot stamp ABSENT. Unlike the env!()-relink (which fails safe by
+# relinking even when the stamp is absent — a cheap, idempotent mtime touch),
+# relocation is a content rewrite: an unguarded/empty search prefix would match
+# every byte and corrupt the file, so the fail-safe direction is inverted here
+# — skip, and say so on stderr, rather than guess.
+P_ABS_BASE_PARENT="$(mktemp -d /tmp/test-seed-P-abs-parent-XXXXXX)"
+P_ABS_BASE="$P_ABS_BASE_PARENT/target"
+P_ABS_LANE="$(mktemp -d /tmp/test-seed-P-abs-lane-XXXXXX)"
+_TMPDIRS+=("$P_ABS_BASE_PARENT" "$P_ABS_LANE")
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$P_ABS_BASE_PARENT/.warm-base-meta"
+# Deliberately no ${P_ABS_BASE}.buildroot written.
+
+mkdir -p "$P_ABS_BASE/debug/build/cxx-AAAA"
+cat > "$P_ABS_BASE/debug/build/cxx-AAAA/output" <<EOF
+cargo:CXXBRIDGE_DIR0=$P_FOREIGN/target/debug/build/cxx-AAAA/out/cxxbridge/include
+EOF
+
+P_ABS_SNAPSHOT="$(mktemp /tmp/test-seed-P-abs-snapshot-XXXXXX)"
+_TMPDIRS+=("$P_ABS_SNAPSHOT")
+cp "$P_ABS_BASE/debug/build/cxx-AAAA/output" "$P_ABS_SNAPSHOT"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$P_ABS_BASE" "$P_ABS_LANE" --fresh-checkout
+
+assert "P-abs: absent-buildroot seed exits 0" test "$RC" -eq 0
+assert "P-abs: output file BYTE-UNCHANGED (no corruption from an empty-prefix match)" \
+    cmp -s "$P_ABS_SNAPSHOT" "$P_ABS_LANE/target/debug/build/cxx-AAAA/output"
+assert "P-abs: stderr names the absent buildroot stamp (actionable warn)" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "buildroot stamp absent"' _ "$ERR_OUT"
+
+# P-eq: buildroot EQUALS the lane (genuine in-place build) — the baked path
+# already reflects the lane's own root, so relocation must be a pure no-op.
+P_EQ_BASE_PARENT="$(mktemp -d /tmp/test-seed-P-eq-parent-XXXXXX)"
+P_EQ_BASE="$P_EQ_BASE_PARENT/target"
+P_EQ_LANE="$(mktemp -d /tmp/test-seed-P-eq-lane-XXXXXX)"
+_TMPDIRS+=("$P_EQ_BASE_PARENT" "$P_EQ_LANE")
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$P_EQ_BASE_PARENT/.warm-base-meta"
+P_EQ_LANE_RP="$(realpath -m "$P_EQ_LANE")"
+printf '%s' "$P_EQ_LANE_RP" > "${P_EQ_BASE}.buildroot"
+
+mkdir -p "$P_EQ_BASE/debug/build/cxx-AAAA"
+cat > "$P_EQ_BASE/debug/build/cxx-AAAA/output" <<EOF
+cargo:CXXBRIDGE_DIR0=$P_EQ_LANE_RP/target/debug/build/cxx-AAAA/out/cxxbridge/include
+EOF
+
+P_EQ_SNAPSHOT="$(mktemp /tmp/test-seed-P-eq-snapshot-XXXXXX)"
+_TMPDIRS+=("$P_EQ_SNAPSHOT")
+cp "$P_EQ_BASE/debug/build/cxx-AAAA/output" "$P_EQ_SNAPSHOT"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$P_EQ_BASE" "$P_EQ_LANE" --fresh-checkout
+
+assert "P-eq: equal-buildroot seed exits 0" test "$RC" -eq 0
+assert "P-eq: output file unchanged (no-op; buildroot equals lane)" \
+    cmp -s "$P_EQ_SNAPSHOT" "$P_EQ_LANE/target/debug/build/cxx-AAAA/output"
+assert "P-eq: no relocation count > 0 reported on stderr" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "Relocated [1-9][0-9]* "' _ "$ERR_OUT"
+
 test_summary
