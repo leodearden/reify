@@ -1409,6 +1409,13 @@ build_plan
 # ---------------------------------------------------------------------------
 if [ "$PRINT_PLAN" -eq 1 ]; then
     echo "# verify.sh plan — action=$ACTION profile=$PROFILE scope=$SCOPE include_infra=$INCLUDE_INFRA nextest=$NEXTEST role=$DF_VERIFY_ROLE"
+    # NOTE (task 5125 review): a manual --include-infra run outside the merge
+    # gate no longer gets the wholesale infra pool suite (moved to the
+    # merge-only tier above) — only the cheaper selective per-artifact subset
+    # runs. Flagged here so this isn't mistaken for full local infra coverage.
+    if [ "$INCLUDE_INFRA" -eq 1 ] && [ "$DF_VERIFY_ROLE" != "merge" ]; then
+        echo "# NOTE: include_infra=1 under role=$DF_VERIFY_ROLE gets the selective per-artifact infra subset only (scripts/verify-pipeline-infra-tests.txt) — the wholesale infra pool suite now runs at the merge tier exclusively, not here"
+    fi
     echo "# scope decision — RUN_RUST=$RUN_RUST RUN_GUI=$RUN_GUI RUN_OCCT_GATE=$RUN_OCCT_GATE"
     echo "# narrowing — NARROW_ACTIVE=$NARROW_ACTIVE affected=${AFFECTED:-}"
     echo "# --- environment (process-level; inherited by every command below) ---"

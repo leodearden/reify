@@ -879,6 +879,46 @@ plan_for_vs_map_new hooks/pre-merge-commit
 assert "VS-map-premerge: plan contains test_hooks_call_verify.sh glob literal" \
     plan_has 'tests/infra/test_hooks_call_verify\.sh'
 
+# ---------------------------------------------------------------------------
+# VS-map-glob-resolve: drift-guard (task 5125 review). Every glob in
+# scripts/verify-pipeline-infra-tests.txt must expand to >= 1 real
+# tests/infra/*.sh file. A glob that matches zero files (rename, typo, or a
+# map row added ahead of its test) silently drops per-task fail-fast
+# coverage for whatever artifact maps to it -- exactly the failure mode this
+# task's selective-infra tier exists to close, leaving only the merge-tier
+# pool suite to catch the regression. Drives the REAL shipped map against
+# the REAL tests/infra tree (no verify.sh invocation, no fixture needed --
+# this is a static check of the map file's own promise). GREEN now: this
+# guards against future drift, not a currently-broken contract.
+# ---------------------------------------------------------------------------
+verify_pipeline_map_globs_resolve() {
+    local _map="$REPO_ROOT/scripts/verify-pipeline-infra-tests.txt"
+    local _line _artifact _glob _f _match _bad=""
+    while IFS= read -r _line || [ -n "$_line" ]; do
+        case "$_line" in
+            ''|'#'*) continue ;;
+        esac
+        read -r _artifact _glob <<< "$_line"
+        [ -n "$_glob" ] || continue
+        _match=0
+        for _f in "$REPO_ROOT"/$_glob; do
+            [ -f "$_f" ] || continue
+            _match=1
+        done
+        [ "$_match" -eq 1 ] || _bad="${_bad}${_artifact} -> ${_glob}"$'\n'
+    done < "$_map"
+    if [ -n "$_bad" ]; then
+        printf 'glob(s) with zero matching tests/infra files:\n%s' "$_bad"
+        return 1
+    fi
+    return 0
+}
+
+echo ""
+echo "--- Scenario VS-map-glob-resolve: every verify-pipeline-infra-tests.txt glob expands to >= 1 real file (drift guard, task 5125 review) ---"
+assert "VS-map-glob-resolve: all map globs resolve to at least one existing tests/infra file" \
+    verify_pipeline_map_globs_resolve
+
 # ===========================================================================
 # DS-* scenarios: doc-sync infra-map citing-test subset (task 4955)
 #
