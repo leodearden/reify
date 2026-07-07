@@ -1085,6 +1085,44 @@ mod tests {
         assert!(diagnostics.is_empty());
     }
 
+    /// Coverage-parity mirror of the analogous v0.1 tag-based-resolver
+    /// interleaved-duplicates regression test (deleted alongside the v0.1
+    /// resolver): dedup must apply to the full candidate set, not only
+    /// matching ids. Interleaves a matching id with a non-matching id (both
+    /// duplicated) so a dedup guard that only tracked ids reaching the match
+    /// branch would still leave the earlier case (c) above passing (every
+    /// occurrence there matches), while this shape would resurface a
+    /// spurious multi-match. Pins the user-observable outcome of
+    /// `collect_matches`'s unconditional `seen.insert` regardless of match
+    /// order.
+    #[test]
+    fn resolve_unique_by_attribute_interleaved_matching_and_nonmatching_duplicates() {
+        let id_match = h(90);
+        let id_nomatch = h(91);
+        let mut table = TopologyAttributeTable::default();
+        table.record(id_match, attr(Role::Side, 0, None));
+        table.record(id_nomatch, attr(Role::Side, 1, None));
+        let candidates = [id_match, id_nomatch, id_nomatch, id_match];
+        let query = AttributeQuery {
+            user_label: None,
+            role_and_index: Some((Role::Side, 0)),
+            feature_id: None,
+        };
+        let mut diagnostics = Vec::new();
+        let result =
+            resolve_unique_by_attribute(&table, &candidates, &query, span(), &mut diagnostics);
+        assert_eq!(
+            result,
+            AttributeResolution::Resolved(id_match),
+            "duplicate candidate ids must not inflate the match count regardless of tag-match order"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "no spurious TopologyAttributeStale when matching and non-matching duplicates are interleaved; got: {:?}",
+            diagnostics
+        );
+    }
+
     /// Regression pin for the feature_id-only contract (plan #2704).
     ///
     /// A query with `feature_id=Some` but both positional fields
