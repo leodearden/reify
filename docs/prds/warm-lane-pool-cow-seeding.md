@@ -156,7 +156,7 @@ seed-warm-lane.sh <base_target_dir> <lane_dir> (--fresh-checkout | --reset-in-pl
 
 ### 9.3 Base-refresh + defrag-signal — `scripts/refresh-warm-base.sh`
 
-*(Updated 2026-06-18 — D10 amendment. The pre-D10 prose described a `<base_dir>.new` atomic rename; the landed implementation uses generation-dir staging + atomic symlink-flip + reader-refcount GC as described below. Updated 2026-06-25 — esc-3468-75 fix: now also stamps the authoritative per-gen landed-commit (step 4b) and reaps it in GC. Updated 2026-07-03 — task 4983: now also stamps the per-gen build-worktree root (step 2b) and reaps it in GC.)*
+*(Updated 2026-06-18 — D10 amendment. The pre-D10 prose described a `<base_dir>.new` atomic rename; the landed implementation uses generation-dir staging + atomic symlink-flip + reader-refcount GC as described below. Updated 2026-06-25 — esc-3468-75 fix: now also stamps the authoritative per-gen landed-commit (step 4b) and reaps it in GC. Updated 2026-07-03 — task 4983: now also stamps the per-gen build-worktree root (step 2b) and reaps it in GC. Updated 2026-07-07 — task 5126: the step 2b `.buildroot` stamp gains a second consumer — seed-warm-lane.sh now also relocates (rewrites, not just relinks) foreign-prefix links-metadata/OUT_DIR baked into build-script `output`/`root-output` replay files; no change to refresh-warm-base.sh itself.)*
 
 ```
 refresh-warm-base.sh --advancing-dir <dir> --base-dir <base> --landed-commit <sha> [--check-frag [--frag-threshold <N>]]
@@ -185,8 +185,10 @@ refresh-warm-base.sh --advancing-dir <dir> --base-dir <base> --landed-commit <sh
        _prov_wt the inv.9 provenance guard resolves) — the worktree under which
        this gen's test/bench binaries were compiled, and thus the path baked into
        any env!("CARGO_MANIFEST_DIR") (or allied CARGO_* path macro) call in their
-       sources. Consumed by seed-warm-lane.sh to detect a build-worktree mismatch
-       and relink the affected test/bench binaries (see §9.5 inv.8 sub-note).
+       sources. Consumed by seed-warm-lane.sh to detect a build-worktree mismatch,
+       both to relink the affected test/bench binaries AND (task 5126) to relocate
+       the foreign prefix baked into build-script `output`/`root-output` replay
+       files (see §9.5 inv.8 sub-notes).
     3. atomic whole-tree swap:
          ln -sfn <base>.gen.<N>  <base>    (atomic symlink replace on Linux)
     4. reader-refcount GC — sweep retired <base>.gen.*:
@@ -202,8 +204,9 @@ refresh-warm-base.sh --advancing-dir <dir> --base-dir <base> --landed-commit <sh
     (for preflight/seed guards). Per-gen <base>.gen.<N>.basecommit is the authoritative
     landed-commit for seed-warm-lane.sh delta-touch (see §9.3 step 2 and esc-3468-75).
     Per-gen <base>.gen.<N>.buildroot is the authoritative build-worktree root for
-    seed-warm-lane.sh's env!()-baked-path test/bench relink (see §9.3 step 2b and
-    task 4983).
+    seed-warm-lane.sh's env!()-baked-path test/bench relink (task 4983) AND its
+    links-metadata/OUT_DIR path relocation (task 5126) — see §9.3 step 2b and
+    §9.5 inv.8 sub-notes.
   --check-frag: run xfs_bmap extent probe; emit "ok <N>" or "reseed-due <N>"
     (default threshold: FRAG_THRESHOLD=64). A "reseed-due" signal means the next
     invariant-6 safety-valve COLD build's target/ should be promoted as a fresh
@@ -222,7 +225,7 @@ warm-lane-preflight.sh   (mirrors check-manifold-deps.sh; first step of a pooled
 
 ### 9.5 Pool lifecycle contract (consumed by dark-factory ζ/η)
 
-*(Updated 2026-06-18 — D10 amendment. acquire_lane ALWAYS re-seeds; release_lane retains nothing load-bearing. Two new invariants (inv.8/inv.9) added; total: 9. Updated 2026-06-25 — esc-3468-75 fix: inv.9 now records the EXACT landed commit per gen; seed derives its delta-touch base from the authoritative per-gen stamp with priority over the legacy .warm-base-meta; _touch_git_delta is fail-closed; a seed-time post-condition forbids any changed file retaining the 2020-01-01 stamp.)*
+*(Updated 2026-06-18 — D10 amendment. acquire_lane ALWAYS re-seeds; release_lane retains nothing load-bearing. Two new invariants (inv.8/inv.9) added; total: 9. Updated 2026-06-25 — esc-3468-75 fix: inv.9 now records the EXACT landed commit per gen; seed derives its delta-touch base from the authoritative per-gen stamp with priority over the legacy .warm-base-meta; _touch_git_delta is fail-closed; a seed-time post-condition forbids any changed file retaining the 2020-01-01 stamp. Updated 2026-07-07 — task 5126: inv.8 gains a third sub-note — links-metadata/OUT_DIR path relocation (esc-5052), the third member of the non-relocatable-baked-path family alongside task 4712's tauri deletion and task 4983's env!() relink.)*
 
 A lane is `FREE` or `ASSIGNED`. The DF wiring implements:
 
@@ -250,6 +253,7 @@ release_lane(lane_dir)
 8. **Always-re-seed-at-acquire + base coherence** — a torn / mixed-generation base read is FORBIDDEN. The `<base>` symlink resolves to ONE immutable `.gen.N` dir; reader-refcount GC (`flock -s` held during `cp -a`) keeps the pinned generation alive for the clone's full duration. Acquiring a lane from a partially-refreshed base is not possible by construction (the symlink flip is atomic). (D10)
    **Seed delta-touch correctness (esc-3468-75):** `seed-warm-lane.sh` derives the git delta-touch base from the authoritative per-gen stamp (`<base>.gen.<N>.basecommit`, written by refresh at promote time — see §9.3 step 2) with priority over the drift-prone legacy `.warm-base-meta BASE_COMMIT`. A `git diff --name-only` failure is fail-closed (aborts the seed; cold-fallback rebuild forced) rather than silently leaving the whole tree at the 2020-01-01 stamp (global stale-rmeta bomb). A seed-time post-condition (`_assert_no_stale_delta_stamp`) re-checks every changed file after the touch and aborts if any retains the 2020-01-01 epoch — defense-in-depth against any future regression of the delta-touch.
    **env!()-baked-path test/bench relink (task 4983, esc-4906-57):** `seed-warm-lane.sh` also compares the base's recorded build-worktree (`<base>.gen.<N>.buildroot`, written by refresh at promote time — see §9.3 step 2b) against the consuming lane's own path. A TEST or BENCH source that bakes an absolute path via a compile-time `env!()` macro (`CARGO_MANIFEST_DIR`, `OUT_DIR`, `CARGO_TARGET_TMPDIR`, `CARGO_BIN_EXE_*`) is invisible to cargo's fingerprint, so a CoW-cloned binary keeps serving the BASE's baked path until its source mtime changes — a deterministic runtime failure (`Cargo.toml` `NotFound`) once that build worktree is deleted or diverges (esc-4906-57; same non-relocatable-baked-path family as tasks 4712 and 4854, but triggered by a TEST-source `env!()` macro rather than tauri `OUT_DIR`/permission paths or stale rmeta). When the recorded buildroot is ABSENT or its realpath differs from the lane's, seed touches every seeded `tests/`/`benches/` `.rs` source containing one of these macros (`src/` is out of scope — it would force a lib recompile + downstream cascade) so cargo recompiles+relinks just that test/bench binary, re-baking the lane's own `CARGO_MANIFEST_DIR`; an exact match skips the relink as a genuine no-op.
+   **Links-metadata/OUT_DIR path relocation (task 5126, esc-5052):** the third member of the same non-relocatable-baked-path family — alongside task 4712's tauri `OUT_DIR`/permission-path build-dir deletion and task 4983's env!() test/bench relink above — this one covers sys-crate build scripts (`cxx`, `reify-kernel-occt`, `reify-kernel-openvdb`, `libsqlite3-sys`, `zstd-sys`, tree-sitter, `link-cplusplus`, …) whose foreign build-worktree root is baked into two cargo-replayed files under `build/<pkg>-<hash>/`: `output` (`links`-metadata cargo re-emits on a Fresh build script, e.g. cxx's `cargo:CXXBRIDGE_DIR0=<foreign>/target/.../out/cxxbridge/include`) and `root-output` (the build script's OUT_DIR, replayed so a dependent's `include!(concat!(env!("OUT_DIR"), ...))` opens the right dir). These crates are NOT on task 4712's tauri/reify-gui deletion allow-list — deleting their build dirs would force a multi-minute native/C++ rebuild, destroying the warmth the CoW seed exists to preserve. Instead, seed reuses the SAME `<base>.gen.<N>.buildroot` stamp (§9.3 step 2b) to REWRITE the foreign prefix to the lane's own root in place (fixed-string `sed -E`, both search and replacement escaped against ERE metacharacters): the CoW copy already holds identical `out/` content at the lane-relative path, so relocation makes the replayed metadata resolve inside the lane while every compiled `rlib`/`.o`/`.a` stays Fresh (path-independent fingerprint) instead of forcing a rebuild. Gate semantics deliberately DIFFER from the env!() relink's fail-safe-on-absent above: because this is a content REWRITE rather than a cheap idempotent `touch`, an ABSENT stamp skips relocation with an actionable stderr warn instead of guessing — an empty search prefix would match every byte of every candidate file and corrupt it. An EXACT match (buildroot equals the lane) is a genuine no-op. Scope is deliberately narrow, matching the `_NONRELOCATABLE_BUILD_GLOBS` allow-list's philosophy of an explicit surface over a broad one: only files NAMED `output`/`root-output` are rewritten (a filename filter, not a content scan) — `.d` depfiles (advisory; a stale entry forces at most a localized recompile, never ENOENT) and compiled binaries (`.o`/`.a`/`.rlib`; already Fresh and path-independent, so rewriting their bytes is a pure corruption risk with no upside) are an accepted, documented residual.
 9. **Promote provenance** — only the `_merge-verify` lane's clean landed-commit `target/` may be promoted to base; a task lane's WIP MUST NEVER advance the base. Enforced by `refresh-warm-base.sh --landed-commit <sha>` + dirty-worktree guard (see §9.3). The EXACT landed commit is recorded as `<base>.gen.<N>.basecommit` at promote time so seed can derive a correct, drift-free delta-touch base. (D10, esc-3468-75)
 
 ## 10. Boundary-test sketch (two-way; the B+H §, closes G2 for δ/ζ/η)
