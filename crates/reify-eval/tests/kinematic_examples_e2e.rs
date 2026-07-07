@@ -520,6 +520,14 @@ fn four_bar_singular_compiles_clean() {
 /// but drives the committed `.ri` example (rather than an inline source
 /// string) through the same `parse → compile_with_stdlib → eval` pipeline.
 ///
+/// MAINTENANCE: `four_bar_singular.ri`'s body/joint topology is a deliberate
+/// duplicate of that test's `SINGULAR_SOURCE` constant (committed example vs.
+/// inline test fixture). If the solver's singularity conditions ever change
+/// in a way that requires editing one topology, update the other in the same
+/// change — both fixtures assert `is_singular=true` and will fail loudly if
+/// one drifts out of lockstep with the other, but keeping them in sync is
+/// currently a manual step.
+///
 /// Deliberately does NOT assert on diagnostic message text, `loop_index`, or
 /// an exact diagnostic count: the eval-surfaced `KinematicSingularity`
 /// diagnostic (`engine_eval.rs::detect_kinematic_singularity`) carries a

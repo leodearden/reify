@@ -28,6 +28,14 @@
 // crates/reify-eval/tests/kinematic_singularity_snapshot_e2e.rs::SINGULAR_SOURCE
 // (task 3580's proven end-to-end fixture for this exact solver code path).
 //
+// MAINTENANCE: this body/joint wiring is a deliberate duplicate of
+// SINGULAR_SOURCE (committed example vs. inline test fixture — see rationale
+// above). If the solver's singularity conditions ever change in a way that
+// requires editing one topology, update the other in the SAME change so
+// neither fixture silently drifts into testing a stale/no-longer-singular
+// chain; both tests assert is_singular=true and will fail loudly if you miss
+// one, but keeping them in lockstep is currently a manual step.
+//
 // PRD ref: docs/prds/v0_3/kinematic-constraints-completion.md (KCC-iota, task 3848)
 structure def FourBarSingular {
     let j_a = prismatic(vec3(1, 0, 0), 0mm .. 1000mm)
