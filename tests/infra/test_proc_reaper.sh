@@ -1270,4 +1270,42 @@ assert "reap-orphans kills the SAME run_all-topology child once ORPHAN_PPIDS mat
         _poll_pid_gone "$_child_pid" "$_POLL_ATTEMPTS_ORPHAN"; exit $?
     '
 
+# -- Test 9d: SILENCE — a NON-dry-run sweep under the SAME production-default
+# orphan gates does NOT emit the "spared (non-orphan/live ancestry)"
+# diagnostic for the live run_all-topology child. This locks the load-bearing
+# claim (lib_proc_reaper.sh header + docs/notes/orphaned-test-binary-reaper.md)
+# that the spare diagnostic is dry-run-only: Test 9b's non-dry-run sweep
+# discards stderr wholesale, so it alone would not catch the diagnostic
+# accidentally being hoisted out of the `[ "$_dry_run" -eq 1 ]` guard and
+# spamming one line per live deps-glob binary on a busy host. --
+assert "reap-orphans (non-dry-run) does not emit the spared/non-orphan diagnostic (esc-5020)" \
+    env LIB_REAPER="$LIB_REAPER" _RUNALL_BIN="$_RUNALL_BIN" _SENT_RUNALL="$_SENT_RUNALL" \
+        _P9_DIR="$_P9_DIR" _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" bash -c '
+        [ -f "$LIB_REAPER" ] || exit 1
+        _abs_sleep=$(command -v sleep)
+        _abs_kill=$(command -v kill)
+        _abs_grep=$(command -v grep)
+
+        "$_RUNALL_BIN" "$_SENTINEL_SLEEP_SECS" </dev/null >/dev/null 2>&1 &
+        _child_pid=$!
+        "$_abs_sleep" 0.2
+
+        _err=$(mktemp)
+
+        REIFY_REAPER_DEPS_GLOB="${_P9_DIR}/target/debug/deps/*" \
+        REIFY_REAPER_MIN_AGE_SECS=0 \
+        REIFY_REAPER_ORPHAN_PPIDS=1 \
+        REIFY_REAPER_COMMS="systemd init" \
+        REIFY_REAPER_UID=$(id -u) \
+            bash "$LIB_REAPER" reap-orphans >/dev/null 2>"$_err" || true
+
+        _rc=0
+        "$_abs_grep" -qF "spared (non-orphan/live ancestry)" "$_err" && _rc=1
+
+        "$_abs_kill" -9 "$_child_pid" 2>/dev/null || true
+        wait "$_child_pid" 2>/dev/null || true
+        rm -f "$_err"
+        exit "$_rc"
+    '
+
 test_summary

@@ -221,7 +221,7 @@ _reaper_reap_orphans() {
         fi
         if [ "$_matched" -eq 0 ]; then
             if [ "$_dry_run" -eq 1 ]; then
-                echo "reap-orphans [dry-run]: spared (non-orphan/live ancestry): pid=$_pid exe=$_exe ppid=$_ppid ppid_comm=$_ppid_comm" >&2
+                echo "reap-orphans [dry-run]: spared (non-orphan/live ancestry): pid=$_pid exe=$_exe age=${_etimes}s ppid=$_ppid ppid_comm=$_ppid_comm" >&2
             fi
             continue
         fi
