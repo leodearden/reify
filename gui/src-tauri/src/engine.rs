@@ -1387,9 +1387,13 @@ impl EngineSession {
     /// `load_from_source`, `set_parameter`, `load_file`, `update_source`,
     /// `load_from_compiled`) calls this ONE method after committing state,
     /// instead of hand-rolling its own copy of the five-call emit sequence.
-    /// Collapsing to a single call site means no future entry point can forget
-    /// an emitter — see `emit_quintet_routed_through_single_choke_point` for the
-    /// structural guard that locks this in.
+    /// Collapsing to a single call site means every entry point fires the
+    /// full quintet in the same order. There is no separate structural
+    /// source-introspection guard for this; the invariant is enforced by each
+    /// entry point's own behavioral emitter regression test (e.g.
+    /// `load_from_compiled_emits_fea_diagnostics`,
+    /// `fea_diagnostics_emitter_fires_on_set_parameter`), which fails if that
+    /// entry point ever stops routing through here.
     ///
     /// Reads `self.core.last_check()` once into a local: every constituent
     /// emit-helper below reads from that same committed `CheckResult`, matching
