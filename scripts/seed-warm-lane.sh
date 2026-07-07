@@ -248,6 +248,17 @@ _read_buildroot_stamp() {
     fi
 }
 
+# Escape <string> (anything outside [a-zA-Z0-9_]) for safe interpolation as a
+# LITERAL into a `sed -E` pattern or replacement (task 5126). Backslash-escaping
+# every non-word byte defeats ERE metacharacters (. * + ? | { } ( ) [ ] ^ $ \)
+# on the pattern side and the &/\ specials on the replacement side. ERE (-E),
+# not BRE: under plain BRE, \+ \? \| \{ \} \( \) are GNU *extensions* that turn
+# ON special meaning, which would invert this escaping and corrupt any baked
+# path containing those bytes.
+_sed_escape() {
+    printf '%s' "$1" | sed -e 's/[^a-zA-Z0-9_]/\\&/g'
+}
+
 # Seed-time post-condition: assert no file listed by `git diff --name-only <sha>`
 # still carries the 2020-01-01 bulk-stamp epoch after the delta-touch.
 # This is defense-in-depth against any future regression of _touch_git_delta
@@ -648,6 +659,36 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     done < <(find "$LANE_TARGET" -maxdepth 3 -type d -name build -print0)
     info "Invalidated $_invalidated_count non-relocatable build-script output dir(s) so cargo re-bakes lane-correct paths"
 
+    # Base build-worktree stamp (refresh-warm-base.sh Step 4b), shared by the
+    # relocation sweep below and the env!()-relink gate further down.
+    _recorded_buildroot="$(_read_buildroot_stamp "$BASE_TARGET_DIR")"
+    _lane_rp="$(realpath -m "$LANE_DIR")"
+
+    # ── non-relocatable links-metadata/OUT_DIR path relocation (task 5126) ────
+    # cxx/reify-kernel-occt/reify-kernel-openvdb/libsqlite3-sys/zstd-sys/etc. sit
+    # outside the _NONRELOCATABLE_BUILD_GLOBS allow-list above, so the foreign
+    # buildroot baked into their `output` files' links-metadata (e.g. cxx's
+    # cargo:CXXBRIDGE_DIR0=<foreign>/target/.../out/cxxbridge/include) survives
+    # the CoW seed verbatim -> ENOENT once the base's own worktree is refreshed
+    # or cleaned. Rewrite the foreign prefix to this lane's root in place rather
+    # than deleting the build dir: the CoW copy already placed identical out/
+    # content at the lane-relative path, so relocating keeps the compiled
+    # rlib/.o/.a Fresh (path-independent fingerprint) instead of forcing a
+    # multi-minute native/C++ rebuild.
+    if [ -n "$_recorded_buildroot" ] && [ "$(realpath -m "$_recorded_buildroot")" != "$_lane_rp" ]; then
+        _foreign_rp="$(realpath -m "$_recorded_buildroot")"
+        _relocate_search_esc="$(_sed_escape "$_foreign_rp")"
+        _relocate_replace_esc="$(_sed_escape "$_lane_rp")"
+        _relocated_count=0
+        while IFS= read -r -d '' _rl_file; do
+            if grep -qF "$_foreign_rp" "$_rl_file" 2>/dev/null; then
+                sed -E -i "s/${_relocate_search_esc}/${_relocate_replace_esc}/g" "$_rl_file"
+                _relocated_count=$((_relocated_count + 1))
+            fi
+        done < <(find "$LANE_TARGET" -type f -name output -print0)
+        info "Relocated $_relocated_count non-relocatable links-metadata file(s): foreign buildroot ($_foreign_rp) -> this lane ($_lane_rp)"
+    fi
+
     # ── non-relocatable env!()-baked-path test/bench relink (task 4983) ───────
     # A TEST or BENCH source can bake an absolute worktree path at compile time
     # via a cargo-internal env!() macro (CARGO_MANIFEST_DIR, OUT_DIR,
@@ -686,8 +727,8 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     # Step 4b write) fails safe and relinks too, since the baked path's
     # provenance is unknown. Only an EXACT match (the base was built under
     # this lane's own path) skips the relink as a genuine no-op.
-    _recorded_buildroot="$(_read_buildroot_stamp "$BASE_TARGET_DIR")"
-    _lane_rp="$(realpath -m "$LANE_DIR")"
+    # (_recorded_buildroot/_lane_rp already computed above, shared with the
+    # links-metadata/OUT_DIR relocation sweep.)
     if [ -z "$_recorded_buildroot" ] || [ "$(realpath -m "$_recorded_buildroot")" != "$_lane_rp" ]; then
         _relinked_count=0
         while IFS= read -r -d '' _rs_file; do
