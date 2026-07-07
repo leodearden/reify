@@ -268,6 +268,20 @@ here is correct" per the brief.
    2026-07-06) — this only affects the merge-worker's trivial-pass eligibility, not
    whether tests run; the full suite still executes as normal.
 
+**Authorized exception (Leo, 2026-07-06 — resolves esc-5026-4).** One moved test,
+`compile_geometry_op_has_no_nested_per_kind_match`, byte-depends on the *pre*-eviction
+layout: it `include_str!`s `geometry_ops.rs` and locates the production/test split via the
+literal `"\n#[cfg(test)]\nmod tests {"`, then asserts the production region has no per-kind
+behavioral match arms. The eviction rewrites that byte sequence to `mod tests;`, so a
+*pure* verbatim move would make `.find` return `None`, panic the `.expect`, and turn verify
+RED — the "verbatim move + no test rewrites + verify stays green" constraints are jointly
+unsatisfiable for this one test. The sanctioned deviation is a **single-line update to that
+boundary literal** (`mod tests {` → `mod tests;`) plus its matching `.expect` message. The
+scanned production region (everything before the declaration) is **byte-identical** to
+before, so the guard's invariant is fully preserved; it is not weakened. All 355 other
+tests move byte-for-byte. This is the **only** permitted departure from step 3's "verbatim"
+mandate.
+
 **Rebase note (carry verbatim in the task, per the brief):** "wholesale test move —
 rebases over this are trivial (test text relocated verbatim); if your branch conflicts,
 take the moved location."
