@@ -283,7 +283,19 @@ pub const DORFLER_THETA: f64 = 0.5;
 /// rather than contributing to `total`, so an all-non-finite slice behaves
 /// like an all-zero one — an empty marked set, plus the single WARN.
 pub fn mark_dorfler(indicators: &[f64], theta: f64) -> Vec<usize> {
-    let n_non_finite = indicators.iter().filter(|v| !v.is_finite()).count();
+    // Fused single pass: tally non-finite indicators and sum the finite ones
+    // together (rather than two separate `filter().count()` /
+    // `filter().sum()` passes over `indicators`).
+    let (n_non_finite, total) =
+        indicators
+            .iter()
+            .fold((0usize, 0.0_f64), |(n_non_finite, total), &v| {
+                if v.is_finite() {
+                    (n_non_finite, total + v)
+                } else {
+                    (n_non_finite + 1, total)
+                }
+            });
     if n_non_finite > 0 {
         tracing::warn!(
             target: "reify_solver_elastic::adaptive",
@@ -296,14 +308,17 @@ pub fn mark_dorfler(indicators: &[f64], theta: f64) -> Vec<usize> {
         );
     }
 
-    let total: f64 = indicators.iter().filter(|v| v.is_finite()).sum();
     let threshold = theta * total;
 
     // Indices sorted by (indicator desc, index asc) — a total order, so the
     // result is deterministic regardless of sort stability. Non-finite
     // indicators are excluded here (see "Fail-closed" above), so every
-    // remaining value is finite and `total_cmp` is both panic-free and
-    // byte-identical to the old partial_cmp-based order.
+    // remaining value is finite and `total_cmp` is panic-free. `total_cmp`
+    // agrees with the old `partial_cmp`-based order on every non-negative
+    // finite indicator (the only values reachable here) — the two orders
+    // diverge only on signed zero (`total_cmp` places -0.0 before +0.0, while
+    // `partial_cmp` treats them as Equal), which cannot occur for a
+    // non-negative error-norm indicator.
     let mut order: Vec<usize> = (0..indicators.len())
         .filter(|&i| indicators[i].is_finite())
         .collect();
