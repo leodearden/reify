@@ -283,19 +283,21 @@ pub const DORFLER_THETA: f64 = 0.5;
 /// rather than contributing to `total`, so an all-non-finite slice behaves
 /// like an all-zero one — an empty marked set, plus the single WARN.
 pub fn mark_dorfler(indicators: &[f64], theta: f64) -> Vec<usize> {
-    // Fused single pass: tally non-finite indicators and sum the finite ones
-    // together (rather than two separate `filter().count()` /
-    // `filter().sum()` passes over `indicators`).
-    let (n_non_finite, total) =
-        indicators
-            .iter()
-            .fold((0usize, 0.0_f64), |(n_non_finite, total), &v| {
-                if v.is_finite() {
-                    (n_non_finite, total + v)
-                } else {
-                    (n_non_finite + 1, total)
-                }
-            });
+    // Single fused pass over `indicators`: tally non-finite entries, sum the
+    // finite ones, and collect the finite indices that will be sorted below
+    // — avoiding separate `filter().count()` / `filter().sum()` /
+    // `filter().collect()` passes over `indicators`.
+    let (n_non_finite, total, mut order) = indicators.iter().enumerate().fold(
+        (0usize, 0.0_f64, Vec::<usize>::new()),
+        |(n_non_finite, total, mut order), (i, &v)| {
+            if v.is_finite() {
+                order.push(i);
+                (n_non_finite, total + v, order)
+            } else {
+                (n_non_finite + 1, total, order)
+            }
+        },
+    );
     if n_non_finite > 0 {
         tracing::warn!(
             target: "reify_solver_elastic::adaptive",
@@ -310,18 +312,15 @@ pub fn mark_dorfler(indicators: &[f64], theta: f64) -> Vec<usize> {
 
     let threshold = theta * total;
 
-    // Indices sorted by (indicator desc, index asc) — a total order, so the
-    // result is deterministic regardless of sort stability. Non-finite
-    // indicators are excluded here (see "Fail-closed" above), so every
-    // remaining value is finite and `total_cmp` is panic-free. `total_cmp`
-    // agrees with the old `partial_cmp`-based order on every non-negative
-    // finite indicator (the only values reachable here) — the two orders
-    // diverge only on signed zero (`total_cmp` places -0.0 before +0.0, while
-    // `partial_cmp` treats them as Equal), which cannot occur for a
-    // non-negative error-norm indicator.
-    let mut order: Vec<usize> = (0..indicators.len())
-        .filter(|&i| indicators[i].is_finite())
-        .collect();
+    // Sort the finite indices by (indicator desc, index asc) — a total
+    // order, so the result is deterministic regardless of sort stability.
+    // Every entry in `order` is finite (non-finite indices were excluded
+    // above; see "Fail-closed" above), so `total_cmp` is panic-free here and
+    // agrees with the old `partial_cmp`-based order on any finite value — the
+    // two orders diverge only on signed zero (`total_cmp` places -0.0 before
+    // +0.0, while `partial_cmp` treats them as Equal). This function is
+    // `pub` with no precondition barring negative indicators, but the
+    // agreement holds regardless of sign, so no such precondition is needed.
     order.sort_by(|&a, &b| indicators[b].total_cmp(&indicators[a]).then(a.cmp(&b)));
 
     let mut cumulative = 0.0_f64;
@@ -617,7 +616,12 @@ mod tests {
             mark_dorfler(&[bad, 1.0, 2.0, 3.0, 4.0], 0.5)
         });
 
-        // (a) The non-finite element must never enter the marked set.
+        // (a) The non-finite element must never enter the marked set. This
+        // is technically subsumed by the exact-equality check (b) below
+        // (if `marked == vec![3, 4]` then index 0 is provably absent), but
+        // is kept as its own assertion so a regression that only breaks the
+        // exclusion (rather than the finite ordering) gets a more specific
+        // failure message.
         assert!(
             !marked.contains(&0),
             "non-finite indicator (bad={bad}) must be excluded from the marked \
