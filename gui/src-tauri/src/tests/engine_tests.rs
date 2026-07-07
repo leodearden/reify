@@ -15334,6 +15334,182 @@ fn fea_diagnostics_emitter_fires_on_set_parameter() {
     );
 }
 
+/// load_from_compiled_emits_fea_diagnostics (INV-GUI-2 / gui-state-sync L4).
+///
+/// Regression for latent bug #6: `load_from_compiled`'s emit block silently
+/// drops `emit_fea_diagnostics` — it jumps straight from mode_shape to drain
+/// (engine.rs:5291-5300 on current main). Pins that `load_from_compiled` fires
+/// a `fea-diagnostics-changed` event just like the other five entry points
+/// (fires-every-commit semantics, including the empty-list case for a
+/// non-FEA compiled module).
+///
+/// Setup: install RecordingFeaDiagnosticsEmitter BEFORE calling
+/// `load_from_compiled` (there is no prior load to exclude here, unlike
+/// `fea_diagnostics_emitter_fires_on_set_parameter`).
+///
+/// RED on current main: load_from_compiled never calls emit_fea_diagnostics,
+/// so zero events are recorded.
+#[test]
+fn load_from_compiled_emits_fea_diagnostics() {
+    use std::sync::Arc;
+
+    let template = TopologyTemplateBuilder::new("Simple").build();
+    let compiled = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    let recorder = RecordingFeaDiagnosticsEmitter::new();
+    let captured = Arc::clone(&recorder.events);
+    session.set_fea_diagnostics_emitter(Arc::new(recorder));
+
+    session
+        .load_from_compiled(compiled, "test")
+        .expect("load_from_compiled should succeed");
+
+    let events = captured.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        1,
+        "load_from_compiled must fire exactly one fea-diagnostics-changed event; got {}",
+        events.len()
+    );
+    assert!(
+        events[0].is_empty(),
+        "non-FEA compiled module must produce an empty fea-diagnostics payload; got {:?}",
+        events[0]
+    );
+}
+
+/// load_from_source_emits_fea_diagnostics (INV-GUI-2 / gui-state-sync L4 step-4).
+///
+/// Behavioral regression covering the `load_from_source` production entry
+/// point: pins that it routes through `post_engine_call_telemetry` and
+/// therefore fires a `fea-diagnostics-changed` event (fires-every-commit
+/// semantics, empty payload for a non-FEA design). This is direct behavioral
+/// coverage of the INV-GUI-2 choke-point for this entry point, in place of
+/// the source-introspection call-count guard.
+///
+/// Setup: install RecordingFeaDiagnosticsEmitter BEFORE calling
+/// load_from_source (there is no prior load to exclude here).
+#[test]
+fn load_from_source_emits_fea_diagnostics() {
+    use std::sync::Arc;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let recorder = RecordingFeaDiagnosticsEmitter::new();
+    let captured = Arc::clone(&recorder.events);
+    session.set_fea_diagnostics_emitter(Arc::new(recorder));
+
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load_from_source should succeed");
+
+    let events = captured.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        1,
+        "INV-GUI-2: load_from_source must fire exactly one fea-diagnostics-changed event; got {}",
+        events.len()
+    );
+    assert!(
+        events[0].is_empty(),
+        "non-FEA design must produce an empty fea-diagnostics payload; got {:?}",
+        events[0]
+    );
+}
+
+/// load_file_emits_fea_diagnostics (INV-GUI-2 / gui-state-sync L4 step-4).
+///
+/// Behavioral regression covering the `load_file` production entry point
+/// (path-construction mirrors load_file_returns_gui_state).
+///
+/// Setup: install RecordingFeaDiagnosticsEmitter BEFORE calling load_file
+/// (there is no prior load to exclude here).
+#[test]
+fn load_file_emits_fea_diagnostics() {
+    use std::sync::Arc;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("examples/bracket.ri");
+
+    let recorder = RecordingFeaDiagnosticsEmitter::new();
+    let captured = Arc::clone(&recorder.events);
+    session.set_fea_diagnostics_emitter(Arc::new(recorder));
+
+    session.load_file(&path).expect("load_file should succeed");
+
+    let events = captured.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        1,
+        "INV-GUI-2: load_file must fire exactly one fea-diagnostics-changed event; got {}",
+        events.len()
+    );
+    assert!(
+        events[0].is_empty(),
+        "non-FEA design must produce an empty fea-diagnostics payload; got {:?}",
+        events[0]
+    );
+}
+
+/// update_source_emits_fea_diagnostics (INV-GUI-2 / gui-state-sync L4 step-4).
+///
+/// Behavioral regression covering the `update_source` production entry point.
+///
+/// Setup:
+///   1. Load bracket_source() (non-FEA design, no structured_detail) to prime
+///      the session.
+///   2. THEN install RecordingFeaDiagnosticsEmitter (events only counted from
+///      here), mirroring fea_diagnostics_emitter_fires_on_set_parameter.
+///   3. Call update_source("bracket.ri", bracket_source_with_width("120mm")).
+#[test]
+fn update_source_emits_fea_diagnostics() {
+    use std::sync::Arc;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load bracket source");
+
+    // Install AFTER the initial load so that only update_source's emit is counted.
+    let recorder = RecordingFeaDiagnosticsEmitter::new();
+    let captured = Arc::clone(&recorder.events);
+    session.set_fea_diagnostics_emitter(Arc::new(recorder));
+
+    session
+        .update_source("bracket.ri", &bracket_source_with_width("120mm"))
+        .expect("update_source should succeed");
+
+    let events = captured.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        1,
+        "INV-GUI-2: update_source must fire exactly one fea-diagnostics-changed event; got {}",
+        events.len()
+    );
+    assert!(
+        events[0].is_empty(),
+        "non-FEA design must produce an empty fea-diagnostics payload; got {:?}",
+        events[0]
+    );
+}
+
 // ── #4898: surface-finish functional wiring — coating + finish_process → MeshData.appearance ──
 
 /// Source code for the surface-finish wiring integration tests.
