@@ -117,3 +117,26 @@ reify_bin_is_stale() {
 
     return 0
 }
+
+# reify_bin_stamp [repo_root]
+#
+# Records repo_root's current HEAD SHA into <repo_root>/target/.reify-bin-sha,
+# creating target/ if it doesn't already exist. Defaults repo_root to $PWD so
+# it could be called argless (verify.sh stamps inline instead — see its
+# infra pre-step block — but this keeps the entrypoint self-sufficient for any
+# other caller).
+#
+# Returns 0 on success. Returns 1 (and writes no sidecar) when repo_root is
+# not a git repo / has no HEAD — nothing meaningful to stamp.
+reify_bin_stamp() {
+    local repo_root="${1:-$PWD}"
+
+    local head
+    head=$(reify_bin_head_sha "$repo_root")
+    if [ -z "$head" ]; then
+        return 1
+    fi
+
+    mkdir -p "$repo_root/target"
+    printf '%s\n' "$head" > "$repo_root/target/.reify-bin-sha"
+}
