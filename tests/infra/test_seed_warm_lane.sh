@@ -1715,6 +1715,39 @@ assert "P-eq: output file unchanged (no-op; buildroot equals lane)" \
 assert "P-eq: no relocation count > 0 reported on stderr" \
     bash -c '! printf "%s\n" "$1" | grep -qE "Relocated [1-9][0-9]* "' _ "$ERR_OUT"
 
+# P-mismatch: buildroot DIFFERS from the lane (relocation is applicable per the
+# gate) but the baked `output` file's actual bytes do NOT carry the recorded
+# buildroot's prefix — simulating a canonicalization drift between the
+# .buildroot stamp and what actually got baked (e.g. a symlinked vs. realpath
+# worktree root at build time). grep -qF then matches nothing on the only
+# candidate; the fix must warn instead of silently reporting a bare
+# "Relocated 0" so the drift is visible rather than reading as success.
+P_MISMATCH_BASE_PARENT="$(mktemp -d /tmp/test-seed-P-mismatch-parent-XXXXXX)"
+P_MISMATCH_BASE="$P_MISMATCH_BASE_PARENT/target"
+P_MISMATCH_LANE="$(mktemp -d /tmp/test-seed-P-mismatch-lane-XXXXXX)"
+_TMPDIRS+=("$P_MISMATCH_BASE_PARENT" "$P_MISMATCH_LANE")
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$P_MISMATCH_BASE_PARENT/.warm-base-meta"
+printf '%s' "$P_FOREIGN" > "${P_MISMATCH_BASE}.buildroot"
+
+mkdir -p "$P_MISMATCH_BASE/debug/build/cxx-AAAA"
+cat > "$P_MISMATCH_BASE/debug/build/cxx-AAAA/output" <<EOF
+cargo:CXXBRIDGE_DIR0=/tmp/some-other-uncanonicalized-wt/target/debug/build/cxx-AAAA/out/cxxbridge/include
+EOF
+
+P_MISMATCH_SNAPSHOT="$(mktemp /tmp/test-seed-P-mismatch-snapshot-XXXXXX)"
+_TMPDIRS+=("$P_MISMATCH_SNAPSHOT")
+cp "$P_MISMATCH_BASE/debug/build/cxx-AAAA/output" "$P_MISMATCH_SNAPSHOT"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$P_MISMATCH_BASE" "$P_MISMATCH_LANE" --fresh-checkout
+
+assert "P-mismatch: differing-buildroot-but-no-candidate-match seed exits 0" test "$RC" -eq 0
+assert "P-mismatch: output file BYTE-UNCHANGED (no candidate matched the recorded prefix)" \
+    cmp -s "$P_MISMATCH_SNAPSHOT" "$P_MISMATCH_LANE/target/debug/build/cxx-AAAA/output"
+assert "P-mismatch: stderr warns of the canonicalization-drift possibility (not a bare Relocated-0)" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "canonicali"' _ "$ERR_OUT"
+
 # P3a: --reset-in-place does NOT relocate (scope guard, mirrors Block H's H3a).
 # The relocation sweep must live entirely inside `if [ -n "$FRESH_CHECKOUT" ]`.
 P3A_BASE_PARENT="$(mktemp -d /tmp/test-seed-P3a-parent-XXXXXX)"

@@ -703,14 +703,35 @@ if [ -n "$FRESH_CHECKOUT" ]; then
         if [ "$_foreign_rp" != "$_lane_rp" ]; then
             _relocate_search_esc="$(_sed_escape "$_foreign_rp")"
             _relocate_replace_esc="$(_sed_escape "$_lane_rp")"
+            _relocate_candidate_count=0
             _relocated_count=0
+            # -maxdepth 5: output/root-output live at target/<profile>/build/<pkg>-<hash>/{output,root-output}
+            # (depth 4) or, for cross-compiled targets, target/<triple>/<profile>/build/<pkg>-<hash>/{output,root-output}
+            # (depth 5) — mirrors the -maxdepth 3 bound on the tauri/reify-gui deletion sweep's directory
+            # walk above, applied one filename-match level deeper here since this find locates leaf files
+            # rather than `build` dirs. Bounding this avoids a full unbounded descent into every out/
+            # subdir and incremental-fingerprint dir under the (potentially huge) warm target tree.
             while IFS= read -r -d '' _rl_file; do
+                _relocate_candidate_count=$((_relocate_candidate_count + 1))
                 if grep -qF "$_foreign_rp" "$_rl_file" 2>/dev/null; then
                     sed -E -i "s/${_relocate_search_esc}/${_relocate_replace_esc}/g" "$_rl_file"
                     _relocated_count=$((_relocated_count + 1))
                 fi
-            done < <(find "$LANE_TARGET" -type f \( -name output -o -name root-output \) -print0)
-            info "Relocated $_relocated_count non-relocatable links-metadata/OUT_DIR file(s): foreign buildroot ($_foreign_rp) -> this lane ($_lane_rp)"
+            done < <(find "$LANE_TARGET" -maxdepth 5 -type f \( -name output -o -name root-output \) -print0)
+            if [ "$_relocated_count" -eq 0 ] && [ "$_relocate_candidate_count" -gt 0 ]; then
+                # Candidates exist (cargo DID write output/root-output files) yet NONE carried the
+                # recorded foreign prefix, even though the buildroot gate says foreign != lane. That
+                # combination is only expected if the .buildroot stamp and the bytes actually baked into
+                # these files were canonicalized inconsistently (e.g. the base was built through a
+                # symlinked worktree path while the stamp records the realpath, or vice-versa) — grep -qF
+                # would then silently match nothing on every candidate, nothing gets rewritten, and the
+                # foreign path(s) survive verbatim, reproducing the exact ENOENT this fix targets. Warn
+                # instead of a bare "Relocated 0" so canonicalization drift surfaces instead of reading
+                # as success.
+                warn "Relocated 0 of $_relocate_candidate_count links-metadata/OUT_DIR candidate file(s) even though recorded buildroot ($_foreign_rp) differs from this lane ($_lane_rp) — none contained the expected foreign prefix. This may mean the .buildroot stamp and the baked paths were canonicalized inconsistently (e.g. symlinked vs realpath worktree root); if so, the foreign path(s) will survive uncorrected and the lane may hit ENOENT. Re-check the stamp written by refresh-warm-base.sh."
+            else
+                info "Relocated $_relocated_count of $_relocate_candidate_count links-metadata/OUT_DIR candidate file(s): foreign buildroot ($_foreign_rp) -> this lane ($_lane_rp)"
+            fi
         else
             info "Skipping links-metadata/OUT_DIR relocation: recorded buildroot matches this lane ($_lane_rp)"
         fi
