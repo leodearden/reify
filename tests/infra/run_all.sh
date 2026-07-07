@@ -550,6 +550,21 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     # concurrency bound slot_acquire uses below -- no new constant). This
     # bounds the PARENT's own fork footprint; slot_acquire remains the
     # host-global concurrency gate inside the worker body, unchanged (INV-1).
+    #
+    # `wait -n` is given the explicit `_h2_pids` list (not called bare) so it
+    # only ever reaps OUR worker shells. Argument-less `wait -n` waits for the
+    # next job of ANY kind to change state -- including the parent's earlier
+    # `< <(classification_discovered_set ...)` / `< <(classification_bucket
+    # pool)` process-substitution subshells above, which bash keeps in the
+    # same internal wait-list until explicitly reaped. If one of those were
+    # still unreaped here, a bare `wait -n` could consume it instead of a
+    # worker, decrementing _h2_active without a worker actually finishing and
+    # silently letting the pool exceed _H2_POOL_N. Passing "${_h2_pids[@]}"
+    # closes that gap. Already-reaped entries accumulate harmlessly in
+    # _h2_pids (bash prints "no such job" for those, suppressed by
+    # `2>/dev/null`) but never cause an early return -- verified empirically
+    # on this host (bash 5.2): `wait -n` with a mix of stale and live pids
+    # still blocks until a live one actually exits.
     _h2_pids=()
     _h2_active=0
     _h2_peak=0
@@ -564,7 +579,7 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
         fi
 
         while [ "$_h2_active" -ge "$_H2_POOL_N" ]; do
-            wait -n 2>/dev/null || true
+            wait -n "${_h2_pids[@]}" 2>/dev/null || true
             _h2_active=$((_h2_active - 1))
         done
         _h2_psi_gate
