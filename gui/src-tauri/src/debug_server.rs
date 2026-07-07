@@ -1374,6 +1374,34 @@ pub async fn set_fea_case_on_engine(
     run_on_engine(engine, move |session| session.set_active_fea_case(&case)).await
 }
 
+/// Wraps [`set_fea_case_on_engine`] and additionally refreshes the delta
+/// baseline through the same [`crate::diff::compute_delta`] choke-point
+/// `main.rs`'s normal command/watcher path uses (INV-GUI-2, task 5035 L6).
+///
+/// Without this refresh, a debug-driven FEA-case switch advances the engine
+/// but leaves `last_state` stale, so the next NORMAL command computes its
+/// delta against the pre-debug baseline instead of the state the frontend
+/// actually has (survey latent bug #7 — the stale-baseline desync).
+///
+/// The returned `StateDelta` from `compute_delta` is intentionally discarded:
+/// the full `GuiState` is delivered to the frontend via the caller's
+/// synchronous `query_frontend` push (not `emit_delta`) — see PRD §4 D7. This
+/// call exists purely for its side effect of refreshing `last_state`.
+///
+/// `last_state` is typed as `&std::sync::Mutex<...>` (not `&Arc<Mutex<...>>`)
+/// so this helper is headlessly testable with a plain `Mutex` in unit tests;
+/// callers holding an `Arc<Mutex<_>>` (e.g. `DebugServerState::last_state`)
+/// pass it in via `&state.last_state`, which deref-coerces cleanly.
+pub async fn set_fea_case_on_engine_and_refresh_baseline(
+    engine: &Arc<Mutex<EngineSession>>,
+    last_state: &std::sync::Mutex<Option<crate::types::GuiState>>,
+    case: &str,
+) -> Result<crate::types::GuiState, String> {
+    let gs = set_fea_case_on_engine(engine, case).await?;
+    crate::diff::compute_delta(last_state, &gs);
+    Ok(gs)
+}
+
 /// Select the active FEA load case on the engine, push the rebuilt `GuiState`
 /// to the frontend via `apply_gui_state`, and return an echo response.
 ///
