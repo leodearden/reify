@@ -38,6 +38,11 @@
 #        release (precedence)
 #   18:  verify.sh merge-tier plan — reify-cli release pre-build + .reify-bin-sha
 #        stamp lines both present and ordered BEFORE run_all.sh
+#   19:  behavioral wiring — test_prd_gate_corpus.sh and
+#        test_prd_gate_objective_inheritance.sh, run as black-box subprocesses
+#        with REIFY_BIN pointing at a missing file, SKIP cleanly (exit 0,
+#        output cites REIFY_BIN) instead of falling through to a
+#        HARNESS_ERROR/FAIL
 #
 # Check 18 note (task 5125): run_all.sh's gating in verify.sh moved from the
 # plain --include-infra tier to a DF_VERIFY_ROLE=merge-gated conditional
@@ -430,6 +435,47 @@ assert "merge-all plan: .reify-bin-sha stamp index < run_all.sh index (stamp ord
         RUN_IDX=$(printf "%s\n" "$1" | grep -n "run_all\.sh" | head -1 | cut -d: -f1)
         [ -n "$STAMP_IDX" ] && [ -n "$RUN_IDX" ] && [ "$STAMP_IDX" -lt "$RUN_IDX" ]
     ' _ "$MERGE_ALL_PLAN"
+
+# ==============================================================================
+# Check 19: behavioral wiring — running the (not-yet-modified) PRD gate tests
+#           as black-box subprocesses with REIFY_BIN pointing at a missing
+#           file must produce a clean SKIP citing the new freshness guard
+#           (REIFY_BIN), not a HARNESS_ERROR/FAIL. Today both tests trust
+#           REIFY_BIN blindly (no existence check), so this exercises the
+#           real, unmodified gate test files end to end.
+#
+# set -e note: the gate tests may currently exit non-zero (e.g.
+# test_prd_gate_objective_inheritance.sh FAILs today under a missing
+# REIFY_BIN) — capture via `cmd || VAR=$?` (mirroring the ALPHA_EXIT idiom
+# inside those same gate tests) so a non-zero exit doesn't trip this script's
+# own `set -e` before the assertion runs.
+# ==============================================================================
+echo ""
+echo "--- Check 19: PRD gate tests SKIP cleanly under a missing REIFY_BIN ---"
+
+CORPUS_GATE_EXIT=0
+CORPUS_GATE_OUT="$(REIFY_BIN=/nonexistent/reify bash "$REPO_ROOT/tests/infra/test_prd_gate_corpus.sh" 2>&1)" || CORPUS_GATE_EXIT=$?
+
+assert "test_prd_gate_corpus.sh: REIFY_BIN=missing file → exit 0" \
+    bash -c "[ '$CORPUS_GATE_EXIT' -eq 0 ]"
+
+assert "test_prd_gate_corpus.sh: REIFY_BIN=missing file → output contains SKIP" \
+    bash -c 'printf "%s\n" "$1" | grep -q "SKIP"' _ "$CORPUS_GATE_OUT"
+
+assert "test_prd_gate_corpus.sh: REIFY_BIN=missing file → output cites REIFY_BIN (new freshness guard, distinct from the pre-existing toolchain SKIP)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "REIFY_BIN"' _ "$CORPUS_GATE_OUT"
+
+OBJECTIVE_GATE_EXIT=0
+OBJECTIVE_GATE_OUT="$(REIFY_BIN=/nonexistent/reify bash "$REPO_ROOT/tests/infra/test_prd_gate_objective_inheritance.sh" 2>&1)" || OBJECTIVE_GATE_EXIT=$?
+
+assert "test_prd_gate_objective_inheritance.sh: REIFY_BIN=missing file → exit 0" \
+    bash -c "[ '$OBJECTIVE_GATE_EXIT' -eq 0 ]"
+
+assert "test_prd_gate_objective_inheritance.sh: REIFY_BIN=missing file → output contains SKIP" \
+    bash -c 'printf "%s\n" "$1" | grep -q "SKIP"' _ "$OBJECTIVE_GATE_OUT"
+
+assert "test_prd_gate_objective_inheritance.sh: REIFY_BIN=missing file → output cites REIFY_BIN (new freshness guard)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "REIFY_BIN"' _ "$OBJECTIVE_GATE_OUT"
 
 # -- Summary ------------------------------------------------------------------
 test_summary
