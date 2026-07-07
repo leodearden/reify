@@ -1199,8 +1199,7 @@ assert "reap-orphans --dry-run reports a spared/non-orphan diagnostic for a live
             bash "$LIB_REAPER" reap-orphans --dry-run >/dev/null 2>"$_err" || true
 
         _rc=0
-        grep -qF "spared (non-orphan/live ancestry)" "$_err" || _rc=1
-        grep -qF "pid=$_child_pid exe=" "$_err" || _rc=1
+        grep -qE "spared \(non-orphan/live ancestry\):.*pid=$_child_pid exe=" "$_err" || _rc=1
 
         "$_abs_kill" -9 "$_child_pid" 2>/dev/null || true
         wait "$_child_pid" 2>/dev/null || true
