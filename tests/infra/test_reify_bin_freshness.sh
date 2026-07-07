@@ -22,6 +22,20 @@
 #   8:   reify_bin_stamp — creates target/ + sidecar == HEAD
 #   9:   round-trip — stamped repo + present bin → is_stale reports fresh
 #   10:  reify_bin_stamp on a non-git dir → non-zero, no sidecar written
+#   11:  resolve_trusted_reify_bin — explicit existing REIFY_BIN → trusted,
+#        freshness bypassed entirely
+#   12:  resolve_trusted_reify_bin — explicit REIFY_BIN missing path → SKIP,
+#        reason mentions REIFY_BIN + missing
+#   13:  resolve_trusted_reify_bin — no REIFY_BIN, no target bins → SKIP,
+#        reason mentions "not built"
+#   14:  resolve_trusted_reify_bin — fresh release bin → trusted, resolves
+#        the release path
+#   15:  resolve_trusted_reify_bin — fresh debug-only bin → trusted, resolves
+#        the debug path
+#   16:  resolve_trusted_reify_bin — release bin + stale sidecar → SKIP,
+#        reason mentions "stale"
+#   17:  resolve_trusted_reify_bin — release+debug both fresh → resolves
+#        release (precedence)
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -195,6 +209,183 @@ assert "reify_bin_stamp on a non-git dir returns non-zero" \
 
 assert "reify_bin_stamp on a non-git dir writes no sidecar" \
     bash -c "[ ! -f '$STAMP_NON_GIT_DIR/target/.reify-bin-sha' ]"
+
+# ==============================================================================
+# Check 11: resolve_trusted_reify_bin — explicit existing REIFY_BIN → trusted
+#           (exit 0), REIFY_BIN_RESOLVED == that path, freshness bypassed
+#           entirely (repo_root below has NO target/ bins or sidecar at all —
+#           if resolve fell through to auto-discovery it would find nothing).
+# ==============================================================================
+echo ""
+echo "--- Check 11: resolve_trusted_reify_bin trusts an explicit existing REIFY_BIN ---"
+
+RESOLVE_EMPTY_REPO="$TMPDIR_BINFRESH/resolve-empty"
+mkdir -p "$RESOLVE_EMPTY_REPO"
+git -C "$RESOLVE_EMPTY_REPO" init -q
+touch "$RESOLVE_EMPTY_REPO/placeholder"
+git -C "$RESOLVE_EMPTY_REPO" add placeholder
+git -C "$RESOLVE_EMPTY_REPO" \
+    -c user.name="Test" \
+    -c user.email="test@test.com" \
+    commit -qm "init" 2>/dev/null
+
+EXPLICIT_BIN="$TMPDIR_BINFRESH/explicit-reify-bin"
+touch "$EXPLICIT_BIN"
+chmod +x "$EXPLICIT_BIN"
+
+assert "resolve_trusted_reify_bin: explicit existing REIFY_BIN → trusted (exit 0)" \
+    env REIFY_BIN="$EXPLICIT_BIN" bash -c "source '$FRESHNESS_LIB' && resolve_trusted_reify_bin '$RESOLVE_EMPTY_REPO'"
+
+assert "resolve_trusted_reify_bin: explicit REIFY_BIN → REIFY_BIN_RESOLVED equals that path" \
+    env REIFY_BIN="$EXPLICIT_BIN" bash -c "source '$FRESHNESS_LIB' && resolve_trusted_reify_bin '$RESOLVE_EMPTY_REPO' >/dev/null && [ \"\$REIFY_BIN_RESOLVED\" = '$EXPLICIT_BIN' ]"
+
+# ==============================================================================
+# Check 12: resolve_trusted_reify_bin — explicit REIFY_BIN pointing at a
+#           missing path → SKIP (non-zero), reason mentions REIFY_BIN + missing.
+# ==============================================================================
+echo ""
+echo "--- Check 12: resolve_trusted_reify_bin rejects a missing explicit REIFY_BIN ---"
+
+MISSING_BIN="$TMPDIR_BINFRESH/does-not-exist-reify-bin"
+
+assert "resolve_trusted_reify_bin: missing explicit REIFY_BIN → non-zero (SKIP)" \
+    env REIFY_BIN="$MISSING_BIN" bash -c "source '$FRESHNESS_LIB' && ! resolve_trusted_reify_bin '$RESOLVE_EMPTY_REPO'"
+
+assert "resolve_trusted_reify_bin: missing explicit REIFY_BIN → reason mentions REIFY_BIN and missing" \
+    env REIFY_BIN="$MISSING_BIN" bash -c "source '$FRESHNESS_LIB'; resolve_trusted_reify_bin '$RESOLVE_EMPTY_REPO' >/dev/null; echo \"\$REIFY_BIN_SKIP_REASON\" | grep -q 'REIFY_BIN' && echo \"\$REIFY_BIN_SKIP_REASON\" | grep -qi 'missing'"
+
+# ==============================================================================
+# Check 13: resolve_trusted_reify_bin — REIFY_BIN unset, no target bins → SKIP,
+#           reason mentions 'not built'.
+# ==============================================================================
+echo ""
+echo "--- Check 13: resolve_trusted_reify_bin SKIPs when nothing is built ---"
+
+assert "resolve_trusted_reify_bin: no REIFY_BIN, no target bins → non-zero (SKIP)" \
+    bash -c "unset REIFY_BIN; source '$FRESHNESS_LIB' && ! resolve_trusted_reify_bin '$RESOLVE_EMPTY_REPO'"
+
+assert "resolve_trusted_reify_bin: no REIFY_BIN, no target bins → reason mentions 'not built'" \
+    bash -c "unset REIFY_BIN; source '$FRESHNESS_LIB'; resolve_trusted_reify_bin '$RESOLVE_EMPTY_REPO' >/dev/null; echo \"\$REIFY_BIN_SKIP_REASON\" | grep -q 'not built'"
+
+# ==============================================================================
+# Check 14: resolve_trusted_reify_bin — release bin + sidecar == HEAD → trusted,
+#           resolves the release path.
+# ==============================================================================
+echo ""
+echo "--- Check 14: resolve_trusted_reify_bin resolves a fresh release bin ---"
+
+RESOLVE_REPO_D="$TMPDIR_BINFRESH/resolve-d"
+mkdir -p "$RESOLVE_REPO_D"
+git -C "$RESOLVE_REPO_D" init -q
+touch "$RESOLVE_REPO_D/placeholder"
+git -C "$RESOLVE_REPO_D" add placeholder
+git -C "$RESOLVE_REPO_D" \
+    -c user.name="Test" \
+    -c user.email="test@test.com" \
+    commit -qm "init" 2>/dev/null
+D_HEAD_SHA=$(git -C "$RESOLVE_REPO_D" rev-parse HEAD)
+
+D_RELEASE_BIN="$RESOLVE_REPO_D/target/release/reify"
+mkdir -p "$(dirname "$D_RELEASE_BIN")"
+touch "$D_RELEASE_BIN"
+chmod +x "$D_RELEASE_BIN"
+printf '%s\n' "$D_HEAD_SHA" > "$RESOLVE_REPO_D/target/.reify-bin-sha"
+
+assert "resolve_trusted_reify_bin: fresh release bin → trusted (exit 0)" \
+    bash -c "unset REIFY_BIN; source '$FRESHNESS_LIB' && resolve_trusted_reify_bin '$RESOLVE_REPO_D'"
+
+assert "resolve_trusted_reify_bin: fresh release bin → REIFY_BIN_RESOLVED is the release path" \
+    bash -c "unset REIFY_BIN; source '$FRESHNESS_LIB' && resolve_trusted_reify_bin '$RESOLVE_REPO_D' >/dev/null && [ \"\$REIFY_BIN_RESOLVED\" = '$D_RELEASE_BIN' ]"
+
+# ==============================================================================
+# Check 15: resolve_trusted_reify_bin — debug bin only + sidecar == HEAD →
+#           trusted, resolves the debug path.
+# ==============================================================================
+echo ""
+echo "--- Check 15: resolve_trusted_reify_bin resolves a fresh debug-only bin ---"
+
+RESOLVE_REPO_E="$TMPDIR_BINFRESH/resolve-e"
+mkdir -p "$RESOLVE_REPO_E"
+git -C "$RESOLVE_REPO_E" init -q
+touch "$RESOLVE_REPO_E/placeholder"
+git -C "$RESOLVE_REPO_E" add placeholder
+git -C "$RESOLVE_REPO_E" \
+    -c user.name="Test" \
+    -c user.email="test@test.com" \
+    commit -qm "init" 2>/dev/null
+E_HEAD_SHA=$(git -C "$RESOLVE_REPO_E" rev-parse HEAD)
+
+E_DEBUG_BIN="$RESOLVE_REPO_E/target/debug/reify"
+mkdir -p "$(dirname "$E_DEBUG_BIN")"
+touch "$E_DEBUG_BIN"
+chmod +x "$E_DEBUG_BIN"
+printf '%s\n' "$E_HEAD_SHA" > "$RESOLVE_REPO_E/target/.reify-bin-sha"
+
+assert "resolve_trusted_reify_bin: fresh debug-only bin → trusted (exit 0)" \
+    bash -c "unset REIFY_BIN; source '$FRESHNESS_LIB' && resolve_trusted_reify_bin '$RESOLVE_REPO_E'"
+
+assert "resolve_trusted_reify_bin: fresh debug-only bin → REIFY_BIN_RESOLVED is the debug path" \
+    bash -c "unset REIFY_BIN; source '$FRESHNESS_LIB' && resolve_trusted_reify_bin '$RESOLVE_REPO_E' >/dev/null && [ \"\$REIFY_BIN_RESOLVED\" = '$E_DEBUG_BIN' ]"
+
+# ==============================================================================
+# Check 16: resolve_trusted_reify_bin — release bin + sidecar MISMATCH → SKIP,
+#           reason mentions 'stale'.
+# ==============================================================================
+echo ""
+echo "--- Check 16: resolve_trusted_reify_bin SKIPs a stale release bin ---"
+
+RESOLVE_REPO_F="$TMPDIR_BINFRESH/resolve-f"
+mkdir -p "$RESOLVE_REPO_F"
+git -C "$RESOLVE_REPO_F" init -q
+touch "$RESOLVE_REPO_F/placeholder"
+git -C "$RESOLVE_REPO_F" add placeholder
+git -C "$RESOLVE_REPO_F" \
+    -c user.name="Test" \
+    -c user.email="test@test.com" \
+    commit -qm "init" 2>/dev/null
+
+F_RELEASE_BIN="$RESOLVE_REPO_F/target/release/reify"
+mkdir -p "$(dirname "$F_RELEASE_BIN")"
+touch "$F_RELEASE_BIN"
+chmod +x "$F_RELEASE_BIN"
+printf '%s\n' "0000000000000000000000000000000000000000" > "$RESOLVE_REPO_F/target/.reify-bin-sha"
+
+assert "resolve_trusted_reify_bin: release bin + sidecar mismatch → non-zero (SKIP)" \
+    bash -c "unset REIFY_BIN; source '$FRESHNESS_LIB' && ! resolve_trusted_reify_bin '$RESOLVE_REPO_F'"
+
+assert "resolve_trusted_reify_bin: release bin + sidecar mismatch → reason mentions 'stale'" \
+    bash -c "unset REIFY_BIN; source '$FRESHNESS_LIB'; resolve_trusted_reify_bin '$RESOLVE_REPO_F' >/dev/null; echo \"\$REIFY_BIN_SKIP_REASON\" | grep -qi 'stale'"
+
+# ==============================================================================
+# Check 17: resolve_trusted_reify_bin — both release+debug present and fresh →
+#           resolves release (precedence).
+# ==============================================================================
+echo ""
+echo "--- Check 17: resolve_trusted_reify_bin prefers release over debug ---"
+
+RESOLVE_REPO_G="$TMPDIR_BINFRESH/resolve-g"
+mkdir -p "$RESOLVE_REPO_G"
+git -C "$RESOLVE_REPO_G" init -q
+touch "$RESOLVE_REPO_G/placeholder"
+git -C "$RESOLVE_REPO_G" add placeholder
+git -C "$RESOLVE_REPO_G" \
+    -c user.name="Test" \
+    -c user.email="test@test.com" \
+    commit -qm "init" 2>/dev/null
+G_HEAD_SHA=$(git -C "$RESOLVE_REPO_G" rev-parse HEAD)
+
+G_RELEASE_BIN="$RESOLVE_REPO_G/target/release/reify"
+G_DEBUG_BIN="$RESOLVE_REPO_G/target/debug/reify"
+mkdir -p "$(dirname "$G_RELEASE_BIN")" "$(dirname "$G_DEBUG_BIN")"
+touch "$G_RELEASE_BIN" "$G_DEBUG_BIN"
+chmod +x "$G_RELEASE_BIN" "$G_DEBUG_BIN"
+printf '%s\n' "$G_HEAD_SHA" > "$RESOLVE_REPO_G/target/.reify-bin-sha"
+
+assert "resolve_trusted_reify_bin: both bins present+fresh → trusted (exit 0)" \
+    bash -c "unset REIFY_BIN; source '$FRESHNESS_LIB' && resolve_trusted_reify_bin '$RESOLVE_REPO_G'"
+
+assert "resolve_trusted_reify_bin: both bins present+fresh → resolves release (precedence over debug)" \
+    bash -c "unset REIFY_BIN; source '$FRESHNESS_LIB' && resolve_trusted_reify_bin '$RESOLVE_REPO_G' >/dev/null && [ \"\$REIFY_BIN_RESOLVED\" = '$G_RELEASE_BIN' ]"
 
 # -- Summary ------------------------------------------------------------------
 test_summary
