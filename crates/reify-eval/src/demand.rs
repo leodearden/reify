@@ -120,6 +120,20 @@ impl DemandRegistry {
                 }
                 NodeId::Realization(rnid) => {
                     if let Some(rnode) = graph.realizations.get(rnid) {
+                        // γ (task #4954): a geometry `let` lowers to a realization
+                        // PAIRED with a `Type::Geometry` value cell (`geometry_cell`,
+                        // the pair-shape). When the realization is demanded, that
+                        // paired value cell must join the cone too — otherwise an
+                        // all-visible selective cone schedules strictly LESS than
+                        // full scope (it drops the geometry-let cell), breaking the
+                        // "all-visible selectivity is a no-op — schedule EXACTLY what
+                        // full scope does" invariant (selective_demand_alpha).
+                        if let Some(cell) = &rnode.geometry_cell {
+                            let value_node = NodeId::Value(cell.clone());
+                            if !self.demand_cone.contains(&value_node) {
+                                queue.push_back(value_node);
+                            }
+                        }
                         extract_realization_dependencies(&rnode.operations).reads
                     } else {
                         Vec::new()

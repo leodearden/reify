@@ -50,20 +50,22 @@ fn set_demand_selective_populates_production_demand_from_one_visible_realization
     let body_a = NodeId::Realization(RealizationNodeId::new(e, 0));
     let body_b = NodeId::Realization(RealizationNodeId::new(e, 1));
 
-    // ALL-VISIBLE baseline: demanding BOTH realizations covers every value cell
-    // ({a→sa→w} ∪ {b→sb→w} ⇒ cone {R0,R1,sa,sb,w}). This is the "full" cone the
-    // single-body selective cone must come in UNDER.
+    // ALL-VISIBLE baseline: demanding BOTH realizations covers every value cell.
+    // Post-γ (#4954) each realization also pulls its paired geometry-let value
+    // cell (`a`/`b`) into the cone ⇒ {R0,R1,a,b,sa,sb,w}. This is the "full" cone
+    // the single-body selective cone must come in UNDER.
     engine.set_demand_selective([body_a.clone(), body_b.clone()]);
     let full_cone = engine.demand_cone_size();
 
     // SELECTIVE: only `body_a` visible — `body_b` hidden.
     engine.set_demand_selective([body_a.clone()]);
 
-    // `body_a`'s backward closure is exactly {Realization(a), sa, w} = 3 nodes …
+    // `body_a`'s backward closure is exactly {Realization(a), a, sa, w} = 4 nodes
+    // (post-γ the realization pulls its paired geometry-let cell `a` in too) …
     assert_eq!(
         engine.demand_cone_size(),
-        3,
-        "selective cone must equal body_a's backward closure {{R(a), sa, w}}"
+        4,
+        "selective cone must equal body_a's backward closure {{R(a), a, sa, w}}"
     );
     // … and strictly smaller than the all-visible cone (selectivity is real).
     assert!(
@@ -90,6 +92,17 @@ fn set_demand_selective_populates_production_demand_from_one_visible_realization
     assert!(
         !engine.demand_is_demanded(&NodeId::Value(ValueCellId::new(e, "sb"))),
         "`sb` feeds ONLY hidden body_b ⇒ pruned from the selective cone"
+    );
+
+    // γ (#4954): body_a's paired geometry-let cell `a` is demanded (pulled in by
+    // its realization); hidden body_b's `b` is NOT.
+    assert!(
+        engine.demand_is_demanded(&NodeId::Value(ValueCellId::new(e, "a"))),
+        "visible body_a's geometry-let cell `a` must be demanded (γ pair-shape)"
+    );
+    assert!(
+        !engine.demand_is_demanded(&NodeId::Value(ValueCellId::new(e, "b"))),
+        "hidden body_b's geometry-let cell `b` must NOT be demanded"
     );
 
     // Selective population must NOT trip the cold full-scope override.
