@@ -1588,4 +1588,240 @@ assert "O11: full-teardown: stderr does NOT contain the Invocation-mismatch mess
 assert "O12: full-teardown: cp NEVER invoked (guard fires before clone)" \
     bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Block P — non-relocatable links-metadata/OUT_DIR path relocation (esc-5052)
+# Uses run_helper_real (real cp/find/touch + stub git), mirroring Block H.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block P: non-relocatable links-metadata path relocation (esc-5052) ---"
+
+# P: DIFFER fixture — recorded .buildroot points at a FOREIGN worktree root that
+# is baked into build-script `output` files (links-metadata absolute paths
+# consumed as file paths by DEPENDENT build scripts, e.g. cxx's CXXBRIDGE_DIR0
+# and a sys-crate's lib_dir). Both cxx-* and reify-kernel-occt-* are OUTSIDE the
+# tauri-*/reify-gui-* allow-list (Block H), so the existing deletion sweep never
+# touches them — relocation must rewrite the baked prefix in place instead.
+P_FOREIGN="/tmp/foreign-wt"
+
+P_BASE_PARENT="$(mktemp -d /tmp/test-seed-P-parent-XXXXXX)"
+P_BASE="$P_BASE_PARENT/target"
+P_LANE="$(mktemp -d /tmp/test-seed-P-lane-XXXXXX)"
+_TMPDIRS+=("$P_BASE_PARENT" "$P_LANE")
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$P_BASE_PARENT/.warm-base-meta"
+printf '%s' "$P_FOREIGN" > "${P_BASE}.buildroot"
+
+mkdir -p "$P_BASE/debug/build/cxx-AAAA" "$P_BASE/debug/build/reify-kernel-occt-BBBB"
+cat > "$P_BASE/debug/build/cxx-AAAA/output" <<EOF
+cargo:CXXBRIDGE_DIR0=$P_FOREIGN/target/debug/build/reify-kernel-occt-BBBB/out/cxxbridge/include
+EOF
+cat > "$P_BASE/debug/build/reify-kernel-occt-BBBB/output" <<EOF
+cargo:lib_dir=$P_FOREIGN/target/debug/build/reify-kernel-occt-BBBB/out/lib
+EOF
+
+# root-output records the build script's OUT_DIR (replayed to set OUT_DIR for
+# the crate compile) — a distinct ENOENT class from `output`'s links-metadata:
+# include!(concat!(env!("OUT_DIR"), ...)) opens the FOREIGN out dir baked here.
+mkdir -p "$P_BASE/debug/build/ahash-CCCC"
+printf '%s' "$P_FOREIGN/target/debug/build/ahash-CCCC/out" > "$P_BASE/debug/build/ahash-CCCC/root-output"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$P_BASE" "$P_LANE" --fresh-checkout
+
+P_LANE_RP="$(realpath -m "$P_LANE")"
+
+# P1: success contract — exit 0, stdout == <lane>/target
+assert "P1: --fresh-checkout exits 0 (links-metadata relocation)" test "$RC" -eq 0
+assert "P1: STDOUT is exactly <lane>/target" \
+    bash -c '[ "$1" = "'"$P_LANE/target"'" ]' _ "$OUT"
+
+# P1a/b: cxx-AAAA/output rewritten to the lane root; no FOREIGN substring left
+assert "P1a: build/cxx-AAAA/output contains the LANE root prefix" \
+    bash -c 'grep -qF "$1" "$2"' _ "$P_LANE_RP" "$P_LANE/target/debug/build/cxx-AAAA/output"
+assert "P1b: build/cxx-AAAA/output no longer contains the FOREIGN root" \
+    bash -c '! grep -qF "$1" "$2"' _ "$P_FOREIGN" "$P_LANE/target/debug/build/cxx-AAAA/output"
+
+# P1c/d: reify-kernel-occt-BBBB/output rewritten to the lane root; no FOREIGN left
+assert "P1c: build/reify-kernel-occt-BBBB/output contains the LANE root prefix" \
+    bash -c 'grep -qF "$1" "$2"' _ "$P_LANE_RP" "$P_LANE/target/debug/build/reify-kernel-occt-BBBB/output"
+assert "P1d: build/reify-kernel-occt-BBBB/output no longer contains the FOREIGN root" \
+    bash -c '! grep -qF "$1" "$2"' _ "$P_FOREIGN" "$P_LANE/target/debug/build/reify-kernel-occt-BBBB/output"
+
+# P2: build/ahash-CCCC/root-output (OUT_DIR class) rewritten to the exact lane
+# path, byte-for-byte — this file's ENTIRE content is the OUT_DIR value cargo
+# replays verbatim, so the assertion pins the full expected string, not just
+# a substring.
+assert "P2: build/ahash-CCCC/root-output reads the lane's OUT_DIR (no FOREIGN substring)" \
+    bash -c '[ "$(cat "$1")" = "'"$P_LANE_RP"'/target/debug/build/ahash-CCCC/out" ]' \
+    _ "$P_LANE/target/debug/build/ahash-CCCC/root-output"
+
+# P-abs: buildroot stamp ABSENT. Unlike the env!()-relink (which fails safe by
+# relinking even when the stamp is absent — a cheap, idempotent mtime touch),
+# relocation is a content rewrite: an unguarded/empty search prefix would match
+# every byte and corrupt the file, so the fail-safe direction is inverted here
+# — skip, and say so on stderr, rather than guess.
+P_ABS_BASE_PARENT="$(mktemp -d /tmp/test-seed-P-abs-parent-XXXXXX)"
+P_ABS_BASE="$P_ABS_BASE_PARENT/target"
+P_ABS_LANE="$(mktemp -d /tmp/test-seed-P-abs-lane-XXXXXX)"
+_TMPDIRS+=("$P_ABS_BASE_PARENT" "$P_ABS_LANE")
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$P_ABS_BASE_PARENT/.warm-base-meta"
+# Deliberately no ${P_ABS_BASE}.buildroot written.
+
+mkdir -p "$P_ABS_BASE/debug/build/cxx-AAAA"
+cat > "$P_ABS_BASE/debug/build/cxx-AAAA/output" <<EOF
+cargo:CXXBRIDGE_DIR0=$P_FOREIGN/target/debug/build/cxx-AAAA/out/cxxbridge/include
+EOF
+
+P_ABS_SNAPSHOT="$(mktemp /tmp/test-seed-P-abs-snapshot-XXXXXX)"
+_TMPDIRS+=("$P_ABS_SNAPSHOT")
+cp "$P_ABS_BASE/debug/build/cxx-AAAA/output" "$P_ABS_SNAPSHOT"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$P_ABS_BASE" "$P_ABS_LANE" --fresh-checkout
+
+assert "P-abs: absent-buildroot seed exits 0" test "$RC" -eq 0
+assert "P-abs: output file BYTE-UNCHANGED (no corruption from an empty-prefix match)" \
+    cmp -s "$P_ABS_SNAPSHOT" "$P_ABS_LANE/target/debug/build/cxx-AAAA/output"
+assert "P-abs: stderr names the absent buildroot stamp (actionable warn)" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "buildroot stamp absent"' _ "$ERR_OUT"
+
+# P-eq: buildroot EQUALS the lane (genuine in-place build) — the baked path
+# already reflects the lane's own root, so relocation must be a pure no-op.
+P_EQ_BASE_PARENT="$(mktemp -d /tmp/test-seed-P-eq-parent-XXXXXX)"
+P_EQ_BASE="$P_EQ_BASE_PARENT/target"
+P_EQ_LANE="$(mktemp -d /tmp/test-seed-P-eq-lane-XXXXXX)"
+_TMPDIRS+=("$P_EQ_BASE_PARENT" "$P_EQ_LANE")
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$P_EQ_BASE_PARENT/.warm-base-meta"
+P_EQ_LANE_RP="$(realpath -m "$P_EQ_LANE")"
+printf '%s' "$P_EQ_LANE_RP" > "${P_EQ_BASE}.buildroot"
+
+mkdir -p "$P_EQ_BASE/debug/build/cxx-AAAA"
+cat > "$P_EQ_BASE/debug/build/cxx-AAAA/output" <<EOF
+cargo:CXXBRIDGE_DIR0=$P_EQ_LANE_RP/target/debug/build/cxx-AAAA/out/cxxbridge/include
+EOF
+
+P_EQ_SNAPSHOT="$(mktemp /tmp/test-seed-P-eq-snapshot-XXXXXX)"
+_TMPDIRS+=("$P_EQ_SNAPSHOT")
+cp "$P_EQ_BASE/debug/build/cxx-AAAA/output" "$P_EQ_SNAPSHOT"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$P_EQ_BASE" "$P_EQ_LANE" --fresh-checkout
+
+assert "P-eq: equal-buildroot seed exits 0" test "$RC" -eq 0
+assert "P-eq: output file unchanged (no-op; buildroot equals lane)" \
+    cmp -s "$P_EQ_SNAPSHOT" "$P_EQ_LANE/target/debug/build/cxx-AAAA/output"
+assert "P-eq: no relocation count > 0 reported on stderr" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "Relocated [1-9][0-9]* "' _ "$ERR_OUT"
+
+# P-mismatch: buildroot DIFFERS from the lane (relocation is applicable per the
+# gate) but the baked `output` file's actual bytes do NOT carry the recorded
+# buildroot's prefix — simulating a canonicalization drift between the
+# .buildroot stamp and what actually got baked (e.g. a symlinked vs. realpath
+# worktree root at build time). grep -qF then matches nothing on the only
+# candidate; the fix must warn instead of silently reporting a bare
+# "Relocated 0" so the drift is visible rather than reading as success.
+P_MISMATCH_BASE_PARENT="$(mktemp -d /tmp/test-seed-P-mismatch-parent-XXXXXX)"
+P_MISMATCH_BASE="$P_MISMATCH_BASE_PARENT/target"
+P_MISMATCH_LANE="$(mktemp -d /tmp/test-seed-P-mismatch-lane-XXXXXX)"
+_TMPDIRS+=("$P_MISMATCH_BASE_PARENT" "$P_MISMATCH_LANE")
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$P_MISMATCH_BASE_PARENT/.warm-base-meta"
+printf '%s' "$P_FOREIGN" > "${P_MISMATCH_BASE}.buildroot"
+
+mkdir -p "$P_MISMATCH_BASE/debug/build/cxx-AAAA"
+cat > "$P_MISMATCH_BASE/debug/build/cxx-AAAA/output" <<EOF
+cargo:CXXBRIDGE_DIR0=/tmp/some-other-uncanonicalized-wt/target/debug/build/cxx-AAAA/out/cxxbridge/include
+EOF
+
+P_MISMATCH_SNAPSHOT="$(mktemp /tmp/test-seed-P-mismatch-snapshot-XXXXXX)"
+_TMPDIRS+=("$P_MISMATCH_SNAPSHOT")
+cp "$P_MISMATCH_BASE/debug/build/cxx-AAAA/output" "$P_MISMATCH_SNAPSHOT"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$P_MISMATCH_BASE" "$P_MISMATCH_LANE" --fresh-checkout
+
+assert "P-mismatch: differing-buildroot-but-no-candidate-match seed exits 0" test "$RC" -eq 0
+assert "P-mismatch: output file BYTE-UNCHANGED (no candidate matched the recorded prefix)" \
+    cmp -s "$P_MISMATCH_SNAPSHOT" "$P_MISMATCH_LANE/target/debug/build/cxx-AAAA/output"
+assert "P-mismatch: stderr warns of the canonicalization-drift possibility (not a bare Relocated-0)" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "canonicali"' _ "$ERR_OUT"
+
+# P3a: --reset-in-place does NOT relocate (scope guard, mirrors Block H's H3a).
+# The relocation sweep must live entirely inside `if [ -n "$FRESH_CHECKOUT" ]`.
+P3A_BASE_PARENT="$(mktemp -d /tmp/test-seed-P3a-parent-XXXXXX)"
+P3A_BASE="$P3A_BASE_PARENT/target"
+P3A_LANE="$(mktemp -d /tmp/test-seed-P3a-lane-XXXXXX)"
+_TMPDIRS+=("$P3A_BASE_PARENT" "$P3A_LANE")
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$P3A_BASE_PARENT/.warm-base-meta"
+printf '%s' "$P_FOREIGN" > "${P3A_BASE}.buildroot"
+
+mkdir -p "$P3A_BASE/debug/build/cxx-AAAA"
+cat > "$P3A_BASE/debug/build/cxx-AAAA/output" <<EOF
+cargo:CXXBRIDGE_DIR0=$P_FOREIGN/target/debug/build/cxx-AAAA/out/cxxbridge/include
+EOF
+
+P3A_SNAPSHOT="$(mktemp /tmp/test-seed-P3a-snapshot-XXXXXX)"
+_TMPDIRS+=("$P3A_SNAPSHOT")
+cp "$P3A_BASE/debug/build/cxx-AAAA/output" "$P3A_SNAPSHOT"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$P3A_BASE" "$P3A_LANE" --reset-in-place
+
+assert "P3a: --reset-in-place exits 0" test "$RC" -eq 0
+assert "P3a: build/cxx-AAAA/output UNCHANGED under --reset-in-place (scope guard)" \
+    cmp -s "$P3A_SNAPSHOT" "$P3A_LANE/target/debug/build/cxx-AAAA/output"
+
+# P3b/c: warmth + safety guards, same --fresh-checkout fixture.
+#   P3b — a sibling compiled artifact (out/libfoo.a) and the build dir itself
+#         are NOT deleted by relocation (relocation only rewrites file content).
+#   P3c — only files NAMED output/root-output are rewritten: a `.d` depfile and
+#         a binary stub that ALSO contain the FOREIGN byte-string are left
+#         BYTE-UNCHANGED (filename-scoped match, not a content scan).
+P3BC_BASE_PARENT="$(mktemp -d /tmp/test-seed-P3bc-parent-XXXXXX)"
+P3BC_BASE="$P3BC_BASE_PARENT/target"
+P3BC_LANE="$(mktemp -d /tmp/test-seed-P3bc-lane-XXXXXX)"
+P3BC_D_SNAPSHOT="$(mktemp /tmp/test-seed-P3bc-d-snapshot-XXXXXX)"
+P3BC_A_SNAPSHOT="$(mktemp /tmp/test-seed-P3bc-a-snapshot-XXXXXX)"
+_TMPDIRS+=("$P3BC_BASE_PARENT" "$P3BC_LANE" "$P3BC_D_SNAPSHOT" "$P3BC_A_SNAPSHOT")
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$P3BC_BASE_PARENT/.warm-base-meta"
+printf '%s' "$P_FOREIGN" > "${P3BC_BASE}.buildroot"
+
+mkdir -p "$P3BC_BASE/debug/build/cxx-AAAA/out"
+cat > "$P3BC_BASE/debug/build/cxx-AAAA/output" <<EOF
+cargo:CXXBRIDGE_DIR0=$P_FOREIGN/target/debug/build/cxx-AAAA/out/cxxbridge/include
+EOF
+cat > "$P3BC_BASE/debug/build/cxx-AAAA/build_script_build.d" <<EOF
+$P_FOREIGN/target/debug/build/cxx-AAAA/build_script_build: $P_FOREIGN/crates/cxx/build.rs
+EOF
+printf 'ELF-stub-bytes %s\n' "$P_FOREIGN/target/debug/build/cxx-AAAA/out" \
+    > "$P3BC_BASE/debug/build/cxx-AAAA/out/libfoo.a"
+
+cp "$P3BC_BASE/debug/build/cxx-AAAA/build_script_build.d" "$P3BC_D_SNAPSHOT"
+cp "$P3BC_BASE/debug/build/cxx-AAAA/out/libfoo.a" "$P3BC_A_SNAPSHOT"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$P3BC_BASE" "$P3BC_LANE" --fresh-checkout
+
+assert "P3b/c: --fresh-checkout exits 0 (warmth/safety guards)" test "$RC" -eq 0
+
+assert "P3b: build/cxx-AAAA/out/libfoo.a PRESERVED (warmth; not deleted)" \
+    test -e "$P3BC_LANE/target/debug/build/cxx-AAAA/out/libfoo.a"
+assert "P3b: build/cxx-AAAA build dir PRESERVED (not deleted, only rewritten)" \
+    test -d "$P3BC_LANE/target/debug/build/cxx-AAAA"
+
+assert "P3c: build_script_build.d BYTE-UNCHANGED (.d not in scope; filename-only match)" \
+    cmp -s "$P3BC_D_SNAPSHOT" "$P3BC_LANE/target/debug/build/cxx-AAAA/build_script_build.d"
+assert "P3c: out/libfoo.a BYTE-UNCHANGED (binary; never rewritten regardless of content)" \
+    cmp -s "$P3BC_A_SNAPSHOT" "$P3BC_LANE/target/debug/build/cxx-AAAA/out/libfoo.a"
+
+# Sanity: confirm relocation actually ran in this same fixture, so the guards
+# above aren't vacuously true because relocation never fired at all.
+P3BC_LANE_RP="$(realpath -m "$P3BC_LANE")"
+assert "P3c: build/cxx-AAAA/output WAS relocated in this same run (guards non-vacuous)" \
+    bash -c 'grep -qF "$1" "$2"' _ "$P3BC_LANE_RP" "$P3BC_LANE/target/debug/build/cxx-AAAA/output"
+
 test_summary
