@@ -189,4 +189,4 @@ Labels α…ε; IDs at decompose time. Spine (C-as-integration-gate): α → β 
 - Subtree / whole-model cost-as-objective + cross-scope coupling → `whole-model-objective-coupling.md` (M-WHOLE).
 - Discrete supplier/stock-size/count cost → `discrete-cost-minimisation.md` (PRD 2) over `ranked-solve-result.md` (F-result).
 - Geometry-dependent material/waste cost (outer loop) → `material-waste-cost-minimisation.md` (M-WASTE) over `cache-input-cone-rekey.md` (F-cache).
-- Multi-aspect (cost+mass+…) dimensional coherence → `multi-aspect-objective-units-coherence.md` (M-UNITS).
+- Multi-aspect (cost+mass+…) dimensional coherence → **realized** by `multi-aspect-objective-units-coherence.md` (M-UNITS): the compile-time units-coherence guard (`E_OBJECTIVE_MIXED_DIMENSION` / `DiagnosticCode::ObjectiveDimensionIncoherent`) at the objective fold sites, the `Massive` aspect trait alongside `Costed`, and the normalised dimensionless tradeoff idiom (`examples/multi_aspect_objective.ri`) — no longer a forward-stub.
