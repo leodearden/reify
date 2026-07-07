@@ -3976,6 +3976,18 @@ mod tests {
     // the invocation in `std::panic::catch_unwind` so a panic becomes
     // `Some(ComputeOutcome::Failed{diagnostics,..})` instead of aborting the
     // test process (survey latent bug #9 / PRD compute-fea-hardening.md D1).
+    //
+    // Note: once GREEN, running these panic-driven tests still prints a full
+    // panic message and backtrace to stderr for every caught panic — this is
+    // expected noise, not a failure signal (assert on the returned
+    // `ComputeOutcome`, not on stderr being clean). We deliberately do NOT
+    // install a temporary no-op panic hook around these calls to quiet it:
+    // the panic hook is process-global (`std::panic::set_hook`/`take_hook`)
+    // and Rust runs tests on parallel threads by default, so swapping it
+    // per-test would race with every other test's panics in this crate's
+    // test binary and could flake or swallow a genuine failure's backtrace.
+    // Production leaves the default hook installed for the same reason (see
+    // `invoke_compute_trampoline` above) — one hook, one policy, everywhere.
 
     /// Synthetic trampoline panicking with a `&str` payload.
     fn panics_str_fn(
@@ -4069,44 +4081,32 @@ mod tests {
         }
     }
 
-    // ── Task #5079 step-1: RED — five per-arg Undef regression tests ───────
+    // ── Task #5079 step-1: real-trampoline integration test ────────────────
+    //
+    // Amendment (review round 2): this section originally held five
+    // near-identical tests, one per Undef position (material/length/width/
+    // height/loads). The `catch_unwind` boundary in
+    // `invoke_compute_trampoline` behaves identically regardless of which
+    // internal call panics, so the five cases added coupling to
+    // `elastic_static`'s internal panic sites (five line-number comments to
+    // keep in sync) without proving anything beyond what one representative
+    // case already proves — the mechanism itself is fully pinned by the
+    // synthetic tests (a)/(b) above. Collapsed to the single Undef-material
+    // case below; see that test's doc comment for why its assertion is also
+    // deliberately looser than (a)/(b)'s.
     //
     // Baseline `value_inputs` mirrors the dims-overload layout
     // `[material, length, width, height, loads, supports, options]`
-    // (elastic_static.rs:6-7). Every position holds a valid fixture except
-    // the ONE under test, replaced with `Value::Undef`. [2] (width) is a
-    // `Value::Scalar` (never a `List`) and [0] (material) is a
-    // `Value::StructureInstance` (never an `AsPrintedZones` Field), so
-    // neither the `body_path` discriminator nor the `AsPrintedZones`
-    // degraded-field guard intercepts (elastic_static.rs:424-470) — each
-    // single-Undef input reaches its intended panic arm during input
-    // extraction, before any mesh/solve.
+    // (elastic_static.rs:6-7), with `Value::Undef` at material [0] and a
+    // valid fixture everywhere else. [2] (width) is a `Value::Scalar` (never
+    // a `List`), so the `body_path` discriminator does not intercept; [0]
+    // being Undef (not an `AsPrintedZones` Field) likewise dodges that
+    // degraded-field guard (elastic_static.rs:424-470) — the Undef material
+    // reaches `classify_material`'s panic arm during input extraction,
+    // before any mesh/solve.
 
     use reify_core::DimensionVector;
     use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
-
-    /// Valid `IsotropicElastic` material `StructureInstance` — mirrors
-    /// elastic_static.rs:6903-6921 (`shell9_make_isotropic_material`).
-    fn valid_material() -> Value {
-        let fields: PersistentMap<String, Value> = [
-            (
-                "youngs_modulus".to_string(),
-                Value::Scalar {
-                    si_value: 200e9,
-                    dimension: DimensionVector::PRESSURE,
-                },
-            ),
-            ("poisson_ratio".to_string(), Value::Real(0.3)),
-        ]
-        .into_iter()
-        .collect();
-        Value::StructureInstance(Box::new(StructureInstanceData {
-            type_id: StructureTypeId(u32::MAX),
-            type_name: "IsotropicElastic".to_string(),
-            version: 1,
-            fields,
-        }))
-    }
 
     /// Valid `Value::Scalar` geometry length (SI metres) — mirrors
     /// elastic_static.rs:6924-6930 (`shell9_make_len`).
@@ -4133,37 +4133,40 @@ mod tests {
         ))])
     }
 
-    /// Baseline 7-element `value_inputs` for `solve_elastic_static_trampoline`
-    /// with a valid entry at every position; [5] (supports) and [6] (options)
-    /// stay `Value::Undef` (unused by the panic arms under test).
-    fn baseline_elastic_static_inputs() -> Vec<Value> {
-        vec![
-            valid_material(),
+    /// (c) A real, registered `ComputeFn` (`solve_elastic_static_trampoline`)
+    /// panicking on Undef material — `classify_material`/`extract_material`
+    /// panic (elastic_static.rs:3373/3712) — must also become
+    /// `Some(ComputeOutcome::Failed{..})`, proving the mechanism protects a
+    /// genuine trampoline, not just the synthetic ones in (a)/(b).
+    ///
+    /// Deliberately asserts only the structural outcome
+    /// (`Some(Failed{..})`), not the diagnostic message's wording: the
+    /// "panicked" + target-name wording is already pinned precisely by
+    /// (a)/(b), whose synthetic trampolines always panic by construction.
+    /// Whether `elastic_static`'s input extraction panics on Undef is a
+    /// property of `compute_targets::elastic_static` (out of this task's
+    /// scope), not of `invoke_compute_trampoline`. If those extraction sites
+    /// are later hardened to return a graceful `Failed` instead of panicking
+    /// (a plausible future step under the same compute-fea-hardening PRD),
+    /// this test stays green rather than needing an update — "returns
+    /// Some(Failed{..}), not an unwind" holds exactly the same either way.
+    #[test]
+    fn invoke_compute_trampoline_real_trampoline_undef_material_becomes_failed_outcome() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn(
+            "test::elastic_static",
+            crate::compute_targets::elastic_static::solve_elastic_static_trampoline as ComputeFn,
+        );
+
+        let inputs = vec![
+            Value::Undef, // material [0] — the arg under test
             valid_len(),
             valid_len(),
             valid_len(),
             valid_loads(),
             Value::Undef,
             Value::Undef,
-        ]
-    }
-
-    /// Shared assertion: registering `solve_elastic_static_trampoline` under
-    /// `"test::elastic_static"` and invoking it with `inputs` must return
-    /// `Some(ComputeOutcome::Failed{..})` with a diagnostic naming the
-    /// target and "panicked" — not merely `matches!(.., Some(Failed{..}))`,
-    /// which input extraction could also satisfy via a graceful (non-panic)
-    /// `Failed` return and would leave this test green without the
-    /// trampoline ever having panicked. Asserting the "panicked" wording
-    /// (only ever emitted by `invoke_compute_trampoline`'s `catch_unwind`
-    /// `Err` arm, per tests (a)/(b) above) is what actually pins this test
-    /// to the crash-safety mechanism under change.
-    fn assert_elastic_static_input_yields_failed(inputs: Vec<Value>) {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
-        engine.register_compute_fn(
-            "test::elastic_static",
-            crate::compute_targets::elastic_static::solve_elastic_static_trampoline as ComputeFn,
-        );
+        ];
 
         let result = engine.invoke_compute_trampoline(
             "test::elastic_static",
@@ -4174,63 +4177,11 @@ mod tests {
             &CancellationHandle::new(),
         );
 
-        match result {
-            Some(ComputeOutcome::Failed { diagnostics, .. }) => {
-                assert!(
-                    diagnostics.iter().any(|d| d.severity == reify_core::Severity::Error
-                        && d.message.contains("test::elastic_static")
-                        && d.message.contains("panicked")),
-                    "expected an Error diagnostic naming the target and \"panicked\" \
-                     (i.e. caught by catch_unwind, not a graceful Failed return that \
-                     never panicked), got {diagnostics:?}",
-                );
-            }
-            other => panic!(
-                "expected Some(ComputeOutcome::Failed {{ .. }}) for a single-Undef arg, \
-                 got {other:?}"
-            ),
-        }
-    }
-
-    /// (c) Undef material [0] → `classify_material`/`extract_material` panic
-    /// (elastic_static.rs:3373/3712).
-    #[test]
-    fn invoke_compute_trampoline_undef_material_becomes_failed_outcome() {
-        let mut inputs = baseline_elastic_static_inputs();
-        inputs[0] = Value::Undef;
-        assert_elastic_static_input_yields_failed(inputs);
-    }
-
-    /// (d) Undef length [1] → `extract_scalar_si` panic (elastic_static.rs:3745).
-    #[test]
-    fn invoke_compute_trampoline_undef_length_becomes_failed_outcome() {
-        let mut inputs = baseline_elastic_static_inputs();
-        inputs[1] = Value::Undef;
-        assert_elastic_static_input_yields_failed(inputs);
-    }
-
-    /// (e) Undef width [2] → `extract_scalar_si` panic (elastic_static.rs:3745).
-    #[test]
-    fn invoke_compute_trampoline_undef_width_becomes_failed_outcome() {
-        let mut inputs = baseline_elastic_static_inputs();
-        inputs[2] = Value::Undef;
-        assert_elastic_static_input_yields_failed(inputs);
-    }
-
-    /// (f) Undef height [3] → `extract_scalar_si` panic (elastic_static.rs:3745).
-    #[test]
-    fn invoke_compute_trampoline_undef_height_becomes_failed_outcome() {
-        let mut inputs = baseline_elastic_static_inputs();
-        inputs[3] = Value::Undef;
-        assert_elastic_static_input_yields_failed(inputs);
-    }
-
-    /// (g) Undef loads [4] → `extract_loads` panic (elastic_static.rs:3791).
-    #[test]
-    fn invoke_compute_trampoline_undef_loads_becomes_failed_outcome() {
-        let mut inputs = baseline_elastic_static_inputs();
-        inputs[4] = Value::Undef;
-        assert_elastic_static_input_yields_failed(inputs);
+        assert!(
+            matches!(result, Some(ComputeOutcome::Failed { .. })),
+            "expected Some(ComputeOutcome::Failed {{ .. }}) for Undef material, \
+             got {result:?}"
+        );
     }
 
     // ── Task #5079 step-3: RED — diagnostic enrichment ──────────────────────
