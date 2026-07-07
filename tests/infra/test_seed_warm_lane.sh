@@ -1588,4 +1588,57 @@ assert "O11: full-teardown: stderr does NOT contain the Invocation-mismatch mess
 assert "O12: full-teardown: cp NEVER invoked (guard fires before clone)" \
     bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Block P — non-relocatable links-metadata/OUT_DIR path relocation (esc-5052)
+# Uses run_helper_real (real cp/find/touch + stub git), mirroring Block H.
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block P: non-relocatable links-metadata path relocation (esc-5052) ---"
+
+# P: DIFFER fixture — recorded .buildroot points at a FOREIGN worktree root that
+# is baked into build-script `output` files (links-metadata absolute paths
+# consumed as file paths by DEPENDENT build scripts, e.g. cxx's CXXBRIDGE_DIR0
+# and a sys-crate's lib_dir). Both cxx-* and reify-kernel-occt-* are OUTSIDE the
+# tauri-*/reify-gui-* allow-list (Block H), so the existing deletion sweep never
+# touches them — relocation must rewrite the baked prefix in place instead.
+P_FOREIGN="/tmp/foreign-wt"
+
+P_BASE_PARENT="$(mktemp -d /tmp/test-seed-P-parent-XXXXXX)"
+P_BASE="$P_BASE_PARENT/target"
+P_LANE="$(mktemp -d /tmp/test-seed-P-lane-XXXXXX)"
+_TMPDIRS+=("$P_BASE_PARENT" "$P_LANE")
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$P_BASE_PARENT/.warm-base-meta"
+printf '%s' "$P_FOREIGN" > "${P_BASE}.buildroot"
+
+mkdir -p "$P_BASE/debug/build/cxx-AAAA" "$P_BASE/debug/build/reify-kernel-occt-BBBB"
+cat > "$P_BASE/debug/build/cxx-AAAA/output" <<EOF
+cargo:CXXBRIDGE_DIR0=$P_FOREIGN/target/debug/build/reify-kernel-occt-BBBB/out/cxxbridge/include
+EOF
+cat > "$P_BASE/debug/build/reify-kernel-occt-BBBB/output" <<EOF
+cargo:lib_dir=$P_FOREIGN/target/debug/build/reify-kernel-occt-BBBB/out/lib
+EOF
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$P_BASE" "$P_LANE" --fresh-checkout
+
+P_LANE_RP="$(realpath -m "$P_LANE")"
+
+# P1: success contract — exit 0, stdout == <lane>/target
+assert "P1: --fresh-checkout exits 0 (links-metadata relocation)" test "$RC" -eq 0
+assert "P1: STDOUT is exactly <lane>/target" \
+    bash -c '[ "$1" = "'"$P_LANE/target"'" ]' _ "$OUT"
+
+# P1a/b: cxx-AAAA/output rewritten to the lane root; no FOREIGN substring left
+assert "P1a: build/cxx-AAAA/output contains the LANE root prefix" \
+    bash -c 'grep -qF "$1" "$2"' _ "$P_LANE_RP" "$P_LANE/target/debug/build/cxx-AAAA/output"
+assert "P1b: build/cxx-AAAA/output no longer contains the FOREIGN root" \
+    bash -c '! grep -qF "$1" "$2"' _ "$P_FOREIGN" "$P_LANE/target/debug/build/cxx-AAAA/output"
+
+# P1c/d: reify-kernel-occt-BBBB/output rewritten to the lane root; no FOREIGN left
+assert "P1c: build/reify-kernel-occt-BBBB/output contains the LANE root prefix" \
+    bash -c 'grep -qF "$1" "$2"' _ "$P_LANE_RP" "$P_LANE/target/debug/build/reify-kernel-occt-BBBB/output"
+assert "P1d: build/reify-kernel-occt-BBBB/output no longer contains the FOREIGN root" \
+    bash -c '! grep -qF "$1" "$2"' _ "$P_FOREIGN" "$P_LANE/target/debug/build/reify-kernel-occt-BBBB/output"
+
 test_summary
