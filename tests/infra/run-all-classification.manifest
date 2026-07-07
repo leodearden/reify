@@ -118,6 +118,7 @@ test_run_all_ambient_isolation.sh pool
 test_run_all_classification.sh pool
 test_run_all.sh pool
 test_run_all_clock_marker_sanitize.sh pool
+test_run_all_tiering.sh pool
 test_run_gui_scripts.sh pool
 test_run_offline_deep.sh pool
 test_scope_boundary.sh pool

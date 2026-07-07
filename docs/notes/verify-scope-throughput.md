@@ -34,10 +34,10 @@ reflect a real run on this host.
 
 | Shape | Changed file | Override | scope=all | scope=branch |
 |-------|-------------|---------|-----------|--------------|
-| (a) docs-only | `docs/note.md` | — | 17 | 0 |
-| (b) reify-doc (non-OCCT) | `crates/reify-doc/src/lib.rs` | `reify-doc` | 17 | 17 |
-| (c) reify-eval (OCCT) | `crates/reify-eval/src/lib.rs` | `reify-eval` | 17 | 17 |
-| (d) gui-only | `gui/src/editor/foo.ts` | — | 17 | 3 |
+| (a) docs-only | `docs/note.md` | — | 13 | 0 |
+| (b) reify-doc (non-OCCT) | `crates/reify-doc/src/lib.rs` | `reify-doc` | 13 | 13 |
+| (c) reify-eval (OCCT) | `crates/reify-eval/src/lib.rs` | `reify-eval` | 13 | 13 |
+| (d) gui-only | `gui/src/editor/foo.ts` | — | 13 | 3 |
 
 Machine-parseable sentinel block for `tests/infra/test_verify_throughput.sh`'s
 drift guard.  Update by re-running the regeneration commands in the section
@@ -46,10 +46,10 @@ below and replacing the counts; then re-run the test to confirm it passes.
 <!-- THROUGHPUT-COUNTS:BEGIN -->
 | shape | all | branch |
 |-------|-----|--------|
-| docs-only  | 16 |  0 |
-| reify-doc  | 16 | 16 |
-| reify-eval | 16 | 16 |
-| gui-only   | 16 |  3 |
+| docs-only  | 13 |  0 |
+| reify-doc  | 13 | 13 |
+| reify-eval | 13 | 13 |
+| gui-only   | 13 |  3 |
 <!-- THROUGHPUT-COUNTS:END -->
 
 _Counts bumped 2026-06-25 (task 4839): `add_test_passes()` emitted one
@@ -73,6 +73,24 @@ line (task 4853) is KEPT but repositioned as a block-entry load gate before
 ```bash
 bash scripts/verify.sh all --profile debug --scope all --include-infra --print-plan | grep -cE '^[^#]'
 ```
+
+_Counts bumped 2026-07-06 (task 5125): the reify-audit release pre-build, its
+positive-assertion guard, and the `tests/infra/run_all.sh` wholesale-suite
+line moved from the per-task `INCLUDE_INFRA` tier to a new
+`DF_VERIFY_ROLE=merge` gate (fixes M-way pool contention against the shared
+16-slot semaphore — every per-task lane previously ran the full 103-test
+suite, and the merge gate, which never passes `--include-infra`, ran none of
+it). Net change: −3 non-comment plan lines from every role=task `scope=all`
+count, and from `scope=branch` for shapes with `RUN_RUST=1` (reify-doc,
+reify-eval). docs-only branch stays 0 and gui-only branch stays 3 (both
+`RUN_RUST=0` there, so the removed lines never applied under branch scope).
+The oracle command is unchanged (role=task is the default; no `DF_VERIFY_ROLE`
+is set) — only the resulting counts shifted. The human-readable "Plan-Step
+Counts" table above now equals this machine sentinel exactly (13 for every
+non-zero cell): the pre-2026-07-06 +1 table↔sentinel offset was a stale
+hand-maintained table artifact, not a semantic difference — both renderings
+count the same non-comment `--print-plan` lines from the same role=task oracle,
+so they are kept identical from here on._
 
 ## Heavy-Work Narrowed Markers
 

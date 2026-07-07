@@ -160,14 +160,26 @@ else
         false
 fi
 
-# -- Test 5: verify.sh plan wiring ----------------------------------------------
+# -- Test 5: verify.sh plan wiring (merge-tier gating, task 5125) --------------
 echo ""
-echo "--- Test 5: verify.sh test plan (--include-infra) includes run_all.sh ---"
+echo "--- Test 5: verify.sh plan wiring — run_all.sh gated to the merge tier ---"
 
 # Since task 3766 the orchestrator runs scripts/verify.sh; run_all.sh is wired
 # into the test-side infra of the verify.sh plan, not orchestrator.yaml directly.
-assert "verify.sh test plan references tests/infra/run_all.sh" \
-    bash -c "bash '$REPO_ROOT/scripts/verify.sh' test --scope all --include-infra --print-plan | grep -v '^#' | grep -q 'tests/infra/run_all\.sh'"
+#
+# task 5125: the wholesale run_all.sh pool (103 tests) moved from the
+# per-task INCLUDE_INFRA tier to the DF_VERIFY_ROLE=merge tier, fixing M-way
+# shared-pool contention across concurrent per-task verifies (both merge
+# seams — hooks/pre-merge-commit and the dark-factory merge-verify command —
+# already stamp DF_VERIFY_ROLE=merge). (a) asserts run_all.sh is present in
+# the merge-role plan; (b) is the drift guard confirming it is now ABSENT
+# from the role=task --include-infra plan (moved, not duplicated). Mirrors
+# test_verify_failfast_order.sh Test 6(a)/(e).
+assert "verify.sh test plan (role=merge): references tests/infra/run_all.sh" \
+    bash -c "DF_VERIFY_ROLE=merge bash '$REPO_ROOT/scripts/verify.sh' test --scope all --print-plan | grep -v '^#' | grep -q 'tests/infra/run_all\.sh'"
+
+assert "verify.sh test plan (role=task, --include-infra): LACKS tests/infra/run_all.sh (wholesale suite moved to merge tier, task 5125)" \
+    bash -c "! bash '$REPO_ROOT/scripts/verify.sh' test --scope all --include-infra --print-plan | grep -v '^#' | grep -q 'tests/infra/run_all\.sh'"
 
 # -- Test 6: structural self-checks (meta-assertions) ---------------------------
 echo ""

@@ -762,12 +762,16 @@ assert "VS-neg: plan lacks test_verify_*.sh glob (reify-doc not in artifact map)
     bash -c '! printf "%s\n" "$1" | grep -qE "tests/infra/test_verify_\*\.sh"' _ "$PLAN_VS_NEG"
 
 # ---------------------------------------------------------------------------
-# Scenario VS-incl: verify.sh change WITH --include-infra -> wholesale run_all.sh
-# present, selective test_verify_*.sh loop ABSENT (no double-run).
-# RED until step-4: step-2 emits the selective loop regardless of INCLUDE_INFRA.
+# Scenario VS-incl: verify.sh change WITH --include-infra (role=task) ->
+# wholesale run_all.sh ABSENT (task 5125: full pool suite moved to the merge
+# tier), selective test_verify_*.sh loop PRESENT instead (no double-run;
+# exactly-one: {full pool, selective infra}).
+# RED until step-3 (task 5125): verify.sh still gates run_all.sh on
+# INCLUDE_INFRA, so today's plan has run_all.sh present / selective loop
+# absent — the exact inversion this task fixes.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Scenario VS-incl: verify.sh change + --include-infra -> run_all.sh present, no selective loop (RED until step-4) ---"
+echo "--- Scenario VS-incl: verify.sh change + --include-infra (role=task) -> run_all.sh ABSENT, selective loop PRESENT (RED until step-3) ---"
 
 # plan_for_vs_change_incl — like plan_for_vs_change but passes --include-infra.
 # Reuses FIX_VS (restored to main by plan_for_vs_change above).
@@ -782,10 +786,138 @@ plan_for_vs_change_incl() {
 }
 
 plan_for_vs_change_incl
-assert "VS-incl: wholesale run_all.sh present (--include-infra fires)" \
-    plan_has 'tests/infra/run_all\.sh'
-assert "VS-incl: selective test_verify_*.sh loop ABSENT (no double-run under --include-infra)" \
-    plan_lacks 'tests/infra/test_verify_\*\.sh'
+assert "VS-incl: wholesale run_all.sh ABSENT (role=task; full pool moved to merge tier, task 5125)" \
+    plan_lacks 'tests/infra/run_all\.sh'
+assert "VS-incl: selective test_verify_*.sh loop PRESENT (role=task pole; no double-run)" \
+    plan_has 'tests/infra/test_verify_\*\.sh'
+
+# ===========================================================================
+# VS-map-* scenarios: task 5125 broadened verify-pipeline-infra-tests.txt
+# coverage. Each changes (or creates) one newly-mapped artifact on a fresh
+# task-branch (role=task, --scope branch, NO --include-infra) and asserts its
+# selective glob is selected. The negative control for "unmapped artifact ->
+# no selection" is already established by Scenario VS-neg above; these
+# scenarios only need the positive per-row assertion.
+#
+# RED until step-5: scripts/verify-pipeline-infra-tests.txt does not yet map
+# these artifacts, so select_infra_tests() selects nothing for them.
+# ===========================================================================
+echo ""
+echo "=== VS-map-* scenarios: broadened infra-map coverage (task 5125) ==="
+
+# plan_for_vs_map_append <fixture-relpath> — on a fresh task-branch off
+# FIX_VS, append a sentinel comment to an EXISTING fixture file (already
+# copied in by make_branch_fixture), commit, and capture the selective
+# (no --include-infra) plan into PLAN_OUT. Mirrors plan_for_vs_change.
+plan_for_vs_map_append() {
+    local _f="$1"
+    git -C "$FIX_VS" checkout -q -b task-branch
+    echo "# task-5125 map-coverage sentinel" >> "$FIX_VS/$_f"
+    git -C "$FIX_VS" add "$_f"
+    git -C "$FIX_VS" commit -q -m "task changes"
+    PLAN_OUT="$(cd "$FIX_VS" && bash scripts/verify.sh all --profile debug --scope branch --print-plan 2>/dev/null)" || true
+    git -C "$FIX_VS" checkout -q main
+    git -C "$FIX_VS" branch -q -D task-branch
+}
+
+# plan_for_vs_map_new <fixture-relpath> — on a fresh task-branch off FIX_VS,
+# CREATE a new file at a mapped path (not present in the fixture), commit,
+# and capture the selective (no --include-infra) plan into PLAN_OUT.
+plan_for_vs_map_new() {
+    local _f="$1"
+    git -C "$FIX_VS" checkout -q -b task-branch
+    mkdir -p "$FIX_VS/$(dirname "$_f")"
+    printf 'x\n' > "$FIX_VS/$_f"
+    git -C "$FIX_VS" add "$_f"
+    git -C "$FIX_VS" commit -q -m "task changes"
+    PLAN_OUT="$(cd "$FIX_VS" && bash scripts/verify.sh all --profile debug --scope branch --print-plan 2>/dev/null)" || true
+    git -C "$FIX_VS" checkout -q main
+    git -C "$FIX_VS" branch -q -D task-branch
+}
+
+echo ""
+echo "--- Scenario VS-map-occt: scripts/occt-scope-lib.sh changed -> test_verify_*.sh selected (RED until step-5) ---"
+plan_for_vs_map_append scripts/occt-scope-lib.sh
+assert "VS-map-occt: plan contains test_verify_*.sh glob literal" \
+    plan_has 'tests/infra/test_verify_\*\.sh'
+
+echo ""
+echo "--- Scenario VS-map-affected: scripts/affected-crates-lib.sh changed -> test_verify_*.sh selected (RED until step-5) ---"
+plan_for_vs_map_append scripts/affected-crates-lib.sh
+assert "VS-map-affected: plan contains test_verify_*.sh glob literal" \
+    plan_has 'tests/infra/test_verify_\*\.sh'
+
+echo ""
+echo "--- Scenario VS-map-release: scripts/release-scope-lib.sh changed -> test_verify_*.sh selected (RED until step-5) ---"
+plan_for_vs_map_append scripts/release-scope-lib.sh
+assert "VS-map-release: plan contains test_verify_*.sh glob literal" \
+    plan_has 'tests/infra/test_verify_\*\.sh'
+
+echo ""
+echo "--- Scenario VS-map-cpuadmit: scripts/cpu-admit.sh changed -> test_verify_*.sh selected (RED until step-5) ---"
+plan_for_vs_map_append scripts/cpu-admit.sh
+assert "VS-map-cpuadmit: plan contains test_verify_*.sh glob literal" \
+    plan_has 'tests/infra/test_verify_\*\.sh'
+assert "VS-map-cpuadmit: plan also contains the dedicated test_cpu_admit.sh glob (review follow-up: plan-generation wiring coverage alone misses cpu-admit.sh's own PSI-admission behavior)" \
+    plan_has 'tests/infra/test_cpu_admit\.sh'
+
+echo ""
+echo "--- Scenario VS-map-runall: tests/infra/run_all.sh created -> test_run_all*.sh selected (RED until step-5) ---"
+plan_for_vs_map_new tests/infra/run_all.sh
+assert "VS-map-runall: plan contains test_run_all*.sh glob literal" \
+    plan_has 'tests/infra/test_run_all\*\.sh'
+
+echo ""
+echo "--- Scenario VS-map-land: scripts/land.sh created -> test_land_*.sh selected (RED until step-5) ---"
+plan_for_vs_map_new scripts/land.sh
+assert "VS-map-land: plan contains test_land_*.sh glob literal" \
+    plan_has 'tests/infra/test_land_\*\.sh'
+
+echo ""
+echo "--- Scenario VS-map-premerge: hooks/pre-merge-commit created -> test_hooks_call_verify.sh selected (RED until step-5) ---"
+plan_for_vs_map_new hooks/pre-merge-commit
+assert "VS-map-premerge: plan contains test_hooks_call_verify.sh glob literal" \
+    plan_has 'tests/infra/test_hooks_call_verify\.sh'
+
+# ---------------------------------------------------------------------------
+# VS-map-glob-resolve: drift-guard (task 5125 review). Every glob in
+# scripts/verify-pipeline-infra-tests.txt must expand to >= 1 real
+# tests/infra/*.sh file. A glob that matches zero files (rename, typo, or a
+# map row added ahead of its test) silently drops per-task fail-fast
+# coverage for whatever artifact maps to it -- exactly the failure mode this
+# task's selective-infra tier exists to close, leaving only the merge-tier
+# pool suite to catch the regression. Drives the REAL shipped map against
+# the REAL tests/infra tree (no verify.sh invocation, no fixture needed --
+# this is a static check of the map file's own promise). GREEN now: this
+# guards against future drift, not a currently-broken contract.
+# ---------------------------------------------------------------------------
+verify_pipeline_map_globs_resolve() {
+    local _map="$REPO_ROOT/scripts/verify-pipeline-infra-tests.txt"
+    local _line _artifact _glob _f _match _bad=""
+    while IFS= read -r _line || [ -n "$_line" ]; do
+        case "$_line" in
+            ''|'#'*) continue ;;
+        esac
+        read -r _artifact _glob <<< "$_line"
+        [ -n "$_glob" ] || continue
+        _match=0
+        for _f in "$REPO_ROOT"/$_glob; do
+            [ -f "$_f" ] || continue
+            _match=1
+        done
+        [ "$_match" -eq 1 ] || _bad="${_bad}${_artifact} -> ${_glob}"$'\n'
+    done < "$_map"
+    if [ -n "$_bad" ]; then
+        printf 'glob(s) with zero matching tests/infra files:\n%s' "$_bad"
+        return 1
+    fi
+    return 0
+}
+
+echo ""
+echo "--- Scenario VS-map-glob-resolve: every verify-pipeline-infra-tests.txt glob expands to >= 1 real file (drift guard, task 5125 review) ---"
+assert "VS-map-glob-resolve: all map globs resolve to at least one existing tests/infra file" \
+    verify_pipeline_map_globs_resolve
 
 # ===========================================================================
 # DS-* scenarios: doc-sync infra-map citing-test subset (task 4955)
