@@ -2968,6 +2968,19 @@ fn eval_map_or(args: &[CompiledExpr], ctx: &EvalContext) -> Value {
 ///   subject=undef          -> Undef                          (Kleene INV-2)
 ///   other (non-Result)     -> Undef                          (graceful type-error)
 ///
+/// Degrading `f`: if `apply_lambda(f, [e])` itself evaluates to `Value::Undef`
+/// (e.g. `f` is partial, or mistyped and degrades per its own graceful-fallback
+/// rules), the result is `Err{error: Undef}` — a *determined* `Err` tag
+/// carrying an `undef` payload field — deliberately NOT collapsed to top-level
+/// `Undef`. This is intentional: it mirrors DCE's D2/INV-4
+/// (`docs/prds/v0_6/data-carrying-enums.md`) — "structure determined, elements
+/// may be undef" — under which a determined-tag value with an undef payload
+/// field stays determined; a subsequent `match` on the result still selects
+/// the `Err` arm and binds `error = undef`, propagating from there per normal
+/// `undef` rules. This is orthogonal to the `subject=undef` row above, where
+/// the *tag itself* (not a payload field) is undetermined and the combinator
+/// short-circuits to `Undef` per Kleene INV-2.
+///
 /// The `.ri` body is a typecheck-only placeholder `{ r }`; correct runtime
 /// behaviour lives entirely here (same convention as the sibling combinators
 /// in `option_recovery.rs`).
