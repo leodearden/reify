@@ -36,6 +36,18 @@
 #        reason mentions "stale"
 #   17:  resolve_trusted_reify_bin — release+debug both fresh → resolves
 #        release (precedence)
+#   18:  verify.sh merge-tier plan — reify-cli release pre-build + .reify-bin-sha
+#        stamp lines both present and ordered BEFORE run_all.sh
+#
+# Check 18 note (task 5125): run_all.sh's gating in verify.sh moved from the
+# plain --include-infra tier to a DF_VERIFY_ROLE=merge-gated conditional
+# (task 5125, landed just before this task started). The plain
+# `verify.sh all --scope all --include-infra --print-plan` oracle no longer
+# contains a run_all.sh line at all post-5125 (see
+# test_verify_failfast_order.sh Test 6, assertion e). Check 18 instead
+# mirrors that same Test 6's MERGE_ALL_PLAN oracle
+# (`DF_VERIFY_ROLE=merge verify.sh all --scope all --print-plan`), which is
+# where the sibling reify-audit pre-build/run_all.sh pairing now lives.
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -386,6 +398,38 @@ assert "resolve_trusted_reify_bin: both bins present+fresh → trusted (exit 0)"
 
 assert "resolve_trusted_reify_bin: both bins present+fresh → resolves release (precedence over debug)" \
     bash -c "unset REIFY_BIN; source '$FRESHNESS_LIB' && resolve_trusted_reify_bin '$RESOLVE_REPO_G' >/dev/null && [ \"\$REIFY_BIN_RESOLVED\" = '$G_RELEASE_BIN' ]"
+
+# ==============================================================================
+# Check 18: verify.sh plan-shape — reify-cli release pre-build + .reify-bin-sha
+#           stamp lines present and ordered BEFORE run_all.sh, in the
+#           merge-tier plan (DF_VERIFY_ROLE=merge — see the file-header note
+#           above on why this oracle, not the plain --include-infra one, is
+#           used post-task-5125). Hermetic: --print-plan never runs cargo.
+# ==============================================================================
+echo ""
+echo "--- Check 18: verify.sh merge-tier plan orders the reify-cli pre-build + stamp before run_all.sh ---"
+
+MERGE_ALL_PLAN="$(DF_VERIFY_ROLE=merge bash "$REPO_ROOT/scripts/verify.sh" all --scope all --print-plan | grep -v '^#')"
+
+assert "merge-all plan: reify-cli release pre-build line present (cargo build --release -p reify-cli)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "cargo build --release" && printf "%s\n" "$1" | grep "cargo build --release" | grep -q "\-p reify-cli"' _ "$MERGE_ALL_PLAN"
+
+assert "merge-all plan: reify-cli pre-build index < run_all.sh index (pre-step ordered before suite)" \
+    bash -c '
+        PRE_IDX=$(printf "%s\n" "$1" | grep -n "cargo build --release" | grep "\-p reify-cli" | head -1 | cut -d: -f1)
+        RUN_IDX=$(printf "%s\n" "$1" | grep -n "run_all\.sh" | head -1 | cut -d: -f1)
+        [ -n "$PRE_IDX" ] && [ -n "$RUN_IDX" ] && [ "$PRE_IDX" -lt "$RUN_IDX" ]
+    ' _ "$MERGE_ALL_PLAN"
+
+assert "merge-all plan: .reify-bin-sha stamp line present" \
+    bash -c 'printf "%s\n" "$1" | grep -q "\.reify-bin-sha"' _ "$MERGE_ALL_PLAN"
+
+assert "merge-all plan: .reify-bin-sha stamp index < run_all.sh index (stamp ordered before suite)" \
+    bash -c '
+        STAMP_IDX=$(printf "%s\n" "$1" | grep -n "\.reify-bin-sha" | head -1 | cut -d: -f1)
+        RUN_IDX=$(printf "%s\n" "$1" | grep -n "run_all\.sh" | head -1 | cut -d: -f1)
+        [ -n "$STAMP_IDX" ] && [ -n "$RUN_IDX" ] && [ "$STAMP_IDX" -lt "$RUN_IDX" ]
+    ' _ "$MERGE_ALL_PLAN"
 
 # -- Summary ------------------------------------------------------------------
 test_summary
