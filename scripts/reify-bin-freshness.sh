@@ -140,3 +140,58 @@ reify_bin_stamp() {
     mkdir -p "$repo_root/target"
     printf '%s\n' "$head" > "$repo_root/target/.reify-bin-sha"
 }
+
+# resolve_trusted_reify_bin [repo_root]
+#
+# Single discovery+freshness entrypoint shared by test_prd_gate_corpus.sh and
+# test_prd_gate_objective_inheritance.sh (previously each duplicated its own
+# _REIFY_BIN preamble). Sets two globals as output:
+#   REIFY_BIN_RESOLVED     — the vetted binary path (on success)
+#   REIFY_BIN_SKIP_REASON  — a human-readable reason (on failure)
+#
+# Precedence:
+#   1. An explicit REIFY_BIN env var is trusted outright (bypasses the
+#      freshness check entirely) as long as it points at an existing file —
+#      this is a deliberate operator/verify.sh handoff, not the auto-discovery
+#      path where cross-candidate leftovers are the risk. A REIFY_BIN pointing
+#      at a missing file is a clean SKIP rather than a spurious HARNESS_ERROR.
+#   2. Otherwise, auto-discover target/release/reify, then target/debug/reify
+#      (matching prd-capability-check.py's _resolve_reify_bin precedence), and
+#      require it to pass reify_bin_is_stale's SHA-identity check.
+#
+# Returns 0 (trusted) or 1 (SKIP — never a verdict).
+resolve_trusted_reify_bin() {
+    local repo_root="${1:-$PWD}"
+
+    REIFY_BIN_RESOLVED=""
+    REIFY_BIN_SKIP_REASON=""
+
+    if [ -n "${REIFY_BIN:-}" ]; then
+        if [ -f "$REIFY_BIN" ]; then
+            REIFY_BIN_RESOLVED="$REIFY_BIN"
+            return 0
+        fi
+        REIFY_BIN_SKIP_REASON="REIFY_BIN points to missing file: $REIFY_BIN"
+        return 1
+    fi
+
+    local cand=""
+    if [ -f "$repo_root/target/release/reify" ]; then
+        cand="$repo_root/target/release/reify"
+    elif [ -f "$repo_root/target/debug/reify" ]; then
+        cand="$repo_root/target/debug/reify"
+    fi
+
+    if [ -z "$cand" ]; then
+        REIFY_BIN_SKIP_REASON="reify binary not built — need target/{release,debug}/reify or REIFY_BIN"
+        return 1
+    fi
+
+    if reify_bin_is_stale "$cand" "$repo_root"; then
+        REIFY_BIN_SKIP_REASON="reify binary $cand is stale/unverified against HEAD (target/.reify-bin-sha absent or mismatched) — refusing a corpus verdict from a possibly cross-candidate binary"
+        return 1
+    fi
+
+    REIFY_BIN_RESOLVED="$cand"
+    return 0
+}
