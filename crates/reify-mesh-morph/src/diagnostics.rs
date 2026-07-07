@@ -536,6 +536,39 @@ mod tests {
     }
 
     #[test]
+    fn record_quality_remesh_unsupported_never_touches_a_counter() {
+        with_locked_state(|| {
+            // `QualityVerdict::Unsupported` is not a remesh trigger either: the
+            // engine's compose_morph seam intercepts it with an early
+            // structured-error return before this recorder is ever called (see
+            // lib.rs), so this arm exists only as a defensive debug_assert!.
+            // Mirrors `record_quality_remesh_pass_never_touches_a_counter` above
+            // — same release no-op gap, same catch_unwind technique, so a
+            // regression that incremented a bucket on `Unsupported` in a
+            // release build would otherwise slip through untested.
+            let prev_hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(|_| {})); // silence the expected debug-only panic
+            let outcome = std::panic::catch_unwind(|| {
+                record_quality_remesh(&QualityVerdict::Unsupported);
+            });
+            std::panic::set_hook(prev_hook);
+
+            // Debug: the `debug_assert!` unwinds before any counter mutation.
+            // Release: the call returns without touching a counter.
+            assert_eq!(
+                outcome.is_err(),
+                cfg!(debug_assertions),
+                "Unsupported must panic via debug_assert! only in debug builds"
+            );
+            assert_eq!(
+                snapshot(),
+                DiagnosticSnapshot::default(),
+                "QualityVerdict::Unsupported must not increment any counter"
+            );
+        });
+    }
+
+    #[test]
     fn record_ineligible_structural_change_increments_only_structural_bucket() {
         with_locked_state(|| {
             record_ineligible(&Reason::StructuralChange);
