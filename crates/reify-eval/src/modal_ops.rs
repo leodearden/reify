@@ -2931,7 +2931,7 @@ mod tests {
         build_dirichlet_bcs, degenerate_displacement_history, degenerate_modal_result,
         displacement_at_trampoline, eigensolve_modal, extract_damping,
         extract_density_or_degenerate, extract_eigen_knobs, extract_reference_direction,
-        mode_shape_value, placeholder_part, read_real_list, read_scalar_si,
+        mode_shape_value, nearest_node, placeholder_part, read_real_list, read_scalar_si,
         resolve_location_node, run_modal_analysis, run_transient_response,
         simply_supported_pin_pin_bcs, solve_mechanism_modal_trampoline,
         solve_modal_analysis_trampoline, solve_modal_core, solve_transient_response_trampoline,
@@ -4206,6 +4206,47 @@ mod tests {
             .filter(|&n| mesh.nodes[n][0] <= eps || mesh.nodes[n][0] >= length - eps)
             .count();
         assert_eq!(nz, n_end_nodes, "Z must be pinned on every end-face node");
+    }
+
+    /// step-1 (RED → GREEN in step-2): a NaN node coordinate must not win the
+    /// `min_by` pick. Node 0's distance² to `target` is NaN (poisoned by its
+    /// NaN x-coordinate); the true finite nearest is node 2 (dist² = 0.0 vs.
+    /// node 1's dist² = 16.0). Before the `total_cmp` swap,
+    /// `partial_cmp(...).unwrap_or(Ordering::Equal)` treats the NaN distance
+    /// as equal-to-everything and `min_by` returns the NaN node (index 0)
+    /// instead — this assertion is RED until step-2 lands. Also asserts
+    /// repeated calls are deterministic (not a silently-arbitrary pick).
+    #[test]
+    fn nearest_node_picks_true_finite_nearest_over_nan_deterministically() {
+        let nodes = [[f64::NAN, 0.0, 0.0], [5.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
+        let target = [1.0, 0.0, 0.0];
+
+        assert_eq!(
+            nearest_node(&nodes, target),
+            2,
+            "true nearest node (dist² = 0.0) must win over the NaN-poisoned \
+             node 0, not be silently treated as equal-to-everything"
+        );
+
+        for _ in 0..3 {
+            assert_eq!(
+                nearest_node(&nodes, target),
+                2,
+                "repeated calls on the same NaN-containing input must yield \
+                 the identical index (deterministic, not arbitrary)"
+            );
+        }
+    }
+
+    /// step-1 (positive characterization): on all-finite node coordinates,
+    /// `nearest_node` still picks the true nearest node by Euclidean
+    /// distance — dist² = [3.61, 0.81, 0.01], so node 2 wins.
+    #[test]
+    fn nearest_node_picks_true_nearest_on_finite_nodes() {
+        let nodes = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]];
+        let target = [1.9, 0.0, 0.0];
+
+        assert_eq!(nearest_node(&nodes, target), 2);
     }
 
     /// Amendment (suggestion 2): `solve_modal_analysis_trampoline` happy path — a
