@@ -16316,6 +16316,15 @@ fn dock_pickup_mechanism_exposes_scrubbable_literal_bound_slider_smoke() {
         });
 
     // j_x: prismatic, literal-bound at 0mm -> scrubbable slider.
+    //
+    // Note: dock_pickup.ri also drives j_x via `sweep(m2, j_x, 0mm .. 500mm, 11)`
+    // (cell `snaps`), independently of the `snapshot(m2, [bind(j_x, 0mm)])`
+    // (cell `s`) pinned below. This is not a binding-precedence race: engine.rs's
+    // AST-driven binding resolver (`resolve_driving_params_from_ast` /
+    // `collect_snapshot_bind_pairs`) only scans `bind()` pairs inside
+    // `snapshot()` calls — `sweep()` calls are never consulted for descriptor
+    // classification — so `j_x`'s binding is derived solely from the literal
+    // snapshot bind and is unaffected by the sweep cell coexisting in the fixture.
     let j_x = dp_desc
         .joints
         .iter()

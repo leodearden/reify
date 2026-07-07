@@ -536,6 +536,14 @@ fn four_bar_singular_compiles_clean() {
 /// `LoopClosureReport.diagnostics`, which `snapshot()` discards. The "loop
 /// joint pair" (`j_x`/`j_b`) is instead named structurally by the fixture's
 /// four-bar topology and header comments.
+///
+/// Distinguishing assertion vs. the mirrored inline test: this test also
+/// pins `snap.bodies.len() == 4` (the sibling
+/// `snapshot_singularity_surfaces_is_singular_and_diagnostic_e2e` does not
+/// check body count), so a future edit to the committed example that drops
+/// or merges a body — while incidentally leaving the mechanism singular —
+/// fails loudly here instead of only ever being caught via the inline
+/// fixture.
 #[test]
 fn four_bar_singular_snapshot_surfaces_is_singular_and_diagnostic() {
     let compiled = fbs_compiled();
@@ -562,6 +570,22 @@ fn four_bar_singular_snapshot_surfaces_is_singular_and_diagnostic() {
         smap.get(&Value::String("is_singular".to_string())),
         Some(&Value::Bool(true)),
         "four_bar_singular's rank-deficient closed-chain snapshot must carry is_singular=true"
+    );
+
+    // Distinguishing assertion (not present in the mirrored inline
+    // SINGULAR_SOURCE test): pin the four-bar loop's body count so a future
+    // edit that drops/merges one of solidA..solidD in the committed example
+    // — while incidentally leaving the mechanism singular — fails loudly
+    // here rather than only silently changing the example's topology.
+    let bodies = match smap.get(&Value::String("bodies".to_string())) {
+        Some(Value::List(b)) => b,
+        other => panic!("snap.bodies should be a List, got {other:?}"),
+    };
+    assert_eq!(
+        bodies.len(),
+        4,
+        "four_bar_singular's snapshot should carry exactly 4 body records (solidA..solidD), got {}",
+        bodies.len()
     );
 
     let has_singularity_warning = result.diagnostics.iter().any(|d| {
