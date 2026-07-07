@@ -85,7 +85,12 @@ count, and from `scope=branch` for shapes with `RUN_RUST=1` (reify-doc,
 reify-eval). docs-only branch stays 0 and gui-only branch stays 3 (both
 `RUN_RUST=0` there, so the removed lines never applied under branch scope).
 The oracle command is unchanged (role=task is the default; no `DF_VERIFY_ROLE`
-is set) — only the resulting counts shifted._
+is set) — only the resulting counts shifted. The human-readable "Plan-Step
+Counts" table above now equals this machine sentinel exactly (13 for every
+non-zero cell): the pre-2026-07-06 +1 table↔sentinel offset was a stale
+hand-maintained table artifact, not a semantic difference — both renderings
+count the same non-comment `--print-plan` lines from the same role=task oracle,
+so they are kept identical from here on._
 
 ## Heavy-Work Narrowed Markers
 

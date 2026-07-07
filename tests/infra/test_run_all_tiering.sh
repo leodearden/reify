@@ -171,6 +171,37 @@ assert "MERGE (non-vacuous): plan LACKS the selective test_verify_*.sh loop even
     plan_lacks 'tests/infra/test_verify_\*\.sh'
 
 # ===========================================================================
+# RE-ENTRANCY GUARD (task 5125): a DF_VERIFY_ROLE=merge verify running INSIDE
+# an infra suite must NOT re-emit the run_all.sh line. run_all.sh keys the pool
+# on the INHERITED env var DF_VERIFY_ROLE=merge, and
+# tests/infra/test_verify_semaphore_e2e.sh Section B deliberately drives a real
+# `DF_VERIFY_ROLE=merge verify.sh` to prove the semaphore bypass. Without the
+# guard the merge gate recurses unboundedly (run_all -> semaphore-e2e ->
+# merge-role verify -> run_all -> ...) until the 30m wall SIGKILLs it — the
+# exact fork-bomb that blocked this task's own merge (post-merge verify
+# "Terminated"). The guard: verify.sh exports REIFY_INFRA_SUITE_ACTIVE=1 onto
+# the run_all.sh / selective plan lines (inherited by every descendant), and
+# the run_all emit is gated on that sentinel being unset.
+# Oracle: with the sentinel PRE-SET (simulating "already inside run_all"), the
+# merge plan must LACK run_all.sh — RED before the guard, GREEN after.
+# ===========================================================================
+echo ""
+echo "--- RE-ENTRANCY: role=merge --scope all with REIFY_INFRA_SUITE_ACTIVE=1 -> run_all.sh suppressed (no recursion) ---"
+
+capture_print_plan PLAN_OUT "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+    bash -c 'cd "$1" && export DF_VERIFY_ROLE=merge REIFY_INFRA_SUITE_ACTIVE=1 && exec bash scripts/verify.sh all --profile both --scope all --print-plan' \
+    _ "$FIX" || true
+
+assert "RE-ENTRANCY: plan capture complete (structural markers present)" \
+    plan_capture_complete "$PLAN_OUT"
+
+assert "RE-ENTRANCY: plan LACKS tests/infra/run_all.sh when REIFY_INFRA_SUITE_ACTIVE=1 (nested verify does not re-launch the pool -> no fork-bomb, RED before the guard)" \
+    plan_lacks 'tests/infra/run_all\.sh'
+
+assert "RE-ENTRANCY: plan also LACKS the selective test_verify_*.sh loop (a nested merge verify runs neither infra suite -> exactly-neither when re-entrant)" \
+    plan_lacks 'tests/infra/test_verify_\*\.sh'
+
+# ===========================================================================
 # TASK tier: role=task (default), --scope branch --include-infra, on a branch
 # that changes a mapped verify-pipeline artifact (scripts/verify.sh itself).
 # Mirrors every per-task lane (which always passes --include-infra). The
