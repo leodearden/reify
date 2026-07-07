@@ -858,6 +858,8 @@ echo "--- Scenario VS-map-cpuadmit: scripts/cpu-admit.sh changed -> test_verify_
 plan_for_vs_map_append scripts/cpu-admit.sh
 assert "VS-map-cpuadmit: plan contains test_verify_*.sh glob literal" \
     plan_has 'tests/infra/test_verify_\*\.sh'
+assert "VS-map-cpuadmit: plan also contains the dedicated test_cpu_admit.sh glob (review follow-up: plan-generation wiring coverage alone misses cpu-admit.sh's own PSI-admission behavior)" \
+    plan_has 'tests/infra/test_cpu_admit\.sh'
 
 echo ""
 echo "--- Scenario VS-map-runall: tests/infra/run_all.sh created -> test_run_all*.sh selected (RED until step-5) ---"

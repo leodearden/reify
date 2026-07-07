@@ -93,6 +93,13 @@ scripts/occt-scope-lib.sh            tests/infra/test_verify_*.sh
 scripts/affected-crates-lib.sh       tests/infra/test_verify_*.sh
 scripts/release-scope-lib.sh         tests/infra/test_verify_*.sh
 scripts/cpu-admit.sh                 tests/infra/test_verify_*.sh
+# cpu-admit.sh also gets its own dedicated integration guard (task 5125
+# review): test_verify_*.sh only exercises verify.sh's plan-generation
+# wiring to cpu-admit.sh, not cpu-admit.sh's own PSI-admission behavior --
+# test_cpu_admit.sh drives that directly. Two rows for one artifact mirrors
+# the existing scripts/seed-warm-lane.sh / warm-lane-preflight.sh pattern
+# above.
+scripts/cpu-admit.sh                 tests/infra/test_cpu_admit.sh
 tests/infra/run_all.sh               tests/infra/test_run_all*.sh
 scripts/land.sh                      tests/infra/test_land_*.sh
 hooks/pre-merge-commit               tests/infra/test_hooks_call_verify.sh

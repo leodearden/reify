@@ -21,6 +21,12 @@
 # RED now: verify.sh still gates run_all.sh on INCLUDE_INFRA, so the MERGE
 # capture (no --include-infra) LACKS run_all.sh, and the TASK capture (with
 # --include-infra) CONTAINS it — the exact inversion this task fixes.
+#
+# Review follow-up: the plain MERGE scenario below captures a no-diff plan,
+# so its "selective loop absent" assertion holds independent of the
+# DF_VERIFY_ROLE!=merge injection-site gate (see the "MERGE tier
+# (non-vacuous)" scenario's own header comment for the belt-and-braces
+# analysis and why a real-diff capture is added alongside it).
 
 set -euo pipefail
 
@@ -107,6 +113,61 @@ assert "MERGE: run_all.sh line carries REIFY_AUDIT_NO_COLD_BUILD=1 (budget-safe 
     bash -c 'printf "%s\n" "$1" | grep "run_all\.sh" | grep -q "REIFY_AUDIT_NO_COLD_BUILD=1"' _ "$PLAN_OUT"
 
 assert "MERGE: plan LACKS the selective test_verify_*.sh loop (exactly-one: full pool present, selective absent)" \
+    plan_lacks 'tests/infra/test_verify_\*\.sh'
+
+# ---------------------------------------------------------------------------
+# MERGE tier (non-vacuous drift-guard, review follow-up): the scenario above
+# captures the plan with NO branch diff at all (FIX's "main" is untouched),
+# so SELECTED_INFRA_GLOBS is empty independent of the DF_VERIFY_ROLE!=merge
+# injection-site gate (verify.sh:~1388) — the "selective loop absent"
+# assertion above would still pass even if that gate regressed. Close the
+# gap for real: commit an actual diff to a mapped artifact (scripts/verify.sh,
+# mirrors the TASK scenario below) on a branch ahead of main, and REQUEST
+# --scope branch (an attempted narrow, NOT --scope all) so decide_scope()
+# genuinely runs its branch-diff path instead of the test itself handing it
+# an empty CHANGED_FILES_RAW via an explicit --scope all flag. The plan
+# header's `scope=all` token is asserted directly, proving contract-C2
+# forcing (verify.sh:583, "DF_VERIFY_ROLE=merge — forcing --scope all")
+# actually fired for this real diff, rather than merely being assumed.
+#
+# Belt-and-braces limit (documented, not a gap this test can close): C2
+# forcing runs BEFORE decide_scope() and is unconditional on the requested
+# scope, so CHANGED_FILES_RAW/SELECTED_INFRA_GLOBS are empty at merge via
+# scope-forcing ALONE — the injection-site role check is a second,
+# structurally-redundant belt that can only independently matter if C2
+# forcing is ALSO broken (verified empirically: with forcing intact,
+# SELECTED_INFRA_GLOBS is unreachable-nonempty under role=merge no matter
+# what diff exists). This scenario proves the composite guarantee holds
+# end-to-end with a real diff in play, and goes RED the moment C2 forcing
+# itself regresses — the only way the exactly-one invariant can actually
+# break in practice — even though it cannot isolate the injection-site gate
+# from forcing without patching verify.sh's own logic in the fixture.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- MERGE tier (non-vacuous): role=merge --scope branch (attempted), verify.sh changed -> forced to scope=all, still no selective leak ---"
+
+git -C "$FIX" checkout -q -b merge-diff-branch
+echo "# task-5125 MERGE-tier verify.sh-change simulation sentinel" >> "$FIX/scripts/verify.sh"
+git -C "$FIX" add scripts/verify.sh
+git -C "$FIX" commit -q -m "merge-tier diff simulation"
+
+capture_print_plan PLAN_OUT "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+    bash -c 'cd "$1" && export DF_VERIFY_ROLE=merge && exec bash scripts/verify.sh all --profile both --scope branch --print-plan' \
+    _ "$FIX" || true
+
+git -C "$FIX" checkout -q main
+git -C "$FIX" branch -q -D merge-diff-branch
+
+assert "MERGE (non-vacuous): plan capture complete (structural markers present)" \
+    plan_capture_complete "$PLAN_OUT"
+
+assert "MERGE (non-vacuous): plan header shows scope=all (contract C2 forced the attempted --scope branch back to all, despite a real diff)" \
+    plan_has 'scope=all'
+
+assert "MERGE (non-vacuous): plan CONTAINS tests/infra/run_all.sh despite the attempted narrow scope" \
+    plan_has 'tests/infra/run_all\.sh'
+
+assert "MERGE (non-vacuous): plan LACKS the selective test_verify_*.sh loop even though scripts/verify.sh (a mapped artifact) genuinely changed on this branch" \
     plan_lacks 'tests/infra/test_verify_\*\.sh'
 
 # ===========================================================================
