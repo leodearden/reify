@@ -678,18 +678,29 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     # content at the lane-relative path, so relocating keeps the compiled
     # rlib/.o/.a Fresh (path-independent fingerprint) instead of forcing a
     # multi-minute native/C++ rebuild.
-    if [ -n "$_recorded_buildroot" ] && [ "$(realpath -m "$_recorded_buildroot")" != "$_lane_rp" ]; then
+    # Gate (distinct from the env!()-relink gate below): an ABSENT stamp means
+    # the foreign prefix is UNKNOWN, so this skips with a warn rather than
+    # relinking-on-uncertainty like the env!() case — an empty search prefix
+    # would match every byte of every candidate file and corrupt it, whereas
+    # the env!() relink's fail-safe action (a bare `touch`) has no such risk.
+    if [ -z "$_recorded_buildroot" ]; then
+        warn "buildroot stamp absent (${BASE_TARGET_DIR}.buildroot not found) — cannot relocate baked links-metadata/OUT_DIR path(s); an empty search prefix would match every byte and corrupt files, so skipping rather than guessing. Re-run scripts/refresh-warm-base.sh to (re)write the stamp."
+    else
         _foreign_rp="$(realpath -m "$_recorded_buildroot")"
-        _relocate_search_esc="$(_sed_escape "$_foreign_rp")"
-        _relocate_replace_esc="$(_sed_escape "$_lane_rp")"
-        _relocated_count=0
-        while IFS= read -r -d '' _rl_file; do
-            if grep -qF "$_foreign_rp" "$_rl_file" 2>/dev/null; then
-                sed -E -i "s/${_relocate_search_esc}/${_relocate_replace_esc}/g" "$_rl_file"
-                _relocated_count=$((_relocated_count + 1))
-            fi
-        done < <(find "$LANE_TARGET" -type f \( -name output -o -name root-output \) -print0)
-        info "Relocated $_relocated_count non-relocatable links-metadata/OUT_DIR file(s): foreign buildroot ($_foreign_rp) -> this lane ($_lane_rp)"
+        if [ "$_foreign_rp" != "$_lane_rp" ]; then
+            _relocate_search_esc="$(_sed_escape "$_foreign_rp")"
+            _relocate_replace_esc="$(_sed_escape "$_lane_rp")"
+            _relocated_count=0
+            while IFS= read -r -d '' _rl_file; do
+                if grep -qF "$_foreign_rp" "$_rl_file" 2>/dev/null; then
+                    sed -E -i "s/${_relocate_search_esc}/${_relocate_replace_esc}/g" "$_rl_file"
+                    _relocated_count=$((_relocated_count + 1))
+                fi
+            done < <(find "$LANE_TARGET" -type f \( -name output -o -name root-output \) -print0)
+            info "Relocated $_relocated_count non-relocatable links-metadata/OUT_DIR file(s): foreign buildroot ($_foreign_rp) -> this lane ($_lane_rp)"
+        else
+            info "Skipping links-metadata/OUT_DIR relocation: recorded buildroot matches this lane ($_lane_rp)"
+        fi
     fi
 
     # ── non-relocatable env!()-baked-path test/bench relink (task 4983) ───────
