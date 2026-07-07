@@ -1715,4 +1715,80 @@ assert "P-eq: output file unchanged (no-op; buildroot equals lane)" \
 assert "P-eq: no relocation count > 0 reported on stderr" \
     bash -c '! printf "%s\n" "$1" | grep -qE "Relocated [1-9][0-9]* "' _ "$ERR_OUT"
 
+# P3a: --reset-in-place does NOT relocate (scope guard, mirrors Block H's H3a).
+# The relocation sweep must live entirely inside `if [ -n "$FRESH_CHECKOUT" ]`.
+P3A_BASE_PARENT="$(mktemp -d /tmp/test-seed-P3a-parent-XXXXXX)"
+P3A_BASE="$P3A_BASE_PARENT/target"
+P3A_LANE="$(mktemp -d /tmp/test-seed-P3a-lane-XXXXXX)"
+_TMPDIRS+=("$P3A_BASE_PARENT" "$P3A_LANE")
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$P3A_BASE_PARENT/.warm-base-meta"
+printf '%s' "$P_FOREIGN" > "${P3A_BASE}.buildroot"
+
+mkdir -p "$P3A_BASE/debug/build/cxx-AAAA"
+cat > "$P3A_BASE/debug/build/cxx-AAAA/output" <<EOF
+cargo:CXXBRIDGE_DIR0=$P_FOREIGN/target/debug/build/cxx-AAAA/out/cxxbridge/include
+EOF
+
+P3A_SNAPSHOT="$(mktemp /tmp/test-seed-P3a-snapshot-XXXXXX)"
+_TMPDIRS+=("$P3A_SNAPSHOT")
+cp "$P3A_BASE/debug/build/cxx-AAAA/output" "$P3A_SNAPSHOT"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$P3A_BASE" "$P3A_LANE" --reset-in-place
+
+assert "P3a: --reset-in-place exits 0" test "$RC" -eq 0
+assert "P3a: build/cxx-AAAA/output UNCHANGED under --reset-in-place (scope guard)" \
+    cmp -s "$P3A_SNAPSHOT" "$P3A_LANE/target/debug/build/cxx-AAAA/output"
+
+# P3b/c: warmth + safety guards, same --fresh-checkout fixture.
+#   P3b — a sibling compiled artifact (out/libfoo.a) and the build dir itself
+#         are NOT deleted by relocation (relocation only rewrites file content).
+#   P3c — only files NAMED output/root-output are rewritten: a `.d` depfile and
+#         a binary stub that ALSO contain the FOREIGN byte-string are left
+#         BYTE-UNCHANGED (filename-scoped match, not a content scan).
+P3BC_BASE_PARENT="$(mktemp -d /tmp/test-seed-P3bc-parent-XXXXXX)"
+P3BC_BASE="$P3BC_BASE_PARENT/target"
+P3BC_LANE="$(mktemp -d /tmp/test-seed-P3bc-lane-XXXXXX)"
+P3BC_D_SNAPSHOT="$(mktemp /tmp/test-seed-P3bc-d-snapshot-XXXXXX)"
+P3BC_A_SNAPSHOT="$(mktemp /tmp/test-seed-P3bc-a-snapshot-XXXXXX)"
+_TMPDIRS+=("$P3BC_BASE_PARENT" "$P3BC_LANE" "$P3BC_D_SNAPSHOT" "$P3BC_A_SNAPSHOT")
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$P3BC_BASE_PARENT/.warm-base-meta"
+printf '%s' "$P_FOREIGN" > "${P3BC_BASE}.buildroot"
+
+mkdir -p "$P3BC_BASE/debug/build/cxx-AAAA/out"
+cat > "$P3BC_BASE/debug/build/cxx-AAAA/output" <<EOF
+cargo:CXXBRIDGE_DIR0=$P_FOREIGN/target/debug/build/cxx-AAAA/out/cxxbridge/include
+EOF
+cat > "$P3BC_BASE/debug/build/cxx-AAAA/build_script_build.d" <<EOF
+$P_FOREIGN/target/debug/build/cxx-AAAA/build_script_build: $P_FOREIGN/crates/cxx/build.rs
+EOF
+printf 'ELF-stub-bytes %s\n' "$P_FOREIGN/target/debug/build/cxx-AAAA/out" \
+    > "$P3BC_BASE/debug/build/cxx-AAAA/out/libfoo.a"
+
+cp "$P3BC_BASE/debug/build/cxx-AAAA/build_script_build.d" "$P3BC_D_SNAPSHOT"
+cp "$P3BC_BASE/debug/build/cxx-AAAA/out/libfoo.a" "$P3BC_A_SNAPSHOT"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$P3BC_BASE" "$P3BC_LANE" --fresh-checkout
+
+assert "P3b/c: --fresh-checkout exits 0 (warmth/safety guards)" test "$RC" -eq 0
+
+assert "P3b: build/cxx-AAAA/out/libfoo.a PRESERVED (warmth; not deleted)" \
+    test -e "$P3BC_LANE/target/debug/build/cxx-AAAA/out/libfoo.a"
+assert "P3b: build/cxx-AAAA build dir PRESERVED (not deleted, only rewritten)" \
+    test -d "$P3BC_LANE/target/debug/build/cxx-AAAA"
+
+assert "P3c: build_script_build.d BYTE-UNCHANGED (.d not in scope; filename-only match)" \
+    cmp -s "$P3BC_D_SNAPSHOT" "$P3BC_LANE/target/debug/build/cxx-AAAA/build_script_build.d"
+assert "P3c: out/libfoo.a BYTE-UNCHANGED (binary; never rewritten regardless of content)" \
+    cmp -s "$P3BC_A_SNAPSHOT" "$P3BC_LANE/target/debug/build/cxx-AAAA/out/libfoo.a"
+
+# Sanity: confirm relocation actually ran in this same fixture, so the guards
+# above aren't vacuously true because relocation never fired at all.
+P3BC_LANE_RP="$(realpath -m "$P3BC_LANE")"
+assert "P3c: build/cxx-AAAA/output WAS relocated in this same run (guards non-vacuous)" \
+    bash -c 'grep -qF "$1" "$2"' _ "$P3BC_LANE_RP" "$P3BC_LANE/target/debug/build/cxx-AAAA/output"
+
 test_summary
