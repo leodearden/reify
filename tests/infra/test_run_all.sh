@@ -1704,5 +1704,135 @@ else
     assert "T20f: run_all.sh exits 0 (all 6 pool members pass) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
 fi
 
+# -- Test 21: H2 Phase-1 fork-EAGAIN degrade-not-abort --------------------------
+# Task #5129 (PRD docs/prds/run-all-pool-contention-tiering-fix.md §9 L1,
+# esc-3848): a real async `( ) &` fork EAGAIN is uncatchable/fatal in bash
+# (verified empirically -- exit 254 even under `set +e`), so it is exercised
+# here via a deterministic fault-injection seam
+# (REIFY_RUN_ALL_POOL_FORK_FAIL_MEMBER) rather than real resource exhaustion.
+# Proves a single member's simulated fork failure degrades THAT member to a
+# failure (through the existing .out/.rc per-member protocol) and lets the
+# suite COMPLETE with the byte-identical Summary/FAILED contract, instead of
+# aborting the whole run.
+echo ""
+echo "--- Test 21: H2 Phase-1 fork-EAGAIN degrade-not-abort ---"
+
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+    TMPDIR_T21="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T21")
+
+    # Fixture: 3 `pool` members. test_pool_2.sh is an exit-1 mock -- Phase 1
+    # never actually runs it (the fault-injection seam intercepts it before
+    # spawn), but Phase 2.5 retries EVERY failed pool member serially
+    # (VERBATIM, INV-2), and that retry DOES run the real exit-1 mock body --
+    # so the degraded member lands deterministically in hard FAILED, not
+    # FLAKY. test_pool_1/3 are ordinary exit-0 mocks.
+    MANIFEST_T21="$TMPDIR_T21/classification.manifest"
+    cat > "$MANIFEST_T21" <<'EOF'
+test_pool_1.sh pool
+test_pool_2.sh pool
+test_pool_3.sh pool
+EOF
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T21/test_pool_1.sh"
+    printf '#!/usr/bin/env bash\nexit 1\n' > "$TMPDIR_T21/test_pool_2.sh"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T21/test_pool_3.sh"
+    chmod +x "$TMPDIR_T21/test_pool_1.sh" "$TMPDIR_T21/test_pool_2.sh" "$TMPDIR_T21/test_pool_3.sh"
+
+    t21_rc=0
+    t21_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+        RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T21" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T21/pool.lock" \
+        REIFY_RUN_ALL_POOL_CONCURRENCY=2 \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        REIFY_RUN_ALL_POOL_FORK_FAIL_MEMBER=test_pool_2.sh \
+        bash "$RUN_ALL" "$TMPDIR_T21" 2>&1)" || t21_rc=$?
+
+    # 21a: the suite COMPLETED (exit 1 -- one real failure), not aborted (no
+    # bare exit 254 / missing Summary).
+    assert "T21a: run_all.sh exits 1 (suite completed, did not abort)" \
+        test "$t21_rc" -eq 1
+
+    if [[ "$t21_out" == *"ERROR: run_all.sh pool: fork() EAGAIN for test_pool_2.sh under load -- degrading this member to a failure"* ]]; then
+        assert "T21b: fork-EAGAIN degrade diagnostic names test_pool_2.sh" true
+    else
+        assert "T21b: fork-EAGAIN degrade diagnostic names test_pool_2.sh (got: $t21_out)" false
+    fi
+
+    if [[ "$t21_out" == *"=== Summary: 3 discovered, 1 failed ==="* ]]; then
+        assert "T21c: byte-exact Summary line (3 discovered, 1 failed)" true
+    else
+        assert "T21c: byte-exact Summary line (3 discovered, 1 failed) (got: $t21_out)" false
+    fi
+
+    if grep -qE '^FAILED .*test_pool_2\.sh' <<<"$t21_out"; then
+        assert "T21d: ^FAILED classifier marker names test_pool_2.sh" true
+    else
+        assert "T21d: ^FAILED classifier marker names test_pool_2.sh (got: $t21_out)" false
+    fi
+
+    if grep -qE '^=== FAILED:.*test_pool_2\.sh' <<<"$t21_out"; then
+        assert "T21e: === FAILED: human line names test_pool_2.sh" true
+    else
+        assert "T21e: === FAILED: human line names test_pool_2.sh (got: $t21_out)" false
+    fi
+
+    if [[ "$t21_out" == *"RESULT: PASS (test_pool_1.sh)"* ]] && [[ "$t21_out" == *"RESULT: PASS (test_pool_3.sh)"* ]]; then
+        assert "T21f: the other pool members ran and passed (test_pool_1.sh, test_pool_3.sh)" true
+    else
+        assert "T21f: the other pool members ran and passed (test_pool_1.sh, test_pool_3.sh) (got: $t21_out)" false
+    fi
+
+    t21_headers="$(grep -E '^--- Running: ' <<<"$t21_out" | sed -E 's/^--- Running: (.*) ---$/\1/')" || true
+    t21_expected=$'test_pool_1.sh\ntest_pool_2.sh\ntest_pool_3.sh'
+    if [ "$t21_headers" = "$t21_expected" ]; then
+        assert "T21g: discovered-order headers match sorted order" true
+    else
+        assert "T21g: discovered-order headers match sorted order (got: $t21_headers)" false
+    fi
+
+    # 21h: happy-path non-regression -- WITHOUT the seam, an all-exit-0
+    # variant of the same 3-member fixture emits no degrade marker and
+    # exits 0.
+    TMPDIR_T21H="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T21H")
+    MANIFEST_T21H="$TMPDIR_T21H/classification.manifest"
+    cat > "$MANIFEST_T21H" <<'EOF'
+test_pool_1.sh pool
+test_pool_2.sh pool
+test_pool_3.sh pool
+EOF
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T21H/test_pool_1.sh"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T21H/test_pool_2.sh"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T21H/test_pool_3.sh"
+    chmod +x "$TMPDIR_T21H/test_pool_1.sh" "$TMPDIR_T21H/test_pool_2.sh" "$TMPDIR_T21H/test_pool_3.sh"
+
+    t21h_rc=0
+    t21h_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA -u REIFY_RUN_ALL_POOL_FORK_FAIL_MEMBER \
+        RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T21H" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T21H/pool.lock" \
+        REIFY_RUN_ALL_POOL_CONCURRENCY=2 \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        bash "$RUN_ALL" "$TMPDIR_T21H" 2>&1)" || t21h_rc=$?
+
+    if [[ "$t21h_out" != *"ERROR: run_all.sh pool: fork() EAGAIN"* ]]; then
+        assert "T21h: seam-off all-pass fixture emits no fork-EAGAIN degrade marker" true
+    else
+        assert "T21h: seam-off all-pass fixture emits no fork-EAGAIN degrade marker (got: $t21h_out)" false
+    fi
+
+    assert "T21h: seam-off all-pass fixture exits 0" \
+        test "$t21h_rc" -eq 0
+else
+    assert "T21a: run_all.sh exits 1 (suite completed, did not abort) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T21b: fork-EAGAIN degrade diagnostic names test_pool_2.sh (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T21c: byte-exact Summary line (3 discovered, 1 failed) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T21d: ^FAILED classifier marker names test_pool_2.sh (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T21e: === FAILED: human line names test_pool_2.sh (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T21f: the other pool members ran and passed (test_pool_1.sh, test_pool_3.sh) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T21g: discovered-order headers match sorted order (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T21h: seam-off all-pass fixture emits no fork-EAGAIN degrade marker (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T21h: seam-off all-pass fixture exits 0 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+fi
+
 # -- Summary --------------------------------------------------------------------
 test_summary
