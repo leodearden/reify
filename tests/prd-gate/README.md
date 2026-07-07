@@ -75,7 +75,7 @@ python3 scripts/prd-capability-check.py --json tests/prd-gate/example-probe-set.
 | `fixtures/transform3_unresolved.ri` | check | 4577 — `param t : Transform3` → was exit 1, "unresolved type: Transform3"; **removed from corpus** (task 4577 landed Transform3 resolver — probe flipped PASS) |
 | `fixtures/typeparam_member_access.ri` | check | 4437 — `constraint item.length > 5mm` (type-param bounded) → exit 1, "member access not yet supported: .length" |
 | `fixtures/purpose_nested_structure.ri` | grammar | 4497 — nested `structure` inside `purpose {}` → was tree-sitter exit 1 (MISSING "}"); **removed from corpus** (grammar production landed — probe flipped PASS) |
-| `fixtures/cross_sub_geometry_ref.ri` | check | 4358 — `let copy = self.inner.body` (cross-sub ref) → exit 0 with panic in stderr |
+| `fixtures/cross_sub_geometry_ref.ri` | check | 4358 — `let copy = self.inner.body` (cross-sub ref) → was exit 0 with panic in stderr; **removed from corpus** (task 4954 gave geometry lets first-class value cells — cross-sub `let` access now resolves via `ValueRef`, not `CrossSubGeometryRef` — probe flipped PASS) |
 | `fixtures/scalar_codomain_mismatch.ri` | check | 4375 — `field def f : Length -> Scalar` → exit 1, "codomain mismatch" |
 
 ## Committed probe sets
@@ -83,7 +83,7 @@ python3 scripts/prd-capability-check.py --json tests/prd-gate/example-probe-set.
 | File | Description |
 |---|---|
 | `example-probe-set.json` | Example showing all three probe kinds (used in README and docs) |
-| `corpus-probe-set.json` | δ historical-false-premise regression corpus — 4 rows, all FAIL |
+| `corpus-probe-set.json` | δ historical-false-premise regression corpus — 3 rows, all FAIL |
 
 ## `match` predicate semantics
 
@@ -98,7 +98,7 @@ All set fields must hold simultaneously (AND semantics). An empty `match: {}` me
 ## Historical-false-premise regression corpus (δ)
 
 `corpus-probe-set.json` is the δ committed probe-set (task 4609, PRD §10 producer-side
-table / §11). It encodes 4 historical false premises as probe records so that
+table / §11). It encodes 3 historical false premises as probe records so that
 `scripts/prd-capability-check.py` can assert **all rows FAIL or UNPROVABLE**.
 
 A row flipping to **PASS** means either:
@@ -114,17 +114,17 @@ The gate runs automatically via `tests/infra/test_prd_gate_corpus.sh`
 |---|---|---|---|---|---|
 | **3979** arrow-type grammar | `arrow_type.ri` | grammar | present | `{}` | ABSENT → **FAIL** |
 | **4575** revolute silent-accept | `revolute_silent_accept.ri` | check | present | `exit_code:1` | ABSENT → **FAIL** |
-| **4358** CrossSubGeometryRef panic | `cross_sub_geometry_ref.ri` | check | absent | `stderr_contains:"CrossSubGeometryRef should be consumed by entity.rs"` | PRESENT → **FAIL** |
 | **4375** Scalar codomain mismatch | `scalar_codomain_mismatch.ri` | check | absent | `stderr_contains:"codomain mismatch"` | PRESENT → **FAIL** |
 
 ### Polarity and flip semantics
 
-**Bug rows** (4358, 4375) use `observation=absent` + `stderr_contains` pinning
+**The 4375 bug row** uses `observation=absent` + `stderr_contains` pinning
 the bug's diagnostic signature.  While the bug exists the signature is PRESENT → FAIL.
 When the substrate is fixed the signature disappears → ABSENT → verdict PASS → gate fires
-("update corpus").  (4577 Transform3 unresolved and 4437 typeparam member access were
-bug rows — both **removed from corpus** when their substrates landed and the probes
-flipped PASS: 4577 via the Transform3 resolver here, 4437 on main via commit 9552cd760b.)
+("update corpus").  (4577 Transform3 unresolved, 4437 typeparam member access, and 4358
+CrossSubGeometryRef panic were also bug rows — all **removed from corpus** when their
+substrates landed and the probes flipped PASS: 4577 via the Transform3 resolver here,
+4437 on main via commit 9552cd760b, 4358 via task 4954's geometry-let value cells.)
 
 **The 4575 silent-accept row** uses `observation=present` + `exit_code:1` (PRD §9
 negative-assertion): "revolute with invalid args should be rejected" — observed exit 0
@@ -134,14 +134,6 @@ negative-assertion): "revolute with invalid args should be rejected" — observe
 should parse" — tree-sitter exits 1 (ERROR) → ABSENT → FAIL.
 
 ### Per-row encoding notes
-
-**4358 — `probe_kind=check` (NOT `ir`):**
-`reify check` (and `reify eval`) on the cross-sub-geometry-ref fixture emit the
-`CrossSubGeometryRef` unreachable-panic to stderr, but the process **exits 0** (the panic
-is swallowed per-realization).  α's `ir` vector gates on exit code first (`exit 0 → ABSENT`
-unconditionally), so the eval-error proxy would return ABSENT → PASS — a silent false
-negative.  α's `check` vector evaluates `match.stderr_contains` regardless of exit code,
-so it cleanly observes the panic signature.
 
 **4375 — FIELD codomain, not function codomain:**
 Function `-> Scalar` codomains check lax/clean (exit 0) — they would be a silent false

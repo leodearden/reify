@@ -3544,12 +3544,16 @@ fn get_entity_tree_bracket_children_have_correct_kinds() {
         5,
         "5 param cells: width, height, thickness, fillet_radius, hole_diameter"
     );
-    // `let body = box(...)` compiles into a realization (geometry op), not a ValueCellDecl.
-    // Only `let volume = ...` is a let-binding value cell.
+    // γ (task #4954): a geometry-producing let now emits a Type::Geometry
+    // ValueCellDecl (kind Let) ALONGSIDE its RealizationDecl — the same
+    // pair-shape solid-typed geometry params already have. So `let body =
+    // box(...)` surfaces as BOTH a "let" value-cell node here and a
+    // "realization" node (see get_entity_tree_has_mesh_true_when_realization_exists).
+    // Both `let volume` (scalar) and `let body` (geometry) are let cells.
     assert_eq!(
         lets.len(),
-        1,
-        "1 let cell: volume (body is a realization, not a let)"
+        2,
+        "2 let cells: volume (scalar) + body (geometry-let value cell, γ #4954)"
     );
 }
 

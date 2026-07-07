@@ -1168,6 +1168,41 @@ mod tests {
         );
     }
 
+    /// γ (task #4954) let-backed variant of the test above: a top-level
+    /// geometry LET must ALSO link its `Type::Geometry` value cell. The
+    /// geometry_cell name-match rule (this file, `post_process_geometry_
+    /// handle_cells`: `cell.id.member == realization.name && cell.cell_type
+    /// == Type::Geometry`) is kind-agnostic — it fires the same whether the
+    /// backing value cell came from a `param` or a `let` — so no production
+    /// change is needed here; this test verifies that generic rule already
+    /// covers the new let-backed cell.
+    ///
+    /// Boundary row 1 (graph half). Pre-γ this assertion could not even be
+    /// expressed: `loc_box` had a RealizationDecl but no value cell at all,
+    /// so `geometry_cell` was `None` for lack of a candidate cell to link —
+    /// not because the link rule itself failed.
+    #[test]
+    fn from_templates_populates_realization_geometry_cell_for_geometry_let() {
+        use reify_test_support::parse_and_compile;
+
+        let module = parse_and_compile(
+            r#"structure S {
+    param width : Length = 10mm
+    let loc_box = box(width, width, width)
+}"#,
+        );
+        let graph = EvaluationGraph::from_templates(&module.templates);
+        let s_r0 = graph
+            .realizations
+            .get(&RealizationNodeId::new("S", 0))
+            .expect("S realization #0 (loc_box) must exist");
+        assert_eq!(
+            s_r0.geometry_cell,
+            Some(ValueCellId::new("S", "loc_box")),
+            "a let-backed geometry realization must link its Type::Geometry value cell"
+        );
+    }
+
     #[test]
     fn resolution_node_data_construction() {
         use reify_core::ResolutionNodeId;

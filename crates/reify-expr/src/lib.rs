@@ -2599,6 +2599,32 @@ fn eval_restrict(inner_field: &Value, region: &Value, result_type: &Type) -> Val
          field_op_result_type (task 4222 δ); got {:?}",
         result_type
     );
+    // γ (task #4954) regression guard: a SYMBOLIC (not-yet-kernel-backed)
+    // region handle — `GeometryHandle { kernel_handle: None, .. }` — must be
+    // treated exactly like an `Undef` region here. Once γ gave top-level
+    // geometry lets a first-class value cell, the R3d in-walk mint flips an
+    // as-yet-unrealized geometry-let region (e.g. `let region = box(..)`) from
+    // `Undef` to such a placeholder handle *before* `restrict` evaluates. If we
+    // built a `Restricted` field over that placeholder, the field would bake in
+    // a region whose `kernel_handle` is `None`, so every later
+    // `sample(restricted, pt)` containment probe returns `None` → `Undef`
+    // (ContainmentQuery::contains short-circuits on `kernel_handle?`). That
+    // non-`Undef` `restricted` cell then defeats `build()`'s Undef-only
+    // `post_process_derived_lets` re-resolution, permanently stranding
+    // `v_in`/`v_out` at `Undef`. Returning `Undef` here mirrors the strict-Undef
+    // short-circuit (pre-γ `region` was `Undef` at this point) so `restricted`
+    // stays `Undef` until the real-kernel post-process re-resolves it against
+    // the hydrated region handle. Regression witness:
+    // `reify-eval::fields_restrict_e2e::restrict_field_b5_integration`.
+    if matches!(
+        region,
+        Value::GeometryHandle {
+            kernel_handle: None,
+            ..
+        }
+    ) {
+        return Value::Undef;
+    }
     let (domain_type, codomain_type) = if let Type::Field { domain, codomain } = result_type {
         ((**domain).clone(), (**codomain).clone())
     } else {

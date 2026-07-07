@@ -1419,8 +1419,10 @@ fn no_objective_when_absent() {
         "bracket has no minimize/maximize, objective should be None"
     );
 
-    // Verify existing structure is unaffected
-    assert_eq!(template.value_cells.len(), 6);
+    // Verify existing structure is unaffected. γ (task #4954): 7, not 6 — the
+    // top-level geometry let 'body' now also produces a Type::Geometry Let
+    // cell alongside the 5 params + 'volume' (graph-completion lowering).
+    assert_eq!(template.value_cells.len(), 7);
     assert_eq!(template.constraints.len(), 3);
 }
 
@@ -2243,9 +2245,11 @@ fn e2e_function_with_structure_unchanged() {
         "bracket has no fn declarations, functions should be empty"
     );
 
-    // Existing structure should be unaffected
+    // Existing structure should be unaffected. γ (task #4954): 7, not 6 — the
+    // top-level geometry let 'body' now also produces a Type::Geometry Let
+    // cell alongside the 5 params + 'volume' (graph-completion lowering).
     let template = &compiled.templates[0];
-    assert_eq!(template.value_cells.len(), 6, "expected 6 value cells");
+    assert_eq!(template.value_cells.len(), 7, "expected 7 value cells");
     assert_eq!(template.constraints.len(), 3, "expected 3 constraints");
     assert_eq!(template.realizations.len(), 1, "expected 1 realization");
 }

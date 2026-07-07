@@ -2106,8 +2106,62 @@ pub(crate) fn compile_entity(
                 }
             }
             reify_ast::MemberDecl::Let(let_decl) => {
-                // Skip geometry-producing function calls (and ident aliases to them)
+                // γ (task #4954): a top-level geometry-producing let ALSO emits a
+                // Type::Geometry value cell here, alongside the RealizationDecl the
+                // realization-emission loop below still produces — the exact
+                // pair-shape solid-typed geometry params already have (Param arm
+                // above + realization loop + graph.rs:386-392 geometry_cell
+                // name-match link). Without this node, build_combined_param_let_graph
+                // had nothing to hang a consumer→geometry-let edge on, and Kahn
+                // in-degree counting silently dropped it (root cause of the
+                // R3d/R3e/R3f compensation chain).
+                //
+                // cell_type is set EXPLICITLY to Type::Geometry rather than taken
+                // from the compiled expr's result_type: the general expression
+                // compiler's FunctionCall result-type ladder types geometry-function
+                // calls as a dimensionless scalar (that path exists for diagnostics/
+                // content-hash purposes only — the real geometry ops are compiled
+                // separately below by compile_geometry_call into the realization).
+                // Pass 1 already registered this name as Type::Geometry in scope
+                // (entity.rs:1331-1334) — do NOT re-register it here.
+                //
+                // Only TOP-LEVEL geometry lets reach this arm: a `let` nested in a
+                // `GuardedGroup` is a member of that group, not of `structure.members`,
+                // so it never enters this loop (guards.rs independently excludes
+                // geometry lets from its own guarded-member compilation, unchanged by
+                // this task — a guarded geometry let has no backing realization to
+                // mint against).
                 if is_geometry_let(&let_decl.value, functions, &known_geometry_lets, &known_selector_lets) {
+                    let id = ValueCellId::new(entity_name, &let_decl.name);
+
+                    let lowered_annotations = lower_annotations(&let_decl.annotations, diagnostics);
+                    validate_annotations(&lowered_annotations, "let", diagnostics);
+                    let solver_hints = extract_solver_hints(&lowered_annotations, diagnostics);
+                    validate_solver_hint_collections(&solver_hints, &scope, functions, diagnostics);
+
+                    let compiled_expr = compile_expr_with_expected(
+                        &let_decl.value,
+                        &scope,
+                        enum_defs,
+                        functions,
+                        diagnostics,
+                        Some(&Type::Geometry),
+                    );
+
+                    value_cells.push(ValueCellDecl {
+                        id,
+                        kind: ValueCellKind::Let,
+                        // Internal-only design (ratified 2026-07-02): geometry lets
+                        // are not externally addressable today, regardless of
+                        // `let_decl.is_pub`.
+                        visibility: Visibility::Private,
+                        is_aux: let_decl.is_aux,
+                        cell_type: Type::Geometry,
+                        default_expr: Some(compiled_expr),
+                        solver_hints,
+                        span: let_decl.span,
+                    });
+
                     continue;
                 }
 

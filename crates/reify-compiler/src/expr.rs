@@ -2639,9 +2639,16 @@ pub(crate) fn compile_expr_guarded_with_expected(
                 //     used by the engine's collection elaboration, not by ctor-path member
                 //     access, and their RHS may reference sub-component values unavailable
                 //     at ctor time.
-                //   EXCLUDED:  geometry-typed lets — already filtered out before they reach
-                //     `value_cells` by `is_geometry_let` (entity.rs:1411-1413), so the
-                //     `starts_with("__count_")` guard below is the only runtime filter needed.
+                //   EXCLUDED:  geometry-typed lets (γ, task #4954). Since γ, a top-level
+                //     geometry let ALSO emits a `Type::Geometry` value cell (previously it
+                //     emitted no cell at all, so this exclusion was vacuous — see the stale
+                //     comment this replaces). Eagerly materializing a geometry cell here would
+                //     shift `StructureInstanceCtor` cache identity beyond γ's ratified
+                //     value-cell shape change and diverge this (authoritative) phase from the
+                //     phase_functions skeleton builder, which still excludes geometry lets —
+                //     the exact cross-path ctor-lets inconsistency task 4342 exists to prevent.
+                //     Mirrors β's `cell_type != Type::Geometry` compute-value_inputs exclusion
+                //     (engine_eval.rs:262).
                 let lets: Vec<(String, CompiledExpr)> = template
                     .value_cells
                     .iter()
@@ -2651,6 +2658,7 @@ pub(crate) fn compile_expr_guarded_with_expected(
                             // These are compiler-internal cells whose RHS may reference
                             // sub-component values that are unavailable at ctor construction time.
                             && !vc.id.member.starts_with("__count_")
+                            && vc.cell_type != Type::Geometry
                     })
                     .filter_map(|vc| {
                         vc.default_expr

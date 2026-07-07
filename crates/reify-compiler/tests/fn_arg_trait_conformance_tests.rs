@@ -543,11 +543,32 @@ structure TObj {{
 /// (b) A non-conforming call in a REALIZATION geometry-op arg —
 /// `cylinder(couple(FixedThing()), 2.0)` — emits TypeNotConformingToTrait.
 ///
-/// The geometry `let` is skipped from `value_cells` (`continue` at
-/// entity.rs:1175-1177) and emitted as a realization, so the `couple(...)` call
-/// sits in `realizations[*].operations[*].args` with NO double-count against a
-/// value cell. (Bare-number primitive args are accepted — `cylinder(1, 2)`
-/// precedent.)
+/// γ (task #4954) update: pre-γ, the geometry `let` was skipped from
+/// `value_cells` (`continue` at entity.rs:1175-1177) and emitted ONLY as a
+/// realization, so `couple(...)` was compiled exactly once (in
+/// `compile_geometry_call`) and this diagnostic fired exactly once — as this
+/// doc comment used to say verbatim ("NO double-count against a value cell").
+///
+/// Since γ, `body` (a top-level geometry let) ALSO gets a
+/// `ValueCellDecl{cell_type: Type::Geometry}` compiled via
+/// `compile_expr_with_expected` (entity.rs `MemberDecl::Let` arm), so
+/// `couple(FixedThing())` is now compiled TWICE against the SAME live
+/// `diagnostics` sink — once there, once in the realization loop's
+/// `compile_geometry_call` — and the identical diagnostic (same span, same
+/// message) is pushed twice.
+///
+/// This is not a novel regression: it is the SAME double-compile shape a
+/// `Solid`-typed param has had all along (Param arm `compile_expr_with_expected`
+/// at entity.rs ~1955 + the realization loop's `compile_geometry_call`, both
+/// sharing the live `diagnostics` sink) — verified empirically that
+/// `param body : Solid = cylinder(couple(FixedThing()), 2.0)` ALSO produces 2
+/// identical `TypeNotConformingToTrait` diagnostics today. γ's design decision
+/// to accept the double-compile (mirroring the shipping solid-param precedent)
+/// makes geometry lets consistent with that pre-existing solid-param behavior,
+/// duplicate diagnostic included. De-duplicating diagnostics for double-compiled
+/// geometry defaults (params AND lets) is a pre-existing characteristic outside
+/// γ's scope (γ does not touch diagnostic emission/dedup machinery) — a
+/// candidate for its own follow-up task, not fixed here.
 ///
 /// RED until step-12: realizations are not walked by step-10.
 #[test]
@@ -570,8 +591,11 @@ structure TReal {{
 
     assert_eq!(
         conformance_errors.len(),
-        1,
-        "expected exactly 1 TypeNotConformingToTrait in realization, got {}: {:?}",
+        2,
+        "expected exactly 2 TypeNotConformingToTrait in realization (γ: geometry \
+         let's value-cell compile + the realization's compile_geometry_call both \
+         emit it — matches pre-existing Solid-param double-compile behavior), \
+         got {}: {:?}",
         conformance_errors.len(),
         module.diagnostics
     );

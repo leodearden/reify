@@ -5290,41 +5290,24 @@ fn build_leaf_selector(
     }
 }
 
-/// Kernel-FREE eval-path dispatch for the leaf selector constructors over a
-/// SYMBOLIC target (R2b, task #4653).
+/// Single source of truth for the kernel-free symbolic-eval selector-ctor
+/// name→helper map. A `Some(helper)` result means the named ctor is wired into
+/// the `eval()`/`eval_cached()` surface (via [`try_eval_symbolic_topology_selector`])
+/// and is EXPECTED to mint a `Value::Selector` there without a kernel; `None`
+/// means the name is kernel-bearing / composition / named-leaf / unknown and
+/// resolves only on the `build()` path.
 ///
-/// Handles the 9 kernel-free LEAF constructors — `faces`, `edges`,
-/// `mid_surface`, `edges_by_length`, `faces_by_area`, `faces_by_normal`,
-/// `edges_parallel_to`, `edges_at_height`, `vertices` — by mapping the
-/// function name to a [`TopologySelectorHelper`] variant, running the
-/// per-helper arity check (via `helper.expected_arity()`), and delegating
-/// construction to the shared [`try_build_kernel_free_leaf_selector`] helper.
+/// Both the dispatcher ([`try_eval_symbolic_topology_selector`]) and clause-8's
+/// "still in the α net" guard ([`is_symbolic_eval_wired_selector_ctor`]) read
+/// this ONE map, so the EVAL_WIRED set can never drift between them — adding a
+/// new kernel-free leaf ctor here automatically (a) lets it resolve on eval and
+/// (b) keeps it OUT of the build-only exemption, with no second edit.
 ///
-/// Returns `None` for every other helper (kernel-bearing
-/// `closest_point`/`center_of_mass`/etc., composition
-/// `union`/`intersect`/`difference`, named-leaf `face`/`edge`/`vertex`/`solid_body`)
-/// and for any non-`FunctionCall` expr shape — the cell stays at `Value::Undef`
-/// (R1a / deferred to R3).
-///
-/// The shared helper eliminates the duplication between this function and the
-/// build-path [`try_eval_topology_selector`] kernel-free arms, so that adding a
-/// new kernel-free leaf ctor requires touching only one place (the shared helper
-/// + the `expected_arity` table + the two name→enum mappings here and in
-///   `try_eval_topology_selector`).
-pub(crate) fn try_eval_symbolic_topology_selector(
-    expr: &reify_ir::CompiledExpr,
-    values: &reify_ir::ValueMap,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> Option<reify_ir::Value> {
-    // Must be a FunctionCall — anything else is not a selector constructor.
-    let (function, args) = match &expr.kind {
-        reify_ir::CompiledExprKind::FunctionCall { function, args } => (function, args),
-        _ => return None,
-    };
-
-    // Map the 9 kernel-free leaf ctor names to TopologySelectorHelper.
-    // All other helpers (kernel-bearing, composition, named-leaf, unknown) → None.
-    let helper = match function.name.as_str() {
+/// Module-private (not `pub(crate)`): both callers live in this module, and the
+/// private `TopologySelectorHelper` return type must not leak past it
+/// (`private_interfaces` lint, `-D warnings` in the gate).
+fn symbolic_eval_helper_for_name(name: &str) -> Option<TopologySelectorHelper> {
+    Some(match name {
         "faces" => TopologySelectorHelper::Faces,
         "edges" => TopologySelectorHelper::Edges,
         "mid_surface" => TopologySelectorHelper::MidSurface,
@@ -5346,7 +5329,94 @@ pub(crate) fn try_eval_symbolic_topology_selector(
         "created_by_feature" => TopologySelectorHelper::CreatedByFeature,
         "split_by_feature" => TopologySelectorHelper::SplitByFeature,
         _ => return None,
+    })
+}
+
+/// `true` iff `expr` is a `FunctionCall` to a selector constructor that the
+/// kernel-free symbolic-eval pass ([`symbolic_eval_helper_for_name`] /
+/// [`try_eval_symbolic_topology_selector`]) resolves — i.e. it is EXPECTED to
+/// mint a `Value::Selector` on the `eval()`/`eval_cached()` surface.
+///
+/// Such a call is NOT build-only: clause 8 uses this as the guard that keeps
+/// the α stale-Undef net TIGHT. A well-formed leaf ctor that is still `Undef`
+/// post-eval with all deps resolved is a genuine bug (wrong arity, or a
+/// scheduling miss where its target was not minted in time), which must remain
+/// a violation rather than be silently exempted.
+pub(crate) fn is_symbolic_eval_wired_selector_ctor(expr: &reify_ir::CompiledExpr) -> bool {
+    matches!(
+        &expr.kind,
+        reify_ir::CompiledExprKind::FunctionCall { function, .. }
+            if symbolic_eval_helper_for_name(&function.name).is_some()
+    )
+}
+
+/// `true` iff `expr` is a `FunctionCall` that *consumes* a geometry- or
+/// selector-typed value — at least one argument of `Type::Geometry` /
+/// `Type::Selector` / `Type::AnySelector`.
+///
+/// This is the STRUCTURAL rule at the heart of clause 8's build-only
+/// classifier (task γ / #4954): a `FunctionCall` that consumes geometry/
+/// selector but is NOT [`is_symbolic_eval_wired_selector_ctor`] can only
+/// resolve against a realized kernel on the `build()`/`tessellate()` path.
+/// Keyed on argument *types* (which the compiler has already resolved), it
+/// CLOSES the open-ended geometry-consumer class the former clause-8 name
+/// lists kept missing — the `face`/`edge`/`solid_body`/`vertex` named-leaf
+/// ctors, composition `union`/`intersect`/`difference`, GD&T `max_deviation`,
+/// `split`, `feature`, the conformance queries, and any future geometry-arg
+/// consumer — with no per-name upkeep.
+///
+/// It does NOT cover build-only queries that consume ABSTRACTED handles
+/// rather than a geometry-typed arg — the kernel geometry-query family's
+/// `angle` (over direction vectors) and the kinematic/dynamics queries (over
+/// mechanism snapshots + body-ids). Those remain registry-keyed in
+/// [`is_build_only_dispatch_call`]; they are a bounded, stable set, not the
+/// growing class this structural rule exists to absorb.
+///
+/// Deliberately `FunctionCall`-only: geometry/selector-receiver `MethodCall`s
+/// (the feature→datum projections) are governed by the narrow, receiver-type-
+/// gated [`is_feature_datum_projection_call`], so this rule does not broaden
+/// method-call exemptions beyond that documented set.
+pub(crate) fn consumes_geometry_or_selector(expr: &reify_ir::CompiledExpr) -> bool {
+    fn is_geometry_or_selector(t: &reify_core::Type) -> bool {
+        matches!(
+            t,
+            reify_core::Type::Geometry
+                | reify_core::Type::Selector(_)
+                | reify_core::Type::AnySelector
+        )
+    }
+    match &expr.kind {
+        reify_ir::CompiledExprKind::FunctionCall { args, .. } => {
+            args.iter().any(|a| is_geometry_or_selector(&a.result_type))
+        }
+        _ => false,
+    }
+}
+
+/// Kernel-FREE eval-path dispatch for the leaf selector constructors over a
+/// SYMBOLIC target (R2b, task #4653).
+///
+/// Maps the function name to a [`TopologySelectorHelper`] via
+/// [`symbolic_eval_helper_for_name`], runs the per-helper arity check (via
+/// `helper.expected_arity()`), and delegates construction to the shared
+/// [`try_build_kernel_free_leaf_selector`] helper. Returns `None` for every
+/// kernel-bearing / composition / named-leaf ctor and for any
+/// non-`FunctionCall` expr shape — the cell stays at `Value::Undef` (R1a /
+/// deferred to R3).
+pub(crate) fn try_eval_symbolic_topology_selector(
+    expr: &reify_ir::CompiledExpr,
+    values: &reify_ir::ValueMap,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    // Must be a FunctionCall — anything else is not a selector constructor.
+    let (function, args) = match &expr.kind {
+        reify_ir::CompiledExprKind::FunctionCall { function, args } => (function, args),
+        _ => return None,
     };
+
+    // Kernel-free leaf ctor name→helper (single source of truth). All other
+    // helpers (kernel-bearing, composition, named-leaf, unknown) → None.
+    let helper = symbolic_eval_helper_for_name(&function.name)?;
 
     // Per-helper arity check (same contract as try_eval_topology_selector).
     let expected_arity = helper.expected_arity();
@@ -5592,6 +5662,42 @@ pub(crate) fn try_eval_resolve_selector(
 /// only intercepts feature→datum projection `MethodCall`s, leaving β's pure
 /// datum→datum projections (and any other method call) to the pure eval path.
 const FEATURE_DATUM_PROJECTION_MEMBERS: [&str; 4] = ["axis", "plane", "point", "dir"];
+
+/// `true` iff `expr` is a feature→datum projection `MethodCall` — the
+/// geometric-relations ε `feature.axis`/`.plane`/`.point`/`.dir` family that
+/// [`try_eval_feature_datum_projection`] resolves. These are, like
+/// [`is_geometry_consumer_call`]'s builtins, resolvable ONLY via
+/// `engine_build.rs`'s `post_process_feature_datum_projections` — the pure
+/// `eval_datum_projection` (`reify-expr/src/lib.rs`) has no arm for a
+/// `Value::GeometryHandle`/`Value::Selector` receiver, so a feature→datum
+/// projection cell is `Value::Undef` after plain `eval()`/`eval_cached()` by
+/// design (task γ / #4954 boundary row: giving the receiver a first-class
+/// value cell means the checker's clause-4 "missing producer" exemption no
+/// longer fires once that receiver is minted to a symbolic placeholder, so
+/// this build()-only class needs its own clause-8 classifier entry — mirrors
+/// `is_geometry_consumer_call`'s existing partition).
+///
+/// Gated on the RECEIVER's static type (`object.result_type`), mirroring the
+/// compiler's own lowering decision (`datum_projection.rs`'s
+/// `datum_projection_result_type` `Type::Geometry | Type::Selector(_) |
+/// Type::AnySelector` arm) — NOT on method name alone: `dir` is ALSO a valid
+/// β pure datum→datum projection member (`Axis.dir`), resolved entirely by
+/// `eval_datum_projection` at plain eval time, so it must stay a plain
+/// (non-build-only) dependency when its receiver is a datum, not a feature.
+pub(crate) fn is_feature_datum_projection_call(expr: &reify_ir::CompiledExpr) -> bool {
+    matches!(
+        &expr.kind,
+        reify_ir::CompiledExprKind::MethodCall { object, method, args }
+            if args.is_empty()
+                && FEATURE_DATUM_PROJECTION_MEMBERS.contains(&method.as_str())
+                && matches!(
+                    object.result_type,
+                    reify_core::Type::Geometry
+                        | reify_core::Type::Selector(_)
+                        | reify_core::Type::AnySelector
+                )
+    )
+}
 
 /// Kernel-backed evaluation of a feature → datum projection (`feature.axis` /
 /// `.plane` / `.point` / `.dir`), geometric-relations ε (design §7.2). The
