@@ -39,6 +39,13 @@
 # Direct-exec usage (standalone sweep):
 #   REIFY_REAPER_DEPS_GLOB=... REIFY_REAPER_MIN_AGE_SECS=0 \
 #     ./scripts/lib_proc_reaper.sh reap-orphans [--dry-run]
+#
+# --dry-run also reports candidates that matched the deps-glob + age filters
+# but were SPARED by the orphan-PPID/ancestry gate (ancestry-intact / live
+# process) as "spared (non-orphan/live ancestry): ..." — audit visibility for
+# confirming the reaper cannot false-kill a live job (e.g. esc-5020). This
+# reporting is dry-run only: the real sweep stays silent on spares so it
+# doesn't spam one line per live deps-glob binary on a busy host.
 
 # Source guard — prevent double-sourcing.
 if [ "${_REIFY_LIB_PROC_REAPER_SH_SOURCED:-}" = "1" ]; then
@@ -212,7 +219,12 @@ _reaper_reap_orphans() {
                 [ "$_ppid_comm" = "$_comm" ] && { _matched=1; break; }
             done
         fi
-        [ "$_matched" -eq 1 ] || continue
+        if [ "$_matched" -eq 0 ]; then
+            if [ "$_dry_run" -eq 1 ]; then
+                echo "reap-orphans [dry-run]: spared (non-orphan/live ancestry): pid=$_pid exe=$_exe age=${_etimes}s ppid=$_ppid ppid_comm=$_ppid_comm" >&2
+            fi
+            continue
+        fi
 
         # Candidate found.
         if [ "$_dry_run" -eq 1 ]; then
