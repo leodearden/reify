@@ -424,7 +424,18 @@ run_merge_while_task_slot_held() {
     MERGE_RC=0
     (
         apply_hermetic_env "$_stubdir" "$_lock" "$MERGE_WAIT"
-        DF_VERIFY_ROLE=merge bash "$REPO_ROOT/scripts/verify.sh" test --scope all
+        # REIFY_INFRA_SUITE_ACTIVE=1 (task 5125 re-entrancy guard): this Section-B
+        # merge-role verify runs INSIDE the run_all.sh infra pool (run_all
+        # executes this very test). A merge-role verify re-emits the wholesale
+        # run_all.sh plan line, so without this sentinel it recurses:
+        # run_all -> this test -> merge verify -> run_all -> ... (unbounded
+        # fork-bomb, SIGKILLed at the 30m wall). The sentinel trips verify.sh's
+        # re-entrancy guard so the nested verify emits no infra suite. Scoped to
+        # THIS spawn (not broadcast on run_all's plan line) so it never leaks as
+        # an ambient export into the other ~102 pool tests (cf.
+        # test_run_all_ambient_isolation.sh). The bypass assertions below are
+        # unaffected — the merge verify still bypasses the held slot and exits 0.
+        REIFY_INFRA_SUITE_ACTIVE=1 DF_VERIFY_ROLE=merge bash "$REPO_ROOT/scripts/verify.sh" test --scope all
     ) 2>"$MERGE_ERR" || MERGE_RC=$?
 
     _end_s="$(date +%s)"

@@ -1354,16 +1354,18 @@ build_plan() {
     # FAIL-FAST: emitted BEFORE add_test_passes (task #4448).
     #
     # RE-ENTRANCY GUARD (task 5125): suppress the wholesale run_all.sh line when
-    # we are ALREADY executing inside an infra suite (REIFY_INFRA_SUITE_ACTIVE=1
-    # is exported onto the run_all.sh / selective-infra plan lines below, so it
-    # is inherited by every descendant process). Without this, an infra test
-    # that itself drives a real DF_VERIFY_ROLE=merge verify — e.g.
-    # tests/infra/test_verify_semaphore_e2e.sh Section B, which proves the
-    # merge-role semaphore bypass — would re-satisfy this role==merge gate and
-    # re-emit run_all.sh, recursing unboundedly (run_all -> semaphore-e2e ->
-    # merge-role verify -> run_all -> ...). The gate keys on an INHERITED env
-    # var (DF_VERIFY_ROLE), so the recursion break must be an inherited env var
-    # too — a non-inherited flag (the pre-5125 --include-infra) never recursed.
+    # we are ALREADY executing inside an infra suite (REIFY_INFRA_SUITE_ACTIVE
+    # set). Without this, an infra test that itself drives a real
+    # DF_VERIFY_ROLE=merge verify — tests/infra/test_verify_semaphore_e2e.sh
+    # Section B, which proves the merge-role semaphore bypass — would re-satisfy
+    # this role==merge gate and re-emit run_all.sh, recursing unboundedly
+    # (run_all -> semaphore-e2e -> merge-role verify -> run_all -> ...) until the
+    # 30m wall SIGKILLs it. The gate keys on the INHERITED env var
+    # DF_VERIFY_ROLE, so the break is also an inherited env var. It is set
+    # NARROWLY, at the single recursion source (that Section-B spawn), NOT
+    # broadcast onto the run_all.sh plan line: a broadcast leaks into all ~103
+    # pool tests, suppressing run_all in their captured plans and tripping the
+    # ambient-isolation guard (test_run_all_ambient_isolation.sh, task 4961).
     if [ "$DF_VERIFY_ROLE" = "merge" ] && [ "$RUN_RUST" -eq 1 ] && [ "$DO_TEST" -eq 1 ] && [ -z "${REIFY_INFRA_SUITE_ACTIVE:-}" ]; then
         # task #4624: pre-build reify-audit OUTSIDE the run_all.sh wall (30m).
         # By the time run_all.sh runs, target/release/{reify-audit,ptodo-baseline-gen}
@@ -1397,11 +1399,16 @@ build_plan() {
         # REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 (task 5125): host-exclusive tests
         # (declared in tests/infra/run-all-classification.manifest) stay on their
         # cold `--scope host-infra` lane instead of double-running here.
-        # REIFY_INFRA_SUITE_ACTIVE=1 (task 5125 re-entrancy guard): mark all
-        # descendants of run_all.sh as "already inside the infra suite" so a
-        # nested DF_VERIFY_ROLE=merge verify (spawned by an infra test) does NOT
-        # re-emit this line. See the guard on the enclosing `if` above.
-        add "if test -f tests/infra/run_all.sh; then REIFY_INFRA_SUITE_ACTIVE=1 REIFY_AUDIT_NO_COLD_BUILD=1 REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 timeout --kill-after=60 30m bash tests/infra/run_all.sh; fi"
+        # NB: this line must NOT export REIFY_INFRA_SUITE_ACTIVE (the re-entrancy
+        # sentinel). run_all.sh runs ~103 tests; a broad ambient export leaks
+        # into every one and (a) suppresses run_all in the plan captured by the
+        # plan-shape tests (test_run_all_tiering / test_verify_scope /
+        # test_verify_failfast_order), and (b) trips test_run_all_ambient_isolation
+        # (task 4961 / esc-4906-45 — the "orchestration var leaked as ambient
+        # export" guard). The sentinel is set narrowly by the ONE recursion
+        # source, test_verify_semaphore_e2e.sh Section B, so only that nested
+        # merge-role verify sees it (task 5125).
+        add "if test -f tests/infra/run_all.sh; then REIFY_AUDIT_NO_COLD_BUILD=1 REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 timeout --kill-after=60 30m bash tests/infra/run_all.sh; fi"
     fi
 
     # Selective infra injection (task 4523): task-level path runs the infra
@@ -1416,18 +1423,19 @@ build_plan() {
     # the full suite there (a superset), so the selective subset would
     # double-run hermetic tests. Exactly-one invariant (INV-5): every verify
     # runs either the full pool (merge) XOR the selective subset (task/offline).
-    # RE-ENTRANCY GUARD (task 5125): also suppressed inside an infra suite
-    # (REIFY_INFRA_SUITE_ACTIVE=1). The per-task selective path runs
+    # RE-ENTRANCY GUARD (task 5125): also suppressed when already inside an infra
+    # suite (REIFY_INFRA_SUITE_ACTIVE set). The per-task selective path runs
     # test_verify_*.sh, which matches test_verify_semaphore_e2e.sh — whose
-    # Section B drives a real merge-role verify. Marking the selective
-    # invocation (below) with the sentinel stops that nested verify from
-    # re-launching an infra suite of its own (the per-task half of the same
-    # recursion the run_all line above guards against).
+    # Section B drives a real merge-role verify that would otherwise re-launch
+    # run_all. That nested verify sets the sentinel itself, scoped at its own
+    # spawn site, so this guard fires for it WITHOUT this line broadcasting the
+    # sentinel to every selected test (which would leak it as an ambient export;
+    # cf. test_run_all_ambient_isolation.sh, task 4961).
     if [ "$DO_TEST" -eq 1 ] && [ -n "$SELECTED_INFRA_GLOBS" ] && [ "$DF_VERIFY_ROLE" != "merge" ] && [ -z "${REIFY_INFRA_SUITE_ACTIVE:-}" ]; then
         local _glob
         set -f  # disable pathname expansion: keep glob tokens as literals
         for _glob in $SELECTED_INFRA_GLOBS; do
-            add "( for _vt in $_glob; do [ -f \"\$_vt\" ] || continue; REIFY_INFRA_SUITE_ACTIVE=1 timeout --kill-after=60 10m bash \"\$_vt\" || exit \$?; done )"
+            add "( for _vt in $_glob; do [ -f \"\$_vt\" ] || continue; timeout --kill-after=60 10m bash \"\$_vt\" || exit \$?; done )"
         done
         set +f
     fi

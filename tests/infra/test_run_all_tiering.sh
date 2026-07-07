@@ -112,6 +112,15 @@ assert "MERGE: run_all.sh line carries REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 (host-
 assert "MERGE: run_all.sh line carries REIFY_AUDIT_NO_COLD_BUILD=1 (budget-safe backstop, task #4624, RED until step-3)" \
     bash -c 'printf "%s\n" "$1" | grep "run_all\.sh" | grep -q "REIFY_AUDIT_NO_COLD_BUILD=1"' _ "$PLAN_OUT"
 
+# Ambient-leak guard (task 5125): the run_all.sh line must NOT export
+# REIFY_INFRA_SUITE_ACTIVE. Broadcasting the re-entrancy sentinel onto this line
+# leaks it into all ~103 pool tests, suppressing run_all in the plans the
+# plan-shape tests capture and tripping test_run_all_ambient_isolation.sh. The
+# sentinel is set narrowly at the sole recursion source
+# (test_verify_semaphore_e2e.sh Section B), never here.
+assert "MERGE: run_all.sh line does NOT export REIFY_INFRA_SUITE_ACTIVE (no ambient leak into pool tests)" \
+    bash -c '! { printf "%s\n" "$1" | grep "run_all\.sh" | grep -q "REIFY_INFRA_SUITE_ACTIVE"; }' _ "$PLAN_OUT"
+
 assert "MERGE: plan LACKS the selective test_verify_*.sh loop (exactly-one: full pool present, selective absent)" \
     plan_lacks 'tests/infra/test_verify_\*\.sh'
 
