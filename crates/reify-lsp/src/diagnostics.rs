@@ -2114,58 +2114,37 @@ structure S {
         );
     }
 
-    /// Posture lock (PRD `compute-fea-hardening.md` task C1, INV-FEA-1): an
-    /// FEA-bearing source must produce NO false violation and NO false pass
-    /// under `compute_diagnostics` / `compute_diagnostics_with_state`.
-    ///
-    /// This is the LSP-side analog of the CLI posture-lock
-    /// `check_fea_violated_constraint_is_not_gated`
-    /// (`crates/reify-cli/tests/cli_build_fea.rs`): both LSP entry points
-    /// build a bare `Engine::new(SimpleConstraintChecker, None)` and never
-    /// register compute trampolines (see the trampoline-free posture doc on
-    /// `compute_diagnostics_with_state` above), so the `@optimized`
-    /// `solve_elastic_static` call body-inlines to `undef` and the
-    /// FEA-result constraints evaluate `Satisfaction::Indeterminate` — which
-    /// is neither a violation nor a pass.
-    ///
-    /// Two things keep this an actual posture lock rather than a check that
-    /// could pass for the wrong reason:
-    ///
-    /// - The "no false violation" check (see
-    ///   [`assert_no_false_violation_or_pass`]) matches diagnostic messages
-    ///   for *exact* equality against [`constraint_violated_message`] — the
-    ///   SAME formatter `compute_diagnostics_with_state`'s span-aware
-    ///   emission loop calls — rather than a `"violated"` substring, so a
-    ///   future wording change can't silently defeat the assertion.
-    /// - For `compute_diagnostics_with_state` (the persistent-state path the
-    ///   live server actually drives), satisfaction data and the
-    ///   trampoline-registration check both read `state.engine` directly —
-    ///   the SAME `Engine` instance the production call just used — instead
-    ///   of a separately constructed one, so this half of the lock fails
-    ///   immediately if `EvalState::new` / `compute_diagnostics_with_state`
-    ///   ever start registering a `solver::elastic_static` trampoline.
-    ///   `compute_diagnostics` (the stateless path) has no persistent engine
-    ///   to introspect after the call returns, so its checks necessarily run
-    ///   against an independently constructed `Engine::new` mirroring its
-    ///   documented posture; `Engine::compute_dispatch` is the established
-    ///   codebase idiom for asserting trampoline (non-)registration (e.g.
-    ///   `crates/reify-eval/tests/solve_elastic_static_e2e.rs`,
-    ///   `crates/reify-eval/src/test_runner.rs`).
-    ///
-    /// This test is GREEN before AND after being written: it locks
-    /// pre-existing gate behaviour (the two `Satisfaction::Violated` gates
-    /// above, at the `violated_messages` construction and the span-aware
-    /// ERROR emission, already skip `Indeterminate`). The RED counterfactual
-    /// this lock guards: mutating either gate to treat `Indeterminate` as
-    /// `Violated` (false violation), the FEA constraint mis-evaluating to
-    /// `Satisfied` (false pass), or the engine posture regressing to
-    /// register a `solver::elastic_static` trampoline, fails this test.
+    /// Posture lock (PRD `compute-fea-hardening.md` task C1, INV-FEA-1) for
+    /// the trampoline-free posture — see [`compute_diagnostics_with_state`]'s
+    /// doc comment for the authoritative posture writeup; this test is its
+    /// executable contract. Over the FEA-bearing [`FEA_BEARING_SRC`] fixture,
+    /// on both LSP entry points, locks that the resulting `Indeterminate`
+    /// FEA constraint produces neither a false violation nor a false pass
+    /// (see [`assert_no_false_violation_or_pass`]) — the LSP-side analog of
+    /// the CLI's `check_fea_violated_constraint_is_not_gated`
+    /// (`crates/reify-cli/tests/cli_build_fea.rs`). GREEN before and after:
+    /// this locks pre-existing gate behaviour, not new runtime behaviour.
     #[test]
     fn fea_bearing_constraint_produces_no_false_violation_or_false_pass() {
         let uri = test_uri();
         let parsed =
             reify_compiler::parse_with_stdlib(FEA_BEARING_SRC, ModulePath::single("test"));
         let compiled = reify_compiler::compile_with_stdlib(&parsed);
+
+        // Guard: the fixture must compile with zero errors, so the
+        // Indeterminate result asserted below is attributable to
+        // trampoline-free body-inlining (the documented posture), not an
+        // upstream stdlib-resolution failure that happens to also produce
+        // `undef` for the wrong reason.
+        let compile_errors: Vec<_> = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(
+            compile_errors.is_empty(),
+            "FEA_BEARING_SRC must compile without errors; got: {compile_errors:#?}"
+        );
 
         // --- Stateless surface: compute_diagnostics ---
         //
@@ -2225,23 +2204,15 @@ structure S {
     }
 
     /// Shared assertion for
-    /// [`fea_bearing_constraint_produces_no_false_violation_or_false_pass`]:
-    /// given the diagnostics one of the two LSP entry points returned and the
-    /// `CheckResult` for the same content (sourced from an `Engine` sharing
-    /// the trampoline-free posture), assert:
-    ///
-    /// (a) No false violation: no diagnostic message equals the exact text
-    ///     [`constraint_violated_message`] would produce for any constraint
-    ///     in `check_result` — driven from the SAME formatter production
-    ///     uses, not a `"violated"` substring that could drift out of sync
-    ///     with production wording.
-    /// (b) No false pass / genuinely indeterminate (the LSP analog of the
-    ///     CLI lock's stdout "INDETERMINATE" assertion — compute_diagnostics
-    ///     only emits diagnostics for problems, so "no false pass" cannot be
-    ///     read off its Vec output alone): zero `Violated` and at least one
-    ///     `Indeterminate` constraint, proving the FEA-result constraint is
-    ///     present and neither a false violation, a false pass, nor
-    ///     silently all-`Satisfied`.
+    /// [`fea_bearing_constraint_produces_no_false_violation_or_false_pass`]
+    /// (see that test's doc for the full rationale). Given one LSP entry
+    /// point's diagnostics and the `CheckResult` for the same content,
+    /// assert: (a) no diagnostic message equals the exact text
+    /// [`constraint_violated_message`] would produce for any constraint (no
+    /// false violation, matched via the same formatter production uses, not
+    /// a drift-prone substring); (b) zero `Violated` and zero `Satisfied`
+    /// constraints, with at least one `Indeterminate` (no false pass on any
+    /// individual constraint, and not silently missing or all-satisfied).
     fn assert_no_false_violation_or_pass(
         diagnostics: &[lsp_types::Diagnostic],
         check_result: &reify_eval::CheckResult,
@@ -2267,6 +2238,11 @@ structure S {
             .iter()
             .filter(|e| e.satisfaction == Satisfaction::Violated)
             .count();
+        let satisfied_count = check_result
+            .constraint_results
+            .iter()
+            .filter(|e| e.satisfaction == Satisfaction::Satisfied)
+            .count();
         let indeterminate_count = check_result
             .constraint_results
             .iter()
@@ -2277,6 +2253,14 @@ structure S {
             violated_count, 0,
             "{surface}: FEA-only fixture must have zero Violated constraints; \
              got constraint_results: {:#?}",
+            check_result.constraint_results
+        );
+        assert_eq!(
+            satisfied_count, 0,
+            "{surface}: every FEA-result constraint must be Indeterminate \
+             under the trampoline-free posture, never Satisfied — otherwise \
+             a per-constraint false pass on a subset of the fixture's \
+             constraints would slip through; got constraint_results: {:#?}",
             check_result.constraint_results
         );
         assert!(
