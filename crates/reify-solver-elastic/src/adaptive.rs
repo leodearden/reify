@@ -272,6 +272,14 @@ pub const DORFLER_THETA: f64 = 0.5;
 /// the fail-closed guard in
 /// [`through_thickness_check`](reify_kernel_gmsh::through_thickness::through_thickness_check).
 ///
+/// Summation overflow gets the same fail-closed treatment. Every individual
+/// indicator folded into `total` can be finite yet their sum can still
+/// overflow to `±Inf` (e.g. two indicators near `f64::MAX`), reproducing the
+/// "every element marked" pathology above from a threshold that has itself
+/// become infinite. `mark_dorfler` checks `total` for finiteness after the
+/// fold and, if it overflowed, warns once and returns an empty `Vec` rather
+/// than risk an over-marked set.
+///
 /// # Edge cases
 ///
 /// An empty slice and an all-zero indicator vector both return an empty `Vec`:
@@ -283,21 +291,19 @@ pub const DORFLER_THETA: f64 = 0.5;
 /// rather than contributing to `total`, so an all-non-finite slice behaves
 /// like an all-zero one — an empty marked set, plus the single WARN.
 pub fn mark_dorfler(indicators: &[f64], theta: f64) -> Vec<usize> {
-    // Single fused pass over `indicators`: tally non-finite entries, sum the
-    // finite ones, and collect the finite indices that will be sorted below
-    // — avoiding separate `filter().count()` / `filter().sum()` /
-    // `filter().collect()` passes over `indicators`.
-    let (n_non_finite, total, mut order) = indicators.iter().enumerate().fold(
-        (0usize, 0.0_f64, Vec::<usize>::new()),
-        |(n_non_finite, total, mut order), (i, &v)| {
-            if v.is_finite() {
-                order.push(i);
-                (n_non_finite, total + v, order)
-            } else {
-                (n_non_finite + 1, total, order)
-            }
-        },
-    );
+    // Single pass over `indicators`: tally non-finite entries, sum the
+    // finite ones, and collect the finite indices that will be sorted below.
+    let mut n_non_finite = 0usize;
+    let mut total = 0.0_f64;
+    let mut order: Vec<usize> = Vec::new();
+    for (i, &v) in indicators.iter().enumerate() {
+        if v.is_finite() {
+            order.push(i);
+            total += v;
+        } else {
+            n_non_finite += 1;
+        }
+    }
     if n_non_finite > 0 {
         tracing::warn!(
             target: "reify_solver_elastic::adaptive",
@@ -308,6 +314,26 @@ pub fn mark_dorfler(indicators: &[f64], theta: f64) -> Vec<usize> {
              marked set (likely upstream pathology in the solve's error \
              field); finite indicators still marked per the Dörfler threshold"
         );
+    }
+
+    // Fail-closed against summation overflow: every value folded into
+    // `total` above is individually finite, but the sum itself can still
+    // overflow to `±Inf` (e.g. two indicators near `f64::MAX`). An infinite
+    // `total` poisons `threshold` to `±Inf`, reproducing the same
+    // "cumulative >= threshold never trips ⇒ every element marked" pathology
+    // documented above for non-finite indicators — so it gets the same
+    // fail-closed treatment: warn once and mark nothing rather than risk an
+    // over-marked set.
+    if !total.is_finite() {
+        tracing::warn!(
+            target: "reify_solver_elastic::adaptive",
+            reason = "non_finite_total",
+            n_indicators = indicators.len(),
+            "Dörfler marking: finite indicators summed to a non-finite total \
+             (summation overflow); marking nothing rather than risking an \
+             over-marked set"
+        );
+        return Vec::new();
     }
 
     let threshold = theta * total;
@@ -697,6 +723,38 @@ mod tests {
             warn_count, 1,
             "two non-finite indicators in one call must still emit exactly 1 \
              WARN (fires once per call, not once per bad element); got {warn_count}"
+        );
+    }
+
+    /// Summation overflow must be treated as fail-closed too: every
+    /// individual indicator can be finite while their sum still overflows to
+    /// `±Inf` (e.g. two indicators near `f64::MAX`), which would otherwise
+    /// poison `threshold` to `±Inf` and mark every element. `mark_dorfler`
+    /// must instead warn exactly once and mark nothing.
+    #[test]
+    fn mark_dorfler_summation_overflow_marks_nothing_and_warns() {
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let (subscriber, counters) = reify_test_support::CountingSubscriberBuilder::new()
+            .count_level(tracing::Level::WARN)
+            .target_prefix("reify_solver_elastic::adaptive")
+            .build();
+        let warn_arc = Arc::clone(&counters[&tracing::Level::WARN]);
+
+        // Both indicators are individually finite (well under f64::MAX), but
+        // their sum overflows to +Inf.
+        let marked =
+            tracing::subscriber::with_default(subscriber, || mark_dorfler(&[1e308, 1e308], 0.5));
+
+        assert!(
+            marked.is_empty(),
+            "summation overflow must fail closed to an empty marked set; got {marked:?}"
+        );
+
+        let warn_count = warn_arc.load(Ordering::Acquire);
+        assert_eq!(
+            warn_count, 1,
+            "summation overflow must emit exactly 1 WARN; got {warn_count}"
         );
     }
 
