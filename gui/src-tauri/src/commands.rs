@@ -19,7 +19,13 @@ use crate::watcher::FileWatcher;
 pub struct AppState {
     pub engine: Arc<Mutex<EngineSession>>,
     /// Last emitted state for computing minimal diffs.
-    pub last_state: Mutex<Option<GuiState>>,
+    ///
+    /// Shared (via `Arc`) with `DebugServerState::last_state` so a
+    /// debug-driven mutation and a normal Tauri command diff against the
+    /// SAME baseline (INV-GUI-2, task 5035 L6) — without this, the debug
+    /// server (spawned outside Tauri's managed-state world) would advance
+    /// the engine without the normal command path ever finding out.
+    pub last_state: Arc<Mutex<Option<GuiState>>>,
     /// File watcher for the currently loaded .ri file (re-targeted on open_file_engine).
     pub watcher: Mutex<Option<FileWatcher>>,
     /// Claude Code SDK sidecar handle (lazily spawned on first claude_send_message).

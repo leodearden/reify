@@ -1019,6 +1019,12 @@ struct DebugServerState {
     #[allow(dead_code)]
     selection: Arc<RwLock<SelectionInfo>>,
     debug_bridge: Arc<DebugBridge>,
+    /// Shared delta baseline — the SAME `Arc` as `AppState::last_state`
+    /// (INV-GUI-2, task 5035 L6). Refreshed by
+    /// `open_source_into_engine_and_refresh_baseline` /
+    /// `set_fea_case_on_engine_and_refresh_baseline` so a subsequent normal
+    /// Tauri command diffs against the post-debug-mutation state.
+    last_state: Arc<Mutex<Option<crate::types::GuiState>>>,
 }
 
 fn is_image_tool(name: &str) -> bool {
@@ -1299,18 +1305,12 @@ async fn open_path_into_engine(state: &DebugServerState, raw_path: &str) -> Resu
     let content =
         std::fs::read_to_string(&path).map_err(|e| format!("failed to read {path}: {e}"))?;
 
-    // Load into engine and build GUI state (on OS thread — OCCT panics in tokio)
-    let path_clone = path.clone();
-    let content_clone = content.clone();
-    let gui_state = run_on_engine(&state.engine, move |session| {
-        session
-            .update_source(&path_clone, &content_clone)
-            .map_err(|e| format!("update_source failed: {e}"))?;
-        session
-            .build_gui_state()
-            .map_err(|e| format!("build_gui_state failed: {e}"))
-    })
-    .await?;
+    // Load into engine, build GUI state, and refresh the delta baseline
+    // (INV-GUI-2, task 5035 L6) through the same compute_delta choke-point
+    // main.rs's normal command path uses.
+    let gui_state =
+        open_source_into_engine_and_refresh_baseline(&state.engine, &state.last_state, &path, &content)
+            .await?;
 
     // Serialize GUI state for the frontend
     let gui_state_json =
@@ -1450,7 +1450,10 @@ pub async fn set_fea_case_on_engine_and_refresh_baseline(
 /// to the frontend via `apply_gui_state`, and return an echo response.
 ///
 /// Flow (mirrors `open_path_into_engine`):
-///  1. `set_fea_case_on_engine` — re-sources scalar_channels for the new case.
+///  1. `set_fea_case_on_engine_and_refresh_baseline` — re-sources
+///     scalar_channels for the new case AND refreshes the delta baseline
+///     (INV-GUI-2, task 5035 L6) so a subsequent normal command diffs
+///     correctly.
 ///  2. `fea_case_frontend_payload` — serializes GuiState + case name into JSON.
 ///  3. `query_frontend("apply_gui_state", ...)` — frontend applies the GuiState
 ///     WITHOUT a view reset so the camera stays fixed across case switches.
@@ -1464,7 +1467,8 @@ async fn handle_set_fea_case(
         .as_str()
         .ok_or_else(|| "`case` param is required".to_string())?
         .to_owned();
-    let gs = set_fea_case_on_engine(&state.engine, &case).await?;
+    let gs = set_fea_case_on_engine_and_refresh_baseline(&state.engine, &state.last_state, &case)
+        .await?;
     let fp = fea_case_frontend_payload(&case, &gs)?;
     state.debug_bridge.query_frontend("apply_gui_state", fp).await?;
     Ok(json!({ "ok": true, "case": case }))
@@ -1709,6 +1713,7 @@ pub async fn spawn_debug_server(
     engine: Arc<Mutex<EngineSession>>,
     selection: Arc<RwLock<SelectionInfo>>,
     debug_bridge: Arc<DebugBridge>,
+    last_state: Arc<Mutex<Option<crate::types::GuiState>>>,
 ) -> Result<(), String> {
     // Initialize the measurement-window clock at server spawn so
     // session_start_unix_ms reports the true debug-server start time
@@ -1719,6 +1724,7 @@ pub async fn spawn_debug_server(
         engine,
         selection,
         debug_bridge,
+        last_state,
     };
 
     let app = Router::new()
