@@ -683,6 +683,19 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     # relinking-on-uncertainty like the env!() case — an empty search prefix
     # would match every byte of every candidate file and corrupt it, whereas
     # the env!() relink's fail-safe action (a bare `touch`) has no such risk.
+    #
+    # SCOPE BOUNDARY (deliberate, not exhaustive): only files NAMED `output` or
+    # `root-output` are candidates — a filename filter, not a content scan — so
+    # a sibling `.d` depfile or a compiled `.o`/`.a`/`.rlib` that happens to
+    # also contain the foreign prefix is NEVER touched, even though it exists
+    # in the same build dir. `.d` depfiles are advisory (a stale entry forces
+    # at most a localized recompile, never ENOENT); binaries are already
+    # compiled and path-independent, and rewriting their bytes is a corruption
+    # risk with no upside. This mirrors the _NONRELOCATABLE_BUILD_GLOBS
+    # allow-list's philosophy of a narrow, explicit surface rather than a
+    # broad one. MAINTENANCE: if cargo ever bakes a foreign-path-carrying
+    # replay file under a NEW name (beyond `output`/`root-output`), add it to
+    # the `-name` clause below rather than widening this into a content scan.
     if [ -z "$_recorded_buildroot" ]; then
         warn "buildroot stamp absent (${BASE_TARGET_DIR}.buildroot not found) — cannot relocate baked links-metadata/OUT_DIR path(s); an empty search prefix would match every byte and corrupt files, so skipping rather than guessing. Re-run scripts/refresh-warm-base.sh to (re)write the stamp."
     else
