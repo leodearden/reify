@@ -3230,4 +3230,74 @@ mod tests {
              (documents the pre-debug-mutation S0 desync)"
         );
     }
+
+    // ── Task 5035 step-2: RED — FEA-case-switch baseline refresh must route
+    // through compute_delta (INV-GUI-2) ──
+    //
+    // `set_fea_case_on_engine_and_refresh_baseline` (added in step-3) wraps
+    // `set_fea_case_on_engine` and additionally refreshes `last_state` via
+    // `compute_delta`, so a subsequent NORMAL command diffs against the
+    // POST-debug-mutation baseline (S1) instead of the pre-debug one (S0).
+    //
+    // FAILS TO COMPILE until step-3 adds
+    // `set_fea_case_on_engine_and_refresh_baseline`.
+    #[tokio::test]
+    async fn set_fea_case_refresh_helper_keeps_baseline_fresh() {
+        let engine = crate::tests::make_test_engine();
+
+        // Load the three-case fixture (same fixture as
+        // `handle_set_fea_case_routes_to_engine`) so the engine has a compiled
+        // module with an active FEA case to switch. `load_from_source`
+        // returns the freshly-built GuiState directly — that's S0, the
+        // pre-debug-mutation baseline.
+        let initial = {
+            let mut locked = engine.lock().unwrap();
+            locked
+                .load_from_source(
+                    include_str!("../../../examples/fea_multi_case_bracket.ri"),
+                    "FeaMultiCaseBracket",
+                )
+                .expect("load_from_source must succeed for fea_multi_case_bracket.ri")
+        };
+        let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+            std::sync::Mutex::new(Some(initial));
+
+        // Debug-driven mutation: switch to the "overload" FEA case via the
+        // NOT-YET-EXISTING refresh helper (S0 -> S1).
+        let s1 = set_fea_case_on_engine_and_refresh_baseline(&engine, &last_state, "overload")
+            .await
+            .expect("set_fea_case_on_engine_and_refresh_baseline('overload') must return Ok");
+        assert!(
+            !s1.meshes.is_empty(),
+            "set_fea_case_on_engine_and_refresh_baseline must return GuiState with >= 1 mesh"
+        );
+
+        // The helper must refresh the baseline in the same call — the caller
+        // makes no separate compute_delta call.
+        assert_eq!(
+            *last_state.lock().unwrap(),
+            Some(s1.clone()),
+            "set_fea_case_on_engine_and_refresh_baseline must refresh last_state to S1"
+        );
+
+        // A normal command now runs: set_parameter changes exactly one cell
+        // (width) — unrelated to the FEA-case switch itself.
+        let s2 =
+            crate::commands::set_parameter_impl(&engine, "FeaMultiCaseBracket.width", "150mm")
+                .expect("set_parameter_impl must succeed");
+
+        // The normal command's delta is computed against the FRESH (S1)
+        // baseline, so it must be minimal: it must NOT re-report the
+        // untouched 'length' param. Only a stale (pre-switch) baseline would
+        // cause it to reappear (mirrors the step-1 characterization test).
+        let delta = crate::diff::compute_delta(&last_state, &s2);
+        assert!(
+            !delta
+                .changed_values
+                .iter()
+                .any(|v| v.cell_id == "FeaMultiCaseBracket.length"),
+            "fresh-baseline delta must be MINIMAL: it must NOT re-report \
+             'FeaMultiCaseBracket.length', which set_parameter never touched"
+        );
+    }
 }
