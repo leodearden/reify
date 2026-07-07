@@ -280,6 +280,13 @@ pub const DORFLER_THETA: f64 = 0.5;
 /// fold and, if it overflowed, warns once and returns an empty `Vec` rather
 /// than risk an over-marked set.
 ///
+/// The "single WARN" guarantee above is **per-guard, not per-call**: a call
+/// whose input is both non-finite-poisoned (at least one non-finite entry)
+/// *and* overflow-poisoned (the finite remainder's sum still overflows)
+/// trips both guards and emits **two** WARN events — one with `reason =
+/// "non_finite_indicator"`, one with `reason = "non_finite_total"` —
+/// distinguished by the `reason` field, before returning an empty `Vec`.
+///
 /// # Edge cases
 ///
 /// An empty slice and an all-zero indicator vector both return an empty `Vec`:
@@ -612,6 +619,31 @@ mod tests {
     // still Dörfler-marks correctly + 1 warn" (per-element exclusion).
     // -----------------------------------------------------------------------
 
+    /// Runs `f` under a WARN-counting subscriber targeting
+    /// `reify_solver_elastic::adaptive` and returns `f`'s result alongside
+    /// the number of WARN events it emitted.
+    ///
+    /// Shared by every `mark_dorfler` fail-closed guard test below so each
+    /// one only states its call + assertions, rather than re-inlining the
+    /// prime-cache / build-subscriber / with_default / load-counter
+    /// boilerplate.
+    fn run_under_warn_counter<F: FnOnce() -> Vec<usize>>(f: F) -> (Vec<usize>, usize) {
+        // Prime the callsite cache so per-test with_default subscribers see
+        // events even if a prior test thread hit the callsite with no
+        // subscriber active.
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let (subscriber, counters) = reify_test_support::CountingSubscriberBuilder::new()
+            .count_level(tracing::Level::WARN)
+            .target_prefix("reify_solver_elastic::adaptive")
+            .build();
+        let warn_arc = Arc::clone(&counters[&tracing::Level::WARN]);
+
+        let result = tracing::subscriber::with_default(subscriber, f);
+        let warn_count = warn_arc.load(Ordering::Acquire);
+        (result, warn_count)
+    }
+
     /// Shared scaffold for the three non-finite-indicator guard tests.
     ///
     /// Feeds `[bad, 1.0, 2.0, 3.0, 4.0]` (θ=0.5) through `mark_dorfler` under a
@@ -627,20 +659,8 @@ mod tests {
     /// - (c) exactly one WARN event is emitted at the
     ///   `reify_solver_elastic::adaptive` target.
     fn assert_non_finite_indicator_excluded_and_warns(bad: f64) {
-        // Prime the callsite cache so per-test with_default subscribers see
-        // events even if a prior test thread hit the callsite with no
-        // subscriber active.
-        reify_test_support::prime_tracing_callsite_cache();
-
-        let (subscriber, counters) = reify_test_support::CountingSubscriberBuilder::new()
-            .count_level(tracing::Level::WARN)
-            .target_prefix("reify_solver_elastic::adaptive")
-            .build();
-        let warn_arc = Arc::clone(&counters[&tracing::Level::WARN]);
-
-        let marked = tracing::subscriber::with_default(subscriber, || {
-            mark_dorfler(&[bad, 1.0, 2.0, 3.0, 4.0], 0.5)
-        });
+        let (marked, warn_count) =
+            run_under_warn_counter(|| mark_dorfler(&[bad, 1.0, 2.0, 3.0, 4.0], 0.5));
 
         // (a) The non-finite element must never enter the marked set. This
         // is technically subsumed by the exact-equality check (b) below
@@ -664,7 +684,6 @@ mod tests {
         );
 
         // (c) Exactly one WARN event must be emitted at the named target.
-        let warn_count = warn_arc.load(Ordering::Acquire);
         assert_eq!(
             warn_count, 1,
             "expected exactly 1 WARN event at reify_solver_elastic::adaptive \
@@ -706,23 +725,41 @@ mod tests {
     /// call, not one emission per non-finite element.
     #[test]
     fn mark_dorfler_multiple_non_finite_still_warns_once() {
-        reify_test_support::prime_tracing_callsite_cache();
+        let (_marked, warn_count) =
+            run_under_warn_counter(|| mark_dorfler(&[f64::NAN, f64::NAN, 1.0, 2.0], 0.5));
 
-        let (subscriber, counters) = reify_test_support::CountingSubscriberBuilder::new()
-            .count_level(tracing::Level::WARN)
-            .target_prefix("reify_solver_elastic::adaptive")
-            .build();
-        let warn_arc = Arc::clone(&counters[&tracing::Level::WARN]);
-
-        let _marked = tracing::subscriber::with_default(subscriber, || {
-            mark_dorfler(&[f64::NAN, f64::NAN, 1.0, 2.0], 0.5)
-        });
-
-        let warn_count = warn_arc.load(Ordering::Acquire);
         assert_eq!(
             warn_count, 1,
             "two non-finite indicators in one call must still emit exactly 1 \
              WARN (fires once per call, not once per bad element); got {warn_count}"
+        );
+    }
+
+    /// An all-non-finite slice must behave like an all-zero one, per the
+    /// "Edge cases" contract documented on `mark_dorfler` above: every
+    /// indicator is excluded, so `order` ends up empty ⇒ `total == 0` ⇒
+    /// `threshold == 0`, and the already-empty marked set trivially
+    /// satisfies `cumulative(0) >= 0`. This pins that composed path
+    /// distinctly from the "some finite, some not" cases above — an
+    /// all-non-finite input is the boundary between the exclusion logic and
+    /// the marking loop, not just a bigger version of the mixed case (e.g. a
+    /// naive implementation could special-case "at least one finite
+    /// survivor" and mishandle zero survivors).
+    #[test]
+    fn mark_dorfler_all_non_finite_marks_nothing_and_warns_once() {
+        let (marked, warn_count) = run_under_warn_counter(|| {
+            mark_dorfler(&[f64::NAN, f64::INFINITY, f64::NEG_INFINITY], 0.5)
+        });
+
+        assert!(
+            marked.is_empty(),
+            "an all-non-finite slice must behave like an all-zero one — empty \
+             marked set; got {marked:?}"
+        );
+        assert_eq!(
+            warn_count, 1,
+            "an all-non-finite slice must still emit exactly 1 WARN (fires \
+             once per call, not once per non-finite element); got {warn_count}"
         );
     }
 
@@ -733,25 +770,14 @@ mod tests {
     /// must instead warn exactly once and mark nothing.
     #[test]
     fn mark_dorfler_summation_overflow_marks_nothing_and_warns() {
-        reify_test_support::prime_tracing_callsite_cache();
-
-        let (subscriber, counters) = reify_test_support::CountingSubscriberBuilder::new()
-            .count_level(tracing::Level::WARN)
-            .target_prefix("reify_solver_elastic::adaptive")
-            .build();
-        let warn_arc = Arc::clone(&counters[&tracing::Level::WARN]);
-
         // Both indicators are individually finite (well under f64::MAX), but
         // their sum overflows to +Inf.
-        let marked =
-            tracing::subscriber::with_default(subscriber, || mark_dorfler(&[1e308, 1e308], 0.5));
+        let (marked, warn_count) = run_under_warn_counter(|| mark_dorfler(&[1e308, 1e308], 0.5));
 
         assert!(
             marked.is_empty(),
             "summation overflow must fail closed to an empty marked set; got {marked:?}"
         );
-
-        let warn_count = warn_arc.load(Ordering::Acquire);
         assert_eq!(
             warn_count, 1,
             "summation overflow must emit exactly 1 WARN; got {warn_count}"
