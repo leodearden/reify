@@ -667,11 +667,14 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     # ── non-relocatable links-metadata/OUT_DIR path relocation (task 5126) ────
     # cxx/reify-kernel-occt/reify-kernel-openvdb/libsqlite3-sys/zstd-sys/etc. sit
     # outside the _NONRELOCATABLE_BUILD_GLOBS allow-list above, so the foreign
-    # buildroot baked into their `output` files' links-metadata (e.g. cxx's
-    # cargo:CXXBRIDGE_DIR0=<foreign>/target/.../out/cxxbridge/include) survives
-    # the CoW seed verbatim -> ENOENT once the base's own worktree is refreshed
-    # or cleaned. Rewrite the foreign prefix to this lane's root in place rather
-    # than deleting the build dir: the CoW copy already placed identical out/
+    # buildroot baked into two build-script replay files survives the CoW seed
+    # verbatim -> ENOENT once the base's own worktree is refreshed or cleaned:
+    #   `output`      — links-metadata cargo emits, e.g. cxx's
+    #                   cargo:CXXBRIDGE_DIR0=<foreign>/target/.../out/cxxbridge/include
+    #   `root-output` — the build script's OUT_DIR, replayed so
+    #                   include!(concat!(env!("OUT_DIR"), ...)) opens the right dir
+    # Rewrite the foreign prefix to this lane's root in place rather than
+    # deleting the build dir: the CoW copy already placed identical out/
     # content at the lane-relative path, so relocating keeps the compiled
     # rlib/.o/.a Fresh (path-independent fingerprint) instead of forcing a
     # multi-minute native/C++ rebuild.
@@ -685,8 +688,8 @@ if [ -n "$FRESH_CHECKOUT" ]; then
                 sed -E -i "s/${_relocate_search_esc}/${_relocate_replace_esc}/g" "$_rl_file"
                 _relocated_count=$((_relocated_count + 1))
             fi
-        done < <(find "$LANE_TARGET" -type f -name output -print0)
-        info "Relocated $_relocated_count non-relocatable links-metadata file(s): foreign buildroot ($_foreign_rp) -> this lane ($_lane_rp)"
+        done < <(find "$LANE_TARGET" -type f \( -name output -o -name root-output \) -print0)
+        info "Relocated $_relocated_count non-relocatable links-metadata/OUT_DIR file(s): foreign buildroot ($_foreign_rp) -> this lane ($_lane_rp)"
     fi
 
     # ── non-relocatable env!()-baked-path test/bench relink (task 4983) ───────
