@@ -19,6 +19,9 @@
 #   5:   reify_bin_is_stale — sidecar SHA == HEAD → fresh (exit 1)
 #   6:   reify_bin_is_stale — sidecar SHA != HEAD (bogus) → stale (exit 0)
 #   7:   reify_bin_is_stale — sidecar absent (git repo_root) → stale (exit 0)
+#   8:   reify_bin_stamp — creates target/ + sidecar == HEAD
+#   9:   round-trip — stamped repo + present bin → is_stale reports fresh
+#   10:  reify_bin_stamp on a non-git dir → non-zero, no sidecar written
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -133,6 +136,65 @@ rm -f "$GIT_REPO/target/.reify-bin-sha"
 
 assert "is_stale returns stale (exit 0) when the sidecar is absent (unproven provenance)" \
     bash -c "source '$FRESHNESS_LIB' && reify_bin_is_stale '$FAKE_BIN' '$GIT_REPO'"
+
+# ==============================================================================
+# Check 8: reify_bin_stamp — creates target/.reify-bin-sha == HEAD (and target/ itself)
+# ==============================================================================
+echo ""
+echo "--- Check 8: reify_bin_stamp creates the sidecar with HEAD's SHA ---"
+
+STAMP_REPO="$TMPDIR_BINFRESH/stamp-repo"
+mkdir -p "$STAMP_REPO"
+git -C "$STAMP_REPO" init -q
+touch "$STAMP_REPO/placeholder"
+git -C "$STAMP_REPO" add placeholder
+git -C "$STAMP_REPO" \
+    -c user.name="Test" \
+    -c user.email="test@test.com" \
+    commit -qm "init" 2>/dev/null
+STAMP_HEAD_SHA=$(git -C "$STAMP_REPO" rev-parse HEAD)
+
+# target/ does not exist yet in this fixture — reify_bin_stamp must create it.
+assert "target/ does not yet exist in the stamp fixture (precondition)" \
+    bash -c "[ ! -d '$STAMP_REPO/target' ]"
+
+assert "reify_bin_stamp succeeds (creates target/ + sidecar)" \
+    bash -c "source '$FRESHNESS_LIB' && reify_bin_stamp '$STAMP_REPO'"
+
+assert "reify_bin_stamp creates target/.reify-bin-sha" \
+    test -f "$STAMP_REPO/target/.reify-bin-sha"
+
+assert "reify_bin_stamp sidecar contents (trimmed) equal HEAD" \
+    bash -c "[ \"\$(cat '$STAMP_REPO/target/.reify-bin-sha')\" = '$STAMP_HEAD_SHA' ]"
+
+# ==============================================================================
+# Check 9: round-trip — after stamping, is_stale on a present bin → fresh (exit 1)
+# ==============================================================================
+echo ""
+echo "--- Check 9: round-trip — stamped repo + present bin → fresh ---"
+
+STAMP_BIN="$STAMP_REPO/target/release/reify"
+mkdir -p "$(dirname "$STAMP_BIN")"
+touch "$STAMP_BIN"
+chmod +x "$STAMP_BIN"
+
+assert "is_stale returns fresh (exit 1) after reify_bin_stamp round-trip" \
+    bash -c "source '$FRESHNESS_LIB' && ! reify_bin_is_stale '$STAMP_BIN' '$STAMP_REPO'"
+
+# ==============================================================================
+# Check 10: reify_bin_stamp on a non-git dir → non-zero, no sidecar written
+# ==============================================================================
+echo ""
+echo "--- Check 10: reify_bin_stamp on a non-git dir fails without writing a sidecar ---"
+
+STAMP_NON_GIT_DIR="$TMPDIR_BINFRESH/stamp-nongit"
+mkdir -p "$STAMP_NON_GIT_DIR"
+
+assert "reify_bin_stamp on a non-git dir returns non-zero" \
+    bash -c "source '$FRESHNESS_LIB' && ! reify_bin_stamp '$STAMP_NON_GIT_DIR'"
+
+assert "reify_bin_stamp on a non-git dir writes no sidecar" \
+    bash -c "[ ! -f '$STAMP_NON_GIT_DIR/target/.reify-bin-sha' ]"
 
 # -- Summary ------------------------------------------------------------------
 test_summary
