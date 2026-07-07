@@ -1130,4 +1130,144 @@ assert "reap-orphans emits 'host-wide ps scan exceeded' warning to stderr when p
 
 fi  # end: command -v timeout guard
 
+# ===========================================================================
+# Part 9 — esc-5020 run_all false-kill rule-out
+# ===========================================================================
+#
+# Reconstructs the live tests/infra/run_all.sh pool topology: a pool subshell
+# / test_*.sh launcher (bash, no setsid/systemd-run/nohup/disown anywhere in
+# run_all.sh, so ancestry stays intact while live) backgrounds a compiled
+# deps-glob binary child while the run_all invocation is still running.
+# Asserts the host-wide reaper cannot false-kill that child: the orphan-PPID
+# gate (PPID/parent-comm ancestry check) structurally excludes it while its
+# ancestry is intact (PPID = the live launcher, comm=bash — neither in
+# REIFY_REAPER_ORPHAN_PPIDS={1} nor REIFY_REAPER_COMMS={systemd,init}), fully
+# independent of the age gate (isolated here via REIFY_REAPER_MIN_AGE_SECS=0).
+# See esc-5020 and docs/notes/orphaned-test-binary-reaper.md.
+
+echo ""
+echo "--- Part 9: esc-5020 run_all false-kill rule-out ---"
+
+# Hermetic fixture (reuses the Part 2 deps-glob-binary idiom):
+# tmp/target/debug/deps/reify_runall_live_<per-$$>
+_SENT_RUNALL=$(($$ * 10 + 1))
+_P9_DIR="$(mktemp -d)"
+_TMPDIRS+=("$_P9_DIR")
+_P9_DEPS="$_P9_DIR/target/debug/deps"
+mkdir -p "$_P9_DEPS"
+_RUNALL_BIN="$_P9_DEPS/reify_runall_live_${_SENT_RUNALL}"
+cp "$(command -v sleep)" "$_RUNALL_BIN"
+chmod +x "$_RUNALL_BIN"
+
+# -- Test 9a: RED DRIVER — dry-run reports a "spared (non-orphan/live
+# ancestry)" diagnostic naming the child pid. --
+# The launcher (this bash -c, standing in for a run_all pool subshell /
+# test_*.sh) backgrounds the deps-glob child and stays alive for the whole
+# assertion window (it never exits until the script's own final `exit`), so
+# the child's PPID is the LIVE launcher (!=1, comm=bash) throughout. Run under
+# the reaper's PRODUCTION-DEFAULT orphan gates (ORPHAN_PPIDS=1, COMMS="systemd
+# init") — the ancestry-intact child must NOT match, and (RED today) no
+# diagnostic exists yet to report why it was spared.
+assert "reap-orphans --dry-run reports a spared/non-orphan diagnostic for a live run_all-topology child (esc-5020)" \
+    env LIB_REAPER="$LIB_REAPER" _RUNALL_BIN="$_RUNALL_BIN" _SENT_RUNALL="$_SENT_RUNALL" \
+        _P9_DIR="$_P9_DIR" _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" bash -c '
+        [ -f "$LIB_REAPER" ] || exit 1
+        _abs_sleep=$(command -v sleep)
+        _abs_ps=$(command -v ps)
+        _abs_kill=$(command -v kill)
+        _abs_grep=$(command -v grep)
+        _abs_awk=$(command -v awk)
+
+        # Pre-clean stale instances of this fixture binary.
+        "$_abs_ps" -A -o pid,args 2>/dev/null \
+            | "$_abs_grep" -E "reify_runall_live_${_SENT_RUNALL}" \
+            | "$_abs_awk" "{print \$1}" \
+            | while read -r _p; do "$_abs_kill" -9 "$_p" 2>/dev/null || true; done
+        "$_abs_sleep" 0.3
+
+        "$_RUNALL_BIN" "$_SENTINEL_SLEEP_SECS" </dev/null >/dev/null 2>&1 &
+        _child_pid=$!
+        "$_abs_sleep" 0.2
+
+        _err=$(mktemp)
+
+        REIFY_REAPER_DEPS_GLOB="${_P9_DIR}/target/debug/deps/*" \
+        REIFY_REAPER_MIN_AGE_SECS=0 \
+        REIFY_REAPER_ORPHAN_PPIDS=1 \
+        REIFY_REAPER_COMMS="systemd init" \
+        REIFY_REAPER_UID=$(id -u) \
+            bash "$LIB_REAPER" reap-orphans --dry-run >/dev/null 2>"$_err" || true
+
+        _rc=0
+        grep -qF "spared (non-orphan/live ancestry)" "$_err" || _rc=1
+        grep -qF "pid=$_child_pid exe=" "$_err" || _rc=1
+
+        "$_abs_kill" -9 "$_child_pid" 2>/dev/null || true
+        wait "$_child_pid" 2>/dev/null || true
+        rm -f "$_err"
+        exit "$_rc"
+    '
+
+# -- Test 9b: REGRESSION LOCK — a NON-dry-run sweep under the SAME
+# production-default orphan gates SPARES the live run_all-topology child
+# (mirrors Test 2b's negative-spare assertion pattern). --
+assert "reap-orphans (non-dry-run) spares a live run_all-topology child under production-default orphan gates (esc-5020)" \
+    env LIB_REAPER="$LIB_REAPER" _RUNALL_BIN="$_RUNALL_BIN" _SENT_RUNALL="$_SENT_RUNALL" \
+        _P9_DIR="$_P9_DIR" _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" bash -c '
+        [ -f "$LIB_REAPER" ] || exit 1
+        _abs_sleep=$(command -v sleep)
+        _abs_ps=$(command -v ps)
+        _abs_kill=$(command -v kill)
+        _abs_grep=$(command -v grep)
+
+        "$_RUNALL_BIN" "$_SENTINEL_SLEEP_SECS" </dev/null >/dev/null 2>&1 &
+        _child_pid=$!
+        "$_abs_sleep" 0.2
+
+        REIFY_REAPER_DEPS_GLOB="${_P9_DIR}/target/debug/deps/*" \
+        REIFY_REAPER_MIN_AGE_SECS=0 \
+        REIFY_REAPER_ORPHAN_PPIDS=1 \
+        REIFY_REAPER_COMMS="systemd init" \
+        REIFY_REAPER_UID=$(id -u) \
+            bash "$LIB_REAPER" reap-orphans >/dev/null 2>&1 || true
+
+        _alive=0
+        "$_abs_ps" -o pid= -p "$_child_pid" 2>/dev/null | "$_abs_grep" -q . && _alive=1 || true
+        "$_abs_kill" -9 "$_child_pid" 2>/dev/null || true
+        wait "$_child_pid" 2>/dev/null || true
+        exit $((1 - _alive))
+    '
+
+# -- Test 9c: NON-VACUITY — the SAME fixture IS reaped once
+# REIFY_REAPER_ORPHAN_PPIDS is set to the child's ACTUAL PPID, proving 9b's
+# spare was not vacuous (the child genuinely matches the deps-glob + age
+# filters; only the orphan-PPID/ancestry gate spared it) — mirrors Test 2a.
+# The launcher (this bash -c) never exits before reading the PPID, so the
+# child's PPID is stable and no reparenting can occur (same reasoning as
+# Test 2a). --
+assert "reap-orphans kills the SAME run_all-topology child once ORPHAN_PPIDS matches its real ancestry (non-vacuity for 9b, esc-5020)" \
+    env LIB_REAPER="$LIB_REAPER" _RUNALL_BIN="$_RUNALL_BIN" _SENT_RUNALL="$_SENT_RUNALL" \
+        _P9_DIR="$_P9_DIR" _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" \
+        _POLL_ATTEMPTS_ORPHAN="$_POLL_ATTEMPTS_ORPHAN" bash -c '
+        [ -f "$LIB_REAPER" ] || exit 1
+        _abs_sleep=$(command -v sleep)
+        _abs_ps=$(command -v ps)
+
+        "$_RUNALL_BIN" "$_SENTINEL_SLEEP_SECS" </dev/null >/dev/null 2>&1 &
+        _child_pid=$!
+        "$_abs_sleep" 0.2
+
+        _child_ppid=$("$_abs_ps" -o ppid= -p "$_child_pid" 2>/dev/null | tr -d " " || echo "")
+        [ -n "$_child_ppid" ] || { echo "FAIL: could not read PPID of run_all-topology child" >&2; exit 1; }
+
+        REIFY_REAPER_DEPS_GLOB="${_P9_DIR}/target/debug/deps/*" \
+        REIFY_REAPER_MIN_AGE_SECS=0 \
+        REIFY_REAPER_ORPHAN_PPIDS="$_child_ppid" \
+        REIFY_REAPER_COMMS="" \
+        REIFY_REAPER_UID=$(id -u) \
+            bash "$LIB_REAPER" reap-orphans >/dev/null 2>&1 || true
+
+        _poll_pid_gone "$_child_pid" "$_POLL_ATTEMPTS_ORPHAN"; exit $?
+    '
+
 test_summary
