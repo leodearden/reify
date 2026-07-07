@@ -4989,6 +4989,11 @@ mod tests {
         let cyl_faces = kernel_b
             .extract_faces(GeometryHandleId(1))
             .expect("extract_faces on the cylinder should succeed");
+        assert_eq!(
+            cyl_faces.len(),
+            3,
+            "a cylinder has 3 faces (two caps + the lateral surface)"
+        );
         let stale_child = cyl_faces[0];
 
         // Precondition: before the restore, OwnerBody correctly resolves the
@@ -5019,18 +5024,62 @@ mod tests {
             post_restore
         );
 
+        // PERSIST path: reprs must be restored from kernel_a's state. Handle
+        // 1 now names kernel_a's box (kernel_b's own cylinder used the same
+        // id before the wholesale swap), so repr_of(1) must report the
+        // restored box's BRepKind, not a stale leftover.
+        assert_eq!(
+            kernel_b.repr_of(GeometryHandleId(1)),
+            Some(BRepKind::Solid),
+            "post-restore: handle 1 should report the restored box's BRepKind::Solid"
+        );
+
+        // PERSIST path: next_id must come from kernel_a's state (2, after
+        // minting one handle) — not kernel_b's own dirty next_id, which the
+        // cylinder + extract_faces above already advanced past kernel_a's.
+        // This dirty-consumer setup is the only round-trip test where
+        // kernel_b's pre-restore next_id exceeds kernel_a's, so it is the
+        // one place a "keep the larger of the two" merge regression (instead
+        // of an overwrite) would actually surface.
+        let minted = kernel_b
+            .execute(&GeometryOp::Sphere {
+                radius: Value::Real(1.0),
+            })
+            .unwrap();
+        assert_eq!(
+            minted.id,
+            GeometryHandleId(2),
+            "next_id should be restored from kernel_a's warm state, not kernel_b's dirty pre-restore value"
+        );
+
         // Re-extraction on the restored (box) shape correctly rebuilds
-        // provenance.
+        // provenance, minting fresh ids disjoint from the stale pre-restore
+        // cylinder-face cache — proving extracted_faces was cleared too,
+        // not just parent_handle.
         let faces = kernel_b
             .extract_faces(GeometryHandleId(1))
             .expect("extract_faces on the restored box should succeed");
-        assert_eq!(
-            kernel_b
-                .query(&GeometryQuery::OwnerBody(faces[0]))
-                .unwrap(),
-            Value::Int(1),
-            "post-restore re-extraction should rebuild provenance correctly"
+        assert_eq!(faces.len(), 6, "a box has 6 faces");
+
+        let cyl_face_set: std::collections::HashSet<GeometryHandleId> =
+            cyl_faces.iter().copied().collect();
+        let box_face_set: std::collections::HashSet<GeometryHandleId> =
+            faces.iter().copied().collect();
+        let stale_overlap: std::collections::HashSet<_> =
+            cyl_face_set.intersection(&box_face_set).collect();
+        assert!(
+            stale_overlap.is_empty(),
+            "warm-start restore should clear the extracted_faces cache so re-extraction mints \
+             fresh ids disjoint from the stale cylinder-face cache; found shared ids: {stale_overlap:?}"
         );
+
+        for face in &faces {
+            assert_eq!(
+                kernel_b.query(&GeometryQuery::OwnerBody(*face)).unwrap(),
+                Value::Int(1),
+                "post-restore re-extraction should rebuild provenance correctly for {face:?}"
+            );
+        }
     }
 
     #[test]
