@@ -180,6 +180,25 @@ above reflect today's tree).
 - **D6 — sidecar prompt honesty is a *delete*, not a gate** (Leo-ratified). The system prompt is rewritten to
   the real tool surface and the dead `reify_`-prefix interception is removed; the properly-wired version is
   re-introduced later by the AI-native editing tools PRD. (§6, §8 L7/L8)
+- **D7 — L6 resolved to the fallback route: thread the shared delta baseline, keep the parallel
+  `query_frontend` push.** Investigate-then-route (§8 L6) found three compelling reasons the primary route
+  (retire the debug-server push in favor of `compute_delta`/`emit_delta`) is not viable: (1) the e2e
+  visual-regression harness (`gui/test/visual/*`) depends on `DebugBridge::query_frontend`'s synchronous
+  request/response round-trip (`debug.rs:117-162`) to know a mutation is applied **before** it screenshots —
+  `emit_delta` is fire-and-forget with no synchronization point and would race; (2) the frontend handlers do
+  frontend-specific work no delta event can express (`bridge.ts:1086-1120`): `open_file` opens a **new editor
+  tab** (`editor.openFile`) plus a full `engine.initFromState` and `viewState.resetToDefaultView()`;
+  `apply_gui_state` uses `initFromState` but **deliberately omits** the view reset so the camera stays fixed
+  across per-case FEA screenshots; (3) OCCT panics inside tokio, so the debug path's `run_on_engine`
+  real-OS-thread model is structurally distinct from `main.rs`'s Tauri-command-thread + fire-and-forget
+  `emit_delta` model. Instead, `DebugServerState` gets a `last_state: Arc<Mutex<Option<GuiState>>>` field — the
+  **same** `Arc` as `AppState.last_state` — refreshed by two thin helpers
+  (`open_source_into_engine_and_refresh_baseline`, `set_fea_case_on_engine_and_refresh_baseline`) that call
+  `compute_delta` (discarding the returned delta) purely to advance the baseline before the full-state push.
+  **OQ4 resolution:** no shared `apply_and_emit(session, last_state, app)` helper — the two paths' threading and
+  delivery models differ too much to unify; they instead share only the minimal primitive (`compute_delta`, the
+  same choke-point `main.rs`'s normal command path diffs against), reused directly from `debug_server.rs`. (§8
+  L6)
 
 ---
 
@@ -292,6 +311,7 @@ beyond the noted edges.
   delta baseline into `DebugServerState` instead — record the chosen route + rationale in this PRD's §4.
   *Signal (user-observable, reify-debug MCP):* a debug-driven mutation followed by a normal `set_parameter`
   produces **correct deltas** (baseline-desync regression test). *INV: INV-GUI-2. Deps: L4.*
+  *Resolved to the fallback route — see D7 (§4).*
 - **L7 — sidecar system-prompt honesty.** Rewrite `gui/sidecar/src/system-prompt.ts:67-83` to the **real**
   tool surface (`Write`/`Edit` + `mcp__reify-debug__*`), dropping `reify_set_parameter`/`reify_update_source`/
   etc. that `session.ts:81` `ALLOWED_TOOLS` structurally cannot grant.
