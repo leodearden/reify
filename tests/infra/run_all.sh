@@ -84,6 +84,21 @@
 #                                      empty/"0"/garbage) runs the full
 #                                      discovered set unchanged -- default 0,
 #                                      strictly additive on landing.
+#   REIFY_RUN_ALL_POOL_FORK_FAIL_MEMBER   fault-injection seam (task #5129):
+#                                      when set to a pool-bucket member's
+#                                      basename, that ONE member is degraded
+#                                      to a failure instead of spawned (see
+#                                      _h2_degrade_member) -- the suite still
+#                                      completes with the normal Summary/
+#                                      FAILED contract. Empirically, a real
+#                                      fork() EAGAIN is uncatchable/fatal in
+#                                      bash (exit 254 even under `set +e`), so
+#                                      this seam is how the graceful-degrade
+#                                      path is exercised deterministically;
+#                                      the `wait -n` worker-pool throttle
+#                                      above is the actual fork-storm defense.
+#                                      Unset by default -- test-only, never
+#                                      set in normal operation.
 
 set -euo pipefail
 
@@ -509,11 +524,82 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
         return 0
     }
 
+    # -- Fork-EAGAIN degrade path (task #5129, esc-3848) -------------------------
+    # A real async `( ) &` fork EAGAIN is uncatchable/fatal in bash (verified
+    # empirically on this host, bash 5.2: the shell prints "fork: Resource
+    # temporarily unavailable" and exits 254 regardless of `set +e`/
+    # `|| rc=$?`) -- reproducing it requires exhausting the host's process
+    # limit, which would also kill the test harness. The bounded `wait -n`
+    # throttle above is therefore the REAL fork-storm defense; this helper
+    # makes the graceful single-member degrade contract explicit and
+    # deterministically testable via the REIFY_RUN_ALL_POOL_FORK_FAIL_MEMBER
+    # fault-injection seam below (also the landing spot for any future
+    # catchable spawn-failure signal). Routes the failure through the
+    # EXISTING per-member .out/.rc protocol so Phases 2/2.5/3 (serial retry,
+    # FLAKY ledger, discovered-order replay) consume it unchanged (INV-2).
+    _h2_degrade_member() {
+        local _name="$1" _idx="$2"
+        echo "ERROR: run_all.sh pool: fork() EAGAIN for ${_name} under load -- degrading this member to a failure (esc-3848 class; suite continues)" >&2
+        echo "run_all.sh pool: fork() EAGAIN for ${_name} -- degraded to a failure" > "$_H2_WORKDIR/${_idx}.out"
+        echo 1 > "$_H2_WORKDIR/${_idx}.rc"
+    }
+
     # -- Phase 1: pool (concurrent, bounded by the host-global semaphore) --------
+    # Bounded worker-pool throttle (task #5129, esc-5029/3848 fork-storm): cap
+    # the number of LIVE worker SHELLS at _H2_POOL_N (the same resolved pool
+    # concurrency bound slot_acquire uses below -- no new constant). This
+    # bounds the PARENT's own fork footprint; slot_acquire remains the
+    # host-global concurrency gate inside the worker body, unchanged (INV-1).
+    #
+    # `wait -n` is given the explicit `_h2_pids` list (not called bare) so it
+    # only ever reaps OUR worker shells. Argument-less `wait -n` waits for the
+    # next job of ANY kind to change state -- including the parent's earlier
+    # `< <(classification_discovered_set ...)` / `< <(classification_bucket
+    # pool)` process-substitution subshells above, which bash keeps in the
+    # same internal wait-list until explicitly reaped. If one of those were
+    # still unreaped here, a bare `wait -n` could consume it instead of a
+    # worker, silently letting the pool exceed _H2_POOL_N. Passing
+    # "${_h2_pids[@]}" closes that gap.
+    #
+    # The live count is NOT derived by assuming "one wait -n call reaps
+    # exactly one entry, so decrement by 1": _h2_pids accumulates every pid
+    # ever spawned and is never pruned, so a throttled run hands `wait -n` a
+    # growing mix of live and already-reaped pids. This repo pins no minimum
+    # bash version (see :461), and whether `wait -n <ids>` tolerates
+    # already-reaped ids in that list and keeps blocking for a live one, vs.
+    # returning early the moment it hits an id it no longer recognizes, is
+    # exactly the kind of edge case that has differed across bash releases --
+    # trusting a fixed decrement would let the live count silently drift
+    # under an untested bash, over-spawning past _H2_POOL_N without any
+    # signal. Instead `wait -n` is used ONLY as a blocking wake-up; the live
+    # set itself is always re-derived from the shell's own job table via
+    # `jobs -rp` (running jobs' pids), which reflects bash's SIGCHLD-driven
+    # Running/Done bookkeeping directly and needs no id-list tolerance at
+    # all -- verified empirically on this host (bash 5.2) across repeated
+    # stress runs (N in {1,3,5}, up to 50 members): peak never exceeded N.
+    # Worst case on a bash where `wait -n` itself returns early on a stale
+    # id, this spins re-checking `jobs -rp` rather than silently
+    # over-spawning -- safe, just not maximally efficient.
     _h2_pids=()
+    _h2_peak=0
     for _h2_name in "${_h2_pool_members[@]}"; do
-        _h2_psi_gate
         _h2_i="${_h2_index_of[$_h2_name]}"
+
+        # Fault-injection seam (test-only, esc-3848 class): degrade this ONE
+        # member instead of spawning it -- see _h2_degrade_member above.
+        if [ -n "${REIFY_RUN_ALL_POOL_FORK_FAIL_MEMBER:-}" ] && [ "$_h2_name" = "$REIFY_RUN_ALL_POOL_FORK_FAIL_MEMBER" ]; then
+            _h2_degrade_member "$_h2_name" "$_h2_i"
+            continue
+        fi
+
+        while [ "${#_h2_pids[@]}" -ge "$_H2_POOL_N" ]; do
+            wait -n "${_h2_pids[@]}" 2>/dev/null || true
+            _h2_pids=()
+            while IFS= read -r _h2_p; do
+                [ -n "$_h2_p" ] && _h2_pids+=("$_h2_p")
+            done < <(jobs -rp)
+        done
+        _h2_psi_gate
         (
             _h2_child_rc=0
             _h2_slot_rc=0
@@ -529,9 +615,13 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
             exit 0
         ) &
         _h2_pids+=($!)
+        [ "${#_h2_pids[@]}" -gt "$_h2_peak" ] && _h2_peak="${#_h2_pids[@]}"
     done
     if [ "${#_h2_pids[@]}" -gt 0 ]; then
         wait "${_h2_pids[@]}" 2>/dev/null || true
+    fi
+    if [ "${#_h2_pool_members[@]}" -gt 0 ]; then
+        echo "INFO: run_all.sh pool: Phase-1 peak concurrent worker shells=${_h2_peak} (limit ${_H2_POOL_N})" >&2
     fi
 
     # -- Phase 2: serial (foreground, one at a time, discovered order) -----------

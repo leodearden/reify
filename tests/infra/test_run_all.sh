@@ -1601,5 +1601,238 @@ else
     assert "T19h: normal pool run exits 0 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
 fi
 
+# -- Test 20: H2 Phase-1 bounded worker-pool throttle (wait -n) -----------------
+# Task #5129 (PRD docs/prds/run-all-pool-contention-tiering-fix.md §9 L1):
+# proves the Phase-1 pool spawn loop bounds its own fork footprint to the
+# resolved pool concurrency N via a `wait -n` worker-SHELL throttle, instead
+# of forking every pool member at once (the esc-5029/3848 fork-storm). The
+# throttle caps PARENT-side live worker shells, which a post-slot_acquire
+# body-level counter cannot observe (slot_acquire already caps test-body
+# concurrency at N in both the throttled and un-throttled cases) -- so the
+# peak is asserted via the new parent-side `_h2_active` high-water-mark INFO
+# line, cross-checked against the Test-9-style real-overlap mock counter and
+# a behavioral (not source-grep) proof that slot_acquire still fires.
+echo ""
+echo "--- Test 20: H2 Phase-1 bounded worker-pool throttle (wait -n) ---"
+
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+    TMPDIR_T20="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T20")
+
+    # Fixture: 6 `pool` members, REIFY_RUN_ALL_POOL_CONCURRENCY=2 (N=2) --
+    # members > N so the throttle is actually exercised; a fork-storm
+    # regression (no throttle) would peak at 6 concurrent worker shells.
+    MANIFEST_T20="$TMPDIR_T20/classification.manifest"
+    cat > "$MANIFEST_T20" <<'EOF'
+test_pool_1.sh pool
+test_pool_2.sh pool
+test_pool_3.sh pool
+test_pool_4.sh pool
+test_pool_5.sh pool
+test_pool_6.sh pool
+EOF
+
+    CNT_T20="$TMPDIR_T20/counters"
+    mkdir -p "$CNT_T20"
+
+    # Reuse Test 9's flock CUR/MAX + ARRIVED-barrier pool mock verbatim (all
+    # 6 members pass -- this test is about spawn-footprint/observability,
+    # not failure classification).
+    _h2t9_write_pool_mock "$TMPDIR_T20/test_pool_1.sh" 0
+    _h2t9_write_pool_mock "$TMPDIR_T20/test_pool_2.sh" 0
+    _h2t9_write_pool_mock "$TMPDIR_T20/test_pool_3.sh" 0
+    _h2t9_write_pool_mock "$TMPDIR_T20/test_pool_4.sh" 0
+    _h2t9_write_pool_mock "$TMPDIR_T20/test_pool_5.sh" 0
+    _h2t9_write_pool_mock "$TMPDIR_T20/test_pool_6.sh" 0
+
+    SLOT_LOG_T20="$TMPDIR_T20/slot-events.log"
+
+    t20_rc=0
+    t20_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+        RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T20" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T20/pool-semaphore.lock" \
+        REIFY_RUN_ALL_POOL_CONCURRENCY=2 \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        REIFY_SLOT_EVENT_LOG="$SLOT_LOG_T20" \
+        H2_T9_LOAD_LIB="$LOAD_TOLERANCE_LIB_T9" \
+        H2_T9_POOL_LOCK="$CNT_T20/pool.lock" \
+        H2_T9_POOL_CUR="$CNT_T20/pool.cur" \
+        H2_T9_POOL_MAX="$CNT_T20/pool.max" \
+        H2_T9_POOL_ARRIVED="$CNT_T20/pool.arrived" \
+        H2_T9_POLL_BASE=100 \
+        H2_T9_ARRIVE_THRESHOLD=2 \
+        bash "$RUN_ALL" "$TMPDIR_T20" 2>&1)" || t20_rc=$?
+
+    t20_peak="$(grep -oE 'shells=[0-9]+' <<<"$t20_out" | head -1 | cut -d= -f2)" || true
+
+    if [ -n "$t20_peak" ] && [ "$t20_peak" -le 2 ] 2>/dev/null; then
+        assert "T20a: peak concurrent worker shells <= 2 (the throttle cap; got: $t20_peak)" true
+    else
+        assert "T20a: peak concurrent worker shells <= 2 (the throttle cap) (got: $t20_out)" false
+    fi
+
+    if [ -n "$t20_peak" ] && [ "$t20_peak" -ge 2 ] 2>/dev/null; then
+        assert "T20b: peak concurrent worker shells >= 2 (INV-3 at the worker-shell level; got: $t20_peak)" true
+    else
+        assert "T20b: peak concurrent worker shells >= 2 (INV-3 at the worker-shell level) (got: $t20_out)" false
+    fi
+
+    t20_pool_max="$(cat "$CNT_T20/pool.max" 2>/dev/null || echo 0)"
+    assert "T20c: mock CUR/MAX real-overlap counter shows max-concurrency >= 2 (got: $t20_pool_max)" \
+        test "$t20_pool_max" -ge 2
+
+    if [ -s "$SLOT_LOG_T20" ] && grep -q 'ACQUIRE' "$SLOT_LOG_T20"; then
+        assert "T20d: REIFY_SLOT_EVENT_LOG contains an ACQUIRE entry (slot_acquire still the host-global gate, INV-1)" true
+    else
+        assert "T20d: REIFY_SLOT_EVENT_LOG contains an ACQUIRE entry (slot_acquire still the host-global gate, INV-1) (got: $(cat "$SLOT_LOG_T20" 2>/dev/null))" false
+    fi
+
+    if [[ "$t20_out" == *"=== Summary: 6 discovered, 0 failed ==="* ]]; then
+        assert "T20e: byte-exact Summary line (6 discovered, 0 failed)" true
+    else
+        assert "T20e: byte-exact Summary line (6 discovered, 0 failed) (got: $t20_out)" false
+    fi
+
+    assert "T20f: run_all.sh exits 0 (all 6 pool members pass)" \
+        test "$t20_rc" -eq 0
+else
+    assert "T20a: peak concurrent worker shells <= 2 (the throttle cap) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T20b: peak concurrent worker shells >= 2 (INV-3 at the worker-shell level) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T20c: mock CUR/MAX real-overlap counter shows max-concurrency >= 2 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T20d: REIFY_SLOT_EVENT_LOG contains an ACQUIRE entry (slot_acquire still the host-global gate, INV-1) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T20e: byte-exact Summary line (6 discovered, 0 failed) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T20f: run_all.sh exits 0 (all 6 pool members pass) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+fi
+
+# -- Test 21: H2 Phase-1 fork-EAGAIN degrade-not-abort --------------------------
+# Task #5129 (PRD docs/prds/run-all-pool-contention-tiering-fix.md §9 L1,
+# esc-3848): a real async `( ) &` fork EAGAIN is uncatchable/fatal in bash
+# (verified empirically -- exit 254 even under `set +e`), so it is exercised
+# here via a deterministic fault-injection seam
+# (REIFY_RUN_ALL_POOL_FORK_FAIL_MEMBER) rather than real resource exhaustion.
+# Proves a single member's simulated fork failure degrades THAT member to a
+# failure (through the existing .out/.rc per-member protocol) and lets the
+# suite COMPLETE with the byte-identical Summary/FAILED contract, instead of
+# aborting the whole run.
+echo ""
+echo "--- Test 21: H2 Phase-1 fork-EAGAIN degrade-not-abort ---"
+
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+    TMPDIR_T21="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T21")
+
+    # Fixture: 3 `pool` members. test_pool_2.sh is an exit-1 mock -- Phase 1
+    # never actually runs it (the fault-injection seam intercepts it before
+    # spawn), but Phase 2.5 retries EVERY failed pool member serially
+    # (VERBATIM, INV-2), and that retry DOES run the real exit-1 mock body --
+    # so the degraded member lands deterministically in hard FAILED, not
+    # FLAKY. test_pool_1/3 are ordinary exit-0 mocks.
+    MANIFEST_T21="$TMPDIR_T21/classification.manifest"
+    cat > "$MANIFEST_T21" <<'EOF'
+test_pool_1.sh pool
+test_pool_2.sh pool
+test_pool_3.sh pool
+EOF
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T21/test_pool_1.sh"
+    printf '#!/usr/bin/env bash\nexit 1\n' > "$TMPDIR_T21/test_pool_2.sh"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T21/test_pool_3.sh"
+    chmod +x "$TMPDIR_T21/test_pool_1.sh" "$TMPDIR_T21/test_pool_2.sh" "$TMPDIR_T21/test_pool_3.sh"
+
+    t21_rc=0
+    t21_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+        RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T21" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T21/pool.lock" \
+        REIFY_RUN_ALL_POOL_CONCURRENCY=2 \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        REIFY_RUN_ALL_POOL_FORK_FAIL_MEMBER=test_pool_2.sh \
+        bash "$RUN_ALL" "$TMPDIR_T21" 2>&1)" || t21_rc=$?
+
+    # 21a: the suite COMPLETED (exit 1 -- one real failure), not aborted (no
+    # bare exit 254 / missing Summary).
+    assert "T21a: run_all.sh exits 1 (suite completed, did not abort)" \
+        test "$t21_rc" -eq 1
+
+    if [[ "$t21_out" == *"ERROR: run_all.sh pool: fork() EAGAIN for test_pool_2.sh under load -- degrading this member to a failure"* ]]; then
+        assert "T21b: fork-EAGAIN degrade diagnostic names test_pool_2.sh" true
+    else
+        assert "T21b: fork-EAGAIN degrade diagnostic names test_pool_2.sh (got: $t21_out)" false
+    fi
+
+    if [[ "$t21_out" == *"=== Summary: 3 discovered, 1 failed ==="* ]]; then
+        assert "T21c: byte-exact Summary line (3 discovered, 1 failed)" true
+    else
+        assert "T21c: byte-exact Summary line (3 discovered, 1 failed) (got: $t21_out)" false
+    fi
+
+    if grep -qE '^FAILED .*test_pool_2\.sh' <<<"$t21_out"; then
+        assert "T21d: ^FAILED classifier marker names test_pool_2.sh" true
+    else
+        assert "T21d: ^FAILED classifier marker names test_pool_2.sh (got: $t21_out)" false
+    fi
+
+    if grep -qE '^=== FAILED:.*test_pool_2\.sh' <<<"$t21_out"; then
+        assert "T21e: === FAILED: human line names test_pool_2.sh" true
+    else
+        assert "T21e: === FAILED: human line names test_pool_2.sh (got: $t21_out)" false
+    fi
+
+    if [[ "$t21_out" == *"RESULT: PASS (test_pool_1.sh)"* ]] && [[ "$t21_out" == *"RESULT: PASS (test_pool_3.sh)"* ]]; then
+        assert "T21f: the other pool members ran and passed (test_pool_1.sh, test_pool_3.sh)" true
+    else
+        assert "T21f: the other pool members ran and passed (test_pool_1.sh, test_pool_3.sh) (got: $t21_out)" false
+    fi
+
+    t21_headers="$(grep -E '^--- Running: ' <<<"$t21_out" | sed -E 's/^--- Running: (.*) ---$/\1/')" || true
+    t21_expected=$'test_pool_1.sh\ntest_pool_2.sh\ntest_pool_3.sh'
+    if [ "$t21_headers" = "$t21_expected" ]; then
+        assert "T21g: discovered-order headers match sorted order" true
+    else
+        assert "T21g: discovered-order headers match sorted order (got: $t21_headers)" false
+    fi
+
+    # 21h: happy-path non-regression -- WITHOUT the seam, an all-exit-0
+    # variant of the same 3-member fixture emits no degrade marker and
+    # exits 0.
+    TMPDIR_T21H="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T21H")
+    MANIFEST_T21H="$TMPDIR_T21H/classification.manifest"
+    cat > "$MANIFEST_T21H" <<'EOF'
+test_pool_1.sh pool
+test_pool_2.sh pool
+test_pool_3.sh pool
+EOF
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T21H/test_pool_1.sh"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T21H/test_pool_2.sh"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T21H/test_pool_3.sh"
+    chmod +x "$TMPDIR_T21H/test_pool_1.sh" "$TMPDIR_T21H/test_pool_2.sh" "$TMPDIR_T21H/test_pool_3.sh"
+
+    t21h_rc=0
+    t21h_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA -u REIFY_RUN_ALL_POOL_FORK_FAIL_MEMBER \
+        RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T21H" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T21H/pool.lock" \
+        REIFY_RUN_ALL_POOL_CONCURRENCY=2 \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        bash "$RUN_ALL" "$TMPDIR_T21H" 2>&1)" || t21h_rc=$?
+
+    if [[ "$t21h_out" != *"ERROR: run_all.sh pool: fork() EAGAIN"* ]]; then
+        assert "T21h: seam-off all-pass fixture emits no fork-EAGAIN degrade marker" true
+    else
+        assert "T21h: seam-off all-pass fixture emits no fork-EAGAIN degrade marker (got: $t21h_out)" false
+    fi
+
+    assert "T21h: seam-off all-pass fixture exits 0" \
+        test "$t21h_rc" -eq 0
+else
+    assert "T21a: run_all.sh exits 1 (suite completed, did not abort) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T21b: fork-EAGAIN degrade diagnostic names test_pool_2.sh (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T21c: byte-exact Summary line (3 discovered, 1 failed) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T21d: ^FAILED classifier marker names test_pool_2.sh (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T21e: === FAILED: human line names test_pool_2.sh (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T21f: the other pool members ran and passed (test_pool_1.sh, test_pool_3.sh) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T21g: discovered-order headers match sorted order (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T21h: seam-off all-pass fixture emits no fork-EAGAIN degrade marker (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T21h: seam-off all-pass fixture exits 0 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+fi
+
 # -- Summary --------------------------------------------------------------------
 test_summary
