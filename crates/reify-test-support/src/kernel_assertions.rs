@@ -228,11 +228,20 @@ use reify_ir::{
 ///
 /// Panics with a descriptive message if any of the following fail:
 /// - `query_many(&[])` returns `Ok(v)` with `v.is_empty()`.
-/// - `query_many` on a 2-element input returns `Err(_)` or `Ok(v)` with
-///   `v.len() == 2`.
+/// - `query_many` on a 2-element input, when `probe` is a handle both
+///   per-element queries (`Volume`, `SurfaceArea`) succeed on, returns
+///   `Ok(v)` with `v.len() == 2` — a conforming kernel's `query_many`
+///   must not error on a batch it would accept element-by-element.
+///   `Err(_)` is only tolerated when `probe` is itself invalid (e.g. the
+///   STUB arm's dangling probe, where every query errors).
 /// - `query_many` on a 1-element input is `Debug`-equal to the
 ///   corresponding single `query` call (both `Err` with the same debug
-///   representation, or both `Ok` with the same single value).
+///   representation, or both `Ok` with the same single value). Debug
+///   representations are compared rather than `==` because neither
+///   `Value` nor `QueryError` derive `PartialEq` (both derive only
+///   `Debug, Clone`, and `QueryError` is `#[non_exhaustive]`); this
+///   relies on their derived `Debug` output being deterministic and
+///   content-complete.
 pub fn assert_query_many_length_invariant<K: GeometryKernel + ?Sized>(
     kernel: &K,
     probe: GeometryHandleId,
@@ -245,37 +254,54 @@ pub fn assert_query_many_length_invariant<K: GeometryKernel + ?Sized>(
         ),
     }
 
+    // Determine whether `probe` is a handle this kernel considers valid
+    // by observing the per-element `query` outcome for both query kinds
+    // used in the batch below. `volume_result` is also reused for the
+    // single-vs-many agreement check further down, rather than issuing a
+    // second, redundant `query` call for the same input.
+    let volume_result = kernel.query(&GeometryQuery::Volume(probe));
+    let probe_queries_succeed =
+        volume_result.is_ok() && kernel.query(&GeometryQuery::SurfaceArea(probe)).is_ok();
+
     let two = [
         GeometryQuery::Volume(probe),
         GeometryQuery::SurfaceArea(probe),
     ];
     match kernel.query_many(&two) {
-        Err(_) => {}
         Ok(v) if v.len() == two.len() => {}
-        Ok(v) => panic!(
-            "query_many on {} queries must return Err(_) or Ok(v) with v.len() == queries.len(), got Ok(v) with v.len() == {}: {:?}",
+        // Only tolerated when the probe itself is invalid: callers always
+        // pass a probe the kernel considers canonical for its mode (a
+        // dangling id for the STUB arm, a freshly-executed handle for the
+        // REAL arm), so unconditionally accepting `Err(_)` here would let
+        // a kernel that unexpectedly errors on a valid batch pass this
+        // check unexercised.
+        Err(_) if !probe_queries_succeed => {}
+        other => panic!(
+            "query_many on {} queries must return {}, got {:?}",
             two.len(),
-            v.len(),
-            v
+            if probe_queries_succeed {
+                "Ok(v) with v.len() == queries.len(), since both per-element queries on probe succeed"
+            } else {
+                "Err(_) or Ok(v) with v.len() == queries.len()"
+            },
+            other
         ),
     }
 
-    let one = [GeometryQuery::Volume(probe)];
-    let many_result = kernel.query_many(&one);
-    let single_result = kernel.query(&one[0]);
+    let many_result = kernel.query_many(&[GeometryQuery::Volume(probe)]);
     let many_desc = match &many_result {
         Ok(v) if v.len() == 1 => format!("Ok({:?})", v[0]),
         Ok(v) => format!("Ok(<wrong length {}>: {:?})", v.len(), v),
         Err(e) => format!("Err({:?})", e),
     };
-    let single_desc = match &single_result {
+    let single_desc = match &volume_result {
         Ok(v) => format!("Ok({:?})", v),
         Err(e) => format!("Err({:?})", e),
     };
     assert_eq!(
         many_desc, single_desc,
         "query_many(&[q]) must agree with query(&q): query_many gave {:?}, query gave {:?}",
-        many_result, single_result
+        many_result, volume_result
     );
 }
 
@@ -288,6 +314,14 @@ pub fn assert_query_many_length_invariant<K: GeometryKernel + ?Sized>(
 /// `extract_edges` doc: "a second call with the same `handle` returns the
 /// same handle list as the first call"), which the v0.2 selector
 /// vocabulary's `adjacent_to_face` relies on.
+///
+/// The two calls are compared via `format!("{:?}", _)` rather than `==`:
+/// the `Ok` side (`Vec<GeometryHandleId>`) does implement `PartialEq`,
+/// but `QueryError` derives only `Debug, Clone` (and is
+/// `#[non_exhaustive]`), so `Result<Vec<GeometryHandleId>, QueryError>`
+/// has no `PartialEq` impl as a whole. Debug-string equality compares
+/// both arms uniformly, relying on the derived `Debug` output being
+/// deterministic and content-complete.
 ///
 /// Panics naming the offending method on divergence.
 pub fn assert_extract_determinism<K: GeometryKernel + ?Sized>(kernel: &mut K, handle: GeometryHandleId) {
@@ -712,6 +746,52 @@ mod tests {
 
     const STUB_MSG: &str = "TestStub kernel not available — fixture only";
 
+    /// Generates a `GeometryKernel` impl whose `execute`/`query`/`export`/
+    /// `tessellate` all return the stub error shape carrying `$msg`
+    /// (`OperationFailed`/`QueryFailed`/`FormatError`/`TessellationFailed`
+    /// respectively). An optional `extra { .. }` block is spliced into the
+    /// same `impl`, so a fixture that only needs to add or override
+    /// `query_many`/`extract_*` (e.g. `WrongLengthQueryManyKernel` below)
+    /// doesn't have to repeat the four baseline bodies.
+    ///
+    /// Fixtures that must diverge on one of the four baseline methods
+    /// themselves — not just their message — don't fit this shape and
+    /// stay hand-written: `AcceptsDanglingKernel` (all four return `Ok`),
+    /// `WrongTaxonomyStub` (`execute` returns the wrong variant), and
+    /// `TestRealKernel` (stateful handle validity, not all-error).
+    macro_rules! impl_all_error_kernel {
+        ($ty:ty, $msg:expr $(, extra { $($extra:tt)* })?) => {
+            impl GeometryKernel for $ty {
+                fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+                    Err(GeometryError::OperationFailed(($msg).into()))
+                }
+
+                fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
+                    Err(QueryError::QueryFailed(($msg).into()))
+                }
+
+                fn export(
+                    &self,
+                    _handle: GeometryHandleId,
+                    _format: ExportFormat,
+                    _writer: &mut dyn std::io::Write,
+                ) -> Result<(), ExportError> {
+                    Err(ExportError::FormatError(($msg).into()))
+                }
+
+                fn tessellate(
+                    &self,
+                    _handle: GeometryHandleId,
+                    _tolerance: f64,
+                ) -> Result<Mesh, TessError> {
+                    Err(TessError::TessellationFailed(($msg).into()))
+                }
+
+                $($($extra)*)?
+            }
+        };
+    }
+
     /// Minimal all-error stub kernel for testing [`crate::assert_stub_kernel_errors!`].
     ///
     /// Mirrors the `_private: ()` pattern from `reify-kernel-occt/src/stubs.rs`.
@@ -725,32 +805,7 @@ mod tests {
         }
     }
 
-    impl GeometryKernel for TestStubKernel {
-        fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
-            Err(GeometryError::OperationFailed(STUB_MSG.into()))
-        }
-
-        fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
-            Err(QueryError::QueryFailed(STUB_MSG.into()))
-        }
-
-        fn export(
-            &self,
-            _handle: GeometryHandleId,
-            _format: ExportFormat,
-            _writer: &mut dyn std::io::Write,
-        ) -> Result<(), ExportError> {
-            Err(ExportError::FormatError(STUB_MSG.into()))
-        }
-
-        fn tessellate(
-            &self,
-            _handle: GeometryHandleId,
-            _tolerance: f64,
-        ) -> Result<Mesh, TessError> {
-            Err(TessError::TessellationFailed(STUB_MSG.into()))
-        }
-    }
+    impl_all_error_kernel!(TestStubKernel, STUB_MSG);
 
     // Invoke the macro to generate three #[test] fns against the fixture stub.
     crate::assert_stub_kernel_errors!(TestStubKernel::new, "TestStub");
@@ -760,36 +815,11 @@ mod tests {
     /// many queries were passed in.
     struct WrongLengthQueryManyKernel;
 
-    impl GeometryKernel for WrongLengthQueryManyKernel {
-        fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
-            Err(GeometryError::OperationFailed(STUB_MSG.into()))
-        }
-
-        fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
-            Err(QueryError::QueryFailed(STUB_MSG.into()))
-        }
-
+    impl_all_error_kernel!(WrongLengthQueryManyKernel, STUB_MSG, extra {
         fn query_many(&self, _queries: &[GeometryQuery]) -> Result<Vec<Value>, QueryError> {
             Ok(Vec::new())
         }
-
-        fn export(
-            &self,
-            _handle: GeometryHandleId,
-            _format: ExportFormat,
-            _writer: &mut dyn std::io::Write,
-        ) -> Result<(), ExportError> {
-            Err(ExportError::FormatError(STUB_MSG.into()))
-        }
-
-        fn tessellate(
-            &self,
-            _handle: GeometryHandleId,
-            _tolerance: f64,
-        ) -> Result<Mesh, TessError> {
-            Err(TessError::TessellationFailed(STUB_MSG.into()))
-        }
-    }
+    });
 
     #[test]
     fn query_many_length_helper_passes_conforming_and_catches_wrong_length() {
@@ -829,32 +859,7 @@ mod tests {
         }
     }
 
-    impl GeometryKernel for UnstableExtractKernel {
-        fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
-            Err(GeometryError::OperationFailed(STUB_MSG.into()))
-        }
-
-        fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
-            Err(QueryError::QueryFailed(STUB_MSG.into()))
-        }
-
-        fn export(
-            &self,
-            _handle: GeometryHandleId,
-            _format: ExportFormat,
-            _writer: &mut dyn std::io::Write,
-        ) -> Result<(), ExportError> {
-            Err(ExportError::FormatError(STUB_MSG.into()))
-        }
-
-        fn tessellate(
-            &self,
-            _handle: GeometryHandleId,
-            _tolerance: f64,
-        ) -> Result<Mesh, TessError> {
-            Err(TessError::TessellationFailed(STUB_MSG.into()))
-        }
-
+    impl_all_error_kernel!(UnstableExtractKernel, STUB_MSG, extra {
         fn extract_edges(
             &mut self,
             _handle: GeometryHandleId,
@@ -875,7 +880,7 @@ mod tests {
         ) -> Result<Vec<GeometryHandleId>, QueryError> {
             Ok(vec![self.next_id()])
         }
-    }
+    });
 
     #[test]
     fn extract_determinism_helper_passes_conforming_and_catches_unstable() {
