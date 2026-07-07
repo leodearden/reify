@@ -1328,6 +1328,50 @@ async fn open_path_into_engine(state: &DebugServerState, raw_path: &str) -> Resu
         .await
 }
 
+/// Mirrors `open_path_into_engine`'s engine block (`update_source` +
+/// `build_gui_state` on a real OS thread) but additionally refreshes the
+/// delta baseline through the same [`crate::diff::compute_delta`]
+/// choke-point `main.rs`'s normal command/watcher path uses (INV-GUI-2,
+/// task 5035 L6).
+///
+/// Without this refresh, a debug-driven open_file/load_fixture call advances
+/// the engine but leaves `last_state` stale, so the next NORMAL command
+/// computes its delta against the pre-debug baseline instead of the state
+/// the frontend actually has (survey latent bug #7 — the stale-baseline
+/// desync).
+///
+/// The returned `StateDelta` from `compute_delta` is intentionally discarded:
+/// the full `GuiState` is still delivered to the frontend via the caller's
+/// synchronous `query_frontend` push (not `emit_delta`) — see PRD §4 D7. This
+/// call exists purely for its side effect of refreshing `last_state`.
+/// `update_source` already routes through `post_engine_call_telemetry` (the
+/// L4 emission choke-point) by construction.
+///
+/// `last_state` is typed as `&std::sync::Mutex<...>` (not `&Arc<Mutex<...>>`)
+/// so this helper is headlessly testable with a plain `Mutex` in unit tests;
+/// callers holding an `Arc<Mutex<_>>` (e.g. `DebugServerState::last_state`)
+/// pass it in via `&state.last_state`, which deref-coerces cleanly.
+pub async fn open_source_into_engine_and_refresh_baseline(
+    engine: &Arc<Mutex<EngineSession>>,
+    last_state: &std::sync::Mutex<Option<crate::types::GuiState>>,
+    path: &str,
+    content: &str,
+) -> Result<crate::types::GuiState, String> {
+    let path = path.to_owned();
+    let content = content.to_owned();
+    let gui_state = run_on_engine(engine, move |session| {
+        session
+            .update_source(&path, &content)
+            .map_err(|e| format!("update_source failed: {e}"))?;
+        session
+            .build_gui_state()
+            .map_err(|e| format!("build_gui_state failed: {e}"))
+    })
+    .await?;
+    crate::diff::compute_delta(last_state, &gui_state);
+    Ok(gui_state)
+}
+
 async fn handle_open_file(state: &DebugServerState, params: Value) -> Result<Value, String> {
     let raw_path = params["path"]
         .as_str()
