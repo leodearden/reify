@@ -4093,13 +4093,28 @@ impl Engine {
         // Runs on EVERY build (geometry_output block may be skipped when no kernel
         // is registered, but the snapshot graph is always populated by check() above).
         // No-op when eval_state is None (empty module or compile-only build).
+        //
+        // SKIP when the unified planner detected a CYCLE: cyclic (and downstream-
+        // stranded) nodes land in `unified_pass.residue` and are excluded from
+        // `exec_order`, so `check_dag_complete` would flag the cycle's unavoidable
+        // backward edge as a false "incomplete DAG" violation. A cycle is NOT a
+        // completeness bug — the executor diagnoses it via E_EVAL_CYCLE /
+        // unresolvable-Sub (appended just below). Post-γ (#4954) geometry lets carry
+        // value cells, so a mutual geometry `let` cycle (`a = translate(b)`,
+        // `b = rotate(a)`) now surfaces a value-cell/realization cycle here where
+        // pre-γ it had no value-cell trace (geometry_sibling_realization_cycle_*).
         #[cfg(debug_assertions)]
         if let Some(state) = self.eval_state.as_ref() {
-            crate::dirty::assert_dag_complete_from_graph(
-                &state.snapshot.graph,
-                &module.fields,
-                &exec_order,
-            );
+            let cycle_detected = unified_pass
+                .as_ref()
+                .is_some_and(|pass| !pass.residue.is_empty());
+            if !cycle_detected {
+                crate::dirty::assert_dag_complete_from_graph(
+                    &state.snapshot.graph,
+                    &module.fields,
+                    &exec_order,
+                );
+            }
         }
 
         // Task 4357 δ / 4358 ε: unified build-DAG cycle contract. The planner
