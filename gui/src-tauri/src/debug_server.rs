@@ -3161,4 +3161,73 @@ mod tests {
             "vonMises values must survive the serde round-trip byte-identical"
         );
     }
+
+    // ── Task 5035 step-1: CHARACTERIZATION — debug mutation leaves the delta
+    // baseline stale on today's main (INVESTIGATE-THEN-ROUTE, PRD §8 L6) ──
+    //
+    // `DebugServerState` has no handle to `AppState.last_state` (the delta
+    // baseline `compute_delta` diffs against). So a debug-triggered engine
+    // mutation — replicated here as `open_path_into_engine`'s engine block
+    // verbatim (update_source + build_gui_state on `run_on_engine`) — advances
+    // the engine to a new state (S1) but never refreshes the baseline. The
+    // next NORMAL command (`set_parameter`) still diffs against the pre-debug
+    // baseline (S0 = None), so its delta comes back FULL/bloated instead of
+    // minimal relative to S1.
+    //
+    // This is a characterization test (green on current main), not a RED
+    // regression test — it documents the bug this task's later steps fix.
+    #[tokio::test]
+    async fn debug_mutation_leaves_delta_baseline_stale_today() {
+        use reify_test_support::bracket_source;
+
+        // bracket_source() has >= 2 editable params (width, height, thickness,
+        // fillet_radius, hole_diameter); make_test_engine() pre-loads it at
+        // module path "bracket".
+        let engine = crate::tests::make_test_engine();
+
+        // Pre-debug delta baseline (S0): no command has run yet.
+        let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+            std::sync::Mutex::new(None);
+
+        // Replicate today's debug-mutation engine ops WITHOUT any baseline
+        // refresh — mirrors `open_path_into_engine`'s engine block exactly
+        // (that function has no `compute_delta` call anywhere on this path).
+        let content = bracket_source();
+        run_on_engine(&engine, move |session| {
+            session
+                .update_source("bracket", content)
+                .map_err(|e| format!("update_source failed: {e}"))?;
+            session
+                .build_gui_state()
+                .map_err(|e| format!("build_gui_state failed: {e}"))
+        })
+        .await
+        .expect("debug-style update_source+build_gui_state must succeed (S0 -> S1)");
+
+        // BUG: the engine really did advance to S1, but the baseline was
+        // never told — it is still the pre-debug S0 (None).
+        assert!(
+            last_state.lock().unwrap().is_none(),
+            "today's debug mutation must NOT refresh last_state — this is the bug this task fixes"
+        );
+
+        // A normal command now runs: set_parameter changes exactly one cell.
+        let s2 = crate::commands::set_parameter_impl(&engine, "Bracket.thickness", "9mm")
+            .expect("set_parameter_impl must succeed");
+
+        // The normal command's delta is computed against the STALE (None)
+        // baseline, so `compute_delta` treats it as an initial emission and
+        // returns a FULL delta — re-reporting every param, including ones
+        // set_parameter never touched (e.g. height), not a minimal one.
+        let delta = crate::diff::compute_delta(&last_state, &s2);
+        assert!(
+            delta
+                .changed_values
+                .iter()
+                .any(|v| v.cell_id == "Bracket.height"),
+            "stale-baseline delta must be FULL/bloated: it re-reports 'Bracket.height', \
+             which set_parameter never touched, solely because the baseline is still None \
+             (documents the pre-debug-mutation S0 desync)"
+        );
+    }
 }
