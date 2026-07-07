@@ -49,6 +49,14 @@
 # lib, slot-acquire lib, cpu-admit lib, load-tolerance lib, flock) is present;
 # otherwise run_all.sh falls back to the legacy fully-serial for-loop.
 #
+# Discovery/partition diagnostic guard (task #5123, esc-5080-9): a scoped ERR
+# trap wraps the pool path's discovery -> partition -> workdir-setup block
+# (before Phase 1 spawns anything) so a failure there prints an actionable
+# `ERROR: run_all.sh pool: ...` diagnostic -- failing command, exit code,
+# loadavg, PSI avg10 -- instead of dying silently right after the `INFO:
+# run_all.sh pool: N=` line, then re-raises the same exit code. See
+# _ra_discovery_diag below.
+#
 # Knobs:
 #   REIFY_RUN_ALL_POOL_CONCURRENCY  N (default: max(1, nproc/2); never a
 #                                   frozen host-baked count -- resolved at
@@ -185,6 +193,49 @@ _RA_CLOCK_SANITIZE='s/@@REIFY_CLOCK_/@@REIFY_QUOTED_CLOCK_/g'
 _ra_emit_sanitized() {
     [ -f "$1" ] || return 0
     sed "$_RA_CLOCK_SANITIZE" "$1" 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------------------
+# _ra_discovery_diag <rc> <lineno> <bash_command>  (task #5123, esc-5080-9)
+#
+# ERR-trap handler scoped around the H2 pool discovery/partition/pool-workdir
+# block below. Under fleet-wide host overload that block was observed to die
+# IMMEDIATELY after the "INFO: run_all.sh pool: N=" line with ZERO
+# diagnostic -- an unguarded command inside it returned nonzero under
+# `set -euo pipefail` and the script just exited, so the operator had no way
+# to tell which command failed or why. The pool branch installs
+# `trap '_ra_discovery_diag "$?" "$LINENO" "$BASH_COMMAND"' ERR` right after
+# the INFO line and clears it (`trap - ERR`) right after the workdir/EXIT-trap
+# setup, so this fires on the first unguarded failure in exactly that span
+# (never the PSI-gate definition or Phases 1-3).
+#
+# Runs fail-open under `set +e` -- gathering diagnostic context must never
+# itself become a new failure source or mask the real root cause -- reads
+# loadavg and PSI avg10 best-effort, prints an actionable `ERROR: run_all.sh
+# pool: ...` diagnostic to stderr, then RE-RAISES the exact captured exit
+# code. Purely additive observability: no classifier/aggregation/exit-code
+# behavior changes on either the failure or success path.
+# ---------------------------------------------------------------------------
+_ra_discovery_diag() {
+    set +e
+    local _rc="$1" _lineno="$2" _cmd="$3"
+    local _la _avg10 _psi_proc
+
+    _la="$( (cut -d' ' -f1-3 /proc/loadavg) 2>/dev/null )"
+    [ -n "$_la" ] || _la="?"
+
+    _psi_proc="${REIFY_RUN_ALL_POOL_PSI_PROC_PATH:-/proc/pressure/cpu}"
+    if command -v cpu_admit_read_avg10 >/dev/null 2>&1; then
+        _avg10="$(cpu_admit_read_avg10 "$_psi_proc" 2>/dev/null)"
+    else
+        _avg10=""
+    fi
+    [ -n "$_avg10" ] || _avg10="n/a"
+
+    echo "ERROR: run_all.sh pool: discovery/partition stage failed (exit ${_rc}) at line ${_lineno}: command: ${_cmd}" >&2
+    echo "ERROR: run_all.sh pool: host state at failure: loadavg=${_la} psi_cpu_avg10=${_avg10} (task #5123 discovery/partition guard)" >&2
+
+    exit "$_rc"
 }
 
 failures=0
@@ -368,6 +419,11 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     # idiom. Only emitted on the pool path (not the all-serial fallback).
     echo "INFO: run_all.sh pool: N=${_H2_POOL_N} lock=${_H2_POOL_LOCK}" >&2
 
+    # Discovery/partition/pool-workdir-setup diagnostic guard (task #5123,
+    # esc-5080-9): scoped to exactly this block, cleared right after the
+    # workdir/EXIT-trap setup below -- see _ra_discovery_diag for why.
+    trap '_ra_discovery_diag "$?" "$LINENO" "$BASH_COMMAND"' ERR
+
     # -- Discovery + partition (pool vs serial; unclassified fail-safes serial) --
     _h2_discovered_list=()
     while IFS= read -r _h2_name; do
@@ -419,6 +475,10 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
 
     _H2_WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/reify-run-all-pool.XXXXXX")"
     trap 'rm -rf "$_H2_WORKDIR"' EXIT
+
+    # Discovery/partition/pool-workdir-setup guard ends here -- clear before
+    # the PSI-gate definition and Phases 1-3 so it never wraps them.
+    trap - ERR
 
     # -- PSI soft-gate (parent-side, before each pool spawn) ---------------------
     # Paces pool spawns under sustained CPU pressure without ever reducing N,
