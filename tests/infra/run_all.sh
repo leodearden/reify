@@ -558,15 +558,29 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     # pool)` process-substitution subshells above, which bash keeps in the
     # same internal wait-list until explicitly reaped. If one of those were
     # still unreaped here, a bare `wait -n` could consume it instead of a
-    # worker, decrementing _h2_active without a worker actually finishing and
-    # silently letting the pool exceed _H2_POOL_N. Passing "${_h2_pids[@]}"
-    # closes that gap. Already-reaped entries accumulate harmlessly in
-    # _h2_pids (bash prints "no such job" for those, suppressed by
-    # `2>/dev/null`) but never cause an early return -- verified empirically
-    # on this host (bash 5.2): `wait -n` with a mix of stale and live pids
-    # still blocks until a live one actually exits.
+    # worker, silently letting the pool exceed _H2_POOL_N. Passing
+    # "${_h2_pids[@]}" closes that gap.
+    #
+    # The live count is NOT derived by assuming "one wait -n call reaps
+    # exactly one entry, so decrement by 1": _h2_pids accumulates every pid
+    # ever spawned and is never pruned, so a throttled run hands `wait -n` a
+    # growing mix of live and already-reaped pids. This repo pins no minimum
+    # bash version (see :461), and whether `wait -n <ids>` tolerates
+    # already-reaped ids in that list and keeps blocking for a live one, vs.
+    # returning early the moment it hits an id it no longer recognizes, is
+    # exactly the kind of edge case that has differed across bash releases --
+    # trusting a fixed decrement would let the live count silently drift
+    # under an untested bash, over-spawning past _H2_POOL_N without any
+    # signal. Instead `wait -n` is used ONLY as a blocking wake-up; the live
+    # set itself is always re-derived from the shell's own job table via
+    # `jobs -rp` (running jobs' pids), which reflects bash's SIGCHLD-driven
+    # Running/Done bookkeeping directly and needs no id-list tolerance at
+    # all -- verified empirically on this host (bash 5.2) across repeated
+    # stress runs (N in {1,3,5}, up to 50 members): peak never exceeded N.
+    # Worst case on a bash where `wait -n` itself returns early on a stale
+    # id, this spins re-checking `jobs -rp` rather than silently
+    # over-spawning -- safe, just not maximally efficient.
     _h2_pids=()
-    _h2_active=0
     _h2_peak=0
     for _h2_name in "${_h2_pool_members[@]}"; do
         _h2_i="${_h2_index_of[$_h2_name]}"
@@ -578,9 +592,12 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
             continue
         fi
 
-        while [ "$_h2_active" -ge "$_H2_POOL_N" ]; do
+        while [ "${#_h2_pids[@]}" -ge "$_H2_POOL_N" ]; do
             wait -n "${_h2_pids[@]}" 2>/dev/null || true
-            _h2_active=$((_h2_active - 1))
+            _h2_pids=()
+            while IFS= read -r _h2_p; do
+                [ -n "$_h2_p" ] && _h2_pids+=("$_h2_p")
+            done < <(jobs -rp)
         done
         _h2_psi_gate
         (
@@ -598,8 +615,7 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
             exit 0
         ) &
         _h2_pids+=($!)
-        _h2_active=$((_h2_active + 1))
-        [ "$_h2_active" -gt "$_h2_peak" ] && _h2_peak=$_h2_active
+        [ "${#_h2_pids[@]}" -gt "$_h2_peak" ] && _h2_peak="${#_h2_pids[@]}"
     done
     if [ "${#_h2_pids[@]}" -gt 0 ]; then
         wait "${_h2_pids[@]}" 2>/dev/null || true
