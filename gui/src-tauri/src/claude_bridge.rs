@@ -288,14 +288,17 @@ pub(crate) async fn on_sidecar_exit<F>(
     }
 }
 
-/// Named configuration for MCP tool interception in the sidecar reader task.
+/// Named configuration for the sidecar reader task's event emission.
 ///
-/// Replaces the anonymous 3-tuple `(Arc<Mutex<EngineSession>>, F, Arc<RwLock<SelectionInfo>>)`
-/// that previously required `#[allow(clippy::type_complexity)]`.
+/// Previously also carried `engine` + `selection` fields consumed by an
+/// in-process `reify_`-prefixed tool-call interception; that interception
+/// mutated engine state with zero frontend sync and was deleted (gui-state-sync
+/// PRD L8), so this holder was slimmed to just the emitter it still needs. A
+/// future properly-wired, synced re-introduction of engine-mutating sidecar
+/// tools is owned by docs/prds/v0_6/ai-native-editing.md (registered on the
+/// reify-debug HTTP MCP server, not a claude_bridge interception).
 pub struct McpConfig<F> {
-    pub(crate) engine: Arc<std::sync::Mutex<crate::engine::EngineSession>>,
     pub(crate) event_emitter: Arc<F>,
-    pub(crate) selection: Arc<std::sync::RwLock<reify_mcp::SelectionInfo>>,
 }
 
 // --- Sidecar lifecycle management ---
@@ -356,20 +359,16 @@ impl SidecarHandle {
         Self::new_inner::<R, fn(String, Value)>(stdin, reader, state, None)
     }
 
-    /// Construct a SidecarHandle with full event and MCP wiring.
+    /// Construct a SidecarHandle with full event wiring.
     ///
     /// The reader task will:
     /// - Transition state to Ready on ready message
     /// - Emit all outbound messages to `event_emitter` via [`outbound_to_event`]
-    /// - For `tool_call` messages with a `reify_` prefix, call [`crate::mcp_context::mcp_tool_call_impl`]
-    ///   and write the result back to the sidecar as a `tool_result` inbound message
     pub fn from_parts_with_mcp<W, R, F>(
         writer: W,
         reader: R,
         state: Arc<Mutex<SidecarState>>,
-        engine: Arc<std::sync::Mutex<crate::engine::EngineSession>>,
         event_emitter: F,
-        selection: Arc<std::sync::RwLock<reify_mcp::SelectionInfo>>,
     ) -> Self
     where
         W: AsyncWrite + Unpin + Send + 'static,
@@ -378,9 +377,7 @@ impl SidecarHandle {
     {
         let stdin: SharedStdin = Arc::new(Mutex::new(Box::new(writer)));
         let mcp_config = McpConfig {
-            engine,
             event_emitter: Arc::new(event_emitter),
-            selection,
         };
         Self::new_inner(stdin, reader, state, Some(mcp_config))
     }
@@ -400,7 +397,6 @@ impl SidecarHandle {
         let state_for_ready = Arc::clone(&state);
         let state_for_crash = Arc::clone(&state);
         let notify_for_crash = Arc::clone(&ready_notify);
-        let stdin_for_reader = Arc::clone(&stdin);
         let notify_for_reader = Arc::clone(&ready_notify);
         // Capture event_emitter for the on_exit closure so we can emit
         // claude-sidecar-crashed when an unexpected exit is detected.
@@ -421,70 +417,18 @@ impl SidecarHandle {
                         });
                     }
 
-                    // 2. Event emission and MCP interception
+                    // 2. Event emission. All outbound messages — including tool_call —
+                    // are forwarded to the frontend as-is. There is no in-process MCP
+                    // tool interception here: the `reify_`-prefixed interception that
+                    // used to run engine-mutating tools via
+                    // `mcp_context::mcp_tool_call_impl` with zero frontend sync was
+                    // deleted (gui-state-sync PRD L8). A future properly-wired, synced
+                    // re-introduction of engine-mutating sidecar tools is owned by
+                    // docs/prds/v0_6/ai-native-editing.md (registered on the
+                    // reify-debug HTTP MCP server, not a claude_bridge interception).
                     if let Some(ref mcp) = mcp_config {
                         let (event_name, payload) = outbound_to_event(&msg);
                         (mcp.event_emitter)(event_name, payload);
-
-                        // 3. MCP tool interception for reify_ prefixed tool calls
-                        if let OutboundMessage::ToolCall {
-                            id,
-                            tool_name,
-                            tool_input,
-                            tool_use_id,
-                        } = &msg
-                            && tool_name.starts_with("reify_")
-                        {
-                            let id = id.clone();
-                            let err_id = id.clone();
-                            let tool_name = tool_name.clone();
-                            let tool_input = tool_input.clone();
-                            let tool_use_id = tool_use_id.clone();
-                            let engine_clone = Arc::clone(&mcp.engine);
-                            let selection_clone = Arc::clone(&mcp.selection);
-                            let stdin_clone = Arc::clone(&stdin_for_reader);
-                            let emitter_clone = Arc::clone(&mcp.event_emitter);
-                            tokio::spawn(async move {
-                                let ctx =
-                                    crate::mcp_context::TauriToolContext::builder(engine_clone)
-                                        .with_selection(selection_clone)
-                                        .with_event_emitter({
-                                            let e = Arc::clone(&emitter_clone);
-                                            move |name: &str, payload: serde_json::Value| {
-                                                e(name.to_string(), payload);
-                                            }
-                                        })
-                                        .build();
-                                let result = crate::mcp_context::mcp_tool_call_impl(
-                                    &tool_name, tool_input, &ctx,
-                                );
-                                let result_val = match result {
-                                    Ok(v) => v,
-                                    Err(e) => serde_json::json!({ "error": e }),
-                                };
-                                let response = InboundMessage::ToolResult {
-                                    id,
-                                    tool_name,
-                                    result: result_val,
-                                    tool_use_id,
-                                };
-                                let mut writer = stdin_clone.lock().await;
-                                if let Err(err) =
-                                    write_to_sidecar(&mut *writer, &response).await
-                                {
-                                    tracing::error!(
-                                        "failed to send tool result to sidecar: {err}"
-                                    );
-                                    emitter_clone(
-                                        "claude-error".to_string(),
-                                        serde_json::json!({
-                                            "id": err_id,
-                                            "message": format!("failed to send tool result to sidecar: {err}"),
-                                        }),
-                                    );
-                                }
-                            });
-                        }
                     }
                 },
                 move || {
@@ -841,7 +785,7 @@ pub fn apply_sidecar_env(
 /// Spawn the Claude sidecar process and return a [`SidecarHandle`] in `Starting` state.
 ///
 /// Extracts stdin/stdout from the child, wraps stdout in a [`BufReader`], and
-/// wires up event emission and MCP interception via [`SidecarHandle::from_parts_with_mcp`].
+/// wires up event emission via [`SidecarHandle::from_parts_with_mcp`].
 /// The returned handle starts in [`SidecarState::Starting`]; the caller typically uses
 /// [`ensure_sidecar_ready`] to store it in the shared sidecar slot and await readiness,
 /// or can call [`SidecarHandle::wait_ready`] manually.
@@ -853,9 +797,7 @@ pub fn apply_sidecar_env(
 /// Returns `Err` if the process cannot be spawned or if stdin/stdout are unavailable.
 pub async fn spawn_sidecar_impl<F>(
     path: &Path,
-    engine: Arc<std::sync::Mutex<crate::engine::EngineSession>>,
     event_emitter: F,
-    selection: Arc<std::sync::RwLock<reify_mcp::SelectionInfo>>,
     workspace: &std::path::Path,
     landlock_exec: Option<&std::path::Path>,
 ) -> Result<SidecarHandle, String>
@@ -889,14 +831,8 @@ where
 
     let reader = BufReader::new(stdout);
     let sidecar_state = Arc::new(Mutex::new(SidecarState::Starting));
-    let mut handle = SidecarHandle::from_parts_with_mcp(
-        stdin,
-        reader,
-        sidecar_state,
-        engine,
-        event_emitter,
-        selection,
-    );
+    let mut handle =
+        SidecarHandle::from_parts_with_mcp(stdin, reader, sidecar_state, event_emitter);
     handle.set_child(proc);
     Ok(handle)
 }
