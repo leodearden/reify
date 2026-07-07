@@ -1618,6 +1618,12 @@ cat > "$P_BASE/debug/build/reify-kernel-occt-BBBB/output" <<EOF
 cargo:lib_dir=$P_FOREIGN/target/debug/build/reify-kernel-occt-BBBB/out/lib
 EOF
 
+# root-output records the build script's OUT_DIR (replayed to set OUT_DIR for
+# the crate compile) — a distinct ENOENT class from `output`'s links-metadata:
+# include!(concat!(env!("OUT_DIR"), ...)) opens the FOREIGN out dir baked here.
+mkdir -p "$P_BASE/debug/build/ahash-CCCC"
+printf '%s' "$P_FOREIGN/target/debug/build/ahash-CCCC/out" > "$P_BASE/debug/build/ahash-CCCC/root-output"
+
 reset_calls
 RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
     run_helper_real "$P_BASE" "$P_LANE" --fresh-checkout
@@ -1640,5 +1646,13 @@ assert "P1c: build/reify-kernel-occt-BBBB/output contains the LANE root prefix" 
     bash -c 'grep -qF "$1" "$2"' _ "$P_LANE_RP" "$P_LANE/target/debug/build/reify-kernel-occt-BBBB/output"
 assert "P1d: build/reify-kernel-occt-BBBB/output no longer contains the FOREIGN root" \
     bash -c '! grep -qF "$1" "$2"' _ "$P_FOREIGN" "$P_LANE/target/debug/build/reify-kernel-occt-BBBB/output"
+
+# P2: build/ahash-CCCC/root-output (OUT_DIR class) rewritten to the exact lane
+# path, byte-for-byte — this file's ENTIRE content is the OUT_DIR value cargo
+# replays verbatim, so the assertion pins the full expected string, not just
+# a substring.
+assert "P2: build/ahash-CCCC/root-output reads the lane's OUT_DIR (no FOREIGN substring)" \
+    bash -c '[ "$(cat "$1")" = "'"$P_LANE_RP"'/target/debug/build/ahash-CCCC/out" ]' \
+    _ "$P_LANE/target/debug/build/ahash-CCCC/root-output"
 
 test_summary
