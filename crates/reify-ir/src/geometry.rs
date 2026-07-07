@@ -10010,33 +10010,6 @@ mod tests {
         assert_eq!(tri_count, 12, "unit cube must have 12 triangles; got {tri_count}");
     }
 
-    // ── FeatureTagTable::remove unit tests (task 4349) ────────────────────────
-
-    /// `remove` returns `Some(tag)` after a `record` and the entry is gone.
-    #[test]
-    fn feature_tag_table_remove_returns_some_and_empties_entry() {
-        let mut table = FeatureTagTable::default();
-        let id = GeometryHandleId(1);
-        let tag = FeatureTag {
-            source_span: reify_core::diagnostics::SourceSpan::new(0, 0),
-            step_kind: StepKind::Primitive,
-            sub_index: 0,
-        };
-        table.record(id, tag);
-        let removed = table.remove(id);
-        assert!(removed.is_some(), "remove must return Some after record");
-        assert!(table.lookup(id).is_none(), "entry must be gone after remove");
-        assert!(table.is_empty(), "table must be empty after removing the only entry");
-    }
-
-    /// `remove` returns `None` when the id was never recorded.
-    #[test]
-    fn feature_tag_table_remove_absent_returns_none() {
-        let mut table = FeatureTagTable::default();
-        let removed = table.remove(GeometryHandleId(99));
-        assert!(removed.is_none(), "remove of absent id must return None");
-    }
-
     // ── TopologyAttributeTable::remove unit tests (task 4349) ─────────────────
 
     fn make_topology_attribute() -> TopologyAttribute {

@@ -7989,74 +7989,19 @@ structure Assembly {
     }
 
     /// Regression test for cross-kernel `GeometryHandleId` collision at the
-    /// cache-hit short-circuit — `feature_tag_table` path (task 4349).
+    /// cache-hit short-circuit — `topology_attribute_table` path (task 4349).
     ///
     /// # Background
     ///
     /// OCCT and Manifold both mint `GeometryHandleId(1)` for their first
     /// geometry handle (each kernel's counter starts at 1). Within a single
     /// build a Manifold op can record
-    /// `feature_tag_table.record(GeometryHandleId(1), tag)` while a later
-    /// cache-hit short-circuit returns the cached `{Occt, GeometryHandleId(1)}`
-    /// from a prior build. The former
-    /// `debug_assert!(feature_tag_table.lookup(cached_handle.id).is_none())`
+    /// `topology_attribute_table.record(GeometryHandleId(1), attr)` while a
+    /// later cache-hit short-circuit returns the cached
+    /// `{Occt, GeometryHandleId(1)}` from a prior build. The former
+    /// `debug_assert!(topology_attribute_table.lookup(cached_handle.id).is_none())`
     /// fires because key `GeometryHandleId(1)` is occupied by the Manifold
     /// entry — two distinct `KernelHandle`s collapsing onto one kernel-blind key.
-    ///
-    /// After the fix the assert is replaced with
-    /// `feature_tag_table.remove(cached_handle.id)`, so the cached handle reads
-    /// `None` from the table — satisfying the #3226 spec ("a cache-served handle
-    /// has no entries in those tables on the second build") even when a
-    /// cross-kernel sibling left a colliding numeric id.
-    ///
-    /// # Invariant (build-mode independent)
-    ///
-    /// After the cache-hit short-circuit, `feature_tag_table.lookup(id)` for
-    /// the cached handle must return `None` — regardless of whether the build
-    /// is debug or release.  In debug builds the former `debug_assert!` also
-    /// panicked before the fix, but the meaningful guarantee is the `None`
-    /// post-condition, which holds in both build modes.
-    #[test]
-    fn cache_hit_short_circuit_tolerates_cross_kernel_feature_tag_id_collision() {
-        use reify_ir::StepKind;
-
-        let state = run_cross_kernel_cache_hit_short_circuit("CrossKernelEntity", |state, _| {
-            // Pre-seed feature_tag_table with a colliding entry at GeometryHandleId(1),
-            // simulating a cross-kernel sibling op (e.g. Manifold) that recorded its
-            // first handle's tag earlier in this same build.
-            state.feature_tag_table.record(
-                GeometryHandleId(1),
-                FeatureTag {
-                    source_span: SourceSpan::new(0, 0),
-                    step_kind: StepKind::Primitive,
-                    sub_index: 0,
-                },
-            );
-        });
-
-        // Post-condition: the cached handle must read None from feature_tag_table
-        // (#3226 spec: a cache-served handle has no entries in those tables).
-        assert!(
-            state
-                .feature_tag_table
-                .lookup(GeometryHandleId(1))
-                .is_none(),
-            "feature_tag_table must have no entry for the cached handle id after \
-             cache-hit short-circuit: cross-kernel sibling's colliding entry must \
-             be removed (not left behind as a foreign kernel's tag)"
-        );
-    }
-
-    /// Regression test for cross-kernel `GeometryHandleId` collision at the
-    /// cache-hit short-circuit — `topology_attribute_table` path (task 4349).
-    ///
-    /// Symmetric to `cache_hit_short_circuit_tolerates_cross_kernel_feature_tag_id_collision`
-    /// but pre-seeds ONLY `topology_attribute_table` (leaving `feature_tag_table`
-    /// empty). After step-2's fix the first check (`feature_tag_table.remove`)
-    /// is a no-op on the empty table and execution reaches the SECOND
-    /// `debug_assert!(topology_attribute_table.lookup(cached_handle.id).is_none())`
-    /// which then fires because `GeometryHandleId(1)` is occupied by the
-    /// sibling attribute entry.
     ///
     /// # Invariant (build-mode independent)
     ///
@@ -8099,74 +8044,6 @@ structure Assembly {
             "topology_attribute_table must have no entry for the cached handle id \
              after cache-hit short-circuit: cross-kernel sibling's colliding entry \
              must be removed (not left behind as a foreign kernel's attribute)"
-        );
-    }
-
-    /// Regression test for cross-kernel `GeometryHandleId` collision at the
-    /// cache-hit short-circuit — both tables seeded simultaneously (task 4349).
-    ///
-    /// # Background
-    ///
-    /// In a realistic cross-kernel build a sibling op typically records BOTH a
-    /// feature tag and a topology attribute for its handle.  This test seeds
-    /// both `feature_tag_table` and `topology_attribute_table` at
-    /// `GeometryHandleId(1)` before the cache-hit short-circuit fires, ensuring
-    /// that neither eviction is accidentally gated on the other: both `remove`
-    /// calls are independent and both must leave `None` at the colliding id.
-    ///
-    /// # Invariant (build-mode independent)
-    ///
-    /// After the cache-hit short-circuit, both
-    /// `feature_tag_table.lookup(GeometryHandleId(1))` and
-    /// `topology_attribute_table.lookup(GeometryHandleId(1))` must return
-    /// `None`.  This holds in debug and release builds alike.
-    #[test]
-    fn cache_hit_short_circuit_tolerates_cross_kernel_both_tables_id_collision() {
-        use reify_ir::{FeatureId, Role, StepKind};
-
-        let state = run_cross_kernel_cache_hit_short_circuit(
-            "CrossKernelEntityBoth",
-            |state, realization_id| {
-                // Pre-seed BOTH tables at GeometryHandleId(1) simultaneously,
-                // simulating a sibling op that recorded both a feature tag and a
-                // topology attribute for its first handle in the same build.
-                state.feature_tag_table.record(
-                    GeometryHandleId(1),
-                    FeatureTag {
-                        source_span: SourceSpan::new(0, 0),
-                        step_kind: StepKind::Primitive,
-                        sub_index: 0,
-                    },
-                );
-                state.topology_attribute_table.record(
-                    GeometryHandleId(1),
-                    TopologyAttribute {
-                        feature_id: FeatureId::from(realization_id),
-                        role: Role::Side,
-                        local_index: 0,
-                        user_label: None,
-                        mod_history: Vec::new(),
-                    },
-                );
-            },
-        );
-
-        // Both evictions are independent: neither is gated on the other.
-        assert!(
-            state
-                .feature_tag_table
-                .lookup(GeometryHandleId(1))
-                .is_none(),
-            "feature_tag_table must have no entry for the cached handle id after \
-             cache-hit short-circuit (both-tables case)"
-        );
-        assert!(
-            state
-                .topology_attribute_table
-                .lookup(GeometryHandleId(1))
-                .is_none(),
-            "topology_attribute_table must have no entry for the cached handle id \
-             after cache-hit short-circuit (both-tables case)"
         );
     }
 

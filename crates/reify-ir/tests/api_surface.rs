@@ -89,10 +89,10 @@ use reify_ir::{
     AttributeHistory, AxisSign, BRepKind, BooleanOpHistoryRecords, BooleanOpParents,
     BooleanOpParentsError, CapKind, CapabilityDescriptor, DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
     DeletedRecord, EdgeCurveKind, ElementOrderTag, ExportError, ExportFormat, FaceSurfaceKind,
-    FeatureId, FeatureTag, FeatureTagTable, GeometryError, GeometryHandle, GeometryHandleId,
+    FeatureId, GeometryError, GeometryHandle, GeometryHandleId,
     GeometryKernel, GeometryOp, GeometryQuery, HistoryRecord, KernelAttributeHook,
     KernelAttributeOutcome, KernelRegistration, LoftOpHistoryRecords, Mesh, ModEntry, Operation,
-    QueryCapability, QueryError, ReprKind, Role, StepKind, SweepOpHistoryRecords, TessError,
+    QueryCapability, QueryError, ReprKind, Role, SweepOpHistoryRecords, TessError,
     TopologyAttribute, TopologyAttributeTable, VolumeConnectivity, VolumeMesh,
     debug_assert_query_many_invariant,
 };
@@ -108,8 +108,7 @@ use reify_ir::geometry::{
     DeletedRecord as DeletedRecordMod, EdgeCurveKind as EdgeCurveKindMod,
     ElementOrderTag as ElementOrderTagMod, ExportError as ExportErrorMod,
     ExportFormat as ExportFormatMod, FaceSurfaceKind as FaceSurfaceKindMod,
-    FeatureId as FeatureIdMod, FeatureTag as FeatureTagMod,
-    FeatureTagTable as FeatureTagTableMod, GeometryError as GeometryErrorMod,
+    FeatureId as FeatureIdMod, GeometryError as GeometryErrorMod,
     GeometryHandle as GeometryHandleMod, GeometryHandleId as GeometryHandleIdMod,
     GeometryKernel as GeometryKernelMod, GeometryOp as GeometryOpMod,
     GeometryQuery as GeometryQueryMod, HistoryRecord as HistoryRecordMod,
@@ -119,7 +118,7 @@ use reify_ir::geometry::{
     LoftOpHistoryRecords as LoftOpHistoryRecordsMod, Mesh as MeshMod, ModEntry as ModEntryMod,
     Operation as OperationMod, QueryCapability as QueryCapabilityMod,
     QueryError as QueryErrorMod, ReprKind as ReprKindMod, Role as RoleMod,
-    StepKind as StepKindMod, SweepOpHistoryRecords as SweepOpHistoryRecordsMod,
+    SweepOpHistoryRecords as SweepOpHistoryRecordsMod,
     TessError as TessErrorMod, TopologyAttribute as TopologyAttributeMod,
     TopologyAttributeTable as TopologyAttributeTableMod,
     VolumeConnectivity as VolumeConnectivityMod, VolumeMesh as VolumeMeshMod,
@@ -471,8 +470,6 @@ fn geometry_types_in_scope() {
     let _: fn() -> Option<ExportFormat> = || None;
     let _: fn() -> Option<FaceSurfaceKind> = || None;
     let _: fn() -> Option<FeatureId> = || None;
-    let _: fn() -> Option<FeatureTag> = || None;
-    let _: fn() -> Option<FeatureTagTable> = || None;
     let _: fn() -> Option<GeometryError> = || None;
     let _: fn() -> Option<GeometryOp> = || None;
     let _: fn() -> Option<GeometryQuery> = || None;
@@ -485,7 +482,6 @@ fn geometry_types_in_scope() {
     let _: fn() -> Option<QueryError> = || None;
     let _: fn() -> Option<ReprKind> = || None;
     let _: fn() -> Option<Role> = || None;
-    let _: fn() -> Option<StepKind> = || None;
     let _: fn() -> Option<SweepOpHistoryRecords> = || None;
     let _: fn() -> Option<TessError> = || None;
     let _: fn() -> Option<TopologyAttribute> = || None;
@@ -514,8 +510,6 @@ fn geometry_types_in_scope() {
     let _: fn() -> Option<ExportFormatMod> = || None;
     let _: fn() -> Option<FaceSurfaceKindMod> = || None;
     let _: fn() -> Option<FeatureIdMod> = || None;
-    let _: fn() -> Option<FeatureTagMod> = || None;
-    let _: fn() -> Option<FeatureTagTableMod> = || None;
     let _: fn() -> Option<GeometryErrorMod> = || None;
     let _: fn() -> Option<GeometryOpMod> = || None;
     let _: fn() -> Option<GeometryQueryMod> = || None;
@@ -528,7 +522,6 @@ fn geometry_types_in_scope() {
     let _: fn() -> Option<QueryErrorMod> = || None;
     let _: fn() -> Option<ReprKindMod> = || None;
     let _: fn() -> Option<RoleMod> = || None;
-    let _: fn() -> Option<StepKindMod> = || None;
     let _: fn() -> Option<SweepOpHistoryRecordsMod> = || None;
     let _: fn() -> Option<TessErrorMod> = || None;
     let _: fn() -> Option<TopologyAttributeMod> = || None;
