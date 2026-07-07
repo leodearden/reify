@@ -334,6 +334,30 @@ impl TetSpatialIndex {
         TetSpatialIndex { bvh_nodes, root, perm, n_nodes: nodes.len() }
     }
 
+    /// Total-order comparator for element centroids along `axis`, used by
+    /// the median-split sort in [`Self::build_recursive`].
+    ///
+    /// `total_cmp`: NaN-safe IEEE-754 total order keeps the median split
+    /// panic-free + deterministic; a NaN centroid is upstream corruption
+    /// (INV-FEA-3, task #5090). Pulled out to a named function — rather
+    /// than inlined in the sort closure — so a test can assert this
+    /// *exact* comparator's total-order postcondition (see
+    /// `centroid_axis_cmp_sorts_nan_bearing_centroids_into_a_valid_total_order`
+    /// in `bvh_tests`) instead of only re-testing `f64::total_cmp` itself:
+    /// reverting this body back to
+    /// `partial_cmp(..).unwrap_or(Ordering::Equal)` breaks that test.
+    #[inline]
+    fn centroid_axis_cmp(
+        centroids: &[[f64; 3]],
+        axis: usize,
+        a: usize,
+        b: usize,
+    ) -> std::cmp::Ordering {
+        centroids[a][axis]
+            .partial_cmp(&centroids[b][axis])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    }
+
     fn build_recursive(
         perm: &mut Vec<usize>,
         start: usize,
@@ -384,11 +408,9 @@ impl TetSpatialIndex {
         }
 
         // Median split: sort perm[start..end] by centroid along `axis`.
-        // total_cmp: NaN-safe IEEE-754 total order keeps the median split
-        // panic-free + deterministic; a NaN centroid is upstream corruption
-        // (INV-FEA-3, task #5090).
+        // See `Self::centroid_axis_cmp` for the comparator and rationale.
         perm[start..end]
-            .sort_unstable_by(|&a, &b| centroids[a][axis].total_cmp(&centroids[b][axis]));
+            .sort_unstable_by(|&a, &b| Self::centroid_axis_cmp(centroids, axis, a, b));
 
         let mid = start + count / 2;
 
@@ -708,9 +730,9 @@ mod bvh_tests {
     /// A determinism check therefore adds no signal specific to this fix,
     /// so it is omitted rather than kept as an assertion that implies
     /// coverage it doesn't provide. See
-    /// `total_cmp_sorts_nan_bearing_slice_into_a_valid_total_order` below
-    /// for a direct, non-heuristic guard on the comparator property this
-    /// fix actually relies on.
+    /// `centroid_axis_cmp_sorts_nan_bearing_centroids_into_a_valid_total_order`
+    /// below for a direct, non-heuristic guard on the comparator property
+    /// this fix actually relies on.
     ///
     /// Toolchain caveat: reaching past `build()` below relies on rustc's
     /// `sort_unstable_by` (ipnsort) *detecting* the old comparator's
@@ -721,8 +743,20 @@ mod bvh_tests {
     /// non-monotonic inputs of ~24-32 elements, which is why this fixture
     /// uses N=30 below, but a future toolchain could narrow or drop that
     /// detection window and silently turn this test into a vacuous pass.
-    /// `total_cmp_sorts_nan_bearing_slice_into_a_valid_total_order` does not
-    /// share that risk and is the durable guard on the underlying fix.
+    /// `centroid_axis_cmp_sorts_nan_bearing_centroids_into_a_valid_total_order`
+    /// does not share that risk and is the primary, durable guard on the
+    /// underlying fix — see the revalidation note below.
+    ///
+    /// Revalidation note: if the pinned toolchain (`rust-toolchain.toml`,
+    /// currently rustc 1.96.0) is ever bumped, re-verify this N=30 fixture
+    /// still panics against the pre-fix comparator (temporarily revert
+    /// `centroid_axis_cmp`'s body to
+    /// `partial_cmp(..).unwrap_or(Ordering::Equal)`) before trusting a
+    /// green run here as a regression guard on the new toolchain — a
+    /// narrowed or dropped ipnsort detection window would silently turn
+    /// this into a vacuous pass.
+    /// `centroid_axis_cmp_sorts_nan_bearing_centroids_into_a_valid_total_order`
+    /// needs no such revalidation.
     ///
     /// Fixture sensitivity (do not "simplify" this away): the mesh needs
     /// more than `LEAF_MAX` (8) elements to reach the sort at all, AND
@@ -785,34 +819,44 @@ mod bvh_tests {
         }
     }
 
-    /// Direct, toolchain-independent guard on the `total_cmp` comparator
-    /// property that the fix for task #5090 relies on (see the toolchain
-    /// caveat on `build_recursive_nan_centroid_is_panic_free` above):
-    /// rustc's `sort_unstable_by` panic on a non-total-order comparator is a
-    /// best-effort diagnostic, not a documented guarantee, so it alone
-    /// cannot be trusted to keep guarding this regression across toolchain
-    /// changes. This test instead asserts the postcondition that any valid
-    /// total-order comparator must satisfy: sorting a slice containing NaN,
-    /// -0.0/+0.0, and infinities via `total_cmp` yields a sequence that is
-    /// fully ordered per `total_cmp` itself, with no elements lost or
-    /// duplicated, and with NaN (a positive quiet NaN, as produced by
-    /// `f64::NAN`) sorted strictly last.
+    /// Direct, toolchain-independent guard on
+    /// [`TetSpatialIndex::centroid_axis_cmp`], the exact comparator
+    /// `build_recursive`'s median-split sort calls (task #5090, INV-FEA-3;
+    /// see the toolchain caveat on `build_recursive_nan_centroid_is_panic_free`
+    /// above for why that panic-based test alone isn't a durable guard).
+    /// Calling `centroid_axis_cmp` itself — rather than re-testing
+    /// `f64::total_cmp` directly — means this test actually covers the fix:
+    /// reverting `centroid_axis_cmp`'s body back to
+    /// `partial_cmp(..).unwrap_or(Ordering::Equal)` breaks it, because that
+    /// comparator is not transitive across a NaN entry and so does not, in
+    /// general, sort this NaN-bearing fixture into `total_cmp` order.
+    ///
+    /// Asserts the postcondition any valid total-order comparator must
+    /// satisfy: sorting indices into a centroid slice containing NaN,
+    /// -0.0/+0.0, and infinities yields a permutation (no indices lost or
+    /// duplicated) whose centroids are fully ordered per `total_cmp`
+    /// itself, with NaN (a positive quiet NaN, as produced by `f64::NAN`)
+    /// sorted strictly last.
     #[test]
-    fn total_cmp_sorts_nan_bearing_slice_into_a_valid_total_order() {
-        let mut values =
-            vec![3.0_f64, f64::NAN, -1.0, f64::INFINITY, 0.0, -0.0, f64::NEG_INFINITY, 2.5, -7.25];
-        let original_len = values.len();
+    fn centroid_axis_cmp_sorts_nan_bearing_centroids_into_a_valid_total_order() {
+        let axis = 0;
+        let raw =
+            [3.0_f64, f64::NAN, -1.0, f64::INFINITY, 0.0, -0.0, f64::NEG_INFINITY, 2.5, -7.25];
+        let centroids: Vec<[f64; 3]> = raw.iter().map(|&x| [x, 0.0, 0.0]).collect();
+        let mut perm: Vec<usize> = (0..centroids.len()).collect();
+        let original_len = perm.len();
 
-        values.sort_unstable_by(|a, b| a.total_cmp(b));
+        perm.sort_unstable_by(|&a, &b| TetSpatialIndex::centroid_axis_cmp(&centroids, axis, a, b));
 
-        assert_eq!(values.len(), original_len, "sort must not lose or duplicate elements");
+        assert_eq!(perm.len(), original_len, "sort must not lose or duplicate indices");
+        let sorted: Vec<f64> = perm.iter().map(|&i| centroids[i][axis]).collect();
         assert!(
-            values.windows(2).all(|w| w[0].total_cmp(&w[1]) != std::cmp::Ordering::Greater),
-            "sorted output must be non-decreasing under total_cmp's own order: {values:?}",
+            sorted.windows(2).all(|w| w[0].total_cmp(&w[1]) != std::cmp::Ordering::Greater),
+            "sorted output must be non-decreasing under total_cmp's own order: {sorted:?}",
         );
         assert!(
-            values.last().unwrap().is_nan(),
-            "NaN must sort strictly last under total_cmp: {values:?}",
+            sorted.last().unwrap().is_nan(),
+            "NaN must sort strictly last under total_cmp: {sorted:?}",
         );
     }
 }
