@@ -69,11 +69,17 @@ trap cleanup EXIT
 
 echo "=== run_all.sh pool-lock host-global drift-guard (task 5131 / PRD run-all-pool-contention-tiering-fix.md §9 L3a) ==="
 
-# mk_tmp <outvar> — mktemp -d, register the dir for the EXIT-trap cleanup,
-# assign its path to <outvar>.
+# mk_tmp <outvar> — mktemp -d anchored at /tmp (NOT the ambient TMPDIR of
+# the outer test-runner process, which the orchestrator may provision as a
+# per-worktree/per-lane path), register the dir for the EXIT-trap cleanup,
+# assign its path to <outvar>. Anchoring outside REPO_ROOT is required so
+# that Assertion 3's REPO_ROOT-exclusion check can never spuriously FAIL
+# just because ambient TMPDIR happens to be nested under the worktree
+# (reviewer finding, task 5131 amendment) — SHARED_TMP feeds directly into
+# the resolved lock value, so if it were repo-nested the lock would be too.
 mk_tmp() {
     local _var="$1" _d
-    _d="$(mktemp -d)"
+    _d="$(mktemp -d --tmpdir=/tmp reify-poollock.XXXXXX)"
     _TMPDIRS+=("$_d")
     printf -v "$_var" '%s' "$_d"
 }
