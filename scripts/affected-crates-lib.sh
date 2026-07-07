@@ -30,6 +30,15 @@ _REIFY_AFFECTED_CRATES_LIB_SOURCED=1
 
 _AFFECTED_CRATES_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Shared compile-closure primitive (_reify_compile_closure): _reverse_closure
+# below delegates to it instead of carrying its own copy of the
+# adj_normal/adj_dev + normal_closure model. occt-scope-lib.sh's own source
+# guard makes this a no-op if verify.sh (or another caller) already sourced
+# it first.
+[ -f "$_AFFECTED_CRATES_LIB_DIR/occt-scope-lib.sh" ] || { echo "affected-crates-lib.sh: ERROR — scripts/occt-scope-lib.sh not found next to affected-crates-lib.sh" >&2; return 1; }
+# shellcheck source=scripts/occt-scope-lib.sh
+source "$_AFFECTED_CRATES_LIB_DIR/occt-scope-lib.sh"
+
 # _is_global <path> — returns 0 (true) if the path is a C4 workspace-global file.
 # Matches: root Cargo.toml, Cargo.lock, .cargo/**, tree-sitter-reify/**,
 #          rust-toolchain and rust-toolchain.toml.
@@ -88,31 +97,19 @@ _file_to_crate() {
 # crate whose test-compile-closure pulls in a seed), sorted-unique, one per
 # line.
 #
-# Technique mirrors occt-scope-lib.sh:occt_touching_set (lines 59-109), ported
-# from the forward ("what does X pull in") question to the reverse ("which
-# crates pull in a seed") question by parameterizing on the stdin seed ids
-# instead of a hardcoded occt_ids set:
-#   - single `cargo metadata --format-version 1` piped into python3
-#   - separate adjacency maps: adj_normal (kind null/'build', compiled
-#     transitively) vs adj_dev (kind 'dev' — dev-deps do NOT propagate
-#     transitively, so only the DIRECT dev-deps of the tested crate matter)
-#   - for each workspace member, compiled = normal_closure(member) UNION
-#     normal_closure(each DIRECT dev-dep of member)
-#   - a member is affected iff its compiled set intersects the seed ids
+# Delegates to _reify_compile_closure (scripts/occt-scope-lib.sh, sourced
+# above) — the single shared implementation of the adj_normal/adj_dev +
+# normal_closure compile-closure model, also used by occt_touching_set. This
+# is the reverse ("which crates pull in a seed") framing of that same model,
+# reached here by passing the stdin seed names as the helper's argv instead
+# of occt_touching_set's hardcoded seed.
 #
-# NOTE (code-review follow-up, task 4938): this is a physical duplicate of
-# occt_touching_set's Python (scripts/occt-scope-lib.sh:59-109), not a shared
-# implementation — if cargo's dep_kinds semantics or this closure algorithm
-# ever change, BOTH copies must be updated in lockstep. Extracting a single
-# shared helper (e.g. a common script invoked by both libraries) would
-# require editing scripts/occt-scope-lib.sh, which is outside the locked
-# scope of this task (scripts/affected-crates-lib.sh,
-# tests/infra/test_affected_crates_lib.sh only) — tracked as follow-up work.
-# In the meantime, tests/infra/test_affected_crates_lib.sh asserts
-# affected_crates(occt-seed) == occt_touching_set as a drift guard: any
-# future divergence between the two copies fails that assertion loudly.
+# tests/infra/test_affected_crates_lib.sh asserts affected_crates(occt-seed)
+# == occt_touching_set as a regression guard: since both now delegate to the
+# same helper, this fails loudly if either caller's seed handling regresses.
 #
-# On any cargo failure or python error, prints ALL (C5).
+# On any cargo failure or malformed-metadata error from the shared helper,
+# prints ALL (C5).
 _reverse_closure() {
     local seeds
     seeds="$(cat)"
@@ -123,68 +120,15 @@ _reverse_closure() {
     meta="$(cargo metadata --format-version 1 2>/dev/null)" || { echo ALL; return 0; }
     [ -n "$meta" ] || { echo ALL; return 0; }
 
-    printf '%s\n' "$meta" | _AFFECTED_CRATES_SEEDS="$seeds" python3 -c "
-import sys, json, os
-try:
-    seed_names = set(s.strip() for s in os.environ.get('_AFFECTED_CRATES_SEEDS', '').strip().splitlines() if s.strip())
+    # Convert the newline-separated seeds into a bash array for safe argv
+    # expansion into _reify_compile_closure.
+    local seed_args=()
+    local s
+    while IFS= read -r s; do
+        [ -n "$s" ] && seed_args+=("$s")
+    done <<< "$seeds"
 
-    m = json.load(sys.stdin)
-    members = set(m['workspace_members'])
-    id_to_name = {p['id']: p['name'] for p in m['packages']}
-    name_to_ids = {}
-    for p in m['packages']:
-        name_to_ids.setdefault(p['name'], []).append(p['id'])
-
-    # Build separate adjacency maps for normal/build vs dev deps.
-    # dep_kinds[].kind: null -> normal, 'build' -> build dep, 'dev' -> dev dep.
-    # We must NOT conflate them: dev-deps of a transitive dep are never
-    # compiled when testing a crate that only has a normal dep on it.
-    adj_normal = {}  # kind=null or kind='build' (compiled transitively)
-    adj_dev = {}     # kind='dev' (only the DIRECT dev-deps of the tested crate matter)
-    for node in m['resolve']['nodes']:
-        adj_normal[node['id']] = set()
-        adj_dev[node['id']] = set()
-        for d in node['deps']:
-            kinds = {dk.get('kind') for dk in d.get('dep_kinds', [])}
-            if None in kinds or 'build' in kinds:
-                adj_normal[node['id']].add(d['pkg'])
-            if 'dev' in kinds:
-                adj_dev[node['id']].add(d['pkg'])
-
-    def normal_closure(start):
-        '''All packages reachable via normal/build edges only.'''
-        visited, queue = set(), [start]
-        while queue:
-            curr = queue.pop()
-            if curr in visited:
-                continue
-            visited.add(curr)
-            queue.extend(adj_normal.get(curr, []))
-        return visited
-
-    seed_ids = set()
-    for sn in seed_names:
-        seed_ids.update(name_to_ids.get(sn, []))
-
-    result = []
-    for pkg_id in members:
-        # A crate's test compilation includes:
-        #   - normal/build closure of the crate itself, PLUS
-        #   - normal/build closure of each DIRECT dev-dep of the crate
-        # Dev-deps of transitive normal deps do NOT propagate (Cargo does not
-        # propagate dev-deps transitively).
-        compiled = normal_closure(pkg_id)
-        for dev_dep_id in adj_dev.get(pkg_id, []):
-            compiled |= normal_closure(dev_dep_id)
-        if compiled & seed_ids:
-            result.append(id_to_name[pkg_id])
-
-    for name in sorted(set(result)):
-        print(name)
-except Exception:
-    print('ALL')
-    sys.exit(0)
-" || { echo ALL; return 0; }
+    printf '%s\n' "$meta" | _reify_compile_closure "${seed_args[@]}" 2>/dev/null || { echo ALL; return 0; }
 }
 
 # affected_crates <file>... — print the affected workspace crate set, one name
