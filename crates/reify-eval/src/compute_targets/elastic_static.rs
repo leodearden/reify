@@ -3766,9 +3766,14 @@ fn scalar_si_field(
 ) -> Result<f64, FeaValueShapeError> {
     match data.fields.get(key) {
         Some(Value::Scalar { si_value, .. }) => Ok(*si_value),
+        // `context` stays the fixed function-name label per the PRD §C3
+        // contract (`ExpectedScalar { context: &'static str, got: String }`,
+        // shared with D3/D5/D7/D8/D9); `got`'s wording is unpinned (open
+        // question 2), so the offending field key rides along in `got`
+        // instead so a `panic!("{e}")`/eventual D9 diagnostic can name it.
         Some(other) => Err(FeaValueShapeError::ExpectedScalar {
             context: "scalar_si_field",
-            got: format!("{other:?}"),
+            got: format!("{other:?} (field {key:?})"),
         }),
         None => Err(FeaValueShapeError::MissingField {
             context: "scalar_si_field",
@@ -3784,9 +3789,12 @@ fn real_field(
 ) -> Result<f64, FeaValueShapeError> {
     match data.fields.get(key) {
         Some(Value::Real(r)) => Ok(*r),
+        // See `scalar_si_field`'s comment above: `context` stays the fixed
+        // function-name label; the field key rides in `got` instead so it
+        // isn't lost for the eventual D9 diagnostic.
         Some(other) => Err(FeaValueShapeError::ExpectedReal {
             context: "real_field",
-            got: format!("{other:?}"),
+            got: format!("{other:?} (field {key:?})"),
         }),
         None => Err(FeaValueShapeError::MissingField {
             context: "real_field",
@@ -8883,6 +8891,18 @@ mod tests {
         );
     }
 
+    /// Amendment (task #5080 review round 2, suggestion 1): `extract_scalar_si`
+    /// must return `Ok` with the SI value for a well-formed `Value::Scalar`,
+    /// locking the success path alongside the error path above.
+    #[test]
+    fn extract_scalar_si_accepts_scalar() {
+        let val = Value::Scalar {
+            si_value: 2.5,
+            dimension: DimensionVector::DIMENSIONLESS,
+        };
+        assert_eq!(extract_scalar_si(&val), Ok(2.5));
+    }
+
     /// step-3 RED: `scalar_si_field` must reject a present-but-wrong-type
     /// field with `Err(FeaValueShapeError::ExpectedScalar { .. })` instead of
     /// panicking.
@@ -8933,6 +8953,33 @@ mod tests {
             "expected Err(MissingField) for an absent field key, got: {:?}",
             res
         );
+    }
+
+    /// Amendment (task #5080 review round 2, suggestion 1): `scalar_si_field`
+    /// must return `Ok` with the SI value for a present, correctly-typed
+    /// field, locking the success path alongside the error/missing paths
+    /// above.
+    #[test]
+    fn scalar_si_field_returns_value_for_scalar_field() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        let fields: PersistentMap<String, Value> = [(
+            "e1".to_string(),
+            Value::Scalar {
+                si_value: 4.2,
+                dimension: DimensionVector::DIMENSIONLESS,
+            },
+        )]
+        .into_iter()
+        .collect();
+        let data = StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "OrthotropicMaterial".to_string(),
+            version: 1,
+            fields,
+        };
+
+        assert_eq!(scalar_si_field(&data, "e1"), Ok(4.2));
     }
 
     /// step-5 RED: `real_field` must reject a present-but-wrong-type field
@@ -8990,6 +9037,26 @@ mod tests {
         );
     }
 
+    /// Amendment (task #5080 review round 2, suggestion 1): `real_field`
+    /// must return `Ok` with the value for a present, correctly-typed field,
+    /// locking the success path alongside the error/missing paths above.
+    #[test]
+    fn real_field_returns_value_for_real_field() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        let fields: PersistentMap<String, Value> = [("nu12".to_string(), Value::Real(0.3))]
+            .into_iter()
+            .collect();
+        let data = StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "OrthotropicMaterial".to_string(),
+            version: 1,
+            fields,
+        };
+
+        assert_eq!(real_field(&data, "nu12"), Ok(0.3));
+    }
+
     /// step-7 RED: `extract_point3_si` must reject a non-Point `Value` with
     /// `Err(FeaValueShapeError::ExpectedList { .. })` instead of panicking.
     ///
@@ -9040,6 +9107,17 @@ mod tests {
         );
     }
 
+    /// Amendment (task #5080 review round 2, suggestion 1): `extract_point3_si`
+    /// must return `Ok` with the 3 SI components for a well-formed
+    /// 3-component `Value::Point`, locking the success path alongside the
+    /// error paths above.
+    #[test]
+    fn extract_point3_si_accepts_point() {
+        let scalar = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::DIMENSIONLESS };
+        let point = Value::Point(vec![scalar(1.0), scalar(2.0), scalar(3.0)]);
+        assert_eq!(extract_point3_si(&point), Ok([1.0, 2.0, 3.0]));
+    }
+
     /// step-9 RED: `extract_vec3_si` must reject a non-Vector `Value` with
     /// `Err(FeaValueShapeError::ExpectedList { .. })` instead of panicking.
     ///
@@ -9088,5 +9166,16 @@ mod tests {
             "expected Err(ExpectedScalar) for a Vector with a non-Scalar component, got: {:?}",
             res
         );
+    }
+
+    /// Amendment (task #5080 review round 2, suggestion 1): `extract_vec3_si`
+    /// must return `Ok` with the 3 SI components for a well-formed
+    /// 3-component `Value::Vector`, locking the success path alongside the
+    /// error paths above.
+    #[test]
+    fn extract_vec3_si_accepts_vector() {
+        let scalar = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::DIMENSIONLESS };
+        let vector = Value::Vector(vec![scalar(1.0), scalar(2.0), scalar(3.0)]);
+        assert_eq!(extract_vec3_si(&vector), Ok([1.0, 2.0, 3.0]));
     }
 }
