@@ -4245,6 +4245,32 @@ mod tests {
         assert_eq!(nearest_node(&nodes, target), 2);
     }
 
+    /// step-3 (RED → GREEN in step-4): a non-finite node/target coordinate
+    /// must emit a WARN (telemetry only — the pick itself is already
+    /// deterministic via `total_cmp` after step-2). Clean, all-finite input
+    /// must stay quiet (no spurious warn).
+    #[test]
+    fn nearest_node_warns_once_on_non_finite_and_is_quiet_on_finite() {
+        use reify_test_support::warn_capturing_subscriber;
+
+        // Inoculate against tracing's per-callsite Interest cache — see
+        // `prime_tracing_callsite_cache` in reify-test-support for why.
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+        tracing::subscriber::with_default(subscriber, || {
+            let _ = super::nearest_node(&[[f64::NAN, 0.0, 0.0], [1.0, 0.0, 0.0]], [1.0, 0.0, 0.0]);
+        });
+        capture.assert_count_and_any_message_contains(1, "non-finite");
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+        tracing::subscriber::with_default(subscriber, || {
+            let nodes = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]];
+            let _ = super::nearest_node(&nodes, [1.9, 0.0, 0.0]);
+        });
+        capture.assert_count(0);
+    }
+
     /// Amendment (suggestion 2): `solve_modal_analysis_trampoline` happy path — a
     /// clamped steel beam with a `RayleighDamping` option yields a well-shaped
     /// `ModalResult` (non-empty modes, positive matrix norms, ascending finite
