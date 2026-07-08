@@ -2838,6 +2838,15 @@ fn simply_supported_pin_pin_bcs(nodes: &[[f64; 3]], length: f64, height: f64) ->
 /// Used to place the simply-supported anchors on the end-face neutral-axis nodes
 /// robustly — by coordinate, independent of `build_beam_mesh`'s internal node
 /// numbering (mirroring the unit tests' coordinate-based face selection).
+///
+/// Fail-closed, never panics: the pick uses [`f64::total_cmp`], a total order
+/// that agrees with `partial_cmp` on all finite non-negative squared
+/// distances and sorts a NaN distance as the largest, so a non-finite node
+/// coordinate can never win the `min_by` pick over a true finite nearest node
+/// (PRD `compute-fea-hardening.md` Resolved design decision 5: graceful
+/// `total_cmp` fallback + telemetry, never a hard panic). A non-finite
+/// node/target coordinate additionally emits a WARN — telemetry only, since
+/// the deterministic fallback pick already comes from `total_cmp` above.
 fn nearest_node(nodes: &[[f64; 3]], target: [f64; 3]) -> usize {
     let dist2 = |p: &[f64; 3]| -> f64 {
         let dx = p[0] - target[0];
@@ -2845,6 +2854,18 @@ fn nearest_node(nodes: &[[f64; 3]], target: [f64; 3]) -> usize {
         let dz = p[2] - target[2];
         dx * dx + dy * dy + dz * dz
     };
+
+    if nodes.iter().flatten().chain(target.iter()).any(|c| !c.is_finite()) {
+        tracing::warn!(
+            target: "reify_eval::modal_ops",
+            reason = "non_finite_node_coordinate",
+            n_nodes = nodes.len(),
+            "nearest_node: non-finite node/target coordinate; falling back to \
+             total_cmp for a deterministic nearest-node pick (a simply-supported \
+             BC anchor may be mis-placed — likely upstream mesh pathology)"
+        );
+    }
+
     nodes
         .iter()
         .enumerate()
