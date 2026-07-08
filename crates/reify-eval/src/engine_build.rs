@@ -7862,6 +7862,82 @@ impl Engine {
                     }
                 }
             }
+            // ── Task 5033 (GAP #2): Voxel realization call edge ───────────────
+            //
+            // Mirrors the VolumeMesh edge above but for `demanded_repr ==
+            // Voxel` and NON-terminal-gated: `isosurface`'s operand (e.g.
+            // `solid` in `let shell = isosurface(solid)`) is demanded Voxel by
+            // `compute_demanded_reprs`' Voxel-only-input consumer rule (β,
+            // task 5000), and — unlike VolumeMesh, which only ever anchors a
+            // terminal FEA/optimization consumer — this operand is virtually
+            // always a NON-terminal (intermediate let-binding) realization. A
+            // primitive/BRep op has no kernel that emits Voxel directly, so
+            // design_decision 3's BRep fallback already ran in the per-op loop
+            // above; this dedicated post-loop edge forces that BRep/Mesh
+            // terminal THROUGH the existing BRep→Mesh (Tessellate) → Mesh→Voxel
+            // (Voxelize) conversion pair, mirroring the VolumeMesh edge's
+            // tessellate→ingest shape. Guarded on `last_produced_repr !=
+            // Some(Voxel)` so this edge is purely additive: a realization whose
+            // per-op loop already resolved Voxel directly (e.g. an OpenVDB-
+            // native Boolean op) skips it untouched. Any failure (no OpenVDB
+            // kernel, tessellation/ingest error) leaves the realization at its
+            // BRep/Mesh fallback — honest degradation, never a hard error.
+            if demanded_repr == ReprKind::Voxel
+                && last_produced_repr != Some(ReprKind::Voxel)
+                && let Some(&terminal) = step_handles[handle_start..].last()
+            {
+                let tol = demanded_tol.unwrap_or(Self::DEFAULT_TESSELLATION_TOLERANCE);
+                // Same registry-name-vs-map-key dance as the VolumeMesh edge
+                // above (backward-compat sentinel mode keys OCCT's handle under
+                // `default_kernel_name`, not `"occt"`).
+                let terminal_name = if kernels.contains_key(terminal.kernel.as_registry_name()) {
+                    terminal.kernel.as_registry_name()
+                } else {
+                    default_kernel_name
+                };
+                let surface = match kernels.get(terminal_name) {
+                    Some(src) => match src.tessellate(terminal.id, tol) {
+                        Ok(mesh) => Some(mesh),
+                        Err(e) => {
+                            diagnostics.push(Diagnostic::warning(format!(
+                                "Voxel realization {realization_id}: tessellation of the \
+                                 terminal handle on kernel '{terminal_name}' failed ({e}); \
+                                 leaving the BRep/Mesh fallback"
+                            )));
+                            None
+                        }
+                    },
+                    None => {
+                        diagnostics.push(Diagnostic::warning(format!(
+                            "Voxel realization {realization_id}: terminal source kernel \
+                             '{terminal_name}' absent from the kernel map; leaving the BRep/Mesh \
+                             fallback"
+                        )));
+                        None
+                    }
+                };
+                if let Some(surface) = surface {
+                    match kernels.get_mut(KernelId::OpenVdb.as_registry_name()) {
+                        Some(openvdb) => match openvdb.ingest_mesh(&surface) {
+                            Ok(handle) => {
+                                step_handles.push(KernelHandle {
+                                    kernel: KernelId::OpenVdb,
+                                    id: handle.id,
+                                });
+                                last_produced_repr = Some(ReprKind::Voxel);
+                            }
+                            Err(e) => diagnostics.push(Diagnostic::warning(format!(
+                                "Voxel realization {realization_id}: openvdb ingest_mesh failed \
+                                 ({e}); leaving the BRep/Mesh fallback"
+                            ))),
+                        },
+                        None => diagnostics.push(Diagnostic::warning(format!(
+                            "Voxel realization {realization_id}: no openvdb kernel registered \
+                             (call ensure_openvdb_kernel()); leaving the BRep/Mesh fallback"
+                        ))),
+                    }
+                }
+            }
             // ── Task 4744 β step-20: source-bundle stash ─────────────────────
             //
             // When a morph producer is active and this realization produced a
