@@ -77,7 +77,7 @@ _slow_terminate_for_file() {
     awk -v pkg="$pkg" -v bin="$bin" '
         /^\[\[/ { in_block = 0 }
         /filter/ && index($0, pkg) && index($0, bin) { in_block = 1 }
-        in_block && /slow-timeout/ {
+        in_block && /^[[:space:]]*slow-timeout[[:space:]]*=/ {
             match($0, /terminate-after[[:space:]]*=[[:space:]]*[0-9]+/)
             seg = substr($0, RSTART, RLENGTH)
             match(seg, /[0-9]+$/)
