@@ -19,6 +19,18 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 RUN_ALL="$SCRIPT_DIR/run_all.sh"
 ORCHESTRATOR_YAML="$REPO_ROOT/orchestrator.yaml"
 
+# Harness-global default (task #5142 review remediation): isolate the ENTIRE
+# meta-suite from the real git-ignored default ledger
+# (data/verify-logs/flaky-ledger.jsonl). Any $RUN_ALL invocation below that
+# triggers a genuine FLAKY reclassification must never append to production
+# state. Tests 23a/23c/23d already set their own per-test
+# REIFY_RUN_ALL_FLAKY_LEDGER (inline env-prefix precedence wins over this
+# export); this default covers Test 18a's explicit override too, plus any
+# FUTURE flaky fixture that forgets isolation, by construction.
+_SUITE_LEDGER_DIR="$(mktemp -d)"
+_TMPDIRS+=("$_SUITE_LEDGER_DIR")
+export REIFY_RUN_ALL_FLAKY_LEDGER="$_SUITE_LEDGER_DIR/flaky-ledger.jsonl"
+
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
 
@@ -1331,6 +1343,7 @@ MOCKBODY
         REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T18/pool-flaky.lock" \
         REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
         FLAKY_COUNTER_FILE="$TMPDIR_T18/flaky-counter" \
+        REIFY_RUN_ALL_FLAKY_LEDGER="$TMPDIR_T18/flaky-ledger.jsonl" \
         bash "$RUN_ALL" "$TMPDIR_T18" 2>&1)" || t18a_rc=$?
 
     assert "T18a: run_all.sh exits 0 when a pool member passes on serial retry" \
