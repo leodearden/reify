@@ -3141,6 +3141,51 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `E_LogicalRequiresBool`
     /// (severity convention: `E_*` → Error; see task 4490 type-hygiene α).
     LogicalOperandNotBool,
+    /// Origin: `crates/reify-compiler/src/expr.rs` (`BinOp::Mul`/`BinOp::Div` compile site).
+    ///
+    /// Emitted as a `Severity::Error` when `*` or `/` is applied to operand kinds
+    /// the runtime evaluator (`eval_mul`/`eval_div` in `reify-expr`) has no
+    /// intentional arm for — a **structural** `Value::Undef` (kind-level, true for
+    /// every value of that kind pairing), NOT a data-dependent one (e.g.
+    /// divide-by-zero is excluded from this code). The pinned supported/unsupported
+    /// partition this diagnostic enforces lives in
+    /// `crates/reify-expr/tests/mul_div_runtime_truth_table.rs` (task
+    /// compiler-type-hygiene β1/β2, `INV-COMP-3`).
+    ///
+    /// Rejected operand-kind combinations include: an aggregate paired with another
+    /// aggregate of the same or a mismatched kind (`Vector × Vector`, `Tensor ×
+    /// Tensor`, `Point × Point`); the degenerate `Tensor × Vector` scale shape
+    /// (nested tensor-of-vectors — PRD decision 5, not a deliberate design);
+    /// `Vector × Transform` (order-sensitive: `Transform × Vector` IS supported,
+    /// the reversed order is not); any `Matrix` operand, in either position (no
+    /// intentional eval arm exists for `Value::Matrix` — PRD §10 open question 2);
+    /// `List`/`String`/`Bool` operands; and, because `Div` is non-commutative,
+    /// `Scalar / Vector` / `Real / Vector` (no reverse-scale arm exists for
+    /// division, unlike `Mul`'s commutative aggregate-scale arms).
+    ///
+    /// Canonical message form (naming the operator and BOTH operand types):
+    ///   `"operator \`*\` is undefined for operand kinds \`Vector3<Length>\` and \
+    ///    \`Vector3<Length>\`"`
+    /// with a label `"unsupported operand kinds"` on the expression span.
+    ///
+    /// Gradualism: operands typed `Type::Error` (poison) or `Type::TypeParam(_)`
+    /// (unresolved auto/generic) pass through without emitting this code
+    /// (anti-cascade; PRD decision 3) — mirrors the `Cmp`/logical guards' skip.
+    ///
+    /// The result type IS poisoned to `Type::Error` (via `make_poison_type`,
+    /// mirroring the `Pow`/`Mod` guards) — unlike [`CmpOperandKind`] and
+    /// [`LogicalOperandNotBool`], which keep their unconditional result type
+    /// (`Bool`). `Mul`/`Div` produce a value type, so poisoning the mistyped
+    /// expression stops follow-on cascades on that value.
+    ///
+    /// Distinct from [`CmpOperandKind`] (comparison-operator operand rejection;
+    /// result stays `Bool`) and from [`ModuloRequiresInt`] (the `%`-specific
+    /// Int-only guard).
+    ///
+    /// The PRD-prose mnemonic for this code is `E_ArithOperandKind`
+    /// (severity convention: `E_*` → Error; see
+    /// `docs/prds/v0_6/compiler-type-hygiene.md` §7.2/§8, task compiler-type-hygiene β2).
+    ArithOperandKind,
     /// Origin: `crates/reify-compiler/src/expr.rs` (the `COLLECTION_AGGREGATION_MEMBERS`
     /// wrong-receiver arms: `.sum` on a non-`List` receiver, or `.keys`/`.values` on a
     /// non-`Map` receiver; ds-sentinel L4, task #4649).
