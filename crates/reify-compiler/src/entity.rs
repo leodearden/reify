@@ -6451,6 +6451,28 @@ structure def Manifold {
     // one contract integration tests can't observe: whether `compile_default`
     // is invoked on the auto branch.
 
+    /// Shared assertions for the fields that pass straight through
+    /// `build_param_value_cell_decl` from its inputs to the returned decl on
+    /// both branches (`id`, `span`, `visibility`, `is_aux`, `cell_type`,
+    /// `solver_hints`) — factored out so each test below only spells out the
+    /// contract unique to it (auto-vs-param `kind`/`default_expr` behavior,
+    /// `compile_default` invocation, or cell_type identity).
+    fn assert_param_decl_passthrough_fields(
+        decl: &ValueCellDecl,
+        id: &ValueCellId,
+        span: SourceSpan,
+        visibility: Visibility,
+        cell_type: &Type,
+        solver_hints: &[SolverHint],
+    ) {
+        assert_eq!(&decl.id, id);
+        assert_eq!(decl.span, span);
+        assert_eq!(decl.visibility, visibility);
+        assert!(!decl.is_aux);
+        assert_eq!(&decl.cell_type, cell_type);
+        assert_eq!(decl.solver_hints, solver_hints);
+    }
+
     /// Auto branch (`auto_free = Some(free)`): the returned decl must carry
     /// `ValueCellKind::Auto { free }`, `default_expr: None`, and every other
     /// field verbatim from the inputs — and `compile_default` must NOT be
@@ -6489,12 +6511,14 @@ structure def Manifold {
             );
             assert_eq!(decl.kind, ValueCellKind::Auto { free });
             assert!(decl.default_expr.is_none());
-            assert_eq!(decl.visibility, Visibility::Private);
-            assert!(!decl.is_aux);
-            assert_eq!(decl.cell_type, cell_type);
-            assert_eq!(decl.solver_hints, solver_hints);
-            assert_eq!(decl.id, id);
-            assert_eq!(decl.span, span);
+            assert_param_decl_passthrough_fields(
+                &decl,
+                &id,
+                span,
+                Visibility::Private,
+                &cell_type,
+                &solver_hints,
+            );
         }
     }
 
@@ -6540,17 +6564,19 @@ structure def Manifold {
             "compile_default must be invoked exactly once"
         );
         assert_eq!(decl.kind, ValueCellKind::Param);
+        assert_param_decl_passthrough_fields(
+            &decl,
+            &id,
+            span,
+            Visibility::Public,
+            &cell_type,
+            &solver_hints,
+        );
         assert_eq!(
             decl.default_expr.map(|e| e.content_hash),
             Some(expected_hash),
             "default_expr must equal whatever compile_default returned"
         );
-        assert_eq!(decl.visibility, Visibility::Public);
-        assert!(!decl.is_aux);
-        assert_eq!(decl.cell_type, cell_type);
-        assert_eq!(decl.solver_hints, solver_hints);
-        assert_eq!(decl.id, id);
-        assert_eq!(decl.span, span);
     }
 
     /// Non-auto branch (`auto_free = None`) with a distinct, non-dimensionless
