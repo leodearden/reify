@@ -581,10 +581,10 @@ fn over_cap_cluster_still_solves_per_template() {
         .build();
 
     let alpha_ids: Vec<ValueCellId> = (0..OVER_CAP_AUTOS)
-        .map(|i| ValueCellId::new("Alpha", &format!("a{i}")))
+        .map(|i| ValueCellId::new("Alpha", format!("a{i}")))
         .collect();
     let beta_ids: Vec<ValueCellId> = (0..OVER_CAP_AUTOS)
-        .map(|i| ValueCellId::new("Beta", &format!("a{i}")))
+        .map(|i| ValueCellId::new("Beta", format!("a{i}")))
         .collect();
 
     let mut combined: HashMap<ValueCellId, Value> = HashMap::new();
