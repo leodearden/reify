@@ -1413,25 +1413,37 @@ fn edit_param_followed_by_build_snapshot_re_executes_kernel_so_geometry_handle_i
 ///
 /// **What this test pins:** after the second `build()` call is served from
 /// `RealizationCache` (the cache-hit short-circuit at
-/// `engine_build.rs::execute_realization_ops` fires), `feature_tag_table` is
-/// empty (no entry for the cached handle, table-wide empty).  The root cause
-/// is documented in the "Known limitation" docstring on
+/// `engine_build.rs::execute_realization_ops` fires), `topology_attribute_table`
+/// is empty (no entry for the sphere's seeded face handle, table-wide empty).
+/// The root cause is documented in the "Known limitation" docstring on
 /// `execute_realization_ops`: the short-circuit returns early before the
-/// per-op `feature_tag_table.record(...)` call at line 1547, and the table
-/// is reset to `default()` at the start of every `build()`.  The parallel
-/// `topology_attribute_table` claim is left to a separate OCCT-gated test
-/// because its population path requires real face/edge extraction (see "Why
-/// MockGeometryKernel" below).
+/// per-op primitive-attribute-seeding call, and the table is reset to
+/// `default()` at the start of every `build()`.
 ///
-/// **Why MockGeometryKernel:** (1) The test runs unconditionally — no
-/// `OCCT_AVAILABLE` skip gate that could hide the regression in OCCT-less CI
-/// environments.  (2) `MockGeometryKernel::operations_ref()` exposes the ops
-/// counter needed to assert the cache-hit short-circuit actually fired, which
-/// is the non-vacuousness premise for the regression assertions.  (3) The
-/// regression pin targets the parent-solid-handle level
-/// (`feature_tag_table.record(handle.id, tag)` at engine_build.rs:1547),
-/// which is independent of the per-face/per-edge seeding that requires real
-/// OCCT extraction.
+/// (Prior to task 4827 this test pinned the same short-circuit behaviour via
+/// the now-deleted `feature_tag_table`, keyed on the parent-solid handle
+/// directly. `topology_attribute_table` only ever records entries for a
+/// primitive's extracted faces/edges/vertices — never for the primitive's own
+/// result handle — so the re-pointed PINs below key on the sphere's seeded
+/// face handle instead.)
+///
+/// **Why MockGeometryKernel with staged extraction fixtures:** (1) The test
+/// runs unconditionally — no `OCCT_AVAILABLE` skip gate that could hide the
+/// regression in OCCT-less CI environments.  (2)
+/// `MockGeometryKernel::operations_ref()` exposes the ops counter needed to
+/// assert the cache-hit short-circuit actually fired, which is the
+/// non-vacuousness premise for the regression assertions.  (3) A bare
+/// `MockGeometryKernel` (no staged fixtures) errors on every
+/// `extract_faces`/`extract_edges` call, which would make the primitive
+/// seeder return `Err` (silently swallowed as "auxiliary-metadata failure")
+/// and leave `topology_attribute_table` permanently empty — vacuously
+/// satisfying the PINs for the wrong reason. Staging
+/// `with_extracted_faces`/`with_extracted_edges` for the sphere's
+/// `GeometryHandleId(1)` (the kernel's one-and-only handle in this fixture)
+/// makes the seeding path actually populate the table, so the SANITY check
+/// below is meaningful. A `Sphere` primitive is used (rather than `Box`)
+/// because its seeding arm only extracts faces/edges — no vertex extraction
+/// or `GeometryQuery::BoundingBox` staging is required.
 ///
 /// **This is a CHARACTERIZATION test** — it passes immediately on first run
 /// because it pins existing behaviour.  Flipping any assertion to FAIL is the
@@ -1439,17 +1451,36 @@ fn edit_param_followed_by_build_snapshot_re_executes_kernel_so_geometry_handle_i
 /// population moved outside the op-loop, or the cache short-circuit stopped
 /// firing.
 #[test]
-fn cache_hit_short_circuit_leaves_feature_tag_table_empty_for_cached_handle() {
+fn cache_hit_short_circuit_leaves_topology_attribute_table_empty_after_second_build() {
+    let mm_lit = |v: f64| CompiledExpr::literal(mm(v), Type::length());
+    let sphere_op = CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_lit(5.0))],
+    };
+    let sphere_realization_template = TopologyTemplateBuilder::new("MyDesign")
+        .param("MyDesign", "thickness", Type::dimensionless_scalar(), None)
+        .realization_named("MyDesign", 0, "body", vec![sphere_op])
+        .build();
+
     let module = CompiledModuleBuilder::new(ModulePath::new(vec![
-        "test_cache_hit_leaves_feature_tag_table_empty".to_string(),
+        "test_cache_hit_leaves_topology_attribute_table_empty".to_string(),
     ]))
     .template(step_output_template(1e-6))
-    .template(my_design_template_with_box_realization())
+    .template(sphere_realization_template)
     .compiled_purpose(manufacturing_purpose("manufacturing", 1e-6))
     .build();
 
+    // The sphere is the sole op dispatched by this engine instance, so the
+    // kernel's first (and only) handle is `GeometryHandleId(1)` — stage its
+    // face/edge extraction so the primitive seeder actually populates
+    // `topology_attribute_table` (see "Why MockGeometryKernel" above).
+    let seeded_solid = reify_ir::GeometryHandleId(1);
+    let seeded_face = reify_ir::GeometryHandleId(101);
+    let seeded_edge = reify_ir::GeometryHandleId(102);
     let checker = MockConstraintChecker::new();
-    let kernel = MockGeometryKernel::new();
+    let kernel = MockGeometryKernel::new()
+        .with_extracted_faces(seeded_solid, vec![seeded_face])
+        .with_extracted_edges(seeded_solid, vec![seeded_edge]);
     let ops_handle = kernel.operations_ref();
     let mut engine = reify_eval::Engine::new(Box::new(checker), Some(Box::new(kernel)));
 
@@ -1480,21 +1511,19 @@ fn cache_hit_short_circuit_leaves_feature_tag_table_empty_for_cached_handle() {
              (\"MyDesign\", ReprKind::BRep, 1e-6)",
         );
 
-    // SANITY: the op-loop populated feature_tag_table for the parent-solid
-    // handle on build #1. This makes the PIN below non-vacuous — if the
-    // table were already empty after build #1, asserting it is empty after
-    // build #2 would prove nothing.
+    // SANITY: the op-loop populated topology_attribute_table for the sphere's
+    // seeded face handle on build #1 (via the staged extraction fixtures).
+    // This makes the PIN below non-vacuous — if the table were already empty
+    // after build #1, asserting it is empty after build #2 would prove
+    // nothing.
     assert!(
-        engine
-            .feature_tag_table()
-            .lookup(cached_handle.id)
-            .is_some(),
-        "sanity: expected feature_tag_table to contain an entry for \
-         cached_handle {:?} after build #1 — the op-loop at \
-         engine_build.rs:1547 must record the parent-solid handle. If this \
-         fires, the op-loop recording path has changed and the regression \
-         PIN assertions below may no longer be meaningful.",
-        cached_handle,
+        engine.topology_attribute_table().lookup(seeded_face).is_some(),
+        "sanity: expected topology_attribute_table to contain an entry for \
+         seeded_face {:?} after build #1 — the primitive-attribute seeder in \
+         the op-loop must record the sphere's extracted face. If this fires, \
+         the seeding path has changed and the regression PIN assertions below \
+         may no longer be meaningful.",
+        seeded_face,
     );
 
     // Defensive re-activation: `eval()` PRESERVES `active_purpose_bindings`
@@ -1545,35 +1574,33 @@ fn cache_hit_short_circuit_leaves_feature_tag_table_empty_for_cached_handle() {
     // PIN 1 (headline) + PIN 2 (stronger) layering rationale: PIN 2's
     // table-wide emptiness strictly implies PIN 1's per-handle absence, so
     // they overlap in truth condition.  Both are kept because PIN 1's failure
-    // message names `cached_handle` directly and is the more diagnostic signal
-    // for the canonical regression (population only of the cached handle),
+    // message names `seeded_face` directly and is the more diagnostic signal
+    // for the canonical regression (population only of the seeded face),
     // while PIN 2 generalises to catch any new population path.
     //
     // PIN 1 (headline): the cache-hit short-circuit skips the per-op
-    // `feature_tag_table.record(handle.id, tag)` call at engine_build.rs:1547,
-    // and the per-build reset at the top of build() clears the table before the
-    // short-circuit fires. Net effect: the cached handle has no entry.
+    // primitive-attribute-seeding call, and the per-build reset at the top of
+    // build() clears the table before the short-circuit fires. Net effect:
+    // the previously-seeded face has no entry.
     assert!(
-        engine
-            .feature_tag_table()
-            .lookup(cached_handle.id)
-            .is_none(),
-        "regression PIN: expected feature_tag_table to have NO entry for \
-         cached_handle {:?} on the second build — the cache-hit short-circuit \
-         at engine_build.rs::execute_realization_ops deliberately skips per-op \
-         feature_tag_table.record(); if this fires, either the per-build reset \
-         stopped firing or population moved outside the op-loop.",
-        cached_handle,
+        engine.topology_attribute_table().lookup(seeded_face).is_none(),
+        "regression PIN: expected topology_attribute_table to have NO entry \
+         for seeded_face {:?} on the second build — the cache-hit \
+         short-circuit at engine_build.rs::execute_realization_ops \
+         deliberately skips the per-op primitive-attribute seeder; if this \
+         fires, either the per-build reset stopped firing or population moved \
+         outside the op-loop.",
+        seeded_face,
     );
 
     // PIN 2 (stronger): the entire table is empty — no spurious population from
     // any other source.
     assert!(
-        engine.feature_tag_table().is_empty(),
-        "regression PIN: expected feature_tag_table to be completely empty \
-         after a cache-served build — only the op-loop at engine_build.rs:1547 \
-         populates this table, and the cache-hit short-circuit skips that loop \
-         entirely. If this fires, a new population path outside the op-loop \
-         has been introduced.",
+        engine.topology_attribute_table().is_empty(),
+        "regression PIN: expected topology_attribute_table to be completely \
+         empty after a cache-served build — only the primitive-attribute \
+         seeder in the op-loop populates this table, and the cache-hit \
+         short-circuit skips that loop entirely. If this fires, a new \
+         population path outside the op-loop has been introduced.",
     );
 }
