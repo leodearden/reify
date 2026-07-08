@@ -261,4 +261,20 @@ assert "merge-all plan: run_all.sh line keeps stdout (no 1>&2 / >/dev/null)" \
         echo "$L" | grep -qv "1>&2" && echo "$L" | grep -qv ">/dev/null"
     ' _ "$MERGE_ALL_PLAN"
 
+# (h)-(i) task 5139: the two release pre-builds run cargo build --release -q,
+# which swallows all compiler diagnostics — the 06-27/28 failure cluster and
+# esc-5077-1 archived with no usable evidence. Drop -q so diagnostics land in
+# the archived log.
+assert "merge-all plan: reify-audit pre-step drops -q (compiler diagnostics archived)" \
+    bash -c '
+        L=$(printf "%s\n" "$1" | grep "cargo build --release" | grep "\-p reify-audit" | head -1)
+        echo "$L" | grep -qvE "[[:space:]]-q([[:space:]]|;|$)"
+    ' _ "$MERGE_ALL_PLAN"
+
+assert "merge-all plan: reify-cli pre-step present and drops -q" \
+    bash -c '
+        L=$(printf "%s\n" "$1" | grep "cargo build --release" | grep "\-p reify-cli" | head -1)
+        [ -n "$L" ] && echo "$L" | grep -qvE "[[:space:]]-q([[:space:]]|;|$)"
+    ' _ "$MERGE_ALL_PLAN"
+
 test_summary
