@@ -108,4 +108,71 @@ assert "A5: no subcommand exits 2" test "$RC" -eq 2
 run_helper frobulate
 assert "A6: unknown subcommand exits 2" test "$RC" -eq 2
 
+# ── fixture helpers ────────────────────────────────────────────────────────────
+# _mk_loadavg LOAD1 — writes a /proc/loadavg-format file with field 1 = LOAD1.
+_mk_loadavg() {
+    local _f
+    _f="$(mktemp /tmp/test-fleet-load-detector-loadavg-XXXXXX)"
+    _TMPDIRS+=("$_f")
+    printf '%s 0.40 0.30 1/100 999\n' "$1" > "$_f"
+    echo "$_f"
+}
+
+# _mk_psi AVG10 — writes a /proc/pressure/cpu-format file with `some` avg10 = AVG10.
+_mk_psi() {
+    local _f
+    _f="$(mktemp /tmp/test-fleet-load-detector-psi-XXXXXX)"
+    _TMPDIRS+=("$_f")
+    printf 'some avg10=%s avg60=0.50 avg300=0.10 total=12345\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' "$1" > "$_f"
+    echo "$_f"
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block B — happy path: ratio < threshold AND avg10 < threshold → healthy
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block B: happy path (healthy) ---"
+
+B_LOADAVG="$(_mk_loadavg 0.50)"
+B_PSI="$(_mk_psi 1.00)"
+
+REIFY_FLEET_LOAD_LOADAVG_PATH="$B_LOADAVG" REIFY_FLEET_LOAD_PSI_PATH="$B_PSI" REIFY_FLEET_LOAD_NPROC=32 \
+    run_helper check
+assert "B1: healthy fixture exits 0" test "$RC" -eq 0
+assert "B2: stdout is exactly the expected FLEET_LOAD verdict line" \
+    bash -c '[ "$1" = "FLEET_LOAD status=ok load1=0.50 nproc=32 ratio=0.02 ratio_threshold=4.0 avg10=1.00 avg10_threshold=80 reason=none" ]' \
+    _ "$OUT"
+assert "B3: stdout is a single line" \
+    bash -c '[ "$(printf "%s\n" "$1" | wc -l)" -eq 1 ]' _ "$OUT"
+assert "B4: no oversubscribed marker on stderr" \
+    bash -c '! printf "%s\n" "$1" | grep -q "@@REIFY_FLEET_OVERSUBSCRIBED@@"' _ "$ERR_OUT"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block F — boundary: pins the >= operator on the ratio axis via the STDOUT
+# status field only. Exit-code/marker behavior for the flagged path is wired
+# in step-6 — asserting RC here for the AT-threshold row would regress once
+# step-6 lands (it flips from 0 to 3), so only the JUST-BELOW row (whose exit
+# code never changes) asserts RC.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block F: boundary (>= operator) ---"
+
+# F1: load1=128 nproc=32 → ratio exactly 4.0 → status=oversubscribed (>=, not >)
+F1_LOADAVG="$(_mk_loadavg 128)"
+F_PSI="$(_mk_psi 1.00)"
+REIFY_FLEET_LOAD_LOADAVG_PATH="$F1_LOADAVG" REIFY_FLEET_LOAD_PSI_PATH="$F_PSI" REIFY_FLEET_LOAD_NPROC=32 \
+    run_helper check
+assert "F1: ratio exactly at threshold (4.00) is status=oversubscribed" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])status=oversubscribed([[:space:]]|$)"' _ "$OUT"
+assert "F1: ratio field reads 4.00" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])ratio=4\.00([[:space:]]|$)"' _ "$OUT"
+
+# F2: load1=127 nproc=32 → ratio 3.97 (just below 4.0) → status=ok, exit 0
+F2_LOADAVG="$(_mk_loadavg 127)"
+REIFY_FLEET_LOAD_LOADAVG_PATH="$F2_LOADAVG" REIFY_FLEET_LOAD_PSI_PATH="$F_PSI" REIFY_FLEET_LOAD_NPROC=32 \
+    run_helper check
+assert "F2: ratio just below threshold (3.97) is status=ok" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])status=ok([[:space:]]|$)"' _ "$OUT"
+assert "F2: just-below-threshold exits 0" test "$RC" -eq 0
+
 test_summary
