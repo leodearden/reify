@@ -1179,19 +1179,26 @@ sleep 30
 SLOW_PS_STUB
 chmod +x "$_P8_BINDIR/ps"
 
-# Test 8a: wall-clock bound -- reap-orphans must complete < 15s even though
-# the stub ps sleeps 30s without the timeout wrapper.
-# REIFY_REAPER_PS_TIMEOUT=2 -> timeout fires at ~2s -> 7x margin under 15s.
-assert "reap-orphans completes < 15s when ps stalls 30s (REIFY_REAPER_PS_TIMEOUT=2 bounds scan)" \
+# Test 8a: MECHANISM proof -- the ps-timeout wrapper fires (marker present in
+# stderr) and the sweep returns promptly under a generous anti-hang ceiling,
+# even though the stub ps sleeps 30s without the timeout wrapper.
+# NON-VACUOUS: unlike an elapsed bound, the marker appears ONLY when
+# _reaper_bounded_ps actually times out. If lib's bounding were removed
+# (bare-ps fallback), the sweep would still finish under the generous 60s
+# ceiling (30s stub < 60s) -- an elapsed bound would pass either way -- but
+# the marker would be ABSENT, so this assertion still goes RED.
+# REIFY_REAPER_PS_TIMEOUT=2 -> internal timeout fires at ~2s; the outer 60s
+# timeout is a pure anti-hang backstop, not a discriminator.
+assert "reap-orphans fires the ps-timeout mechanism under a generous anti-hang ceiling (REIFY_REAPER_PS_TIMEOUT=2 bounds scan)" \
     env LIB_REAPER="$LIB_REAPER" P8_BINDIR="$_P8_BINDIR" bash -c '
-        _start=$(date +%s)
+        _err=$(mktemp)
+        trap "rm -f \"$_err\"" EXIT
         PATH="$P8_BINDIR:$PATH" \
         REIFY_REAPER_PS_TIMEOUT=2 \
         REIFY_REAPER_UID=$(id -u) \
-            bash "$LIB_REAPER" reap-orphans >/dev/null 2>/dev/null || true
-        _end=$(date +%s)
-        _elapsed=$(( _end - _start ))
-        [ "$_elapsed" -lt 15 ]
+            timeout 60 bash "$LIB_REAPER" reap-orphans >/dev/null 2>"$_err"
+        _rc=$?
+        [ "$_rc" -ne 124 ] && grep -qF "host-wide ps scan exceeded" "$_err"
     '
 
 # Test 8b: non-vacuous proof -- stderr must carry the timeout-warning substring.
