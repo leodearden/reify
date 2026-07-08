@@ -1534,6 +1534,119 @@ pub(crate) fn resolve_unop(op: &str) -> Option<UnOp> {
 
 // --- Type inference for binary operations ---
 
+/// Scalar-like operand for `*`/`/` static typing: `Int` or `Scalar{..}`.
+///
+/// `Real` is NOT a distinct `Type` variant — a `Real` literal types as
+/// `Scalar{dimension: DIMENSIONLESS}` — so this predicate covers it for free.
+fn is_mul_div_scalar_like(ty: &Type) -> bool {
+    matches!(ty, Type::Int | Type::Scalar { .. })
+}
+
+/// Single source of truth for BOTH the correct static result type of `*`/`/`
+/// AND the runtime-supported/unsupported partition (task compiler-type-hygiene
+/// β2, INV-COMP-3).
+///
+/// `Some(ty)` — the operand-kind pair is one the runtime evaluator
+/// (`eval_mul`/`eval_div` in `reify-expr`) has an INTENTIONAL arm for; `ty` is
+/// the exact static result type for that arm. `None` — no intentional arm
+/// exists (a **structural**, kind-level `Value::Undef`, not a data-dependent
+/// one like divide-by-zero); the caller (the `expr.rs` operand-kind guard)
+/// poisons to `Type::Error` and emits `DiagnosticCode::ArithOperandKind`.
+///
+/// Pinned row-for-row against the frozen runtime characterization suite:
+/// `crates/reify-expr/tests/mul_div_runtime_truth_table.rs` (β1, task 5052).
+/// Only that file's `INTENTIONAL` rows become `Some`; `STRUCTURAL-Undef`,
+/// `degenerate-NOT-intentional`, and `Matrix-diagnostic` rows all become
+/// `None`. `DATA-DRIVEN-Undef` rows (divide-by-zero) are excluded — they are
+/// a runtime VALUE question, not a static TYPE question.
+///
+/// Callers: `infer_binop_type`'s `Mul`/`Div` arm (below) delegates here
+/// directly; the `expr.rs` `compile_binop` operand-kind guard calls this
+/// separately to decide whether to poison + emit `ArithOperandKind`. Keeping
+/// both concerns in ONE function makes the static table structurally unable
+/// to disagree with itself (mirrors the `modulo_operands_are_int` /
+/// `is_orderable_scalar` predicate-here / emission-in-`expr.rs` split).
+///
+/// Aggregate "scale" arms (`Vector`/`Point`/`Tensor` ⊗ scalar-like) recurse
+/// this same function over the aggregate's quantity slot, mirroring the
+/// runtime's `scale_components(.., eval_mul/eval_div, ..)`, which itself maps
+/// `eval_mul`/`eval_div` over each component against the same "scalar"
+/// operand — so a dimensioned "scalar" (e.g. `Scalar<Time>`) combines
+/// dimensions with the quantity exactly as `Scalar ⊗ Scalar` would.
+pub(crate) fn infer_mul_div_result(op: BinOp, left: &Type, right: &Type) -> Option<Type> {
+    debug_assert!(
+        matches!(op, BinOp::Mul | BinOp::Div),
+        "infer_mul_div_result only handles BinOp::Mul/BinOp::Div, got {op:?}"
+    );
+    match (left, right) {
+        // ── Numeric + Scalar core ────────────────────────────────────────────
+        (Type::Int, Type::Int) => Some(Type::Int),
+
+        (Type::Scalar { dimension: ld }, Type::Scalar { dimension: rd }) => Some(Type::Scalar {
+            dimension: match op {
+                BinOp::Mul => ld.mul(rd),
+                BinOp::Div => ld.div(rd),
+                _ => unreachable!(),
+            },
+        }),
+
+        // Scalar ⊗ Int: Int carries no dimension, so both Mul and Div preserve
+        // the Scalar's dimension unchanged.
+        (Type::Scalar { dimension }, Type::Int) => Some(Type::Scalar { dimension: *dimension }),
+        // Int ⊗ Scalar: Mul is commutative with the above (preserve); Div is
+        // the non-commutative reciprocal-dimension arm (`Int / Scalar<Time>`).
+        (Type::Int, Type::Scalar { dimension }) => Some(Type::Scalar {
+            dimension: match op {
+                BinOp::Mul => *dimension,
+                BinOp::Div => DimensionVector::DIMENSIONLESS.div(dimension),
+                _ => unreachable!(),
+            },
+        }),
+
+        // ── Aggregate scale: Vector/Point/Tensor ⊗ scalar-like ───────────────
+        // `Aggregate / scalar-like` and `Aggregate * scalar-like` share one arm
+        // (valid for both ops with the aggregate on the LEFT). The reverse
+        // order (`scalar-like * Aggregate`) is Mul-only — Div has no
+        // reverse-scale arm (non-commutative).
+        (Type::Vector { n, quantity }, other) if is_mul_div_scalar_like(other) => {
+            infer_mul_div_result(op, quantity, other)
+                .map(|q| Type::Vector { n: *n, quantity: Box::new(q) })
+        }
+        (other, Type::Vector { n, quantity })
+            if op == BinOp::Mul && is_mul_div_scalar_like(other) =>
+        {
+            infer_mul_div_result(op, quantity, other)
+                .map(|q| Type::Vector { n: *n, quantity: Box::new(q) })
+        }
+        (Type::Point { n, quantity }, other) if is_mul_div_scalar_like(other) => {
+            infer_mul_div_result(op, quantity, other)
+                .map(|q| Type::Point { n: *n, quantity: Box::new(q) })
+        }
+        (other, Type::Point { n, quantity })
+            if op == BinOp::Mul && is_mul_div_scalar_like(other) =>
+        {
+            infer_mul_div_result(op, quantity, other)
+                .map(|q| Type::Point { n: *n, quantity: Box::new(q) })
+        }
+        (Type::Tensor { rank, n, quantity }, other) if is_mul_div_scalar_like(other) => {
+            infer_mul_div_result(op, quantity, other)
+                .map(|q| Type::Tensor { rank: *rank, n: *n, quantity: Box::new(q) })
+        }
+        (other, Type::Tensor { rank, n, quantity })
+            if op == BinOp::Mul && is_mul_div_scalar_like(other) =>
+        {
+            infer_mul_div_result(op, quantity, other)
+                .map(|q| Type::Tensor { rank: *rank, n: *n, quantity: Box::new(q) })
+        }
+
+        // Every other operand-kind pairing (incl. Complex/Transform — added in
+        // step-4; aggregate×aggregate; degenerate Tensor×Vector; Matrix in
+        // either position; List/String/Bool; non-commutative Div reversals)
+        // has no runtime-intentional arm.
+        _ => None,
+    }
+}
+
 /// Infer the result type of a binary operation given operand types.
 pub(crate) fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
     // Anti-cascade guard (task-448): if either operand is already poisoned,
@@ -1573,27 +1686,13 @@ pub(crate) fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
         | BinOp::Or
         | BinOp::Implies => Type::Bool,
         BinOp::Add | BinOp::Sub => left.clone(), // same dimension required
-        BinOp::Mul => match (left, right) {
-            (Type::Scalar { dimension: ld }, Type::Scalar { dimension: rd }) => Type::Scalar {
-                dimension: ld.mul(rd),
-            },
-            (Type::Scalar { .. }, _) | (_, Type::Scalar { .. }) => {
-                // Scalar * non-scalar preserves the scalar type
-                if let Type::Scalar { .. } = left {
-                    left.clone()
-                } else {
-                    right.clone()
-                }
-            }
-            _ => Type::Int,
-        },
-        BinOp::Div => match (left, right) {
-            (Type::Scalar { dimension: ld }, Type::Scalar { dimension: rd }) => {
-                Type::Scalar { dimension: ld.div(rd) }
-            }
-            (Type::Scalar { .. }, _) => left.clone(),
-            _ => Type::Int,
-        },
+        // Delegates to the single source of truth for both the correct static
+        // result type and the runtime-supported/unsupported partition (β2,
+        // INV-COMP-3). The `Type::Int` fallback is a placeholder for
+        // runtime-unsupported combos: it preserves base (pre-β2) behavior
+        // until the `expr.rs` operand-kind guard poisons + emits together
+        // (mirrors the Mod/Pow precedent) — see `infer_mul_div_result`'s doc.
+        BinOp::Mul | BinOp::Div => infer_mul_div_result(op, left, right).unwrap_or(Type::Int),
         BinOp::Mod => left.clone(),
         BinOp::Pow => left.clone(), // simplified for M1
     }
