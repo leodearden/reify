@@ -10964,7 +10964,7 @@ mod tests {
     fn validate_rejects_non_finite() {
         // A NaN vertex coordinate on vertex 1 (x-component).
         let mut nan_vertex_mesh = welded_tetra_mesh();
-        nan_vertex_mesh.vertices[1 * 3] = f32::NAN;
+        nan_vertex_mesh.vertices[3] = f32::NAN; // vertex 1, x-component (index * stride 3)
         let err = nan_vertex_mesh
             .validate(0.0)
             .expect_err("a mesh with a NaN vertex coordinate must fail the mesh contract");
