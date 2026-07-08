@@ -213,6 +213,28 @@ export function createEngineStore(options?: EngineStoreOptions) {
     setState('feaDiagnostics', diags);
   }
 
+  /**
+   * Whole-value live-sync reducers for the 4 L2-stopgap StateDelta list fields
+   * (task #5031). Each mirrors setTessellationDiagnostics/setCompileDiagnostics:
+   * diff.rs emits the entire list whenever it changes, so the reducer replaces
+   * the whole list rather than merging by key.
+   */
+  function setTensegrityWires(wires: TensegrityWireData[]) {
+    setState('tensegrityWires', wires);
+  }
+
+  function setTensegritySurfaces(surfaces: TensegritySurfaceData[]) {
+    setState('tensegritySurfaces', surfaces);
+  }
+
+  function setDisplayPanes(panes: DisplayDirective[]) {
+    setState('displayPanes', panes);
+  }
+
+  function setDisplayAppearance(appearance: AppearanceDirective[]) {
+    setState('displayAppearance', appearance);
+  }
+
   function setKernelStatus(status: KernelStatus | null) {
     setState('kernelStatus', status);
   }
@@ -539,6 +561,10 @@ export function createEngineStore(options?: EngineStoreOptions) {
     setTessellationDiagnostics,
     setCompileDiagnostics,
     setFeaDiagnostics,
+    setTensegrityWires,
+    setTensegritySurfaces,
+    setDisplayPanes,
+    setDisplayAppearance,
     setKernelStatus,
     beginAutoResolveLoop,
     applyAutoResolveIteration,
