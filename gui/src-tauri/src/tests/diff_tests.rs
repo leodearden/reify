@@ -62,6 +62,57 @@ fn sample_mesh(entity_path: &str, vertices: Vec<f32>) -> MeshData {
     }
 }
 
+fn sample_tensegrity_wire(entity_path: &str, kind: &str) -> TensegrityWireData {
+    TensegrityWireData {
+        entity_path: entity_path.to_string(),
+        kind: kind.to_string(),
+        x1: 0.0,
+        y1: 0.0,
+        z1: 0.0,
+        x2: 1.0,
+        y2: 0.0,
+        z2: 0.0,
+    }
+}
+
+fn sample_tensegrity_surface(entity_path: &str, kind: &str) -> TensegritySurfaceData {
+    TensegritySurfaceData {
+        entity_path: entity_path.to_string(),
+        kind: kind.to_string(),
+        i0: 0,
+        i1: 1,
+        i2: 2,
+        x0: 0.0,
+        y0: 0.0,
+        z0: 0.0,
+        x1: 1.0,
+        y1: 0.0,
+        z1: 0.0,
+        x2: 0.0,
+        y2: 1.0,
+        z2: 0.0,
+    }
+}
+
+fn sample_display_directive(subject: &str, pane: i32) -> DisplayDirective {
+    DisplayDirective {
+        subject: subject.to_string(),
+        pane,
+    }
+}
+
+fn sample_appearance_directive(subject: &str, opacity: f32) -> AppearanceDirective {
+    AppearanceDirective {
+        subject: subject.to_string(),
+        style: DisplayStyleData {
+            color: [0.5, 0.3, 0.1, opacity],
+            finish: 1,
+            opacity,
+            wireframe: false,
+        },
+    }
+}
+
 #[test]
 fn diff_identical_states_returns_empty_delta() {
     let state = GuiState {
@@ -1027,6 +1078,723 @@ fn delta_to_events_omits_compile_diagnostics_event_when_none() {
         events.iter().all(|(n, _)| n != "compile-diagnostics"),
         "expected no compile-diagnostics event when field is None; got {:?}",
         events.iter().map(|(n, _)| n).collect::<Vec<_>>()
+    );
+}
+
+// --- tensegrity_wires diff / full-delta tests (step-1) ---
+
+/// diff_gui_state: identical tensegrity_wires in old and new → delta field is None.
+#[test]
+fn diff_identical_tensegrity_wires_returns_none() {
+    let wires = vec![sample_tensegrity_wire("TPrism.strut0", "strut")];
+    let old = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: wires.clone(),
+        tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
+        display_panes: vec![],
+        display_appearance: vec![],
+        fea_diagnostics: vec![],
+        fea_convergence: None,
+    };
+    let new = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: wires.clone(),
+        tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
+        display_panes: vec![],
+        display_appearance: vec![],
+        fea_diagnostics: vec![],
+        fea_convergence: None,
+    };
+
+    let delta = diff_gui_state(&old, &new);
+    assert!(
+        delta.changed_tensegrity_wires.is_none(),
+        "expected None when tensegrity_wires are identical, got {:?}",
+        delta.changed_tensegrity_wires
+    );
+}
+
+/// diff_gui_state: empty → non-empty tensegrity_wires produces Some(new vec).
+#[test]
+fn diff_changed_tensegrity_wires_returns_some() {
+    let old = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
+        display_panes: vec![],
+        display_appearance: vec![],
+        fea_diagnostics: vec![],
+        fea_convergence: None,
+    };
+    let new_wires = vec![
+        sample_tensegrity_wire("TPrism.strut0", "strut"),
+        sample_tensegrity_wire("TPrism.cable0", "cable"),
+    ];
+    let new = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: new_wires.clone(),
+        tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
+        display_panes: vec![],
+        display_appearance: vec![],
+        fea_diagnostics: vec![],
+        fea_convergence: None,
+    };
+
+    let delta = diff_gui_state(&old, &new);
+    assert_eq!(
+        delta.changed_tensegrity_wires,
+        Some(new_wires),
+        "delta should carry the new tensegrity_wires vec"
+    );
+}
+
+/// diff_gui_state: non-empty → empty transition emits Some(vec![]) so subscribers can clear.
+#[test]
+fn diff_clearing_tensegrity_wires_emits_some_empty() {
+    let old = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![sample_tensegrity_wire("TPrism.strut0", "strut")],
+        tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
+        display_panes: vec![],
+        display_appearance: vec![],
+        fea_diagnostics: vec![],
+        fea_convergence: None,
+    };
+    let new = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
+        display_panes: vec![],
+        display_appearance: vec![],
+        fea_diagnostics: vec![],
+        fea_convergence: None,
+    };
+
+    let delta = diff_gui_state(&old, &new);
+    assert_eq!(
+        delta.changed_tensegrity_wires,
+        Some(vec![]),
+        "non-empty → empty transition must emit Some(vec![]) so subscribers can clear; \
+         None would swallow the clear event"
+    );
+}
+
+/// StateDelta::full: None when tensegrity_wires is empty, Some(clone) when non-empty.
+#[test]
+fn full_delta_tensegrity_wires_none_when_empty_some_when_nonempty() {
+    let empty_state = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
+        display_panes: vec![],
+        display_appearance: vec![],
+        fea_diagnostics: vec![],
+        fea_convergence: None,
+    };
+    assert!(
+        StateDelta::full(&empty_state)
+            .changed_tensegrity_wires
+            .is_none(),
+        "StateDelta::full must omit tensegrity_wires when empty"
+    );
+
+    let wires = vec![sample_tensegrity_wire("TPrism.strut0", "strut")];
+    let nonempty_state = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: wires.clone(),
+        tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
+        display_panes: vec![],
+        display_appearance: vec![],
+        fea_diagnostics: vec![],
+        fea_convergence: None,
+    };
+    assert_eq!(
+        StateDelta::full(&nonempty_state).changed_tensegrity_wires,
+        Some(wires),
+        "StateDelta::full must carry a clone of tensegrity_wires when non-empty"
+    );
+}
+
+// --- tensegrity_surfaces diff / full-delta tests (step-1) ---
+
+/// diff_gui_state: identical tensegrity_surfaces in old and new → delta field is None.
+#[test]
+fn diff_identical_tensegrity_surfaces_returns_none() {
+    let surfaces = vec![sample_tensegrity_surface("TPatch.facet0", "membrane")];
+    let old = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
+        tensegrity_surfaces: surfaces.clone(),
+        demand_prune_measurement: None,
+        display_panes: vec![],
+        display_appearance: vec![],
+        fea_diagnostics: vec![],
+        fea_convergence: None,
+    };
+    let new = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
+        tensegrity_surfaces: surfaces.clone(),
+        demand_prune_measurement: None,
+        display_panes: vec![],
+        display_appearance: vec![],
+        fea_diagnostics: vec![],
+        fea_convergence: None,
+    };
+
+    let delta = diff_gui_state(&old, &new);
+    assert!(
+        delta.changed_tensegrity_surfaces.is_none(),
+        "expected None when tensegrity_surfaces are identical, got {:?}",
+        delta.changed_tensegrity_surfaces
+    );
+}
+
+/// diff_gui_state: empty → non-empty tensegrity_surfaces produces Some(new vec).
+#[test]
+fn diff_changed_tensegrity_surfaces_returns_some() {
+    let old = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
+        display_panes: vec![],
+        display_appearance: vec![],
+        fea_diagnostics: vec![],
+        fea_convergence: None,
+    };
+    let new_surfaces = vec![sample_tensegrity_surface("TPatch.facet0", "membrane")];
+    let new = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
+        tensegrity_surfaces: new_surfaces.clone(),
+        demand_prune_measurement: None,
+        display_panes: vec![],
+        display_appearance: vec![],
+        fea_diagnostics: vec![],
+        fea_convergence: None,
+    };
+
+    let delta = diff_gui_state(&old, &new);
+    assert_eq!(
+        delta.changed_tensegrity_surfaces,
+        Some(new_surfaces),
+        "delta should carry the new tensegrity_surfaces vec"
+    );
+}
+
+/// diff_gui_state: non-empty → empty transition emits Some(vec![]) so subscribers can clear.
+#[test]
+fn diff_clearing_tensegrity_surfaces_emits_some_empty() {
+    let old = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![sample_tensegrity_surface("TPatch.facet0", "membrane")],
+        demand_prune_measurement: None,
+        display_panes: vec![],
+        display_appearance: vec![],
+        fea_diagnostics: vec![],
+        fea_convergence: None,
+    };
+    let new = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
+        display_panes: vec![],
+        display_appearance: vec![],
+        fea_diagnostics: vec![],
+        fea_convergence: None,
+    };
+
+    let delta = diff_gui_state(&old, &new);
+    assert_eq!(
+        delta.changed_tensegrity_surfaces,
+        Some(vec![]),
+        "non-empty → empty transition must emit Some(vec![]) so subscribers can clear; \
+         None would swallow the clear event"
+    );
+}
+
+/// StateDelta::full: None when tensegrity_surfaces is empty, Some(clone) when non-empty.
+#[test]
+fn full_delta_tensegrity_surfaces_none_when_empty_some_when_nonempty() {
+    let empty_state = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
+        display_panes: vec![],
+        display_appearance: vec![],
+        fea_diagnostics: vec![],
+        fea_convergence: None,
+    };
+    assert!(
+        StateDelta::full(&empty_state)
+            .changed_tensegrity_surfaces
+            .is_none(),
+        "StateDelta::full must omit tensegrity_surfaces when empty"
+    );
+
+    let surfaces = vec![sample_tensegrity_surface("TPatch.facet0", "membrane")];
+    let nonempty_state = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
+        tensegrity_surfaces: surfaces.clone(),
+        demand_prune_measurement: None,
+        display_panes: vec![],
+        display_appearance: vec![],
+        fea_diagnostics: vec![],
+        fea_convergence: None,
+    };
+    assert_eq!(
+        StateDelta::full(&nonempty_state).changed_tensegrity_surfaces,
+        Some(surfaces),
+        "StateDelta::full must carry a clone of tensegrity_surfaces when non-empty"
+    );
+}
+
+// --- display_panes diff / full-delta tests (step-1) ---
+
+/// diff_gui_state: identical display_panes in old and new → delta field is None.
+#[test]
+fn diff_identical_display_panes_returns_none() {
+    let panes = vec![sample_display_directive("Bracket#realization[0]", 0)];
+    let old = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
+        display_panes: panes.clone(),
+        display_appearance: vec![],
+        fea_diagnostics: vec![],
+        fea_convergence: None,
+    };
+    let new = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
+        display_panes: panes.clone(),
+        display_appearance: vec![],
+        fea_diagnostics: vec![],
+        fea_convergence: None,
+    };
+
+    let delta = diff_gui_state(&old, &new);
+    assert!(
+        delta.changed_display_panes.is_none(),
+        "expected None when display_panes are identical, got {:?}",
+        delta.changed_display_panes
+    );
+}
+
+/// diff_gui_state: empty → non-empty display_panes produces Some(new vec).
+#[test]
+fn diff_changed_display_panes_returns_some() {
+    let old = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
+        display_panes: vec![],
+        display_appearance: vec![],
+        fea_diagnostics: vec![],
+        fea_convergence: None,
+    };
+    let new_panes = vec![sample_display_directive("Bracket#realization[0]", 1)];
+    let new = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
+        display_panes: new_panes.clone(),
+        display_appearance: vec![],
+        fea_diagnostics: vec![],
+        fea_convergence: None,
+    };
+
+    let delta = diff_gui_state(&old, &new);
+    assert_eq!(
+        delta.changed_display_panes,
+        Some(new_panes),
+        "delta should carry the new display_panes vec"
+    );
+}
+
+/// diff_gui_state: non-empty → empty transition emits Some(vec![]) so subscribers can clear.
+#[test]
+fn diff_clearing_display_panes_emits_some_empty() {
+    let old = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
+        display_panes: vec![sample_display_directive("Bracket#realization[0]", 0)],
+        display_appearance: vec![],
+        fea_diagnostics: vec![],
+        fea_convergence: None,
+    };
+    let new = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
+        display_panes: vec![],
+        display_appearance: vec![],
+        fea_diagnostics: vec![],
+        fea_convergence: None,
+    };
+
+    let delta = diff_gui_state(&old, &new);
+    assert_eq!(
+        delta.changed_display_panes,
+        Some(vec![]),
+        "non-empty → empty transition must emit Some(vec![]) so subscribers can clear; \
+         None would swallow the clear event"
+    );
+}
+
+/// StateDelta::full: None when display_panes is empty, Some(clone) when non-empty.
+#[test]
+fn full_delta_display_panes_none_when_empty_some_when_nonempty() {
+    let empty_state = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
+        display_panes: vec![],
+        display_appearance: vec![],
+        fea_diagnostics: vec![],
+        fea_convergence: None,
+    };
+    assert!(
+        StateDelta::full(&empty_state).changed_display_panes.is_none(),
+        "StateDelta::full must omit display_panes when empty"
+    );
+
+    let panes = vec![sample_display_directive("Bracket#realization[0]", 0)];
+    let nonempty_state = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
+        display_panes: panes.clone(),
+        display_appearance: vec![],
+        fea_diagnostics: vec![],
+        fea_convergence: None,
+    };
+    assert_eq!(
+        StateDelta::full(&nonempty_state).changed_display_panes,
+        Some(panes),
+        "StateDelta::full must carry a clone of display_panes when non-empty"
+    );
+}
+
+// --- display_appearance diff / full-delta tests (step-1) ---
+
+/// diff_gui_state: identical display_appearance in old and new → delta field is None.
+#[test]
+fn diff_identical_display_appearance_returns_none() {
+    let appearance = vec![sample_appearance_directive("Bracket#realization[0]", 0.8)];
+    let old = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
+        display_panes: vec![],
+        display_appearance: appearance.clone(),
+        fea_diagnostics: vec![],
+        fea_convergence: None,
+    };
+    let new = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
+        display_panes: vec![],
+        display_appearance: appearance.clone(),
+        fea_diagnostics: vec![],
+        fea_convergence: None,
+    };
+
+    let delta = diff_gui_state(&old, &new);
+    assert!(
+        delta.changed_display_appearance.is_none(),
+        "expected None when display_appearance are identical, got {:?}",
+        delta.changed_display_appearance
+    );
+}
+
+/// diff_gui_state: empty → non-empty display_appearance produces Some(new vec).
+#[test]
+fn diff_changed_display_appearance_returns_some() {
+    let old = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
+        display_panes: vec![],
+        display_appearance: vec![],
+        fea_diagnostics: vec![],
+        fea_convergence: None,
+    };
+    let new_appearance = vec![sample_appearance_directive("Bracket#realization[0]", 0.8)];
+    let new = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
+        display_panes: vec![],
+        display_appearance: new_appearance.clone(),
+        fea_diagnostics: vec![],
+        fea_convergence: None,
+    };
+
+    let delta = diff_gui_state(&old, &new);
+    assert_eq!(
+        delta.changed_display_appearance,
+        Some(new_appearance),
+        "delta should carry the new display_appearance vec"
+    );
+}
+
+/// diff_gui_state: non-empty → empty transition emits Some(vec![]) so subscribers can clear.
+#[test]
+fn diff_clearing_display_appearance_emits_some_empty() {
+    let old = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
+        display_panes: vec![],
+        display_appearance: vec![sample_appearance_directive("Bracket#realization[0]", 0.8)],
+        fea_diagnostics: vec![],
+        fea_convergence: None,
+    };
+    let new = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
+        display_panes: vec![],
+        display_appearance: vec![],
+        fea_diagnostics: vec![],
+        fea_convergence: None,
+    };
+
+    let delta = diff_gui_state(&old, &new);
+    assert_eq!(
+        delta.changed_display_appearance,
+        Some(vec![]),
+        "non-empty → empty transition must emit Some(vec![]) so subscribers can clear; \
+         None would swallow the clear event"
+    );
+}
+
+/// StateDelta::full: None when display_appearance is empty, Some(clone) when non-empty.
+#[test]
+fn full_delta_display_appearance_none_when_empty_some_when_nonempty() {
+    let empty_state = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
+        display_panes: vec![],
+        display_appearance: vec![],
+        fea_diagnostics: vec![],
+        fea_convergence: None,
+    };
+    assert!(
+        StateDelta::full(&empty_state)
+            .changed_display_appearance
+            .is_none(),
+        "StateDelta::full must omit display_appearance when empty"
+    );
+
+    let appearance = vec![sample_appearance_directive("Bracket#realization[0]", 0.8)];
+    let nonempty_state = GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
+        display_panes: vec![],
+        display_appearance: appearance.clone(),
+        fea_diagnostics: vec![],
+        fea_convergence: None,
+    };
+    assert_eq!(
+        StateDelta::full(&nonempty_state).changed_display_appearance,
+        Some(appearance),
+        "StateDelta::full must carry a clone of display_appearance when non-empty"
     );
 }
 
