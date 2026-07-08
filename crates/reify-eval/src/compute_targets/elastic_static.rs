@@ -9296,4 +9296,39 @@ mod tests {
             res
         );
     }
+
+    /// step-5: `extract_material` must return `Ok` with the exact
+    /// `IsotropicElastic` values for a well-formed material StructureInstance,
+    /// locking the success path alongside the error paths above.
+    #[test]
+    fn extract_material_accepts_well_formed_material() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        let fields: PersistentMap<String, Value> = [
+            (
+                "youngs_modulus".to_string(),
+                Value::Scalar {
+                    si_value: 2.0e9,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                },
+            ),
+            ("poisson_ratio".to_string(), Value::Real(0.3)),
+        ]
+        .into_iter()
+        .collect();
+        let material = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_name: "IsotropicMaterial".to_string(),
+            type_id: StructureTypeId(u32::MAX),
+            version: 1,
+            fields,
+        }));
+
+        assert_eq!(
+            extract_material(&material),
+            Ok(IsotropicElastic {
+                youngs_modulus: 2.0e9,
+                poisson_ratio: 0.3,
+            })
+        );
+    }
 }
