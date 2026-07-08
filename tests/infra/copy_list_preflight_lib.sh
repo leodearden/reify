@@ -43,7 +43,16 @@
 # class). Of those, the LAST `/<name>.sh"` substring is captured — this
 # covers every real dir-idiom in scripts/ ($SCRIPT_DIR/, the nested-quote
 # $(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ idiom, and a bare $VAR_DIR/
-# idiom). A line whose sourced path is a bare variable (e.g. `source "$v"`,
+# idiom). The capture requires a literal `"` immediately after `.sh`, so
+# ONLY double-quoted source paths are recognized, by design: every real
+# source statement in scripts/ today double-quotes its path, so this is
+# latent, not live. An unquoted (`source $DIR/foo.sh`) or single-quoted
+# (`source '$DIR/foo.sh'`) source line has no capturable `/name.sh"`
+# substring and would be silently dropped from the derived closure — if
+# scripts/ ever grows one, its target needs adding to the affected fixture's
+# copy list by hand (this preflight would not flag that specific lib's
+# absence, though it still catches drift among every double-quoted-sourced
+# lib). A line whose sourced path is a bare variable (e.g. `source "$v"`,
 # used by lib_slot_acquire.sh and cpu-admit.sh to reach lib_clock_stop.sh)
 # has no capturable `/name.sh"` substring and is silently skipped — static
 # variable-assignment tracing is fragile, and both real call sites already
