@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::watcher::{FileEvent, FileWatcher};
 
@@ -27,6 +27,56 @@ where
         }
         Err(e) => panic!("unexpected watcher error: {e}"),
     }
+}
+
+#[test]
+fn wait_for_returns_true_promptly_when_condition_already_satisfied() {
+    let sink: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(vec![42]));
+    let start = Instant::now();
+
+    let found = wait_for(&sink, Duration::from_secs(10), |v: &[u32]| v.contains(&42));
+
+    assert!(found, "predicate should be satisfied on the first check");
+    assert!(
+        start.elapsed() < Duration::from_secs(1),
+        "should return promptly when already satisfied, took {:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
+fn wait_for_detects_value_set_by_another_thread() {
+    let sink: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(vec![]));
+    let producer_sink = sink.clone();
+
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(50));
+        producer_sink.lock().unwrap().push(7);
+    });
+
+    let found = wait_for(&sink, Duration::from_secs(5), |v: &[u32]| v.contains(&7));
+
+    assert!(
+        found,
+        "should observe the value pushed by the producer thread"
+    );
+}
+
+#[test]
+fn wait_for_returns_false_after_timeout_when_never_satisfied() {
+    let sink: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(vec![]));
+    let start = Instant::now();
+
+    let found = wait_for(&sink, Duration::from_millis(150), |v: &[u32]| {
+        v.contains(&99)
+    });
+
+    assert!(!found, "predicate is never satisfied, should time out");
+    assert!(
+        start.elapsed() >= Duration::from_millis(150),
+        "should wait out the full timeout, took {:?}",
+        start.elapsed()
+    );
 }
 
 #[test]
