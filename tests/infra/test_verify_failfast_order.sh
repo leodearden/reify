@@ -246,7 +246,15 @@ assert "merge-all plan: run_all.sh line carries REIFY_AUDIT_NO_COLD_BUILD=1" \
 assert "all plan (role=task): LACKS run_all.sh (wholesale suite moved to merge tier, task 5125)" \
     bash -c '! printf "%s\n" "$1" | grep -q "run_all\.sh"' _ "$ALL_PLAN"
 
-# (f)-(g) task 5139: run_all.sh stderr is not captured into the archived
+# (f)-(k) task 5139: assert the generated PLAN STRING only, via the hermetic
+# --print-plan oracle (amend review, reviewer_comprehensive test_coverage) —
+# they confirm verify.sh emits `2>&1` / drops `-q` in the right places, not
+# that stderr text actually reaches the archived stdout log end-to-end. An
+# e2e check would need to drive the real cargo/run_all pipeline (heavy,
+# non-hermetic) for no added fidelity on this pure string-shape change — see
+# design_decisions in .task/plan.json ("plan-shape via --print-plan").
+#
+# (f)-(g) run_all.sh stderr is not captured into the archived
 # attempt-N.test-*.log — merge it into the already-captured stdout stream
 # (2>&1) while preserving the Summary/FAILED classifier-marker contract.
 # (f) RED until step-2: run_all.sh line merges stderr into stdout.
@@ -268,7 +276,7 @@ assert "merge-all plan: run_all.sh line keeps stdout (no 1>&2 / >/dev/null)" \
 assert "merge-all plan: reify-audit pre-step drops -q (compiler diagnostics archived)" \
     bash -c '
         L=$(printf "%s\n" "$1" | grep "cargo build --release" | grep "\-p reify-audit" | head -1)
-        echo "$L" | grep -qvE "[[:space:]]-q([[:space:]]|;|$)"
+        [ -n "$L" ] && echo "$L" | grep -qvE "[[:space:]]-q([[:space:]]|;|$)"
     ' _ "$MERGE_ALL_PLAN"
 
 assert "merge-all plan: reify-cli pre-step present and drops -q" \
