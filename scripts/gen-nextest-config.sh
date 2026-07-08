@@ -133,7 +133,9 @@ tmp=$(mktemp "${TMPDIR:-/tmp}/reify-nextest-occt.XXXXXX")
 
 # Write a full copy of .config/nextest.toml with ONLY the occt literal line
 # rewritten to the resolved cap.  Anchored sed substitution preserves the
-# [[profile.default.overrides]] filter verbatim.
+# [[profile.default.overrides]] filter verbatim (including the per-test
+# slow-timeout/terminate-after ceilings, task 5141 — [profile.default] and
+# the per-binary overrides are untouched by this sed).
 sed "s/^occt = { max-threads = [0-9][0-9]* }$/occt = { max-threads = ${cap} }/" \
     "$REPO_ROOT/.config/nextest.toml" > "$tmp"
 

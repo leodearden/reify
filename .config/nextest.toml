@@ -25,6 +25,21 @@
 [test-groups]
 occt = { max-threads = 24 }
 
+# Default per-test slow-timeout/terminate-after ceiling (task 5141): bounds
+# ANY hung test with by-name attribution well under the 60-minute pass-level
+# wall (scripts/verify.sh: `timeout --kill-after=60 60m`, which on expiry
+# kills the whole nextest process tree as exit 124 with ZERO per-test
+# attribution — the task 4877/4878 failure shape). 120s x 10 = 1200s (20 min).
+# The 5 known-slow "heavy" binaries below carry their own larger ceiling
+# inline on their existing [[profile.default.overrides]] blocks (task 5141) —
+# nextest resolves each override SETTING by first-match independently, so
+# they do not fall through to this default.
+# DELIBERATE: no `retries` key here or anywhere in this file. A retry would
+# re-run and mask the very hangs/flakes this ceiling exists to attribute and
+# kill (task invariant — regression-guarded by test_occt_gated_scope.sh).
+[profile.default]
+slow-timeout = { period = "120s", terminate-after = 10 }
+
 # Pin the OCCT-touching packages to the `occt` group (max-threads = 24, env-driven).
 # Kept in sync with scripts/occt-touching-crates.txt by hand (these are config
 # literals, not shell). A drift here would let a crate escape the max-threads
