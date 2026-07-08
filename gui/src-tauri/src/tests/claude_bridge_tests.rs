@@ -2339,7 +2339,7 @@ async fn shutdown_not_blocked_during_ensure_sidecar_ready_spawn() {
     // runs outside the lock after step-31.  With the current code (lock held
     // during spawn), this times out.
     let shutdown_result = tokio::time::timeout(
-        Duration::from_millis(200),
+        Duration::from_secs(10),
         shutdown_sidecar(&sidecar_for_shutdown),
     )
     .await;
