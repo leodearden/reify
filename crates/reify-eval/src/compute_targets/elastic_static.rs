@@ -9227,4 +9227,31 @@ mod tests {
             res
         );
     }
+
+    /// step-3: `extract_material` must reject a present-but-wrong-typed
+    /// `youngs_modulus` field with `Err(FeaValueShapeError::ExpectedScalar {
+    /// .. })`, routed through the reused `scalar_si_field` helper.
+    #[test]
+    fn extract_material_rejects_wrong_typed_youngs_modulus() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        let fields: PersistentMap<String, Value> =
+            [("youngs_modulus".to_string(), Value::Real(1.0))]
+                .into_iter()
+                .collect();
+        let material = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_name: "IsotropicMaterial".to_string(),
+            type_id: StructureTypeId(u32::MAX),
+            version: 1,
+            fields,
+        }));
+
+        let res = extract_material(&material);
+        assert!(
+            matches!(res, Err(FeaValueShapeError::ExpectedScalar { .. })),
+            "expected Err(ExpectedScalar) for a present-but-wrong-type \
+             youngs_modulus field, got: {:?}",
+            res
+        );
+    }
 }
