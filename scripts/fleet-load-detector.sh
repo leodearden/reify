@@ -22,7 +22,7 @@
 # Options (env defaults shown):
 #   --ratio-threshold N    Oversubscription ratio ceiling (load1/nproc)
 #                          (env: REIFY_FLEET_LOAD_RATIO_THRESHOLD; default: 4.0)
-#   --avg10-threshold N    PSI avg10 %% ceiling (env: REIFY_FLEET_LOAD_AVG10_THRESHOLD; default: 80)
+#   --avg10-threshold N    PSI avg10 % ceiling (env: REIFY_FLEET_LOAD_AVG10_THRESHOLD; default: 80)
 #   --loadavg-path PATH    /proc/loadavg-format source — test seam
 #                          (env: REIFY_FLEET_LOAD_LOADAVG_PATH; default: /proc/loadavg)
 #   --psi-path PATH        /proc/pressure/cpu-format source — test seam
@@ -58,7 +58,7 @@
 #
 # Env knobs:
 #   REIFY_FLEET_LOAD_RATIO_THRESHOLD   oversubscription ratio ceiling (default 4.0)
-#   REIFY_FLEET_LOAD_AVG10_THRESHOLD   PSI avg10 %% ceiling (default 80)
+#   REIFY_FLEET_LOAD_AVG10_THRESHOLD   PSI avg10 % ceiling (default 80)
 #   REIFY_FLEET_LOAD_LOADAVG_PATH      /proc/loadavg source override (test seam)
 #   REIFY_FLEET_LOAD_PSI_PATH          /proc/pressure/cpu source override (test seam)
 #   REIFY_FLEET_LOAD_NPROC             nproc override (test seam)
