@@ -2674,10 +2674,11 @@ impl Mesh {
     /// real rustdoc naming each obligation lives on
     /// [`GeometryKernel::tessellate`] and [`GeometryKernel::ingest_mesh`].
     ///
-    /// `tol` is currently unused by the checks implemented so far (obligation
-    /// checks land incrementally); it will become the
-    /// [`MeshInvariant::NonDegenerate`] twice-area epsilon.
-    pub fn validate(&self, _tol: f64) -> Result<ValidatedMesh, MeshContractViolation> {
+    /// `tol` is the [`MeshInvariant::NonDegenerate`] twice-area epsilon (a
+    /// length-scale value; a triangle is degenerate when the magnitude of
+    /// its `(b-a) × (c-a)` cross product is `<= tol * tol`). It does NOT
+    /// affect [`Mesh::weld_positions`], which is always bit-exact.
+    pub fn validate(&self, tol: f64) -> Result<ValidatedMesh, MeshContractViolation> {
         // Obligation 1 — Finite: every vertex coordinate and (if present)
         // normal component must be finite (no NaN/±Infinity). Runs before
         // every other check since a non-finite coordinate poisons all
@@ -2763,6 +2764,61 @@ impl Mesh {
                 invariant: MeshInvariant::IndexValid,
                 counts: MeshViolationCounts {
                     oob_indices,
+                    ..Default::default()
+                },
+                witness: MeshWitness::Triangle {
+                    tri,
+                    indices: tri_indices,
+                },
+            });
+        }
+
+        // Obligation 3 — NonDegenerate: no triangle may have (near-)zero
+        // area. This also catches a repeated raw index or two distinct
+        // indices at coincident positions: either collapses one edge to
+        // the zero vector, so the cross product is exactly zero regardless
+        // of the third corner — no separate index-repeat check is needed.
+        // Reuses the same `(b-a) × (c-a)` cross-product math as
+        // `compute_facet_normal`, but keeps the raw magnitude (twice the
+        // triangle's area) instead of a normalized direction, since that
+        // magnitude is what `tol` gates. Indices are already bounds-checked
+        // by the IndexValid obligation above, so `mesh_vertex` cannot fail
+        // here.
+        let mut degenerate_tris = 0usize;
+        let mut degenerate_witness: Option<(usize, [u32; 3])> = None;
+        let tol_area = tol * tol;
+        for tri in 0..complete_tris {
+            let base = tri * 3;
+            let tri_indices = [
+                self.indices[base],
+                self.indices[base + 1],
+                self.indices[base + 2],
+            ];
+            let [a, b, c] = tri_indices.map(|idx| {
+                mesh_vertex(&self.vertices, idx)
+                    .expect("index bounds already checked by the IndexValid obligation")
+            });
+            let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+            let cross = [
+                ab[1] * ac[2] - ab[2] * ac[1],
+                ab[2] * ac[0] - ab[0] * ac[2],
+                ab[0] * ac[1] - ab[1] * ac[0],
+            ];
+            let twice_area =
+                (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt() as f64;
+            if twice_area <= tol_area {
+                degenerate_tris += 1;
+                if degenerate_witness.is_none() {
+                    degenerate_witness = Some((tri, tri_indices));
+                }
+            }
+        }
+        if let Some((tri, tri_indices)) = degenerate_witness {
+            return Err(MeshContractViolation {
+                invariant: MeshInvariant::NonDegenerate,
+                counts: MeshViolationCounts {
+                    degenerate_tris,
                     ..Default::default()
                 },
                 witness: MeshWitness::Triangle {
