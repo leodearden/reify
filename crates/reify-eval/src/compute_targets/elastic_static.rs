@@ -3423,7 +3423,7 @@ fn classify_material(val: &Value) -> MaterialModel {
         _ => {
             // Isotropic fallback: reads youngs_modulus + poisson_ratio (unchanged
             // from the pre-δ trampoline).
-            MaterialModel::Isotropic(extract_material(val))
+            MaterialModel::Isotropic(extract_material(val).fea_shim())
         }
     }
 }
@@ -3827,35 +3827,28 @@ fn real_field(
 
 /// Extract `IsotropicElastic` from a `Value::StructureInstance` carrying
 /// `youngs_modulus: Scalar<Pressure>` and `poisson_ratio: Real`.
-fn extract_material(val: &Value) -> IsotropicElastic {
+///
+/// PRD compute-fea-hardening D3: Result-ified leaf extractor. Returns
+/// `Err(FeaValueShapeError)` instead of panicking on a malformed `Value`;
+/// the sole call site (`classify_material`'s isotropic fallback) bridges
+/// with `FeaShimExt::fea_shim` so external behavior is unchanged until D7
+/// Result-ifies `classify_material` and removes the shim.
+fn extract_material(val: &Value) -> Result<IsotropicElastic, FeaValueShapeError> {
     let data = match val {
         Value::StructureInstance(d) => d,
-        other => panic!(
-            "solve_elastic_static_trampoline: expected material to be \
-             Value::StructureInstance, got: {:?}",
-            other
-        ),
+        other => {
+            return Err(FeaValueShapeError::ExpectedStructureInstance {
+                context: "extract_material",
+                got: format!("{other:?}"),
+            })
+        }
     };
-    let youngs_modulus = match data.fields.get("youngs_modulus") {
-        Some(Value::Scalar { si_value, .. }) => *si_value,
-        other => panic!(
-            "solve_elastic_static_trampoline: expected youngs_modulus to be \
-             Value::Scalar, got: {:?}",
-            other
-        ),
-    };
-    let poisson_ratio = match data.fields.get("poisson_ratio") {
-        Some(Value::Real(r)) => *r,
-        other => panic!(
-            "solve_elastic_static_trampoline: expected poisson_ratio to be \
-             Value::Real, got: {:?}",
-            other
-        ),
-    };
-    IsotropicElastic {
+    let youngs_modulus = scalar_si_field(data, "youngs_modulus")?;
+    let poisson_ratio = real_field(data, "poisson_ratio")?;
+    Ok(IsotropicElastic {
         youngs_modulus,
         poisson_ratio,
-    }
+    })
 }
 
 /// Extract SI scalar value from `Value::Scalar { si_value, .. }`.
