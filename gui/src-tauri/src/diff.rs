@@ -312,6 +312,50 @@ pub fn delta_to_events(delta: &StateDelta) -> Vec<(String, serde_json::Value)> {
         );
     }
 
+    // Tensegrity wires: emit full list when it changed.
+    if let Some(wires) = &delta.changed_tensegrity_wires {
+        push_serialized_event(
+            &mut events,
+            "tensegrity-wires-update",
+            "tensegrity-wires-update",
+            "tensegrity-wires",
+            serde_json::to_value(wires),
+        );
+    }
+
+    // Tensegrity surfaces: emit full list when it changed.
+    if let Some(surfaces) = &delta.changed_tensegrity_surfaces {
+        push_serialized_event(
+            &mut events,
+            "tensegrity-surfaces-update",
+            "tensegrity-surfaces-update",
+            "tensegrity-surfaces",
+            serde_json::to_value(surfaces),
+        );
+    }
+
+    // Display panes: emit full list when it changed.
+    if let Some(panes) = &delta.changed_display_panes {
+        push_serialized_event(
+            &mut events,
+            "display-panes-update",
+            "display-panes-update",
+            "display-panes",
+            serde_json::to_value(panes),
+        );
+    }
+
+    // Display appearance: emit full list when it changed.
+    if let Some(appearance) = &delta.changed_display_appearance {
+        push_serialized_event(
+            &mut events,
+            "display-appearance-update",
+            "display-appearance-update",
+            "display-appearance",
+            serde_json::to_value(appearance),
+        );
+    }
+
     events
 }
 
