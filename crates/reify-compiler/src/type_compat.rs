@@ -1639,8 +1639,64 @@ pub(crate) fn infer_mul_div_result(op: BinOp, left: &Type, right: &Type) -> Opti
                 .map(|q| Type::Tensor { rank: *rank, n: *n, quantity: Box::new(q) })
         }
 
-        // Every other operand-kind pairing (incl. Complex/Transform — added in
-        // step-4; aggregate×aggregate; degenerate Tensor×Vector; Matrix in
+        // ── Complex(q) ────────────────────────────────────────────────────────
+        // Complex×Complex and Complex×Scalar COMBINE dimensions (mul/div,
+        // matching the Scalar⊗Scalar core); Complex×Int PRESERVES the
+        // Complex's dimension (Int carries none to combine). Div requires
+        // Complex on the LEFT (numerator) — no reverse arm, same
+        // non-commutativity as the aggregate-scale Div arms above.
+        (Type::Complex(lq), Type::Complex(rq)) => match (lq.as_ref(), rq.as_ref()) {
+            (Type::Scalar { dimension: ld }, Type::Scalar { dimension: rd }) => {
+                Some(Type::complex(Type::Scalar {
+                    dimension: match op {
+                        BinOp::Mul => ld.mul(rd),
+                        BinOp::Div => ld.div(rd),
+                        _ => unreachable!(),
+                    },
+                }))
+            }
+            _ => None,
+        },
+        (Type::Complex(cq), Type::Scalar { dimension: sd }) => match cq.as_ref() {
+            Type::Scalar { dimension: cd } => Some(Type::complex(Type::Scalar {
+                dimension: match op {
+                    BinOp::Mul => cd.mul(sd),
+                    BinOp::Div => cd.div(sd),
+                    _ => unreachable!(),
+                },
+            })),
+            _ => None,
+        },
+        (Type::Scalar { dimension: sd }, Type::Complex(cq)) if op == BinOp::Mul => {
+            match cq.as_ref() {
+                Type::Scalar { dimension: cd } => {
+                    Some(Type::complex(Type::Scalar { dimension: cd.mul(sd) }))
+                }
+                _ => None,
+            }
+        }
+        (Type::Complex(cq), Type::Int) => Some(Type::complex(cq.as_ref().clone())),
+        (Type::Int, Type::Complex(cq)) if op == BinOp::Mul => {
+            Some(Type::complex(cq.as_ref().clone()))
+        }
+
+        // ── Transform(n) — Mul only, matching n required ────────────────────
+        // `Transform × Vector -> Vector`, `Transform × Point -> Point`,
+        // `Transform × Transform -> Transform` (row-9 pin). Order-sensitive:
+        // there is no reverse (`Vector/Point/Transform × Transform`) arm —
+        // Div is entirely unsupported for Transform (no runtime arm at all).
+        (Type::Transform(n1), Type::Vector { n: n2, quantity }) if op == BinOp::Mul && n1 == n2 => {
+            Some(Type::Vector { n: *n2, quantity: quantity.clone() })
+        }
+        (Type::Transform(n1), Type::Point { n: n2, quantity }) if op == BinOp::Mul && n1 == n2 => {
+            Some(Type::Point { n: *n2, quantity: quantity.clone() })
+        }
+        (Type::Transform(n1), Type::Transform(n2)) if op == BinOp::Mul && n1 == n2 => {
+            Some(Type::Transform(*n1))
+        }
+
+        // Every other operand-kind pairing (aggregate×aggregate; degenerate
+        // Tensor×Vector; order-reversed Vector/Point×Transform; Matrix in
         // either position; List/String/Bool; non-commutative Div reversals)
         // has no runtime-intentional arm.
         _ => None,
