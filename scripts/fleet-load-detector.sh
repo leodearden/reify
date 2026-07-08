@@ -159,6 +159,108 @@ if [ -z "$SUBCOMMAND" ]; then
     exit 2
 fi
 
-# step-2: CLI skeleton only — measurement/decision logic lands in later steps
-# (task 5135 plan.json step-4 onward).
+# ── avg10 parser: guarded-source cpu-admit.sh (PRD decision #3: single PSI
+# parser, no drift) when it AND lib_clock_stop.sh both exist next to this
+# script; inline parity fallback otherwise. cpu-admit.sh sources
+# lib_clock_stop.sh unconditionally at source-time and `exit 1`s if it is
+# missing — sourcing cpu-admit.sh unconditionally would let that exit kill
+# this detector, violating the fail-open contract, so the guard below only
+# sources it when both files are confirmed present. ──────────────────────────
+_FLEET_LOAD_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$_FLEET_LOAD_SCRIPT_DIR/cpu-admit.sh" ] && [ -f "$_FLEET_LOAD_SCRIPT_DIR/lib_clock_stop.sh" ]; then
+    # shellcheck source=scripts/cpu-admit.sh
+    source "$_FLEET_LOAD_SCRIPT_DIR/cpu-admit.sh"
+fi
+
+# _read_avg10 PATH — echoes the `some` avg10 value from a /proc/pressure/cpu-
+# format file, or "" on any error (missing file, unparseable content).
+_read_avg10() {
+    if declare -F cpu_admit_read_avg10 >/dev/null 2>&1; then
+        cpu_admit_read_avg10 "$1"
+    else
+        awk '$1 == "some" {
+            for (i=2; i<=NF; i++) {
+                if ($i ~ /^avg10=/) { v=$i; sub(/^avg10=/, "", v); print v; exit }
+            }
+        }' "$1" 2>/dev/null || echo ""
+    fi
+}
+
+# _read_load1 PATH — echoes field 1 of a /proc/loadavg-format file, or "" on
+# any error (unreadable file, non-numeric field). Mirrors load_tolerance_lib
+# .sh's load_tolerance_factor read+awk-validate idiom ($1+0==$1 numeric guard).
+_read_load1() {
+    local _path="$1" _raw _valid
+    if [ ! -r "$_path" ]; then
+        echo ""
+        return 0
+    fi
+    _raw="$(awk '{print $1}' "$_path" 2>/dev/null || true)"
+    _valid="$(printf '%s' "$_raw" | awk '{if ($1+0 == $1 && $1 != "") print "ok"}' 2>/dev/null || true)"
+    if [ "$_valid" = "ok" ]; then
+        echo "$_raw"
+    else
+        echo ""
+    fi
+}
+
+# _resolve_nproc — echoes NPROC_OVERRIDE (validated) or `nproc`'s output, or
+# "" if neither yields a valid positive integer. Mirrors load_tolerance_lib
+# .sh's nproc-override + fail-safe idiom (the "_NPROC pattern" reuse item).
+_resolve_nproc() {
+    local _n
+    if [ -n "$NPROC_OVERRIDE" ]; then
+        _n="$NPROC_OVERRIDE"
+    else
+        _n="$(nproc 2>/dev/null || true)"
+    fi
+    case "$_n" in
+        ''|*[!0-9]*) echo ""; return 0 ;;
+    esac
+    if [ "$_n" -le 0 ] 2>/dev/null; then
+        echo ""
+        return 0
+    fi
+    echo "$_n"
+}
+
+# ── measurement ────────────────────────────────────────────────────────────────
+LOAD1="$(_read_load1 "$LOADAVG_PATH")"
+NPROC="$(_resolve_nproc)"
+
+RATIO=""
+if [ -n "$LOAD1" ] && [ -n "$NPROC" ]; then
+    RATIO="$(awk -v l="$LOAD1" -v n="$NPROC" 'BEGIN{printf "%.2f", l/n}')"
+fi
+
+AVG10="$(_read_avg10 "$PSI_PATH")"
+
+# ── decision: FLAGGED iff ratio>=ratio_threshold OR avg10>=avg10_threshold ──────
+# An unavailable axis (empty RATIO/AVG10) never participates — treated as
+# absent, not 0-or-huge (fail-open; C-A4 philosophy).
+RATIO_HIT=0
+if [ -n "$RATIO" ] && awk -v r="$RATIO" -v t="$RATIO_THRESHOLD" 'BEGIN{exit !(r>=t)}'; then
+    RATIO_HIT=1
+fi
+
+AVG10_HIT=0
+if [ -n "$AVG10" ] && awk -v a="$AVG10" -v t="$AVG10_THRESHOLD" 'BEGIN{exit !(a>=t)}'; then
+    AVG10_HIT=1
+fi
+
+if [ "$RATIO_HIT" -eq 1 ] && [ "$AVG10_HIT" -eq 1 ]; then
+    STATUS="oversubscribed"; REASON="both"
+elif [ "$RATIO_HIT" -eq 1 ]; then
+    STATUS="oversubscribed"; REASON="ratio"
+elif [ "$AVG10_HIT" -eq 1 ]; then
+    STATUS="oversubscribed"; REASON="avg10"
+else
+    STATUS="ok"; REASON="none"
+fi
+
+printf 'FLEET_LOAD status=%s load1=%s nproc=%s ratio=%s ratio_threshold=%s avg10=%s avg10_threshold=%s reason=%s\n' \
+    "$STATUS" "$LOAD1" "$NPROC" "$RATIO" "$RATIO_THRESHOLD" "$AVG10" "$AVG10_THRESHOLD" "$REASON"
+
+# step-4: exit 0 unconditionally — the flagged path (marker + exit 3) is
+# wired in step-6 (task 5135 plan.json).
 exit 0
