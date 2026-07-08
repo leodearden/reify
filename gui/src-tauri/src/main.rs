@@ -21,8 +21,8 @@ use reify_eval::SolverProgressSink;
 use reify_gui::commands::AppState;
 use reify_gui::diff::{StateDelta, compute_delta, delta_to_events};
 use reify_gui::engine::{
-    AutoResolveEmitter, EngineSession, FeaCaseEmitter, FeaDiagnosticsEmitter,
-    ModeShapeFrameEmitter, WarmPoolEventEmitter,
+    AutoResolveEmitter, EngineSession, FeaCaseEmitter, FeaConvergenceEmitter,
+    FeaDiagnosticsEmitter, ModeShapeFrameEmitter, WarmPoolEventEmitter,
 };
 use reify_gui::event_bus::emit_typed;
 use reify_gui::lsp_bridge::LspBridge;
@@ -163,6 +163,24 @@ impl FeaDiagnosticsEmitter for TauriFeaDiagnosticsEmitter {
     fn changed(&self, payload: Vec<reify_gui::types::FeaDiagnosticInfo>) {
         if let Err(e) = emit_typed(&self.app, "fea-diagnostics-changed", &payload) {
             warn!("fea-diagnostics-changed emit failed: {}", e);
+        }
+    }
+}
+
+/// Emits `fea-convergence-changed` events to the frontend on every commit (task #5032).
+///
+/// Payload is a full-value snapshot of `Option<FeaConvergenceInfo>` — fires including
+/// `None` so a param edit that clears the FEA problem clears the stale convergence
+/// indicator. Installed during `setup()` alongside [`TauriFeaDiagnosticsEmitter`] and
+/// other emitters.
+struct TauriFeaConvergenceEmitter {
+    app: tauri::AppHandle,
+}
+
+impl FeaConvergenceEmitter for TauriFeaConvergenceEmitter {
+    fn changed(&self, payload: Option<reify_gui::types::FeaConvergenceInfo>) {
+        if let Err(e) = emit_typed(&self.app, "fea-convergence-changed", &payload) {
+            warn!("fea-convergence-changed emit failed: {}", e);
         }
     }
 }
@@ -827,6 +845,17 @@ fn main() {
             });
             if let Ok(mut session) = engine_arc.lock() {
                 session.set_fea_diagnostics_emitter(fea_diagnostics_emitter);
+            }
+
+            // Install the fea-convergence-changed emitter so the frontend FEA convergence
+            // indicator refreshes live on every commit (task #5032 — param-edit re-solve
+            // path). Payload is a full-value snapshot including None to clear a stale
+            // indicator.
+            let fea_convergence_emitter = Arc::new(TauriFeaConvergenceEmitter {
+                app: app.handle().clone(),
+            });
+            if let Ok(mut session) = engine_arc.lock() {
+                session.set_fea_convergence_emitter(fea_convergence_emitter);
             }
 
             // Install the mode-shape-frame emitter so the frontend BucklingPanel
