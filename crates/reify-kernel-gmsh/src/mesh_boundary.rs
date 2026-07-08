@@ -516,6 +516,17 @@ fn run_meshing_with_entity_queries(
 /// Find the handle in `candidates` whose anchor is closest to `query_anchor`
 /// (Euclidean squared distance). Returns `None` if `candidates` is empty or
 /// the nearest distance exceeds `tol_sq`.
+///
+/// # Fail-closed NaN policy (INV-FEA-3)
+///
+/// Candidates whose squared distance to `query_anchor` is non-finite (NaN or
+/// ±Inf) are excluded from matching — a non-finite distance can never be the
+/// nearest match, so it is dropped rather than treated as an equally-near
+/// tie. When one or more candidates are excluded this way, exactly one WARN
+/// event is emitted at `reify_kernel_gmsh::mesh_boundary` (filterable via
+/// `RUST_LOG=reify_kernel_gmsh::mesh_boundary=warn`) so upstream mesh
+/// pathology in anchor coordinates surfaces to operators instead of being
+/// silently dropped.
 fn find_closest_anchor(
     query_anchor: [f64; 3],
     candidates: &[(GeometryHandleId, [f64; 3])],
@@ -524,16 +535,280 @@ fn find_closest_anchor(
     if tol_sq <= 0.0 {
         return None;
     }
-    candidates
-        .iter()
-        .map(|(handle, anchor)| {
-            let dx = query_anchor[0] - anchor[0];
-            let dy = query_anchor[1] - anchor[1];
-            let dz = query_anchor[2] - anchor[2];
-            let d2 = dx * dx + dy * dy + dz * dz;
-            (d2, *handle)
-        })
-        .filter(|&(d2, _)| d2 < tol_sq)
-        .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
-        .map(|(_, handle)| handle)
+    // Single pass: track the running-nearest finite candidate and how many
+    // non-finite distances were seen, so the common case (all-finite, the
+    // vast majority of calls — this runs once per entity per dimension in
+    // the mesh-readout loop above) stays allocation-free.
+    let mut best: Option<(f64, GeometryHandleId)> = None;
+    let mut n_excluded: usize = 0;
+    for &(handle, anchor) in candidates {
+        let dx = query_anchor[0] - anchor[0];
+        let dy = query_anchor[1] - anchor[1];
+        let dz = query_anchor[2] - anchor[2];
+        let d2 = dx * dx + dy * dy + dz * dz;
+        if !d2.is_finite() {
+            n_excluded += 1;
+            continue;
+        }
+        if d2 < tol_sq && best.is_none_or(|(best_d2, _)| d2 < best_d2) {
+            best = Some((d2, handle));
+        }
+    }
+
+    if n_excluded > 0 {
+        // Distinguish "the query anchor itself is non-finite" (every
+        // candidate distance is poisoned by the same bad input) from "one or
+        // more candidate anchors are non-finite" — otherwise `n_candidates`
+        // reads as "many pathological candidates" when the real fault is a
+        // single bad query anchor (e.g. an entity anchor computed from
+        // corrupt mesh-node coordinates). `n_excluded` additionally reports
+        // how many candidates were actually dropped (as opposed to
+        // `n_candidates`, the total considered), so a single pathological
+        // anchor among many healthy ones doesn't read as widespread
+        // corruption.
+        let query_finite = query_anchor.iter().all(|v| v.is_finite());
+        tracing::warn!(
+            target: "reify_kernel_gmsh::mesh_boundary",
+            reason = "non_finite_anchor_distance",
+            n_candidates = candidates.len(),
+            n_excluded,
+            query_finite,
+            "find_closest_anchor: excluding candidate(s) with non-finite squared distance \
+             (likely upstream pathology in mesh anchor coordinates); a non-finite distance \
+             can never be the nearest match"
+        );
+    }
+
+    best.map(|(_, handle)| handle)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+
+    /// Builds two candidates — one at `[coord, 0.0, 0.0]` (non-finite when
+    /// `coord` is NaN or infinite) and one at `[0.1, 0.0, 0.0]` (a legitimate
+    /// finite match within `tol_sq = 1.0`) — and asserts that
+    /// `find_closest_anchor` (a) still returns the finite match (the
+    /// non-finite candidate is excluded, never treated as an equally-near
+    /// tie) and (b) emits exactly one WARN at
+    /// `reify_kernel_gmsh::mesh_boundary` documenting the exclusion.
+    fn assert_non_finite_candidate_excluded_and_warns(coord: f64) {
+        // Prime the callsite cache so per-test with_default subscribers see
+        // events even if a prior test thread hit the callsite with no
+        // subscriber active.
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let query = [0.0, 0.0, 0.0];
+        let candidates = vec![
+            (GeometryHandleId(1), [coord, 0.0, 0.0]),
+            (GeometryHandleId(2), [0.1, 0.0, 0.0]),
+        ];
+        let tol_sq = 1.0;
+
+        let (subscriber, counters) = reify_test_support::CountingSubscriberBuilder::new()
+            .count_level(tracing::Level::WARN)
+            .target_prefix("reify_kernel_gmsh::mesh_boundary")
+            .build();
+        let warn = Arc::clone(&counters[&tracing::Level::WARN]);
+
+        let matched = tracing::subscriber::with_default(subscriber, || {
+            find_closest_anchor(query, &candidates, tol_sq)
+        });
+
+        // (a) The non-finite candidate must be excluded, never treated as an
+        // equally-near tie — the finite candidate must still win.
+        assert_eq!(
+            matched,
+            Some(GeometryHandleId(2)),
+            "non-finite candidate (coord={coord}) must be excluded, not treated as an \
+             equally-near tie; expected the finite candidate GeometryHandleId(2) to win"
+        );
+
+        // (b) Exactly one WARN event must be emitted at the named target.
+        let warn_count = warn.load(Ordering::Acquire);
+        assert_eq!(
+            warn_count, 1,
+            "expected exactly 1 WARN event at reify_kernel_gmsh::mesh_boundary \
+             (coord={coord}); got {warn_count}"
+        );
+    }
+
+    #[test]
+    fn nan_candidate_excluded_and_warns() {
+        assert_non_finite_candidate_excluded_and_warns(f64::NAN);
+    }
+
+    #[test]
+    fn inf_candidate_excluded_and_warns() {
+        assert_non_finite_candidate_excluded_and_warns(f64::INFINITY);
+    }
+
+    /// Negative control: two finite candidates must produce no WARN at all
+    /// (guards against spurious warnings on healthy input) and must select
+    /// the nearer handle.
+    #[test]
+    fn all_finite_candidates_emit_no_warn() {
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let query = [0.0, 0.0, 0.0];
+        let candidates = vec![
+            (GeometryHandleId(1), [0.1, 0.0, 0.0]),
+            (GeometryHandleId(2), [0.9, 0.0, 0.0]),
+        ];
+        let tol_sq = 1.0;
+
+        let (subscriber, counters) = reify_test_support::CountingSubscriberBuilder::new()
+            .count_level(tracing::Level::WARN)
+            .target_prefix("reify_kernel_gmsh::mesh_boundary")
+            .build();
+        let warn = Arc::clone(&counters[&tracing::Level::WARN]);
+
+        let matched = tracing::subscriber::with_default(subscriber, || {
+            find_closest_anchor(query, &candidates, tol_sq)
+        });
+
+        assert_eq!(matched, Some(GeometryHandleId(1)));
+
+        let warn_count = warn.load(Ordering::Acquire);
+        assert_eq!(
+            warn_count, 0,
+            "healthy finite input must not emit any WARN; got {warn_count}"
+        );
+    }
+
+    /// The `query_anchor` itself can be non-finite (e.g. an entity anchor
+    /// computed as the mean of corrupt mesh-node coordinates). Every
+    /// candidate distance is then poisoned by the same bad input — so no
+    /// candidate can be finite — and the function must return `None` (fail
+    /// closed; there is no finite candidate left to pick) while still
+    /// emitting exactly one WARN with `query_finite = false`, distinguishing
+    /// a bad query anchor from a bad candidate anchor.
+    #[test]
+    fn non_finite_query_anchor_returns_none_and_warns() {
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let query = [f64::NAN, 0.0, 0.0];
+        let candidates = vec![
+            (GeometryHandleId(1), [0.1, 0.0, 0.0]),
+            (GeometryHandleId(2), [0.2, 0.0, 0.0]),
+        ];
+        let tol_sq = 1.0;
+
+        let (subscriber, capture) = reify_test_support::CapturingSubscriberBuilder::new(
+            tracing::Level::WARN,
+        )
+        .target_prefix("reify_kernel_gmsh::mesh_boundary")
+        .build();
+
+        let matched = tracing::subscriber::with_default(subscriber, || {
+            find_closest_anchor(query, &candidates, tol_sq)
+        });
+
+        assert_eq!(
+            matched, None,
+            "a non-finite query anchor poisons every candidate distance; with no \
+             finite candidate left to match, the result must be None"
+        );
+
+        assert_eq!(
+            capture.count(),
+            1,
+            "expected exactly one WARN event; got {:?}",
+            capture.messages()
+        );
+        let fields = capture.fields_by_event();
+        assert!(
+            fields.iter().any(|f| {
+                f.get("query_finite").map(String::as_str) == Some("false")
+                    && f.get("n_candidates").map(String::as_str) == Some("2")
+                    && f.get("n_excluded").map(String::as_str) == Some("2")
+            }),
+            "expected a WARN event with query_finite=false, n_candidates=2, n_excluded=2 \
+             (both candidates poisoned by the non-finite query); got {fields:?}"
+        );
+    }
+
+    /// Fail-closed boundary: when the *only* candidate(s) available are
+    /// non-finite — no finite fallback at all — `best` must stay `None` for
+    /// the whole call, so the function returns `None` rather than ever
+    /// selecting a non-finite distance, while still emitting exactly one
+    /// WARN.
+    #[test]
+    fn all_candidates_non_finite_returns_none_and_warns() {
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let query = [0.0, 0.0, 0.0];
+        let candidates = vec![(GeometryHandleId(1), [f64::NAN, 0.0, 0.0])];
+        let tol_sq = 1.0;
+
+        let (subscriber, counters) = reify_test_support::CountingSubscriberBuilder::new()
+            .count_level(tracing::Level::WARN)
+            .target_prefix("reify_kernel_gmsh::mesh_boundary")
+            .build();
+        let warn = Arc::clone(&counters[&tracing::Level::WARN]);
+
+        let matched = tracing::subscriber::with_default(subscriber, || {
+            find_closest_anchor(query, &candidates, tol_sq)
+        });
+
+        assert_eq!(
+            matched, None,
+            "with no finite candidate available, find_closest_anchor must return None \
+             rather than selecting a non-finite distance"
+        );
+
+        let warn_count = warn.load(Ordering::Acquire);
+        assert_eq!(
+            warn_count, 1,
+            "expected exactly 1 WARN event when the only candidate is non-finite; \
+             got {warn_count}"
+        );
+    }
+
+    /// `n_excluded` must report only the number of candidates actually
+    /// dropped, not the total candidate count (`n_candidates`) — otherwise a
+    /// single pathological anchor among many healthy ones would read as
+    /// widespread corruption.
+    #[test]
+    fn n_excluded_counts_only_non_finite_candidates() {
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let query = [0.0, 0.0, 0.0];
+        let candidates = vec![
+            (GeometryHandleId(1), [f64::NAN, 0.0, 0.0]),
+            (GeometryHandleId(2), [0.1, 0.0, 0.0]),
+            (GeometryHandleId(3), [0.2, 0.0, 0.0]),
+        ];
+        let tol_sq = 1.0;
+
+        let (subscriber, capture) = reify_test_support::CapturingSubscriberBuilder::new(
+            tracing::Level::WARN,
+        )
+        .target_prefix("reify_kernel_gmsh::mesh_boundary")
+        .build();
+
+        let matched = tracing::subscriber::with_default(subscriber, || {
+            find_closest_anchor(query, &candidates, tol_sq)
+        });
+
+        assert_eq!(
+            matched,
+            Some(GeometryHandleId(2)),
+            "the nearer of the two finite candidates must still win despite the \
+             one non-finite candidate"
+        );
+
+        let fields = capture.fields_by_event();
+        assert!(
+            fields.iter().any(|f| {
+                f.get("n_candidates").map(String::as_str) == Some("3")
+                    && f.get("n_excluded").map(String::as_str) == Some("1")
+            }),
+            "expected a WARN event with n_candidates=3 but n_excluded=1 (only the \
+             single non-finite candidate, not the whole candidate set); got {fields:?}"
+        );
+    }
 }
