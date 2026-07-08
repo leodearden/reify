@@ -3000,7 +3000,12 @@ fn eval_map_or(args: &[CompiledExpr], ctx: &EvalContext) -> Value {
 /// shape only ever carries that one field, so this is currently equivalent
 /// to a fresh vec — but it means a future multi-field `Err` variant would
 /// survive `map_err` intact instead of having its other fields silently
-/// dropped.
+/// dropped. If no existing `error` field is found — unreachable under
+/// today's frozen `Err { error: E }` shape, but kept consistent with the
+/// `error_val` lookup above, which already tolerates a missing field by
+/// falling back to `Value::Undef` rather than assuming one is present —
+/// `mapped` is appended as a new `("error", mapped)` field instead of being
+/// silently dropped.
 ///
 /// Evaluation is LAZY: `f` (args[1]) is only evaluated in the `Err` arm,
 /// mirroring `eval_map_or`'s laziness convention (the Ok-case never evaluates
@@ -3035,16 +3040,28 @@ fn eval_map_err(args: &[CompiledExpr], ctx: &EvalContext) -> Value {
             // ever has one field, so the two approaches coincide now — but
             // mapping preserves any additional field a future multi-field
             // `Err` variant might carry, instead of silently dropping it.
-            let new_payload: Vec<(String, Value)> = payload
+            let mut found_error_field = false;
+            let mut new_payload: Vec<(String, Value)> = payload
                 .iter()
                 .map(|(field, v)| {
                     if field == "error" {
+                        found_error_field = true;
                         (field.clone(), mapped.clone())
                     } else {
                         (field.clone(), v.clone())
                     }
                 })
                 .collect();
+            if !found_error_field {
+                // Defensive: keeps this rebuild consistent with the
+                // `error_val` lookup above, which already tolerates a
+                // missing `error` field by falling back to `Value::Undef`
+                // instead of assuming one is present. Unreachable under
+                // today's frozen `Err { error: E }` shape — if it ever
+                // isn't, `mapped` still lands in the payload instead of
+                // being silently discarded.
+                new_payload.push(("error".to_string(), mapped));
+            }
             Value::Enum {
                 type_name: type_name.clone(),
                 variant: variant.clone(),
