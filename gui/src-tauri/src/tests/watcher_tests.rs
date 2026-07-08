@@ -127,7 +127,9 @@ fn watcher_detects_ri_file_modification() {
     std::fs::write(&ri_file, "structure Bracket { param width = 80mm }").unwrap();
 
     // Wait for the event to propagate (with debounce)
-    std::thread::sleep(Duration::from_millis(500));
+    wait_for(&changed_paths, Duration::from_secs(10), |paths| {
+        paths.iter().any(|p| p.ends_with("test.ri"))
+    });
 
     let paths = changed_paths.lock().unwrap();
     assert!(
@@ -201,8 +203,10 @@ fn watcher_with_target_file_only_fires_for_that_file() {
 
     // Modify the target file (should trigger)
     std::fs::write(&project_file, "structure Project { param y = 20mm }").unwrap();
-    // Increased wait: notify background thread needs time on heavily loaded systems
-    std::thread::sleep(Duration::from_millis(2000));
+    // Wait for the event to propagate (with debounce)
+    wait_for(&changed_paths, Duration::from_secs(10), |paths| {
+        paths.iter().any(|p| p.ends_with("project.ri"))
+    });
 
     let paths = changed_paths.lock().unwrap();
     // Should have fired for project.ri only
@@ -245,7 +249,9 @@ fn watcher_detects_ri_file_removal() {
     std::fs::remove_file(&ri_file).unwrap();
 
     // Wait for the Remove event to propagate (with debounce)
-    std::thread::sleep(Duration::from_millis(500));
+    wait_for(&removed_paths, Duration::from_secs(10), |paths| {
+        paths.iter().any(|p| p.ends_with("scratch.ri"))
+    });
 
     let paths = removed_paths.lock().unwrap();
     assert!(
@@ -287,7 +293,10 @@ fn watcher_emits_remove_event_even_when_target_file_filter_excludes_other_files(
     std::fs::remove_file(&scratch_file).unwrap();
 
     // Wait for event propagation
-    std::thread::sleep(Duration::from_millis(500));
+    wait_for(&events, Duration::from_secs(10), |evts| {
+        evts.iter()
+            .any(|e| matches!(e, FileEvent::Removed(p) if p.ends_with("scratch.ri")))
+    });
 
     let evts = events.lock().unwrap();
     let has_removed = evts.iter().any(|e| {
