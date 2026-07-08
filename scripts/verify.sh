@@ -1427,7 +1427,12 @@ build_plan() {
         # export" guard). The sentinel is set narrowly by the ONE recursion
         # source, test_verify_semaphore_e2e.sh Section B, so only that nested
         # merge-role verify sees it (task 5125).
-        add "if test -f tests/infra/run_all.sh; then REIFY_AUDIT_NO_COLD_BUILD=1 REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 timeout --kill-after=60 30m bash tests/infra/run_all.sh; fi"
+        # task 5139: run_all's stderr (INFO/progress lines plus the task-5123
+        # _ra_discovery_diag ERR-trap diagnostic) was lost entirely from the
+        # archived attempt-N.test-*.log. 2>&1 routes it into the same stream
+        # DF already captures; run_all emits its Summary/FAILED classifier
+        # markers to stdout, so the DF ^FAILED\s contract is preserved.
+        add "if test -f tests/infra/run_all.sh; then REIFY_AUDIT_NO_COLD_BUILD=1 REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 timeout --kill-after=60 30m bash tests/infra/run_all.sh 2>&1; fi"
     fi
 
     # Selective infra injection (task 4523): task-level path runs the infra
