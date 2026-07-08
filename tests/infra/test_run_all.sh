@@ -1976,7 +1976,7 @@ fi
 echo ""
 echo "--- Test 23: FLAKY ledger persistence ---"
 
-if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ] && command -v jq >/dev/null 2>&1; then
     # -- 23a: FLAKY direction -- reuses Test 18a's counter-file mock verbatim
     # (invocation 1 exits 1, invocation 2+ exits 0), adding
     # REIFY_RUN_ALL_FLAKY_LEDGER pointed at a fresh temp path.
@@ -2194,6 +2194,14 @@ MOCKBODY
     else
         assert "T23d: a single occurrence (< N) emits NO chronic WARNING (non-vacuity lock) (got: $t23d_out)" false
     fi
+elif [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+    # jq is missing but run_all.sh and load_tolerance_lib.sh are present:
+    # run_all.sh's own ledger writer/chronic-scan is itself jq-gated and
+    # fails open in this exact case (INV-4), so these JSON-shape assertions
+    # would false-fail rather than exercise a real defect. Genuinely SKIP
+    # (no PASS/FAIL impact), mirroring the jq-guard idiom used for F10 in
+    # test_relocate_worktrees_to_warm_lane.sh.
+    echo "  SKIP: T23a/T23b/T23c/T23d (FLAKY ledger persistence) - jq not on PATH; run_all.sh's ledger writer fails open without jq"
 else
     assert "T23a: run_all.sh exits 0 when a pool member passes on serial retry (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T23a: ledger file exists after a flaky-pass run (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
