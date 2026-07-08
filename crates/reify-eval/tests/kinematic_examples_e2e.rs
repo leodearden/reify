@@ -528,6 +528,15 @@ fn four_bar_singular_compiles_clean() {
 /// one drifts out of lockstep with the other, but keeping them in sync is
 /// currently a manual step.
 ///
+/// Corpus-wide gates: as a committed `examples/` fixture (unlike the inline
+/// `SINGULAR_SOURCE`), this file is also walked by
+/// `no_stale_undef_invariant_gate.rs::broad_corpus_sweep`,
+/// `reify-compiler/tests/examples_smoke.rs`, and
+/// `auto_type_param_determinism_tests.rs::v0_1_example_corpus_compile_and_check_time_is_bounded`.
+/// Confirmed green (this fixture present, zero violations, zero smoke
+/// failures, time bound unaffected) via targeted local runs at amendment
+/// time; the full `--scope all` merge-queue gate re-confirms on land.
+///
 /// Deliberately does NOT assert on diagnostic message text, `loop_index`, or
 /// an exact diagnostic count: the eval-surfaced `KinematicSingularity`
 /// diagnostic (`engine_eval.rs::detect_kinematic_singularity`) carries a
