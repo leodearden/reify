@@ -6,6 +6,61 @@
 #   B — merge exemption (DF_VERIFY_ROLE=merge bypasses the held slot)
 #   C — exit-75 propagation (acquisition deadline propagates out of verify.sh)
 #   D — print-plan occt-cap=24 override + compile/check/clippy outside gated region
+#
+# Task 5144 residual failure-mode stabilization (07-07/08 survey; this suite was
+# the top infra flakiness offender). Four residual live modes, each root-caused
+# and resolved below; all four are now covered by this file's own assertions
+# (unit-test blocks Part C/D/E/F for the mechanism, Sections A/B/C/F1/F2 for the
+# execute-mode acceptance signal, load-accepted per step-9 — see below):
+#
+#   mode-1 (5077) — nested verify.sh exit 127 + "test_helpers.sh:42 integer
+#     expression expected" + "tree-sitter pre-generation failed". Two causes:
+#     (a) the OLD per-section REAL tree-sitter pre-gen inside make_stub_bin was
+#         load-fragile — an interrupted regen left partial/0-byte outputs that
+#         cascaded into the next section's nested-verify post-check. Fixed by a
+#         ONE-TIME suite-start readiness gate (ensure_tree_sitter_ready /
+#         _ts_outputs_healthy / _ts_ready_check, below) so every nested verify
+#         deterministically hits the up-to-date fast-path (no regen -> no
+#         corruption -> no cascade).
+#     (b) an empty REIFY_SLOT_EVENT_LOG (both nested runs exiting before ever
+#         acquiring the slot) fed an empty operand into Section A's raw
+#         `test -ge` causal check, surfacing as "integer expression expected"
+#         via test_helpers.sh assert()'s `if "$@"` line. Current main
+#         test_helpers.sh:42 (task 4968) is already guarded — the failing
+#         "line 42" copy in the 5077 log was a STALE branch's nested
+#         test_helpers.sh from an earlier era. Fixed at THIS test's level (not
+#         by editing test_helpers.sh) via _assert_serialized_events, which
+#         validates all four causal operands as non-empty integers before any
+#         -eq/-ge comparison touches them.
+#   mode-2 (5125) — Section B rc=2: a merge-role nested verify re-emitted
+#     run_all.sh's plan and recursed (run_all -> this test -> merge verify ->
+#     run_all -> ...), SIGKILLed at the 30m wall. Already fixed ON MAIN by the
+#     REIFY_INFRA_SUITE_ACTIVE re-entrancy sentinel (commit cd12443277, task
+#     5125) and inherited by this branch — no 5144 change was needed here; see
+#     run_merge_while_task_slot_held's REIFY_INFRA_SUITE_ACTIVE=1 spawn below.
+#   mode-3 (5127) — rc=127. The task hypothesized a hardcoded sandbox
+#     copy-list; verified FALSE for this test — it copies no scripts into any
+#     sandbox, every section runs $REPO_ROOT/scripts/verify.sh directly
+#     (make_stub_bin only stubs cargo/npm/tree-sitter onto PATH). rc=127 is
+#     therefore the same recursion class as mode-2 (a nested run_all hitting a
+#     not-yet-present command on a stale branch): eliminated by the inherited
+#     mode-2 guard and now diagnosable via _dump_captured_stderr if it recurs.
+#     No copy-list-derivation code was added — it would be dead code against a
+#     non-existent list.
+#   mode-4 (5111) — silent FAIL with no captured reason: the exit-code
+#     assertions (Sections A/B/C/F1/F2) dumped only the numeric checker's
+#     (empty) output, never the nested run's own stderr. Fixed by
+#     _dump_captured_stderr, wired into every execute-mode section on failure.
+#
+# Acceptance (task 5144 step-9): the full suite (unit-test blocks + Sections
+# A-I) is green both at idle and under tests/infra/cpu_load_fixture.sh-induced
+# load. Every wall-clock DEADLINE in the acceptance path is already
+# _load_scaled_deadline-scaled (REIFY_LOAD_TOLERANCE_FACTOR-scaled); HOLD_S /
+# MERGE_WAIT / C_HOLD_S stay intentionally FIXED — they are external-holder
+# hold durations, not anti-hang deadlines, and scaling them would only
+# lengthen the acceptance run without changing what is proven. No assertion
+# went flaky under load during step-9's acceptance pass, so no deadline
+# required rescaling.
 
 set -euo pipefail
 
