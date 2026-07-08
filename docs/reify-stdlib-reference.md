@@ -1585,12 +1585,13 @@ Joint primitives are first-class stdlib values. Each joint type internally expos
 **Joint types and traits:**
 
 ```
-trait Joint          // any joint kind
+trait Joint          // root marker — every joint kind conforms (Prismatic, Revolute, Coupling, Fixed, ...)
 trait HasMotion {    // joint kinds with a concrete-dimension motion variable (Prismatic, Revolute, Coupling)
     type MotionValue  // required associated type; no default
 }
 trait DrivingJoint: Joint {}   // Prismatic and Revolute only; may be bound or swept directly
-                               // Coupling<P> derives its motion and does NOT implement DrivingJoint
+                               // Coupling<P> and Fixed do NOT implement DrivingJoint: Coupling derives
+                               // its motion from a parent joint, Fixed has no motion variable at all
 
 structure def Prismatic : DrivingJoint + HasMotion {  // 1-DOF translation; Prismatic::MotionValue ⇒ Length
     type MotionValue = Length
@@ -1601,7 +1602,16 @@ structure def Revolute : DrivingJoint + HasMotion {   // 1-DOF rotation;    Revo
 structure def Coupling<P: DrivingJoint + HasMotion> : Joint + HasMotion {  // derives motion from joint P
     type MotionValue = P::MotionValue  // Coupling<P>::MotionValue ⇒ P::MotionValue; not a DrivingJoint
 }
+structure def Fixed : Joint {}  // 0-DOF rigid sub-assembly grouping; no motion variable, not a DrivingJoint
 ```
+
+This hierarchy is enforced via nominal conformance, not merely declared: `bind`/`sweep`/`dim` (§13.3–§13.4) carry a `DrivingJoint` bound checked at both the runtime (L1) and compile-time (L2) layers and reject `Coupling`/`Fixed` arguments with `error[E_MECHANISM_NONDRIVING_JOINT]`.
+
+`JointBinding` (the `bind()` return type, §13.3) and `Twist` (the `joint_jacobian` return type, below) are likewise declared marker structures — `bind(joint, value)` and `joint_jacobian(joint)` return typed `JointBinding`/`Twist` values rather than bare `Map`s, even though neither structure yet declares member fields (field layout is a follow-on, not part of this reconciliation).
+
+The parametric spelling `Coupling<P>` and the projected associated type `P::MotionValue` above are the stdlib's own internal nominal-generic declarations, which the compiler resolves and enforces today. Writing a *user*-authored generic function or structure parameterized over an arbitrary joint kind (`fn foo<J: DrivingJoint>(j: J) -> ...` in user code) requires general user-defined generics, a separate, broader language feature that has not shipped — tracked by the generics PRD (tasks 4232/4235); `Coupling<P>` should be read as a forward-reference to that surface, not as evidence it already exists for user code. At runtime every joint kind, `Coupling<P>` included, is still represented as an untyped `Value::Map` — the nominal types above are compile-time-only tags.
+
+`Axis` (the `revolute()` parameter type and the `joint_axis(Revolute)` return type below) is a placeholder name owned by the geometry-transforms cluster, not by `std.mechanism`: at runtime it is a plain `Vector3<Length>`-shaped value today, and its promotion to a distinct nominal type is tracked there.
 
 **Constructors:**
 
@@ -1609,25 +1619,29 @@ structure def Coupling<P: DrivingJoint + HasMotion> : Joint + HasMotion {  // de
 fn prismatic(axis: Vector3<Dimensionless>, range: Range<Length>) -> Prismatic
 fn revolute(axis: Axis, range: Range<Angle>) -> Revolute
 fn couple<P: DrivingJoint + HasMotion>(other: P, ratio: Real, offset: P::MotionValue = zero) -> Coupling<P>
+fn fixed() -> Fixed
 ```
 
-`Prismatic` models 1-DOF translation along a fixed axis with motion-range bounds. `Revolute` models 1-DOF rotation about a fixed axis with angle-range bounds. `Coupling` derives its motion variable from another joint: `value = ratio * other.value + offset`. A negative ratio produces the counter-mass direction reversal shown in the worked examples (§13.6).
+`Prismatic` models 1-DOF translation along a fixed axis with motion-range bounds. `Revolute` models 1-DOF rotation about a fixed axis with angle-range bounds. `Coupling` derives its motion variable from another joint: `value = ratio * other.value + offset`. A negative ratio produces the counter-mass direction reversal shown in the worked examples (§13.6). `Fixed` (`fixed()`) is a 0-DOF rigid joint used to attach an immovable body — such as a stationary dock or parked tool — to `world` or to another body without introducing a motion variable; see the dock-pickup example in §13.6.
 
-**Axis, range, and ratio accessors:**
+**`joint_axis`, `joint_range`, `joint_ratio`, and `joint_offset` accessors:**
 
 ```
-fn axis(j: Prismatic) -> Vector3<Dimensionless>
-fn range(j: Prismatic) -> Range<Length>
-fn axis(j: Revolute) -> Axis
-fn range(j: Revolute) -> Range<Angle>
-fn ratio(j: Coupling<P>) -> Real
-fn offset(j: Coupling<P>) -> P::MotionValue
+fn joint_axis(j: Prismatic) -> Vector3<Dimensionless>
+fn joint_range(j: Prismatic) -> Range<Length>
+fn joint_axis(j: Revolute) -> Axis
+fn joint_range(j: Revolute) -> Range<Angle>
+fn joint_ratio(j: Coupling<P>) -> Real
+fn joint_offset(j: Coupling<P>) -> P::MotionValue
 fn transform_at(j: Prismatic, v: Length) -> Transform<3>
 fn transform_at(j: Revolute, v: Angle) -> Transform<3>
 fn transform_at(j: Coupling<P>, v: P::MotionValue) -> Transform<3>
 ```
 
-**Jacobian (v0.2).** `joint_jacobian` returns the analytic SE(3) twist column
+These are the registered builtin names (`crates/reify-stdlib/src/joints.rs:676,693,705,719`). Earlier drafts of this section used bare `axis`/`range`/`ratio`/`offset`, which return `Undef` — those names are not registered. No bare aliases are provided: Reify's builtin namespace is flat and global, so an unqualified `axis`/`range` would collide across unrelated stdlib modules; the `joint_`-prefixed spelling is the collision-safe, self-documenting form and is the only one that ships.
+
+**Jacobian.** `joint_jacobian` is a live builtin (`crates/reify-stdlib/src/joints.rs:733`, delegating to
+`joint_jacobian_value` at `:776`) that returns the analytic SE(3) twist column
 for a single joint, used by the closed-chain loop-closure solver — see
 [`v0_2/kinematic-constraints.md`](prds/v0_2/kinematic-constraints.md). The
 returned `Twist` shape (`Map { angular, linear }`) is the same one used by
@@ -1659,21 +1673,21 @@ Coupling<P>::MotionValue         ⇒ P::MotionValue  // symbolic until P is subs
 
 ### 13.2 `std.mechanism.builder`
 
-`mechanism()` returns an empty `Mechanism`. Bodies are attached with `.body()` chaining; each call returns a fresh `Mechanism`. `world` is the pre-declared ground-frame sentinel — a `Joint` value with no motion variable that serves as the fixed root anchor of every mechanism DAG:
+`mechanism()` returns an empty `Mechanism`. Bodies are attached with `.body()` chaining; each call returns a fresh `Mechanism`. `world()` is the ground-frame sentinel builtin — it returns a `Joint` value with no motion variable that serves as the fixed root anchor of every mechanism DAG. Reify has no top-level `const`/`let` bindings, so the ground frame is reached by calling `world()`, not by referencing a bare `world` identifier — the same reason `g`/`c`/`boltzmann` are zero-arg functions (`STANDARD_GRAVITY()`/`SPEED_OF_LIGHT()`/`BOLTZMANN_CONSTANT()`, §2) rather than pre-declared constants:
 
 ```
-let world : Joint   // ground/world frame; the implicit fixed root of every mechanism DAG
+fn world() -> Joint   // ground/world frame; the implicit fixed root of every mechanism DAG
 ```
 
 ```
 fn mechanism() -> Mechanism
-fn body(m: Mechanism, solid: Solid, at: Joint, parent: Joint = world, pose: Transform<3> = transform3_identity) -> Mechanism
+fn body(m: Mechanism, solid: Solid, at: Joint, parent: Joint = world(), pose: Transform<3> = transform3_identity) -> Mechanism
 fn body_id_of(m: Mechanism, solid: Solid) -> BodyId
 ```
 
-`at` is the joint that positions the body; `parent` is the upstream joint (default `world` for bodies attached to the ground frame). `pose` is an additional static offset applied after the joint's own transform. `BodyId` is a stable, opaque identifier used later by snapshot accessors and query functions (see §13.3 and §13.5). To recover the `BodyId` of a particular `solid` after building, call `body_id_of(m, solid)` against the final `Mechanism` (it returns the id assigned when that `solid` was added, or raises if the solid is not in the mechanism). The builder is immutable: each `.body()` call returns a fresh `Mechanism` value. Each `solid` value must be unique within a given `Mechanism` (by referential identity); inserting the same `solid` value twice raises `error[E_MECHANISM_DUPLICATE_SOLID]` at build time, keeping `body_id_of` unambiguous even when two bodies have identical geometry — use distinct constructor calls to create distinct solids before passing them to `.body()`.
+`at` is the joint that positions the body; `parent` is the upstream joint (default `world()` for bodies attached to the ground frame). `pose` is an additional static offset applied after the joint's own transform. `BodyId` is a stable, opaque identifier used later by snapshot accessors and query functions (see §13.3 and §13.5). To recover the `BodyId` of a particular `solid` after building, call `body_id_of(m, solid)` against the final `Mechanism` (it returns the id assigned when that `solid` was added, or raises if the solid is not in the mechanism). The builder is immutable: each `.body()` call returns a fresh `Mechanism` value. Each `solid` value must be unique within a given `Mechanism` (by referential identity); inserting the same `solid` value twice raises `error[E_MECHANISM_DUPLICATE_SOLID]` at build time, keeping `body_id_of` unambiguous even when two bodies have identical geometry — use distinct constructor calls to create distinct solids before passing them to `.body()`.
 
-**Closed-chain detection.** `mechanism()` builds a directed acyclic graph (DAG) of bodies connected through joints. If any body is reachable via two distinct joint paths, the compiler emits `error[E_KINEMATIC_CLOSED_CHAIN]`, naming both paths in the diagnostic:
+**Closed chains (reserved diagnostic, not emitted).** `mechanism()` builds a directed graph of bodies connected through joints. An earlier draft of this section documented closed chains — bodies reachable via two distinct joint paths — as a build-time error:
 
 ```
 error[E_KINEMATIC_CLOSED_CHAIN]: body is reachable via two distinct joint paths
@@ -1683,7 +1697,7 @@ error[E_KINEMATIC_CLOSED_CHAIN]: body is reachable via two distinct joint paths
   | path 2: world -> joint_c -> body
 ```
 
-Closed chains are a v0.1 error; v0.2 introduces a cyclic solver.
+That rejection was retired by task 2671: closed chains are valid v0.2 mechanisms. Each closing edge is instead recorded as a loop-closure constraint on the `Mechanism` value and construction proceeds normally — see [`v0_2/kinematic-constraints.md`](prds/v0_2/kinematic-constraints.md) for the loop-closure solver. `E_KINEMATIC_CLOSED_CHAIN` remains declared in the diagnostics registry, reserved for a possible future opt-in strict mode, but no path on main emits it today.
 
 ### 13.3 `std.mechanism.snapshot`
 
@@ -1694,7 +1708,7 @@ fn snapshot(m: Mechanism, bindings: List<JointBinding>) -> Snapshot
 fn bind<J: DrivingJoint + HasMotion>(joint: J, value: J::MotionValue) -> JointBinding
 ```
 
-Each entry binds a driving joint to a typed motion-variable value via `bind(joint, value)`: `Length` for `Prismatic`, `Angle` for `Revolute`. `Coupling<P>` joints are excluded — their motion variable is derived from the parent joint's binding and cannot be overridden (`Coupling<P>` implements `Joint` but not `DrivingJoint`, so passing a coupling to `bind` is a type error). `JointBinding` is a sum type with one variant per `DrivingJoint` kind; its concrete variants are `bind(j: Prismatic, v: Length) -> JointBinding` and `bind(j: Revolute, v: Angle) -> JointBinding`. A single bindings list can mix the two driving-joint kinds while remaining type-safe (see `J::MotionValue` in §13.1). Joints absent from `bindings` take their range midpoint.
+Each entry binds a driving joint to a typed motion-variable value via `bind(joint, value)`: `Length` for `Prismatic`, `Angle` for `Revolute`. `Coupling` and `Fixed` joints are rejected — neither implements `DrivingJoint` (§13.1: `Coupling`'s motion is derived from its parent, `Fixed` has no motion variable at all), so passing either to `bind` raises `error[E_MECHANISM_NONDRIVING_JOINT]`. The rejection is enforced at both the runtime layer (`bind`'s own guard) and the compile-time layer (the `DrivingJoint` conformance check on `bind`'s type parameter), so it holds whether or not the build reaches the kernel. `JointBinding` (§13.1) is the typed marker structure `bind` returns; its concrete forms are conceptually `bind(j: Prismatic, v: Length) -> JointBinding` and `bind(j: Revolute, v: Angle) -> JointBinding`. A single bindings list can mix the two driving-joint kinds while remaining type-safe (see `J::MotionValue` in §13.1). Joints absent from `bindings` take their range midpoint.
 
 **Snapshot accessors:**
 
@@ -1706,6 +1720,8 @@ fn bounding_box(s: Snapshot) -> BoundingBox
 ```
 
 `center_of_mass` with `densities = undef` (the default) uses uniform density across all bodies; an empty map (`{}`) is treated identically to `undef`. A partial map uses the specified density for each listed body and falls back to uniform density for any body absent from the map. `bounding_box` returns the axis-aligned bounding box of all body geometry in the snapshot, expressed in world coordinates. `BoundingBox` is defined in §3.10. `BodyId` is the opaque identifier returned by `.body()` (§13.2).
+
+**Point-mass approximation.** `bounding_box` always computes the axis-aligned envelope of each body's *origin point* (the translation component of its world-frame transform), not the true geometric extent of its solid; a volumetric upgrade (the real BREP bounding box via `BRepBndLib::Add`) is tracked separately (task #2530) and is out of scope here. `center_of_mass` falls back to that same origin-point, density-weighted approximation only when at least one body in the snapshot lacks resolvable mass data; when every body carries resolvable mass (an explicitly attached mass-properties structure, or mass properties baked in by the build), it instead returns the mass-weighted centroid using each body's resolved mass-properties center, posed by its `world_transform` (rotation and translation), and the `densities` argument is ignored — this mass-weights each body's stored `MassProperties` center, not a recomputed volumetric centroid of the solid's BREP (that upgrade is the same task #2530 as `bounding_box` above).
 
 ### 13.4 `std.mechanism.sweep`
 
@@ -1737,9 +1753,11 @@ fn min_clearance(s: Snapshot, a: BodyId, b: BodyId) -> Length
 
 `min_clearance` computes the minimum separation distance between `a` and `b` using OCCT's `BRepExtrema_DistShapeShape`. Returns `0mm` when the bodies intersect.
 
+**FK-aware.** All three queries test each body's *posed* geometry, not its source-authored geometry: the build path applies each body's forward-kinematics `world_transform` (via the same `ApplyTransform` mechanism as `apply_transform()`, §3.7) before running the OCCT BREP test, so a body mounted on a non-identity joint is correctly repositioned first. This is proven by the `fk_posed_cubes_no_interference_and_correct_clearance` smoke test (`crates/reify-eval/tests/mechanism_interference_smoke.rs`): two 20mm cubes whose source-authored geometry fully overlaps at the origin are correctly reported clear (20mm apart, non-zero `min_clearance`) once one of them is mounted on a prismatic joint bound to +40mm.
+
 ### 13.6 Worked examples
 
-The two examples below are the primary acceptance-test drivers for `std.mechanism`. Both are reproduced verbatim from `docs/prds/kinematic-constraints.md`.
+The two examples below are adapted from `docs/prds/kinematic-constraints.md`. The PRD prose uses method-call forms — `.map(|s| ...)`, `.windows(2)`, `.norm()` — that Reify's grammar does not support: member access is zero-arg only and a function call requires a bare identifier, so a lambda is passed to a free function (`flat_map(list, |x| [f(x)])`) rather than to a method. The snippets below use that free-function form instead. `examples/kinematic/counter_mass_balance.ri` (exercised by `crates/reify-eval/tests/kinematic_examples_e2e.rs`) is the landed, compiling, end-to-end-tested version of the counter-mass scenario that the second snippet below follows exactly. `examples/kinematic/dock_pickup.ri` (same test file) is a landed, e2e-tested example of the same swept-interference-query *shape* as the toolchanger scenario, not an identical match — see the note after each snippet for exactly what its landed test covers.
 
 **Toolchanger dock-approach clearance check.** A toolhead riding on a gantry that itself rides on a Y-rail sweeps its dock-approach path; the interference query asserts no collision with the parked tool anywhere along the path except at the final dock pose.
 
@@ -1761,12 +1779,14 @@ fn toolchanger_dock_check() -> Bool {
 
     // Interference query — toolhead must not collide with parked tool
     // anywhere along the path except at the final dock pose.
-    let collisions = snapshots.map(|s| interferes(s));
-    forall i in 0..50 - 1: collisions[i].is_empty()
+    let collisions = flat_map(snapshots, |s| [interferes(s)]);
+    forall i in 0..50 - 1: collisions[i].count == 0
 }
 ```
 
-**Counter-mass COM stationarity check.** A coupled counter-mass (ratio −1.0) keeps the system centre of mass stationary as the toolhead traverses its range.
+The swept `flat_map(snapshots, |s| [interferes(s)])` call above is illustrative, not itself e2e-tested: no landed example runs `interferes` inside a sweep. The landed, compiling, e2e-tested `examples/kinematic/dock_pickup.ri` covers the same swept-interference-query shape (one prismatic joint, a fixed dock) but its swept cell drives `min_clearance`, not `interferes` — `let clearances = flat_map(snaps, |s| [min_clearance(s, id_head, id_park)])`; `interferes(s)` is exercised there only once, on a single home-position snapshot, outside any sweep. Treat `dock_pickup.ri`'s `min_clearance` sweep as the canonical, proven form of this pattern, and the `interferes`-in-`flat_map` snippet above as an unverified variant that follows the identical shape.
+
+**Counter-mass COM stationarity check.** A coupled counter-mass (ratio −1.0) keeps the system centre of mass stationary — at the origin, for this symmetric equal-mass pair — as the toolhead traverses its range.
 
 ```reify
 fn counter_mass_balance() -> Bool {
@@ -1778,11 +1798,14 @@ fn counter_mass_balance() -> Bool {
         .body(toolhead_solid(), at: x_axis)
         .body(counter_mass_solid(), at: cm_axis);
 
-    // At every position along the sweep, the system COM must stay fixed.
+    // At every position along the sweep, the system COM must stay at the
+    // origin: distance-from-origin is the invariant, not a pairwise diff.
     let snapshots = sweep(m, x_axis, 0mm .. 500mm, steps: 11);
-    let coms = snapshots.map(|s| s.center_of_mass());
-    forall pair in coms.windows(2): (pair[1] - pair[0]).norm() < 0.1mm
+    let com_magnitudes = flat_map(snapshots, |s| [magnitude(center_of_mass(s))]);
+    forall d in com_magnitudes: d < 1um
 }
 ```
+
+This mirrors the landed `examples/kinematic/counter_mass_balance.ri`, whose e2e-proven invariant is `magnitude(center_of_mass(s)) < 1um` for every swept snapshot (a generous bound relative to the 1e-9m tolerance `center_of_mass_counter_mass_balance_stationarity` proves at the Rust level) — rather than the PRD prose's unsupported pairwise `coms.windows(2)` / `.norm()` adjacent-difference form.
 
 See `docs/prds/kinematic-constraints.md` for the full specification, acceptance criteria, and task breakdown.
