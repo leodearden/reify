@@ -15634,6 +15634,56 @@ fn fea_convergence_emitter_fires_none_for_no_elastic_result() {
     );
 }
 
+/// fea_convergence_emitter_fires_on_set_parameter (INV-GUI-2 / gui-state-sync L3 step-3).
+///
+/// Pins that `set_parameter` — the exact production path that `handleSetParameter`
+/// invokes and then discards the GuiState from — emits a `fea-convergence-changed`
+/// event via the installed emitter.
+///
+/// Setup:
+///   1. Load bracket_source() (non-FEA design, no ElasticResult).
+///   2. THEN install RecordingFeaConvergenceEmitter (events only counted from here).
+///   3. Call set_parameter("Bracket.width", "120mm").
+///
+/// Assert: recorder captured exactly ONE event with payload None (non-FEA design
+/// has no ElasticResult).
+///
+/// RED: emit_fea_convergence is not yet called from the post_engine_call_telemetry
+/// commit path, so zero events are recorded.
+#[test]
+fn fea_convergence_emitter_fires_on_set_parameter() {
+    use std::sync::Arc;
+
+    let checker = SimpleConstraintChecker;
+    let kernel = MockGeometryKernel::new();
+    let mut session = EngineSession::new(Box::new(checker), Some(Box::new(kernel)));
+    session
+        .load_from_source(bracket_source(), "bracket")
+        .expect("load bracket source");
+
+    // Install AFTER load so that only set_parameter's emit is counted.
+    let recorder = RecordingFeaConvergenceEmitter::new();
+    let captured = Arc::clone(&recorder.events);
+    session.set_fea_convergence_emitter(Arc::new(recorder));
+
+    session
+        .set_parameter("Bracket.width", "120mm")
+        .expect("set_parameter should succeed");
+
+    let events = captured.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        1,
+        "set_parameter must fire exactly one fea-convergence-changed event; got {}",
+        events.len()
+    );
+    assert_eq!(
+        events[0], None,
+        "non-FEA design must produce a None fea-convergence payload; got {:?}",
+        events[0]
+    );
+}
+
 // ── #4898: surface-finish functional wiring — coating + finish_process → MeshData.appearance ──
 
 /// Source code for the surface-finish wiring integration tests.
