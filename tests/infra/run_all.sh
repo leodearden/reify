@@ -114,10 +114,34 @@
 #                                      value fails OPEN to 30 rather than
 #                                      exiting, unlike the load-bearing knobs
 #                                      above.
+#   REIFY_RUN_ALL_FLAKY_LEDGER         Path to the durable append-only JSONL
+#                                      FLAKY ledger (task #5142; default
+#                                      $_H2_REPO_ROOT/data/verify-logs/
+#                                      flaky-ledger.jsonl, git-ignored).
+#                                      Every `=== FLAKY (passed on serial
+#                                      retry) ===` emission (Phase 2.5
+#                                      deflake above) appends one JSON line
+#                                      {ts,test,role,task,branch,run_id} here,
+#                                      crash-safely (flock). Pure
+#                                      observability, strictly additive
+#                                      (INV-4): a missing jq/flock or an
+#                                      unwritable path silently no-ops rather
+#                                      than exiting -- see
+#                                      _ra_flaky_ledger_append.
+#   REIFY_RUN_ALL_FLAKY_LEDGER_DISABLE Set to 1 to disable the FLAKY ledger
+#                                      entirely (break-glass; default unset).
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Per-run identifier for the FLAKY ledger (task #5142): stamps every ledger
+# line so the chronic-offender scan (_ra_flaky_chronic_check) can window
+# over "the last M DISTINCT runs" exactly, even though a single run can
+# flag multiple members (one ledger line each). EPOCHSECONDS (bash 5.0+)
+# falls back to `date +%s` for portability; $$ disambiguates two runs that
+# start in the same second.
+_RA_RUN_ID="${EPOCHSECONDS:-$(date +%s)}-$$"
 
 # Arg parsing: an optional `--scope <val>` / `--scope=<val>` flag plus one
 # optional positional INFRA_DIR (order-independent). An unrecognized flag
@@ -177,6 +201,11 @@ esac
 # Pinning role=task here makes the meta-tests hermetic. Suites that deliberately
 # exercise merge-role behavior set `DF_VERIFY_ROLE=merge` inline per command,
 # and that per-command assignment still overrides this exported default.
+#
+# FLAKY ledger (task #5142): snapshot the INBOUND role before normalizing it
+# below -- from this line on DF_VERIFY_ROLE is always "task", so the
+# meaningful merge-vs-task/branch signal for ledger triage only exists here.
+_RA_INBOUND_ROLE="${DF_VERIFY_ROLE:-unknown}"
 export DF_VERIFY_ROLE=task
 
 # ---------------------------------------------------------------------------
@@ -268,6 +297,51 @@ _ra_discovery_diag() {
     exit "$_rc"
 }
 
+# ---------------------------------------------------------------------------
+# _ra_flaky_ledger_append <name>  (task #5142)
+#
+# Persists one JSONL line to the durable FLAKY ledger (_RA_FLAKY_LEDGER)
+# recording that <name> passed on the Phase-2.5 serial retry this run --
+# otherwise the only trace of a "flaky" reclassification is the transient
+# `=== FLAKY ...` stdout line, which nothing archives or counts across runs.
+#
+# Pure observability, strictly additive (INV-4): fails OPEN (silent no-op)
+# when REIFY_RUN_ALL_FLAKY_LEDGER_DISABLE=1, jq or flock is missing, or the
+# ledger path/parent is unwritable -- a pure-observability subsystem must
+# never break the suite. Crash-safe append via the repo's subshell-flock
+# idiom (mirrors scripts/lib_slot_acquire.sh / lib_lane_x_flock.sh) into a
+# dedicated `.lock` sibling file, so lock acquisition never contends with a
+# reader opening the ledger itself.
+# ---------------------------------------------------------------------------
+_ra_flaky_ledger_append() {
+    local _name="$1"
+    [ "${REIFY_RUN_ALL_FLAKY_LEDGER_DISABLE:-}" = "1" ] && return 0
+    command -v jq >/dev/null 2>&1 || return 0
+    command -v flock >/dev/null 2>&1 || return 0
+
+    local _branch _task _line
+    _branch="$(git -C "$INFRA_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+    [ -n "$_branch" ] || _branch="unknown"
+    case "$_branch" in
+        task/*) _task="${_branch#task/}" ;;
+        *) _task="unknown" ;;
+    esac
+
+    _line="$(jq -cn \
+        --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --arg test "$_name" \
+        --arg role "$_RA_INBOUND_ROLE" \
+        --arg task "$_task" \
+        --arg branch "$_branch" \
+        --arg run_id "$_RA_RUN_ID" \
+        '{ts:$ts,test:$test,role:$role,task:$task,branch:$branch,run_id:$run_id}' 2>/dev/null || true)"
+    [ -n "$_line" ] || return 0
+
+    mkdir -p "$(dirname "$_RA_FLAKY_LEDGER")" 2>/dev/null || true
+    ( flock 9 || exit 0; printf '%s\n' "$_line" >> "$_RA_FLAKY_LEDGER" ) 9>>"${_RA_FLAKY_LEDGER}.lock" 2>/dev/null || true
+    return 0
+}
+
 failures=0
 discovered=0
 failed_names=()
@@ -287,6 +361,11 @@ _H2_CLASSIFICATION_LIB="$SCRIPT_DIR/run-all-classification-lib.sh"
 _H2_SLOT_ACQUIRE_LIB="$_H2_REPO_ROOT/scripts/lib_slot_acquire.sh"
 _H2_CPU_ADMIT_LIB="$_H2_REPO_ROOT/scripts/cpu-admit.sh"
 _H2_LOAD_TOLERANCE_LIB="$SCRIPT_DIR/load_tolerance_lib.sh"
+
+# FLAKY ledger path (task #5142): overridable for test isolation; defaults
+# under the repo's git-ignored data/verify-logs/ tree (.git/info/exclude),
+# so the default file is never accidentally committed.
+_RA_FLAKY_LEDGER="${REIFY_RUN_ALL_FLAKY_LEDGER:-$_H2_REPO_ROOT/data/verify-logs/flaky-ledger.jsonl}"
 
 _H2_POOL_ACTIVE=1
 if [ "${REIFY_RUN_ALL_POOL_DISABLE:-}" = "1" ]; then
@@ -820,6 +899,12 @@ if [ "${#failed_names[@]}" -gt 0 ]; then
 fi
 if [ "${#flaky_names[@]}" -gt 0 ]; then
     echo "=== FLAKY (passed on serial retry): ${flaky_names[*]} ==="
+    # FLAKY ledger (task #5142): persist each emission for durable
+    # cross-run triage -- observability only, never touches exit code or
+    # any stdout line above (_ra_flaky_ledger_append is fail-open).
+    for _ra_flaky_name in "${flaky_names[@]}"; do
+        _ra_flaky_ledger_append "$_ra_flaky_name"
+    done
 fi
 
 if [ "$failures" -eq 0 ]; then
