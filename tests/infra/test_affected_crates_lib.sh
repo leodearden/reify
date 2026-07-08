@@ -21,11 +21,14 @@
 #      direct dev-dependent (reify-eval) that does compile OCCT
 #  12. (task 4938) tests/infra/* non-crate allowlist composes with crate
 #      accumulation in a mixed diff (narrows; does not force ALL)
-#  13. (task 4938 amendment) drift guard: affected_crates(occt-seed) equals
-#      occt_touching_set — the two are independently-implemented copies of
-#      the same compile-closure algorithm (scripts/occt-scope-lib.sh:59-109),
-#      and this cross-check fails loudly instead of letting them silently
-#      diverge
+#  13. (task 4938 amendment; unified by task 5124) drift guard:
+#      affected_crates(occt-seed) equals occt_touching_set — both now
+#      delegate to the single shared _reify_compile_closure helper
+#      (scripts/occt-scope-lib.sh), and this cross-check fails loudly if
+#      that ever regresses
+#  14. (task 5124) _reify_compile_closure — the shared helper both wrappers
+#      delegate to — is exercised directly: its output equals
+#      occt_touching_set and contains the seed crate
 
 set -euo pipefail
 
@@ -178,19 +181,17 @@ assert "OCCT-seed closure contains reify-eval (direct dev-dependent whose own te
     _check_contains reify-eval crates/reify-kernel-occt/src/lib.rs
 
 # ---------------------------------------------------------------------------
-# Amendment (code-review follow-up): drift guard between the two independent
-# implementations of the normal/dev compile-closure algorithm.
+# Amendment (code-review follow-up, task 4938; unified by task 5124): drift
+# guard between the two callers of the shared compile-closure model.
 #
 # _reverse_closure (scripts/affected-crates-lib.sh) and occt_touching_set
-# (scripts/occt-scope-lib.sh:59-109) each embed their own copy of the
-# adj_normal/adj_dev + normal_closure Python (the PRD calls this "reused
-# verbatim and parameterized" — docs/prds/verify-scope-contract.md §3). A
-# shared-helper extraction was proposed in review, but doing so would require
-# editing scripts/occt-scope-lib.sh, which this task does not hold a lock on
-# (out of scope here; escalated as follow-up work). Until that extraction
-# happens, this equality check is the mitigation: it fails loudly the moment
-# either copy's dep_kinds handling diverges, rather than letting the two
-# implementations silently disagree about scope.
+# (scripts/occt-scope-lib.sh) both delegate to the single shared
+# `_reify_compile_closure` helper (scripts/occt-scope-lib.sh) for the
+# adj_normal/adj_dev + normal_closure algorithm (the PRD calls this "reused
+# verbatim and parameterized" — docs/prds/verify-scope-contract.md §3),
+# rather than each carrying its own copy. This equality check remains as a
+# regression guard: it fails loudly if either wrapper's seed handling, or
+# the shared helper itself, ever regresses.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- Drift guard: affected_crates(occt-seed) == occt_touching_set ---"
@@ -201,8 +202,36 @@ _check_occt_seed_matches_touching_set() {
     from_occt="$(occt_touching_set | sort -u)"
     [ "$from_affected" = "$from_occt" ]
 }
-assert "affected_crates(occt-seed) equals occt_touching_set (no drift between the two implementations)" \
+assert "affected_crates(occt-seed) equals occt_touching_set (both delegate to the shared helper)" \
     _check_occt_seed_matches_touching_set
+
+# ---------------------------------------------------------------------------
+# Task 5124: direct exercise of the extracted shared helper.
+#
+# _reify_compile_closure (scripts/occt-scope-lib.sh) is the single
+# implementation of the adj_normal/adj_dev + normal_closure model that both
+# occt_touching_set and _reverse_closure delegate to. This calls it directly
+# (bypassing both wrappers) to guard against a helper that silently returns
+# nothing — a regression the drift-guard assert above would miss if both
+# wrappers happened to be broken identically.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Task 5124: _reify_compile_closure direct exercise ---"
+
+_check_compile_closure_matches_occt() {
+    local from_helper from_occt
+    from_helper="$(cargo metadata --format-version 1 2>/dev/null | _reify_compile_closure reify-kernel-occt | sort -u)"
+    from_occt="$(occt_touching_set | sort -u)"
+    [ "$from_helper" = "$from_occt" ]
+}
+assert "_reify_compile_closure(reify-kernel-occt) equals occt_touching_set" \
+    _check_compile_closure_matches_occt
+
+_check_compile_closure_contains_seed() {
+    cargo metadata --format-version 1 2>/dev/null | _reify_compile_closure reify-kernel-occt | grep -qx reify-kernel-occt
+}
+assert "_reify_compile_closure(reify-kernel-occt) contains reify-kernel-occt (seed itself)" \
+    _check_compile_closure_contains_seed
 
 # ---------------------------------------------------------------------------
 # Task 4938 Fix #2 composition guard: the tests/infra/* non-crate allowlist
