@@ -1640,7 +1640,8 @@ fn transform_at(j: Coupling<P>, v: P::MotionValue) -> Transform<3>
 
 These are the registered builtin names (`crates/reify-stdlib/src/joints.rs:676,693,705,719`). Earlier drafts of this section used bare `axis`/`range`/`ratio`/`offset`, which return `Undef` — those names are not registered. No bare aliases are provided: Reify's builtin namespace is flat and global, so an unqualified `axis`/`range` would collide across unrelated stdlib modules; the `joint_`-prefixed spelling is the collision-safe, self-documenting form and is the only one that ships.
 
-**Jacobian (v0.2).** `joint_jacobian` returns the analytic SE(3) twist column
+**Jacobian.** `joint_jacobian` is a live builtin (`crates/reify-stdlib/src/joints.rs:733`, delegating to
+`joint_jacobian_value` at `:776`) that returns the analytic SE(3) twist column
 for a single joint, used by the closed-chain loop-closure solver — see
 [`v0_2/kinematic-constraints.md`](prds/v0_2/kinematic-constraints.md). The
 returned `Twist` shape (`Map { angular, linear }`) is the same one used by
