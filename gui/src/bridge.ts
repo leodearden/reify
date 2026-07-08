@@ -27,6 +27,10 @@ import type {
   SolverProgress,
   ModeShapeFrame,
   FeaDiagnosticInfo,
+  TensegrityWireData,
+  TensegritySurfaceData,
+  DisplayDirective,
+  AppearanceDirective,
 } from './types';
 import { convertRawMesh, convertRawGuiState } from './types';
 import type {
@@ -526,6 +530,54 @@ export async function onFeaDiagnosticsChanged(
   callback: (data: FeaDiagnosticInfo[]) => void,
 ): Promise<UnlistenFn> {
   return listen<FeaDiagnosticInfo[]>('fea-diagnostics-changed', (event) => {
+    callback(event.payload);
+  });
+}
+
+/**
+ * Subscribe to tensegrity wires update events. Carries the full current list
+ * (L2 stopgap, task #5031 — diff.rs changed_tensegrity_wires channel).
+ */
+export async function onTensegrityWiresUpdate(
+  callback: (data: TensegrityWireData[]) => void,
+): Promise<UnlistenFn> {
+  return listen<TensegrityWireData[]>('tensegrity-wires-update', (event) => {
+    callback(event.payload);
+  });
+}
+
+/**
+ * Subscribe to tensegrity surfaces update events. Carries the full current list
+ * (L2 stopgap, task #5031 — diff.rs changed_tensegrity_surfaces channel).
+ */
+export async function onTensegritySurfacesUpdate(
+  callback: (data: TensegritySurfaceData[]) => void,
+): Promise<UnlistenFn> {
+  return listen<TensegritySurfaceData[]>('tensegrity-surfaces-update', (event) => {
+    callback(event.payload);
+  });
+}
+
+/**
+ * Subscribe to display panes update events. Carries the full current list
+ * (L2 stopgap, task #5031 — diff.rs changed_display_panes channel).
+ */
+export async function onDisplayPanesUpdate(
+  callback: (data: DisplayDirective[]) => void,
+): Promise<UnlistenFn> {
+  return listen<DisplayDirective[]>('display-panes-update', (event) => {
+    callback(event.payload);
+  });
+}
+
+/**
+ * Subscribe to display appearance update events. Carries the full current list
+ * (L2 stopgap, task #5031 — diff.rs changed_display_appearance channel).
+ */
+export async function onDisplayAppearanceUpdate(
+  callback: (data: AppearanceDirective[]) => void,
+): Promise<UnlistenFn> {
+  return listen<AppearanceDirective[]>('display-appearance-update', (event) => {
     callback(event.payload);
   });
 }
