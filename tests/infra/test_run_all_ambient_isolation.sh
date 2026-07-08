@@ -58,6 +58,8 @@ TARGET="$SCRIPT_DIR/test_run_all.sh"
 MANIFEST="$SCRIPT_DIR/run-all-ambient-vars.manifest"
 [ -f "$MANIFEST" ] || { echo "ERROR: run-all-ambient-vars.manifest not found at $MANIFEST (task 5152 ledger of every env var ambiently injected into the run_all.sh pool)"; exit 1; }
 
+[ -f "$REPO_ROOT/orchestrator.yaml" ] || { echo "ERROR: orchestrator.yaml not found at $REPO_ROOT/orchestrator.yaml"; exit 1; }
+
 echo "=== run_all.sh ambient-isolation regression guard (task 4961 / esc-4906-45; manifest-driven, task 5152) ==="
 
 # ---------------------------------------------------------------------------
@@ -156,6 +158,77 @@ while IFS= read -r _kv; do
 done <<< "$PLAN_LINE_KV"
 
 # ---------------------------------------------------------------------------
+# Derivation (source 2 of 2): orchestrator.yaml's verify_env block.
+#
+# verify_env_exports is mirrored VERBATIM (reuse-note, not extracted to a
+# shared lib) from tests/infra/test_verify_env_ambient_isolation.sh:59-85
+# (task 4966's drift-guard), to avoid editing that live merge-gate guard
+# file -- out of this task's declared scope. Refresh both copies together if
+# the awk logic ever changes.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Derivation (2/2): orchestrator.yaml verify_env block (verify_env_exports) ---"
+
+verify_env_exports() {
+    local yaml_file="$1"
+    awk '
+        /^verify_env:[[:space:]]*$/ { in_block = 1; next }
+        in_block && /^[^[:space:]#]/ { in_block = 0 }
+        !in_block { next }
+        /^[[:space:]]*#/ { next }
+        /^[[:space:]]*$/ { next }
+        /^[[:space:]]+[A-Za-z_][A-Za-z0-9_]*:/ {
+            line = $0
+            sub(/^[[:space:]]+/, "", line)
+            colon = index(line, ":")
+            key = substr(line, 1, colon - 1)
+            rest = substr(line, colon + 1)
+            sub(/^[[:space:]]+/, "", rest)
+            if (substr(rest, 1, 1) == "\"") {
+                tail = substr(rest, 2)
+                q = index(tail, "\"")
+                val = (q > 0) ? substr(tail, 1, q - 1) : tail
+            } else {
+                n = split(rest, toks, /[[:space:]]+/)
+                val = (n >= 1) ? toks[1] : ""
+            }
+            print key "=" val
+        }
+    ' "$yaml_file"
+}
+
+VERIFY_ENV_KV="$(verify_env_exports "$REPO_ROOT/orchestrator.yaml")"
+
+assert "orchestrator.yaml verify_env block parse is non-empty" \
+    test -n "$VERIFY_ENV_KV"
+
+assert "verify_env block contains REIFY_RUN_ALL_EXCLUDE_HOST_INFRA (block-parse sanity)" \
+    plan_match "$VERIFY_ENV_KV" '^REIFY_RUN_ALL_EXCLUDE_HOST_INFRA='
+
+assert "verify_env block contains REIFY_GATE_EXCLUDE_HEAVY (block-parse sanity)" \
+    plan_match "$VERIFY_ENV_KV" '^REIFY_GATE_EXCLUDE_HEAVY='
+
+assert "verify_env block contains RUSTC_WRAPPER (block-parse sanity)" \
+    plan_match "$VERIFY_ENV_KV" '^RUSTC_WRAPPER='
+
+assert "verify_env block contains CARGO_INCREMENTAL (block-parse sanity)" \
+    plan_match "$VERIFY_ENV_KV" '^CARGO_INCREMENTAL='
+
+VERIFY_ENV_KEYS=""
+while IFS= read -r _kv; do
+    [ -z "$_kv" ] && continue
+    VERIFY_ENV_KEYS+="${_kv%%=*}"$'\n'
+done <<< "$VERIFY_ENV_KV"
+
+# ---------------------------------------------------------------------------
+# LIVE_KEYS: sort-unique union of both injection sources. LIVE_KV mirrors the
+# union at the KEY=VALUE level so the hostile-ambient loop below can look up
+# a live value for a verify_env-only ledger var, not just a plan-line one.
+# ---------------------------------------------------------------------------
+LIVE_KV="${PLAN_LINE_KV}${VERIFY_ENV_KV}"
+LIVE_KEYS="$(sort -u <<< "${PLAN_LINE_KEYS}${VERIFY_ENV_KEYS}")"
+
+# ---------------------------------------------------------------------------
 # Ledger: tests/infra/run-all-ambient-vars.manifest (keys only, one per
 # line). Read defensively -- strip comment/blank lines -- mirroring
 # run-all-classification-lib.sh's manifest-reading convention.
@@ -174,15 +247,25 @@ done < "$MANIFEST"
 assert "run-all-ambient-vars.manifest declares at least one var" \
     test -n "$MANIFEST_KEYS"
 
-# Subset guard (plan-line half): every var injected by the run_all.sh
-# plan-line prefix env must be declared in the ledger. (Upgraded to full set
-# equality, across both injection sources, once the verify_env-source
-# derivation is added.)
-while IFS= read -r _plan_key; do
-    [ -z "$_plan_key" ] && continue
-    assert "plan-line var $_plan_key is declared in run-all-ambient-vars.manifest" \
-        kv_key_member "$_plan_key" "$MANIFEST_KEYS"
-done <<< "$PLAN_LINE_KEYS"
+# Full set-equality guard (upgraded from the step-1 plan-line-only subset
+# guard, task 5152): every LIVE var (plan-line UNION verify_env) must be
+# declared in the ledger, AND every ledger var must still be part of the
+# LIVE set -- together these two directions are full set equality, so a var
+# newly injected by either source without a matching ledger entry, or a
+# stale ledger entry for a var no longer injected by either source, fails
+# this guard by construction (task 5152 design decision: equality, not mere
+# subset).
+while IFS= read -r _live_key; do
+    [ -z "$_live_key" ] && continue
+    assert "live var $_live_key is declared in run-all-ambient-vars.manifest (add it there)" \
+        kv_key_member "$_live_key" "$MANIFEST_KEYS"
+done <<< "$LIVE_KEYS"
+
+while IFS= read -r _manifest_key; do
+    [ -z "$_manifest_key" ] && continue
+    assert "run-all-ambient-vars.manifest's $_manifest_key is still part of the live injected set (remove if stale)" \
+        kv_key_member "$_manifest_key" "$LIVE_KEYS"
+done <<< "$MANIFEST_KEYS"
 
 # ---------------------------------------------------------------------------
 # Manifest-driven hostile-ambient loop: for each ledger var, run the REAL
@@ -201,8 +284,8 @@ echo "--- Manifest-driven hostile-ambient loop: test_run_all.sh under each ledge
 while IFS= read -r _key; do
     [ -z "$_key" ] && continue
 
-    _val="$(kv_lookup "$PLAN_LINE_KV" "$_key")" || {
-        echo "ERROR: no live value found for ledger var $_key (checked plan-line KV)"
+    _val="$(kv_lookup "$LIVE_KV" "$_key")" || {
+        echo "ERROR: no live value found for ledger var $_key (checked plan-line + verify_env KV)"
         exit 1
     }
 
