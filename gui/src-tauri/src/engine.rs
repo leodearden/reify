@@ -529,6 +529,12 @@ pub struct EngineSession {
     /// every commit — full-list snapshot including the empty list (to clear a stale overlay).
     /// When `None` (the default), all emit paths are no-ops.
     fea_diagnostics_emitter: Option<Arc<dyn FeaDiagnosticsEmitter>>,
+    /// Optional fea-convergence-changed event sink installed by the GUI layer (task #5032).
+    ///
+    /// When `Some`, `emit_fea_convergence` calls `changed(build_fea_convergence())` on
+    /// every commit — full-value snapshot including `None` (to clear a stale indicator).
+    /// When `None` (the default), all emit paths are no-ops.
+    fea_convergence_emitter: Option<Arc<dyn FeaConvergenceEmitter>>,
     /// Optional mode-shape-frame event sink installed by the GUI layer.
     ///
     /// When `Some`, `emit_mode_shape_frames_if_any` scans `CheckResult.values` for a
@@ -636,6 +642,21 @@ pub trait FeaCaseEmitter: Send + Sync {
 /// The trait is object-safe: no method takes or returns `Self`.
 pub trait FeaDiagnosticsEmitter: Send + Sync {
     fn changed(&self, payload: Vec<crate::types::FeaDiagnosticInfo>);
+}
+
+/// Trait for sinking fea-convergence-changed events to the GUI transport layer (task #5032).
+///
+/// Implemented by `TauriFeaConvergenceEmitter` in `main.rs` for the production path
+/// (calls `event_bus::emit_typed` with channel `"fea-convergence-changed"`), and by
+/// `RecordingFeaConvergenceEmitter` in engine tests.
+///
+/// Payload semantics: full-value snapshot of `Option<FeaConvergenceInfo>` — fires on
+/// EVERY commit including `None` (so a param edit that clears the FEA problem clears
+/// the stale convergence indicator on the frontend).
+///
+/// The trait is object-safe: no method takes or returns `Self`.
+pub trait FeaConvergenceEmitter: Send + Sync {
+    fn changed(&self, payload: Option<crate::types::FeaConvergenceInfo>);
 }
 
 /// Trait for sinking mode-shape-frame events to the GUI transport layer (task ι/3458).
@@ -1053,6 +1074,7 @@ impl EngineSession {
             warm_pool_event_emitter: None,
             fea_case_emitter: None,
             fea_diagnostics_emitter: None,
+            fea_convergence_emitter: None,
             mode_shape_frame_emitter: None,
             solve_cancel_sink: None,
             solver_progress_sink: None,
@@ -1102,6 +1124,16 @@ impl EngineSession {
     /// installed emitter.
     pub fn set_fea_diagnostics_emitter(&mut self, emitter: Arc<dyn FeaDiagnosticsEmitter>) {
         self.fea_diagnostics_emitter = Some(emitter);
+    }
+
+    /// Install a fea-convergence-changed event emitter on this session (task #5032).
+    ///
+    /// After installation, every `emit_fea_convergence` call — co-located inside
+    /// the single `post_engine_call_telemetry` choke-point (INV-GUI-2) — fires
+    /// `changed(Option<FeaConvergenceInfo>)` with a full-value snapshot — including
+    /// `None`, to clear a stale indicator. Replaces any previously installed emitter.
+    pub fn set_fea_convergence_emitter(&mut self, emitter: Arc<dyn FeaConvergenceEmitter>) {
+        self.fea_convergence_emitter = Some(emitter);
     }
 
     /// Install a mode-shape-frame event emitter on this session.
@@ -1453,6 +1485,33 @@ impl EngineSession {
     #[cfg(test)]
     pub(crate) fn emit_fea_diagnostics_for_test(&self) {
         self.emit_fea_diagnostics();
+    }
+
+    /// Emit a `fea-convergence-changed` event carrying the current
+    /// `Option<FeaConvergenceInfo>` derived from `last_check().values`.
+    ///
+    /// Full-value snapshot semantics (mirrors `emit_fea_diagnostics`): the event
+    /// payload is `build_fea_convergence()` — byte-identical to
+    /// `GuiState.fea_convergence`. Fires on EVERY commit including `None` (so a
+    /// param edit that clears the FEA problem clears the stale indicator).
+    ///
+    /// Early-returns silently when no emitter is installed.
+    fn emit_fea_convergence(&self) {
+        let emitter = match &self.fea_convergence_emitter {
+            Some(e) => e,
+            None => return,
+        };
+        emitter.changed(self.build_fea_convergence());
+    }
+
+    /// Drive `emit_fea_convergence` in tests without a full engine eval.
+    ///
+    /// Callers must first inject a `CheckResult` via `inject_check_for_test` so
+    /// that `build_fea_convergence()` reads a non-None `last_check`.
+    /// Not callable from production code.
+    #[cfg(test)]
+    pub(crate) fn emit_fea_convergence_for_test(&self) {
+        self.emit_fea_convergence();
     }
 
     /// Drive `emit_mode_shape_frames_if_any` with a pre-built `CheckResult` in tests.
