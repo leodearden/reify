@@ -305,6 +305,37 @@ _assert_serialized_events() {
     return 1
 }
 
+# ===========================================================================
+# _dump_captured_stderr helper (task 5144 F2 mode-4)
+# ===========================================================================
+# _dump_captured_stderr <label> <errfile>
+# Observability helper for the 5111 "silent FAIL" mode: dumps a nested run's
+# captured stderr (tail -50, matching assert()'s own captured-output dump in
+# test_helpers.sh) under a clear bracketed header naming <label>, so a
+# failing exit-code assertion (Sections A/B/C/F) or a failed Section F2
+# print-plan capture has a diagnosable reason in the log instead of silence.
+# <errfile> missing or empty (0 bytes) prints a graceful "(no stderr
+# captured)" note rather than an empty/confusing header.
+#
+# MUST NEVER abort its caller under set -euo pipefail: always returns 0
+# regardless of <errfile>'s state, because it is invoked as a bare
+# diagnostic statement (not wrapped in a guarded assert). Complements, not
+# replaces, assert()'s own dump-on-FAIL (which dumps the CHECKER's captured
+# output — empty for a numeric `test $RC -eq 0` checker); this dumps the
+# SEPARATE nested-run errfile that holds the actual reason.
+_dump_captured_stderr() {
+    local _label="$1"
+    local _errfile="$2"
+    echo "  ---- [${_label}] captured stderr ----"
+    if [ -s "$_errfile" ]; then
+        tail -n 50 "$_errfile" | sed 's/^/  | /'
+    else
+        echo "  (no stderr captured)"
+    fi
+    echo "  ---- [${_label}] end captured stderr ----"
+    return 0
+}
+
 make_stub_bin() {
     local dir="$1"
     # stub cargo: sleeps $REIFY_E2E_CARGO_SLEEP seconds, exits 0.
@@ -422,13 +453,18 @@ drive_two_concurrent_task_runs() {
     # the real verify's wait and kill the run mid-nextest (esc-4802-228).
     # Section A asserts only on the event log + timing, never on stderr, so
     # capturing here is loss-free (matches Sections B/C/E/F's 2>"$*_ERR").
+    # A_ERR1/A_ERR2 (task 5144 F2 mode-4): globals exposing each run's errfile
+    # so a failing exit-code assertion can dump the reason via
+    # _dump_captured_stderr, mirroring $MERGE_ERR/$C_ERR/$F_ERR.
+    A_ERR1="$_tmpdir/runA1.err"
+    A_ERR2="$_tmpdir/runA2.err"
     local _pid1 _pid2
     # First concurrent task run.
     (
         apply_hermetic_env "$_stubdir" "$_lock"
         export REIFY_E2E_CARGO_SLEEP=2
         DF_VERIFY_ROLE=task bash "$REPO_ROOT/scripts/verify.sh" test --scope all
-    ) 2>"$_tmpdir/runA1.err" &
+    ) 2>"$A_ERR1" &
     _pid1=$!
 
     # Second concurrent task run — same lock base so both compete for the single slot.
@@ -436,7 +472,7 @@ drive_two_concurrent_task_runs() {
         apply_hermetic_env "$_stubdir" "$_lock"
         export REIFY_E2E_CARGO_SLEEP=2
         DF_VERIFY_ROLE=task bash "$REPO_ROOT/scripts/verify.sh" test --scope all
-    ) 2>"$_tmpdir/runA2.err" &
+    ) 2>"$A_ERR2" &
     _pid2=$!
 
     # Capture exit codes without letting set -e abort on non-zero child.
@@ -808,6 +844,13 @@ if [ "$_TS_READY" = "1" ]; then
     # consume ~2s and satisfy the timing lower bound, producing a false green.
     assert "both concurrent task runs exited 0 (rc1=${RC1}, rc2=${RC2})" \
         test "$RC1" -eq 0 -a "$RC2" -eq 0
+    # Mode-4 observability (task 5144): surface each nested run's captured
+    # stderr when the exit-code assertion above fails, so a Section A failure
+    # has a diagnosable reason instead of just the bare rc.
+    if [ "$RC1" -ne 0 ] || [ "$RC2" -ne 0 ]; then
+        _dump_captured_stderr "Section A run 1 (rc=${RC1})" "$A_ERR1"
+        _dump_captured_stderr "Section A run 2 (rc=${RC2})" "$A_ERR2"
+    fi
     assert "two concurrent task verify.sh test runs hold-serialize (elapsed >= 3000ms, got ${MS}ms)" \
         test "$MS" -ge 3000
     # --- Section A causal assertions (R-technique): parse REIFY_SLOT_EVENT_LOG ---
@@ -911,6 +954,11 @@ if [ "$_TS_READY" = "1" ]; then
     run_merge_while_task_slot_held
     assert "merge-role verify.sh test proceeds while task slot is held (exit 0, got ${MERGE_RC})" \
         test "$MERGE_RC" -eq 0
+    # Mode-4 observability (task 5144): surface the nested run's captured
+    # stderr when the exit-code assertion above fails.
+    if [ "$MERGE_RC" -ne 0 ]; then
+        _dump_captured_stderr "Section B merge-role run (rc=${MERGE_RC})" "$MERGE_ERR"
+    fi
     # --- Section B structural assertion (S-technique): bypass marker in stderr ---
     # Proves the merge-exemption CODE PATH executed specifically (not just exit 0).
     # Fixed-string grep stops before the em-dash (U+2014) in the full message to avoid
@@ -992,6 +1040,11 @@ if [ "$_TS_READY" = "1" ]; then
     run_task_with_slot_held
     assert "verify.sh exits 75 (EX_TEMPFAIL) on acquisition deadline (got ${C_RC})" \
         test "$C_RC" -eq 75
+    # Mode-4 observability (task 5144): surface the nested run's captured
+    # stderr when the exit-code assertion above fails.
+    if [ "$C_RC" -ne 75 ]; then
+        _dump_captured_stderr "Section C task run with held slot (rc=${C_RC})" "$C_ERR"
+    fi
     assert "stderr shows exit-75 propagated THROUGH verify.sh (verify.sh: FAILED (exit 75): ...)" \
         grep -qE 'verify\.sh: FAILED \(exit 75\): test-run semaphore acquire' "$C_ERR"
 else
@@ -1179,6 +1232,11 @@ if [ "$_TS_READY" = "1" ]; then
     run_unlimited_wait_with_slot_held
     assert "F1: unlimited-wait verify.sh exits 0 when slot eventually freed (got ${F_RC})" \
         test "$F_RC" -eq 0
+    # Mode-4 observability (task 5144): surface the nested run's captured
+    # stderr when the exit-code assertion above fails.
+    if [ "$F_RC" -ne 0 ]; then
+        _dump_captured_stderr "Section F1 unlimited-wait run (rc=${F_RC})" "$F_ERR"
+    fi
     assert_marker "F1: F_ERR captured the CLOCK_STOP marker (reason=test_slot_starvation)" \
         "$F_ERR" '@@REIFY_CLOCK_STOP@@ reason=test_slot_starvation'
     assert_marker "F1: F_ERR captured the CLOCK_HEARTBEAT marker" \
@@ -1193,14 +1251,41 @@ fi
 # F2: print-plan ACQUIRE annotation must reference the clock-stop region.
 # Captures the ACQUIRE # comment line from --print-plan and asserts it contains
 # "REIFY_CLOCK", "clock-stop", or "dark_factory:1916".
-# RED today: the current annotation does not mention the clock-stop seam.
-F2_PLAN="$(bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan 2>/dev/null)"
-F2_ACQ_LINE="$(printf '%s\n' "$F2_PLAN" | grep 'test-run semaphore.*ACQUIRE' | head -1)"
-echo "  [F2] ACQUIRE annotation: ${F2_ACQ_LINE}" >&2
-assert "F2: ACQUIRE annotation is a # comment (not a bare timeout/exec command)" \
-    bash -c 'printf "%s\n" "$1" | grep -q "^#"' _ "$F2_ACQ_LINE"
-assert "F2: ACQUIRE annotation references clock-stop region (REIFY_CLOCK / clock-stop / dark_factory:1916)" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "REIFY_CLOCK|clock-stop|dark_factory:1916"' _ "$F2_ACQ_LINE"
+#
+# Mode-4 fix (task 5144, 5111 "silent FAIL"): the original bare
+# `F2_PLAN="$(bash ... --print-plan 2>/dev/null)"` assignment had no `|| ...`
+# fallback — unlike every other nested-run capture in this file (RC1/RC2,
+# MERGE_RC, C_RC, F_RC all use the `|| _rc=$?` idiom). Under concurrent load a
+# nested print-plan can transiently return non-zero; with no `||` to
+# neutralize it, `set -e` aborted the WHOLE suite right there, and
+# `2>/dev/null` erased the reason — a FAIL with no assert line and no
+# evidence. _run_capturing (the same helper backing the step-7
+# _dump_captured_stderr unit tests) makes the capture set-e-safe; on
+# non-zero rc or an empty plan this now FAILs loudly via a single guarded
+# assert and dumps the captured output via _dump_captured_stderr instead of
+# dying silently. (verify.sh's real print-plan path writes only to stdout on
+# the success path — see the nextest-availability probe's stderr being
+# reserved for its own failure branch — so merging stdout+stderr here does
+# not corrupt F2_PLAN on the happy path.)
+_F2_TMPDIR="$(mktemp -d)"
+_TMPDIRS+=("$_F2_TMPDIR")
+F2_ERR="$_F2_TMPDIR/f2_capture.txt"
+_F2_RC=0
+_run_capturing "$F2_ERR" bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan || _F2_RC=$?
+F2_PLAN="$(cat "$F2_ERR" 2>/dev/null || true)"
+
+if [ "$_F2_RC" -eq 0 ] && [ -n "$F2_PLAN" ]; then
+    F2_ACQ_LINE="$(printf '%s\n' "$F2_PLAN" | grep 'test-run semaphore.*ACQUIRE' | head -1)"
+    echo "  [F2] ACQUIRE annotation: ${F2_ACQ_LINE}" >&2
+    assert "F2: ACQUIRE annotation is a # comment (not a bare timeout/exec command)" \
+        bash -c 'printf "%s\n" "$1" | grep -q "^#"' _ "$F2_ACQ_LINE"
+    assert "F2: ACQUIRE annotation references clock-stop region (REIFY_CLOCK / clock-stop / dark_factory:1916)" \
+        bash -c 'printf "%s\n" "$1" | grep -qE "REIFY_CLOCK|clock-stop|dark_factory:1916"' _ "$F2_ACQ_LINE"
+else
+    assert "F2: print-plan capture succeeded (rc 0, non-empty plan) — got rc=${_F2_RC} (5111 silent-FAIL guard; see dumped output below)" \
+        false
+    _dump_captured_stderr "F2 print-plan" "$F2_ERR"
+fi
 
 # run_hermetic_compile_gate_capture
 # Drives verify.sh compile-gate (execute-only entry) under apply_hermetic_env and
