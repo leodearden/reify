@@ -762,6 +762,15 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             // `option_recovery` module (INV-1). `is_combinator` deliberately
             // omits `map_err`, so it always falls through to this gate.
             // See `eval_map_err` for the full semantics.
+            //
+            // Reserved-name intercept: same caveat as `map_or` above — the bare
+            // `name == "map_err" && arity == 2` gate makes `map_err/2`
+            // effectively a reserved stdlib name, so a user fn of the same
+            // name+arity is shadowed by this intercept and never reaches
+            // `eval_user_function_call`. Acceptable under the prelude/stdlib
+            // trust model; if call-binding resolution to `std.result` is ever
+            // threaded into eval, gate on that resolved binding here instead
+            // of the bare name.
             if function_name == "map_err" && args.len() == 2 {
                 return eval_map_err(args, ctx);
             }
