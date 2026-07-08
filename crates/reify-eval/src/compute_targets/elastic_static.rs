@@ -9255,6 +9255,33 @@ mod tests {
         );
     }
 
+    /// Amendment (task #5081 review, suggestion 2): `extract_material` must
+    /// route an absent `youngs_modulus` field to
+    /// `Err(FeaValueShapeError::MissingField { .. })` via the reused
+    /// `scalar_si_field` helper, rather than silently falling through.
+    /// `scalar_si_field`/`real_field` already have their own missing-field
+    /// tests; this pins that `extract_material` propagates the delegation
+    /// unchanged, directly locking the case noted by the review as only
+    /// transitively covered.
+    #[test]
+    fn extract_material_rejects_missing_youngs_modulus() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        let material = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_name: "IsotropicMaterial".to_string(),
+            type_id: StructureTypeId(u32::MAX),
+            version: 1,
+            fields: PersistentMap::<String, Value>::new(),
+        }));
+
+        let res = extract_material(&material);
+        assert!(
+            matches!(res, Err(FeaValueShapeError::MissingField { .. })),
+            "expected Err(MissingField) for an absent youngs_modulus field, got: {:?}",
+            res
+        );
+    }
+
     /// step-4: `extract_material` must reject a present-but-wrong-typed
     /// `poisson_ratio` field with `Err(FeaValueShapeError::ExpectedReal {
     /// .. })`, routed through the reused `real_field` helper. `youngs_modulus`
@@ -9268,7 +9295,7 @@ mod tests {
                 "youngs_modulus".to_string(),
                 Value::Scalar {
                     si_value: 2.0e9,
-                    dimension: DimensionVector::DIMENSIONLESS,
+                    dimension: DimensionVector::PRESSURE,
                 },
             ),
             (
@@ -9309,7 +9336,7 @@ mod tests {
                 "youngs_modulus".to_string(),
                 Value::Scalar {
                     si_value: 2.0e9,
-                    dimension: DimensionVector::DIMENSIONLESS,
+                    dimension: DimensionVector::PRESSURE,
                 },
             ),
             ("poisson_ratio".to_string(), Value::Real(0.3)),
