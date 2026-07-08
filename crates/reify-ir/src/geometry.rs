@@ -2674,10 +2674,52 @@ impl Mesh {
     /// real rustdoc naming each obligation lives on
     /// [`GeometryKernel::tessellate`] and [`GeometryKernel::ingest_mesh`].
     ///
-    /// `tol` is currently unused (stub — obligation checks land
-    /// incrementally); it will become the [`MeshInvariant::NonDegenerate`]
-    /// twice-area epsilon.
+    /// `tol` is currently unused by the checks implemented so far (obligation
+    /// checks land incrementally); it will become the
+    /// [`MeshInvariant::NonDegenerate`] twice-area epsilon.
     pub fn validate(&self, _tol: f64) -> Result<ValidatedMesh, MeshContractViolation> {
+        // Obligation 1 — Finite: every vertex coordinate and (if present)
+        // normal component must be finite (no NaN/±Infinity). Runs before
+        // every other check since a non-finite coordinate poisons all
+        // downstream geometric tests (bounds, area, winding).
+        let n = self.vertices.len() / 3;
+        let mut nan_verts = 0usize;
+        let mut first_witness: Option<(u32, [f32; 3])> = None;
+        for i in 0..n {
+            let pos = [
+                self.vertices[i * 3],
+                self.vertices[i * 3 + 1],
+                self.vertices[i * 3 + 2],
+            ];
+            let pos_finite = pos.iter().all(|c| c.is_finite());
+            let normal = self.normals.as_ref().and_then(|normals| {
+                let base = i * 3;
+                (base + 3 <= normals.len())
+                    .then(|| [normals[base], normals[base + 1], normals[base + 2]])
+            });
+            let normal_finite = normal.is_none_or(|nv| nv.iter().all(|c| c.is_finite()));
+            if !pos_finite || !normal_finite {
+                nan_verts += 1;
+                if first_witness.is_none() {
+                    // Report whichever of position/normal actually carries
+                    // the non-finite value, so the witness coordinate is
+                    // diagnostic rather than a finite decoy.
+                    let coord = if !pos_finite { pos } else { normal.unwrap() };
+                    first_witness = Some((i as u32, coord));
+                }
+            }
+        }
+        if let Some((index, coord)) = first_witness {
+            return Err(MeshContractViolation {
+                invariant: MeshInvariant::Finite,
+                counts: MeshViolationCounts {
+                    nan_verts,
+                    ..Default::default()
+                },
+                witness: MeshWitness::Vertex { index, coord },
+            });
+        }
+
         Ok(ValidatedMesh(self.clone()))
     }
 }
