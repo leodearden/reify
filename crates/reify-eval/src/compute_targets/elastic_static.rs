@@ -478,9 +478,9 @@ pub fn solve_elastic_static_trampoline(
     let model = classify_material(&value_inputs[0]);
 
     // ── (2) Extract geometry scalars (SI: metres) ─────────────────────────────
-    let length = extract_scalar_si(&value_inputs[1]).unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
-    let width = extract_scalar_si(&value_inputs[2]).unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
-    let height = extract_scalar_si(&value_inputs[3]).unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
+    let length = extract_scalar_si(&value_inputs[1]).fea_shim();
+    let width = extract_scalar_si(&value_inputs[2]).fea_shim();
+    let height = extract_scalar_si(&value_inputs[3]).fea_shim();
 
     // ── (3) Extract loads from value_inputs[4] (List of StructureInstances) ──
     //
@@ -3381,15 +3381,15 @@ fn classify_material(val: &Value) -> MaterialModel {
 
     match data.type_name.as_str() {
         "OrthotropicMaterial" => {
-            let e1 = scalar_si_field(data, "e1").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
-            let e2 = scalar_si_field(data, "e2").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
-            let e3 = scalar_si_field(data, "e3").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
-            let g12 = scalar_si_field(data, "g12").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
-            let g13 = scalar_si_field(data, "g13").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
-            let g23 = scalar_si_field(data, "g23").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
-            let nu12 = real_field(data, "nu12").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
-            let nu13 = real_field(data, "nu13").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
-            let nu23 = real_field(data, "nu23").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
+            let e1 = scalar_si_field(data, "e1").fea_shim();
+            let e2 = scalar_si_field(data, "e2").fea_shim();
+            let e3 = scalar_si_field(data, "e3").fea_shim();
+            let g12 = scalar_si_field(data, "g12").fea_shim();
+            let g13 = scalar_si_field(data, "g13").fea_shim();
+            let g23 = scalar_si_field(data, "g23").fea_shim();
+            let nu12 = real_field(data, "nu12").fea_shim();
+            let nu13 = real_field(data, "nu13").fea_shim();
+            let nu23 = real_field(data, "nu23").fea_shim();
             let law = OrthotropicMaterial {
                 e1,
                 e2,
@@ -3405,11 +3405,11 @@ fn classify_material(val: &Value) -> MaterialModel {
             MaterialModel::Anisotropic(aniso)
         }
         "TransverseIsotropicMaterial" => {
-            let e_in_plane = scalar_si_field(data, "e_in_plane").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
-            let e_axial = scalar_si_field(data, "e_axial").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
-            let nu_in_plane = real_field(data, "nu_in_plane").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
-            let nu_axial = real_field(data, "nu_axial").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
-            let g_axial = scalar_si_field(data, "g_axial").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
+            let e_in_plane = scalar_si_field(data, "e_in_plane").fea_shim();
+            let e_axial = scalar_si_field(data, "e_axial").fea_shim();
+            let nu_in_plane = real_field(data, "nu_in_plane").fea_shim();
+            let nu_axial = real_field(data, "nu_axial").fea_shim();
+            let g_axial = scalar_si_field(data, "g_axial").fea_shim();
             let law = TransverseIsotropicMaterial {
                 e_in_plane,
                 e_axial,
@@ -3460,8 +3460,8 @@ fn classify_material_as_printed_zones(lambda: &Value) -> MaterialModel {
         );
     }
 
-    let aabb_min = extract_point3_si(&list[0]).unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
-    let aabb_max = extract_point3_si(&list[1]).unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
+    let aabb_min = extract_point3_si(&list[0]).fea_shim();
+    let aabb_max = extract_point3_si(&list[1]).fea_shim();
     let params   = extract_zone_process_params(&list[2]);
     let cos_threshold = match &list[3] {
         Value::Real(r) => *r,
@@ -3498,9 +3498,10 @@ fn classify_material_as_printed_zones(lambda: &Value) -> MaterialModel {
 /// from "panic on malformed `Value`" to `Result<_, FeaValueShapeError>`. Task
 /// D2 (this task) only Result-ifies the leaf extractors (`extract_scalar_si`,
 /// `scalar_si_field`, `real_field`, `extract_point3_si`, `extract_vec3_si`);
-/// every call site still bridges with
-/// `.unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"))`, so
-/// external behavior is unchanged until D9 removes the shims and reports the
+/// every call site still bridges with the `FeaShimExt::fea_shim` extension
+/// method (below), which panics with `"solve_elastic_static_trampoline:
+/// {e}"` — so external behavior is unchanged until D9 replaces every call
+/// site with real `Result` propagation, deletes `fea_shim`, and reports the
 /// first error as a diagnostic naming the offending arg.
 #[allow(dead_code)] // ExpectedStructureInstance is constructed by D3/D5/D7, not D2
 #[derive(Debug, Clone, PartialEq)]
@@ -3539,6 +3540,27 @@ impl std::fmt::Display for FeaValueShapeError {
                 write!(f, "missing field {field:?} for {context}")
             }
         }
+    }
+}
+
+/// Amendment (task #5080 review round 3, suggestion 1): bridging-shim
+/// extension trait for the transitional Result-ified extractors above.
+///
+/// Every one of D2's ~36 call sites needs the exact same
+/// `.unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"))` to
+/// preserve today's panic-on-malformed-`Value` behavior (PRD
+/// compute-fea-hardening D2). Repeating that literal at each call site made
+/// the eventual D9 cleanup error-prone — a single site missed during the
+/// sweep would silently keep panicking instead of propagating `Result` — and
+/// bloated the diff. Centralizing it here gives D9 one definition to delete
+/// and one unambiguous grep target (`fea_shim`) for the migration boundary.
+trait FeaShimExt<T> {
+    fn fea_shim(self) -> T;
+}
+
+impl<T> FeaShimExt<T> for Result<T, FeaValueShapeError> {
+    fn fea_shim(self) -> T {
+        self.unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"))
     }
 }
 
@@ -3693,15 +3715,15 @@ fn anisotropic_material_from_value(val: &Value) -> AnisotropicMaterial {
         let x = extract_vec3_si(frame_data.fields.get("x_axis").unwrap_or_else(|| {
             panic!("solve_elastic_static_trampoline: MaterialFrame missing 'x_axis'")
         }))
-        .unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
+        .fea_shim();
         let y = extract_vec3_si(frame_data.fields.get("y_axis").unwrap_or_else(|| {
             panic!("solve_elastic_static_trampoline: MaterialFrame missing 'y_axis'")
         }))
-        .unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
+        .fea_shim();
         let z = extract_vec3_si(frame_data.fields.get("z_axis").unwrap_or_else(|| {
             panic!("solve_elastic_static_trampoline: MaterialFrame missing 'z_axis'")
         }))
-        .unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"));
+        .fea_shim();
         // Columns = local basis vectors in global: frame[row][col] = global-row-component
         // of local-col-axis.  rotate_voigt reads rows as direction cosines of global
         // axes in local coords (R[i] = global-i in local), which is the TRANSPOSE of
@@ -3729,25 +3751,25 @@ fn anisotropic_material_from_value(val: &Value) -> AnisotropicMaterial {
     match law_data.type_name.as_str() {
         "OrthotropicMaterial" => {
             let law = OrthotropicMaterial {
-                e1:   scalar_si_field(law_data, "e1").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}")),
-                e2:   scalar_si_field(law_data, "e2").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}")),
-                e3:   scalar_si_field(law_data, "e3").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}")),
-                g12:  scalar_si_field(law_data, "g12").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}")),
-                g13:  scalar_si_field(law_data, "g13").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}")),
-                g23:  scalar_si_field(law_data, "g23").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}")),
-                nu12: real_field(law_data, "nu12").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}")),
-                nu13: real_field(law_data, "nu13").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}")),
-                nu23: real_field(law_data, "nu23").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}")),
+                e1:   scalar_si_field(law_data, "e1").fea_shim(),
+                e2:   scalar_si_field(law_data, "e2").fea_shim(),
+                e3:   scalar_si_field(law_data, "e3").fea_shim(),
+                g12:  scalar_si_field(law_data, "g12").fea_shim(),
+                g13:  scalar_si_field(law_data, "g13").fea_shim(),
+                g23:  scalar_si_field(law_data, "g23").fea_shim(),
+                nu12: real_field(law_data, "nu12").fea_shim(),
+                nu13: real_field(law_data, "nu13").fea_shim(),
+                nu23: real_field(law_data, "nu23").fea_shim(),
             };
             AnisotropicMaterial::from_law(&law, frame)
         }
         "TransverseIsotropicMaterial" => {
             let law = TransverseIsotropicMaterial {
-                e_in_plane:  scalar_si_field(law_data, "e_in_plane").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}")),
-                e_axial:     scalar_si_field(law_data, "e_axial").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}")),
-                nu_in_plane: real_field(law_data, "nu_in_plane").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}")),
-                nu_axial:    real_field(law_data, "nu_axial").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}")),
-                g_axial:     scalar_si_field(law_data, "g_axial").unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}")),
+                e_in_plane:  scalar_si_field(law_data, "e_in_plane").fea_shim(),
+                e_axial:     scalar_si_field(law_data, "e_axial").fea_shim(),
+                nu_in_plane: real_field(law_data, "nu_in_plane").fea_shim(),
+                nu_axial:    real_field(law_data, "nu_axial").fea_shim(),
+                g_axial:     scalar_si_field(law_data, "g_axial").fea_shim(),
             };
             AnisotropicMaterial::from_law(&law, frame)
         }
@@ -8871,9 +8893,8 @@ mod tests {
     // ── task 5080 (PRD compute-fea-hardening D2): Result-ify SI/Real leaf
     // extractors — each RED test feeds a malformed `Value` and asserts `Err`
     // instead of a panic. External behavior is unchanged (call sites still
-    // panic via a
-    // `.unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"))`
-    // bridging shim); only the internal signature becomes `Result`. ───────
+    // panic via the `FeaShimExt::fea_shim` bridging shim); only the internal
+    // signature becomes `Result`. ─────────────────────────────────────────
 
     /// step-1 RED: `extract_scalar_si` must reject a non-Scalar `Value` with
     /// `Err(FeaValueShapeError::ExpectedScalar { .. })` instead of panicking.
@@ -9115,6 +9136,20 @@ mod tests {
     fn extract_point3_si_accepts_point() {
         let scalar = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::DIMENSIONLESS };
         let point = Value::Point(vec![scalar(1.0), scalar(2.0), scalar(3.0)]);
+        assert_eq!(extract_point3_si(&point), Ok([1.0, 2.0, 3.0]));
+    }
+
+    /// Amendment (task #5080 review round 3, suggestion 2): `extract_point3_si`
+    /// (via `extract_scalar_triple`'s `comps.len() < 3` arity guard) only
+    /// requires AT LEAST 3 components, so a `Value::Point` with MORE than 3
+    /// silently uses just the first three — this pins that lenient over-arity
+    /// behavior as an intentional, documented contract rather than an
+    /// untested accident. A future task that tightens the arity to exactly 3
+    /// must update this test deliberately.
+    #[test]
+    fn extract_point3_si_ignores_trailing_components_past_three() {
+        let scalar = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::DIMENSIONLESS };
+        let point = Value::Point(vec![scalar(1.0), scalar(2.0), scalar(3.0), scalar(4.0)]);
         assert_eq!(extract_point3_si(&point), Ok([1.0, 2.0, 3.0]));
     }
 
