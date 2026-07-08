@@ -277,6 +277,23 @@ pub fn compose_morph(
     // quality_check runs here. Kept so the seam stays total (never panics)
     // if that upstream ordering ever changes.
     //
+    // Reachability cross-reference (this arm has no behavior test — see
+    // below for why): its unreachability depends on BOTH sibling entry
+    // guards continuing to reject non-tet meshes before `morphed` is ever
+    // produced —
+    //   - laplacian.rs: `let Some(order) = old_mesh.element_order() else { .. }`
+    //     at the top of `laplacian_smooth`.
+    //   - elasticity.rs: the identical `element_order()` guard at the top of
+    //     `elasticity_morph`.
+    // `element_order()` (reify-ir geometry.rs) is `None` for
+    // `VolumeConnectivity::Hex`/`Wedge`, so either guard trips first and
+    // `compose_morph` returns before `morphed` (and thus this quality_check
+    // call) is ever reached. If either guard is loosened to admit hex/wedge,
+    // this early return becomes reachable through compose_morph and needs
+    // its own behavior test at that point — no test can construct that path
+    // today because it would require an already-rejecting upstream solver to
+    // instead hand quality_check a hex/wedge `morphed` mesh.
+    //
     // Deliberately records no diagnostic counter here, unlike the sibling
     // Ineligible / Panicked / HardFail / SoftFail arms: there is no
     // `MorphOutcome` bucket for this case, and adding one would grow the
