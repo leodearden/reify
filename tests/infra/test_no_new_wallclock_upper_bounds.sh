@@ -310,7 +310,7 @@ assert "2g: bare _S suffix variable (wait_S -le 30) flagged as wall-clock upper 
     test "$_s2g_rc" -eq 1
 
 # ---------------------------------------------------------------------------
-# 2h/2i/2j (task 5148, DEFECT 2A): multi-line evasion — an `assert "..." \`
+# 2h/2i/2j/2k/2l (task 5148, DEFECT 2A): multi-line evasion — an `assert "..." \`
 # that opens a multi-line single-quoted `bash -c '...'` block (the
 # test_occt_flock_gate.sh / test_proc_reaper.sh idiom).  The prior awk join
 # only continued across a trailing `\`; a line ending in an OPEN single quote
@@ -374,6 +374,78 @@ _s2j_rc=0
 _detect_wallclock_upper_bound "$_s2j_tmpdir" 2>/dev/null || _s2j_rc=$?
 assert "2j: an unrelated later multi-line bash -c block (no assert keyword) does not spuriously join with an earlier already-terminated assert statement (returns 0)" \
     test "$_s2j_rc" -eq 0
+
+# ---------------------------------------------------------------------------
+# 2k (task 5148, DEFECT 2B): FAITHFUL positive — replicates
+# tests/infra/test_proc_reaper.sh Part 8 Test 8a's real evasion shape: an
+# `assert "..." \` line joins (via its OWN trailing backslash) an
+# `env VAR=x bash -c '` line that itself ends in an OPEN single quote (no
+# trailing backslash); deeper inside that still-open quote sit INTERNAL
+# backslash-continuation lines (mirroring Test 8a's `PATH=... \` /
+# `REIFY_REAPER_PS_TIMEOUT=2 \` env-prefix lines), then a bare
+# `_elapsed=$(( ... ))` computation, then the `[ "$_elapsed" -le <int> ]`
+# comparison several physical lines further in, then the closing `'`.
+# Under the pre-step-3 backslash-only join, `assert` (joined only with the
+# `bash -c '` line via its own trailing backslash) and the upper-bound
+# comparison (buried past internally-joined-but-separately-terminated lines)
+# never land on the same logical line -> NOT flagged.
+# RED today (joins 2h): must be flagged (returns 1) once the join becomes
+# quote-aware (step 3).
+# ---------------------------------------------------------------------------
+_s2k_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2k_tmpdir")
+
+printf '#!/usr/bin/env bash\n' > "$_s2k_tmpdir/fixture.sh"
+printf '%s "reap-orphans check" \\\n' "$_ASS_WORD" >> "$_s2k_tmpdir/fixture.sh"
+printf "    env FOO=x bash -c '\n" >> "$_s2k_tmpdir/fixture.sh"
+printf '        PATH=x \\\n' >> "$_s2k_tmpdir/fixture.sh"
+printf '        VAR=2 \\\n' >> "$_s2k_tmpdir/fixture.sh"
+printf '            true\n' >> "$_s2k_tmpdir/fixture.sh"
+printf '        _%s=$(( 1 ))\n' "$_WC_LEX_PART" >> "$_s2k_tmpdir/fixture.sh"
+printf '        [ "$_%s" %s 15 ]\n' "$_WC_LEX_PART" "$_UB_OP" >> "$_s2k_tmpdir/fixture.sh"
+printf "    '\n" >> "$_s2k_tmpdir/fixture.sh"
+
+_s2k_rc=0
+_detect_wallclock_upper_bound "$_s2k_tmpdir" 2>/dev/null || _s2k_rc=$?
+assert "2k: faithful multi-line Test-8a-shape (internal backslash-continuations inside an open bash -c quote) is flagged (returns 1)" \
+    test "$_s2k_rc" -eq 1
+
+# ---------------------------------------------------------------------------
+# 2l (task 5148, DEFECT 2B): PRECISION-NEGATIVE — replicates
+# tests/infra/test_occt_flock_gate.sh's `"$WRAPPER" bash -c '...'`
+# barrier-loop shape: a multi-line open single-quoted block containing
+# `'"$VAR"'`-style interpolation (a quote-close/quote-reopen pair on the SAME
+# physical line) around a NON-assert-wired `while ... -le 100` loop keyed on
+# a non-lexeme var (`_w`), immediately followed by a SEPARATE,
+# already-terminated `assert` statement whose description carries a
+# wall-clock lexeme but compares with `-eq` (not an upper bound) so it is
+# benign on its own. A join that mis-tracks the interpolated quote parity (or
+# fails to reset cleanly at the true close of the quoted block) could weld
+# the barrier loop's upper-bound operator onto the trailing assert's lexeme,
+# producing a FALSE positive across two unrelated statements.
+# Must stay unflagged (returns 0) both before and after the step-3 hardening.
+# ---------------------------------------------------------------------------
+_s2l_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2l_tmpdir")
+
+# Assemble the two interpolated-quote lines separately (readability); each
+# embeds a literal `'"$_BARRIER2L"'` pair via the standard '"'"' idiom so the
+# WRITTEN fixture reproduces the real close-quote/dquote-var/reopen-quote
+# barrier pattern, while this guard source line itself carries no literal
+# assert+upper-bound+lexeme combination (self-match safety).
+_s2l_line_b='    touch "'"'"'"$_BARRIER2L"'"'"'/ready-$$"'
+_s2l_line_c='    _w=0; while [ ! -f "'"'"'"$_BARRIER2L"'"'"'/go" ] && [ "$_w" '"$_UB_OP"' 100 ]; do'
+
+printf '#!/usr/bin/env bash\n' > "$_s2l_tmpdir/fixture.sh"
+printf '"$WRAPPER" bash -c '"'"'\n' >> "$_s2l_tmpdir/fixture.sh"
+printf '%s\n' "$_s2l_line_b" >> "$_s2l_tmpdir/fixture.sh"
+printf '%s\n' "$_s2l_line_c" >> "$_s2l_tmpdir/fixture.sh"
+printf '        sleep 0.2; _w=$(( _w + 1 )); done\n' >> "$_s2l_tmpdir/fixture.sh"
+printf "'\n" >> "$_s2l_tmpdir/fixture.sh"
+printf '%s "%s check done" test 1 -eq 1\n' "$_ASS_WORD" "$_WC_LEX_PART" >> "$_s2l_tmpdir/fixture.sh"
+
+_s2l_rc=0
+_detect_wallclock_upper_bound "$_s2l_tmpdir" 2>/dev/null || _s2l_rc=$?
+assert "2l: quote-interpolated barrier loop with a non-lexeme non-assert-wired upper bound, followed by a separate lexeme-bearing assert, does not spuriously join (returns 0)" \
+    test "$_s2l_rc" -eq 0
 
 # ===========================================================================
 # Section 3: LIVE guard — scan the real tests/infra for un-escaped
