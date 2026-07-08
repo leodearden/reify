@@ -2223,10 +2223,14 @@ structure S {
     /// constraints, with at least one `Indeterminate` (no false pass on any
     /// individual constraint, and not silently missing or all-satisfied);
     /// (c) `Indeterminate` accounts for *every* entry in `constraint_results`
-    /// — this closes the loop against any future `Satisfaction` variant
-    /// beyond `{Violated, Satisfied, Indeterminate}` silently absorbing a
-    /// false pass that the explicit counts in (b) wouldn't individually
-    /// catch.
+    /// — a runtime belt-and-suspenders check against any future
+    /// `Satisfaction` variant beyond `{Violated, Satisfied, Indeterminate}`
+    /// silently absorbing a false pass that the explicit counts in (b)
+    /// wouldn't individually catch. The primary guard against that same
+    /// drift is the exhaustive `match` (no wildcard arm) used to tally the
+    /// counts below, which fails to *compile* the moment `Satisfaction`
+    /// grows a fourth variant, rather than relying on this fixture
+    /// happening to exercise it.
     ///
     /// Note on the stateless (`compute_diagnostics`) call site: its
     /// `check_result` argument is produced by an independently constructed
@@ -2255,21 +2259,22 @@ structure S {
              FEA constraint; got: {false_violations:#?}"
         );
 
-        let violated_count = check_result
-            .constraint_results
-            .iter()
-            .filter(|e| e.satisfaction == Satisfaction::Violated)
-            .count();
-        let satisfied_count = check_result
-            .constraint_results
-            .iter()
-            .filter(|e| e.satisfaction == Satisfaction::Satisfied)
-            .count();
-        let indeterminate_count = check_result
-            .constraint_results
-            .iter()
-            .filter(|e| e.satisfaction == Satisfaction::Indeterminate)
-            .count();
+        // Tally via an exhaustive `match` (no wildcard arm) rather than three
+        // independent `== Satisfaction::X` filters: if `Satisfaction` ever
+        // grows a variant beyond `{Satisfied, Violated, Indeterminate}`, this
+        // fails to COMPILE. That's a stronger guard than the runtime
+        // `indeterminate_count == constraint_results.len()` check below,
+        // which only catches a new variant if this fixture happens to
+        // exercise it.
+        let (violated_count, satisfied_count, indeterminate_count) =
+            check_result.constraint_results.iter().fold(
+                (0usize, 0usize, 0usize),
+                |(violated, satisfied, indeterminate), e| match e.satisfaction {
+                    Satisfaction::Violated => (violated + 1, satisfied, indeterminate),
+                    Satisfaction::Satisfied => (violated, satisfied + 1, indeterminate),
+                    Satisfaction::Indeterminate => (violated, satisfied, indeterminate + 1),
+                },
+            );
 
         assert_eq!(
             violated_count, 0,
