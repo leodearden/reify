@@ -480,6 +480,66 @@ assert "_ts_outputs_healthy: missing node-types.json -> rc 1 (got ${_TSH_RC3})" 
     test "$_TSH_RC3" -eq 1
 
 # ===========================================================================
+# ensure_tree_sitter_ready unit tests (Part D helper, task 5144 F1)
+# ===========================================================================
+# Exercises ensure_tree_sitter_ready's readiness/regenerate/re-check branches
+# via _make_fake_ts_dir fixtures + an injected fake regenerator (test seam:
+# `ensure_tree_sitter_ready <ts_dir> <regenerator...>`) so the unit tests
+# NEVER touch the real (gitignored) tree-sitter-reify/src/ or invoke the
+# real tree-sitter CLI. The suite-start call (below Part D, before Section A)
+# uses the real defaults (no args).
+echo ""
+echo "--- ensure_tree_sitter_ready unit tests (Part D helper, task 5144 F1) ---"
+
+_ETSR_DIR="$(mktemp -d)"
+_TMPDIRS+=("$_ETSR_DIR")
+
+# Case 1: already-healthy dir -> must NOT invoke the regenerator.
+_ETSR_CALLED_1="$_ETSR_DIR/called-1"
+_make_fake_ts_dir "$_ETSR_DIR/case1" healthy
+_fake_regen_sentinel_1() { echo called >> "$_ETSR_CALLED_1"; return 0; }
+_TS_READY=""
+_ETSR_RC1=0
+ensure_tree_sitter_ready "$_ETSR_DIR/case1" _fake_regen_sentinel_1 2>/dev/null || _ETSR_RC1=$?
+_ETSR_READY1="$_TS_READY"
+
+assert "ensure_tree_sitter_ready: already-healthy dir -> _TS_READY=1 (got '${_ETSR_READY1}')" \
+    test "$_ETSR_READY1" = "1"
+assert "ensure_tree_sitter_ready: already-healthy dir -> rc 0 (got ${_ETSR_RC1})" \
+    test "$_ETSR_RC1" -eq 0
+assert "ensure_tree_sitter_ready: already-healthy dir -> regenerator NOT invoked" \
+    bash -c '[ ! -s "$1" ]' _ "$_ETSR_CALLED_1"
+
+# Case 2: unhealthy dir + a fake regenerator that HEALS it.
+_make_fake_ts_dir "$_ETSR_DIR/case2" zero_byte_parser
+_fake_regen_heals() { _make_fake_ts_dir "$_ETSR_DIR/case2" healthy; }
+_TS_READY=""
+_ETSR_RC2=0
+ensure_tree_sitter_ready "$_ETSR_DIR/case2" _fake_regen_heals 2>/dev/null || _ETSR_RC2=$?
+_ETSR_READY2="$_TS_READY"
+
+assert "ensure_tree_sitter_ready: unhealthy dir + healing regen -> _TS_READY=1 (got '${_ETSR_READY2}')" \
+    test "$_ETSR_READY2" = "1"
+assert "ensure_tree_sitter_ready: unhealthy dir + healing regen -> rc 0 (got ${_ETSR_RC2})" \
+    test "$_ETSR_RC2" -eq 0
+
+# Case 3: unhealthy dir + a fake regenerator that FAILS to heal.
+_make_fake_ts_dir "$_ETSR_DIR/case3" missing_output
+_fake_regen_noop() { return 0; }
+_TS_READY=""
+_ETSR_ERR3="$_ETSR_DIR/err3.txt"
+_ETSR_RC3=0
+_run_capturing "$_ETSR_ERR3" ensure_tree_sitter_ready "$_ETSR_DIR/case3" _fake_regen_noop || _ETSR_RC3=$?
+_ETSR_READY3="$_TS_READY"
+
+assert "ensure_tree_sitter_ready: unhealthy dir + non-healing regen -> _TS_READY=0 (got '${_ETSR_READY3}')" \
+    test "$_ETSR_READY3" = "0"
+assert "ensure_tree_sitter_ready: unhealthy dir + non-healing regen -> rc non-zero (got ${_ETSR_RC3})" \
+    test "$_ETSR_RC3" -ne 0
+assert "ensure_tree_sitter_ready: non-healing case emits a non-empty diagnostic naming tree-sitter" \
+    bash -c '[ -s "$1" ] && grep -qi "tree-sitter" "$1"' _ "$_ETSR_ERR3"
+
+# ===========================================================================
 # Section A: held-slot serialization (execute mode)
 # ===========================================================================
 # Two concurrent DF_VERIFY_ROLE=task runs must HOLD-serialize at N=1 — the slot
