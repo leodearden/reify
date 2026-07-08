@@ -183,6 +183,17 @@ pub(crate) fn commit_cell_result(
         payload: Some(EventPayload::Custom(trace.as_str().to_string())),
     });
 
+    // Every commit needs 3 independently-owned copies of `value` (values leg,
+    // snapshot leg, and the returned `CommitOutcome`); `CacheLeg::Record`
+    // needs a 4th (the cache leg). `Value` is not `Copy` and can hold large
+    // payloads, so each extra owner costs a real clone — the two clones below
+    // cover values+snapshot, the cache leg's clone (Record arm only, below)
+    // is the 3rd, and the original `value` is reused via a move into
+    // `CommitOutcome` at the end of this function rather than a 4th clone.
+    // That is already the minimum possible for however many legs actually
+    // write; reordering cannot reduce it further (some owner must always be
+    // the one that "spends" the original via move, and one is all that's
+    // available).
     values.insert(node.clone(), value.clone());
     snapshot_values.insert(node, (value.clone(), det));
 
@@ -203,6 +214,17 @@ pub(crate) fn commit_cell_result(
         timestamp: Instant::now(),
         node_id,
         kind: EventKind::Completed {
+            // `EvalOutcome` has only `Changed`/`Unchanged` — both imply a
+            // cache write happened, so neither is an honest value when
+            // `cache_leg` was `CacheLeg::Skip(_)` (no `record_evaluation`
+            // call, no cache entry written). On that path this `outcome` is
+            // an UNSPECIFIED PLACEHOLDER, present only so the `Completed`
+            // event can be constructed; it must NOT be read as a claim that
+            // anything changed or was cached. The authoritative "nothing was
+            // cached" signal is `skip_reason.is_some()` (equivalently
+            // `CommitOutcome::cache_outcome == None`) — a future §2.6
+            // divergence audit must branch on that, not on this field, for
+            // any commit where `skip_reason.is_some()`.
             outcome: cache_outcome.unwrap_or(EvalOutcome::Changed),
         },
         version,
@@ -338,6 +360,130 @@ mod tests {
         assert_eq!(outcome.cache_outcome, Some(EvalOutcome::Changed));
         assert_eq!(outcome.skip_reason, None);
         assert_eq!(outcome.trace_source, TraceSource::ColdEval);
+    }
+
+    /// Extends Record-path coverage to `DeterminacyRule::Undetermined`
+    /// (rejected-override / solver-owned Auto cells awaiting a solve): the
+    /// end-to-end commit must land `Undetermined` in BOTH the snapshot leg's
+    /// tuple AND the cache leg's `CachedResult::Value`, not merely at the
+    /// `DeterminacyRule::resolve` unit level. The value itself (`Bool(true)`)
+    /// is not `Value::Undef`, proving once more that the RULE — not the
+    /// value's shape — drives the recorded determinacy.
+    #[test]
+    fn commit_record_with_undetermined_rule_lands_undetermined_in_snapshot_and_cache() {
+        let mut values = ValueMap::new();
+        let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::new();
+        let mut cache = CacheStore::new();
+        let mut journal = EventJournal::new();
+        let node = ValueCellId::new("Body", "w");
+
+        let outcome = commit_cell_result(
+            CommitLegs {
+                values: &mut values,
+                snapshot_values: &mut snapshot_values,
+                cache: &mut cache,
+                journal: &mut journal,
+            },
+            node.clone(),
+            Value::Bool(true),
+            DeterminacyRule::Undetermined,
+            TraceSource::GuardedGroup,
+            DependencyTrace::default(),
+            VersionId(1),
+            CacheLeg::Record,
+        );
+
+        // snapshot leg: Undetermined despite a non-Undef value.
+        assert_eq!(
+            snapshot_values.get(&node),
+            Some(&(Value::Bool(true), DeterminacyState::Undetermined))
+        );
+
+        // cache leg: same Undetermined determinacy recorded in CachedResult.
+        let node_id = NodeId::Value(node.clone());
+        let entry = cache
+            .get(&node_id)
+            .expect("CacheLeg::Record must write a cache entry");
+        match &entry.result {
+            CachedResult::Value(v, d) => {
+                assert_eq!(*v, Value::Bool(true));
+                assert_eq!(*d, DeterminacyState::Undetermined);
+            }
+            other => panic!("expected CachedResult::Value, got {other:?}"),
+        }
+
+        assert_eq!(outcome.determinacy, DeterminacyState::Undetermined);
+        assert_eq!(outcome.cache_outcome, Some(EvalOutcome::Changed));
+    }
+
+    /// Pins that `CacheLeg::Record`'s `cache_outcome` forwards whatever
+    /// `CacheStore::record_evaluation` returns — including the early-cutoff
+    /// `Unchanged` signal — not just the cold-start `Changed` case exercised
+    /// by `commit_record_writes_all_four_legs`. A regression that dropped or
+    /// mislabeled the forwarded outcome (e.g. always reporting `Changed`)
+    /// would pass every other test in this module but fail here.
+    #[test]
+    fn commit_record_forwards_unchanged_outcome_on_repeat_commit() {
+        let mut values = ValueMap::new();
+        let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::new();
+        let mut cache = CacheStore::new();
+        let mut journal = EventJournal::new();
+        let node = ValueCellId::new("Body", "w");
+
+        // First commit: cold start -> Changed.
+        let first = commit_cell_result(
+            CommitLegs {
+                values: &mut values,
+                snapshot_values: &mut snapshot_values,
+                cache: &mut cache,
+                journal: &mut journal,
+            },
+            node.clone(),
+            Value::Int(7),
+            DeterminacyRule::DeriveFromValue,
+            TraceSource::ColdEval,
+            DependencyTrace::default(),
+            VersionId(1),
+            CacheLeg::Record,
+        );
+        assert_eq!(first.cache_outcome, Some(EvalOutcome::Changed));
+
+        // Second commit: identical value and determinacy rule -> identical
+        // content hash -> CacheStore's early-cutoff path -> Unchanged.
+        let second = commit_cell_result(
+            CommitLegs {
+                values: &mut values,
+                snapshot_values: &mut snapshot_values,
+                cache: &mut cache,
+                journal: &mut journal,
+            },
+            node.clone(),
+            Value::Int(7),
+            DeterminacyRule::DeriveFromValue,
+            TraceSource::EditReeval,
+            DependencyTrace::default(),
+            VersionId(2),
+            CacheLeg::Record,
+        );
+        assert_eq!(second.cache_outcome, Some(EvalOutcome::Unchanged));
+
+        // The journal's second Completed event for this node reflects the
+        // forwarded Unchanged outcome, not a stale/hardcoded Changed.
+        let node_id = NodeId::Value(node.clone());
+        let events = journal.events_for_node(&node_id);
+        assert_eq!(
+            events.len(),
+            4,
+            "expected Started+Completed per commit (x2), got {events:?}"
+        );
+        match &events[3].kind {
+            EventKind::Completed { outcome } => {
+                assert_eq!(*outcome, EvalOutcome::Unchanged);
+            }
+            other => panic!("expected Completed{{outcome: Unchanged}}, got {other:?}"),
+        }
     }
 
     /// Pins INV-EVAL-1's core Skip assertion: `CacheLeg::Skip` must omit
