@@ -243,6 +243,23 @@ _resolve_nproc() {
     echo "$_n"
 }
 
+# _numeric_or_empty VALUE — echoes VALUE if it is a valid number (the same
+# awk $1+0==$1 guard _read_load1 applies to the loadavg axis), else echoes ""
+# so a non-numeric token is treated as ABSENT rather than flowing into an awk
+# comparison as a STRING (which can spuriously compare true/false depending on
+# its leading character). Applied to AVG10 below so the PSI axis gets the same
+# fail-open guard as LOAD1 — _read_avg10's inline-fallback parser does not
+# validate its `avg10=` token on its own.
+_numeric_or_empty() {
+    local _val="$1" _valid
+    _valid="$(printf '%s' "$_val" | awk '{if ($1+0 == $1 && $1 != "") print "ok"}' 2>/dev/null || true)"
+    if [ "$_valid" = "ok" ]; then
+        echo "$_val"
+    else
+        echo ""
+    fi
+}
+
 # ── measurement ────────────────────────────────────────────────────────────────
 LOAD1="$(_read_load1 "$LOADAVG_PATH")"
 NPROC="$(_resolve_nproc)"
@@ -253,6 +270,7 @@ if [ -n "$LOAD1" ] && [ -n "$NPROC" ]; then
 fi
 
 AVG10="$(_read_avg10 "$PSI_PATH")"
+AVG10="$(_numeric_or_empty "$AVG10")"
 
 # ── decision: FLAGGED iff ratio>=ratio_threshold OR avg10>=avg10_threshold ──────
 # An unavailable axis (empty RATIO/AVG10) never participates — treated as
@@ -302,10 +320,12 @@ printf 'FLEET_LOAD status=%s load1=%s nproc=%s ratio=%s ratio_threshold=%s avg10
 # ── flagged path ───────────────────────────────────────────────────────────────
 # stdout verdict line above is emitted in BOTH cases (it already carries
 # status=/reason=); the marker below is stderr-only and additive, so a
-# consumer reading either channel works standalone.
+# consumer reading either channel works standalone. Uses AVG10_DISPLAY (not
+# the raw AVG10) so an absent PSI axis renders as the same "unavailable"
+# sentinel on both channels instead of an ambiguous empty avg10= field here.
 if [ "$STATUS" = "oversubscribed" ]; then
     printf '@@REIFY_FLEET_OVERSUBSCRIBED@@ ratio=%s load1=%s nproc=%s avg10=%s\n' \
-        "$RATIO" "$LOAD1" "$NPROC" "$AVG10" >&2
+        "$RATIO" "$LOAD1" "$NPROC" "$AVG10_DISPLAY" >&2
     exit 3
 fi
 
