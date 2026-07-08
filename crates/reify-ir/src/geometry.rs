@@ -2828,6 +2828,63 @@ impl Mesh {
             });
         }
 
+        // Obligation 4 — Closed: on the position-welded quotient topology,
+        // every directed edge must have its reverse exactly once (no open
+        // boundary). Position-welding first is essential: OCCT's per-face
+        // tessellation output (`occt_wrapper.cpp:5847`) emits each corner
+        // once per incident face, so the RAW index buffer is never closed —
+        // only the welded quotient is. Lifted from the
+        // closed-orientable-manifold invariant in
+        // `tessellation_winding_integration.rs` (task 4336). Consistent
+        // winding (same-direction duplicate detection) shares this same
+        // directed-edge pass but is added in a later obligation.
+        let (_, welded_indices) = self.weld_positions();
+        let remapped: Vec<u32> = self
+            .indices
+            .iter()
+            .map(|&idx| welded_indices[idx as usize])
+            .collect();
+        let mut edge_count: HashMap<(u32, u32), usize> = HashMap::new();
+        for tri in 0..complete_tris {
+            let base = tri * 3;
+            let a = remapped[base];
+            let b = remapped[base + 1];
+            let c = remapped[base + 2];
+            *edge_count.entry((a, b)).or_insert(0) += 1;
+            *edge_count.entry((b, c)).or_insert(0) += 1;
+            *edge_count.entry((c, a)).or_insert(0) += 1;
+        }
+        let mut open_edges = 0usize;
+        let mut open_witness: Option<(u32, u32)> = None;
+        for tri in 0..complete_tris {
+            let base = tri * 3;
+            let tri_edges = [
+                (remapped[base], remapped[base + 1]),
+                (remapped[base + 1], remapped[base + 2]),
+                (remapped[base + 2], remapped[base]),
+            ];
+            for (u, v) in tri_edges {
+                let count = *edge_count.get(&(u, v)).unwrap_or(&0);
+                let rev = *edge_count.get(&(v, u)).unwrap_or(&0);
+                if count == 1 && rev == 0 {
+                    open_edges += 1;
+                    if open_witness.is_none() {
+                        open_witness = Some((u, v));
+                    }
+                }
+            }
+        }
+        if let Some((u, v)) = open_witness {
+            return Err(MeshContractViolation {
+                invariant: MeshInvariant::Closed,
+                counts: MeshViolationCounts {
+                    open_edges,
+                    ..Default::default()
+                },
+                witness: MeshWitness::Edge { u, v },
+            });
+        }
+
         Ok(ValidatedMesh(self.clone()))
     }
 }
