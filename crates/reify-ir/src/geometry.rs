@@ -10961,4 +10961,42 @@ mod tests {
             other => panic!("expected MeshWitness::Edge naming the offender, got {other:?}"),
         }
     }
+
+    #[test]
+    fn validate_rejects_reversed_winding() {
+        // The valid welded tetra with exactly ONE face's winding reversed:
+        // face (0,2,1) becomes (0,1,2). This makes three directed edges
+        // occur twice in the same direction, while their true reverses
+        // never appear anywhere — tripping both ConsistentWinding
+        // (same-direction duplicate) and Closed (missing reverse). Winding
+        // must be reported with priority over closedness.
+        let mut faces = tetra_faces();
+        faces[0] = [faces[0][0], faces[0][2], faces[0][1]];
+        let positions = tetra_positions();
+        let vertices: Vec<f32> = positions.iter().flat_map(|v| v.iter().copied()).collect();
+        let indices: Vec<u32> = faces.into_iter().flatten().collect();
+        let mesh = Mesh {
+            vertices,
+            indices,
+            normals: None,
+        };
+        let err = mesh
+            .validate(0.0)
+            .expect_err("a mesh with one face's winding reversed must fail the mesh contract");
+        assert_eq!(
+            err.invariant,
+            MeshInvariant::ConsistentWinding,
+            "winding must be reported with priority over closedness when both trip"
+        );
+        assert!(err.counts.reversed_edges > 0);
+        assert!(
+            err.counts.open_edges > 0,
+            "the doubled edge's true reverse is entirely absent, so open_edges must also be \
+             nonzero even though ConsistentWinding is the reported invariant"
+        );
+        match err.witness {
+            MeshWitness::Edge { .. } => {}
+            other => panic!("expected MeshWitness::Edge naming the offender, got {other:?}"),
+        }
+    }
 }
