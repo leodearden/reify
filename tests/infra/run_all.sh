@@ -130,6 +130,24 @@
 #                                      _ra_flaky_ledger_append.
 #   REIFY_RUN_ALL_FLAKY_LEDGER_DISABLE Set to 1 to disable the FLAKY ledger
 #                                      entirely (break-glass; default unset).
+#   REIFY_RUN_ALL_FLAKY_CHRONIC_N      Chronic-offender WARNING threshold
+#                                      (task #5142; default 3). Once a pool
+#                                      member appears in >=N of the last
+#                                      REIFY_RUN_ALL_FLAKY_CHRONIC_M distinct
+#                                      recorded runs in the FLAKY ledger, a
+#                                      loud `WARNING: chronic flaky member
+#                                      ...` line fires on stderr (see
+#                                      _ra_flaky_chronic_check). Pure
+#                                      observability, strictly additive
+#                                      (INV-4): does NOT hard-fail the run --
+#                                      that policy is deliberately deferred
+#                                      to Leo (2026-07-08 flakiness survey).
+#                                      A malformed value fails OPEN to 3.
+#   REIFY_RUN_ALL_FLAKY_CHRONIC_M      Chronic-offender scan window: the
+#                                      number of most-recent DISTINCT
+#                                      recorded run_ids to consider (task
+#                                      #5142; default 20). A malformed value
+#                                      fails OPEN to 20.
 
 set -euo pipefail
 
@@ -342,6 +360,60 @@ _ra_flaky_ledger_append() {
     return 0
 }
 
+# ---------------------------------------------------------------------------
+# _ra_flaky_chronic_check <name>  (task #5142)
+#
+# Scans the durable FLAKY ledger (_RA_FLAKY_LEDGER) and, when <name> appears
+# in >=_ra_chronic_n of the last _ra_chronic_m DISTINCT recorded run_ids,
+# emits a loud `WARNING: chronic flaky member ...` line to STDERR. "Last M
+# runs" = the last M distinct run_ids present in the ledger file, which is
+# append-only in chronological order -- a run with zero flaky members writes
+# no ledger line by design, so M is necessarily measured over recorded/
+# flaky runs only (see design_decisions in the task plan).
+#
+# Pure observability, strictly additive (INV-4): this NEVER touches the
+# exit code or any stdout line -- hard-failing on repeat offenders is a
+# policy explicitly deferred to Leo (2026-07-08 flakiness survey; task
+# #5142). Fails OPEN (silent no-op) when REIFY_RUN_ALL_FLAKY_LEDGER_DISABLE=1,
+# jq is missing, or the ledger file is absent/empty -- a pure-observability
+# subsystem must never break the suite.
+# ---------------------------------------------------------------------------
+_ra_flaky_chronic_check() {
+    local _name="$1"
+    [ "${REIFY_RUN_ALL_FLAKY_LEDGER_DISABLE:-}" = "1" ] && return 0
+    command -v jq >/dev/null 2>&1 || return 0
+    [ -s "$_RA_FLAKY_LEDGER" ] || return 0
+
+    local _count
+    _count="$(jq -r '[.run_id,.test]|@tsv' "$_RA_FLAKY_LEDGER" 2>/dev/null | awk -F'\t' -v name="$_name" -v m="$_ra_chronic_m" '
+        {
+            if (!($1 in seen)) {
+                order[++n] = $1
+                seen[$1] = 1
+            }
+            if ($2 == name) {
+                hit[$1] = 1
+            }
+        }
+        END {
+            start = n - m + 1
+            if (start < 1) start = 1
+            count = 0
+            for (i = start; i <= n; i++) {
+                if (hit[order[i]] == 1) count++
+            }
+            print count
+        }
+    ' 2>/dev/null || true)"
+    case "$_count" in
+        ''|*[!0-9]*) return 0 ;;
+    esac
+    [ "$_count" -ge "$_ra_chronic_n" ] || return 0
+
+    echo "WARNING: chronic flaky member $_name (flaky in $_count of last $_ra_chronic_m recorded runs; N=$_ra_chronic_n) -- run_all.sh serial retry-once is masking it; observability only, not hard-failing (policy deferred, task #5142)" >&2
+    return 0
+}
+
 failures=0
 discovered=0
 failed_names=()
@@ -366,6 +438,24 @@ _H2_LOAD_TOLERANCE_LIB="$SCRIPT_DIR/load_tolerance_lib.sh"
 # under the repo's git-ignored data/verify-logs/ tree (.git/info/exclude),
 # so the default file is never accidentally committed.
 _RA_FLAKY_LEDGER="${REIFY_RUN_ALL_FLAKY_LEDGER:-$_H2_REPO_ROOT/data/verify-logs/flaky-ledger.jsonl}"
+
+# Chronic-offender scan thresholds (task #5142): resolved unconditionally
+# (common to both the pool and legacy-serial paths, mirroring _RA_FLAKY_LEDGER
+# above) since the Summary block that consumes them runs on every path. Pure
+# observability / strictly additive (INV-4), mirroring the
+# REIFY_RUN_ALL_PROGRESS_SECS idiom below: a malformed value fails OPEN to
+# the default rather than exiting -- see _ra_flaky_chronic_check.
+_ra_chronic_n="${REIFY_RUN_ALL_FLAKY_CHRONIC_N:-3}"
+case "$_ra_chronic_n" in
+    ''|*[!0-9]*) _ra_chronic_n=3 ;;
+esac
+[ "$_ra_chronic_n" -ge 1 ] || _ra_chronic_n=3
+
+_ra_chronic_m="${REIFY_RUN_ALL_FLAKY_CHRONIC_M:-20}"
+case "$_ra_chronic_m" in
+    ''|*[!0-9]*) _ra_chronic_m=20 ;;
+esac
+[ "$_ra_chronic_m" -ge 1 ] || _ra_chronic_m=20
 
 _H2_POOL_ACTIVE=1
 if [ "${REIFY_RUN_ALL_POOL_DISABLE:-}" = "1" ]; then
@@ -904,6 +994,13 @@ if [ "${#flaky_names[@]}" -gt 0 ]; then
     # any stdout line above (_ra_flaky_ledger_append is fail-open).
     for _ra_flaky_name in "${flaky_names[@]}"; do
         _ra_flaky_ledger_append "$_ra_flaky_name"
+    done
+    # Chronic-offender scan (task #5142): append-all-THEN-scan-all so the
+    # current run's just-appended lines are included in the window (a member
+    # can cross the threshold on the very run that reports it). Stderr-only,
+    # exit code untouched -- see _ra_flaky_chronic_check.
+    for _ra_flaky_name in "${flaky_names[@]}"; do
+        _ra_flaky_chronic_check "$_ra_flaky_name"
     done
 fi
 
