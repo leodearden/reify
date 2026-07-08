@@ -9,9 +9,15 @@
 //!   metrics breach their configured thresholds: minimum scaled Jacobian,
 //!   fraction of elements below 0.25, or maximum aspect-ratio increase.
 //! - [`QualityVerdict::Pass`] — all checks passed.
+//! - [`QualityVerdict::Unsupported`] — `morphed` or `source` is a hex/wedge
+//!   `VolumeMesh` (task #5007); the tet-only pass below cannot evaluate it.
 //!
 //! ## Preconditions
 //!
+//! - **Tet-only.** `morphed` and `source` must both have `VolumeConnectivity::Tet`
+//!   connectivity (`tet_indices()` returns `Some`). Either operand having
+//!   hex/wedge connectivity returns [`QualityVerdict::Unsupported`] instead of
+//!   panicking (task #5007).
 //! - **P1 elements only.** `morphed.tet_indices` must be segmented in 4-node
 //!   chunks (P1 tetrahedra). P2 input with 10-node elements will be
 //!   mis-segmented by `chunks_exact(4)` without a structured error. Engine
@@ -158,7 +164,9 @@ fn norm(a: [f64; 3]) -> f64 {
 ///
 /// Variants are evaluated in priority order: `HardFail` strictly preempts
 /// `SoftFail`. If any tetrahedron is inverted, only `HardFail` is returned
-/// even if soft-fail thresholds are also breached.
+/// even if soft-fail thresholds are also breached. [`QualityVerdict::Unsupported`]
+/// is orthogonal to this priority order: it is returned before any
+/// element-quality metric is evaluated.
 #[derive(Debug, Clone, PartialEq)]
 pub enum QualityVerdict {
     /// All quality checks passed.
@@ -169,15 +177,26 @@ pub enum QualityVerdict {
     /// No inversions, but one or more quality metrics breached their
     /// configured thresholds.
     SoftFail(SoftFailDetails),
+    /// The mesh's element family is not tet (hex/wedge); the tet-only
+    /// quality pass cannot evaluate it — a diagnostic that routes callers to
+    /// remesh instead of panicking (task #5007).
+    Unsupported,
 }
 
 /// Evaluate mesh quality after a morph operation.
 ///
 /// Returns a [`QualityVerdict`] describing whether the morphed mesh passes
 /// quality thresholds configured in `options`. See the module-level doc for
-/// preconditions (P1-only, matched connectivity, valid indices).
+/// preconditions (tet-only, P1-only, matched connectivity, valid indices).
 ///
 /// An empty mesh (no tetrahedra) always returns [`QualityVerdict::Pass`].
+///
+/// ## Non-tet VolumeMesh
+///
+/// When `morphed` or `source` has hex/wedge connectivity (`tet_indices()`
+/// returns `None`), this function returns [`QualityVerdict::Unsupported`]
+/// instead of panicking — this tet-only quality pass has no hex/wedge
+/// analogue (task #5007).
 ///
 /// ## Connectivity mismatch
 ///
@@ -197,7 +216,7 @@ pub enum QualityVerdict {
 /// `tests/calibration/sweep.rs` exploits this by passing a from-scratch
 /// target as the `source` argument to compute the true
 /// `morphed_AR / from_scratch_AR` ratio.
-// G-allow: mesh-morph public API — §3.2 realization-kind dispatch producer per engine-integration-norm §3.2; consumer pending task #4744 (volume-mesh-realization-and-morph-wiring §8 task β — morph arm in dispatch_volume_mesh); re-homed from cancelled #3429/#2947
+// G-allow: mesh-morph public API — §3.2 realization-kind dispatch producer per engine-integration-norm §3.2; re-homed onto #5007 (quality_check hex/wedge tet-only hardening; returns QualityVerdict::Unsupported); formerly cited #4744 (out-of-scope per its plan.json); cancelled #3429/#2947
 pub fn quality_check(
     morphed: &VolumeMesh,
     source: &VolumeMesh,
@@ -205,12 +224,16 @@ pub fn quality_check(
 ) -> QualityVerdict {
     let morphed_vertex_count = morphed.vertices.len() / 3;
     let source_vertex_count = source.vertices.len() / 3;
-    let morphed_tet_indices = morphed
-        .tet_indices()
-        .expect("quality_check: tet-only pipeline (hex/wedge VolumeMesh not supported)");
-    let source_tet_indices = source
-        .tet_indices()
-        .expect("quality_check: tet-only pipeline (hex/wedge VolumeMesh not supported)");
+    // Tet-only pipeline (task #5007): either operand having hex/wedge
+    // connectivity (`tet_indices()` returns `None`) is reported honestly as
+    // `Unsupported` rather than panicking, mirroring the sibling self-guard
+    // discipline in laplacian.rs/elasticity.rs (`element_order()` ->
+    // `UnsupportedElementOrder`).
+    let (Some(morphed_tet_indices), Some(source_tet_indices)) =
+        (morphed.tet_indices(), source.tet_indices())
+    else {
+        return QualityVerdict::Unsupported;
+    };
     let matched_connectivity = morphed_tet_indices.len() == source_tet_indices.len();
 
     // Single pass over morphed elements: track inversions and soft-fail metrics.
@@ -416,6 +439,90 @@ mod tests {
             quality_check(&m, &m, &opts),
             QualityVerdict::Pass,
             "empty mesh should always return Pass"
+        );
+    }
+
+    // ── Task 5007: quality_check totality on non-tet VolumeMesh ──────────────
+    //
+    // `quality_check` must return `QualityVerdict::Unsupported` (not panic) when
+    // either the morphed or source mesh has hex/wedge connectivity.
+    // `VolumeMesh::tet_indices()` returns `None` for `Hex`/`Wedge`
+    // (reify-ir geometry.rs:2966-2971); the pre-task-5007 code did an unguarded
+    // double `.expect()` on `tet_indices()` that panicked on this input.
+
+    /// Minimal Hex8 VolumeMesh fixture — mirrors reify-ir geometry.rs:8255-8262
+    /// (`volume_mesh_connectivity_accessors_distinguish_tet_hex_wedge`).
+    fn hex_mesh() -> VolumeMesh {
+        VolumeMesh {
+            vertices: vec![0.0; 24],
+            connectivity: VolumeConnectivity::Hex {
+                indices: vec![0, 1, 2, 3, 4, 5, 6, 7],
+            },
+            normals: None,
+            boundary: None,
+        }
+    }
+
+    /// Minimal Wedge/PRI6 VolumeMesh fixture — mirrors reify-ir geometry.rs:8272-8279.
+    fn wedge_mesh() -> VolumeMesh {
+        VolumeMesh {
+            vertices: vec![0.0; 18],
+            connectivity: VolumeConnectivity::Wedge {
+                indices: vec![0, 1, 2, 3, 4, 5],
+            },
+            normals: None,
+            boundary: None,
+        }
+    }
+
+    #[test]
+    fn quality_check_with_hex_morphed_and_source_returns_unsupported() {
+        let m = hex_mesh();
+        let opts = MorphOptions::default();
+        assert_eq!(
+            quality_check(&m, &m, &opts),
+            QualityVerdict::Unsupported,
+            "hex/hex VolumeMesh must return Unsupported, not panic"
+        );
+    }
+
+    #[test]
+    fn quality_check_with_wedge_morphed_and_source_returns_unsupported() {
+        let m = wedge_mesh();
+        let opts = MorphOptions::default();
+        assert_eq!(
+            quality_check(&m, &m, &opts),
+            QualityVerdict::Unsupported,
+            "wedge/wedge VolumeMesh must return Unsupported, not panic"
+        );
+    }
+
+    #[test]
+    fn quality_check_with_tet_morphed_and_hex_source_returns_unsupported() {
+        // Proves the SOURCE operand alone is enough to trigger Unsupported —
+        // pre-task-5007 code would have panicked on source.tet_indices().expect().
+        let morphed = empty_mesh();
+        let source = hex_mesh();
+        let opts = MorphOptions::default();
+        assert_eq!(
+            quality_check(&morphed, &source, &opts),
+            QualityVerdict::Unsupported,
+            "tet morphed + hex source must return Unsupported, not panic"
+        );
+    }
+
+    #[test]
+    fn quality_check_with_hex_morphed_and_tet_source_returns_unsupported() {
+        // Proves the MORPHED operand alone is enough to trigger Unsupported —
+        // pre-task-5007 code would have panicked on morphed.tet_indices().expect()
+        // before ever reaching the source operand.
+        let morphed = hex_mesh();
+        let source = empty_mesh();
+        let opts = MorphOptions::default();
+        assert_eq!(
+            quality_check(&morphed, &source, &opts),
+            QualityVerdict::Unsupported,
+            "hex morphed + tet source must return Unsupported, not panic"
         );
     }
 
@@ -832,6 +939,9 @@ mod tests {
                      stretched tet is right-handed and must not invert"
                 );
             }
+            QualityVerdict::Unsupported => {
+                panic!("expected SoftFail, got Unsupported — both meshes are tet fixtures");
+            }
         }
     }
 
@@ -939,6 +1049,9 @@ mod tests {
                     "expected SoftFail, got HardFail({d:?}) — \
                      coplanar tet has sj=0 (not < 0) and must not invert"
                 );
+            }
+            QualityVerdict::Unsupported => {
+                panic!("expected SoftFail, got Unsupported — both meshes are tet fixtures");
             }
         }
     }
@@ -1165,6 +1278,9 @@ mod tests {
             QualityVerdict::Pass => {
                 panic!("expected HardFail, got Pass");
             }
+            QualityVerdict::Unsupported => {
+                panic!("expected HardFail, got Unsupported — both meshes are tet fixtures");
+            }
         }
     }
 
@@ -1239,6 +1355,9 @@ mod tests {
             }
             QualityVerdict::Pass => {
                 panic!("expected HardFail, got Pass");
+            }
+            QualityVerdict::Unsupported => {
+                panic!("expected HardFail, got Unsupported — both meshes are tet fixtures");
             }
         }
     }

@@ -69,6 +69,32 @@
 //!
 //! Calibration was performed against the [`StiffnessRule::InverseVolume`]
 //! production default (PRD task #8 / task 2945, shipped on main).
+//!
+//! ## Task #5007 — compose_morph's `QualityVerdict::Unsupported` handling
+//!
+//! [`quality::QualityVerdict::Unsupported`] means `morphed`/`source` is a
+//! non-tet (hex/wedge) mesh; [`quality_check`] returns it instead of
+//! panicking. `compose_morph` intercepts it before [`record_quality_remesh`]
+//! and returns a structured [`MorphFailure::SolverError`].
+//!
+//! The intercept is unreachable through any constructible `compose_morph`
+//! input today — both [`laplacian_smooth`] and [`elasticity_morph`] already
+//! reject non-tet meshes at their own entry (`element_order()` is `None` for
+//! `VolumeConnectivity::Hex`/`Wedge`), so `morphed` is always tet by the time
+//! `quality_check` runs. It is kept only so the seam stays total if that
+//! upstream ordering ever changes, and has no behaviour test for the same
+//! reason: no constructible input reaches it.
+//!
+//! It also records no diagnostic counter, unlike the sibling Ineligible /
+//! Panicked / HardFail / SoftFail arms — there is no `MorphOutcome` bucket
+//! for a branch that cannot fire today, and the failure still reaches the
+//! caller via the structured `Err`, so this is silent-from-diagnostics, not
+//! silent-from-the-API. [`record_quality_remesh`]'s own `Unsupported` arm
+//! mirrors this with a `debug_assert!` instead of a counter, since this
+//! intercept always fires first. If the upstream guards are ever relaxed and
+//! this path becomes reachable, add a dedicated `MorphOutcome` bucket (or
+//! reuse an existing failure bucket) so it is observable in release
+//! diagnostics rather than silent.
 pub mod boundary;
 pub mod diagnostics;
 pub mod elasticity;
@@ -271,11 +297,22 @@ pub fn compose_morph(
         record_morphed();
         return Ok(morphed);
     }
+    // Defensive, not reachable via compose_morph today: laplacian_smooth and
+    // elasticity_morph already reject non-tet meshes upstream, so `morphed`
+    // is always tet here. Kept so this seam stays total; surfaced to the
+    // caller as `MorphFailure::SolverError`. Full rationale: module docs
+    // above (`Task #5007`).
+    if matches!(verdict, QualityVerdict::Unsupported) {
+        return Err(MorphFailure::SolverError(SolverErrorPayload::new(
+            "quality_check: non-tet (hex/wedge) VolumeMesh unsupported",
+        )));
+    }
     record_quality_remesh(&verdict);
     match verdict {
         QualityVerdict::HardFail(details) => Err(MorphFailure::QualityHardFail(details)),
         QualityVerdict::SoftFail(details) => Err(MorphFailure::QualitySoftFail(details)),
         QualityVerdict::Pass => unreachable!("Pass returns early above"),
+        QualityVerdict::Unsupported => unreachable!("Unsupported returns early above"),
     }
 }
 
@@ -683,6 +720,7 @@ mod tests {
             max_aspect_ratio_factor: None,
             degenerate_morphed_element: None,
         });
+        let _: QualityVerdict = QualityVerdict::Unsupported;
     };
 
     // ── task 2945: lib re-export + variant fence for StiffnessRule ───────────
@@ -913,198 +951,219 @@ mod tests {
         }
     }
 
+    /// Run `f` with the process-global mesh-morph diagnostic counters
+    /// freshly reset, while holding `diagnostics::TEST_LOCK`.
+    ///
+    /// Mirrors `diagnostics::tests::with_locked_state` (task 4744 step-9
+    /// cross-module race fix): the counters are process-global statics
+    /// shared with `diagnostics::tests`, so every test here that reads or
+    /// increments them — via `compose_morph` or `register_morph_producer`'s
+    /// dispatch — must serialize against every other test in the binary that
+    /// touches the same counters, including `diagnostics::tests`' own suite,
+    /// which acquires the identical lock directly. Routing every
+    /// counter-touching test below through this one guarded entry point
+    /// (instead of each hand-copying the lock+reset boilerplate) keeps them
+    /// consistent with each other and with `with_locked_state`.
+    fn with_diag_lock<F: FnOnce()>(f: F) {
+        let _guard = crate::diagnostics::TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        diagnostics::reset_for_test();
+        f();
+    }
+
     #[test]
     fn compose_morph_eligible_small_displacement_preserves_connectivity_and_records_morphed() {
-        diagnostics::reset_for_test();
+        with_diag_lock(|| {
+            // Eligible old/new BRep: identical graphs (Stage A passes) + one
+            // matching Cap(Top) face each (Stage B yields face_to_face {h(10):h(20)}).
+            let id = ValueCellId::new("Part", "width");
+            let old_graph = graph_with_cell(&id, Type::length());
+            let new_graph = old_graph.clone();
+            let mut values = ValueMap::new();
+            values.insert(id, Value::length(0.05));
 
-        // Eligible old/new BRep: identical graphs (Stage A passes) + one
-        // matching Cap(Top) face each (Stage B yields face_to_face {h(10):h(20)}).
-        let id = ValueCellId::new("Part", "width");
-        let old_graph = graph_with_cell(&id, Type::length());
-        let new_graph = old_graph.clone();
-        let mut values = ValueMap::new();
-        values.insert(id, Value::length(0.05));
+            let mut old_table = TopologyAttributeTable::default();
+            old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0));
+            let mut new_table = TopologyAttributeTable::default();
+            new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0));
 
-        let mut old_table = TopologyAttributeTable::default();
-        old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0));
-        let mut new_table = TopologyAttributeTable::default();
-        new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0));
+            let old_brep = BRep {
+                graph: &old_graph,
+                values: &values,
+                topology_attributes: &old_table,
+                faces: &[h(10)],
+                edges: &[],
+                vertices: &[],
+            };
+            let new_brep = BRep {
+                graph: &new_graph,
+                values: &values,
+                topology_attributes: &new_table,
+                faces: &[h(20)],
+                edges: &[],
+                vertices: &[],
+            };
 
-        let old_brep = BRep {
-            graph: &old_graph,
-            values: &values,
-            topology_attributes: &old_table,
-            faces: &[h(10)],
-            edges: &[],
-            vertices: &[],
-        };
-        let new_brep = BRep {
-            graph: &new_graph,
-            values: &values,
-            topology_attributes: &new_table,
-            faces: &[h(20)],
-            edges: &[],
-            vertices: &[],
-        };
+            // All four nodes attached to the (matching) face → all prescribed, so the
+            // Laplacian quick-pass deforms by the tiny +x shift with no free interior
+            // nodes (a shape-preserving translation: connectivity-identical, quality-safe).
+            let mut boundary = BoundaryAssociation::default();
+            for n in 0..4u32 {
+                boundary.associate(n, NodeAttachment::OnFace(h(10)));
+            }
 
-        // All four nodes attached to the (matching) face → all prescribed, so the
-        // Laplacian quick-pass deforms by the tiny +x shift with no free interior
-        // nodes (a shape-preserving translation: connectivity-identical, quality-safe).
-        let mut boundary = BoundaryAssociation::default();
-        for n in 0..4u32 {
-            boundary.associate(n, NodeAttachment::OnFace(h(10)));
-        }
+            let source = single_tet_mesh();
+            let kernel = ShiftingKernel;
+            let options = MorphOptions::default();
 
-        let source = single_tet_mesh();
-        let kernel = ShiftingKernel;
-        let options = MorphOptions::default();
+            let morphed = compose_morph(&source, &boundary, old_brep, new_brep, &kernel, &options)
+                .expect("eligible small-displacement morph should succeed");
 
-        let morphed = compose_morph(&source, &boundary, old_brep, new_brep, &kernel, &options)
-            .expect("eligible small-displacement morph should succeed");
-
-        // Connectivity preserved: identical tet_indices (the defining property of morph).
-        assert_eq!(
-            morphed.tet_indices(), source.tet_indices(),
-            "morph must preserve connectivity (same tet_indices)"
-        );
-        // Deformed: vertices moved by the prescribed +x shift.
-        assert_ne!(
-            morphed.vertices, source.vertices,
-            "morph must deform the vertices"
-        );
-        // Diagnostics: exactly one successful morph recorded.
-        assert_eq!(
-            diagnostics::snapshot().morphed,
-            1,
-            "compose_morph must record exactly one morphed outcome"
-        );
+            // Connectivity preserved: identical tet_indices (the defining property of morph).
+            assert_eq!(
+                morphed.tet_indices(), source.tet_indices(),
+                "morph must preserve connectivity (same tet_indices)"
+            );
+            // Deformed: vertices moved by the prescribed +x shift.
+            assert_ne!(
+                morphed.vertices, source.vertices,
+                "morph must deform the vertices"
+            );
+            // Diagnostics: exactly one successful morph recorded.
+            assert_eq!(
+                diagnostics::snapshot().morphed,
+                1,
+                "compose_morph must record exactly one morphed outcome"
+            );
+        });
     }
 
     // ── Step-9 (task 4744 β): compose_morph failure arms record one counter ───
 
     #[test]
     fn compose_morph_stage_b_count_mismatch_returns_ineligible_and_records_bijection_bucket() {
-        diagnostics::reset_for_test();
+        with_diag_lock(|| {
+            // old 1 face Cap(Top); new 2 faces Cap(Top)+Cap(Bottom) → Stage-B
+            // CountMismatch → Ineligible(BijectionFailure).
+            let id = ValueCellId::new("Part", "width");
+            let old_graph = graph_with_cell(&id, Type::length());
+            let new_graph = old_graph.clone();
+            let mut values = ValueMap::new();
+            values.insert(id, Value::length(0.05));
 
-        // old 1 face Cap(Top); new 2 faces Cap(Top)+Cap(Bottom) → Stage-B
-        // CountMismatch → Ineligible(BijectionFailure).
-        let id = ValueCellId::new("Part", "width");
-        let old_graph = graph_with_cell(&id, Type::length());
-        let new_graph = old_graph.clone();
-        let mut values = ValueMap::new();
-        values.insert(id, Value::length(0.05));
+            let mut old_table = TopologyAttributeTable::default();
+            old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0));
+            let mut new_table = TopologyAttributeTable::default();
+            new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0));
+            new_table.record(h(21), attr(Role::Cap(CapKind::Bottom), 1));
 
-        let mut old_table = TopologyAttributeTable::default();
-        old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0));
-        let mut new_table = TopologyAttributeTable::default();
-        new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0));
-        new_table.record(h(21), attr(Role::Cap(CapKind::Bottom), 1));
+            let old_brep = BRep {
+                graph: &old_graph,
+                values: &values,
+                topology_attributes: &old_table,
+                faces: &[h(10)],
+                edges: &[],
+                vertices: &[],
+            };
+            let new_brep = BRep {
+                graph: &new_graph,
+                values: &values,
+                topology_attributes: &new_table,
+                faces: &[h(20), h(21)],
+                edges: &[],
+                vertices: &[],
+            };
 
-        let old_brep = BRep {
-            graph: &old_graph,
-            values: &values,
-            topology_attributes: &old_table,
-            faces: &[h(10)],
-            edges: &[],
-            vertices: &[],
-        };
-        let new_brep = BRep {
-            graph: &new_graph,
-            values: &values,
-            topology_attributes: &new_table,
-            faces: &[h(20), h(21)],
-            edges: &[],
-            vertices: &[],
-        };
+            let mut boundary = BoundaryAssociation::default();
+            boundary.associate(0, NodeAttachment::OnFace(h(10)));
 
-        let mut boundary = BoundaryAssociation::default();
-        boundary.associate(0, NodeAttachment::OnFace(h(10)));
+            let source = single_tet_mesh();
+            let kernel = ShiftingKernel;
+            let options = MorphOptions::default();
+            let result = compose_morph(&source, &boundary, old_brep, new_brep, &kernel, &options);
 
-        let source = single_tet_mesh();
-        let kernel = ShiftingKernel;
-        let options = MorphOptions::default();
-        let result = compose_morph(&source, &boundary, old_brep, new_brep, &kernel, &options);
-
-        assert!(
-            matches!(
-                result,
-                Err(MorphFailure::Ineligible(Reason::BijectionFailure(_)))
-            ),
-            "Stage-B count mismatch must be Ineligible(BijectionFailure), got: {result:?}"
-        );
-        // The matching diagnostic bucket is incremented exactly once.
-        assert_eq!(
-            diagnostics::snapshot().ineligible_bijection_failure, 1,
-            "compose_morph must record the bijection-failure ineligible bucket"
-        );
-        assert_eq!(
-            diagnostics::snapshot().morphed, 0,
-            "an ineligible edit must not record a morph"
-        );
+            assert!(
+                matches!(
+                    result,
+                    Err(MorphFailure::Ineligible(Reason::BijectionFailure(_)))
+                ),
+                "Stage-B count mismatch must be Ineligible(BijectionFailure), got: {result:?}"
+            );
+            // The matching diagnostic bucket is incremented exactly once.
+            assert_eq!(
+                diagnostics::snapshot().ineligible_bijection_failure, 1,
+                "compose_morph must record the bijection-failure ineligible bucket"
+            );
+            assert_eq!(
+                diagnostics::snapshot().morphed, 0,
+                "an ineligible edit must not record a morph"
+            );
+        });
     }
 
     #[test]
     fn compose_morph_quality_soft_fail_returns_quality_failure_and_records_soft_bucket() {
-        diagnostics::reset_for_test();
+        with_diag_lock(|| {
+            // Same eligible setup as the success path (one matching Cap(Top) face).
+            let id = ValueCellId::new("Part", "width");
+            let old_graph = graph_with_cell(&id, Type::length());
+            let new_graph = old_graph.clone();
+            let mut values = ValueMap::new();
+            values.insert(id, Value::length(0.05));
 
-        // Same eligible setup as the success path (one matching Cap(Top) face).
-        let id = ValueCellId::new("Part", "width");
-        let old_graph = graph_with_cell(&id, Type::length());
-        let new_graph = old_graph.clone();
-        let mut values = ValueMap::new();
-        values.insert(id, Value::length(0.05));
+            let mut old_table = TopologyAttributeTable::default();
+            old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0));
+            let mut new_table = TopologyAttributeTable::default();
+            new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0));
 
-        let mut old_table = TopologyAttributeTable::default();
-        old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0));
-        let mut new_table = TopologyAttributeTable::default();
-        new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0));
+            let old_brep = BRep {
+                graph: &old_graph,
+                values: &values,
+                topology_attributes: &old_table,
+                faces: &[h(10)],
+                edges: &[],
+                vertices: &[],
+            };
+            let new_brep = BRep {
+                graph: &new_graph,
+                values: &values,
+                topology_attributes: &new_table,
+                faces: &[h(20)],
+                edges: &[],
+                vertices: &[],
+            };
 
-        let old_brep = BRep {
-            graph: &old_graph,
-            values: &values,
-            topology_attributes: &old_table,
-            faces: &[h(10)],
-            edges: &[],
-            vertices: &[],
-        };
-        let new_brep = BRep {
-            graph: &new_graph,
-            values: &values,
-            topology_attributes: &new_table,
-            faces: &[h(20)],
-            edges: &[],
-            vertices: &[],
-        };
+            let mut boundary = BoundaryAssociation::default();
+            for n in 0..4u32 {
+                boundary.associate(n, NodeAttachment::OnFace(h(10)));
+            }
 
-        let mut boundary = BoundaryAssociation::default();
-        for n in 0..4u32 {
-            boundary.associate(n, NodeAttachment::OnFace(h(10)));
-        }
+            let source = single_tet_mesh();
+            let kernel = ShiftingKernel;
+            // An impossibly high scaled-Jacobian floor (> the valid [-1, 1] range)
+            // makes every morphed element trip the soft-fail metric → guaranteed
+            // QualityVerdict::SoftFail, independent of the deformation magnitude.
+            let options = MorphOptions {
+                quality_floor_min_scaled_jacobian: 2.0,
+                ..MorphOptions::default()
+            };
+            let result = compose_morph(&source, &boundary, old_brep, new_brep, &kernel, &options);
 
-        let source = single_tet_mesh();
-        let kernel = ShiftingKernel;
-        // An impossibly high scaled-Jacobian floor (> the valid [-1, 1] range)
-        // makes every morphed element trip the soft-fail metric → guaranteed
-        // QualityVerdict::SoftFail, independent of the deformation magnitude.
-        let options = MorphOptions {
-            quality_floor_min_scaled_jacobian: 2.0,
-            ..MorphOptions::default()
-        };
-        let result = compose_morph(&source, &boundary, old_brep, new_brep, &kernel, &options);
-
-        assert!(
-            matches!(result, Err(MorphFailure::QualitySoftFail(_))),
-            "an impossibly-high SJ floor must force a quality soft-fail, got: {result:?}"
-        );
-        // The soft-fail remesh bucket is incremented exactly once.
-        assert_eq!(
-            diagnostics::snapshot().remeshed_quality_soft_fail, 1,
-            "compose_morph must record the soft-fail remesh bucket"
-        );
-        assert_eq!(
-            diagnostics::snapshot().morphed, 0,
-            "a quality reject must not record a morph"
-        );
+            assert!(
+                matches!(result, Err(MorphFailure::QualitySoftFail(_))),
+                "an impossibly-high SJ floor must force a quality soft-fail, got: {result:?}"
+            );
+            // The soft-fail remesh bucket is incremented exactly once.
+            assert_eq!(
+                diagnostics::snapshot().remeshed_quality_soft_fail, 1,
+                "compose_morph must record the soft-fail remesh bucket"
+            );
+            assert_eq!(
+                diagnostics::snapshot().morphed, 0,
+                "a quality reject must not record a morph"
+            );
+        });
     }
 
     // ── Step-17 (task 4744 β): register_morph_producer installs a working producer ─
@@ -1129,81 +1188,88 @@ mod tests {
         use reify_eval::{BRepSnapshot, Engine, MorphRequest, MorphResult};
         use reify_test_support::mocks::MockConstraintChecker;
 
-        // Eligible old/new BRep: identical graphs (Stage A passes) + one matching
-        // Cap(Top) face each (Stage B yields face_to_face {h(10):h(20)}).
-        let id = ValueCellId::new("Part", "width");
-        let old_graph = graph_with_cell(&id, Type::length());
-        let new_graph = old_graph.clone();
-        let mut values = ValueMap::new();
-        values.insert(id, Value::length(0.05));
+        // This test doesn't assert on the diagnostic counters, but its
+        // `compose_morph` success path still increments `morphed` — so it
+        // must hold the same lock as the tests that DO assert (see
+        // `with_diag_lock`'s doc comment above), or it can corrupt one of
+        // those tests' reset-then-assert windows.
+        with_diag_lock(|| {
+            // Eligible old/new BRep: identical graphs (Stage A passes) + one matching
+            // Cap(Top) face each (Stage B yields face_to_face {h(10):h(20)}).
+            let id = ValueCellId::new("Part", "width");
+            let old_graph = graph_with_cell(&id, Type::length());
+            let new_graph = old_graph.clone();
+            let mut values = ValueMap::new();
+            values.insert(id, Value::length(0.05));
 
-        let mut old_table = TopologyAttributeTable::default();
-        old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0));
-        let mut new_table = TopologyAttributeTable::default();
-        new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0));
+            let mut old_table = TopologyAttributeTable::default();
+            old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0));
+            let mut new_table = TopologyAttributeTable::default();
+            new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0));
 
-        let old_faces = [h(10)];
-        let new_faces = [h(20)];
-        let old_brep = BRepSnapshot {
-            graph: &old_graph,
-            values: &values,
-            topology_attributes: &old_table,
-            faces: &old_faces,
-            edges: &[],
-            vertices: &[],
-        };
-        let new_brep = BRepSnapshot {
-            graph: &new_graph,
-            values: &values,
-            topology_attributes: &new_table,
-            faces: &new_faces,
-            edges: &[],
-            vertices: &[],
-        };
+            let old_faces = [h(10)];
+            let new_faces = [h(20)];
+            let old_brep = BRepSnapshot {
+                graph: &old_graph,
+                values: &values,
+                topology_attributes: &old_table,
+                faces: &old_faces,
+                edges: &[],
+                vertices: &[],
+            };
+            let new_brep = BRepSnapshot {
+                graph: &new_graph,
+                values: &values,
+                topology_attributes: &new_table,
+                faces: &new_faces,
+                edges: &[],
+                vertices: &[],
+            };
 
-        // All four nodes on the matching face → all prescribed → the Laplacian
-        // quick-pass applies the tiny +x shift (a shape-preserving translation).
-        let mut boundary = BoundaryAssociation::default();
-        for n in 0..4u32 {
-            boundary.associate(n, NodeAttachment::OnFace(h(10)));
-        }
-
-        let source = single_tet_mesh();
-        let kernel = ShiftingKernel;
-
-        // The seam under test: register_morph_producer installs the producer.
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
-        crate::register_morph_producer(&mut engine);
-
-        let producer = engine
-            .morph_producer()
-            .expect("register_morph_producer must install a MorphProducer");
-
-        let request = MorphRequest {
-            source: &source,
-            boundary: &boundary,
-            old_brep,
-            new_brep,
-            kernel: &kernel,
-        };
-
-        match producer.try_morph(request) {
-            MorphResult::Ok(mesh) => {
-                // Connectivity preserved: the producer wraps req.kernel in a
-                // KernelProjector and runs compose_morph, which deforms vertices
-                // in place and clones tet_indices by construction.
-                assert_eq!(
-                    mesh.tet_indices(), source.tet_indices(),
-                    "morph must preserve connectivity (same tet_indices)"
-                );
-                assert_ne!(
-                    mesh.vertices, source.vertices,
-                    "morph must deform the vertices"
-                );
+            // All four nodes on the matching face → all prescribed → the Laplacian
+            // quick-pass applies the tiny +x shift (a shape-preserving translation).
+            let mut boundary = BoundaryAssociation::default();
+            for n in 0..4u32 {
+                boundary.associate(n, NodeAttachment::OnFace(h(10)));
             }
-            other => {
-                panic!("expected MorphResult::Ok for an eligible request, got: {other:?}")
+
+            let source = single_tet_mesh();
+            let kernel = ShiftingKernel;
+
+            // The seam under test: register_morph_producer installs the producer.
+            let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+            crate::register_morph_producer(&mut engine);
+
+            let producer = engine
+                .morph_producer()
+                .expect("register_morph_producer must install a MorphProducer");
+
+            let request = MorphRequest {
+                source: &source,
+                boundary: &boundary,
+                old_brep,
+                new_brep,
+                kernel: &kernel,
+            };
+
+            match producer.try_morph(request) {
+                MorphResult::Ok(mesh) => {
+                    // Connectivity preserved: the producer wraps req.kernel in a
+                    // KernelProjector and runs compose_morph, which deforms vertices
+                    // in place and clones tet_indices by construction.
+                    assert_eq!(
+                        mesh.tet_indices(), source.tet_indices(),
+                        "morph must preserve connectivity (same tet_indices)"
+                    );
+                    assert_ne!(
+                        mesh.vertices, source.vertices,
+                        "morph must deform the vertices"
+                    );
+                }
+                other => {
+                    panic!("expected MorphResult::Ok for an eligible request, got: {other:?}")
+                }
             }
-        }
+        });
     }
 }

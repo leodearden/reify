@@ -200,6 +200,13 @@ pub fn record_quality_remesh(verdict: &QualityVerdict) {
             );
             return;
         }
+        QualityVerdict::Unsupported => {
+            debug_assert!(
+                false,
+                "record_quality_remesh called with QualityVerdict::Unsupported (not a remesh trigger)"
+            );
+            return;
+        }
     };
     counter(outcome).fetch_add(1, Ordering::Relaxed);
 }
@@ -309,6 +316,17 @@ pub fn reset_for_test() {
     reset();
 }
 
+/// Serializes test access to the process-global diagnostic counters across
+/// BOTH this module's own test suite and `lib.rs`'s `compose_morph` tests,
+/// which mutate the same [`COUNTERS`] statics via the public recorders and
+/// [`reset_for_test`]. `pub(crate)` so `lib.rs`'s `#[cfg(test)]` tests can
+/// acquire this exact lock — a lock private to this module's `tests`
+/// submodule would only serialize this module's own tests against each
+/// other, leaving the cross-module race against `lib.rs`'s `compose_morph`
+/// tests (task 4744 step-9) open.
+#[cfg(test)]
+pub(crate) static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -317,7 +335,6 @@ mod tests {
     use crate::types::{InversionDetails, SoftFailDetails};
     use crate::{BijectionFailure, NamingLayerErrorReason, SubShapeKind};
     use reify_test_support::{CapturingSubscriberBuilder, prime_tracing_callsite_cache};
-    use std::sync::Mutex;
     use tracing::Level;
 
     /// The default event target for `tracing` events emitted from this module —
@@ -360,15 +377,13 @@ mod tests {
         }
     }
 
-    /// Serialize parallel test access to the process-global diagnostic
-    /// counters. Each test acquires this before resetting state so tests don't
-    /// interfere with each other regardless of execution order. Mirrors the
-    /// `TEST_LOCK` discipline in `stats.rs`.
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
-
-    /// Run `f` under `TEST_LOCK` with freshly-reset counters.
+    /// Run `f` under the shared [`super::TEST_LOCK`] with freshly-reset
+    /// counters. Each test acquires this before resetting state so tests
+    /// don't interfere with each other regardless of execution order —
+    /// including `lib.rs`'s `compose_morph` tests, which acquire the same
+    /// lock directly. Mirrors the `TEST_LOCK` discipline in `stats.rs`.
     fn with_locked_state<F: FnOnce()>(f: F) {
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = super::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         reset_for_test();
         f();
     }
@@ -516,6 +531,39 @@ mod tests {
                 snapshot(),
                 DiagnosticSnapshot::default(),
                 "QualityVerdict::Pass must not increment any counter"
+            );
+        });
+    }
+
+    #[test]
+    fn record_quality_remesh_unsupported_never_touches_a_counter() {
+        with_locked_state(|| {
+            // `QualityVerdict::Unsupported` is not a remesh trigger either: the
+            // engine's compose_morph seam intercepts it with an early
+            // structured-error return before this recorder is ever called (see
+            // lib.rs), so this arm exists only as a defensive debug_assert!.
+            // Mirrors `record_quality_remesh_pass_never_touches_a_counter` above
+            // — same release no-op gap, same catch_unwind technique, so a
+            // regression that incremented a bucket on `Unsupported` in a
+            // release build would otherwise slip through untested.
+            let prev_hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(|_| {})); // silence the expected debug-only panic
+            let outcome = std::panic::catch_unwind(|| {
+                record_quality_remesh(&QualityVerdict::Unsupported);
+            });
+            std::panic::set_hook(prev_hook);
+
+            // Debug: the `debug_assert!` unwinds before any counter mutation.
+            // Release: the call returns without touching a counter.
+            assert_eq!(
+                outcome.is_err(),
+                cfg!(debug_assertions),
+                "Unsupported must panic via debug_assert! only in debug builds"
+            );
+            assert_eq!(
+                snapshot(),
+                DiagnosticSnapshot::default(),
+                "QualityVerdict::Unsupported must not increment any counter"
             );
         });
     }
