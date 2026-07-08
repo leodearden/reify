@@ -5053,25 +5053,27 @@ mod tests {
         );
 
         // Re-extraction on the restored (box) shape correctly rebuilds
-        // provenance, minting fresh ids disjoint from the stale pre-restore
-        // cylinder-face cache — proving extracted_faces was cleared too,
-        // not just parent_handle.
+        // provenance. If extracted_faces had not been cleared on restore,
+        // this call would hit the idempotency cache under parent id 1 and
+        // return the stale 3-entry cylinder-face list verbatim instead of
+        // re-extracting — so the length assertion below (6, not 3) already
+        // proves the cache was cleared.
+        //
+        // Note: the returned ids are deliberately *not* asserted disjoint
+        // from `cyl_faces`. next_id is restored wholesale from kernel_a's
+        // state (asserted above) rather than merged/maxed against kernel_b's
+        // dirty pre-restore counter, and this test mints a sphere in
+        // between — so numeric id reuse across the warm-start boundary
+        // (e.g. a new box face landing on the same integer as an old
+        // cylinder face) is an expected consequence of that design, not a
+        // staleness bug. The correctness guarantee under test is that every
+        // *current* handle resolves correctly (see the OwnerBody loop
+        // below), not that ids stay globally unique across a kernel's
+        // lifetime.
         let faces = kernel_b
             .extract_faces(GeometryHandleId(1))
             .expect("extract_faces on the restored box should succeed");
         assert_eq!(faces.len(), 6, "a box has 6 faces");
-
-        let cyl_face_set: std::collections::HashSet<GeometryHandleId> =
-            cyl_faces.iter().copied().collect();
-        let box_face_set: std::collections::HashSet<GeometryHandleId> =
-            faces.iter().copied().collect();
-        let stale_overlap: std::collections::HashSet<_> =
-            cyl_face_set.intersection(&box_face_set).collect();
-        assert!(
-            stale_overlap.is_empty(),
-            "warm-start restore should clear the extracted_faces cache so re-extraction mints \
-             fresh ids disjoint from the stale cylinder-face cache; found shared ids: {stale_overlap:?}"
-        );
 
         for face in &faces {
             assert_eq!(
