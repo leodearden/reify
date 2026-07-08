@@ -10789,4 +10789,43 @@ mod tests {
         );
         assert_eq!(err.invariant, MeshInvariant::IndexValid);
     }
+
+    #[test]
+    fn validate_rejects_degenerate_triangle() {
+        // (a) A repeated raw index within a triangle collapses two corners
+        // onto the same position — zero area regardless of tol.
+        let repeated_index_mesh = Mesh {
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            indices: vec![0, 1, 1],
+            normals: None,
+        };
+        let err = repeated_index_mesh
+            .validate(0.0)
+            .expect_err("a triangle with a repeated index must fail the mesh contract");
+        assert_eq!(err.invariant, MeshInvariant::NonDegenerate);
+        assert!(err.counts.degenerate_tris >= 1);
+        match err.witness {
+            MeshWitness::Triangle { .. } => {}
+            other => panic!("expected MeshWitness::Triangle naming the offender, got {other:?}"),
+        }
+
+        // (b) Three distinct raw indices, but two reference coincident
+        // vertex positions — also zero area at tol=0.0.
+        let coincident_position_mesh = Mesh {
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            indices: vec![0, 1, 2],
+            normals: None,
+        };
+        let err = coincident_position_mesh.validate(0.0).expect_err(
+            "a triangle with coincident vertex positions must fail the mesh contract",
+        );
+        assert_eq!(err.invariant, MeshInvariant::NonDegenerate);
+        assert!(err.counts.degenerate_tris >= 1);
+
+        // A real (non-degenerate) tetra face must NOT be flagged at
+        // tol=0.0 — guards against false-rejecting valid geometry.
+        welded_tetra_mesh()
+            .validate(0.0)
+            .expect("a closed outward-wound tetra has no degenerate triangles");
+    }
 }
