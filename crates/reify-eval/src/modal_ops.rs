@@ -2839,23 +2839,37 @@ fn simply_supported_pin_pin_bcs(nodes: &[[f64; 3]], length: f64, height: f64) ->
 /// robustly — by coordinate, independent of `build_beam_mesh`'s internal node
 /// numbering (mirroring the unit tests' coordinate-based face selection).
 ///
-/// Fail-closed, never panics: the pick uses [`f64::total_cmp`], a total order
-/// that agrees with `partial_cmp` on all finite non-negative squared
-/// distances. Every squared distance computed here is either finite and
-/// non-negative or a positive NaN (the sign bit stays 0 through subtraction,
-/// squaring, and addition of these operands), and `total_cmp` orders such
-/// values no lower than any finite distance — so a non-finite node
-/// coordinate can never win the `min_by` pick over a true finite nearest node
-/// (PRD `compute-fea-hardening.md` Resolved design decision 5: graceful
-/// `total_cmp` fallback + telemetry, never a hard panic). A non-finite
-/// node/target coordinate additionally emits a WARN — telemetry only, since
-/// the deterministic fallback pick already comes from `total_cmp` above.
+/// Fail-closed, never panics: the pick compares a `key` derived from each
+/// squared distance via [`f64::total_cmp`], a total order that agrees with
+/// `partial_cmp` on all finite non-negative values. `total_cmp` alone is not
+/// enough: it ranks a *negatively*-signed NaN below every finite value (and
+/// below `-infinity`), and that sign bit is not guaranteed to be positive —
+/// it can and does propagate through the subtraction/squaring/addition in
+/// `dist2` from a negatively-signed NaN input coordinate (e.g. the x86_64
+/// "real indefinite" QNaN `0xFFF8_0000_0000_0000`), so an unguarded
+/// `total_cmp` comparison could let a non-finite node silently *win* the
+/// `min_by` pick — the exact fail-open this guard exists to prevent. `key`
+/// closes that gap by explicitly normalizing any NaN squared-distance to
+/// `+INFINITY` (independent of its sign bit) before the `total_cmp`
+/// comparison, so a non-finite node/target coordinate can never win the pick
+/// over a true finite nearest node (PRD `compute-fea-hardening.md` Resolved
+/// design decision 5: graceful `total_cmp` fallback + telemetry, never a
+/// hard panic). A non-finite node/target coordinate additionally emits a
+/// WARN — telemetry only, since the deterministic fallback pick already
+/// comes from the guarded `key` comparison above.
 fn nearest_node(nodes: &[[f64; 3]], target: [f64; 3]) -> usize {
     let dist2 = |p: &[f64; 3]| -> f64 {
         let dx = p[0] - target[0];
         let dy = p[1] - target[1];
         let dz = p[2] - target[2];
         dx * dx + dy * dy + dz * dz
+    };
+    // Normalize NaN to +INFINITY before comparing: total_cmp ranks a
+    // negative-signed NaN below every finite value (see the doc comment
+    // above), so leaving it unmapped could let a non-finite node win.
+    let key = |p: &[f64; 3]| -> f64 {
+        let d = dist2(p);
+        if d.is_nan() { f64::INFINITY } else { d }
     };
 
     if nodes.iter().flatten().chain(target.iter()).any(|c| !c.is_finite()) {
@@ -2872,7 +2886,7 @@ fn nearest_node(nodes: &[[f64; 3]], target: [f64; 3]) -> usize {
     nodes
         .iter()
         .enumerate()
-        .min_by(|(_, a), (_, b)| dist2(a).total_cmp(&dist2(b)))
+        .min_by(|(_, a), (_, b)| key(a).total_cmp(&key(b)))
         .map(|(i, _)| i)
         .expect("beam mesh has at least one node")
 }
@@ -4293,6 +4307,56 @@ mod tests {
             let _ = super::nearest_node(&nodes, [1.9, 0.0, 0.0]);
         });
         capture.assert_count(0);
+    }
+
+    /// Amendment (suggestion 1): a *negatively*-signed NaN node coordinate
+    /// (e.g. the x86_64 "real indefinite" QNaN bit pattern
+    /// `0xFFF8_0000_0000_0000`) must not win the pick either. `total_cmp`
+    /// alone ranks a negative-signed NaN below every finite value (and below
+    /// `-infinity`), so without the `key` helper's explicit NaN → `+INFINITY`
+    /// normalization, this exact case would select the poisoned node instead
+    /// of the true nearest — the fail-open the guard exists to prevent.
+    #[test]
+    fn nearest_node_picks_true_finite_nearest_over_negative_signed_nan() {
+        let neg_nan = f64::from_bits(0xFFF8_0000_0000_0000);
+        assert!(neg_nan.is_nan(), "fixture must actually be NaN");
+        assert!(
+            neg_nan.is_sign_negative(),
+            "fixture must be a negative-signed NaN"
+        );
+
+        let nodes = [[neg_nan, 0.0, 0.0], [5.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
+        let target = [1.0, 0.0, 0.0];
+
+        assert_eq!(
+            nearest_node(&nodes, target),
+            2,
+            "true nearest node (dist² = 0.0) must win over a negative-signed \
+             NaN-poisoned node — total_cmp alone ranks negative NaN below \
+             every finite value, so an unguarded comparison would wrongly \
+             pick the poisoned node here"
+        );
+    }
+
+    /// Amendment (suggestion 2): non-finite `+infinity`/`-infinity` node
+    /// coordinates must not win the pick either, pinning the "non-finite
+    /// never wins" contract for the infinite case alongside the NaN cases
+    /// above.
+    #[test]
+    fn nearest_node_picks_true_finite_nearest_over_infinite_coordinates() {
+        let nodes = [
+            [f64::INFINITY, 0.0, 0.0],
+            [f64::NEG_INFINITY, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+        ];
+        let target = [1.0, 0.0, 0.0];
+
+        assert_eq!(
+            nearest_node(&nodes, target),
+            2,
+            "true finite nearest node must win over both +infinity and \
+             -infinity node coordinates"
+        );
     }
 
     /// Amendment (suggestion 2): `solve_modal_analysis_trampoline` happy path — a
