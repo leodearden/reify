@@ -252,4 +252,16 @@ assert "throughput.sh preflight fires on injected copy-list drift" \
     bash -c 'REIFY_COPY_LIST_PREFLIGHT_INJECT_PHANTOM=__never_copied__.sh timeout 120 bash "$1" >/dev/null 2>&1; [ $? -ne 0 ]' \
     _ "$REPO_ROOT/tests/infra/test_verify_throughput.sh"
 
+echo ""
+echo "--- wiring: test_verify_scope.sh consults the shared preflight ---"
+# Behavioral proof (not a source-grep): inject a phantom lib that is never
+# copied to any fixture and assert the meta-test itself exits non-zero.
+# RED until step-6 wires make_fixture/make_branch_fixture to
+# assert_source_closure_copied — today scope.sh has NO preflight at either cp
+# site, so this env is ignored entirely and the suite runs to completion and
+# exits 0. `timeout`-guarded so a regression here can't wedge the pool.
+assert "scope.sh preflight fires on injected copy-list drift" \
+    bash -c 'REIFY_COPY_LIST_PREFLIGHT_INJECT_PHANTOM=__never_copied__.sh timeout 120 bash "$1" >/dev/null 2>&1; [ $? -ne 0 ]' \
+    _ "$REPO_ROOT/tests/infra/test_verify_scope.sh"
+
 test_summary
