@@ -2611,6 +2611,21 @@ pub struct MeshContractViolation {
     pub witness: MeshWitness,
 }
 
+impl MeshContractViolation {
+    /// Attach the producing kernel's name, bridging this kernel-agnostic
+    /// violation into a [`GeometryError::MeshContractViolation`] for the
+    /// kernel-aware wiring sites (e.g. the OCCT/Manifold ingest paths) that
+    /// know which kernel produced the offending mesh.
+    pub fn into_geometry_error(self, kernel: &'static str) -> GeometryError {
+        GeometryError::MeshContractViolation {
+            kernel,
+            invariant: self.invariant,
+            counts: self.counts,
+            witness: self.witness,
+        }
+    }
+}
+
 impl Mesh {
     /// Position-weld the raw vertex buffer: map every distinct `(x, y, z)`
     /// triple to one canonical index, in first-seen order.
@@ -3543,6 +3558,21 @@ pub enum GeometryError {
     OperationFailed(String),
     /// Kernel initialization error.
     InitFailed(String),
+    /// A kernel-emitted [`Mesh`] failed [`Mesh::validate`]'s producer
+    /// obligations (INV-GEO-1). Kernel-aware wiring sites obtain this from
+    /// the kernel-agnostic [`MeshContractViolation`] via
+    /// [`MeshContractViolation::into_geometry_error`].
+    MeshContractViolation {
+        /// Name of the kernel that produced the offending mesh (e.g.
+        /// `"occt"`, `"manifold"`).
+        kernel: &'static str,
+        /// The first obligation that failed.
+        invariant: MeshInvariant,
+        /// Per-category offender counts.
+        counts: MeshViolationCounts,
+        /// One concrete offender illustrating `invariant`.
+        witness: MeshWitness,
+    },
 }
 
 impl fmt::Display for GeometryError {
@@ -3556,6 +3586,18 @@ impl fmt::Display for GeometryError {
             }
             GeometryError::InitFailed(msg) => {
                 write!(f, "geometry kernel init failed: {}", msg)
+            }
+            GeometryError::MeshContractViolation {
+                kernel,
+                invariant,
+                counts,
+                witness,
+            } => {
+                write!(
+                    f,
+                    "kernel '{kernel}' emitted a mesh violating the mesh contract: \
+                     {invariant:?} ({counts:?}, witness: {witness:?})"
+                )
             }
         }
     }
