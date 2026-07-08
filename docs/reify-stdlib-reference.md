@@ -1673,21 +1673,21 @@ Coupling<P>::MotionValue         ⇒ P::MotionValue  // symbolic until P is subs
 
 ### 13.2 `std.mechanism.builder`
 
-`mechanism()` returns an empty `Mechanism`. Bodies are attached with `.body()` chaining; each call returns a fresh `Mechanism`. `world` is the pre-declared ground-frame sentinel — a `Joint` value with no motion variable that serves as the fixed root anchor of every mechanism DAG:
+`mechanism()` returns an empty `Mechanism`. Bodies are attached with `.body()` chaining; each call returns a fresh `Mechanism`. `world()` is the ground-frame sentinel builtin — it returns a `Joint` value with no motion variable that serves as the fixed root anchor of every mechanism DAG. Reify has no top-level `const`/`let` bindings, so the ground frame is reached by calling `world()`, not by referencing a bare `world` identifier — the same reason `g`/`c`/`boltzmann` are zero-arg functions (`STANDARD_GRAVITY()`/`SPEED_OF_LIGHT()`/`BOLTZMANN_CONSTANT()`, §2) rather than pre-declared constants:
 
 ```
-let world : Joint   // ground/world frame; the implicit fixed root of every mechanism DAG
+fn world() -> Joint   // ground/world frame; the implicit fixed root of every mechanism DAG
 ```
 
 ```
 fn mechanism() -> Mechanism
-fn body(m: Mechanism, solid: Solid, at: Joint, parent: Joint = world, pose: Transform<3> = transform3_identity) -> Mechanism
+fn body(m: Mechanism, solid: Solid, at: Joint, parent: Joint = world(), pose: Transform<3> = transform3_identity) -> Mechanism
 fn body_id_of(m: Mechanism, solid: Solid) -> BodyId
 ```
 
-`at` is the joint that positions the body; `parent` is the upstream joint (default `world` for bodies attached to the ground frame). `pose` is an additional static offset applied after the joint's own transform. `BodyId` is a stable, opaque identifier used later by snapshot accessors and query functions (see §13.3 and §13.5). To recover the `BodyId` of a particular `solid` after building, call `body_id_of(m, solid)` against the final `Mechanism` (it returns the id assigned when that `solid` was added, or raises if the solid is not in the mechanism). The builder is immutable: each `.body()` call returns a fresh `Mechanism` value. Each `solid` value must be unique within a given `Mechanism` (by referential identity); inserting the same `solid` value twice raises `error[E_MECHANISM_DUPLICATE_SOLID]` at build time, keeping `body_id_of` unambiguous even when two bodies have identical geometry — use distinct constructor calls to create distinct solids before passing them to `.body()`.
+`at` is the joint that positions the body; `parent` is the upstream joint (default `world()` for bodies attached to the ground frame). `pose` is an additional static offset applied after the joint's own transform. `BodyId` is a stable, opaque identifier used later by snapshot accessors and query functions (see §13.3 and §13.5). To recover the `BodyId` of a particular `solid` after building, call `body_id_of(m, solid)` against the final `Mechanism` (it returns the id assigned when that `solid` was added, or raises if the solid is not in the mechanism). The builder is immutable: each `.body()` call returns a fresh `Mechanism` value. Each `solid` value must be unique within a given `Mechanism` (by referential identity); inserting the same `solid` value twice raises `error[E_MECHANISM_DUPLICATE_SOLID]` at build time, keeping `body_id_of` unambiguous even when two bodies have identical geometry — use distinct constructor calls to create distinct solids before passing them to `.body()`.
 
-**Closed-chain detection.** `mechanism()` builds a directed acyclic graph (DAG) of bodies connected through joints. If any body is reachable via two distinct joint paths, the compiler emits `error[E_KINEMATIC_CLOSED_CHAIN]`, naming both paths in the diagnostic:
+**Closed chains (reserved diagnostic, not emitted).** `mechanism()` builds a directed graph of bodies connected through joints. An earlier draft of this section documented closed chains — bodies reachable via two distinct joint paths — as a build-time error:
 
 ```
 error[E_KINEMATIC_CLOSED_CHAIN]: body is reachable via two distinct joint paths
@@ -1697,7 +1697,7 @@ error[E_KINEMATIC_CLOSED_CHAIN]: body is reachable via two distinct joint paths
   | path 2: world -> joint_c -> body
 ```
 
-Closed chains are a v0.1 error; v0.2 introduces a cyclic solver.
+That rejection was retired by task 2671: closed chains are valid v0.2 mechanisms. Each closing edge is instead recorded as a loop-closure constraint on the `Mechanism` value and construction proceeds normally — see [`v0_2/kinematic-constraints.md`](prds/v0_2/kinematic-constraints.md) for the loop-closure solver. `E_KINEMATIC_CLOSED_CHAIN` remains declared in the diagnostics registry, reserved for a possible future opt-in strict mode, but no path on main emits it today.
 
 ### 13.3 `std.mechanism.snapshot`
 
