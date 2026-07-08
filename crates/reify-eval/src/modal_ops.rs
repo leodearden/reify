@@ -2839,24 +2839,13 @@ fn simply_supported_pin_pin_bcs(nodes: &[[f64; 3]], length: f64, height: f64) ->
 /// robustly — by coordinate, independent of `build_beam_mesh`'s internal node
 /// numbering (mirroring the unit tests' coordinate-based face selection).
 ///
-/// Fail-closed, never panics: the pick compares a `key` derived from each
-/// squared distance via [`f64::total_cmp`], a total order that agrees with
-/// `partial_cmp` on all finite non-negative values. `total_cmp` alone is not
-/// enough: it ranks a *negatively*-signed NaN below every finite value (and
-/// below `-infinity`), and that sign bit is not guaranteed to be positive —
-/// it can and does propagate through the subtraction/squaring/addition in
-/// `dist2` from a negatively-signed NaN input coordinate (e.g. the x86_64
-/// "real indefinite" QNaN `0xFFF8_0000_0000_0000`), so an unguarded
-/// `total_cmp` comparison could let a non-finite node silently *win* the
-/// `min_by` pick — the exact fail-open this guard exists to prevent. `key`
-/// closes that gap by explicitly normalizing any NaN squared-distance to
-/// `+INFINITY` (independent of its sign bit) before the `total_cmp`
-/// comparison, so a non-finite node/target coordinate can never win the pick
-/// over a true finite nearest node (PRD `compute-fea-hardening.md` Resolved
-/// design decision 5: graceful `total_cmp` fallback + telemetry, never a
-/// hard panic). A non-finite node/target coordinate additionally emits a
-/// WARN — telemetry only, since the deterministic fallback pick already
-/// comes from the guarded `key` comparison above.
+/// Fail-closed, never panics (PRD `compute-fea-hardening.md` Resolved design
+/// decision 5): normalizes a non-finite squared distance to `+INFINITY` so a
+/// non-finite node/target coordinate can never win an [`f64::total_cmp`]
+/// pick, and emits a WARN as telemetry. Assumes coordinates stay within a
+/// non-overflowing range — an extreme but finite coordinate that overflows
+/// `dist2` to `+INFINITY` trips the same guard/WARN. See the tests below for
+/// the NaN-sign-bit and infinite-coordinate edge cases this covers.
 fn nearest_node(nodes: &[[f64; 3]], target: [f64; 3]) -> usize {
     let dist2 = |p: &[f64; 3]| -> f64 {
         let dx = p[0] - target[0];
@@ -2865,19 +2854,10 @@ fn nearest_node(nodes: &[[f64; 3]], target: [f64; 3]) -> usize {
         dx * dx + dy * dy + dz * dz
     };
 
-    // Drives the WARN below without a dedicated scan over `nodes`/`target`:
-    // `dist2` sums three squared terms, so it is non-finite exactly when `p`
-    // or `target` has a non-finite component (a NaN or +/-infinity operand
-    // propagates through the subtraction/squaring/addition). `key` already
-    // visits every node once via `min_by` below, so latching this flag
-    // there — instead of a separate `nodes.iter().flatten()...any(...)`
-    // pass — covers every node, and transitively `target` too (a non-finite
-    // `target` component makes *every* node's `dist2` non-finite), in the
-    // same single pass.
+    // Latches on any non-finite dist2 (NaN, or +INFINITY from a non-finite
+    // or overflowing coordinate) for the WARN below, and normalizes NaN to
+    // +INFINITY so it can never win the total_cmp pick (see doc comment).
     let saw_non_finite = std::cell::Cell::new(false);
-    // Normalize NaN to +INFINITY before comparing: total_cmp ranks a
-    // negative-signed NaN below every finite value (see the doc comment
-    // above), so leaving it unmapped could let a non-finite node win.
     let key = |p: &[f64; 3]| -> f64 {
         let d = dist2(p);
         if !d.is_finite() {
@@ -2900,11 +2880,12 @@ fn nearest_node(nodes: &[[f64; 3]], target: [f64; 3]) -> usize {
     if saw_non_finite.get() {
         tracing::warn!(
             target: "reify_eval::modal_ops",
-            reason = "non_finite_node_coordinate",
+            reason = "non_finite_squared_distance",
             n_nodes = nodes.len(),
-            "nearest_node: non-finite node/target coordinate; falling back to \
-             total_cmp for a deterministic nearest-node pick (a simply-supported \
-             BC anchor may be mis-placed — likely upstream mesh pathology)"
+            "nearest_node: non-finite squared distance (non-finite or \
+             overflowing node/target coordinate); falling back to total_cmp \
+             for a deterministic nearest-node pick (a simply-supported BC \
+             anchor may be mis-placed)"
         );
     }
 
