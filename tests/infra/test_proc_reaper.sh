@@ -795,11 +795,10 @@ chmod +x "$_E2E_FAKE"
 
 assert "SIGKILL to parent does NOT reap the backgrounded test binary (survivor exists)" \
     env _E2E_FAKE="$_E2E_FAKE" _SENT_FAKE="$_SENT_FAKE" \
-        _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" bash -c '
+        _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" \
+        _POLL_ATTEMPTS_ORPHAN="$_POLL_ATTEMPTS_ORPHAN" bash -c '
         _abs_sleep=$(command -v sleep)
-        _abs_ps=$(command -v ps)
         _abs_kill=$(command -v kill)
-        _abs_grep=$(command -v grep)
         _abs_bash=$(command -v bash)
         _pid_file=$(mktemp)
         trap "rm -f \"$_pid_file\"" EXIT
@@ -818,30 +817,41 @@ assert "SIGKILL to parent does NOT reap the backgrounded test binary (survivor e
         _fake_pid=$(cat "$_pid_file" 2>/dev/null || echo "")
         [ -n "$_fake_pid" ] || { echo "FAIL: did not get fake binary PID" >&2; exit 1; }
 
-        # SIGKILL the parent.
+        # SIGKILL the parent, then confirm it is effectively gone (reparenting
+        # completes at parent death) before sampling the survivor.
         "$_abs_kill" -9 "$_parent_pid" 2>/dev/null || true
-        "$_abs_sleep" 0.5
+        _poll_pid_gone "$_parent_pid" "$_POLL_ATTEMPTS_ORPHAN" || true
 
-        # Assert the fake binary is still alive after parent SIGKILL.
+        # STRUCTURAL/condition-polled survivor-alive proof (task 5148):
+        # replaces a fixed-wait + single ps sample, which raced a
+        # transient-empty ps read under pool load (data/verify-logs/4911) —
+        # poll across the load-scaled budget instead so a transient-empty
+        # read is retried rather than misreported as dead. Non-vacuous: a
+        # genuinely-dead survivor exhausts the poll -> _alive stays 0 ->
+        # exit 1 (RED).
         _alive=0
-        "$_abs_ps" -o pid= -p "$_fake_pid" 2>/dev/null | "$_abs_grep" -q . && _alive=1 || true
+        for ((_t=1; _t<=_POLL_ATTEMPTS_ORPHAN; _t++)); do
+            if ! _pid_effectively_gone "$_fake_pid"; then
+                _alive=1
+                break
+            fi
+            load_tolerant_sleep_tick
+        done
         "$_abs_kill" -9 "$_fake_pid" 2>/dev/null || true
         exit $((1 - _alive))
     '
 
-# -- Test 5b (hermetic RED repro, task 5148): the CURRENT single-shot survivor
-# check (fixed wait + ONE ps sample, as used just above) misreports a
-# genuinely-alive survivor as DEAD when its one ps sample happens to land on a
-# transient-empty read. Under real pool load this is a race (observed in
-# data/verify-logs/4911 etc.); here it is forced deterministically via a
+# -- Test 5b (regression lock, task 5148): the condition-polled survivor
+# check above tolerates a transient-empty ps read instead of misreporting a
+# genuinely-alive survivor as DEAD. Under real pool load this was a race
+# (observed in data/verify-logs/4911 etc: a fixed wait + ONE ps sample could
+# land on a transient-empty read); here it is forced deterministically via a
 # stateful `ps` stub (extends the Part 8 SLOW_PS_STUB idiom below) whose FIRST
 # invocation emits nothing and whose invocations #2+ delegate to the real ps.
-# Because the single-shot shape below makes exactly ONE ps call, that call is
-# always invocation #1 -> always empty -> the check always (mis)reports DEAD.
-# This proves the single-shot shape itself is unsound, independent of actual
-# host load.
-# RED today: the assert expects ALIVE (matching the real, live survivor) but
-# the stubbed single sample reports DEAD.
+# The condition-polled check below retries past that first empty read (via
+# _pid_effectively_gone, exported at the top of this file) and correctly
+# converges on ALIVE. Locks the fix: a reversion to a single-shot sample
+# would make this go RED again (as it did before task 5148).
 _P5_STUB_DIR="$(mktemp -d)"
 _TMPDIRS+=("$_P5_STUB_DIR")
 _P5_STUB_COUNTER="$_P5_STUB_DIR/ps_invocation_count"
@@ -859,14 +869,14 @@ exec "$_abs_real_ps_p5" "\$@"
 STUB_PS_EOF
 chmod +x "$_P5_STUB_DIR/ps"
 
-assert "hermetic repro: single-shot survivor sample misreports a live survivor as dead on a transient-empty ps read (proves the check must be condition-polled, task 5148)" \
+assert "hermetic regression lock: condition-polled survivor check tolerates a transient-empty ps read (retries past invocation #1, task 5148)" \
     env _E2E_FAKE="$_E2E_FAKE" _SENT_FAKE="$_SENT_FAKE" \
         _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" \
+        _POLL_ATTEMPTS_ORPHAN="$_POLL_ATTEMPTS_ORPHAN" \
         PATH="$_P5_STUB_DIR:$PATH" bash -c '
         _abs_sleep=$(command -v sleep)
         _abs_kill=$(command -v kill)
         _abs_bash=$(command -v bash)
-        _abs_ps=$(command -v ps)
         _pid_file=$(mktemp)
         trap "rm -f \"$_pid_file\"" EXIT
 
@@ -881,14 +891,19 @@ assert "hermetic repro: single-shot survivor sample misreports a live survivor a
 
         # SIGKILL the parent (survivor is now orphaned but still alive).
         "$_abs_kill" -9 "$_parent_pid" 2>/dev/null || true
-        "$_abs_sleep" 0.5
 
-        # CURRENT single-shot logic shape (mirrors the pre-fix production
-        # check above): one fixed wait, one ps sample. "$_abs_ps" resolves to
-        # the stateful stub via the PATH prepend above, and this is the ONLY
-        # ps call in this whole subshell tree, so it is always invocation #1.
+        # Condition-polled logic shape (mirrors the fixed production check
+        # above): _pid_effectively_gone resolves ps via the PATH prepend
+        # above, so its FIRST call always hits the stubbed transient-empty
+        # invocation #1 and is retried instead of misreported as dead.
         _alive=0
-        "$_abs_ps" -o pid= -p "$_fake_pid" 2>/dev/null | grep -q . && _alive=1 || true
+        for ((_t=1; _t<=_POLL_ATTEMPTS_ORPHAN; _t++)); do
+            if ! _pid_effectively_gone "$_fake_pid"; then
+                _alive=1
+                break
+            fi
+            load_tolerant_sleep_tick
+        done
         "$_abs_kill" -9 "$_fake_pid" 2>/dev/null || true
         exit $((1 - _alive))
     '
