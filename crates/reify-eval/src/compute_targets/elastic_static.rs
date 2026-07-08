@@ -9145,6 +9145,88 @@ mod tests {
         assert_eq!(extract_point3_si(&point), Ok([1.0, 2.0, 3.0]));
     }
 
+    /// step-1 RED (task #5082, D4): `extract_zone_process_params` must
+    /// reject a non-List `Value` with `Err(FeaValueShapeError::ExpectedList
+    /// { .. })` instead of panicking.
+    ///
+    /// RED: `extract_zone_process_params` currently returns a bare
+    /// `ZoneProcessParams`, so matching `Err(..)` fails to type-check until
+    /// step-2 converts it to `Result<ZoneProcessParams, FeaValueShapeError>`.
+    #[test]
+    fn extract_zone_process_params_rejects_non_list() {
+        let res = extract_zone_process_params(&Value::Real(1.0));
+        assert!(
+            matches!(res, Err(FeaValueShapeError::ExpectedList { .. })),
+            "expected Err(ExpectedList) for a non-List Value, got: {:?}",
+            res
+        );
+    }
+
+    /// step-1 RED (task #5082, D4): a `Value::List` with fewer than 7
+    /// elements is the right shape but the wrong arity — must still report
+    /// `Err(FeaValueShapeError::ExpectedList { .. })` (the arity guard
+    /// shares the same variant as the non-List case above, mirroring
+    /// `extract_point3_si_rejects_wrong_arity`).
+    #[test]
+    fn extract_zone_process_params_rejects_wrong_arity() {
+        let short_list = Value::List(vec![Value::Real(1.0)]);
+        let res = extract_zone_process_params(&short_list);
+        assert!(
+            matches!(res, Err(FeaValueShapeError::ExpectedList { .. })),
+            "expected Err(ExpectedList) for a List with < 7 elements, got: {:?}",
+            res
+        );
+    }
+
+    /// step-1 RED (task #5082, D4): a 7-element `Value::List` with a
+    /// non-`Real` element must report `Err(FeaValueShapeError::ExpectedReal
+    /// { .. })` from the per-index check, not `ExpectedList`.
+    #[test]
+    fn extract_zone_process_params_rejects_non_real_element() {
+        let mixed = Value::List(vec![
+            Value::Real(1.0),
+            Value::Real(2.0),
+            Value::Point(vec![]),
+            Value::Real(4.0),
+            Value::Real(5.0),
+            Value::Real(6.0),
+            Value::Real(7.0),
+        ]);
+        let res = extract_zone_process_params(&mixed);
+        assert!(
+            matches!(res, Err(FeaValueShapeError::ExpectedReal { .. })),
+            "expected Err(ExpectedReal) for a List with a non-Real element, got: {:?}",
+            res
+        );
+    }
+
+    /// step-1 RED (task #5082, D4): `extract_zone_process_params` must
+    /// return `Ok` with the mapped `ZoneProcessParams` for a well-formed
+    /// 7-element `Value::List`, locking the success/field-mapping path
+    /// alongside the error paths above.
+    #[test]
+    fn extract_zone_process_params_accepts_valid_list() {
+        let list = Value::List(vec![
+            Value::Real(2.0),
+            Value::Real(3.0),
+            Value::Real(0.25),
+            Value::Real(0.5),
+            Value::Real(0.0),
+            Value::Real(0.0),
+            Value::Real(1.0),
+        ]);
+        assert_eq!(
+            extract_zone_process_params(&list),
+            Ok(ZoneProcessParams {
+                walls: 2,
+                top_bottom_layers: 3,
+                layer_height: 0.25,
+                line_width: 0.5,
+                build_direction: [0.0, 0.0, 1.0],
+            })
+        );
+    }
+
     /// Amendment (task #5080 review round 3, suggestion 2): `extract_point3_si`
     /// (via `extract_scalar_triple`'s `comps.len() < 3` arity guard) only
     /// requires AT LEAST 3 components, so a `Value::Point` with MORE than 3
