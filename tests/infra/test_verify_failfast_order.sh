@@ -303,4 +303,27 @@ assert "merge-all plan: reify-cli pre-step merges stderr into captured stdout (2
         [ -n "$L" ] && echo "$L" | grep -q "2>&1"
     ' _ "$MERGE_ALL_PLAN"
 
+# (l)-(m) task 5139 (amendment review, reviewer_comprehensive
+# robustness_error_handling): the reify-audit binary-missing guard (task
+# #4624's positive assertion — Cargo.toml present but pre-build produced no
+# binary -> abort loudly) emitted its ERROR(#4624) diagnostic to stderr-only
+# (echo ... >&2; false). When that guard fires, the explanation was dropped
+# from the archived stdout log — reproducing the exact "archived with no
+# usable evidence" gap 5139 closes elsewhere for the cargo/run_all lines.
+# Merge its stderr into the captured stdout stream too, same as (f)/(j)/(k).
+assert "merge-all plan: reify-audit binary-missing guard (#4624) merges stderr into captured stdout (2>&1)" \
+    bash -c '
+        L=$(printf "%s\n" "$1" | grep "ERROR(#4624)" | head -1)
+        [ -n "$L" ] && echo "$L" | grep -q "2>&1"
+    ' _ "$MERGE_ALL_PLAN"
+
+# (m) contract guard (green before and after): the guard's abort semantics
+# (non-zero exit via `false`) must survive the stderr-capture fix — the fix
+# is a stream redirect, not a logic change.
+assert "merge-all plan: reify-audit binary-missing guard (#4624) still aborts (false present, non-zero exit preserved)" \
+    bash -c '
+        L=$(printf "%s\n" "$1" | grep "ERROR(#4624)" | head -1)
+        [ -n "$L" ] && echo "$L" | grep -q "false"
+    ' _ "$MERGE_ALL_PLAN"
+
 test_summary

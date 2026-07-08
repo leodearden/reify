@@ -1395,7 +1395,15 @@ build_plan() {
         # Guards against the pre-step being removed or reordered without updating
         # the REIFY_AUDIT_NO_COLD_BUILD backstop below.  Only fires if the
         # pre-step is present (Cargo.toml guard matches) but produces no output.
-        add "if test -f crates/reify-audit/Cargo.toml && [ ! -f target/release/reify-audit ]; then echo 'ERROR(#4624): reify-audit binary missing after pre-build step — PTODO gate will silently SKIP; restore the pre-step above or remove this check deliberately' >&2; false; fi"
+        # task 5139 (amendment review, reviewer_comprehensive
+        # robustness_error_handling): this guard's own ERROR(#4624) diagnostic
+        # was stderr-only (>&2), so a fired guard reproduced the exact
+        # "archived with no usable evidence" gap 5139 closes for the
+        # cargo/run_all lines above/below. `fi 2>&1` merges the whole
+        # if-statement's stderr into the already-captured stdout stream
+        # (applied to the compound command, so it also covers the internal
+        # `>&2` on the echo) without touching the `false` exit code.
+        add "if test -f crates/reify-audit/Cargo.toml && [ ! -f target/release/reify-audit ]; then echo 'ERROR(#4624): reify-audit binary missing after pre-build step — PTODO gate will silently SKIP; restore the pre-step above or remove this check deliberately' >&2; false; fi 2>&1"
         # task #5133: pre-build reify-cli and stamp target/.reify-bin-sha with
         # build-time HEAD, mirroring the reify-audit pre-build immediately
         # above. The PRD gate tests inside run_all.sh (test_prd_gate_corpus.sh,
