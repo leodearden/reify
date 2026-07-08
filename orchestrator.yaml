@@ -74,7 +74,7 @@ verify_command_timeout_secs: 7200
 # 180 -> 600. The 180s backstop false-killed verifies whose clock-stop span was
 # followed by a long SILENT native-crate compile/link with no heartbeat (32
 # escalations across ~12 tasks 06-27..07-06; worst observed false-kill at wall
-# time 329.9s, 0 assertion failures). 600 gives 2x margin over that worst case;
+# time 329.9s, 0 assertion failures). 600 gives ~1.8x margin over that worst case;
 # a genuinely wedged wait is now caught in 10min instead of 3, which is
 # acceptable since live waits heartbeat every 30s and the 7200s
 # verify_command_timeout_secs outer wall still bounds everything. Durable fix
