@@ -9850,4 +9850,89 @@ mod tests {
             other => panic!("expected Result::Err enum, got {:?}", other),
         }
     }
+
+    /// `eval_map_err`'s "degrading `f`" contract (documented on `eval_map_err`
+    /// above): when `apply_lambda(f, [e])` itself evaluates to `Value::Undef`
+    /// (e.g. `f` is partial or mistyped), the result must be a *determined*
+    /// `Err` tag carrying an `undef` payload field — `Err{error: Undef}` —
+    /// deliberately NOT collapsed to top-level `Value::Undef`. Per DCE
+    /// D2/INV-4 ("structure determined, elements may be undef"), a
+    /// subsequent `match` on the result still selects the `Err` arm and
+    /// binds `error = undef`. This is the code path this task's review
+    /// flagged as untested — a future refactor that collapsed the mapped
+    /// value up to top-level `Undef` would previously have gone unnoticed.
+    #[test]
+    fn map_err_err_subject_degrading_f_yields_err_with_undef_payload() {
+        let subject = lit(
+            Value::Enum {
+                type_name: "Result".to_string(),
+                variant: "Err".to_string(),
+                payload: vec![("error".to_string(), Value::String("x".to_string()))],
+            },
+            Type::Enum("Result".to_string()),
+        );
+        // f = |e| undef — unconditionally degrades to Undef regardless of
+        // its argument, modelling a partial/mistyped `f`.
+        let e_id = ValueCellId::new("$lambda_map_err_degrade.S", "e");
+        let f = lambda_lit(
+            vec![("e", e_id)],
+            lit(Value::Undef, Type::String),
+            ValueMap::new(),
+        );
+        let call_expr = CompiledExpr {
+            content_hash: ContentHash::of(b"map_err_degrading_f"),
+            result_type: Type::Enum("Result".to_string()),
+            kind: CompiledExprKind::UserFunctionCall {
+                function_name: "map_err".to_string(),
+                args: vec![subject, f],
+            },
+        };
+        let values = ValueMap::new();
+        let result = eval_expr(&call_expr, &EvalContext::simple(&values));
+        assert_eq!(
+            result,
+            Value::Enum {
+                type_name: "Result".to_string(),
+                variant: "Err".to_string(),
+                payload: vec![("error".to_string(), Value::Undef)],
+            },
+            "map_err(Err{{error:\"x\"}}, |_| undef) must yield a DETERMINED Err{{error: Undef}} \
+             (D2/INV-4) — not collapsed to top-level Undef; got {:?}",
+            result
+        );
+    }
+
+    /// `eval_map_err`'s non-`Result`, non-`Undef` graceful-degradation arm
+    /// (the trailing `_ => Value::Undef`) is exercised directly: a mistyped
+    /// subject (here, a plain scalar — not a `Result` enum) must degrade to
+    /// `Value::Undef`, and `f` must never run. Mirrors the pure combinators'
+    /// analogous graceful-degradation arms in `option_recovery.rs`.
+    #[test]
+    fn map_err_non_result_subject_degrades_to_undef() {
+        let subject = lit(mm_val(5.0), Type::length());
+        // f = |e| true — never applied; the mistyped subject short-circuits
+        // to Undef before f would run.
+        let e_id = ValueCellId::new("$lambda_map_err_non_result.S", "e");
+        let f = lambda_lit(
+            vec![("e", e_id)],
+            lit(Value::Bool(true), Type::Bool),
+            ValueMap::new(),
+        );
+        let call_expr = CompiledExpr {
+            content_hash: ContentHash::of(b"map_err_non_result_subject"),
+            result_type: Type::Enum("Result".to_string()),
+            kind: CompiledExprKind::UserFunctionCall {
+                function_name: "map_err".to_string(),
+                args: vec![subject, f],
+            },
+        };
+        let values = ValueMap::new();
+        let result = eval_expr(&call_expr, &EvalContext::simple(&values));
+        assert_eq!(
+            result,
+            Value::Undef,
+            "map_err(<non-Result scalar subject>, f) must gracefully degrade to Value::Undef; got {:?}",
+            result
+        );
+    }
 }
