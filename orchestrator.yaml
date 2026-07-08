@@ -241,6 +241,23 @@ cpu_governance:
     enabled: true
     threshold: 50  # REIFY_CPU_ADMIT_AGENT_THRESHOLD (scripts/agent-bin/cargo) — avg10 % PSI ceiling for heavy cargo subcommands
   DF_AGENT_CPU_GOVERN: 1  # reify-owned value dark-factory ζ reads to enable the agent-launch spawn prefix
+  # fleet_load_detector (task 5135): host-aggregate loadavg/PSI oversubscription
+  # DETECTOR (scripts/fleet-load-detector.sh) — observes ALL concurrently-
+  # dispatched lanes via host-global /proc/loadavg + /proc/pressure/cpu, no
+  # per-lane enumeration needed. Knob VALUES below MUST match the script's
+  # :-fallback defaults (cross-checked by tests/infra/test_fleet_load_detector
+  # .sh Block I, kept self-contained rather than enlarging
+  # test_cpu_governance_config.sh). `enabled` is DF-consumed (not grep-checked
+  # against a reify script, exactly like DF_AGENT_CPU_GOVERN above) — dark-
+  # factory L3b (out of scope for reify; docs/prds/run-all-pool-contention-
+  # tiering-fix.md §9) reads this block to wire the periodic invocation +
+  # dispatch-admission cap/escalation action. orchestrator.yaml loads once at
+  # startup, so a config edit needs commit-then-restart to take effect on the
+  # DF side (deploy-time concern, not verified here).
+  fleet_load_detector:
+    enabled: true
+    ratio_threshold: 4.0  # REIFY_FLEET_LOAD_RATIO_THRESHOLD (scripts/fleet-load-detector.sh)
+    avg10_threshold: 80   # REIFY_FLEET_LOAD_AVG10_THRESHOLD (scripts/fleet-load-detector.sh)
 
 # ── Warm-lane CoW pool (Phase 6, task ε #4663) ───────────────────────────────
 # reify ships the primitives: scripts/{provision-warm-lane-fs,seed-warm-lane,
