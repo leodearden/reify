@@ -2720,6 +2720,58 @@ impl Mesh {
             });
         }
 
+        // Obligation 2 — IndexValid: `indices.len()` must be a multiple of 3
+        // and every index must reference an in-bounds vertex. Runs before
+        // welding (later obligations) so an out-of-bounds index cannot panic
+        // the weld remap.
+        let mut oob_indices = 0usize;
+        let mut index_witness: Option<(usize, [u32; 3])> = None;
+        let complete_tris = self.indices.len() / 3;
+        for tri in 0..complete_tris {
+            let base = tri * 3;
+            let tri_indices = [
+                self.indices[base],
+                self.indices[base + 1],
+                self.indices[base + 2],
+            ];
+            let oob_here = tri_indices
+                .iter()
+                .filter(|&&idx| mesh_vertex(&self.vertices, idx).is_none())
+                .count();
+            if oob_here > 0 {
+                oob_indices += oob_here;
+                if index_witness.is_none() {
+                    index_witness = Some((tri, tri_indices));
+                }
+            }
+        }
+        if !self.indices.len().is_multiple_of(3) {
+            // A dangling trailing group that doesn't form a full triangle —
+            // counted as the one offending group (not per leftover index).
+            oob_indices += 1;
+            if index_witness.is_none() {
+                let base = complete_tris * 3;
+                let mut tail = [u32::MAX; 3];
+                for (slot, &v) in tail.iter_mut().zip(&self.indices[base..]) {
+                    *slot = v;
+                }
+                index_witness = Some((complete_tris, tail));
+            }
+        }
+        if let Some((tri, tri_indices)) = index_witness {
+            return Err(MeshContractViolation {
+                invariant: MeshInvariant::IndexValid,
+                counts: MeshViolationCounts {
+                    oob_indices,
+                    ..Default::default()
+                },
+                witness: MeshWitness::Triangle {
+                    tri,
+                    indices: tri_indices,
+                },
+            });
+        }
+
         Ok(ValidatedMesh(self.clone()))
     }
 }
