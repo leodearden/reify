@@ -93,6 +93,67 @@ _slow_terminate_for() {
 }
 
 # ---------------------------------------------------------------------------
+# Helper (task 5141 amend — reviewer test-quality finding): extract the
+# `period` seconds integer from a `slow-timeout = { period = "Ns",
+# terminate-after = M }` line inside a [[profile.default.overrides]] block
+# whose filter contains both package(<pkg>) and binary(<bin>). Mirrors
+# _slow_terminate_for_file's block-walk but pulls the period digits instead
+# of terminate-after. Feeds Assertion H below so its 2-tier ordering/wall-
+# bound arithmetic is computed FROM parsed file content rather than repeating
+# hardcoded literals that could never fail regardless of the file's contents.
+# Usage: _slow_period_for_file <file> <pkg> <binary>
+# ---------------------------------------------------------------------------
+_slow_period_for_file() {
+    local file="$1" pkg="package(${2})" bin="binary(${3})"
+    awk -v pkg="$pkg" -v bin="$bin" '
+        /^\[\[/ { in_block = 0 }
+        /filter/ && index($0, pkg) && index($0, bin) { in_block = 1 }
+        in_block && /^[[:space:]]*slow-timeout[[:space:]]*=/ {
+            match($0, /period[[:space:]]*=[[:space:]]*"[0-9]+s"/)
+            seg = substr($0, RSTART, RLENGTH)
+            match(seg, /[0-9]+/)
+            print substr(seg, RSTART, RLENGTH)
+            in_block = 0
+        }
+    ' "$file"
+}
+
+# Convenience wrapper for the canonical nextest.toml.
+_slow_period_for() {
+    _slow_period_for_file "$NEXTEST_TOML" "$1" "$2"
+}
+
+# ---------------------------------------------------------------------------
+# Helper (task 5141 amend): compute period-seconds * terminate-after for the
+# [profile.default] table's slow-timeout — section-scoped to that table only
+# (excludes [[profile.default.overrides]] blocks), mirroring
+# test_occt_gated_scope.sh's _DEFAULT_ST_AWK extractor. Prints the product
+# (e.g. "1200") or an empty string if [profile.default]'s slow-timeout is
+# missing. Feeds Assertion H so the default-tier ceiling it compares against
+# is likewise parsed from the file, not a repeated literal.
+# Usage: _default_slow_timeout_seconds_for_file <file>
+# ---------------------------------------------------------------------------
+_default_slow_timeout_seconds_for_file() {
+    local file="$1"
+    awk '
+        /^\[profile\.default\]/ { f = 1; next }
+        /^\[/ { f = 0 }
+        f && /slow-timeout/ {
+            match($0, /period[[:space:]]*=[[:space:]]*"[0-9]+s"/)
+            pseg = substr($0, RSTART, RLENGTH)
+            match(pseg, /[0-9]+/)
+            period = substr(pseg, RSTART, RLENGTH) + 0
+            match($0, /terminate-after[[:space:]]*=[[:space:]]*[0-9]+/)
+            tseg = substr($0, RSTART, RLENGTH)
+            match(tseg, /[0-9]+$/)
+            term = substr(tseg, RSTART, RLENGTH) + 0
+            print period * term
+            exit
+        }
+    ' "$file"
+}
+
+# ---------------------------------------------------------------------------
 # Precompute priority values from nextest.toml (in current shell, not subshell).
 # This makes assertions simple test -n / test -gt checks on already-resolved values.
 # ---------------------------------------------------------------------------
@@ -325,19 +386,69 @@ assert "gen-nextest-config.sh: determinism slow-timeout terminate-after = 15 pre
     test "${_GST_DET:-}" = "15"
 
 # ---------------------------------------------------------------------------
-# Assertion H (task 5141): 2-tier ordering + wall bound. The heavy ceiling
-# (120*15=1800s) is strictly greater than the default ceiling (120*10=1200s,
-# test_occt_gated_scope.sh Test 16c) and strictly less than the 3600s (60m)
-# pass-level wall — both tiers attribute-and-kill before the outer timeout
-# fires exit 124 with zero attribution.
+# Assertion H (task 5141; amended — reviewer test-quality finding): 2-tier
+# ordering + wall bound. For each of the 5 heavy binaries, its ceiling
+# (period-seconds * terminate-after — BOTH FACTORS EXTRACTED FROM
+# nextest.toml via _slow_period_for/ST_* above, not hardcoded literals) is
+# strictly greater than the [profile.default] ceiling (likewise extracted via
+# _default_slow_timeout_seconds_for_file; test_occt_gated_scope.sh Test 16c
+# performs the equivalent file-derived check of the default ceiling against
+# the 3600s wall) and strictly less than the 3600s (60m) pass-level wall.
+# Both tiers attribute-and-kill before the outer timeout fires exit 124 with
+# zero attribution.
+#
+# The original form of this assertion (`test $((120*15)) -gt $((120*10))`)
+# was pure arithmetic on literals that never read nextest.toml — it could
+# never fail regardless of what the file contained. Deriving both operands
+# from the parsed config ties the check to actual state, so an edit to any
+# heavy block's period/terminate-after (or to [profile.default]'s) that broke
+# the ordering/wall invariant would now fail here.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Assertion H (task 5141): 2-tier ordering — heavy (1800s) > default (1200s), both < 3600s wall ---"
+echo "--- Assertion H (task 5141): 2-tier ordering — heavy ceiling > default ceiling, both < 3600s wall (values extracted from nextest.toml) ---"
 
-assert "heavy slow-timeout ceiling (120*15=1800s) is strictly greater than the default ceiling (120*10=1200s)" \
-    test $((120 * 15)) -gt $((120 * 10))
+SP_T0A="$(_slow_period_for reify-eval tensegrity_t0a)"
+SP_FEA="$(_slow_period_for reify-eval-fea-tests fea_diagnostics_e2e)"
+SP_REPR="$(_slow_period_for reify-eval representation_within_assertion)"
+SP_ANAL="$(_slow_period_for reify-solver-elastic analytical_validation)"
+SP_DET="$(_slow_period_for reify-solver-elastic determinism)"
 
-assert "heavy slow-timeout ceiling (120*15=1800s) is strictly less than the 3600s (60m) pass-level wall" \
-    test $((120 * 15)) -lt 3600
+DEFAULT_SECONDS="$(_default_slow_timeout_seconds_for_file "$NEXTEST_TOML")"
+
+HS_T0A=$(( ${SP_T0A:-0} * ${ST_T0A:-0} ))
+HS_FEA=$(( ${SP_FEA:-0} * ${ST_FEA:-0} ))
+HS_REPR=$(( ${SP_REPR:-0} * ${ST_REPR:-0} ))
+HS_ANAL=$(( ${SP_ANAL:-0} * ${ST_ANAL:-0} ))
+HS_DET=$(( ${SP_DET:-0} * ${ST_DET:-0} ))
+
+assert "tensegrity_t0a heavy ceiling (${HS_T0A}s = period ${SP_T0A:-unset}s * terminate-after ${ST_T0A:-unset}) is strictly greater than the default ceiling (${DEFAULT_SECONDS:-unset}s), both extracted from nextest.toml" \
+    bash -c "[ -n '${HS_T0A:-}' ] && [ -n '${DEFAULT_SECONDS:-}' ] && [ '${HS_T0A:-0}' -gt '${DEFAULT_SECONDS:-0}' ]"
+
+assert "fea_diagnostics_e2e heavy ceiling (${HS_FEA}s = period ${SP_FEA:-unset}s * terminate-after ${ST_FEA:-unset}) is strictly greater than the default ceiling (${DEFAULT_SECONDS:-unset}s), both extracted from nextest.toml" \
+    bash -c "[ -n '${HS_FEA:-}' ] && [ -n '${DEFAULT_SECONDS:-}' ] && [ '${HS_FEA:-0}' -gt '${DEFAULT_SECONDS:-0}' ]"
+
+assert "representation_within_assertion heavy ceiling (${HS_REPR}s = period ${SP_REPR:-unset}s * terminate-after ${ST_REPR:-unset}) is strictly greater than the default ceiling (${DEFAULT_SECONDS:-unset}s), both extracted from nextest.toml" \
+    bash -c "[ -n '${HS_REPR:-}' ] && [ -n '${DEFAULT_SECONDS:-}' ] && [ '${HS_REPR:-0}' -gt '${DEFAULT_SECONDS:-0}' ]"
+
+assert "analytical_validation heavy ceiling (${HS_ANAL}s = period ${SP_ANAL:-unset}s * terminate-after ${ST_ANAL:-unset}) is strictly greater than the default ceiling (${DEFAULT_SECONDS:-unset}s), both extracted from nextest.toml" \
+    bash -c "[ -n '${HS_ANAL:-}' ] && [ -n '${DEFAULT_SECONDS:-}' ] && [ '${HS_ANAL:-0}' -gt '${DEFAULT_SECONDS:-0}' ]"
+
+assert "determinism heavy ceiling (${HS_DET}s = period ${SP_DET:-unset}s * terminate-after ${ST_DET:-unset}) is strictly greater than the default ceiling (${DEFAULT_SECONDS:-unset}s), both extracted from nextest.toml" \
+    bash -c "[ -n '${HS_DET:-}' ] && [ -n '${DEFAULT_SECONDS:-}' ] && [ '${HS_DET:-0}' -gt '${DEFAULT_SECONDS:-0}' ]"
+
+assert "tensegrity_t0a heavy ceiling (${HS_T0A}s, extracted from nextest.toml) is strictly less than the 3600s (60m) pass-level wall" \
+    bash -c "[ -n '${HS_T0A:-}' ] && [ '${HS_T0A:-0}' -lt 3600 ]"
+
+assert "fea_diagnostics_e2e heavy ceiling (${HS_FEA}s, extracted from nextest.toml) is strictly less than the 3600s (60m) pass-level wall" \
+    bash -c "[ -n '${HS_FEA:-}' ] && [ '${HS_FEA:-0}' -lt 3600 ]"
+
+assert "representation_within_assertion heavy ceiling (${HS_REPR}s, extracted from nextest.toml) is strictly less than the 3600s (60m) pass-level wall" \
+    bash -c "[ -n '${HS_REPR:-}' ] && [ '${HS_REPR:-0}' -lt 3600 ]"
+
+assert "analytical_validation heavy ceiling (${HS_ANAL}s, extracted from nextest.toml) is strictly less than the 3600s (60m) pass-level wall" \
+    bash -c "[ -n '${HS_ANAL:-}' ] && [ '${HS_ANAL:-0}' -lt 3600 ]"
+
+assert "determinism heavy ceiling (${HS_DET}s, extracted from nextest.toml) is strictly less than the 3600s (60m) pass-level wall" \
+    bash -c "[ -n '${HS_DET:-}' ] && [ '${HS_DET:-0}' -lt 3600 ]"
 
 test_summary

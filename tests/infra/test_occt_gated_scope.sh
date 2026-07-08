@@ -497,12 +497,25 @@ assert "gen-nextest-config.sh: default-tier slow-timeout preserved verbatim in g
         exit \$rc
     "
 
-# Test 16c: numeric basis — default ceiling 120*10=1200s is strictly less than
-# the 3600s (60m) pass-level wall (verify.sh timeout --kill-after=60 60m), so
+# Test 16c (amended — reviewer test-quality finding): numeric basis — the
+# default ceiling (period-seconds * terminate-after, BOTH FACTORS EXTRACTED
+# FROM nextest.toml below, not hardcoded literals) is strictly less than the
+# 3600s (60m) pass-level wall (verify.sh timeout --kill-after=60 60m), so
 # nextest attributes-and-kills a hang BEFORE the outer timeout fires exit 124
 # with zero attribution.
-assert "default slow-timeout ceiling (120*10=1200s) is strictly less than the 3600s (60m) pass-level wall" \
-    test $((120 * 10)) -lt 3600
+#
+# The original form (`test $((120*10)) -lt 3600`) was pure arithmetic on
+# literals that never read nextest.toml — it could never fail regardless of
+# the file's contents. Extracting period and terminate-after from the actual
+# [profile.default] table ties the check to real state, so an edit that
+# pushed the product past the wall would now fail here.
+_DEFAULT_ST_PERIOD_AWK='/^\[profile\.default\]/{f=1;next}/^\[/{f=0}f&&/slow-timeout/{match($0,/period[[:space:]]*=[[:space:]]*"[0-9]+s"/);seg=substr($0,RSTART,RLENGTH);match(seg,/[0-9]+/);print substr(seg,RSTART,RLENGTH);exit}'
+_DEFAULT_ST_TERM_AWK='/^\[profile\.default\]/{f=1;next}/^\[/{f=0}f&&/slow-timeout/{match($0,/terminate-after[[:space:]]*=[[:space:]]*[0-9]+/);seg=substr($0,RSTART,RLENGTH);match(seg,/[0-9]+$/);print substr(seg,RSTART,RLENGTH);exit}'
+_DEFAULT_ST_PERIOD="$(awk "$_DEFAULT_ST_PERIOD_AWK" "$NEXTEST_TOML")"
+_DEFAULT_ST_TERM="$(awk "$_DEFAULT_ST_TERM_AWK" "$NEXTEST_TOML")"
+
+assert "default slow-timeout ceiling (period=${_DEFAULT_ST_PERIOD:-unset}s * terminate-after=${_DEFAULT_ST_TERM:-unset}, both extracted from nextest.toml) is strictly less than the 3600s (60m) pass-level wall" \
+    bash -c "[ -n '${_DEFAULT_ST_PERIOD:-}' ] && [ -n '${_DEFAULT_ST_TERM:-}' ] && [ \$(( ${_DEFAULT_ST_PERIOD:-0} * ${_DEFAULT_ST_TERM:-0} )) -lt 3600 ]"
 
 # Test 16d: REGRESSION GUARD (green-on-arrival) — no `retries` key anywhere in
 # nextest.toml or the generated config. A retry would re-run and mask the very
