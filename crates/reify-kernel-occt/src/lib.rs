@@ -4726,6 +4726,18 @@ mod tests {
         entries
     }
 
+    /// Capture `from`'s warm state and restore it into `into` — which may be
+    /// a freshly constructed kernel or one that already has its own state
+    /// (a "dirty" consumer) — returning the restored kernel. Shared by the
+    /// warm-start round-trip tests so each test body leads with its distinct
+    /// scenario setup and assertions instead of repeating the
+    /// capture/restore boilerplate.
+    fn warm_restore(from: &OcctKernel, mut into: OcctKernel) -> OcctKernel {
+        let state = from.warm_state().expect("kernel should have warm state");
+        into.with_warm_state(state);
+        into
+    }
+
     /// RED step-1 (task 4999): `GeometryOp::Surface` is a Mesh-repr terminal
     /// anchor fed by a Voxel→Mesh conversion edge (PRD
     /// docs/prds/v0_3/voxel-to-mesh-surfacing.md C-1) — it must never reach
@@ -4933,11 +4945,7 @@ mod tests {
         );
 
         // 4. Round-trip.
-        let state = kernel_a
-            .warm_state()
-            .expect("kernel should have warm state");
-        let mut kernel_b = OcctKernel::new();
-        kernel_b.with_warm_state(state);
+        let kernel_b = warm_restore(&kernel_a, OcctKernel::new());
 
         // 5. Post-warm: face handle must still report BRepKind::Face (the regression).
         assert_eq!(
@@ -4973,9 +4981,6 @@ mod tests {
                 depth: Value::Real(30.0),
             })
             .unwrap();
-        let state = kernel_a
-            .warm_state()
-            .expect("kernel_a should have warm state");
 
         // Kernel B: dirty consumer. It already has extraction provenance
         // (parent_handle entries) from its own cylinder before the restore.
@@ -5009,7 +5014,7 @@ mod tests {
         // Warm-start kernel B with kernel A's box-only state (shapes={1},
         // next_id=2). This wholesale-swaps kernel B's shape table out from
         // under its stale parent_handle entries.
-        kernel_b.with_warm_state(state);
+        let mut kernel_b = warm_restore(&kernel_a, kernel_b);
 
         // RED on current main: parent_handle is never cleared by
         // with_warm_state, so OwnerBody(stale_child) still resolves to
