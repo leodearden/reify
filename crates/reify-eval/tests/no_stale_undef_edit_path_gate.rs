@@ -138,3 +138,130 @@ fn edit_param_let_backed_selector_consumer_reresolves_and_invariant_green() {
          edit-closure scenario after edit_param, got {violations:?}"
     );
 }
+
+/// Modified sibling of the ε fixture, used only by the `edit_source` test
+/// below: same `loc_box -> loc -> probe` chain, but `loc_box`'s `box()`
+/// dimension changes (30mm -> 40mm) so the edit is observable — a
+/// byte-identical module would make the re-resolution assertion vacuous.
+const EDIT_FIXTURE_SOURCE_MODIFIED: &str = r#"structure def GeometryLetSelectorConsumerEdit {
+    param w : Length = 50mm
+    let loc_box = box(w, 40mm, 10mm)
+    let loc = faces_by_normal(loc_box, vec3(0.0, 0.0, 1.0), 1deg)
+    let probe = loc
+}"#;
+
+/// Deliverable 1 (§6.1 "ε extends it graph-natively to edit_param/
+/// edit_source"): the same geometry-let -> selector -> consumer chain must
+/// re-resolve (non-Undef) after `edit_source` too, AND the edit-path
+/// invariant must stay green — proving the graph-native checker is reused
+/// unchanged over edit_source's `eval_state` install (engine_edit.rs:3805-3809),
+/// not just edit_param's.
+#[test]
+fn edit_source_geometry_let_selector_chain_invariant_green() {
+    let source = read_edit_fixture();
+    let compiled = compile_source_with_stdlib(&source);
+    let errors = collect_errors(&compiled.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "geometry_let_selector_consumer_edit.ri should compile without errors: {errors:#?}"
+    );
+
+    let mut engine = Engine::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    reify_eval::compute_targets::register_compute_fns(&mut engine);
+
+    let probe_id = ValueCellId::new("GeometryLetSelectorConsumerEdit", "probe");
+    let loc_box_id = ValueCellId::new("GeometryLetSelectorConsumerEdit", "loc_box");
+
+    // Baseline: prove the chain resolves BEFORE the edit too, so the
+    // post-edit assertion below proves RE-resolution, not just initial
+    // resolution.
+    let baseline = engine.eval(&compiled);
+    let baseline_probe = baseline
+        .values
+        .get(&probe_id)
+        .cloned()
+        .expect("probe should be in baseline values");
+    assert!(
+        matches!(baseline_probe, Value::Selector(_)),
+        "baseline: GeometryLetSelectorConsumerEdit.probe must resolve to a \
+         Value::Selector before the edit — got {baseline_probe:?}"
+    );
+    let baseline_loc_box_hash = match baseline.values.get(&loc_box_id) {
+        Some(Value::GeometryHandle {
+            upstream_values_hash,
+            ..
+        }) => *upstream_values_hash,
+        other => panic!(
+            "baseline: GeometryLetSelectorConsumerEdit.loc_box must hydrate to a \
+             Value::GeometryHandle — got {other:?}"
+        ),
+    };
+
+    let modified_compiled = compile_source_with_stdlib(EDIT_FIXTURE_SOURCE_MODIFIED);
+    let modified_errors = collect_errors(&modified_compiled.diagnostics);
+    assert!(
+        modified_errors.is_empty(),
+        "the modified edit_source module should compile without errors: {modified_errors:#?}"
+    );
+
+    let result = engine
+        .edit_source(&modified_compiled)
+        .expect("edit_source should succeed after a prior eval()");
+
+    // Non-vacuity guard (anti-silent-accept): loc_box's minted upstream hash
+    // must actually change, or the re-resolution proved below would be
+    // vacuous (the same values recomputed from a byte-identical module).
+    let post_edit_loc_box_hash = match result.values.get(&loc_box_id) {
+        Some(Value::GeometryHandle {
+            upstream_values_hash,
+            ..
+        }) => *upstream_values_hash,
+        other => panic!(
+            "post-edit_source: GeometryLetSelectorConsumerEdit.loc_box must \
+             still hydrate to a Value::GeometryHandle — got {other:?}"
+        ),
+    };
+    assert_ne!(
+        baseline_loc_box_hash, post_edit_loc_box_hash,
+        "the edited box() dimension must change loc_box's minted upstream \
+         hash, or the re-resolution this test proves would be vacuous"
+    );
+
+    let post_edit_probe = result
+        .values
+        .get(&probe_id)
+        .expect("probe should be in post-edit values");
+    assert!(
+        !matches!(post_edit_probe, Value::Undef),
+        "miss #5 closure: GeometryLetSelectorConsumerEdit.probe must NOT be \
+         Value::Undef after edit_source — got {post_edit_probe:?}"
+    );
+    assert!(
+        matches!(post_edit_probe, Value::Selector(_)),
+        "GeometryLetSelectorConsumerEdit.probe must re-resolve to a \
+         Value::Selector after edit_source — got {post_edit_probe:?}"
+    );
+
+    // Non-vacuity guard (anti-silent-accept): the checker below must be
+    // inspecting REAL post-edit state, not an empty/absent one.
+    let state = engine
+        .eval_state()
+        .expect("eval_state must be populated after edit_source");
+    for member in ["loc_box", "loc", "probe"] {
+        let id = ValueCellId::new("GeometryLetSelectorConsumerEdit", member);
+        assert!(
+            state.snapshot.graph.value_cells.contains_key(&id),
+            "post-edit graph must retain the {member} value cell"
+        );
+    }
+
+    let violations = engine.check_no_stale_undef();
+    assert!(
+        violations.is_empty(),
+        "edit-path invariant must be green over the ε geometry-let/selector \
+         edit-closure scenario after edit_source, got {violations:?}"
+    );
+}
