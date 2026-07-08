@@ -599,6 +599,56 @@ assert "ensure_tree_sitter_ready: non-healing case emits a non-empty diagnostic 
     bash -c '[ -s "$1" ] && grep -qi "tree-sitter" "$1"' _ "$_ETSR_ERR3"
 
 # ===========================================================================
+# _assert_serialized_events unit tests (Part E helper, task 5144 F2)
+# ===========================================================================
+# Guarded replacement for Section A's raw `test "$A_MAX_ACQ" -ge "$A_MIN_REL"`
+# causal check: validates ACQUIRE/RELEASE counts and both timestamps are
+# non-empty integers BEFORE any `-ge` comparison, so `test` never sees an
+# empty/non-numeric operand. This is the fix for the 5077 log's failure mode:
+# both nested verify runs exited 127, leaving an EMPTY event log, so
+# A_MAX_ACQ/A_MIN_REL came back empty and the raw `test "" -ge ""` produced
+# "test_helpers.sh: line 42: test: : integer expression expected" — a SYMPTOM
+# of the empty event log (test_helpers.sh's line-42 `if "$@"` merely executed
+# the caller's malformed comparison), not a test_helpers.sh bug.
+echo ""
+echo "--- _assert_serialized_events unit tests (Part E helper, task 5144 F2) ---"
+
+_ASE_DIR="$(mktemp -d)"
+_TMPDIRS+=("$_ASE_DIR")
+
+# Case 1: acq=2 rel=2 max_acq=200 min_rel=100 -> serialized (rc 0).
+_ASE_OUT1="$_ASE_DIR/case1.txt"
+_ASE_RC1=0
+_run_capturing "$_ASE_OUT1" _assert_serialized_events 2 2 200 100 || _ASE_RC1=$?
+
+assert "_assert_serialized_events: acq=2 rel=2 max_acq=200 min_rel=100 -> rc 0 (serialized, got ${_ASE_RC1})" \
+    test "$_ASE_RC1" -eq 0
+
+# Case 2: acq=2 rel=2 max_acq=100 min_rel=200 -> NOT serialized (rc non-zero, clear message).
+_ASE_OUT2="$_ASE_DIR/case2.txt"
+_ASE_RC2=0
+_run_capturing "$_ASE_OUT2" _assert_serialized_events 2 2 100 200 || _ASE_RC2=$?
+
+assert "_assert_serialized_events: acq=2 rel=2 max_acq=100 min_rel=200 -> rc non-zero (NOT serialized, got ${_ASE_RC2})" \
+    test "$_ASE_RC2" -ne 0
+assert "_assert_serialized_events: NOT-serialized case emits a non-empty diagnostic message" \
+    bash -c '[ -s "$1" ]' _ "$_ASE_OUT2"
+
+# Case 3: acq=0 rel=0 max_acq="" min_rel="" (empty event log — the 5077 case)
+# -> rc non-zero, output does NOT contain "integer expression expected", DOES
+# contain a clear "event log empty"/"no ACQUIRE/RELEASE events" diagnostic.
+_ASE_OUT3="$_ASE_DIR/case3.txt"
+_ASE_RC3=0
+_run_capturing "$_ASE_OUT3" _assert_serialized_events 0 0 "" "" || _ASE_RC3=$?
+
+assert "_assert_serialized_events: empty event log (acq=0 rel=0) -> rc non-zero (got ${_ASE_RC3})" \
+    test "$_ASE_RC3" -ne 0
+assert "_assert_serialized_events: empty event log -> output does NOT contain 'integer expression expected'" \
+    bash -c '! grep -qF "integer expression expected" "$1"' _ "$_ASE_OUT3"
+assert "_assert_serialized_events: empty event log -> output names the empty event log (event log empty / no ACQUIRE.RELEASE events)" \
+    bash -c 'grep -Eqi "event log (is )?empty|no ACQUIRE.*RELEASE events" "$1"' _ "$_ASE_OUT3"
+
+# ===========================================================================
 # Suite-start tree-sitter readiness gate (task 5144 F1)
 # ===========================================================================
 # ONE-TIME real regeneration/readiness check, before ANY execute-mode section
