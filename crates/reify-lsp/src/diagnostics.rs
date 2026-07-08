@@ -2153,7 +2153,16 @@ structure S {
         // posture (Engine::new(SimpleConstraintChecker, None), no
         // trampoline registration) — a sanity check on that shared
         // construction idiom, not a direct introspection of
-        // compute_diagnostics's own internal engine.
+        // compute_diagnostics's own internal engine. Because
+        // `stateless_probe` is a distinct instance from the engine
+        // `compute_diagnostics` builds and drops internally, the
+        // `assert_no_false_violation_or_pass` call below on THIS surface is
+        // a redundant belt-and-suspenders check, not the authoritative
+        // lock — if compute_diagnostics's internal engine ever diverged
+        // from this construction, a false violation there could in
+        // principle slip past this comparison. The authoritative lock for
+        // this contract is the stateful surface below, which reads
+        // `state.engine` — the actual production engine instance — directly.
         let stateless_diags = compute_diagnostics(FEA_BEARING_SRC, &uri);
 
         let checker = SimpleConstraintChecker;
@@ -2212,7 +2221,20 @@ structure S {
     /// false violation, matched via the same formatter production uses, not
     /// a drift-prone substring); (b) zero `Violated` and zero `Satisfied`
     /// constraints, with at least one `Indeterminate` (no false pass on any
-    /// individual constraint, and not silently missing or all-satisfied).
+    /// individual constraint, and not silently missing or all-satisfied);
+    /// (c) `Indeterminate` accounts for *every* entry in `constraint_results`
+    /// — this closes the loop against any future `Satisfaction` variant
+    /// beyond `{Violated, Satisfied, Indeterminate}` silently absorbing a
+    /// false pass that the explicit counts in (b) wouldn't individually
+    /// catch.
+    ///
+    /// Note on the stateless (`compute_diagnostics`) call site: its
+    /// `check_result` argument is produced by an independently constructed
+    /// probe engine, not the exact internal engine `compute_diagnostics`
+    /// builds and drops (see that call site's comment) — that invocation is
+    /// a redundant belt-and-suspenders check. The stateful
+    /// (`compute_diagnostics_with_state`) call site, which reads
+    /// `state.engine` directly, is the authoritative lock for this contract.
     fn assert_no_false_violation_or_pass(
         diagnostics: &[lsp_types::Diagnostic],
         check_result: &reify_eval::CheckResult,
@@ -2269,6 +2291,24 @@ structure S {
              constraint under the trampoline-free posture); got 0 — the \
              constraint may be silently Satisfied (false pass) or missing \
              entirely. constraint_results: {:#?}",
+            check_result.constraint_results
+        );
+        // Closed-world closer: the three checks above only guard the two
+        // named variants (Violated, Satisfied) plus "at least one
+        // Indeterminate exists" — they don't by themselves rule out a
+        // constraint landing in some future non-{Violated, Satisfied,
+        // Indeterminate} `Satisfaction` variant, which would pass all three
+        // yet still be a silent false pass. Assert Indeterminate accounts
+        // for EVERY constraint in this FEA-only fixture, which holds
+        // regardless of how many variants `Satisfaction` has.
+        assert_eq!(
+            indeterminate_count,
+            check_result.constraint_results.len(),
+            "{surface}: every constraint in this FEA-only fixture must be \
+             Indeterminate; violated={violated_count}, \
+             satisfied={satisfied_count}, indeterminate={indeterminate_count}, \
+             total={}; constraint_results: {:#?}",
+            check_result.constraint_results.len(),
             check_result.constraint_results
         );
     }
