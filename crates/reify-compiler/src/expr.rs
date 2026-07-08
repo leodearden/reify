@@ -1838,6 +1838,48 @@ pub(crate) fn compile_expr_guarded_with_expected(
                         }
                     }
 
+                    // Operand-kind guard for `*`/`/` (task compiler-type-hygiene β2,
+                    // INV-COMP-3, `E_ArithOperandKind`).
+                    //
+                    // `infer_binop_type`'s `Mul`/`Div` arm delegates to
+                    // `infer_mul_div_result`, which returns `None` for any operand-kind
+                    // pairing the runtime evaluator (`eval_mul`/`eval_div`) has no
+                    // intentional arm for — a structural, kind-level `Value::Undef`. See
+                    // `infer_mul_div_result`'s doc for the full supported/unsupported
+                    // partition, pinned against the β1 runtime truth table.
+                    //
+                    // Gradualism: skip when either operand is already `Type::Error`
+                    // (poison) or `Type::TypeParam(_)` (unresolved generic) — mirrors the
+                    // Cmp/logical guards' skip (PRD decision 3 / §8 row 8).
+                    //
+                    // Unlike the Cmp/logical guards (which keep their unconditional `Bool`
+                    // result), this guard POISONS `result_type` to `Type::Error` — `*`/`/`
+                    // produce a value type, so a mistyped product must stop follow-on
+                    // cascades on that value (mirrors the Pow/Mod poison precedent).
+                    if matches!(bin_op, BinOp::Mul | BinOp::Div)
+                        && !matches!(compiled_left.result_type, Type::Error | Type::TypeParam(_))
+                        && !matches!(compiled_right.result_type, Type::Error | Type::TypeParam(_))
+                        && type_compat::infer_mul_div_result(
+                            bin_op,
+                            &compiled_left.result_type,
+                            &compiled_right.result_type,
+                        )
+                        .is_none()
+                    {
+                        result_type = make_poison_type(
+                            diagnostics,
+                            Diagnostic::error(format!(
+                                "operator `{op}` is undefined for operand kinds `{}` and `{}`",
+                                compiled_left.result_type, compiled_right.result_type,
+                            ))
+                            .with_code(DiagnosticCode::ArithOperandKind)
+                            .with_label(DiagnosticLabel::new(
+                                expr.span,
+                                "unsupported operand kinds",
+                            )),
+                        );
+                    }
+
                     CompiledExpr::binop(bin_op, compiled_left, compiled_right, result_type)
                 }
                 None => {
