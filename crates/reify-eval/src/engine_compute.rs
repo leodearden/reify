@@ -158,6 +158,28 @@ impl crate::Engine {
         // assumption — such a trampoline must reorder its mutation to after
         // all fallible extraction, or this dispatcher needs a stronger
         // recovery story than "convert to Failed".
+        //
+        // This is partially, not just documentation-only, backed by the
+        // `ComputeFn` signature itself: every parameter is an immutable
+        // domain value (`&[Value]`, `&Value`) or a narrow read-only/
+        // cooperative-signal handle (`&[RealizationReadHandle]`,
+        // `Option<&OpaqueState>`, `&CancellationHandle`) — none is `&mut`, so
+        // no trampoline can reach engine cache/registry state through its own
+        // arguments. `OpaqueState::new`'s `T: Send + Sync` bound
+        // (reify-ir/src/warm.rs) additionally rejects `Cell`/`RefCell`/`Rc`
+        // interior mutability from ever being smuggled through the
+        // warm-state channel. What is NOT mechanically caught: a trampoline
+        // reaching for its own module-level global (e.g. a `static
+        // OnceLock<Mutex<..>>`) is invisible to both this signature and to
+        // `catch_unwind` — that residual case still relies on code review,
+        // per the "must reorder its mutation" rule above. A stronger
+        // mechanical check (e.g. a lint against `static`/`thread_local`
+        // mutation under `compute_targets::*`, or a checklist item in
+        // compute-fea-hardening.md's registration contract) would touch
+        // `register_compute_fn` (engine_admin.rs) and/or the PRD doc, both
+        // outside this task's locked module (engine_compute.rs only);
+        // flagged via escalate_info as a follow-up rather than attempted
+        // here.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             f(
                 value_inputs,
@@ -4097,8 +4119,12 @@ mod tests {
     // keep in sync) without proving anything beyond what one representative
     // case already proves — the mechanism itself is fully pinned by the
     // synthetic tests (a)/(b) above. Collapsed to the single Undef-material
-    // case below; see that test's doc comment for why its assertion is also
-    // deliberately looser than (a)/(b)'s.
+    // case below. Amendment (review round 3): the collapse had also
+    // regressed the assertion to a bare `matches!(.., Some(Failed{..}))`,
+    // silently dropping the "panicked"-wording check a still-earlier round
+    // had added specifically so this test couldn't go green via a graceful
+    // (non-panic) `Failed` return instead of an actually-caught panic.
+    // Restored below so the single case asserts the same wording as (a)/(b).
     //
     // Baseline `value_inputs` mirrors the dims-overload layout
     // `[material, length, width, height, loads, supports, options]`
@@ -4141,20 +4167,22 @@ mod tests {
     /// (c) A real, registered `ComputeFn` (`solve_elastic_static_trampoline`)
     /// panicking on Undef material — `classify_material`/`extract_material`
     /// panic (elastic_static.rs:3373/3712) — must also become
-    /// `Some(ComputeOutcome::Failed{..})`, proving the mechanism protects a
-    /// genuine trampoline, not just the synthetic ones in (a)/(b).
+    /// `Some(ComputeOutcome::Failed{..})` with a diagnostic naming the target
+    /// and "panicked", proving the mechanism protects a genuine trampoline,
+    /// not just the synthetic ones in (a)/(b).
     ///
-    /// Deliberately asserts only the structural outcome
-    /// (`Some(Failed{..})`), not the diagnostic message's wording: the
-    /// "panicked" + target-name wording is already pinned precisely by
-    /// (a)/(b), whose synthetic trampolines always panic by construction.
-    /// Whether `elastic_static`'s input extraction panics on Undef is a
-    /// property of `compute_targets::elastic_static` (out of this task's
-    /// scope), not of `invoke_compute_trampoline`. If those extraction sites
-    /// are later hardened to return a graceful `Failed` instead of panicking
-    /// (a plausible future step under the same compute-fea-hardening PRD),
-    /// this test stays green rather than needing an update — "returns
-    /// Some(Failed{..}), not an unwind" holds exactly the same either way.
+    /// Asserts the "panicked" wording (only ever emitted by
+    /// `invoke_compute_trampoline`'s `catch_unwind` `Err` arm, per (a)/(b)
+    /// above) rather than merely `matches!(.., Some(Failed{..}))`: the
+    /// looser form would also pass if `elastic_static`'s input extraction
+    /// returned a graceful (non-panic) `Failed` for Undef material, which
+    /// would leave this test green without the trampoline ever having
+    /// panicked — silently losing its one job of proving the `catch_unwind`
+    /// boundary actually fired on a genuine trampoline. Whether that
+    /// extraction currently panics (rather than failing gracefully) on Undef
+    /// material is a property of `compute_targets::elastic_static` (out of
+    /// this task's scope) — but as long as it does, this test must pin the
+    /// panic having been *caught*, not just that some `Failed` came back.
     #[test]
     fn invoke_compute_trampoline_real_trampoline_undef_material_becomes_failed_outcome() {
         let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
@@ -4182,11 +4210,22 @@ mod tests {
             &CancellationHandle::new(),
         );
 
-        assert!(
-            matches!(result, Some(ComputeOutcome::Failed { .. })),
-            "expected Some(ComputeOutcome::Failed {{ .. }}) for Undef material, \
-             got {result:?}"
-        );
+        match result {
+            Some(ComputeOutcome::Failed { diagnostics, .. }) => {
+                assert!(
+                    diagnostics.iter().any(|d| d.severity == reify_core::Severity::Error
+                        && d.message.contains("test::elastic_static")
+                        && d.message.contains("panicked")),
+                    "expected an Error diagnostic naming the target and \"panicked\" \
+                     (i.e. caught by catch_unwind, not a graceful Failed return that \
+                     never panicked), got {diagnostics:?}",
+                );
+            }
+            other => panic!(
+                "expected Some(ComputeOutcome::Failed {{ .. }}) for Undef material, \
+                 got {other:?}"
+            ),
+        }
     }
 
     // ── Task #5079 step-3: RED — diagnostic enrichment ──────────────────────
