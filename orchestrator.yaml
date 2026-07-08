@@ -70,8 +70,17 @@ verify_command_timeout_secs: 7200
 # verify_command_timeout_secs (continuous wait no longer counts against this budget).
 # Markers default to @@REIFY_CLOCK_{STOP,HEARTBEAT,START}@@ in DF defaults.yaml
 # (byte-match reify's lib_clock_stop.sh emitter — no marker override needed).
+# 2026-07-08 (task 5156, Leo-approved verify-flakiness survey follow-up): bumped
+# 180 -> 600. The 180s backstop false-killed verifies whose clock-stop span was
+# followed by a long SILENT native-crate compile/link with no heartbeat (32
+# escalations across ~12 tasks 06-27..07-06; worst observed false-kill at wall
+# time 329.9s, 0 assertion failures). 600 gives 2x margin over that worst case;
+# a genuinely wedged wait is now caught in 10min instead of 3, which is
+# acceptable since live waits heartbeat every 30s and the 7200s
+# verify_command_timeout_secs outer wall still bounds everything. Durable fix
+# (per-test slow-timeout attribution so this can be tightened again) is task 5141.
 verify_clock_stop_enabled: true
-verify_clock_stop_heartbeat_idle_max: 180
+verify_clock_stop_heartbeat_idle_max: 600
 
 # Verification commands — thin delegations to scripts/verify.sh, the single
 # source of truth shared with the git hooks (hooks/project-checks +
