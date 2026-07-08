@@ -1797,4 +1797,81 @@ assert "Block 18: task stamp boot_id == host boot_id" \
 
 _cleanup_balancer
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 19: clean-exit unlink (test-19, task 5146)
+#   A crash/SIGKILL must NOT unlink (that's what makes staleness detectable
+#   across balancer crashes) but a CLEAN SIGTERM must unlink both FIFOs and
+#   both owner stamps, so a graceful restart never leaves a stale stamp
+#   behind for the next daemon incarnation to trip over.
+#
+#   Also asserts (grep-the-source, Block 5 style) that setup-dev.sh's
+#   ExecStartPre/ExecStopPost rm lines were extended to cover the new
+#   ".owner" sidecars, keeping the systemd-level belt-and-suspenders cleanup
+#   in sync with the daemon's own in-process unlink.
+#
+#   RED today: the balancer never unlinks on exit (poll below times out with
+#   the FIFOs/stamps still present), and setup-dev.sh has no ".owner" rm.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 19: clean-exit unlink ---"
+
+_cleanup_balancer   # ensure clean state from any prior run
+
+start_balancer 4 0.05
+wait_for_seed 10 || true
+
+# Wait for both owner stamps to appear before triggering shutdown, so the
+# unlink assertions below prove removal, not "never created".
+_b19_stamps_present=0
+_b19_t0=$(date +%s)
+while true; do
+    if [ -f "${_MERGE_FIFO}.owner" ] && [ -f "${_TASK_FIFO}.owner" ]; then
+        _b19_stamps_present=1; break
+    fi
+    [ $(( $(date +%s) - _b19_t0 )) -ge 5 ] && break
+    sleep 0.05
+done
+assert "Block 19: owner stamps present before shutdown (precondition)" \
+    test "$_b19_stamps_present" -eq 1
+
+_b19_merge_fifo="$_MERGE_FIFO"
+_b19_task_fifo="$_TASK_FIFO"
+
+# Clean SIGTERM (not SIGKILL) — the graceful-exit path under test.
+kill "$_BALANCER_PID" 2>/dev/null || true
+wait "$_BALANCER_PID" 2>/dev/null || true
+_BALANCER_PID=""
+
+# Poll (bounded ~5s) until all four paths are gone.
+_b19_all_gone=0
+_b19_t0=$(date +%s)
+while true; do
+    if [ ! -e "$_b19_merge_fifo" ] && [ ! -e "$_b19_task_fifo" ] \
+        && [ ! -e "${_b19_merge_fifo}.owner" ] && [ ! -e "${_b19_task_fifo}.owner" ]; then
+        _b19_all_gone=1; break
+    fi
+    [ $(( $(date +%s) - _b19_t0 )) -ge 5 ] && break
+    sleep 0.05
+done
+
+assert "Block 19: all four paths (FIFOs + owner stamps) gone within timeout" \
+    test "$_b19_all_gone" -eq 1
+assert "Block 19: merge FIFO removed after clean exit" \
+    test ! -e "$_b19_merge_fifo"
+assert "Block 19: task FIFO removed after clean exit" \
+    test ! -e "$_b19_task_fifo"
+assert "Block 19: merge owner stamp removed after clean exit" \
+    test ! -e "${_b19_merge_fifo}.owner"
+assert "Block 19: task owner stamp removed after clean exit" \
+    test ! -e "${_b19_task_fifo}.owner"
+
+# _MERGE_FIFO/_TASK_FIFO now point at already-removed paths; _cleanup_balancer's
+# rm -f tolerates that (no-op), so this stays leak-free either way.
+_cleanup_balancer
+
+# setup-dev.sh: ExecStartPre/ExecStopPost reference the new .owner sidecars
+# (grep-the-source, mirrors Block 5's pattern).
+assert "setup-dev.sh ExecStartPre/ExecStopPost reference the .owner sidecar cleanup" \
+    bash -c "grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -qF 'reify-jobserver-merge.owner'"
+
 test_summary
