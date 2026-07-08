@@ -2293,14 +2293,7 @@ structure S {
              entirely. constraint_results: {:#?}",
             check_result.constraint_results
         );
-        // Closed-world closer: the three checks above only guard the two
-        // named variants (Violated, Satisfied) plus "at least one
-        // Indeterminate exists" — they don't by themselves rule out a
-        // constraint landing in some future non-{Violated, Satisfied,
-        // Indeterminate} `Satisfaction` variant, which would pass all three
-        // yet still be a silent false pass. Assert Indeterminate accounts
-        // for EVERY constraint in this FEA-only fixture, which holds
-        // regardless of how many variants `Satisfaction` has.
+        // Guards against a future 4th Satisfaction variant absorbing a false pass.
         assert_eq!(
             indeterminate_count,
             check_result.constraint_results.len(),
