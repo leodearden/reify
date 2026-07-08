@@ -1381,7 +1381,10 @@ build_plan() {
         # the compile-gate window that guards clippy/check; (4) the CLAUDE.md
         # admission-control invariant is for task×compile contention during the
         # main psi-gate/slot region, which this small pre-build does not enter.
-        add "if test -f crates/reify-audit/Cargo.toml; then timeout --kill-after=60 10m ${CARGO_PRIO}cargo build --release -q -p reify-audit; fi"
+        # task 5139: dropped -q — it swallowed compiler diagnostics, so the
+        # 06-27/28 failure cluster (4763/4744/4822/4873) and esc-5077-1
+        # pre-build failures archived with no usable evidence.
+        add "if test -f crates/reify-audit/Cargo.toml; then timeout --kill-after=60 10m ${CARGO_PRIO}cargo build --release -p reify-audit; fi"
         # Positive assertion: if the Cargo.toml exists but the pre-build did not
         # produce the binary, abort loudly rather than silently degrading to SKIP.
         # Guards against the pre-step being removed or reordered without updating
@@ -1405,7 +1408,8 @@ build_plan() {
         # matches HEAD's reify-cli cone, evicting any sibling leftover. The
         # stamp is guarded on that bin existing so a failed/absent pre-build
         # never stamps a false HEAD onto a missing binary.
-        add "if test -f crates/reify-cli/Cargo.toml; then timeout --kill-after=60 10m ${CARGO_PRIO}cargo build --release -q -p reify-cli; fi"
+        # task 5139: dropped -q (same rationale as the reify-audit pre-step above).
+        add "if test -f crates/reify-cli/Cargo.toml; then timeout --kill-after=60 10m ${CARGO_PRIO}cargo build --release -p reify-cli; fi"
         add "if test -f target/release/reify; then git rev-parse HEAD > target/.reify-bin-sha 2>/dev/null || true; fi"
         # Arm the budget-safe backstop: REIFY_AUDIT_NO_COLD_BUILD=1 tells the
         # freshness guard to skip rather than cold-build if somehow the pre-step
