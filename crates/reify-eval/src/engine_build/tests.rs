@@ -1166,7 +1166,6 @@ structure Assembly {
         step_handles: Vec<KernelHandle>,
         diagnostics: Vec<Diagnostic>,
         named_steps: HashMap<String, KernelHandle>,
-        feature_tag_table: FeatureTagTable,
         topology_attribute_table: TopologyAttributeTable,
         swept_kind_table: SweptKindTable,
         kernel_error_out: Option<ErrorRef>,
@@ -1192,7 +1191,6 @@ structure Assembly {
                 step_handles: Vec::new(),
                 diagnostics: Vec::new(),
                 named_steps: HashMap::new(),
-                feature_tag_table: FeatureTagTable::default(),
                 topology_attribute_table: TopologyAttributeTable::default(),
                 swept_kind_table: SweptKindTable::default(),
                 kernel_error_out: None,
@@ -1205,13 +1203,12 @@ structure Assembly {
     }
 
     impl DispatchTestState {
-        /// Reset the three per-realization attribute tables (mirrors the
+        /// Reset the two per-realization attribute tables (mirrors the
         /// per-build reset in production at `build` / `build_snapshot` /
         /// `tessellate_*`). Called by the shadow tests between sequential
         /// realizations so the second call sees the same clean-table state the
         /// first did.
         fn reset_attribute_tables(&mut self) {
-            self.feature_tag_table = FeatureTagTable::default();
             self.topology_attribute_table = TopologyAttributeTable::default();
             self.swept_kind_table = SweptKindTable::default();
         }
@@ -1249,14 +1246,12 @@ structure Assembly {
                 registry,
                 default_kernel,
                 ops,
-                &[],
                 &values,
                 &functions,
                 &meta_map,
                 RealizationOutputs::new(
                     &mut self.step_handles,
                     &mut self.named_steps,
-                    &mut self.feature_tag_table,
                     &mut self.topology_attribute_table,
                     &mut self.swept_kind_table,
                     &mut self.produced_repr_out,
@@ -1318,14 +1313,12 @@ structure Assembly {
                 registry,
                 default_kernel,
                 ops,
-                &[],
                 &values,
                 &functions,
                 &meta_map,
                 RealizationOutputs::new(
                     &mut self.step_handles,
                     &mut self.named_steps,
-                    &mut self.feature_tag_table,
                     &mut self.topology_attribute_table,
                     &mut self.swept_kind_table,
                     &mut self.produced_repr_out,
@@ -3245,14 +3238,12 @@ structure Assembly {
             &registry,
             "occt",
             &ops,
-            &[],
             &values,
             &functions,
             &meta_map,
             RealizationOutputs::new(
                 &mut state.step_handles,
                 &mut state.named_steps,
-                &mut state.feature_tag_table,
                 &mut state.topology_attribute_table,
                 &mut state.swept_kind_table,
                 &mut state.produced_repr_out,
@@ -3412,14 +3403,12 @@ structure Assembly {
             &registry,
             "occt",
             &ops,
-            &[],
             &values,
             &functions,
             &meta_map,
             RealizationOutputs::new(
                 &mut state.step_handles,
                 &mut state.named_steps,
-                &mut state.feature_tag_table,
                 &mut state.topology_attribute_table,
                 &mut state.swept_kind_table,
                 &mut state.produced_repr_out,
@@ -3565,14 +3554,12 @@ structure Assembly {
             &registry,
             "occt",
             &ops,
-            &[],
             &values,
             &functions,
             &meta_map,
             RealizationOutputs::new(
                 &mut state.step_handles,
                 &mut state.named_steps,
-                &mut state.feature_tag_table,
                 &mut state.topology_attribute_table,
                 &mut state.swept_kind_table,
                 &mut state.produced_repr_out,
@@ -7528,7 +7515,6 @@ structure Assembly {
         let functions: Vec<CompiledFunction> = vec![];
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
-        let mut feature_tag_table = FeatureTagTable::default();
         let mut topology_attribute_table = TopologyAttributeTable::default();
         let mut swept_kind_table = SweptKindTable::default();
         let mut realization_cache: RealizationCache<KernelHandle> = RealizationCache::new();
@@ -7551,7 +7537,6 @@ structure Assembly {
             &functions,
             &mut diagnostics,
             &meta_map,
-            &mut feature_tag_table,
             &mut topology_attribute_table,
             &mut swept_kind_table,
             &mut realization_cache,
@@ -7594,7 +7579,6 @@ structure Assembly {
         let functions: Vec<CompiledFunction> = vec![];
         let mut diagnostics: Vec<Diagnostic> = vec![];
         let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
-        let mut feature_tag_table = FeatureTagTable::default();
         let mut topology_attribute_table = TopologyAttributeTable::default();
         let mut swept_kind_table = SweptKindTable::default();
         let mut realization_cache: RealizationCache<KernelHandle> = RealizationCache::new();
@@ -7617,7 +7601,6 @@ structure Assembly {
             &functions,
             &mut diagnostics,
             &meta_map,
-            &mut feature_tag_table,
             &mut topology_attribute_table,
             &mut swept_kind_table,
             &mut realization_cache,
@@ -8017,11 +8000,9 @@ structure Assembly {
         let state = run_cross_kernel_cache_hit_short_circuit(
             "CrossKernelEntity2",
             |state, realization_id| {
-                // Pre-seed ONLY topology_attribute_table (not feature_tag_table) at
-                // GeometryHandleId(1), simulating a cross-kernel sibling Mesh op that
-                // recorded its first handle's attribute earlier in this same build.
-                // feature_tag_table stays empty → the first check (now a remove, step-2)
-                // is a no-op and execution reaches the SECOND assert for topology.
+                // Pre-seed topology_attribute_table at GeometryHandleId(1),
+                // simulating a cross-kernel sibling Mesh op that recorded its
+                // first handle's attribute earlier in this same build.
                 state.topology_attribute_table.record(
                     GeometryHandleId(1),
                     TopologyAttribute {

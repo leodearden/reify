@@ -10,11 +10,10 @@ use reify_compiler::{
 use reify_core::{Diagnostic, DiagnosticLabel, RealizationNodeId, SourceSpan, VersionId};
 use reify_ir::{
     AttributeHistory, BooleanOpHistoryRecords, BooleanOpParents, CapabilityDescriptor,
-    CompiledFunction, ElementOrderTag, ErrorRef, ExportFormat, FeatureId, FeatureTag,
-    FeatureTagTable, Freshness, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp,
-    GeometryQuery, KernelHandle, KernelId, LocalFeatureOpHistoryRecords, LoftOpHistoryRecords,
-    Operation, ReprKind, Role, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable,
-    ValueMap, VolumeMesh,
+    CompiledFunction, ElementOrderTag, ErrorRef, ExportFormat, FeatureId, Freshness,
+    GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelHandle,
+    KernelId, LocalFeatureOpHistoryRecords, LoftOpHistoryRecords, Operation, ReprKind, Role,
+    SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable, ValueMap, VolumeMesh,
 };
 use reify_ir::geometry::{ParentRole, descriptor_for};
 use reify_shell_extract::{MidSurfaceMesh, ShellTetInterface};
@@ -117,7 +116,6 @@ enum SingleParentSweepKind {
 struct RealizationOutputs<'a> {
     step_handles: &'a mut Vec<KernelHandle>,
     named_steps: &'a mut HashMap<String, KernelHandle>,
-    feature_tag_table: &'a mut FeatureTagTable,
     topology_attribute_table: &'a mut TopologyAttributeTable,
     swept_kind_table: &'a mut SweptKindTable,
     /// Terminal output [`ReprKind`] surfaced by the executor for the post-call
@@ -137,7 +135,6 @@ impl<'a> RealizationOutputs<'a> {
     fn new(
         step_handles: &'a mut Vec<KernelHandle>,
         named_steps: &'a mut HashMap<String, KernelHandle>,
-        feature_tag_table: &'a mut FeatureTagTable,
         topology_attribute_table: &'a mut TopologyAttributeTable,
         swept_kind_table: &'a mut SweptKindTable,
         produced_repr_out: &'a mut Option<ReprKind>,
@@ -145,7 +142,6 @@ impl<'a> RealizationOutputs<'a> {
         Self {
             step_handles,
             named_steps,
-            feature_tag_table,
             topology_attribute_table,
             swept_kind_table,
             produced_repr_out,
@@ -206,8 +202,8 @@ enum BuildStep {
 /// Error diagnostics carry a `DiagnosticLabel` at `sub.span` so the editor
 /// can underline the sub-component declaration site.
 ///
-/// Per-instance ops intentionally skip `feature_tag_table` /
-/// `topology_attribute_table` / `swept_kind_table` population — those tables
+/// Per-instance ops intentionally skip `topology_attribute_table` /
+/// `swept_kind_table` population — those tables
 /// are populated for the PARENT's own realization ops; the per-instance
 /// pre-pass exists solely to produce the kernel handle referenced by
 /// `GeomRef::Sub("<sub>.<member>")`.
@@ -2742,7 +2738,6 @@ impl Engine {
                 .map(|t| vec![None; t.realizations.len()])
                 .collect();
 
-            self.feature_tag_table = FeatureTagTable::default();
             self.topology_attribute_table = TopologyAttributeTable::default();
             self.swept_kind_table = SweptKindTable::default();
             // Task 3441: cross-template `GeomRef::Sub` threading.  As each
@@ -2828,14 +2823,12 @@ impl Engine {
                         &registry_borrowed,
                         name,
                         &realization.operations,
-                        &realization.feature_tags,
                         &values,
                         &self.functions,
                         &self.meta_map,
                         RealizationOutputs::new(
                             &mut step_handles,
                             &mut named_steps,
-                            &mut self.feature_tag_table,
                             &mut self.topology_attribute_table,
                             &mut self.swept_kind_table,
                             &mut produced_repr_out,
@@ -3484,7 +3477,6 @@ impl Engine {
                 .map(|t| vec![None; t.realizations.len()])
                 .collect();
 
-            self.feature_tag_table = FeatureTagTable::default();
             self.topology_attribute_table = TopologyAttributeTable::default();
             self.swept_kind_table = SweptKindTable::default();
             // Task 3441: cross-template `GeomRef::Sub` threading.  As each
@@ -3710,14 +3702,12 @@ impl Engine {
                         &registry_borrowed,
                         name,
                         &realization.operations,
-                        &realization.feature_tags,
                         &values,
                         &self.functions,
                         &self.meta_map,
                         RealizationOutputs::new(
                             &mut step_handles,
                             &mut named_steps,
-                            &mut self.feature_tag_table,
                             &mut self.topology_attribute_table,
                             &mut self.swept_kind_table,
                             &mut produced_repr_out,
@@ -4684,7 +4674,6 @@ impl Engine {
         // Scratch tables required by execute_realization_ops signature;
         // not used by the distance query (no post-process conformance/kinematic
         // queries needed — only raw geometry handles are needed).
-        let mut scratch_feature_tags = FeatureTagTable::default();
         let mut scratch_topo_attrs = TopologyAttributeTable::default();
         let mut scratch_swept_kinds = SweptKindTable::default();
         let mut module_named_steps: HashMap<String, HashMap<String, KernelHandle>> = HashMap::new();
@@ -4719,14 +4708,12 @@ impl Engine {
                     &registry_borrowed,
                     &name,
                     &realization.operations,
-                    &realization.feature_tags,
                     &values,
                     &self.functions,
                     &self.meta_map,
                     RealizationOutputs::new(
                         &mut step_handles,
                         &mut named_steps,
-                        &mut scratch_feature_tags,
                         &mut scratch_topo_attrs,
                         &mut scratch_swept_kinds,
                         &mut produced_repr_out,
@@ -5132,7 +5119,6 @@ impl Engine {
         // `BuildResult.values` — a reader of either map sees the same
         // kernel-resolved Bool answers (when a kernel is configured).
         let mut values = check_result.values;
-        self.feature_tag_table = FeatureTagTable::default();
         self.topology_attribute_table = TopologyAttributeTable::default();
         self.swept_kind_table = SweptKindTable::default();
         // Determinacy β (task 4198): clear the achieved-tol map at the start
@@ -5167,7 +5153,6 @@ impl Engine {
             &self.functions,
             &mut diagnostics,
             &self.meta_map,
-            &mut self.feature_tag_table,
             &mut self.topology_attribute_table,
             &mut self.swept_kind_table,
             &mut self.realization_cache,
@@ -5506,7 +5491,6 @@ impl Engine {
         functions: &[CompiledFunction],
         diagnostics: &mut Vec<Diagnostic>,
         meta_map: &HashMap<String, HashMap<String, String>>,
-        feature_tag_table: &mut FeatureTagTable,
         topology_attribute_table: &mut TopologyAttributeTable,
         swept_kind_table: &mut SweptKindTable,
         realization_cache: &mut RealizationCache<KernelHandle>,
@@ -5533,8 +5517,8 @@ impl Engine {
         // `tessellate_realizations` / `tessellate_snapshot` call by the
         // caller; populated inside `surface_subtree` after each successful
         // tessellation when `capture_repr_tol` is true. Threaded here as a
-        // sibling of the other &mut tables (feature_tag_table /
-        // topology_attribute_table / swept_kind_table).
+        // sibling of the other &mut tables (topology_attribute_table /
+        // swept_kind_table).
         achieved_repr_tol: &mut std::collections::BTreeMap<String, f64>,
         // θ (task 4361) step-6: Kahn schedule from `run_unified_pass`, threaded
         // from the caller (`tessellate_realizations` / `tessellate_snapshot`).
@@ -5778,14 +5762,12 @@ impl Engine {
                     registry,
                     default_kernel_name,
                     &realization.operations,
-                    &realization.feature_tags,
                     values,
                     functions,
                     meta_map,
                     RealizationOutputs::new(
                         &mut step_handles,
                         &mut named_steps,
-                        &mut *feature_tag_table,
                         &mut *topology_attribute_table,
                         &mut *swept_kind_table,
                         &mut produced_repr_out,
@@ -6038,7 +6020,7 @@ impl Engine {
     ///     `GeomRef::Sub("body")` lookups continue to resolve),
     ///   - returns early — skipping the kernel op loop, the
     ///     `compile_geometry_op` evaluations, the per-op
-    ///     `feature_tag_table` / `topology_attribute_table` populations, the
+    ///     `topology_attribute_table` population, the
     ///     rollback-truncation gate, and the post-loop cache-insert
     ///     (idempotent: the entry already exists, and re-inserting at the
     ///     same `(entity, repr, tol, NO_OPTIONS)` key would be a no-op under
@@ -6059,39 +6041,37 @@ impl Engine {
     /// `step_handles[handle_start..].last()` block below).
     ///
     /// **Known limitation** (recorded as a design decision): a cache-hit
-    /// short-circuit skips per-op `feature_tag_table` /
-    /// `topology_attribute_table` populations, including the kernel-attribute
-    /// hook propagation added in task 2875. Both tables are reset to
-    /// `default()` at the start of every `build()` (see callers around
-    /// engine_build.rs `feature_tag_table = FeatureTagTable::default()` /
+    /// short-circuit skips per-op `topology_attribute_table` population,
+    /// including the kernel-attribute hook propagation added in task 2875.
+    /// The table is reset to `default()` at the start of every `build()`
+    /// (see callers around engine_build.rs
     /// `topology_attribute_table = TopologyAttributeTable::default()`), so a
-    /// cache-served handle has no entries in those tables on the second
+    /// cache-served handle has no entries in the table on the second
     /// build. v0.2 callers do not combine `activate_purpose` with attribute
     /// queries today, so this is documented (not regressed) in scope; a
     /// follow-up task can either cache the table entries alongside the
     /// handle or skip the table reset for engines with non-empty cache.
     ///
     /// **Cross-kernel collision guard** (task 4349): on cache-hit the helper
-    /// calls `feature_tag_table.remove(cached_handle.id)` (and analogously for
-    /// `topology_attribute_table`) to evict any entry that a cross-kernel
-    /// sibling op may have recorded at the same bare `GeometryHandleId`. Both
-    /// tables are keyed by `GeometryHandleId` only (not the full `KernelHandle`),
-    /// and each kernel's counter starts at 1 — so OCCT and Manifold independently
-    /// produce `GeometryHandleId(1)`. A Manifold op earlier in the same build may
-    /// have written `feature_tag_table.record(GeometryHandleId(1), tag)` before
+    /// calls `topology_attribute_table.remove(cached_handle.id)` to evict any
+    /// entry that a cross-kernel sibling op may have recorded at the same
+    /// bare `GeometryHandleId`. The table is keyed by `GeometryHandleId` only
+    /// (not the full `KernelHandle`), and each kernel's counter starts at 1 —
+    /// so OCCT and Manifold independently produce `GeometryHandleId(1)`. A
+    /// Manifold op earlier in the same build may have written
+    /// `topology_attribute_table.record(GeometryHandleId(1), attr)` before
     /// this cache-hit returns `{Occt, GeometryHandleId(1)}` from a prior build,
     /// collapsing two distinct `KernelHandle`s onto one key. The `remove` is a
     /// no-op in the common single-kernel case (the per-build reset already cleared
     /// the table) and enforces the #3226 spec ("cache-served handle has no entries
-    /// in those tables") in the cross-kernel case. The principled re-key of both
-    /// tables to `KernelHandle` is deferred to follow-up task #4351.
+    /// in those tables") in the cross-kernel case. The principled re-key of the
+    /// table to `KernelHandle` is deferred to follow-up task #4351.
     #[allow(clippy::too_many_arguments)]
     fn execute_realization_ops(
         kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,
         registry: &BTreeMap<String, &CapabilityDescriptor>,
         default_kernel_name: &str,
         operations: &[reify_compiler::CompiledGeometryOp],
-        feature_tags: &[FeatureTag],
         values: &ValueMap,
         functions: &[CompiledFunction],
         meta_map: &HashMap<String, HashMap<String, String>>,
@@ -6177,7 +6157,6 @@ impl Engine {
         let RealizationOutputs {
             step_handles,
             named_steps,
-            feature_tag_table,
             topology_attribute_table,
             swept_kind_table,
             produced_repr_out,
@@ -6276,21 +6255,20 @@ impl Engine {
                     }
                 });
             if let Some((cached_handle, resolved_repr)) = cache_probe {
-                // Cross-kernel collision guard (task 4349): `FeatureTagTable`
-                // and `TopologyAttributeTable` are keyed by bare
-                // `GeometryHandleId` — NOT by the full `KernelHandle`. Each
-                // kernel's handle-id counter starts at 1, so OCCT and Manifold
-                // independently produce `GeometryHandleId(1)` for their first
-                // handle. Within one build a Manifold op may record
-                // `feature_tag_table.record(GeometryHandleId(1), tag)` before
-                // this cache-hit short-circuit returns the cached
+                // Cross-kernel collision guard (task 4349): `TopologyAttributeTable`
+                // is keyed by bare `GeometryHandleId` — NOT by the full
+                // `KernelHandle`. Each kernel's handle-id counter starts at 1, so
+                // OCCT and Manifold independently produce `GeometryHandleId(1)`
+                // for their first handle. Within one build a Manifold op may
+                // record `topology_attribute_table.record(GeometryHandleId(1),
+                // attr)` before this cache-hit short-circuit returns the cached
                 // `{Occt, GeometryHandleId(1)}` from a prior build — two
                 // distinct `KernelHandle`s collapsing onto the same numeric key.
                 //
                 // Rather than asserting the table is empty at the cached key
                 // (which fails under cross-kernel collision even though the
                 // per-build reset is unconditional), we defensively remove any
-                // entry at `cached_handle.id` from both tables. This is a no-op
+                // entry at `cached_handle.id` from the table. This is a no-op
                 // in the common single-kernel case (the per-build reset already
                 // cleared the table) and enforces the #3226 spec ("a cache-served
                 // handle has no entries in those tables on the second build") in
@@ -6298,15 +6276,14 @@ impl Engine {
                 //
                 // Trade-off: before this change the SIBLING handle (e.g.
                 // Manifold's `GeometryHandleId(1)`) was the last writer and
-                // therefore returned its correct tag on `lookup(1)` — only the
-                // cache-served handle read the wrong (foreign) value.  After
+                // therefore returned its correct attribute on `lookup(1)` — only
+                // the cache-served handle read the wrong (foreign) value.  After
                 // `remove()`, the sibling's `lookup(1)` also returns `None`,
                 // regressing it from correct to absent.  This is the accepted
                 // interim cost of enforcing the #3226 spec on the cached handle;
                 // only follow-up task #4351's `KernelHandle` re-key will
                 // preserve both entries independently and eliminate the
                 // regression.
-                feature_tag_table.remove(cached_handle.id);
                 topology_attribute_table.remove(cached_handle.id);
                 step_handles.push(cached_handle);
                 named_steps.insert(name.to_string(), cached_handle);
@@ -7163,10 +7140,6 @@ impl Engine {
 
                     match kernel.execute_with_history(&geom_op) {
                         Ok((handle, attribute_history)) => {
-                            // Record the parallel-array feature tag for this handle.
-                            if let Some(&tag) = feature_tags.get(op_idx) {
-                                feature_tag_table.record(handle.id, tag);
-                            }
                             // v0.2 persistent-naming-v2 (PRD task 6, #2574): seed
                             // per-face/per-edge `TopologyAttribute` records for
                             // primitive constructors (Box / Cylinder / Sphere).
@@ -7947,8 +7920,8 @@ impl Engine {
                     // ops run.  On a Mesh-capable engine the terminal's BRep
                     // fallback probe would then find the intermediate handle,
                     // and since that same handle is recorded in
-                    // `feature_tag_table` (from its own op run earlier in this
-                    // build), the per-build reset debug_assert fires.  Only the
+                    // `topology_attribute_table` (from its own op run earlier in
+                    // this build), the per-build reset debug_assert fires.  Only the
                     // TERMINAL realization's result is a valid cache entry for
                     // the entity+tol key — intermediate lets are intra-build
                     // scratch and must not pollute the cross-build cache.
@@ -10134,7 +10107,6 @@ impl Engine {
         // routing — same pattern as the `tessellate_realizations` mirror.
         let registry_borrowed: BTreeMap<String, &CapabilityDescriptor> =
             registry_owned.iter().map(|(k, v)| (k.clone(), v)).collect();
-        self.feature_tag_table = FeatureTagTable::default();
         self.topology_attribute_table = TopologyAttributeTable::default();
         self.swept_kind_table = SweptKindTable::default();
         // Determinacy β (task 4198): clear the achieved-tol map at the start
@@ -10149,7 +10121,6 @@ impl Engine {
             &self.functions,
             &mut diagnostics,
             &self.meta_map,
-            &mut self.feature_tag_table,
             &mut self.topology_attribute_table,
             &mut self.swept_kind_table,
             &mut self.realization_cache,
