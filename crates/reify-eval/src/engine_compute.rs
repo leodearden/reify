@@ -1129,6 +1129,85 @@ mod tests {
         );
     }
 
+    /// (Amendment, review round 4 — test coverage): a panic must be caught
+    /// the same way when driven through `run_compute_dispatch` itself, not
+    /// just `invoke_compute_trampoline`/`dispatch_compute_node` directly.
+    /// `run_compute_dispatch`'s `Failed` arm does extra post-processing
+    /// (prior-warm-state restore via seed-then-donate) beyond what
+    /// `invoke_compute_trampoline` returns, and that arm was previously only
+    /// exercised by a *graceful* `Failed` outcome (test (b) above) — never by
+    /// a *caught panic* flowing through the same arm. Reuses the existing
+    /// `panics_str_fn` synthetic trampoline (no new fixture) under the same
+    /// `run_compute_dispatch` scaffolding as (a)/(b)/(c).
+    #[test]
+    fn run_compute_dispatch_panicking_trampoline_becomes_dispatch_error_failed() {
+        use crate::engine_compute::DispatchError;
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn(
+            "test::panic_run_compute_dispatch",
+            panics_str_fn as ComputeFn,
+        );
+
+        let cell = ValueCellId::new("T", "b");
+        let c_id = ComputeNodeId::new("T", 0);
+
+        engine.cache_store_mut().put(
+            NodeId::Value(cell.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Int(7), DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+
+        let handle = CancellationHandle::new(); // not cancelled
+
+        let result = engine.run_compute_dispatch(
+            &c_id,
+            std::slice::from_ref(&cell),
+            "test::panic_run_compute_dispatch",
+            &[Value::Int(7)],
+            &[],
+            &Value::Undef,
+            &handle,
+            VersionId(2),
+            ContentHash(0), // inert: no cache dir in tests
+        );
+
+        // Must return Err(DispatchError::Failed) with the caught panic's
+        // diagnostics — not a panic unwinding out of this test, and not
+        // Err(DispatchError::Cancelled).
+        match result {
+            Err(DispatchError::Failed(diags, _)) => {
+                assert!(
+                    diags.iter().any(|d| d.severity == reify_core::Severity::Error
+                        && d.message.contains("test::panic_run_compute_dispatch")
+                        && d.message.contains("panicked")
+                        && d.message.contains("boom_str")),
+                    "expected an Error diagnostic naming the target, \"panicked\", and \
+                     the panic payload \"boom_str\" — the same enriched conversion \
+                     invoke_compute_trampoline/dispatch_compute_node perform — got \
+                     {diags:?}",
+                );
+            }
+            other => panic!(
+                "expected Err(DispatchError::Failed(..)) for a panicking trampoline \
+                 driven through run_compute_dispatch, got {other:?}"
+            ),
+        }
+
+        // Output VC is left Pending — same cache contract a graceful Failed
+        // outcome takes (test (b) above): begin was called, complete was not.
+        let node = NodeId::Value(cell.clone());
+        assert!(
+            matches!(engine.freshness(&node), Freshness::Pending { .. }),
+            "post-panic (via run_compute_dispatch) VC freshness must be Pending, \
+             not Final or some other state",
+        );
+    }
+
     /// (c) Completed trampoline → Ok((result, diags)) and VC flipped to Final
     /// (regression: the happy path survives the signature change).
     #[test]
@@ -4041,8 +4120,11 @@ mod tests {
     }
 
     /// (a) A `&str`-payload panic must become `Some(ComputeOutcome::Failed{..})`
-    /// with an Error diagnostic naming the target and "panicked" — not an
-    /// unwind out of this test.
+    /// with a single Error diagnostic naming the target, "panicked", AND the
+    /// panic payload text — not an unwind out of this test. (Amendment,
+    /// review round 4: merged with the former standalone test (i), which
+    /// asserted the payload-text half on its own; one dispatch call now
+    /// proves both halves via one assertion on the same diagnostic.)
     #[test]
     fn invoke_compute_trampoline_str_panic_becomes_failed_outcome() {
         let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
@@ -4062,9 +4144,10 @@ mod tests {
                 assert!(
                     diagnostics.iter().any(|d| d.severity == reify_core::Severity::Error
                         && d.message.contains("test::panic_str")
-                        && d.message.contains("panicked")),
-                    "expected an Error diagnostic naming the target and \"panicked\", \
-                     got {diagnostics:?}",
+                        && d.message.contains("panicked")
+                        && d.message.contains("boom_str")),
+                    "expected an Error diagnostic naming the target, \"panicked\", and \
+                     the panic payload \"boom_str\", got {diagnostics:?}",
                 );
             }
             other => panic!(
@@ -4075,8 +4158,10 @@ mod tests {
     }
 
     /// (b) A `String`-payload panic must likewise become
-    /// `Some(ComputeOutcome::Failed{..})` with an Error diagnostic naming the
-    /// target and "panicked".
+    /// `Some(ComputeOutcome::Failed{..})` with a single Error diagnostic
+    /// naming the target, "panicked", AND the panic payload text.
+    /// (Amendment, review round 4: merged with the former standalone test
+    /// (j) — see (a)'s doc comment above for the rationale.)
     #[test]
     fn invoke_compute_trampoline_string_panic_becomes_failed_outcome() {
         let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
@@ -4096,9 +4181,10 @@ mod tests {
                 assert!(
                     diagnostics.iter().any(|d| d.severity == reify_core::Severity::Error
                         && d.message.contains("test::panic_string")
-                        && d.message.contains("panicked")),
-                    "expected an Error diagnostic naming the target and \"panicked\", \
-                     got {diagnostics:?}",
+                        && d.message.contains("panicked")
+                        && d.message.contains("boom_string")),
+                    "expected an Error diagnostic naming the target, \"panicked\", and \
+                     the panic payload \"boom_string\", got {diagnostics:?}",
                 );
             }
             other => panic!(
@@ -4183,6 +4269,19 @@ mod tests {
     /// material is a property of `compute_targets::elastic_static` (out of
     /// this task's scope) — but as long as it does, this test must pin the
     /// panic having been *caught*, not just that some `Failed` came back.
+    ///
+    /// MAINTAINER TRIPWIRE (review round 4 amendment): if this test starts
+    /// failing on the "panicked" assertion below, the likely cause is that
+    /// `compute_targets::elastic_static` was hardened to return a graceful
+    /// `Failed` for Undef material instead of panicking — a GOOD change to
+    /// that module, not a regression here. Do not "fix" this test by
+    /// loosening the assertion back to `matches!(.., Some(Failed{..}))`;
+    /// that would silently stop proving `catch_unwind` fires on a genuine
+    /// trampoline. Instead update or relocate this tripwire — e.g. swap in a
+    /// still-panicking real trampoline, or replace it with a synthetic
+    /// trampoline mirroring elastic_static's former read-then-panic shape.
+    /// The `catch_unwind` guard itself remains fully pinned by (a)/(b) either
+    /// way, so this is a test-maintenance action, not a production concern.
     #[test]
     fn invoke_compute_trampoline_real_trampoline_undef_material_becomes_failed_outcome() {
         let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
@@ -4218,7 +4317,10 @@ mod tests {
                         && d.message.contains("panicked")),
                     "expected an Error diagnostic naming the target and \"panicked\" \
                      (i.e. caught by catch_unwind, not a graceful Failed return that \
-                     never panicked), got {diagnostics:?}",
+                     never panicked), got {diagnostics:?}. If elastic_static no longer \
+                     panics on Undef material, this tripwire needs updating/relocating \
+                     — see this test's doc comment — the catch_unwind guard itself is \
+                     still pinned by (a)/(b).",
                 );
             }
             other => panic!(
@@ -4233,8 +4335,13 @@ mod tests {
     // `panic_payload_message` does not exist yet (test (h) below is a compile
     // error until step-4 adds it), and step-2's generic message
     // ("compute trampoline '<t>' panicked") does not contain the panic
-    // payload text (tests (i)/(j) below), so this whole section is RED on
-    // two counts until step-4 lands the helper and interpolates its output.
+    // payload text, so this whole section was RED on two counts until step-4
+    // landed the helper and interpolated its output. (The payload-text
+    // assertion originally lived in two standalone tests, (i) and (j), here;
+    // a review-round-4 amendment folded them into tests (a)/(b) above — see
+    // (a)'s doc comment — since each pair drove the exact same
+    // `invoke_compute_trampoline` call and differed only in which substring
+    // of the one returned diagnostic it checked.)
 
     /// (h) `panic_payload_message` must extract the payload text from both
     /// `&str` and `String` panic payloads, and fall back to a fixed message
@@ -4253,71 +4360,6 @@ mod tests {
             panic_payload_message(other_payload.as_ref()),
             "<non-string panic payload>"
         );
-    }
-
-    /// (i) The `Failed` diagnostic message for a `&str`-payload panic must
-    /// additionally CONTAIN the panic payload text itself, not just the
-    /// target name and "panicked".
-    #[test]
-    fn invoke_compute_trampoline_str_panic_message_contains_payload() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
-        engine.register_compute_fn("test::panic_str", panics_str_fn as ComputeFn);
-
-        let result = engine.invoke_compute_trampoline(
-            "test::panic_str",
-            &[Value::Int(0)],
-            &[],
-            &Value::Undef,
-            None,
-            &CancellationHandle::new(),
-        );
-
-        match result {
-            Some(ComputeOutcome::Failed { diagnostics, .. }) => {
-                assert!(
-                    diagnostics.iter().any(|d| d.message.contains("boom_str")),
-                    "expected the Failed diagnostic message to contain the panic \
-                     payload text \"boom_str\", got {diagnostics:?}",
-                );
-            }
-            other => panic!(
-                "expected Some(ComputeOutcome::Failed {{ .. }}) after a panicking \
-                 trampoline, got {other:?}"
-            ),
-        }
-    }
-
-    /// (j) Likewise for a `String`-payload panic: the `Failed` diagnostic
-    /// message must CONTAIN the panic payload text.
-    #[test]
-    fn invoke_compute_trampoline_string_panic_message_contains_payload() {
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
-        engine.register_compute_fn("test::panic_string", panics_string_fn as ComputeFn);
-
-        let result = engine.invoke_compute_trampoline(
-            "test::panic_string",
-            &[Value::Int(0)],
-            &[],
-            &Value::Undef,
-            None,
-            &CancellationHandle::new(),
-        );
-
-        match result {
-            Some(ComputeOutcome::Failed { diagnostics, .. }) => {
-                assert!(
-                    diagnostics
-                        .iter()
-                        .any(|d| d.message.contains("boom_string")),
-                    "expected the Failed diagnostic message to contain the panic \
-                     payload text \"boom_string\", got {diagnostics:?}",
-                );
-            }
-            other => panic!(
-                "expected Some(ComputeOutcome::Failed {{ .. }}) after a panicking \
-                 trampoline, got {other:?}"
-            ),
-        }
     }
 
     // ── Task #5079 step-5: RED — dispatch_compute_node must share the guard ──
