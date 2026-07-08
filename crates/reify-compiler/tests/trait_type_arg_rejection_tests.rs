@@ -17,6 +17,14 @@
 //!     additionally trigger its own `UnresolvedType` — the arm renders args
 //!     as written rather than recursively resolving them, a deliberate
 //!     divergence from the structure-with-args arm's recursive resolution.
+//! (e) A name registered as BOTH a structure and a trait (nothing in the
+//!     compiler's unified entity namespace prevents this — see
+//!     `pre_pass::collect_decl_refs`, where `Declaration::Trait` is never
+//!     passed through `record_or_report_duplicate`, unlike `Structure` /
+//!     `Field` / `Occurrence` / `Constraint`) still resolves type args via
+//!     the structure arm's `Type::Applied` path when used with type args —
+//!     "structure wins over trait", the precedence the trait-rejection arm's
+//!     placement (immediately after the structure arm) depends on.
 //!
 //! Scaffold replicates the committed probe fixture
 //! `tests/prd-gate/fixtures/compiler_type_hygiene_trait_args_silent_accept.ri`
@@ -389,5 +397,67 @@ fn structure_with_args_applied_path_unchanged() {
         "Coupling<Prismatic> must resolve to Applied{{\"Coupling\", [StructureRef(\"Prismatic\")]}}, \
          got {:?}",
         c_cell.cell_type
+    );
+}
+
+/// Precedence guard: a name registered as BOTH a structure and a trait.
+///
+/// Nothing in the compiler's unified entity namespace rejects this program:
+/// `pre_pass::collect_decl_refs` runs `record_or_report_duplicate` for
+/// `Declaration::Structure` / `Field` / `Occurrence` / `Constraint`, but
+/// `Declaration::Trait` is only pushed onto `refs.trait_refs` — it never
+/// touches `ctx.seen_entity_names`. `names_phase::build_resolution_names`
+/// then builds `resolution_trait_names` from `trait_refs` alone and
+/// `resolution_structure_names` by filtering `seen_entity_names`, with no
+/// mutual-exclusion check between the two, so a shared name lands in BOTH
+/// sets. This is a real, constructible branch — not merely defensive
+/// ordering — so it is asserted here rather than left as an unverified
+/// comment on the trait-rejection arm.
+///
+/// `Dual<Prismatic>` must resolve via the structure arm's `Type::Applied`
+/// path (the structure arm runs first) and must NOT trigger the
+/// trait-rejection arm's `TypeArgOnTrait`, locking in the "structure wins
+/// over trait" precedence the trait arm's placement depends on.
+#[test]
+fn name_shared_by_structure_and_trait_prefers_structure_applied_path() {
+    let source = format!(
+        "{}\ntrait Dual {{ param density : Real = 1.0 }}\nstructure def Dual<P: HasMotion> {{ param p : P }}\nstructure def Holder {{ param d : Dual<Prismatic> }}",
+        base_source()
+    );
+    let module = compile_source(&source);
+
+    let type_arg_on_trait_errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::TypeArgOnTrait))
+        .collect();
+    assert!(
+        type_arg_on_trait_errors.is_empty(),
+        "Dual<Prismatic> (name shared by a structure and a trait) must prefer \
+         the structure's Applied path and emit NO TypeArgOnTrait; got: {:?}",
+        type_arg_on_trait_errors
+    );
+
+    let template = module
+        .templates
+        .iter()
+        .find(|t| t.name == "Holder")
+        .expect("Holder template must exist");
+
+    let d_cell = template
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "d")
+        .expect("Holder must have a value cell named 'd'");
+
+    let expected = Type::Applied {
+        name: "Dual".to_string(),
+        args: vec![Type::StructureRef("Prismatic".to_string())],
+    };
+    assert_eq!(
+        d_cell.cell_type, expected,
+        "Dual<Prismatic> must resolve to Applied{{\"Dual\", [StructureRef(\"Prismatic\")]}} \
+         (structure wins over trait), got {:?}",
+        d_cell.cell_type
     );
 }

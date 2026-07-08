@@ -1736,9 +1736,18 @@ pub(crate) fn resolve_type_expr_with_aliases_kinded(
     // Placed AFTER the structure arm so a name that is both a structure and a
     // trait with args still resolves via `Type::Applied` (structure wins over
     // trait — the same precedence `resolve_type_with_aliases` uses for the
-    // bare-name case, :655-661). Placed BEFORE simple-name resolution so the
-    // rejection fires regardless of any same-name shadow later in the
-    // fallthrough.
+    // bare-name case, :655-661). This is a real, constructible branch, not
+    // just defensive ordering: nothing in the unified entity namespace stops
+    // a `structure def` and a `trait` from sharing a name (`Declaration::Trait`
+    // is never run through `record_or_report_duplicate` in
+    // `pre_pass::collect_decl_refs`, unlike `Structure`/`Field`/`Occurrence`/
+    // `Constraint`), so `resolution_trait_names` and `resolution_structure_names`
+    // (built independently in `names_phase::build_resolution_names`) can both
+    // contain the same name. Verified by the integration test
+    // `name_shared_by_structure_and_trait_prefers_structure_applied_path` in
+    // crates/reify-compiler/tests/trait_type_arg_rejection_tests.rs. Placed
+    // BEFORE simple-name resolution so the rejection fires regardless of any
+    // same-name shadow later in the fallthrough.
     //
     // Returns Some(Type::Error) (poison sentinel) + one TypeArgOnTrait
     // diagnostic, suppressing the generic UnresolvedType cascade so the user
