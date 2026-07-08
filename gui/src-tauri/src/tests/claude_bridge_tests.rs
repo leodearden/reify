@@ -2357,6 +2357,25 @@ async fn shutdown_not_blocked_during_ensure_sidecar_ready_spawn() {
 
 // --- multi-thread race regression test for wait_ready (task-363/step-1) ---
 
+/// Deadlock backstop for the multi-thread notification-race regression tests
+/// below — NOT a latency assertion.
+///
+/// These tests assert a *liveness* property: the `ready` notification is
+/// delivered and never lost (the `pin! + enable()` fix in `wait_ready` /
+/// `ensure_sidecar_ready`). Once the reader task is scheduled the wait resolves
+/// in microseconds; the timeout exists only to fail a *genuine* lost-wakeup,
+/// which hangs forever. A tight bound instead conflates "notification lost"
+/// with "worker thread starved": under host CPU oversubscription (e.g. loadavg
+/// 123 on a 32-core box — esc-5007-4, and the byte-identical
+/// `Err("Sidecar did not become ready within 500ms")` in task 4654's
+/// 2026-06-27 verify log) the 2 worker threads may not be scheduled within a
+/// few hundred ms, producing a spurious timeout on verified-green code. 10s
+/// matches production (`main.rs` passes `Duration::from_secs(10)` to the same
+/// `ensure_sidecar_ready` call) and the repo-wide `run_with_deadlock_timeout`
+/// convention, giving ample headroom over the real work while still catching a
+/// true hang. See esc-5007-4 root-cause analysis.
+const MULTI_THREAD_RACE_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Regression test for the wait_ready() subscribe-before-check pattern.
 ///
 /// On a multi-thread runtime, the reader task can process `{"type":"ready"}`
@@ -2367,7 +2386,6 @@ async fn shutdown_not_blocked_during_ensure_sidecar_ready_spawn() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn wait_ready_notified_race_on_multithread() {
     use std::sync::Arc;
-    use std::time::Duration;
     use tokio::io::{AsyncWriteExt, BufReader};
     use tokio::sync::Mutex;
 
@@ -2389,7 +2407,7 @@ async fn wait_ready_notified_race_on_multithread() {
         // Hold the writer alive so the reader doesn't see EOF.
         let _data_writer = data_writer;
 
-        let result = handle.wait_ready(Duration::from_millis(500)).await;
+        let result = handle.wait_ready(MULTI_THREAD_RACE_READY_TIMEOUT).await;
         assert!(
             result.is_ok(),
             "iteration {}: wait_ready should return Ok \
@@ -2414,7 +2432,6 @@ async fn wait_ready_notified_race_on_multithread() {
 /// process it immediately on a second worker thread, exercising that window.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ensure_sidecar_ready_notified_race_on_multithread() {
-    use std::time::Duration;
     use tokio::sync::Mutex;
 
     // Run 20 iterations to increase failure probability with the buggy code.
@@ -2423,7 +2440,7 @@ async fn ensure_sidecar_ready_notified_race_on_multithread() {
         let spawn_fn = || make_ready_spawn_fn(writer_tx);
 
         let sidecar: Mutex<Option<SidecarHandle>> = Mutex::new(None);
-        let result = ensure_sidecar_ready(&sidecar, spawn_fn, Duration::from_millis(500)).await;
+        let result = ensure_sidecar_ready(&sidecar, spawn_fn, MULTI_THREAD_RACE_READY_TIMEOUT).await;
         let _held = writer_rx.await.ok();
 
         assert!(
@@ -2466,7 +2483,6 @@ async fn ensure_sidecar_ready_notified_race_on_multithread() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn wait_ready_enable_prevents_missed_notification_race() {
     use std::sync::Arc;
-    use std::time::Duration;
     use tokio::io::BufReader;
     use tokio::sync::Mutex;
 
@@ -2488,7 +2504,7 @@ async fn wait_ready_enable_prevents_missed_notification_race() {
             notify_arc.notify_waiters();
         });
 
-        let result = handle.wait_ready(Duration::from_millis(500)).await;
+        let result = handle.wait_ready(MULTI_THREAD_RACE_READY_TIMEOUT).await;
         assert!(
             result.is_ok(),
             "iteration {}: wait_ready should succeed (race: notify_waiters \
@@ -2533,7 +2549,6 @@ async fn wait_ready_enable_prevents_missed_notification_race() {
 /// and uses only 20 iterations without a pre-populated sidecar slot.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ensure_sidecar_ready_enable_prevents_missed_notification_race() {
-    use std::time::Duration;
     use tokio::sync::Mutex;
 
     for i in 0..50 {
@@ -2546,7 +2561,7 @@ async fn ensure_sidecar_ready_enable_prevents_missed_notification_race() {
         let (stale_handle, _stale_writer) = make_starting_handle();
 
         let sidecar: Mutex<Option<SidecarHandle>> = Mutex::new(Some(stale_handle));
-        let result = ensure_sidecar_ready(&sidecar, spawn_fn, Duration::from_millis(500)).await;
+        let result = ensure_sidecar_ready(&sidecar, spawn_fn, MULTI_THREAD_RACE_READY_TIMEOUT).await;
         let _held = writer_rx.await.ok();
 
         assert!(
