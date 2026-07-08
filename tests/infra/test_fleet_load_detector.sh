@@ -287,4 +287,68 @@ REIFY_FLEET_LOAD_LOADAVG_PATH="$H3_LOADAVG" REIFY_FLEET_LOAD_PSI_PATH="$H3_PSI" 
 assert "H4: garbage avg10 threshold falls back to 80 in the stdout line" \
     bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])avg10_threshold=80([[:space:]]|$)"' _ "$OUT"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block G — fail-open: an unreadable/unparseable measurement source must never
+# spuriously flag/throttle the fleet (C-A4 philosophy, mirrors cpu-admit.sh /
+# load_tolerance_lib.sh). A guaranteed-absent source path is allocated via
+# `mktemp -u` (name only, file never created) — same idiom as test_cpu_admit
+# .sh Cycle E / test_jobserver_canary.sh's "guaranteed-absent path".
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block G: fail-open (unreadable sources) ---"
+
+G_MISSING_LOADAVG="$(mktemp -u /tmp/test-fleet-load-detector-missing-loadavg-XXXXXX)"
+G_MISSING_PSI="$(mktemp -u /tmp/test-fleet-load-detector-missing-psi-XXXXXX)"
+
+# G1: both sources unreadable → exit 0, status=ok, reason=none, and a WARNING
+# on stderr (never a spurious flag when the detector cannot measure at all).
+REIFY_FLEET_LOAD_LOADAVG_PATH="$G_MISSING_LOADAVG" REIFY_FLEET_LOAD_PSI_PATH="$G_MISSING_PSI" REIFY_FLEET_LOAD_NPROC=32 \
+    run_helper check
+assert "G1: both sources unreadable exits 0 (fail-open)" test "$RC" -eq 0
+assert "G1: both sources unreadable is status=ok" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])status=ok([[:space:]]|$)"' _ "$OUT"
+assert "G1: both sources unreadable is reason=none" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])reason=none$"' _ "$OUT"
+assert "G1: both sources unreadable prints a WARNING on stderr" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "warning"' _ "$ERR_OUT"
+assert "G1: both sources unreadable emits no oversubscribed marker" \
+    bash -c '! printf "%s\n" "$1" | grep -q "@@REIFY_FLEET_OVERSUBSCRIBED@@"' _ "$ERR_OUT"
+
+# G2: PSI unreadable, loadavg ratio high (incident fixture 419/32≈13.1) → the
+# ratio axis alone still fires; avg10 renders as the literal "unavailable" in
+# the stdout line (not a blank field) since it never participated.
+G2_LOADAVG="$(_mk_loadavg 419)"
+REIFY_FLEET_LOAD_LOADAVG_PATH="$G2_LOADAVG" REIFY_FLEET_LOAD_PSI_PATH="$G_MISSING_PSI" REIFY_FLEET_LOAD_NPROC=32 \
+    run_helper check
+assert "G2: PSI unreadable + high ratio exits 3" test "$RC" -eq 3
+assert "G2: PSI unreadable + high ratio is reason=ratio" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])reason=ratio$"' _ "$OUT"
+assert "G2: PSI unreadable renders avg10=unavailable in the stdout line" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])avg10=unavailable([[:space:]]|$)"' _ "$OUT"
+assert "G2: PSI unreadable + high ratio still emits the oversubscribed marker" \
+    bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_FLEET_OVERSUBSCRIBED@@"' _ "$ERR_OUT"
+
+# G3: loadavg unreadable, avg10 high → the avg10 axis alone still fires
+# (symmetric to G2 for the other axis).
+G3_PSI="$(_mk_psi 90.00)"
+REIFY_FLEET_LOAD_LOADAVG_PATH="$G_MISSING_LOADAVG" REIFY_FLEET_LOAD_PSI_PATH="$G3_PSI" REIFY_FLEET_LOAD_NPROC=32 \
+    run_helper check
+assert "G3: loadavg unreadable + high avg10 exits 3" test "$RC" -eq 3
+assert "G3: loadavg unreadable + high avg10 is reason=avg10" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])reason=avg10$"' _ "$OUT"
+assert "G3: loadavg unreadable + high avg10 still emits the oversubscribed marker" \
+    bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_FLEET_OVERSUBSCRIBED@@"' _ "$ERR_OUT"
+
+# G4: loadavg unreadable, avg10 healthy → exit 0 (the surviving axis alone
+# decides; it must not be treated as spuriously flagged just because the
+# other axis is absent).
+G4_PSI="$(_mk_psi 1.00)"
+REIFY_FLEET_LOAD_LOADAVG_PATH="$G_MISSING_LOADAVG" REIFY_FLEET_LOAD_PSI_PATH="$G4_PSI" REIFY_FLEET_LOAD_NPROC=32 \
+    run_helper check
+assert "G4: loadavg unreadable + healthy avg10 exits 0" test "$RC" -eq 0
+assert "G4: loadavg unreadable + healthy avg10 is status=ok" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])status=ok([[:space:]]|$)"' _ "$OUT"
+assert "G4: loadavg unreadable + healthy avg10 emits no oversubscribed marker" \
+    bash -c '! printf "%s\n" "$1" | grep -q "@@REIFY_FLEET_OVERSUBSCRIBED@@"' _ "$ERR_OUT"
+
 test_summary
