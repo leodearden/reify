@@ -231,45 +231,16 @@ fn classification_table() -> BTreeMap<&'static str, SyncMechanism> {
     table
 }
 
-/// True if `reference` cites a task in this repo's canonical `#NNNN` form
-/// (CLAUDE.md's TODO-citation convention: a bare `#` followed by at least
-/// one ASCII digit) — e.g. `"cleared by L2 (#5031)"`. A PRD-relative label
-/// like `"cleared by L2"` alone does not count: CLAUDE.md calls out
-/// PRD-relative indices as a `malformed-cite` shape.
-fn cites_task(reference: &str) -> bool {
-    reference
-        .find('#')
-        .is_some_and(|i| reference[i + 1..].starts_with(|c: char| c.is_ascii_digit()))
-}
-
-/// Validates a clearing-task reference cites a live task in the canonical
-/// `#NNNN` form at construction, so the known-stale ledger's "every entry
-/// names its clearing task" guarantee is structural (enforced wherever the
-/// reference is built, and re-checked by every test that constructs
-/// `known_stale_allowlist()`) rather than merely a non-empty string.
-fn clearing_task_reference(reference: &'static str) -> &'static str {
-    assert!(
-        cites_task(reference),
-        "clearing-task reference '{reference}' must cite a live task in the \
-         canonical #NNNN form (CLAUDE.md's TODO-citation convention)"
-    );
-    reference
-}
-
-/// Fields known to be stale (not wired to any live sync mechanism today),
-/// each mapped to a reference citing the live task that clears it — L2
-/// (#5031, "stopgap: four list fields -> StateDelta") cleared the four
-/// tensegrity/display fields by classifying them `Diffed` above; L3 (#5032,
-/// "stopgap: fea-convergence-changed emitter") clears `fea_convergence`.
-/// `clearing_task_reference` enforces the `#NNNN` citation structurally, not
-/// just non-emptiness.
+/// Fields known to be stale (not wired to any live sync mechanism today).
+/// Empty as of L3 (#5032): L2 (#5031, "stopgap: four list fields ->
+/// StateDelta") cleared the four tensegrity/display fields by classifying
+/// them `Diffed` above; L3 (#5032, "stopgap: fea-convergence-changed
+/// emitter") cleared the last remaining entry, `fea_convergence`, by
+/// classifying it `Emitter` above. Kept as a function (rather than deleted)
+/// because the forward/reverse coverage tests below still call it — a
+/// future stale field would be re-added here.
 fn known_stale_allowlist() -> BTreeMap<&'static str, &'static str> {
-    let mut allowlist = BTreeMap::new();
-    allowlist.insert(
-        "fea_convergence",
-        clearing_task_reference("cleared by L3 (#5032)"),
-    );
-    allowlist
+    BTreeMap::new()
 }
 
 /// A `GuiState` fixture with every field populated so all 13 serde keys
