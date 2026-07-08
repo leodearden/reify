@@ -146,6 +146,15 @@ impl crate::Engine {
         // backtraces must still print to stderr (PRD resolved decision); the
         // floor is "survive with a diagnostic," not "silent".
         //
+        // Accepted limitation (FFI panics/aborts): `catch_unwind` intercepts
+        // only Rust unwinding panics. FEA trampolines (elastic_static,
+        // buckling, modal) ultimately drive native solver FFI (OCCT/
+        // manifold/gmsh); a foreign C++ exception or a native abort crossing
+        // the FFI boundary is NOT caught here and still terminates the
+        // process — full crash isolation for solver work would need
+        // subprocess isolation, as the `panic = "abort"` compile_error above
+        // already hints, not this in-process guard.
+        //
         // Accepted limitation (shared-state consistency): `catch_unwind`
         // restores control flow but does NOT roll back side effects a
         // trampoline performed before panicking. Every trampoline registered
@@ -1135,16 +1144,16 @@ mod tests {
         );
     }
 
-    /// (Amendment, review round 4 — test coverage): a panic must be caught
-    /// the same way when driven through `run_compute_dispatch` itself, not
-    /// just `invoke_compute_trampoline`/`dispatch_compute_node` directly.
+    /// A panic must be caught the same way when driven through
+    /// `run_compute_dispatch` itself, not just
+    /// `invoke_compute_trampoline`/`dispatch_compute_node` directly.
     /// `run_compute_dispatch`'s `Failed` arm does extra post-processing
     /// (prior-warm-state restore via seed-then-donate) beyond what
-    /// `invoke_compute_trampoline` returns, and that arm was previously only
-    /// exercised by a *graceful* `Failed` outcome (test (b) above) — never by
-    /// a *caught panic* flowing through the same arm. Reuses the existing
-    /// `panics_str_fn` synthetic trampoline (no new fixture) under the same
-    /// `run_compute_dispatch` scaffolding as (a)/(b)/(c).
+    /// `invoke_compute_trampoline` returns, so a caught panic needs its own
+    /// coverage of that arm distinct from the graceful `Failed` outcome
+    /// (test (b) above). Reuses the existing `panics_str_fn` synthetic
+    /// trampoline (no new fixture) under the same `run_compute_dispatch`
+    /// scaffolding as (a)/(b)/(c).
     #[test]
     fn run_compute_dispatch_panicking_trampoline_becomes_dispatch_error_failed() {
         use crate::engine_compute::DispatchError;
@@ -4127,10 +4136,7 @@ mod tests {
 
     /// (a) A `&str`-payload panic must become `Some(ComputeOutcome::Failed{..})`
     /// with a single Error diagnostic naming the target, "panicked", AND the
-    /// panic payload text — not an unwind out of this test. (Amendment,
-    /// review round 4: merged with the former standalone test (i), which
-    /// asserted the payload-text half on its own; one dispatch call now
-    /// proves both halves via one assertion on the same diagnostic.)
+    /// panic payload text — not an unwind out of this test.
     #[test]
     fn invoke_compute_trampoline_str_panic_becomes_failed_outcome() {
         let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
@@ -4166,8 +4172,6 @@ mod tests {
     /// (b) A `String`-payload panic must likewise become
     /// `Some(ComputeOutcome::Failed{..})` with a single Error diagnostic
     /// naming the target, "panicked", AND the panic payload text.
-    /// (Amendment, review round 4: merged with the former standalone test
-    /// (j) — see (a)'s doc comment above for the rationale.)
     #[test]
     fn invoke_compute_trampoline_string_panic_becomes_failed_outcome() {
         let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
@@ -4202,34 +4206,21 @@ mod tests {
 
     // ── Task #5079 step-1: read-then-panic integration test ────────────────
     //
-    // Amendment (review round 2): this section originally held five
-    // near-identical tests, one per Undef position (material/length/width/
-    // height/loads). The `catch_unwind` boundary in
-    // `invoke_compute_trampoline` behaves identically regardless of which
-    // internal call panics, so the five cases added coupling to
-    // `elastic_static`'s internal panic sites (five line-number comments to
-    // keep in sync) without proving anything beyond what one representative
-    // case already proves — the mechanism itself is fully pinned by the
-    // synthetic tests (a)/(b) above. Collapsed to the single Undef-material
-    // case below. Amendment (review round 3): the collapse had also
-    // regressed the assertion to a bare `matches!(.., Some(Failed{..}))`,
-    // silently dropping the "panicked"-wording check a still-earlier round
-    // had added specifically so this test couldn't go green via a graceful
-    // (non-panic) `Failed` return instead of an actually-caught panic.
-    // Restored so the single case asserts the same wording as (a)/(b).
-    // Amendment (review round 5): the collapsed case still registered the
-    // *real* `solve_elastic_static_trampoline`, so the "panicked" assertion
-    // was only valid so long as `compute_targets::elastic_static` happens to
-    // panic (rather than gracefully failing) on Undef material — an
-    // out-of-scope module this test cannot control. (a)/(b) already fully
-    // pin the `catch_unwind` mechanism itself, so the only marginal value of
-    // a "real trampoline" here was the read-then-panic *shape* (panicking as
-    // a consequence of reading a bad argument, rather than unconditionally)
-    // — not anything specific to `elastic_static`. Replaced with the
-    // synthetic `panics_on_undef_material_fn` below, which has that same
-    // shape but no dependency on a foreign module's internals, so a
-    // legitimate hardening of `elastic_static` (making it fail gracefully
-    // instead of panicking) can no longer redden this test.
+    // One representative case (Undef material) stands in for all five Undef
+    // positions (material/length/width/height/loads): the `catch_unwind`
+    // boundary in `invoke_compute_trampoline` behaves identically regardless
+    // of which internal call panics, and the mechanism itself is already
+    // fully pinned by the synthetic tests (a)/(b) above, so five
+    // near-identical cases would only add coupling to `elastic_static`'s
+    // internal panic-site line numbers without proving anything more. The
+    // assertion checks for "panicked" wording specifically so this test
+    // cannot go green via a graceful (non-panic) `Failed` return instead of
+    // an actually-caught panic. The trampoline below is synthetic rather
+    // than the real `solve_elastic_static_trampoline` so this coverage does
+    // not depend on `compute_targets::elastic_static` continuing to panic on
+    // Undef material — a legitimate future hardening of that module (making
+    // it fail gracefully instead of panicking) should not be able to redden
+    // this test.
 
     /// Synthetic trampoline mirroring `compute_targets::elastic_static`'s
     /// read-then-panic shape: it reads the material input at [0] and panics
@@ -4237,10 +4228,8 @@ mod tests {
     /// failure mode `classify_material`/`extract_material` hit today —
     /// rather than panicking unconditionally like `panics_str_fn`/
     /// `panics_string_fn` above. Kept independent of
-    /// `compute_targets::elastic_static` so the integration coverage below
-    /// no longer depends on that module continuing to panic (review round 5
-    /// amendment — see the section comment above and this test's doc
-    /// comment).
+    /// `compute_targets::elastic_static` so this coverage does not depend on
+    /// that module continuing to panic (see the section comment above).
     fn panics_on_undef_material_fn(
         value_inputs: &[Value],
         _realization_inputs: &[RealizationReadHandle],
@@ -4304,16 +4293,12 @@ mod tests {
 
     // ── Task #5079 step-3: RED — diagnostic enrichment ──────────────────────
     //
-    // `panic_payload_message` does not exist yet (test (h) below is a compile
-    // error until step-4 adds it), and step-2's generic message
-    // ("compute trampoline '<t>' panicked") does not contain the panic
-    // payload text, so this whole section was RED on two counts until step-4
-    // landed the helper and interpolated its output. (The payload-text
-    // assertion originally lived in two standalone tests, (i) and (j), here;
-    // a review-round-4 amendment folded them into tests (a)/(b) above — see
-    // (a)'s doc comment — since each pair drove the exact same
-    // `invoke_compute_trampoline` call and differed only in which substring
-    // of the one returned diagnostic it checked.)
+    // `panic_payload_message` is exercised directly below in isolation. Its
+    // output is also asserted as a substring of the `Failed` diagnostic
+    // message built by tests (a)/(b) above: each of those drives the exact
+    // same `invoke_compute_trampoline` call already used for the
+    // target/"panicked" wording check, so the payload-text assertion lives
+    // alongside it on the same diagnostic rather than in a separate test.
 
     /// (h) `panic_payload_message` must extract the payload text from both
     /// `&str` and `String` panic payloads, and fall back to a fixed message
