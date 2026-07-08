@@ -214,4 +214,77 @@ assert "E2: stdout reason=both" \
 assert "E3: stderr carries the @@REIFY_FLEET_OVERSUBSCRIBED@@ marker" \
     bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_FLEET_OVERSUBSCRIBED@@"' _ "$ERR_OUT"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block D — avg10 axis ALONE (ratio healthy) → the independent OR-branch.
+# Distinct from Block C/E (which both exercise a high RATIO): this is the one
+# combination not yet covered — avg10 must be able to trigger oversubscribed
+# on its own, not merely decorate the reason= string when ratio also fires.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block D: avg10 axis alone ---"
+
+D_LOADAVG="$(_mk_loadavg 16)"
+D_PSI="$(_mk_psi 90.00)"
+REIFY_FLEET_LOAD_LOADAVG_PATH="$D_LOADAVG" REIFY_FLEET_LOAD_PSI_PATH="$D_PSI" REIFY_FLEET_LOAD_NPROC=32 \
+    run_helper check
+assert "D1: avg10-alone fixture exits 3" test "$RC" -eq 3
+assert "D2: stdout reason=avg10" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])reason=avg10$"' _ "$OUT"
+assert "D3: stdout ratio field reads 0.50 (healthy, did not contribute)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])ratio=0\.50([[:space:]]|$)"' _ "$OUT"
+assert "D4: stderr carries the @@REIFY_FLEET_OVERSUBSCRIBED@@ marker" \
+    bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_FLEET_OVERSUBSCRIBED@@"' _ "$ERR_OUT"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block H — threshold-knob override: proves the thresholds are real runtime
+# knobs (env-driven), not hard-coded constants, and that garbage input falls
+# back to the documented default rather than corrupting the awk comparison.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block H: threshold-knob override ---"
+
+# H1: incident fixture (419/32≈13.1) but a raised ratio ceiling → healthy.
+H1_LOADAVG="$(_mk_loadavg 419)"
+H1_PSI="$(_mk_psi 5.00)"
+REIFY_FLEET_LOAD_LOADAVG_PATH="$H1_LOADAVG" REIFY_FLEET_LOAD_PSI_PATH="$H1_PSI" REIFY_FLEET_LOAD_NPROC=32 \
+    REIFY_FLEET_LOAD_RATIO_THRESHOLD=20 \
+    run_helper check
+assert "H1: raised ratio threshold (20) makes the incident fixture status=ok" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])status=ok([[:space:]]|$)"' _ "$OUT"
+assert "H1: raised ratio threshold (20) exits 0" test "$RC" -eq 0
+
+# H2: avg10 threshold override flips an otherwise-healthy avg10 into flagged.
+H2_LOADAVG="$(_mk_loadavg 16)"
+H2_PSI="$(_mk_psi 50.00)"
+REIFY_FLEET_LOAD_LOADAVG_PATH="$H2_LOADAVG" REIFY_FLEET_LOAD_PSI_PATH="$H2_PSI" REIFY_FLEET_LOAD_NPROC=32 \
+    REIFY_FLEET_LOAD_AVG10_THRESHOLD=40 \
+    run_helper check
+assert "H2: lowered avg10 threshold (40) flips avg10=50.00 to oversubscribed" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])status=oversubscribed([[:space:]]|$)"' _ "$OUT"
+assert "H2: lowered avg10 threshold exits 3" test "$RC" -eq 3
+assert "H2: reason=avg10" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])reason=avg10$"' _ "$OUT"
+
+# H3: garbage REIFY_FLEET_LOAD_RATIO_THRESHOLD falls back to the documented
+# default (4.0) rather than leaking into the stdout line or corrupting the
+# awk comparison (an unvalidated non-numeric string can make the comparison
+# behave unpredictably instead of safely defaulting).
+H3_LOADAVG="$(_mk_loadavg 0.50)"
+H3_PSI="$(_mk_psi 1.00)"
+REIFY_FLEET_LOAD_LOADAVG_PATH="$H3_LOADAVG" REIFY_FLEET_LOAD_PSI_PATH="$H3_PSI" REIFY_FLEET_LOAD_NPROC=32 \
+    REIFY_FLEET_LOAD_RATIO_THRESHOLD=abc \
+    run_helper check
+assert "H3: garbage ratio threshold falls back to 4.0 in the stdout line" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])ratio_threshold=4\.0([[:space:]]|$)"' _ "$OUT"
+assert "H3: garbage ratio threshold still reports status=ok on a healthy fixture" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])status=ok([[:space:]]|$)"' _ "$OUT"
+
+# H4: garbage REIFY_FLEET_LOAD_AVG10_THRESHOLD falls back to the documented
+# default (80), mirroring H3 for the avg10 axis.
+REIFY_FLEET_LOAD_LOADAVG_PATH="$H3_LOADAVG" REIFY_FLEET_LOAD_PSI_PATH="$H3_PSI" REIFY_FLEET_LOAD_NPROC=32 \
+    REIFY_FLEET_LOAD_AVG10_THRESHOLD=abc \
+    run_helper check
+assert "H4: garbage avg10 threshold falls back to 80 in the stdout line" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])avg10_threshold=80([[:space:]]|$)"' _ "$OUT"
+
 test_summary
