@@ -309,6 +309,72 @@ _detect_wallclock_upper_bound "$_s2g_tmpdir" 2>/dev/null || _s2g_rc=$?
 assert "2g: bare _S suffix variable (wait_S -le 30) flagged as wall-clock upper bound (returns 1)" \
     test "$_s2g_rc" -eq 1
 
+# ---------------------------------------------------------------------------
+# 2h/2i/2j (task 5148, DEFECT 2A): multi-line evasion — an `assert "..." \`
+# that opens a multi-line single-quoted `bash -c '...'` block (the
+# test_occt_flock_gate.sh / test_proc_reaper.sh idiom).  The prior awk join
+# only continued across a trailing `\`; a line ending in an OPEN single quote
+# (no trailing `\`) terminated the join even though the quoted string
+# continues on later physical lines, so `assert` and a `-le`/`-lt <int>`
+# comparison living deeper inside that block landed on DIFFERENT logical
+# lines and the assert-wiring gate never fired. Mirrors the real evasion at
+# tests/infra/test_proc_reaper.sh (pre-task-5148 Test 8a shape).
+# ---------------------------------------------------------------------------
+
+# 2h: MULTI-LINE, un-escaped -> must be flagged (returns 1).
+# RED today: the awk only joins backslash-continuations, so `assert` (already
+# joined with the `bash -c '` line via its own trailing `\`) and the
+# `-op <int>` comparison several physical lines deeper in the still-open
+# single-quoted string never land on the same logical line.
+_s2h_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2h_tmpdir")
+
+printf '#!/usr/bin/env bash\n' > "$_s2h_tmpdir/fixture.sh"
+printf '%s "%s check" \\\n' "$_ASS_WORD" "$_WC_LEX_PART" >> "$_s2h_tmpdir/fixture.sh"
+printf "    bash -c '\n" >> "$_s2h_tmpdir/fixture.sh"
+printf '        test "$el" %s 3\n' "$_UB_OP" >> "$_s2h_tmpdir/fixture.sh"
+printf "    '\n" >> "$_s2h_tmpdir/fixture.sh"
+
+_s2h_rc=0
+_detect_wallclock_upper_bound "$_s2h_tmpdir" 2>/dev/null || _s2h_rc=$?
+assert "2h: multi-line assert-opens-bash-c-single-quote shape (unescaped) is flagged (returns 1)" \
+    test "$_s2h_rc" -eq 1
+
+# 2i: same multi-line shape, but the escape token lives inside the joined
+# block -> must stay unflagged (returns 0). Already passes pre-fix (the
+# unjoined old awk never flags it either); locks in precision once the join
+# becomes quote-aware.
+_s2i_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2i_tmpdir")
+
+printf '#!/usr/bin/env bash\n' > "$_s2i_tmpdir/fixture.sh"
+printf '%s "%s check" \\\n' "$_ASS_WORD" "$_WC_LEX_PART" >> "$_s2i_tmpdir/fixture.sh"
+printf "    bash -c '\n" >> "$_s2i_tmpdir/fixture.sh"
+printf '        test "$el" %s 3  # %s\n' "$_UB_OP" "$_ESC_TOKEN" >> "$_s2i_tmpdir/fixture.sh"
+printf "    '\n" >> "$_s2i_tmpdir/fixture.sh"
+
+_s2i_rc=0
+_detect_wallclock_upper_bound "$_s2i_tmpdir" 2>/dev/null || _s2i_rc=$?
+assert "2i: multi-line shape with the escape token inside the joined block stays unflagged (returns 0)" \
+    test "$_s2i_rc" -eq 0
+
+# 2j: NO-OVER-JOIN guard — a separate, already-terminated assert statement
+# (no trailing backslash, no open quote) precedes an UNRELATED later
+# multi-line bash -c block that itself carries an upper-bound + wall-clock
+# lexeme but no `assert` keyword. Must stay unflagged (returns 0): the join
+# must not spuriously bridge two unrelated statements.
+_s2j_tmpdir="$(mktemp -d)"; _TMPDIRS+=("$_s2j_tmpdir")
+
+printf '#!/usr/bin/env bash\n' > "$_s2j_tmpdir/fixture.sh"
+printf '%s "unrelated pre-terminated statement" test 1 -eq 1\n' "$_ASS_WORD" >> "$_s2j_tmpdir/fixture.sh"
+printf "bash -c '\n" >> "$_s2j_tmpdir/fixture.sh"
+printf '    test "$el" %s 15\n' "$_UB_OP" >> "$_s2j_tmpdir/fixture.sh"
+printf '    # %s marker\n' "$_WC_LEX_PART" >> "$_s2j_tmpdir/fixture.sh"
+printf "'\n" >> "$_s2j_tmpdir/fixture.sh"
+
+_s2j_rc=0
+_detect_wallclock_upper_bound "$_s2j_tmpdir" 2>/dev/null || _s2j_rc=$?
+assert "2j: an unrelated later multi-line bash -c block (no assert keyword) does not spuriously join with an earlier already-terminated assert statement (returns 0)" \
+    test "$_s2j_rc" -eq 0
+
 # ===========================================================================
 # Section 3: LIVE guard — scan the real tests/infra for un-escaped
 #             wall-clock upper-bound asserts.
