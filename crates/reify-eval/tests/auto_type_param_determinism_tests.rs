@@ -608,6 +608,56 @@ fn v0_1_example_corpus_compile_and_check_time_is_bounded() {
     );
 }
 
+// ─── step-11 unit guards: per_file_violations pure-helper contract ─────────
+
+/// `per_file_violations` must flag a genuinely over-budget file and must NOT
+/// flag sub-budget files. This is the non-vacuous guarantee that the per-file
+/// gate exists to provide: a genuinely quadratic file still goes RED.
+#[test]
+fn per_file_gate_flags_quadratic_overrun() {
+    let measurements: Vec<(String, Duration)> = vec![
+        ("fast.ri".to_string(), Duration::from_millis(500)),
+        ("slow.ri".to_string(), Duration::from_secs(11)),
+        ("edge.ri".to_string(), Duration::from_secs(9)),
+    ];
+
+    let violations = per_file_violations(&measurements, Duration::from_secs(10));
+
+    let names: Vec<&str> = violations.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["slow.ri"],
+        "expected only the 11s file (> 10s budget) to be flagged as a violation, got: {names:?}"
+    );
+}
+
+/// `per_file_violations` has no aggregate/total concept: many sub-budget
+/// files whose SUM exceeds the old 120s total budget must still produce zero
+/// violations. Pins that the aggregate wall-clock budget is gone and
+/// RED-guards any future re-introduction of one.
+#[test]
+fn per_file_gate_ignores_aggregate_total_wall_clock() {
+    let measurements: Vec<(String, Duration)> = (0..300)
+        .map(|i| (format!("file_{i}.ri"), Duration::from_millis(500)))
+        .collect();
+
+    // Sanity: the fixture sum must comfortably exceed the old 120s total
+    // budget, otherwise this test would pass vacuously.
+    let total: Duration = measurements.iter().map(|(_, d)| *d).sum();
+    assert!(
+        total > Duration::from_secs(120),
+        "test fixture must exceed the old 120s total budget to be meaningful, got {total:?}"
+    );
+
+    let violations = per_file_violations(&measurements, Duration::from_secs(10));
+
+    assert!(
+        violations.is_empty(),
+        "expected no violations since every file is under the per-file budget \
+         (there must be no aggregate/total budget), got: {violations:?}"
+    );
+}
+
 // ─── step-13: fixture is included in corpus ───────────────────────────────────
 
 /// Assert that `bearing_auto_seal.ri` is discovered by the corpus walker.
