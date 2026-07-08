@@ -2872,6 +2872,10 @@ fn nearest_node(nodes: &[[f64; 3]], target: [f64; 3]) -> usize {
         if d.is_nan() { f64::INFINITY } else { d }
     };
 
+    // NOTE: this finiteness scan is independent from `key`'s NaN
+    // normalization below — it exists solely to drive the WARN (telemetry),
+    // while `key` alone drives the fallback pick's correctness and
+    // determinism. Keep the two conditions in agreement if either changes.
     if nodes.iter().flatten().chain(target.iter()).any(|c| !c.is_finite()) {
         tracing::warn!(
             target: "reify_eval::modal_ops",
@@ -2883,10 +2887,14 @@ fn nearest_node(nodes: &[[f64; 3]], target: [f64; 3]) -> usize {
         );
     }
 
+    // Precompute each node's key once, rather than inside the `min_by`
+    // comparator (which would otherwise re-run it ~2(n-1) times over the
+    // node set for a single pick).
     nodes
         .iter()
         .enumerate()
-        .min_by(|(_, a), (_, b)| key(a).total_cmp(&key(b)))
+        .map(|(i, p)| (i, key(p)))
+        .min_by(|(_, a), (_, b)| a.total_cmp(b))
         .map(|(i, _)| i)
         .expect("beam mesh has at least one node")
 }
