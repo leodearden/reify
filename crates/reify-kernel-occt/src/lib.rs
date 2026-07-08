@@ -4994,10 +4994,18 @@ mod tests {
         let cyl_faces = kernel_b
             .extract_faces(GeometryHandleId(1))
             .expect("extract_faces on the cylinder should succeed");
+        assert!(
+            !cyl_faces.is_empty(),
+            "cylinder extraction should yield at least one face to seed a stale parent_handle entry"
+        );
+        // Secondary sanity check, not load-bearing for the regression this
+        // test targets below: a cylinder has 3 faces (two caps + the
+        // lateral surface). An OCCT-version/topology change would fail
+        // this without indicating a provenance-clearing regression.
         assert_eq!(
             cyl_faces.len(),
             3,
-            "a cylinder has 3 faces (two caps + the lateral surface)"
+            "sanity check: a cylinder has 3 faces (two caps + the lateral surface)"
         );
         let stale_child = cyl_faces[0];
 
@@ -5061,8 +5069,10 @@ mod tests {
         // provenance. If extracted_faces had not been cleared on restore,
         // this call would hit the idempotency cache under parent id 1 and
         // return the stale 3-entry cylinder-face list verbatim instead of
-        // re-extracting — so the length assertion below (6, not 3) already
-        // proves the cache was cleared.
+        // re-extracting — so the assert_ne! below (faces != cyl_faces)
+        // already proves the cache was cleared, independent of the box's
+        // exact face count (which OCCT-version/topology drift could
+        // otherwise change without indicating this regression).
         //
         // Note: the returned ids are deliberately *not* asserted disjoint
         // from `cyl_faces`. next_id is restored wholesale from kernel_a's
@@ -5078,7 +5088,15 @@ mod tests {
         let faces = kernel_b
             .extract_faces(GeometryHandleId(1))
             .expect("extract_faces on the restored box should succeed");
-        assert_eq!(faces.len(), 6, "a box has 6 faces");
+        assert_ne!(
+            faces, cyl_faces,
+            "re-extraction after warm-start restore returned the stale cached \
+             cylinder-face list verbatim — extracted_faces was not cleared on restore"
+        );
+        assert!(
+            !faces.is_empty(),
+            "re-extraction after warm-start restore should yield at least one face"
+        );
 
         for face in &faces {
             assert_eq!(
@@ -5087,6 +5105,12 @@ mod tests {
                 "post-restore re-extraction should rebuild provenance correctly for {face:?}"
             );
         }
+
+        // Secondary sanity check, not the regression this test targets: a
+        // box has 6 faces. If this fails while the assertions above pass,
+        // it points to an OCCT-version/topology change, not a cache-clear
+        // regression.
+        assert_eq!(faces.len(), 6, "sanity check: a box has 6 faces");
     }
 
     #[test]
@@ -5268,6 +5292,89 @@ mod tests {
             sphere_h.id,
             GeometryHandleId(2),
             "next_id should not advance on total deserialization failure"
+        );
+    }
+
+    #[test]
+    fn with_warm_state_total_failure_preserves_dirty_state_and_provenance() {
+        // Dirty consumer: box + cylinder, with extraction provenance already
+        // populated (parent_handle non-empty) before the restore attempt.
+        let mut kernel = OcctKernel::new();
+        kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+        kernel
+            .execute(&GeometryOp::Cylinder {
+                radius: Value::Real(5.0),
+                height: Value::Real(20.0),
+            })
+            .unwrap();
+        let cyl_faces = kernel
+            .extract_faces(GeometryHandleId(2))
+            .expect("extract_faces on the cylinder should succeed");
+
+        // Snapshot every field the atomic-swap guard in `with_warm_state` is
+        // responsible for leaving untouched when every incoming shape fails
+        // to deserialize (the `staged.is_empty()` no-op path) — the exact
+        // opposite of the clear-on-successful-restore behavior this PR
+        // establishes for the swap-occurs path, so it needs its own pin.
+        let shape_ids_before: std::collections::HashSet<u64> =
+            kernel.shapes.keys().copied().collect();
+        let reprs_before = kernel.reprs.clone();
+        let next_id_before = kernel.next_id;
+        let parent_handle_before = kernel.parent_handle.clone();
+
+        // Construct a warm state with only undeserializable shape blobs.
+        let mut corrupted_shapes = HashMap::new();
+        corrupted_shapes.insert(1, "INVALID_BREP_DATA".to_string());
+        corrupted_shapes.insert(2, "ALSO_GARBAGE".to_string());
+        let corrupted_warm = OcctWarmState {
+            shapes: corrupted_shapes,
+            reprs: HashMap::new(),
+            next_id: 999,
+        };
+        kernel.with_warm_state(OpaqueState::new(corrupted_warm, 64));
+
+        // Nothing should have changed: staged ends up empty, so the atomic
+        // swap — and the parent_handle/extracted_* clears that ride along
+        // with it — must not run at all.
+        let shape_ids_after: std::collections::HashSet<u64> =
+            kernel.shapes.keys().copied().collect();
+        assert_eq!(
+            shape_ids_after, shape_ids_before,
+            "shapes must be untouched when every entry fails to deserialize"
+        );
+        assert_eq!(
+            kernel.reprs, reprs_before,
+            "reprs must be untouched when every entry fails to deserialize"
+        );
+        assert_eq!(
+            kernel.next_id, next_id_before,
+            "next_id must be untouched when every entry fails to deserialize"
+        );
+        assert_eq!(
+            kernel.parent_handle, parent_handle_before,
+            "parent_handle provenance must survive a fully-failed warm-start restore \
+             untouched, not just a successful one — the no-op path must not clear it"
+        );
+        assert_eq!(
+            kernel.warm_start_failures(),
+            2,
+            "both corrupt entries should be counted even though the swap was skipped"
+        );
+
+        // And the provenance is still live end-to-end: OwnerBody for a
+        // pre-existing cylinder face still resolves correctly post-no-op.
+        assert_eq!(
+            kernel
+                .query(&GeometryQuery::OwnerBody(cyl_faces[0]))
+                .unwrap(),
+            Value::Int(2),
+            "provenance should remain queryable after a fully-failed warm-start restore"
         );
     }
 
