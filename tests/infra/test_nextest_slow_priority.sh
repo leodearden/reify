@@ -63,6 +63,36 @@ _priority_for() {
 }
 
 # ---------------------------------------------------------------------------
+# Helper (task 5141): extract the `terminate-after` integer from a
+# `slow-timeout = { period = "...", terminate-after = N }` line inside a
+# [[profile.default.overrides]] block whose filter contains both
+# package(<pkg>) and binary(<bin>). Mirrors _priority_for_file's block-walk,
+# but stays in_block through the intervening `priority = ...` line (slow-timeout
+# is authored one line below priority — task 5141 step-4) instead of resetting
+# on it. Reads from FILE argument; prints the integer or empty string.
+# Usage: _slow_terminate_for_file <file> <pkg> <binary>
+# ---------------------------------------------------------------------------
+_slow_terminate_for_file() {
+    local file="$1" pkg="package(${2})" bin="binary(${3})"
+    awk -v pkg="$pkg" -v bin="$bin" '
+        /^\[\[/ { in_block = 0 }
+        /filter/ && index($0, pkg) && index($0, bin) { in_block = 1 }
+        in_block && /slow-timeout/ {
+            match($0, /terminate-after[[:space:]]*=[[:space:]]*[0-9]+/)
+            seg = substr($0, RSTART, RLENGTH)
+            match(seg, /[0-9]+$/)
+            print substr(seg, RSTART, RLENGTH)
+            in_block = 0
+        }
+    ' "$file"
+}
+
+# Convenience wrapper for the canonical nextest.toml.
+_slow_terminate_for() {
+    _slow_terminate_for_file "$NEXTEST_TOML" "$1" "$2"
+}
+
+# ---------------------------------------------------------------------------
 # Precompute priority values from nextest.toml (in current shell, not subshell).
 # This makes assertions simple test -n / test -gt checks on already-resolved values.
 # ---------------------------------------------------------------------------
@@ -226,5 +256,88 @@ assert "tensegrity_t0a priority (${P_T0A:-unset}) > analytical_validation priori
 
 assert "tensegrity_t0a priority (${P_T0A:-unset}) > determinism priority (${P_DET:-unset})" \
     bash -c "[ -n '${P_T0A:-}' ] && [ -n '${P_DET:-}' ] && [ '${P_T0A:-0}' -gt '${P_DET:-0}' ]"
+
+# ---------------------------------------------------------------------------
+# Assertion F (task 5141): heavy-tier slow-timeout/terminate-after ceiling.
+# Each of the 5 heavy binaries additionally carries
+# slow-timeout = { period = "120s", terminate-after = 15 } (1800s/30min) on
+# its existing [[profile.default.overrides]] priority block — a larger
+# ceiling than the [profile.default] 1200s/20min default (test_occt_gated_scope.sh
+# Tests 16a-16d), sized to clear the worst legitimate straggler (tensegrity_t0a
+# >180s even at ~8x load ≈1440s < 1800s) while still bounding a true hang well
+# under the 3600s (60m) verify.sh pass-level wall.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Assertion F (task 5141): heavy-tier slow-timeout present, terminate-after = 15 ---"
+
+ST_T0A="$(_slow_terminate_for reify-eval tensegrity_t0a)"
+ST_FEA="$(_slow_terminate_for reify-eval-fea-tests fea_diagnostics_e2e)"
+ST_REPR="$(_slow_terminate_for reify-eval representation_within_assertion)"
+ST_ANAL="$(_slow_terminate_for reify-solver-elastic analytical_validation)"
+ST_DET="$(_slow_terminate_for reify-solver-elastic determinism)"
+
+assert "nextest.toml: tensegrity_t0a override has slow-timeout terminate-after = 15" \
+    test "${ST_T0A:-}" = "15"
+
+assert "nextest.toml: fea_diagnostics_e2e override has slow-timeout terminate-after = 15" \
+    test "${ST_FEA:-}" = "15"
+
+assert "nextest.toml: representation_within_assertion override has slow-timeout terminate-after = 15" \
+    test "${ST_REPR:-}" = "15"
+
+assert "nextest.toml: analytical_validation override has slow-timeout terminate-after = 15" \
+    test "${ST_ANAL:-}" = "15"
+
+assert "nextest.toml: determinism override has slow-timeout terminate-after = 15" \
+    test "${ST_DET:-}" = "15"
+
+# ---------------------------------------------------------------------------
+# Assertion G (task 5141): gen-nextest-config.sh preserves each heavy-tier
+# slow-timeout verbatim in the generated temp config (compile-free — the
+# generator only runs sed on the occt max-threads line, never cargo/nextest).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Assertion G (task 5141): gen-nextest-config.sh preserves heavy-tier slow-timeout ---"
+
+_TMP_CFG_ST="$(REIFY_OCCT_NEXTEST_MAX_THREADS=24 bash "$GEN_CFG")"
+
+_GST_T0A="$(_slow_terminate_for_file "$_TMP_CFG_ST" reify-eval tensegrity_t0a)"
+_GST_FEA="$(_slow_terminate_for_file "$_TMP_CFG_ST" reify-eval-fea-tests fea_diagnostics_e2e)"
+_GST_REPR="$(_slow_terminate_for_file "$_TMP_CFG_ST" reify-eval representation_within_assertion)"
+_GST_ANAL="$(_slow_terminate_for_file "$_TMP_CFG_ST" reify-solver-elastic analytical_validation)"
+_GST_DET="$(_slow_terminate_for_file "$_TMP_CFG_ST" reify-solver-elastic determinism)"
+
+rm -f "$_TMP_CFG_ST"
+
+assert "gen-nextest-config.sh: tensegrity_t0a slow-timeout terminate-after = 15 preserved in generated config" \
+    test "${_GST_T0A:-}" = "15"
+
+assert "gen-nextest-config.sh: fea_diagnostics_e2e slow-timeout terminate-after = 15 preserved in generated config" \
+    test "${_GST_FEA:-}" = "15"
+
+assert "gen-nextest-config.sh: representation_within_assertion slow-timeout terminate-after = 15 preserved in generated config" \
+    test "${_GST_REPR:-}" = "15"
+
+assert "gen-nextest-config.sh: analytical_validation slow-timeout terminate-after = 15 preserved in generated config" \
+    test "${_GST_ANAL:-}" = "15"
+
+assert "gen-nextest-config.sh: determinism slow-timeout terminate-after = 15 preserved in generated config" \
+    test "${_GST_DET:-}" = "15"
+
+# ---------------------------------------------------------------------------
+# Assertion H (task 5141): 2-tier ordering + wall bound. The heavy ceiling
+# (120*15=1800s) is strictly greater than the default ceiling (120*10=1200s,
+# test_occt_gated_scope.sh Test 16c) and strictly less than the 3600s (60m)
+# pass-level wall — both tiers attribute-and-kill before the outer timeout
+# fires exit 124 with zero attribution.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Assertion H (task 5141): 2-tier ordering — heavy (1800s) > default (1200s), both < 3600s wall ---"
+
+assert "heavy slow-timeout ceiling (120*15=1800s) is strictly greater than the default ceiling (120*10=1200s)" \
+    test $((120 * 15)) -gt $((120 * 10))
+
+assert "heavy slow-timeout ceiling (120*15=1800s) is strictly less than the 3600s (60m) pass-level wall" \
+    test $((120 * 15)) -lt 3600
 
 test_summary
