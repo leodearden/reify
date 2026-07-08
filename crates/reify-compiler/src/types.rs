@@ -1251,13 +1251,6 @@ pub struct RealizationDecl {
     /// Downstream (reify-eval) reads this to set `MeshSurface.default_visible`.
     pub is_aux: bool,
     pub operations: Vec<CompiledGeometryOp>,
-    /// Feature tags parallel to `operations` — same length, same indexing.
-    ///
-    /// **Invariant**: `feature_tags.len() == operations.len()`.  Enforced
-    /// via `debug_assert!` at construction sites (all of which call
-    /// `derive_feature_tags`).  Tests in `feature_tag_tests.rs` lock this
-    /// invariant against future refactors.
-    pub feature_tags: Vec<reify_ir::FeatureTag>,
     pub span: SourceSpan,
 }
 

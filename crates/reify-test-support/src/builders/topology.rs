@@ -233,12 +233,10 @@ impl TopologyTemplateBuilder {
         operations: Vec<CompiledGeometryOp>,
     ) -> Self {
         let span = SourceSpan::new(0, 0);
-        let feature_tags = reify_compiler::derive_feature_tags(&operations, span);
         self.realizations.push(RealizationDecl {
             id: RealizationNodeId::new(entity, index),
             name: None,
             is_aux: false,
-            feature_tags,
             operations,
             // Sentinel (0, 0): builder-constructed RealizationDecls have no originating
             // source span.  Callers that exercise span-aware diagnostics must construct
@@ -258,12 +256,10 @@ impl TopologyTemplateBuilder {
         operations: Vec<CompiledGeometryOp>,
     ) -> Self {
         let span = SourceSpan::new(0, 0);
-        let feature_tags = reify_compiler::derive_feature_tags(&operations, span);
         self.realizations.push(RealizationDecl {
             id: RealizationNodeId::new(entity, index),
             name: Some(name.into()),
             is_aux: false,
-            feature_tags,
             operations,
             // Sentinel (0, 0): builder-constructed RealizationDecls have no originating
             // source span.  Callers that exercise span-aware diagnostics must construct
