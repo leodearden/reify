@@ -15634,6 +15634,74 @@ fn fea_convergence_emitter_fires_none_for_no_elastic_result() {
     );
 }
 
+/// (C) fea_convergence_emitter_fires_not_converged_with_reason.
+///
+/// Injects a CheckResult whose `values` carries a `NotConverged` ElasticResult
+/// with a `BudgetReason::MaxDofs` payload (via
+/// `make_elastic_result_value_map_with_convergence`), then calls
+/// `emit_fea_convergence_for_test()`. Asserts the recorder captured exactly
+/// ONE event whose payload is
+/// `Some(FeaConvergenceInfo{converged:false, reason:Some("MaxDofs")})`.
+///
+/// Closes the composite-path gap (extract_fea_convergence ->
+/// build_fea_convergence -> emit) for the failure-reason case: that variant
+/// was previously exercised only by the `extract_fea_convergence` unit test
+/// and the TS bridge test, not end-to-end through the emitter (reviewer
+/// follow-up, amendment pass on #5032).
+#[test]
+fn fea_convergence_emitter_fires_not_converged_with_reason() {
+    use std::sync::Arc;
+    use reify_eval::CheckResult;
+    use reify_ir::Value;
+
+    let convergence_status = Value::Enum {
+        type_name: "ConvergenceStatus".to_string(),
+        variant: "NotConverged".to_string(),
+        payload: vec![(
+            "reason".to_string(),
+            Value::Enum {
+                type_name: "BudgetReason".to_string(),
+                variant: "MaxDofs".to_string(),
+                payload: vec![],
+            },
+        )],
+    };
+    let values = make_elastic_result_value_map_with_convergence(convergence_status);
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    let recorder = RecordingFeaConvergenceEmitter::new();
+    let captured = Arc::clone(&recorder.events);
+    session.set_fea_convergence_emitter(Arc::new(recorder));
+
+    let check = CheckResult {
+        values,
+        constraint_results: vec![],
+        diagnostics: vec![],
+        resolved_params: std::collections::HashMap::new(),
+        structured_detail: vec![],
+    };
+    session.inject_check_for_test(check);
+    session.emit_fea_convergence_for_test();
+
+    let events = captured.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        1,
+        "expected exactly one fea-convergence-changed event, got {}",
+        events.len()
+    );
+    assert_eq!(
+        events[0],
+        Some(crate::types::FeaConvergenceInfo {
+            converged: false,
+            reason: Some("MaxDofs".to_string())
+        }),
+        "fea-convergence-changed payload must be Some(converged:false, reason:Some(\"MaxDofs\")) for a NotConverged ElasticResult"
+    );
+}
+
 /// fea_convergence_emitter_fires_on_set_parameter (INV-GUI-2 / gui-state-sync L3 step-3).
 ///
 /// Pins that `set_parameter` — the exact production path that `handleSetParameter`
