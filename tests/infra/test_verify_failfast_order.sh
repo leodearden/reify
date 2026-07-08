@@ -246,4 +246,19 @@ assert "merge-all plan: run_all.sh line carries REIFY_AUDIT_NO_COLD_BUILD=1" \
 assert "all plan (role=task): LACKS run_all.sh (wholesale suite moved to merge tier, task 5125)" \
     bash -c '! printf "%s\n" "$1" | grep -q "run_all\.sh"' _ "$ALL_PLAN"
 
+# (f)-(g) task 5139: run_all.sh stderr is not captured into the archived
+# attempt-N.test-*.log — merge it into the already-captured stdout stream
+# (2>&1) while preserving the Summary/FAILED classifier-marker contract.
+# (f) RED until step-2: run_all.sh line merges stderr into stdout.
+assert "merge-all plan: run_all.sh line merges stderr into captured stdout (2>&1)" \
+    bash -c 'printf "%s\n" "$1" | grep "run_all\.sh" | grep -q "2>&1"' _ "$MERGE_ALL_PLAN"
+
+# (g) contract guard (green before and after): stdout is never redirected
+# away, so run_all's Summary/FAILED classifier markers stay classifier-visible.
+assert "merge-all plan: run_all.sh line keeps stdout (no 1>&2 / >/dev/null)" \
+    bash -c '
+        L=$(printf "%s\n" "$1" | grep "run_all\.sh" | head -1)
+        echo "$L" | grep -qv "1>&2" && echo "$L" | grep -qv ">/dev/null"
+    ' _ "$MERGE_ALL_PLAN"
+
 test_summary
