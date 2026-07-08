@@ -1669,6 +1669,90 @@ describe('engineStore live-sync reducers (#5031 step-1)', () => {
   });
 });
 
+describe('engineStore subscribeToEvents wiring for 4 live-sync fields (#5031 step-3)', () => {
+  it('subscribeToEvents wires the 4 new listeners, routes payloads to state, and cleanup unsubscribes them', async () => {
+    // RED: subscribeToEvents does not yet import or call the 4 new bridge listeners.
+    await createRoot(async (dispose) => {
+      mockOnMeshUpdate.mockResolvedValue(vi.fn());
+      mockOnValueUpdate.mockResolvedValue(vi.fn());
+      mockOnConstraintUpdate.mockResolvedValue(vi.fn());
+      mockOnEvaluationStatus.mockResolvedValue(vi.fn());
+      mockOnMeshRemoved.mockResolvedValue(vi.fn());
+      mockOnValueRemoved.mockResolvedValue(vi.fn());
+      mockOnConstraintRemoved.mockResolvedValue(vi.fn());
+
+      const unlistenWires = vi.fn();
+      const unlistenSurfaces = vi.fn();
+      const unlistenPanes = vi.fn();
+      const unlistenAppearance = vi.fn();
+
+      let wiresCb: ((wires: TensegrityWireData[]) => void) | undefined;
+      let surfacesCb: ((surfaces: TensegritySurfaceData[]) => void) | undefined;
+      let panesCb: ((panes: DisplayDirective[]) => void) | undefined;
+      let appearanceCb: ((appearance: AppearanceDirective[]) => void) | undefined;
+
+      mockOnTensegrityWiresUpdate.mockImplementation(async (cb) => {
+        wiresCb = cb as typeof wiresCb;
+        return unlistenWires;
+      });
+      mockOnTensegritySurfacesUpdate.mockImplementation(async (cb) => {
+        surfacesCb = cb as typeof surfacesCb;
+        return unlistenSurfaces;
+      });
+      mockOnDisplayPanesUpdate.mockImplementation(async (cb) => {
+        panesCb = cb as typeof panesCb;
+        return unlistenPanes;
+      });
+      mockOnDisplayAppearanceUpdate.mockImplementation(async (cb) => {
+        appearanceCb = cb as typeof appearanceCb;
+        return unlistenAppearance;
+      });
+
+      const store = createEngineStore();
+      const cleanup = await store.subscribeToEvents();
+
+      expect(mockOnTensegrityWiresUpdate).toHaveBeenCalledWith(expect.any(Function));
+      expect(mockOnTensegritySurfacesUpdate).toHaveBeenCalledWith(expect.any(Function));
+      expect(mockOnDisplayPanesUpdate).toHaveBeenCalledWith(expect.any(Function));
+      expect(mockOnDisplayAppearanceUpdate).toHaveBeenCalledWith(expect.any(Function));
+
+      // Prove routing (not just subscription): invoking the captured callback
+      // must update live store state via the reducer.
+      const wire: TensegrityWireData = {
+        entity_path: 'TPrism', kind: 'strut', x1: 1.0, y1: 0.0, z1: 1.0, x2: 0.866, y2: 0.5, z2: 0.0,
+      };
+      wiresCb!([wire]);
+      expect(store.state.tensegrityWires).toEqual([wire]);
+
+      const surface: TensegritySurfaceData = {
+        entity_path: 'Patch', kind: 'membrane', i0: 0, i1: 1, i2: 2,
+        x0: 0.0, y0: 0.0, z0: 0.0, x1: 1.0, y1: 0.0, z1: 0.0, x2: 0.5, y2: 0.866, z2: 0.0,
+      };
+      surfacesCb!([surface]);
+      expect(store.state.tensegritySurfaces).toEqual([surface]);
+
+      const directive: DisplayDirective = { subject: 'S#realization[0]', pane: 1 };
+      panesCb!([directive]);
+      expect(store.state.displayPanes).toEqual([directive]);
+
+      const styleDirective: AppearanceDirective = {
+        subject: 'S#realization[0]',
+        style: { color: [0.5, 0.3, 0.1, 0.8], finish: 2, opacity: 0.8, wireframe: false },
+      };
+      appearanceCb!([styleDirective]);
+      expect(store.state.displayAppearance).toEqual([styleDirective]);
+
+      cleanup();
+      expect(unlistenWires).toHaveBeenCalled();
+      expect(unlistenSurfaces).toHaveBeenCalled();
+      expect(unlistenPanes).toHaveBeenCalled();
+      expect(unlistenAppearance).toHaveBeenCalled();
+
+      dispose();
+    });
+  });
+});
+
 describe('engineStore solverProgress', () => {
   it('(step-1a) initial state.solverProgress is { latest: null, trace: [], visible: false, coarseReached: false }', () => {
     createRoot((dispose) => {
