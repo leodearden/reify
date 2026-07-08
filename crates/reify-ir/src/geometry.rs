@@ -10884,4 +10884,24 @@ mod tests {
             .validate(0.0)
             .expect("a closed outward-wound tetra has no degenerate triangles");
     }
+
+    #[test]
+    fn validate_rejects_open_boundary() {
+        // A single non-degenerate triangle has three directed edges, none
+        // of which has a reverse anywhere in the mesh — an open boundary.
+        let open_mesh = Mesh {
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            indices: vec![0, 1, 2],
+            normals: None,
+        };
+        let err = open_mesh
+            .validate(0.0)
+            .expect_err("a single open triangle must fail the mesh contract");
+        assert_eq!(err.invariant, MeshInvariant::Closed);
+        assert!(err.counts.open_edges > 0);
+        match err.witness {
+            MeshWitness::Edge { .. } => {}
+            other => panic!("expected MeshWitness::Edge naming the offender, got {other:?}"),
+        }
+    }
 }
