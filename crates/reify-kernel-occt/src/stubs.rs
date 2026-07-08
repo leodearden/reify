@@ -577,4 +577,200 @@ mod tests {
             ),
         }
     }
+
+    /// Assert a `QueryError`-returning inherent stub method fails with
+    /// `QueryError::QueryFailed` mentioning "OCCT". Mirrors the taxonomy
+    /// check in `reify_test_support::kernel_assertions::assert_all_error_taxonomy`
+    /// (used by the shared suite above) for the inherent, non-`GeometryKernel`
+    /// probe surface that macro cannot see.
+    fn assert_query_failed<T: std::fmt::Debug>(result: Result<T, QueryError>, method: &str) {
+        match result {
+            Err(QueryError::QueryFailed(msg)) => {
+                assert!(
+                    msg.contains("OCCT"),
+                    "{method} error should mention OCCT, got: {msg}"
+                );
+            }
+            other => panic!(
+                "expected Err(QueryError::QueryFailed(_)) from {method}, got {:?}",
+                other
+            ),
+        }
+    }
+
+    /// Assert a `GeometryError`-returning inherent stub method fails with
+    /// `GeometryError::OperationFailed` mentioning "OCCT".
+    fn assert_operation_failed<T: std::fmt::Debug>(result: Result<T, GeometryError>, method: &str) {
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("OCCT"),
+                    "{method} error should mention OCCT, got: {msg}"
+                );
+            }
+            other => panic!(
+                "expected Err(GeometryError::OperationFailed(_)) from {method}, got {:?}",
+                other
+            ),
+        }
+    }
+
+    // --- Review-amendment coverage (task ι amendment pass) -----------------
+    //
+    // The shared `assert_kernel_contract!` suite above only exercises the
+    // `GeometryKernel` trait surface, instantiated against `OcctKernelHandle`
+    // (the only type in this file that implements the trait). It structurally
+    // cannot see: (a) `OcctKernel`'s own inherent methods — a separate type
+    // from `OcctKernelHandle`, never wired to the trait — or (b) either
+    // type's inherent methods that simply aren't on `GeometryKernel` (probes,
+    // with-history variants). These tests close that gap for the methods
+    // flagged by review; they are deliberately NOT a full restoration of the
+    // deleted bespoke suite — the trait-surface duplicates (execute/query/
+    // export/tessellate/extract_* taxonomy on `OcctKernelHandle`) stay
+    // deleted per this task's `design_decisions`.
+
+    /// `OcctKernel`'s core trait-shaped inherent methods (execute/query/
+    /// export/tessellate/extract_*/warm_state): a separate type from
+    /// `OcctKernelHandle`, so the shared suite's Handle instantiation above
+    /// provides no coverage for it.
+    #[test]
+    fn stub_kernel_core_methods_return_not_available_error() {
+        let mut kernel = OcctKernel::new();
+
+        assert_operation_failed(
+            kernel.execute(&GeometryOp::Union {
+                left: GeometryHandleId(1),
+                right: GeometryHandleId(2),
+            }),
+            "execute",
+        );
+        assert_query_failed(
+            kernel.query(&GeometryQuery::Volume(GeometryHandleId(1))),
+            "query",
+        );
+
+        let mut buf = Vec::new();
+        match kernel.export(GeometryHandleId(1), ExportFormat::Step, &mut buf) {
+            Err(ExportError::FormatError(msg)) => {
+                assert!(
+                    msg.contains("OCCT"),
+                    "export error should mention OCCT, got: {msg}"
+                );
+            }
+            other => panic!(
+                "expected Err(ExportError::FormatError(_)) from export, got {:?}",
+                other
+            ),
+        }
+
+        match kernel.tessellate(GeometryHandleId(1), 0.1) {
+            Err(TessError::TessellationFailed(msg)) => {
+                assert!(
+                    msg.contains("OCCT"),
+                    "tessellate error should mention OCCT, got: {msg}"
+                );
+            }
+            other => panic!(
+                "expected Err(TessError::TessellationFailed(_)) from tessellate, got {:?}",
+                other
+            ),
+        }
+
+        assert_query_failed(kernel.extract_edges(GeometryHandleId(1)), "extract_edges");
+        assert_query_failed(kernel.extract_faces(GeometryHandleId(1)), "extract_faces");
+        assert_query_failed(
+            kernel.extract_vertices(GeometryHandleId(1)),
+            "extract_vertices",
+        );
+        assert!(
+            kernel.warm_state().is_none(),
+            "stub warm_state should always be None"
+        );
+    }
+
+    /// `OcctKernel`'s geometric-probe inherent methods flagged by review
+    /// (closest_point_on_shape/surface_angle/surface_normal_at/curvature_at/
+    /// point_on_shape/contains): none are on `GeometryKernel`, so
+    /// `assert_kernel_contract!` cannot see them regardless of which type
+    /// it's instantiated against.
+    #[test]
+    fn stub_kernel_probe_methods_return_not_available_error() {
+        let kernel = OcctKernel::new();
+
+        assert_query_failed(
+            kernel.closest_point_on_shape(GeometryHandleId(1), 0.0, 0.0, 0.0),
+            "closest_point_on_shape",
+        );
+        assert_query_failed(
+            kernel.surface_angle(GeometryHandleId(1), GeometryHandleId(2)),
+            "surface_angle",
+        );
+        assert_query_failed(
+            kernel.surface_normal_at(GeometryHandleId(1), 0.0, 0.0),
+            "surface_normal_at",
+        );
+        assert_query_failed(
+            kernel.curvature_at(GeometryHandleId(1), 0.0, 0.0),
+            "curvature_at",
+        );
+        assert_query_failed(
+            kernel.point_on_shape(
+                GeometryHandleId(1),
+                0.0,
+                0.0,
+                0.0,
+                reify_ir::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
+            ),
+            "point_on_shape",
+        );
+        assert_query_failed(
+            kernel.contains(
+                GeometryHandleId(1),
+                0.0,
+                0.0,
+                0.0,
+                reify_ir::DEFAULT_CONTAINS_TOLERANCE_M,
+            ),
+            "contains",
+        );
+    }
+
+    /// `OcctKernel::query` for non-`Volume` query kinds flagged by review.
+    /// `assert_all_error_taxonomy` (shared suite) only probes `Volume`;
+    /// today's stub ignores the query kind entirely, but these guard
+    /// against a future per-variant `match` that forgets a case.
+    #[test]
+    fn stub_kernel_query_variants_return_not_available_error() {
+        let kernel = OcctKernel::new();
+
+        assert_query_failed(
+            kernel.query(&GeometryQuery::EdgeLength(GeometryHandleId(1))),
+            "query(EdgeLength)",
+        );
+        assert_query_failed(
+            kernel.query(&GeometryQuery::FaceNormal(GeometryHandleId(1))),
+            "query(FaceNormal)",
+        );
+        assert_query_failed(
+            kernel.query(&GeometryQuery::EdgeTangent(GeometryHandleId(1))),
+            "query(EdgeTangent)",
+        );
+    }
+
+    /// `OcctKernelHandle::fillet_with_history`/`chamfer_with_history`
+    /// (task 2655/2821): inherent methods not on `GeometryKernel`, so the
+    /// shared suite's Handle instantiation above cannot see them either.
+    #[test]
+    fn stub_handle_fillet_and_chamfer_with_history_return_not_available_error() {
+        let handle = OcctKernelHandle::spawn();
+
+        assert_operation_failed(
+            handle.fillet_with_history(GeometryHandleId(1), 1.0e-3),
+            "fillet_with_history",
+        );
+        assert_operation_failed(
+            handle.chamfer_with_history(GeometryHandleId(1), 1.0e-3),
+            "chamfer_with_history",
+        );
+    }
 }
