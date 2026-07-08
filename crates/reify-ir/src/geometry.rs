@@ -4479,11 +4479,8 @@ impl TopologyAttribute {
 
 /// Runtime table mapping geometry handle ids to `TopologyAttribute`s.
 ///
-/// The v0.2 attribute-based replacement-in-progress for `FeatureTagTable`.
 /// Tasks 5-8 wire per-op auto-population; task 2 (#2570) wires
-/// selector lookup against this table. Mirrors the `FeatureTagTable`
-/// shape (HashMap keyed by `GeometryHandleId`, four-method API) so the
-/// existing call sites can adopt it incrementally.
+/// selector lookup against this table.
 // `Clone` (task 4744 β step-20): the morph-source side-table snapshots the
 // live attribute table into an owned `OwnedBRepSnapshot` BEFORE a rebuild wipes
 // it, so `morph_eligible` Stage-B can run against the OLD BRep on the next tick.
@@ -4497,9 +4494,8 @@ pub struct TopologyAttributeTable {
 impl TopologyAttributeTable {
     /// Record that geometry handle `id` carries `attr`.
     ///
-    /// Overwrites any prior entry for the same id (last-write-wins,
-    /// mirroring `FeatureTagTable::record`). Tasks 3 (#2571) and 4 (#2572)
-    /// will add diagnostics around accidental rebinds.
+    /// Overwrites any prior entry for the same id (last-write-wins). Tasks 3
+    /// (#2571) and 4 (#2572) will add diagnostics around accidental rebinds.
     pub fn record(&mut self, id: GeometryHandleId, attr: TopologyAttribute) {
         self.entries.insert(id, attr);
     }
