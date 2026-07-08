@@ -99,6 +99,21 @@
 #                                      above is the actual fork-storm defense.
 #                                      Unset by default -- test-only, never
 #                                      set in normal operation.
+#   REIFY_RUN_ALL_PROGRESS_SECS        Phase-1 single-writer progress-heartbeat
+#                                      cadence in seconds (task #5130; default
+#                                      30, mirrors REIFY_CLOCK_HEARTBEAT_SECS).
+#                                      A background printer emits `INFO:
+#                                      run_all.sh pool progress: X/Y complete,
+#                                      elapsed Ns` on stderr at this cadence
+#                                      (sleeps-FIRST -- a pool finishing under
+#                                      one interval stays silent) so a
+#                                      contended/slow pool is attributable on
+#                                      the live stream instead of a fully
+#                                      buffered black box. Pure observability,
+#                                      strictly additive (INV-4): a malformed
+#                                      value fails OPEN to 30 rather than
+#                                      exiting, unlike the load-bearing knobs
+#                                      above.
 
 set -euo pipefail
 
@@ -429,6 +444,16 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     esac
     [ "$_H2_POOL_WAIT" -ge 1 ] || { echo "ERROR: run_all.sh: REIFY_RUN_ALL_POOL_WAIT must be >= 1 (got '${_H2_POOL_WAIT}')" >&2; exit 64; }
 
+    # Phase-1 single-writer progress-heartbeat cadence (task #5130). Pure
+    # observability / strictly additive (INV-4): unlike the load-bearing
+    # knobs above, a malformed value fails OPEN to 30 instead of exiting --
+    # a pure-observability knob must never be able to break the suite.
+    _h2_progress_secs="${REIFY_RUN_ALL_PROGRESS_SECS:-30}"
+    case "$_h2_progress_secs" in
+        ''|*[!0-9]*) _h2_progress_secs=30 ;;
+    esac
+    [ "$_h2_progress_secs" -ge 1 ] || _h2_progress_secs=30
+
     # Observability: report the resolved bound before doing any discovery/
     # execution work, mirroring cargo-test-occt-gated.sh's `INFO: ... N=`
     # idiom. Only emitted on the pool path (not the all-serial fallback).
@@ -582,6 +607,52 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     # over-spawning -- safe, just not maximally efficient.
     _h2_pids=()
     _h2_peak=0
+
+    # Single-writer Phase-1 progress heartbeat (task #5130, PRD
+    # run-all-pool-contention-tiering-fix.md §9 L2): exactly ONE background
+    # printer, started only when there is at least one pool member, counting
+    # completed members via the existing per-member .rc protocol. MUST be
+    # disowned immediately -- the L1 throttle re-derives its live-worker set
+    # from `jobs -rp` (below) and this phase ends with `wait "${_h2_pids[@]}"`;
+    # a non-disowned forever-looping printer would inflate _h2_peak (breaking
+    # Test 20's peak<=N) and would be FATALLY joined by that terminal `wait`,
+    # hanging the whole suite. `disown` removes it from the shell job table
+    # (invisible to both `jobs -rp` and `wait`) while it stays killable via
+    # the saved PID (killed right after the Phase-1 join below). Sleeps-FIRST:
+    # a pool finishing inside one interval is killed mid-sleep and never
+    # prints (see the REIFY_RUN_ALL_PROGRESS_SECS Knobs doc above).
+    if [ "${#_h2_pool_members[@]}" -gt 0 ]; then
+        _h2_progress_start=$(date +%s)
+        (
+            set +e +o pipefail
+            # 1s-sliced sleep (NOT a single `sleep "$_h2_progress_secs"`): a
+            # killed shell does not kill its own in-flight `sleep` CHILD
+            # process, which would otherwise linger as an orphan holding
+            # this subshell's inherited stdout/stderr open for up to the
+            # full interval -- and any caller reading run_all.sh's output
+            # through a pipe (command substitution, `| tee`, dark-factory's
+            # own subprocess capture) blocks on read-until-EOF until that
+            # orphan finally exits. Slicing bounds that post-kill orphan
+            # lifetime to ~1s regardless of how large the interval is
+            # configured, instead of hanging the caller for the whole
+            # interval (e.g. up to 3600s at the ceiling exercised by
+            # Test 22's fast-pool fixture).
+            _h2_slept=0
+            while [ -d "$_H2_WORKDIR" ]; do
+                sleep 1
+                _h2_slept=$((_h2_slept + 1))
+                if [ "$_h2_slept" -ge "$_h2_progress_secs" ]; then
+                    _h2_slept=0
+                    _done=$(find "$_H2_WORKDIR" -maxdepth 1 -name '*.rc' ! -name '*.retry.rc' 2>/dev/null | wc -l | tr -d ' ')
+                    _elapsed=$(( $(date +%s) - _h2_progress_start ))
+                    echo "INFO: run_all.sh pool progress: ${_done}/${#_h2_pool_members[@]} complete, elapsed ${_elapsed}s" >&2
+                fi
+            done
+        ) &
+        _h2_progress_pid=$!
+        disown 2>/dev/null || true
+    fi
+
     for _h2_name in "${_h2_pool_members[@]}"; do
         _h2_i="${_h2_index_of[$_h2_name]}"
 
@@ -620,6 +691,10 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     if [ "${#_h2_pids[@]}" -gt 0 ]; then
         wait "${_h2_pids[@]}" 2>/dev/null || true
     fi
+    # Stop the single-writer progress printer now that Phase 1 has joined --
+    # disowned above, so it is invisible to `jobs -rp`/`wait` and must be
+    # stopped explicitly via its saved PID (task #5130).
+    [ -n "${_h2_progress_pid:-}" ] && kill "$_h2_progress_pid" 2>/dev/null || true
     if [ "${#_h2_pool_members[@]}" -gt 0 ]; then
         echo "INFO: run_all.sh pool: Phase-1 peak concurrent worker shells=${_h2_peak} (limit ${_H2_POOL_N})" >&2
     fi
