@@ -4005,4 +4005,222 @@ mod tests {
             "String passed as Length param must be rejected"
         );
     }
+
+    // ── β2 (task compiler-type-hygiene): infer_mul_div_result — step-1 RED ───
+    //
+    // Unit tests for the new `infer_mul_div_result(op, left, right) ->
+    // Option<Type>`, pinned row-for-row against the β1 runtime truth table
+    // (`crates/reify-expr/tests/mul_div_runtime_truth_table.rs`). This batch
+    // covers the numeric/Scalar-core and aggregate-scale (Vector/Point/Tensor)
+    // arms only — Complex/Transform arms are step-3/4.
+    //
+    // RED: `infer_mul_div_result` does not exist yet.
+
+    fn time_ty() -> Type {
+        Type::Scalar {
+            dimension: DimensionVector::TIME,
+        }
+    }
+
+    #[test]
+    fn infer_mul_div_result_scalar_times_scalar_multiplies_dimensions() {
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &Type::length(), &Type::length()),
+            Some(Type::Scalar {
+                dimension: DimensionVector::LENGTH.mul(&DimensionVector::LENGTH),
+            }),
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_scalar_div_scalar_divides_dimensions() {
+        assert_eq!(
+            infer_mul_div_result(BinOp::Div, &Type::length(), &Type::length()),
+            Some(Type::Scalar {
+                dimension: DimensionVector::LENGTH.div(&DimensionVector::LENGTH),
+            }),
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_int_times_int_yields_int() {
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &Type::Int, &Type::Int),
+            Some(Type::Int)
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_int_div_int_yields_int_exemption() {
+        // β3 exemption ledger (PRD decision 4): stays Some(Int) statically even
+        // though the runtime widens to Real on non-divisible operands.
+        assert_eq!(
+            infer_mul_div_result(BinOp::Div, &Type::Int, &Type::Int),
+            Some(Type::Int)
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_scalar_times_int_preserves_dimension_both_orders() {
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &Type::length(), &Type::Int),
+            Some(Type::length()),
+        );
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &Type::Int, &Type::length()),
+            Some(Type::length()),
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_scalar_div_int_preserves_dimension() {
+        assert_eq!(
+            infer_mul_div_result(BinOp::Div, &Type::length(), &Type::Int),
+            Some(Type::length()),
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_int_div_scalar_yields_reciprocal_dimension() {
+        assert_eq!(
+            infer_mul_div_result(BinOp::Div, &Type::Int, &time_ty()),
+            Some(Type::Scalar {
+                dimension: DimensionVector::DIMENSIONLESS.div(&DimensionVector::TIME),
+            }),
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_dimensionless_scalar_div_scalar_yields_reciprocal_dimension() {
+        // A `Real` literal types as `Scalar{DIMENSIONLESS}` — there is no `Type::Real`.
+        assert_eq!(
+            infer_mul_div_result(BinOp::Div, &Type::dimensionless_scalar(), &time_ty()),
+            Some(Type::Scalar {
+                dimension: DimensionVector::DIMENSIONLESS.div(&DimensionVector::TIME),
+            }),
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_vector_times_dimensionless_preserves_vector() {
+        let v = Type::vec3(Type::length());
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &v, &Type::dimensionless_scalar()),
+            Some(v),
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_int_times_vector_is_commutative() {
+        let v = Type::vec3(Type::length());
+        assert_eq!(infer_mul_div_result(BinOp::Mul, &Type::Int, &v), Some(v));
+    }
+
+    #[test]
+    fn infer_mul_div_result_point_times_int_scales_both_orders() {
+        let p = Type::point3(Type::length());
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &p, &Type::Int),
+            Some(p.clone())
+        );
+        assert_eq!(infer_mul_div_result(BinOp::Mul, &Type::Int, &p), Some(p));
+    }
+
+    #[test]
+    fn infer_mul_div_result_tensor_times_int_scales_both_orders() {
+        let t = Type::tensor(1, 3, Type::length());
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &t, &Type::Int),
+            Some(t.clone())
+        );
+        assert_eq!(infer_mul_div_result(BinOp::Mul, &Type::Int, &t), Some(t));
+    }
+
+    #[test]
+    fn infer_mul_div_result_vector_div_dimensionless_preserves_vector_row6() {
+        // β1 row-6 pin: `Vector3<Force> / dimensionless -> Vector3<Force>`.
+        let v = Type::vec3(force_ty());
+        assert_eq!(
+            infer_mul_div_result(BinOp::Div, &v, &Type::dimensionless_scalar()),
+            Some(v),
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_vector_div_scalar_time_yields_reciprocal_component() {
+        assert_eq!(
+            infer_mul_div_result(BinOp::Div, &Type::vec3(Type::length()), &time_ty()),
+            Some(Type::vec3(Type::Scalar {
+                dimension: DimensionVector::LENGTH.div(&DimensionVector::TIME),
+            })),
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_div_vector_scale_is_not_commutative() {
+        // Div has no reverse-scale arm: `dimensionless / Vector3<Length>` is unsupported.
+        assert_eq!(
+            infer_mul_div_result(
+                BinOp::Div,
+                &Type::dimensionless_scalar(),
+                &Type::vec3(Type::length())
+            ),
+            None,
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_vector_times_vector_is_none() {
+        let v = Type::vec3(Type::length());
+        assert_eq!(infer_mul_div_result(BinOp::Mul, &v, &v), None);
+    }
+
+    #[test]
+    fn infer_mul_div_result_tensor_times_tensor_is_none() {
+        let t = Type::tensor(1, 3, Type::length());
+        assert_eq!(infer_mul_div_result(BinOp::Mul, &t, &t), None);
+    }
+
+    #[test]
+    fn infer_mul_div_result_point_times_point_is_none() {
+        let p = Type::point3(Type::length());
+        assert_eq!(infer_mul_div_result(BinOp::Mul, &p, &p), None);
+    }
+
+    #[test]
+    fn infer_mul_div_result_scalar_div_vector_is_none() {
+        assert_eq!(
+            infer_mul_div_result(BinOp::Div, &Type::length(), &Type::vec3(Type::length())),
+            None,
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_matrix_operand_is_none_both_orders() {
+        let m = Type::matrix(2, 2, Type::length());
+        assert_eq!(infer_mul_div_result(BinOp::Mul, &m, &Type::Int), None);
+        assert_eq!(infer_mul_div_result(BinOp::Mul, &Type::Int, &m), None);
+    }
+
+    #[test]
+    fn infer_mul_div_result_list_operand_is_none() {
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &Type::List(Box::new(Type::Int)), &Type::Int),
+            None,
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_bool_operand_is_none() {
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &Type::Bool, &Type::Int),
+            None
+        );
+    }
+
+    #[test]
+    fn infer_binop_type_delegates_to_infer_mul_div_result_for_vector_scale() {
+        let v = Type::vec3(Type::length());
+        assert_eq!(infer_binop_type(BinOp::Mul, &v, &Type::Int), v);
+    }
 }
