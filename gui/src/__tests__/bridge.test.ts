@@ -42,6 +42,10 @@ import {
   onAutoResolveIteration,
   onFileRemoved,
   onFeaDiagnosticsChanged,
+  onTensegrityWiresUpdate,
+  onTensegritySurfacesUpdate,
+  onDisplayPanesUpdate,
+  onDisplayAppearanceUpdate,
 } from '../bridge';
 import type { PersistentViewState } from '../types';
 import type { KernelStatus } from '../bridge';
@@ -505,6 +509,139 @@ describe('bridge event listeners', () => {
     await onKernelStatus(callback);
 
     expect(callback).toHaveBeenCalledWith(sample);
+  });
+});
+
+describe('bridge tensegrity/display listeners', () => {
+  it("onTensegrityWiresUpdate subscribes to 'tensegrity-wires-update' event", async () => {
+    const unlisten = vi.fn();
+    mockListen.mockResolvedValue(unlisten);
+
+    const callback = vi.fn();
+    const result = await onTensegrityWiresUpdate(callback);
+
+    expect(mockListen).toHaveBeenCalledWith('tensegrity-wires-update', expect.any(Function));
+    expect(result).toBe(unlisten);
+  });
+
+  it('onTensegrityWiresUpdate passes payload array to callback', async () => {
+    const unlisten = vi.fn();
+    mockListen.mockImplementation(async (_event, handler) => {
+      const payload = [
+        { entity_path: 'TPrism', kind: 'strut', x1: 0, y1: 0, z1: 0, x2: 1, y2: 0, z2: 0 },
+      ];
+      (handler as (event: { payload: unknown }) => void)({ payload });
+      return unlisten;
+    });
+
+    const callback = vi.fn();
+    await onTensegrityWiresUpdate(callback);
+
+    expect(callback).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ entity_path: 'TPrism', kind: 'strut' }),
+      ])
+    );
+  });
+
+  it("onTensegritySurfacesUpdate subscribes to 'tensegrity-surfaces-update' event", async () => {
+    const unlisten = vi.fn();
+    mockListen.mockResolvedValue(unlisten);
+
+    const callback = vi.fn();
+    const result = await onTensegritySurfacesUpdate(callback);
+
+    expect(mockListen).toHaveBeenCalledWith('tensegrity-surfaces-update', expect.any(Function));
+    expect(result).toBe(unlisten);
+  });
+
+  it('onTensegritySurfacesUpdate passes payload array to callback', async () => {
+    const unlisten = vi.fn();
+    mockListen.mockImplementation(async (_event, handler) => {
+      const payload = [
+        {
+          entity_path: 'TPrism', kind: 'membrane',
+          i0: 0, i1: 1, i2: 2,
+          x0: 0, y0: 0, z0: 0,
+          x1: 1, y1: 0, z1: 0,
+          x2: 0, y2: 1, z2: 0,
+        },
+      ];
+      (handler as (event: { payload: unknown }) => void)({ payload });
+      return unlisten;
+    });
+
+    const callback = vi.fn();
+    await onTensegritySurfacesUpdate(callback);
+
+    expect(callback).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ entity_path: 'TPrism', kind: 'membrane' }),
+      ])
+    );
+  });
+
+  it("onDisplayPanesUpdate subscribes to 'display-panes-update' event", async () => {
+    const unlisten = vi.fn();
+    mockListen.mockResolvedValue(unlisten);
+
+    const callback = vi.fn();
+    const result = await onDisplayPanesUpdate(callback);
+
+    expect(mockListen).toHaveBeenCalledWith('display-panes-update', expect.any(Function));
+    expect(result).toBe(unlisten);
+  });
+
+  it('onDisplayPanesUpdate passes payload array to callback', async () => {
+    const unlisten = vi.fn();
+    mockListen.mockImplementation(async (_event, handler) => {
+      const payload = [{ subject: 'Bracket#realization[0]', pane: 1 }];
+      (handler as (event: { payload: unknown }) => void)({ payload });
+      return unlisten;
+    });
+
+    const callback = vi.fn();
+    await onDisplayPanesUpdate(callback);
+
+    expect(callback).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ subject: 'Bracket#realization[0]', pane: 1 }),
+      ])
+    );
+  });
+
+  it("onDisplayAppearanceUpdate subscribes to 'display-appearance-update' event", async () => {
+    const unlisten = vi.fn();
+    mockListen.mockResolvedValue(unlisten);
+
+    const callback = vi.fn();
+    const result = await onDisplayAppearanceUpdate(callback);
+
+    expect(mockListen).toHaveBeenCalledWith('display-appearance-update', expect.any(Function));
+    expect(result).toBe(unlisten);
+  });
+
+  it('onDisplayAppearanceUpdate passes payload array to callback', async () => {
+    const unlisten = vi.fn();
+    mockListen.mockImplementation(async (_event, handler) => {
+      const payload = [
+        {
+          subject: 'Bracket#realization[0]',
+          style: { color: [1, 0, 0, 1], finish: 1, opacity: 1, wireframe: false },
+        },
+      ];
+      (handler as (event: { payload: unknown }) => void)({ payload });
+      return unlisten;
+    });
+
+    const callback = vi.fn();
+    await onDisplayAppearanceUpdate(callback);
+
+    expect(callback).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ subject: 'Bracket#realization[0]' }),
+      ])
+    );
   });
 });
 

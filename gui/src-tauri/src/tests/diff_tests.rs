@@ -62,6 +62,80 @@ fn sample_mesh(entity_path: &str, vertices: Vec<f32>) -> MeshData {
     }
 }
 
+fn sample_tensegrity_wire(entity_path: &str, kind: &str) -> TensegrityWireData {
+    TensegrityWireData {
+        entity_path: entity_path.to_string(),
+        kind: kind.to_string(),
+        x1: 0.0,
+        y1: 0.0,
+        z1: 0.0,
+        x2: 1.0,
+        y2: 0.0,
+        z2: 0.0,
+    }
+}
+
+fn sample_tensegrity_surface(entity_path: &str, kind: &str) -> TensegritySurfaceData {
+    TensegritySurfaceData {
+        entity_path: entity_path.to_string(),
+        kind: kind.to_string(),
+        i0: 0,
+        i1: 1,
+        i2: 2,
+        x0: 0.0,
+        y0: 0.0,
+        z0: 0.0,
+        x1: 1.0,
+        y1: 0.0,
+        z1: 0.0,
+        x2: 0.0,
+        y2: 1.0,
+        z2: 0.0,
+    }
+}
+
+fn sample_display_directive(subject: &str, pane: i32) -> DisplayDirective {
+    DisplayDirective {
+        subject: subject.to_string(),
+        pane,
+    }
+}
+
+fn sample_appearance_directive(subject: &str, opacity: f32) -> AppearanceDirective {
+    AppearanceDirective {
+        subject: subject.to_string(),
+        style: DisplayStyleData {
+            color: [0.5, 0.3, 0.1, opacity],
+            finish: 1,
+            opacity,
+            wireframe: false,
+        },
+    }
+}
+
+/// All-empty `GuiState`, for tests that only care about one field's diff
+/// behavior. Spread with `..empty_gui_state()` and override just the field(s)
+/// under test, e.g. `GuiState { tensegrity_wires: wires, ..empty_gui_state() }`.
+/// Keeps each test's literal down to the one field that actually varies and
+/// localizes future `GuiState` field additions to this one helper.
+fn empty_gui_state() -> GuiState {
+    GuiState {
+        meshes: vec![],
+        values: vec![],
+        constraints: vec![],
+        files: vec![],
+        tessellation_diagnostics: vec![],
+        compile_diagnostics: vec![],
+        tensegrity_wires: vec![],
+        tensegrity_surfaces: vec![],
+        demand_prune_measurement: None,
+        display_panes: vec![],
+        display_appearance: vec![],
+        fea_diagnostics: vec![],
+        fea_convergence: None,
+    }
+}
+
 #[test]
 fn diff_identical_states_returns_empty_delta() {
     let state = GuiState {
@@ -369,6 +443,10 @@ fn delta_to_events_returns_correct_tuples_for_changes_and_removals() {
         removed_constraint_ids: vec!["Bracket.old_constraint".to_string()],
         changed_tessellation_diagnostics: None,
         changed_compile_diagnostics: None,
+        changed_tensegrity_wires: None,
+        changed_tensegrity_surfaces: None,
+        changed_display_panes: None,
+        changed_display_appearance: None,
     };
 
     let events = delta_to_events(&delta);
@@ -439,6 +517,10 @@ fn delta_to_events_returns_empty_vec_for_empty_delta() {
         removed_constraint_ids: vec![],
         changed_tessellation_diagnostics: None,
         changed_compile_diagnostics: None,
+        changed_tensegrity_wires: None,
+        changed_tensegrity_surfaces: None,
+        changed_display_panes: None,
+        changed_display_appearance: None,
     };
 
     let events = delta_to_events(&delta);
@@ -459,6 +541,10 @@ fn delta_to_events_emits_serialization_error_event_on_failure() {
         removed_constraint_ids: vec![],
         changed_tessellation_diagnostics: None,
         changed_compile_diagnostics: None,
+        changed_tensegrity_wires: None,
+        changed_tensegrity_surfaces: None,
+        changed_display_panes: None,
+        changed_display_appearance: None,
     };
 
     let events = delta_to_events(&delta);
@@ -516,6 +602,10 @@ fn delta_to_events_warns_and_skips_on_serialization_failure() {
         removed_constraint_ids: vec![],
         changed_tessellation_diagnostics: None,
         changed_compile_diagnostics: None,
+        changed_tensegrity_wires: None,
+        changed_tensegrity_surfaces: None,
+        changed_display_panes: None,
+        changed_display_appearance: None,
     };
 
     let events = tracing::subscriber::with_default(subscriber, || delta_to_events(&delta));
@@ -568,6 +658,10 @@ fn delta_to_events_multiple_failures_warn_for_each() {
         removed_constraint_ids: vec![],
         changed_tessellation_diagnostics: None,
         changed_compile_diagnostics: None,
+        changed_tensegrity_wires: None,
+        changed_tensegrity_surfaces: None,
+        changed_display_panes: None,
+        changed_display_appearance: None,
     };
 
     let events = tracing::subscriber::with_default(subscriber, || delta_to_events(&delta));
@@ -827,6 +921,10 @@ fn delta_to_events_emits_tessellation_diagnostics_event() {
         removed_constraint_ids: vec![],
         changed_tessellation_diagnostics: Some(diags.clone()),
         changed_compile_diagnostics: None,
+        changed_tensegrity_wires: None,
+        changed_tensegrity_surfaces: None,
+        changed_display_panes: None,
+        changed_display_appearance: None,
     };
 
     let events = delta_to_events(&delta);
@@ -862,6 +960,10 @@ fn delta_to_events_omits_tessellation_diagnostics_event_when_none() {
         removed_constraint_ids: vec![],
         changed_tessellation_diagnostics: None,
         changed_compile_diagnostics: None,
+        changed_tensegrity_wires: None,
+        changed_tensegrity_surfaces: None,
+        changed_display_panes: None,
+        changed_display_appearance: None,
     };
 
     let events = delta_to_events(&delta);
@@ -984,6 +1086,10 @@ fn delta_to_events_emits_compile_diagnostics_event() {
         removed_constraint_ids: vec![],
         changed_tessellation_diagnostics: None,
         changed_compile_diagnostics: Some(diags.clone()),
+        changed_tensegrity_wires: None,
+        changed_tensegrity_surfaces: None,
+        changed_display_panes: None,
+        changed_display_appearance: None,
     };
 
     let events = delta_to_events(&delta);
@@ -1019,6 +1125,10 @@ fn delta_to_events_omits_compile_diagnostics_event_when_none() {
         removed_constraint_ids: vec![],
         changed_tessellation_diagnostics: None,
         changed_compile_diagnostics: None,
+        changed_tensegrity_wires: None,
+        changed_tensegrity_surfaces: None,
+        changed_display_panes: None,
+        changed_display_appearance: None,
     };
 
     let events = delta_to_events(&delta);
@@ -1026,6 +1136,718 @@ fn delta_to_events_omits_compile_diagnostics_event_when_none() {
     assert!(
         events.iter().all(|(n, _)| n != "compile-diagnostics"),
         "expected no compile-diagnostics event when field is None; got {:?}",
+        events.iter().map(|(n, _)| n).collect::<Vec<_>>()
+    );
+}
+
+// --- tensegrity_wires diff / full-delta tests (step-1) ---
+
+/// diff_gui_state: identical tensegrity_wires in old and new → delta field is None.
+#[test]
+fn diff_identical_tensegrity_wires_returns_none() {
+    let wires = vec![sample_tensegrity_wire("TPrism.strut0", "strut")];
+    let old = GuiState {
+        tensegrity_wires: wires.clone(),
+        ..empty_gui_state()
+    };
+    let new = GuiState {
+        tensegrity_wires: wires.clone(),
+        ..empty_gui_state()
+    };
+
+    let delta = diff_gui_state(&old, &new);
+    assert!(
+        delta.changed_tensegrity_wires.is_none(),
+        "expected None when tensegrity_wires are identical, got {:?}",
+        delta.changed_tensegrity_wires
+    );
+}
+
+/// diff_gui_state: empty → non-empty tensegrity_wires produces Some(new vec).
+#[test]
+fn diff_changed_tensegrity_wires_returns_some() {
+    let old = empty_gui_state();
+    let new_wires = vec![
+        sample_tensegrity_wire("TPrism.strut0", "strut"),
+        sample_tensegrity_wire("TPrism.cable0", "cable"),
+    ];
+    let new = GuiState {
+        tensegrity_wires: new_wires.clone(),
+        ..empty_gui_state()
+    };
+
+    let delta = diff_gui_state(&old, &new);
+    assert_eq!(
+        delta.changed_tensegrity_wires,
+        Some(new_wires),
+        "delta should carry the new tensegrity_wires vec"
+    );
+}
+
+/// diff_gui_state: a same-length list with a mutated element (kind changes on
+/// an otherwise-identical wire) must still be detected as changed. Guards
+/// against a future switch to length-only or id-only comparison silently
+/// swallowing content changes.
+#[test]
+fn diff_changed_tensegrity_wire_element_returns_some() {
+    let old = GuiState {
+        tensegrity_wires: vec![sample_tensegrity_wire("TPrism.strut0", "strut")],
+        ..empty_gui_state()
+    };
+    let new_wires = vec![sample_tensegrity_wire("TPrism.strut0", "cable")];
+    let new = GuiState {
+        tensegrity_wires: new_wires.clone(),
+        ..empty_gui_state()
+    };
+
+    let delta = diff_gui_state(&old, &new);
+    assert_eq!(
+        delta.changed_tensegrity_wires,
+        Some(new_wires),
+        "an in-place element mutation (same length, changed content) must be detected"
+    );
+}
+
+/// diff_gui_state: non-empty → empty transition emits Some(vec![]) so subscribers can clear.
+#[test]
+fn diff_clearing_tensegrity_wires_emits_some_empty() {
+    let old = GuiState {
+        tensegrity_wires: vec![sample_tensegrity_wire("TPrism.strut0", "strut")],
+        ..empty_gui_state()
+    };
+    let new = empty_gui_state();
+
+    let delta = diff_gui_state(&old, &new);
+    assert_eq!(
+        delta.changed_tensegrity_wires,
+        Some(vec![]),
+        "non-empty → empty transition must emit Some(vec![]) so subscribers can clear; \
+         None would swallow the clear event"
+    );
+}
+
+/// StateDelta::full: None when tensegrity_wires is empty, Some(clone) when non-empty.
+#[test]
+fn full_delta_tensegrity_wires_none_when_empty_some_when_nonempty() {
+    let empty_state = empty_gui_state();
+    assert!(
+        StateDelta::full(&empty_state)
+            .changed_tensegrity_wires
+            .is_none(),
+        "StateDelta::full must omit tensegrity_wires when empty"
+    );
+
+    let wires = vec![sample_tensegrity_wire("TPrism.strut0", "strut")];
+    let nonempty_state = GuiState {
+        tensegrity_wires: wires.clone(),
+        ..empty_gui_state()
+    };
+    assert_eq!(
+        StateDelta::full(&nonempty_state).changed_tensegrity_wires,
+        Some(wires),
+        "StateDelta::full must carry a clone of tensegrity_wires when non-empty"
+    );
+}
+
+// --- tensegrity_surfaces diff / full-delta tests (step-1) ---
+
+/// diff_gui_state: identical tensegrity_surfaces in old and new → delta field is None.
+#[test]
+fn diff_identical_tensegrity_surfaces_returns_none() {
+    let surfaces = vec![sample_tensegrity_surface("TPatch.facet0", "membrane")];
+    let old = GuiState {
+        tensegrity_surfaces: surfaces.clone(),
+        ..empty_gui_state()
+    };
+    let new = GuiState {
+        tensegrity_surfaces: surfaces.clone(),
+        ..empty_gui_state()
+    };
+
+    let delta = diff_gui_state(&old, &new);
+    assert!(
+        delta.changed_tensegrity_surfaces.is_none(),
+        "expected None when tensegrity_surfaces are identical, got {:?}",
+        delta.changed_tensegrity_surfaces
+    );
+}
+
+/// diff_gui_state: empty → non-empty tensegrity_surfaces produces Some(new vec).
+#[test]
+fn diff_changed_tensegrity_surfaces_returns_some() {
+    let old = empty_gui_state();
+    let new_surfaces = vec![sample_tensegrity_surface("TPatch.facet0", "membrane")];
+    let new = GuiState {
+        tensegrity_surfaces: new_surfaces.clone(),
+        ..empty_gui_state()
+    };
+
+    let delta = diff_gui_state(&old, &new);
+    assert_eq!(
+        delta.changed_tensegrity_surfaces,
+        Some(new_surfaces),
+        "delta should carry the new tensegrity_surfaces vec"
+    );
+}
+
+/// diff_gui_state: a same-length list with a mutated element (kind changes on
+/// an otherwise-identical surface) must still be detected as changed. Guards
+/// against a future switch to length-only or id-only comparison silently
+/// swallowing content changes.
+#[test]
+fn diff_changed_tensegrity_surface_element_returns_some() {
+    let old = GuiState {
+        tensegrity_surfaces: vec![sample_tensegrity_surface("TPatch.facet0", "membrane")],
+        ..empty_gui_state()
+    };
+    let new_surfaces = vec![sample_tensegrity_surface("TPatch.facet0", "panel")];
+    let new = GuiState {
+        tensegrity_surfaces: new_surfaces.clone(),
+        ..empty_gui_state()
+    };
+
+    let delta = diff_gui_state(&old, &new);
+    assert_eq!(
+        delta.changed_tensegrity_surfaces,
+        Some(new_surfaces),
+        "an in-place element mutation (same length, changed content) must be detected"
+    );
+}
+
+/// diff_gui_state: non-empty → empty transition emits Some(vec![]) so subscribers can clear.
+#[test]
+fn diff_clearing_tensegrity_surfaces_emits_some_empty() {
+    let old = GuiState {
+        tensegrity_surfaces: vec![sample_tensegrity_surface("TPatch.facet0", "membrane")],
+        ..empty_gui_state()
+    };
+    let new = empty_gui_state();
+
+    let delta = diff_gui_state(&old, &new);
+    assert_eq!(
+        delta.changed_tensegrity_surfaces,
+        Some(vec![]),
+        "non-empty → empty transition must emit Some(vec![]) so subscribers can clear; \
+         None would swallow the clear event"
+    );
+}
+
+/// StateDelta::full: None when tensegrity_surfaces is empty, Some(clone) when non-empty.
+#[test]
+fn full_delta_tensegrity_surfaces_none_when_empty_some_when_nonempty() {
+    let empty_state = empty_gui_state();
+    assert!(
+        StateDelta::full(&empty_state)
+            .changed_tensegrity_surfaces
+            .is_none(),
+        "StateDelta::full must omit tensegrity_surfaces when empty"
+    );
+
+    let surfaces = vec![sample_tensegrity_surface("TPatch.facet0", "membrane")];
+    let nonempty_state = GuiState {
+        tensegrity_surfaces: surfaces.clone(),
+        ..empty_gui_state()
+    };
+    assert_eq!(
+        StateDelta::full(&nonempty_state).changed_tensegrity_surfaces,
+        Some(surfaces),
+        "StateDelta::full must carry a clone of tensegrity_surfaces when non-empty"
+    );
+}
+
+// --- display_panes diff / full-delta tests (step-1) ---
+
+/// diff_gui_state: identical display_panes in old and new → delta field is None.
+#[test]
+fn diff_identical_display_panes_returns_none() {
+    let panes = vec![sample_display_directive("Bracket#realization[0]", 0)];
+    let old = GuiState {
+        display_panes: panes.clone(),
+        ..empty_gui_state()
+    };
+    let new = GuiState {
+        display_panes: panes.clone(),
+        ..empty_gui_state()
+    };
+
+    let delta = diff_gui_state(&old, &new);
+    assert!(
+        delta.changed_display_panes.is_none(),
+        "expected None when display_panes are identical, got {:?}",
+        delta.changed_display_panes
+    );
+}
+
+/// diff_gui_state: empty → non-empty display_panes produces Some(new vec).
+#[test]
+fn diff_changed_display_panes_returns_some() {
+    let old = empty_gui_state();
+    let new_panes = vec![sample_display_directive("Bracket#realization[0]", 1)];
+    let new = GuiState {
+        display_panes: new_panes.clone(),
+        ..empty_gui_state()
+    };
+
+    let delta = diff_gui_state(&old, &new);
+    assert_eq!(
+        delta.changed_display_panes,
+        Some(new_panes),
+        "delta should carry the new display_panes vec"
+    );
+}
+
+/// diff_gui_state: a same-length list with a mutated element (pane index
+/// changes on an otherwise-identical directive) must still be detected as
+/// changed. Guards against a future switch to length-only or subject-only
+/// comparison silently swallowing content changes.
+#[test]
+fn diff_changed_display_pane_element_returns_some() {
+    let old = GuiState {
+        display_panes: vec![sample_display_directive("Bracket#realization[0]", 1)],
+        ..empty_gui_state()
+    };
+    let new_panes = vec![sample_display_directive("Bracket#realization[0]", 2)];
+    let new = GuiState {
+        display_panes: new_panes.clone(),
+        ..empty_gui_state()
+    };
+
+    let delta = diff_gui_state(&old, &new);
+    assert_eq!(
+        delta.changed_display_panes,
+        Some(new_panes),
+        "an in-place element mutation (same length, changed content) must be detected"
+    );
+}
+
+/// diff_gui_state: non-empty → empty transition emits Some(vec![]) so subscribers can clear.
+#[test]
+fn diff_clearing_display_panes_emits_some_empty() {
+    let old = GuiState {
+        display_panes: vec![sample_display_directive("Bracket#realization[0]", 0)],
+        ..empty_gui_state()
+    };
+    let new = empty_gui_state();
+
+    let delta = diff_gui_state(&old, &new);
+    assert_eq!(
+        delta.changed_display_panes,
+        Some(vec![]),
+        "non-empty → empty transition must emit Some(vec![]) so subscribers can clear; \
+         None would swallow the clear event"
+    );
+}
+
+/// StateDelta::full: None when display_panes is empty, Some(clone) when non-empty.
+#[test]
+fn full_delta_display_panes_none_when_empty_some_when_nonempty() {
+    let empty_state = empty_gui_state();
+    assert!(
+        StateDelta::full(&empty_state).changed_display_panes.is_none(),
+        "StateDelta::full must omit display_panes when empty"
+    );
+
+    let panes = vec![sample_display_directive("Bracket#realization[0]", 0)];
+    let nonempty_state = GuiState {
+        display_panes: panes.clone(),
+        ..empty_gui_state()
+    };
+    assert_eq!(
+        StateDelta::full(&nonempty_state).changed_display_panes,
+        Some(panes),
+        "StateDelta::full must carry a clone of display_panes when non-empty"
+    );
+}
+
+// --- display_appearance diff / full-delta tests (step-1) ---
+
+/// diff_gui_state: identical display_appearance in old and new → delta field is None.
+#[test]
+fn diff_identical_display_appearance_returns_none() {
+    let appearance = vec![sample_appearance_directive("Bracket#realization[0]", 0.8)];
+    let old = GuiState {
+        display_appearance: appearance.clone(),
+        ..empty_gui_state()
+    };
+    let new = GuiState {
+        display_appearance: appearance.clone(),
+        ..empty_gui_state()
+    };
+
+    let delta = diff_gui_state(&old, &new);
+    assert!(
+        delta.changed_display_appearance.is_none(),
+        "expected None when display_appearance are identical, got {:?}",
+        delta.changed_display_appearance
+    );
+}
+
+/// diff_gui_state: empty → non-empty display_appearance produces Some(new vec).
+#[test]
+fn diff_changed_display_appearance_returns_some() {
+    let old = empty_gui_state();
+    let new_appearance = vec![sample_appearance_directive("Bracket#realization[0]", 0.8)];
+    let new = GuiState {
+        display_appearance: new_appearance.clone(),
+        ..empty_gui_state()
+    };
+
+    let delta = diff_gui_state(&old, &new);
+    assert_eq!(
+        delta.changed_display_appearance,
+        Some(new_appearance),
+        "delta should carry the new display_appearance vec"
+    );
+}
+
+/// diff_gui_state: a same-length list with a mutated element (opacity changes
+/// on an otherwise-identical directive) must still be detected as changed.
+/// Guards against a future switch to length-only or subject-only comparison
+/// silently swallowing content changes.
+#[test]
+fn diff_changed_display_appearance_element_returns_some() {
+    let old = GuiState {
+        display_appearance: vec![sample_appearance_directive("Bracket#realization[0]", 0.8)],
+        ..empty_gui_state()
+    };
+    let new_appearance = vec![sample_appearance_directive("Bracket#realization[0]", 0.3)];
+    let new = GuiState {
+        display_appearance: new_appearance.clone(),
+        ..empty_gui_state()
+    };
+
+    let delta = diff_gui_state(&old, &new);
+    assert_eq!(
+        delta.changed_display_appearance,
+        Some(new_appearance),
+        "an in-place element mutation (same length, changed content) must be detected"
+    );
+}
+
+/// diff_gui_state: non-empty → empty transition emits Some(vec![]) so subscribers can clear.
+#[test]
+fn diff_clearing_display_appearance_emits_some_empty() {
+    let old = GuiState {
+        display_appearance: vec![sample_appearance_directive("Bracket#realization[0]", 0.8)],
+        ..empty_gui_state()
+    };
+    let new = empty_gui_state();
+
+    let delta = diff_gui_state(&old, &new);
+    assert_eq!(
+        delta.changed_display_appearance,
+        Some(vec![]),
+        "non-empty → empty transition must emit Some(vec![]) so subscribers can clear; \
+         None would swallow the clear event"
+    );
+}
+
+/// StateDelta::full: None when display_appearance is empty, Some(clone) when non-empty.
+#[test]
+fn full_delta_display_appearance_none_when_empty_some_when_nonempty() {
+    let empty_state = empty_gui_state();
+    assert!(
+        StateDelta::full(&empty_state)
+            .changed_display_appearance
+            .is_none(),
+        "StateDelta::full must omit display_appearance when empty"
+    );
+
+    let appearance = vec![sample_appearance_directive("Bracket#realization[0]", 0.8)];
+    let nonempty_state = GuiState {
+        display_appearance: appearance.clone(),
+        ..empty_gui_state()
+    };
+    assert_eq!(
+        StateDelta::full(&nonempty_state).changed_display_appearance,
+        Some(appearance),
+        "StateDelta::full must carry a clone of display_appearance when non-empty"
+    );
+}
+
+// --- delta_to_events tests for the 4 new list-field channels (step-3) ---
+
+/// delta_to_events: when `changed_tensegrity_wires` is Some(vec), exactly one
+/// event named "tensegrity-wires-update" is produced with the vec as its JSON
+/// payload.
+#[test]
+fn delta_to_events_emits_tensegrity_wires_update_event() {
+    let wires = vec![
+        sample_tensegrity_wire("TPrism.strut0", "strut"),
+        sample_tensegrity_wire("TPrism.cable0", "cable"),
+    ];
+    let delta = StateDelta {
+        changed_meshes: vec![],
+        changed_values: vec![],
+        changed_constraints: vec![],
+        removed_mesh_paths: vec![],
+        removed_value_ids: vec![],
+        removed_constraint_ids: vec![],
+        changed_tessellation_diagnostics: None,
+        changed_compile_diagnostics: None,
+        changed_tensegrity_wires: Some(wires.clone()),
+        changed_tensegrity_surfaces: None,
+        changed_display_panes: None,
+        changed_display_appearance: None,
+    };
+
+    let events = delta_to_events(&delta);
+
+    let wire_events: Vec<_> = events
+        .iter()
+        .filter(|(name, _)| name == "tensegrity-wires-update")
+        .collect();
+    assert_eq!(
+        wire_events.len(),
+        1,
+        "expected exactly one tensegrity-wires-update event; got {:?}",
+        events.iter().map(|(n, _)| n).collect::<Vec<_>>()
+    );
+
+    let expected = serde_json::to_value(&wires).expect("failed to serialize tensegrity wires");
+    assert_eq!(
+        wire_events[0].1, expected,
+        "tensegrity-wires-update payload must match the tensegrity_wires vec"
+    );
+}
+
+/// delta_to_events: when `changed_tensegrity_wires` is None, no
+/// "tensegrity-wires-update" event is emitted.
+#[test]
+fn delta_to_events_omits_tensegrity_wires_update_event_when_none() {
+    let delta = StateDelta {
+        changed_meshes: vec![],
+        changed_values: vec![],
+        changed_constraints: vec![],
+        removed_mesh_paths: vec![],
+        removed_value_ids: vec![],
+        removed_constraint_ids: vec![],
+        changed_tessellation_diagnostics: None,
+        changed_compile_diagnostics: None,
+        changed_tensegrity_wires: None,
+        changed_tensegrity_surfaces: None,
+        changed_display_panes: None,
+        changed_display_appearance: None,
+    };
+
+    let events = delta_to_events(&delta);
+
+    assert!(
+        events.iter().all(|(n, _)| n != "tensegrity-wires-update"),
+        "expected no tensegrity-wires-update event when field is None; got {:?}",
+        events.iter().map(|(n, _)| n).collect::<Vec<_>>()
+    );
+}
+
+/// delta_to_events: when `changed_tensegrity_surfaces` is Some(vec), exactly
+/// one event named "tensegrity-surfaces-update" is produced with the vec as
+/// its JSON payload.
+#[test]
+fn delta_to_events_emits_tensegrity_surfaces_update_event() {
+    let surfaces = vec![sample_tensegrity_surface("TPatch.facet0", "membrane")];
+    let delta = StateDelta {
+        changed_meshes: vec![],
+        changed_values: vec![],
+        changed_constraints: vec![],
+        removed_mesh_paths: vec![],
+        removed_value_ids: vec![],
+        removed_constraint_ids: vec![],
+        changed_tessellation_diagnostics: None,
+        changed_compile_diagnostics: None,
+        changed_tensegrity_wires: None,
+        changed_tensegrity_surfaces: Some(surfaces.clone()),
+        changed_display_panes: None,
+        changed_display_appearance: None,
+    };
+
+    let events = delta_to_events(&delta);
+
+    let surface_events: Vec<_> = events
+        .iter()
+        .filter(|(name, _)| name == "tensegrity-surfaces-update")
+        .collect();
+    assert_eq!(
+        surface_events.len(),
+        1,
+        "expected exactly one tensegrity-surfaces-update event; got {:?}",
+        events.iter().map(|(n, _)| n).collect::<Vec<_>>()
+    );
+
+    let expected =
+        serde_json::to_value(&surfaces).expect("failed to serialize tensegrity surfaces");
+    assert_eq!(
+        surface_events[0].1, expected,
+        "tensegrity-surfaces-update payload must match the tensegrity_surfaces vec"
+    );
+}
+
+/// delta_to_events: when `changed_tensegrity_surfaces` is None, no
+/// "tensegrity-surfaces-update" event is emitted.
+#[test]
+fn delta_to_events_omits_tensegrity_surfaces_update_event_when_none() {
+    let delta = StateDelta {
+        changed_meshes: vec![],
+        changed_values: vec![],
+        changed_constraints: vec![],
+        removed_mesh_paths: vec![],
+        removed_value_ids: vec![],
+        removed_constraint_ids: vec![],
+        changed_tessellation_diagnostics: None,
+        changed_compile_diagnostics: None,
+        changed_tensegrity_wires: None,
+        changed_tensegrity_surfaces: None,
+        changed_display_panes: None,
+        changed_display_appearance: None,
+    };
+
+    let events = delta_to_events(&delta);
+
+    assert!(
+        events
+            .iter()
+            .all(|(n, _)| n != "tensegrity-surfaces-update"),
+        "expected no tensegrity-surfaces-update event when field is None; got {:?}",
+        events.iter().map(|(n, _)| n).collect::<Vec<_>>()
+    );
+}
+
+/// delta_to_events: when `changed_display_panes` is Some(vec), exactly one
+/// event named "display-panes-update" is produced with the vec as its JSON
+/// payload.
+#[test]
+fn delta_to_events_emits_display_panes_update_event() {
+    let panes = vec![sample_display_directive("Bracket#realization[0]", 1)];
+    let delta = StateDelta {
+        changed_meshes: vec![],
+        changed_values: vec![],
+        changed_constraints: vec![],
+        removed_mesh_paths: vec![],
+        removed_value_ids: vec![],
+        removed_constraint_ids: vec![],
+        changed_tessellation_diagnostics: None,
+        changed_compile_diagnostics: None,
+        changed_tensegrity_wires: None,
+        changed_tensegrity_surfaces: None,
+        changed_display_panes: Some(panes.clone()),
+        changed_display_appearance: None,
+    };
+
+    let events = delta_to_events(&delta);
+
+    let pane_events: Vec<_> = events
+        .iter()
+        .filter(|(name, _)| name == "display-panes-update")
+        .collect();
+    assert_eq!(
+        pane_events.len(),
+        1,
+        "expected exactly one display-panes-update event; got {:?}",
+        events.iter().map(|(n, _)| n).collect::<Vec<_>>()
+    );
+
+    let expected = serde_json::to_value(&panes).expect("failed to serialize display panes");
+    assert_eq!(
+        pane_events[0].1, expected,
+        "display-panes-update payload must match the display_panes vec"
+    );
+}
+
+/// delta_to_events: when `changed_display_panes` is None, no
+/// "display-panes-update" event is emitted.
+#[test]
+fn delta_to_events_omits_display_panes_update_event_when_none() {
+    let delta = StateDelta {
+        changed_meshes: vec![],
+        changed_values: vec![],
+        changed_constraints: vec![],
+        removed_mesh_paths: vec![],
+        removed_value_ids: vec![],
+        removed_constraint_ids: vec![],
+        changed_tessellation_diagnostics: None,
+        changed_compile_diagnostics: None,
+        changed_tensegrity_wires: None,
+        changed_tensegrity_surfaces: None,
+        changed_display_panes: None,
+        changed_display_appearance: None,
+    };
+
+    let events = delta_to_events(&delta);
+
+    assert!(
+        events.iter().all(|(n, _)| n != "display-panes-update"),
+        "expected no display-panes-update event when field is None; got {:?}",
+        events.iter().map(|(n, _)| n).collect::<Vec<_>>()
+    );
+}
+
+/// delta_to_events: when `changed_display_appearance` is Some(vec), exactly
+/// one event named "display-appearance-update" is produced with the vec as
+/// its JSON payload.
+#[test]
+fn delta_to_events_emits_display_appearance_update_event() {
+    let appearance = vec![sample_appearance_directive("Bracket#realization[0]", 0.8)];
+    let delta = StateDelta {
+        changed_meshes: vec![],
+        changed_values: vec![],
+        changed_constraints: vec![],
+        removed_mesh_paths: vec![],
+        removed_value_ids: vec![],
+        removed_constraint_ids: vec![],
+        changed_tessellation_diagnostics: None,
+        changed_compile_diagnostics: None,
+        changed_tensegrity_wires: None,
+        changed_tensegrity_surfaces: None,
+        changed_display_panes: None,
+        changed_display_appearance: Some(appearance.clone()),
+    };
+
+    let events = delta_to_events(&delta);
+
+    let appearance_events: Vec<_> = events
+        .iter()
+        .filter(|(name, _)| name == "display-appearance-update")
+        .collect();
+    assert_eq!(
+        appearance_events.len(),
+        1,
+        "expected exactly one display-appearance-update event; got {:?}",
+        events.iter().map(|(n, _)| n).collect::<Vec<_>>()
+    );
+
+    let expected =
+        serde_json::to_value(&appearance).expect("failed to serialize display appearance");
+    assert_eq!(
+        appearance_events[0].1, expected,
+        "display-appearance-update payload must match the display_appearance vec"
+    );
+}
+
+/// delta_to_events: when `changed_display_appearance` is None, no
+/// "display-appearance-update" event is emitted.
+#[test]
+fn delta_to_events_omits_display_appearance_update_event_when_none() {
+    let delta = StateDelta {
+        changed_meshes: vec![],
+        changed_values: vec![],
+        changed_constraints: vec![],
+        removed_mesh_paths: vec![],
+        removed_value_ids: vec![],
+        removed_constraint_ids: vec![],
+        changed_tessellation_diagnostics: None,
+        changed_compile_diagnostics: None,
+        changed_tensegrity_wires: None,
+        changed_tensegrity_surfaces: None,
+        changed_display_panes: None,
+        changed_display_appearance: None,
+    };
+
+    let events = delta_to_events(&delta);
+
+    assert!(
+        events
+            .iter()
+            .all(|(n, _)| n != "display-appearance-update"),
+        "expected no display-appearance-update event when field is None; got {:?}",
         events.iter().map(|(n, _)| n).collect::<Vec<_>>()
     );
 }

@@ -205,6 +205,10 @@ fn classification_table() -> BTreeMap<&'static str, SyncMechanism> {
     table.insert("constraints", SyncMechanism::Diffed);
     table.insert("tessellation_diagnostics", SyncMechanism::Diffed);
     table.insert("compile_diagnostics", SyncMechanism::Diffed);
+    table.insert("tensegrity_wires", SyncMechanism::Diffed);
+    table.insert("tensegrity_surfaces", SyncMechanism::Diffed);
+    table.insert("display_panes", SyncMechanism::Diffed);
+    table.insert("display_appearance", SyncMechanism::Diffed);
     table.insert(
         "files",
         SyncMechanism::Emitter("file-changed/file-removed"),
@@ -250,28 +254,13 @@ fn clearing_task_reference(reference: &'static str) -> &'static str {
 
 /// Fields known to be stale (not wired to any live sync mechanism today),
 /// each mapped to a reference citing the live task that clears it — L2
-/// (#5031, "stopgap: four list fields -> StateDelta") clears the four
-/// tensegrity/display fields, L3 (#5032, "stopgap: fea-convergence-changed
-/// emitter") clears `fea_convergence`. `clearing_task_reference` enforces the
-/// `#NNNN` citation structurally, not just non-emptiness.
+/// (#5031, "stopgap: four list fields -> StateDelta") cleared the four
+/// tensegrity/display fields by classifying them `Diffed` above; L3 (#5032,
+/// "stopgap: fea-convergence-changed emitter") clears `fea_convergence`.
+/// `clearing_task_reference` enforces the `#NNNN` citation structurally, not
+/// just non-emptiness.
 fn known_stale_allowlist() -> BTreeMap<&'static str, &'static str> {
     let mut allowlist = BTreeMap::new();
-    allowlist.insert(
-        "tensegrity_wires",
-        clearing_task_reference("cleared by L2 (#5031)"),
-    );
-    allowlist.insert(
-        "tensegrity_surfaces",
-        clearing_task_reference("cleared by L2 (#5031)"),
-    );
-    allowlist.insert(
-        "display_panes",
-        clearing_task_reference("cleared by L2 (#5031)"),
-    );
-    allowlist.insert(
-        "display_appearance",
-        clearing_task_reference("cleared by L2 (#5031)"),
-    );
     allowlist.insert(
         "fea_convergence",
         clearing_task_reference("cleared by L3 (#5032)"),
@@ -344,20 +333,18 @@ fn fixture_reflects_every_classified_and_allowlisted_field() {
 }
 
 /// The warn-mode debt ledger: `currently_unwired_fields` must report exactly
-/// the six fields not live on a param edit today (PRD §1) — the five
-/// allowlisted stale fields plus the one `FullReloadOnly` field.
+/// the two fields not live on a param edit today (PRD §1) — the one
+/// allowlisted stale field (`fea_convergence`) plus the one `FullReloadOnly`
+/// field (`demand_prune_measurement`). L2 (#5031) shrank this from six to two
+/// by classifying the four tensegrity/display fields `Diffed`.
 #[test]
-fn warn_mode_report_lists_the_six_currently_unwired_fields() {
+fn warn_mode_report_lists_the_two_remaining_unwired_fields() {
     let fields = currently_unwired_fields(&classification_table(), &known_stale_allowlist());
     assert_eq!(
         fields,
         vec![
             "demand_prune_measurement".to_string(),
-            "display_appearance".to_string(),
-            "display_panes".to_string(),
             "fea_convergence".to_string(),
-            "tensegrity_surfaces".to_string(),
-            "tensegrity_wires".to_string(),
         ]
     );
 }
