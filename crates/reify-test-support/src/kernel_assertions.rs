@@ -228,12 +228,16 @@ use reify_ir::{
 ///
 /// Panics with a descriptive message if any of the following fail:
 /// - `query_many(&[])` returns `Ok(v)` with `v.is_empty()`.
-/// - `query_many` on a 2-element input, when `probe` is a handle both
-///   per-element queries (`Volume`, `SurfaceArea`) succeed on, returns
+/// - `query_many` on a homogeneous 2-element `Volume` batch, when `probe`
+///   is a handle the per-element `Volume` query succeeds on, returns
 ///   `Ok(v)` with `v.len() == 2` — a conforming kernel's `query_many`
-///   must not error on a batch it would accept element-by-element.
-///   `Err(_)` is only tolerated when `probe` is itself invalid (e.g. the
-///   STUB arm's dangling probe, where every query errors).
+///   must not error on a batch it would accept element-by-element. The
+///   batch intentionally repeats a single query kind (`Volume`) instead
+///   of mixing in `SurfaceArea`, so this is exercised for any kernel that
+///   supports at least one query kind, independent of whether it has
+///   wired up `SurfaceArea`. `Err(_)` is only tolerated when `probe` is
+///   itself invalid (e.g. the STUB arm's dangling probe, where every
+///   query errors).
 /// - `query_many` on a 1-element input is `Debug`-equal to the
 ///   corresponding single `query` call (both `Err` with the same debug
 ///   representation, or both `Ok` with the same single value). Debug
@@ -255,18 +259,18 @@ pub fn assert_query_many_length_invariant<K: GeometryKernel + ?Sized>(
     }
 
     // Determine whether `probe` is a handle this kernel considers valid
-    // by observing the per-element `query` outcome for both query kinds
+    // by observing the per-element `query` outcome for the query kind
     // used in the batch below. `volume_result` is also reused for the
     // single-vs-many agreement check further down, rather than issuing a
     // second, redundant `query` call for the same input.
     let volume_result = kernel.query(&GeometryQuery::Volume(probe));
-    let probe_queries_succeed =
-        volume_result.is_ok() && kernel.query(&GeometryQuery::SurfaceArea(probe)).is_ok();
+    let probe_queries_succeed = volume_result.is_ok();
 
-    let two = [
-        GeometryQuery::Volume(probe),
-        GeometryQuery::SurfaceArea(probe),
-    ];
+    // Homogeneous batch (both elements the same query kind) so the length
+    // invariant is exercised for any kernel that supports at least
+    // `Volume`, independent of `SurfaceArea` support — the invariant
+    // itself has no dependency on batch heterogeneity.
+    let two = [GeometryQuery::Volume(probe), GeometryQuery::Volume(probe)];
     match kernel.query_many(&two) {
         Ok(v) if v.len() == two.len() => {}
         // Only tolerated when the probe itself is invalid: callers always
@@ -280,7 +284,7 @@ pub fn assert_query_many_length_invariant<K: GeometryKernel + ?Sized>(
             "query_many on {} queries must return {}, got {:?}",
             two.len(),
             if probe_queries_succeed {
-                "Ok(v) with v.len() == queries.len(), since both per-element queries on probe succeed"
+                "Ok(v) with v.len() == queries.len(), since the per-element Volume query on probe succeeds"
             } else {
                 "Err(_) or Ok(v) with v.len() == queries.len()"
             },
@@ -354,6 +358,44 @@ pub fn assert_extract_determinism<K: GeometryKernel + ?Sized>(kernel: &mut K, ha
         vertices1,
         vertices2
     );
+}
+
+/// Assert that `extract_edges`/`extract_faces`/`extract_vertices` succeed
+/// (`Ok(_)`) on `handle` — the REAL-arm positive-signal counterpart to
+/// [`assert_extract_determinism`]. Determinism alone passes trivially for
+/// a kernel whose topology extraction is broken or unimplemented (two
+/// calls returning the *same* `Err` are still "idempotent"), so a real
+/// kernel's instantiation additionally needs proof that extraction
+/// actually works on a valid handle. The STUB arm has no equivalent
+/// call: a stub kernel's `extract_*` is expected to always error (see
+/// [`assert_all_error_taxonomy`]), so asserting `Ok(_)` there would fail
+/// every conforming stub.
+///
+/// Panics naming the offending method if it returns `Err` for `handle`.
+pub fn assert_extract_succeeds<K: GeometryKernel + ?Sized>(kernel: &mut K, handle: GeometryHandleId) {
+    match kernel.extract_edges(handle) {
+        Ok(_) => {}
+        Err(e) => panic!(
+            "extract_edges on a valid handle {:?} must return Ok(_), got Err({:?})",
+            handle, e
+        ),
+    }
+
+    match kernel.extract_faces(handle) {
+        Ok(_) => {}
+        Err(e) => panic!(
+            "extract_faces on a valid handle {:?} must return Ok(_), got Err({:?})",
+            handle, e
+        ),
+    }
+
+    match kernel.extract_vertices(handle) {
+        Ok(_) => {}
+        Err(e) => panic!(
+            "extract_vertices on a valid handle {:?} must return Ok(_), got Err({:?})",
+            handle, e
+        ),
+    }
 }
 
 /// Assert that a never-created ("dangling") handle is rejected with an
@@ -573,6 +615,48 @@ pub fn assert_dangling_reference_taxonomy<K: GeometryKernel + ?Sized>(
     }
 }
 
+/// Shared body for [`assert_kernel_contract!`]'s `Send + Sync` +
+/// `Box<dyn GeometryKernel>` upcast test, factored out so the `stub` and
+/// `real` arms — otherwise byte-identical here except for the generated
+/// fn's name — can't drift out of sync. Not part of the public API; use
+/// [`assert_kernel_contract!`] instead.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __kernel_contract_send_sync_and_box_upcast_test {
+    ($test_name:ident, $factory:expr) => {
+        /// Compile-time `Send + Sync` pin and `Box<dyn GeometryKernel>` upcast.
+        #[test]
+        fn $test_name() {
+            fn assert_send_sync<T: ::core::marker::Send + ::core::marker::Sync>(_: &T) {}
+            let kernel = ($factory)();
+            assert_send_sync(&kernel);
+            let _boxed: ::std::boxed::Box<dyn ::reify_ir::GeometryKernel> =
+                ::std::boxed::Box::new(kernel);
+        }
+    };
+}
+
+/// Shared body for [`assert_kernel_contract!`]'s
+/// [`assert_dangling_handle_is_err`] wiring, factored out so the `stub`
+/// and `real` arms — otherwise byte-identical here except for the
+/// generated fn's name — can't drift out of sync. Not part of the public
+/// API; use [`assert_kernel_contract!`] instead.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __kernel_contract_dangling_handle_is_err_test {
+    ($test_name:ident, $factory:expr) => {
+        /// See [`$crate::kernel_assertions::assert_dangling_handle_is_err`].
+        #[test]
+        fn $test_name() {
+            let mut kernel = ($factory)();
+            $crate::kernel_assertions::assert_dangling_handle_is_err(
+                &mut kernel,
+                ::reify_ir::GeometryHandleId(u64::MAX),
+            );
+        }
+    };
+}
+
 /// Assert the shared, cross-cfg `GeometryKernel` contract — error
 /// taxonomy, the `query_many` length invariant, and `extract_*`
 /// stability — by generating a set of independently-named `#[test]`
@@ -599,7 +683,10 @@ pub fn assert_dangling_reference_taxonomy<K: GeometryKernel + ?Sized>(
 ///   `query_many`/`extract_*` checks. Runs
 ///   [`assert_dangling_reference_taxonomy`], [`assert_dangling_handle_is_err`],
 ///   an `$op`-executes-`Ok` check, [`assert_query_many_length_invariant`],
-///   and [`assert_extract_determinism`].
+///   [`assert_extract_determinism`], and [`assert_extract_succeeds`] (the
+///   positive-signal check that extraction actually works on a valid
+///   handle, since determinism alone passes trivially for a kernel that
+///   always errors).
 ///
 /// Both arms also generate a `Send + Sync` + `Box<dyn GeometryKernel>`
 /// upcast test, mirroring [`assert_stub_kernel_errors!`]'s first test.
@@ -628,15 +715,10 @@ pub fn assert_dangling_reference_taxonomy<K: GeometryKernel + ?Sized>(
 #[macro_export]
 macro_rules! assert_kernel_contract {
     (stub; $factory:expr, $substr:literal $(,)?) => {
-        /// Compile-time `Send + Sync` pin and `Box<dyn GeometryKernel>` upcast.
-        #[test]
-        fn kernel_contract_stub_send_sync_and_box_upcast() {
-            fn assert_send_sync<T: ::core::marker::Send + ::core::marker::Sync>(_: &T) {}
-            let kernel = ($factory)();
-            assert_send_sync(&kernel);
-            let _boxed: ::std::boxed::Box<dyn ::reify_ir::GeometryKernel> =
-                ::std::boxed::Box::new(kernel);
-        }
+        $crate::__kernel_contract_send_sync_and_box_upcast_test!(
+            kernel_contract_stub_send_sync_and_box_upcast,
+            $factory
+        );
 
         /// See [`$crate::kernel_assertions::assert_all_error_taxonomy`].
         #[test]
@@ -665,27 +747,17 @@ macro_rules! assert_kernel_contract {
             );
         }
 
-        /// See [`$crate::kernel_assertions::assert_dangling_handle_is_err`].
-        #[test]
-        fn kernel_contract_stub_dangling_handle_is_err() {
-            let mut kernel = ($factory)();
-            $crate::kernel_assertions::assert_dangling_handle_is_err(
-                &mut kernel,
-                ::reify_ir::GeometryHandleId(u64::MAX),
-            );
-        }
+        $crate::__kernel_contract_dangling_handle_is_err_test!(
+            kernel_contract_stub_dangling_handle_is_err,
+            $factory
+        );
     };
 
     (real; $factory:expr, valid_op = $op:expr $(,)?) => {
-        /// Compile-time `Send + Sync` pin and `Box<dyn GeometryKernel>` upcast.
-        #[test]
-        fn kernel_contract_real_send_sync_and_box_upcast() {
-            fn assert_send_sync<T: ::core::marker::Send + ::core::marker::Sync>(_: &T) {}
-            let kernel = ($factory)();
-            assert_send_sync(&kernel);
-            let _boxed: ::std::boxed::Box<dyn ::reify_ir::GeometryKernel> =
-                ::std::boxed::Box::new(kernel);
-        }
+        $crate::__kernel_contract_send_sync_and_box_upcast_test!(
+            kernel_contract_real_send_sync_and_box_upcast,
+            $factory
+        );
 
         /// See [`$crate::kernel_assertions::assert_dangling_reference_taxonomy`].
         #[test]
@@ -697,15 +769,10 @@ macro_rules! assert_kernel_contract {
             );
         }
 
-        /// See [`$crate::kernel_assertions::assert_dangling_handle_is_err`].
-        #[test]
-        fn kernel_contract_real_dangling_handle_is_err() {
-            let mut kernel = ($factory)();
-            $crate::kernel_assertions::assert_dangling_handle_is_err(
-                &mut kernel,
-                ::reify_ir::GeometryHandleId(u64::MAX),
-            );
-        }
+        $crate::__kernel_contract_dangling_handle_is_err_test!(
+            kernel_contract_real_dangling_handle_is_err,
+            $factory
+        );
 
         /// `valid_op` must execute `Ok` on a fresh kernel from `$factory`.
         #[test]
@@ -736,6 +803,15 @@ macro_rules! assert_kernel_contract {
                 .expect("valid_op must execute Ok to produce a probe handle");
             $crate::kernel_assertions::assert_extract_determinism(&mut kernel, handle.id);
         }
+
+        /// See [`$crate::kernel_assertions::assert_extract_succeeds`].
+        #[test]
+        fn kernel_contract_real_extract_succeeds() {
+            let mut kernel = ($factory)();
+            let handle = ::reify_ir::GeometryKernel::execute(&mut kernel, &($op))
+                .expect("valid_op must execute Ok to produce a probe handle");
+            $crate::kernel_assertions::assert_extract_succeeds(&mut kernel, handle.id);
+        }
     };
 }
 
@@ -745,6 +821,30 @@ mod tests {
     use std::panic::{catch_unwind, AssertUnwindSafe};
 
     const STUB_MSG: &str = "TestStub kernel not available — fixture only";
+
+    /// Unwrap a [`catch_unwind`] result from a negative self-test below and
+    /// assert the panic message contains `fragment`, pinning the test to
+    /// the *intended* assertion's panic rather than merely "something
+    /// panicked". Without this, a future edit that makes an unrelated
+    /// assertion fire first would leave these tests green while no longer
+    /// verifying the property they claim to.
+    fn assert_panic_contains(result: std::thread::Result<()>, fragment: &str) {
+        let payload = match result {
+            Err(payload) => payload,
+            Ok(()) => panic!("expected the wrapped call to panic, but it returned normally"),
+        };
+        let message = payload
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| panic!("panic payload was neither a &str nor a String"));
+        assert!(
+            message.contains(fragment),
+            "expected panic message to contain {:?}, got {:?}",
+            fragment,
+            message
+        );
+    }
 
     /// Generates a `GeometryKernel` impl whose `execute`/`query`/`export`/
     /// `tessellate` all return the stub error shape carrying `$msg`
@@ -834,10 +934,7 @@ mod tests {
                 GeometryHandleId(1),
             );
         }));
-        assert!(
-            result.is_err(),
-            "assert_query_many_length_invariant must panic when query_many violates the length invariant"
-        );
+        assert_panic_contains(result, "query_many on");
     }
 
     /// All-error kernel whose `extract_edges`/`extract_faces`/`extract_vertices`
@@ -892,10 +989,7 @@ mod tests {
         let result = catch_unwind(AssertUnwindSafe(|| {
             super::assert_extract_determinism(&mut UnstableExtractKernel::new(), GeometryHandleId(1));
         }));
-        assert!(
-            result.is_err(),
-            "assert_extract_determinism must panic when extract_* is not idempotent per handle"
-        );
+        assert_panic_contains(result, "extract_edges must be idempotent");
     }
 
     /// Kernel that silently accepts any handle — including one it never
@@ -947,10 +1041,7 @@ mod tests {
         let result = catch_unwind(AssertUnwindSafe(|| {
             super::assert_dangling_handle_is_err(&mut AcceptsDanglingKernel, GeometryHandleId(999));
         }));
-        assert!(
-            result.is_err(),
-            "assert_dangling_handle_is_err must panic when the kernel accepts a dangling handle"
-        );
+        assert_panic_contains(result, "execute on a dangling handle");
     }
 
     /// All-error stub kernel whose `execute` returns the wrong error
@@ -1013,10 +1104,7 @@ mod tests {
         let result = catch_unwind(AssertUnwindSafe(|| {
             super::assert_all_error_taxonomy(&mut WrongTaxonomyStub::new(), "WrongTaxonomy");
         }));
-        assert!(
-            result.is_err(),
-            "assert_all_error_taxonomy must panic when execute returns the wrong error variant"
-        );
+        assert_panic_contains(result, "OperationFailed");
     }
 
     /// Real-like kernel fixture that models the verified OCCT dangling-handle
@@ -1151,10 +1239,32 @@ mod tests {
         let result = catch_unwind(AssertUnwindSafe(|| {
             super::assert_dangling_reference_taxonomy(&mut TestStubKernel::new(), GeometryHandleId(9999));
         }));
-        assert!(
-            result.is_err(),
-            "assert_dangling_reference_taxonomy must panic when given a stub kernel in place of a real kernel"
-        );
+        assert_panic_contains(result, "InvalidReference");
+    }
+
+    #[test]
+    fn extract_succeeds_helper_passes_real_and_catches_broken_extraction() {
+        let mut kernel = TestRealKernel::new();
+        let handle = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(10.0),
+                depth: Value::Real(10.0),
+            })
+            .expect("TestRealKernel::execute(Box) must succeed to create a valid handle");
+
+        // TestRealKernel's extract_* succeeds on a handle it created — must not panic.
+        super::assert_extract_succeeds(&mut kernel, handle.id);
+
+        // TestStubKernel's extract_* always errors, even for a handle the
+        // caller treats as valid — must panic. Models a real kernel whose
+        // topology extraction is broken or unimplemented, which
+        // `assert_extract_determinism` alone would miss (two equal `Err`s
+        // still look "idempotent").
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            super::assert_extract_succeeds(&mut TestStubKernel::new(), GeometryHandleId(1));
+        }));
+        assert_panic_contains(result, "extract_edges on a valid handle");
     }
 
     // The both-arms-from-one-source suite self-test: instantiate
