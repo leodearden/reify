@@ -1,0 +1,20 @@
+// Fixture: edit-path sibling of geometry_let_selector_consumer.ri (PRD
+// docs/prds/v0_6/eval-uniform-dependency-handling.md, task ε — edit-path
+// closure premise).
+//
+// Same geometry-let + selector + consumer chain (`loc_box` -> `loc` ->
+// `probe`) as the α/δ premise fixture, but drives `loc_box`'s width from an
+// editable `param w : Length` so `edit_param`/`edit_source` have an upstream
+// param to perturb. Proves the chain RE-resolves (not just initially
+// resolves) after an edit: γ (task 4954) pairs the geometry let with a real
+// value cell, so it rides the dirty cone and is minted in-walk at
+// `engine_edit.rs`'s edit_param walk, letting `faces_by_normal` (a
+// kernel-free symbolic-eval-wired leaf ctor) mint a `Value::Selector` for
+// `loc` — and hence `probe` — on the pure eval() surface post-edit too.
+
+structure def GeometryLetSelectorConsumerEdit {
+    param w : Length = 50mm
+    let loc_box = box(w, 30mm, 10mm)
+    let loc = faces_by_normal(loc_box, vec3(0.0, 0.0, 1.0), 1deg)
+    let probe = loc
+}
