@@ -39,7 +39,8 @@ echo "=== Wall-clock upper-bound regression guard ==="
 #
 # Scans all *.sh files in <dir> (except <exclude_basename>) for
 # wall-clock absolute-upper-bound assert violations.  A logical line
-# (after joining \-continuations via awk) is a violation iff ALL of:
+# (after joining \-continuations AND lines inside a still-open
+# single-quoted `bash -c '...'` span via awk) is a violation iff ALL of:
 #   (1) assert-wired: the word "assert" appears on the line
 #   (2) upper-bound:  line contains `-le <int>` or `-lt <int>`
 #   (3) wall-clock:   description or compared var carries a time lexeme:
@@ -96,24 +97,102 @@ _detect_wallclock_upper_bound() {
             continue
         fi
 
-        # Join backslash-continued lines into logical lines.
+        # Join backslash-continued lines AND lines inside a still-open
+        # single-quoted string (e.g. a multi-line `bash -c '...'` block, the
+        # test_occt_flock_gate.sh / test_proc_reaper.sh idiom) into one
+        # logical line.  A line ending in `\` continues the join exactly as
+        # before; a line that leaves a single-quoted string OPEN continues
+        # the join even with no trailing backslash, and the join only
+        # terminates once neither condition holds.
+        #
+        # Quote tracking is a left-to-right character scan, NOT a naive
+        # apostrophe parity count — a bare `'` is only a real single-quote
+        # toggle when it appears OUTSIDE a double-quoted span.  tests/infra
+        # prose is full of possessives/contractions inside double-quoted
+        # assert descriptions (e.g. "...other branch's job") and inside `#`
+        # comments (e.g. "# _START15's perspective"), each contributing
+        # exactly ONE apostrophe on its physical line; a whole-line odd/even
+        # count desyncs on the first such line and then mis-joins (or
+        # mis-splits) everything downstream. The scanner tracks single-quote
+        # (inq1) and double-quote (inq2) state independently: a `'` only
+        # toggles inq1 while NOT inside inq2, matching real shell quoting
+        # (apostrophes inside "..." are literal text, never a quote
+        # boundary). `'"$VAR"'`-style interpolation (close-quote, dquote-var,
+        # reopen-quote, as used by test_occt_flock_gate.sh's barrier loops)
+        # is thus handled precisely rather than by parity-cancellation luck:
+        # the first `'` toggles inq1 off, `"..."` opens/closes inq2 without
+        # touching inq1, and the final `'` toggles inq1 back on.
+        #
+        # A `#` starts a comment (stops the scan early — nothing after it can
+        # affect quote state, matching real bash) only when reached OUTSIDE
+        # both inq1 and inq2 and at a word boundary (start of line, or
+        # preceded by a space/tab); this keeps prose apostrophes in full-line
+        # or trailing comments from ever reaching the parity logic. The
+        # comment text itself is still appended to `buf` unmodified — only
+        # the SCAN stops early — because a `# wallclock:allow` escape token
+        # is itself a comment and must survive into the logical line for the
+        # downstream escape-regex to see it.
+        #
+        # A backslash escapes the single next character everywhere (outside
+        # quotes, and inside a double-quoted span) so `\"` inside `"..."`
+        # cannot prematurely close it. Inside a single-quoted span nothing is
+        # special but the terminating `'` (real bash: single quotes have no
+        # escape mechanism), so the scanner does not consult backslashes
+        # there.
+        #
+        # `q`/`dq` (passed via -v) hold one apostrophe / double-quote so this
+        # awk script body never needs either literally — a literal `'` would
+        # break out of the surrounding bash single-quoted string.
+        #
+        # Statement-boundary reset: inq1/inq2 are reset to closed whenever a
+        # logical line completes (printed), so an already-terminated
+        # statement can never leak open-quote state into an unrelated later
+        # statement (fixture 2j).
         # Output format: <first-physical-lineno> TAB <logical-line>
-        awk '
-            /\\$/ {
-                sub(/\\$/, "")
-                if (buf == "") { startline = NR }
-                buf = buf $0
-                next
-            }
+        awk -v q="'" -v dq="\"" '
+            BEGIN { inq1 = 0; inq2 = 0; active = 0; buf = "" }
             {
-                if (buf != "") {
-                    print startline "\t" buf $0
-                    buf = ""; startline = 0
-                } else {
-                    print NR "\t" $0
+                orig = $0
+                cont_bs = (orig ~ /\\$/)
+                line = orig
+                if (cont_bs) { sub(/\\$/, "", line) }
+
+                n = length(line)
+                i = 1
+                while (i <= n) {
+                    c = substr(line, i, 1)
+                    if (inq1) {
+                        if (c == q) { inq1 = 0 }
+                        i++
+                        continue
+                    }
+                    if (inq2) {
+                        if (c == "\\") { i += 2; continue }
+                        if (c == dq) { inq2 = 0 }
+                        i++
+                        continue
+                    }
+                    if (c == "\\") { i += 2; continue }
+                    if (c == q) { inq1 = 1; i++; continue }
+                    if (c == dq) { inq2 = 1; i++; continue }
+                    if (c == "#") {
+                        prevc = (i == 1) ? "" : substr(line, i - 1, 1)
+                        if (i == 1 || prevc == " " || prevc == "\t") { break }
+                    }
+                    i++
                 }
+
+                if (!active) { startline = NR; active = 1 }
+                buf = buf line
+
+                if (cont_bs || inq1) {
+                    next
+                }
+
+                print startline "\t" buf
+                buf = ""; active = 0; inq1 = 0; inq2 = 0
             }
-            END { if (buf != "") print startline "\t" buf }
+            END { if (active) print startline "\t" buf }
         ' "$f" > "$_linesf"
 
         local lineno logical
