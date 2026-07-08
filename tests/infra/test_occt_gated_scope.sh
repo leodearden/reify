@@ -459,4 +459,66 @@ assert "gen-nextest-config.sh NPROC=32, no REIFY_OCCT_MEMTOTAL_GIB: cap in [1..3
         [ -n \"\$val\" ] && [ \"\$val\" -ge 1 ] && [ \"\$val\" -le 32 ]
     "
 
+# ---------------------------------------------------------------------------
+# Tests 16a-16d (task 5141): per-test slow-timeout/terminate-after ceiling —
+# DEFAULT TIER. A single hung test must be SIGTERM/SIGKILLed BY NEXTEST — with
+# by-name attribution in its output — well before the pass-level
+# `timeout --kill-after=60 60m` wall (verify.sh, 3600s budget) fires as exit
+# 124 with ZERO test-level attribution (the task 4877/4878 failure shape).
+#
+# [profile.default] slow-timeout = { period = "120s", terminate-after = 10 }
+# = 1200s (20 min) ceiling applied to every test that has no more specific
+# override. The 5 known-slow "heavy" binaries get a separate, larger ceiling
+# via their own [[profile.default.overrides]] blocks (task 5141 step-3/4) —
+# nextest resolves each override SETTING by first-match independently, so the
+# heavy tier does not fall through to this default.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Tests 16a-16d (task 5141): default-tier slow-timeout/terminate-after ceiling ---"
+
+# Section-scoped awk: bind the match to the [profile.default] TABLE only (the
+# `/^\[/` reset excludes the [[profile.default.overrides]] blocks that follow),
+# mirroring the occt max-threads section-scoped extractor (_OCCT_AWK above).
+_DEFAULT_ST_AWK='/^\[profile\.default\]/{f=1;next}/^\[/{f=0}f&&/slow-timeout/{print;exit}'
+
+# Test 16a: [profile.default] carries the exact default-tier slow-timeout.
+assert "nextest.toml: [profile.default] has slow-timeout = { period = \"120s\", terminate-after = 10 } (section-scoped to the [profile.default] table, not an overrides block)" \
+    bash -c "awk '${_DEFAULT_ST_AWK}' '$NEXTEST_TOML' | grep -qF 'slow-timeout = { period = \"120s\", terminate-after = 10 }'"
+
+# Test 16b (compile-free, task 4613 convention): gen-nextest-config.sh's
+# full-copy + anchored occt-only sed preserves the default-tier slow-timeout
+# verbatim in the generated temp config (no cargo/nextest invocation).
+assert "gen-nextest-config.sh: default-tier slow-timeout preserved verbatim in generated config" \
+    bash -c "
+        cfg=\$(REIFY_OCCT_NEXTEST_MAX_THREADS=24 bash \"${GEN_CFG}\")
+        rc=0
+        awk '${_DEFAULT_ST_AWK}' \"\$cfg\" | grep -qF 'slow-timeout = { period = \"120s\", terminate-after = 10 }' || rc=1
+        rm -f \"\$cfg\"
+        exit \$rc
+    "
+
+# Test 16c: numeric basis — default ceiling 120*10=1200s is strictly less than
+# the 3600s (60m) pass-level wall (verify.sh timeout --kill-after=60 60m), so
+# nextest attributes-and-kills a hang BEFORE the outer timeout fires exit 124
+# with zero attribution.
+assert "default slow-timeout ceiling (120*10=1200s) is strictly less than the 3600s (60m) pass-level wall" \
+    test $((120 * 10)) -lt 3600
+
+# Test 16d: REGRESSION GUARD (green-on-arrival) — no `retries` key anywhere in
+# nextest.toml or the generated config. A retry would re-run and mask the very
+# hangs/flakes this ceiling exists to attribute-and-kill (task invariant: no
+# retries, ever). Comment lines are excluded so prose mentioning the word
+# "retries" (e.g. documenting this very invariant) cannot false-positive.
+assert "no 'retries' key in .config/nextest.toml (no-retries invariant)" \
+    bash -c "! grep -v '^[[:space:]]*#' '$NEXTEST_TOML' | grep -q 'retries'"
+
+assert "no 'retries' key in gen-nextest-config.sh generated config (no-retries invariant preserved end-to-end)" \
+    bash -c "
+        cfg=\$(REIFY_OCCT_NEXTEST_MAX_THREADS=24 bash \"${GEN_CFG}\")
+        rc=0
+        grep -v '^[[:space:]]*#' \"\$cfg\" | grep -q 'retries' && rc=1
+        rm -f \"\$cfg\"
+        exit \$rc
+    "
+
 test_summary
