@@ -333,19 +333,25 @@ fn fixture_reflects_every_classified_and_allowlisted_field() {
 }
 
 /// The warn-mode debt ledger: `currently_unwired_fields` must report exactly
-/// the two fields not live on a param edit today (PRD §1) — the one
-/// allowlisted stale field (`fea_convergence`) plus the one `FullReloadOnly`
-/// field (`demand_prune_measurement`). L2 (#5031) shrank this from six to two
-/// by classifying the four tensegrity/display fields `Diffed`.
+/// the one field not live on a param edit today (PRD §1) — the one
+/// `FullReloadOnly` field (`demand_prune_measurement`). L2 (#5031) shrank this
+/// from six to two by classifying the four tensegrity/display fields
+/// `Diffed`; L3 (#5032) shrank it from two to one by classifying
+/// `fea_convergence` `Emitter`, leaving `known_stale_allowlist()` empty.
 #[test]
-fn warn_mode_report_lists_the_two_remaining_unwired_fields() {
+fn warn_mode_report_lists_the_one_remaining_unwired_field() {
     let fields = currently_unwired_fields(&classification_table(), &known_stale_allowlist());
+    assert_eq!(fields, vec!["demand_prune_measurement".to_string()]);
+}
+
+/// Pins that `fea_convergence` is classified as an `Emitter` on the
+/// `fea-convergence-changed` channel (L3/#5032 done-criteria) — the last
+/// entry moved off `known_stale_allowlist()` and into `classification_table()`.
+#[test]
+fn fea_convergence_classified_as_emitter() {
     assert_eq!(
-        fields,
-        vec![
-            "demand_prune_measurement".to_string(),
-            "fea_convergence".to_string(),
-        ]
+        classification_table().get("fea_convergence"),
+        Some(&SyncMechanism::Emitter("fea-convergence-changed"))
     );
 }
 
