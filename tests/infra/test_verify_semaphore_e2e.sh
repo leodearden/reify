@@ -429,6 +429,37 @@ assert "_load_scaled_deadline factor=1 base=60 == 60 (idle floor: factor=1 prese
     test "$_LSD_T3" = "60"
 
 # ===========================================================================
+# _ts_outputs_healthy unit tests (Part C helper, task 5144 F1)
+# ===========================================================================
+# Pure existence+non-empty check over a <ts_src_dir> (TS_DIR-shaped: outputs
+# live at <ts_src_dir>/src/{parser.c,grammar.json,node-types.json}) — exactly
+# the corruption signature left by a killed/interrupted real-tree-sitter run
+# under load (task 5144 cause 1). Exercised against _make_fake_ts_dir
+# fixtures so the real (gitignored) tree-sitter-reify/src/ is never touched.
+echo ""
+echo "--- _ts_outputs_healthy unit tests (Part C helper, task 5144 F1) ---"
+
+_TSH_DIR="$(mktemp -d)"
+_TMPDIRS+=("$_TSH_DIR")
+_make_fake_ts_dir "$_TSH_DIR/healthy" healthy
+_make_fake_ts_dir "$_TSH_DIR/zero_byte" zero_byte_parser
+_make_fake_ts_dir "$_TSH_DIR/missing" missing_output
+
+_TSH_RC1=0
+_ts_outputs_healthy "$_TSH_DIR/healthy" 2>/dev/null || _TSH_RC1=$?
+_TSH_RC2=0
+_ts_outputs_healthy "$_TSH_DIR/zero_byte" 2>/dev/null || _TSH_RC2=$?
+_TSH_RC3=0
+_ts_outputs_healthy "$_TSH_DIR/missing" 2>/dev/null || _TSH_RC3=$?
+
+assert "_ts_outputs_healthy: healthy dir (all 3 outputs present + non-empty) -> rc 0 (got ${_TSH_RC1})" \
+    test "$_TSH_RC1" -eq 0
+assert "_ts_outputs_healthy: 0-byte parser.c -> rc 1 (got ${_TSH_RC2})" \
+    test "$_TSH_RC2" -eq 1
+assert "_ts_outputs_healthy: missing node-types.json -> rc 1 (got ${_TSH_RC3})" \
+    test "$_TSH_RC3" -eq 1
+
+# ===========================================================================
 # Section A: held-slot serialization (execute mode)
 # ===========================================================================
 # Two concurrent DF_VERIFY_ROLE=task runs must HOLD-serialize at N=1 — the slot
