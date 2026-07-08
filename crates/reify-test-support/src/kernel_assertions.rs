@@ -53,6 +53,15 @@
 //! (starting with the OCCT kernel, task ι) should use
 //! [`assert_kernel_contract!`] instead of this macro.
 
+// Used by the public `assert_*` helper fns below. The exported macros
+// (`assert_stub_kernel_errors!`, `assert_kernel_contract!` and friends) use
+// fully-qualified `::reify_ir::` paths instead, since macro-generated code
+// expands in the caller's scope.
+use reify_ir::{
+    ExportError, ExportFormat, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp,
+    GeometryQuery, QueryError, TessError,
+};
+
 /// Assert the all-error stub-kernel contract for a [`::reify_ir::GeometryKernel`]
 /// implementation by generating three independent `#[test]` functions.
 ///
@@ -215,11 +224,6 @@ macro_rules! assert_stub_kernel_errors {
         }
     };
 }
-
-use reify_ir::{
-    ExportError, ExportFormat, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp,
-    GeometryQuery, QueryError, TessError,
-};
 
 /// Assert the `query_many` length invariant documented on
 /// [`::reify_ir::GeometryKernel::query_many`]: the output length must
