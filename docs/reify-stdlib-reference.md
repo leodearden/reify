@@ -1585,12 +1585,13 @@ Joint primitives are first-class stdlib values. Each joint type internally expos
 **Joint types and traits:**
 
 ```
-trait Joint          // any joint kind
+trait Joint          // root marker — every joint kind conforms (Prismatic, Revolute, Coupling, Fixed, ...)
 trait HasMotion {    // joint kinds with a concrete-dimension motion variable (Prismatic, Revolute, Coupling)
     type MotionValue  // required associated type; no default
 }
 trait DrivingJoint: Joint {}   // Prismatic and Revolute only; may be bound or swept directly
-                               // Coupling<P> derives its motion and does NOT implement DrivingJoint
+                               // Coupling<P> and Fixed do NOT implement DrivingJoint: Coupling derives
+                               // its motion from a parent joint, Fixed has no motion variable at all
 
 structure def Prismatic : DrivingJoint + HasMotion {  // 1-DOF translation; Prismatic::MotionValue ⇒ Length
     type MotionValue = Length
@@ -1601,7 +1602,16 @@ structure def Revolute : DrivingJoint + HasMotion {   // 1-DOF rotation;    Revo
 structure def Coupling<P: DrivingJoint + HasMotion> : Joint + HasMotion {  // derives motion from joint P
     type MotionValue = P::MotionValue  // Coupling<P>::MotionValue ⇒ P::MotionValue; not a DrivingJoint
 }
+structure def Fixed : Joint {}  // 0-DOF rigid sub-assembly grouping; no motion variable, not a DrivingJoint
 ```
+
+This hierarchy is enforced via nominal conformance, not merely declared: `bind`/`sweep`/`dim` (§13.3–§13.4) carry a `DrivingJoint` bound checked at both the runtime (L1) and compile-time (L2) layers and reject `Coupling`/`Fixed` arguments with `error[E_MECHANISM_NONDRIVING_JOINT]`.
+
+`JointBinding` (the `bind()` return type, §13.3) and `Twist` (the `joint_jacobian` return type, below) are likewise declared marker structures — `bind(joint, value)` and `joint_jacobian(joint)` return typed `JointBinding`/`Twist` values rather than bare `Map`s, even though neither structure yet declares member fields (field layout is a follow-on, not part of this reconciliation).
+
+The parametric spelling `Coupling<P>` and the projected associated type `P::MotionValue` above are the stdlib's own internal nominal-generic declarations, which the compiler resolves and enforces today. Writing a *user*-authored generic function or structure parameterized over an arbitrary joint kind (`fn foo<J: DrivingJoint>(j: J) -> ...` in user code) requires general user-defined generics, a separate, broader language feature that has not shipped — tracked by the generics PRD (tasks 4232/4235); `Coupling<P>` should be read as a forward-reference to that surface, not as evidence it already exists for user code. At runtime every joint kind, `Coupling<P>` included, is still represented as an untyped `Value::Map` — the nominal types above are compile-time-only tags.
+
+`Axis` (the `revolute()` parameter type and the `joint_axis(Revolute)` return type below) is a placeholder name owned by the geometry-transforms cluster, not by `std.mechanism`: at runtime it is a plain `Vector3<Length>`-shaped value today, and its promotion to a distinct nominal type is tracked there.
 
 **Constructors:**
 
@@ -1609,9 +1619,10 @@ structure def Coupling<P: DrivingJoint + HasMotion> : Joint + HasMotion {  // de
 fn prismatic(axis: Vector3<Dimensionless>, range: Range<Length>) -> Prismatic
 fn revolute(axis: Axis, range: Range<Angle>) -> Revolute
 fn couple<P: DrivingJoint + HasMotion>(other: P, ratio: Real, offset: P::MotionValue = zero) -> Coupling<P>
+fn fixed() -> Fixed
 ```
 
-`Prismatic` models 1-DOF translation along a fixed axis with motion-range bounds. `Revolute` models 1-DOF rotation about a fixed axis with angle-range bounds. `Coupling` derives its motion variable from another joint: `value = ratio * other.value + offset`. A negative ratio produces the counter-mass direction reversal shown in the worked examples (§13.6).
+`Prismatic` models 1-DOF translation along a fixed axis with motion-range bounds. `Revolute` models 1-DOF rotation about a fixed axis with angle-range bounds. `Coupling` derives its motion variable from another joint: `value = ratio * other.value + offset`. A negative ratio produces the counter-mass direction reversal shown in the worked examples (§13.6). `Fixed` (`fixed()`) is a 0-DOF rigid joint used to attach an immovable body — such as a stationary dock or parked tool — to `world` or to another body without introducing a motion variable; see the dock-pickup example in §13.6.
 
 **`joint_axis`, `joint_range`, `joint_ratio`, and `joint_offset` accessors:**
 
