@@ -395,6 +395,105 @@ fn merged_cluster_objective_passed_through_opaquely() {
 }
 
 // ---------------------------------------------------------------------------
+// step-08 hardening: inherited-objective dedup (§6.1 INV-4).
+// ---------------------------------------------------------------------------
+
+/// `Parent`(idx0) declares `minimize (ChildA.cost + ChildB.cost)` AND CONTAINS
+/// `ChildA`(idx1)/`ChildB`(idx2) as sub-components. Because the children own no
+/// objective of their own, they INHERIT Parent's objective
+/// (`ContainerObjective::Inherited`, §6.1 INV-4). The objective's cross-scope
+/// reads couple all three scopes into ONE spanning `MergedSolve` cluster
+/// [0, 1, 2] -- the same shape as `spanning_objective_cluster_module`, plus the
+/// two containment edges that turn the children into inheritors.
+///
+/// `governing_objective` therefore attaches the SAME Parent objective THREE
+/// times across the cluster: once as Parent's own governance, and once each as
+/// ChildA's / ChildB's inherited copy.
+fn contained_children_inherit_parent_objective_module() -> CompiledModule {
+    let parent = TopologyTemplateBuilder::new("Parent")
+        .auto_param("Parent", "total", Type::length())
+        .sub_component("child_a_inst", "ChildA", vec![])
+        .sub_component("child_b_inst", "ChildB", vec![])
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            binop(
+                BinOp::Add,
+                value_ref("ChildA", "cost"),
+                value_ref("ChildB", "cost"),
+            ),
+        ))
+        .build();
+
+    let child_a = TopologyTemplateBuilder::new("ChildA")
+        .auto_param("ChildA", "cost", Type::length())
+        .build();
+
+    let child_b = TopologyTemplateBuilder::new("ChildB")
+        .auto_param("ChildB", "cost", Type::length())
+        .build();
+
+    CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(parent)
+        .template(child_a)
+        .template(child_b)
+        .build()
+}
+
+/// A container objective inherited by several cluster members must contribute
+/// its terms to the merged objective EXACTLY ONCE. `governing_objective` hands
+/// the same `Inherited` objective to every child of a governing container, so a
+/// blind concatenation would fold Parent's single term three times (once own,
+/// once per inheriting child), inflating its weight in the merged fold and
+/// shifting the argmin away from the true inherited-objective optimum (§6.1
+/// INV-4 -- the exact coupling this feature targets).
+///
+/// RED before the dedup fix: `build_merged_solver_problem`'s spanning-objective
+/// loop appended `governance[idx].objective.terms` for every governed member,
+/// yielding 3 terms here.
+#[test]
+fn merged_cluster_inherited_objective_folded_once() {
+    let module = contained_children_inherit_parent_objective_module();
+
+    let parent_total = ValueCellId::new("Parent", "total");
+    let child_a_cost = ValueCellId::new("ChildA", "cost");
+    let child_b_cost = ValueCellId::new("ChildB", "cost");
+
+    let mut solved = HashMap::new();
+    solved.insert(parent_total.clone(), mm(1.0));
+    solved.insert(child_a_cost.clone(), mm(2.0));
+    solved.insert(child_b_cost.clone(), mm(3.0));
+
+    let spy = SpyConstraintSolver::new_solved(solved);
+    let captured = spy.captured_problem();
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+    let _result = engine.eval(&module);
+
+    let problem = captured
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("solver must have been called with a merged ResolutionProblem");
+
+    let objective = problem.objective.expect(
+        "merged problem must carry the spanning objective (Parent's) -- got None",
+    );
+
+    // Parent's objective is a single term. Even though it governs THREE cluster
+    // members (Parent's own + ChildA's/ChildB's inherited copies), it must be
+    // folded into the merged objective EXACTLY once.
+    assert_eq!(
+        objective.terms.len(),
+        1,
+        "Parent's inherited objective must contribute its single term EXACTLY \
+         once, not once per governed cluster member (would be 3 without dedup); \
+         got {} term(s)",
+        objective.terms.len(),
+    );
+}
+
+// ---------------------------------------------------------------------------
 // step-09/10: determinism + back-compat guards (BT5, BT6/INV-2, over-cap).
 // ---------------------------------------------------------------------------
 

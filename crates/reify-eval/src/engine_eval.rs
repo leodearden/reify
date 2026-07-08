@@ -1623,12 +1623,35 @@ fn build_merged_solver_problem(
         })
         .collect();
 
-    // Spanning objective: concatenate every member's governing ObjectiveTerms
-    // opaquely, in cluster.scopes order (same determinism rule as above).
+    // Spanning objective: concatenate every DISTINCT governing objective's
+    // ObjectiveTerms opaquely, in cluster.scopes order (same determinism rule as
+    // above).
+    //
+    // A container objective inherited (§6.1 INV-4) by several cluster members
+    // must contribute its terms EXACTLY ONCE. `governing_objective` hands back
+    // the SAME `ContainerObjective::Inherited` set to every child of a governing
+    // container, so when a container P and its inheriting children C1/C2 all land
+    // in one MergedSolve cluster, P's terms appear in governance[P] (own), and
+    // again in governance[C1]/governance[C2] (inherited). Concatenating blindly
+    // would fold P's terms 2–3×, inflating its weight in the merged fold and
+    // shifting the argmin. Dedup by governing-scope identity: the container name
+    // for inherited governance, else the member's own template name (own
+    // objectives are unique per template, and a container that governs a child
+    // shares its own name key so P-own and C-inherited collapse to one entry).
     let mut spanning_terms = Vec::new();
     let mut cost_robustness_lambda: Option<f64> = None;
+    let mut seen_objective_sources: HashSet<String> = HashSet::new();
     for &idx in &cluster.scopes {
         if let Some(obj) = governance[idx].objective.as_ref() {
+            let source_key = governance[idx]
+                .inherited_from
+                .clone()
+                .unwrap_or_else(|| templates[idx].name.clone());
+            if !seen_objective_sources.insert(source_key) {
+                // Already folded in via the governing container itself or an
+                // earlier sibling that inherits the same objective.
+                continue;
+            }
             spanning_terms.extend(obj.terms.iter().cloned());
             match (cost_robustness_lambda, obj.cost_robustness_lambda) {
                 (None, candidate) => cost_robustness_lambda = candidate,
