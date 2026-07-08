@@ -962,8 +962,13 @@ impl Engine {
                 // RealizationNodeData (same operations, same upstream_values_hash
                 // fold) because edit_param has no access to the CompiledModule.
                 // Note: `diagnostics` is declared later in this function; use a
-                // local sink here (selector-mint diagnostics are re-captured by
-                // the idempotent post-eval backstop mint passes).
+                // local sink here instead. This in-walk mint is the SOLE
+                // edit-path mint mechanism (γ, task 4954 — geometry-let cells
+                // ride the dirty cone and mint at their topo slot here);
+                // edit_param has no post-eval backstop mint pass. The local
+                // `sel_diags` sink below is intentionally dropped — this
+                // incremental re-mint does not surface selector-mint
+                // diagnostics, unlike edit_source's whole-module pass.
                 let was_undef = matches!(val, Value::Undef);
                 let val = if was_undef {
                     let geom = Engine::mint_symbolic_geometry_handle_for_cell_from_graph(
