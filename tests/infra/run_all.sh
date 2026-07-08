@@ -514,7 +514,18 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     done
 
     _H2_WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/reify-run-all-pool.XXXXXX")"
-    trap 'rm -rf "$_H2_WORKDIR"' EXIT
+    # amend (task #5130): also stop the single-writer progress printer (once
+    # started, see _h2_progress_pid below) on ANY exit path, not just the
+    # normal one. `_h2_progress_pid` does not exist yet at this line, but the
+    # trap body is single-quoted so expansion is deferred to fire-time, by
+    # which point it is set if Phase 1 ever started the printer. The explicit
+    # kill after the Phase-1 join (below) remains the primary stop path; this
+    # is a backstop for a signal-driven exit (INT/TERM) that unwinds through
+    # this trap first -- same "explicit path primary, EXIT trap backstop"
+    # shape as lane_x_flock_release above (:384). A SIGKILL to the parent
+    # still bypasses this (and every) trap; that residual case is left to the
+    # orphaned-test-binary reaper, per docs/notes/orphaned-test-binary-reaper.md.
+    trap '[ -n "${_h2_progress_pid:-}" ] && kill "$_h2_progress_pid" 2>/dev/null || true; rm -rf "$_H2_WORKDIR"' EXIT
 
     # Discovery/partition/pool-workdir-setup guard ends here -- clear before
     # the PSI-gate definition and Phases 1-3 so it never wraps them.
@@ -693,7 +704,9 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     fi
     # Stop the single-writer progress printer now that Phase 1 has joined --
     # disowned above, so it is invisible to `jobs -rp`/`wait` and must be
-    # stopped explicitly via its saved PID (task #5130).
+    # stopped explicitly via its saved PID (task #5130). This is the primary
+    # stop path; the _H2_WORKDIR EXIT trap above (:517) is the backstop for a
+    # signal-driven exit that never reaches this line.
     [ -n "${_h2_progress_pid:-}" ] && kill "$_h2_progress_pid" 2>/dev/null || true
     if [ "${#_h2_pool_members[@]}" -gt 0 ]; then
         echo "INFO: run_all.sh pool: Phase-1 peak concurrent worker shells=${_h2_peak} (limit ${_H2_POOL_N})" >&2
