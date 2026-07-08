@@ -3468,7 +3468,7 @@ fn classify_material_as_printed_zones(lambda: &Value) -> MaterialModel {
 
     let aabb_min = extract_point3_si(&list[0]).fea_shim();
     let aabb_max = extract_point3_si(&list[1]).fea_shim();
-    let params   = extract_zone_process_params(&list[2]);
+    let params   = extract_zone_process_params(&list[2]).fea_shim();
     let cos_threshold = match &list[3] {
         Value::Real(r) => *r,
         other => panic!(
@@ -3647,37 +3647,41 @@ fn extract_vec3_si(val: &Value) -> Result<[f64; 3], FeaValueShapeError> {
 /// `[walls, top_bottom_layers, layer_height, line_width, bx, by, bz]`
 ///
 /// All elements are `Value::Real`.
-fn extract_zone_process_params(val: &Value) -> ZoneProcessParams {
+///
+/// Task D4 (compute-fea-hardening PRD): Result-ified leaf extractor — returns
+/// `Err(FeaValueShapeError)` on a malformed `Value` instead of panicking. The
+/// sole call site bridges with `FeaShimExt::fea_shim` until D6 Result-ifies
+/// `classify_material_as_printed_zones` and propagates the error directly.
+fn extract_zone_process_params(val: &Value) -> Result<ZoneProcessParams, FeaValueShapeError> {
     let list = match val {
         Value::List(v) => v,
-        other => panic!(
-            "solve_elastic_static_trampoline: AsPrintedZones params must be \
-             a Value::List, got: {:?}",
-            other
-        ),
+        other => {
+            return Err(FeaValueShapeError::ExpectedList {
+                context: "extract_zone_process_params (params list)",
+                got: format!("{other:?}"),
+            })
+        }
     };
     if list.len() < 7 {
-        panic!(
-            "solve_elastic_static_trampoline: AsPrintedZones params list has {} \
-             elements, expected 7",
-            list.len()
-        );
+        return Err(FeaValueShapeError::ExpectedList {
+            context: "extract_zone_process_params",
+            got: format!("List with {} elements", list.len()),
+        });
     }
     let real = |idx: usize| match &list[idx] {
-        Value::Real(r) => *r,
-        other => panic!(
-            "solve_elastic_static_trampoline: params[{idx}] must be Value::Real, \
-             got: {:?}",
-            other
-        ),
+        Value::Real(r) => Ok(*r),
+        other => Err(FeaValueShapeError::ExpectedReal {
+            context: "extract_zone_process_params element",
+            got: format!("{other:?}"),
+        }),
     };
-    ZoneProcessParams {
-        walls:             real(0) as u32,
-        top_bottom_layers: real(1) as u32,
-        layer_height:      real(2),
-        line_width:        real(3),
-        build_direction:   [real(4), real(5), real(6)],
-    }
+    Ok(ZoneProcessParams {
+        walls:             real(0)? as u32,
+        top_bottom_layers: real(1)? as u32,
+        layer_height:      real(2)?,
+        line_width:        real(3)?,
+        build_direction:   [real(4)?, real(5)?, real(6)?],
+    })
 }
 
 /// Convert an `AnisotropicMaterial { law: OrthotropicMaterial|TransverseIsotropicMaterial,
