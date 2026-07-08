@@ -175,4 +175,43 @@ assert "F2: ratio just below threshold (3.97) is status=ok" \
     bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])status=ok([[:space:]]|$)"' _ "$OUT"
 assert "F2: just-below-threshold exits 0" test "$RC" -eq 0
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block C — incident reproduction (ratio axis): the reference esc-4037
+# loadavg~419 on 32 cores incident (ratio≈13.1×), avg10 low → the ratio axis
+# alone must flag oversubscription with the flagged-path exit code + marker.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block C: incident reproduction (ratio axis) ---"
+
+C_LOADAVG="$(_mk_loadavg 419)"
+C_PSI="$(_mk_psi 5.00)"
+REIFY_FLEET_LOAD_LOADAVG_PATH="$C_LOADAVG" REIFY_FLEET_LOAD_PSI_PATH="$C_PSI" REIFY_FLEET_LOAD_NPROC=32 \
+    run_helper check
+assert "C1: incident fixture (419/32) exits 3" test "$RC" -eq 3
+assert "C2: stdout status=oversubscribed" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])status=oversubscribed([[:space:]]|$)"' _ "$OUT"
+assert "C3: stdout reason=ratio" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])reason=ratio$"' _ "$OUT"
+assert "C4: stderr carries the @@REIFY_FLEET_OVERSUBSCRIBED@@ marker" \
+    bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_FLEET_OVERSUBSCRIBED@@"' _ "$ERR_OUT"
+assert "C5: marker line carries ratio=/load1=/nproc=/avg10= fields" \
+    bash -c 'printf "%s\n" "$1" | grep -E "@@REIFY_FLEET_OVERSUBSCRIBED@@" | grep -qE "ratio=.*load1=.*nproc=.*avg10="' \
+    _ "$ERR_OUT"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block E — both axes high simultaneously → reason=both
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block E: both axes high ---"
+
+E_LOADAVG="$(_mk_loadavg 419)"
+E_PSI="$(_mk_psi 90.00)"
+REIFY_FLEET_LOAD_LOADAVG_PATH="$E_LOADAVG" REIFY_FLEET_LOAD_PSI_PATH="$E_PSI" REIFY_FLEET_LOAD_NPROC=32 \
+    run_helper check
+assert "E1: both-high fixture exits 3" test "$RC" -eq 3
+assert "E2: stdout reason=both" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])reason=both$"' _ "$OUT"
+assert "E3: stderr carries the @@REIFY_FLEET_OVERSUBSCRIBED@@ marker" \
+    bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_FLEET_OVERSUBSCRIBED@@"' _ "$ERR_OUT"
+
 test_summary
