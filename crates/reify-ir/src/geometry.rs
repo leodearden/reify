@@ -10709,4 +10709,32 @@ mod tests {
         assert_eq!(err.invariant, MeshInvariant::Finite);
         assert!(err.counts.nan_verts >= 1);
     }
+
+    #[test]
+    fn validate_rejects_out_of_bounds_index() {
+        // The last triangle's last index is bumped to 4, but the tetra only
+        // has 4 vertices (valid indices 0..=3).
+        let mut oob_mesh = welded_tetra_mesh();
+        let last = oob_mesh.indices.len() - 1;
+        oob_mesh.indices[last] = 4;
+        let err = oob_mesh
+            .validate(0.0)
+            .expect_err("a mesh with an out-of-bounds triangle index must fail the mesh contract");
+        assert_eq!(err.invariant, MeshInvariant::IndexValid);
+        assert!(err.counts.oob_indices >= 1);
+        match err.witness {
+            MeshWitness::Triangle { .. } => {}
+            other => panic!("expected MeshWitness::Triangle naming the offender, got {other:?}"),
+        }
+
+        // A dangling trailing group (indices.len() % 3 != 0) is also
+        // reported as IndexValid.
+        let mut truncated_mesh = welded_tetra_mesh();
+        truncated_mesh.indices.pop();
+        assert_ne!(truncated_mesh.indices.len() % 3, 0);
+        let err = truncated_mesh.validate(0.0).expect_err(
+            "a mesh whose index buffer length is not a multiple of 3 must fail the mesh contract",
+        );
+        assert_eq!(err.invariant, MeshInvariant::IndexValid);
+    }
 }
