@@ -261,6 +261,14 @@ fi
 printf 'FLEET_LOAD status=%s load1=%s nproc=%s ratio=%s ratio_threshold=%s avg10=%s avg10_threshold=%s reason=%s\n' \
     "$STATUS" "$LOAD1" "$NPROC" "$RATIO" "$RATIO_THRESHOLD" "$AVG10" "$AVG10_THRESHOLD" "$REASON"
 
-# step-4: exit 0 unconditionally — the flagged path (marker + exit 3) is
-# wired in step-6 (task 5135 plan.json).
+# ── flagged path ───────────────────────────────────────────────────────────────
+# stdout verdict line above is emitted in BOTH cases (it already carries
+# status=/reason=); the marker below is stderr-only and additive, so a
+# consumer reading either channel works standalone.
+if [ "$STATUS" = "oversubscribed" ]; then
+    printf '@@REIFY_FLEET_OVERSUBSCRIBED@@ ratio=%s load1=%s nproc=%s avg10=%s\n' \
+        "$RATIO" "$LOAD1" "$NPROC" "$AVG10" >&2
+    exit 3
+fi
+
 exit 0
