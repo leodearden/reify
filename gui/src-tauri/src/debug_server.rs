@@ -1019,6 +1019,12 @@ struct DebugServerState {
     #[allow(dead_code)]
     selection: Arc<RwLock<SelectionInfo>>,
     debug_bridge: Arc<DebugBridge>,
+    /// Shared delta baseline — the SAME `Arc` as `AppState::last_state`
+    /// (INV-GUI-2, task 5035 L6). Refreshed by
+    /// `open_source_into_engine_and_refresh_baseline` /
+    /// `set_fea_case_on_engine_and_refresh_baseline` so a subsequent normal
+    /// Tauri command diffs against the post-debug-mutation state.
+    last_state: Arc<Mutex<Option<crate::types::GuiState>>>,
 }
 
 fn is_image_tool(name: &str) -> bool {
@@ -1299,18 +1305,17 @@ async fn open_path_into_engine(state: &DebugServerState, raw_path: &str) -> Resu
     let content =
         std::fs::read_to_string(&path).map_err(|e| format!("failed to read {path}: {e}"))?;
 
-    // Load into engine and build GUI state (on OS thread — OCCT panics in tokio)
-    let path_clone = path.clone();
-    let content_clone = content.clone();
-    let gui_state = run_on_engine(&state.engine, move |session| {
-        session
-            .update_source(&path_clone, &content_clone)
-            .map_err(|e| format!("update_source failed: {e}"))?;
-        session
-            .build_gui_state()
-            .map_err(|e| format!("build_gui_state failed: {e}"))
-    })
-    .await?;
+    // Load into engine, build GUI state, and refresh the delta baseline
+    // (INV-GUI-2, task 5035 L6) through the same compute_delta choke-point
+    // main.rs's normal command path uses. NOTE: the baseline is refreshed
+    // here, BEFORE the query_frontend push below lands S1 on the frontend —
+    // a normal command interleaved in that window would diff against S1
+    // while the frontend is still at S0. Safe only because debug sessions
+    // (the e2e visual-regression harness) run serially and never overlap a
+    // debug op with a normal command; see PRD §4 D7.
+    let gui_state =
+        open_source_into_engine_and_refresh_baseline(&state.engine, &state.last_state, &path, &content)
+            .await?;
 
     // Serialize GUI state for the frontend
     let gui_state_json =
@@ -1326,6 +1331,53 @@ async fn open_path_into_engine(state: &DebugServerState, raw_path: &str) -> Resu
         .debug_bridge
         .query_frontend("open_file", file_data)
         .await
+}
+
+// ── INV-GUI-2 (task 5035 L6): debug-mutation delta-baseline refresh ──
+//
+// Debug-server mutations run the engine forward but, without help, never
+// touch `last_state`, the delta baseline `compute_delta` diffs against. The
+// next NORMAL command would then diff against the pre-debug baseline
+// instead of the state the frontend actually has (survey latent bug #7 —
+// the stale-baseline desync). The two helpers below fix this by calling
+// `crate::diff::compute_delta(last_state, &gui_state)` right after the
+// engine mutation, purely for its side effect of refreshing `last_state`;
+// the returned `StateDelta` is intentionally discarded because the full
+// `GuiState` is still delivered to the frontend via the caller's
+// synchronous `query_frontend` push, not `emit_delta` (see PRD §4 D7).
+//
+// Both take `last_state: &std::sync::Mutex<...>` (not `&Arc<Mutex<...>>`) so
+// they're headlessly testable with a plain `Mutex` in unit tests; callers
+// holding an `Arc<Mutex<_>>` (e.g. `DebugServerState::last_state`) pass it
+// in via `&state.last_state`, which deref-coerces cleanly. See also the
+// concurrency note on their call sites (`open_path_into_engine`,
+// `handle_set_fea_case`): the refresh lands before the frontend push, so
+// this assumes debug ops never overlap a normal command.
+
+/// Mirrors `open_path_into_engine`'s engine block (`update_source` +
+/// `build_gui_state` on a real OS thread), then refreshes the delta
+/// baseline — see the INV-GUI-2 note above for why/how. `update_source`
+/// already routes through `post_engine_call_telemetry` (the L4 emission
+/// choke-point) by construction.
+pub async fn open_source_into_engine_and_refresh_baseline(
+    engine: &Arc<Mutex<EngineSession>>,
+    last_state: &std::sync::Mutex<Option<crate::types::GuiState>>,
+    path: &str,
+    content: &str,
+) -> Result<crate::types::GuiState, String> {
+    let path = path.to_owned();
+    let content = content.to_owned();
+    let gui_state = run_on_engine(engine, move |session| {
+        session
+            .update_source(&path, &content)
+            .map_err(|e| format!("update_source failed: {e}"))?;
+        session
+            .build_gui_state()
+            .map_err(|e| format!("build_gui_state failed: {e}"))
+    })
+    .await?;
+    crate::diff::compute_delta(last_state, &gui_state);
+    Ok(gui_state)
 }
 
 async fn handle_open_file(state: &DebugServerState, params: Value) -> Result<Value, String> {
@@ -1374,16 +1426,38 @@ pub async fn set_fea_case_on_engine(
     run_on_engine(engine, move |session| session.set_active_fea_case(&case)).await
 }
 
+/// Wraps [`set_fea_case_on_engine`], then refreshes the delta baseline —
+/// see the shared INV-GUI-2 rationale above
+/// [`open_source_into_engine_and_refresh_baseline`] for why/how.
+pub async fn set_fea_case_on_engine_and_refresh_baseline(
+    engine: &Arc<Mutex<EngineSession>>,
+    last_state: &std::sync::Mutex<Option<crate::types::GuiState>>,
+    case: &str,
+) -> Result<crate::types::GuiState, String> {
+    let gs = set_fea_case_on_engine(engine, case).await?;
+    crate::diff::compute_delta(last_state, &gs);
+    Ok(gs)
+}
+
 /// Select the active FEA load case on the engine, push the rebuilt `GuiState`
 /// to the frontend via `apply_gui_state`, and return an echo response.
 ///
 /// Flow (mirrors `open_path_into_engine`):
-///  1. `set_fea_case_on_engine` — re-sources scalar_channels for the new case.
+///  1. `set_fea_case_on_engine_and_refresh_baseline` — re-sources
+///     scalar_channels for the new case AND refreshes the delta baseline
+///     (INV-GUI-2, task 5035 L6) so a subsequent normal command diffs
+///     correctly.
 ///  2. `fea_case_frontend_payload` — serializes GuiState + case name into JSON.
 ///  3. `query_frontend("apply_gui_state", ...)` — frontend applies the GuiState
 ///     WITHOUT a view reset so the camera stays fixed across case switches.
 ///  4. Returns `{"ok": true, "case": <name>}` so the visual-regression harness
 ///     can confirm the switch and proceed to screenshot.
+///
+/// NOTE: step 1 refreshes `last_state` BEFORE step 3's push lands S1 on the
+/// frontend, so a normal command interleaved in that window would diff
+/// against S1 while the frontend is still at S0. Safe only because debug
+/// sessions never overlap a debug op with a normal command (the e2e
+/// visual-regression harness runs serially); see PRD §4 D7.
 async fn handle_set_fea_case(
     state: &DebugServerState,
     params: Value,
@@ -1392,7 +1466,8 @@ async fn handle_set_fea_case(
         .as_str()
         .ok_or_else(|| "`case` param is required".to_string())?
         .to_owned();
-    let gs = set_fea_case_on_engine(&state.engine, &case).await?;
+    let gs = set_fea_case_on_engine_and_refresh_baseline(&state.engine, &state.last_state, &case)
+        .await?;
     let fp = fea_case_frontend_payload(&case, &gs)?;
     state.debug_bridge.query_frontend("apply_gui_state", fp).await?;
     Ok(json!({ "ok": true, "case": case }))
@@ -1637,6 +1712,7 @@ pub async fn spawn_debug_server(
     engine: Arc<Mutex<EngineSession>>,
     selection: Arc<RwLock<SelectionInfo>>,
     debug_bridge: Arc<DebugBridge>,
+    last_state: Arc<Mutex<Option<crate::types::GuiState>>>,
 ) -> Result<(), String> {
     // Initialize the measurement-window clock at server spawn so
     // session_start_unix_ms reports the true debug-server start time
@@ -1647,6 +1723,7 @@ pub async fn spawn_debug_server(
         engine,
         selection,
         debug_bridge,
+        last_state,
     };
 
     let app = Router::new()
@@ -3159,6 +3236,146 @@ mod tests {
             vm,
             &von_mises,
             "vonMises values must survive the serde round-trip byte-identical"
+        );
+    }
+
+    // ── Task 5035 step-2: RED — FEA-case-switch baseline refresh must route
+    // through compute_delta (INV-GUI-2) ──
+    //
+    // `set_fea_case_on_engine_and_refresh_baseline` (added in step-3) wraps
+    // `set_fea_case_on_engine` and additionally refreshes `last_state` via
+    // `compute_delta`, so a subsequent NORMAL command diffs against the
+    // POST-debug-mutation baseline (S1) instead of the pre-debug one (S0).
+    //
+    // FAILS TO COMPILE until step-3 adds
+    // `set_fea_case_on_engine_and_refresh_baseline`.
+    #[tokio::test]
+    async fn set_fea_case_refresh_helper_keeps_baseline_fresh() {
+        let engine = crate::tests::make_test_engine();
+
+        // Load the three-case fixture (same fixture as
+        // `handle_set_fea_case_routes_to_engine`) so the engine has a compiled
+        // module with an active FEA case to switch. `load_from_source`
+        // returns the freshly-built GuiState directly — that's S0, the
+        // pre-debug-mutation baseline.
+        let initial = {
+            let mut locked = engine.lock().unwrap();
+            locked
+                .load_from_source(
+                    include_str!("../../../examples/fea_multi_case_bracket.ri"),
+                    "FeaMultiCaseBracket",
+                )
+                .expect("load_from_source must succeed for fea_multi_case_bracket.ri")
+        };
+        let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+            std::sync::Mutex::new(Some(initial));
+
+        // Debug-driven mutation: switch to the "overload" FEA case via the
+        // NOT-YET-EXISTING refresh helper (S0 -> S1).
+        let s1 = set_fea_case_on_engine_and_refresh_baseline(&engine, &last_state, "overload")
+            .await
+            .expect("set_fea_case_on_engine_and_refresh_baseline('overload') must return Ok");
+        assert!(
+            !s1.meshes.is_empty(),
+            "set_fea_case_on_engine_and_refresh_baseline must return GuiState with >= 1 mesh"
+        );
+
+        // The helper must refresh the baseline in the same call — the caller
+        // makes no separate compute_delta call.
+        assert_eq!(
+            *last_state.lock().unwrap(),
+            Some(s1.clone()),
+            "set_fea_case_on_engine_and_refresh_baseline must refresh last_state to S1"
+        );
+
+        // A normal command now runs: set_parameter changes exactly one cell
+        // (width) — unrelated to the FEA-case switch itself.
+        let s2 =
+            crate::commands::set_parameter_impl(&engine, "FeaMultiCaseBracket.width", "150mm")
+                .expect("set_parameter_impl must succeed");
+
+        // The normal command's delta is computed against the FRESH (S1)
+        // baseline, so it must be minimal: it must NOT re-report the
+        // untouched 'length' param. Only a stale (pre-switch) baseline would
+        // cause it to reappear.
+        let delta = crate::diff::compute_delta(&last_state, &s2);
+        assert!(
+            !delta
+                .changed_values
+                .iter()
+                .any(|v| v.cell_id == "FeaMultiCaseBracket.length"),
+            "fresh-baseline delta must be MINIMAL: it must NOT re-report \
+             'FeaMultiCaseBracket.length', which set_parameter never touched"
+        );
+    }
+
+    // ── Task 5035 step-4: RED — open_file/load_fixture baseline refresh must
+    // route through compute_delta (INV-GUI-2) ──
+    //
+    // `open_source_into_engine_and_refresh_baseline` (added in step-5) mirrors
+    // `open_path_into_engine`'s engine block (update_source + build_gui_state)
+    // but additionally refreshes `last_state` via `compute_delta`. Without
+    // this refresh, a debug-driven open_file/load_fixture call would advance
+    // the engine to S1 but leave `last_state` stale at S0, so the next
+    // NORMAL command's delta comes back FULL/bloated instead of minimal
+    // relative to S1 (survey latent bug #7 — the stale-baseline desync).
+    // This test proves the routed-through-the-helper path gets a CORRECT
+    // (minimal) delta instead.
+    //
+    // FAILS TO COMPILE until step-5 adds
+    // `open_source_into_engine_and_refresh_baseline`.
+    #[tokio::test]
+    async fn open_source_refresh_helper_keeps_baseline_fresh() {
+        use reify_test_support::bracket_source;
+
+        // make_test_engine() pre-loads bracket_source() at module path
+        // "bracket" already; the helper under test re-drives update_source
+        // (mirroring what open_path_into_engine always does on open/
+        // load-fixture), exercising the same code path a debug-driven
+        // open_file/load_fixture call would.
+        let engine = crate::tests::make_test_engine();
+
+        // Pre-debug delta baseline (S0): cold, no command has run yet.
+        let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+            std::sync::Mutex::new(None);
+
+        // Debug-driven mutation: open/load bracket_source() via the
+        // NOT-YET-EXISTING refresh helper (S0 -> S1).
+        let content = bracket_source();
+        let s1 =
+            open_source_into_engine_and_refresh_baseline(&engine, &last_state, "bracket", content)
+                .await
+                .expect("open_source_into_engine_and_refresh_baseline must return Ok");
+        assert!(
+            !s1.values.is_empty(),
+            "open_source_into_engine_and_refresh_baseline must return GuiState with >= 1 value"
+        );
+
+        // The helper must refresh the baseline in the same call — the caller
+        // makes no separate compute_delta call.
+        assert_eq!(
+            *last_state.lock().unwrap(),
+            Some(s1.clone()),
+            "open_source_into_engine_and_refresh_baseline must refresh last_state to S1"
+        );
+
+        // A normal command now runs: set_parameter changes exactly one cell.
+        let s2 = crate::commands::set_parameter_impl(&engine, "Bracket.thickness", "9mm")
+            .expect("set_parameter_impl must succeed");
+
+        // The normal command's delta is computed against the FRESH (S1)
+        // baseline, so it must be minimal: it must NOT re-report the
+        // untouched 'Bracket.height' — a STALE (None) baseline would
+        // incorrectly re-report it (survey latent bug #7).
+        let delta = crate::diff::compute_delta(&last_state, &s2);
+        assert!(
+            !delta
+                .changed_values
+                .iter()
+                .any(|v| v.cell_id == "Bracket.height"),
+            "fresh-baseline delta must be MINIMAL: it must NOT re-report \
+             'Bracket.height', which set_parameter never touched (a stale \
+             baseline would incorrectly include it)"
         );
     }
 }

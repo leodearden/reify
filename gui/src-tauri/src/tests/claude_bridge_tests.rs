@@ -696,7 +696,7 @@ fn app_state_has_sidecar_field() {
     // AppState should be constructible with the new sidecar field
     let _state = AppState {
         engine: Arc::new(Mutex::new(session)),
-        last_state: Mutex::new(None),
+        last_state: Arc::new(Mutex::new(None)),
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::new(RwLock::new(SelectionInfo::default())),

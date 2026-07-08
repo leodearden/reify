@@ -28,7 +28,7 @@ fn app_state_constructible() {
     let session = make_loaded_session();
     let _state = AppState {
         engine: Arc::new(Mutex::new(session)),
-        last_state: Mutex::new(None),
+        last_state: Arc::new(Mutex::new(None)),
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::new(RwLock::new(SelectionInfo::default())),
@@ -42,7 +42,7 @@ fn app_state_selection_is_accessible() {
     let session = make_loaded_session();
     let state = AppState {
         engine: Arc::new(Mutex::new(session)),
-        last_state: Mutex::new(None),
+        last_state: Arc::new(Mutex::new(None)),
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::new(RwLock::new(SelectionInfo {
@@ -62,7 +62,7 @@ fn app_state_selection_multi() {
     let session = make_loaded_session();
     let state = AppState {
         engine: Arc::new(Mutex::new(session)),
-        last_state: Mutex::new(None),
+        last_state: Arc::new(Mutex::new(None)),
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::new(RwLock::new(SelectionInfo {
@@ -1489,7 +1489,7 @@ fn cancel_solve_impl_fires_published_handle_and_clears_slot() {
 
     let state = AppState {
         engine: Arc::new(Mutex::new(session)),
-        last_state: Mutex::new(None),
+        last_state: Arc::new(Mutex::new(None)),
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::new(RwLock::new(SelectionInfo::default())),
@@ -1514,7 +1514,7 @@ fn cancel_solve_impl_returns_ok_when_slot_empty() {
     let session = make_session();
     let state = AppState {
         engine: Arc::new(Mutex::new(session)),
-        last_state: Mutex::new(None),
+        last_state: Arc::new(Mutex::new(None)),
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::new(RwLock::new(SelectionInfo::default())),
@@ -1600,7 +1600,7 @@ fn pending_solve_cancel_cancelled_by_consumer_during_solve() {
     let session = make_session();
     let state = AppState {
         engine: Arc::new(Mutex::new(session)),
-        last_state: Mutex::new(None),
+        last_state: Arc::new(Mutex::new(None)),
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::new(RwLock::new(SelectionInfo::default())),

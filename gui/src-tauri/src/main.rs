@@ -761,9 +761,15 @@ fn main() {
     let solve_cancel_slot: Arc<Mutex<Option<reify_eval::CancellationHandle>>> =
         Arc::new(Mutex::new(None));
 
+    // Shared delta baseline — the SAME `Arc` is handed to `DebugServerState`
+    // below so a debug-driven mutation and a normal Tauri command diff
+    // against the SAME baseline (INV-GUI-2, task 5035 L6).
+    let last_state_arc: Arc<Mutex<Option<reify_gui::types::GuiState>>> =
+        Arc::new(Mutex::new(None));
+
     let app_state = AppState {
         engine: Arc::clone(&engine_arc),
-        last_state: std::sync::Mutex::new(None),
+        last_state: Arc::clone(&last_state_arc),
         watcher: Mutex::new(None),
         sidecar: tokio::sync::Mutex::new(None),
         selection: Arc::clone(&selection_arc),
@@ -860,11 +866,13 @@ fn main() {
             if debug_enabled {
                 let engine_for_debug = Arc::clone(&engine_arc);
                 let selection_for_debug = Arc::clone(&selection_arc);
+                let last_state_for_debug = Arc::clone(&last_state_arc);
                 tauri::async_runtime::spawn(async move {
                     if let Err(e) = reify_gui::debug_server::spawn_debug_server(
                         engine_for_debug,
                         selection_for_debug,
                         debug_bridge,
+                        last_state_for_debug,
                     )
                     .await
                     {
