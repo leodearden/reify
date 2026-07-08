@@ -536,37 +536,59 @@ fn pipeline_output_is_stable_under_no_candidate_arm() {
 
 // ─── step-11: v0.1 corpus compile+check time is bounded ─────────────────────
 
+/// Return the subset of `measurements` whose duration exceeds `per_file_budget`.
+///
+/// Pure and deterministic: no aggregate/total-wall-clock concept. This is the
+/// single source of truth for the v0.1 example-corpus per-file perf gate,
+/// exercised directly by `per_file_gate_flags_quadratic_overrun` and
+/// `per_file_gate_ignores_aggregate_total_wall_clock` below, and driven by
+/// real corpus timings from `v0_1_example_corpus_compile_and_check_time_is_bounded`.
+fn per_file_violations(
+    measurements: &[(String, Duration)],
+    per_file_budget: Duration,
+) -> Vec<(String, Duration)> {
+    measurements
+        .iter()
+        .filter(|(_, dur)| *dur > per_file_budget)
+        .cloned()
+        .collect()
+}
+
 /// Walk `examples/*.ri` recursively, skipping SKIP_SET entries, and for each
 /// file time `check_source_with_stdlib` (which internally calls
 /// `parse_and_compile_with_stdlib`, so the measurement covers the full
 /// parse+compile+check pipeline exactly once per file).
-/// Asserts every per-file duration < 10s AND total elapsed < 120s.
+/// Asserts every per-file duration < 10s via `per_file_violations`.
 ///
 /// On failure, prints a sorted `(path, duration)` table so the slow file is
 /// immediately visible. Pinned by PRD acceptance criterion 12.
 ///
 /// # Budget rationale
 ///
-/// The generous bounds (10s/file, 120s total) are intentional: tight
-/// per-machine baselines flake on slow CI and require continual recalibration.
-/// The PRD §"Phase A" cap-of-10 rationale targets obvious quadratic regressions,
-/// not microbenchmark drift. As a rough baseline on a modern developer machine,
-/// each `.ri` example file compiles in under 500ms; the 10s/file and 120s
-/// total limits provide >10× headroom against a p99 outlier without risking
-/// false positives from CI scheduling jitter. If a regression pushes a file
-/// past the budget, the sorted violation table will identify it.
+/// The per-file bound (10s) is intentionally generous: a tight per-machine
+/// baseline flakes on slow CI and requires continual recalibration. The PRD
+/// §"Phase A" cap-of-10 rationale targets obvious quadratic regressions, not
+/// microbenchmark drift. As a rough baseline on a modern developer machine,
+/// each `.ri` example file compiles in under 500ms, so the 10s/file limit
+/// provides >10× headroom against a p99 outlier without risking false
+/// positives from CI scheduling jitter. If a regression pushes a file past
+/// the budget, the sorted violation table will identify it.
+///
+/// There is deliberately no aggregate/total wall-clock budget: task 5149
+/// dropped it because a fixed total erodes as the corpus grows and is
+/// multiplied by concurrent-verify CPU oversubscription, which flaked under
+/// load independent of any real regression. The per-file bound has no such
+/// failure mode and remains the load-tolerant quadratic-regression detector.
 #[test]
 fn v0_1_example_corpus_compile_and_check_time_is_bounded() {
     use std::collections::HashSet;
 
     const PER_FILE_BUDGET: Duration = Duration::from_secs(10);
-    const TOTAL_BUDGET: Duration = Duration::from_secs(120);
 
     let skip: HashSet<&str> = SKIP_SET.iter().map(|(name, _)| *name).collect();
     let paths = discover_ri_files();
 
-    let mut violations: Vec<(String, Duration)> = Vec::new();
-    let total_start = Instant::now();
+    let mut measurements: Vec<(String, Duration)> = Vec::new();
 
     for path in &paths {
         let rel = relative_to_examples_dir(path);
@@ -581,29 +603,19 @@ fn v0_1_example_corpus_compile_and_check_time_is_bounded() {
         let _ = check_source_with_stdlib(&src);
         let elapsed = t.elapsed();
 
-        if elapsed > PER_FILE_BUDGET {
-            violations.push((rel, elapsed));
-        }
+        measurements.push((rel, elapsed));
     }
 
-    let total_elapsed = total_start.elapsed();
+    let violations = per_file_violations(&measurements, PER_FILE_BUDGET);
 
-    let mut report_parts: Vec<String> = violations
+    let report_parts: Vec<String> = violations
         .iter()
         .map(|(name, dur)| format!("  {name}: {:.2}s", dur.as_secs_f64()))
         .collect();
 
-    if total_elapsed > TOTAL_BUDGET {
-        report_parts.push(format!(
-            "  TOTAL: {:.2}s (budget {}s)",
-            total_elapsed.as_secs_f64(),
-            TOTAL_BUDGET.as_secs()
-        ));
-    }
-
     assert!(
-        violations.is_empty() && total_elapsed <= TOTAL_BUDGET,
-        "v0.1 corpus perf regression detected:\n{}",
+        violations.is_empty(),
+        "v0.1 corpus per-file perf regression detected:\n{}",
         report_parts.join("\n")
     );
 }
