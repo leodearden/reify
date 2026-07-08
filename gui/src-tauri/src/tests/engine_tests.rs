@@ -15510,6 +15510,130 @@ fn update_source_emits_fea_diagnostics() {
     );
 }
 
+// ── FeaConvergenceEmitter tests (#5032) ─────────────────────────────────────
+
+/// Mirrors [`RecordingFeaDiagnosticsEmitter`] for the fea-convergence-changed channel.
+///
+/// Compile-fails in step-1 because `crate::engine::FeaConvergenceEmitter` does
+/// not exist yet.
+struct RecordingFeaConvergenceEmitter {
+    events: std::sync::Arc<std::sync::Mutex<Vec<Option<crate::types::FeaConvergenceInfo>>>>,
+}
+
+impl RecordingFeaConvergenceEmitter {
+    fn new() -> Self {
+        Self {
+            events: std::sync::Arc::new(std::sync::Mutex::new(vec![])),
+        }
+    }
+}
+
+impl crate::engine::FeaConvergenceEmitter for RecordingFeaConvergenceEmitter {
+    fn changed(&self, payload: Option<crate::types::FeaConvergenceInfo>) {
+        self.events.lock().unwrap().push(payload);
+    }
+}
+
+/// (A) fea_convergence_emitter_fires_converged.
+///
+/// Injects a CheckResult whose `values` carries a `Converged` ElasticResult
+/// (via `make_elastic_result_value_map_with_convergence`), then calls
+/// `emit_fea_convergence_for_test()`. Asserts the recorder captured exactly
+/// ONE event whose payload is `Some(FeaConvergenceInfo{converged:true, reason:None})`.
+///
+/// Compile-fails because FeaConvergenceEmitter, set_fea_convergence_emitter,
+/// and emit_fea_convergence_for_test do not exist yet.
+#[test]
+fn fea_convergence_emitter_fires_converged() {
+    use std::sync::Arc;
+    use reify_eval::CheckResult;
+    use reify_ir::Value;
+
+    let convergence_status = Value::Enum {
+        type_name: "ConvergenceStatus".to_string(),
+        variant: "Converged".to_string(),
+        payload: vec![("final_indicator".to_string(), Value::Real(0.0))],
+    };
+    let values = make_elastic_result_value_map_with_convergence(convergence_status);
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    let recorder = RecordingFeaConvergenceEmitter::new();
+    let captured = Arc::clone(&recorder.events);
+    session.set_fea_convergence_emitter(Arc::new(recorder));
+
+    let check = CheckResult {
+        values,
+        constraint_results: vec![],
+        diagnostics: vec![],
+        resolved_params: std::collections::HashMap::new(),
+        structured_detail: vec![],
+    };
+    session.inject_check_for_test(check);
+    session.emit_fea_convergence_for_test();
+
+    let events = captured.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        1,
+        "expected exactly one fea-convergence-changed event, got {}",
+        events.len()
+    );
+    assert_eq!(
+        events[0],
+        Some(crate::types::FeaConvergenceInfo {
+            converged: true,
+            reason: None
+        }),
+        "fea-convergence-changed payload must be Some(converged:true) for a Converged ElasticResult"
+    );
+}
+
+/// (B) fea_convergence_emitter_fires_none_for_no_elastic_result.
+///
+/// Injects a CheckResult with an empty ValueMap (no ElasticResult), then calls
+/// `emit_fea_convergence_for_test()`. Asserts the recorder captured exactly
+/// ONE event whose payload is `None` — pins the clear-stale-indicator contract:
+/// a param edit that clears the FEA problem must clear the convergence indicator.
+///
+/// Compile-fails because FeaConvergenceEmitter, set_fea_convergence_emitter,
+/// and emit_fea_convergence_for_test do not exist yet.
+#[test]
+fn fea_convergence_emitter_fires_none_for_no_elastic_result() {
+    use std::sync::Arc;
+    use reify_eval::CheckResult;
+
+    let checker = SimpleConstraintChecker;
+    let mut session = EngineSession::new(Box::new(checker), None);
+
+    let recorder = RecordingFeaConvergenceEmitter::new();
+    let captured = Arc::clone(&recorder.events);
+    session.set_fea_convergence_emitter(Arc::new(recorder));
+
+    let check = CheckResult {
+        values: reify_ir::ValueMap::new(),
+        constraint_results: vec![],
+        diagnostics: vec![],
+        resolved_params: std::collections::HashMap::new(),
+        structured_detail: vec![],
+    };
+    session.inject_check_for_test(check);
+    session.emit_fea_convergence_for_test();
+
+    let events = captured.lock().unwrap();
+    assert_eq!(
+        events.len(),
+        1,
+        "expected exactly one fea-convergence-changed event even with no ElasticResult, got {}",
+        events.len()
+    );
+    assert_eq!(
+        events[0], None,
+        "payload must be None when no ElasticResult is present — clears stale indicator"
+    );
+}
+
 // ── #4898: surface-finish functional wiring — coating + finish_process → MeshData.appearance ──
 
 /// Source code for the surface-finish wiring integration tests.
