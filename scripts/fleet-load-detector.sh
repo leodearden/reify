@@ -277,8 +277,27 @@ else
     STATUS="ok"; REASON="none"
 fi
 
+# AVG10_DISPLAY — the stdout line renders the literal "unavailable" (not a
+# blank field) when the PSI axis could not be read/parsed, so a consumer
+# parsing the line sees an unambiguous token. The raw (possibly empty) AVG10
+# above still drives the decision and below drives the stderr marker.
+if [ -n "$AVG10" ]; then
+    AVG10_DISPLAY="$AVG10"
+else
+    AVG10_DISPLAY="unavailable"
+fi
+
+# Both axes unavailable → the detector cannot assess fleet load at all; never
+# spuriously flag/throttle dispatch when the detector itself is blind
+# (fail-open; mirrors cpu-admit.sh C-A4 / load_tolerance_lib.sh's fail-safe
+# philosophy). STATUS/REASON above already resolve to ok/none in this case
+# (both *_HIT stay 0), so this only adds the stderr warning.
+if [ -z "$RATIO" ] && [ -z "$AVG10" ]; then
+    warn "loadavg ($LOADAVG_PATH) and PSI ($PSI_PATH) are both unreadable/unparseable — cannot assess fleet load; reporting healthy (fail-open)"
+fi
+
 printf 'FLEET_LOAD status=%s load1=%s nproc=%s ratio=%s ratio_threshold=%s avg10=%s avg10_threshold=%s reason=%s\n' \
-    "$STATUS" "$LOAD1" "$NPROC" "$RATIO" "$RATIO_THRESHOLD" "$AVG10" "$AVG10_THRESHOLD" "$REASON"
+    "$STATUS" "$LOAD1" "$NPROC" "$RATIO" "$RATIO_THRESHOLD" "$AVG10_DISPLAY" "$AVG10_THRESHOLD" "$REASON"
 
 # ── flagged path ───────────────────────────────────────────────────────────────
 # stdout verdict line above is emitted in BOTH cases (it already carries
