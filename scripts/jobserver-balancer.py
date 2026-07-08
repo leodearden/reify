@@ -181,6 +181,19 @@ HELD_BACK_FILE: str = os.environ.get(
 # compatibility with the canary and any downstream tools.
 TOKEN_BYTE: bytes = b"+"
 
+# Sidecar owner-stamp suffix: verify.sh (task 5146) probes "${FIFO}${OWNER_STAMP_SUFFIX}"
+# for "<pid> <boot_id>" before trusting a bare FIFO's existence, distinguishing a
+# live custodian from a FIFO left behind by a crashed balancer.
+OWNER_STAMP_SUFFIX: str = ".owner"
+
+# Path to the kernel boot-id file — read once at startup (main()) and stamped
+# beside each FIFO so a liveness probe can reject a stamp surviving a reboot
+# (post-reboot pid reuse).  No env override: verify.sh and this daemon must
+# read the same host file to agree on "current boot" (unlike PSI_PROC_PATH,
+# there is no hermetic-test need to point this elsewhere — tests compare
+# against the same real file).
+BOOT_ID_PROC_PATH: str = "/proc/sys/kernel/random/boot_id"
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Module-level stop flag — set by SIGTERM/SIGINT handler in main().
 # Defined at module scope so _transfer() can check it during the write-retry
@@ -336,6 +349,40 @@ def write_held_back(path: str, n: int) -> None:
         _held_back_last[0] = n
     except OSError as _exc:
         sys.stderr.write(f"WARNING: write_held_back({path!r}, {n}): {_exc}\n")
+
+
+def read_boot_id(proc_path: str = BOOT_ID_PROC_PATH) -> str:
+    """Read the kernel boot ID, stripped.  Returns "-" sentinel if unreadable.
+
+    Fail-open: an unreadable boot_id file must never crash the daemon.  The
+    "-" sentinel signals "info unavailable" to consumers of the owner stamp
+    (verify.sh's liveness probe skips the boot_id comparison whenever either
+    side reads "-", matching the PID check as the primary liveness signal).
+    """
+    try:
+        with open(proc_path) as _f:
+            return _f.read().strip() or "-"
+    except OSError:
+        return "-"
+
+
+def write_owner_stamp(fifo_path: str, pid: int, boot_id: str) -> None:
+    """Atomically publish an owner stamp "<pid> <boot_id>" beside fifo_path.
+
+    Written to "{fifo_path}{OWNER_STAMP_SUFFIX}" via tmp+rename (mirrors
+    write_held_back's idiom) so a concurrent reader (verify.sh) never sees a
+    partially-written stamp.  Tolerates OSError with a WARNING — fail-open,
+    must never crash the daemon; a missing stamp just falls back to the
+    pre-5146 existence-only trust in the FIFO.
+    """
+    path = fifo_path + OWNER_STAMP_SUFFIX
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w") as _f:
+            _f.write(f"{pid} {boot_id}\n")
+        os.rename(tmp, path)
+    except OSError as _exc:
+        sys.stderr.write(f"WARNING: write_owner_stamp({path!r}): {_exc}\n")
 
 
 def make_fifo(path: str) -> None:
@@ -546,6 +593,14 @@ def main() -> None:
     # reader/writer closes — this is the C5 custodian contract.
     merge_fd = open_rdwr(MERGE_FIFO)
     task_fd  = open_rdwr(TASK_FIFO)
+
+    # Publish owner stamps now that both FIFOs are truly held (O_RDWR open) —
+    # verify.sh's liveness probe (task 5146) trusts a stamp only when the pid
+    # inside it is alive, distinguishing a live custodian from an orphaned
+    # FIFO left behind by a crashed balancer.
+    _boot_id = read_boot_id()
+    write_owner_stamp(MERGE_FIFO, os.getpid(), _boot_id)
+    write_owner_stamp(TASK_FIFO, os.getpid(), _boot_id)
 
     # ── Seed the pools ───────────────────────────────────────────────────────
     seed_fifo(merge_fd, merge_baseline)
