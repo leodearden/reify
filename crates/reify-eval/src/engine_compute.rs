@@ -4200,7 +4200,7 @@ mod tests {
         }
     }
 
-    // ── Task #5079 step-1: real-trampoline integration test ────────────────
+    // ── Task #5079 step-1: read-then-panic integration test ────────────────
     //
     // Amendment (review round 2): this section originally held five
     // near-identical tests, one per Undef position (material/length/width/
@@ -4216,98 +4216,68 @@ mod tests {
     // silently dropping the "panicked"-wording check a still-earlier round
     // had added specifically so this test couldn't go green via a graceful
     // (non-panic) `Failed` return instead of an actually-caught panic.
-    // Restored below so the single case asserts the same wording as (a)/(b).
-    //
-    // Baseline `value_inputs` mirrors the dims-overload layout
-    // `[material, length, width, height, loads, supports, options]`
-    // documented in the trampoline module's doc contract, with
-    // `Value::Undef` at material [0] and a valid fixture everywhere else.
-    // [2] (width) is a `Value::Scalar` (never a `List`), so the `body_path`
-    // discriminator does not intercept; [0] being Undef (not an
-    // `AsPrintedZones` Field) likewise dodges that module's degraded-field
-    // guard — the Undef material reaches `classify_material`'s panic arm
-    // during input extraction, before any mesh/solve.
+    // Restored so the single case asserts the same wording as (a)/(b).
+    // Amendment (review round 5): the collapsed case still registered the
+    // *real* `solve_elastic_static_trampoline`, so the "panicked" assertion
+    // was only valid so long as `compute_targets::elastic_static` happens to
+    // panic (rather than gracefully failing) on Undef material — an
+    // out-of-scope module this test cannot control. (a)/(b) already fully
+    // pin the `catch_unwind` mechanism itself, so the only marginal value of
+    // a "real trampoline" here was the read-then-panic *shape* (panicking as
+    // a consequence of reading a bad argument, rather than unconditionally)
+    // — not anything specific to `elastic_static`. Replaced with the
+    // synthetic `panics_on_undef_material_fn` below, which has that same
+    // shape but no dependency on a foreign module's internals, so a
+    // legitimate hardening of `elastic_static` (making it fail gracefully
+    // instead of panicking) can no longer redden this test.
 
-    use reify_core::DimensionVector;
-    use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
-
-    /// Valid `Value::Scalar` geometry length (SI metres) — mirrors
-    /// `elastic_static`'s `shell9_make_len` fixture builder.
-    fn valid_len() -> Value {
-        Value::Scalar {
-            si_value: 1.0,
-            dimension: DimensionVector::LENGTH,
+    /// Synthetic trampoline mirroring `compute_targets::elastic_static`'s
+    /// read-then-panic shape: it reads the material input at [0] and panics
+    /// only as a *consequence* of that value being `Value::Undef` — the same
+    /// failure mode `classify_material`/`extract_material` hit today —
+    /// rather than panicking unconditionally like `panics_str_fn`/
+    /// `panics_string_fn` above. Kept independent of
+    /// `compute_targets::elastic_static` so the integration coverage below
+    /// no longer depends on that module continuing to panic (review round 5
+    /// amendment — see the section comment above and this test's doc
+    /// comment).
+    fn panics_on_undef_material_fn(
+        value_inputs: &[Value],
+        _realization_inputs: &[RealizationReadHandle],
+        _options: &Value,
+        _prior_warm_state: Option<&OpaqueState>,
+        _cancellation: &CancellationHandle,
+    ) -> ComputeOutcome {
+        match value_inputs.first() {
+            Some(Value::Undef) | None => panic!("material input is Undef"),
+            Some(material) => ComputeOutcome::Completed {
+                result: material.clone(),
+                new_warm_state: None,
+                cost_per_byte: None,
+                diagnostics: vec![],
+                structured_detail: vec![],
+            },
         }
     }
 
-    /// Valid `Value::List` with one `PointLoad` — mirrors
-    /// `elastic_static`'s `shell9_make_point_loads` fixture builder.
-    fn valid_loads() -> Value {
-        let fields: PersistentMap<String, Value> = [("force".to_string(), Value::Real(1000.0))]
-            .into_iter()
-            .collect();
-        Value::List(vec![Value::StructureInstance(Box::new(
-            StructureInstanceData {
-                type_id: StructureTypeId(u32::MAX),
-                type_name: "PointLoad".to_string(),
-                version: 1,
-                fields,
-            },
-        ))])
-    }
-
-    /// (c) A real, registered `ComputeFn` (`solve_elastic_static_trampoline`)
-    /// panicking on Undef material — via `classify_material`/`extract_material`
-    /// — must also become `Some(ComputeOutcome::Failed{..})` with a
-    /// diagnostic naming the target and "panicked", proving the mechanism
-    /// protects a genuine trampoline, not just the synthetic ones in (a)/(b).
-    ///
-    /// Asserts the "panicked" wording (only ever emitted by
-    /// `invoke_compute_trampoline`'s `catch_unwind` `Err` arm, per (a)/(b)
-    /// above) rather than merely `matches!(.., Some(Failed{..}))`: the
-    /// looser form would also pass if `elastic_static`'s input extraction
-    /// returned a graceful (non-panic) `Failed` for Undef material, which
-    /// would leave this test green without the trampoline ever having
-    /// panicked — silently losing its one job of proving the `catch_unwind`
-    /// boundary actually fired on a genuine trampoline. Whether that
-    /// extraction currently panics (rather than failing gracefully) on Undef
-    /// material is a property of `compute_targets::elastic_static` (out of
-    /// this task's scope) — but as long as it does, this test must pin the
-    /// panic having been *caught*, not just that some `Failed` came back.
-    ///
-    /// MAINTAINER TRIPWIRE (review round 4 amendment): if this test starts
-    /// failing on the "panicked" assertion below, the likely cause is that
-    /// `compute_targets::elastic_static` was hardened to return a graceful
-    /// `Failed` for Undef material instead of panicking — a GOOD change to
-    /// that module, not a regression here. Do not "fix" this test by
-    /// loosening the assertion back to `matches!(.., Some(Failed{..}))`;
-    /// that would silently stop proving `catch_unwind` fires on a genuine
-    /// trampoline. Instead update or relocate this tripwire — e.g. swap in a
-    /// still-panicking real trampoline, or replace it with a synthetic
-    /// trampoline mirroring elastic_static's former read-then-panic shape.
-    /// The `catch_unwind` guard itself remains fully pinned by (a)/(b) either
-    /// way, so this is a test-maintenance action, not a production concern.
+    /// (c) A trampoline that panics as a consequence of reading a bad
+    /// argument — mirroring `compute_targets::elastic_static`'s
+    /// read-then-panic shape for Undef material — must also become
+    /// `Some(ComputeOutcome::Failed{..})` with a diagnostic naming the
+    /// target and "panicked", proving the mechanism protects a
+    /// realistically-shaped trampoline, not just the unconditionally
+    /// panicking ones in (a)/(b).
     #[test]
-    fn invoke_compute_trampoline_real_trampoline_undef_material_becomes_failed_outcome() {
+    fn invoke_compute_trampoline_read_then_panic_fn_undef_material_becomes_failed_outcome() {
         let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
         engine.register_compute_fn(
-            "test::elastic_static",
-            crate::compute_targets::elastic_static::solve_elastic_static_trampoline as ComputeFn,
+            "test::read_then_panic",
+            panics_on_undef_material_fn as ComputeFn,
         );
 
-        let inputs = vec![
-            Value::Undef, // material [0] — the arg under test
-            valid_len(),
-            valid_len(),
-            valid_len(),
-            valid_loads(),
-            Value::Undef,
-            Value::Undef,
-        ];
-
         let result = engine.invoke_compute_trampoline(
-            "test::elastic_static",
-            &inputs,
+            "test::read_then_panic",
+            &[Value::Undef], // material [0] — the arg under test
             &[],
             &Value::Undef,
             None,
@@ -4318,14 +4288,11 @@ mod tests {
             Some(ComputeOutcome::Failed { diagnostics, .. }) => {
                 assert!(
                     diagnostics.iter().any(|d| d.severity == reify_core::Severity::Error
-                        && d.message.contains("test::elastic_static")
+                        && d.message.contains("test::read_then_panic")
                         && d.message.contains("panicked")),
                     "expected an Error diagnostic naming the target and \"panicked\" \
                      (i.e. caught by catch_unwind, not a graceful Failed return that \
-                     never panicked), got {diagnostics:?}. If elastic_static no longer \
-                     panics on Undef material, this tripwire needs updating/relocating \
-                     — see this test's doc comment — the catch_unwind guard itself is \
-                     still pinned by (a)/(b).",
+                     never panicked), got {diagnostics:?}",
                 );
             }
             other => panic!(
