@@ -353,9 +353,7 @@ impl TetSpatialIndex {
         a: usize,
         b: usize,
     ) -> std::cmp::Ordering {
-        centroids[a][axis]
-            .partial_cmp(&centroids[b][axis])
-            .unwrap_or(std::cmp::Ordering::Equal)
+        centroids[a][axis].total_cmp(&centroids[b][axis])
     }
 
     fn build_recursive(
