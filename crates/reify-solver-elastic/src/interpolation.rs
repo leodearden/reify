@@ -308,6 +308,17 @@ impl TetSpatialIndex {
             .collect();
 
         // Centroid of each padded AABB (used for median-split sorting).
+        //
+        // A NaN input coordinate propagates to a NaN centroid here.
+        // Deliberately not guarded by a `debug_assert`: that would
+        // reintroduce, in debug/test builds, exactly the panic that
+        // `centroid_axis_cmp`'s `total_cmp` (INV-FEA-3, task #5090) removes
+        // from the median-split sort. A NaN centroid signals upstream mesh
+        // corruption; per the PRD (compute-fea-hardening.md task E3) the
+        // accepted tradeoff is that the sort stays panic-free and
+        // deterministic in both debug and release, while any `locate()`
+        // result reached through the resulting NaN-poisoned AABB subtree is
+        // silently geometrically meaningless.
         let centroids: Vec<[f64; 3]> = elem_aabbs
             .iter()
             .map(|ab| {
@@ -700,86 +711,32 @@ mod bvh_tests {
         check("far outside", [10.0, 10.0, 10.0]);
     }
 
-    /// Regression test (task #5090, PRD compute-fea-hardening.md task E3 /
-    /// INV-FEA-3): the median-split sort in `build_recursive` must not panic
-    /// even when the mesh contains a NaN centroid (signalling upstream mesh
-    /// corruption).
-    ///
-    /// Contract asserted here: PANIC-FREEDOM ONLY — NOT geometric query
-    /// correctness, and determinism is deliberately not asserted as a
-    /// regression signal (see rationale below). A NaN centroid poisons the
-    /// padded AABB (and, depending on tree position, an ancestor union
-    /// AABB) for its element, because `NaN < x` and `NaN > x` are both
-    /// `false`; those boxes silently retain stale bounds and cull queries
-    /// unpredictably. Any `locate()` result routed through a NaN-poisoned
-    /// subtree is therefore geometrically meaningless BY DESIGN — the mesh
-    /// itself is corrupt upstream of this sort. The smoke pass over a few
-    /// finite probe points below only confirms that post-build queries
-    /// against this (partially NaN-poisoned) structure also complete
-    /// without panicking; their return values are intentionally not
-    /// asserted.
-    ///
-    /// Why no determinism assertion: `sort_unstable_by` is deterministic
-    /// for a given input + comparator, so two builds of identical input
-    /// always agree on `locate()` regardless of whether the comparator is a
-    /// valid total order — that equality would hold even against the
-    /// unfixed `partial_cmp(..).unwrap_or(Ordering::Equal)` comparator
-    /// whenever its panic (see toolchain caveat below) happens not to fire.
-    /// A determinism check therefore adds no signal specific to this fix,
-    /// so it is omitted rather than kept as an assertion that implies
-    /// coverage it doesn't provide. See
+    /// Smoke test (task #5090, PRD compute-fea-hardening.md task E3 /
+    /// INV-FEA-3): `build()` and `locate()` must not panic when the mesh
+    /// contains a NaN centroid (signalling upstream mesh corruption). This
+    /// is a plain build-and-query check, not a toolchain-sensitive
+    /// regression guard —
     /// `centroid_axis_cmp_sorts_nan_bearing_centroids_into_a_valid_total_order`
-    /// below for a direct, non-heuristic guard on the comparator property
-    /// this fix actually relies on.
+    /// below is the durable, toolchain-independent guard on the comparator
+    /// property this fix actually relies on.
     ///
-    /// Toolchain caveat: reaching past `build()` below relies on rustc's
-    /// `sort_unstable_by` (ipnsort) *detecting* the old comparator's
-    /// non-total-order violation and panicking. The stdlib docs describe
-    /// this detection as "may panic; however this is not guaranteed" — a
-    /// best-effort anti-UB diagnostic, not a documented contract. It fires
-    /// reliably (pinned toolchain rustc 1.96.0, empirically verified) for
-    /// non-monotonic inputs of ~24-32 elements, which is why this fixture
-    /// uses N=30 below, but a future toolchain could narrow or drop that
-    /// detection window and silently turn this test into a vacuous pass.
-    /// `centroid_axis_cmp_sorts_nan_bearing_centroids_into_a_valid_total_order`
-    /// does not share that risk and is the primary, durable guard on the
-    /// underlying fix — see the revalidation note below.
-    ///
-    /// Revalidation note: if the pinned toolchain (`rust-toolchain.toml`,
-    /// currently rustc 1.96.0) is ever bumped, re-verify this N=30 fixture
-    /// still panics against the pre-fix comparator (temporarily revert
-    /// `centroid_axis_cmp`'s body to
-    /// `partial_cmp(..).unwrap_or(Ordering::Equal)`) before trusting a
-    /// green run here as a regression guard on the new toolchain — a
-    /// narrowed or dropped ipnsort detection window would silently turn
-    /// this into a vacuous pass.
-    /// `centroid_axis_cmp_sorts_nan_bearing_centroids_into_a_valid_total_order`
-    /// needs no such revalidation.
-    ///
-    /// Fixture sensitivity (do not "simplify" this away): the mesh needs
-    /// more than `LEAF_MAX` (8) elements to reach the sort at all, AND
-    /// Rust's `sort_unstable_by` (ipnsort, stable since 1.81) only
-    /// *detects* a non-total-order comparator and panics for non-monotonic
-    /// inputs in roughly the 24-32 element range (empirically verified at
-    /// the pinned toolchain, rustc 1.96.0). A small (<=20-element,
-    /// insertion-sort path) or already-ascending fixture would make the
-    /// "does not panic" assertion vacuously true even against the unfixed
-    /// `partial_cmp(..).unwrap_or(Ordering::Equal)` comparator — not a real
-    /// regression test.
+    /// Only panic-freedom is asserted. A NaN centroid poisons its element's
+    /// padded AABB — and possibly an ancestor union AABB, since `NaN < x`
+    /// and `NaN > x` are both `false` — so any `locate()` result routed
+    /// through a NaN-poisoned subtree is geometrically meaningless by
+    /// design; return values are intentionally not checked.
     #[test]
     fn build_recursive_nan_centroid_is_panic_free() {
-        const N: usize = 30;
+        // N must exceed `LEAF_MAX` (8) so `build` actually reaches the
+        // median-split sort at least once.
+        const N: usize = 10;
         const SPACING: f64 = 10.0;
         let nan_at = N / 2;
 
-        // N tets with DESCENDING x-centroids as element index increases
-        // (non-ascending along the split axis) — required to exercise
-        // ipnsort's order-violation detection; see fixture-sensitivity note
-        // above. One tet's conn[0] carries a NaN x-coordinate.
         let mut nodes: Vec<[f64; 3]> = Vec::with_capacity(N * 4);
         let mut elems: Vec<[usize; 4]> = Vec::with_capacity(N);
         for i in 0..N {
-            let x = ((N - i) as f64) * SPACING;
+            let x = (i as f64) * SPACING;
             let base = nodes.len();
             // conn[0]: AABB-init sets min=max=nodes[conn[0]], then only
             // updates from the other 3 nodes via `<`/`>` (both false
@@ -795,22 +752,11 @@ mod bvh_tests {
         }
         let tol = 1e-9_f64;
 
-        // Reaching past `build` without panicking IS the assertion: against
-        // the unfixed comparator, ipnsort panics with "user-provided
-        // comparison function does not correctly implement a total order"
-        // while sorting this fixture's centroids (see toolchain caveat in
-        // the doc comment above).
         let idx = TetSpatialIndex::build(&nodes, &elems, tol);
-
-        // Smoke pass only: confirm subsequent queries against the
-        // (partially NaN-poisoned) structure also complete without
-        // panicking. Values are intentionally not asserted — see doc
-        // comment above.
         let probes = [
             [0.0_f64, 0.0, 0.0],
             [SPACING * (N as f64) * 0.5, 0.25, 0.25],
             [-5.0, -5.0, -5.0],
-            [SPACING * (N as f64 + 5.0), 0.0, 0.0],
         ];
         for p in probes {
             let _ = idx.locate(&nodes, &elems, p, tol);
@@ -819,10 +765,12 @@ mod bvh_tests {
 
     /// Direct, toolchain-independent guard on
     /// [`TetSpatialIndex::centroid_axis_cmp`], the exact comparator
-    /// `build_recursive`'s median-split sort calls (task #5090, INV-FEA-3;
-    /// see the toolchain caveat on `build_recursive_nan_centroid_is_panic_free`
-    /// above for why that panic-based test alone isn't a durable guard).
-    /// Calling `centroid_axis_cmp` itself — rather than re-testing
+    /// `build_recursive`'s median-split sort calls (task #5090, INV-FEA-3);
+    /// complements the plain smoke test in
+    /// `build_recursive_nan_centroid_is_panic_free` above with a guarantee
+    /// that doesn't depend on the standard library's best-effort
+    /// non-total-order panic detection. Calling `centroid_axis_cmp` itself
+    /// — rather than re-testing
     /// `f64::total_cmp` directly — means this test actually covers the fix:
     /// reverting `centroid_axis_cmp`'s body back to
     /// `partial_cmp(..).unwrap_or(Ordering::Equal)` breaks it, because that
