@@ -622,6 +622,49 @@ esac
 # Environment (process-level; inherited by every command in the plan)
 # ---------------------------------------------------------------------------
 ENV_LINES=()
+
+# _jobserver_owner_live <fifo> — probe the sidecar owner stamp "<fifo>.owner"
+# (written by scripts/jobserver-balancer.py after it opens <fifo> O_RDWR) to
+# tell a live custodian apart from a FIFO left behind by a crashed balancer
+# (task 5146).  Exit status:
+#   0 = LIVE     stamp's pid is alive, and its boot_id matches the host's (or
+#                boot_id info is unavailable on either side).
+#   1 = STALE    stamp's pid is dead, OR its boot_id positively mismatches the
+#                host's (guards post-reboot pid reuse).  Sets _JB_STALE_PID
+#                (best-effort) to the stamp's pid field, for the caller's
+#                WARNING message.
+#   2 = UNKNOWN  no stamp exists (old/foreign balancer that predates this
+#                contract) or the stamp is malformed (pid field doesn't match
+#                ^[0-9]+$).  Ambiguous is not proof of death, so callers must
+#                treat UNKNOWN the same as LIVE (existence-only fallback).
+_jobserver_owner_live() {
+    local fifo="$1"
+    local stamp="${fifo}.owner"
+    _JB_STALE_PID=""
+    [ -e "$stamp" ] || return 2
+
+    local pid boot
+    read -r pid boot <"$stamp" 2>/dev/null || return 2
+
+    case "$pid" in
+        ''|*[!0-9]*) return 2 ;;  # malformed pid field — ambiguous, not proof of death
+    esac
+
+    if [ ! -d "/proc/$pid" ]; then
+        _JB_STALE_PID="$pid"
+        return 1  # STALE: pid not alive
+    fi
+
+    local cur
+    cur="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)"
+    if [ -n "$boot" ] && [ "$boot" != "-" ] && [ -n "$cur" ] && [ "$boot" != "$cur" ]; then
+        _JB_STALE_PID="$pid"
+        return 1  # STALE: boot_id mismatch (post-reboot pid reuse)
+    fi
+
+    return 0  # LIVE
+}
+
 apply_env() {
     if [ -f "$HOME/.cargo/env" ]; then
         # shellcheck disable=SC1091
@@ -636,15 +679,29 @@ apply_env() {
     export CARGO_INCREMENTAL=0
     ENV_LINES+=("export CARGO_INCREMENTAL=0")
 
-    # Inherit the shared global jobserver ONLY when the role's FIFO exists; otherwise
-    # leave CARGO_MAKEFLAGS unset so cargo manages its own job pool. Exporting a
-    # stale fifo path when reify-jobserver.service is down would wedge cargo.
+    # Inherit the shared global jobserver ONLY when the role's FIFO exists AND
+    # probes LIVE; otherwise leave CARGO_MAKEFLAGS unset so cargo manages its
+    # own job pool. Exporting a stale fifo path when reify-jobserver.service
+    # is down would wedge cargo (every rustc blocks forever on token
+    # acquisition until the outer timeout fires — task 5146).
     # Role→FIFO selection: merge   → REIFY_JOBSERVER_MERGE_FIFO (default /tmp/reify-jobserver-merge)
     #                       task    → REIFY_JOBSERVER_TASK_FIFO  (default /tmp/reify-jobserver-task)
     #                       offline → neither (task 4913/A2, PRD §8 invariant): the offline
     #                                 lane runs off the merge jobserver entirely, so it never
     #                                 contends with either the task or merge FIFO.
     # Defaults/var-names match scripts/jobserver-balancer.py (α, task 4516).
+    #
+    # Liveness probe (task 5146): a bare `[ -p "$_jb_fifo" ]` only proves the
+    # FIFO exists, not that a custodian holds it — a crashed balancer leaves
+    # the FIFO behind with its buffered tokens discarded (task 4515 contract
+    # C5), and every rustc would then block forever.  scripts/jobserver-
+    # balancer.py stamps "${fifo}.owner" = "<pid> <boot_id>" right after
+    # opening each FIFO O_RDWR (a clean exit unlinks both; a crash/SIGKILL
+    # deliberately leaves the stamp naming the now-dead pid).  See
+    # _jobserver_owner_live() above for the LIVE/STALE/UNKNOWN contract.
+    # Break-glass: REIFY_JOBSERVER_SKIP_LIVENESS_PROBE=1 reverts to the
+    # pre-5146 existence-only guard (mirrors REIFY_MAIN_GATE_BYPASS /
+    # REIFY_PSI_GATE_DISABLE / REIFY_JOBSERVER_PRESSURE_DISABLE).
     local _jb_fifo=""
     if [ "$DF_VERIFY_ROLE" = "merge" ]; then
         _jb_fifo="${REIFY_JOBSERVER_MERGE_FIFO:-/tmp/reify-jobserver-merge}"
@@ -654,8 +711,19 @@ apply_env() {
     if [ "$DF_VERIFY_ROLE" = "offline" ]; then
         ENV_LINES+=("# CARGO_MAKEFLAGS left unset (offline role — off the merge jobserver, draws from neither task nor merge FIFO)")
     elif [ -p "$_jb_fifo" ]; then
-        export CARGO_MAKEFLAGS="--jobserver-auth=fifo:$_jb_fifo"
-        ENV_LINES+=("export CARGO_MAKEFLAGS=--jobserver-auth=fifo:$_jb_fifo")
+        local _jb_live_rc=0
+        if [ "${REIFY_JOBSERVER_SKIP_LIVENESS_PROBE:-}" != "1" ]; then
+            # `||` (not a bare statement) so a non-zero STALE/UNKNOWN return
+            # doesn't trip `set -e` and abort the whole script.
+            _jobserver_owner_live "$_jb_fifo" || _jb_live_rc=$?
+        fi
+        if [ "$_jb_live_rc" -eq 1 ]; then
+            echo "verify.sh: WARNING — stale jobserver FIFO $_jb_fifo (owner pid ${_JB_STALE_PID:-?} not alive / boot mismatch; balancer appears down) — falling back to plain cargo -j" >&2
+            ENV_LINES+=("# CARGO_MAKEFLAGS left unset (stale FIFO $_jb_fifo — jobserver balancer down) — cargo uses its own job pool")
+        else
+            export CARGO_MAKEFLAGS="--jobserver-auth=fifo:$_jb_fifo"
+            ENV_LINES+=("export CARGO_MAKEFLAGS=--jobserver-auth=fifo:$_jb_fifo")
+        fi
     else
         ENV_LINES+=("# CARGO_MAKEFLAGS left unset (no $_jb_fifo FIFO) — cargo uses its own job pool")
     fi
