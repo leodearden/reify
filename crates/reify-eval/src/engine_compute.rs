@@ -118,7 +118,7 @@ impl crate::Engine {
     /// lowering site thread the same `Arc<AtomicBool>` that it stores in the
     /// node's `running` slot, so a future async driver cancelling via `running`
     /// propagates to the trampoline's poll.
-    fn invoke_compute_trampoline(
+    pub(crate) fn invoke_compute_trampoline(
         &self,
         target: &str,
         value_inputs: &[Value],
@@ -131,10 +131,15 @@ impl crate::Engine {
         // Task #5079 (INV-FEA-2 / PRD compute-fea-hardening.md D1, Contract
         // C2): guard the single generic compute-dispatch point so a
         // panicking `ComputeFn` becomes `ComputeOutcome::Failed` instead of
-        // unwinding out of the CLI and aborting the process. Every
-        // registered trampoline is invoked through this one method, so
-        // guarding here protects all of them uniformly. `AssertUnwindSafe`
-        // is sound: every captured value (`&[Value]`, `&Value`,
+        // unwinding out of the CLI and aborting the process. Both public
+        // dispatch entry points — `run_compute_dispatch` (below, the
+        // in-flight/async lowering path) and `Engine::dispatch_compute_node`
+        // (engine_admin.rs, the synchronous `@optimized` path) — route
+        // through this single guarded method, so the guard IS uniform across
+        // both. Any NEW dispatch path MUST call `invoke_compute_trampoline`
+        // rather than doing `compute_registry.fns.get(..)` + `f(..)`
+        // directly, or it will reopen this crash-safety gap.
+        // `AssertUnwindSafe` is sound: every captured value (`&[Value]`, `&Value`,
         // `Option<&OpaqueState>`, `&CancellationHandle`) is a shared
         // reference, none mutated across the unwind boundary. The default
         // panic hook is intentionally NOT suppressed here — genuine-bug

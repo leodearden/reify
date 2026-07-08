@@ -1433,28 +1433,36 @@ impl Engine {
         use crate::engine_compute::ComputeOutcome;
         use crate::graph::CancellationHandle;
 
-        match self.compute_registry.fns.get(target).copied() {
-            Some(f) => {
-                let handle = CancellationHandle::new();
-                match f(
-                    value_inputs,
-                    realization_inputs,
-                    options,
-                    prior_warm_state,
-                    &handle,
-                ) {
-                    ComputeOutcome::Completed {
-                        result,
-                        diagnostics,
-                        ..
-                    } => Ok((result, diagnostics)),
-                    ComputeOutcome::Failed { diagnostics, .. } => Err(diagnostics),
-                    ComputeOutcome::Cancelled => Err(vec![reify_core::Diagnostic::error(format!(
-                        "@optimized target {:?}: compute trampoline was cancelled",
-                        target
-                    ))]),
-                }
-            }
+        // Task #5079 step-6: delegate to the single guarded dispatch
+        // chokepoint (`Engine::invoke_compute_trampoline`) instead of
+        // resolving `compute_registry.fns` and calling `f(...)` directly
+        // here. A second, independent `catch_unwind` site would drift from
+        // the guarded one over time and silently reopen the crash-safety
+        // gap this delegation closes — see the maintainer note on
+        // `invoke_compute_trampoline`. The Completed/Failed/Cancelled/None
+        // mapping below is behavior-identical to the prior direct-call
+        // version for every non-panicking outcome; only a panicking
+        // trampoline's behavior changes (Err(diagnostics) instead of an
+        // unwind out of the process).
+        let handle = CancellationHandle::new();
+        match self.invoke_compute_trampoline(
+            target,
+            value_inputs,
+            realization_inputs,
+            options,
+            prior_warm_state,
+            &handle,
+        ) {
+            Some(ComputeOutcome::Completed {
+                result,
+                diagnostics,
+                ..
+            }) => Ok((result, diagnostics)),
+            Some(ComputeOutcome::Failed { diagnostics, .. }) => Err(diagnostics),
+            Some(ComputeOutcome::Cancelled) => Err(vec![reify_core::Diagnostic::error(format!(
+                "@optimized target {:?}: compute trampoline was cancelled",
+                target
+            ))]),
             // The "(falling back to body-inlining)" clause is intentionally
             // omitted here: fallback is the eval-loop caller's behaviour, not
             // this helper's. Direct callers of `dispatch_compute_node`
