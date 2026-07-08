@@ -9213,4 +9213,25 @@ mod tests {
         let vector = Value::Vector(vec![scalar(1.0), scalar(2.0), scalar(3.0)]);
         assert_eq!(extract_vec3_si(&vector), Ok([1.0, 2.0, 3.0]));
     }
+
+    // ── task 5081 (PRD compute-fea-hardening D3): Result-ify extract_material
+    // (isotropic material scalar/real field extraction) — mirrors D2's
+    // RED-plus-characterization-lock pattern. ─────────────────────────────
+
+    /// step-1 RED: `extract_material` must reject a non-StructureInstance
+    /// `Value` with `Err(FeaValueShapeError::ExpectedStructureInstance { .. })`
+    /// instead of panicking.
+    ///
+    /// RED: `extract_material` currently returns a bare `IsotropicElastic`, so
+    /// matching `Err(..)` fails to type-check until step-2 converts it to
+    /// `Result<IsotropicElastic, FeaValueShapeError>`.
+    #[test]
+    fn extract_material_rejects_non_structure_instance() {
+        let res = extract_material(&Value::Real(1.0));
+        assert!(
+            matches!(res, Err(FeaValueShapeError::ExpectedStructureInstance { .. })),
+            "expected Err(ExpectedStructureInstance) for a non-StructureInstance Value, got: {:?}",
+            res
+        );
+    }
 }
