@@ -1388,6 +1388,25 @@ build_plan() {
         # the REIFY_AUDIT_NO_COLD_BUILD backstop below.  Only fires if the
         # pre-step is present (Cargo.toml guard matches) but produces no output.
         add "if test -f crates/reify-audit/Cargo.toml && [ ! -f target/release/reify-audit ]; then echo 'ERROR(#4624): reify-audit binary missing after pre-build step — PTODO gate will silently SKIP; restore the pre-step above or remove this check deliberately' >&2; false; fi"
+        # task #5133: pre-build reify-cli and stamp target/.reify-bin-sha with
+        # build-time HEAD, mirroring the reify-audit pre-build immediately
+        # above. The PRD gate tests inside run_all.sh (test_prd_gate_corpus.sh,
+        # test_prd_gate_objective_inheritance.sh) auto-discover whatever
+        # target/{release,debug}/reify happens to exist; in this shared
+        # merge-verify warm lane that binary can be a LEFTOVER built by a
+        # different, sibling merge candidate that happened to build reify-cli
+        # earlier in the same lane. The sidecar records the exact tree the
+        # binary was built from so those tests can prove it matches the
+        # current candidate (not a cross-candidate leftover) and refuse a
+        # verdict (clean SKIP) when it doesn't. It MUST be emitted before the
+        # run_all.sh line below so the sidecar exists by the time the
+        # auto-discovered gate tests run inside it; cargo's per-tree
+        # fingerprint means the freshly built target/release/reify here
+        # matches HEAD's reify-cli cone, evicting any sibling leftover. The
+        # stamp is guarded on that bin existing so a failed/absent pre-build
+        # never stamps a false HEAD onto a missing binary.
+        add "if test -f crates/reify-cli/Cargo.toml; then timeout --kill-after=60 10m ${CARGO_PRIO}cargo build --release -q -p reify-cli; fi"
+        add "if test -f target/release/reify; then git rev-parse HEAD > target/.reify-bin-sha 2>/dev/null || true; fi"
         # Arm the budget-safe backstop: REIFY_AUDIT_NO_COLD_BUILD=1 tells the
         # freshness guard to skip rather than cold-build if somehow the pre-step
         # above was bypassed or narrowed (defense-in-depth; maps to SKIP exit 0).

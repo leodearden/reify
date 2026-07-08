@@ -8,7 +8,12 @@
 # (auto-discovery) → verify.sh:983.
 #
 # Skip-guards on toolchain presence — mirroring α's @skipUnless guards:
-#   - REIFY_BIN env var, or target/release/reify, or target/debug/reify
+#   - reify binary: REIFY_BIN env var, or target/release/reify, or
+#     target/debug/reify, PLUS a target/.reify-bin-sha freshness check
+#     proving the resolved binary's build-time HEAD matches the current tree
+#     (task #5133 — see scripts/reify-bin-freshness.sh; guards against a
+#     cross-candidate leftover binary in the shared _merge-verify warm lane).
+#     An explicit REIFY_BIN handoff bypasses the freshness check.
 #   - tree-sitter-reify/src/parser.c (grammar must be generated)
 #   - tree-sitter CLI on PATH (grammar probes call 'tree-sitter parse')
 #
@@ -28,18 +33,19 @@ source "$SCRIPT_DIR/test_helpers.sh"
 echo "=== test_prd_gate_corpus ==="
 
 # ── Toolchain skip-guard ───────────────────────────────────────────────────
-# Mirror α's _REIFY_BUILT / _TS_GRAMMAR_AVAILABLE skip pattern.
-_REIFY_BIN=""
-if [ -n "${REIFY_BIN:-}" ]; then
-    _REIFY_BIN="${REIFY_BIN}"
-elif [ -f "$REPO_ROOT/target/release/reify" ]; then
-    _REIFY_BIN="$REPO_ROOT/target/release/reify"
-elif [ -f "$REPO_ROOT/target/debug/reify" ]; then
-    _REIFY_BIN="$REPO_ROOT/target/debug/reify"
-fi
+# Mirror α's _REIFY_BUILT / _TS_GRAMMAR_AVAILABLE skip pattern. Binary
+# discovery+freshness (task #5133) lives in reify-bin-freshness.sh: it
+# refuses (clean SKIP) a resolved binary whose target/.reify-bin-sha sidecar
+# is absent or doesn't match HEAD — provenance unproven, possibly a
+# cross-candidate leftover from a sibling merge candidate in the shared
+# _merge-verify warm lane. An explicit REIFY_BIN handoff bypasses this and is
+# trusted outright.
+source "$REPO_ROOT/scripts/reify-bin-freshness.sh"
+resolve_trusted_reify_bin "$REPO_ROOT" || { echo "SKIP: $REIFY_BIN_SKIP_REASON"; exit 0; }
+_REIFY_BIN="$REIFY_BIN_RESOLVED"
 
-if [ -z "$_REIFY_BIN" ] || [ ! -f "$REPO_ROOT/tree-sitter-reify/src/parser.c" ]; then
-    echo "SKIP: reify/tree-sitter toolchain not built — need target/{release,debug}/reify AND tree-sitter-reify/src/parser.c"
+if [ ! -f "$REPO_ROOT/tree-sitter-reify/src/parser.c" ]; then
+    echo "SKIP: tree-sitter grammar not built — need tree-sitter-reify/src/parser.c"
     exit 0
 fi
 
@@ -58,7 +64,7 @@ CORPUS="$REPO_ROOT/tests/prd-gate/corpus-probe-set.json"
 # ── Run α with --json to get machine-readable verdict output ───────────────
 # Capture stdout (JSON) only; stderr flows to terminal for diagnostics.
 ALPHA_EXIT=0
-ALPHA_JSON="$(python3 "$REPO_ROOT/scripts/prd-capability-check.py" --json "$CORPUS")" \
+ALPHA_JSON="$(REIFY_BIN="$_REIFY_BIN" python3 "$REPO_ROOT/scripts/prd-capability-check.py" --json "$CORPUS")" \
     || ALPHA_EXIT=$?
 
 # α exits 64 (EX_USAGE: corpus missing, unreadable, or invalid probe-set) or

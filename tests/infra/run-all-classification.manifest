@@ -110,6 +110,7 @@ test_reify_audit_freshness.sh pool
 test_reify_audit_predone_wrapper.sh pool
 test_reify_audit_ptodo_budget_skip.sh pool
 test_reify_audit_ptodo_orphan_hardgate.sh pool
+test_reify_bin_freshness.sh pool
 test_reify_overlap_deploy_smoke.sh pool
 test_reify_overlap_detector.sh pool
 test_release_mode_in_test_command.sh pool
