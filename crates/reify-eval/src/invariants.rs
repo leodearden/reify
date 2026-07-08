@@ -243,6 +243,19 @@ impl crate::Engine {
     /// free-function [`check_no_stale_undef`]. Returns an empty `Vec` when no
     /// eval has run yet (`eval_state()` is `None`) — there is no retained
     /// state to check.
+    ///
+    /// Task ε (PRD §6.1 "extends it graph-natively to edit_param/
+    /// edit_source"): this wrapper is reused UNCHANGED across all four
+    /// state-producing entry points — `eval`, `eval_cached` (engine_eval.rs)
+    /// and `edit_param`, `edit_source` (engine_edit.rs). Every one of them
+    /// installs its own post-run snapshot/reverse_index/trace_map into
+    /// `self.eval_state` immediately before returning an `EvalResult`/
+    /// `CachedEvalResult` whose `values` match that snapshot, so this
+    /// wrapper always inspects exactly the state the calling entry point
+    /// just produced. No edit-path-specific checker variant or
+    /// `TopologyTemplate` dependency is needed; see
+    /// `crates/reify-eval/tests/no_stale_undef_edit_path_gate.rs` for the
+    /// edit-path regression coverage.
     pub fn check_no_stale_undef(&self) -> Vec<StaleUndefViolation> {
         let Some(state) = self.eval_state() else {
             return Vec::new();
