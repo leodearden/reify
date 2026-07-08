@@ -3058,16 +3058,26 @@ mod sidecar_env {
     #[test]
     fn ordering_is_workspace_first_then_landlock_exec() {
         let envs = compute_sidecar_env(Path::new("/ws"), Some(Path::new("/sb/le.py")));
-        assert_eq!(envs.len(), 2);
+        // Under `--features gui`, compute_sidecar_env also appends REIFY_DEBUG_PORT
+        // after REIFY_LANDLOCK_EXEC (see compute_sidecar_env_includes_debug_port_and_workspace),
+        // so the exact count is feature-dependent; assert on relative ordering by key instead.
+        let expected_len = if cfg!(feature = "gui") { 3 } else { 2 };
+        assert_eq!(envs.len(), expected_len);
         assert_eq!(envs[0].0, "REIFY_WORKSPACE");
         assert_eq!(envs[1].0, "REIFY_LANDLOCK_EXEC");
+        #[cfg(feature = "gui")]
+        assert_eq!(envs[2].0, "REIFY_DEBUG_PORT");
     }
 
     #[test]
     fn only_workspace_when_no_landlock() {
         let envs = compute_sidecar_env(Path::new("/ws"), None);
-        assert_eq!(envs.len(), 1);
+        // Under `--features gui`, REIFY_DEBUG_PORT is also present (no landlock_exec entry).
+        let expected_len = if cfg!(feature = "gui") { 2 } else { 1 };
+        assert_eq!(envs.len(), expected_len);
         assert_eq!(envs[0].0, "REIFY_WORKSPACE");
+        #[cfg(feature = "gui")]
+        assert_eq!(envs[1].0, "REIFY_DEBUG_PORT");
     }
 }
 
