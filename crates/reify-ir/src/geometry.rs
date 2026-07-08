@@ -2543,8 +2543,10 @@ pub enum MeshInvariant {
     /// Every vertex coordinate and (if present) normal component is finite
     /// (no NaN or ±Infinity).
     Finite,
-    /// `indices.len()` is a multiple of 3 and every index is in bounds for
-    /// `vertices`.
+    /// Buffer shapes are well-formed and self-consistent: `vertices.len()`
+    /// and `indices.len()` are each a multiple of 3, every index is in
+    /// bounds for `vertices`, and (if present) `normals.len() ==
+    /// vertices.len()`.
     IndexValid,
     /// No triangle has a repeated welded vertex index or (near-)zero area.
     NonDegenerate,
@@ -2566,8 +2568,11 @@ pub enum MeshInvariant {
 pub struct MeshViolationCounts {
     /// Vertices (or normals) with a non-finite coordinate.
     pub nan_verts: usize,
-    /// Triangle index entries referencing an out-of-bounds vertex (or, for a
-    /// non-multiple-of-3 index buffer, the one dangling trailing group).
+    /// Triangle index entries referencing an out-of-bounds vertex; or, for
+    /// a buffer-shape defect (a non-multiple-of-3 `indices`/`vertices`
+    /// length, or a `normals` buffer whose length doesn't match
+    /// `vertices`), the one dangling/malformed buffer counted as a single
+    /// offender.
     pub oob_indices: usize,
     /// Triangles with a repeated welded index or (near-)zero area.
     pub degenerate_tris: usize,
@@ -2585,6 +2590,11 @@ pub struct MeshViolationCounts {
 pub enum MeshWitness {
     /// The first non-finite vertex found: its raw index and coordinate
     /// (the coordinate carries the NaN/Inf value itself for diagnostics).
+    ///
+    /// Also reused by the `IndexValid` buffer-shape guard (a malformed
+    /// `vertices`/`normals` length) with a `[NaN; 3]` sentinel coordinate,
+    /// standing in for "no single vertex is at fault — the whole buffer's
+    /// shape is."
     Vertex { index: u32, coord: [f32; 3] },
     /// The first offending triangle: its 0-based triangle index (into
     /// `indices.len() / 3`) and its raw (unwelded) vertex indices.
@@ -2683,17 +2693,43 @@ impl Mesh {
         }
     }
 
-    /// Check every producer obligation of the mesh contract and, on success,
-    /// mint a [`ValidatedMesh`] witnessing it. See
-    /// `docs/prds/kernel-seam-contracts.md` §2/§3 for the full contract;
-    /// real rustdoc naming each obligation lives on
-    /// [`GeometryKernel::tessellate`] and [`GeometryKernel::ingest_mesh`].
-    ///
-    /// `tol` is the [`MeshInvariant::NonDegenerate`] twice-area epsilon (a
-    /// length-scale value; a triangle is degenerate when the magnitude of
-    /// its `(b-a) × (c-a)` cross product is `<= tol * tol`). It does NOT
-    /// affect [`Mesh::weld_positions`], which is always bit-exact.
-    pub fn validate(&self, tol: f64) -> Result<ValidatedMesh, MeshContractViolation> {
+    /// Shared obligation-checking body for [`Self::validate`] (borrowing;
+    /// clones `self` into the witness on success) and
+    /// [`Self::into_validated`] (by-value; moves `self` instead, to avoid
+    /// the clone on hot paths) — see those methods' docs for the full mesh
+    /// contract.
+    fn check_contract(&self, tol: f64) -> Result<(), MeshContractViolation> {
+        // Obligation 2, part A — IndexValid (buffer shape): `vertices.len()`
+        // must be a multiple of 3, and if `normals` is present its length
+        // must equal `vertices.len()`. Checked FIRST, before Obligation 1
+        // (Finite) below, because Finite's scan walks `vertices.len() / 3`
+        // vertices and only inspects a normal when `base + 3 <=
+        // normals.len()` — a shape defect here would otherwise let a
+        // non-finite value hide in a truncated `vertices` tail or an
+        // unmatched/out-of-sync `normals` region rather than being caught.
+        // Reported as `IndexValid` (reusing its `oob_indices` counter,
+        // parallel to the dangling index-tail case in part B below) rather
+        // than a new invariant, since it's the same "malformed buffer
+        // shape" category.
+        if !self.vertices.len().is_multiple_of(3)
+            || self
+                .normals
+                .as_ref()
+                .is_some_and(|normals| normals.len() != self.vertices.len())
+        {
+            return Err(MeshContractViolation {
+                invariant: MeshInvariant::IndexValid,
+                counts: MeshViolationCounts {
+                    oob_indices: 1,
+                    ..Default::default()
+                },
+                witness: MeshWitness::Vertex {
+                    index: (self.vertices.len() / 3) as u32,
+                    coord: [f32::NAN, f32::NAN, f32::NAN],
+                },
+            });
+        }
+
         // Obligation 1 — Finite: every vertex coordinate and (if present)
         // normal component must be finite (no NaN/±Infinity). Runs before
         // every other check since a non-finite coordinate poisons all
@@ -2736,10 +2772,10 @@ impl Mesh {
             });
         }
 
-        // Obligation 2 — IndexValid: `indices.len()` must be a multiple of 3
-        // and every index must reference an in-bounds vertex. Runs before
-        // welding (later obligations) so an out-of-bounds index cannot panic
-        // the weld remap.
+        // Obligation 2, part B — IndexValid (index bounds): `indices.len()`
+        // must be a multiple of 3 and every index must reference an
+        // in-bounds vertex. Runs before welding (later obligations) so an
+        // out-of-bounds index cannot panic the weld remap.
         let mut oob_indices = 0usize;
         let mut index_witness: Option<(usize, [u32; 3])> = None;
         let complete_tris = self.indices.len() / 3;
@@ -2939,7 +2975,42 @@ impl Mesh {
             });
         }
 
+        Ok(())
+    }
+
+    /// Check every producer obligation of the mesh contract and, on success,
+    /// mint a [`ValidatedMesh`] witnessing it. See
+    /// `docs/prds/kernel-seam-contracts.md` §2/§3 for the full contract;
+    /// real rustdoc naming each obligation lives on
+    /// [`GeometryKernel::tessellate`] and [`GeometryKernel::ingest_mesh`].
+    ///
+    /// `tol` is the [`MeshInvariant::NonDegenerate`] twice-area epsilon (a
+    /// length-scale value; a triangle is degenerate when the magnitude of
+    /// its `(b-a) × (c-a)` cross product is `<= tol * tol`). It does NOT
+    /// affect [`Mesh::weld_positions`], which is always bit-exact.
+    ///
+    /// Clones `self` to mint the witness — this sits on the kernel
+    /// tessellation/ingest hot path, so if the caller doesn't need the
+    /// original `Mesh` back after a successful check, prefer
+    /// [`Self::into_validated`] to move it in instead and skip the clone.
+    pub fn validate(&self, tol: f64) -> Result<ValidatedMesh, MeshContractViolation> {
+        self.check_contract(tol)?;
         Ok(ValidatedMesh(self.clone()))
+    }
+
+    /// By-value sibling of [`Self::validate`]: moves `self` into the minted
+    /// [`ValidatedMesh`] on success instead of cloning it, for callers
+    /// (e.g. kernel tessellation/ingest paths) that don't need to retain
+    /// the original `Mesh` once it's been validated.
+    ///
+    /// On failure, hands `self` back alongside the [`MeshContractViolation`]
+    /// so the mesh isn't lost; callers that must retain ownership on
+    /// failure too should use the borrowing [`Self::validate`] instead.
+    pub fn into_validated(self, tol: f64) -> Result<ValidatedMesh, (Mesh, MeshContractViolation)> {
+        match self.check_contract(tol) {
+            Ok(()) => Ok(ValidatedMesh(self)),
+            Err(violation) => Err((self, violation)),
+        }
     }
 }
 
@@ -10958,6 +11029,18 @@ mod tests {
         let welded = welded_tetra_mesh().weldedness(0.0);
         assert!(welded.raw_welded);
         assert_eq!(welded.weld_merged_verts, 0);
+
+        // `tol` is documented as unused — welding is always bit-exact (§13
+        // Q2 of the PRD) — so wildly different `tol` values must produce an
+        // identical report; pins that documented behavior against drift.
+        assert_eq!(
+            per_face_block_tetra_mesh().weldedness(0.0),
+            per_face_block_tetra_mesh().weldedness(999.0)
+        );
+        assert_eq!(
+            welded_tetra_mesh().weldedness(0.0),
+            welded_tetra_mesh().weldedness(999.0)
+        );
     }
 
     #[test]
@@ -10988,6 +11071,14 @@ mod tests {
             .expect_err("a mesh with a +Inf normal component must fail the mesh contract");
         assert_eq!(err.invariant, MeshInvariant::Finite);
         assert!(err.counts.nan_verts >= 1);
+        match err.witness {
+            MeshWitness::Vertex { coord, .. } => assert!(
+                coord.iter().any(|c| !c.is_finite()),
+                "witness coord must carry the non-finite NORMAL value, not a finite \
+                 position decoy: {coord:?}"
+            ),
+            other => panic!("expected MeshWitness::Vertex naming the offender, got {other:?}"),
+        }
     }
 
     #[test]
@@ -11015,6 +11106,44 @@ mod tests {
         let err = truncated_mesh.validate(0.0).expect_err(
             "a mesh whose index buffer length is not a multiple of 3 must fail the mesh contract",
         );
+        assert_eq!(err.invariant, MeshInvariant::IndexValid);
+    }
+
+    #[test]
+    fn validate_rejects_malformed_vertex_buffer_length() {
+        // A `vertices` buffer whose length isn't a multiple of 3 (one
+        // dangling trailing float) must be a first-class IndexValid
+        // violation rather than silently truncated away by `len() / 3`,
+        // mirroring the analogous `indices` check above.
+        let mut mesh = welded_tetra_mesh();
+        mesh.vertices.push(0.0);
+        assert_ne!(mesh.vertices.len() % 3, 0);
+        let err = mesh.validate(0.0).expect_err(
+            "a vertices buffer whose length isn't a multiple of 3 must fail the mesh contract",
+        );
+        assert_eq!(err.invariant, MeshInvariant::IndexValid);
+        assert!(err.counts.oob_indices >= 1);
+    }
+
+    #[test]
+    fn validate_rejects_mismatched_normals_length() {
+        // A `normals` buffer present but not the same length as `vertices`
+        // must be rejected rather than silently under/over-scanned by the
+        // Finite check's `base + 3 <= normals.len()` guard (which would
+        // otherwise let a non-finite value hide in the unmatched region).
+        let mut short_normals = welded_tetra_mesh();
+        let full_len = short_normals.vertices.len();
+        short_normals.normals = Some(vec![0.0_f32; full_len - 3]); // one vertex short
+        let err = short_normals
+            .validate(0.0)
+            .expect_err("a normals buffer shorter than vertices must fail the mesh contract");
+        assert_eq!(err.invariant, MeshInvariant::IndexValid);
+
+        let mut long_normals = welded_tetra_mesh();
+        long_normals.normals = Some(vec![0.0_f32; full_len + 3]); // one vertex too many
+        let err = long_normals
+            .validate(0.0)
+            .expect_err("a normals buffer longer than vertices must fail the mesh contract");
         assert_eq!(err.invariant, MeshInvariant::IndexValid);
     }
 
@@ -11163,5 +11292,34 @@ mod tests {
             }
             other => panic!("expected MeshContractViolation, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn into_validated_moves_mesh_without_cloning_on_success() {
+        let mesh = welded_tetra_mesh();
+        let expected_vertices = mesh.vertices.clone();
+        let expected_indices = mesh.indices.clone();
+        let validated = mesh
+            .into_validated(0.0)
+            .expect("closed outward-wound welded tetra must satisfy the mesh contract");
+        assert_eq!(validated.mesh().vertices, expected_vertices);
+        assert_eq!(validated.mesh().indices, expected_indices);
+    }
+
+    #[test]
+    fn into_validated_returns_mesh_back_on_failure() {
+        let mut mesh = welded_tetra_mesh();
+        mesh.vertices[3] = f32::NAN;
+        let expected_vertices = mesh.vertices.clone();
+        let expected_indices = mesh.indices.clone();
+        let (returned_mesh, err) = mesh
+            .into_validated(0.0)
+            .expect_err("a mesh with a NaN vertex coordinate must fail the mesh contract");
+        assert_eq!(err.invariant, MeshInvariant::Finite);
+        assert_eq!(
+            returned_mesh.vertices, expected_vertices,
+            "the mesh must be handed back unchanged on failure"
+        );
+        assert_eq!(returned_mesh.indices, expected_indices);
     }
 }
