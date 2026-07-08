@@ -255,6 +255,56 @@ ensure_tree_sitter_ready() {
     return 1
 }
 
+# ===========================================================================
+# _assert_serialized_events helper (task 5144 F2)
+# ===========================================================================
+# _assert_serialized_events <acq> <rel> <max_acq> <min_rel>
+# Guarded replacement for a raw `test "$max_acq" -ge "$min_rel"` causal check
+# (Section A below). Validates all four operands are non-empty integers
+# (the same ''|*[!0-9]*-case idiom load_tolerance_lib.sh uses) BEFORE any
+# -eq/-ge comparison touches them, so an empty/non-numeric operand — the
+# exact symptom left by an empty REIFY_SLOT_EVENT_LOG (task 5144 cause 1:
+# both nested verify runs exiting before ever acquiring the slot) — never
+# reaches a bare `test` and produces "test: : integer expression expected".
+# That message was a SYMPTOM of the empty log surfacing through
+# test_helpers.sh's assert() `if "$@"` line, not a test_helpers.sh bug.
+#
+# Returns 0 iff acq==2, rel==2, AND max(ACQUIRE_ts) >= min(RELEASE_ts) — i.e.
+# both runs traversed the gated region and the second critical section began
+# only after the first ended (true hold-serialization at N=1). Returns 1
+# with a diagnostic on stderr otherwise: naming the empty/incomplete event
+# log when any operand is non-numeric or when acq/rel==0 (no ACQUIRE/RELEASE
+# events recorded at all), or a descriptive not-serialized message when the
+# counts/ordering simply don't satisfy serialization. Pure — never mutates
+# anything, safe to call directly under set -euo pipefail via `assert`.
+_assert_serialized_events() {
+    local _acq="$1" _rel="$2" _max_acq="$3" _min_rel="$4"
+    local _v
+
+    for _v in "$_acq" "$_rel" "$_max_acq" "$_min_rel"; do
+        case "$_v" in
+            ''|*[!0-9]*)
+                echo "ERROR: _assert_serialized_events: event log is empty or incomplete — no ACQUIRE/RELEASE events recorded (acq='${_acq}' rel='${_rel}' max_acq='${_max_acq}' min_rel='${_min_rel}'); cannot assert causal serialization" >&2
+                return 1
+                ;;
+        esac
+    done
+
+    # All four operands are confirmed non-empty integers below this point —
+    # bare -eq/-ge comparisons are now safe.
+    if [ "$_acq" -eq 0 ] || [ "$_rel" -eq 0 ]; then
+        echo "ERROR: _assert_serialized_events: event log is empty — no ACQUIRE/RELEASE events recorded (acq=${_acq} rel=${_rel})" >&2
+        return 1
+    fi
+
+    if [ "$_acq" -eq 2 ] && [ "$_rel" -eq 2 ] && [ "$_max_acq" -ge "$_min_rel" ]; then
+        return 0
+    fi
+
+    echo "ERROR: _assert_serialized_events: events NOT serialized (acq=${_acq} rel=${_rel} max_acq=${_max_acq} min_rel=${_min_rel}; expected exactly 2 ACQUIRE + 2 RELEASE events with max(ACQUIRE_ts) >= min(RELEASE_ts))" >&2
+    return 1
+}
+
 make_stub_bin() {
     local dir="$1"
     # stub cargo: sleeps $REIFY_E2E_CARGO_SLEEP seconds, exits 0.
@@ -701,10 +751,15 @@ if [ "$_TS_READY" = "1" ]; then
     assert "two concurrent task verify.sh test runs hold-serialize (elapsed >= 3000ms, got ${MS}ms)" \
         test "$MS" -ge 3000
     # --- Section A causal assertions (R-technique): parse REIFY_SLOT_EVENT_LOG ---
-    # Assert (1): exactly 2 ACQUIRE + 2 RELEASE events — both runs traversed the
-    # gated region; guards against a vacuous empty-log green (e.g. DISABLE=1).
-    # Assert (2): max(ACQUIRE_ts) >= min(RELEASE_ts) — the second critical section
-    # began only after the first ended; proves true hold-serialization at N=1.
+    # Single guarded assertion (task 5144 F2): exactly 2 ACQUIRE + 2 RELEASE
+    # events — both runs traversed the gated region; guards against a vacuous
+    # empty-log green (e.g. DISABLE=1) — AND max(ACQUIRE_ts) >= min(RELEASE_ts)
+    # — the second critical section began only after the first ended; proves
+    # true hold-serialization at N=1. _assert_serialized_events guards all
+    # four operands as non-empty integers BEFORE any -eq/-ge comparison, so an
+    # empty REIFY_SLOT_EVENT_LOG (task 5144 cause 1: both nested verify runs
+    # exiting before ever acquiring the slot) FAILs with a clear diagnostic
+    # instead of "test: : integer expression expected".
     # RED with CONCURRENCY=2 (both acquire concurrently → max(ACQ) < min(REL)).
     # RED with DISABLE=1 (no slot events → count 0 ≠ 2).
     A_ACQ_COUNT=$(awk '$3 == "ACQUIRE"' "$A_EVENTLOG" | wc -l | tr -d ' ')
@@ -712,12 +767,8 @@ if [ "$_TS_READY" = "1" ]; then
     A_MAX_ACQ=$(awk '$3 == "ACQUIRE" { print $1 }' "$A_EVENTLOG" | sort -n | tail -1)
     A_MIN_REL=$(awk '$3 == "RELEASE" { print $1 }' "$A_EVENTLOG" | sort -n | head -1)
     echo "  [A-causal] acq=${A_ACQ_COUNT} rel=${A_REL_COUNT} max_acq=${A_MAX_ACQ} min_rel=${A_MIN_REL}" >&2
-    assert "Section A causal: exactly 2 ACQUIRE events in event log (got ${A_ACQ_COUNT})" \
-        test "$A_ACQ_COUNT" -eq 2
-    assert "Section A causal: exactly 2 RELEASE events in event log (got ${A_REL_COUNT})" \
-        test "$A_REL_COUNT" -eq 2
-    assert "Section A causal: max(ACQUIRE_ts) >= min(RELEASE_ts) — second CS began only after first CS ended" \
-        test "$A_MAX_ACQ" -ge "$A_MIN_REL"
+    assert "Section A causal: events serialized (2 ACQUIRE + 2 RELEASE, max(ACQUIRE_ts) >= min(RELEASE_ts); acq=${A_ACQ_COUNT} rel=${A_REL_COUNT} max_acq=${A_MAX_ACQ} min_rel=${A_MIN_REL})" \
+        _assert_serialized_events "$A_ACQ_COUNT" "$A_REL_COUNT" "$A_MAX_ACQ" "$A_MIN_REL"
 else
     assert "Section A SKIPPED: tree-sitter artifacts not ready — cannot run execute-mode e2e sections (see readiness diagnostic above)" \
         false
