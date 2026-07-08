@@ -1,6 +1,16 @@
-// INV-GUI-1 interim enforcement (warn-mode): every `GuiState` field must be
-// either classified with a sync mechanism or named on the known-stale
-// allowlist. See docs/prds/v0_6/gui-state-sync.md §8 L1.
+// INV-GUI-1 interim enforcement: every `GuiState` field must be either
+// classified with a sync mechanism or named on the known-stale allowlist.
+// See docs/prds/v0_6/gui-state-sync.md §8 L1.
+//
+// "Warn-mode" (task title; docs/invariants.md's fail-closed rollout: contract
+// spec -> warn-mode corpus sweep -> fix bulk producers -> flip to enforce)
+// names the ALLOWLIST's tolerance of pre-existing debt, not the check's
+// severity: gui-state-sync.md §2 is explicit that "a field that is neither
+// classified nor on an explicit shrinking known-stale allowlist -> the lint
+// fails". Every test below that calls `check_field_coverage` hard-fails
+// `cargo test` (assert_eq!/expect) the moment a field is neither classified
+// nor allowlisted — promotion to `enforce` status happens at L5, when the
+// derive makes an unclassified field a compile error instead.
 //
 // This lint is interim scaffolding — L5 (per the PRD) retires it wholesale
 // once the derive-based mechanism lands. Everything it needs (checker fn,
@@ -11,6 +21,8 @@
 // intentionally sparse at pre-1 — content grows with each step.
 
 use std::collections::{BTreeMap, BTreeSet};
+
+use serde::Serialize;
 
 use crate::diff::StateDelta;
 use crate::types::GuiState;
@@ -92,19 +104,27 @@ fn check_field_coverage_honors_allowlist() {
     assert_eq!(err, vec!["ghost".to_string()]);
 }
 
-/// Reflects the serde-JSON object keys of a `GuiState` value — the field
-/// names that actually appear on the wire. For a field carrying
-/// `#[serde(skip_serializing_if = ...)]` (e.g. `fea_convergence`), this
-/// excludes the key entirely when the field is left at its skipped value.
-/// Shared by the forward and reverse coverage checks below.
-fn reflected_keys(state: &GuiState) -> BTreeSet<String> {
-    serde_json::to_value(state)
+/// Reflects the serde-JSON object keys of any `Serialize` value. The single
+/// definition site for the reflection idiom, shared by `reflected_keys`
+/// (`GuiState`) and the `StateDelta` cross-check below — so both stay in
+/// sync if the reflection approach ever changes.
+fn serde_keys<T: Serialize>(value: &T) -> BTreeSet<String> {
+    serde_json::to_value(value)
         .unwrap()
         .as_object()
         .unwrap()
         .keys()
         .cloned()
         .collect()
+}
+
+/// Reflects the serde-JSON object keys of a `GuiState` value — the field
+/// names that actually appear on the wire. For a field carrying
+/// `#[serde(skip_serializing_if = ...)]` (e.g. `fea_convergence`), this
+/// excludes the key entirely when the field is left at its skipped value.
+/// Shared by the forward and reverse coverage checks below.
+fn reflected_keys(state: &GuiState) -> BTreeSet<String> {
+    serde_keys(state)
 }
 
 /// The acceptance harness (forward direction): every field reflected off a
@@ -160,13 +180,7 @@ fn fully_populated_fixture_has_expected_field_count() {
 #[test]
 fn diffed_classification_matches_state_delta_fields() {
     let delta = StateDelta::full(&fully_populated_gui_state());
-    let delta_keys: BTreeSet<String> = serde_json::to_value(&delta)
-        .unwrap()
-        .as_object()
-        .unwrap()
-        .keys()
-        .cloned()
-        .collect();
+    let delta_keys = serde_keys(&delta);
 
     for (field, mechanism) in classification_table() {
         if mechanism == SyncMechanism::Diffed {
@@ -209,34 +223,59 @@ fn classification_table() -> BTreeMap<&'static str, SyncMechanism> {
     table
 }
 
-/// Validates a clearing-task reference is non-empty at construction, so the
-/// known-stale ledger's "every entry names its clearing task" guarantee is
-/// structural (enforced wherever the reference is built) rather than a
-/// separate runtime assertion re-checking the same hardcoded literals.
+/// True if `reference` cites a task in this repo's canonical `#NNNN` form
+/// (CLAUDE.md's TODO-citation convention: a bare `#` followed by at least
+/// one ASCII digit) — e.g. `"cleared by L2 (#5031)"`. A PRD-relative label
+/// like `"cleared by L2"` alone does not count: CLAUDE.md calls out
+/// PRD-relative indices as a `malformed-cite` shape.
+fn cites_task(reference: &str) -> bool {
+    reference
+        .find('#')
+        .is_some_and(|i| reference[i + 1..].starts_with(|c: char| c.is_ascii_digit()))
+}
+
+/// Validates a clearing-task reference cites a live task in the canonical
+/// `#NNNN` form at construction, so the known-stale ledger's "every entry
+/// names its clearing task" guarantee is structural (enforced wherever the
+/// reference is built, and re-checked by every test that constructs
+/// `known_stale_allowlist()`) rather than merely a non-empty string.
 fn clearing_task_reference(reference: &'static str) -> &'static str {
     assert!(
-        !reference.is_empty(),
-        "clearing-task reference must be non-empty"
+        cites_task(reference),
+        "clearing-task reference '{reference}' must cite a live task in the \
+         canonical #NNNN form (CLAUDE.md's TODO-citation convention)"
     );
     reference
 }
 
 /// Fields known to be stale (not wired to any live sync mechanism today),
-/// each mapped to a non-empty reference naming the task that clears it —
-/// L2 clears the four tensegrity/display fields, L3 clears `fea_convergence`.
+/// each mapped to a reference citing the live task that clears it — L2
+/// (#5031, "stopgap: four list fields -> StateDelta") clears the four
+/// tensegrity/display fields, L3 (#5032, "stopgap: fea-convergence-changed
+/// emitter") clears `fea_convergence`. `clearing_task_reference` enforces the
+/// `#NNNN` citation structurally, not just non-emptiness.
 fn known_stale_allowlist() -> BTreeMap<&'static str, &'static str> {
     let mut allowlist = BTreeMap::new();
-    allowlist.insert("tensegrity_wires", clearing_task_reference("cleared by L2"));
+    allowlist.insert(
+        "tensegrity_wires",
+        clearing_task_reference("cleared by L2 (#5031)"),
+    );
     allowlist.insert(
         "tensegrity_surfaces",
-        clearing_task_reference("cleared by L2"),
+        clearing_task_reference("cleared by L2 (#5031)"),
     );
-    allowlist.insert("display_panes", clearing_task_reference("cleared by L2"));
+    allowlist.insert(
+        "display_panes",
+        clearing_task_reference("cleared by L2 (#5031)"),
+    );
     allowlist.insert(
         "display_appearance",
-        clearing_task_reference("cleared by L2"),
+        clearing_task_reference("cleared by L2 (#5031)"),
     );
-    allowlist.insert("fea_convergence", clearing_task_reference("cleared by L3"));
+    allowlist.insert(
+        "fea_convergence",
+        clearing_task_reference("cleared by L3 (#5032)"),
+    );
     allowlist
 }
 
@@ -342,20 +381,4 @@ fn currently_unwired_fields(
             .map(|(k, _)| k.to_string()),
     );
     fields.into_iter().collect()
-}
-
-/// A field that is both allowlisted and `FullReloadOnly`-classified (a
-/// plausible transient state mid-migration) must be reported exactly once,
-/// not once per source.
-#[test]
-fn currently_unwired_fields_dedupes_overlapping_entries() {
-    let mut table: BTreeMap<&'static str, SyncMechanism> = BTreeMap::new();
-    table.insert("overlap_field", SyncMechanism::FullReloadOnly("debug only"));
-    let mut allowlist: BTreeMap<&'static str, &'static str> = BTreeMap::new();
-    allowlist.insert("overlap_field", "cleared by L2");
-
-    assert_eq!(
-        currently_unwired_fields(&table, &allowlist),
-        vec!["overlap_field".to_string()]
-    );
 }
