@@ -3966,6 +3966,21 @@ pub trait GeometryKernel: Send + Sync {
     }
 
     /// Tessellate a handle into a mesh.
+    ///
+    /// # Mesh contract (INV-GEO-1)
+    ///
+    /// The returned [`Mesh`] must satisfy every producer obligation checked
+    /// by [`Mesh::validate`]: finite coordinates, in-bounds indices,
+    /// non-degenerate triangles, and — on the mesh's **position-welded
+    /// quotient topology** — closed and consistently wound. Closed and
+    /// consistently-wound are checked on the WELDED quotient, not the raw
+    /// index buffer, specifically so that per-face-block output (each
+    /// corner emitted once per incident face — e.g. OCCT's
+    /// `tessellate_shape`, `occt_wrapper.cpp:5847`) is legal: raw-index
+    /// welledness is a [`Mesh::weldedness`] ([`WeldednessReport`]) CONSUMER
+    /// CAPABILITY, reported but never gated — not one of `validate`'s
+    /// obligations. A [`ValidatedMesh`] is the proof-carrying witness that
+    /// these obligations held.
     fn tessellate(&self, handle: GeometryHandleId, tolerance: f64) -> Result<Mesh, TessError>;
 
     /// Extract the unique edges of a shape, storing each as a new handle.
@@ -4109,6 +4124,25 @@ pub trait GeometryKernel: Send + Sync {
     /// `ManifoldKernel` is the only current override; it accepts closed
     /// orientable triangle meshes and stores them as `Manifold` values (see
     /// `crates/reify-kernel-manifold/src/kernel.rs`).
+    ///
+    /// # Mesh contract (INV-GEO-1)
+    ///
+    /// An accepting override should require `_mesh` to satisfy every
+    /// producer obligation checked by [`Mesh::validate`]: finite
+    /// coordinates, in-bounds indices, non-degenerate triangles, and — on
+    /// the mesh's **position-welded quotient topology** — closed and
+    /// consistently wound. Closed and consistently-wound are checked on the
+    /// WELDED quotient, not the raw index buffer, so per-face-block input
+    /// (each corner emitted once per incident face — e.g. OCCT's
+    /// `tessellate_shape` output, `occt_wrapper.cpp:5847`) is legal and
+    /// unwelded-by-design. Raw-index welledness is a [`Mesh::weldedness`]
+    /// ([`WeldednessReport`]) CONSUMER CAPABILITY — reported, not gated — so
+    /// an override may reject an invalid mesh (bridging the
+    /// `Err(MeshContractViolation)` from `validate` into
+    /// `Err(GeometryError::MeshContractViolation)` via
+    /// [`MeshContractViolation::into_geometry_error`]) but must not reject
+    /// solely for being unwelded. A [`ValidatedMesh`] is the proof-carrying
+    /// witness that these obligations held.
     ///
     /// # Object safety
     ///
