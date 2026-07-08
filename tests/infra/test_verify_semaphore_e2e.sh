@@ -1263,16 +1263,29 @@ fi
 # _dump_captured_stderr unit tests) makes the capture set-e-safe; on
 # non-zero rc or an empty plan this now FAILs loudly via a single guarded
 # assert and dumps the captured output via _dump_captured_stderr instead of
-# dying silently. (verify.sh's real print-plan path writes only to stdout on
-# the success path — see the nextest-availability probe's stderr being
-# reserved for its own failure branch — so merging stdout+stderr here does
-# not corrupt F2_PLAN on the happy path.)
+# dying silently.
+#
+# Stream split (amendment, reviewer finding): _run_capturing folds its
+# wrapped command's stdout+stderr together (`>outfile 2>&1`), so piping
+# verify.sh straight through it would fold any stderr noise into F2_PLAN too
+# — a behavioral change from the original capture, which was stdout-only
+# (`2>/dev/null` dropped stderr entirely). _f2_capture_print_plan below
+# diverts verify.sh's OWN stderr to its own file (F2_ERR) via an inner
+# redirect that takes effect BEFORE _run_capturing's outer `2>&1` ever sees
+# it, so only the plan text reaches F2_OUT/F2_PLAN — matching the original
+# stdout-only capture exactly — while F2_ERR (genuinely stderr-only, unlike
+# the old merged file of the same name) is still there to dump on failure.
+_f2_capture_print_plan() {
+    bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan 2>"$1"
+}
+
 _F2_TMPDIR="$(mktemp -d)"
 _TMPDIRS+=("$_F2_TMPDIR")
-F2_ERR="$_F2_TMPDIR/f2_capture.txt"
+F2_OUT="$_F2_TMPDIR/f2_stdout.txt"
+F2_ERR="$_F2_TMPDIR/f2_stderr.txt"
 _F2_RC=0
-_run_capturing "$F2_ERR" bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan || _F2_RC=$?
-F2_PLAN="$(cat "$F2_ERR" 2>/dev/null || true)"
+_run_capturing "$F2_OUT" _f2_capture_print_plan "$F2_ERR" || _F2_RC=$?
+F2_PLAN="$(cat "$F2_OUT" 2>/dev/null || true)"
 
 if [ "$_F2_RC" -eq 0 ] && [ -n "$F2_PLAN" ]; then
     F2_ACQ_LINE="$(printf '%s\n' "$F2_PLAN" | grep 'test-run semaphore.*ACQUIRE' | head -1)"
@@ -1284,7 +1297,8 @@ if [ "$_F2_RC" -eq 0 ] && [ -n "$F2_PLAN" ]; then
 else
     assert "F2: print-plan capture succeeded (rc 0, non-empty plan) — got rc=${_F2_RC} (5111 silent-FAIL guard; see dumped output below)" \
         false
-    _dump_captured_stderr "F2 print-plan" "$F2_ERR"
+    _dump_captured_stderr "F2 print-plan stdout" "$F2_OUT"
+    _dump_captured_stderr "F2 print-plan stderr" "$F2_ERR"
 fi
 
 # run_hermetic_compile_gate_capture
