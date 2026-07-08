@@ -2029,9 +2029,9 @@ MOCKBODY
     fi
 
     if [ -f "$LEDGER_T23A" ] \
-        && jq -er '.ts' "$LEDGER_T23A" 2>/dev/null | grep -q . \
-        && jq -er '.role' "$LEDGER_T23A" 2>/dev/null | grep -q . \
-        && jq -er '.run_id' "$LEDGER_T23A" 2>/dev/null | grep -q .; then
+        && [ "$(jq -r '.ts // ""' "$LEDGER_T23A" 2>/dev/null)" != "" ] \
+        && [ "$(jq -r '.role // ""' "$LEDGER_T23A" 2>/dev/null)" != "" ] \
+        && [ "$(jq -r '.run_id // ""' "$LEDGER_T23A" 2>/dev/null)" != "" ]; then
         assert "T23a: ledger .ts/.role/.run_id are all non-empty" true
     else
         assert "T23a: ledger .ts/.role/.run_id are all non-empty (got: $(cat "$LEDGER_T23A" 2>/dev/null || true))" false
