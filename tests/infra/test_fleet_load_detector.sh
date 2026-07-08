@@ -288,6 +288,44 @@ assert "H4: garbage avg10 threshold falls back to 80 in the stdout line" \
     bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])avg10_threshold=80([[:space:]]|$)"' _ "$OUT"
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Block J — CLI-flag parity: every block above drives the script exclusively
+# via the REIFY_FLEET_LOAD_* env seams. This block drives the equivalent
+# --flags instead, so a regression in the flag-parsing branches themselves
+# (wrong shift count, swapped variable assignment, a broken missing-value
+# guard) is caught — those branches are otherwise untested.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block J: CLI-flag parity ---"
+
+# J1: --loadavg-path/--psi-path/--nproc/--ratio-threshold entirely via CLI
+# flags (no env vars at all) on the incident fixture with a raised ratio
+# ceiling — mirrors H1 but through the flag-parsing branches.
+J1_LOADAVG="$(_mk_loadavg 419)"
+J1_PSI="$(_mk_psi 5.00)"
+run_helper check --loadavg-path "$J1_LOADAVG" --psi-path "$J1_PSI" --nproc 32 --ratio-threshold 20
+assert "J1: CLI-flag form (raised ratio threshold) makes incident fixture status=ok" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])status=ok([[:space:]]|$)"' _ "$OUT"
+assert "J1: CLI-flag form exits 0" test "$RC" -eq 0
+
+# J2: --avg10-threshold via CLI flips an otherwise-healthy avg10 into flagged
+# (mirrors H2 through the flag-parsing branch).
+J2_LOADAVG="$(_mk_loadavg 16)"
+J2_PSI="$(_mk_psi 50.00)"
+run_helper check --loadavg-path "$J2_LOADAVG" --psi-path "$J2_PSI" --nproc 32 --avg10-threshold 40
+assert "J2: CLI-flag --avg10-threshold flips avg10=50.00 to oversubscribed" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])status=oversubscribed([[:space:]]|$)"' _ "$OUT"
+assert "J2: CLI-flag form exits 3" test "$RC" -eq 3
+assert "J2: CLI-flag form reason=avg10" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "(^|[[:space:]])reason=avg10$"' _ "$OUT"
+
+# J3: missing-value guard — `--nproc` with no following value must exit 2
+# (usage error), proving the `[ $# -ge 2 ] || { err ...; exit 2; }` guard
+# fires for a value-consuming flag rather than silently consuming the next
+# token or falling through.
+run_helper check --nproc
+assert "J3: --nproc with no value exits 2" test "$RC" -eq 2
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Block G — fail-open: an unreadable/unparseable measurement source must never
 # spuriously flag/throttle the fleet (C-A4 philosophy, mirrors cpu-admit.sh /
 # load_tolerance_lib.sh). A guaranteed-absent source path is allocated via
