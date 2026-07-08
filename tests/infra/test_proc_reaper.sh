@@ -829,6 +829,70 @@ assert "SIGKILL to parent does NOT reap the backgrounded test binary (survivor e
         exit $((1 - _alive))
     '
 
+# -- Test 5b (hermetic RED repro, task 5148): the CURRENT single-shot survivor
+# check (fixed wait + ONE ps sample, as used just above) misreports a
+# genuinely-alive survivor as DEAD when its one ps sample happens to land on a
+# transient-empty read. Under real pool load this is a race (observed in
+# data/verify-logs/4911 etc.); here it is forced deterministically via a
+# stateful `ps` stub (extends the Part 8 SLOW_PS_STUB idiom below) whose FIRST
+# invocation emits nothing and whose invocations #2+ delegate to the real ps.
+# Because the single-shot shape below makes exactly ONE ps call, that call is
+# always invocation #1 -> always empty -> the check always (mis)reports DEAD.
+# This proves the single-shot shape itself is unsound, independent of actual
+# host load.
+# RED today: the assert expects ALIVE (matching the real, live survivor) but
+# the stubbed single sample reports DEAD.
+_P5_STUB_DIR="$(mktemp -d)"
+_TMPDIRS+=("$_P5_STUB_DIR")
+_P5_STUB_COUNTER="$_P5_STUB_DIR/ps_invocation_count"
+_abs_real_ps_p5="$(command -v ps)"
+
+cat > "$_P5_STUB_DIR/ps" <<STUB_PS_EOF
+#!/usr/bin/env bash
+_n=\$(cat "$_P5_STUB_COUNTER" 2>/dev/null || echo 0)
+_n=\$((_n + 1))
+echo "\$_n" > "$_P5_STUB_COUNTER"
+if [ "\$_n" -eq 1 ]; then
+    exit 0
+fi
+exec "$_abs_real_ps_p5" "\$@"
+STUB_PS_EOF
+chmod +x "$_P5_STUB_DIR/ps"
+
+assert "hermetic repro: single-shot survivor sample misreports a live survivor as dead on a transient-empty ps read (proves the check must be condition-polled, task 5148)" \
+    env _E2E_FAKE="$_E2E_FAKE" _SENT_FAKE="$_SENT_FAKE" \
+        _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" \
+        PATH="$_P5_STUB_DIR:$PATH" bash -c '
+        _abs_sleep=$(command -v sleep)
+        _abs_kill=$(command -v kill)
+        _abs_bash=$(command -v bash)
+        _abs_ps=$(command -v ps)
+        _pid_file=$(mktemp)
+        trap "rm -f \"$_pid_file\"" EXIT
+
+        "$_abs_bash" -c "\"$_E2E_FAKE\" \"$_SENTINEL_SLEEP_SECS\" </dev/null >/dev/null 2>&1 & echo \$! > \"$_pid_file\"; wait" &
+        _parent_pid=$!
+        for ((_t=1; _t<=20; _t++)); do
+            [ -s "$_pid_file" ] && break
+            "$_abs_sleep" 0.3
+        done
+        _fake_pid=$(cat "$_pid_file" 2>/dev/null || echo "")
+        [ -n "$_fake_pid" ] || { echo "FAIL: did not get fake binary PID" >&2; exit 1; }
+
+        # SIGKILL the parent (survivor is now orphaned but still alive).
+        "$_abs_kill" -9 "$_parent_pid" 2>/dev/null || true
+        "$_abs_sleep" 0.5
+
+        # CURRENT single-shot logic shape (mirrors the pre-fix production
+        # check above): one fixed wait, one ps sample. "$_abs_ps" resolves to
+        # the stateful stub via the PATH prepend above, and this is the ONLY
+        # ps call in this whole subshell tree, so it is always invocation #1.
+        _alive=0
+        "$_abs_ps" -o pid= -p "$_fake_pid" 2>/dev/null | grep -q . && _alive=1 || true
+        "$_abs_kill" -9 "$_fake_pid" 2>/dev/null || true
+        exit $((1 - _alive))
+    '
+
 assert "reap-orphaned-test-binaries.sh reaps an orphaned test binary after parent SIGKILL" \
     env _WRAPPER="$_WRAPPER" _E2E_FAKE="$_E2E_FAKE" _E2E_DIR="$_E2E_DIR" \
         _SENT_FAKE="$_SENT_FAKE" _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" \
