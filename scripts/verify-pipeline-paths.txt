@@ -72,3 +72,15 @@ scripts/lib_clock_stop.sh
 #   transitive lib_slot_acquire.sh entry above) routes run_all.sh edits to the
 #   full --scope all gate.
 tests/infra/run_all.sh
+#
+# tests/infra/run-all-ambient-vars.manifest: the checked-in ledger of every
+#   env var ambiently injected into the run_all.sh pool (task 5152), cross-
+#   checked for SET EQUALITY against the LIVE set derived from verify.sh's
+#   run_all.sh plan line and orchestrator.yaml's verify_env block by
+#   tests/infra/test_run_all_ambient_isolation.sh. It is neither sourced by
+#   verify.sh nor otherwise listed, so verify-pipeline-guard.sh's
+#   auto-derivation misses it. A ledger-only edit (e.g. adding a newly
+#   injected var) must route to the full --scope all gate so the drift
+#   guard actually re-runs against the change, mirroring the run_all.sh
+#   entry immediately above.
+tests/infra/run-all-ambient-vars.manifest

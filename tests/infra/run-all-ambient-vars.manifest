@@ -1,0 +1,28 @@
+# tests/infra/run-all-ambient-vars.manifest — the single acknowledged ledger
+# of every env var ambiently injected into the run_all.sh pool (every one of
+# its ~103 tests inherits ALL of these, whether or not a given test cares
+# about a given var).
+#
+# Co-maintained with the two live injection sources:
+#   - scripts/verify.sh's run_all.sh plan line (verify.sh:1430): a prefix env
+#     hardcoded onto the `bash tests/infra/run_all.sh` command.
+#   - orchestrator.yaml's verify_env block (orchestrator.yaml:148-152):
+#     exported into the whole verify.sh process tree by the orchestrator.
+#
+# tests/infra/test_run_all_ambient_isolation.sh derives the LIVE injected-var
+# set from both sources above and cross-checks it against this file's key set
+# for SET EQUALITY. A var newly added to either source without a matching
+# entry here (or a stale entry here for a var no longer injected) fails that
+# guard's drift assertion — so extending either injection source requires a
+# conscious edit to this ledger. The same guard also drives a per-var
+# hostile-ambient sub-case (real test_run_all.sh run once per var, with every
+# other ledger var unset) off this file's key set.
+#
+# Format: one env-var name per line. `#`-comment and blank lines ignored.
+# Values are NOT recorded here (this is a keys-only ledger) — each guard run
+# looks up the live value from whichever injection source actually carries
+# that key.
+
+# --- run_all.sh plan-line prefix env (verify.sh:1430) -----------------------
+REIFY_AUDIT_NO_COLD_BUILD
+REIFY_RUN_ALL_EXCLUDE_HOST_INFRA
