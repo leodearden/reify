@@ -2864,19 +2864,40 @@ fn nearest_node(nodes: &[[f64; 3]], target: [f64; 3]) -> usize {
         let dz = p[2] - target[2];
         dx * dx + dy * dy + dz * dz
     };
+
+    // Drives the WARN below without a dedicated scan over `nodes`/`target`:
+    // `dist2` sums three squared terms, so it is non-finite exactly when `p`
+    // or `target` has a non-finite component (a NaN or +/-infinity operand
+    // propagates through the subtraction/squaring/addition). `key` already
+    // visits every node once via `min_by` below, so latching this flag
+    // there — instead of a separate `nodes.iter().flatten()...any(...)`
+    // pass — covers every node, and transitively `target` too (a non-finite
+    // `target` component makes *every* node's `dist2` non-finite), in the
+    // same single pass.
+    let saw_non_finite = std::cell::Cell::new(false);
     // Normalize NaN to +INFINITY before comparing: total_cmp ranks a
     // negative-signed NaN below every finite value (see the doc comment
     // above), so leaving it unmapped could let a non-finite node win.
     let key = |p: &[f64; 3]| -> f64 {
         let d = dist2(p);
+        if !d.is_finite() {
+            saw_non_finite.set(true);
+        }
         if d.is_nan() { f64::INFINITY } else { d }
     };
 
-    // NOTE: this finiteness scan is independent from `key`'s NaN
-    // normalization below — it exists solely to drive the WARN (telemetry),
-    // while `key` alone drives the fallback pick's correctness and
-    // determinism. Keep the two conditions in agreement if either changes.
-    if nodes.iter().flatten().chain(target.iter()).any(|c| !c.is_finite()) {
+    // Precompute each node's key once, rather than inside the `min_by`
+    // comparator (which would otherwise re-run it ~2(n-1) times over the
+    // node set for a single pick).
+    let nearest = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (i, key(p)))
+        .min_by(|(_, a), (_, b)| a.total_cmp(b))
+        .map(|(i, _)| i)
+        .expect("beam mesh has at least one node");
+
+    if saw_non_finite.get() {
         tracing::warn!(
             target: "reify_eval::modal_ops",
             reason = "non_finite_node_coordinate",
@@ -2887,16 +2908,7 @@ fn nearest_node(nodes: &[[f64; 3]], target: [f64; 3]) -> usize {
         );
     }
 
-    // Precompute each node's key once, rather than inside the `min_by`
-    // comparator (which would otherwise re-run it ~2(n-1) times over the
-    // node set for a single pick).
-    nodes
-        .iter()
-        .enumerate()
-        .map(|(i, p)| (i, key(p)))
-        .min_by(|(_, a), (_, b)| a.total_cmp(b))
-        .map(|(i, _)| i)
-        .expect("beam mesh has at least one node")
+    nearest
 }
 
 /// Collect the `target` face names from the options' `boundary_conditions` list
