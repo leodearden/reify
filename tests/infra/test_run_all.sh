@@ -1948,5 +1948,135 @@ else
     assert "T22g: fast pool + high interval emits NO pool-progress line (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
 fi
 
+# -- Test 23: FLAKY ledger persistence (task #5142) ------------------------------
+# Proves each `=== FLAKY (passed on serial retry): ... ===` emission (Phase 3,
+# same fixture as Test 18a) is ALSO persisted to a durable append-only JSONL
+# ledger (REIFY_RUN_ALL_FLAKY_LEDGER) -- one valid-JSON line per flaky member,
+# with non-empty ts/role/run_id -- while the byte-exact Summary contract
+# (T18a) stays intact. A run with zero flaky members must write NO ledger
+# file at all (flake-triggered-only: a healthy suite leaves no trace).
+echo ""
+echo "--- Test 23: FLAKY ledger persistence ---"
+
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+    # -- 23a: FLAKY direction -- reuses Test 18a's counter-file mock verbatim
+    # (invocation 1 exits 1, invocation 2+ exits 0), adding
+    # REIFY_RUN_ALL_FLAKY_LEDGER pointed at a fresh temp path.
+    TMPDIR_T23A="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T23A")
+
+    MANIFEST_T23A="$TMPDIR_T23A/classification-flaky.manifest"
+    printf 'test_flaky_pool.sh pool\n' > "$MANIFEST_T23A"
+
+    cat > "$TMPDIR_T23A/test_flaky_pool.sh" <<'MOCKBODY'
+#!/usr/bin/env bash
+set -euo pipefail
+counter_file="$FLAKY_COUNTER_FILE"
+count=$(( $(cat "$counter_file" 2>/dev/null || echo 0) + 1 ))
+echo "$count" > "$counter_file"
+echo "test_flaky_pool.sh invocation $count"
+if [ "$count" -eq 1 ]; then
+    exit 1
+else
+    exit 0
+fi
+MOCKBODY
+    chmod +x "$TMPDIR_T23A/test_flaky_pool.sh"
+
+    LEDGER_T23A="$TMPDIR_T23A/flaky-ledger.jsonl"
+
+    t23a_rc=0
+    t23a_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T23A" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T23A/pool-flaky.lock" \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        FLAKY_COUNTER_FILE="$TMPDIR_T23A/flaky-counter" \
+        REIFY_RUN_ALL_FLAKY_LEDGER="$LEDGER_T23A" \
+        bash "$RUN_ALL" "$TMPDIR_T23A" 2>&1)" || t23a_rc=$?
+
+    assert "T23a: run_all.sh exits 0 when a pool member passes on serial retry" \
+        test "$t23a_rc" -eq 0
+
+    assert "T23a: ledger file exists after a flaky-pass run" \
+        test -f "$LEDGER_T23A"
+
+    if [ -f "$LEDGER_T23A" ]; then
+        t23a_lines="$(wc -l < "$LEDGER_T23A" 2>/dev/null | tr -d ' ' || true)"
+    else
+        t23a_lines=""
+    fi
+    if [ "$t23a_lines" = "1" ]; then
+        assert "T23a: ledger has exactly 1 line" true
+    else
+        assert "T23a: ledger has exactly 1 line (got: '$t23a_lines' lines; content: $(cat "$LEDGER_T23A" 2>/dev/null || true))" false
+    fi
+
+    if [ -f "$LEDGER_T23A" ] && jq -e . "$LEDGER_T23A" >/dev/null 2>&1; then
+        assert "T23a: ledger line is valid JSON" true
+    else
+        assert "T23a: ledger line is valid JSON (got: $(cat "$LEDGER_T23A" 2>/dev/null || true))" false
+    fi
+
+    t23a_test_field="$(jq -r '.test' "$LEDGER_T23A" 2>/dev/null || true)"
+    if [ "$t23a_test_field" = "test_flaky_pool.sh" ]; then
+        assert "T23a: ledger .test field names test_flaky_pool.sh" true
+    else
+        assert "T23a: ledger .test field names test_flaky_pool.sh (got: '$t23a_test_field')" false
+    fi
+
+    if [ -f "$LEDGER_T23A" ] \
+        && jq -er '.ts' "$LEDGER_T23A" 2>/dev/null | grep -q . \
+        && jq -er '.role' "$LEDGER_T23A" 2>/dev/null | grep -q . \
+        && jq -er '.run_id' "$LEDGER_T23A" 2>/dev/null | grep -q .; then
+        assert "T23a: ledger .ts/.role/.run_id are all non-empty" true
+    else
+        assert "T23a: ledger .ts/.role/.run_id are all non-empty (got: $(cat "$LEDGER_T23A" 2>/dev/null || true))" false
+    fi
+
+    if [[ "$t23a_out" == *"=== Summary: 1 discovered, 0 failed, 1 flaky-retried ==="* ]]; then
+        assert "T23a: Summary line stays byte-exact (stdout contract regression lock)" true
+    else
+        assert "T23a: Summary line stays byte-exact (stdout contract regression lock) (got: $t23a_out)" false
+    fi
+
+    # -- 23b: negative direction -- an all-pass run (no flake) with a FRESH
+    # temp ledger path must leave the ledger file NON-EXISTENT (flake-
+    # triggered-only: a healthy run leaves no trace).
+    TMPDIR_T23B="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T23B")
+
+    MANIFEST_T23B="$TMPDIR_T23B/classification-pass.manifest"
+    printf 'test_pool_pass.sh pool\n' > "$MANIFEST_T23B"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T23B/test_pool_pass.sh"
+    chmod +x "$TMPDIR_T23B/test_pool_pass.sh"
+
+    LEDGER_T23B="$TMPDIR_T23B/flaky-ledger.jsonl"
+
+    t23b_rc=0
+    RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T23B" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T23B/pool-pass.lock" \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        REIFY_RUN_ALL_FLAKY_LEDGER="$LEDGER_T23B" \
+        bash "$RUN_ALL" "$TMPDIR_T23B" >/dev/null 2>&1 || t23b_rc=$?
+
+    assert "T23b: run_all.sh exits 0 on an all-pass run" \
+        test "$t23b_rc" -eq 0
+
+    if [ ! -e "$LEDGER_T23B" ]; then
+        assert "T23b: all-pass run writes NO ledger file (flake-triggered-only)" true
+    else
+        assert "T23b: all-pass run writes NO ledger file (flake-triggered-only) (got: $(cat "$LEDGER_T23B" 2>/dev/null || true))" false
+    fi
+else
+    assert "T23a: run_all.sh exits 0 when a pool member passes on serial retry (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T23a: ledger file exists after a flaky-pass run (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T23a: ledger has exactly 1 line (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T23a: ledger line is valid JSON (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T23a: ledger .test field names test_flaky_pool.sh (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T23a: ledger .ts/.role/.run_id are all non-empty (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T23a: Summary line stays byte-exact (stdout contract regression lock) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T23b: run_all.sh exits 0 on an all-pass run (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T23b: all-pass run writes NO ledger file (flake-triggered-only) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+fi
+
 # -- Summary --------------------------------------------------------------------
 test_summary
