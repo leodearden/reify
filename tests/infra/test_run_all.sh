@@ -1955,6 +1955,11 @@ fi
 # with non-empty ts/role/run_id -- while the byte-exact Summary contract
 # (T18a) stays intact. A run with zero flaky members must write NO ledger
 # file at all (flake-triggered-only: a healthy suite leaves no trace).
+# 23c/23d additionally prove the chronic-offender scan: once a member
+# appears in >=REIFY_RUN_ALL_FLAKY_CHRONIC_N distinct recorded runs, a loud
+# `WARNING: chronic flaky member` line fires WITHOUT hard-failing the run or
+# touching the Summary contract (observability only, policy deferred to
+# Leo -- task #5142); a single sub-threshold occurrence must NOT warn.
 echo ""
 echo "--- Test 23: FLAKY ledger persistence ---"
 
@@ -2066,6 +2071,116 @@ MOCKBODY
     else
         assert "T23b: all-pass run writes NO ledger file (flake-triggered-only) (got: $(cat "$LEDGER_T23B" 2>/dev/null || true))" false
     fi
+
+    # -- 23c: chronic-offender direction -- pre-seed the ledger with 2 prior
+    # DISTINCT-run_id occurrences of the same member, then let this run's
+    # flaky-pass append a 3rd (member now flaky in 3 distinct runs).
+    # Crossing REIFY_RUN_ALL_FLAKY_CHRONIC_N=3 must emit a loud WARNING,
+    # WITHOUT hard-failing the run or altering the byte-exact Summary
+    # contract (observability only; policy deferred, task #5142).
+    TMPDIR_T23C="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T23C")
+
+    MANIFEST_T23C="$TMPDIR_T23C/classification-flaky.manifest"
+    printf 'test_flaky_pool.sh pool\n' > "$MANIFEST_T23C"
+
+    cat > "$TMPDIR_T23C/test_flaky_pool.sh" <<'MOCKBODY'
+#!/usr/bin/env bash
+set -euo pipefail
+counter_file="$FLAKY_COUNTER_FILE"
+count=$(( $(cat "$counter_file" 2>/dev/null || echo 0) + 1 ))
+echo "$count" > "$counter_file"
+echo "test_flaky_pool.sh invocation $count"
+if [ "$count" -eq 1 ]; then
+    exit 1
+else
+    exit 0
+fi
+MOCKBODY
+    chmod +x "$TMPDIR_T23C/test_flaky_pool.sh"
+
+    LEDGER_T23C="$TMPDIR_T23C/flaky-ledger.jsonl"
+    printf '{"ts":"2026-01-01T00:00:00Z","test":"test_flaky_pool.sh","role":"task","task":"unknown","branch":"unknown","run_id":"seed-1"}\n' > "$LEDGER_T23C"
+    printf '{"ts":"2026-01-01T00:00:01Z","test":"test_flaky_pool.sh","role":"task","task":"unknown","branch":"unknown","run_id":"seed-2"}\n' >> "$LEDGER_T23C"
+
+    t23c_rc=0
+    t23c_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T23C" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T23C/pool-flaky.lock" \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        FLAKY_COUNTER_FILE="$TMPDIR_T23C/flaky-counter" \
+        REIFY_RUN_ALL_FLAKY_LEDGER="$LEDGER_T23C" \
+        REIFY_RUN_ALL_FLAKY_CHRONIC_N=3 \
+        bash "$RUN_ALL" "$TMPDIR_T23C" 2>&1)" || t23c_rc=$?
+
+    assert "T23c: run_all.sh exits 0 despite a chronic-flaky WARNING (observability only, no hard-fail)" \
+        test "$t23c_rc" -eq 0
+
+    if [[ "$t23c_out" == *"WARNING: chronic flaky member"* ]] && [[ "$t23c_out" == *"test_flaky_pool.sh"* ]]; then
+        assert "T23c: chronic-offender WARNING names test_flaky_pool.sh" true
+    else
+        assert "T23c: chronic-offender WARNING names test_flaky_pool.sh (got: $t23c_out)" false
+    fi
+
+    if [[ "$t23c_out" == *"=== Summary: 1 discovered, 0 failed, 1 flaky-retried ==="* ]]; then
+        assert "T23c: Summary line stays byte-exact despite the chronic WARNING (stdout contract regression lock)" true
+    else
+        assert "T23c: Summary line stays byte-exact despite the chronic WARNING (stdout contract regression lock) (got: $t23c_out)" false
+    fi
+
+    if [ -f "$LEDGER_T23C" ]; then
+        t23c_lines="$(wc -l < "$LEDGER_T23C" 2>/dev/null | tr -d ' ' || true)"
+    else
+        t23c_lines=""
+    fi
+    if [ "$t23c_lines" = "3" ]; then
+        assert "T23c: ledger has exactly 3 lines (2 pre-seeded + this run's append)" true
+    else
+        assert "T23c: ledger has exactly 3 lines (2 pre-seeded + this run's append) (got: '$t23c_lines' lines; content: $(cat "$LEDGER_T23C" 2>/dev/null || true))" false
+    fi
+
+    # -- 23d: non-vacuity control -- a single occurrence (< N) must NOT emit
+    # the chronic WARNING (proves 23c's assert is threshold-gated, not
+    # always-on).
+    TMPDIR_T23D="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T23D")
+
+    MANIFEST_T23D="$TMPDIR_T23D/classification-flaky.manifest"
+    printf 'test_flaky_pool.sh pool\n' > "$MANIFEST_T23D"
+
+    cat > "$TMPDIR_T23D/test_flaky_pool.sh" <<'MOCKBODY'
+#!/usr/bin/env bash
+set -euo pipefail
+counter_file="$FLAKY_COUNTER_FILE"
+count=$(( $(cat "$counter_file" 2>/dev/null || echo 0) + 1 ))
+echo "$count" > "$counter_file"
+echo "test_flaky_pool.sh invocation $count"
+if [ "$count" -eq 1 ]; then
+    exit 1
+else
+    exit 0
+fi
+MOCKBODY
+    chmod +x "$TMPDIR_T23D/test_flaky_pool.sh"
+
+    LEDGER_T23D="$TMPDIR_T23D/flaky-ledger.jsonl"
+
+    t23d_rc=0
+    t23d_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T23D" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T23D/pool-flaky.lock" \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        FLAKY_COUNTER_FILE="$TMPDIR_T23D/flaky-counter" \
+        REIFY_RUN_ALL_FLAKY_LEDGER="$LEDGER_T23D" \
+        REIFY_RUN_ALL_FLAKY_CHRONIC_N=3 \
+        bash "$RUN_ALL" "$TMPDIR_T23D" 2>&1)" || t23d_rc=$?
+
+    assert "T23d: run_all.sh exits 0 on a single (sub-threshold) flaky occurrence" \
+        test "$t23d_rc" -eq 0
+
+    if [[ "$t23d_out" != *"WARNING: chronic flaky member"* ]]; then
+        assert "T23d: a single occurrence (< N) emits NO chronic WARNING (non-vacuity lock)" true
+    else
+        assert "T23d: a single occurrence (< N) emits NO chronic WARNING (non-vacuity lock) (got: $t23d_out)" false
+    fi
 else
     assert "T23a: run_all.sh exits 0 when a pool member passes on serial retry (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T23a: ledger file exists after a flaky-pass run (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
@@ -2076,6 +2191,12 @@ else
     assert "T23a: Summary line stays byte-exact (stdout contract regression lock) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T23b: run_all.sh exits 0 on an all-pass run (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
     assert "T23b: all-pass run writes NO ledger file (flake-triggered-only) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T23c: run_all.sh exits 0 despite a chronic-flaky WARNING (observability only, no hard-fail) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T23c: chronic-offender WARNING names test_flaky_pool.sh (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T23c: Summary line stays byte-exact despite the chronic WARNING (stdout contract regression lock) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T23c: ledger has exactly 3 lines (2 pre-seeded + this run's append) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T23d: run_all.sh exits 0 on a single (sub-threshold) flaky occurrence (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T23d: a single occurrence (< N) emits NO chronic WARNING (non-vacuity lock) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
 fi
 
 # -- Summary --------------------------------------------------------------------
