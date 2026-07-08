@@ -1708,7 +1708,7 @@ fn snapshot(m: Mechanism, bindings: List<JointBinding>) -> Snapshot
 fn bind<J: DrivingJoint + HasMotion>(joint: J, value: J::MotionValue) -> JointBinding
 ```
 
-Each entry binds a driving joint to a typed motion-variable value via `bind(joint, value)`: `Length` for `Prismatic`, `Angle` for `Revolute`. `Coupling<P>` joints are excluded — their motion variable is derived from the parent joint's binding and cannot be overridden (`Coupling<P>` implements `Joint` but not `DrivingJoint`, so passing a coupling to `bind` is a type error). `JointBinding` is a sum type with one variant per `DrivingJoint` kind; its concrete variants are `bind(j: Prismatic, v: Length) -> JointBinding` and `bind(j: Revolute, v: Angle) -> JointBinding`. A single bindings list can mix the two driving-joint kinds while remaining type-safe (see `J::MotionValue` in §13.1). Joints absent from `bindings` take their range midpoint.
+Each entry binds a driving joint to a typed motion-variable value via `bind(joint, value)`: `Length` for `Prismatic`, `Angle` for `Revolute`. `Coupling` and `Fixed` joints are rejected — neither implements `DrivingJoint` (§13.1: `Coupling`'s motion is derived from its parent, `Fixed` has no motion variable at all), so passing either to `bind` raises `error[E_MECHANISM_NONDRIVING_JOINT]`. The rejection is enforced at both the runtime layer (`bind`'s own guard) and the compile-time layer (the `DrivingJoint` conformance check on `bind`'s type parameter), so it holds whether or not the build reaches the kernel. `JointBinding` (§13.1) is the typed marker structure `bind` returns; its concrete forms are conceptually `bind(j: Prismatic, v: Length) -> JointBinding` and `bind(j: Revolute, v: Angle) -> JointBinding`. A single bindings list can mix the two driving-joint kinds while remaining type-safe (see `J::MotionValue` in §13.1). Joints absent from `bindings` take their range midpoint.
 
 **Snapshot accessors:**
 
@@ -1720,6 +1720,8 @@ fn bounding_box(s: Snapshot) -> BoundingBox
 ```
 
 `center_of_mass` with `densities = undef` (the default) uses uniform density across all bodies; an empty map (`{}`) is treated identically to `undef`. A partial map uses the specified density for each listed body and falls back to uniform density for any body absent from the map. `bounding_box` returns the axis-aligned bounding box of all body geometry in the snapshot, expressed in world coordinates. `BoundingBox` is defined in §3.10. `BodyId` is the opaque identifier returned by `.body()` (§13.2).
+
+**Point-mass approximation.** `bounding_box` always computes the axis-aligned envelope of each body's *origin point* (the translation component of its world-frame transform), not the true geometric extent of its solid; a volumetric upgrade (the real BREP bounding box via `BRepBndLib::Add`) is tracked separately (task #2530) and is out of scope here. `center_of_mass` falls back to that same origin-point, density-weighted approximation only when at least one body in the snapshot lacks resolvable mass data; when every body carries resolvable mass (an explicitly attached mass-properties structure, or mass properties baked in by the build), it instead returns the true mass-weighted centroid over each body's full posed geometry, and the `densities` argument is ignored.
 
 ### 13.4 `std.mechanism.sweep`
 
