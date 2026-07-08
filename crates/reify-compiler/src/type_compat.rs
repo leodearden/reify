@@ -4322,4 +4322,131 @@ mod tests {
         let v = Type::vec3(Type::length());
         assert_eq!(infer_binop_type(BinOp::Mul, &v, &Type::Int), v);
     }
+
+    // ── β2 step-3 RED — infer_mul_div_result: Complex + Transform arms ──────
+    //
+    // Extends infer_mul_div_result with the Complex(q) and Transform(n) arms,
+    // pinned row-for-row against the β1 runtime truth table (mul: lib.rs
+    // 4361-4458, 4485-4626; div: lib.rs 4699-4754).
+    //
+    // RED: step-2 returns None for every Complex/Transform combo below (no
+    // arm exists yet), so infer_binop_type falls back to the Type::Int
+    // placeholder instead of the Complex/aggregate result.
+
+    fn area_ty() -> Type {
+        Type::Scalar {
+            dimension: DimensionVector::AREA,
+        }
+    }
+
+    #[test]
+    fn infer_mul_div_result_complex_times_complex_multiplies_dimensions() {
+        let length_complex = Type::complex(Type::length());
+        let time_complex = Type::complex(time_ty());
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &length_complex, &time_complex),
+            Some(Type::complex(Type::Scalar {
+                dimension: DimensionVector::LENGTH.mul(&DimensionVector::TIME),
+            })),
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_complex_times_scalar_multiplies_dimensions_both_orders() {
+        let length_complex = Type::complex(Type::length());
+        let expected = Some(Type::complex(Type::Scalar {
+            dimension: DimensionVector::LENGTH.mul(&DimensionVector::TIME),
+        }));
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &length_complex, &time_ty()),
+            expected,
+        );
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &time_ty(), &length_complex),
+            expected,
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_complex_times_int_preserves_dimension_both_orders() {
+        let length_complex = Type::complex(Type::length());
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &length_complex, &Type::Int),
+            Some(length_complex.clone()),
+        );
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &Type::Int, &length_complex),
+            Some(length_complex),
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_complex_div_complex_divides_dimensions() {
+        let area_complex = Type::complex(area_ty());
+        let length_complex = Type::complex(Type::length());
+        assert_eq!(
+            infer_mul_div_result(BinOp::Div, &area_complex, &length_complex),
+            Some(Type::complex(Type::Scalar {
+                dimension: DimensionVector::AREA.div(&DimensionVector::LENGTH),
+            })),
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_complex_div_scalar_divides_dimensions() {
+        let area_complex = Type::complex(area_ty());
+        assert_eq!(
+            infer_mul_div_result(BinOp::Div, &area_complex, &Type::length()),
+            Some(Type::complex(Type::Scalar {
+                dimension: DimensionVector::AREA.div(&DimensionVector::LENGTH),
+            })),
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_complex_div_int_preserves_dimension() {
+        let length_complex = Type::complex(Type::length());
+        assert_eq!(
+            infer_mul_div_result(BinOp::Div, &length_complex, &Type::Int),
+            Some(length_complex),
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_transform_times_vector_yields_vector() {
+        let v = Type::vec3(Type::length());
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &Type::transform(3), &v),
+            Some(v),
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_transform_times_point_yields_point() {
+        let p = Type::point3(Type::length());
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &Type::transform(3), &p),
+            Some(p),
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_transform_times_transform_yields_transform_row9() {
+        // β1 row-9 pin: `Transform(3) * Transform(3) -> Transform(3)`.
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &Type::transform(3), &Type::transform(3)),
+            Some(Type::transform(3)),
+        );
+    }
+
+    #[test]
+    fn infer_mul_div_result_vector_times_transform_is_none_order_sensitive() {
+        // Order-sensitive: Transform × Vector IS supported (above), but the
+        // reverse Vector × Transform has no runtime-intentional arm.
+        let v = Type::vec3(Type::length());
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &v, &Type::transform(3)),
+            None,
+        );
+    }
 }
