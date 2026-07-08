@@ -105,6 +105,29 @@ _orphan_ppid_settled() {
     ps -o ppid= -p "$_child" 2>/dev/null | tr -d ' ' || echo ""
 }
 
+# _poll_survivor_alive <pid> <n>
+#   Condition-polled proof that <pid> is still alive (task 5148): retries up
+#   to <n> times via the zombie-aware _pid_effectively_gone (tolerating a
+#   transient-empty ps read instead of misreporting it as dead), ticking
+#   load_tolerant_sleep_tick between samples. Returns 0 (alive) on the first
+#   not-gone sample, 1 only once the whole budget is exhausted — still
+#   non-vacuous: a genuinely-dead pid exhausts the poll and returns 1.
+#   Shared by the Part 5 end-to-end survivor check and its Test 5b hermetic
+#   regression lock so BOTH exercise this ONE code path: a reversion to a
+#   single-shot ps sample anywhere in here flips both assertions, rather than
+#   a lock that only guards a duplicated copy of the loop (reviewer
+#   follow-up on the original Test 5b, which inlined its own copy).
+_poll_survivor_alive() {
+    local _pid="$1" _n="$2" _t
+    for ((_t=1; _t<=_n; _t++)); do
+        if ! _pid_effectively_gone "$_pid"; then
+            return 0
+        fi
+        load_tolerant_sleep_tick
+    done
+    return 1
+}
+
 # ---------------------------------------------------------------------------
 # _spawn_sentinel_pgroup <marker_bin> <count>
 #   Background <count> copies of "<marker_bin>" "${_SENTINEL_SLEEP_SECS}" and
@@ -137,7 +160,7 @@ _spawn_sentinel_pgroup() {
     wait
 }
 
-export -f _pid_effectively_gone _poll_pid_gone _orphan_ppid_settled _spawn_sentinel_pgroup
+export -f _pid_effectively_gone _poll_pid_gone _orphan_ppid_settled _poll_survivor_alive _spawn_sentinel_pgroup
 
 echo "=== lib_proc_reaper.sh unit tests ==="
 
@@ -824,21 +847,18 @@ assert "SIGKILL to parent does NOT reap the backgrounded test binary (survivor e
 
         # STRUCTURAL/condition-polled survivor-alive proof (task 5148):
         # replaces a fixed-wait + single ps sample, which raced a
-        # transient-empty ps read under pool load (data/verify-logs/4911) —
-        # poll across the load-scaled budget instead so a transient-empty
-        # read is retried rather than misreported as dead. Non-vacuous: a
-        # genuinely-dead survivor exhausts the poll -> _alive stays 0 ->
-        # exit 1 (RED).
-        _alive=0
-        for ((_t=1; _t<=_POLL_ATTEMPTS_ORPHAN; _t++)); do
-            if ! _pid_effectively_gone "$_fake_pid"; then
-                _alive=1
-                break
-            fi
-            load_tolerant_sleep_tick
-        done
+        # transient-empty ps read under pool load (data/verify-logs/4911).
+        # Delegates to the shared _poll_survivor_alive helper (exported at
+        # top-of-file) instead of an inline loop, so the Test 5b hermetic
+        # regression lock below — which drives this SAME helper — actually
+        # guards this code path: a reversion to a single-shot sample
+        # anywhere inside _poll_survivor_alive flips both this assertion and
+        # the lock, not just a duplicated copy of the loop. Non-vacuous: a
+        # genuinely-dead survivor exhausts the poll and returns 1 (RED).
+        _poll_survivor_alive "$_fake_pid" "$_POLL_ATTEMPTS_ORPHAN"
+        _alive_rc=$?
         "$_abs_kill" -9 "$_fake_pid" 2>/dev/null || true
-        exit $((1 - _alive))
+        exit "$_alive_rc"
     '
 
 # -- Test 5b (regression lock, task 5148): the condition-polled survivor
@@ -848,10 +868,11 @@ assert "SIGKILL to parent does NOT reap the backgrounded test binary (survivor e
 # land on a transient-empty read); here it is forced deterministically via a
 # stateful `ps` stub (extends the Part 8 SLOW_PS_STUB idiom below) whose FIRST
 # invocation emits nothing and whose invocations #2+ delegate to the real ps.
-# The condition-polled check below retries past that first empty read (via
-# _pid_effectively_gone, exported at the top of this file) and correctly
-# converges on ALIVE. Locks the fix: a reversion to a single-shot sample
-# would make this go RED again (as it did before task 5148).
+# The shared _poll_survivor_alive helper (see below — the SAME helper driven
+# by the production Test 5 check above) retries past that first empty read
+# and correctly converges on ALIVE. Locks the fix: a reversion to a
+# single-shot sample anywhere in that shared helper would make BOTH this and
+# Test 5 go RED again (as Test 5 did before task 5148).
 _P5_STUB_DIR="$(mktemp -d)"
 _TMPDIRS+=("$_P5_STUB_DIR")
 _P5_STUB_COUNTER="$_P5_STUB_DIR/ps_invocation_count"
@@ -892,20 +913,19 @@ assert "hermetic regression lock: condition-polled survivor check tolerates a tr
         # SIGKILL the parent (survivor is now orphaned but still alive).
         "$_abs_kill" -9 "$_parent_pid" 2>/dev/null || true
 
-        # Condition-polled logic shape (mirrors the fixed production check
-        # above): _pid_effectively_gone resolves ps via the PATH prepend
-        # above, so its FIRST call always hits the stubbed transient-empty
-        # invocation #1 and is retried instead of misreported as dead.
-        _alive=0
-        for ((_t=1; _t<=_POLL_ATTEMPTS_ORPHAN; _t++)); do
-            if ! _pid_effectively_gone "$_fake_pid"; then
-                _alive=1
-                break
-            fi
-            load_tolerant_sleep_tick
-        done
+        # Drives the SAME shared _poll_survivor_alive helper (exported at
+        # top-of-file, task 5148) as the production Test 5 check above,
+        # rather than a duplicated for-loop, so this lock actually guards
+        # that shared code path: a regression to a single-shot sample
+        # anywhere inside _poll_survivor_alive flips BOTH Test 5 and this
+        # lock. _pid_effectively_gone (called by the helper) resolves ps via
+        # the PATH prepend above, so the helper FIRST call always hits the
+        # stubbed transient-empty invocation #1 and is retried instead of
+        # misreported as dead.
+        _poll_survivor_alive "$_fake_pid" "$_POLL_ATTEMPTS_ORPHAN"
+        _alive_rc=$?
         "$_abs_kill" -9 "$_fake_pid" 2>/dev/null || true
-        exit $((1 - _alive))
+        exit "$_alive_rc"
     '
 
 assert "reap-orphaned-test-binaries.sh reaps an orphaned test binary after parent SIGKILL" \
