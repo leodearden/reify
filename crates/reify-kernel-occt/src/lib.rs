@@ -4183,6 +4183,15 @@ impl WarmStartable for OcctKernel {
         }
         // Atomic swap: only replace kernel state if at least one shape was
         // successfully deserialized. Otherwise the kernel state is untouched.
+        //
+        // Coverage boundary: the INV-GEO-3 exhaustive-destructure drift guard
+        // below only fires on this swap-occurs path. A future field that must
+        // be cleared even on the no-op (total-failure) branch is NOT caught
+        // by that guard — it would need its own explicit handling above this
+        // `if`, plus a behavioral pin (see
+        // `with_warm_state_total_failure_preserves_dirty_state_and_provenance`,
+        // which asserts the no-op path leaves every current field, including
+        // `parent_handle`, untouched on a dirty kernel).
         if !staged.is_empty() {
             // Rebuild repr map: for every successfully staged id, take the
             // persisted repr if present, falling back to BRepKind::Solid
@@ -5111,6 +5120,65 @@ mod tests {
         // it points to an OCCT-version/topology change, not a cache-clear
         // regression.
         assert_eq!(faces.len(), 6, "sanity check: a box has 6 faces");
+    }
+
+    #[test]
+    fn warm_state_producer_does_not_serialize_extraction_provenance() {
+        // Kernel A extracts its own box's faces, populating parent_handle
+        // (child face id -> parent box id) before any warm-state round-trip.
+        let mut kernel_a = OcctKernel::new();
+        kernel_a
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+        let faces_a = kernel_a
+            .extract_faces(GeometryHandleId(1))
+            .expect("extract_faces on the box should succeed");
+        assert!(
+            !faces_a.is_empty(),
+            "box extraction should yield at least one face"
+        );
+
+        // Precondition: kernel_a resolves its own freshly-extracted face's
+        // owner correctly, pre-restore.
+        assert_eq!(
+            kernel_a
+                .query(&GeometryQuery::OwnerBody(faces_a[0]))
+                .unwrap(),
+            Value::Int(1),
+            "precondition: kernel_a should resolve its own extracted face's owner"
+        );
+
+        // Restore kernel_a's warm state into a FRESH kernel_b — no dirty
+        // pre-existing provenance of its own, so a `parent_handle.clear()`
+        // on the consumer side would be a no-op regardless. This isolates
+        // the *producer* half of the persist/clear classification: it
+        // proves `warm_state()` never serialized kernel_a's parent_handle
+        // entries into `OcctWarmState` at all, independent of whether the
+        // consumer clears on restore (that consumer-side behavior is
+        // covered separately by `owner_body_survives_warm_start`, which
+        // uses a *dirty* consumer to get a RED-on-main signal).
+        let kernel_b = warm_restore(&kernel_a, OcctKernel::new());
+
+        // faces_a[0]'s underlying shape blob round-trips into kernel_b's
+        // shape table verbatim (extracted sub-shapes are ordinary entries in
+        // `shapes`/`reprs`, PERSIST-classified like any other handle) — but
+        // its provenance link must not have survived. If `warm_state()` ever
+        // starts serializing `parent_handle`, this fresh kernel_b would
+        // silently resolve the owner "correctly" (there is no stale state
+        // here to expose the bug the way a dirty consumer would), so this
+        // assertion is the only thing pinning the "derived, not persisted"
+        // half of the classification.
+        let result = kernel_b.query(&GeometryQuery::OwnerBody(faces_a[0]));
+        assert!(
+            matches!(result, Err(QueryError::QueryFailed(_))),
+            "warm_state() must not serialize extraction provenance \
+             (parent_handle); got {:?}",
+            result
+        );
     }
 
     #[test]
