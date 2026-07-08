@@ -159,6 +159,25 @@ if [ -z "$SUBCOMMAND" ]; then
     exit 2
 fi
 
+# _validate_threshold VALUE DEFAULT — echoes VALUE if it is a valid number
+# (awk numeric-validity guard, mirroring load_tolerance_lib.sh's $1+0==$1
+# idiom); else echoes DEFAULT. A garbage threshold must never reach the awk
+# comparison below unvalidated: it would leak verbatim into the stdout
+# ratio_threshold=/avg10_threshold= fields, and a non-numeric string on one
+# side of an awk comparison forces a STRING (not numeric) comparison —
+# unpredictable rather than safely defaulting.
+_validate_threshold() {
+    local _val="$1" _default="$2" _valid
+    _valid="$(printf '%s' "$_val" | awk '{if ($1+0 == $1 && $1 != "") print "ok"}' 2>/dev/null || true)"
+    if [ "$_valid" = "ok" ]; then
+        echo "$_val"
+    else
+        echo "$_default"
+    fi
+}
+RATIO_THRESHOLD="$(_validate_threshold "$RATIO_THRESHOLD" "4.0")"
+AVG10_THRESHOLD="$(_validate_threshold "$AVG10_THRESHOLD" "80")"
+
 # ── avg10 parser: guarded-source cpu-admit.sh (PRD decision #3: single PSI
 # parser, no drift) when it AND lib_clock_stop.sh both exist next to this
 # script; inline parity fallback otherwise. cpu-admit.sh sources
