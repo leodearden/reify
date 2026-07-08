@@ -747,7 +747,7 @@ async fn crash_detection_sets_state_to_crashed_on_eof() {
     // Poll under timeout: the spawned reader task must notice EOF and set Crashed.
     // A fixed yield count is flaky on loaded CI runners — same race as the wiring
     // test (`from_parts_with_mcp_emits_sidecar_crashed_on_eof`) below.
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             if matches!(*handle.state().lock().await, SidecarState::Crashed(_)) {
                 break;
@@ -793,7 +793,7 @@ async fn from_parts_with_mcp_emits_sidecar_crashed_on_eof() {
 
     // Poll under timeout: the spawned on_exit task must acquire the state mutex
     // and emit the event; a fixed yield count is flaky on loaded CI runners.
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             if matches!(*handle.state().lock().await, SidecarState::Crashed(_)) {
                 break;
