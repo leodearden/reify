@@ -193,8 +193,8 @@ _cleanup_balancer() {
         wait "$_BALANCER_PID" 2>/dev/null || true
     fi
     _BALANCER_PID=""
-    [ -n "$_MERGE_FIFO"  ] && rm -f "$_MERGE_FIFO"  || true
-    [ -n "$_TASK_FIFO"   ] && rm -f "$_TASK_FIFO"   || true
+    [ -n "$_MERGE_FIFO"  ] && rm -f "$_MERGE_FIFO" "${_MERGE_FIFO}.owner" || true
+    [ -n "$_TASK_FIFO"   ] && rm -f "$_TASK_FIFO" "${_TASK_FIFO}.owner"   || true
     [ -n "$_PSI_FIXTURE" ] && rm -f "$_PSI_FIXTURE" || true
     _MERGE_FIFO=""
     _TASK_FIFO=""
@@ -1719,5 +1719,82 @@ assert "17e: GUARD — ExecStopPost still references reify-jobserver-merge (orig
 # 17f: GUARD — ExecStopPost reify-jobserver-task line still present
 assert "17f: GUARD — ExecStopPost still references reify-jobserver-task (orig FIFO)" \
     bash -c "grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -F 'ExecStopPost' | grep -qF 'reify-jobserver-task'"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 18: FIFO owner stamp write (test-18, task 5146)
+#   verify.sh cannot distinguish a live FIFO from one left behind by a crashed
+#   balancer (existence-only `[ -p FIFO ]` guard).  The daemon must write a
+#   sidecar owner stamp "${FIFO}.owner" = "<pid> <boot_id>" AFTER opening each
+#   FIFO O_RDWR, for BOTH the merge and task FIFOs, so verify.sh can probe
+#   liveness before trusting the FIFO's existence.
+#
+#   (a) ${_MERGE_FIFO}.owner and ${_TASK_FIFO}.owner exist as regular files
+#       (polled, bounded ~5s).
+#   (b) First whitespace field of each stamp == $_BALANCER_PID, and that pid
+#       is alive (kill -0 / /proc/<pid> present).
+#   (c) Second field of each stamp == the host boot_id
+#       ($(cat /proc/sys/kernel/random/boot_id)).
+#
+#   RED today: the balancer writes no stamp — the poll below times out and
+#   the stamp files never appear.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 18: FIFO owner stamp write ---"
+
+_cleanup_balancer   # ensure clean state from any prior run
+
+start_balancer 4 0.05
+wait_for_seed 10 || true
+
+_b18_host_boot="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)"
+
+# Poll (bounded ~5s) until BOTH owner stamps exist.
+_b18_stamps_present=0
+_b18_t0=$(date +%s)
+while true; do
+    if [ -f "${_MERGE_FIFO}.owner" ] && [ -f "${_TASK_FIFO}.owner" ]; then
+        _b18_stamps_present=1; break
+    fi
+    [ $(( $(date +%s) - _b18_t0 )) -ge 5 ] && break
+    sleep 0.05
+done
+
+assert "Block 18: both owner stamps appear within timeout" \
+    test "$_b18_stamps_present" -eq 1
+
+assert "Block 18: merge owner stamp is a regular file" \
+    test -f "${_MERGE_FIFO}.owner"
+
+assert "Block 18: task owner stamp is a regular file" \
+    test -f "${_TASK_FIFO}.owner"
+
+_b18_merge_pid=""; _b18_merge_boot=""
+if [ -f "${_MERGE_FIFO}.owner" ]; then
+    read -r _b18_merge_pid _b18_merge_boot < "${_MERGE_FIFO}.owner" || true
+fi
+_b18_task_pid=""; _b18_task_boot=""
+if [ -f "${_TASK_FIFO}.owner" ]; then
+    read -r _b18_task_pid _b18_task_boot < "${_TASK_FIFO}.owner" || true
+fi
+
+assert "Block 18: merge stamp pid == balancer pid" \
+    test "$_b18_merge_pid" = "$_BALANCER_PID"
+
+assert "Block 18: task stamp pid == balancer pid" \
+    test "$_b18_task_pid" = "$_BALANCER_PID"
+
+assert "Block 18: merge stamp pid is alive" \
+    bash -c '[ -n "$1" ] && { kill -0 "$1" 2>/dev/null || [ -d "/proc/$1" ]; }' _ "$_b18_merge_pid"
+
+assert "Block 18: task stamp pid is alive" \
+    bash -c '[ -n "$1" ] && { kill -0 "$1" 2>/dev/null || [ -d "/proc/$1" ]; }' _ "$_b18_task_pid"
+
+assert "Block 18: merge stamp boot_id == host boot_id" \
+    test "$_b18_merge_boot" = "$_b18_host_boot"
+
+assert "Block 18: task stamp boot_id == host boot_id" \
+    test "$_b18_task_boot" = "$_b18_host_boot"
+
+_cleanup_balancer
 
 test_summary
