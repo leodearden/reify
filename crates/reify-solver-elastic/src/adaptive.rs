@@ -256,26 +256,105 @@ pub const DORFLER_THETA: f64 = 0.5;
 ///    soon as the running sum reaches `theta * total`.
 /// 4. Return the marked indices sorted **ascending**.
 ///
+/// # Fail-closed: non-finite indicators are excluded, not ordered
+///
+/// A NaN error indicator poisons `total` (`Σ` includes a NaN ⇒ NaN) and
+/// scrambles `partial_cmp`-based ordering (NaN compares `Equal` against every
+/// value); an infinite indicator poisons `total` to `±Inf`, which either
+/// marks every element (`+Inf` ⇒ `cumulative >= threshold` never trips) or
+/// marks none (`-Inf` ⇒ `cumulative(0) >= -Inf` trips immediately) — in
+/// either case producing a marked set that does not reflect the finite error
+/// field. This is upstream pathology in the solve's error indicator, not a
+/// condition [`mark_dorfler`] can silently paper over: every non-finite
+/// indicator is excluded from both `total` and the sort order (so it can
+/// never be marked), a single WARN is emitted, and the finite sub-problem is
+/// marked exactly as if the non-finite entries were never present. Mirrors
+/// the fail-closed guard in
+/// [`through_thickness_check`](reify_kernel_gmsh::through_thickness::through_thickness_check).
+///
+/// Summation overflow gets the same fail-closed treatment. Every individual
+/// indicator folded into `total` can be finite yet their sum can still
+/// overflow to `±Inf` (e.g. two indicators near `f64::MAX`), reproducing the
+/// "every element marked" pathology above from a threshold that has itself
+/// become infinite. `mark_dorfler` checks `total` for finiteness after the
+/// fold and, if it overflowed, warns once and returns an empty `Vec` rather
+/// than risk an over-marked set.
+///
+/// The "single WARN" guarantee above is **per-guard, not per-call**: a call
+/// whose input is both non-finite-poisoned (at least one non-finite entry)
+/// *and* overflow-poisoned (the finite remainder's sum still overflows)
+/// trips both guards and emits **two** WARN events — one with `reason =
+/// "non_finite_indicator"`, one with `reason = "non_finite_total"` —
+/// distinguished by the `reason` field, before returning an empty `Vec`.
+///
 /// # Edge cases
 ///
 /// An empty slice and an all-zero indicator vector both return an empty `Vec`:
 /// when `total == 0` the threshold is `0`, and the empty set already satisfies
 /// `cumulative(0) >= theta * 0`, so no element is marked. A zero-error field
 /// (e.g. the Zienkiewicz patch test) therefore triggers no wasted refinement,
-/// consistent with [`crate::error_estimator`]'s zero-energy guard.
+/// consistent with [`crate::error_estimator`]'s zero-energy guard. Non-finite
+/// indicators compose with this: excluded per the fail-closed policy above
+/// rather than contributing to `total`, so an all-non-finite slice behaves
+/// like an all-zero one — an empty marked set, plus the single WARN.
 pub fn mark_dorfler(indicators: &[f64], theta: f64) -> Vec<usize> {
-    let total: f64 = indicators.iter().sum();
+    // Single pass over `indicators`: tally non-finite entries, sum the
+    // finite ones, and collect the finite indices that will be sorted below.
+    let mut n_non_finite = 0usize;
+    let mut total = 0.0_f64;
+    let mut order: Vec<usize> = Vec::new();
+    for (i, &v) in indicators.iter().enumerate() {
+        if v.is_finite() {
+            order.push(i);
+            total += v;
+        } else {
+            n_non_finite += 1;
+        }
+    }
+    if n_non_finite > 0 {
+        tracing::warn!(
+            target: "reify_solver_elastic::adaptive",
+            reason = "non_finite_indicator",
+            n_non_finite = n_non_finite,
+            n_indicators = indicators.len(),
+            "Dörfler marking: excluded non-finite error indicator(s) from the \
+             marked set (likely upstream pathology in the solve's error \
+             field); finite indicators still marked per the Dörfler threshold"
+        );
+    }
+
+    // Fail-closed against summation overflow: every value folded into
+    // `total` above is individually finite, but the sum itself can still
+    // overflow to `±Inf` (e.g. two indicators near `f64::MAX`). An infinite
+    // `total` poisons `threshold` to `±Inf`, reproducing the same
+    // "cumulative >= threshold never trips ⇒ every element marked" pathology
+    // documented above for non-finite indicators — so it gets the same
+    // fail-closed treatment: warn once and mark nothing rather than risk an
+    // over-marked set.
+    if !total.is_finite() {
+        tracing::warn!(
+            target: "reify_solver_elastic::adaptive",
+            reason = "non_finite_total",
+            n_indicators = indicators.len(),
+            "Dörfler marking: finite indicators summed to a non-finite total \
+             (summation overflow); marking nothing rather than risking an \
+             over-marked set"
+        );
+        return Vec::new();
+    }
+
     let threshold = theta * total;
 
-    // Indices sorted by (indicator desc, index asc) — a total order, so the
-    // result is deterministic regardless of sort stability.
-    let mut order: Vec<usize> = (0..indicators.len()).collect();
-    order.sort_by(|&a, &b| {
-        indicators[b]
-            .partial_cmp(&indicators[a])
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then(a.cmp(&b))
-    });
+    // Sort the finite indices by (indicator desc, index asc) — a total
+    // order, so the result is deterministic regardless of sort stability.
+    // Every entry in `order` is finite (non-finite indices were excluded
+    // above; see "Fail-closed" above), so `total_cmp` is panic-free here and
+    // agrees with the old `partial_cmp`-based order on any finite value — the
+    // two orders diverge only on signed zero (`total_cmp` places -0.0 before
+    // +0.0, while `partial_cmp` treats them as Equal). This function is
+    // `pub` with no precondition barring negative indicators, but the
+    // agreement holds regardless of sign, so no such precondition is needed.
+    order.sort_by(|&a, &b| indicators[b].total_cmp(&indicators[a]).then(a.cmp(&b)));
 
     let mut cumulative = 0.0_f64;
     let mut marked: Vec<usize> = Vec::new();
@@ -476,6 +555,9 @@ pub fn refine_marked_elements(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+
     use super::*;
 
     // -----------------------------------------------------------------------
@@ -524,6 +606,182 @@ mod tests {
         // wasted refinement on a zero-error field.
         let marked = mark_dorfler(&[0.0, 0.0, 0.0], 0.5);
         assert!(marked.is_empty(), "all-zero indicators ⇒ empty marked set");
+    }
+
+    // -----------------------------------------------------------------------
+    // E2 (PRD docs/prds/compute-fea-hardening.md, §Sketch §4, INV-FEA-3):
+    // mark_dorfler — fail-closed non-finite indicator exclusion + single WARN.
+    //
+    // Mirrors the fail-closed guard-test structure at
+    // `crates/reify-kernel-gmsh/tests/through_thickness_tests.rs:382-466`,
+    // adapted from "empty Vec + 1 warn" (whole-function early return) to
+    // "non-finite index excluded from the marked set + finite sub-vector
+    // still Dörfler-marks correctly + 1 warn" (per-element exclusion).
+    // -----------------------------------------------------------------------
+
+    /// Runs `f` under a WARN-counting subscriber targeting
+    /// `reify_solver_elastic::adaptive` and returns `f`'s result alongside
+    /// the number of WARN events it emitted.
+    ///
+    /// Shared by every `mark_dorfler` fail-closed guard test below so each
+    /// one only states its call + assertions, rather than re-inlining the
+    /// prime-cache / build-subscriber / with_default / load-counter
+    /// boilerplate.
+    fn run_under_warn_counter<F: FnOnce() -> Vec<usize>>(f: F) -> (Vec<usize>, usize) {
+        // Prime the callsite cache so per-test with_default subscribers see
+        // events even if a prior test thread hit the callsite with no
+        // subscriber active.
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let (subscriber, counters) = reify_test_support::CountingSubscriberBuilder::new()
+            .count_level(tracing::Level::WARN)
+            .target_prefix("reify_solver_elastic::adaptive")
+            .build();
+        let warn_arc = Arc::clone(&counters[&tracing::Level::WARN]);
+
+        let result = tracing::subscriber::with_default(subscriber, f);
+        let warn_count = warn_arc.load(Ordering::Acquire);
+        (result, warn_count)
+    }
+
+    /// Shared scaffold for the three non-finite-indicator guard tests.
+    ///
+    /// Feeds `[bad, 1.0, 2.0, 3.0, 4.0]` (θ=0.5) through `mark_dorfler` under a
+    /// WARN-counting subscriber and asserts:
+    ///
+    /// - (a) the returned marked set does not contain index 0 (the non-finite
+    ///   element) — it is excluded outright, never left in with an undefined
+    ///   sort position;
+    /// - (b) the finite sub-vector `{1.0, 2.0, 3.0, 4.0}` (indices 1..4) still
+    ///   Dörfler-marks exactly as `mark_dorfler_half_marks_largest_until_half_total`
+    ///   does for `[1.0, 2.0, 3.0, 4.0]` (marks `{2, 3}`), index-shifted by the
+    ///   prepended non-finite element ⇒ `{3, 4}`;
+    /// - (c) exactly one WARN event is emitted at the
+    ///   `reify_solver_elastic::adaptive` target.
+    fn assert_non_finite_indicator_excluded_and_warns(bad: f64) {
+        let (marked, warn_count) =
+            run_under_warn_counter(|| mark_dorfler(&[bad, 1.0, 2.0, 3.0, 4.0], 0.5));
+
+        // (a) The non-finite element must never enter the marked set. This
+        // is technically subsumed by the exact-equality check (b) below
+        // (if `marked == vec![3, 4]` then index 0 is provably absent), but
+        // is kept as its own assertion so a regression that only breaks the
+        // exclusion (rather than the finite ordering) gets a more specific
+        // failure message.
+        assert!(
+            !marked.contains(&0),
+            "non-finite indicator (bad={bad}) must be excluded from the marked \
+             set, not left in with an undefined sort position; got {marked:?}"
+        );
+
+        // (b) The finite sub-vector {1,2,3,4} still Dörfler-marks its two
+        // largest (index-shifted by the prepended non-finite element).
+        assert_eq!(
+            marked,
+            vec![3, 4],
+            "finite indicators must still mark correctly per the Dörfler \
+             threshold with the non-finite indicator (bad={bad}) excluded"
+        );
+
+        // (c) Exactly one WARN event must be emitted at the named target.
+        assert_eq!(
+            warn_count, 1,
+            "expected exactly 1 WARN event at reify_solver_elastic::adaptive \
+             (bad={bad}); got {warn_count}"
+        );
+    }
+
+    /// A NaN indicator must be excluded from the marked set — NaN poisons
+    /// `total`/`threshold` via `sum()` (so `cumulative >= threshold` never
+    /// trips and every element gets marked) and scrambles the `partial_cmp`
+    /// sort order. The finite indicators must still mark correctly, and
+    /// exactly one WARN must be emitted at the `reify_solver_elastic::adaptive`
+    /// target.
+    #[test]
+    fn mark_dorfler_nan_indicator_excluded_and_warns() {
+        assert_non_finite_indicator_excluded_and_warns(f64::NAN);
+    }
+
+    /// A +Inf indicator must be excluded from the marked set (Inf poisons
+    /// `total`/`threshold` to Inf, so `cumulative >= threshold` never trips
+    /// and every element — including the Inf one — would otherwise be
+    /// marked).
+    #[test]
+    fn mark_dorfler_pos_infinity_indicator_excluded_and_warns() {
+        assert_non_finite_indicator_excluded_and_warns(f64::INFINITY);
+    }
+
+    /// A -Inf indicator must be excluded from the marked set. -Inf takes a
+    /// slightly different arithmetic path than +Inf (avoids any
+    /// +Inf + -Inf = NaN interaction that could mask the failure mode), so it
+    /// is tested separately to close the `!is_finite()` predicate's coverage.
+    #[test]
+    fn mark_dorfler_neg_infinity_indicator_excluded_and_warns() {
+        assert_non_finite_indicator_excluded_and_warns(f64::NEG_INFINITY);
+    }
+
+    /// Multiple non-finite indicators in the same call must still emit
+    /// exactly ONE WARN event — the guard is a single guarded statement per
+    /// call, not one emission per non-finite element.
+    #[test]
+    fn mark_dorfler_multiple_non_finite_still_warns_once() {
+        let (_marked, warn_count) =
+            run_under_warn_counter(|| mark_dorfler(&[f64::NAN, f64::NAN, 1.0, 2.0], 0.5));
+
+        assert_eq!(
+            warn_count, 1,
+            "two non-finite indicators in one call must still emit exactly 1 \
+             WARN (fires once per call, not once per bad element); got {warn_count}"
+        );
+    }
+
+    /// An all-non-finite slice must behave like an all-zero one, per the
+    /// "Edge cases" contract documented on `mark_dorfler` above: every
+    /// indicator is excluded, so `order` ends up empty ⇒ `total == 0` ⇒
+    /// `threshold == 0`, and the already-empty marked set trivially
+    /// satisfies `cumulative(0) >= 0`. This pins that composed path
+    /// distinctly from the "some finite, some not" cases above — an
+    /// all-non-finite input is the boundary between the exclusion logic and
+    /// the marking loop, not just a bigger version of the mixed case (e.g. a
+    /// naive implementation could special-case "at least one finite
+    /// survivor" and mishandle zero survivors).
+    #[test]
+    fn mark_dorfler_all_non_finite_marks_nothing_and_warns_once() {
+        let (marked, warn_count) = run_under_warn_counter(|| {
+            mark_dorfler(&[f64::NAN, f64::INFINITY, f64::NEG_INFINITY], 0.5)
+        });
+
+        assert!(
+            marked.is_empty(),
+            "an all-non-finite slice must behave like an all-zero one — empty \
+             marked set; got {marked:?}"
+        );
+        assert_eq!(
+            warn_count, 1,
+            "an all-non-finite slice must still emit exactly 1 WARN (fires \
+             once per call, not once per non-finite element); got {warn_count}"
+        );
+    }
+
+    /// Summation overflow must be treated as fail-closed too: every
+    /// individual indicator can be finite while their sum still overflows to
+    /// `±Inf` (e.g. two indicators near `f64::MAX`), which would otherwise
+    /// poison `threshold` to `±Inf` and mark every element. `mark_dorfler`
+    /// must instead warn exactly once and mark nothing.
+    #[test]
+    fn mark_dorfler_summation_overflow_marks_nothing_and_warns() {
+        // Both indicators are individually finite (well under f64::MAX), but
+        // their sum overflows to +Inf.
+        let (marked, warn_count) = run_under_warn_counter(|| mark_dorfler(&[1e308, 1e308], 0.5));
+
+        assert!(
+            marked.is_empty(),
+            "summation overflow must fail closed to an empty marked set; got {marked:?}"
+        );
+        assert_eq!(
+            warn_count, 1,
+            "summation overflow must emit exactly 1 WARN; got {warn_count}"
+        );
     }
 
     // -----------------------------------------------------------------------
