@@ -2828,16 +2828,23 @@ impl Mesh {
             });
         }
 
-        // Obligation 4 — Closed: on the position-welded quotient topology,
-        // every directed edge must have its reverse exactly once (no open
-        // boundary). Position-welding first is essential: OCCT's per-face
-        // tessellation output (`occt_wrapper.cpp:5847`) emits each corner
-        // once per incident face, so the RAW index buffer is never closed —
-        // only the welded quotient is. Lifted from the
-        // closed-orientable-manifold invariant in
-        // `tessellation_winding_integration.rs` (task 4336). Consistent
-        // winding (same-direction duplicate detection) shares this same
-        // directed-edge pass but is added in a later obligation.
+        // Obligations 4/5 — ConsistentWinding + Closed: on the
+        // position-welded quotient topology, every directed edge must have
+        // its reverse exactly once. Position-welding first is essential:
+        // OCCT's per-face tessellation output (`occt_wrapper.cpp:5847`)
+        // emits each corner once per incident face, so the RAW index buffer
+        // is (by design) never closed — only the welded quotient is. Lifted
+        // from the closed-orientable-manifold invariant in
+        // `tessellation_winding_integration.rs` (task 4336): a single
+        // directed-edge occurrence map serves both obligations —
+        // `reversed_edges` counts directed edges occurring more than once
+        // in the SAME direction (two triangles agreeing on a shared edge's
+        // direction, which is a winding inconsistency), `open_edges` counts
+        // directed edges whose reverse never occurs at all (a boundary
+        // hole). A same-direction duplicate always also leaves its true
+        // reverse absent, so both counts populate together for that input
+        // — but ConsistentWinding is reported first (PRD §11.1): it is the
+        // more specific diagnosis of the two.
         let (_, welded_indices) = self.weld_positions();
         let remapped: Vec<u32> = self
             .indices
@@ -2854,9 +2861,25 @@ impl Mesh {
             *edge_count.entry((b, c)).or_insert(0) += 1;
             *edge_count.entry((c, a)).or_insert(0) += 1;
         }
+        // Totals: a sum of a per-key predicate over the whole map, so the
+        // result doesn't depend on (nondeterministic) hash-map iteration
+        // order.
+        let mut reversed_edges = 0usize;
         let mut open_edges = 0usize;
+        for (&(u, v), &count) in &edge_count {
+            if count >= 2 {
+                reversed_edges += 1;
+            }
+            if *edge_count.get(&(v, u)).unwrap_or(&0) == 0 {
+                open_edges += 1;
+            }
+        }
+        // Witnesses: a separate, deterministic pass in triangle-emission
+        // order so the reported offender doesn't depend on hash-map
+        // iteration order, even though the totals above don't need it.
+        let mut winding_witness: Option<(u32, u32)> = None;
         let mut open_witness: Option<(u32, u32)> = None;
-        for tri in 0..complete_tris {
+        'witness_search: for tri in 0..complete_tris {
             let base = tri * 3;
             let tri_edges = [
                 (remapped[base], remapped[base + 1]),
@@ -2864,21 +2887,37 @@ impl Mesh {
                 (remapped[base + 2], remapped[base]),
             ];
             for (u, v) in tri_edges {
-                let count = *edge_count.get(&(u, v)).unwrap_or(&0);
-                let rev = *edge_count.get(&(v, u)).unwrap_or(&0);
-                if count == 1 && rev == 0 {
-                    open_edges += 1;
-                    if open_witness.is_none() {
-                        open_witness = Some((u, v));
-                    }
+                if winding_witness.is_none() && *edge_count.get(&(u, v)).unwrap_or(&0) >= 2 {
+                    winding_witness = Some((u, v));
+                }
+                if open_witness.is_none() && *edge_count.get(&(v, u)).unwrap_or(&0) == 0 {
+                    open_witness = Some((u, v));
+                }
+                if winding_witness.is_some() && open_witness.is_some() {
+                    break 'witness_search;
                 }
             }
         }
-        if let Some((u, v)) = open_witness {
+        if reversed_edges > 0 {
+            let (u, v) =
+                winding_witness.expect("reversed_edges > 0 implies a winding witness was found");
+            return Err(MeshContractViolation {
+                invariant: MeshInvariant::ConsistentWinding,
+                counts: MeshViolationCounts {
+                    open_edges,
+                    reversed_edges,
+                    ..Default::default()
+                },
+                witness: MeshWitness::Edge { u, v },
+            });
+        }
+        if open_edges > 0 {
+            let (u, v) = open_witness.expect("open_edges > 0 implies an open witness was found");
             return Err(MeshContractViolation {
                 invariant: MeshInvariant::Closed,
                 counts: MeshViolationCounts {
                     open_edges,
+                    reversed_edges,
                     ..Default::default()
                 },
                 witness: MeshWitness::Edge { u, v },
