@@ -394,6 +394,19 @@ def make_fifo(path: str) -> None:
     os.mkfifo(path)
 
 
+def _unlink_best_effort(path: str) -> None:
+    """Best-effort remove: swallow FileNotFoundError and any other OSError.
+
+    Only called on the clean-exit path (never reachable on SIGKILL, since
+    Python cannot catch that signal) -- a stale-file removal failure must
+    never crash the daemon mid-shutdown and skip the remaining unlinks.
+    """
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
 def open_rdwr(path: str) -> int:
     """Open a FIFO O_RDWR|O_NONBLOCK.  Returns the fd (kept open for lifetime)."""
     return os.open(path, os.O_RDWR | os.O_NONBLOCK)
@@ -757,7 +770,17 @@ def main() -> None:
 
         time.sleep(POLL_INTERVAL)
 
-    # Clean exit — fds are closed by the OS when the process exits.
+    # Clean exit (SIGTERM/SIGINT) — fds are closed by the OS, and we also
+    # remove the FIFOs, owner stamps, and held-back file so a graceful
+    # restart never trips over stale state.  A SIGKILL bypasses this
+    # unlink entirely (Python cannot catch it) — that is what leaves the
+    # stamp behind naming the now-dead pid, making the crash detectable by
+    # verify.sh's liveness probe (task 5146).
+    _unlink_best_effort(MERGE_FIFO)
+    _unlink_best_effort(TASK_FIFO)
+    _unlink_best_effort(MERGE_FIFO + OWNER_STAMP_SUFFIX)
+    _unlink_best_effort(TASK_FIFO + OWNER_STAMP_SUFFIX)
+    _unlink_best_effort(HELD_BACK_FILE)
 
 
 if __name__ == "__main__":
