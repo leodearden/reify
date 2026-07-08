@@ -29,6 +29,7 @@ import {
   onTessellationDiagnostics,
   onCompileDiagnostics,
   onFeaDiagnosticsChanged,
+  onFeaConvergenceChanged,
   onTensegrityWiresUpdate,
   onTensegritySurfacesUpdate,
   onDisplayPanesUpdate,
@@ -215,6 +216,10 @@ export function createEngineStore(options?: EngineStoreOptions) {
 
   function setFeaDiagnostics(diags: FeaDiagnosticInfo[]) {
     setState('feaDiagnostics', diags);
+  }
+
+  function setFeaConvergence(conv: FeaConvergenceInfo | null) {
+    setState('feaConvergence', conv);
   }
 
   /**
@@ -458,6 +463,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
       onTessellationDiagnostics(setTessellationDiagnostics),
       onCompileDiagnostics(setCompileDiagnostics),
       onFeaDiagnosticsChanged(setFeaDiagnostics),
+      onFeaConvergenceChanged(setFeaConvergence),
       onTensegrityWiresUpdate(setTensegrityWires),
       onTensegritySurfacesUpdate(setTensegritySurfaces),
       onDisplayPanesUpdate(setDisplayPanes),
@@ -569,6 +575,7 @@ export function createEngineStore(options?: EngineStoreOptions) {
     setTessellationDiagnostics,
     setCompileDiagnostics,
     setFeaDiagnostics,
+    setFeaConvergence,
     setTensegrityWires,
     setTensegritySurfaces,
     setDisplayPanes,
