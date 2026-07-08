@@ -42,6 +42,7 @@ import {
   onAutoResolveIteration,
   onFileRemoved,
   onFeaDiagnosticsChanged,
+  onFeaConvergenceChanged,
   onTensegrityWiresUpdate,
   onTensegritySurfacesUpdate,
   onDisplayPanesUpdate,
@@ -413,6 +414,46 @@ describe('bridge event listeners', () => {
         expect.objectContaining({ kind: 'Unconstrained', rigid_body_modes: ['TranslationX'] }),
       ])
     );
+  });
+
+  it("onFeaConvergenceChanged subscribes to 'fea-convergence-changed' event", async () => {
+    const unlisten = vi.fn();
+    mockListen.mockResolvedValue(unlisten);
+
+    const callback = vi.fn();
+    const result = await onFeaConvergenceChanged(callback);
+
+    expect(mockListen).toHaveBeenCalledWith('fea-convergence-changed', expect.any(Function));
+    expect(result).toBe(unlisten);
+  });
+
+  it('onFeaConvergenceChanged passes payload to callback', async () => {
+    const unlisten = vi.fn();
+    mockListen.mockImplementation(async (_event, handler) => {
+      const payload = { converged: false, reason: 'MaxDofs' };
+      (handler as (event: { payload: unknown }) => void)({ payload });
+      return unlisten;
+    });
+
+    const callback = vi.fn();
+    await onFeaConvergenceChanged(callback);
+
+    expect(callback).toHaveBeenCalledWith(
+      expect.objectContaining({ converged: false, reason: 'MaxDofs' })
+    );
+  });
+
+  it('onFeaConvergenceChanged passes null payload to callback (clears stale indicator)', async () => {
+    const unlisten = vi.fn();
+    mockListen.mockImplementation(async (_event, handler) => {
+      (handler as (event: { payload: unknown }) => void)({ payload: null });
+      return unlisten;
+    });
+
+    const callback = vi.fn();
+    await onFeaConvergenceChanged(callback);
+
+    expect(callback).toHaveBeenCalledWith(null);
   });
 
   it('onCompileDiagnostics passes DiagnosticInfo[] payload to callback', async () => {
