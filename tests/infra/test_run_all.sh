@@ -1834,5 +1834,119 @@ else
     assert "T21h: seam-off all-pass fixture exits 0 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
 fi
 
+# -- Test 22: H2 Phase-1 single-writer progress heartbeat -----------------------
+# Task 5130 (PRD docs/prds/run-all-pool-contention-tiering-fix.md §9 L2):
+# proves a SINGLE-WRITER background printer emits an `INFO: run_all.sh pool
+# progress: X/Y complete, elapsed Ns` heartbeat on STDERR at least every
+# REIFY_RUN_ALL_PROGRESS_SECS seconds, so a contended/slow Phase-1 pool is
+# attributable on the live verify stream instead of a silent black box
+# (Phase-1 output is otherwise buffered until Phase 3). Also proves the line
+# is marker-safe (INV-4: no @@REIFY_CLOCK_ token, never a forbidden
+# line-anchored prefix) and additive/conditional (a fast pool with a high
+# interval emits no line at all -- the printer sleeps-FIRST).
+echo ""
+echo "--- Test 22: H2 Phase-1 single-writer progress heartbeat ---"
+
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+    # Marker-safety token, assembled at runtime (mirrors
+    # test_run_all_clock_marker_sanitize.sh's CP idiom) so THIS file's own
+    # stdout (this comment / the assert description strings below) is never
+    # itself a leak source when the real pool re-emits test_run_all.sh's output.
+    T22_CP='@@REIFY_CLOCK_'
+
+    # -- Slow-pool fixture: REIFY_RUN_ALL_PROGRESS_SECS=1, one `pool` member
+    # that sleeps 3s -- long enough for the 1s-cadence printer to fire at
+    # least once before the member completes. stdout/stderr captured into
+    # SEPARATE files so the INV-4 stream assertion (b) is meaningful.
+    TMPDIR_T22="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T22")
+    MANIFEST_T22="$TMPDIR_T22/classification.manifest"
+    cat > "$MANIFEST_T22" <<'EOF'
+test_pool_1.sh pool
+EOF
+    printf '#!/usr/bin/env bash\nsleep 3\nexit 0\n' > "$TMPDIR_T22/test_pool_1.sh"
+    chmod +x "$TMPDIR_T22/test_pool_1.sh"
+
+    T22_STDOUT="$TMPDIR_T22/stdout.txt"
+    T22_STDERR="$TMPDIR_T22/stderr.txt"
+    t22_rc=0
+    env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+        RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T22" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T22/pool.lock" \
+        REIFY_RUN_ALL_POOL_CONCURRENCY=2 \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        REIFY_RUN_ALL_PROGRESS_SECS=1 \
+        bash "$RUN_ALL" "$TMPDIR_T22" >"$T22_STDOUT" 2>"$T22_STDERR" || t22_rc=$?
+
+    if grep -qE '^INFO: run_all\.sh pool progress: [0-9]+/[0-9]+ complete, elapsed [0-9]+s$' "$T22_STDERR"; then
+        assert "T22a: stderr has >=1 pool-progress heartbeat line (slow pool, 1s cadence)" true
+    else
+        assert "T22a: stderr has >=1 pool-progress heartbeat line (slow pool, 1s cadence) (got stderr: $(cat "$T22_STDERR"))" false
+    fi
+
+    if grep -qE '^INFO: run_all\.sh pool progress: ' "$T22_STDOUT"; then
+        assert "T22b: pool-progress line is on stderr, NOT stdout (INV-4 stream) (got stdout: $(cat "$T22_STDOUT"))" false
+    else
+        assert "T22b: pool-progress line is on stderr, NOT stdout (INV-4 stream)" true
+    fi
+
+    if grep -F "${T22_CP}" "$T22_STDERR" >/dev/null 2>&1 || grep -F "${T22_CP}" "$T22_STDOUT" >/dev/null 2>&1; then
+        assert "T22c: pool-progress output contains no @@REIFY_CLOCK_ token (marker-safe, INV-4) (got stderr: $(cat "$T22_STDERR"); stdout: $(cat "$T22_STDOUT"))" false
+    else
+        assert "T22c: pool-progress output contains no @@REIFY_CLOCK_ token (marker-safe, INV-4)" true
+    fi
+
+    t22_progress_lines="$(grep -E 'pool progress:' "$T22_STDERR" || true)"
+    if [ -n "$t22_progress_lines" ] && ! grep -qvE '^INFO: ' <<<"$t22_progress_lines"; then
+        assert "T22d: every pool-progress line starts with 'INFO: ' (never --- Running: / FAILED / ===)" true
+    else
+        assert "T22d: every pool-progress line starts with 'INFO: ' (never --- Running: / FAILED / ===) (got: $t22_progress_lines)" false
+    fi
+
+    if [[ "$(cat "$T22_STDOUT")" == *"=== Summary: 1 discovered, 0 failed ==="* ]]; then
+        assert "T22e: byte-exact Summary line intact (1 discovered, 0 failed)" true
+    else
+        assert "T22e: byte-exact Summary line intact (1 discovered, 0 failed) (got: $(cat "$T22_STDOUT"))" false
+    fi
+
+    assert "T22f: run_all.sh exits 0 (slow pool member passes)" \
+        test "$t22_rc" -eq 0
+
+    # -- Fast-pool fixture + a high interval: no progress line at all
+    # (conditional / non-vacuous -- proves the printer doesn't spam every run).
+    TMPDIR_T22F="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T22F")
+    MANIFEST_T22F="$TMPDIR_T22F/classification.manifest"
+    cat > "$MANIFEST_T22F" <<'EOF'
+test_pool_1.sh pool
+EOF
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T22F/test_pool_1.sh"
+    chmod +x "$TMPDIR_T22F/test_pool_1.sh"
+
+    T22F_STDERR="$TMPDIR_T22F/stderr.txt"
+    t22f_rc=0
+    env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+        RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T22F" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T22F/pool.lock" \
+        REIFY_RUN_ALL_POOL_CONCURRENCY=2 \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        REIFY_RUN_ALL_PROGRESS_SECS=3600 \
+        bash "$RUN_ALL" "$TMPDIR_T22F" >/dev/null 2>"$T22F_STDERR" || t22f_rc=$?
+
+    if grep -q 'pool progress:' "$T22F_STDERR"; then
+        assert "T22g: fast pool + high interval emits NO pool-progress line (got: $(cat "$T22F_STDERR"))" false
+    else
+        assert "T22g: fast pool + high interval emits NO pool-progress line" true
+    fi
+else
+    assert "T22a: stderr has >=1 pool-progress heartbeat line (slow pool, 1s cadence) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T22b: pool-progress line is on stderr, NOT stdout (INV-4 stream) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T22c: pool-progress output contains no @@REIFY_CLOCK_ token (marker-safe, INV-4) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T22d: every pool-progress line starts with 'INFO: ' (never --- Running: / FAILED / ===) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T22e: byte-exact Summary line intact (1 discovered, 0 failed) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T22f: run_all.sh exits 0 (slow pool member passes) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T22g: fast pool + high interval emits NO pool-progress line (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+fi
+
 # -- Summary --------------------------------------------------------------------
 test_summary
