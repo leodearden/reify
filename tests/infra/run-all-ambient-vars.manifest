@@ -26,3 +26,14 @@
 # --- run_all.sh plan-line prefix env (verify.sh:1430) -----------------------
 REIFY_AUDIT_NO_COLD_BUILD
 REIFY_RUN_ALL_EXCLUDE_HOST_INFRA
+
+# --- orchestrator.yaml verify_env block (orchestrator.yaml:148-152) ---------
+# REIFY_RUN_ALL_EXCLUDE_HOST_INFRA already declared above (both sources carry
+# it). CARGO_MAKEFLAGS is deliberately excluded: owned solely by verify.sh's
+# apply_env() (contract C3 / task 4518 delta), not injected by verify_env.
+REIFY_GATE_EXCLUDE_HEAVY
+RUSTC_WRAPPER
+CARGO_INCREMENTAL
+REIFY_TEST_SEMAPHORE_CONCURRENCY
+REIFY_TEST_SEMAPHORE_WAIT
+REIFY_PSI_GATE_MAX_WAIT
