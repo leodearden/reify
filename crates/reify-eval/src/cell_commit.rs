@@ -85,9 +85,11 @@ pub enum TraceSource {
 
 impl TraceSource {
     /// A stable, kebab-case slug identifying this provenance path. Recorded
-    /// on the journal `Started` event's [`EventPayload::Custom`] payload, and
+    /// on the journal `Started` event's [`EventPayload::Custom`] payload —
+    /// verbatim on `CacheLeg::Record`, or with a `|cache-skip=<reason>`
+    /// suffix appended on `CacheLeg::Skip` (see [`commit_cell_result`]) — and
     /// intended as the stable key a future divergence audit attributes a
-    /// mismatch to — so these strings, once shipped, should not be renamed.
+    /// mismatch to, so these strings, once shipped, should not be renamed.
     pub fn as_str(&self) -> &'static str {
         match self {
             TraceSource::ColdEval => "cold-eval",
@@ -119,19 +121,58 @@ pub enum CacheLeg {
 ///
 /// Carries the `(value, determinacy)` pair so callers that previously read
 /// back the inserted tuple keep working, plus the cache/skip/provenance
-/// metadata the four-leg commit produced.
-#[allow(dead_code)] // fields read by tests only until migration leaves γ/δ/ε/ι land
+/// metadata the four-leg commit produced. Fields are private — migration
+/// call sites in other modules (leaves γ/δ/ε/ι) read them via the
+/// `pub(crate)` accessor methods below, not by reaching into the struct.
+#[allow(dead_code)] // fields read by tests/accessors only until migration leaves γ/δ/ε/ι land
 #[derive(Debug, Clone)]
 pub struct CommitOutcome {
     value: Value,
     determinacy: DeterminacyState,
     /// `Some` on `CacheLeg::Record` (forwarded from `record_evaluation`),
-    /// `None` on `CacheLeg::Skip` — the authoritative signal that nothing
-    /// was cached.
+    /// `None` on `CacheLeg::Skip` — the authoritative in-memory signal that
+    /// nothing was cached. The same fact is independently recoverable from
+    /// the journal alone, without this struct, via the paired `Started`
+    /// event's `cache-skip=` payload marker — see [`commit_cell_result`].
     cache_outcome: Option<EvalOutcome>,
     /// `Some(reason)` on `CacheLeg::Skip`, `None` on `CacheLeg::Record`.
     skip_reason: Option<&'static str>,
     trace_source: TraceSource,
+}
+
+/// Read-only accessors for [`CommitOutcome`] — the shape migration call
+/// sites in other modules (leaves γ/δ/ε/ι) use to consume a commit's result,
+/// since the struct's fields are private to this module.
+#[allow(dead_code)] // called by migration call sites from leaves γ/δ/ε/ι; a test exercises them until then
+impl CommitOutcome {
+    /// The committed value — mirrors what was written to the values and
+    /// snapshot legs.
+    pub(crate) fn value(&self) -> &Value {
+        &self.value
+    }
+
+    /// The resolved determinacy state — mirrors what was written to the
+    /// snapshot leg's tuple and, on `CacheLeg::Record`, the cache leg's
+    /// `CachedResult::Value`.
+    pub(crate) fn determinacy(&self) -> DeterminacyState {
+        self.determinacy
+    }
+
+    /// `Some` on `CacheLeg::Record` (forwarded from `record_evaluation`),
+    /// `None` on `CacheLeg::Skip`.
+    pub(crate) fn cache_outcome(&self) -> Option<EvalOutcome> {
+        self.cache_outcome
+    }
+
+    /// `Some(reason)` on `CacheLeg::Skip`, `None` on `CacheLeg::Record`.
+    pub(crate) fn skip_reason(&self) -> Option<&'static str> {
+        self.skip_reason
+    }
+
+    /// The provenance path this commit was attributed to.
+    pub(crate) fn trace_source(&self) -> TraceSource {
+        self.trace_source
+    }
 }
 
 /// The four `&mut` leg targets a commit writes to, bundled as disjoint
@@ -151,7 +192,10 @@ pub(crate) struct CommitLegs<'a> {
 ///
 /// Emits the full journal `Started`/`Completed` `EvalEvent` pair, subsuming
 /// the `record_eval_completed` helper (engine_eval.rs:369), which today emits
-/// only `Completed`.
+/// only `Completed`. On `CacheLeg::Skip`, the `Started` event's payload
+/// additionally carries a `cache-skip=<reason>` marker (see body), so the
+/// journal alone — with no access to the in-memory [`CommitOutcome`] — is
+/// sufficient to tell a genuine cache write apart from a skip.
 #[allow(dead_code)] // wired in by migration leaves γ/δ/ε/ι; exercised by tests until then
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn commit_cell_result(
@@ -175,12 +219,24 @@ pub(crate) fn commit_cell_result(
     let node_id = NodeId::Value(node.clone());
     let start = Instant::now();
 
+    // The `Started` event's payload doubles as the journal-only source of
+    // truth for the cache leg's fate: the trace-source slug always, plus a
+    // `|cache-skip=<reason>` suffix when `cache_leg` is `Skip`. This is what
+    // lets a consumer with access to the journal alone — not the in-memory
+    // `CommitOutcome` — discover that the cache leg was omitted, and why; the
+    // `Completed` event constructed below is NOT such a signal on the Skip
+    // path (see its `outcome` field's doc comment).
+    let started_payload = match cache_leg {
+        CacheLeg::Record => trace.as_str().to_string(),
+        CacheLeg::Skip(reason) => format!("{}|cache-skip={reason}", trace.as_str()),
+    };
+
     journal.record(EvalEvent {
         timestamp: start,
         node_id: node_id.clone(),
         kind: EventKind::Started,
         version,
-        payload: Some(EventPayload::Custom(trace.as_str().to_string())),
+        payload: Some(EventPayload::Custom(started_payload)),
     });
 
     // Every commit needs 3 independently-owned copies of `value` (values leg,
@@ -222,9 +278,11 @@ pub(crate) fn commit_cell_result(
             // event can be constructed; it must NOT be read as a claim that
             // anything changed or was cached. The authoritative "nothing was
             // cached" signal is `skip_reason.is_some()` (equivalently
-            // `CommitOutcome::cache_outcome == None`) — a future §2.6
-            // divergence audit must branch on that, not on this field, for
-            // any commit where `skip_reason.is_some()`.
+            // `CommitOutcome::cache_outcome == None`) for in-memory callers,
+            // and the paired `Started` event's `cache-skip=` payload marker
+            // (constructed above) for a journal-only consumer — a future
+            // §2.6 divergence audit must branch on one of those, never on
+            // this field, for any commit where the cache leg was skipped.
             outcome: cache_outcome.unwrap_or(EvalOutcome::Changed),
         },
         version,
@@ -355,11 +413,14 @@ mod tests {
         assert!(matches!(events[1].kind, EventKind::Completed { .. }));
 
         // Returned CommitOutcome mirrors what was written to all four legs.
-        assert_eq!(outcome.value, Value::Bool(true));
-        assert_eq!(outcome.determinacy, DeterminacyState::Determined);
-        assert_eq!(outcome.cache_outcome, Some(EvalOutcome::Changed));
-        assert_eq!(outcome.skip_reason, None);
-        assert_eq!(outcome.trace_source, TraceSource::ColdEval);
+        // Read via the pub(crate) accessors (not the private fields
+        // directly) to prove the accessors migration call sites will use
+        // return the right data.
+        assert_eq!(*outcome.value(), Value::Bool(true));
+        assert_eq!(outcome.determinacy(), DeterminacyState::Determined);
+        assert_eq!(outcome.cache_outcome(), Some(EvalOutcome::Changed));
+        assert_eq!(outcome.skip_reason(), None);
+        assert_eq!(outcome.trace_source(), TraceSource::ColdEval);
     }
 
     /// Extends Record-path coverage to `DeterminacyRule::Undetermined`
@@ -538,6 +599,31 @@ mod tests {
         );
         assert!(matches!(events[0].kind, EventKind::Started));
         assert!(matches!(events[1].kind, EventKind::Completed { .. }));
+
+        // The journal alone (no access to the in-memory CommitOutcome) must
+        // be able to discover that the cache leg was skipped, and why: the
+        // Started event's payload carries the trace slug plus a
+        // `cache-skip=<reason>` suffix.
+        match &events[0].payload {
+            Some(EventPayload::Custom(slug)) => assert_eq!(
+                slug, "cold-eval|cache-skip=cyclic let-cell (2266)",
+                "Started payload must carry both the trace slug and the skip reason"
+            ),
+            other => panic!("expected Started payload Custom(_), got {other:?}"),
+        }
+
+        // Completed's `outcome` on the Skip path is an UNSPECIFIED PLACEHOLDER
+        // (see the doc comment in commit_cell_result) — pinned here so a
+        // future change to the fallback is caught by this test instead of
+        // silently becoming load-bearing. It must NOT be read as "nothing
+        // changed" or "the value was cached": the Started-payload assertion
+        // above is the actual, journal-recoverable skip signal.
+        match &events[1].kind {
+            EventKind::Completed { outcome } => {
+                assert_eq!(*outcome, EvalOutcome::Changed);
+            }
+            other => panic!("expected Completed{{outcome}}, got {other:?}"),
+        }
 
         assert_eq!(outcome.cache_outcome, None);
         assert_eq!(outcome.skip_reason, Some("cyclic let-cell (2266)"));
