@@ -699,6 +699,66 @@ assert "_assert_serialized_events: empty event log -> output names the empty eve
     bash -c 'grep -Eqi "event log (is )?empty|no ACQUIRE.*RELEASE events" "$1"' _ "$_ASE_OUT3"
 
 # ===========================================================================
+# _dump_captured_stderr unit tests (Part F helper, task 5144 F2 mode-4)
+# ===========================================================================
+# RED (step-7): _dump_captured_stderr is not yet defined (step-8 GREENs
+# this). New Part F helper for mode-4 observability (5111 "silent FAIL"): a
+# nested run's captured stderr, dumped under a clear bracketed header, so a
+# failing exit-code assertion (Sections A/B/C/F) or a set-e-safe capture
+# failure (Section F2) leaves a diagnosable reason instead of silence.
+# Contract: MUST NEVER abort its caller under set -euo pipefail — always
+# returns rc 0 regardless of whether the errfile has content, is empty, or
+# is missing — because it is invoked as a bare diagnostic statement, not
+# wrapped in a guarded assert. Uses _run_capturing to capture the helper's
+# OWN stdout+stderr so tests can assert on both content and rc.
+echo ""
+echo "--- _dump_captured_stderr unit tests (Part F helper, task 5144 F2 mode-4) ---"
+
+_DCS_DIR="$(mktemp -d)"
+_TMPDIRS+=("$_DCS_DIR")
+
+# Case 1: non-empty errfile -> a bracketed header naming the label AND the
+# errfile's own content (e.g. via tail) appear in the output.
+_DCS_ERR1="$_DCS_DIR/err1.txt"
+printf 'nested verify.sh: something exploded\nline 2 of stderr\n' > "$_DCS_ERR1"
+_DCS_OUT1="$_DCS_DIR/out1.txt"
+_DCS_RC1=0
+_run_capturing "$_DCS_OUT1" _dump_captured_stderr "my-label-1" "$_DCS_ERR1" || _DCS_RC1=$?
+
+assert "_dump_captured_stderr: non-empty errfile -> rc 0 (got ${_DCS_RC1})" \
+    test "$_DCS_RC1" -eq 0
+assert "_dump_captured_stderr: non-empty errfile -> output has a bracketed header naming the label" \
+    bash -c 'grep -qF "[my-label-1]" "$1"' _ "$_DCS_OUT1"
+assert "_dump_captured_stderr: non-empty errfile -> output contains the errfile's own content" \
+    bash -c 'grep -qF "something exploded" "$1"' _ "$_DCS_OUT1"
+
+# Case 2: empty (0-byte) errfile -> a graceful "(no stderr captured)" note, no crash.
+_DCS_ERR2="$_DCS_DIR/err2.txt"
+: > "$_DCS_ERR2"
+_DCS_OUT2="$_DCS_DIR/out2.txt"
+_DCS_RC2=0
+_run_capturing "$_DCS_OUT2" _dump_captured_stderr "my-label-2" "$_DCS_ERR2" || _DCS_RC2=$?
+
+assert "_dump_captured_stderr: empty errfile -> rc 0, does not crash (got ${_DCS_RC2})" \
+    test "$_DCS_RC2" -eq 0
+assert "_dump_captured_stderr: empty errfile -> output has a '(no stderr captured)' style note" \
+    bash -c 'grep -qi "no stderr captured" "$1"' _ "$_DCS_OUT2"
+
+# Case 3: missing/nonexistent errfile -> same graceful note, rc 0, caller
+# survives (no set -e abort) — proven by requiring rc EXACTLY 0 (the
+# strongest guarantee: a function that always returns 0 can never trip
+# `set -e` regardless of whether its caller guards the call).
+_DCS_ERR3="$_DCS_DIR/does-not-exist.txt"
+_DCS_OUT3="$_DCS_DIR/out3.txt"
+_DCS_RC3=0
+_run_capturing "$_DCS_OUT3" _dump_captured_stderr "my-label-3" "$_DCS_ERR3" || _DCS_RC3=$?
+
+assert "_dump_captured_stderr: missing errfile -> rc 0, caller survives (got ${_DCS_RC3})" \
+    test "$_DCS_RC3" -eq 0
+assert "_dump_captured_stderr: missing errfile -> output has a '(no stderr captured)' style note" \
+    bash -c 'grep -qi "no stderr captured" "$1"' _ "$_DCS_OUT3"
+
+# ===========================================================================
 # Suite-start tree-sitter readiness gate (task 5144 F1)
 # ===========================================================================
 # ONE-TIME real regeneration/readiness check, before ANY execute-mode section
