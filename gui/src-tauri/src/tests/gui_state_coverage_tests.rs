@@ -218,6 +218,10 @@ fn classification_table() -> BTreeMap<&'static str, SyncMechanism> {
         SyncMechanism::Emitter("fea-diagnostics-changed"),
     );
     table.insert(
+        "fea_convergence",
+        SyncMechanism::Emitter("fea-convergence-changed"),
+    );
+    table.insert(
         "demand_prune_measurement",
         SyncMechanism::FullReloadOnly(
             "observability-only; read via reify-debug MCP engine_state_json \
