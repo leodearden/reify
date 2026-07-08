@@ -1834,6 +1834,293 @@ fn full_delta_display_appearance_none_when_empty_some_when_nonempty() {
     );
 }
 
+// --- delta_to_events tests for the 4 new list-field channels (step-3) ---
+
+/// delta_to_events: when `changed_tensegrity_wires` is Some(vec), exactly one
+/// event named "tensegrity-wires-update" is produced with the vec as its JSON
+/// payload.
+#[test]
+fn delta_to_events_emits_tensegrity_wires_update_event() {
+    let wires = vec![
+        sample_tensegrity_wire("TPrism.strut0", "strut"),
+        sample_tensegrity_wire("TPrism.cable0", "cable"),
+    ];
+    let delta = StateDelta {
+        changed_meshes: vec![],
+        changed_values: vec![],
+        changed_constraints: vec![],
+        removed_mesh_paths: vec![],
+        removed_value_ids: vec![],
+        removed_constraint_ids: vec![],
+        changed_tessellation_diagnostics: None,
+        changed_compile_diagnostics: None,
+        changed_tensegrity_wires: Some(wires.clone()),
+        changed_tensegrity_surfaces: None,
+        changed_display_panes: None,
+        changed_display_appearance: None,
+    };
+
+    let events = delta_to_events(&delta);
+
+    let wire_events: Vec<_> = events
+        .iter()
+        .filter(|(name, _)| name == "tensegrity-wires-update")
+        .collect();
+    assert_eq!(
+        wire_events.len(),
+        1,
+        "expected exactly one tensegrity-wires-update event; got {:?}",
+        events.iter().map(|(n, _)| n).collect::<Vec<_>>()
+    );
+
+    let expected = serde_json::to_value(&wires).expect("failed to serialize tensegrity wires");
+    assert_eq!(
+        wire_events[0].1, expected,
+        "tensegrity-wires-update payload must match the tensegrity_wires vec"
+    );
+}
+
+/// delta_to_events: when `changed_tensegrity_wires` is None, no
+/// "tensegrity-wires-update" event is emitted.
+#[test]
+fn delta_to_events_omits_tensegrity_wires_update_event_when_none() {
+    let delta = StateDelta {
+        changed_meshes: vec![],
+        changed_values: vec![],
+        changed_constraints: vec![],
+        removed_mesh_paths: vec![],
+        removed_value_ids: vec![],
+        removed_constraint_ids: vec![],
+        changed_tessellation_diagnostics: None,
+        changed_compile_diagnostics: None,
+        changed_tensegrity_wires: None,
+        changed_tensegrity_surfaces: None,
+        changed_display_panes: None,
+        changed_display_appearance: None,
+    };
+
+    let events = delta_to_events(&delta);
+
+    assert!(
+        events.iter().all(|(n, _)| n != "tensegrity-wires-update"),
+        "expected no tensegrity-wires-update event when field is None; got {:?}",
+        events.iter().map(|(n, _)| n).collect::<Vec<_>>()
+    );
+}
+
+/// delta_to_events: when `changed_tensegrity_surfaces` is Some(vec), exactly
+/// one event named "tensegrity-surfaces-update" is produced with the vec as
+/// its JSON payload.
+#[test]
+fn delta_to_events_emits_tensegrity_surfaces_update_event() {
+    let surfaces = vec![sample_tensegrity_surface("TPatch.facet0", "membrane")];
+    let delta = StateDelta {
+        changed_meshes: vec![],
+        changed_values: vec![],
+        changed_constraints: vec![],
+        removed_mesh_paths: vec![],
+        removed_value_ids: vec![],
+        removed_constraint_ids: vec![],
+        changed_tessellation_diagnostics: None,
+        changed_compile_diagnostics: None,
+        changed_tensegrity_wires: None,
+        changed_tensegrity_surfaces: Some(surfaces.clone()),
+        changed_display_panes: None,
+        changed_display_appearance: None,
+    };
+
+    let events = delta_to_events(&delta);
+
+    let surface_events: Vec<_> = events
+        .iter()
+        .filter(|(name, _)| name == "tensegrity-surfaces-update")
+        .collect();
+    assert_eq!(
+        surface_events.len(),
+        1,
+        "expected exactly one tensegrity-surfaces-update event; got {:?}",
+        events.iter().map(|(n, _)| n).collect::<Vec<_>>()
+    );
+
+    let expected =
+        serde_json::to_value(&surfaces).expect("failed to serialize tensegrity surfaces");
+    assert_eq!(
+        surface_events[0].1, expected,
+        "tensegrity-surfaces-update payload must match the tensegrity_surfaces vec"
+    );
+}
+
+/// delta_to_events: when `changed_tensegrity_surfaces` is None, no
+/// "tensegrity-surfaces-update" event is emitted.
+#[test]
+fn delta_to_events_omits_tensegrity_surfaces_update_event_when_none() {
+    let delta = StateDelta {
+        changed_meshes: vec![],
+        changed_values: vec![],
+        changed_constraints: vec![],
+        removed_mesh_paths: vec![],
+        removed_value_ids: vec![],
+        removed_constraint_ids: vec![],
+        changed_tessellation_diagnostics: None,
+        changed_compile_diagnostics: None,
+        changed_tensegrity_wires: None,
+        changed_tensegrity_surfaces: None,
+        changed_display_panes: None,
+        changed_display_appearance: None,
+    };
+
+    let events = delta_to_events(&delta);
+
+    assert!(
+        events
+            .iter()
+            .all(|(n, _)| n != "tensegrity-surfaces-update"),
+        "expected no tensegrity-surfaces-update event when field is None; got {:?}",
+        events.iter().map(|(n, _)| n).collect::<Vec<_>>()
+    );
+}
+
+/// delta_to_events: when `changed_display_panes` is Some(vec), exactly one
+/// event named "display-panes-update" is produced with the vec as its JSON
+/// payload.
+#[test]
+fn delta_to_events_emits_display_panes_update_event() {
+    let panes = vec![sample_display_directive("Bracket#realization[0]", 1)];
+    let delta = StateDelta {
+        changed_meshes: vec![],
+        changed_values: vec![],
+        changed_constraints: vec![],
+        removed_mesh_paths: vec![],
+        removed_value_ids: vec![],
+        removed_constraint_ids: vec![],
+        changed_tessellation_diagnostics: None,
+        changed_compile_diagnostics: None,
+        changed_tensegrity_wires: None,
+        changed_tensegrity_surfaces: None,
+        changed_display_panes: Some(panes.clone()),
+        changed_display_appearance: None,
+    };
+
+    let events = delta_to_events(&delta);
+
+    let pane_events: Vec<_> = events
+        .iter()
+        .filter(|(name, _)| name == "display-panes-update")
+        .collect();
+    assert_eq!(
+        pane_events.len(),
+        1,
+        "expected exactly one display-panes-update event; got {:?}",
+        events.iter().map(|(n, _)| n).collect::<Vec<_>>()
+    );
+
+    let expected = serde_json::to_value(&panes).expect("failed to serialize display panes");
+    assert_eq!(
+        pane_events[0].1, expected,
+        "display-panes-update payload must match the display_panes vec"
+    );
+}
+
+/// delta_to_events: when `changed_display_panes` is None, no
+/// "display-panes-update" event is emitted.
+#[test]
+fn delta_to_events_omits_display_panes_update_event_when_none() {
+    let delta = StateDelta {
+        changed_meshes: vec![],
+        changed_values: vec![],
+        changed_constraints: vec![],
+        removed_mesh_paths: vec![],
+        removed_value_ids: vec![],
+        removed_constraint_ids: vec![],
+        changed_tessellation_diagnostics: None,
+        changed_compile_diagnostics: None,
+        changed_tensegrity_wires: None,
+        changed_tensegrity_surfaces: None,
+        changed_display_panes: None,
+        changed_display_appearance: None,
+    };
+
+    let events = delta_to_events(&delta);
+
+    assert!(
+        events.iter().all(|(n, _)| n != "display-panes-update"),
+        "expected no display-panes-update event when field is None; got {:?}",
+        events.iter().map(|(n, _)| n).collect::<Vec<_>>()
+    );
+}
+
+/// delta_to_events: when `changed_display_appearance` is Some(vec), exactly
+/// one event named "display-appearance-update" is produced with the vec as
+/// its JSON payload.
+#[test]
+fn delta_to_events_emits_display_appearance_update_event() {
+    let appearance = vec![sample_appearance_directive("Bracket#realization[0]", 0.8)];
+    let delta = StateDelta {
+        changed_meshes: vec![],
+        changed_values: vec![],
+        changed_constraints: vec![],
+        removed_mesh_paths: vec![],
+        removed_value_ids: vec![],
+        removed_constraint_ids: vec![],
+        changed_tessellation_diagnostics: None,
+        changed_compile_diagnostics: None,
+        changed_tensegrity_wires: None,
+        changed_tensegrity_surfaces: None,
+        changed_display_panes: None,
+        changed_display_appearance: Some(appearance.clone()),
+    };
+
+    let events = delta_to_events(&delta);
+
+    let appearance_events: Vec<_> = events
+        .iter()
+        .filter(|(name, _)| name == "display-appearance-update")
+        .collect();
+    assert_eq!(
+        appearance_events.len(),
+        1,
+        "expected exactly one display-appearance-update event; got {:?}",
+        events.iter().map(|(n, _)| n).collect::<Vec<_>>()
+    );
+
+    let expected =
+        serde_json::to_value(&appearance).expect("failed to serialize display appearance");
+    assert_eq!(
+        appearance_events[0].1, expected,
+        "display-appearance-update payload must match the display_appearance vec"
+    );
+}
+
+/// delta_to_events: when `changed_display_appearance` is None, no
+/// "display-appearance-update" event is emitted.
+#[test]
+fn delta_to_events_omits_display_appearance_update_event_when_none() {
+    let delta = StateDelta {
+        changed_meshes: vec![],
+        changed_values: vec![],
+        changed_constraints: vec![],
+        removed_mesh_paths: vec![],
+        removed_value_ids: vec![],
+        removed_constraint_ids: vec![],
+        changed_tessellation_diagnostics: None,
+        changed_compile_diagnostics: None,
+        changed_tensegrity_wires: None,
+        changed_tensegrity_surfaces: None,
+        changed_display_panes: None,
+        changed_display_appearance: None,
+    };
+
+    let events = delta_to_events(&delta);
+
+    assert!(
+        events
+            .iter()
+            .all(|(n, _)| n != "display-appearance-update"),
+        "expected no display-appearance-update event when field is None; got {:?}",
+        events.iter().map(|(n, _)| n).collect::<Vec<_>>()
+    );
+}
+
 // --- Shell-extract backward-compat regression (Task 3597 step-13) ---
 
 /// `delta_to_events` must produce a `mesh-update` event whose JSON payload
