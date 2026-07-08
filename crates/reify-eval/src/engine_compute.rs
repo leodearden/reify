@@ -700,9 +700,15 @@ impl crate::Engine {
 /// Turn a [`catch_unwind`](std::panic::catch_unwind) panic payload into a
 /// printable message for the `Failed` diagnostic built in
 /// [`Engine::invoke_compute_trampoline`]: the standard downcast chain
-/// used elsewhere in the workspace (mirrors
-/// `reify-stdlib/src/orientation.rs:766-770`) — try `&str`, then `String`,
+/// used elsewhere in the workspace (mirrors the idiom in
+/// `reify-stdlib`'s `orientation` module) — try `&str`, then `String`,
 /// else fall back to a fixed placeholder.
+///
+/// This duplicates rather than reuses that copy: hoisting a shared
+/// `panic_payload_message` into a lower crate (e.g. `reify-core`) so both
+/// call sites converge would touch `reify-stdlib`, outside this task's
+/// locked module (`engine_compute.rs` only); flagged via `escalate_info`
+/// as a follow-up rather than attempted here.
 fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
     if let Some(s) = payload.downcast_ref::<&str>() {
         (*s).to_string()
@@ -4214,19 +4220,19 @@ mod tests {
     //
     // Baseline `value_inputs` mirrors the dims-overload layout
     // `[material, length, width, height, loads, supports, options]`
-    // (elastic_static.rs:6-7), with `Value::Undef` at material [0] and a
-    // valid fixture everywhere else. [2] (width) is a `Value::Scalar` (never
-    // a `List`), so the `body_path` discriminator does not intercept; [0]
-    // being Undef (not an `AsPrintedZones` Field) likewise dodges that
-    // degraded-field guard (elastic_static.rs:424-470) — the Undef material
-    // reaches `classify_material`'s panic arm during input extraction,
-    // before any mesh/solve.
+    // documented in the trampoline module's doc contract, with
+    // `Value::Undef` at material [0] and a valid fixture everywhere else.
+    // [2] (width) is a `Value::Scalar` (never a `List`), so the `body_path`
+    // discriminator does not intercept; [0] being Undef (not an
+    // `AsPrintedZones` Field) likewise dodges that module's degraded-field
+    // guard — the Undef material reaches `classify_material`'s panic arm
+    // during input extraction, before any mesh/solve.
 
     use reify_core::DimensionVector;
     use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
 
     /// Valid `Value::Scalar` geometry length (SI metres) — mirrors
-    /// elastic_static.rs:6924-6930 (`shell9_make_len`).
+    /// `elastic_static`'s `shell9_make_len` fixture builder.
     fn valid_len() -> Value {
         Value::Scalar {
             si_value: 1.0,
@@ -4235,7 +4241,7 @@ mod tests {
     }
 
     /// Valid `Value::List` with one `PointLoad` — mirrors
-    /// elastic_static.rs:6932-6945 (`shell9_make_point_loads`).
+    /// `elastic_static`'s `shell9_make_point_loads` fixture builder.
     fn valid_loads() -> Value {
         let fields: PersistentMap<String, Value> = [("force".to_string(), Value::Real(1000.0))]
             .into_iter()
@@ -4251,11 +4257,10 @@ mod tests {
     }
 
     /// (c) A real, registered `ComputeFn` (`solve_elastic_static_trampoline`)
-    /// panicking on Undef material — `classify_material`/`extract_material`
-    /// panic (elastic_static.rs:3373/3712) — must also become
-    /// `Some(ComputeOutcome::Failed{..})` with a diagnostic naming the target
-    /// and "panicked", proving the mechanism protects a genuine trampoline,
-    /// not just the synthetic ones in (a)/(b).
+    /// panicking on Undef material — via `classify_material`/`extract_material`
+    /// — must also become `Some(ComputeOutcome::Failed{..})` with a
+    /// diagnostic naming the target and "panicked", proving the mechanism
+    /// protects a genuine trampoline, not just the synthetic ones in (a)/(b).
     ///
     /// Asserts the "panicked" wording (only ever emitted by
     /// `invoke_compute_trampoline`'s `catch_unwind` `Err` arm, per (a)/(b)
