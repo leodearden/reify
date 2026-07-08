@@ -11316,8 +11316,21 @@ mod tests {
             .into_validated(0.0)
             .expect_err("a mesh with a NaN vertex coordinate must fail the mesh contract");
         assert_eq!(err.invariant, MeshInvariant::Finite);
+        // Bit-pattern comparison, not `assert_eq!` on the `Vec<f32>` directly:
+        // `expected_vertices` carries the injected NaN (cloned from `mesh`
+        // after poisoning it above), and IEEE-754 NaN != NaN under `==`, so a
+        // plain float comparison would fail here even when the mesh really
+        // is byte-for-byte unchanged.
         assert_eq!(
-            returned_mesh.vertices, expected_vertices,
+            returned_mesh
+                .vertices
+                .iter()
+                .map(|f| f.to_bits())
+                .collect::<Vec<_>>(),
+            expected_vertices
+                .iter()
+                .map(|f| f.to_bits())
+                .collect::<Vec<_>>(),
             "the mesh must be handed back unchanged on failure"
         );
         assert_eq!(returned_mesh.indices, expected_indices);
