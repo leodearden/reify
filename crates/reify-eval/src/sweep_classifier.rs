@@ -134,9 +134,9 @@ pub enum SweptKind {
 /// last entry in `step_handles[handle_start..]`). Cleared and repopulated on
 /// every `build()` / `build_snapshot()` / `tessellate_realizations()` /
 /// `tessellate_snapshot()` call (per-build, not per-realization). Mirrors the
-/// `FeatureTagTable` / `TopologyAttributeTable` shape — same four-method API
-/// (`record` / `lookup` / `len` / `is_empty`) and the same last-write-wins
-/// semantics on duplicate-id `record` calls.
+/// `TopologyAttributeTable` shape — same four-method API (`record` / `lookup`
+/// / `len` / `is_empty`) and the same last-write-wins semantics on
+/// duplicate-id `record` calls.
 #[derive(Debug, Default)]
 pub struct SweptKindTable {
     entries: HashMap<GeometryHandleId, SweptKind>,
@@ -147,10 +147,10 @@ impl SweptKindTable {
     /// recognised swept body of `kind`.
     ///
     /// Overwrites any prior entry for the same id (last-write-wins, matching
-    /// `FeatureTagTable::record` and `TopologyAttributeTable::record`). Phase A
-    /// callers (the engine post-realization wiring) should never produce
-    /// duplicate keys because each successful realization writes its own
-    /// distinct final handle, but the contract is recorded here for symmetry.
+    /// `TopologyAttributeTable::record`). Phase A callers (the engine
+    /// post-realization wiring) should never produce duplicate keys because
+    /// each successful realization writes its own distinct final handle, but
+    /// the contract is recorded here for symmetry.
     pub fn record(&mut self, id: GeometryHandleId, kind: SweptKind) {
         self.entries.insert(id, kind);
     }

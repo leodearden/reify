@@ -203,9 +203,8 @@ fn engine_build_records_topology_attributes_for_sphere_realization() {
 ///
 /// This pins the reset wire-up in `Engine::build` (the
 /// `self.topology_attribute_table = TopologyAttributeTable::default()`
-/// reset that mirrors the `feature_tag_table` reset in the same call).
-/// A missed reset site would surface here as a table bigger than the
-/// sphere alone after the second build.
+/// reset). A missed reset site would surface here as a table bigger than
+/// the sphere alone after the second build.
 #[test]
 fn engine_build_resets_topology_attribute_table_across_builds() {
     if !OCCT_AVAILABLE {

@@ -1,7 +1,8 @@
 //! v0.2 persistent-naming-v2 attribute-based selector resolver.
 //!
-//! Mirrors `topology_selectors.rs::resolve_unique_by_tag` (the v0.1 path)
-//! but consumes `TopologyAttributeTable` instead of `FeatureTagTable`.
+//! Resolves a selector query against a `TopologyAttributeTable`, returning
+//! the unique matching handle or a diagnostic when the match is not exactly
+//! one candidate.
 //!
 //! ## PRD references
 //!
@@ -30,9 +31,8 @@
 //!
 //! The resolver is pure Rust: it does NOT take a `&mut dyn GeometryKernel`.
 //! Callers pre-extract candidates via `kernel.extract_faces(...)` /
-//! `kernel.extract_edges(...)` and pass a slice. This mirrors
-//! `resolve_unique_by_tag`'s discipline and keeps the resolver testable
-//! without an OCCT build.
+//! `kernel.extract_edges(...)` and pass a slice, which keeps the resolver
+//! testable without an OCCT build.
 
 use std::collections::HashSet;
 
@@ -290,9 +290,8 @@ pub fn resolve_unique_by_attribute(
 ///
 /// Shared by the zero-match (step-10) and multi-match (step-12) emission
 /// sites so the message form stays consistent. The primary label is
-/// attached at `selector_span` with the canonical "selector call" text,
-/// matching `resolve_unique_by_tag`'s diagnostic shape. A secondary
-/// "feature originally produced here" label is intentionally omitted —
+/// attached at `selector_span` with the canonical "selector call" text.
+/// A secondary "feature originally produced here" label is intentionally omitted —
 /// `TopologyAttribute` does not currently carry a `source_span`, so there
 /// is no canonical originating-feature span to point at.
 fn emit_attribute_stale_diagnostic(
@@ -314,19 +313,17 @@ fn emit_attribute_stale_diagnostic(
 /// to the attribute. Returns the de-duplicated Vec of all matching
 /// `(handle, attribute)` pairs in candidate-encounter order.
 ///
-/// Mirrors `resolve_unique_by_tag`'s zero/one/many counting discipline.
-/// Callers branch on `matches.len()` (`0` / `1` / `>1`) to decide whether
-/// to resolve, fall through, or emit a diagnostic. The returned slice
-/// also feeds [`try_cluster_after_split`] without re-querying the table:
-/// each match already carries a borrow of the matching attribute, so
-/// the cluster predicate runs directly over the borrowed attrs rather
-/// than re-doing `table.lookup` per matched id.
+/// Implements a zero/one/many counting discipline: callers branch on
+/// `matches.len()` (`0` / `1` / `>1`) to decide whether to resolve, fall
+/// through, or emit a diagnostic. The returned slice also feeds
+/// [`try_cluster_after_split`] without re-querying the table: each match
+/// already carries a borrow of the matching attribute, so the cluster
+/// predicate runs directly over the borrowed attrs rather than re-doing
+/// `table.lookup` per matched id.
 ///
-/// Deduplicates candidate ids via a HashSet (mirroring
-/// `resolve_unique_by_tag` at topology_selectors.rs:703) so a misbehaving
-/// extractor that returned the same handle multiple times does not
-/// inflate the match count and spuriously trigger an ambiguity
-/// diagnostic.
+/// Deduplicates candidate ids via a HashSet so a misbehaving extractor
+/// that returned the same handle multiple times does not inflate the
+/// match count and spuriously trigger an ambiguity diagnostic.
 fn collect_matches<'t, F>(
     table: &'t TopologyAttributeTable,
     candidates: &[GeometryHandleId],
@@ -853,7 +850,7 @@ mod tests {
             diag.message
         );
         // Primary label at selector_span with the canonical "selector call"
-        // text (mirrors resolve_unique_by_tag).
+        // text.
         assert!(!diag.labels.is_empty(), "expected at least one label");
         let primary = &diag.labels[0];
         assert_eq!(primary.span, selector_span);
@@ -998,8 +995,8 @@ mod tests {
     /// (c) Duplicate candidate ids → Resolved. The resolver must
     ///     deduplicate before counting matches so a misbehaving extractor
     ///     that returned the same handle three times still yields
-    ///     `Resolved(handle)`, mirroring `resolve_unique_by_tag`'s
-    ///     defense-in-depth `HashSet::insert` discipline.
+    ///     `Resolved(handle)`, via the defense-in-depth `HashSet::insert`
+    ///     discipline.
     #[test]
     fn edge_cases() {
         // (a) Empty candidate slice + populated table.

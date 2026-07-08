@@ -545,28 +545,14 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `W_TRAIT_USER_ASSERTED`
     /// (see `docs/prds/geometry-traits.md` §"Scope" point 5).
     TraitUserAsserted,
-    /// Origin: `crates/reify-eval/src/topology_selectors.rs::resolve_unique_by_tag`.
-    /// Emitted as a `Warning` when a feature-tag selector matches zero or multiple
-    /// sub-shapes after a topology change (i.e. the unique-tag invariant is violated).
+    /// Emitted as a `Warning` by the `LeafQuery::Named` arm in
+    /// `crates/reify-eval/src/topology_selectors.rs`: persistent-naming-v2
+    /// name→handle resolution is not yet wired up, so a named topology
+    /// selector resolves to the empty selection rather than panicking.
     ///
     /// Canonical message form:
-    /// `"feature-tag selector matched <N> sub-shapes (expected exactly 1; topology may have changed)"`.
-    ///
-    /// Two labels accompany the warning: a primary label at the selector call site
-    /// (`"selector call"`) and a secondary label at the `FeatureTag::source_span`
-    /// of the target tag (`"feature originally produced here"`).
-    ///
-    /// The [`crate::FeatureTagTable`] that `resolve_unique_by_tag` reads from is
-    /// populated by the four `*_with_tags` filter selectors in
-    /// `crates/reify-eval/src/topology_selectors.rs`:
-    ///   - `edges_at_height_with_tags` (task 2323)
-    ///   - `edges_by_length_with_tags` (task 2329)
-    ///   - `faces_by_area_with_tags` (task 2329)
-    ///   - `edges_parallel_to_with_tags` (task 2329)
-    ///
-    /// Each populator records a tag for every extracted sub-shape before
-    /// applying its filter predicate, so `resolve_unique_by_tag` can look up
-    /// any extracted sub-shape, not just those that passed the predicate.
+    /// `"named topology selectors are not yet resolvable (persistent naming
+    /// v2); selector resolved to empty"`.
     ///
     /// The PRD-prose mnemonic for this code is `W_TOPOLOGY_TAG_STALE`
     /// (see `docs/prds/topology-selectors.md` task 6).
@@ -4341,7 +4327,7 @@ mod tests {
     }
 
     // --- TopologyTagStale tests (task 2332 — W_TOPOLOGY_TAG_STALE) ---
-    // Pairs with the resolver `resolve_unique_by_tag` in
+    // Pairs with the `LeafQuery::Named` arm in
     // `crates/reify-eval/src/topology_selectors.rs`.
     // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
     // covered by `diagnostic_code_derives` above; only the variant-specific

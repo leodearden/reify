@@ -730,8 +730,8 @@ impl Engine {
         // parameter values, so any cached `GeometryHandleId` entries point at
         // OLD geometry and would silently be served by a subsequent
         // `build_snapshot()` cache-hit short-circuit. The reset mirrors the
-        // `feature_tag_table` / `topology_attribute_table` reset-at-hook-point
-        // pattern (engine_build.rs:531/406): the engine cannot prove which
+        // `topology_attribute_table` reset-at-hook-point pattern
+        // (engine_build.rs:531/406): the engine cannot prove which
         // cached entries survive a given edit without per-cell input-cone
         // analysis we do not currently maintain, so we conservatively flush
         // the entire cache on every edit. The next `build()` /
@@ -2379,8 +2379,8 @@ impl Engine {
         // geometry ops, parameter defaults, or template structure may have
         // changed) and would silently be served by a subsequent `build()` /
         // `build_snapshot()` cache-hit short-circuit. The reset mirrors the
-        // `feature_tag_table` / `topology_attribute_table` reset-at-hook-point
-        // pattern (engine_build.rs:531/406) and the parallel reset in
+        // `topology_attribute_table` reset-at-hook-point pattern
+        // (engine_build.rs:531/406) and the parallel reset in
         // `edit_param`. Pinned by
         // `edit_source_clears_realization_cache_to_prevent_stale_handle_on_subsequent_build`
         // in `tests/tolerance_wiring_e2e.rs` (task 2874, step-19).

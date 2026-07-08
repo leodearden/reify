@@ -25,8 +25,7 @@
 //!     variants backed by OCCT FFI.
 //!
 //! Order discipline: every combinator and filter preserves the input
-//! encounter order with dedup-on-first-seen, mirroring
-//! `topology_selectors::resolve_unique_by_tag`. This keeps selector
+//! encounter order with dedup-on-first-seen. This keeps selector
 //! pipelines deterministic regardless of how downstream consumers
 //! traverse the result.
 //!
@@ -669,8 +668,8 @@ pub fn geom_universal(handles: &[GeometryHandleId]) -> Vec<GeometryHandleId> {
 //
 // `created_by_feature(feature_id)` returns candidates whose `feature_id` is
 // the topology entity's origin feature (`qCreatedBy` in OnShape). It is the
-// inverse mapping of `FeatureTagTable::record` — given a feature, surface
-// the entities it produced.
+// inverse mapping of `TopologyAttributeTable::record` — given a feature,
+// surface the entities it produced.
 //
 // `split_by_feature(feature_id)` returns candidates whose `mod_history`
 // contains the feature anywhere (any-position match, not just the most

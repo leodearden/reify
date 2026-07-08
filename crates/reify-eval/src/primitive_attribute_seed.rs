@@ -80,10 +80,9 @@
 //! the only feature-identity granularity that has landed so far, and
 //! widening it to a per-let-binding `FeatureId` (e.g.
 //! `Body#realization[0]/let[body]`) requires the AST → IR threading
-//! that PRD §6.5 sketches but tasks 9-10 (selector vocabulary +
-//! `feature_tag_table` retirement) are intended to deliver. The
-//! primitive seeder will follow that thread once it lands; until then,
-//! the shared-FeatureId contract is the documented status quo.
+//! that PRD §6.5 sketches. The primitive seeder will follow that thread
+//! once it lands; until then, the shared-FeatureId contract is the
+//! documented status quo.
 
 use std::collections::HashMap;
 
@@ -120,8 +119,8 @@ const NORMAL_Z_EPSILON: f64 = 1.0e-6;
 /// `Engine::execute_realization_ops` cannot use the underlying
 /// [`seed_primitive_attributes`] directly because the kernel is not
 /// available to the engine as a `&mut dyn GeometryKernel` at the same
-/// time as borrows on `step_handles` / `feature_tag_table`; this wrapper
-/// brackets all kernel borrows in one synchronous call.
+/// time as borrows on `step_handles` / `topology_attribute_table`; this
+/// wrapper brackets all kernel borrows in one synchronous call.
 ///
 /// Errors: same contract as [`seed_primitive_attributes`] — callers
 /// should treat any `Err(QueryError)` as auxiliary-metadata failure
