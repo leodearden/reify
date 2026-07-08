@@ -1441,7 +1441,7 @@ impl EngineSession {
     /// emit-helper below reads from that same committed `CheckResult`, matching
     /// the ordering invariant each call site already established (emit AFTER
     /// state is committed). Fires, in order: auto-resolve → fea-case →
-    /// mode-shape frames → fea-diagnostics → warm-pool drain.
+    /// mode-shape frames → fea-diagnostics → fea-convergence → warm-pool drain.
     ///
     /// Note on the receiver type: this must be `&mut self` (the warm-pool drain
     /// needs `&mut self`), so it deliberately does NOT take `check: &CheckResult`
@@ -1449,6 +1449,10 @@ impl EngineSession {
     /// `&mut self` receiver for the duration of the call. Reading `last_check()`
     /// into a local instead lets NLL end that shared borrow after its last use
     /// (`emit_mode_shape_frames_if_any`), before the `&mut self` drain call.
+    /// `emit_fea_diagnostics` and `emit_fea_convergence` each re-read
+    /// `last_check()` themselves (via `build_fea_diagnostics`/`build_fea_convergence`)
+    /// rather than taking `check`, but that re-borrow is `&self` and ends before
+    /// the drain's `&mut self`, so it does not conflict with the `check` local either.
     fn post_engine_call_telemetry(&mut self) {
         let check = self.core.last_check().expect(
             "post_engine_call_telemetry: last_check must be Some after state commit — see cross-cutting ordering invariant",
@@ -1457,6 +1461,7 @@ impl EngineSession {
         self.emit_fea_case_if_any(check);
         self.emit_mode_shape_frames_if_any(check);
         self.emit_fea_diagnostics();
+        self.emit_fea_convergence();
         self.drain_and_emit_warm_pool_events();
     }
 
