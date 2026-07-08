@@ -1753,9 +1753,11 @@ fn min_clearance(s: Snapshot, a: BodyId, b: BodyId) -> Length
 
 `min_clearance` computes the minimum separation distance between `a` and `b` using OCCT's `BRepExtrema_DistShapeShape`. Returns `0mm` when the bodies intersect.
 
+**FK-aware.** All three queries test each body's *posed* geometry, not its source-authored geometry: the build path applies each body's forward-kinematics `world_transform` (via the same `ApplyTransform` mechanism as `apply_transform()`, §3.7) before running the OCCT BREP test, so a body mounted on a non-identity joint is correctly repositioned first. This is proven by the `fk_posed_cubes_no_interference_and_correct_clearance` smoke test (`crates/reify-eval/tests/mechanism_interference_smoke.rs`): two 20mm cubes whose source-authored geometry fully overlaps at the origin are correctly reported clear (20mm apart, non-zero `min_clearance`) once one of them is mounted on a prismatic joint bound to +40mm.
+
 ### 13.6 Worked examples
 
-The two examples below are the primary acceptance-test drivers for `std.mechanism`. Both are reproduced verbatim from `docs/prds/kinematic-constraints.md`.
+The two examples below are adapted from `docs/prds/kinematic-constraints.md`. The PRD prose uses method-call forms — `.map(|s| ...)`, `.windows(2)`, `.norm()` — that Reify's grammar does not support: member access is zero-arg only and a function call requires a bare identifier, so a lambda is passed to a free function (`flat_map(list, |x| [f(x)])`) rather than to a method. The snippets below use that free-function form instead; the landed, compiling, end-to-end-tested versions of these same two scenarios are `examples/kinematic/dock_pickup.ri` and `examples/kinematic/counter_mass_balance.ri` (both exercised by `crates/reify-eval/tests/kinematic_examples_e2e.rs`), which these snippets follow.
 
 **Toolchanger dock-approach clearance check.** A toolhead riding on a gantry that itself rides on a Y-rail sweeps its dock-approach path; the interference query asserts no collision with the parked tool anywhere along the path except at the final dock pose.
 
@@ -1777,12 +1779,14 @@ fn toolchanger_dock_check() -> Bool {
 
     // Interference query — toolhead must not collide with parked tool
     // anywhere along the path except at the final dock pose.
-    let collisions = snapshots.map(|s| interferes(s));
-    forall i in 0..50 - 1: collisions[i].is_empty()
+    let collisions = flat_map(snapshots, |s| [interferes(s)]);
+    forall i in 0..50 - 1: collisions[i].count == 0
 }
 ```
 
-**Counter-mass COM stationarity check.** A coupled counter-mass (ratio −1.0) keeps the system centre of mass stationary as the toolhead traverses its range.
+A simpler but fully real and e2e-tested version of this same swept-interference pattern (one prismatic joint, a fixed dock) is `examples/kinematic/dock_pickup.ri`, whose `let clearances = flat_map(snaps, |s| [min_clearance(s, id_head, id_park)])` is the canonical form the rewrite above follows.
+
+**Counter-mass COM stationarity check.** A coupled counter-mass (ratio −1.0) keeps the system centre of mass stationary — at the origin, for this symmetric equal-mass pair — as the toolhead traverses its range.
 
 ```reify
 fn counter_mass_balance() -> Bool {
@@ -1794,11 +1798,14 @@ fn counter_mass_balance() -> Bool {
         .body(toolhead_solid(), at: x_axis)
         .body(counter_mass_solid(), at: cm_axis);
 
-    // At every position along the sweep, the system COM must stay fixed.
+    // At every position along the sweep, the system COM must stay at the
+    // origin: distance-from-origin is the invariant, not a pairwise diff.
     let snapshots = sweep(m, x_axis, 0mm .. 500mm, steps: 11);
-    let coms = snapshots.map(|s| s.center_of_mass());
-    forall pair in coms.windows(2): (pair[1] - pair[0]).norm() < 0.1mm
+    let com_magnitudes = flat_map(snapshots, |s| [magnitude(center_of_mass(s))]);
+    forall d in com_magnitudes: d < 1um
 }
 ```
+
+This mirrors the landed `examples/kinematic/counter_mass_balance.ri`, whose e2e-proven invariant is `magnitude(center_of_mass(s)) < 1um` for every swept snapshot (a generous bound relative to the 1e-9m tolerance `center_of_mass_counter_mass_balance_stationarity` proves at the Rust level) — rather than the PRD prose's unsupported pairwise `coms.windows(2)` / `.norm()` adjacent-difference form.
 
 See `docs/prds/kinematic-constraints.md` for the full specification, acceptance criteria, and task breakdown.
