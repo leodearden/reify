@@ -9324,6 +9324,43 @@ mod tests {
         );
     }
 
+    /// Amendment (task #5081 review, amendment round 2): `extract_material`
+    /// must route an absent `poisson_ratio` field to
+    /// `Err(FeaValueShapeError::MissingField { .. })` via the reused
+    /// `real_field` helper, rather than silently falling through.
+    /// Mirrors `extract_material_rejects_missing_youngs_modulus`, restoring
+    /// the symmetry the review noted was missing: `youngs_modulus` already
+    /// had direct wrong-typed AND absent coverage, while `poisson_ratio` only
+    /// had a wrong-typed test (the absent case was only transitively covered
+    /// by `real_field`'s own test).
+    #[test]
+    fn extract_material_rejects_missing_poisson_ratio() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        let fields: PersistentMap<String, Value> = [(
+            "youngs_modulus".to_string(),
+            Value::Scalar {
+                si_value: 2.0e9,
+                dimension: DimensionVector::PRESSURE,
+            },
+        )]
+        .into_iter()
+        .collect();
+        let material = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_name: "IsotropicMaterial".to_string(),
+            type_id: StructureTypeId(u32::MAX),
+            version: 1,
+            fields,
+        }));
+
+        let res = extract_material(&material);
+        assert!(
+            matches!(res, Err(FeaValueShapeError::MissingField { .. })),
+            "expected Err(MissingField) for an absent poisson_ratio field, got: {:?}",
+            res
+        );
+    }
+
     /// step-5: `extract_material` must return `Ok` with the exact
     /// `IsotropicElastic` values for a well-formed material StructureInstance,
     /// locking the success path alongside the error paths above.
