@@ -1536,7 +1536,21 @@ fn build_solver_problem(
 /// combines connectors with a whole-model cluster spanning the connector's
 /// parent scope should extend this function to reuse
 /// `connector_pin_if_determined`/`is_strict_connector_instance_auto` the way
-/// `build_solver_problem` does.
+/// `build_solver_problem` does. This assumption is now GUARDED (amendment,
+/// task #5014), not just documented: the union loop below `debug_assert!`s
+/// that no cluster member contributes a strict connector-instance auto, so a
+/// future module violating the assumption fails loudly in debug/test builds
+/// instead of silently mis-solving a connector pin as an unconstrained auto.
+///
+/// Cost note (cold-path only): like `build_solver_problem`, the
+/// constraint-filter loop below re-runs `extract_dependency_trace` on every
+/// member constraint's expression on every merged solve — O(constraints ×
+/// trace-size), no memoization. This mirrors the existing per-template cost
+/// (not a new asymptotic hazard), and a `MergedSolve` cluster is capped at
+/// `WHOLE_MODEL_CLUSTER_DIM_CAP` (12) auto cells, so the constant factor stays
+/// small. If profiling ever shows this hot, cache each constraint's trace (a
+/// pure function of `c.expr`) once and reuse it here and at any downstream
+/// consumer.
 ///
 /// Spanning objective (step-08 of #5014, §5.2 "objective fold consumed
 /// abstractly"): for each member scope in `cluster.scopes`, `governance[idx]`'s
@@ -1546,23 +1560,42 @@ fn build_solver_problem(
 /// or re-folded as an f64 here — the solver's `eval_objective_set` owns that
 /// fold, so this stays representation-agnostic w.r.t. a future `weight: f64
 /// -> Value::Scalar` flip. `cost_robustness_lambda` carries through from the
-/// first member that sets one (no β fixture governs more than one member, so
-/// first-found is an uncontended default). `objective` is `None` only when NO
-/// member in the cluster has any governing objective.
+/// first member that sets one; if a LATER governed member sets a *different*
+/// lambda, the collision is not silent — a warning diagnostic is pushed to
+/// `diagnostics` and the first-found value still wins (documented precedence,
+/// amendment task #5014). `objective` is `None` only when NO member in the
+/// cluster has any governing objective.
 fn build_merged_solver_problem(
     cluster: &crate::resolve_order::Cluster,
     templates: &[TopologyTemplate],
     governance: &[GoverningObjective],
     values: &ValueMap,
     functions: Arc<[CompiledFunction]>,
+    diagnostics: &mut Vec<Diagnostic>,
 ) -> ResolutionProblem {
     // Union each member's auto cells, in cluster.scopes (ascending source
     // index) × value_cells declaration order — a pure function of stable Vec
     // iteration; no HashMap/HashSet contributes to this ordering (§5.2 BT5).
     let mut auto_cells: Vec<&ValueCellDecl> = Vec::new();
     for &idx in &cluster.scopes {
+        // Computed once per member (task #4899 S5 idiom), mirroring
+        // `build_solver_problem`'s `connector_prefix`.
+        let connector_prefix = format!("{}.", templates[idx].name);
         for cell in &templates[idx].value_cells {
             if cell.kind.is_auto() {
+                debug_assert!(
+                    !is_strict_connector_instance_auto(cell, &connector_prefix),
+                    "build_merged_solver_problem: cluster member `{}` contributes a \
+                     strict connector-instance auto cell `{}` -- this builder does not \
+                     partition connector-pinned autos out of auto_params (see doc \
+                     comment); handing it to the solver as an unconstrained free \
+                     variable would silently mis-solve it. Extend this function to \
+                     reuse connector_pin_if_determined/is_strict_connector_instance_auto \
+                     the way build_solver_problem does before merging connectors into a \
+                     whole-model cluster.",
+                    templates[idx].name,
+                    cell.id.member,
+                );
                 auto_cells.push(cell);
             }
         }
@@ -1593,12 +1626,24 @@ fn build_merged_solver_problem(
     // Spanning objective: concatenate every member's governing ObjectiveTerms
     // opaquely, in cluster.scopes order (same determinism rule as above).
     let mut spanning_terms = Vec::new();
-    let mut cost_robustness_lambda = None;
+    let mut cost_robustness_lambda: Option<f64> = None;
     for &idx in &cluster.scopes {
         if let Some(obj) = governance[idx].objective.as_ref() {
             spanning_terms.extend(obj.terms.iter().cloned());
-            if cost_robustness_lambda.is_none() {
-                cost_robustness_lambda = obj.cost_robustness_lambda;
+            match (cost_robustness_lambda, obj.cost_robustness_lambda) {
+                (None, candidate) => cost_robustness_lambda = candidate,
+                (Some(existing), Some(candidate)) if candidate != existing => {
+                    let member_name = &templates[idx].name;
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "Cluster member `{member_name}` sets \
+                         cost_robustness_lambda={candidate} which differs from the \
+                         already-governing lambda={existing} taken from an earlier \
+                         cluster member; the merged solve keeps the first-found value \
+                         (task #5014 §5.2) -- reconcile the two objectives if this \
+                         divergence is unintentional."
+                    )));
+                }
+                _ => {}
             }
         }
     }
@@ -5188,12 +5233,19 @@ impl Engine {
     /// entire cluster dispatched up-front and skips every other member in
     /// `ro.order`, so this is the ONLY write-back this cluster gets.
     ///
-    /// `objective_provenance` entries are recorded with `objective: None`
-    /// here even though the merged `problem` may itself carry a spanning
-    /// objective (step-08) — provenance's per-term `TermContribution`
-    /// breakdown is a per-scope concept the merged path does not yet surface;
-    /// each entry's `scope` is that id's OWN owning entity (`id.entity`), not
-    /// `idx`'s template, since one merged solve spans N scopes.
+    /// `objective_provenance` entries are populated from the SAME spanning
+    /// objective the solver actually used (amendment, task #5014 — previously
+    /// this recorded `objective: None`/empty `term_contributions` for every
+    /// cluster cell even when a spanning objective governed the solve, a
+    /// fidelity regression vs. the pre-β per-template path): `objective`,
+    /// `combination`, and `term_contributions` are computed ONCE per merged
+    /// solve (mirrors the per-template arm just above this impl block) and
+    /// shared via `Arc` across every resolved cell. Each entry's `scope` is
+    /// that id's OWN owning entity (`id.entity`), not `idx`'s template, since
+    /// one merged solve spans N scopes; `inherited_from` is likewise looked
+    /// up per-cell against the OWNING member's `governance` entry (a cell
+    /// belongs to exactly one cluster member), since different members may
+    /// have different own-vs-inherited governance (§6.1).
     ///
     /// Downstream let cells (step-06 of #5014) are re-evaluated for EVERY
     /// cluster member template, not just `idx`'s: `cluster.scopes` (already a
@@ -5234,6 +5286,7 @@ impl Engine {
             governance,
             values,
             Arc::clone(&functions),
+            diagnostics,
         );
 
         let solver = self
@@ -5343,26 +5396,52 @@ impl Engine {
                     }
                 }
 
-                // θ (task 4015): record ObjectiveProvenance for each resolved
-                // cell, keyed by the CELL'S OWN owning scope (id.entity) since
+                // θ (task 4015), generalized to the merged spanning objective
+                // (amendment, task #5014): record REAL ObjectiveProvenance for
+                // each resolved cell from the objective the solver actually
+                // used, keyed by the CELL'S OWN owning scope (id.entity) since
                 // one merged solve spans every cluster member -- not `idx`'s
-                // template, unlike the per-template arm above. `objective` is
-                // always None here (see doc comment); a later step assembles
-                // the spanning objective (§5.2).
-                let empty_term_contributions: Arc<Vec<TermContribution>> = Arc::new(Vec::new());
+                // template, unlike the per-template arm above.
+                //
+                // Performance: `objective`/`term_contributions` are computed
+                // ONCE per merged solve (not per cell) and shared via Arc,
+                // mirroring the per-template arm's O(1)-refcount-bump contract.
+                let objective_arc: Option<Arc<ObjectiveSet>> =
+                    problem.objective.as_ref().map(|o| Arc::new(o.clone()));
+                let combination = objective_arc.as_ref().map(|o| o.combination);
+                let term_contributions: Arc<Vec<TermContribution>> = match objective_arc.as_ref()
+                {
+                    Some(obj) => Arc::new(self.objective_term_contributions(obj, values)),
+                    None => Arc::new(Vec::new()),
+                };
+                // Map each cluster member's owning entity name to its
+                // `governance` index once, so the per-cell loop below can look
+                // up the OWNING member's `inherited_from` in O(1) -- a merged
+                // solve spans N scopes with potentially different own-vs-
+                // inherited governance (§6.1), unlike the single-scope
+                // per-template arm which uses one `governance[idx]` for every
+                // cell.
+                let member_by_name: HashMap<&str, usize> = cluster
+                    .scopes
+                    .iter()
+                    .map(|&member_idx| (module.templates[member_idx].name.as_str(), member_idx))
+                    .collect();
                 for id in &resolved_ids {
                     let is_synth = self
                         .centrality_synthesized_scopes
                         .contains(id.entity.as_str());
+                    let inherited_from = member_by_name
+                        .get(id.entity.as_str())
+                        .and_then(|&member_idx| governance[member_idx].inherited_from.clone());
                     objective_provenance.insert(
                         id.clone(),
                         ObjectiveProvenance {
                             scope: id.entity.clone(),
-                            objective: None,
-                            combination: None,
-                            term_contributions: Arc::clone(&empty_term_contributions),
+                            objective: objective_arc.clone(),
+                            combination,
+                            term_contributions: Arc::clone(&term_contributions),
                             synthetic_centrality: is_synth,
-                            inherited_from: None,
+                            inherited_from,
                         },
                     );
                 }
