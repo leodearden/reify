@@ -1613,19 +1613,21 @@ fn couple<P: DrivingJoint + HasMotion>(other: P, ratio: Real, offset: P::MotionV
 
 `Prismatic` models 1-DOF translation along a fixed axis with motion-range bounds. `Revolute` models 1-DOF rotation about a fixed axis with angle-range bounds. `Coupling` derives its motion variable from another joint: `value = ratio * other.value + offset`. A negative ratio produces the counter-mass direction reversal shown in the worked examples (§13.6).
 
-**Axis, range, and ratio accessors:**
+**`joint_axis`, `joint_range`, `joint_ratio`, and `joint_offset` accessors:**
 
 ```
-fn axis(j: Prismatic) -> Vector3<Dimensionless>
-fn range(j: Prismatic) -> Range<Length>
-fn axis(j: Revolute) -> Axis
-fn range(j: Revolute) -> Range<Angle>
-fn ratio(j: Coupling<P>) -> Real
-fn offset(j: Coupling<P>) -> P::MotionValue
+fn joint_axis(j: Prismatic) -> Vector3<Dimensionless>
+fn joint_range(j: Prismatic) -> Range<Length>
+fn joint_axis(j: Revolute) -> Axis
+fn joint_range(j: Revolute) -> Range<Angle>
+fn joint_ratio(j: Coupling<P>) -> Real
+fn joint_offset(j: Coupling<P>) -> P::MotionValue
 fn transform_at(j: Prismatic, v: Length) -> Transform<3>
 fn transform_at(j: Revolute, v: Angle) -> Transform<3>
 fn transform_at(j: Coupling<P>, v: P::MotionValue) -> Transform<3>
 ```
+
+These are the registered builtin names (`crates/reify-stdlib/src/joints.rs:676,693,705,719`). Earlier drafts of this section used bare `axis`/`range`/`ratio`/`offset`, which return `Undef` — those names are not registered. No bare aliases are provided: Reify's builtin namespace is flat and global, so an unqualified `axis`/`range` would collide across unrelated stdlib modules; the `joint_`-prefixed spelling is the collision-safe, self-documenting form and is the only one that ships.
 
 **Jacobian (v0.2).** `joint_jacobian` returns the analytic SE(3) twist column
 for a single joint, used by the closed-chain loop-closure solver — see
