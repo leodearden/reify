@@ -9254,4 +9254,46 @@ mod tests {
             res
         );
     }
+
+    /// step-4: `extract_material` must reject a present-but-wrong-typed
+    /// `poisson_ratio` field with `Err(FeaValueShapeError::ExpectedReal {
+    /// .. })`, routed through the reused `real_field` helper. `youngs_modulus`
+    /// is well-formed so control reaches the `poisson_ratio` read.
+    #[test]
+    fn extract_material_rejects_wrong_typed_poisson_ratio() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        let fields: PersistentMap<String, Value> = [
+            (
+                "youngs_modulus".to_string(),
+                Value::Scalar {
+                    si_value: 2.0e9,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                },
+            ),
+            (
+                "poisson_ratio".to_string(),
+                Value::Scalar {
+                    si_value: 0.3,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                },
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let material = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_name: "IsotropicMaterial".to_string(),
+            type_id: StructureTypeId(u32::MAX),
+            version: 1,
+            fields,
+        }));
+
+        let res = extract_material(&material);
+        assert!(
+            matches!(res, Err(FeaValueShapeError::ExpectedReal { .. })),
+            "expected Err(ExpectedReal) for a present-but-wrong-type \
+             poisson_ratio field, got: {:?}",
+            res
+        );
+    }
 }
