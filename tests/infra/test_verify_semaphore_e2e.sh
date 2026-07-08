@@ -85,10 +85,14 @@ trap cleanup EXIT
 #                 (`npm ci && npm run typecheck && npm test`) without any
 #                 network/install/build activity.
 #   tree-sitter — satisfies tree-sitter-generate.sh's `command -v` guard.
-#                 Pre-generation (below) ensures the staleness fast-path exits
-#                 0 before calling tree-sitter; the 'generate' branch redirects
-#                 output to a hermetic tmpdir (not tree-sitter-reify/src/) as a
-#                 fail-fast fallback in case pre-generation does not succeed.
+#                 The suite-start ensure_tree_sitter_ready call (task 5144 F1,
+#                 below Part D / before Section A) readies the REAL
+#                 tree-sitter-reify/src/ ONCE so the staleness fast-path exits
+#                 0 before calling tree-sitter in every hermetic subshell; the
+#                 'generate' branch here redirects output to a hermetic tmpdir
+#                 (not tree-sitter-reify/src/) as a fail-fast fallback in case
+#                 readiness did not hold (execute-mode sections gate on
+#                 _TS_READY and skip driving entirely in that case).
 # This neutralizes ONLY the heavy external build tools; the REAL semaphore
 # acquire/hold/release wiring in lib_test_semaphore.sh / verify.sh is left
 # completely intact.
@@ -178,6 +182,79 @@ _ts_outputs_healthy() {
     return 0
 }
 
+# _ts_ready_check <ts_src_dir>
+# True iff <ts_src_dir>'s outputs are healthy (_ts_outputs_healthy) AND
+# <ts_src_dir>/src/.grammar_hash.stamp matches the current sha256 of
+# <ts_src_dir>/grammar.js — the same up-to-date contract
+# tree-sitter-generate.sh's own non-force staleness check uses
+# (tree-sitter-generate.sh:50-63). Pure — reads only, never mutates.
+_ts_ready_check() {
+    local _ts_src_dir="$1"
+    _ts_outputs_healthy "$_ts_src_dir" || return 1
+    [ -f "$_ts_src_dir/src/.grammar_hash.stamp" ] || return 1
+    local _hash
+    _hash="$(compute_sha256 "$_ts_src_dir/grammar.js" | awk '{print $1}')"
+    [ "$(cat "$_ts_src_dir/src/.grammar_hash.stamp" 2>/dev/null)" = "$_hash" ]
+}
+
+# _ts_real_regenerate
+# Default regenerator for ensure_tree_sitter_ready's suite-start (no-args)
+# call: force-regenerates the REAL (gitignored) tree-sitter-reify/src/ via
+# the real scripts/tree-sitter-generate.sh --force. ~/.cargo/bin is prepended
+# to PATH so the real tree-sitter CLI resolves ahead of any stub later placed
+# on PATH by make_stub_bin/apply_hermetic_env. Wrapped in a
+# _load_scaled_deadline-scaled timeout so a hung/wedged generation cannot
+# wedge the whole suite under cpu_load_fixture load (BASE=180 covers
+# tree-sitter-generate.sh's own worst case: 120s lock wait + 60s generate).
+_ts_real_regenerate() {
+    PATH="$HOME/.cargo/bin:$PATH" timeout "$(_load_scaled_deadline 180 600)" \
+        bash "$REPO_ROOT/scripts/tree-sitter-generate.sh" --force
+}
+
+# ensure_tree_sitter_ready [<ts_src_dir> <regenerator...>]
+# Idempotently guarantees <ts_src_dir>'s generated tree-sitter outputs are
+# ready (_ts_ready_check). If already ready, returns immediately WITHOUT
+# invoking the regenerator. Otherwise invokes <regenerator...> once and
+# re-checks. Sets the GLOBAL _TS_READY to "1" on success or "0" on failure
+# (with a diagnostic naming tree-sitter to stderr), returning 0/1 to match.
+# The regenerator's own exit code is never allowed to escape this function
+# (guarded with `|| true`) — its effect is observed only via the re-check, so
+# a failing/timed-out regenerator FAILS this function cleanly instead of
+# aborting the whole suite under set -euo pipefail.
+#
+# Test seam: called with explicit <ts_src_dir>/<regenerator...> args (see the
+# unit tests below), tests exercise every branch against _make_fake_ts_dir
+# fixtures + injected fake regenerators, never touching the real (gitignored)
+# tree-sitter-reify/src/ or invoking the real tree-sitter CLI. Called with NO
+# args (the suite-start call, below Part D and before Section A) it defaults
+# to the real tree-sitter-reify dir and _ts_real_regenerate.
+ensure_tree_sitter_ready() {
+    local _ts_dir
+    if [ "$#" -eq 0 ]; then
+        _ts_dir="$REPO_ROOT/tree-sitter-reify"
+        set -- _ts_real_regenerate
+    else
+        _ts_dir="$1"
+        shift
+    fi
+
+    if _ts_ready_check "$_ts_dir"; then
+        _TS_READY=1
+        return 0
+    fi
+
+    "$@" || true
+
+    if _ts_ready_check "$_ts_dir"; then
+        _TS_READY=1
+        return 0
+    fi
+
+    _TS_READY=0
+    echo "ERROR: ensure_tree_sitter_ready: tree-sitter artifacts under '$_ts_dir' are not ready after a regeneration attempt (tree-sitter CLI/grammar generation failed, or still unhealthy/stale) — cannot run execute-mode e2e sections" >&2
+    return 1
+}
+
 make_stub_bin() {
     local dir="$1"
     # stub cargo: sleeps $REIFY_E2E_CARGO_SLEEP seconds, exits 0.
@@ -201,34 +278,16 @@ exit 0
 STUB_NPM
     chmod +x "$dir/npm"
 
-    # Pre-seed tree-sitter generated files using the REAL tree-sitter so that
-    # tree-sitter-generate.sh's staleness fast-path exits 0 in every hermetic
-    # subshell without reaching the stub's 'generate' branch.  This prevents
-    # the stub from writing 0-byte output stubs into the real tree-sitter-reify/src/.
-    # PATH is prepended with ~/.cargo/bin so tree-sitter is findable before
-    # apply_hermetic_env puts the stub binary first.
-    # If parser.c is 0-byte (left by a prior test run's stub), force-regen to
-    # restore real content; otherwise the normal staleness check suffices.
-    local _ts_dir="$REPO_ROOT/tree-sitter-reify"
-    if [ -f "$_ts_dir/src/parser.c" ] && [ ! -s "$_ts_dir/src/parser.c" ]; then
-        if ! PATH="$HOME/.cargo/bin:$PATH" bash "$REPO_ROOT/scripts/tree-sitter-generate.sh" \
-                --force >/dev/null 2>&1; then
-            echo "  [make_stub_bin] WARNING: tree-sitter pre-generation (--force) failed — stub may write to tree-sitter-reify/src/" >&2
-        fi
-    else
-        if ! PATH="$HOME/.cargo/bin:$PATH" bash "$REPO_ROOT/scripts/tree-sitter-generate.sh" \
-                >/dev/null 2>&1; then
-            echo "  [make_stub_bin] WARNING: tree-sitter pre-generation failed — stub may write to tree-sitter-reify/src/" >&2
-        fi
-    fi
-
     # stub tree-sitter: satisfies `command -v` guard.
-    # Pre-generation above ensures the staleness fast-path exits before this stub's
-    # 'generate' branch is reached.  If it IS reached (pre-gen failed), write to a
-    # hermetic tmpdir rather than $PWD/src/ (= tree-sitter-reify/src/) so we never
-    # contaminate the real source tree with 0-byte stubs.  tree-sitter-generate.sh's
-    # post-check then fails (files not in expected src/), propagating as verify.sh
-    # non-zero → caught by the relevant section's exit-code assertion (fail-fast).
+    # The suite-start ensure_tree_sitter_ready call (task 5144 F1) readies the
+    # REAL tree-sitter-reify/src/ ONCE, before any execute-mode section calls
+    # make_stub_bin, so the staleness fast-path exits before this stub's
+    # 'generate' branch is reached. If it IS somehow reached, write to a
+    # hermetic tmpdir rather than $PWD/src/ (= tree-sitter-reify/src/) so we
+    # never contaminate the real source tree with 0-byte stubs.
+    # tree-sitter-generate.sh's post-check then fails (files not in expected
+    # src/), propagating as verify.sh non-zero → caught by the relevant
+    # section's exit-code assertion (fail-fast).
     local _ts_hermetic_out="$dir/ts-output"
     cat > "$dir/tree-sitter" <<STUB_TREESITTER
 #!/usr/bin/env bash
