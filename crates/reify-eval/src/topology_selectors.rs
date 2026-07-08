@@ -32,11 +32,11 @@
 use std::collections::HashSet;
 
 use reify_core::ty::SelectorKind;
-use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan, hash::ContentHash};
+use reify_core::{Diagnostic, DiagnosticCode, hash::ContentHash};
 use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorNode, SelectorValue};
 use reify_ir::{
-    FeatureTag, FeatureTagTable, GeometryHandleId, GeometryKernel, GeometryQuery, QueryError,
-    Role, TopologyAttributeTable, Value,
+    GeometryHandleId, GeometryKernel, GeometryQuery, QueryError, Role, TopologyAttributeTable,
+    Value,
 };
 
 use reify_ir::boundary_attachment::NodeAttachment;
@@ -252,34 +252,6 @@ where
     Ok(out)
 }
 
-/// Record a [`FeatureTag`] in `table` for every id in `ids`.
-///
-/// Each tag is derived from `parent_tag` with `sub_index` set to the
-/// enumerate position (overriding `parent_tag.sub_index`). `source_span`
-/// and `step_kind` are copied verbatim from `parent_tag`.
-///
-/// Called by every `*_with_tags` selector **before** applying its filter
-/// predicate, ensuring the table is fully populated regardless of which
-/// sub-shapes pass the predicate. This centralises the per-child tag-
-/// derivation rule so a single change here propagates to all four tagged
-/// variants.
-fn record_subshape_tags(
-    table: &mut FeatureTagTable,
-    ids: &[GeometryHandleId],
-    parent_tag: FeatureTag,
-) {
-    for (i, id) in ids.iter().enumerate() {
-        table.record(
-            *id,
-            FeatureTag {
-                source_span: parent_tag.source_span,
-                step_kind: parent_tag.step_kind,
-                sub_index: i as u32,
-            },
-        );
-    }
-}
-
 /// Return the subset of `extract_edges(handle)` whose length lies in
 /// `[min_m, max_m]` (inclusive on both ends).
 ///
@@ -312,51 +284,6 @@ pub fn edges_by_length<K: GeometryKernel + ?Sized>(
     )
 }
 
-/// Return the subset of `extract_edges(parent_handle)` whose length lies in
-/// `[min_m, max_m]` (inclusive on both ends), while also recording a
-/// [`FeatureTag`] for every extracted edge in `table`.
-///
-/// Mirrors [`edges_by_length`]'s logic exactly — same filter predicate, same
-/// canonical sub-shape order — while additionally populating `table` with
-/// per-edge tags derived from `parent_tag`: each edge at position `i` in the
-/// extracted list gets a tag whose `source_span` and `step_kind` are copied
-/// from `parent_tag` and whose `sub_index` is `i as u32`.
-///
-/// Tags are recorded for **all** extracted edges (before the length-filter
-/// runs), so callers can query the table even for edges that do not pass the
-/// filter. This matches the recording contract established by
-/// [`edges_at_height_with_tags`] (task 2323 / task 2329).
-///
-/// Downstream consumers can pass the populated table to
-/// [`resolve_unique_by_tag`] to pin a specific sub-shape across topology
-/// changes, receiving [`DiagnosticCode::TopologyTagStale`] if the
-/// unique-tag invariant is later violated.
-///
-/// # Errors
-///
-/// Same as [`edges_by_length`].
-pub fn edges_by_length_with_tags<K: GeometryKernel + ?Sized>(
-    kernel: &mut K,
-    table: &mut FeatureTagTable,
-    parent_handle: GeometryHandleId,
-    parent_tag: FeatureTag,
-    min_m: f64,
-    max_m: f64,
-) -> Result<Vec<GeometryHandleId>, QueryError> {
-    let edges = kernel.extract_edges(parent_handle)?;
-    record_subshape_tags(table, &edges, parent_tag);
-    filter_by_value(
-        kernel,
-        &edges,
-        "edges_by_length_with_tags",
-        GeometryQuery::EdgeLength,
-        |id, value| {
-            let len = expect_real("EdgeLength", id, value)?;
-            Ok(len >= min_m && len <= max_m)
-        },
-    )
-}
-
 /// Return the subset of `extract_faces(handle)` whose surface area lies in
 /// `[min_m2, max_m2]` (inclusive on both ends).
 ///
@@ -381,53 +308,6 @@ pub fn faces_by_area<K: GeometryKernel + ?Sized>(
         kernel,
         &faces,
         "faces_by_area",
-        GeometryQuery::SurfaceArea,
-        |id, value| {
-            let area = expect_real("SurfaceArea", id, value)?;
-            Ok(area >= min_m2 && area <= max_m2)
-        },
-    )
-}
-
-/// Return the subset of `extract_faces(parent_handle)` whose surface area lies
-/// in `[min_m2, max_m2]` (inclusive on both ends), while also recording a
-/// [`FeatureTag`] for every extracted face in `table`.
-///
-/// Mirrors [`faces_by_area`]'s logic exactly — same filter predicate, same
-/// canonical sub-shape order — while additionally populating `table` with
-/// per-face tags derived from `parent_tag`: each face at position `i` in the
-/// extracted list gets a tag whose `source_span` and `step_kind` are copied
-/// from `parent_tag` and whose `sub_index` is `i as u32` (the parent's
-/// `sub_index` is **not** inherited — each child position determines its own
-/// `sub_index`).
-///
-/// Tags are recorded for **all** extracted faces (before the area-filter
-/// runs), so callers can query the table even for faces that do not pass the
-/// filter. This matches the recording contract established by
-/// [`edges_at_height_with_tags`] (task 2323 / task 2329).
-///
-/// Downstream consumers can pass the populated table to
-/// [`resolve_unique_by_tag`] to pin a specific sub-shape across topology
-/// changes, receiving [`DiagnosticCode::TopologyTagStale`] if the
-/// unique-tag invariant is later violated.
-///
-/// # Errors
-///
-/// Same as [`faces_by_area`].
-pub fn faces_by_area_with_tags<K: GeometryKernel + ?Sized>(
-    kernel: &mut K,
-    table: &mut FeatureTagTable,
-    parent_handle: GeometryHandleId,
-    parent_tag: FeatureTag,
-    min_m2: f64,
-    max_m2: f64,
-) -> Result<Vec<GeometryHandleId>, QueryError> {
-    let faces = kernel.extract_faces(parent_handle)?;
-    record_subshape_tags(table, &faces, parent_tag);
-    filter_by_value(
-        kernel,
-        &faces,
-        "faces_by_area_with_tags",
         GeometryQuery::SurfaceArea,
         |id, value| {
             let area = expect_real("SurfaceArea", id, value)?;
@@ -1000,86 +880,6 @@ pub fn edges_parallel_to<K: GeometryKernel + ?Sized>(
     )
 }
 
-/// Return the subset of `extract_edges(parent_handle)` whose midpoint tangent
-/// is (anti-)parallel to `axis` within `angular_tol_rad`, while also recording
-/// a [`FeatureTag`] for every extracted edge in `table`.
-///
-/// Mirrors [`edges_parallel_to`]'s logic exactly — same sign-tolerant predicate
-/// (`|t · axis| >= cos(angular_tol_rad)`), same canonical sub-shape order —
-/// while additionally populating `table` with per-edge tags derived from
-/// `parent_tag`: each edge at position `i` in the extracted list gets a tag
-/// whose `source_span` and `step_kind` are copied from `parent_tag` and whose
-/// `sub_index` is `i as u32`.
-///
-/// **Both tolerance and axis are validated before extraction:** if
-/// `angular_tol_rad` is out of range or non-finite, or if `axis` is the zero
-/// vector or contains a non-finite component, the function returns a
-/// `QueryError::QueryFailed` immediately, before calling `extract_edges` or
-/// touching `table`. This matches the baseline's "fail before kernel touch"
-/// contract.
-///
-/// Tags are recorded for **all** extracted edges (before the axis-filter
-/// runs), so callers can query the table even for edges that do not pass the
-/// filter. This matches the recording contract established by
-/// [`edges_at_height_with_tags`] (task 2323 / task 2329).
-///
-/// Downstream consumers can pass the populated table to
-/// [`resolve_unique_by_tag`] to pin a specific sub-shape across topology
-/// changes, receiving [`DiagnosticCode::TopologyTagStale`] if the
-/// unique-tag invariant is later violated.
-///
-/// # Errors
-///
-/// - Returns `QueryError::QueryFailed` if `angular_tol_rad` is not finite or
-///   outside the valid range `[0, π/2]`. Fires before any kernel touch or
-///   table mutation.
-/// - Returns `QueryError::QueryFailed` if `axis` is the zero vector or
-///   contains a non-finite component. Fires before any kernel touch or table
-///   mutation.
-/// - Otherwise same as [`edges_parallel_to`].
-pub fn edges_parallel_to_with_tags<K: GeometryKernel + ?Sized>(
-    kernel: &mut K,
-    table: &mut FeatureTagTable,
-    parent_handle: GeometryHandleId,
-    parent_tag: FeatureTag,
-    axis: [f64; 3],
-    angular_tol_rad: f64,
-) -> Result<Vec<GeometryHandleId>, QueryError> {
-    // Tolerance validation is FIRST — before axis normalization, extract_edges,
-    // and table mutation. "Fail before kernel touch" contract pinned by
-    // edges_parallel_to_with_tags_*_errors_before_table_mutation tests.
-    validate_angular_tol(
-        "edges_parallel_to_with_tags",
-        angular_tol_rad,
-        std::f64::consts::FRAC_PI_2,
-        "π/2",
-    )?;
-    let axis = normalize3(axis).ok_or_else(|| {
-        QueryError::QueryFailed(
-            "edges_parallel_to_with_tags: axis direction must be non-zero and finite".into(),
-        )
-    })?;
-    let cos_tol = angular_tol_rad.cos();
-    let edges = kernel.extract_edges(parent_handle)?;
-    record_subshape_tags(table, &edges, parent_tag);
-    filter_by_value(
-        kernel,
-        &edges,
-        "edges_parallel_to_with_tags",
-        GeometryQuery::EdgeTangent,
-        |id, value| {
-            let raw = parse_xyz_value(value, "EdgeTangent")?;
-            let tan = normalize3(raw).ok_or_else(|| {
-                QueryError::QueryFailed(format!(
-                    "EdgeTangent({:?}) returned a degenerate (near-zero) tangent",
-                    id
-                ))
-            })?;
-            Ok(dot3(tan, axis).abs() >= cos_tol)
-        },
-    )
-}
-
 /// Return the subset of `extract_edges(handle)` that lie entirely within
 /// `tol_m` (metres) of the horizontal plane `z = z_m`.
 ///
@@ -1116,111 +916,6 @@ pub fn edges_at_height<K: GeometryKernel + ?Sized>(
             Ok((zmin - z_m).abs() <= tol_m && (zmax - z_m).abs() <= tol_m)
         },
     )
-}
-
-/// Return the subset of `extract_edges(parent_handle)` that lie entirely within
-/// `tol_m` (metres) of the horizontal plane `z = z_m`, while also recording a
-/// [`FeatureTag`] for every extracted edge in `table`.
-///
-/// This is a proof-of-concept variant of [`edges_at_height`] that demonstrates
-/// the feature-tag runtime table (task 2323). It mirrors `edges_at_height`'s
-/// logic exactly — same filter predicate, same canonical sub-shape order — while
-/// additionally populating `table` with per-edge tags derived from `parent_tag`:
-/// each edge at position `i` in the extracted list gets a tag whose
-/// `source_span` and `step_kind` are copied from `parent_tag` and whose
-/// `sub_index` is `i as u32`.
-///
-/// Tags are recorded for **all** extracted edges (before the z-filter runs),
-/// so callers can query the table even for edges that do not pass the filter.
-///
-/// # Errors
-///
-/// Same as [`edges_at_height`].
-pub fn edges_at_height_with_tags<K: GeometryKernel + ?Sized>(
-    kernel: &mut K,
-    table: &mut FeatureTagTable,
-    parent_handle: GeometryHandleId,
-    parent_tag: FeatureTag,
-    z_m: f64,
-    tol_m: f64,
-) -> Result<Vec<GeometryHandleId>, QueryError> {
-    let edges = kernel.extract_edges(parent_handle)?;
-    record_subshape_tags(table, &edges, parent_tag);
-    filter_by_value(
-        kernel,
-        &edges,
-        "edges_at_height_with_tags",
-        GeometryQuery::BoundingBox,
-        |_id, value| {
-            let (zmin, zmax) = parse_bbox_z_extents(value)?;
-            Ok((zmin - z_m).abs() <= tol_m && (zmax - z_m).abs() <= tol_m)
-        },
-    )
-}
-
-/// Resolve a `FeatureTag` to a unique candidate geometry handle.
-///
-/// Filters `candidates` to those whose recorded tag in `table` equals `target`
-/// (full `FeatureTag` equality via the `PartialEq` derive). Returns `Some(handle)`
-/// iff exactly one match is found.
-///
-/// If zero or more than one candidates match, returns `None` and pushes a
-/// [`DiagnosticCode::TopologyTagStale`] warning onto `diagnostics` with:
-/// - a primary label at `selector_span` (`"selector call"`), and
-/// - a secondary label at `target.source_span` (`"feature originally produced here"`).
-///
-/// The match count is embedded in the message so callers can distinguish the
-/// zero-match (sub-shape lost) from the multi-match (topology split) case.
-///
-/// # Scope
-/// This is a pure building-block helper: it does not call into the geometry kernel
-/// and does not require any `&mut dyn GeometryKernel` reference. Callers are
-/// expected to have already extracted the candidate handles (via
-/// `kernel.extract_edges` / `kernel.extract_faces`) and populated the table
-/// (via `edges_at_height_with_tags` or equivalent) before calling this resolver.
-///
-/// # Preconditions
-/// Callers SHOULD pass a deduplicated `candidates` slice (the OCCT-backed
-/// kernel extractors guarantee this via `TopoDS_Shape::IsSame`). As a
-/// defense-in-depth measure, the resolver internally deduplicates via a
-/// `HashSet<GeometryHandleId>` so that accidental duplicates from a
-/// misbehaving extractor cannot inflate the match count or produce a spurious
-/// `W_TOPOLOGY_TAG_STALE` diagnostic.
-pub fn resolve_unique_by_tag(
-    table: &FeatureTagTable,
-    candidates: &[GeometryHandleId],
-    target: FeatureTag,
-    selector_span: SourceSpan,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> Option<GeometryHandleId> {
-    let mut seen: HashSet<GeometryHandleId> = HashSet::with_capacity(candidates.len());
-    let mut found: Option<GeometryHandleId> = None;
-    let mut n: usize = 0;
-    for &id in candidates {
-        if seen.insert(id) && table.lookup(id) == Some(&target) {
-            n += 1;
-            if n == 1 {
-                found = Some(id);
-            }
-        }
-    }
-    match n {
-        1 => found,
-        n => {
-            diagnostics.push(
-                Diagnostic::warning(format!(
-                    "feature-tag selector matched {n} sub-shapes (expected exactly 1; topology may have changed)"
-                ))
-                .with_code(DiagnosticCode::TopologyTagStale)
-                .with_label(DiagnosticLabel::new(selector_span, "selector call"))
-                .with_label(DiagnosticLabel::new(
-                    target.source_span,
-                    "feature originally produced here",
-                )),
-            );
-            None
-        }
-    }
 }
 
 /// Parse a `Value::String` that the kernel formatted as JSON
