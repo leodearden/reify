@@ -326,7 +326,7 @@ impl OcctKernelHandle {
         _format: ExportFormat,
         _writer: &mut dyn std::io::Write,
     ) -> Result<(), ExportError> {
-        Err(ExportError::IoError(NOT_AVAILABLE.into()))
+        Err(ExportError::FormatError(NOT_AVAILABLE.into()))
     }
 
     pub fn tessellate(
