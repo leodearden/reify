@@ -110,6 +110,41 @@ drift_detected() {
     done
 }
 
+# wiring_fires_on_drift SCRIPT_PATH PHANTOM_NAME — behavioral proof the
+# target meta-test actually CONSULTS assert_source_closure_copied at
+# fixture-build time (vs. merely mentioning it in source): inject
+# PHANTOM_NAME — a lib basename that can never be copied to any fixture —
+# and require BOTH (a) SCRIPT_PATH exits non-zero AND (b) its captured
+# output names the phantom via the "copy-list drift: missing <phantom>"
+# signature that only assert_source_closure_copied emits. Exit-code-only is
+# a weak proxy: an unrelated non-zero exit (a missing env dependency, an
+# unrelated fixture/verify failure, or `timeout` firing because an UNWIRED
+# meta-test ran its full heavy suite to completion) would otherwise satisfy
+# a bare "exit code != 0" check for the wrong reason. Requiring the specific
+# drift message ties the failure to the preflight itself, not to some other
+# cause.
+wiring_fires_on_drift() {
+    local script="$1" phantom="$2" out rc
+    out="$(REIFY_COPY_LIST_PREFLIGHT_INJECT_PHANTOM="$phantom" timeout 120 bash "$script" 2>&1)"
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "expected non-zero exit under phantom injection; got 0. output:"
+        printf '%s\n' "$out"
+        return 1
+    fi
+    case "$out" in
+        *"copy-list drift: missing $phantom"*) ;;
+        *)
+            echo "exited non-zero (rc=$rc) but output never named the injected" \
+                 "phantom (no 'copy-list drift: missing $phantom' line) — the" \
+                 "non-zero exit may not have come from assert_source_closure_copied." \
+                 "output:"
+            printf '%s\n' "$out"
+            return 1
+            ;;
+    esac
+}
+
 # ---------------------------------------------------------------------------
 # Build a synthetic authoritative "scripts/" tree covering every grammar case.
 #
@@ -243,37 +278,46 @@ assert "real closure(verify.sh) contains direct heavy-test-filter-lib.sh" \
 echo ""
 echo "--- wiring: test_verify_throughput.sh consults the shared preflight ---"
 # Behavioral proof (not a source-grep): inject a phantom lib that is never
-# copied to any fixture and assert the meta-test itself exits non-zero.
+# copied to any fixture and require BOTH the meta-test exits non-zero AND
+# its output names the phantom via the preflight's own "copy-list drift:
+# missing" signature (wiring_fires_on_drift) — exit-code-only would also go
+# green for an unrelated failure or a `timeout` firing on an unwired
+# meta-test that ran its full heavy suite to completion.
 # RED until step-4 wires make_branch_fixture to assert_source_closure_copied
 # — today throughput.sh's own inline direct-only preflight (pre-task-5154)
 # ignores this env entirely, so the suite runs to completion and exits 0.
 # `timeout`-guarded so a regression here can't wedge the pool.
 assert "throughput.sh preflight fires on injected copy-list drift" \
-    bash -c 'REIFY_COPY_LIST_PREFLIGHT_INJECT_PHANTOM=__never_copied__.sh timeout 120 bash "$1" >/dev/null 2>&1; [ $? -ne 0 ]' \
-    _ "$REPO_ROOT/tests/infra/test_verify_throughput.sh"
+    wiring_fires_on_drift "$REPO_ROOT/tests/infra/test_verify_throughput.sh" __never_copied__.sh
 
 echo ""
 echo "--- wiring: test_verify_scope.sh consults the shared preflight ---"
 # Behavioral proof (not a source-grep): inject a phantom lib that is never
-# copied to any fixture and assert the meta-test itself exits non-zero.
+# copied to any fixture and require BOTH the meta-test exits non-zero AND
+# its output names the phantom via the preflight's own "copy-list drift:
+# missing" signature (wiring_fires_on_drift) — exit-code-only would also go
+# green for an unrelated failure or a `timeout` firing on an unwired
+# meta-test that ran its full heavy suite to completion.
 # RED until step-6 wires make_fixture/make_branch_fixture to
 # assert_source_closure_copied — today scope.sh has NO preflight at either cp
 # site, so this env is ignored entirely and the suite runs to completion and
 # exits 0. `timeout`-guarded so a regression here can't wedge the pool.
 assert "scope.sh preflight fires on injected copy-list drift" \
-    bash -c 'REIFY_COPY_LIST_PREFLIGHT_INJECT_PHANTOM=__never_copied__.sh timeout 120 bash "$1" >/dev/null 2>&1; [ $? -ne 0 ]' \
-    _ "$REPO_ROOT/tests/infra/test_verify_scope.sh"
+    wiring_fires_on_drift "$REPO_ROOT/tests/infra/test_verify_scope.sh" __never_copied__.sh
 
 echo ""
 echo "--- wiring: test_scope_boundary.sh consults the shared preflight ---"
 # Behavioral proof (not a source-grep): inject a phantom lib that is never
-# copied to any fixture and assert the meta-test itself exits non-zero.
+# copied to any fixture and require BOTH the meta-test exits non-zero AND
+# its output names the phantom via the preflight's own "copy-list drift:
+# missing" signature (wiring_fires_on_drift) — exit-code-only would also go
+# green for an unrelated failure or a `timeout` firing on an unwired
+# meta-test that ran its full heavy suite to completion.
 # RED until step-8 wires make_branch_fixture to assert_source_closure_copied
 # — today boundary.sh has NO preflight at its single cp site, so this env is
 # ignored entirely and the suite runs to completion and exits 0.
 # `timeout`-guarded so a regression here can't wedge the pool.
 assert "boundary.sh preflight fires on injected copy-list drift" \
-    bash -c 'REIFY_COPY_LIST_PREFLIGHT_INJECT_PHANTOM=__never_copied__.sh timeout 120 bash "$1" >/dev/null 2>&1; [ $? -ne 0 ]' \
-    _ "$REPO_ROOT/tests/infra/test_scope_boundary.sh"
+    wiring_fires_on_drift "$REPO_ROOT/tests/infra/test_scope_boundary.sh" __never_copied__.sh
 
 test_summary
