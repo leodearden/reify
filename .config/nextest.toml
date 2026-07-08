@@ -84,19 +84,32 @@ test-group = 'occt'
 [[profile.default.overrides]]
 filter = 'package(reify-eval) & binary(tensegrity_t0a)'
 priority = 100
+# Heavy-tail slow-timeout ceiling (task 5141): 120s x 15 = 1800s (30 min),
+# larger than the 1200s/20min [profile.default] ceiling above — sized to
+# clear the worst legitimate straggler here (>180s even at ~8x load ≈1440s
+# < 1800s) — while still bounding a true hang well under the 3600s (60m)
+# verify.sh pass-level wall. nextest resolves each override SETTING
+# (priority, slow-timeout) by first-match independently, so this ceiling is
+# unaffected by both this block's own `priority` value and the earlier occt
+# test-group override.
+slow-timeout = { period = "120s", terminate-after = 15 }
 
 [[profile.default.overrides]]
 filter = 'package(reify-eval-fea-tests) & binary(fea_diagnostics_e2e)'
 priority = 50
+slow-timeout = { period = "120s", terminate-after = 15 }
 
 [[profile.default.overrides]]
 filter = 'package(reify-eval) & binary(representation_within_assertion)'
 priority = 50
+slow-timeout = { period = "120s", terminate-after = 15 }
 
 [[profile.default.overrides]]
 filter = 'package(reify-solver-elastic) & binary(analytical_validation)'
 priority = 50
+slow-timeout = { period = "120s", terminate-after = 15 }
 
 [[profile.default.overrides]]
 filter = 'package(reify-solver-elastic) & binary(determinism)'
 priority = 50
+slow-timeout = { period = "120s", terminate-after = 15 }
