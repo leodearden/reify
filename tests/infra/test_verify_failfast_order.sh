@@ -277,4 +277,22 @@ assert "merge-all plan: reify-cli pre-step present and drops -q" \
         [ -n "$L" ] && echo "$L" | grep -qvE "[[:space:]]-q([[:space:]]|;|$)"
     ' _ "$MERGE_ALL_PLAN"
 
+# (j)-(k) task 5139 (review fix, reviewer_comprehensive robustness_error_handling):
+# dropping -q alone does NOT archive compiler diagnostics — cargo writes ALL of
+# its output (Compiling/Finished progress AND rustc error/warning diagnostics)
+# to stderr, never stdout, and DF captures verify.sh's stdout stream only.
+# Merge stderr into stdout on both pre-build lines, mirroring the run_all.sh
+# fix in (f) above.
+assert "merge-all plan: reify-audit pre-step merges stderr into captured stdout (2>&1)" \
+    bash -c '
+        L=$(printf "%s\n" "$1" | grep "cargo build --release" | grep "\-p reify-audit" | head -1)
+        [ -n "$L" ] && echo "$L" | grep -q "2>&1"
+    ' _ "$MERGE_ALL_PLAN"
+
+assert "merge-all plan: reify-cli pre-step merges stderr into captured stdout (2>&1)" \
+    bash -c '
+        L=$(printf "%s\n" "$1" | grep "cargo build --release" | grep "\-p reify-cli" | head -1)
+        [ -n "$L" ] && echo "$L" | grep -q "2>&1"
+    ' _ "$MERGE_ALL_PLAN"
+
 test_summary
