@@ -1757,7 +1757,7 @@ fn min_clearance(s: Snapshot, a: BodyId, b: BodyId) -> Length
 
 ### 13.6 Worked examples
 
-The two examples below are adapted from `docs/prds/kinematic-constraints.md`. The PRD prose uses method-call forms — `.map(|s| ...)`, `.windows(2)`, `.norm()` — that Reify's grammar does not support: member access is zero-arg only and a function call requires a bare identifier, so a lambda is passed to a free function (`flat_map(list, |x| [f(x)])`) rather than to a method. The snippets below use that free-function form instead; the landed, compiling, end-to-end-tested versions of these same two scenarios are `examples/kinematic/dock_pickup.ri` and `examples/kinematic/counter_mass_balance.ri` (both exercised by `crates/reify-eval/tests/kinematic_examples_e2e.rs`), which these snippets follow.
+The two examples below are adapted from `docs/prds/kinematic-constraints.md`. The PRD prose uses method-call forms — `.map(|s| ...)`, `.windows(2)`, `.norm()` — that Reify's grammar does not support: member access is zero-arg only and a function call requires a bare identifier, so a lambda is passed to a free function (`flat_map(list, |x| [f(x)])`) rather than to a method. The snippets below use that free-function form instead. `examples/kinematic/counter_mass_balance.ri` (exercised by `crates/reify-eval/tests/kinematic_examples_e2e.rs`) is the landed, compiling, end-to-end-tested version of the counter-mass scenario that the second snippet below follows exactly. `examples/kinematic/dock_pickup.ri` (same test file) is a landed, e2e-tested example of the same swept-interference-query *shape* as the toolchanger scenario, not an identical match — see the note after each snippet for exactly what its landed test covers.
 
 **Toolchanger dock-approach clearance check.** A toolhead riding on a gantry that itself rides on a Y-rail sweeps its dock-approach path; the interference query asserts no collision with the parked tool anywhere along the path except at the final dock pose.
 
@@ -1784,7 +1784,7 @@ fn toolchanger_dock_check() -> Bool {
 }
 ```
 
-A simpler but fully real and e2e-tested version of this same swept-interference pattern (one prismatic joint, a fixed dock) is `examples/kinematic/dock_pickup.ri`, whose `let clearances = flat_map(snaps, |s| [min_clearance(s, id_head, id_park)])` is the canonical form the rewrite above follows.
+The swept `flat_map(snapshots, |s| [interferes(s)])` call above is illustrative, not itself e2e-tested: no landed example runs `interferes` inside a sweep. The landed, compiling, e2e-tested `examples/kinematic/dock_pickup.ri` covers the same swept-interference-query shape (one prismatic joint, a fixed dock) but its swept cell drives `min_clearance`, not `interferes` — `let clearances = flat_map(snaps, |s| [min_clearance(s, id_head, id_park)])`; `interferes(s)` is exercised there only once, on a single home-position snapshot, outside any sweep. Treat `dock_pickup.ri`'s `min_clearance` sweep as the canonical, proven form of this pattern, and the `interferes`-in-`flat_map` snippet above as an unverified variant that follows the identical shape.
 
 **Counter-mass COM stationarity check.** A coupled counter-mass (ratio −1.0) keeps the system centre of mass stationary — at the origin, for this symmetric equal-mass pair — as the toolhead traverses its range.
 
