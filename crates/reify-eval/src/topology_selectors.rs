@@ -226,7 +226,7 @@ where
 ///
 /// `selector_label` is forwarded to `query_per_subshape` and embedded in
 /// any `check_query_many_len` error message, so each caller should pass its
-/// own distinct label (e.g. `"edges_by_length"` vs `"edges_by_length_with_tags"`).
+/// own distinct label (e.g. `"edges_by_length"` vs `"faces_by_area"`).
 ///
 /// `id` is supplied so predicate-side error messages can name the offending
 /// sub-shape; predicates that don't need it may use `_id`.
