@@ -599,6 +599,31 @@ assert "ensure_tree_sitter_ready: non-healing case emits a non-empty diagnostic 
     bash -c '[ -s "$1" ] && grep -qi "tree-sitter" "$1"' _ "$_ETSR_ERR3"
 
 # ===========================================================================
+# Suite-start tree-sitter readiness gate (task 5144 F1)
+# ===========================================================================
+# ONE-TIME real regeneration/readiness check, before ANY execute-mode section
+# runs a nested verify.sh. This is the structural fix for the tree-sitter
+# prerequisite cascade (task 5144 cause 1): the OLD per-section real
+# pre-generation inside make_stub_bin was the load-fragile step — an
+# interrupted real-tree-sitter run under load left partial/corrupt outputs
+# (via tree-sitter-generate.sh's own _cleanup_partial_outputs), and the NEXT
+# section's nested verify then failed its own tree-sitter post-check,
+# cascading through B/C/F. Doing readiness ONCE here makes every nested
+# verify.sh deterministically hit the "up to date" fast-path (no regen -> no
+# corruption -> no cascade). Execute-mode sections (A/B/C/F1) below gate on
+# _TS_READY and fail loudly+cleanly instead of cascading cryptically when
+# tree-sitter could not be readied.
+echo ""
+echo "--- Tree-sitter readiness (suite start, task 5144 F1) ---"
+_TS_READY=0
+ensure_tree_sitter_ready || true
+if [ "$_TS_READY" = "1" ]; then
+    echo "  [ts-ready] tree-sitter artifacts ready — execute-mode sections will run" >&2
+else
+    echo "  [ts-ready] WARNING: tree-sitter artifacts NOT ready — execute-mode sections (A/B/C/F1) will FAIL loudly instead of cascading" >&2
+fi
+
+# ===========================================================================
 # Section A: held-slot serialization (execute mode)
 # ===========================================================================
 # Two concurrent DF_VERIFY_ROLE=task runs must HOLD-serialize at N=1 — the slot
@@ -617,31 +642,36 @@ RC1=0
 RC2=0
 MS=0
 A_EVENTLOG=""
-drive_two_concurrent_task_runs
-# Both runs must have exited 0: a run that errors mid-slot-hold could still
-# consume ~2s and satisfy the timing lower bound, producing a false green.
-assert "both concurrent task runs exited 0 (rc1=${RC1}, rc2=${RC2})" \
-    test "$RC1" -eq 0 -a "$RC2" -eq 0
-assert "two concurrent task verify.sh test runs hold-serialize (elapsed >= 3000ms, got ${MS}ms)" \
-    test "$MS" -ge 3000
-# --- Section A causal assertions (R-technique): parse REIFY_SLOT_EVENT_LOG ---
-# Assert (1): exactly 2 ACQUIRE + 2 RELEASE events — both runs traversed the
-# gated region; guards against a vacuous empty-log green (e.g. DISABLE=1).
-# Assert (2): max(ACQUIRE_ts) >= min(RELEASE_ts) — the second critical section
-# began only after the first ended; proves true hold-serialization at N=1.
-# RED with CONCURRENCY=2 (both acquire concurrently → max(ACQ) < min(REL)).
-# RED with DISABLE=1 (no slot events → count 0 ≠ 2).
-A_ACQ_COUNT=$(awk '$3 == "ACQUIRE"' "$A_EVENTLOG" | wc -l | tr -d ' ')
-A_REL_COUNT=$(awk '$3 == "RELEASE"' "$A_EVENTLOG" | wc -l | tr -d ' ')
-A_MAX_ACQ=$(awk '$3 == "ACQUIRE" { print $1 }' "$A_EVENTLOG" | sort -n | tail -1)
-A_MIN_REL=$(awk '$3 == "RELEASE" { print $1 }' "$A_EVENTLOG" | sort -n | head -1)
-echo "  [A-causal] acq=${A_ACQ_COUNT} rel=${A_REL_COUNT} max_acq=${A_MAX_ACQ} min_rel=${A_MIN_REL}" >&2
-assert "Section A causal: exactly 2 ACQUIRE events in event log (got ${A_ACQ_COUNT})" \
-    test "$A_ACQ_COUNT" -eq 2
-assert "Section A causal: exactly 2 RELEASE events in event log (got ${A_REL_COUNT})" \
-    test "$A_REL_COUNT" -eq 2
-assert "Section A causal: max(ACQUIRE_ts) >= min(RELEASE_ts) — second CS began only after first CS ended" \
-    test "$A_MAX_ACQ" -ge "$A_MIN_REL"
+if [ "$_TS_READY" = "1" ]; then
+    drive_two_concurrent_task_runs
+    # Both runs must have exited 0: a run that errors mid-slot-hold could still
+    # consume ~2s and satisfy the timing lower bound, producing a false green.
+    assert "both concurrent task runs exited 0 (rc1=${RC1}, rc2=${RC2})" \
+        test "$RC1" -eq 0 -a "$RC2" -eq 0
+    assert "two concurrent task verify.sh test runs hold-serialize (elapsed >= 3000ms, got ${MS}ms)" \
+        test "$MS" -ge 3000
+    # --- Section A causal assertions (R-technique): parse REIFY_SLOT_EVENT_LOG ---
+    # Assert (1): exactly 2 ACQUIRE + 2 RELEASE events — both runs traversed the
+    # gated region; guards against a vacuous empty-log green (e.g. DISABLE=1).
+    # Assert (2): max(ACQUIRE_ts) >= min(RELEASE_ts) — the second critical section
+    # began only after the first ended; proves true hold-serialization at N=1.
+    # RED with CONCURRENCY=2 (both acquire concurrently → max(ACQ) < min(REL)).
+    # RED with DISABLE=1 (no slot events → count 0 ≠ 2).
+    A_ACQ_COUNT=$(awk '$3 == "ACQUIRE"' "$A_EVENTLOG" | wc -l | tr -d ' ')
+    A_REL_COUNT=$(awk '$3 == "RELEASE"' "$A_EVENTLOG" | wc -l | tr -d ' ')
+    A_MAX_ACQ=$(awk '$3 == "ACQUIRE" { print $1 }' "$A_EVENTLOG" | sort -n | tail -1)
+    A_MIN_REL=$(awk '$3 == "RELEASE" { print $1 }' "$A_EVENTLOG" | sort -n | head -1)
+    echo "  [A-causal] acq=${A_ACQ_COUNT} rel=${A_REL_COUNT} max_acq=${A_MAX_ACQ} min_rel=${A_MIN_REL}" >&2
+    assert "Section A causal: exactly 2 ACQUIRE events in event log (got ${A_ACQ_COUNT})" \
+        test "$A_ACQ_COUNT" -eq 2
+    assert "Section A causal: exactly 2 RELEASE events in event log (got ${A_REL_COUNT})" \
+        test "$A_REL_COUNT" -eq 2
+    assert "Section A causal: max(ACQUIRE_ts) >= min(RELEASE_ts) — second CS began only after first CS ended" \
+        test "$A_MAX_ACQ" -ge "$A_MIN_REL"
+else
+    assert "Section A SKIPPED: tree-sitter artifacts not ready — cannot run execute-mode e2e sections (see readiness diagnostic above)" \
+        false
+fi
 
 # run_merge_while_task_slot_held
 # Pins the single slot via an external flock holder for HOLD_S seconds, then runs a
@@ -716,16 +746,21 @@ MERGE_S=0
 MERGE_ERR=""
 HOLD_S=6         # fixed: long enough that a non-exempt run would block
 MERGE_WAIT=30    # fixed: WAIT > HOLD_S so a blocked run stays blocked, not exit-75
-run_merge_while_task_slot_held
-assert "merge-role verify.sh test proceeds while task slot is held (exit 0, got ${MERGE_RC})" \
-    test "$MERGE_RC" -eq 0
-# --- Section B structural assertion (S-technique): bypass marker in stderr ---
-# Proves the merge-exemption CODE PATH executed specifically (not just exit 0).
-# Fixed-string grep stops before the em-dash (U+2014) in the full message to avoid
-# locale/encoding fragility; the substring is unique to the bypass path.
-# RED when DF_VERIFY_ROLE=task (bypass marker absent → grep fails).
-assert "Section B structural: stderr contains merge-bypass marker (lib_test_semaphore.sh: bypass (role=merge))" \
-    grep -qF 'lib_test_semaphore.sh: bypass (role=merge)' "$MERGE_ERR"
+if [ "$_TS_READY" = "1" ]; then
+    run_merge_while_task_slot_held
+    assert "merge-role verify.sh test proceeds while task slot is held (exit 0, got ${MERGE_RC})" \
+        test "$MERGE_RC" -eq 0
+    # --- Section B structural assertion (S-technique): bypass marker in stderr ---
+    # Proves the merge-exemption CODE PATH executed specifically (not just exit 0).
+    # Fixed-string grep stops before the em-dash (U+2014) in the full message to avoid
+    # locale/encoding fragility; the substring is unique to the bypass path.
+    # RED when DF_VERIFY_ROLE=task (bypass marker absent → grep fails).
+    assert "Section B structural: stderr contains merge-bypass marker (lib_test_semaphore.sh: bypass (role=merge))" \
+        grep -qF 'lib_test_semaphore.sh: bypass (role=merge)' "$MERGE_ERR"
+else
+    assert "Section B SKIPPED: tree-sitter artifacts not ready — cannot run execute-mode e2e sections (see readiness diagnostic above)" \
+        false
+fi
 
 # run_task_with_slot_held
 # Pins the single slot via an external flock holder for C_HOLD_S seconds (fixed,
@@ -792,11 +827,16 @@ echo "--- Section C: exit-75 propagation (execute mode) ---"
 C_RC=0
 C_S=0
 C_ERR=""
-run_task_with_slot_held
-assert "verify.sh exits 75 (EX_TEMPFAIL) on acquisition deadline (got ${C_RC})" \
-    test "$C_RC" -eq 75
-assert "stderr shows exit-75 propagated THROUGH verify.sh (verify.sh: FAILED (exit 75): ...)" \
-    grep -qE 'verify\.sh: FAILED \(exit 75\): test-run semaphore acquire' "$C_ERR"
+if [ "$_TS_READY" = "1" ]; then
+    run_task_with_slot_held
+    assert "verify.sh exits 75 (EX_TEMPFAIL) on acquisition deadline (got ${C_RC})" \
+        test "$C_RC" -eq 75
+    assert "stderr shows exit-75 propagated THROUGH verify.sh (verify.sh: FAILED (exit 75): ...)" \
+        grep -qE 'verify\.sh: FAILED \(exit 75\): test-run semaphore acquire' "$C_ERR"
+else
+    assert "Section C SKIPPED: tree-sitter artifacts not ready — cannot run execute-mode e2e sections (see readiness diagnostic above)" \
+        false
+fi
 
 # capture_plans
 # Capture print-plan output for Section D assertions (once each, no stubs needed).
@@ -974,15 +1014,20 @@ run_unlimited_wait_with_slot_held() {
 
 F_RC=0
 F_ERR=""
-run_unlimited_wait_with_slot_held
-assert "F1: unlimited-wait verify.sh exits 0 when slot eventually freed (got ${F_RC})" \
-    test "$F_RC" -eq 0
-assert_marker "F1: F_ERR captured the CLOCK_STOP marker (reason=test_slot_starvation)" \
-    "$F_ERR" '@@REIFY_CLOCK_STOP@@ reason=test_slot_starvation'
-assert_marker "F1: F_ERR captured the CLOCK_HEARTBEAT marker" \
-    "$F_ERR" '@@REIFY_CLOCK_HEARTBEAT@@'
-assert_marker "F1: F_ERR captured the CLOCK_START marker (reason=test_slot_starvation)" \
-    "$F_ERR" '@@REIFY_CLOCK_START@@ reason=test_slot_starvation'
+if [ "$_TS_READY" = "1" ]; then
+    run_unlimited_wait_with_slot_held
+    assert "F1: unlimited-wait verify.sh exits 0 when slot eventually freed (got ${F_RC})" \
+        test "$F_RC" -eq 0
+    assert_marker "F1: F_ERR captured the CLOCK_STOP marker (reason=test_slot_starvation)" \
+        "$F_ERR" '@@REIFY_CLOCK_STOP@@ reason=test_slot_starvation'
+    assert_marker "F1: F_ERR captured the CLOCK_HEARTBEAT marker" \
+        "$F_ERR" '@@REIFY_CLOCK_HEARTBEAT@@'
+    assert_marker "F1: F_ERR captured the CLOCK_START marker (reason=test_slot_starvation)" \
+        "$F_ERR" '@@REIFY_CLOCK_START@@ reason=test_slot_starvation'
+else
+    assert "Section F1 SKIPPED: tree-sitter artifacts not ready — cannot run execute-mode e2e sections (see readiness diagnostic above)" \
+        false
+fi
 
 # F2: print-plan ACQUIRE annotation must reference the clock-stop region.
 # Captures the ACQUIRE # comment line from --print-plan and asserts it contains
