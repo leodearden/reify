@@ -18,6 +18,13 @@ source "$SCRIPT_DIR/test_helpers.sh"
 [ -f "$SCRIPT_DIR/load_tolerance_lib.sh" ] || { echo "ERROR: load_tolerance_lib.sh not found at $SCRIPT_DIR/load_tolerance_lib.sh"; exit 1; }
 source "$SCRIPT_DIR/load_tolerance_lib.sh"
 
+# compute_sha256 (task 5144): needed by the tree-sitter readiness helpers
+# below (ensure_tree_sitter_ready's stamp-match check) and by the
+# _make_fake_ts_dir unit-test fixture, so both sides of the contract use the
+# EXACT same hash mechanism as scripts/tree-sitter-generate.sh itself.
+[ -f "$REPO_ROOT/scripts/lib.sh" ] || { echo "ERROR: lib.sh not found at $REPO_ROOT/scripts/lib.sh"; exit 1; }
+source "$REPO_ROOT/scripts/lib.sh"
+
 # Preserve a keepalive fd (task 4931 / esc-3002-145 FIX #2): _wait_for_marker's
 # up-to-600s poll (Section F) and _wait_for_holder_ready's poll both run with
 # zero interim output, which could otherwise trip dark-factory's clock-stop
@@ -320,6 +327,83 @@ drive_two_concurrent_task_runs() {
 
     # Clean up slot file left by the semaphore.
     rm -f "${_lock}.slot-1"
+}
+
+# ===========================================================================
+# Unit-test-only fixtures (task 5144): synthetic tree-sitter output trees +
+# a generic output-capture helper for the new helper unit-test blocks below.
+# Hermetic — these NEVER touch the real (gitignored) tree-sitter-reify/src/.
+# ===========================================================================
+
+# _make_fake_ts_dir <dir> <mode>
+# Populate <dir> as a synthetic tree-sitter-reify-shaped source tree (a
+# grammar.js at <dir>/grammar.js plus the three generated outputs and the
+# stamp file under <dir>/src/), with controllable health so
+# _ts_outputs_healthy/ensure_tree_sitter_ready unit tests can exercise every
+# branch without ever touching the real tree-sitter-reify/src/.
+# <mode>:
+#   healthy           — all three outputs present, non-empty, stamp matches
+#                        the real sha256 of the fixture grammar.js (mirrors
+#                        tree-sitter-generate.sh's own staleness contract).
+#   zero_byte_parser  — src/parser.c exists but is 0 bytes (the exact
+#                        corruption class left by a killed/interrupted
+#                        real-tree-sitter run under load, task 5144 cause 1).
+#   missing_output    — src/node-types.json is entirely absent.
+#   stamp_mismatch    — all three outputs present + non-empty, but the stamp
+#                        file holds a hash that does NOT match grammar.js.
+_make_fake_ts_dir() {
+    local _dir="$1"
+    local _mode="$2"
+    mkdir -p "$_dir/src"
+    printf 'module.exports = grammar({ name: "fake_reify_fixture_5144" });\n' > "$_dir/grammar.js"
+    local _hash
+    _hash="$(compute_sha256 "$_dir/grammar.js" | awk '{print $1}')"
+
+    case "$_mode" in
+        healthy)
+            printf 'FAKE_PARSER_C\n' > "$_dir/src/parser.c"
+            printf '{"FAKE":"grammar"}\n' > "$_dir/src/grammar.json"
+            printf '{"FAKE":"node-types"}\n' > "$_dir/src/node-types.json"
+            printf '%s' "$_hash" > "$_dir/src/.grammar_hash.stamp"
+            ;;
+        zero_byte_parser)
+            : > "$_dir/src/parser.c"
+            printf '{"FAKE":"grammar"}\n' > "$_dir/src/grammar.json"
+            printf '{"FAKE":"node-types"}\n' > "$_dir/src/node-types.json"
+            printf '%s' "$_hash" > "$_dir/src/.grammar_hash.stamp"
+            ;;
+        missing_output)
+            printf 'FAKE_PARSER_C\n' > "$_dir/src/parser.c"
+            printf '{"FAKE":"grammar"}\n' > "$_dir/src/grammar.json"
+            printf '%s' "$_hash" > "$_dir/src/.grammar_hash.stamp"
+            ;;
+        stamp_mismatch)
+            printf 'FAKE_PARSER_C\n' > "$_dir/src/parser.c"
+            printf '{"FAKE":"grammar"}\n' > "$_dir/src/grammar.json"
+            printf '{"FAKE":"node-types"}\n' > "$_dir/src/node-types.json"
+            printf 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef' > "$_dir/src/.grammar_hash.stamp"
+            ;;
+        *)
+            echo "_make_fake_ts_dir: unknown mode '$_mode'" >&2
+            return 1
+            ;;
+    esac
+}
+
+# _run_capturing <outfile> <cmd...>
+# Run <cmd...> with combined stdout+stderr redirected to <outfile>; returns
+# <cmd...>'s own exit code so callers can assert on BOTH the captured text
+# (substring checks) and the numeric result, e.g.:
+#   _rc=0; _run_capturing "$out" some_helper args || _rc=$?
+# set -e-safe ONLY when callers use that `|| _rc=$?` idiom (matching this
+# file's existing `wait "$_pid" || _rc=$?` pattern) — this helper's own
+# non-zero return would otherwise abort the suite under set -euo pipefail.
+_run_capturing() {
+    local _outfile="$1"
+    shift
+    local _rc=0
+    "$@" >"$_outfile" 2>&1 || _rc=$?
+    return "$_rc"
 }
 
 # ===========================================================================
