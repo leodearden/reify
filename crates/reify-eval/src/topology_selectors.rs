@@ -1199,7 +1199,7 @@ fn resolve_leaf<K: GeometryKernel + ?Sized>(
         },
         LeafQuery::Named(_label) => {
             // Interim D8 behavior: full name→handle resolution is δ /
-            // persistent-naming-v2. No FeatureTagTable is plumbed through
+            // persistent-naming-v2. No name→handle table is plumbed through
             // resolve(), so emit a stale-tag warning and resolve to the empty
             // selection rather than panicking. The 7 re-typed constructors
             // never build a Named leaf, so this path is unreachable from the
@@ -1240,7 +1240,7 @@ fn resolve_leaf<K: GeometryKernel + ?Sized>(
             // Correlating `attr.feature_id` to the target body needs the
             // persistent-naming-v2 body→feature map (2570/2302), explicitly NOT
             // pulled forward by this task (it must stay orthogonal to the
-            // `LeafQuery::Named`/FeatureTagTable path). The empty→Undef contract
+            // `LeafQuery::Named` name-resolution path). The empty→Undef contract
             // one layer up therefore holds per-DESIGN ("no body carries this
             // role"), NOT per-BODY.
             let mut matches: Vec<(u32, GeometryHandleId)> = table
