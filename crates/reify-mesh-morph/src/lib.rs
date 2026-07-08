@@ -69,6 +69,32 @@
 //!
 //! Calibration was performed against the [`StiffnessRule::InverseVolume`]
 //! production default (PRD task #8 / task 2945, shipped on main).
+//!
+//! ## Task #5007 — compose_morph's `QualityVerdict::Unsupported` handling
+//!
+//! [`quality::QualityVerdict::Unsupported`] means `morphed`/`source` is a
+//! non-tet (hex/wedge) mesh; [`quality_check`] returns it instead of
+//! panicking. `compose_morph` intercepts it before [`record_quality_remesh`]
+//! and returns a structured [`MorphFailure::SolverError`].
+//!
+//! The intercept is unreachable through any constructible `compose_morph`
+//! input today — both [`laplacian_smooth`] and [`elasticity_morph`] already
+//! reject non-tet meshes at their own entry (`element_order()` is `None` for
+//! `VolumeConnectivity::Hex`/`Wedge`), so `morphed` is always tet by the time
+//! `quality_check` runs. It is kept only so the seam stays total if that
+//! upstream ordering ever changes, and has no behaviour test for the same
+//! reason: no constructible input reaches it.
+//!
+//! It also records no diagnostic counter, unlike the sibling Ineligible /
+//! Panicked / HardFail / SoftFail arms — there is no `MorphOutcome` bucket
+//! for a branch that cannot fire today, and the failure still reaches the
+//! caller via the structured `Err`, so this is silent-from-diagnostics, not
+//! silent-from-the-API. [`record_quality_remesh`]'s own `Unsupported` arm
+//! mirrors this with a `debug_assert!` instead of a counter, since this
+//! intercept always fires first. If the upstream guards are ever relaxed and
+//! this path becomes reachable, add a dedicated `MorphOutcome` bucket (or
+//! reuse an existing failure bucket) so it is observable in release
+//! diagnostics rather than silent.
 pub mod boundary;
 pub mod diagnostics;
 pub mod elasticity;
@@ -271,42 +297,11 @@ pub fn compose_morph(
         record_morphed();
         return Ok(morphed);
     }
-    // Defensive: unreachable via compose_morph today because both
-    // laplacian_smooth and elasticity_morph already reject hex/wedge
-    // VolumeMesh upstream (Step 3), so `morphed` is always tet by the time
-    // quality_check runs here. Kept so the seam stays total (never panics)
-    // if that upstream ordering ever changes.
-    //
-    // Reachability cross-reference (this arm has no behavior test — see
-    // below for why): its unreachability depends on BOTH sibling entry
-    // guards continuing to reject non-tet meshes before `morphed` is ever
-    // produced —
-    //   - laplacian.rs: `let Some(order) = old_mesh.element_order() else { .. }`
-    //     at the top of `laplacian_smooth`.
-    //   - elasticity.rs: the identical `element_order()` guard at the top of
-    //     `elasticity_morph`.
-    // `element_order()` (reify-ir geometry.rs) is `None` for
-    // `VolumeConnectivity::Hex`/`Wedge`, so either guard trips first and
-    // `compose_morph` returns before `morphed` (and thus this quality_check
-    // call) is ever reached. If either guard is loosened to admit hex/wedge,
-    // this early return becomes reachable through compose_morph and needs
-    // its own behavior test at that point — no test can construct that path
-    // today because it would require an already-rejecting upstream solver to
-    // instead hand quality_check a hex/wedge `morphed` mesh.
-    //
-    // Deliberately records no diagnostic counter here, unlike the sibling
-    // Ineligible / Panicked / HardFail / SoftFail arms: there is no
-    // `MorphOutcome` bucket for this case, and adding one would grow the
-    // public `DiagnosticSnapshot` surface for a branch that cannot fire
-    // through any constructible `compose_morph` input today (so a counter
-    // increment here could never be pinned by a test either). The failure
-    // is still surfaced to the caller via the structured
-    // `Err(MorphFailure::SolverError(_))` below, so this is a
-    // silent-from-diagnostics choice, not a silent-from-the-API one.
-    // `record_quality_remesh`'s own `Unsupported` arm encodes the same
-    // defensive doctrine as a `debug_assert!` instead of a counter: that
-    // recorder must never observe `Unsupported` because this early return
-    // always intercepts it first.
+    // Defensive, not reachable via compose_morph today: laplacian_smooth and
+    // elasticity_morph already reject non-tet meshes upstream, so `morphed`
+    // is always tet here. Kept so this seam stays total; surfaced to the
+    // caller as `MorphFailure::SolverError`. Full rationale: module docs
+    // above (`Task #5007`).
     if matches!(verdict, QualityVerdict::Unsupported) {
         return Err(MorphFailure::SolverError(SolverErrorPayload::new(
             "quality_check: non-tet (hex/wedge) VolumeMesh unsupported",
