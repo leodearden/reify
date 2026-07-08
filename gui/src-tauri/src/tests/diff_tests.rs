@@ -420,6 +420,10 @@ fn delta_to_events_returns_correct_tuples_for_changes_and_removals() {
         removed_constraint_ids: vec!["Bracket.old_constraint".to_string()],
         changed_tessellation_diagnostics: None,
         changed_compile_diagnostics: None,
+        changed_tensegrity_wires: None,
+        changed_tensegrity_surfaces: None,
+        changed_display_panes: None,
+        changed_display_appearance: None,
     };
 
     let events = delta_to_events(&delta);
@@ -490,6 +494,10 @@ fn delta_to_events_returns_empty_vec_for_empty_delta() {
         removed_constraint_ids: vec![],
         changed_tessellation_diagnostics: None,
         changed_compile_diagnostics: None,
+        changed_tensegrity_wires: None,
+        changed_tensegrity_surfaces: None,
+        changed_display_panes: None,
+        changed_display_appearance: None,
     };
 
     let events = delta_to_events(&delta);
@@ -510,6 +518,10 @@ fn delta_to_events_emits_serialization_error_event_on_failure() {
         removed_constraint_ids: vec![],
         changed_tessellation_diagnostics: None,
         changed_compile_diagnostics: None,
+        changed_tensegrity_wires: None,
+        changed_tensegrity_surfaces: None,
+        changed_display_panes: None,
+        changed_display_appearance: None,
     };
 
     let events = delta_to_events(&delta);
@@ -567,6 +579,10 @@ fn delta_to_events_warns_and_skips_on_serialization_failure() {
         removed_constraint_ids: vec![],
         changed_tessellation_diagnostics: None,
         changed_compile_diagnostics: None,
+        changed_tensegrity_wires: None,
+        changed_tensegrity_surfaces: None,
+        changed_display_panes: None,
+        changed_display_appearance: None,
     };
 
     let events = tracing::subscriber::with_default(subscriber, || delta_to_events(&delta));
@@ -619,6 +635,10 @@ fn delta_to_events_multiple_failures_warn_for_each() {
         removed_constraint_ids: vec![],
         changed_tessellation_diagnostics: None,
         changed_compile_diagnostics: None,
+        changed_tensegrity_wires: None,
+        changed_tensegrity_surfaces: None,
+        changed_display_panes: None,
+        changed_display_appearance: None,
     };
 
     let events = tracing::subscriber::with_default(subscriber, || delta_to_events(&delta));
@@ -878,6 +898,10 @@ fn delta_to_events_emits_tessellation_diagnostics_event() {
         removed_constraint_ids: vec![],
         changed_tessellation_diagnostics: Some(diags.clone()),
         changed_compile_diagnostics: None,
+        changed_tensegrity_wires: None,
+        changed_tensegrity_surfaces: None,
+        changed_display_panes: None,
+        changed_display_appearance: None,
     };
 
     let events = delta_to_events(&delta);
@@ -913,6 +937,10 @@ fn delta_to_events_omits_tessellation_diagnostics_event_when_none() {
         removed_constraint_ids: vec![],
         changed_tessellation_diagnostics: None,
         changed_compile_diagnostics: None,
+        changed_tensegrity_wires: None,
+        changed_tensegrity_surfaces: None,
+        changed_display_panes: None,
+        changed_display_appearance: None,
     };
 
     let events = delta_to_events(&delta);
@@ -1035,6 +1063,10 @@ fn delta_to_events_emits_compile_diagnostics_event() {
         removed_constraint_ids: vec![],
         changed_tessellation_diagnostics: None,
         changed_compile_diagnostics: Some(diags.clone()),
+        changed_tensegrity_wires: None,
+        changed_tensegrity_surfaces: None,
+        changed_display_panes: None,
+        changed_display_appearance: None,
     };
 
     let events = delta_to_events(&delta);
@@ -1070,6 +1102,10 @@ fn delta_to_events_omits_compile_diagnostics_event_when_none() {
         removed_constraint_ids: vec![],
         changed_tessellation_diagnostics: None,
         changed_compile_diagnostics: None,
+        changed_tensegrity_wires: None,
+        changed_tensegrity_surfaces: None,
+        changed_display_panes: None,
+        changed_display_appearance: None,
     };
 
     let events = delta_to_events(&delta);

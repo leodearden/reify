@@ -11,7 +11,10 @@ use tracing::warn;
 
 use reify_core::DiagnosticInfo;
 
-use crate::types::{ConstraintData, GuiState, MeshData, ValueData};
+use crate::types::{
+    AppearanceDirective, ConstraintData, DisplayDirective, GuiState, MeshData,
+    TensegritySurfaceData, TensegrityWireData, ValueData,
+};
 
 /// Minimal delta between two GuiState snapshots.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,6 +29,14 @@ pub struct StateDelta {
     pub changed_tessellation_diagnostics: Option<Vec<DiagnosticInfo>>,
     /// Some(vec) when the compile diagnostics list changed; None when unchanged.
     pub changed_compile_diagnostics: Option<Vec<DiagnosticInfo>>,
+    /// Some(vec) when the tensegrity wires list changed; None when unchanged.
+    pub changed_tensegrity_wires: Option<Vec<TensegrityWireData>>,
+    /// Some(vec) when the tensegrity surfaces list changed; None when unchanged.
+    pub changed_tensegrity_surfaces: Option<Vec<TensegritySurfaceData>>,
+    /// Some(vec) when the display panes list changed; None when unchanged.
+    pub changed_display_panes: Option<Vec<DisplayDirective>>,
+    /// Some(vec) when the display appearance list changed; None when unchanged.
+    pub changed_display_appearance: Option<Vec<AppearanceDirective>>,
 }
 
 impl StateDelta {
@@ -52,6 +63,26 @@ impl StateDelta {
                 None
             } else {
                 Some(state.compile_diagnostics.clone())
+            },
+            changed_tensegrity_wires: if state.tensegrity_wires.is_empty() {
+                None
+            } else {
+                Some(state.tensegrity_wires.clone())
+            },
+            changed_tensegrity_surfaces: if state.tensegrity_surfaces.is_empty() {
+                None
+            } else {
+                Some(state.tensegrity_surfaces.clone())
+            },
+            changed_display_panes: if state.display_panes.is_empty() {
+                None
+            } else {
+                Some(state.display_panes.clone())
+            },
+            changed_display_appearance: if state.display_appearance.is_empty() {
+                None
+            } else {
+                Some(state.display_appearance.clone())
             },
         }
     }
@@ -162,6 +193,34 @@ pub fn diff_gui_state(old: &GuiState, new: &GuiState) -> StateDelta {
         None
     };
 
+    // --- Tensegrity wires: emit the new list when it differs ---
+    let changed_tensegrity_wires = if old.tensegrity_wires != new.tensegrity_wires {
+        Some(new.tensegrity_wires.clone())
+    } else {
+        None
+    };
+
+    // --- Tensegrity surfaces: emit the new list when it differs ---
+    let changed_tensegrity_surfaces = if old.tensegrity_surfaces != new.tensegrity_surfaces {
+        Some(new.tensegrity_surfaces.clone())
+    } else {
+        None
+    };
+
+    // --- Display panes: emit the new list when it differs ---
+    let changed_display_panes = if old.display_panes != new.display_panes {
+        Some(new.display_panes.clone())
+    } else {
+        None
+    };
+
+    // --- Display appearance: emit the new list when it differs ---
+    let changed_display_appearance = if old.display_appearance != new.display_appearance {
+        Some(new.display_appearance.clone())
+    } else {
+        None
+    };
+
     StateDelta {
         changed_meshes,
         changed_values,
@@ -171,6 +230,10 @@ pub fn diff_gui_state(old: &GuiState, new: &GuiState) -> StateDelta {
         removed_constraint_ids,
         changed_tessellation_diagnostics,
         changed_compile_diagnostics,
+        changed_tensegrity_wires,
+        changed_tensegrity_surfaces,
+        changed_display_panes,
+        changed_display_appearance,
     }
 }
 
