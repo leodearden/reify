@@ -4275,4 +4275,52 @@ mod tests {
             ),
         }
     }
+
+    // ── Task #5079 step-5: RED — dispatch_compute_node must share the guard ──
+    //
+    // `Engine::dispatch_compute_node` (engine_admin.rs) is a SECOND public
+    // dispatch entry point. It resolves the SAME `compute_registry.fns`
+    // registry as `invoke_compute_trampoline` but today calls `f(...)`
+    // directly with no `catch_unwind` — so a trampoline that panics when
+    // reached via THIS path still unwinds out of the process, even after
+    // step-2/step-4 guarded `invoke_compute_trampoline`. RED today:
+    // `panic!("boom_str")` unwinds straight through `dispatch_compute_node`
+    // into this test fn, so `.expect_err(..)` is never reached and the
+    // harness (panic=unwind, pinned by the `#[cfg(panic = "abort")]
+    // compile_error!` above) reports a panicked-test failure. Step-6 makes
+    // this GREEN by routing `dispatch_compute_node` through the
+    // already-guarded `invoke_compute_trampoline`.
+
+    /// `dispatch_compute_node` must convert a panicking trampoline into
+    /// `Err(diagnostics)` — the SAME enriched conversion
+    /// `invoke_compute_trampoline` already performs — rather than letting
+    /// the panic unwind out of the process.
+    #[test]
+    fn dispatch_compute_node_catches_panicking_trampoline() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn("test::panic_dispatch", panics_str_fn as ComputeFn);
+
+        let diags = engine
+            .dispatch_compute_node(
+                "test::panic_dispatch",
+                &[Value::Int(0)],
+                &[],
+                &Value::Undef,
+                None,
+            )
+            .expect_err(
+                "a panic via dispatch_compute_node must become Err(diagnostics), not \
+                 unwind out of the process",
+            );
+
+        assert!(
+            diags.iter().any(|d| d.severity == reify_core::Severity::Error
+                && d.message.contains("test::panic_dispatch")
+                && d.message.contains("panicked")
+                && d.message.contains("boom_str")),
+            "expected an Error diagnostic naming the target, \"panicked\", and the \
+             panic payload \"boom_str\" (i.e. the same enriched conversion \
+             invoke_compute_trampoline performs), got {diags:?}",
+        );
+    }
 }
