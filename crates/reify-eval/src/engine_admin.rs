@@ -8,8 +8,8 @@ use crate::{Engine, EvaluationState};
 use reify_compiler::{CompiledModule, EntityKind, ValueCellKind};
 use reify_core::Diagnostic;
 use reify_ir::{
-    CompiledFunction, ConstraintChecker, ConstraintSolver, FeatureTagTable, GeometryKernel,
-    OptimizedImpl, TopologyAttributeTable,
+    CompiledFunction, ConstraintChecker, ConstraintSolver, GeometryKernel, OptimizedImpl,
+    TopologyAttributeTable,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -331,7 +331,6 @@ impl Engine {
             // Read REIFY_WARM_STATE_BUDGET_BYTES once at construction; falls
             // back to DEFAULT_BUDGET_BYTES (2 GiB) when unset. Per arch §4.3.
             warm_pool: crate::warm_pool::WarmStatePool::from_env_or_default(),
-            feature_tag_table: FeatureTagTable::default(),
             // v0.2 persistent-naming-v2 attribute store. Always empty after
             // construction — task 2590 added the field + accessor as the
             // foundation; tasks 5-8 wire per-op auto-population.
@@ -494,16 +493,6 @@ impl Engine {
                 .unwrap_or_else(|| (a.realization.clone(), u32::MAX))
         });
         entries
-    }
-
-    /// Return a reference to the feature-tag table populated by the most recent
-    /// `build()` or `build_snapshot()` call.
-    ///
-    /// Maps each `GeometryHandleId` produced during geometry execution to the
-    /// `FeatureTag` derived from its position in the parallel `feature_tags`
-    /// array on `RealizationDecl`. See task 2323 for full design rationale.
-    pub fn feature_tag_table(&self) -> &FeatureTagTable {
-        &self.feature_tag_table
     }
 
     /// Return a reference to the v0.2 persistent-naming-v2 attribute table on

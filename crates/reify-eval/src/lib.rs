@@ -178,9 +178,9 @@ use std::sync::Arc;
 use reify_compiler::{CompiledModule, CompiledPurpose};
 use reify_core::{ConstraintNodeId, ContentHash, Diagnostic, ValueCellId};
 use reify_ir::{
-    CompiledFunction, ConstraintChecker, ConstraintSolver, FeatureTagTable, GeometryKernel,
-    KernelHandle, Mesh, ObjectiveProvenance, ObjectiveSet, OptimizedImpl, Satisfaction,
-    TopologyAttributeTable, ValueMap,
+    CompiledFunction, ConstraintChecker, ConstraintSolver, GeometryKernel, KernelHandle, Mesh,
+    ObjectiveProvenance, ObjectiveSet, OptimizedImpl, Satisfaction, TopologyAttributeTable,
+    ValueMap,
 };
 
 use crate::cache::{CacheStore, NodeId};
@@ -785,15 +785,6 @@ pub struct Engine {
     /// `warm_pool()` / `warm_pool_mut()` (cfg-gated to test/test-instrumentation
     /// builds) live in `engine_admin.rs`.
     warm_pool: crate::warm_pool::WarmStatePool,
-    /// Maps each successfully-produced `GeometryHandleId` to the `FeatureTag`
-    /// derived from its position in the realization's parallel `feature_tags`
-    /// array. Populated by `Engine::execute_realization_ops` immediately after
-    /// `kernel.execute(...)` returns `Ok(handle)`. Cleared and repopulated on
-    /// each `build()` / `build_snapshot()` call.
-    ///
-    /// Exposed via `Engine::feature_tag_table()` so topology selectors and
-    /// GUI consumers can correlate geometry handles back to source locations.
-    feature_tag_table: FeatureTagTable,
     /// v0.2 persistent-naming-v2 attribute store, keyed by
     /// `GeometryHandleId`. Mirrors the `feature_tag_table` shape but holds
     /// `TopologyAttribute` records (per-feature `feature_id`, `role`,
