@@ -34,9 +34,11 @@ VERIFY="$REPO_ROOT/scripts/verify.sh"
 MERGE_FIFO="$(mktemp -u /tmp/test-jb-merge-XXXXXX)"
 TASK_FIFO="$(mktemp -u /tmp/test-jb-task-XXXXXX)"
 ABSENT_PATH="$(mktemp -u /tmp/test-jb-absent-XXXXXX)"
+LIVE_PID=""   # populated by the liveness-probe cases below (task 5146); killed by _cleanup
 
 _cleanup() {
-    rm -f "$MERGE_FIFO" "$TASK_FIFO" 2>/dev/null || true
+    [ -n "$LIVE_PID" ] && kill "$LIVE_PID" 2>/dev/null || true
+    rm -f "$MERGE_FIFO" "$TASK_FIFO" "${TASK_FIFO}.owner" 2>/dev/null || true
 }
 trap _cleanup EXIT
 
@@ -145,5 +147,138 @@ export _PLAN_F
 
 assert "(f) default path: CARGO_MAKEFLAGS output line references /tmp/reify-jobserver-task" \
     bash -c 'printf "%s\n" "$_PLAN_F" | grep "CARGO_MAKEFLAGS" | grep -qF "/tmp/reify-jobserver-task"'
+
+# ---------------------------------------------------------------------------
+# Liveness probe (task 5146): verify.sh must not export a stale FIFO's
+# CARGO_MAKEFLAGS.  Cases (g)-(l) craft "${TASK_FIFO}.owner" stamps beside the
+# already-mkfifo'd $TASK_FIFO and reuse the (a)-(f) mktemp-FIFO +
+# REIFY_JOBSERVER_TASK_FIFO override + --print-plan grep idiom.
+#
+# DEAD_PID is a pid essentially guaranteed not to be alive (near INT_MAX, far
+# past any realistic pid_max); WRONG_BOOT_ID is a well-formed but wrong UUID;
+# LIVE_PID is a real backgrounded process this file owns and kills on EXIT.
+#
+# Cases (g), (h) are RED today: apply_env's existence-only guard never skips
+# the export, so a stale/boot-mismatched stamp still exports CARGO_MAKEFLAGS.
+# ---------------------------------------------------------------------------
+DEAD_PID=2147483646
+WRONG_BOOT_ID="00000000-0000-0000-0000-000000000000"
+HOST_BOOT_ID="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)"
+
+sleep 300 &
+LIVE_PID=$!
+
+# ---------------------------------------------------------------------------
+# (g) STALE: dead pid + host boot_id → CARGO_MAKEFLAGS left unset (stale) +
+#     a 'verify.sh: WARNING' line on stderr
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- (g) STALE: dead pid + host boot_id → CARGO_MAKEFLAGS left unset + WARNING on stderr ---"
+printf '%s %s\n' "$DEAD_PID" "$HOST_BOOT_ID" > "${TASK_FIFO}.owner"
+
+_G_STDERR="$(mktemp)"
+_PLAN_G="$(DF_VERIFY_ROLE=task REIFY_JOBSERVER_TASK_FIFO="$TASK_FIFO" \
+    bash "$VERIFY" test --print-plan 2>"$_G_STDERR" || true)"
+export _PLAN_G
+
+assert "(g) STALE dead-pid: no active 'export CARGO_MAKEFLAGS' line" \
+    bash -c '! printf "%s\n" "$_PLAN_G" | grep -q "export CARGO_MAKEFLAGS"'
+
+assert "(g) STALE dead-pid: 'CARGO_MAKEFLAGS left unset' + 'stale' comment present" \
+    bash -c 'printf "%s\n" "$_PLAN_G" | grep -i "CARGO_MAKEFLAGS left unset" | grep -qi "stale"'
+
+assert "(g) STALE dead-pid: 'verify.sh: WARNING' appears on stderr" \
+    bash -c "grep -qF 'verify.sh: WARNING' '$_G_STDERR'"
+
+rm -f "$_G_STDERR" "${TASK_FIFO}.owner"
+
+# ---------------------------------------------------------------------------
+# (h) BOOT-MISMATCH: live pid + wrong boot_id → CARGO_MAKEFLAGS left unset
+#     (post-reboot pid-reuse guard fires even though the pid itself is alive)
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- (h) BOOT-MISMATCH: live pid + wrong boot_id → CARGO_MAKEFLAGS left unset ---"
+printf '%s %s\n' "$LIVE_PID" "$WRONG_BOOT_ID" > "${TASK_FIFO}.owner"
+
+_PLAN_H="$(DF_VERIFY_ROLE=task REIFY_JOBSERVER_TASK_FIFO="$TASK_FIFO" \
+    bash "$VERIFY" test --print-plan 2>/dev/null || true)"
+export _PLAN_H
+
+assert "(h) BOOT-MISMATCH: no active 'export CARGO_MAKEFLAGS' line" \
+    bash -c '! printf "%s\n" "$_PLAN_H" | grep -q "export CARGO_MAKEFLAGS"'
+
+assert "(h) BOOT-MISMATCH: 'CARGO_MAKEFLAGS left unset' comment present" \
+    bash -c 'printf "%s\n" "$_PLAN_H" | grep -q "CARGO_MAKEFLAGS left unset"'
+
+rm -f "${TASK_FIFO}.owner"
+
+# ---------------------------------------------------------------------------
+# (i) LIVE: live pid + host boot_id → exports --jobserver-auth=fifo:<task-tmp>
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- (i) LIVE: live pid + host boot_id → exports --jobserver-auth=fifo:<task-tmp> ---"
+printf '%s %s\n' "$LIVE_PID" "$HOST_BOOT_ID" > "${TASK_FIFO}.owner"
+
+_PLAN_I="$(DF_VERIFY_ROLE=task REIFY_JOBSERVER_TASK_FIFO="$TASK_FIFO" \
+    bash "$VERIFY" test --print-plan 2>/dev/null || true)"
+export _PLAN_I
+
+assert "(i) LIVE: exports --jobserver-auth=fifo:<task-tmp>" \
+    bash -c 'printf "%s\n" "$_PLAN_I" | grep -qF "CARGO_MAKEFLAGS=--jobserver-auth=fifo:$TASK_FIFO"'
+
+rm -f "${TASK_FIFO}.owner"
+
+# ---------------------------------------------------------------------------
+# (j) NO-STAMP backward-compat: FIFO present, no .owner → exports
+#     (UNKNOWN — an old/foreign balancer without a stamp must keep working)
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- (j) NO-STAMP: FIFO present, no .owner → exports (backward-compat, UNKNOWN) ---"
+rm -f "${TASK_FIFO}.owner"   # ensure absent
+
+_PLAN_J="$(DF_VERIFY_ROLE=task REIFY_JOBSERVER_TASK_FIFO="$TASK_FIFO" \
+    bash "$VERIFY" test --print-plan 2>/dev/null || true)"
+export _PLAN_J
+
+assert "(j) NO-STAMP: exports --jobserver-auth=fifo:<task-tmp> (backward-compat)" \
+    bash -c 'printf "%s\n" "$_PLAN_J" | grep -qF "CARGO_MAKEFLAGS=--jobserver-auth=fifo:$TASK_FIFO"'
+
+# ---------------------------------------------------------------------------
+# (k) MALFORMED: owner stamp with an empty/space-only first field → exports
+#     (UNKNOWN, not STALE — ambiguous is not proof of death)
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- (k) MALFORMED: owner stamp with empty first field → exports (UNKNOWN, not stale) ---"
+printf '   \n' > "${TASK_FIFO}.owner"   # whitespace-only line: read -r pid boot → both empty
+
+_PLAN_K="$(DF_VERIFY_ROLE=task REIFY_JOBSERVER_TASK_FIFO="$TASK_FIFO" \
+    bash "$VERIFY" test --print-plan 2>/dev/null || true)"
+export _PLAN_K
+
+assert "(k) MALFORMED: exports --jobserver-auth=fifo:<task-tmp> (UNKNOWN, not stale)" \
+    bash -c 'printf "%s\n" "$_PLAN_K" | grep -qF "CARGO_MAKEFLAGS=--jobserver-auth=fifo:$TASK_FIFO"'
+
+rm -f "${TASK_FIFO}.owner"
+
+# ---------------------------------------------------------------------------
+# (l) BREAK-GLASS: dead-pid stamp + REIFY_JOBSERVER_SKIP_LIVENESS_PROBE=1 →
+#     exports anyway (existence-only guard, pre-5146 behavior forced back on)
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- (l) BREAK-GLASS: dead-pid stamp + REIFY_JOBSERVER_SKIP_LIVENESS_PROBE=1 → exports ---"
+printf '%s %s\n' "$DEAD_PID" "$HOST_BOOT_ID" > "${TASK_FIFO}.owner"
+
+_PLAN_L="$(DF_VERIFY_ROLE=task REIFY_JOBSERVER_TASK_FIFO="$TASK_FIFO" \
+    REIFY_JOBSERVER_SKIP_LIVENESS_PROBE=1 \
+    bash "$VERIFY" test --print-plan 2>/dev/null || true)"
+export _PLAN_L
+
+assert "(l) BREAK-GLASS: exports --jobserver-auth=fifo:<task-tmp> despite stale stamp" \
+    bash -c 'printf "%s\n" "$_PLAN_L" | grep -qF "CARGO_MAKEFLAGS=--jobserver-auth=fifo:$TASK_FIFO"'
+
+rm -f "${TASK_FIFO}.owner"
+kill "$LIVE_PID" 2>/dev/null || true
+wait "$LIVE_PID" 2>/dev/null || true
+LIVE_PID=""
 
 test_summary
