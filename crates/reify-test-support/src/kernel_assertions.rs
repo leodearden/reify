@@ -309,6 +309,23 @@ pub fn assert_query_many_length_invariant<K: GeometryKernel + ?Sized>(
     );
 }
 
+/// Calls `extract_edges`/`extract_faces`/`extract_vertices` on `handle`
+/// and pairs each result with a `&'static str` label. The single point of
+/// edit for a fourth extractor: [`assert_extract_determinism`],
+/// [`assert_extract_succeeds`], and [`assert_all_error_taxonomy`] all
+/// iterate over this instead of repeating a near-identical
+/// edges/faces/vertices block each.
+fn extract_all<K: GeometryKernel + ?Sized>(
+    kernel: &mut K,
+    handle: GeometryHandleId,
+) -> [(&'static str, Result<Vec<GeometryHandleId>, QueryError>); 3] {
+    [
+        ("extract_edges", kernel.extract_edges(handle)),
+        ("extract_faces", kernel.extract_faces(handle)),
+        ("extract_vertices", kernel.extract_vertices(handle)),
+    ]
+}
+
 /// Assert that `extract_edges`/`extract_faces`/`extract_vertices` are
 /// idempotent per parent handle: calling the same extractor twice on the
 /// same `handle` must yield the same observable result (both `Err` with
@@ -329,35 +346,18 @@ pub fn assert_query_many_length_invariant<K: GeometryKernel + ?Sized>(
 ///
 /// Panics naming the offending method on divergence.
 pub fn assert_extract_determinism<K: GeometryKernel + ?Sized>(kernel: &mut K, handle: GeometryHandleId) {
-    let edges1 = kernel.extract_edges(handle);
-    let edges2 = kernel.extract_edges(handle);
-    assert_eq!(
-        format!("{:?}", edges1),
-        format!("{:?}", edges2),
-        "extract_edges must be idempotent per handle: first call {:?}, second call {:?}",
-        edges1,
-        edges2
-    );
-
-    let faces1 = kernel.extract_faces(handle);
-    let faces2 = kernel.extract_faces(handle);
-    assert_eq!(
-        format!("{:?}", faces1),
-        format!("{:?}", faces2),
-        "extract_faces must be idempotent per handle: first call {:?}, second call {:?}",
-        faces1,
-        faces2
-    );
-
-    let vertices1 = kernel.extract_vertices(handle);
-    let vertices2 = kernel.extract_vertices(handle);
-    assert_eq!(
-        format!("{:?}", vertices1),
-        format!("{:?}", vertices2),
-        "extract_vertices must be idempotent per handle: first call {:?}, second call {:?}",
-        vertices1,
-        vertices2
-    );
+    let first = extract_all(kernel, handle);
+    let second = extract_all(kernel, handle);
+    for ((name, r1), (_, r2)) in first.into_iter().zip(second) {
+        assert_eq!(
+            format!("{:?}", r1),
+            format!("{:?}", r2),
+            "{} must be idempotent per handle: first call {:?}, second call {:?}",
+            name,
+            r1,
+            r2
+        );
+    }
 }
 
 /// Assert that `extract_edges`/`extract_faces`/`extract_vertices` succeed
@@ -373,28 +373,13 @@ pub fn assert_extract_determinism<K: GeometryKernel + ?Sized>(kernel: &mut K, ha
 ///
 /// Panics naming the offending method if it returns `Err` for `handle`.
 pub fn assert_extract_succeeds<K: GeometryKernel + ?Sized>(kernel: &mut K, handle: GeometryHandleId) {
-    match kernel.extract_edges(handle) {
-        Ok(_) => {}
-        Err(e) => panic!(
-            "extract_edges on a valid handle {:?} must return Ok(_), got Err({:?})",
-            handle, e
-        ),
-    }
-
-    match kernel.extract_faces(handle) {
-        Ok(_) => {}
-        Err(e) => panic!(
-            "extract_faces on a valid handle {:?} must return Ok(_), got Err({:?})",
-            handle, e
-        ),
-    }
-
-    match kernel.extract_vertices(handle) {
-        Ok(_) => {}
-        Err(e) => panic!(
-            "extract_vertices on a valid handle {:?} must return Ok(_), got Err({:?})",
-            handle, e
-        ),
+    for (name, result) in extract_all(kernel, handle) {
+        if let Err(e) = result {
+            panic!(
+                "{} on a valid handle {:?} must return Ok(_), got Err({:?})",
+                name, handle, e
+            );
+        }
     }
 }
 
@@ -554,28 +539,14 @@ pub fn assert_all_error_taxonomy<K: GeometryKernel + ?Sized>(kernel: &mut K, sub
         ),
     }
 
-    match kernel.extract_edges(GeometryHandleId(1)) {
-        Err(QueryError::QueryFailed(_)) => {}
-        other => panic!(
-            "expected Err(QueryError::QueryFailed(_)) from extract_edges, got {:?}",
-            other
-        ),
-    }
-
-    match kernel.extract_faces(GeometryHandleId(1)) {
-        Err(QueryError::QueryFailed(_)) => {}
-        other => panic!(
-            "expected Err(QueryError::QueryFailed(_)) from extract_faces, got {:?}",
-            other
-        ),
-    }
-
-    match kernel.extract_vertices(GeometryHandleId(1)) {
-        Err(QueryError::QueryFailed(_)) => {}
-        other => panic!(
-            "expected Err(QueryError::QueryFailed(_)) from extract_vertices, got {:?}",
-            other
-        ),
+    for (name, result) in extract_all(kernel, GeometryHandleId(1)) {
+        match result {
+            Err(QueryError::QueryFailed(_)) => {}
+            other => panic!(
+                "expected Err(QueryError::QueryFailed(_)) from {}, got {:?}",
+                name, other
+            ),
+        }
     }
 }
 
@@ -937,6 +908,102 @@ mod tests {
         assert_panic_contains(result, "query_many on");
     }
 
+    /// All-error kernel whose `query_many` returns a length-correct but
+    /// content-divergent result for a single-element batch:
+    /// `query_many(&[q])` returns `Ok(vec![Value::Real(42.0)])`, while the
+    /// equivalent `query(&q)` call returns `Err(_)` (inherited from
+    /// [`impl_all_error_kernel!`]). `WrongLengthQueryManyKernel` above
+    /// panics on the earlier length check and never reaches the
+    /// single-vs-many agreement `assert_eq!`, so this fixture isolates it:
+    /// same length (1), disagreeing content.
+    struct DivergentSingleQueryManyKernel;
+
+    impl_all_error_kernel!(DivergentSingleQueryManyKernel, STUB_MSG, extra {
+        fn query_many(&self, queries: &[GeometryQuery]) -> Result<Vec<Value>, QueryError> {
+            match queries.len() {
+                0 => Ok(Vec::new()),
+                1 => Ok(vec![Value::Real(42.0)]),
+                _ => Err(QueryError::QueryFailed(STUB_MSG.into())),
+            }
+        }
+    });
+
+    #[test]
+    fn query_many_length_helper_catches_single_batch_content_divergence() {
+        // DivergentSingleQueryManyKernel's query_many(&[q]) returns
+        // Ok(42.0) while query(&q) returns Err(_) — same length, wrong
+        // content — must panic on the agreement check specifically.
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            super::assert_query_many_length_invariant(
+                &DivergentSingleQueryManyKernel,
+                GeometryHandleId(1),
+            );
+        }));
+        assert_panic_contains(result, "query_many(&[q]) must agree with query(&q)");
+    }
+
+    /// Kernel whose per-element `query` always succeeds (models a kernel
+    /// for which `probe` is valid), but whose `query_many` override
+    /// incorrectly returns `Err` for a non-empty batch. Used to prove the
+    /// `Err(_) if !probe_queries_succeed` guard in
+    /// [`assert_query_many_length_invariant`] actually restricts the
+    /// tolerated-`Err` branch to an *invalid* probe:
+    /// `WrongLengthQueryManyKernel` above only ever exercises that guard
+    /// with an invalid probe (its `query` always errors too), so a
+    /// regression that dropped the `!probe_queries_succeed` condition —
+    /// silently tolerating `Err` from `query_many` even when the probe is
+    /// valid — would ship undetected without this fixture.
+    struct ErroringQueryManyWithValidProbeKernel;
+
+    impl GeometryKernel for ErroringQueryManyWithValidProbeKernel {
+        fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+            Err(GeometryError::OperationFailed(STUB_MSG.into()))
+        }
+
+        fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
+            Ok(Value::Real(1.0))
+        }
+
+        fn query_many(&self, queries: &[GeometryQuery]) -> Result<Vec<Value>, QueryError> {
+            if queries.is_empty() {
+                Ok(Vec::new())
+            } else {
+                Err(QueryError::QueryFailed(STUB_MSG.into()))
+            }
+        }
+
+        fn export(
+            &self,
+            _handle: GeometryHandleId,
+            _format: ExportFormat,
+            _writer: &mut dyn std::io::Write,
+        ) -> Result<(), ExportError> {
+            Err(ExportError::FormatError(STUB_MSG.into()))
+        }
+
+        fn tessellate(
+            &self,
+            _handle: GeometryHandleId,
+            _tolerance: f64,
+        ) -> Result<Mesh, TessError> {
+            Err(TessError::TessellationFailed(STUB_MSG.into()))
+        }
+    }
+
+    #[test]
+    fn query_many_length_helper_catches_erroring_query_many_with_valid_probe() {
+        // query(probe) succeeds, but query_many on a 2-element batch of
+        // the same query wrongly returns Err — the guard must not
+        // tolerate this, since the probe is valid.
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            super::assert_query_many_length_invariant(
+                &ErroringQueryManyWithValidProbeKernel,
+                GeometryHandleId(1),
+            );
+        }));
+        assert_panic_contains(result, "query_many on 2 queries must return");
+    }
+
     /// All-error kernel whose `extract_edges`/`extract_faces`/`extract_vertices`
     /// each mint a fresh id on every call, violating the determinism the real
     /// contract requires (idempotent per parent handle).
@@ -1042,6 +1109,101 @@ mod tests {
             super::assert_dangling_handle_is_err(&mut AcceptsDanglingKernel, GeometryHandleId(999));
         }));
         assert_panic_contains(result, "execute on a dangling handle");
+    }
+
+    /// Which single handle-taking method (besides `execute`, which always
+    /// errors) [`AcceptsDanglingOnlyAt`] accepts a dangling handle on.
+    enum DanglingAcceptPoint {
+        Query,
+        Export,
+        Tessellate,
+    }
+
+    /// Kernel that errors on `execute` and on every handle-taking method
+    /// except the single one named by its [`DanglingAcceptPoint`], which
+    /// it silently accepts (`Ok`) even for a dangling handle.
+    /// `AcceptsDanglingKernel` above accepts on all four methods, so
+    /// [`assert_dangling_handle_is_err`]'s negative self-test using it
+    /// only ever reaches the `execute` panic arm — a bug in the
+    /// query/export/tessellate detection would ship undetected. This
+    /// fixture isolates each remaining branch: erroring everywhere but
+    /// the one method under test forces
+    /// [`assert_dangling_handle_is_err`] to walk past the earlier
+    /// method(s) to reach it.
+    struct AcceptsDanglingOnlyAt(DanglingAcceptPoint);
+
+    impl GeometryKernel for AcceptsDanglingOnlyAt {
+        fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+            Err(GeometryError::OperationFailed(STUB_MSG.into()))
+        }
+
+        fn query(&self, _query: &GeometryQuery) -> Result<Value, QueryError> {
+            if matches!(self.0, DanglingAcceptPoint::Query) {
+                Ok(Value::Real(0.0))
+            } else {
+                Err(QueryError::QueryFailed(STUB_MSG.into()))
+            }
+        }
+
+        fn export(
+            &self,
+            _handle: GeometryHandleId,
+            _format: ExportFormat,
+            _writer: &mut dyn std::io::Write,
+        ) -> Result<(), ExportError> {
+            if matches!(self.0, DanglingAcceptPoint::Export) {
+                Ok(())
+            } else {
+                Err(ExportError::FormatError(STUB_MSG.into()))
+            }
+        }
+
+        fn tessellate(
+            &self,
+            _handle: GeometryHandleId,
+            _tolerance: f64,
+        ) -> Result<Mesh, TessError> {
+            if matches!(self.0, DanglingAcceptPoint::Tessellate) {
+                Ok(Mesh {
+                    vertices: Vec::new(),
+                    indices: Vec::new(),
+                    normals: None,
+                })
+            } else {
+                Err(TessError::TessellationFailed(STUB_MSG.into()))
+            }
+        }
+    }
+
+    #[test]
+    fn dangling_is_err_helper_catches_accepting_kernel_on_query_export_tessellate() {
+        // Isolate the `query` branch: execute errors, query wrongly accepts.
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            super::assert_dangling_handle_is_err(
+                &mut AcceptsDanglingOnlyAt(DanglingAcceptPoint::Query),
+                GeometryHandleId(999),
+            );
+        }));
+        assert_panic_contains(result, "query on a dangling handle");
+
+        // Isolate the `export` branch: execute/query error, export wrongly accepts.
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            super::assert_dangling_handle_is_err(
+                &mut AcceptsDanglingOnlyAt(DanglingAcceptPoint::Export),
+                GeometryHandleId(999),
+            );
+        }));
+        assert_panic_contains(result, "export on a dangling handle");
+
+        // Isolate the `tessellate` branch: execute/query/export error,
+        // tessellate wrongly accepts.
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            super::assert_dangling_handle_is_err(
+                &mut AcceptsDanglingOnlyAt(DanglingAcceptPoint::Tessellate),
+                GeometryHandleId(999),
+            );
+        }));
+        assert_panic_contains(result, "tessellate on a dangling handle");
     }
 
     /// All-error stub kernel whose `execute` returns the wrong error
