@@ -11038,4 +11038,54 @@ mod tests {
             other => panic!("expected MeshWitness::Edge naming the offender, got {other:?}"),
         }
     }
+
+    #[test]
+    fn geometry_error_mesh_contract_violation_display_and_bridge() {
+        let counts = MeshViolationCounts {
+            reversed_edges: 3,
+            open_edges: 3,
+            ..Default::default()
+        };
+        let witness = MeshWitness::Edge { u: 0, v: 1 };
+        let violation = MeshContractViolation {
+            invariant: MeshInvariant::ConsistentWinding,
+            counts,
+            witness,
+        };
+
+        let occt_error = GeometryError::MeshContractViolation {
+            kernel: "occt",
+            invariant: violation.invariant,
+            counts: violation.counts,
+            witness: violation.witness,
+        };
+        let rendered = occt_error.to_string();
+        assert!(
+            rendered.contains("occt"),
+            "Display must name the kernel: {rendered}"
+        );
+        assert!(
+            rendered.contains("ConsistentWinding"),
+            "Display must name the invariant: {rendered}"
+        );
+        assert!(
+            rendered.contains('3'),
+            "Display must include the violation counts: {rendered}"
+        );
+
+        match violation.into_geometry_error("manifold") {
+            GeometryError::MeshContractViolation {
+                kernel,
+                invariant,
+                counts: bridged_counts,
+                witness: bridged_witness,
+            } => {
+                assert_eq!(kernel, "manifold");
+                assert_eq!(invariant, MeshInvariant::ConsistentWinding);
+                assert_eq!(bridged_counts, counts);
+                assert_eq!(bridged_witness, witness);
+            }
+            other => panic!("expected MeshContractViolation, got {other:?}"),
+        }
+    }
 }
