@@ -126,14 +126,16 @@ fn watcher_detects_ri_file_modification() {
     // Modify the .ri file
     std::fs::write(&ri_file, "structure Bracket { param width = 80mm }").unwrap();
 
-    // Wait for the event to propagate (with debounce)
-    wait_for(&changed_paths, Duration::from_secs(10), |paths| {
+    // Wait for the event to propagate (with debounce). Bind the result so a
+    // genuine regression fails via the assert below with a clear message,
+    // rather than the boolean being silently discarded.
+    let found = wait_for(&changed_paths, Duration::from_secs(10), |paths| {
         paths.iter().any(|p| p.ends_with("test.ri"))
     });
 
     let paths = changed_paths.lock().unwrap();
     assert!(
-        paths.iter().any(|p| p.ends_with("test.ri")),
+        found,
         "should have detected test.ri change, got: {:?}",
         *paths
     );
@@ -203,15 +205,21 @@ fn watcher_with_target_file_only_fires_for_that_file() {
 
     // Modify the target file (should trigger)
     std::fs::write(&project_file, "structure Project { param y = 20mm }").unwrap();
-    // Wait for the event to propagate (with debounce)
-    wait_for(&changed_paths, Duration::from_secs(10), |paths| {
+    // Wait for the event to propagate (with debounce). Bind the result so a
+    // genuine regression fails via the assert below with a clear message,
+    // rather than the boolean being silently discarded.
+    let found = wait_for(&changed_paths, Duration::from_secs(10), |paths| {
         paths.iter().any(|p| p.ends_with("project.ri"))
     });
 
     let paths = changed_paths.lock().unwrap();
-    // Should have fired for project.ri only
+    // Should have fired for project.ri only. The negative check below is not
+    // a race: other.ri was modified 500ms before project.ri (see above), so
+    // if the target_file filter were broken, other.ri's Changed event would
+    // already be sitting in `paths` by the time wait_for observes
+    // project.ri's event (itself gated behind the watcher's ~100ms debounce).
     assert!(
-        paths.iter().any(|p| p.ends_with("project.ri")),
+        found,
         "should have detected project.ri change, got: {:?}",
         *paths
     );
@@ -248,14 +256,16 @@ fn watcher_detects_ri_file_removal() {
     // Delete the .ri file
     std::fs::remove_file(&ri_file).unwrap();
 
-    // Wait for the Remove event to propagate (with debounce)
-    wait_for(&removed_paths, Duration::from_secs(10), |paths| {
+    // Wait for the Remove event to propagate (with debounce). Bind the
+    // result so a genuine regression fails via the assert below with a
+    // clear message, rather than the boolean being silently discarded.
+    let found = wait_for(&removed_paths, Duration::from_secs(10), |paths| {
         paths.iter().any(|p| p.ends_with("scratch.ri"))
     });
 
     let paths = removed_paths.lock().unwrap();
     assert!(
-        paths.iter().any(|p| p.ends_with("scratch.ri")),
+        found,
         "should have received FileEvent::Removed for scratch.ri, got: {:?}",
         *paths
     );
@@ -292,22 +302,17 @@ fn watcher_emits_remove_event_even_when_target_file_filter_excludes_other_files(
     // Delete the scratch file (not the target) — should produce Removed event
     std::fs::remove_file(&scratch_file).unwrap();
 
-    // Wait for event propagation
-    wait_for(&events, Duration::from_secs(10), |evts| {
+    // Wait for event propagation. Bind the result so a genuine regression
+    // fails via the assert below with a clear message, rather than the
+    // boolean being silently discarded.
+    let found = wait_for(&events, Duration::from_secs(10), |evts| {
         evts.iter()
             .any(|e| matches!(e, FileEvent::Removed(p) if p.ends_with("scratch.ri")))
     });
 
     let evts = events.lock().unwrap();
-    let has_removed = evts.iter().any(|e| {
-        if let FileEvent::Removed(p) = e {
-            p.ends_with("scratch.ri")
-        } else {
-            false
-        }
-    });
     assert!(
-        has_removed,
+        found,
         "FileEvent::Removed for scratch.ri should fire even with target_file filter, got: {:?}",
         evts.iter()
             .map(|e| format!("{:?}", e))
