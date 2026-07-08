@@ -158,6 +158,26 @@ assert_marker() {
     assert "$label" grep -qF "$token" "$file"
 }
 
+# ===========================================================================
+# Tree-sitter readiness helpers (task 5144 F1)
+# ===========================================================================
+# _ts_outputs_healthy <ts_src_dir>
+# Returns 0 iff <ts_src_dir>/src/{parser.c,grammar.json,node-types.json} all
+# exist AND are non-empty ([ -s ]); else 1.  Pure — reads only under the
+# given dir, never mutates anything.  This is the same output signature
+# tree-sitter-generate.sh's own post-generation existence loop checks
+# (tree-sitter-generate.sh:167-172), plus the non-empty guard that catches
+# the 0-byte-parser.c corruption class left by a killed/interrupted real
+# generation under load (task 5144 cause 1).
+_ts_outputs_healthy() {
+    local _ts_src_dir="$1"
+    local _f
+    for _f in parser.c grammar.json node-types.json; do
+        [ -s "$_ts_src_dir/src/$_f" ] || return 1
+    done
+    return 0
+}
+
 make_stub_bin() {
     local dir="$1"
     # stub cargo: sleeps $REIFY_E2E_CARGO_SLEEP seconds, exits 0.
