@@ -37,6 +37,13 @@ occt = { max-threads = 24 }
 # DELIBERATE: no `retries` key here or anywhere in this file. A retry would
 # re-run and mask the very hangs/flakes this ceiling exists to attribute and
 # kill (task invariant — regression-guarded by test_occt_gated_scope.sh).
+# OPERATIONAL CAVEAT: this 1200s ceiling applies to every test with no more
+# specific override. A future test that legitimately needs >20 minutes MUST
+# be given its own [[profile.default.overrides]] slow-timeout (mirroring the
+# 5 heavy-binary blocks below) — otherwise nextest will SIGTERM it at 1200s
+# indistinguishable in the log from a genuine hang. There is no automated
+# check that the heavy-binary list stays complete; this comment is that
+# guard until one exists.
 [profile.default]
 slow-timeout = { period = "120s", terminate-after = 10 }
 
