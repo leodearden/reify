@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use reify_core::diagnostics::SourceSpan;
 use reify_core::hash::ContentHash;
 use crate::boundary_attachment::BoundaryAssociation;
 use crate::value::{SampledField, Value};
@@ -3986,118 +3985,11 @@ pub fn debug_assert_query_many_invariant<Q, R>(queries: &[Q], reply: &[R]) {
     );
 }
 
-// ─── Feature-tag IR (task 2323) ───────────────────────────────────────────────
-
-/// Coarse classification of the geometry operation kind that produced a shape.
-///
-/// Intentionally decoupled from `reify-compiler`'s fine-grained sub-kind enums
-/// (`PrimitiveKind`, `BooleanOp`, `ModifyKind`, …) so that `reify-types` does
-/// not gain a reverse dependency on `reify-compiler`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum StepKind {
-    /// A primitive creation op (box, cylinder, sphere, tube).
-    Primitive,
-    /// A boolean op (union, difference, intersection).
-    Boolean,
-    /// A modify op (fillet, chamfer, shell, draft, thicken).
-    Modify,
-    /// A transform op (translate, rotate, scale, mirror, …).
-    Transform,
-    /// A pattern op (linear, circular, mirror pattern).
-    Pattern,
-    /// A sweep op (extrude, revolve, loft, pipe, …).
-    Sweep,
-    /// A curve construction op (line_segment, arc, helix, …).
-    Curve,
-    /// A 2-D face profile op (rectangle, circle).
-    Profile,
-    /// A free-form surface op (nurbs_surface).
-    Surface,
-}
-
-/// A feature tag attached to a compiler-generated geometry op.
-///
-/// `source_span` identifies the **enclosing realization** (the `let`-binding
-/// that produced this op stream); all ops within one realization share the same
-/// span.  The only distinguisher *within* a realization is `sub_index`, which
-/// is a zero-based position in the op sequence.
-///
-/// **Stability caveat:** `sub_index` is fragile under op insertion or
-/// reordering.  A follow-up task can improve stability by threading per-op
-/// source spans through `CompiledGeometryOp`; for now, consumers should treat
-/// `(source_span, sub_index)` as stable only when the program text is
-/// unchanged.
-///
-/// `source_span` stores the full `SourceSpan` rather than a line number so
-/// that consumers with access to the source text can derive a line/column via
-/// `byte_offset_to_line_col(source, span.start)` — the same pattern used
-/// everywhere else in the codebase (`Diagnostic::span`, `RealizationDecl::span`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FeatureTag {
-    /// Byte-offset span of the enclosing realization in source.
-    pub source_span: SourceSpan,
-    /// Coarse classification of the op.
-    pub step_kind: StepKind,
-    /// Zero-based index of this op within the realization's op stream.
-    pub sub_index: u32,
-}
-
-/// Runtime table mapping geometry handle ids to their originating feature tags.
-///
-/// Populated by `Engine::execute_realization_ops` as each op succeeds.
-/// Keyed by `GeometryHandleId` so topology selectors can record per-edge /
-/// per-face tags derived from a parent solid's tag.
-#[derive(Debug, Default)]
-pub struct FeatureTagTable {
-    entries: HashMap<GeometryHandleId, FeatureTag>,
-}
-
-impl FeatureTagTable {
-    /// Record that geometry handle `id` was produced by `tag`.
-    ///
-    /// Overwrites any prior entry for the same id (callers should avoid
-    /// duplicates, but this is not a hard error — the most recent tag wins).
-    pub fn record(&mut self, id: GeometryHandleId, tag: FeatureTag) {
-        self.entries.insert(id, tag);
-    }
-
-    /// Look up the tag for a given geometry handle, if any.
-    pub fn lookup(&self, id: GeometryHandleId) -> Option<&FeatureTag> {
-        self.entries.get(&id)
-    }
-
-    /// Remove the entry for `id`, returning it if present.
-    ///
-    /// Used by the cache-hit short-circuit in `Engine::execute_realization_ops`
-    /// to evict any cross-kernel colliding entry at `id` before pushing the
-    /// cached handle — so a subsequent `lookup(id)` correctly returns `None`
-    /// (the #3226 spec: a cache-served handle has no entries in the tag table
-    /// on the second build).
-    ///
-    /// Returns `None` silently when `id` is absent (no-op in the common
-    /// single-kernel case where the per-build reset already cleared the table).
-    pub fn remove(&mut self, id: GeometryHandleId) -> Option<FeatureTag> {
-        self.entries.remove(&id)
-    }
-
-    /// Number of entries currently in the table.
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    /// Returns `true` if the table has no entries.
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-}
-
 // ----------------------------------------------------------------------
 // v0.2 persistent-naming-v2 (task 2590)
 //
-// New attribute-based topology naming primitives. Coexist with the v0.1
-// `FeatureTag`/`FeatureTagTable` machinery above; the v0.1 path stays in
-// place until selector resolution swaps over (task 2 / #2570) and per-op
-// auto-population lands across tasks 5-8. See
+// Attribute-based topology naming primitives. Per-op auto-population lands
+// across tasks 5-8; task 2 (#2570) wires selector lookup. See
 // `docs/prds/v0_2/persistent-naming-v2.md` lines 46-87 for the design
 // reference.
 // ----------------------------------------------------------------------

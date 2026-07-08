@@ -69,11 +69,11 @@ pub use geometry::{
     DEFAULT_GEO_EQUIV_SAMPLE_COUNT, DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
     DeletedRecord, EdgeCurveKind, ElementOrderTag, ExportError, ExportFormat, ExportOptions,
     ExportWarning, FaceSurfaceKind,
-    FeatureId, FeatureTag, FeatureTagTable, GeometryError, GeometryHandle, GeometryHandleId,
+    FeatureId, GeometryError, GeometryHandle, GeometryHandleId,
     GeometryKernel, GeometryOp, GeometryQuery, HistoryRecord, KernelAttributeHook,
     KernelAttributeOutcome, KernelHandle, KernelId, KernelRegistration, LocalFeatureOpHistoryRecords,
     LoftOpHistoryRecords, Mesh, ModEntry, Operation, ThreeMfOptions, ThreeMfWarning, write_3mf, write_stl_ascii, write_stl_binary,
-    QueryCapability, QueryError, ReprKind, Role, StepKind, StepSchema, SweepOpHistoryRecords, TessError,
+    QueryCapability, QueryError, ReprKind, Role, StepSchema, SweepOpHistoryRecords, TessError,
     TopologyAttribute, TopologyAttributeTable, VolumeConnectivity, VolumeMesh, debug_assert_query_many_invariant,
 };
 pub use kernel_validation::{
