@@ -1455,9 +1455,13 @@ build_plan() {
         # interleaving concern — a stdout classifier line torn mid-write by
         # unbuffered stderr could in principle corrupt the ^FAILED\s anchor.
         # No change made: run_all emits "=== Summary: ..." / "=== FAILED: ..."
-        # via single `echo` calls (run_all.sh:813/815/818), each one `write()`
-        # syscall well under PIPE_BUF, so the OS guarantees each line lands
-        # atomically on the shared pipe regardless of stderr interleaving —
+        # via single `echo` calls (the summary block at the end of run_all.sh,
+        # after the discovery/execution loop, that prints the
+        # discovered/failed counts and the FAILED name list — grep
+        # '=== Summary' / '=== FAILED' in run_all.sh to relocate it since line
+        # numbers drift), each one a `write()` syscall well under PIPE_BUF, so
+        # the OS guarantees each line lands atomically on the shared pipe
+        # regardless of stderr interleaving —
         # tests/infra/test_run_all.sh Test 7 asserts these exact markers
         # survive a `2>&1`-merged capture. Revisit only if that assumption
         # breaks (e.g. run_all starts assembling a classifier line across
