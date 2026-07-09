@@ -18,7 +18,7 @@ pub struct TopologyCacheBuildCounts {
     pub edge_face_map_builds: u32,
 }
 
-const NOT_AVAILABLE: &str = "geometry libraries not available at build time";
+const NOT_AVAILABLE: &str = "OCCT libraries not available at build time";
 
 /// Stub OpenCASCADE kernel — all operations return errors.
 pub struct OcctKernel {
