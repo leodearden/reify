@@ -3006,10 +3006,15 @@ impl Mesh {
     /// On failure, hands `self` back alongside the [`MeshContractViolation`]
     /// so the mesh isn't lost; callers that must retain ownership on
     /// failure too should use the borrowing [`Self::validate`] instead.
-    pub fn into_validated(self, tol: f64) -> Result<ValidatedMesh, (Mesh, MeshContractViolation)> {
+    /// Boxed per `clippy::result_large_err` — the tuple carries a whole
+    /// [`Mesh`], so returning it unboxed would bloat every `Ok` path too.
+    pub fn into_validated(
+        self,
+        tol: f64,
+    ) -> Result<ValidatedMesh, Box<(Mesh, MeshContractViolation)>> {
         match self.check_contract(tol) {
             Ok(()) => Ok(ValidatedMesh(self)),
-            Err(violation) => Err((self, violation)),
+            Err(violation) => Err(Box::new((self, violation))),
         }
     }
 }
@@ -11312,7 +11317,7 @@ mod tests {
         mesh.vertices[3] = f32::NAN;
         let expected_vertices = mesh.vertices.clone();
         let expected_indices = mesh.indices.clone();
-        let (returned_mesh, err) = mesh
+        let (returned_mesh, err) = *mesh
             .into_validated(0.0)
             .expect_err("a mesh with a NaN vertex coordinate must fail the mesh contract");
         assert_eq!(err.invariant, MeshInvariant::Finite);
