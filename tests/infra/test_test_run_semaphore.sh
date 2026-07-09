@@ -794,10 +794,66 @@ _HG1_OUT="$(bash -c 'source "$1" >/dev/null 2>&1; TMPDIR="$2" _test_semaphore_de
 assert "Test HG-1b: with a private non-/tmp TMPDIR exported, _test_semaphore_default_lock prints '${_HG1_EXPECTED}' (got '${_HG1_OUT}')" \
     test "$_HG1_OUT" = "$_HG1_EXPECTED"
 
-assert "Test HG-1c: output does not contain the private TMPDIR (${_HG1_PRIVATE_TMPDIR})" \
-    bash -c '! printf "%s" "$1" | grep -qF -- "$2"' _ "$_HG1_OUT" "$_HG1_PRIVATE_TMPDIR"
+# NOTE: HG-1b's exact-equality check already subsumes a "does not contain the
+# private TMPDIR" assertion -- if the output equals the fixed literal exactly,
+# it cannot also contain the private TMPDIR substring. No separate assertion
+# needed (dropped a redundant Test HG-1c here per amendment review).
 
 rm -rf "$_HG1_PRIVATE_TMPDIR"
+
+# ===========================================================================
+# SIGNAL (l): test_semaphore_acquire's default-LOCK WIRING is TMPDIR-independent
+# (Test HG-2, task 5145 amendment)
+# HG-1 only proves _test_semaphore_default_lock itself resolves correctly in
+# isolation -- it does NOT prove test_semaphore_acquire (lib_test_semaphore.sh
+# ~line 98) actually calls through it. A regression reverting that line back
+# to the old inline ${TMPDIR:-/tmp}/... expression would leave HG-1 green
+# while the real acquisition path is TMPDIR-keyed again -- exactly the bug
+# task 5145 fixes.
+#
+# Probes the REAL default (REIFY_TEST_SEMAPHORE_LOCK unset) through
+# test_semaphore_acquire's own stderr diagnostic, which always names the
+# resolved LOCK on BOTH the success path ("acquired test slot ... LOCK=...")
+# and the WAIT-deadline path ("failed to acquire test slot ... LOCK=...") --
+# an emit-regardless-of-outcome oracle, mirroring how
+# test_run_all_pool_lock_host_global.sh reads run_all.sh's own
+# "INFO: ... lock=" line rather than re-deriving the path.
+#
+# REIFY_TEST_SEMAPHORE_WAIT=0 makes this instant AND non-blocking either way:
+# flock -xn is non-blocking by construction, so even a contended real
+# host-global slot (e.g. held by a parent verify.sh across all test passes,
+# verify.sh:171) fails the single attempt immediately and hits the WAIT=0
+# deadline check before any sleep -- this can never hang or deadlock,
+# regardless of whether this test runs standalone or nested under a
+# slot-holding parent. On the rare uncontended path (acquire succeeds), the
+# subshell releases the slot before exiting; the shared lock FILE itself is
+# never deleted (unlinking a live host-global coordination file while another
+# process may hold a flock on its inode would decouple new waiters onto a
+# fresh inode and silently break mutual exclusion for everyone else).
+# ===========================================================================
+
+echo ""
+echo "--- Test HG-2: test_semaphore_acquire's default-LOCK wiring is TMPDIR-independent (not just the resolver in isolation) ---"
+
+_HG2_PRIVATE_TMPDIR="$(mktemp -d)/private"
+mkdir -p "$_HG2_PRIVATE_TMPDIR"
+_HG2_EXPECTED="/tmp/reify-test-semaphore-$(id -u).lock"
+_HG2_ERR="$(mktemp)"
+
+env -u REIFY_TEST_SEMAPHORE_LOCK -u REIFY_TEST_SEMAPHORE_DISABLE \
+    DF_VERIFY_ROLE=task TMPDIR="$_HG2_PRIVATE_TMPDIR" \
+    REIFY_TEST_SEMAPHORE_CONCURRENCY=1 REIFY_TEST_SEMAPHORE_WAIT=0 \
+    bash -c 'source "$1" >/dev/null 2>&1; test_semaphore_acquire; rc=$?; test_semaphore_release; exit $rc' \
+    _ "$LIB" 2>"$_HG2_ERR" || true
+
+assert "Test HG-2: test_semaphore_acquire's own LOCK= diagnostic resolves to the fixed default (${_HG2_EXPECTED}), not the private TMPDIR (stderr: $(cat "$_HG2_ERR"))" \
+    grep -qF "LOCK=${_HG2_EXPECTED}" "$_HG2_ERR"
+
+rm -f "$_HG2_ERR"
+rm -rf "$_HG2_PRIVATE_TMPDIR"
+# Intentionally do NOT rm the real ${_HG2_EXPECTED}.slot-1 -- it is shared
+# host-global state (mirrors verify.sh's other /tmp/reify-* coordination
+# files); see comment above.
 
 # ===========================================================================
 # Summary
