@@ -2404,6 +2404,55 @@ fn demanded_reprs_for_template(
     demand
 }
 
+/// Compute per-realization dispatch-demand OVERRIDES for the two roles in an
+/// isosurface-shaped Voxel/Mesh pipeline (task 5033 Gap D: the
+/// `tessellate_from_values` sibling of `demanded_reprs_for_template`'s
+/// `needs_voxel` rule above). Absent from the returned map ⇒ the caller's
+/// pre-existing hardcoded `ReprKind::BRep` applies, unchanged.
+///
+/// `tessellate_from_values` (unlike `build`/`build_snapshot`/
+/// `build_with_geometry_output`) does not call `compute_demanded_reprs`: its
+/// per-op dispatch demand is unconditionally `ReprKind::BRep` (task 4050
+/// step-8 design_decision 4), because every realization's terminal handle is
+/// tessellated at the end regardless of demand, and forcing BRep keeps every
+/// terminal handle on the default kernel for that trailing tessellate call.
+/// A Voxel-only-input op (e.g. `isosurface`) is the one shape BRep-everywhere
+/// cannot satisfy, in BOTH roles simultaneously:
+///   - the CONSUMER realization itself (e.g. `shell` in `let shell =
+///     isosurface(solid)`) must demand Mesh — no kernel declares a
+///     `(Surface, BRep)` capability entry (only `(Surface, Mesh)`,
+///     register.rs), so a BRep demand makes its own dispatch unsatisfiable
+///     with no fallback (the BRep-fallback in `execute_realization_ops` is a
+///     no-op when `demanded_repr == ReprKind::BRep` already).
+///   - its DIRECT operand (e.g. `solid`) must demand Voxel, or the consumer's
+///     `available_for_op` never contains Voxel and the same dispatch fails.
+/// This narrow helper reproduces JUST those two overrides, leaving every
+/// other realization's demand at the pre-existing hardcoded BRep — no
+/// behavior change for any pipeline that does not use isosurface.
+fn voxel_pipeline_demand_overrides(template: &TopologyTemplate) -> HashMap<usize, ReprKind> {
+    let name_to_idx: HashMap<&str, usize> = template
+        .realizations
+        .iter()
+        .enumerate()
+        .filter_map(|(i, r)| r.name.as_deref().map(|name| (name, i)))
+        .collect();
+    let mut overrides = HashMap::new();
+    for (c_idx, realization) in template.realizations.iter().enumerate() {
+        for op in &realization.operations {
+            if !op_is_voxel_only_input(&compiled_geometry_op_to_operation(op)) {
+                continue;
+            }
+            overrides.insert(c_idx, ReprKind::Mesh);
+            for sub_name in sub_refs_in_op(op) {
+                if let Some(&p_idx) = name_to_idx.get(sub_name) {
+                    overrides.insert(p_idx, ReprKind::Voxel);
+                }
+            }
+        }
+    }
+    overrides
+}
+
 /// Derive the output [`ReprKind`] for a dispatched op by reading the chosen
 /// kernel's capability descriptor (task ε / 3436, PRD §8 step-6).
 ///
@@ -5633,6 +5682,11 @@ impl Engine {
         let long_chain_threshold = crate::dispatcher::long_chain_threshold_from_env();
 
         for (t_idx, template) in module.templates.iter().enumerate() {
+            // Task 5033 Gap D: the isosurface-pipeline exception to this
+            // function's hardcoded-BRep dispatch demand — see
+            // `voxel_pipeline_demand_overrides` doc for why this is scoped
+            // narrowly rather than reusing `compute_demanded_reprs`.
+            let voxel_demand_overrides = voxel_pipeline_demand_overrides(template);
             // `named_steps` is scoped per-template so that two structures
             // that each declare `let body = …` cannot clobber each other's
             // name → handle entries.  Cross-template `GeomRef::Sub`
@@ -5788,6 +5842,16 @@ impl Engine {
                 // bug; Rust's slice indexing panics with a precise OOB message
                 // at runtime in both debug and release.
                 let demanded_tol = demanded_tols[t_idx][r_idx];
+                // Task 5033 Gap D: BRep for every realization EXCEPT the two
+                // isosurface-pipeline roles overridden above — see
+                // `voxel_pipeline_demand_overrides` doc for why this narrow
+                // exception is correct and safe (every other realization's
+                // demand is byte-identical to the pre-existing hardcoded-BRep
+                // behavior below).
+                let demanded_repr = voxel_demand_overrides
+                    .get(&r_idx)
+                    .copied()
+                    .unwrap_or(ReprKind::BRep);
                 Engine::execute_realization_ops(
                     geometry_kernels,
                     registry,
@@ -5811,11 +5875,16 @@ impl Engine {
                     &mut kernel_error,
                     realization_cache,
                     demanded_tol,
-                    // Task 4050 step-8 / design_decision 4: the tessellate path
-                    // discards produced_repr and stays on a BRep demand
-                    // permanently (a Manifold terminal would break the trailing
-                    // default-kernel tessellate call).
-                    ReprKind::BRep,
+                    // Task 4050 step-8 / design_decision 4 (narrowed by task
+                    // 5033 Gap D): BRep for every realization except the two
+                    // isosurface-pipeline roles (operand → Voxel, consumer →
+                    // Mesh) — computed above. `walk_placed_realizations`
+                    // (geometry_ops.rs) resolves the trailing tessellate
+                    // call's kernel from each terminal handle's own
+                    // `KernelHandle.kernel` (task 5033 Gap D sibling fix), so
+                    // a non-default-kernel terminal (e.g. an OpenVDB
+                    // Voxel/Mesh handle) no longer breaks that call.
+                    demanded_repr,
                     // Tessellate path never demands VolumeMesh, so never boundary.
                     false,
                     &mut *dispatch_count,

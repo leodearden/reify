@@ -10067,12 +10067,31 @@ pub(crate) fn walk_placed_realizations<V>(
         if pre_filter.is_some_and(|f| !f(t_idx, r_idx, &entity_path)) {
             continue;
         }
-        let default_kernel = geometry_kernels
-            .get_mut(default_kernel_name)
-            .expect("default kernel must remain in the map across the surfacing walk");
+        // Task 5033 Gap D: resolve the kernel that actually OWNS this handle
+        // (`handle.kernel`), not unconditionally `default_kernel_name`. Every
+        // pre-5033 realization dispatched at BRep demand (task 4050 step-8
+        // design_decision 4), so `handle.kernel` was always the default
+        // kernel and this lookup was a no-op in practice. `tessellate_from_values`
+        // now demands Voxel for an isosurface operand (Gap D sibling fix,
+        // `voxel_demanded_realization_indices`), so a handle reaching this
+        // walk can legitimately live on a non-default kernel (e.g. OpenVDB);
+        // tessellating it via the wrong kernel's disjoint id space would
+        // panic or silently mistessellate. Same registry-name-vs-map-key
+        // fallback used by `engine_build.rs`'s Voxel/VolumeMesh post-loop
+        // edges (backward-compat sentinel mode keys the default kernel's
+        // handle under `default_kernel_name`, not its own registry name).
+        let resolved_kernel_name =
+            if geometry_kernels.contains_key(handle.kernel.as_registry_name()) {
+                handle.kernel.as_registry_name()
+            } else {
+                default_kernel_name
+            };
+        let resolved_kernel = geometry_kernels
+            .get_mut(resolved_kernel_name)
+            .expect("resolved kernel must remain in the map across the surfacing walk");
         let placed_id = match placement {
             Some((rotation, translation)) => {
-                match default_kernel.execute(&reify_ir::GeometryOp::ApplyTransform {
+                match resolved_kernel.execute(&reify_ir::GeometryOp::ApplyTransform {
                     target: handle.id,
                     rotation,
                     translation,
@@ -10093,10 +10112,10 @@ pub(crate) fn walk_placed_realizations<V>(
         // Pass a mutable borrow of the kernel to the visitor; the borrow is
         // released when visit_realization returns, before the sub-component
         // loop re-borrows geometry_kernels for the recursive call.
-        // Explicit deref-coercion: `default_kernel` is `&mut Box<dyn GeometryKernel>`;
-        // `&mut **default_kernel` gives the `&mut dyn GeometryKernel` the visitor expects.
+        // Explicit deref-coercion: `resolved_kernel` is `&mut Box<dyn GeometryKernel>`;
+        // `&mut **resolved_kernel` gives the `&mut dyn GeometryKernel` the visitor expects.
         visit_realization(
-            &mut **default_kernel,
+            &mut **resolved_kernel,
             placed_id,
             entity_path,
             default_visible,
