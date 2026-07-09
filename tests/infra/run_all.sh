@@ -598,6 +598,10 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
         [ "$_H2_POOL_N" -ge 1 ] || _H2_POOL_N=1
     fi
 
+    # Fixed /tmp base, independent of TMPDIR (task 5145) -- mirrors the
+    # scripts/lib_test_semaphore.sh `_test_semaphore_default_lock` resolver's
+    # identical policy. Keep both host-global lock defaults in sync if either
+    # changes.
     _H2_POOL_LOCK="${REIFY_RUN_ALL_POOL_LOCK:-/tmp/reify-run-all-pool-$(id -u).lock}"
     _H2_POOL_WAIT="${REIFY_RUN_ALL_POOL_WAIT:-1800}"
 

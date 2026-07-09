@@ -6,7 +6,7 @@
 # task 5145 to require TMPDIR-independence.
 #
 # CONTRACT UNDER TEST (INV-1 / PRD §8 non-goal, line 170; tightened by task
-# 5145): run_all.sh's H2 concurrent-pool semaphore lock (run_all.sh:597) must
+# 5145): run_all.sh's H2 concurrent-pool semaphore lock (run_all.sh:605) must
 # always resolve to a FIXED host-global per-uid path —
 # /tmp/reify-run-all-pool-$(id -u).lock by default — regardless of TMPDIR.
 # NEVER a worktree/per-lane-scoped path, and never keyed off an ambient
@@ -27,15 +27,15 @@
 # the FIXED /tmp literal as the only correct default (Assertion 2) and adds a
 # same-Assertion-3 check that the resolved lock never contains $SHARED_TMP
 # (the injected TMPDIR) — proving TMPDIR-independence, not just per-lane-path
-# independence. RED until run_all.sh:597 stops consulting TMPDIR.
+# independence. RED until run_all.sh:605 stops consulting TMPDIR.
 #
 # APPROACH (behavioral, not source-grep): drives the REAL run_all.sh against
 # an empty `mktemp -d` INFRA_DIR (an optional positional arg, run_all.sh:189)
 # so discovery yields zero test_*.sh (fast, hermetic — no test ever
 # executes, and the semaphore is never actually acquired), while the
-# `INFO: run_all.sh pool: N=... lock=...` stderr line (run_all.sh:629) still
+# `INFO: run_all.sh pool: N=... lock=...` stderr line (run_all.sh:637) still
 # emits, because it is printed BEFORE discovery. Parsing that line's resolved
-# `lock=` value is the behavioral oracle — it exercises run_all.sh:597's
+# `lock=` value is the behavioral oracle — it exercises run_all.sh:605's
 # actual runtime resolution (catching drift in the expression itself, not
 # just a hardcoded literal), rather than pattern-matching run_all.sh's source
 # text.
@@ -106,9 +106,9 @@ _lacks()    { ! grep -qF -- "$2" <<<"$1"; }
 #   and the semaphore is never acquired) under a controlled neutral TMPDIR,
 #   clearing ambient REIFY_RUN_ALL_POOL_LOCK / REIFY_RUN_ALL_POOL_DISABLE
 #   inside the capture subshell so the resolved lock reflects
-#   run_all.sh:347's true default (or the given override) independent of any
+#   run_all.sh:605's true default (or the given override) independent of any
 #   orchestrator ambient state. Extracts the resolved lock from the
-#   "INFO: run_all.sh pool: N=... lock=..." stderr line (run_all.sh:369),
+#   "INFO: run_all.sh pool: N=... lock=..." stderr line (run_all.sh:637),
 #   which is emitted BEFORE discovery. Sets <outvar> to the resolved lock
 #   path (empty string if the INFO line never appeared — the non-vacuity
 #   gate below catches that).
