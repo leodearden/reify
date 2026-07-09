@@ -195,9 +195,28 @@ rm -f "$_G_STDERR" "${TASK_FIFO}.owner"
 # ---------------------------------------------------------------------------
 # (h) BOOT-MISMATCH: live pid + wrong boot_id → CARGO_MAKEFLAGS left unset
 #     (post-reboot pid-reuse guard fires even though the pid itself is alive)
+#
+#     Guarded on HOST_BOOT_ID being non-empty (task 5146 review comment 3):
+#     _jobserver_owner_live()'s STALE-via-boot-mismatch branch only fires
+#     when `[ -n "$cur" ]` (verify.sh's own live read of the host boot_id)
+#     is true; on an exotic host/container where
+#     /proc/sys/kernel/random/boot_id is unreadable, that check is false,
+#     the comparison is skipped, and this case would flip from STALE to
+#     LIVE — matching the daemon's own fail-open contract ("-"/absent boot
+#     info is never treated as proof of staleness), but making the
+#     assertion below untestable on such a host. Skip rather than assert a
+#     host property this file cannot control.
+#
+#     NOTE: sibling case (g) needs no such guard — its expected STALE
+#     verdict comes from the dead-pid check (`[ ! -d "/proc/$pid" ]`), which
+#     is evaluated BEFORE the boot_id comparison and short-circuits it, so
+#     (g) holds regardless of HOST_BOOT_ID's value.
 # ---------------------------------------------------------------------------
 echo ""
 echo "--- (h) BOOT-MISMATCH: live pid + wrong boot_id → CARGO_MAKEFLAGS left unset ---"
+if [ -z "$HOST_BOOT_ID" ]; then
+    echo "  SKIP: (h) BOOT-MISMATCH — host boot_id unreadable here; boot-mismatch branch untestable"
+else
 printf '%s %s\n' "$LIVE_PID" "$WRONG_BOOT_ID" > "${TASK_FIFO}.owner"
 
 _PLAN_H="$(DF_VERIFY_ROLE=task REIFY_JOBSERVER_TASK_FIFO="$TASK_FIFO" \
@@ -211,6 +230,7 @@ assert "(h) BOOT-MISMATCH: 'CARGO_MAKEFLAGS left unset' comment present" \
     bash -c 'printf "%s\n" "$_PLAN_H" | grep -q "CARGO_MAKEFLAGS left unset"'
 
 rm -f "${TASK_FIFO}.owner"
+fi
 
 # ---------------------------------------------------------------------------
 # (i) LIVE: live pid + host boot_id → exports --jobserver-auth=fifo:<task-tmp>
@@ -275,6 +295,31 @@ export _PLAN_L
 
 assert "(l) BREAK-GLASS: exports --jobserver-auth=fifo:<task-tmp> despite stale stamp" \
     bash -c 'printf "%s\n" "$_PLAN_L" | grep -qF "CARGO_MAKEFLAGS=--jobserver-auth=fifo:$TASK_FIFO"'
+
+rm -f "${TASK_FIFO}.owner"
+
+# ---------------------------------------------------------------------------
+# (m) BOOT-INFO-UNAVAILABLE: live pid + "-" sentinel boot field → exports
+#     (task 5146 review comment 1). read_boot_id() returns the "-" sentinel
+#     when /proc/sys/kernel/random/boot_id is unreadable on the balancer's
+#     side; _jobserver_owner_live()'s boot comparison must be skipped
+#     whenever the stamp's boot field is "-" (its `[ "$boot" != "-" ]` guard),
+#     falling back to the pid-alive check alone. This is the ONLY existing
+#     case exercising that fail-open branch end-to-end — every real test
+#     host has a readable boot_id, so cases (g)-(l)/(i) never hit it via a
+#     genuinely-unreadable host file; here we force it via the stamp content
+#     itself, independent of host readability.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- (m) BOOT-INFO-UNAVAILABLE: live pid + '-' boot field → exports (pid-only LIVE) ---"
+printf '%s -\n' "$LIVE_PID" > "${TASK_FIFO}.owner"
+
+_PLAN_M="$(DF_VERIFY_ROLE=task REIFY_JOBSERVER_TASK_FIFO="$TASK_FIFO" \
+    bash "$VERIFY" test --print-plan 2>/dev/null || true)"
+export _PLAN_M
+
+assert "(m) BOOT-INFO-UNAVAILABLE: exports --jobserver-auth=fifo:<task-tmp> (pid-only LIVE)" \
+    bash -c 'printf "%s\n" "$_PLAN_M" | grep -qF "CARGO_MAKEFLAGS=--jobserver-auth=fifo:$TASK_FIFO"'
 
 rm -f "${TASK_FIFO}.owner"
 kill "$LIVE_PID" 2>/dev/null || true
