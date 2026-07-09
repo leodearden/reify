@@ -64,6 +64,10 @@ _REIFY_TEST_SEMAPHORE_HELD=0
 #   FIXED host-global /tmp literal, independent of TMPDIR (task 5145) -- see
 #   the REIFY_TEST_SEMAPHORE_LOCK KNOB doc above. No I/O side effects (no
 #   flock, no acquire), so it is safe to call directly from tests.
+#   DRIFT-GUARD: tests/infra/run_all.sh's `_H2_POOL_LOCK` mirrors this exact
+#   "fixed /tmp, TMPDIR-independent" policy for its own pool lock (as an
+#   inline literal, not a resolver -- see that site's comment for why). Keep
+#   both host-global lock defaults in sync if either changes.
 # ---------------------------------------------------------------------------
 _test_semaphore_default_lock() {
     printf '%s' "/tmp/reify-test-semaphore-$(id -u).lock"
