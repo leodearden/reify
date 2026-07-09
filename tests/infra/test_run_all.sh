@@ -2220,5 +2220,89 @@ else
     assert "T23d: a single occurrence (< N) emits NO chronic WARNING (non-vacuity lock) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
 fi
 
+# -- Test 24: pool slot_acquire wait emits a live clock-stop reason marker (task #5147) --
+# On a REAL host-global pool-lock wait (forced here via an externally held
+# slot-1, the T16b/T17c external-holder pattern), the pool worker's
+# slot_acquire call must emit a LIVE @@REIFY_CLOCK_STOP@@ reason=<token>
+# marker to stderr -- the exact span dark_factory:1916 reads to pause/resume
+# its wall-clock verify-timeout budget (scripts/lib_clock_stop.sh). Today the
+# pool worker's slot_acquire call (run_all.sh) passes only 3 args (no REASON),
+# so no marker is emitted on a real wait -- this is the RED case. Intra-
+# invocation the pool never self-contends (worker-shell throttle == slot
+# count N), so this can only be forced via cross-invocation contention on a
+# shared lock: REIFY_RUN_ALL_POOL_CONCURRENCY=1 makes the lock have exactly
+# one slot (.slot-1), which is pre-held externally before invoking run_all.sh.
+echo ""
+echo "--- Test 24: pool slot_acquire wait emits a live clock-stop reason marker ---"
+
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+    TMPDIR_T24="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T24")
+
+    MANIFEST_T24="$TMPDIR_T24/classification.manifest"
+    printf 'test_pool_1.sh pool\n' > "$MANIFEST_T24"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T24/test_pool_1.sh"
+    chmod +x "$TMPDIR_T24/test_pool_1.sh"
+
+    LOCK_T24="$TMPDIR_T24/pool-t24.lock"
+
+    # Background holder: acquire the sole slot (.slot-1) and hold it for 30s
+    # (well past the REIFY_RUN_ALL_POOL_WAIT=2 deadline below), forcing the
+    # pool worker's own slot_acquire call to actually wait.
+    ( flock -x 9; sleep 30 ) 9>>"${LOCK_T24}.slot-1" &
+    _HOLDER_T24=$!
+    sleep 0.2   # give holder time to acquire
+
+    # Separate stdout/stderr capture files (T22 pattern) -- the assertions
+    # below need to distinguish which stream the marker lands on.
+    T24_STDOUT="$TMPDIR_T24/stdout.txt"
+    T24_STDERR="$TMPDIR_T24/stderr.txt"
+    t24_rc=0
+    env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+        RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T24" \
+        REIFY_RUN_ALL_POOL_LOCK="$LOCK_T24" \
+        REIFY_RUN_ALL_POOL_CONCURRENCY=1 \
+        REIFY_RUN_ALL_POOL_WAIT=2 \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        bash "$RUN_ALL" "$TMPDIR_T24" >"$T24_STDOUT" 2>"$T24_STDERR" || t24_rc=$?
+
+    kill "$_HOLDER_T24" 2>/dev/null || true
+    wait "$_HOLDER_T24" 2>/dev/null || true
+    rm -f "$LOCK_T24" "${LOCK_T24}.slot-1"
+
+    if grep -Fq '@@REIFY_CLOCK_STOP@@ reason=test_slot_starvation' "$T24_STDERR"; then
+        assert "T24a: stderr contains a live @@REIFY_CLOCK_STOP@@ reason=test_slot_starvation marker" true
+    else
+        assert "T24a: stderr contains a live @@REIFY_CLOCK_STOP@@ reason=test_slot_starvation marker (got stderr: $(cat "$T24_STDERR"))" false
+    fi
+
+    if grep -Fq '@@REIFY_QUOTED_CLOCK_STOP@@' "$T24_STDERR"; then
+        assert "T24b: stderr does NOT contain the sanitized @@REIFY_QUOTED_CLOCK_STOP@@ form (marker rode the unsanitized parent stream) (got stderr: $(cat "$T24_STDERR"))" false
+    else
+        assert "T24b: stderr does NOT contain the sanitized @@REIFY_QUOTED_CLOCK_STOP@@ form (marker rode the unsanitized parent stream)" true
+    fi
+
+    if grep -Fq '@@REIFY_CLOCK_STOP@@' "$T24_STDOUT"; then
+        assert "T24c: STOP marker is on stderr, NOT stdout (got stdout: $(cat "$T24_STDOUT"))" false
+    else
+        assert "T24c: STOP marker is on stderr, NOT stdout" true
+    fi
+
+    if [[ "$(cat "$T24_STDOUT")" == *"=== Summary: 1 discovered, 0 failed ==="* ]]; then
+        assert "T24d: byte-exact Summary line intact (1 discovered, 0 failed)" true
+    else
+        assert "T24d: byte-exact Summary line intact (1 discovered, 0 failed) (got: $(cat "$T24_STDOUT"))" false
+    fi
+
+    assert "T24e: run_all.sh exits 0 (soft-admit past the wait deadline, member passes)" \
+        test "$t24_rc" -eq 0
+else
+    assert "T24a: stderr contains a live @@REIFY_CLOCK_STOP@@ reason=test_slot_starvation marker (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T24b: stderr does NOT contain the sanitized @@REIFY_QUOTED_CLOCK_STOP@@ form (marker rode the unsanitized parent stream) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T24c: STOP marker is on stderr, NOT stdout (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T24d: byte-exact Summary line intact (1 discovered, 0 failed) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T24e: run_all.sh exits 0 (soft-admit past the wait deadline, member passes) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+fi
+
 # -- Summary --------------------------------------------------------------------
 test_summary
