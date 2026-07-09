@@ -2218,10 +2218,6 @@ structure S {
     /// The three counts are tallied via an exhaustive `match` (no wildcard
     /// arm) on `Satisfaction`, so this fn fails to *compile* — rather than
     /// silently passing — the moment `Satisfaction` grows a fourth variant.
-    /// No separate runtime check of that is needed: the two `== 0` asserts
-    /// in (b) already force `indeterminate_count` to equal
-    /// `constraint_results.len()` as a matter of arithmetic, since the fold
-    /// always partitions every entry into exactly one of the three counts.
     ///
     /// Belt-and-suspenders note (applies to both call sites below): the
     /// stateless (`compute_diagnostics`) call site passes a `check_result`
