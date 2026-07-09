@@ -1828,6 +1828,19 @@ pub(crate) fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
         // `E_ArithOperandKind` on e.g. `w / complex(1.0, 2.0)`). A DIMENSIONED
         // Complex operand does not widen — falls through to the unchanged
         // `left.clone()` fallback, same as before this arm existed.
+        //
+        // KNOWN GAP (out of scope for β2, which is Mul/Div-only per PRD
+        // decision 2): a DIMENSIONED `Complex` + Int/Real (e.g.
+        // `Complex<Length> + 1`) still statically claims `left`'s dimensioned
+        // Complex type via the `left.clone()` fallback below, even though
+        // `guard_dimensionless_complex` evaluates `Value::Undef` for it at
+        // runtime — the same static/runtime disagreement class β2 closes for
+        // Mul/Div (this fn's `Mul`/`Div` arm below), but Add/Sub has no
+        // operand-kind guard to surface it as a diagnostic. Pinned (as
+        // current, not desired, behavior) by
+        // `binop_add_dimensioned_complex_plus_int_does_not_widen` below.
+        // TODO(#5163): add an Add/Sub operand-kind guard for this case, or
+        // document it as a permanently-accepted static/runtime gap.
         BinOp::Add | BinOp::Sub => {
             if is_dimensionless_complex(left) && is_dimensionless_numeric(right) {
                 left.clone()
@@ -2301,7 +2314,9 @@ mod tests {
         // Complex does not promote against a bare Int/Real at runtime (evals
         // Undef) — the static side must not claim a result type either, so
         // this combination is deliberately left on the pre-existing
-        // `left.clone()` fallback (unchanged by this fix).
+        // `left.clone()` fallback (unchanged by this fix). This pins the
+        // CURRENT (mistyped) behavior, not the desired one — closing the gap
+        // is tracked separately, see TODO(#5163) above this match arm.
         let dimensioned = Type::complex(Type::length());
         assert_eq!(
             infer_binop_type(BinOp::Add, &dimensioned, &Type::Int),
@@ -4518,6 +4533,27 @@ mod tests {
             infer_mul_div_result(BinOp::Mul, &Type::Bool, &Type::Int),
             None
         );
+    }
+
+    /// `ScalarParam(Q) * ScalarParam(Q)` is deliberately left unhandled: the
+    /// combined dimension ("Q²") is not representable by `ScalarParam`'s
+    /// bare-name form (see the `ScalarParam` arms' doc comment above), so
+    /// this poisons + emits `E_ArithOperandKind` rather than silently
+    /// mistyping — regression pin for that documented decision.
+    #[test]
+    fn infer_mul_div_result_scalar_param_times_scalar_param_is_none() {
+        let q = Type::ScalarParam("Q".to_string());
+        assert_eq!(infer_mul_div_result(BinOp::Mul, &q, &q), None);
+    }
+
+    /// `Int / ScalarParam(Q)` is deliberately left unhandled: the `Int ⊗
+    /// ScalarParam` arms above cover only `Mul` (dimension-preserving); `Div`
+    /// (reciprocal dimension) has no `ScalarParam` arm — regression pin for
+    /// that documented decision.
+    #[test]
+    fn infer_mul_div_result_int_div_scalar_param_is_none() {
+        let q = Type::ScalarParam("Q".to_string());
+        assert_eq!(infer_mul_div_result(BinOp::Div, &Type::Int, &q), None);
     }
 
     #[test]
