@@ -1573,6 +1573,31 @@ fn build_solver_problem(
 /// `connector_pin_if_determined` the way `build_solver_problem` does, so
 /// such a module is actually SOLVED rather than merely refused.
 ///
+/// Why only the STRICT variant is guarded below (reviewer_comprehensive,
+/// amendment task #5014): `connector_pin_if_determined` gates on
+/// `!cell.kind.is_auto_free()` ("Gate: strict auto only", its own doc
+/// comment) and returns `None` unconditionally for a `free == true` cell —
+/// regardless of whether its connector child is Determined.
+/// `build_solver_problem` therefore never pins a free connector-instance
+/// auto either; every free connector-instance cell always falls through to
+/// its `regular_auto_cells` arm and is handed to the solver as an ordinary
+/// free auto (the documented "resolve-to-feasible-value +
+/// non-unique-warning" behavior). `is_strict_connector_instance_auto`
+/// carries the identical `!free` gate, so the union loop below and
+/// `build_solver_problem` treat every free connector-instance auto
+/// IDENTICALLY — there is no Determined-free-connector case that
+/// `build_solver_problem` silently pins and that this guard could instead
+/// silently mis-solve; the two builders are already symmetric there. The
+/// one real asymmetry lives entirely WITHIN the strict population:
+/// `build_solver_problem` differentiates a Determined child (silent pin)
+/// from a not-yet-Determined child (silent skip, no diagnostic at all),
+/// whereas the guard below currently treats both strict sub-cases
+/// identically — exclude and push a loud error — because no fixture yet
+/// exercises a connector-pinnable (Determined-child) cell inside a
+/// `MergedSolve` cluster. Closing that residual gap is exactly the
+/// "extend this function to reuse `connector_pin_if_determined`" follow-up
+/// noted just above, not a free/strict boundary issue.
+///
 /// Until then this is a REAL, always-on guard, not just documented
 /// (amendment, task #5014 — was previously a `debug_assert!`, which compiles
 /// out in release and would have let a strict connector-instance auto reach
@@ -5438,8 +5463,29 @@ impl Engine {
                 // step-04: write back EVERY cluster member's cells in one
                 // pass — each ValueCellId already encodes its owning scope
                 // (id.entity), so no per-member filtering is needed here.
+                //
+                // Defensive auto_params filter (amendment, task #5014,
+                // reviewer_comprehensive): `SolveResult::Solved.values` is
+                // documented as "resolved values for auto parameters" —
+                // i.e. keyed by `problem.auto_params` — but nothing enforces
+                // that contract structurally. `problem.current_values` (the
+                // frozen snapshot passed to the solver, including every
+                // OTHER cluster's constants) was also visible to it; if a
+                // misbehaving `ConstraintSolver` impl ever echoed one of
+                // those keys back in `solver_values`, an unfiltered pass
+                // would wrongly stamp a cell OUTSIDE this cluster's auto set
+                // as `Determined` — and because one merged solve spans N
+                // scopes, the blast radius is wider here than the
+                // identically-shaped single-template loop this mirrors.
+                // Restricting to `problem.auto_params` ids makes the
+                // existing contract explicit rather than merely assumed.
+                let auto_param_ids: HashSet<&ValueCellId> =
+                    problem.auto_params.iter().map(|ap| &ap.id).collect();
                 let mut resolved_ids = HashSet::new();
-                for (id, val) in solver_values.iter() {
+                for (id, val) in solver_values
+                    .iter()
+                    .filter(|(id, _)| auto_param_ids.contains(id))
+                {
                     let node_id = NodeId::Value(id.clone());
                     let start = Instant::now();
                     self.journal.record(EvalEvent {
