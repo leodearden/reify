@@ -1166,6 +1166,9 @@ structure Assembly {
         step_handles: Vec<KernelHandle>,
         diagnostics: Vec<Diagnostic>,
         named_steps: HashMap<String, KernelHandle>,
+        // Task 5033 Gap #2 Gap A: by-name repr sibling of `named_steps`. See
+        // `RealizationOutputs::named_step_reprs` doc for why.
+        named_step_reprs: HashMap<String, ReprKind>,
         topology_attribute_table: TopologyAttributeTable,
         swept_kind_table: SweptKindTable,
         kernel_error_out: Option<ErrorRef>,
@@ -1191,6 +1194,7 @@ structure Assembly {
                 step_handles: Vec::new(),
                 diagnostics: Vec::new(),
                 named_steps: HashMap::new(),
+                named_step_reprs: HashMap::new(),
                 topology_attribute_table: TopologyAttributeTable::default(),
                 swept_kind_table: SweptKindTable::default(),
                 kernel_error_out: None,
@@ -1252,6 +1256,7 @@ structure Assembly {
                 RealizationOutputs::new(
                     &mut self.step_handles,
                     &mut self.named_steps,
+                    &mut self.named_step_reprs,
                     &mut self.topology_attribute_table,
                     &mut self.swept_kind_table,
                     &mut self.produced_repr_out,
@@ -1319,6 +1324,7 @@ structure Assembly {
                 RealizationOutputs::new(
                     &mut self.step_handles,
                     &mut self.named_steps,
+                    &mut self.named_step_reprs,
                     &mut self.topology_attribute_table,
                     &mut self.swept_kind_table,
                     &mut self.produced_repr_out,
@@ -3244,6 +3250,7 @@ structure Assembly {
             RealizationOutputs::new(
                 &mut state.step_handles,
                 &mut state.named_steps,
+                &mut state.named_step_reprs,
                 &mut state.topology_attribute_table,
                 &mut state.swept_kind_table,
                 &mut state.produced_repr_out,
@@ -3409,6 +3416,7 @@ structure Assembly {
             RealizationOutputs::new(
                 &mut state.step_handles,
                 &mut state.named_steps,
+                &mut state.named_step_reprs,
                 &mut state.topology_attribute_table,
                 &mut state.swept_kind_table,
                 &mut state.produced_repr_out,
@@ -3560,6 +3568,7 @@ structure Assembly {
             RealizationOutputs::new(
                 &mut state.step_handles,
                 &mut state.named_steps,
+                &mut state.named_step_reprs,
                 &mut state.topology_attribute_table,
                 &mut state.swept_kind_table,
                 &mut state.produced_repr_out,
