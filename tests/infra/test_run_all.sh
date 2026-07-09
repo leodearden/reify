@@ -2251,7 +2251,23 @@ if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
     # pool worker's own slot_acquire call to actually wait.
     ( flock -x 9; sleep 30 ) 9>>"${LOCK_T24}.slot-1" &
     _HOLDER_T24=$!
-    sleep 0.2   # give holder time to acquire
+
+    # Bounded poll (not a fixed sleep) confirming the holder actually owns
+    # slot-1 before invoking run_all.sh: under host load the holder's own
+    # `flock -x` might not land within a fixed 0.2s window, letting the pool
+    # worker acquire the uncontended slot with no wait and emit no marker --
+    # a false T24a (the same class of race Test 25's state poll avoids).
+    # A non-blocking acquire attempt on the same slot file (mirrors
+    # lib_slot_acquire.sh's own `flock -xn 9`) that FAILS is proof the holder
+    # holds it; cap at 5s as a deadlock backstop.
+    t24_i=0
+    while [ "$t24_i" -lt 50 ]; do
+        if ! ( flock -xn 9 ) 9>>"${LOCK_T24}.slot-1" 2>/dev/null; then
+            break
+        fi
+        sleep 0.1
+        t24_i=$((t24_i + 1))
+    done
 
     # Separate stdout/stderr capture files (T22 pattern) -- the assertions
     # below need to distinguish which stream the marker lands on.
@@ -2378,10 +2394,19 @@ EOF
         bash "$RUN_ALL" "$TMPDIR_T25" >"$T25_OUT" 2>&1 &
     t25_pid=$!
 
+    # Poll bound: base 40 attempts (4s) on an idle host, scaled by the same
+    # /proc/loadavg-derived factor load_tolerance_lib.sh already applies
+    # elsewhere in this suite (e.g. Test 9's ARRIVED barrier) -- a heavily
+    # loaded host gets a proportionally longer window instead of a fixed
+    # guess, while the early-exit below still reacts immediately once boom's
+    # write lands (no extra wall-clock cost on an idle/normal host).
+    source "$LOAD_TOLERANCE_LIB_T9"
+    t25_poll_attempts=$(load_tolerant_attempts 40)
+
     t25_wd=""
     t25_rc_file=""
     t25_i=0
-    while [ "$t25_i" -lt 40 ]; do
+    while [ "$t25_i" -lt "$t25_poll_attempts" ]; do
         if [ -z "$t25_wd" ]; then
             for _d in "$H2WD_PARENT_T25"/reify-run-all-pool.*; do
                 [ -d "$_d" ] && t25_wd="$_d"
@@ -2401,6 +2426,15 @@ EOF
         sleep 0.1
         t25_i=$((t25_i + 1))
     done
+
+    # Confirm the poll actually observed boom's failure before firing
+    # SIGTERM. A timeout here (host severely overloaded) would otherwise
+    # surface downstream as an ambiguous T25b/T25c failure (empty partial-name
+    # attribution) that reads like an attribution bug rather than a timing
+    # miss -- say so plainly instead.
+    if [ -z "$t25_rc_file" ]; then
+        echo "T25 WARNING: poll timed out after $t25_i/$t25_poll_attempts attempts waiting for boom's .rc write under $H2WD_PARENT_T25 -- firing SIGTERM anyway; T25b/T25c may fail with an empty partial-name attribution" >&2
+    fi
 
     kill -TERM "$t25_pid" 2>/dev/null || true
     ( sleep 5; kill -KILL "$t25_pid" 2>/dev/null || true ) &
