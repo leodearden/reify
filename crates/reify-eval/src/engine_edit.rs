@@ -729,6 +729,25 @@ type DiagnosticDedupKey = (
 /// severity, code, message, label `(span, message)` pairs, and candidates —
 /// rather than requiring an upstream derive change.
 ///
+/// # Caller scope (amend, task ε #4957 review round 4)
+///
+/// The sole call site (`edit_param`, below) invokes this ONLY on the
+/// `runtime_sink` + `selector_mint_diagnostics` suffix it appends
+/// immediately before calling this function — NOT on the full
+/// `diagnostics` vec. Earlier-pushed constraint-solver
+/// (`SolveResult::Infeasible`/`NoProgress`) and collection-count-resize
+/// diagnostics come from independent per-entity-group / per-collection-sub
+/// loops, where two genuinely distinct violations CAN render identically
+/// (e.g. two unrelated entity groups both hitting the solver's generic
+/// `NoProgress` reason string). Deduping those against each other would
+/// silently undercount real, independent occurrences, so the call site
+/// excludes them from this function's input by construction (see the
+/// `split_off` there). Within the runtime_sink/selector_mint suffix
+/// itself, identical rendering IS treated as identity by design — that
+/// pair is the genuine two-source same-cell duplicate described above,
+/// and this is the same rendered-identity approximation this function
+/// already relies on in lieu of an upstream `PartialEq`/`Hash` derive.
+///
 /// `edit_param` is on the interactive LSP edit hot path and the
 /// overwhelmingly common case is 0 or 1 diagnostics, where a duplicate is
 /// impossible by construction — so that case returns `diags` unchanged
@@ -2360,6 +2379,20 @@ impl Engine {
         // diagnostics vec. The sink was populated by `eval_expr` calls
         // above whenever sampled-field OOB queries or RBF/Kriging
         // fallbacks emitted warnings via `EvalContext::diagnostics`.
+        //
+        // Snapshot the prefix length first (amend, task ε #4957 review
+        // round 4, `reviewer_comprehensive/robustness`): `diagnostics`
+        // already holds constraint-solver (`Infeasible`/`NoProgress`, one
+        // independent solve per entity group) and collection-count-resize
+        // warnings (one independent check per collection-sub) pushed
+        // earlier in this function. Those are NOT part of the
+        // selector-mint/runtime-sink overlap the dedup below targets —
+        // deduping them against each other risks silently collapsing two
+        // genuinely-independent violations that happen to render
+        // identically (e.g. two unrelated entity groups both hitting the
+        // solver's generic `NoProgress` reason string) — so `split_off`
+        // below excludes them from the dedup pass by construction.
+        let pre_overlap_len = diagnostics.len();
         diagnostics.append(&mut runtime_sink.borrow_mut());
         // Drain selector-mint diagnostics (amend, task ε #4957 review):
         // populated above by `try_eval_symbolic_topology_selector` calls
@@ -2372,7 +2405,11 @@ impl Engine {
         // `re_eval_consumers_of_in_walk_mints_from_graph` a few lines above
         // (into `runtime_sink`) — see `dedup_diagnostics_preserve_order`'s
         // doc. No-op on the happy path (all diagnostics already distinct).
-        let diagnostics = dedup_diagnostics_preserve_order(diagnostics);
+        // Scoped to just the runtime_sink/selector_mint suffix appended
+        // above (round 4): the constraint-solver/collection-count prefix
+        // captured in `pre_overlap_len` is left untouched by `split_off`.
+        let overlap_suffix = diagnostics.split_off(pre_overlap_len);
+        diagnostics.extend(dedup_diagnostics_preserve_order(overlap_suffix));
 
         Ok(EvalResult {
             values,
@@ -3947,14 +3984,20 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use reify_compiler::ValueCellKind;
-    use reify_core::{ContentHash, Type, ValueCellId};
+    use reify_core::{
+        ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, Severity, SourceSpan, Type,
+        ValueCellId,
+    };
     use reify_ir::{CompiledExpr, DeterminacyState, PersistentMap, Value, ValueMap};
 
     use std::collections::HashMap;
 
     use crate::graph::{EvaluationGraph, GuardedGroupInfo, ValueCellNode};
 
-    use super::{deactivate_if_not_auto, guard_value_unchanged, reelaborate_guarded_group};
+    use super::{
+        deactivate_if_not_auto, dedup_diagnostics_preserve_order, guard_value_unchanged,
+        reelaborate_guarded_group,
+    };
 
     /// Construct a [`ValueCellNode`] for use in unit tests.
     ///
@@ -5586,5 +5629,86 @@ mod tests {
             "Resolution(R) must be filtered out when R is absent from the new graph — \
              symmetric with the Value/Constraint/Realization/Compute arms"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // `dedup_diagnostics_preserve_order` (amend, task ε #4957 review round
+    // 4, `reviewer_comprehensive/test_coverage`): the dedup branch itself
+    // (`seen.insert` returning `false`) and its order-of-first-occurrence
+    // guarantee had no direct coverage — both integration tests only ever
+    // produce 0 or 1 diagnostics, which short-circuits on the `len() < 2`
+    // fast path before the `HashSet` is ever touched.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn dedup_diagnostics_preserve_order_drops_exact_duplicate_keeping_first() {
+        let a = Diagnostic::warning("boom")
+            .with_label(DiagnosticLabel::new(SourceSpan::new(1, 2), "here"))
+            .with_candidates(["x"]);
+        let out = dedup_diagnostics_preserve_order(vec![a.clone(), a.clone()]);
+        assert_eq!(
+            out.len(),
+            1,
+            "two byte-identical diagnostics must collapse to the first occurrence"
+        );
+        assert_eq!(out[0].message, a.message);
+        assert_eq!(out[0].severity, Severity::Warning);
+    }
+
+    #[test]
+    fn dedup_diagnostics_preserve_order_keeps_diagnostics_differing_only_by_label_span() {
+        let base = Diagnostic::warning("boom");
+        let d1 = base
+            .clone()
+            .with_label(DiagnosticLabel::new(SourceSpan::new(1, 2), "here"));
+        // Differs from `d1` only in the label's span *end* (2 vs 3).
+        let d2 = base.with_label(DiagnosticLabel::new(SourceSpan::new(1, 3), "here"));
+        let out = dedup_diagnostics_preserve_order(vec![d1, d2]);
+        assert_eq!(
+            out.len(),
+            2,
+            "a differing label span end is a distinct dedup key and must survive"
+        );
+    }
+
+    #[test]
+    fn dedup_diagnostics_preserve_order_keeps_diagnostics_differing_only_by_candidates() {
+        let base = Diagnostic::warning("boom");
+        let d1 = base.clone().with_candidates(["a"]);
+        // Differs from `d1` only in its candidate list.
+        let d2 = base.with_candidates(["b"]);
+        let out = dedup_diagnostics_preserve_order(vec![d1, d2]);
+        assert_eq!(
+            out.len(),
+            2,
+            "a differing candidate list is a distinct dedup key and must survive"
+        );
+    }
+
+    #[test]
+    fn dedup_diagnostics_preserve_order_keeps_diagnostics_differing_only_by_code() {
+        let base = Diagnostic::warning("boom");
+        let d1 = base.clone().with_code(DiagnosticCode::TraitNotImplemented);
+        // Differs from `d1` only in its attached `DiagnosticCode`.
+        let d2 = base.with_code(DiagnosticCode::UnresolvedTrait);
+        let out = dedup_diagnostics_preserve_order(vec![d1, d2]);
+        assert_eq!(
+            out.len(),
+            2,
+            "a differing diagnostic code is a distinct dedup key and must survive"
+        );
+    }
+
+    #[test]
+    fn dedup_diagnostics_preserve_order_preserves_order_with_interleaved_duplicate() {
+        let a = Diagnostic::warning("a");
+        let b = Diagnostic::warning("b");
+        let c = Diagnostic::warning("c");
+        // The second `a` is a duplicate of the first and must be dropped;
+        // `b` and `c` are distinct and must survive in their original
+        // relative order (order-of-first-occurrence guarantee).
+        let out = dedup_diagnostics_preserve_order(vec![a.clone(), b, a, c]);
+        let messages: Vec<&str> = out.iter().map(|d| d.message.as_str()).collect();
+        assert_eq!(messages, vec!["a", "b", "c"]);
     }
 }
