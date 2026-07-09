@@ -3663,9 +3663,17 @@ fn extract_zone_process_params(val: &Value) -> Result<ZoneProcessParams, FeaValu
         }
     };
     if list.len() < 7 {
+        // Amendment (task #5082 review, suggestion 2): prefix the message
+        // with "wrong arity" so this reads distinctly from the non-List
+        // shape mismatch above when both surface through the same
+        // `ExpectedList` variant (shared taxonomy — see the variant's doc
+        // comment; not redefined here per this task's D2 reuse decision).
         return Err(FeaValueShapeError::ExpectedList {
             context: "extract_zone_process_params",
-            got: format!("List with {} elements", list.len()),
+            got: format!(
+                "List with wrong arity: {} elements (expected at least 7)",
+                list.len()
+            ),
         });
     }
     let real = |idx: usize| match &list[idx] {
@@ -9218,6 +9226,38 @@ mod tests {
             Value::Real(0.0),
             Value::Real(0.0),
             Value::Real(1.0),
+        ]);
+        assert_eq!(
+            extract_zone_process_params(&list),
+            Ok(ZoneProcessParams {
+                walls: 2,
+                top_bottom_layers: 3,
+                layer_height: 0.25,
+                line_width: 0.5,
+                build_direction: [0.0, 0.0, 1.0],
+            })
+        );
+    }
+
+    /// Amendment (task #5082 review, suggestion 1): the arity guard only
+    /// requires AT LEAST 7 elements (`list.len() < 7`), so a `Value::List`
+    /// with MORE than 7 elements silently uses just the first seven — this
+    /// pins that lenient over-arity behavior as an intentional, documented
+    /// contract rather than an untested accident, mirroring
+    /// `extract_point3_si_ignores_trailing_components_past_three`. A future
+    /// task that tightens the arity to exactly 7 must update this test
+    /// deliberately.
+    #[test]
+    fn extract_zone_process_params_accepts_extra_elements() {
+        let list = Value::List(vec![
+            Value::Real(2.0),
+            Value::Real(3.0),
+            Value::Real(0.25),
+            Value::Real(0.5),
+            Value::Real(0.0),
+            Value::Real(0.0),
+            Value::Real(1.0),
+            Value::Real(999.0),
         ]);
         assert_eq!(
             extract_zone_process_params(&list),
