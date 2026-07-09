@@ -1881,4 +1881,44 @@ assert "setup-dev.sh ExecStartPre/ExecStopPost reference the .owner sidecar clea
 assert "setup-dev.sh ExecStartPre/ExecStopPost reference the .owner.tmp sidecar cleanup" \
     bash -c "grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -qF 'reify-jobserver-merge.owner.tmp'"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 20: read_boot_id() fail-open "-" sentinel unit test (test-20, task 5146
+#   review comment 1)
+#
+#   Every real test host has a readable /proc/sys/kernel/random/boot_id, so
+#   the "-" fail-open sentinel branch in read_boot_id() (the OSError except
+#   clause) never executes end-to-end via the live-daemon Block 18/19 tests
+#   above. That branch is the safety valve that keeps a missing/unreadable
+#   boot_id from ever producing a false STALE verdict in verify.sh's
+#   _jobserver_owner_live() — so it is exercised directly here, via
+#   importlib, by pointing read_boot_id() at a path that cannot exist.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 20: read_boot_id() fail-open '-' sentinel unit test ---"
+
+_b20_exit=0
+{
+python3 - "$BALANCER" <<'PY'
+import importlib.util, sys
+
+spec = importlib.util.spec_from_file_location("jb", sys.argv[1])
+mod  = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+errors = []
+
+# ── unreadable/nonexistent proc_path → "-" sentinel (fail-open) ──────────
+got = mod.read_boot_id("/nonexistent/path/does-not-exist-5146")
+if got != "-":
+    errors.append(f"read_boot_id(nonexistent) = {got!r}, want '-'")
+
+if errors:
+    sys.stderr.write("FAIL read_boot_id:\n" + "\n".join("  " + e for e in errors) + "\n")
+    sys.exit(1)
+print("OK: read_boot_id fail-open sentinel")
+PY
+} || _b20_exit=$?
+assert "read_boot_id(): unreadable/nonexistent path returns '-' sentinel (fail-open)" \
+    test "$_b20_exit" -eq 0
+
 test_summary
