@@ -1669,7 +1669,12 @@ fn build_merged_solver_problem(
                      auto cell `{}` to a MergedSolve cluster -- connector-pinned \
                      autos inside a whole-model cluster are not yet supported \
                      (task #5014); the cell is excluded from the merged solve \
-                     and remains undetermined.",
+                     and remains undetermined. Note: this same cell would be \
+                     silently left undetermined with no diagnostic at all if its \
+                     scope were not coupled into a MergedSolve cluster -- this \
+                     error is intentionally topology-dependent (a whole-model \
+                     solve fails loud here rather than risk silently mis-solving \
+                     the pin); see task #5014.",
                     templates[idx].name, cell.id.member,
                 )));
                 continue;
@@ -5397,6 +5402,21 @@ impl Engine {
         // let-cone re-eval here — consistent with the per-template
         // `build_solver_problem` == `None` arm, which likewise `continue`s
         // without invoking `evaluate_let_bindings`.
+        //
+        // Blast radius (reviewer_comprehensive, amendment task #5014): this
+        // early return is scoped to the WHOLE cluster, not just the
+        // member(s) that contributed an excluded cell. EVERY member in
+        // `cluster.scopes` is left unresolved by this `return` — including a
+        // member whose own cells contained no excluded auto and would have
+        // solved fine standalone. This is an accepted, documented tradeoff,
+        // not an oversight: a member only reaches this dispatch because α's
+        // `compute_clusters` already coupled it into the same `MergedSolve`
+        // SCC/objective span as the excluded cell's scope, so silently
+        // falling back to solving it alone would ignore that real coupling
+        // and could produce a value inconsistent with the (unsolved) rest of
+        // the cluster. Falling back to per-template solving for the
+        // non-excluded members is a possible follow-up, not implemented
+        // here.
         if problem.auto_params.is_empty() {
             return;
         }
