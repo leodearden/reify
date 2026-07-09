@@ -705,7 +705,7 @@ fn frequency_ascending_order(frequencies: &[f64]) -> Option<Vec<usize>> {
     order.sort_by(|&a, &b| {
         frequencies[a]
             .partial_cmp(&frequencies[b])
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(std::cmp::Ordering::Equal) // nan-safe:allow — all frequencies finite here (non-finite → early return None above at :691)
     });
     Some(order)
 }

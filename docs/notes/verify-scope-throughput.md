@@ -34,10 +34,10 @@ reflect a real run on this host.
 
 | Shape | Changed file | Override | scope=all | scope=branch |
 |-------|-------------|---------|-----------|--------------|
-| (a) docs-only | `docs/note.md` | — | 13 | 0 |
-| (b) reify-doc (non-OCCT) | `crates/reify-doc/src/lib.rs` | `reify-doc` | 13 | 13 |
-| (c) reify-eval (OCCT) | `crates/reify-eval/src/lib.rs` | `reify-eval` | 13 | 13 |
-| (d) gui-only | `gui/src/editor/foo.ts` | — | 13 | 3 |
+| (a) docs-only | `docs/note.md` | — | 14 | 0 |
+| (b) reify-doc (non-OCCT) | `crates/reify-doc/src/lib.rs` | `reify-doc` | 14 | 14 |
+| (c) reify-eval (OCCT) | `crates/reify-eval/src/lib.rs` | `reify-eval` | 14 | 14 |
+| (d) gui-only | `gui/src/editor/foo.ts` | — | 14 | 3 |
 
 Machine-parseable sentinel block for `tests/infra/test_verify_throughput.sh`'s
 drift guard.  Update by re-running the regeneration commands in the section
@@ -46,10 +46,10 @@ below and replacing the counts; then re-run the test to confirm it passes.
 <!-- THROUGHPUT-COUNTS:BEGIN -->
 | shape | all | branch |
 |-------|-----|--------|
-| docs-only  | 13 |  0 |
-| reify-doc  | 13 | 13 |
-| reify-eval | 13 | 13 |
-| gui-only   | 13 |  3 |
+| docs-only  | 14 |  0 |
+| reify-doc  | 14 | 14 |
+| reify-eval | 14 | 14 |
+| gui-only   | 14 |  3 |
 <!-- THROUGHPUT-COUNTS:END -->
 
 _Counts bumped 2026-06-25 (task 4839): `add_test_passes()` emitted one
@@ -91,6 +91,14 @@ non-zero cell): the pre-2026-07-06 +1 table↔sentinel offset was a stale
 hand-maintained table artifact, not a semantic difference — both renderings
 count the same non-comment `--print-plan` lines from the same role=task oracle,
 so they are kept identical from here on._
+
+_Counts bumped 2026-07-09 (task 5093): added `scripts/check-nan-safe-ordering.sh`
+(INV-FEA-3 NaN-safe-ordering grep gate) to the `DO_LINT` Rust-infra lint block in
+`scripts/verify.sh`, beside `check_event_inventory.sh`. Net change: +1 non-comment
+plan line wherever that block runs — every `scope=all` plan, and `scope=branch` for
+the `RUN_RUST=1` shapes (reify-doc, reify-eval). docs-only branch stays 0 and
+gui-only branch stays 3 (the Rust-infra lint block is not emitted under those branch
+scopes). The Plan-Step Counts table and the machine sentinel move 13 → 14 in lockstep._
 
 ## Heavy-Work Narrowed Markers
 
