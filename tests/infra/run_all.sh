@@ -418,10 +418,110 @@ _ra_flaky_chronic_check() {
     return 0
 }
 
+# ---------------------------------------------------------------------------
+# _ra_partial_failed_names  (task #5147)
+#
+# Best-effort scan of the H2 pool workdir's per-member `.rc` bookkeeping
+# (see the `.rc` writes in the pool/serial/retry phases below) for members
+# that have already recorded a nonzero exit code -- used by _ra_on_term to
+# attribute a partial FAILED marker when the outer timeout SIGTERMs mid-run,
+# long before the normal Phase 3 emit block would otherwise run. Prints one
+# name per line; prints nothing (silently) on the legacy/host-infra paths,
+# which never set _H2_WORKDIR.
+#
+# Fail-open: this runs from inside a signal handler, so an error here must
+# never prevent _ra_on_term from emitting its classifier marker -- every
+# dereference below is guarded so a missing/empty _H2_WORKDIR, an unreadable
+# `.rc` file, or an out-of-range index just yields whatever was gathered so
+# far, never an error under set -u/set -e.
+# ---------------------------------------------------------------------------
+_ra_partial_failed_names() {
+    [ -n "${_H2_WORKDIR:-}" ] && [ -d "${_H2_WORKDIR:-}" ] || return 0
+    local _f _base _idx _rc _name
+    for _f in "$_H2_WORKDIR"/*.rc; do
+        [ -f "$_f" ] || continue
+        # Exclude serial-retry .rc files -- mirrors the Phase-1 progress
+        # printer's `! -name '*.retry.rc'` exclusion above: a retry .rc
+        # shares its base member's index and is reconciled separately by
+        # Phase 2.5/3, not part of the first-attempt bookkeeping this scan
+        # reads.
+        case "$_f" in
+            *.retry.rc) continue ;;
+        esac
+        _base="$(basename "$_f" .rc)"
+        [[ "$_base" =~ ^[0-9]+$ ]] || continue
+        _idx="$_base"
+        _rc="$(cat "$_f" 2>/dev/null || echo 0)"
+        [[ "$_rc" =~ ^[0-9]+$ ]] || _rc=0
+        [ "$_rc" -eq 0 ] && continue
+        _name="${_h2_discovered_list[$((_idx-1))]:-}"
+        [ -n "$_name" ] && printf '%s\n' "$_name"
+    done
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+# _ra_on_term  (task #5147)
+#
+# TERM-signal handler: installed immediately below (before ANY phase work),
+# so it covers both the pool and legacy-serial paths alike. The merge-tier
+# envelope wraps run_all.sh in `timeout --kill-after=60 30m` (verify.sh) --
+# timeout sends SIGTERM first (SIGKILL only after the kill-after grace
+# period), so this handler gets a real window to reclassify a mid-run kill
+# BEFORE dark-factory's classifier falls through to a tree_sitter_generate_error
+# mislabel for want of any Summary/FAILED line (the normal-path emit block,
+# lines ~988-997 below, never runs on a signal death).
+#
+# Emits, to STDOUT (the same stream the normal-path marker uses and DF's
+# `^FAILED\s` scan reads):
+#   - a distinct `=== Summary: INTERRUPTED ... ===` line, deliberately NOT
+#     matching the byte-exact `=== Summary: N discovered, M failed ===`
+#     substring the contract tests assert (T9a/T13b/T22e class).
+#   - `=== FAILED: <names> (partial) ===` (human-readable) and the bare
+#     `FAILED <names> (partial)` classifier line (matches DF's `^FAILED\s`
+#     reclassifier -- pattern #7b, checked before the tree-sitter mislabel).
+#
+# Name attribution is best-effort and fail-open: the sorted-unique union of
+# _ra_partial_failed_names (the .rc-file scan) and the existing failed_names
+# array (covers the legacy path and any Phase-3 partial progress) -- the
+# guaranteed deliverable is the classifier reclassification itself, so a
+# gather error must never be able to suppress the marker. `set +e` covers
+# the whole handler for exactly this reason.
+#
+# Re-raises via `trap - TERM; kill -TERM $$` (rather than `exit`) so the
+# process's recorded exit status reflects signal death (143), and so the
+# EXISTING `_H2_WORKDIR` EXIT-trap cleanup (below) still runs AFTER this
+# handler returns -- this handler's `.rc` scan above therefore sees the
+# workdir before that cleanup removes it.
+# ---------------------------------------------------------------------------
+_ra_on_term() {
+    set +e
+
+    echo ""
+    echo "=== Summary: INTERRUPTED (outer timeout; partial results) ==="
+
+    local _names
+    _names="$(
+        { _ra_partial_failed_names; printf '%s\n' "${failed_names[@]:-}"; } 2>/dev/null \
+            | sed '/^$/d' | sort -u | tr '\n' ' ' | sed 's/ $//'
+    )"
+
+    echo "=== FAILED: ${_names} (partial) ==="
+    printf 'FAILED %s(partial)\n' "${_names:+$_names }"
+
+    trap - TERM
+    kill -TERM $$
+}
+
 failures=0
 discovered=0
 failed_names=()
 flaky_names=()
+
+# Install the TERM trap BEFORE any phase work (pool or legacy), so a
+# mid-run outer-timeout SIGTERM is reclassified regardless of which path is
+# active (task #5147). See _ra_on_term above.
+trap _ra_on_term TERM
 
 echo "=== Running all infra tests in: $INFRA_DIR ==="
 
