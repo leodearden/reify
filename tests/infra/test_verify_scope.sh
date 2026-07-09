@@ -426,9 +426,13 @@ assert "C5/no-main: full scope forced (RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1)" \
 # inline fixtures (FIX_B5/FIX_C5 idiom), left dirty and reclaimed by the
 # EXIT trap.
 #
-# All three are RED against current ACMR (deletion dropped from `_files` ->
-# decide_scope classifies nothing -> RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0) and
-# GREEN once the diff-filter widens to ACMRD.
+# All scenarios in this block are RED against current ACMR (deletion dropped
+# from `_files` -> decide_scope classifies nothing -> RUN_RUST=0 RUN_GUI=0
+# RUN_OCCT_GATE=0) and GREEN once the diff-filter widens to ACMRD. This
+# includes DEL-crate-branch's companion REIFY_AFFECTED_CRATES_OVERRIDE
+# measurement (narrowing is unreachable while RUN_RUST=0, so it is RED/GREEN
+# too) and DEL-occt-branch (locks the gate=1-via-deletion outcome alongside
+# DEL-crate-branch's gate=0 case).
 # ===========================================================================
 echo ""
 echo "=== Deletion-aware scope classification (task 5140 DEL-* scenarios) ==="
@@ -451,6 +455,21 @@ git -C "$FIX_DEL_CRATE" checkout -q -b task-branch
 git -C "$FIX_DEL_CRATE" rm -q crates/reify-doc/src/lib.rs
 git -C "$FIX_DEL_CRATE" commit -q -m "delete reify-doc"
 PLAN_DEL_CRATE="$(cd "$FIX_DEL_CRATE" && bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
+# Companion measurement on the SAME committed deletion, captured before
+# fixture cleanup below: with REIFY_AFFECTED_CRATES_OVERRIDE set, this
+# non-global crate deletion DOES narrow (NARROW_ACTIVE=1, affected=<crate>,
+# not ALL). The override bypasses affected_crates() entirely
+# (verify.sh:845-847), so this does NOT exercise affected-crates-lib.sh's
+# `_is_global` C4 short-circuit — it exists only to prove the ALL-vs-narrowed
+# distinction is reachable in this suite at all. Without an override, every
+# real call into affected_crates() in this workspace-less fixture fails wide
+# to ALL (`cargo metadata` has no workspace to inspect — the C5 fallback), so
+# DEL-global-branch's "affected=ALL" below can't by itself distinguish the
+# deliberate `_is_global` short-circuit from that fixture-wide fallback. This
+# companion shows narrowing IS achievable for the identical
+# deleted-non-OCCT-crate input, which is what makes DEL-global-branch's
+# "deleted global defeats narrowing" claim meaningful.
+PLAN_DEL_CRATE_NARROWED="$(cd "$FIX_DEL_CRATE" && REIFY_AFFECTED_CRATES_OVERRIDE="reify-doc" bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
 git -C "$FIX_DEL_CRATE" checkout -q main
 git -C "$FIX_DEL_CRATE" branch -q -D task-branch
 # FIX_DEL_CRATE left dirty; cleaned up by the EXIT trap via _TMPDIRS.
@@ -458,6 +477,38 @@ assert "DEL-crate-branch: scope=branch reported in plan header" \
     bash -c 'printf "%s\n" "$1" | grep -q "scope=branch"' _ "$PLAN_DEL_CRATE"
 assert "DEL-crate-branch: RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0 (deleted non-OCCT crate classified)" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0"' _ "$PLAN_DEL_CRATE"
+assert "DEL-crate-branch/override: NARROW_ACTIVE=1 affected=reify-doc (non-global deletion narrows when override set)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "NARROW_ACTIVE=1 affected=reify-doc"' _ "$PLAN_DEL_CRATE_NARROWED"
+
+# ---------------------------------------------------------------------------
+# Scenario DEL-occt-branch: deleting an OCCT-touching crate file on a branch
+# still routes through decide_scope's `crates/*` case and sets the
+# conservative OCCT gate (RUN_OCCT_GATE=1). Contrasts with DEL-crate-branch
+# above (non-OCCT crate deletion -> RUN_OCCT_GATE=0): classification is
+# diff-filter-agnostic once ACMRD lets the deleted path reach decide_scope,
+# so a deletion under a declared OCCT crate (occt-touching-crates.txt) must
+# still gate exactly like an Added/Modified change would (Scenario B6).
+# Locks the :718 branch-diff site for the gate=1-via-deletion outcome.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario DEL-occt-branch: delete crates/reify-eval file on branch -> gate=1 (RED until ACMRD) ---"
+FIX_DEL_OCCT=""
+make_branch_fixture FIX_DEL_OCCT
+# Seed the artifact into the committed base on `main` — a Deleted-status diff
+# requires the file to already exist at $_MERGE_BASE.
+mkdir -p "$FIX_DEL_OCCT/crates/reify-eval/src"
+printf 'x\n' > "$FIX_DEL_OCCT/crates/reify-eval/src/lib.rs"
+git -C "$FIX_DEL_OCCT" add crates/reify-eval/src/lib.rs
+git -C "$FIX_DEL_OCCT" commit -q -m "seed reify-eval"
+git -C "$FIX_DEL_OCCT" checkout -q -b task-branch
+git -C "$FIX_DEL_OCCT" rm -q crates/reify-eval/src/lib.rs
+git -C "$FIX_DEL_OCCT" commit -q -m "delete reify-eval"
+PLAN_DEL_OCCT="$(cd "$FIX_DEL_OCCT" && bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
+git -C "$FIX_DEL_OCCT" checkout -q main
+git -C "$FIX_DEL_OCCT" branch -q -D task-branch
+# FIX_DEL_OCCT left dirty; cleaned up by the EXIT trap via _TMPDIRS.
+assert "DEL-occt-branch: RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 (deleted OCCT-touching crate forces gate)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1"' _ "$PLAN_DEL_OCCT"
 
 # ---------------------------------------------------------------------------
 # Scenario DEL-global-branch: deleting a workspace-global (Cargo.lock) on a
