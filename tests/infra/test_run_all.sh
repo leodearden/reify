@@ -2313,9 +2313,14 @@ fi
 # mislabel instead of test_failure. RED sub-case: a fast-failing pool member
 # ("boom") plus a slow pool member ("hang") under REIFY_RUN_ALL_POOL_CONCURRENCY=2
 # (both admitted concurrently, no lock contention -- keeps this test's markers
-# independent of Test 24's). At t~2s boom has already written its .rc=1 and the
-# parent is blocked in the Phase-1 `wait` for hang, so the outer `timeout -s TERM`
-# fires into the new trap. Output is captured to a FILE, not `$(...)`: the
+# independent of Test 24's). The harness polls (bounded, not a fixed sleep)
+# for boom's ACTUAL `.rc` bookkeeping write inside the real _H2_WORKDIR
+# (discovered via a private TMPDIR override -- the same authoritative state
+# _ra_partial_failed_names itself scans), confirming the failure landed
+# before firing SIGTERM itself -- decoupling the signal's timing from
+# absolute wall-clock guesswork under host load -- while the parent is
+# blocked in the Phase-1 `wait` for hang, into the new trap. Output is
+# captured to a FILE, not `$(...)`: the
 # orphaned hang-worker subshell (reparented on run_all.sh's death, still holding
 # an inherited copy of the original pipe's write end while it finishes its ~8s
 # sleep) would otherwise hold a command-substitution pipe open long past
@@ -2342,12 +2347,67 @@ EOF
     LOCK_T25="$TMPDIR_T25/pool-t25.lock"
     T25_OUT="$TMPDIR_T25/out.txt"
     t25_rc=0
+
+    # run_all.sh's pool workdir (_H2_WORKDIR) is created via
+    # `mktemp -d "${TMPDIR:-/tmp}/reify-run-all-pool.XXXXXX"` -- the ONLY use
+    # of TMPDIR in run_all.sh (Test 19 relies on the same contract). Pointing
+    # TMPDIR at a private, empty directory lets the harness below discover
+    # the real workdir and poll for boom's ACTUAL `.rc` bookkeeping write --
+    # the same authoritative state _ra_partial_failed_names itself scans --
+    # before firing SIGTERM. A child-side signal (e.g. boom touching its own
+    # "done" marker) would still race the *parent* pool-worker subshell's
+    # separate `.rc` write; polling the `.rc` file itself removes that race
+    # entirely rather than trading one fixed wall-clock guess for another.
+    H2WD_PARENT_T25="$TMPDIR_T25/h2wd"
+    mkdir -p "$H2WD_PARENT_T25"
+
+    # Launch run_all.sh directly (rather than under a fixed `timeout N`) so
+    # the SIGTERM can be fired right after boom's `.rc` write confirms its
+    # failure landed. The bounded poll below caps the wait at 4s (comfortably
+    # under hang's 8s sleep, so a slow-but-not-wedged host still exercises
+    # the intended mid-run interrupt) and reacts as soon as the write lands
+    # rather than always waiting the full window. A background SIGKILL
+    # fallback mirrors `timeout`'s -k grace period, in case the TERM trap
+    # somehow doesn't reap it.
     env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
         RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T25" \
         REIFY_RUN_ALL_POOL_LOCK="$LOCK_T25" \
         REIFY_RUN_ALL_POOL_CONCURRENCY=2 \
         REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
-        timeout -s TERM -k 5 2 bash "$RUN_ALL" "$TMPDIR_T25" >"$T25_OUT" 2>&1 || t25_rc=$?
+        TMPDIR="$H2WD_PARENT_T25" \
+        bash "$RUN_ALL" "$TMPDIR_T25" >"$T25_OUT" 2>&1 &
+    t25_pid=$!
+
+    t25_wd=""
+    t25_rc_file=""
+    t25_i=0
+    while [ "$t25_i" -lt 40 ]; do
+        if [ -z "$t25_wd" ]; then
+            for _d in "$H2WD_PARENT_T25"/reify-run-all-pool.*; do
+                [ -d "$_d" ] && t25_wd="$_d"
+                break
+            done
+        fi
+        if [ -n "$t25_wd" ]; then
+            for _f in "$t25_wd"/*.rc; do
+                case "$_f" in
+                    *.retry.rc) continue ;;
+                esac
+                [ -f "$_f" ] && t25_rc_file="$_f"
+                break
+            done
+        fi
+        [ -n "$t25_rc_file" ] && break
+        sleep 0.1
+        t25_i=$((t25_i + 1))
+    done
+
+    kill -TERM "$t25_pid" 2>/dev/null || true
+    ( sleep 5; kill -KILL "$t25_pid" 2>/dev/null || true ) &
+    t25_killer=$!
+    wait "$t25_pid" 2>/dev/null || t25_rc=$?
+    kill "$t25_killer" 2>/dev/null || true
+    wait "$t25_killer" 2>/dev/null || true
 
     if grep -q 'INTERRUPTED' "$T25_OUT"; then
         assert "T25a: mid-run SIGTERM output contains an INTERRUPTED summary line" true
