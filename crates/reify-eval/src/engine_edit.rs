@@ -900,6 +900,17 @@ impl Engine {
         // the local `diagnostics` vec immediately before the return.
         let runtime_sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
 
+        // Selector-mint diagnostics (amend, task ε #4957 review): accumulates
+        // `Diagnostic`s emitted by `try_eval_symbolic_topology_selector` during
+        // the in-walk mint retry below (e.g. a selector kind-closure violation
+        // that leaves a cell at `Undef`). `diagnostics` itself isn't declared
+        // until after this loop, so — like `runtime_sink` above — this collects
+        // across iterations and is drained into `diagnostics` immediately before
+        // the return, giving edit_param parity with edit_source's whole-module
+        // `mint_symbolic_topology_selectors_into_values` pass instead of
+        // silently dropping a real diagnostic.
+        let mut selector_mint_diagnostics: Vec<Diagnostic> = Vec::new();
+
         // Mark all nodes in the eval set as Pending before re-evaluation.
         // This transitions Final → Pending{last_substantive: hash}.
         self.cache.reset_pending_transition_count();
@@ -961,14 +972,17 @@ impl Engine {
                 // at topo-order time rather than Undef.  Uses the graph's
                 // RealizationNodeData (same operations, same upstream_values_hash
                 // fold) because edit_param has no access to the CompiledModule.
-                // Note: `diagnostics` is declared later in this function; use a
-                // local sink here instead. This in-walk mint is the SOLE
+                // Note: `diagnostics` is declared later in this function; use
+                // `selector_mint_diagnostics` (declared above, alongside
+                // `runtime_sink`) here instead. This in-walk mint is the SOLE
                 // edit-path mint mechanism (γ, task 4954 — geometry-let cells
                 // ride the dirty cone and mint at their topo slot here);
-                // edit_param has no post-eval backstop mint pass. The local
-                // `sel_diags` sink below is intentionally dropped — this
-                // incremental re-mint does not surface selector-mint
-                // diagnostics, unlike edit_source's whole-module pass.
+                // edit_param has no post-eval backstop mint pass. Diagnostics
+                // pushed by `try_eval_symbolic_topology_selector` (e.g. a
+                // selector kind-closure violation leaving the cell at `Undef`)
+                // are accumulated into `selector_mint_diagnostics` and drained
+                // into the function's `diagnostics` output below, matching
+                // edit_source's whole-module pass instead of dropping them.
                 let was_undef = matches!(val, Value::Undef);
                 let val = if was_undef {
                     let geom = Engine::mint_symbolic_geometry_handle_for_cell_from_graph(
@@ -982,12 +996,14 @@ impl Engine {
                         v
                     } else {
                         let mut sel_diags: Vec<reify_core::Diagnostic> = Vec::new();
-                        crate::geometry_ops::try_eval_symbolic_topology_selector(
+                        let selector_val = crate::geometry_ops::try_eval_symbolic_topology_selector(
                             expr,
                             &values,
                             &mut sel_diags,
                         )
-                        .unwrap_or(val)
+                        .unwrap_or(val);
+                        selector_mint_diagnostics.extend(sel_diags);
+                        selector_val
                     }
                 } else {
                     val
@@ -2279,6 +2295,10 @@ impl Engine {
         // above whenever sampled-field OOB queries or RBF/Kriging
         // fallbacks emitted warnings via `EvalContext::diagnostics`.
         diagnostics.append(&mut runtime_sink.borrow_mut());
+        // Drain selector-mint diagnostics (amend, task ε #4957 review):
+        // populated above by `try_eval_symbolic_topology_selector` calls
+        // during the in-walk mint retry — see the comment at that call site.
+        diagnostics.append(&mut selector_mint_diagnostics);
 
         Ok(EvalResult {
             values,
