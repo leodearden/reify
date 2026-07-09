@@ -574,7 +574,7 @@ fn per_file_violations(
 /// each `.ri` example file compiles in under 500ms, so the 10s/file limit
 /// provides >10× headroom against a p99 outlier without risking false
 /// positives from CI scheduling jitter. If a regression pushes a file past
-/// the budget, the sorted violation table will identify it.
+/// the budget, the violation table will identify it by name.
 ///
 /// There is deliberately no aggregate/total wall-clock budget: task 5149
 /// dropped it because a fixed total erodes as the corpus grows and is
