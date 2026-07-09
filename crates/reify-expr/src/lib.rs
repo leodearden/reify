@@ -755,6 +755,25 @@ pub fn eval_expr(expr: &CompiledExpr, ctx: &EvalContext) -> Value {
             if function_name == "map_or" && args.len() == 3 {
                 return eval_map_or(args, ctx);
             }
+            // map_err: ctx-aware Result arrow-type combinator (task
+            // result-fallback Layer-B γ #4037), mirroring map_or above. Must
+            // APPLY its lambda argument `f` to the Err payload, which needs
+            // the EvalContext — so it lives here rather than in the pure
+            // `option_recovery` module (INV-1). `is_combinator` deliberately
+            // omits `map_err`, so it always falls through to this gate.
+            // See `eval_map_err` for the full semantics.
+            //
+            // Reserved-name intercept: same caveat as `map_or` above — the bare
+            // `name == "map_err" && arity == 2` gate makes `map_err/2`
+            // effectively a reserved stdlib name, so a user fn of the same
+            // name+arity is shadowed by this intercept and never reaches
+            // `eval_user_function_call`. Acceptable under the prelude/stdlib
+            // trust model; if call-binding resolution to `std.result` is ever
+            // threaded into eval, gate on that resolved binding here instead
+            // of the bare name.
+            if function_name == "map_err" && args.len() == 2 {
+                return eval_map_err(args, ctx);
+            }
             eval_user_function_call(function_name, args, ctx)
         }
 
@@ -2935,6 +2954,103 @@ fn eval_map_or(args: &[CompiledExpr], ctx: &EvalContext) -> Value {
         // undef subject (Kleene INV-2) — propagate Undef; neither branch evaluated.
         Value::Undef => Value::Undef,
         // non-Option subject (type error) — degrade gracefully; neither branch evaluated.
+        _ => Value::Undef,
+    }
+}
+
+/// Evaluate the `map_err(r, f)` arrow-type combinator (task result-fallback
+/// Layer-B γ #4037).
+///
+/// Kept in its own function — deliberately NOT inlined into `eval_expr`'s
+/// `UserFunctionCall` arm — mirroring the `eval_map_or` / `eval_solve_load_cases`
+/// / `option_recovery::eval_combinator` intercept convention (the arm
+/// delegates; the logic lives in a helper, keeping recursive `eval_expr`
+/// stack frames small).
+///
+/// Unlike the pure `option_recovery` combinators (INV-1), map_err must APPLY
+/// its function argument `f` to the unwrapped `Err` payload, which needs the
+/// `EvalContext` (`apply_lambda` — recursion depth, scope, captures); hence it
+/// lives here rather than in the pure path.
+///
+///   subject=Ok{value:x}    -> subject unchanged             (f NOT applied)
+///   subject=Err{error:e}   -> Err{error: apply_lambda(f, [e])} (f APPLIED)
+///   subject=undef          -> Undef                          (Kleene INV-2)
+///   other (non-Result)     -> Undef                          (graceful type-error)
+///
+/// Degrading `f`: if `apply_lambda(f, [e])` itself evaluates to `Value::Undef`
+/// (e.g. `f` is partial, or mistyped and degrades per its own graceful-fallback
+/// rules), the result is `Err{error: Undef}` — a *determined* `Err` tag
+/// carrying an `undef` payload field — deliberately NOT collapsed to top-level
+/// `Undef`. This is intentional: it mirrors DCE's D2/INV-4
+/// (`docs/prds/v0_6/data-carrying-enums.md`) — "structure determined, elements
+/// may be undef" — under which a determined-tag value with an undef payload
+/// field stays determined; a subsequent `match` on the result still selects
+/// the `Err` arm and binds `error = undef`, propagating from there per normal
+/// `undef` rules. This is orthogonal to the `subject=undef` row above, where
+/// the *tag itself* (not a payload field) is undetermined and the combinator
+/// short-circuits to `Undef` per Kleene INV-2.
+///
+/// The `.ri` body is a typecheck-only placeholder `{ r }`; correct runtime
+/// behaviour lives entirely here (same convention as the sibling combinators
+/// in `option_recovery.rs`).
+///
+/// Payload rebuild constructs a fresh single-field `vec![("error", mapped)]`,
+/// mirroring `eval_ok_or`'s `Err` construction in `option_recovery.rs` — the
+/// `Err { error: E }` shape only ever carries that one field, so there is no
+/// other-fields case to preserve.
+///
+/// Evaluation is LAZY: `f` (args[1]) is only evaluated in the `Err` arm,
+/// mirroring `eval_map_or`'s laziness convention (the Ok-case never evaluates
+/// `f`, so a failing/side-effecting `f` expression never runs when unneeded).
+///
+/// Precondition: `args.len() == 2` (guaranteed by the caller's arity gate).
+fn eval_map_err(args: &[CompiledExpr], ctx: &EvalContext) -> Value {
+    let subject = eval_expr(&args[0], ctx);
+    match subject {
+        // Ok{..} -> return the subject unchanged; `f` (args[1]) is NOT evaluated.
+        Value::Enum {
+            ref type_name,
+            ref variant,
+            ..
+        } if type_name == "Result" && variant == "Ok" => subject,
+        // Err{error:e} -> apply f to the error payload, rebuild Err with the mapped value.
+        Value::Enum {
+            ref type_name,
+            ref variant,
+            ref payload,
+        } if type_name == "Result" && variant == "Err" => {
+            let f = eval_expr(&args[1], ctx);
+            // The compiler (variant_construct.rs) guarantees every `Err`
+            // payload carries exactly one field named "error" — surface a
+            // violation via debug_assert (a wiring bug, not a user-reachable
+            // state) while still degrading gracefully to `Undef` for the
+            // mapped-over value in release builds, matching the eval
+            // anti-cascade convention used elsewhere in this module (cf. the
+            // `PurposeReflectiveAggregation` arm above).
+            debug_assert!(
+                payload.iter().any(|(field, _)| field == "error"),
+                "Result::Err payload should carry a single \"error\" field \
+                 (compiler-guaranteed by variant_construct.rs); got {:?}",
+                payload
+            );
+            let error_val = payload
+                .iter()
+                .find(|(field, _)| field == "error")
+                .map(|(_, v)| v.clone())
+                .unwrap_or(Value::Undef);
+            let mapped = apply_lambda(&f, &[error_val], ctx);
+            // Fresh single-field payload, mirroring `eval_ok_or`'s Err
+            // construction — the `Err { error: E }` shape only ever carries
+            // that one field, so there is no other-fields case to preserve.
+            Value::Enum {
+                type_name: type_name.clone(),
+                variant: variant.clone(),
+                payload: vec![("error".to_string(), mapped)],
+            }
+        }
+        // undef subject (Kleene INV-2) — propagate Undef; f is NOT evaluated.
+        Value::Undef => Value::Undef,
+        // non-Result subject (type error) — degrade gracefully; f is NOT evaluated.
         _ => Value::Undef,
     }
 }
@@ -9657,6 +9773,91 @@ mod tests {
             Value::Bool(false),
             "forall m in [str, Undef]: determined(m) must be Bool(false); got {:?}",
             result,
+        );
+    }
+
+    /// `eval_map_err`'s "degrading `f`" contract (documented on `eval_map_err`
+    /// above): when `apply_lambda(f, [e])` itself evaluates to `Value::Undef`
+    /// (e.g. `f` is partial or mistyped), the result must be a *determined*
+    /// `Err` tag carrying an `undef` payload field — `Err{error: Undef}` —
+    /// deliberately NOT collapsed to top-level `Value::Undef`. Per DCE
+    /// D2/INV-4 ("structure determined, elements may be undef"), a
+    /// subsequent `match` on the result still selects the `Err` arm and
+    /// binds `error = undef`. This is the code path this task's review
+    /// flagged as untested — a future refactor that collapsed the mapped
+    /// value up to top-level `Undef` would previously have gone unnoticed.
+    #[test]
+    fn map_err_err_subject_degrading_f_yields_err_with_undef_payload() {
+        let subject = lit(
+            Value::Enum {
+                type_name: "Result".to_string(),
+                variant: "Err".to_string(),
+                payload: vec![("error".to_string(), Value::String("x".to_string()))],
+            },
+            Type::Enum("Result".to_string()),
+        );
+        // f = |e| undef — unconditionally degrades to Undef regardless of
+        // its argument, modelling a partial/mistyped `f`.
+        let e_id = ValueCellId::new("$lambda_map_err_degrade.S", "e");
+        let f = lambda_lit(
+            vec![("e", e_id)],
+            lit(Value::Undef, Type::String),
+            ValueMap::new(),
+        );
+        let call_expr = CompiledExpr {
+            content_hash: ContentHash::of(b"map_err_degrading_f"),
+            result_type: Type::Enum("Result".to_string()),
+            kind: CompiledExprKind::UserFunctionCall {
+                function_name: "map_err".to_string(),
+                args: vec![subject, f],
+            },
+        };
+        let values = ValueMap::new();
+        let result = eval_expr(&call_expr, &EvalContext::simple(&values));
+        assert_eq!(
+            result,
+            Value::Enum {
+                type_name: "Result".to_string(),
+                variant: "Err".to_string(),
+                payload: vec![("error".to_string(), Value::Undef)],
+            },
+            "map_err(Err{{error:\"x\"}}, |_| undef) must yield a DETERMINED Err{{error: Undef}} \
+             (D2/INV-4) — not collapsed to top-level Undef; got {:?}",
+            result
+        );
+    }
+
+    /// `eval_map_err`'s non-`Result`, non-`Undef` graceful-degradation arm
+    /// (the trailing `_ => Value::Undef`) is exercised directly: a mistyped
+    /// subject (here, a plain scalar — not a `Result` enum) must degrade to
+    /// `Value::Undef`, and `f` must never run. Mirrors the pure combinators'
+    /// analogous graceful-degradation arms in `option_recovery.rs`.
+    #[test]
+    fn map_err_non_result_subject_degrades_to_undef() {
+        let subject = lit(mm_val(5.0), Type::length());
+        // f = |e| true — never applied; the mistyped subject short-circuits
+        // to Undef before f would run.
+        let e_id = ValueCellId::new("$lambda_map_err_non_result.S", "e");
+        let f = lambda_lit(
+            vec![("e", e_id)],
+            lit(Value::Bool(true), Type::Bool),
+            ValueMap::new(),
+        );
+        let call_expr = CompiledExpr {
+            content_hash: ContentHash::of(b"map_err_non_result_subject"),
+            result_type: Type::Enum("Result".to_string()),
+            kind: CompiledExprKind::UserFunctionCall {
+                function_name: "map_err".to_string(),
+                args: vec![subject, f],
+            },
+        };
+        let values = ValueMap::new();
+        let result = eval_expr(&call_expr, &EvalContext::simple(&values));
+        assert_eq!(
+            result,
+            Value::Undef,
+            "map_err(<non-Result scalar subject>, f) must gracefully degrade to Value::Undef; got {:?}",
+            result
         );
     }
 }

@@ -81,6 +81,8 @@ std
     snapshot     // snapshot(), bodies(), transform_of(), center_of_mass(), bounding_box()
     sweep        // sweep(), sweep_grid()
     query        // interferes(), interferes_with(), min_clearance()
+  result
+    mod.ri         // Result<T,E>, unwrap_or, is_ok, is_err, or_else, map_err, ok_or
 ```
 
 ---
@@ -1809,3 +1811,32 @@ fn counter_mass_balance() -> Bool {
 This mirrors the landed `examples/kinematic/counter_mass_balance.ri`, whose e2e-proven invariant is `magnitude(center_of_mass(s)) < 1um` for every swept snapshot (a generous bound relative to the 1e-9m tolerance `center_of_mass_counter_mass_balance_stationarity` proves at the Rust level) — rather than the PRD prose's unsupported pairwise `coms.windows(2)` / `.norm()` adjacent-difference form.
 
 See `docs/prds/kinematic-constraints.md` for the full specification, acceptance criteria, and task breakdown.
+
+---
+
+## 14. `std.result` — recovery combinators
+
+`Result<T, E>` is a prelude generic data-carrying enum — `Ok { value: T }` / `Err { error: E }` — callable with no `import`, exactly like `Option<T>`. `std.result` layers six recovery combinators on top, declared alongside the enum:
+
+```
+fn unwrap_or<T, E>(r: Result<T, E>, dflt: T) -> T
+fn is_ok<T, E>(r: Result<T, E>) -> Bool
+fn is_err<T, E>(r: Result<T, E>) -> Bool
+fn or_else<T, E>(r: Result<T, E>, alt: Result<T, E>) -> Result<T, E>
+fn map_err<T, E, F>(r: Result<T, E>, f: (E) -> F) -> Result<T, F>
+fn ok_or<T, E>(o: Option<T>, err: E) -> Result<T, E>
+```
+
+`unwrap_or` and `or_else` overload the `std.option_recovery` combinators of the same name — the compiler resolves the `Option` or `Result` signature per call site from the subject's constructor head (`some`/`none` vs. `Ok`/`Err`), and evaluation dispatches on the runtime subject's tag.
+
+Recovery is driven by the subject (first argument): an `Ok` yields its carried value (or is passed through unchanged, for `or_else`/`map_err`), an `Err` yields the recovery (the default, the alternative, or the payload mapped through `f`), and an **undef-of-`Result`** subject always yields `undef` — only a *determined* `Err` recovers, never an undetermined one.
+
+| combinator | `Ok { value: x }` | `Err { error: e }` | `undef` |
+|---|---|---|---|
+| `unwrap_or(r, dflt)` | `x` | `dflt` | `undef` |
+| `is_ok(r)` | `true` | `false` | `undef` |
+| `is_err(r)` | `false` | `true` | `undef` |
+| `or_else(r, alt)` | `r` unchanged | `alt` | `undef` |
+| `map_err(r, f)` | `r` unchanged (`f` not applied) | `Err { error: f(e) }` | `undef` |
+
+`ok_or(o, err)` is the `Option` → `Result` bridge: `some(x) -> Ok { value: x }`, `none -> Err { error: err }`, `undef -> undef`.
