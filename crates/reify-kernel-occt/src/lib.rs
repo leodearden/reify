@@ -5485,6 +5485,28 @@ mod tests {
             other => panic!("expected Real, got {:?}", other),
         }
 
+        // Seed a stale parent_handle entry, mirroring
+        // `owner_body_survives_warm_start`, so this PARTIAL-deserialization
+        // restore (some shapes fail, `staged` non-empty) is pinned to clear
+        // parent_handle too — not just the full-swap (all-shapes-succeed)
+        // path that test covers.
+        let box_faces = kernel
+            .extract_faces(GeometryHandleId(1))
+            .expect("extract_faces on the box should succeed");
+        assert!(
+            !box_faces.is_empty(),
+            "box extraction should yield at least one face to seed a stale parent_handle entry"
+        );
+        let stale_child = box_faces[0];
+
+        // Precondition: before the restore, OwnerBody correctly resolves the
+        // box face back to its parent (handle 1).
+        assert_eq!(
+            kernel.query(&GeometryQuery::OwnerBody(stale_child)).unwrap(),
+            Value::Int(1),
+            "precondition: stale_child should resolve to its box parent before warm-start"
+        );
+
         // Construct partially-corrupted warm state:
         // handle 1 = valid cylinder BRep, handle 2 = corrupt data
         let mut partial_shapes = HashMap::new();
@@ -5499,6 +5521,21 @@ mod tests {
 
         // Apply partially-corrupted warm state
         kernel.with_warm_state(partial_state);
+
+        // parent_handle must be cleared even on a PARTIAL-deserialization
+        // restore — the clear rides along the same `if !staged.is_empty()`
+        // branch as the full-swap path pinned by
+        // `owner_body_survives_warm_start`. stale_child's underlying shape
+        // (an old box face) is gone regardless post-swap, but OwnerBody
+        // looks up `parent_handle` directly (see the query handler), so
+        // this assertion is the only thing pinning that the map itself —
+        // not just the shape table — was cleared on this branch.
+        let post_restore = kernel.query(&GeometryQuery::OwnerBody(stale_child));
+        assert!(
+            matches!(post_restore, Err(QueryError::QueryFailed(_))),
+            "stale parent_handle must be cleared on a partial warm-start restore too; got {:?}",
+            post_restore
+        );
 
         // Handle 1 should now be a cylinder (not a box)
         let vol_after = kernel
