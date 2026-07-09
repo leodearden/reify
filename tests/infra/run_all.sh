@@ -621,6 +621,24 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     esac
     [ "$_H2_POOL_WAIT" -ge 1 ] || { echo "ERROR: run_all.sh: REIFY_RUN_ALL_POOL_WAIT must be >= 1 (got '${_H2_POOL_WAIT}')" >&2; exit 64; }
 
+    # Clock-stop reason token for the pool worker's slot_acquire wait (task
+    # #5147). Passed as slot_acquire's optional 4th REASON arg so a REAL
+    # host-global pool-lock wait emits @@REIFY_CLOCK_{STOP,HEARTBEAT,START}@@
+    # markers to stderr (scripts/lib_slot_acquire.sh / lib_clock_stop.sh) --
+    # the exact span dark_factory:1916 reads to pause/resume its wall-clock
+    # verify-timeout budget; without it a wait against this host-global lock
+    # (up to REIFY_RUN_ALL_POOL_WAIT seconds) burns that budget invisibly.
+    # `test_slot_starvation` is lib_clock_stop.sh's own REASON VOCABULARY
+    # token for "held-slot semaphore wait (lib_slot_acquire.sh)" -- exactly
+    # this call site -- reused rather than minting a new one so DF's
+    # clock-stop parser already recognizes it. The marker rides the worker
+    # subshell's inherited parent stderr (fd 2), NOT the per-member `.out`
+    # capture (the `> .out 2>&1` redirect below is scoped to the member
+    # `bash` command only), so it is never rewritten by
+    # _RA_CLOCK_SANITIZE/_ra_emit_sanitized, which only touches the Phase-3
+    # `.out` re-emission.
+    _H2_POOL_CLOCK_REASON="test_slot_starvation"
+
     # Phase-1 single-writer progress-heartbeat cadence (task #5130). Pure
     # observability / strictly additive (INV-4): unlike the load-bearing
     # knobs above, a malformed value fails OPEN to 30 instead of exiting --
@@ -865,7 +883,7 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
             # Soft acquire: on deadline (75) proceed unslotted -- never skip a
             # test, never hang. slot_acquire itself already closes FD 9 on
             # every failed attempt, so no held-slot cleanup is needed here.
-            slot_acquire "$_H2_POOL_LOCK" "$_H2_POOL_N" "$_H2_POOL_WAIT" || _h2_slot_rc=$?
+            slot_acquire "$_H2_POOL_LOCK" "$_H2_POOL_N" "$_H2_POOL_WAIT" "$_H2_POOL_CLOCK_REASON" || _h2_slot_rc=$?
             bash "$INFRA_DIR/$_h2_name" 9<&- > "$_H2_WORKDIR/${_h2_i}.out" 2>&1 || _h2_child_rc=$?
             if [ "$_h2_slot_rc" -eq 0 ]; then
                 exec 9>&-
