@@ -36,15 +36,27 @@
 # ledger is cross-checked below against the LIVE injected-var set derived
 # from the real injection source(s), so a var newly added there without a
 # matching ledger entry fails this guard by construction. This closes the
-# LEDGER-DRIFT gap (no injected var can go unguarded-and-unnoticed again)
-# and ensures the set-equality guard now tracks REIFY_AUDIT_NO_COLD_BUILD
-# specifically -- it is NOT a claim that isolation-bug coverage for that
-# var is complete. REIFY_AUDIT_NO_COLD_BUILD's own hostile-ambient sub-case
-# below passes vacuously regardless of whether an isolation bug exists for
-# it, since setting it makes the reify-audit freshness guard SKIP rather
-# than fail (verify.sh:1410-1412), so test_run_all.sh exits 0 either way --
-# see run-all-ambient-vars.manifest's header for the same caveat recorded
-# next to its ledger entry.
+# LEDGER-DRIFT gap (no injected var can go unguarded-and-unnoticed again).
+#
+# Coverage-shape caveat (applies to the whole loop, not just one var):
+# closing the ledger-drift gap is a DIFFERENT claim from broadening
+# isolation-bug coverage, and the per-var hostile-ambient loop below only
+# delivers the former for most ledger vars. Of the ledger's entries, only
+# REIFY_RUN_ALL_EXCLUDE_HOST_INFRA has a matching knob-UNSET sub-case in
+# test_run_all.sh itself (T9a/T9b/T13b/T14b/T17c), so only its loop
+# iteration exercises a real isolation path. Every other var's iteration
+# passes near-vacuously regardless of whether an isolation bug exists for
+# it: REIFY_AUDIT_NO_COLD_BUILD merely makes the reify-audit freshness guard
+# SKIP rather than fail (verify.sh:1410-1412), so test_run_all.sh exits 0
+# either way, and REIFY_GATE_EXCLUDE_HEAVY, RUSTC_WRAPPER,
+# CARGO_INCREMENTAL, and the REIFY_TEST_SEMAPHORE_*/REIFY_PSI_GATE_MAX_WAIT
+# vars are knobs test_run_all.sh never reads at all, so ambiently exporting
+# them cannot perturb its behavior either way. Their real, load-bearing
+# value here is the ledger-drift / set-equality guard above, not broadened
+# isolation-bug detection -- a clean run of the loop over all ledger vars
+# is not proof that per-var isolation coverage is complete. (See
+# run-all-ambient-vars.manifest's header for a matching per-entry note next
+# to REIFY_AUDIT_NO_COLD_BUILD.)
 
 set -euo pipefail
 
