@@ -3422,8 +3422,14 @@ fn classify_material(val: &Value) -> MaterialModel {
         }
         _ => {
             // Isotropic fallback: reads youngs_modulus + poisson_ratio (unchanged
-            // from the pre-δ trampoline).
-            MaterialModel::Isotropic(extract_material(val))
+            // from the pre-δ trampoline). `val` is already known to be
+            // Value::StructureInstance here — the `data` match above panics on
+            // any other variant before control reaches this arm — so
+            // extract_material's own ExpectedStructureInstance check is
+            // defensive/unreachable from this call site; it exists so the leaf
+            // is directly unit-testable on a non-StructureInstance input (see
+            // extract_material_rejects_non_structure_instance).
+            MaterialModel::Isotropic(extract_material(val).fea_shim())
         }
     }
 }
@@ -3827,35 +3833,35 @@ fn real_field(
 
 /// Extract `IsotropicElastic` from a `Value::StructureInstance` carrying
 /// `youngs_modulus: Scalar<Pressure>` and `poisson_ratio: Real`.
-fn extract_material(val: &Value) -> IsotropicElastic {
+///
+/// PRD compute-fea-hardening D3: Result-ified leaf extractor. Returns
+/// `Err(FeaValueShapeError)` instead of panicking on a malformed `Value`;
+/// the sole call site (`classify_material`'s isotropic fallback) bridges
+/// with `FeaShimExt::fea_shim` so external behavior is unchanged until D7
+/// Result-ifies `classify_material` and removes the shim.
+///
+/// Note (task #5081 review round 3, suggestion 2): `scalar_si_field` accepts
+/// any `Value::Scalar` for `youngs_modulus` regardless of its `dimension`
+/// (e.g. a length or dimensionless scalar would be silently accepted as a
+/// pressure). This is pre-existing behavior, not a D3 regression — dimension
+/// checking is deferred to a later D-step, if/when the `FeaValueShapeError`
+/// taxonomy grows a variant for it.
+fn extract_material(val: &Value) -> Result<IsotropicElastic, FeaValueShapeError> {
     let data = match val {
         Value::StructureInstance(d) => d,
-        other => panic!(
-            "solve_elastic_static_trampoline: expected material to be \
-             Value::StructureInstance, got: {:?}",
-            other
-        ),
+        other => {
+            return Err(FeaValueShapeError::ExpectedStructureInstance {
+                context: "extract_material",
+                got: format!("{other:?}"),
+            })
+        }
     };
-    let youngs_modulus = match data.fields.get("youngs_modulus") {
-        Some(Value::Scalar { si_value, .. }) => *si_value,
-        other => panic!(
-            "solve_elastic_static_trampoline: expected youngs_modulus to be \
-             Value::Scalar, got: {:?}",
-            other
-        ),
-    };
-    let poisson_ratio = match data.fields.get("poisson_ratio") {
-        Some(Value::Real(r)) => *r,
-        other => panic!(
-            "solve_elastic_static_trampoline: expected poisson_ratio to be \
-             Value::Real, got: {:?}",
-            other
-        ),
-    };
-    IsotropicElastic {
+    let youngs_modulus = scalar_si_field(data, "youngs_modulus")?;
+    let poisson_ratio = real_field(data, "poisson_ratio")?;
+    Ok(IsotropicElastic {
         youngs_modulus,
         poisson_ratio,
-    }
+    })
 }
 
 /// Extract SI scalar value from `Value::Scalar { si_value, .. }`.
@@ -9212,5 +9218,175 @@ mod tests {
         let scalar = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::DIMENSIONLESS };
         let vector = Value::Vector(vec![scalar(1.0), scalar(2.0), scalar(3.0)]);
         assert_eq!(extract_vec3_si(&vector), Ok([1.0, 2.0, 3.0]));
+    }
+
+    // ── task 5081 (PRD compute-fea-hardening D3): Result-ify extract_material
+    // (isotropic material scalar/real field extraction) — mirrors D2's
+    // RED-plus-characterization-lock pattern. ─────────────────────────────
+
+    /// step-1 RED: `extract_material` must reject a non-StructureInstance
+    /// `Value` with `Err(FeaValueShapeError::ExpectedStructureInstance { .. })`
+    /// instead of panicking.
+    ///
+    /// RED: `extract_material` currently returns a bare `IsotropicElastic`, so
+    /// matching `Err(..)` fails to type-check until step-2 converts it to
+    /// `Result<IsotropicElastic, FeaValueShapeError>`.
+    ///
+    /// Amendment (task #5081 review, suggestion 1): also assert `context ==
+    /// "extract_material"`. This is the leaf's own shape check (unlike the
+    /// wrong-typed/missing-field tests below, which exercise `context`s
+    /// delegated from `scalar_si_field`/`real_field`), so it's the one place
+    /// where pinning `context` locks `extract_material`'s own error
+    /// provenance rather than a helper's.
+    #[test]
+    fn extract_material_rejects_non_structure_instance() {
+        let res = extract_material(&Value::Real(1.0));
+        match res {
+            Err(FeaValueShapeError::ExpectedStructureInstance { context, .. }) => {
+                assert_eq!(context, "extract_material");
+            }
+            other => panic!(
+                "expected Err(ExpectedStructureInstance) for a non-StructureInstance Value, got: {:?}",
+                other
+            ),
+        }
+    }
+
+    /// Amendment (task #5081 review round 3, suggestion 1): shared
+    /// `Value::StructureInstance` builder for the `extract_material_*` tests
+    /// below, replacing the repeated ~8-line struct-literal boilerplate.
+    /// `PersistentMap`/`StructureInstanceData`/`StructureTypeId` are already
+    /// in scope via the `use super::*` at the top of this test module, so
+    /// the per-test `use reify_ir::{..}` imports these tests used to repeat
+    /// are no longer needed either.
+    fn isotropic_material(fields: PersistentMap<String, Value>) -> Value {
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_name: "IsotropicMaterial".to_string(),
+            type_id: StructureTypeId(u32::MAX),
+            version: 1,
+            fields,
+        }))
+    }
+
+    /// A well-formed `youngs_modulus` field pair (`Value::Scalar<Pressure>`),
+    /// shared by the `poisson_ratio`-focused tests below where
+    /// `youngs_modulus` must already be valid for control to reach the
+    /// `poisson_ratio` read.
+    fn valid_youngs_modulus_field() -> (String, Value) {
+        (
+            "youngs_modulus".to_string(),
+            Value::Scalar {
+                si_value: 2.0e9,
+                dimension: DimensionVector::PRESSURE,
+            },
+        )
+    }
+
+    /// step-3: `extract_material` must reject a present-but-wrong-typed
+    /// `youngs_modulus` field with `Err(FeaValueShapeError::ExpectedScalar {
+    /// .. })`, routed through the reused `scalar_si_field` helper.
+    #[test]
+    fn extract_material_rejects_wrong_typed_youngs_modulus() {
+        let fields: PersistentMap<String, Value> =
+            [("youngs_modulus".to_string(), Value::Real(1.0))]
+                .into_iter()
+                .collect();
+
+        let res = extract_material(&isotropic_material(fields));
+        assert!(
+            matches!(res, Err(FeaValueShapeError::ExpectedScalar { .. })),
+            "expected Err(ExpectedScalar) for a present-but-wrong-type \
+             youngs_modulus field, got: {:?}",
+            res
+        );
+    }
+
+    /// Amendment (task #5081 review, suggestion 2): `extract_material` must
+    /// route an absent `youngs_modulus` field to
+    /// `Err(FeaValueShapeError::MissingField { .. })` via the reused
+    /// `scalar_si_field` helper, rather than silently falling through.
+    /// `scalar_si_field`/`real_field` already have their own missing-field
+    /// tests; this pins that `extract_material` propagates the delegation
+    /// unchanged, directly locking the case noted by the review as only
+    /// transitively covered.
+    #[test]
+    fn extract_material_rejects_missing_youngs_modulus() {
+        let res = extract_material(&isotropic_material(PersistentMap::new()));
+        assert!(
+            matches!(res, Err(FeaValueShapeError::MissingField { .. })),
+            "expected Err(MissingField) for an absent youngs_modulus field, got: {:?}",
+            res
+        );
+    }
+
+    /// step-4: `extract_material` must reject a present-but-wrong-typed
+    /// `poisson_ratio` field with `Err(FeaValueShapeError::ExpectedReal {
+    /// .. })`, routed through the reused `real_field` helper. `youngs_modulus`
+    /// is well-formed so control reaches the `poisson_ratio` read.
+    #[test]
+    fn extract_material_rejects_wrong_typed_poisson_ratio() {
+        let fields: PersistentMap<String, Value> = [
+            valid_youngs_modulus_field(),
+            (
+                "poisson_ratio".to_string(),
+                Value::Scalar {
+                    si_value: 0.3,
+                    dimension: DimensionVector::DIMENSIONLESS,
+                },
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        let res = extract_material(&isotropic_material(fields));
+        assert!(
+            matches!(res, Err(FeaValueShapeError::ExpectedReal { .. })),
+            "expected Err(ExpectedReal) for a present-but-wrong-type \
+             poisson_ratio field, got: {:?}",
+            res
+        );
+    }
+
+    /// Amendment (task #5081 review, amendment round 2): `extract_material`
+    /// must route an absent `poisson_ratio` field to
+    /// `Err(FeaValueShapeError::MissingField { .. })` via the reused
+    /// `real_field` helper, rather than silently falling through.
+    /// Mirrors `extract_material_rejects_missing_youngs_modulus`, restoring
+    /// the symmetry the review noted was missing: `youngs_modulus` already
+    /// had direct wrong-typed AND absent coverage, while `poisson_ratio` only
+    /// had a wrong-typed test (the absent case was only transitively covered
+    /// by `real_field`'s own test).
+    #[test]
+    fn extract_material_rejects_missing_poisson_ratio() {
+        let fields: PersistentMap<String, Value> =
+            [valid_youngs_modulus_field()].into_iter().collect();
+
+        let res = extract_material(&isotropic_material(fields));
+        assert!(
+            matches!(res, Err(FeaValueShapeError::MissingField { .. })),
+            "expected Err(MissingField) for an absent poisson_ratio field, got: {:?}",
+            res
+        );
+    }
+
+    /// step-5: `extract_material` must return `Ok` with the exact
+    /// `IsotropicElastic` values for a well-formed material StructureInstance,
+    /// locking the success path alongside the error paths above.
+    #[test]
+    fn extract_material_accepts_well_formed_material() {
+        let fields: PersistentMap<String, Value> = [
+            valid_youngs_modulus_field(),
+            ("poisson_ratio".to_string(), Value::Real(0.3)),
+        ]
+        .into_iter()
+        .collect();
+
+        assert_eq!(
+            extract_material(&isotropic_material(fields)),
+            Ok(IsotropicElastic {
+                youngs_modulus: 2.0e9,
+                poisson_ratio: 0.3,
+            })
+        );
     }
 }
