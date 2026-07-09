@@ -1849,16 +1849,48 @@ pub(crate) fn compile_expr_guarded_with_expected(
                     // partition, pinned against the β1 runtime truth table.
                     //
                     // Gradualism: skip when either operand is already `Type::Error`
-                    // (poison) or `Type::TypeParam(_)` (unresolved generic) — mirrors the
-                    // Cmp/logical guards' skip (PRD decision 3 / §8 row 8).
+                    // (poison), `Type::TypeParam(_)` (unresolved generic), or
+                    // `Type::Projection { base: Type::TypeParam(_), .. }` (unresolved
+                    // trait-associated-type reference, e.g. `P::MotionValue` used inside
+                    // the generic `structure def Coupling<P: DrivingJoint + HasMotion>`
+                    // that declares `P`, BEFORE a concrete arg is substituted for `P`) —
+                    // mirrors the Cmp/logical guards' skip (PRD decision 3 / §8 row 8).
+                    //
+                    // `Type::Projection` is matched broadly (any `base`), not just the
+                    // `TypeParam` case, but per `resolve_qualified_assoc_type`'s doc
+                    // (type_resolution.rs) that IS the only shape reachable here: every
+                    // other base either reduces to a concrete type via `normalize_type`
+                    // (Applied-base and StructureRef-base bindings are always normalized
+                    // before being stored) or poisons to `Type::Error` on an unknown/cyclic
+                    // binding — so a *reduced* Projection or an *unreducible* one both
+                    // arrive here as something other than a bare `Type::Projection`.
+                    //
+                    // By contrast, `Type::Applied`/`Type::StructureRef`/`Type::Union` are
+                    // deliberately NOT added to this skip: they are concrete (not deferred)
+                    // nominal/structural types — e.g. a struct instance handle or a
+                    // match-block-decl union of struct arms — that the runtime has no
+                    // `eval_mul`/`eval_div` arm for regardless of substitution. Prior to
+                    // this guard they silently mistyped to `Int`; correctly hard-erroring
+                    // on them is this task's entire purpose, not a regression. Similarly,
+                    // `Type::ScalarParam` combinations that `infer_mul_div_result` leaves
+                    // unhandled (`ScalarParam`×`ScalarParam`, `Int`/`ScalarParam`) are a
+                    // documented representational limit (no compound-dimension carrier for
+                    // a bare `ScalarParam` name), not a gradualism gap — see that function's
+                    // doc — so `ScalarParam` is intentionally absent from this skip too.
                     //
                     // Unlike the Cmp/logical guards (which keep their unconditional `Bool`
                     // result), this guard POISONS `result_type` to `Type::Error` — `*`/`/`
                     // produce a value type, so a mistyped product must stop follow-on
                     // cascades on that value (mirrors the Pow/Mod poison precedent).
                     if matches!(bin_op, BinOp::Mul | BinOp::Div)
-                        && !matches!(compiled_left.result_type, Type::Error | Type::TypeParam(_))
-                        && !matches!(compiled_right.result_type, Type::Error | Type::TypeParam(_))
+                        && !matches!(
+                            compiled_left.result_type,
+                            Type::Error | Type::TypeParam(_) | Type::Projection { .. }
+                        )
+                        && !matches!(
+                            compiled_right.result_type,
+                            Type::Error | Type::TypeParam(_) | Type::Projection { .. }
+                        )
                         && type_compat::infer_mul_div_result(
                             bin_op,
                             &compiled_left.result_type,

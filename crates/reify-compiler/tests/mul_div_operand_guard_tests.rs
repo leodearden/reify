@@ -186,6 +186,54 @@ fn scale<T>(x: T) -> T { x * 2 }
     );
 }
 
+/// A `Type::Projection { base: TypeParam(_), member }`-typed operand — the
+/// pre-substitution static type of a generic structure's own type-param-
+/// qualified associated-type reference (e.g. `P::MotionValue` referenced
+/// inside `structure def Coupling<P: DrivingJoint + HasMotion>`, BEFORE `P`
+/// is bound at an instantiation site) — must NOT produce a spurious
+/// `ArithOperandKind`. Mirrors `type_param_operand_no_spurious_arith_operand_kind`
+/// above: `P::MotionValue` is exactly as "legitimately symbolic" as a bare
+/// `TypeParam`, and per `resolve_qualified_assoc_type`'s doc
+/// (type_resolution.rs) this `Projection{TypeParam(_), member}` shape is the
+/// ONLY un-reduced form `Type::Projection` can take by the time it reaches a
+/// compiled expression — every other base either normalizes to a concrete
+/// type via `normalize_type` or poisons to `Type::Error` first.
+///
+/// Asserts absence of the specific spurious code rather than a clean
+/// zero-error compile (like `type_param_operand_no_spurious_arith_operand_kind`
+/// above, and unlike the `assert_no_error_diagnostics` clean-path tests
+/// below): a `param` typed with a type-param-qualified associated type
+/// currently also trips a pre-existing, unrelated conformance-checker gap
+/// ("unresolved type in conformance check: P::MotionValue" from
+/// `conformance/checker.rs`, outside this guard's scope) — not something
+/// this task's Mul/Div operand-kind guard owns or should mask.
+#[test]
+fn projection_operand_no_spurious_arith_operand_kind() {
+    let src = r#"
+trait DrivingJoint {}
+trait HasMotion { type MotionValue }
+structure def Coupling<P: DrivingJoint + HasMotion> : HasMotion {
+    type MotionValue = P::MotionValue
+    param value : P::MotionValue
+    let doubled = value * 2.0
+}
+"#;
+    let module = compile_source(src);
+    let errors: Vec<_> = module
+        .diagnostics
+        .into_iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    let spurious = errors
+        .iter()
+        .any(|d| d.code == Some(DiagnosticCode::ArithOperandKind));
+    assert!(
+        !spurious,
+        "Projection(TypeParam, member) operand in `*` must NOT produce \
+         ArithOperandKind (gradualism). got: {errors:?}"
+    );
+}
+
 // ── Clean-path regressions (must stay GREEN throughout) ──────────────────────
 
 /// `a * 2.0` (`Vector3<Length> * dimensionless`) is a legal scale — must

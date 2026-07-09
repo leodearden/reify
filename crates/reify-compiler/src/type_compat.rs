@@ -1761,6 +1761,19 @@ pub(crate) fn infer_mul_div_result(op: BinOp, left: &Type, right: &Type) -> Opti
         // Tensor×Vector; order-reversed Vector/Point×Transform; Matrix in
         // either position; List/String/Bool; non-commutative Div reversals)
         // has no runtime-intentional arm.
+        //
+        // This also covers `Type::Applied`/`Type::StructureRef`/`Type::Union`
+        // operands (nominal struct-instance/union types — never numeric,
+        // regardless of substitution) and the `ScalarParam`×`ScalarParam` /
+        // `Int`/`ScalarParam` combinations noted above (unrepresentable by
+        // `ScalarParam`'s bare-name form). All of these are INTENTIONALLY
+        // `None` here, not merely deferred: the `expr.rs` operand-kind guard's
+        // gradualism skip does NOT bypass them (only `Type::Error`,
+        // `Type::TypeParam`, and `Type::Projection` are bypassed — the latter
+        // because a `Type::Projection` reaching this function is always the
+        // `TypeParam`-base irreducible form, `resolve_qualified_assoc_type`'s
+        // doc in type_resolution.rs), so these pairings correctly poison +
+        // emit `E_ArithOperandKind` rather than silently mistyping to `Int`.
         _ => None,
     }
 }
