@@ -4735,13 +4735,21 @@ describe('App persistence wiring — layout state compose (task-4768 ε)', () =>
     await renderAndWaitForReady();
     await openFile();
 
-    const store = capturedDualViewportProps.viewportStore;
-    store.setSizeWeight('design-main', 5);
-    store.setForceExpanded('design-main', true);
-    store.setSplitRatio(0.7);
+    // Switch to fake timers only after openFile (real-timer) setup has
+    // settled, mirroring the neighboring debounce tests in this file (e.g.
+    // step-31 above) — this makes the assertion depend on the 500ms debounce
+    // firing deterministically rather than racing a real setTimeout against
+    // waitFor's 1000ms default under load (task 5155).
+    vi.useFakeTimers();
+    try {
+      const store = capturedDualViewportProps.viewportStore;
+      store.setSizeWeight('design-main', 5);
+      store.setForceExpanded('design-main', true);
+      store.setSplitRatio(0.7);
 
-    // Flush the debounced effect by waiting
-    await waitFor(() =>
+      // Advance strictly past the 500ms debounce window to flush the write.
+      await vi.advanceTimersByTimeAsync(501);
+
       expect(saveSpy).toHaveBeenCalledWith(
         '/test/bracket.ri',
         expect.objectContaining({
@@ -4750,9 +4758,13 @@ describe('App persistence wiring — layout state compose (task-4768 ε)', () =>
           }),
           splitRatio: expect.closeTo(0.7, 5),
         }),
-      ),
-    );
-    saveSpy.mockRestore();
+      );
+    } finally {
+      // Restore alongside the timer cleanup so spy teardown still happens if
+      // the assertion above throws (task 5155 amendment).
+      vi.useRealTimers();
+      saveSpy.mockRestore();
+    }
     void realSave;
   });
 });
