@@ -1856,7 +1856,38 @@ pub(crate) fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
         // runtime-unsupported combos: it preserves base (pre-β2) behavior
         // until the `expr.rs` operand-kind guard poisons + emits together
         // (mirrors the Mod/Pow precedent) — see `infer_mul_div_result`'s doc.
-        BinOp::Mul | BinOp::Div => infer_mul_div_result(op, left, right).unwrap_or(Type::Int),
+        //
+        // EXCEPT `Type::Projection` (an unresolved trait-associated-type
+        // reference, e.g. `P::MotionValue` before a concrete arg substitutes
+        // `P`): `infer_mul_div_result` has no arm for it, so a bare
+        // `unwrap_or(Type::Int)` would collapse it to `Int` — and unlike
+        // every OTHER `None` case, the `expr.rs` guard deliberately SKIPS
+        // `Type::Projection` operands (mirrors its `TypeParam` skip just
+        // above, PRD decision 3), so that `Int` is never poisoned. It would
+        // instead leak downstream as a bare, seemingly-concrete `Int`: e.g.
+        // the Add/Sub dimension guard (expr.rs `compile_binop`, ~1747)
+        // misreads a follow-on `result + x` (`x: Scalar<Length>`) as
+        // `Int + Scalar<Length>` and emits a spurious dimensioned/
+        // dimensionless mismatch that did not exist pre-β2 (the old Mul/Div
+        // fallback arms preserved a `Scalar` operand's type against ANY other
+        // operand kind, including `Projection`). Propagating the `Projection`
+        // itself — rather than collapsing to `Int` or eagerly adjudicating
+        // the concrete operand's type — mirrors the `TypeParam` gradualism
+        // propagation above (task #4629 W5): an unresolved type must survive
+        // arithmetic so downstream guards keep early-returning on it instead
+        // of adjudicating a spuriously-collapsed concrete type. Scoped to
+        // this arm only (not the shared `TypeParam` block above) because
+        // Add/Sub/Mod/Pow are outside β2's scope (PRD decision 2; Add/Sub's
+        // own dimensioned-Complex gap is already tracked, TODO(#5163)).
+        BinOp::Mul | BinOp::Div => infer_mul_div_result(op, left, right).unwrap_or_else(|| {
+            if let Type::Projection { .. } = left {
+                left.clone()
+            } else if let Type::Projection { .. } = right {
+                right.clone()
+            } else {
+                Type::Int
+            }
+        }),
         BinOp::Mod => left.clone(),
         BinOp::Pow => left.clone(), // simplified for M1
     }
@@ -2306,6 +2337,16 @@ mod tests {
     fn binop_sub_int_minus_dimensionless_complex_widens_to_complex() {
         let c = Type::complex(Type::dimensionless_scalar());
         assert_eq!(infer_binop_type(BinOp::Sub, &Type::Int, &c), c);
+    }
+
+    /// Sub-direction counterpart of `binop_add_dimensionless_complex_plus_int_stays_complex`
+    /// with the dimensionless `Complex` on the LEFT — exercises the
+    /// `is_dimensionless_complex(left) && is_dimensionless_numeric(right)` branch
+    /// under `BinOp::Sub` specifically (previously only exercised for `Add`).
+    #[test]
+    fn binop_sub_dimensionless_complex_minus_int_stays_complex() {
+        let c = Type::complex(Type::dimensionless_scalar());
+        assert_eq!(infer_binop_type(BinOp::Sub, &c, &Type::Int), c);
     }
 
     #[test]
@@ -4556,10 +4597,89 @@ mod tests {
         assert_eq!(infer_mul_div_result(BinOp::Div, &Type::Int, &q), None);
     }
 
+    /// `ScalarParam(Q) * Int` preserves `Q` (Int carries no dimension) — pins
+    /// the `(Type::ScalarParam(name), Type::Int)` arm's Some-returning result
+    /// type, not just the adjacent None-returning edges above.
+    #[test]
+    fn infer_mul_div_result_scalar_param_times_int_preserves_q() {
+        let q = Type::ScalarParam("Q".to_string());
+        assert_eq!(infer_mul_div_result(BinOp::Mul, &q, &Type::Int), Some(q));
+    }
+
+    /// `Int * ScalarParam(Q)` preserves `Q` — the commutative (Mul-only)
+    /// counterpart of the arm above.
+    #[test]
+    fn infer_mul_div_result_int_times_scalar_param_preserves_q() {
+        let q = Type::ScalarParam("Q".to_string());
+        assert_eq!(infer_mul_div_result(BinOp::Mul, &Type::Int, &q), Some(q));
+    }
+
+    /// `ScalarParam(Q) * Scalar{DIMENSIONLESS}` preserves `Q` — the
+    /// `scale_q<Q: Dimension>(x: Scalar<Q>, k: Real) -> Scalar<Q> { x * k }`
+    /// pattern (`dim_param_scale_q_resolves_at_two_dimensions` /
+    /// `examples/generics/dim_param.ri`) pinned at the `infer_mul_div_result`
+    /// level, not just via the `infer_binop_type` delegation tests.
+    #[test]
+    fn infer_mul_div_result_scalar_param_times_dimensionless_preserves_q() {
+        let q = Type::ScalarParam("Q".to_string());
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &q, &Type::dimensionless_scalar()),
+            Some(q)
+        );
+    }
+
+    /// `Scalar{DIMENSIONLESS} * ScalarParam(Q)` preserves `Q` — the reverse-order
+    /// (Mul-only) counterpart of the arm above.
+    #[test]
+    fn infer_mul_div_result_dimensionless_times_scalar_param_preserves_q() {
+        let q = Type::ScalarParam("Q".to_string());
+        assert_eq!(
+            infer_mul_div_result(BinOp::Mul, &Type::dimensionless_scalar(), &q),
+            Some(q)
+        );
+    }
+
     #[test]
     fn infer_binop_type_delegates_to_infer_mul_div_result_for_vector_scale() {
         let v = Type::vec3(Type::length());
         assert_eq!(infer_binop_type(BinOp::Mul, &v, &Type::Int), v);
+    }
+
+    /// `Scalar<Length> / P::MotionValue` (an unresolved trait-associated-type
+    /// projection, before a concrete arg substitutes `P`) must propagate the
+    /// `Projection` itself, NOT collapse to the `Type::Int` placeholder. The
+    /// `expr.rs` operand-kind guard skips `Type::Projection` operands
+    /// (mirrors its `TypeParam` skip, PRD decision 3), so an unqualified
+    /// `Int` result would leak downstream unpoisoned, risking a spurious
+    /// cascade on a later dimensioned op (e.g. `result + x` where
+    /// `x: Scalar<Length>` misreading as `Int + Scalar<Length>` in the
+    /// Add/Sub dimension guard). Regression pin for the gradualism gap closed
+    /// alongside the `Type::Projection` arm in `infer_binop_type`'s Mul/Div
+    /// case above.
+    #[test]
+    fn infer_binop_type_scalar_div_projection_propagates_projection_not_int() {
+        let projection = Type::Projection {
+            base: Box::new(Type::TypeParam("P".to_string())),
+            member: "MotionValue".to_string(),
+        };
+        assert_eq!(
+            infer_binop_type(BinOp::Div, &Type::length(), &projection),
+            projection
+        );
+    }
+
+    /// Reverse-order (Mul) counterpart: `P::MotionValue * Scalar<Length>` also
+    /// propagates the `Projection`, not `Int`.
+    #[test]
+    fn infer_binop_type_projection_mul_scalar_propagates_projection_not_int() {
+        let projection = Type::Projection {
+            base: Box::new(Type::TypeParam("P".to_string())),
+            member: "MotionValue".to_string(),
+        };
+        assert_eq!(
+            infer_binop_type(BinOp::Mul, &projection, &Type::length()),
+            projection
+        );
     }
 
     // ── β2 step-3 RED — infer_mul_div_result: Complex + Transform arms ──────
