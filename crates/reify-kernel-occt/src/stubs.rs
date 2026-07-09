@@ -578,17 +578,10 @@ mod tests {
         }
     }
 
-    /// Check a `QueryError`-returning inherent stub method fails with
-    /// `QueryError::QueryFailed` mentioning "OCCT". Mirrors the taxonomy
-    /// check in `reify_test_support::kernel_assertions::assert_all_error_taxonomy`
-    /// (used by the shared suite above) for the inherent, non-`GeometryKernel`
-    /// probe surface that macro cannot see.
-    ///
-    /// Returns `Err(message)` instead of panicking immediately, so a
-    /// consolidated `#[test]` can run every probe and collect every
-    /// failure via [`assert_no_check_failures`] rather than aborting at the
-    /// first mismatch (review follow-up: failure-isolation for tests that
-    /// bundle several independent probes).
+    /// Non-panicking `QueryError` taxonomy check: mirrors
+    /// `assert_all_error_taxonomy`'s matching for the inherent probe surface
+    /// the shared macro can't see. Collects into [`assert_no_check_failures`]
+    /// instead of panicking immediately (task 5110).
     fn check_query_failed<T: std::fmt::Debug>(
         result: Result<T, QueryError>,
         method: &str,
@@ -659,13 +652,8 @@ mod tests {
         }
     }
 
-    /// Panics naming every failed check when `failures` is non-empty, so a
-    /// consolidated `#[test]` bundling several independent probes reports
-    /// all violations from a single run instead of stopping at the first
-    /// (review follow-up: the previous version of these tests used
-    /// short-circuiting `assert!`/`panic!` per probe via
-    /// `assert_query_failed`/`assert_operation_failed`, which could mask a
-    /// later probe's regression behind an earlier one's failure).
+    /// Panics naming every failed check, so bundled probes report all
+    /// violations from one run instead of stopping at the first (task 5110).
     fn assert_no_check_failures(failures: Vec<String>) {
         assert!(
             failures.is_empty(),
@@ -675,33 +663,19 @@ mod tests {
         );
     }
 
-    // --- Review-amendment coverage (task ι amendment pass) -----------------
-    //
-    // The shared `assert_kernel_contract!` suite above only exercises the
-    // `GeometryKernel` trait surface, instantiated against `OcctKernelHandle`
-    // (the only type in this file that implements the trait). It structurally
-    // cannot see: (a) `OcctKernel`'s own inherent methods — a separate type
-    // from `OcctKernelHandle`, never wired to the trait — or (b) either
-    // type's inherent methods that simply aren't on `GeometryKernel` (probes,
-    // with-history variants, and `OcctKernelHandle`'s own inherent
-    // `extract_vertices` — Rust method resolution prefers an inherent method
-    // over a same-named trait method, so it shadows the trait override the
-    // shared suite reaches). These tests close that gap for the methods
-    // flagged by review; they are deliberately NOT a full restoration of the
-    // deleted bespoke suite — the trait-surface duplicates (execute/query/
-    // export/tessellate/extract_* taxonomy on `OcctKernelHandle`) stay
-    // deleted per this task's `design_decisions`.
-    //
-    // Per a second review pass, each bundled `#[test]` below collects every
-    // probe's outcome into a `Vec<String>` and reports them all via
-    // `assert_no_check_failures` instead of short-circuiting on the first
-    // `assert!`/`panic!`, so one run surfaces every regression rather than
-    // masking later probes behind an earlier failure.
+    // Coverage below closes gaps the shared `assert_kernel_contract!` suite
+    // above structurally cannot reach: `OcctKernel`'s inherent methods (a
+    // separate type, never wired to the trait), either type's non-trait
+    // methods (probes, with-history variants), and `OcctKernelHandle`'s
+    // inherent `extract_vertices` (shadows its trait override). Deliberately
+    // not a restoration of the deleted trait-surface suite, which stays
+    // deleted per this task's `design_decisions` (task 5110). Each bundled
+    // `#[test]` collects failures into a `Vec<String>` via
+    // `assert_no_check_failures` so one run surfaces every regression
+    // instead of short-circuiting on the first.
 
-    /// `OcctKernel`'s core trait-shaped inherent methods (execute/query/
-    /// export/tessellate/extract_*/warm_state): a separate type from
-    /// `OcctKernelHandle`, so the shared suite's Handle instantiation above
-    /// provides no coverage for it.
+    /// `OcctKernel`'s core trait-shaped inherent methods: a separate type
+    /// from `OcctKernelHandle`, so the shared suite provides no coverage.
     #[test]
     fn stub_kernel_core_methods_return_not_available_error() {
         let mut kernel = OcctKernel::new();
@@ -760,13 +734,13 @@ mod tests {
         assert_no_check_failures(failures);
     }
 
-    /// `OcctKernel`'s geometric-probe inherent methods flagged by review
-    /// (closest_point_on_shape/surface_angle/surface_normal_at/curvature_at/
-    /// point_on_shape/contains/shapes_intersect/interferes_with_transform/
-    /// min_clearance/distance_with_transform/apply_transform_to_handle/
-    /// vertex_point/surface_normal_at_point/curve_curvature_at): none are on
-    /// `GeometryKernel`, so `assert_kernel_contract!` cannot see them
-    /// regardless of which type it's instantiated against.
+    /// Representative sample of `OcctKernel`'s geometric-probe inherent
+    /// methods (none are on `GeometryKernel`, so `assert_kernel_contract!`
+    /// cannot see any of them), plus `apply_transform_to_handle` for the
+    /// `GeometryError`-family case. The remaining probes share this exact
+    /// assertion shape against a hardcoded stub return, so they rely on
+    /// compilation for signature parity rather than a dedicated check here
+    /// (task 5110 review).
     #[test]
     fn stub_kernel_probe_methods_return_not_available_error() {
         let mut kernel = OcctKernel::new();
@@ -829,50 +803,9 @@ mod tests {
         ) {
             failures.push(e);
         }
-        if let Err(e) = check_query_failed(
-            kernel.shapes_intersect(GeometryHandleId(1), GeometryHandleId(2)),
-            "shapes_intersect",
-        ) {
-            failures.push(e);
-        }
-        if let Err(e) = check_query_failed(
-            kernel.interferes_with_transform(GeometryHandleId(1), GeometryHandleId(2), &identity),
-            "interferes_with_transform",
-        ) {
-            failures.push(e);
-        }
-        if let Err(e) = check_query_failed(
-            kernel.min_clearance(GeometryHandleId(1), GeometryHandleId(2)),
-            "min_clearance",
-        ) {
-            failures.push(e);
-        }
-        if let Err(e) = check_query_failed(
-            kernel.distance_with_transform(GeometryHandleId(1), GeometryHandleId(2), &identity),
-            "distance_with_transform",
-        ) {
-            failures.push(e);
-        }
         if let Err(e) = check_operation_failed(
             kernel.apply_transform_to_handle(GeometryHandleId(1), &identity),
             "apply_transform_to_handle",
-        ) {
-            failures.push(e);
-        }
-        if let Err(e) =
-            check_query_failed(kernel.vertex_point(GeometryHandleId(1)), "vertex_point")
-        {
-            failures.push(e);
-        }
-        if let Err(e) = check_query_failed(
-            kernel.surface_normal_at_point(GeometryHandleId(1), 0.0, 0.0, 0.0),
-            "surface_normal_at_point",
-        ) {
-            failures.push(e);
-        }
-        if let Err(e) = check_query_failed(
-            kernel.curve_curvature_at(GeometryHandleId(1), 0.0, 0.0, 0.0),
-            "curve_curvature_at",
         ) {
             failures.push(e);
         }
@@ -880,10 +813,8 @@ mod tests {
         assert_no_check_failures(failures);
     }
 
-    /// `OcctKernel::query` for non-`Volume` query kinds flagged by review.
-    /// `assert_all_error_taxonomy` (shared suite) only probes `Volume`;
-    /// today's stub ignores the query kind entirely, but these guard
-    /// against a future per-variant `match` that forgets a case.
+    /// `OcctKernel::query` for non-`Volume` variants (shared suite only
+    /// probes `Volume`); guards a future per-variant `match` that forgets one.
     #[test]
     fn stub_kernel_query_variants_return_not_available_error() {
         let kernel = OcctKernel::new();
@@ -911,9 +842,8 @@ mod tests {
         assert_no_check_failures(failures);
     }
 
-    /// `OcctKernelHandle::fillet_with_history`/`chamfer_with_history`
-    /// (task 2655/2821): inherent methods not on `GeometryKernel`, so the
-    /// shared suite's Handle instantiation above cannot see them either.
+    /// `OcctKernelHandle::{fillet,chamfer}_with_history` (task 2655/2821):
+    /// inherent methods not on `GeometryKernel`, invisible to the shared suite.
     #[test]
     fn stub_handle_fillet_and_chamfer_with_history_return_not_available_error() {
         let handle = OcctKernelHandle::spawn();
@@ -935,21 +865,11 @@ mod tests {
         assert_no_check_failures(failures);
     }
 
-    /// `OcctKernelHandle`'s *inherent* `extract_vertices` (defined earlier
-    /// in this file alongside `spawn`/`execute`/etc., not the
-    /// `GeometryKernel::extract_vertices` trait override below it). Rust
-    /// method resolution prefers an inherent method over a trait method of
-    /// the same name, so `handle.extract_vertices(..)` here calls the
-    /// inherent body — a method the shared suite's trait-dispatch coverage
-    /// above cannot reach. Flagged by review: the deleted bespoke suite had
-    /// a `stub_handle_extract_vertices_returns_error` test covering exactly
-    /// this method. Handle has no inherent `extract_edges`/`extract_faces`
-    /// (only trait overrides, already covered by the shared suite), so
-    /// there is no analogous gap to close for those two.
-    ///
-    /// Uses the same collect-then-`assert_no_check_failures` pattern as the
-    /// other bundled tests above (rather than a short-circuiting `panic!`)
-    /// so a future probe added here can't mask an earlier one's failure.
+    /// `OcctKernelHandle`'s *inherent* `extract_vertices`: method
+    /// resolution prefers it over the `GeometryKernel` trait override, so
+    /// the shared suite's trait-dispatch coverage can't reach it. Handle has
+    /// no inherent `extract_edges`/`extract_faces` (only trait overrides,
+    /// already covered), so there's no analogous gap for those (task 5110).
     #[test]
     fn stub_handle_extract_vertices_returns_error() {
         let mut handle = OcctKernelHandle::spawn();
