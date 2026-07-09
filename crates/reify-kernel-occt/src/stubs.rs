@@ -735,13 +735,24 @@ mod tests {
 
     /// `OcctKernel`'s geometric-probe inherent methods flagged by review
     /// (closest_point_on_shape/surface_angle/surface_normal_at/curvature_at/
-    /// point_on_shape/contains): none are on `GeometryKernel`, so
-    /// `assert_kernel_contract!` cannot see them regardless of which type
-    /// it's instantiated against.
+    /// point_on_shape/contains/shapes_intersect/interferes_with_transform/
+    /// min_clearance/distance_with_transform/apply_transform_to_handle/
+    /// vertex_point/surface_normal_at_point/curve_curvature_at): none are on
+    /// `GeometryKernel`, so `assert_kernel_contract!` cannot see them
+    /// regardless of which type it's instantiated against.
     #[test]
     fn stub_kernel_probe_methods_return_not_available_error() {
-        let kernel = OcctKernel::new();
+        let mut kernel = OcctKernel::new();
         let mut failures = Vec::new();
+        let identity = crate::Transform3 {
+            qw: 1.0,
+            qx: 0.0,
+            qy: 0.0,
+            qz: 0.0,
+            tx: 0.0,
+            ty: 0.0,
+            tz: 0.0,
+        };
 
         if let Err(e) = check_query_failed(
             kernel.closest_point_on_shape(GeometryHandleId(1), 0.0, 0.0, 0.0),
@@ -788,6 +799,53 @@ mod tests {
                 reify_ir::DEFAULT_CONTAINS_TOLERANCE_M,
             ),
             "contains",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_query_failed(
+            kernel.shapes_intersect(GeometryHandleId(1), GeometryHandleId(2)),
+            "shapes_intersect",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_query_failed(
+            kernel.interferes_with_transform(GeometryHandleId(1), GeometryHandleId(2), &identity),
+            "interferes_with_transform",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_query_failed(
+            kernel.min_clearance(GeometryHandleId(1), GeometryHandleId(2)),
+            "min_clearance",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_query_failed(
+            kernel.distance_with_transform(GeometryHandleId(1), GeometryHandleId(2), &identity),
+            "distance_with_transform",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_operation_failed(
+            kernel.apply_transform_to_handle(GeometryHandleId(1), &identity),
+            "apply_transform_to_handle",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) =
+            check_query_failed(kernel.vertex_point(GeometryHandleId(1)), "vertex_point")
+        {
+            failures.push(e);
+        }
+        if let Err(e) = check_query_failed(
+            kernel.surface_normal_at_point(GeometryHandleId(1), 0.0, 0.0, 0.0),
+            "surface_normal_at_point",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_query_failed(
+            kernel.curve_curvature_at(GeometryHandleId(1), 0.0, 0.0, 0.0),
+            "curve_curvature_at",
         ) {
             failures.push(e);
         }
@@ -861,14 +919,22 @@ mod tests {
     /// this method. Handle has no inherent `extract_edges`/`extract_faces`
     /// (only trait overrides, already covered by the shared suite), so
     /// there is no analogous gap to close for those two.
+    ///
+    /// Uses the same collect-then-`assert_no_check_failures` pattern as the
+    /// other bundled tests above (rather than a short-circuiting `panic!`)
+    /// so a future probe added here can't mask an earlier one's failure.
     #[test]
     fn stub_handle_extract_vertices_returns_error() {
         let mut handle = OcctKernelHandle::spawn();
+        let mut failures = Vec::new();
+
         if let Err(e) = check_query_failed(
             handle.extract_vertices(GeometryHandleId(1)),
             "extract_vertices",
         ) {
-            panic!("{e}");
+            failures.push(e);
         }
+
+        assert_no_check_failures(failures);
     }
 }
