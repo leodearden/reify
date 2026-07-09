@@ -776,10 +776,19 @@ def main() -> None:
     # unlink entirely (Python cannot catch it) — that is what leaves the
     # stamp behind naming the now-dead pid, making the crash detectable by
     # verify.sh's liveness probe (task 5146).
+    #
+    # The ".owner.tmp" paths are write_owner_stamp()'s tmp+rename sidecars:
+    # normally renamed away before this point, but a write/rename failure
+    # mid-flight (e.g. ENOSPC) can leave one orphaned.  Best-effort unlink
+    # bounds that to a transient leftover on a crash only — a clean restart
+    # (this path) always clears it, and even absent that, the next
+    # write_owner_stamp() call truncates any stale tmp via open(tmp, "w").
     _unlink_best_effort(MERGE_FIFO)
     _unlink_best_effort(TASK_FIFO)
     _unlink_best_effort(MERGE_FIFO + OWNER_STAMP_SUFFIX)
     _unlink_best_effort(TASK_FIFO + OWNER_STAMP_SUFFIX)
+    _unlink_best_effort(MERGE_FIFO + OWNER_STAMP_SUFFIX + ".tmp")
+    _unlink_best_effort(TASK_FIFO + OWNER_STAMP_SUFFIX + ".tmp")
     _unlink_best_effort(HELD_BACK_FILE)
 
 

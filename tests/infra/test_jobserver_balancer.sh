@@ -1874,4 +1874,11 @@ _cleanup_balancer
 assert "setup-dev.sh ExecStartPre/ExecStopPost reference the .owner sidecar cleanup" \
     bash -c "grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -qF 'reify-jobserver-merge.owner'"
 
+# Amendment (task 5146 review comment 2): write_owner_stamp()'s tmp+rename
+# sidecar ("${fifo}.owner.tmp") must also be covered by setup-dev.sh's
+# ExecStartPre/ExecStopPost rm lines, so a tmp file orphaned by a mid-flight
+# write/rename failure can never survive a clean service restart either.
+assert "setup-dev.sh ExecStartPre/ExecStopPost reference the .owner.tmp sidecar cleanup" \
+    bash -c "grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -qF 'reify-jobserver-merge.owner.tmp'"
+
 test_summary
