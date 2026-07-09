@@ -1450,6 +1450,13 @@ build_plan() {
         # archived attempt-N.test-*.log. 2>&1 routes it into the same stream
         # DF already captures; run_all emits its Summary/FAILED classifier
         # markers to stdout, so the DF ^FAILED\s contract is preserved.
+        # task 5139 (amendment review, reviewer_comprehensive
+        # robustness_error_handling): merging the streams raised a theoretical
+        # concern that a stdout classifier line could be torn mid-write by
+        # interleaved stderr, corrupting the ^FAILED\s anchor. No change
+        # made: atomicity holds because each marker is a single write() call;
+        # regression-guarded by tests/infra/test_run_all.sh Tests 7 and 8a
+        # (source of truth for marker text/locations — not restated here).
         add "if test -f tests/infra/run_all.sh; then REIFY_AUDIT_NO_COLD_BUILD=1 REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 timeout --kill-after=60 30m bash tests/infra/run_all.sh 2>&1; fi"
     fi
 
