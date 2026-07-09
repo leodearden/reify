@@ -538,10 +538,9 @@ fn pipeline_output_is_stable_under_no_candidate_arm() {
 
 /// Return the subset of `measurements` whose duration exceeds `per_file_budget`.
 ///
-/// Pure and deterministic: no aggregate/total-wall-clock concept. This is the
-/// single source of truth for the v0.1 example-corpus per-file perf gate,
-/// exercised directly by `per_file_gate_violation_contract` below, and driven
-/// by real corpus timings from `v0_1_example_corpus_compile_and_check_time_is_bounded`.
+/// Pure and deterministic (no aggregate/total-wall-clock concept) — the
+/// single source of truth for the per-file perf gate, unit-tested directly by
+/// `per_file_gate_violation_contract` below.
 fn per_file_violations(
     measurements: &[(String, Duration)],
     per_file_budget: Duration,
@@ -650,14 +649,10 @@ fn v0_1_example_corpus_compile_and_check_time_is_bounded() {
 /// RED, while the off-by-one-prone `>` vs `>=` boundary is pinned in the
 /// other direction.
 ///
-/// No aggregate/total-budget case here: `per_file_violations` is a pure
-/// per-file filter with no place to hold aggregate logic, so a case
-/// asserting "sub-budget files summing past 120s produce no violations"
-/// would only prove the filter filters per-file — it can't catch a
-/// regression that reintroduces a total budget, since that logic would live
-/// in the caller (`v0_1_example_corpus_compile_and_check_time_is_bounded`),
-/// not here. The absence of an aggregate budget is documented in that
-/// function's "# Budget rationale" section above instead.
+/// No aggregate/total-budget case here — `per_file_violations` is a pure
+/// per-file filter with no place to hold that logic. See the corpus test's
+/// "# Budget rationale" section above for why the aggregate budget was
+/// dropped.
 #[test]
 fn per_file_gate_violation_contract() {
     let measurements: Vec<(String, Duration)> = vec![
