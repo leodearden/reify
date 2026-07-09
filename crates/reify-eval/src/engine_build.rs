@@ -1878,7 +1878,6 @@ fn op_is_voxel_only_input(op: &Operation) -> bool {
 /// Exhaustive match over `CompiledGeometryOp`/kind sub-enums so a new variant
 /// fails to compile until mapped — same discipline as `geometry_op_to_operation`
 /// at :902, but over the compiled-IR form rather than the runtime `GeometryOp`.
-#[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
 fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
     match op {
         CompiledGeometryOp::Primitive { kind, .. } => match kind {
@@ -2440,13 +2439,46 @@ fn voxel_pipeline_demand_overrides(template: &TopologyTemplate) -> HashMap<usize
     let mut overrides = HashMap::new();
     for (c_idx, realization) in template.realizations.iter().enumerate() {
         for op in &realization.operations {
+            // Review fix-forward (task 5033 amendment): cheap discriminant
+            // pre-filter before building the full `Operation` classifier.
+            // `Operation::Surface` — the only Voxel-only-input op — is
+            // produced exclusively by `CompiledGeometryOp::Isosurface` (see
+            // `compiled_geometry_op_to_operation`'s match arms), so every
+            // other op discriminant can skip the
+            // `compiled_geometry_op_to_operation` + `op_is_voxel_only_input`
+            // call chain entirely. This function runs once per template on
+            // EVERY `tessellate_from_values` call (potentially once per
+            // tessellation), so avoiding the full classification for the
+            // overwhelmingly common non-isosurface op is not just cosmetic.
+            if !matches!(op, CompiledGeometryOp::Isosurface { .. }) {
+                continue;
+            }
             if !op_is_voxel_only_input(&compiled_geometry_op_to_operation(op)) {
                 continue;
             }
             overrides.insert(c_idx, ReprKind::Mesh);
             for sub_name in sub_refs_in_op(op) {
                 if let Some(&p_idx) = name_to_idx.get(sub_name) {
-                    overrides.insert(p_idx, ReprKind::Voxel);
+                    // Review fix-forward (task 5033 amendment): a realization
+                    // can be BOTH an isosurface consumer (own demand = Mesh,
+                    // inserted above at its own `c_idx`) and the Voxel
+                    // operand of a DOWNSTREAM isosurface (chained: `b =
+                    // isosurface(a); c = isosurface(b)`). A `GeomRef::Sub`
+                    // operand only ever names an earlier-declared realization
+                    // (`p_idx < c_idx`), so by construction any consumer-Mesh
+                    // entry for `p_idx` was already inserted in an earlier
+                    // iteration of this outer loop — don't clobber it here.
+                    // Chained voxel pipelines are out of this task's scope
+                    // (PRD voxel-to-mesh-surfacing.md targets the
+                    // single-isosurface slice); silently overwriting would
+                    // leave `b` demanding Voxel instead of the Mesh its own
+                    // `Surface` dispatch requires. Single-isosurface
+                    // pipelines never hit this branch (no node is ever both
+                    // a `c_idx` and someone else's `p_idx`), so this is a
+                    // pure no-op guard for the task's actual scope.
+                    if overrides.get(&p_idx) != Some(&ReprKind::Mesh) {
+                        overrides.insert(p_idx, ReprKind::Voxel);
+                    }
                 }
             }
         }

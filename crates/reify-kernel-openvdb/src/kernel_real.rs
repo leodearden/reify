@@ -532,6 +532,62 @@ impl GeometryKernel for OpenVdbKernel {
             let mesh = self.realize_mesh_from_voxel_with_options(*grid, &opts)?;
             return self.register_mesh_handle(&mesh);
         }
+        if let GeometryOp::ApplyTransform {
+            target,
+            rotation,
+            translation,
+        } = op
+        {
+            // Mirrors `OcctKernel::execute`'s `ApplyTransform` finiteness
+            // guard (crates/reify-kernel-occt/src/lib.rs:2783-2795) — reject
+            // non-finite components before touching any handle table.
+            if !rotation[0].is_finite()
+                || !rotation[1].is_finite()
+                || !rotation[2].is_finite()
+                || !rotation[3].is_finite()
+                || !translation[0].is_finite()
+                || !translation[1].is_finite()
+                || !translation[2].is_finite()
+            {
+                return Err(GeometryError::OperationFailed(format!(
+                    "apply_transform parameters must be finite: rotation={:?}, translation={:?}",
+                    rotation, translation
+                )));
+            }
+            // Task 5033 review fix-forward: a placed isosurface handle (mesh
+            // OR voxel-grid) previously fell through to the
+            // `VOXEL_BOOL_STUB_MSG` `Err` below, so `walk_placed_realizations`
+            // (geometry_ops.rs) pushed a "transform application error"
+            // diagnostic and silently dropped the realization for any
+            // non-identity `at` pose. An `Err` here does NOT satisfy that
+            // caller's "no diagnostics" bar — it turns any `execute()` `Err`
+            // into a dropped realization — so resolve the source as a `Mesh`
+            // from whichever table actually holds `target` and transform it.
+            let source_mesh = if let Some(mesh) = self.mesh_handles.get(target) {
+                // The isosurface's own Surface result, stored verbatim by
+                // `register_mesh_handle`. Cloning releases the `&self`
+                // borrow before the grid branch's `&mut self` call below
+                // would otherwise conflict with it.
+                mesh.clone()
+            } else if self.handles.contains_key(target) {
+                // A genuine voxel grid (e.g. the isosurface operand, held at
+                // Voxel repr by task 5033's post-loop conversion edge):
+                // surface it via the same marching-cubes path `Surface` /
+                // `tessellate` use — the identity-pose walk already does
+                // this for display, so this loses no fidelity.
+                self.realize_mesh_from_voxel_with_options(
+                    *target,
+                    &crate::MarchingCubesOptions::default(),
+                )?
+            } else {
+                return Err(GeometryError::OperationFailed(format!(
+                    "ApplyTransform: handle {:?} is not a registered mesh or voxel grid",
+                    target
+                )));
+            };
+            let placed = apply_rigid_transform_to_mesh(&source_mesh, *rotation, *translation);
+            return self.register_mesh_handle(&placed);
+        }
         // Voxel op execution through execute() degrades gracefully — see
         // VOXEL_BOOL_STUB_MSG and the planning-vs-execution contract note above.
         // The capability descriptor declares (Convert{from:Mesh},Voxel) and the
@@ -735,5 +791,155 @@ impl GeometryKernel for OpenVdbKernel {
             adaptive,
         }
         .content_hash()
+    }
+}
+
+/// Apply a rigid transform (unit-quaternion rotation + translation) to every
+/// vertex of `mesh`, returning a new [`Mesh`] with the same triangle topology
+/// (`indices` unchanged). Task 5033 review fix-forward — the OpenVDB-side
+/// counterpart of `OcctKernel`'s `apply_transform_to_handle`, needed because
+/// `OpenVdbKernel` holds placed geometry as `Mesh` values rather than a
+/// transformable BRep shape.
+///
+/// Quaternion convention: `rotation = [qw, qx, qy, qz]` (scalar-first),
+/// matching `reify_kernel_occt::types::Transform3`'s field order (see its
+/// doc comment for the FFI-side `gp_Quaternion(x, y, z, w)` translation) —
+/// both kernels interpret `GeometryOp::ApplyTransform` identically.
+///
+/// Normals (when present) are rotated but NOT translated — a rigid rotation
+/// preserves unit length, so no renormalization is needed. Computes in `f64`
+/// for precision and stores back to `f32`, mirroring `Mesh`'s flat `f32`
+/// vertex/normal buffers. Callers validate rotation/translation finiteness
+/// before calling (see the `ApplyTransform` arm in `OpenVdbKernel::execute`).
+fn apply_rigid_transform_to_mesh(mesh: &Mesh, rotation: [f64; 4], translation: [f64; 3]) -> Mesh {
+    let [qw, qx, qy, qz] = rotation;
+    // Unit-quaternion -> rotation-matrix (row-major), Hamilton convention,
+    // scalar-first — the same rotation OCCT's gp_Quaternion(x,y,z,w)
+    // constructs from the same four components in a different argument order.
+    let r00 = 1.0 - 2.0 * (qy * qy + qz * qz);
+    let r01 = 2.0 * (qx * qy - qw * qz);
+    let r02 = 2.0 * (qx * qz + qw * qy);
+    let r10 = 2.0 * (qx * qy + qw * qz);
+    let r11 = 1.0 - 2.0 * (qx * qx + qz * qz);
+    let r12 = 2.0 * (qy * qz - qw * qx);
+    let r20 = 2.0 * (qx * qz - qw * qy);
+    let r21 = 2.0 * (qy * qz + qw * qx);
+    let r22 = 1.0 - 2.0 * (qx * qx + qy * qy);
+    let [tx, ty, tz] = translation;
+
+    let rotate = |x: f64, y: f64, z: f64| -> (f64, f64, f64) {
+        (
+            r00 * x + r01 * y + r02 * z,
+            r10 * x + r11 * y + r12 * z,
+            r20 * x + r21 * y + r22 * z,
+        )
+    };
+
+    let vertices: Vec<f32> = mesh
+        .vertices
+        .chunks_exact(3)
+        .flat_map(|v| {
+            let (x, y, z) = rotate(v[0] as f64, v[1] as f64, v[2] as f64);
+            [(x + tx) as f32, (y + ty) as f32, (z + tz) as f32]
+        })
+        .collect();
+
+    let normals = mesh.normals.as_ref().map(|ns| {
+        ns.chunks_exact(3)
+            .flat_map(|n| {
+                let (x, y, z) = rotate(n[0] as f64, n[1] as f64, n[2] as f64);
+                [x as f32, y as f32, z as f32]
+            })
+            .collect::<Vec<f32>>()
+    });
+
+    Mesh {
+        vertices,
+        indices: mesh.indices.clone(),
+        normals,
+    }
+}
+
+#[cfg(test)]
+mod surface_execute_tests {
+    use super::*;
+
+    /// Closed 2.0-unit cube mesh centred at the origin (8 corner vertices, 12
+    /// outward-wound triangles). Same fixture shape as
+    /// `crates/reify-kernel-openvdb/tests/voxel_to_mesh_tests.rs::cube_2unit_mesh`
+    /// (that file's integration-test items are not reachable from this
+    /// crate-internal unit test, hence the local copy).
+    fn cube_2unit_mesh() -> Mesh {
+        Mesh {
+            #[rustfmt::skip]
+            vertices: vec![
+                -1.0, -1.0, -1.0, // 0
+                 1.0, -1.0, -1.0, // 1
+                 1.0,  1.0, -1.0, // 2
+                -1.0,  1.0, -1.0, // 3
+                -1.0, -1.0,  1.0, // 4
+                 1.0, -1.0,  1.0, // 5
+                 1.0,  1.0,  1.0, // 6
+                -1.0,  1.0,  1.0, // 7
+            ],
+            #[rustfmt::skip]
+            indices: vec![
+                0, 2, 1,  0, 3, 2, // bottom (-Z)
+                4, 5, 6,  4, 6, 7, // top (+Z)
+                0, 1, 5,  0, 5, 4, // front (-Y)
+                2, 3, 7,  2, 7, 6, // back (+Y)
+                0, 4, 7,  0, 7, 3, // left (-X)
+                1, 2, 6,  1, 6, 5, // right (+X)
+            ],
+            normals: None,
+        }
+    }
+
+    /// Task 5033 review coverage gap: `OpenVdbKernel::execute`'s
+    /// `GeometryOp::Surface` arm has two paths — a cheap pass-through when
+    /// `grid` already names a `register_mesh_handle`-stored Mesh (the only
+    /// path the e2e suite exercises), and a fallback that runs marching
+    /// cubes + self-registers when `grid` names a genuine voxel grid instead
+    /// (this correctness safety net was previously untested). A grid
+    /// produced by `realize_voxel_from_mesh_with_options` lives in the
+    /// `handles` table, never `mesh_handles`, so `execute(Surface { grid,
+    /// .. })` must take the `realize_mesh_from_voxel_with_options` +
+    /// `register_mesh_handle` branch and hand back a genuine,
+    /// freshly-registered Mesh-repr handle.
+    #[test]
+    fn execute_surface_on_genuine_voxel_grid_runs_marching_cubes_and_registers_mesh() {
+        let mesh = cube_2unit_mesh();
+        let opts = crate::MeshToVoxelOptions::honest_floor(&mesh)
+            .expect("honest_floor must return Some for a valid closed cube");
+        let mut kernel = OpenVdbKernel::new();
+        let grid = kernel
+            .realize_voxel_from_mesh_with_options(&mesh, &opts)
+            .expect("realize_voxel_from_mesh_with_options must succeed for a valid closed cube");
+
+        let handle = kernel
+            .execute(&GeometryOp::Surface {
+                grid,
+                iso_level: 0.0,
+                adaptive: false,
+            })
+            .expect("Surface execute on a genuine voxel grid should succeed");
+
+        assert_ne!(
+            handle.id, grid,
+            "the Surface fallback must mint a FRESH mesh handle, not alias the grid id"
+        );
+
+        // The returned id must be a `mesh_handles` (Mesh-repr) entry:
+        // `tessellate` hits the cheap pass-through branch and returns the
+        // already-computed mesh without re-running marching cubes.
+        let surfaced = kernel
+            .tessellate(handle.id, 0.0)
+            .expect("tessellate on the self-registered mesh handle should succeed");
+        assert!(
+            !surfaced.vertices.is_empty() && !surfaced.indices.is_empty(),
+            "expected a non-empty surfaced mesh; got {} vertices, {} indices",
+            surfaced.vertices.len(),
+            surfaced.indices.len()
+        );
     }
 }

@@ -184,3 +184,166 @@ fn isosurface_wiring_builds_honest_voxel_operand_and_mesh_terminal() {
         terminal_mesh.mesh.indices.len()
     );
 }
+
+/// Review fix-forward: placed-isosurface transform guard.
+///
+/// `walk_placed_realizations` (geometry_ops.rs) dispatches
+/// `GeometryOp::ApplyTransform` to the kernel that OWNS each handle whenever
+/// the composed world pose is non-identity. Before this fix,
+/// `OpenVdbKernel::execute` only matched `GeometryOp::Surface` and returned
+/// `Err(VOXEL_BOOL_STUB_MSG)` for `ApplyTransform`, so a PLACED isosurface
+/// (mesh handle) OR a PLACED Voxel operand (grid handle) hit the `Err` arm,
+/// pushed a "transform application error" diagnostic, and was dropped from
+/// the surfaced output — silently. `isosurface_wiring_builds_honest_voxel_operand_and_mesh_terminal`
+/// above only covers a top-level IDENTITY-pose `IsoWire`, so this path never
+/// ran in CI.
+///
+/// Wraps `IsoWire` in a sub placed at `+100mm` on X (`PlacedAssembly`, the
+/// sole root — `IsoWire` is only reachable as a sub) and asserts the placed
+/// `shell` mesh survives with no error diagnostics and an honestly-displaced
+/// vertex set.
+///
+/// RED (before the `OpenVdbKernel::execute` `ApplyTransform` fix):
+/// `ApplyTransform` on the OpenVDB grid+mesh handles returns `Err`, so both
+/// the diagnostics-empty and the placed-mesh-exists assertions fail.
+#[cfg(has_openvdb)]
+#[test]
+fn isosurface_wiring_honors_placement_transform_on_shell_mesh() {
+    use reify_constraints::SimpleConstraintChecker;
+    use reify_core::Severity;
+    use reify_ir::ExportFormat;
+    use reify_test_support::parse_and_compile_with_stdlib;
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping isosurface_wiring_honors_placement_transform_on_shell_mesh: \
+             OCCT not available (cfg(has_occt) not set — stub-mode build)"
+        );
+        return;
+    }
+
+    let source = r#"structure IsoWire {
+    param size: Length = 20mm
+    let solid = box(size, size, size)
+    let shell = isosurface(solid)
+}
+
+structure PlacedAssembly {
+    sub wire : IsoWire at transform3(orient_identity(), vec3(100mm, 0mm, 0mm))
+}"#;
+
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let checker = SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
+    let acquired = engine.ensure_openvdb_kernel();
+    assert!(
+        acquired,
+        "ensure_openvdb_kernel() must return true under cfg(has_openvdb) \
+         (the OpenVDB adapter must be present in the kernel registry)"
+    );
+
+    let _eval = engine.eval(&compiled);
+    let build = engine.build(&compiled, ExportFormat::Stl);
+
+    let build_errors: Vec<_> = build
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.severity, Severity::Error))
+        .collect();
+    assert!(
+        build_errors.is_empty(),
+        "placed isosurface module must build with no error-severity \
+         diagnostics; got: {build_errors:?}"
+    );
+
+    // Locate the shell realization's index (last realization declared under
+    // IsoWire) so its placed entity_path can be predicted — mirrors the
+    // identity-pose test's `nodes.last()` pattern above.
+    let snap = engine
+        .snapshot()
+        .expect("snapshot must be Some after a successful build()");
+    let mut iso_nodes: Vec<_> = snap
+        .graph
+        .realizations
+        .iter()
+        .filter(|(id, _)| id.entity == "IsoWire")
+        .collect();
+    assert!(
+        iso_nodes.len() >= 2,
+        "expected at least 2 realization nodes (solid operand + shell \
+         terminal) for entity IsoWire; got {}",
+        iso_nodes.len()
+    );
+    iso_nodes.sort_by_key(|(id, _)| id.index);
+    let (shell_id, _) = *iso_nodes
+        .last()
+        .expect("iso_nodes is non-empty (asserted above)");
+    // `surface_subtree`'s path_prefix scheme (geometry_ops.rs): root prefix
+    // is the root template's name ("PlacedAssembly"), and each sub appends
+    // ".{sub_name}" — so the shell realization inside the `wire` sub surfaces
+    // at "PlacedAssembly.wire#realization[{shell_index}]".
+    let shell_path = format!("PlacedAssembly.wire#realization[{}]", shell_id.index);
+
+    let tess = engine.tessellate_realizations(&compiled);
+    let tess_errors: Vec<_> = tess
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.severity, Severity::Error))
+        .collect();
+    assert!(
+        tess_errors.is_empty(),
+        "placed IsoWire sub must tessellate with no error-severity \
+         diagnostics (an OpenVDB ApplyTransform failure pushes a \
+         'transform application error' diagnostic and drops the \
+         realization); got: {tess_errors:?}"
+    );
+
+    let placed_shell = tess
+        .meshes
+        .iter()
+        .find(|m| m.entity_path == shell_path)
+        .unwrap_or_else(|| {
+            panic!(
+                "tessellate_realizations must surface a placed shell MeshSurface \
+                 at entity_path {shell_path:?}; got paths: {:?}",
+                tess.meshes
+                    .iter()
+                    .map(|m| &m.entity_path)
+                    .collect::<Vec<_>>()
+            )
+        });
+    assert!(
+        !placed_shell.mesh.vertices.is_empty() && !placed_shell.mesh.indices.is_empty(),
+        "placed shell mesh must be non-empty; got {} vertices, {} indices",
+        placed_shell.mesh.vertices.len(),
+        placed_shell.mesh.indices.len()
+    );
+
+    // ── honest transform-applied signal (displacement bound) ──────────────
+    // box(20mm) is centered at origin (half-extent 10mm), displaced +100mm
+    // by the sub translation; honest_floor's narrow band stays within
+    // longest_extent/2 = 10mm of the true surface, so the placed iso=0
+    // surface lies within ~±20mm of the 100mm center -> world-X ~[0.08,
+    // 0.12] m. An un-transformed (origin) mesh would have min_x ~ -0.012 m
+    // and mean_x ~ 0, failing both bounds below with wide margin.
+    let xs: Vec<f32> = placed_shell
+        .mesh
+        .vertices
+        .chunks_exact(3)
+        .map(|v| v[0])
+        .collect();
+    let min_x = xs.iter().copied().fold(f32::INFINITY, f32::min);
+    assert!(
+        min_x > 0.05,
+        "every placed shell-mesh vertex X must exceed 0.05 m (the \
+         un-transformed origin box would have min_x ~ -0.012 m); got \
+         min_x = {min_x}"
+    );
+    let mean_x = xs.iter().sum::<f32>() / xs.len() as f32;
+    assert!(
+        (0.08..=0.12).contains(&mean_x),
+        "mean placed shell-mesh vertex X must lie in [0.08, 0.12] m; got \
+         mean_x = {mean_x}"
+    );
+}
