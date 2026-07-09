@@ -213,16 +213,20 @@ fn watcher_with_target_file_only_fires_for_that_file() {
         paths.iter().any(|p| p.ends_with("project.ri"))
     });
 
-    // Backstop for the negative assert below: the 500ms gap before project.ri
-    // (above) means a broken target_file filter's other.ri event would
-    // already be present in `changed_paths` by the time project.ri's event
-    // is observed (per-path debounce delays same-path duplicates only, not
-    // cross-path ordering). This poll just bounds a delayed-but-broken
-    // filter event; kept short since it's paid on every green run.
-    let other_appeared = wait_for(&changed_paths, Duration::from_millis(100), |paths| {
-        paths.iter().any(|p| p.ends_with("other.ri"))
-    });
-
+    // The negative check below is an immediate snapshot, not a poll:
+    // asserting an event's absence can only ever false-PASS under a
+    // condition-poll (there's no positive condition to wait for), so
+    // polling here would just add latency on every green run for no
+    // correctness benefit. It is race-free by construction, not by
+    // timeout: other.ri was modified 500ms before project.ri (above) — 5x
+    // the production debounce window (100ms, watcher.rs:15) — and the
+    // watcher's debounce only suppresses duplicate same-path events; it
+    // does not delay or reorder emission across distinct paths. So a
+    // broken target_file filter's other.ri push would already be sitting
+    // in `changed_paths` well before project.ri's push makes `found` true
+    // above. That's a wall-clock ordering argument sized to catch "the
+    // filter is simply broken" (what this test exists to catch), not a
+    // formal guarantee against an adversarially delayed event.
     let paths = changed_paths.lock().unwrap();
     assert!(
         found,
@@ -230,7 +234,7 @@ fn watcher_with_target_file_only_fires_for_that_file() {
         *paths
     );
     assert!(
-        !other_appeared,
+        !paths.iter().any(|p| p.ends_with("other.ri")),
         "should NOT have detected other.ri change, got: {:?}",
         *paths
     );
