@@ -51,12 +51,13 @@ test_cpu_load_governance.sh host-exclusive
 test_cpu_load_governance_deflake.sh host-exclusive
 test_warm_lane_pool.sh host-exclusive
 
-# --- pool (104, the hermetic majority incl. this drift-guard itself) -------
+# --- pool (108, the hermetic majority incl. this drift-guard itself) -------
 test_affected_crates_lib.sh pool
 test_agent_cargo_shim.sh pool
 test_audit_orphan_producers.sh pool
 test_cargo_incremental_lane_decision.sh pool
 test_check_event_inventory.sh pool
+test_copy_list_preflight.sh pool
 test_cpu_admit.sh pool
 test_cpu_governance_config.sh pool
 test_cpu_governed_exec.sh pool
