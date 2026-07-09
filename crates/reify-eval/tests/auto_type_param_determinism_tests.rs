@@ -600,14 +600,31 @@ fn v0_1_example_corpus_compile_and_check_time_is_bounded() {
     let skip: HashSet<&str> = SKIP_SET.iter().map(|(name, _)| *name).collect();
     let paths = discover_ri_files();
 
+    // Resolve the skip-filtered candidate list — and fail fast on the
+    // discovery-floor check below — before paying for the per-file
+    // compile+check loop. Otherwise a misconfigured discover_ri_files()/
+    // SKIP_SET would still burn time compiling whatever few files it found
+    // before reporting the regression.
+    let candidates: Vec<(&PathBuf, String)> = paths
+        .iter()
+        .map(|path| (path, relative_to_examples_dir(path)))
+        .filter(|(_, rel)| !skip.contains(rel.as_str()))
+        .collect();
+
+    assert!(
+        candidates.len() >= EXPECTED_MIN_FILES,
+        "corpus discovery found only {} .ri file(s) (expected >= {}) — \
+         discover_ri_files()/SKIP_SET may be misconfigured (e.g. examples dir \
+         moved or most entries skipped), which would silently narrow this \
+         perf gate's coverage. If this is instead an intentional corpus \
+         reduction, lower EXPECTED_MIN_FILES to match.",
+        candidates.len(),
+        EXPECTED_MIN_FILES
+    );
+
     let mut measurements: Vec<(String, Duration)> = Vec::new();
 
-    for path in &paths {
-        let rel = relative_to_examples_dir(path);
-        if skip.contains(rel.as_str()) {
-            continue;
-        }
-
+    for (path, rel) in &candidates {
         let src = std::fs::read_to_string(path)
             .unwrap_or_else(|e| panic!("cannot read {}: {}", path.display(), e));
 
@@ -615,19 +632,8 @@ fn v0_1_example_corpus_compile_and_check_time_is_bounded() {
         let _ = check_source_with_stdlib(&src);
         let elapsed = t.elapsed();
 
-        measurements.push((rel, elapsed));
+        measurements.push((rel.clone(), elapsed));
     }
-
-    assert!(
-        measurements.len() >= EXPECTED_MIN_FILES,
-        "corpus discovery found only {} .ri file(s) (expected >= {}) — \
-         discover_ri_files()/SKIP_SET may be misconfigured (e.g. examples dir \
-         moved or most entries skipped), which would silently narrow this \
-         perf gate's coverage. If this is instead an intentional corpus \
-         reduction, lower EXPECTED_MIN_FILES to match.",
-        measurements.len(),
-        EXPECTED_MIN_FILES
-    );
 
     let mut violations = per_file_violations(&measurements, PER_FILE_BUDGET);
     violations.sort_by(|a, b| a.0.cmp(&b.0));
