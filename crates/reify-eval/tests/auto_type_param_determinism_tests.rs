@@ -540,9 +540,8 @@ fn pipeline_output_is_stable_under_no_candidate_arm() {
 ///
 /// Pure and deterministic: no aggregate/total-wall-clock concept. This is the
 /// single source of truth for the v0.1 example-corpus per-file perf gate,
-/// exercised directly by `per_file_gate_flags_quadratic_overrun` and
-/// `per_file_gate_ignores_aggregate_total_wall_clock` below, and driven by
-/// real corpus timings from `v0_1_example_corpus_compile_and_check_time_is_bounded`.
+/// exercised directly by `per_file_gate_violation_contract` below, and driven
+/// by real corpus timings from `v0_1_example_corpus_compile_and_check_time_is_bounded`.
 fn per_file_violations(
     measurements: &[(String, Duration)],
     per_file_budget: Duration,
@@ -622,76 +621,70 @@ fn v0_1_example_corpus_compile_and_check_time_is_bounded() {
     );
 }
 
-// ─── step-11 unit guards: per_file_violations pure-helper contract ─────────
-//
-// The two guards below both ultimately exercise the same one-line `dur >
-// per_file_budget` filter inside `per_file_violations`, so their behavioral
-// coverage overlaps: neither can fail without the other also being capable
-// of catching a similarly-shaped regression in that filter. They are kept as
-// two separate, narrowly-named tests rather than merged into one
-// table-driven case because each name pins a distinct guarantee — a failure
-// in `_flags_quadratic_overrun` says "a real regression stopped going RED",
-// while a failure in `_ignores_aggregate_total_wall_clock` says "the
-// aggregate/total budget task 5149 removed has come back" — and a single
-// consolidated test would report only "table test failed" on either,
-// losing that at-a-glance diagnosis.
+// ─── step-11 unit guard: per_file_violations pure-helper contract ─────────
 
-/// `per_file_violations` must flag a genuinely over-budget file and must NOT
-/// flag sub-budget files, including a file landing exactly on the budget
-/// boundary (`duration == budget` uses strict `>`, so it is NOT a
-/// violation). This is the non-vacuous guarantee that the per-file gate
-/// exists to provide: a genuinely quadratic file still goes RED, while the
-/// off-by-one-prone `>` vs `>=` boundary is pinned in the other direction.
+/// `per_file_violations` contract, table-driven so a failing row's label
+/// pins which guarantee broke: a real regression failing to go RED, or the
+/// aggregate/total budget task 5149 removed coming back.
 #[test]
-fn per_file_gate_flags_quadratic_overrun() {
-    let measurements: Vec<(String, Duration)> = vec![
-        ("fast.ri".to_string(), Duration::from_millis(500)),
-        ("slow.ri".to_string(), Duration::from_secs(11)),
-        ("edge.ri".to_string(), Duration::from_secs(9)),
-        ("boundary.ri".to_string(), Duration::from_secs(10)),
-    ];
+fn per_file_gate_violation_contract() {
+    struct Case {
+        label: &'static str,
+        measurements: Vec<(String, Duration)>,
+        budget: Duration,
+        expected: Vec<&'static str>,
+    }
 
-    let violations = per_file_violations(&measurements, Duration::from_secs(10));
-
-    let names: Vec<&str> = violations.iter().map(|(name, _)| name.as_str()).collect();
-    assert_eq!(
-        names,
-        vec!["slow.ri"],
-        "expected only the 11s file (> 10s budget) to be flagged as a violation; \
-         a file at exactly the 10s budget (boundary.ri) must NOT be flagged since \
-         the comparison is strict `>`, got: {names:?}"
-    );
-}
-
-/// `per_file_violations` has no aggregate/total concept: a handful of
-/// sub-budget files whose SUM exceeds the old 120s total budget must still
-/// produce zero violations. Pins that the aggregate wall-clock budget is gone
-/// and RED-guards any future re-introduction of one.
-#[test]
-fn per_file_gate_ignores_aggregate_total_wall_clock() {
     // 20 files at 9s each (still under the 10s per-file budget) sum to 180s,
     // comfortably past the old 120s total — enough to demonstrate "total >>
     // budget while each file is under" without the allocation cost of a
     // much larger fixture.
-    let measurements: Vec<(String, Duration)> = (0..20)
+    let aggregate_measurements: Vec<(String, Duration)> = (0..20)
         .map(|i| (format!("file_{i}.ri"), Duration::from_secs(9)))
         .collect();
 
-    // Sanity: the fixture sum must comfortably exceed the old 120s total
-    // budget, otherwise this test would pass vacuously.
-    let total: Duration = measurements.iter().map(|(_, d)| *d).sum();
+    // Sanity: the aggregate case's fixture sum must comfortably exceed the
+    // old 120s total budget, otherwise that row would pass vacuously.
+    let aggregate_total: Duration = aggregate_measurements.iter().map(|(_, d)| *d).sum();
     assert!(
-        total > Duration::from_secs(120),
-        "test fixture must exceed the old 120s total budget to be meaningful, got {total:?}"
+        aggregate_total > Duration::from_secs(120),
+        "aggregate case fixture must exceed the old 120s total budget to be \
+         meaningful, got {aggregate_total:?}"
     );
 
-    let violations = per_file_violations(&measurements, Duration::from_secs(10));
+    let cases = vec![
+        Case {
+            label: "flags a genuinely over-budget file and must NOT flag sub-budget \
+                    files, including a file landing exactly on the budget boundary \
+                    (duration == budget uses strict `>`, so it is NOT a violation)",
+            measurements: vec![
+                ("fast.ri".to_string(), Duration::from_millis(500)),
+                ("slow.ri".to_string(), Duration::from_secs(11)),
+                ("edge.ri".to_string(), Duration::from_secs(9)),
+                ("boundary.ri".to_string(), Duration::from_secs(10)),
+            ],
+            budget: Duration::from_secs(10),
+            expected: vec!["slow.ri"],
+        },
+        Case {
+            label: "has no aggregate/total concept: sub-budget files whose SUM \
+                    exceeds the old 120s total budget must still produce zero \
+                    violations",
+            measurements: aggregate_measurements,
+            budget: Duration::from_secs(10),
+            expected: vec![],
+        },
+    ];
 
-    assert!(
-        violations.is_empty(),
-        "expected no violations since every file is under the per-file budget \
-         (there must be no aggregate/total budget), got: {violations:?}"
-    );
+    for case in &cases {
+        let violations = per_file_violations(&case.measurements, case.budget);
+        let names: Vec<&str> = violations.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(
+            names, case.expected,
+            "case {:?}: expected {:?}, got {:?}",
+            case.label, case.expected, names
+        );
+    }
 }
 
 // ─── step-13: fixture is included in corpus ───────────────────────────────────
