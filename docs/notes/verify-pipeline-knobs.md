@@ -47,7 +47,7 @@ The verify pipeline is governed by three admission controls that layer in order:
 **Knobs — test semaphore** (`scripts/lib_test_semaphore.sh`):
 - **`REIFY_TEST_SEMAPHORE_CONCURRENCY`** — slot count N (default `1`)
 - **`REIFY_TEST_SEMAPHORE_WAIT`** — max seconds to wait for a slot (default `1800`), OR the sentinel `"unlimited"` (case-insensitive) for a continuous blocking wait with no deadline (clock-stop mode). **ACTIVATED 2026-06-27 (task 4838):** continuous wait live; `dark_factory:1916` deployed; `WAIT=unlimited` in `orchestrator.yaml`; `@@REIFY_CLOCK_*@@` span excluded from `verify_command_timeout_secs`.
-- **`REIFY_TEST_SEMAPHORE_LOCK`** — base path for slot files (default `${TMPDIR:-/tmp}/reify-test-semaphore-$(id -u).lock`)
+- **`REIFY_TEST_SEMAPHORE_LOCK`** — base path for slot files (default `/tmp/reify-test-semaphore-$(id -u).lock`; fixed host-global path, independent of TMPDIR — task 5145)
 - **`REIFY_TEST_SEMAPHORE_DISABLE`** — set to `1` for a total bypass (no slot acquired)
 - **`REIFY_CLOCK_HEARTBEAT_SECS`** — interval (s) between `@@REIFY_CLOCK_HEARTBEAT@@` emissions in the semaphore + PSI poll loops (default `30`; reduce in tests for faster runs)
 

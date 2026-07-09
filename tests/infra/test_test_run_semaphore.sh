@@ -771,6 +771,35 @@ assert "Test CE-2c: poll loop forks ZERO shuf calls at N=1 (got $_CE2_SHUF_CALLS
     test "$_CE2_SHUF_CALLS" -eq 0
 
 # ===========================================================================
+# SIGNAL (k): host-global default lock is TMPDIR-independent (Test HG-1, task 5145)
+# _test_semaphore_default_lock is a pure resolver (printf + id -u; no flock, no
+# acquire) called directly here so this test never touches the real
+# host-global reify-test-semaphore slot that the parent verify.sh holds across
+# ALL test passes (verify.sh:171) -- acquiring the real default lock at low N
+# from inside a test would deadlock against the parent.
+# RED today: _test_semaphore_default_lock does not exist in lib_test_semaphore.sh.
+# ===========================================================================
+
+echo ""
+echo "--- Test HG-1: host-global default lock is TMPDIR-independent ---"
+
+assert "Test HG-1a: _test_semaphore_default_lock is defined" \
+    bash -c 'source "$1" >/dev/null 2>&1 && declare -F _test_semaphore_default_lock' _ "$LIB"
+
+_HG1_PRIVATE_TMPDIR="$(mktemp -d)/private"
+mkdir -p "$_HG1_PRIVATE_TMPDIR"
+_HG1_EXPECTED="/tmp/reify-test-semaphore-$(id -u).lock"
+_HG1_OUT="$(bash -c 'source "$1" >/dev/null 2>&1; TMPDIR="$2" _test_semaphore_default_lock' _ "$LIB" "$_HG1_PRIVATE_TMPDIR" 2>/dev/null)" || true
+
+assert "Test HG-1b: with a private non-/tmp TMPDIR exported, _test_semaphore_default_lock prints '${_HG1_EXPECTED}' (got '${_HG1_OUT}')" \
+    test "$_HG1_OUT" = "$_HG1_EXPECTED"
+
+assert "Test HG-1c: output does not contain the private TMPDIR (${_HG1_PRIVATE_TMPDIR})" \
+    bash -c '! printf "%s" "$1" | grep -qF -- "$2"' _ "$_HG1_OUT" "$_HG1_PRIVATE_TMPDIR"
+
+rm -rf "$_HG1_PRIVATE_TMPDIR"
+
+# ===========================================================================
 # Summary
 # ===========================================================================
 

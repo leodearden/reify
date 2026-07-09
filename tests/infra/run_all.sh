@@ -62,7 +62,11 @@
 #                                   frozen host-baked count -- resolved at
 #                                   runtime; never load-reduced, esc-4000-39)
 #   REIFY_RUN_ALL_POOL_LOCK         semaphore lock base path
-#                                   (default ${TMPDIR:-/tmp}/reify-run-all-pool-$(id -u).lock)
+#                                   (default /tmp/reify-run-all-pool-$(id -u).lock)
+#                                   -- a FIXED host-global path, independent of
+#                                   TMPDIR, so a caller-private TMPDIR (a common
+#                                   per-lane isolation pattern) cannot fork the
+#                                   lock namespace (task 5145).
 #   REIFY_RUN_ALL_POOL_WAIT         slot_acquire deadline seconds (default
 #                                   1800; soft -- admits unslotted on timeout).
 #                                   Must be a positive integer; slot_acquire's
@@ -594,7 +598,11 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
         [ "$_H2_POOL_N" -ge 1 ] || _H2_POOL_N=1
     fi
 
-    _H2_POOL_LOCK="${REIFY_RUN_ALL_POOL_LOCK:-${TMPDIR:-/tmp}/reify-run-all-pool-$(id -u).lock}"
+    # Fixed /tmp base, independent of TMPDIR (task 5145) -- mirrors the
+    # scripts/lib_test_semaphore.sh `_test_semaphore_default_lock` resolver's
+    # identical policy. Keep both host-global lock defaults in sync if either
+    # changes.
+    _H2_POOL_LOCK="${REIFY_RUN_ALL_POOL_LOCK:-/tmp/reify-run-all-pool-$(id -u).lock}"
     _H2_POOL_WAIT="${REIFY_RUN_ALL_POOL_WAIT:-1800}"
 
     # Reject non-integer values -- notably slot_acquire's own "unlimited"
