@@ -4103,6 +4103,21 @@ impl WarmStartable for OcctKernel {
         //     see with_warm_state): extracted_edges, extracted_faces,
         //     extracted_vertices, parent_handle
         //   RUNTIME-only (not part of warm-start state): last_warm_start_failures
+        //
+        // Accepted bloat: `shapes` is persisted wholesale below, which
+        // includes sub-shape blobs previously minted by extract_edges/
+        // extract_faces/extract_vertices (ids that appear as values in
+        // extracted_* / keys in parent_handle). Since parent_handle and the
+        // extracted_* caches are CLEAR-on-restore, those blobs round-trip as
+        // ordinary shapes/reprs entries but come out orphaned on the
+        // consumer side: still queryable by id (repr_of, Volume, ...) but
+        // unreachable via OwnerBody and never reused by a later extract_*
+        // call, which mints fresh ids against the cleared cache. This is
+        // pre-existing behavior (not introduced by the parent_handle clear
+        // above) and is left as-is — filtering sub-shape ids out here would
+        // need parent_handle's key set threaded into the loop below, which
+        // is out of scope for this task; revisit if warm-state payload size
+        // or phantom-entry enumeration becomes a real problem.
         let Self {
             shapes,
             reprs,
