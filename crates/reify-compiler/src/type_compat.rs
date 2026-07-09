@@ -1603,6 +1603,47 @@ pub(crate) fn infer_mul_div_result(op: BinOp, left: &Type, right: &Type) -> Opti
             },
         }),
 
+        // ── ScalarParam(Q) — dimension-kinded generic fn params ──────────────
+        // `Type::ScalarParam(name)` (`Scalar<Q>` inside a `fn f<Q: Dimension>`
+        // body, before call-site substitution binds Q) is a genuine,
+        // well-formed scalar whose dimension is merely unresolved — the same
+        // treatment `emit_comparison_operand_diagnostics` (expr.rs) already
+        // gives it for Cmp ops: accepted directly by the predicate, NOT
+        // skipped via the `Type::Error`/`Type::TypeParam` gradualism early-
+        // return. Mirrors the `Scalar ⊗ Int` / `Scalar ⊗ Scalar` arms above
+        // for the two cases whose result IS representable without inventing
+        // compound dimension-expression algebra:
+        //
+        // - `ScalarParam(Q) ⊗ Int`: Int carries no dimension → preserve Q
+        //   (both ops; Int⊗Scalar precedent above).
+        // - `ScalarParam(Q) ⊗ Scalar{DIMENSIONLESS}` (i.e. `Scalar<Q> * Real`,
+        //   the `scale_q<Q: Dimension>(x: Scalar<Q>, k: Real) -> Scalar<Q> {
+        //   x * k }` pattern pinned by
+        //   `fn_generic_call_inference_tests::dim_param_scale_q_resolves_at_two_dimensions`
+        //   and `examples/generics/dim_param.ri`): DIMENSIONLESS is the
+        //   multiplicative identity for dimension algebra → preserve Q.
+        //
+        // `ScalarParam ⊗ ScalarParam` and `ScalarParam ⊗` a NON-dimensionless
+        // concrete `Scalar` are deliberately left unhandled (fall through to
+        // `None` below): the combined dimension (e.g. "Q²" or "Q*Length")
+        // is not representable by `ScalarParam`'s bare-name form, and no
+        // caller exercises either combination today. Extending `ScalarParam`
+        // to carry a compound dimension expression is out of scope for this
+        // fix; an unrepresentable combination correctly surfaces as
+        // `E_ArithOperandKind` rather than silently guessing.
+        (Type::ScalarParam(name), Type::Int) => Some(Type::ScalarParam(name.clone())),
+        (Type::Int, Type::ScalarParam(name)) if op == BinOp::Mul => {
+            Some(Type::ScalarParam(name.clone()))
+        }
+        (Type::ScalarParam(name), Type::Scalar { dimension }) if dimension.is_dimensionless() => {
+            Some(Type::ScalarParam(name.clone()))
+        }
+        (Type::Scalar { dimension }, Type::ScalarParam(name))
+            if op == BinOp::Mul && dimension.is_dimensionless() =>
+        {
+            Some(Type::ScalarParam(name.clone()))
+        }
+
         // ── Aggregate scale: Vector/Point/Tensor ⊗ scalar-like ───────────────
         // `Aggregate / scalar-like` and `Aggregate * scalar-like` share one arm
         // (valid for both ops with the aggregate on the LEFT). The reverse
