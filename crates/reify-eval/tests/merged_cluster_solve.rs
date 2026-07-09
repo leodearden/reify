@@ -22,12 +22,14 @@
 use std::collections::HashMap;
 
 use reify_compiler::CompiledModule;
-use reify_core::{Diagnostic, DiagnosticCode, ModulePath, Severity, Type, ValueCellId};
+use reify_core::{
+    Diagnostic, DiagnosticCode, ModulePath, Severity, Type, ValueCellId, VersionId,
+};
 use reify_eval::Engine;
 use reify_ir::{
-    BestFoundReason, BinOp, ConstraintSolver, DeterminacyState, ObjectiveCombination,
-    ObjectiveSense, ObjectiveSet, OptimalityStatus, RankedCandidate, RankedSolveResult,
-    ResolutionProblem, SolveResult, UndefCause, Value,
+    BestFoundReason, BinOp, CompiledExpr, CompiledExprKind, ConstraintSolver, DeterminacyState,
+    ObjectiveCombination, ObjectiveSense, ObjectiveSet, OptimalityStatus, RankedCandidate,
+    RankedSolveResult, ResolutionProblem, SolveResult, UndefCause, Value,
 };
 use reify_test_support::{
     CompiledModuleBuilder, MockConstraintChecker, MultiCallSpyConstraintSolver,
@@ -315,6 +317,45 @@ fn spanning_objective_cluster_module() -> CompiledModule {
         .build()
 }
 
+/// Structural equality check for the `CompiledExprKind` shapes this test
+/// module's fixtures ever construct (`BinOp` of `ValueRef` leaves, e.g.
+/// `ChildA.cost + ChildB.cost`). `CompiledExpr`/`CompiledExprKind` have no
+/// `PartialEq`, and comparing via `format!("{:?}", ..)` (the prior approach
+/// here) is brittle: it couples the test to `CompiledExprKind`'s Debug
+/// derive (any field-order/metadata change breaks the test with no
+/// behavioral regression) and would falsely PASS two structurally different
+/// exprs that happen to Debug-format identically. Recurses through `BinOp`
+/// so nested sums compare correctly too; panics on any other variant since
+/// no fixture in this file needs one -- extend here if a future test does.
+fn assert_expr_structurally_eq(actual: &CompiledExpr, expected: &CompiledExpr, ctx: &str) {
+    match (&actual.kind, &expected.kind) {
+        (
+            CompiledExprKind::BinOp {
+                op: a_op,
+                left: a_left,
+                right: a_right,
+            },
+            CompiledExprKind::BinOp {
+                op: e_op,
+                left: e_left,
+                right: e_right,
+            },
+        ) => {
+            assert_eq!(a_op, e_op, "{ctx}: BinOp operator mismatch");
+            assert_expr_structurally_eq(a_left, e_left, &format!("{ctx} (left operand)"));
+            assert_expr_structurally_eq(a_right, e_right, &format!("{ctx} (right operand)"));
+        }
+        (CompiledExprKind::ValueRef(a_id), CompiledExprKind::ValueRef(e_id)) => {
+            assert_eq!(a_id, e_id, "{ctx}: ValueRef target mismatch");
+        }
+        (a_kind, e_kind) => panic!(
+            "{ctx}: expected matching CompiledExprKind variants (both BinOp \
+             or both ValueRef -- the only shapes this helper supports); got \
+             actual={a_kind:?} vs expected={e_kind:?}",
+        ),
+    }
+}
+
 /// The merged `ResolutionProblem` for a spanning cluster must carry the
 /// PARENT's governing objective through OPAQUELY: same combination
 /// (`WeightedSum`), same term count, same `ObjectiveSense`/`weight` per term
@@ -360,7 +401,8 @@ fn merged_cluster_objective_passed_through_opaquely() {
 
     // Expected == Parent's own objective, rebuilt identically to the fixture
     // above (ObjectiveSet/ObjectiveTerm/CompiledExpr have no PartialEq, so
-    // terms are compared structurally field-by-field).
+    // terms are compared structurally field-by-field via
+    // `assert_expr_structurally_eq`, not Debug-string equality).
     let expected = ObjectiveSet::single(
         ObjectiveSense::Minimize,
         binop(
@@ -386,11 +428,67 @@ fn merged_cluster_objective_passed_through_opaquely() {
             "term {i}'s weight must be passed through verbatim -- never \
              re-folded while assembling the merged objective (§5.2)",
         );
+        assert_expr_structurally_eq(&actual.expr, &want.expr, &format!("term {i}'s expression"));
+    }
+}
+
+/// Every resolved cluster cell must carry `ObjectiveProvenance` populated
+/// from the spanning objective the merged solve actually used -- not
+/// `None`/empty, the pre-β per-template fidelity this path must preserve
+/// (`dispatch_merged_cluster_solve`'s per-cell write-back, amendment task
+/// #5014): `objective.is_some()`, `combination == WeightedSum`, non-empty
+/// `term_contributions`, and `scope` equal to the CELL'S OWN owning entity
+/// (not the cluster's anchor/first-dispatched member).
+#[test]
+fn merged_cluster_objective_provenance_populated_for_every_resolved_cell() {
+    let module = spanning_objective_cluster_module();
+
+    let parent_total = ValueCellId::new("Parent", "total");
+    let child_a_cost = ValueCellId::new("ChildA", "cost");
+    let child_b_cost = ValueCellId::new("ChildB", "cost");
+
+    let mut solved = HashMap::new();
+    solved.insert(parent_total.clone(), mm(1.0));
+    solved.insert(child_a_cost.clone(), mm(2.0));
+    solved.insert(child_b_cost.clone(), mm(3.0));
+
+    let spy = SpyConstraintSolver::new_solved(solved);
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+    let result = engine.eval(&module);
+
+    for (id, want_scope) in [
+        (&parent_total, "Parent"),
+        (&child_a_cost, "ChildA"),
+        (&child_b_cost, "ChildB"),
+    ] {
+        let provenance = result.objective_provenance.get(id).unwrap_or_else(|| {
+            panic!(
+                "objective_provenance missing an entry for {id:?} -- every \
+                 resolved cluster cell must carry provenance from the \
+                 spanning objective"
+            )
+        });
+        assert!(
+            provenance.objective.is_some(),
+            "{id:?}'s objective_provenance.objective must be Some (the \
+             spanning objective), not None",
+        );
         assert_eq!(
-            format!("{:?}", actual.expr),
-            format!("{:?}", want.expr),
-            "term {i}'s expression must be Parent's own expr cloned whole, \
-             not reconstructed",
+            provenance.combination,
+            Some(ObjectiveCombination::WeightedSum),
+            "{id:?}'s objective_provenance.combination must be WeightedSum",
+        );
+        assert!(
+            !provenance.term_contributions.is_empty(),
+            "{id:?}'s objective_provenance.term_contributions must be \
+             non-empty; got an empty Vec",
+        );
+        assert_eq!(
+            provenance.scope, want_scope,
+            "{id:?}'s objective_provenance.scope must be the CELL'S OWN \
+             owning entity, not the cluster's anchor member",
         );
     }
 }
@@ -469,7 +567,7 @@ fn merged_cluster_inherited_objective_folded_once() {
 
     let mut engine =
         Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
-    let _result = engine.eval(&module);
+    let result = engine.eval(&module);
 
     let problem = captured
         .lock()
@@ -491,6 +589,46 @@ fn merged_cluster_inherited_objective_folded_once() {
          once, not once per governed cluster member (would be 3 without dedup); \
          got {} term(s)",
         objective.terms.len(),
+    );
+
+    // Per-cell `inherited_from` routing (reviewer_comprehensive, amendment
+    // task #5014): `dispatch_merged_cluster_solve` looks up each resolved
+    // cell's OWNING member's governance, not `idx`'s (whichever cluster
+    // member triggered the merged dispatch) -- so ChildA/ChildB (which
+    // INHERIT Parent's objective) must carry `inherited_from ==
+    // Some("Parent")`, while Parent (which owns its objective) must carry
+    // `inherited_from == None`.
+    assert_eq!(
+        result
+            .objective_provenance
+            .get(&child_a_cost)
+            .expect("objective_provenance missing an entry for ChildA.cost")
+            .inherited_from,
+        Some("Parent".to_string()),
+        "ChildA.cost's objective is INHERITED from Parent -- its \
+         objective_provenance.inherited_from must route to the OWNING \
+         member's (ChildA's) governance",
+    );
+    assert_eq!(
+        result
+            .objective_provenance
+            .get(&child_b_cost)
+            .expect("objective_provenance missing an entry for ChildB.cost")
+            .inherited_from,
+        Some("Parent".to_string()),
+        "ChildB.cost's objective is INHERITED from Parent -- same per-cell \
+         routing as ChildA.cost",
+    );
+    assert_eq!(
+        result
+            .objective_provenance
+            .get(&parent_total)
+            .expect("objective_provenance missing an entry for Parent.total")
+            .inherited_from,
+        None,
+        "Parent.total's objective is its OWN (not inherited) -- \
+         inherited_from must be None, not mistakenly propagated from \
+         another cluster member's governance",
     );
 }
 
@@ -1222,5 +1360,54 @@ fn merged_cluster_skips_solver_when_every_auto_is_excluded() {
             && !result.resolved_params.contains_key(&connector_m),
         "neither excluded connector cell can appear in resolved_params -- no \
          solve ever ran",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Accepted cold/warm divergence (TODO(#5118)) -- documented, not fixed here.
+// ---------------------------------------------------------------------------
+
+/// `eval_cached()` (the warm LSP/GUI incremental path) calls
+/// `resolve_order_ordering_only`, which returns NO clusters (α, task #5013)
+/// -- so the SAME within-cap {A, B} `MergedSolve` cluster that the cold
+/// `eval()` driver merges into ONE solve
+/// (`merged_cluster_dispatches_single_solve_with_union_auto_params` above)
+/// is instead solved PER-TEMPLATE (2 calls) on the warm path. This is a
+/// KNOWN, accepted cold/warm fidelity divergence, not a regression
+/// introduced by this task -- `eval_cached` already skipped cluster work
+/// before β existed -- tracked by the live follow-up `TODO(#5118)` (β's
+/// plan.json design_decisions: "Scope the merged solve to the cold eval()
+/// driver loop; leave warm eval_cached on the per-template path"). This test
+/// pins the accepted behavior so a future change to either path can't
+/// silently alter it without a test failure calling it out.
+#[test]
+fn eval_cached_does_not_merge_within_cap_cluster_unlike_cold_eval() {
+    let module = two_cycle_cluster_module();
+
+    let a_k = ValueCellId::new("A", "k");
+    let b_m = ValueCellId::new("B", "m");
+
+    let mut combined = HashMap::new();
+    combined.insert(a_k.clone(), mm(3.0));
+    combined.insert(b_m.clone(), mm(7.0));
+
+    let spy = MultiCallSpyConstraintSolver::new(vec![SolveResult::Solved {
+        values: combined,
+        unique: true,
+    }]);
+    let captured = spy.captured_problems();
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+    let _result = engine.eval_cached(&module, VersionId(1));
+
+    assert_eq!(
+        captured.lock().unwrap().len(),
+        2,
+        "eval_cached must NOT merge the {{A,B}} cluster -- it solves \
+         per-template (2 calls) even though the SAME module forms a single \
+         MergedSolve cluster on the cold eval() path (accepted divergence, \
+         TODO(#5118)); got {} call(s)",
+        captured.lock().unwrap().len(),
     );
 }

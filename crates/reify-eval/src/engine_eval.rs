@@ -1547,96 +1547,56 @@ fn build_solver_problem(
     ))
 }
 
-/// Builds the merged `ResolutionProblem` for a within-cap `MergedSolve` cluster
-/// (M-WHOLE β, task #5014, PRD `docs/prds/v0_6/whole-model-objective-coupling.md`
-/// §5.2): unions ALL member scopes' auto cells and dependency-filtered
-/// constraints into ONE problem, so the cold `eval()` driver solves the whole
-/// cluster once instead of running `build_solver_problem`'s own-template-only
-/// collection per member — the exact per-template freeze-as-you-go cascade
-/// F-inherit INV-5 refused.
+/// Builds the merged `ResolutionProblem` for a within-cap `MergedSolve`
+/// cluster (M-WHOLE β, task #5014, PRD
+/// `docs/prds/v0_6/whole-model-objective-coupling.md` §5.2): unions ALL
+/// member scopes' regular auto cells, dependency-filtered constraints, and
+/// governing objectives into ONE problem, so the cold `eval()` driver solves
+/// the whole cluster once instead of per-member (the per-template
+/// freeze-as-you-go cascade F-inherit INV-5 refused).
 ///
-/// Determinism (§5.2, BT5): `auto_params`/`constraints` order is a pure
-/// function of `cluster.scopes` (already sorted ascending by source index,
-/// see [`crate::resolve_order::Cluster::scopes`]) × each member's
-/// `value_cells`/`constraints` declaration order — no HashMap/HashSet
-/// iteration contributes to ordering; the `HashSet` below is used only for
-/// O(1) constraint-filter membership tests.
+/// # Contract
 ///
-/// Simplification vs. `build_solver_problem`: this does not PIN
-/// connector-instance autos (task #4710) the way `build_solver_problem` does
-/// (`connector_pin_if_determined`'s child-Determined lookup) — no fixture in
-/// the β test suite places a connector-pinned auto inside a `MergedSolve`
-/// cluster, and this builder's mirror target (§5.2) is the regular-auto /
-/// constraint-filter / current_values / functions shape only. A module that
-/// combines connectors with a whole-model cluster spanning the connector's
-/// parent scope should extend this function to reuse
-/// `connector_pin_if_determined` the way `build_solver_problem` does, so
-/// such a module is actually SOLVED rather than merely refused.
+/// * **Determinism (BT5):** `auto_params`/`constraints` order is a pure
+///   function of `cluster.scopes` (already sorted ascending by source
+///   index, see [`crate::resolve_order::Cluster::scopes`]) × each member's
+///   `value_cells`/`constraints` declaration order — no HashMap/HashSet
+///   iteration contributes to ordering; the `HashSet` below is
+///   membership-only (constraint-filter reads).
+/// * **`auto_params` may come back empty** (e.g. every contributed auto was
+///   excluded as a strict connector, below) — the caller
+///   (`dispatch_merged_cluster_solve`) must treat that as "skip the
+///   solver", mirroring `build_solver_problem`'s `None`-means-skip
+///   contract.
+/// * **Strict connector-instance autos are excluded and error.** Unlike
+///   `build_solver_problem` (which pins a Determined child's connector auto,
+///   or silently skips an undetermined one), this excludes every strict
+///   (`!free`) connector-instance auto uniformly and pushes a hard
+///   `Diagnostic::error` — a real guard (not `debug_assert!`), since release
+///   builds must not silently mis-solve the pin. Free connector-instance
+///   autos are unaffected (solved as ordinary autos in both builders).
+///   Connector-pinning *inside* a whole-model cluster is unsupported today;
+///   extend this function to reuse `connector_pin_if_determined` if that
+///   combination is needed.
+/// * **Objective fold is opaque and deduped by owner (§6.1 INV-4).** Each
+///   member's governing `ObjectiveTerm`s (from [`governing_objective`]) are
+///   cloned WHOLE into one `WeightedSum` `ObjectiveSet` — `weight` is never
+///   read or re-folded as an f64 here (the solver's `eval_objective_set`
+///   owns that fold, keeping this representation-agnostic w.r.t. a future
+///   `weight: f64 -> Value::Scalar` flip). A container objective inherited
+///   by several members must contribute its terms EXACTLY ONCE: the fold is
+///   keyed by owner identity (the `inherited_from` container name, else the
+///   member's own template name), so a container and its inheriting
+///   children collapse to one contribution. `cost_robustness_lambda` carries
+///   through from the first member that sets one; a later, differing value
+///   pushes a warning diagnostic and is dropped (first-found wins).
+///   `objective` is `None` only when no member has a governing objective.
 ///
-/// Why only the STRICT variant is guarded below (reviewer_comprehensive,
-/// amendment task #5014): `connector_pin_if_determined` gates on
-/// `!cell.kind.is_auto_free()` ("Gate: strict auto only", its own doc
-/// comment) and returns `None` unconditionally for a `free == true` cell —
-/// regardless of whether its connector child is Determined.
-/// `build_solver_problem` therefore never pins a free connector-instance
-/// auto either; every free connector-instance cell always falls through to
-/// its `regular_auto_cells` arm and is handed to the solver as an ordinary
-/// free auto (the documented "resolve-to-feasible-value +
-/// non-unique-warning" behavior). `is_strict_connector_instance_auto`
-/// carries the identical `!free` gate, so the union loop below and
-/// `build_solver_problem` treat every free connector-instance auto
-/// IDENTICALLY — there is no Determined-free-connector case that
-/// `build_solver_problem` silently pins and that this guard could instead
-/// silently mis-solve; the two builders are already symmetric there. The
-/// one real asymmetry lives entirely WITHIN the strict population:
-/// `build_solver_problem` differentiates a Determined child (silent pin)
-/// from a not-yet-Determined child (silent skip, no diagnostic at all),
-/// whereas the guard below currently treats both strict sub-cases
-/// identically — exclude and push a loud error — because no fixture yet
-/// exercises a connector-pinnable (Determined-child) cell inside a
-/// `MergedSolve` cluster. Closing that residual gap is exactly the
-/// "extend this function to reuse `connector_pin_if_determined`" follow-up
-/// noted just above, not a free/strict boundary issue.
-///
-/// Until then this is a REAL, always-on guard, not just documented
-/// (amendment, task #5014 — was previously a `debug_assert!`, which compiles
-/// out in release and would have let a strict connector-instance auto reach
-/// the solver as an unconstrained free variable, silently mis-solving the
-/// pin in exactly the build where that matters most): the union loop below
-/// detects a strict connector-instance auto via
-/// `is_strict_connector_instance_auto`, EXCLUDES it from `auto_params`
-/// (mirroring `build_solver_problem`'s "Skipped" case — the cell stays
-/// `Undetermined` rather than being handed to the solver unconstrained), and
-/// pushes an error `Diagnostic` in every build profile. If EVERY auto cell
-/// contributed by the cluster is excluded this way, `auto_params` comes back
-/// empty; the caller (`dispatch_merged_cluster_solve`, amendment task #5014)
-/// checks for this and skips the solver call entirely — mirroring
-/// `build_solver_problem`'s `None`-means-skip contract — instead of issuing a
-/// spurious solve over zero auto params.
-///
-/// Cost note (cold-path only): like `build_solver_problem`, the
-/// constraint-filter loop below re-runs `extract_dependency_trace` on every
-/// member constraint's expression on every merged solve — O(constraints ×
-/// trace-size), no memoization. This mirrors the existing per-template cost
-/// (not a new asymptotic hazard), and a `MergedSolve` cluster is capped at
-/// `WHOLE_MODEL_CLUSTER_DIM_CAP` (12) auto cells, so the constant factor stays
-/// small. If profiling ever shows this hot, cache each constraint's trace (a
-/// pure function of `c.expr`) once and reuse it here and at any downstream
-/// consumer.
-///
-/// Spanning objective (step-08 of #5014, §5.2 "objective fold consumed
-/// abstractly"): for each member scope in `cluster.scopes`, `governance[idx]`'s
-/// `ObjectiveTerm`s (already resolved by [`governing_objective`] — own
-/// objective or nearest inherited container, §6.1 INV-4) are cloned WHOLE and
-/// concatenated into one `WeightedSum` `ObjectiveSet`. `weight` is never read
-/// or re-folded as an f64 here — the solver's `eval_objective_set` owns that
-/// fold, so this stays representation-agnostic w.r.t. a future `weight: f64
-/// -> Value::Scalar` flip. `cost_robustness_lambda` carries through from the
-/// first member that sets one; if a LATER governed member sets a *different*
-/// lambda, the collision is not silent — a warning diagnostic is pushed to
-/// `diagnostics` and the first-found value still wins (documented precedence,
-/// amendment task #5014). `objective` is `None` only when NO member in the
-/// cluster has any governing objective.
+/// Cost (cold-path only): like `build_solver_problem`, the constraint filter
+/// re-runs `extract_dependency_trace` per member constraint on every call —
+/// no memoization. This mirrors the existing per-template cost, and cluster
+/// size is capped at `WHOLE_MODEL_CLUSTER_DIM_CAP` (12), so the constant
+/// factor stays small; memoize the trace if profiling ever shows otherwise.
 fn build_merged_solver_problem(
     cluster: &crate::resolve_order::Cluster,
     templates: &[TopologyTemplate],
@@ -5315,53 +5275,41 @@ impl Engine {
     /// Dispatches ONE merged solver call for a within-cap `MergedSolve`
     /// cluster (M-WHOLE β, task #5014, PRD
     /// `docs/prds/v0_6/whole-model-objective-coupling.md` §5.2), reached at
-    /// `idx` — the first-in-order member of `cluster` per `ro.order` — by the
-    /// cold `eval()` driver loop above. Builds the merged `ResolutionProblem`
-    /// via [`build_merged_solver_problem`], solves it once, and applies the
-    /// existing single-scope Solved/Infeasible/NoProgress write-back pattern
-    /// (mirrors the per-template arm in `eval()` just above this impl block)
-    /// to the WHOLE cluster in one pass.
+    /// `idx` — the first-in-order member of `cluster` per `ro.order` — by
+    /// the cold `eval()` driver loop above. Builds the merged
+    /// `ResolutionProblem` via [`build_merged_solver_problem`], solves it
+    /// once, and applies the existing single-scope
+    /// Solved/Infeasible/NoProgress write-back pattern (mirrors the
+    /// per-template arm just above this impl block) to the WHOLE cluster in
+    /// one pass. The caller marks the entire cluster dispatched up-front and
+    /// skips every other member in `ro.order`, so this is the ONLY
+    /// write-back this cluster gets.
     ///
-    /// Full N-scope write-back (step-04 of #5014): every `(id, val)` in the
-    /// merged `solver_values` is written to `values`/`resolved_params`/the
-    /// snapshot/the cache/`objective_provenance`, regardless of which cluster
-    /// member owns it — each `ValueCellId` already encodes its owning scope
-    /// (`id.entity`), so a single un-filtered pass over `solver_values`
-    /// correctly routes every cluster member's cells (§5.2 "write the solved
-    /// values back to ALL cluster member scopes"). The caller marks the
-    /// entire cluster dispatched up-front and skips every other member in
-    /// `ro.order`, so this is the ONLY write-back this cluster gets.
+    /// # Contract
     ///
-    /// `objective_provenance` entries are populated from the SAME spanning
-    /// objective the solver actually used (amendment, task #5014 — previously
-    /// this recorded `objective: None`/empty `term_contributions` for every
-    /// cluster cell even when a spanning objective governed the solve, a
-    /// fidelity regression vs. the pre-β per-template path): `objective`,
-    /// `combination`, and `term_contributions` are computed ONCE per merged
-    /// solve (mirrors the per-template arm just above this impl block) and
-    /// shared via `Arc` across every resolved cell. Each entry's `scope` is
-    /// that id's OWN owning entity (`id.entity`), not `idx`'s template, since
-    /// one merged solve spans N scopes; `inherited_from` is likewise looked
-    /// up per-cell against the OWNING member's `governance` entry (a cell
-    /// belongs to exactly one cluster member), since different members may
-    /// have different own-vs-inherited governance (§6.1).
-    ///
-    /// Downstream let cells (step-06 of #5014) are re-evaluated for EVERY
-    /// cluster member template, not just `idx`'s: `cluster.scopes` (already a
-    /// stable ascending-by-source-index `Vec`, §5.2 determinism) is walked in
-    /// full, calling `evaluate_let_bindings` once per member against the
-    /// SAME merged snapshot/version, so a member's `let` cell that reads a
-    /// co-solved auto cell owned by a DIFFERENT cluster member (BT3) sees the
-    /// merged value — that auto was already written back above, before any
-    /// member's let cone is evaluated.
-    ///
-    /// Objective-aware routing (step-08 of #5014): when
-    /// [`build_merged_solver_problem`] assembles a spanning objective (any
-    /// cluster member governed, §6.1), the solve is dispatched via
-    /// `solve_ranked` — identically to the per-template objective branch just
-    /// above this impl block — so `W_SOLVER_OPTIMALITY_UNPROVEN` fires under
-    /// the same iteration-limit condition. Objective-less clusters keep the
-    /// plain `.solve()` call (zero behaviour change for the common case).
+    /// * **Full N-scope write-back:** every `(id, val)` in the merged
+    ///   `solver_values` is written to `values`/`resolved_params`/the
+    ///   snapshot/the cache/`objective_provenance`, regardless of which
+    ///   cluster member owns it — each `ValueCellId` already encodes its
+    ///   owning scope (`id.entity`), so one un-filtered pass routes every
+    ///   member's cells.
+    /// * **`objective_provenance` is per-cell, not per-`idx`:** `objective`,
+    ///   `combination`, and `term_contributions` are computed ONCE per
+    ///   merged solve and shared via `Arc` across every resolved cell. Each
+    ///   entry's `scope` is that id's OWN owning entity, and
+    ///   `inherited_from` is looked up against the OWNING member's
+    ///   `governance` entry — different cluster members may have different
+    ///   own-vs-inherited governance (§6.1).
+    /// * **Let cones re-evaluate for EVERY member:** `cluster.scopes`
+    ///   (stable ascending-by-source-index) is walked in full, calling
+    ///   `evaluate_let_bindings` once per member against the SAME merged
+    ///   snapshot/version, so a member's `let` cell reading a co-solved auto
+    ///   owned by a DIFFERENT member (BT3) sees the merged value.
+    /// * **Objective-aware routing:** when the merged problem carries a
+    ///   spanning objective, the solve is dispatched via `solve_ranked`
+    ///   (identically to the per-template objective branch above), so
+    ///   `W_SOLVER_OPTIMALITY_UNPROVEN` fires under the same condition.
+    ///   Objective-less clusters keep the plain `.solve()` call.
     #[allow(clippy::too_many_arguments)]
     fn dispatch_merged_cluster_solve(
         &mut self,
