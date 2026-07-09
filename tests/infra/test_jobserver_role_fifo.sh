@@ -35,10 +35,16 @@ MERGE_FIFO="$(mktemp -u /tmp/test-jb-merge-XXXXXX)"
 TASK_FIFO="$(mktemp -u /tmp/test-jb-task-XXXXXX)"
 ABSENT_PATH="$(mktemp -u /tmp/test-jb-absent-XXXXXX)"
 LIVE_PID=""   # populated by the liveness-probe cases below (task 5146); killed by _cleanup
+N_BALANCER_PID=""   # populated by case (n)'s real-balancer integration test; killed by _cleanup
+N_MERGE_FIFO=""
+N_TASK_FIFO=""
 
 _cleanup() {
     [ -n "$LIVE_PID" ] && kill "$LIVE_PID" 2>/dev/null || true
+    [ -n "$N_BALANCER_PID" ] && kill -9 "$N_BALANCER_PID" 2>/dev/null || true
     rm -f "$MERGE_FIFO" "$TASK_FIFO" "${TASK_FIFO}.owner" 2>/dev/null || true
+    [ -n "$N_MERGE_FIFO" ] && rm -f "$N_MERGE_FIFO" "${N_MERGE_FIFO}.owner" "${N_MERGE_FIFO}.owner.tmp" 2>/dev/null || true
+    [ -n "$N_TASK_FIFO" ] && rm -f "$N_TASK_FIFO" "${N_TASK_FIFO}.owner" "${N_TASK_FIFO}.owner.tmp" 2>/dev/null || true
 }
 trap _cleanup EXIT
 
@@ -325,5 +331,75 @@ rm -f "${TASK_FIFO}.owner"
 kill "$LIVE_PID" 2>/dev/null || true
 wait "$LIVE_PID" 2>/dev/null || true
 LIVE_PID=""
+
+# ---------------------------------------------------------------------------
+# (n) INTEGRATION: real balancer SIGKILLed → verify.sh probes the genuine
+#     leftover stamp and falls back to plain cargo (task 5146 review comment
+#     2, round 3).
+#
+#     Cases (g)-(m) above validate _jobserver_owner_live()'s STALE/LIVE/
+#     UNKNOWN logic against SYNTHETIC hand-written ".owner" stamps; none of
+#     them prove the daemon's ACTUAL on-disk stamp format (field order,
+#     trailing newline, whitespace) round-trips through this file's
+#     `read -r pid boot` the way the synthetic cases assume — a format drift
+#     on either side (this probe, or jobserver-balancer.py's
+#     write_owner_stamp()) would only be caught by an end-to-end run like
+#     this one. Start the REAL balancer daemon (same one
+#     tests/infra/test_jobserver_balancer.sh drives), SIGKILL it once its
+#     stamp is on disk (the crash path Block 19b there proves leaves the
+#     stamp behind), and run the REAL verify.sh probe against that genuine
+#     leftover file end-to-end.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- (n) INTEGRATION: real balancer SIGKILLed → verify.sh falls back to plain cargo ---"
+
+BALANCER_PY="$REPO_ROOT/scripts/jobserver-balancer.py"
+N_MERGE_FIFO="$(mktemp -u /tmp/test-jb-n-merge-XXXXXX)"
+N_TASK_FIFO="$(mktemp -u /tmp/test-jb-n-task-XXXXXX)"
+
+REIFY_JOBSERVER_MERGE_FIFO="$N_MERGE_FIFO" \
+REIFY_JOBSERVER_TASK_FIFO="$N_TASK_FIFO" \
+REIFY_JOBSERVER_TOKENS=4 \
+REIFY_JOBSERVER_POLL_INTERVAL=0.05 \
+    python3 "$BALANCER_PY" &
+N_BALANCER_PID=$!
+
+# Wait (bounded ~5s) for the real daemon to publish its task-FIFO owner stamp.
+_n_stamp_present=0
+_n_t0=$(date +%s)
+while true; do
+    if [ -f "${N_TASK_FIFO}.owner" ]; then
+        _n_stamp_present=1; break
+    fi
+    [ $(( $(date +%s) - _n_t0 )) -ge 5 ] && break
+    sleep 0.05
+done
+assert "(n) INTEGRATION: real balancer published its task-FIFO owner stamp (precondition)" \
+    test "$_n_stamp_present" -eq 1
+
+# SIGKILL — same crash path Block 19b (test_jobserver_balancer.sh) proves
+# leaves the FIFO + stamp behind: no cleanup code runs at all.
+kill -9 "$N_BALANCER_PID" 2>/dev/null || true
+wait "$N_BALANCER_PID" 2>/dev/null || true
+N_BALANCER_PID=""
+sleep 0.2   # let the kernel settle the reap before probing
+
+_N_STDERR="$(mktemp)"
+_PLAN_N="$(DF_VERIFY_ROLE=task REIFY_JOBSERVER_TASK_FIFO="$N_TASK_FIFO" \
+    bash "$VERIFY" test --print-plan 2>"$_N_STDERR" || true)"
+export _PLAN_N
+
+assert "(n) INTEGRATION: no active 'export CARGO_MAKEFLAGS' line (genuine dead-pid stamp)" \
+    bash -c '! printf "%s\n" "$_PLAN_N" | grep -q "export CARGO_MAKEFLAGS"'
+
+assert "(n) INTEGRATION: 'CARGO_MAKEFLAGS left unset' + 'stale' comment present" \
+    bash -c 'printf "%s\n" "$_PLAN_N" | grep -i "CARGO_MAKEFLAGS left unset" | grep -qi "stale"'
+
+assert "(n) INTEGRATION: 'verify.sh: WARNING' appears on stderr" \
+    bash -c "grep -qF 'verify.sh: WARNING' '$_N_STDERR'"
+
+rm -f "$_N_STDERR" "$N_MERGE_FIFO" "$N_TASK_FIFO" "${N_MERGE_FIFO}.owner" "${N_TASK_FIFO}.owner"
+N_MERGE_FIFO=""
+N_TASK_FIFO=""
 
 test_summary
