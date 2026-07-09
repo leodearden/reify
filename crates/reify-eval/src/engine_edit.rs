@@ -692,6 +692,19 @@ fn donate_warm_state_and_invalidate<'a, I, T, F>(
     }
 }
 
+/// Dedup key for [`dedup_diagnostics_preserve_order`]: the fields that
+/// jointly determine a [`Diagnostic`]'s rendered identity (see that
+/// function's doc comment for why `Diagnostic` itself can't derive
+/// `PartialEq`/`Hash`). Factored out of the function signature per
+/// `clippy::type_complexity`.
+type DiagnosticDedupKey = (
+    Severity,
+    Option<DiagnosticCode>,
+    String,
+    Vec<(u32, u32, String)>,
+    Vec<String>,
+);
+
 /// De-duplicate a diagnostics vec by rendered content, preserving the order
 /// of first occurrence (amend, task ε #4957 review round 2).
 ///
@@ -715,17 +728,20 @@ fn donate_warm_state_and_invalidate<'a, I, T, F>(
 /// fields that jointly determine a diagnostic's rendered identity —
 /// severity, code, message, label `(span, message)` pairs, and candidates —
 /// rather than requiring an upstream derive change.
+///
+/// `edit_param` is on the interactive LSP edit hot path and the
+/// overwhelmingly common case is 0 or 1 diagnostics, where a duplicate is
+/// impossible by construction — so that case returns `diags` unchanged
+/// before touching the `HashSet` or cloning any diagnostic field (amend,
+/// task ε #4957 review round 3).
 fn dedup_diagnostics_preserve_order(diags: Vec<Diagnostic>) -> Vec<Diagnostic> {
-    let mut seen: HashSet<(
-        Severity,
-        Option<DiagnosticCode>,
-        String,
-        Vec<(u32, u32, String)>,
-        Vec<String>,
-    )> = HashSet::new();
+    if diags.len() < 2 {
+        return diags;
+    }
+    let mut seen: HashSet<DiagnosticDedupKey> = HashSet::new();
     let mut out = Vec::with_capacity(diags.len());
     for d in diags {
-        let key = (
+        let key: DiagnosticDedupKey = (
             d.severity,
             d.code,
             d.message.clone(),
