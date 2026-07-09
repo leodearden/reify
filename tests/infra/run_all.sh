@@ -488,6 +488,19 @@ _ra_partial_failed_names() {
 # gather error must never be able to suppress the marker. `set +e` covers
 # the whole handler for exactly this reason.
 #
+# DELIBERATE even when the name union is empty (SIGTERM landed before any
+# member recorded a nonzero exit -- e.g. all workers still in-flight): the
+# bare `FAILED (partial)` classifier line is still emitted rather than a
+# distinct not-yet-failed token, so an interrupted run with no confirmed
+# member failure is still over-classified as a failure. A run that never
+# reached a Summary line is abnormal regardless of attribution, and a
+# distinct empty-names token (e.g. "INTERRUPTED (partial)") would only be
+# safe once dark-factory's classifier is confirmed to recognize it -- a
+# cross-repo change out of scope here (CLAUDE.md "Cross-repo seams": reify
+# ships the primitive, dark-factory wires the invocation). Over-classifying
+# a bare interrupt as a failure is the accepted tradeoff over risking a
+# silent fall-through back to the tree_sitter_generate_error mislabel.
+#
 # Re-raises via `trap - TERM; kill -TERM $$` (rather than `exit`) so the
 # process's recorded exit status reflects signal death (143), and so the
 # EXISTING `_H2_WORKDIR` EXIT-trap cleanup (below) still runs AFTER this
@@ -506,6 +519,7 @@ _ra_on_term() {
             | sed '/^$/d' | sort -u | tr '\n' ' ' | sed 's/ $//'
     )"
 
+    # Unconditional even when $_names is empty -- see "DELIBERATE" above.
     echo "=== FAILED: ${_names} (partial) ==="
     printf 'FAILED %s(partial)\n' "${_names:+$_names }"
 
