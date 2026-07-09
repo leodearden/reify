@@ -621,6 +621,18 @@ fn v0_1_example_corpus_compile_and_check_time_is_bounded() {
 }
 
 // ─── step-11 unit guards: per_file_violations pure-helper contract ─────────
+//
+// The two guards below both ultimately exercise the same one-line `dur >
+// per_file_budget` filter inside `per_file_violations`, so their behavioral
+// coverage overlaps: neither can fail without the other also being capable
+// of catching a similarly-shaped regression in that filter. They are kept as
+// two separate, narrowly-named tests rather than merged into one
+// table-driven case because each name pins a distinct guarantee — a failure
+// in `_flags_quadratic_overrun` says "a real regression stopped going RED",
+// while a failure in `_ignores_aggregate_total_wall_clock` says "the
+// aggregate/total budget task 5149 removed has come back" — and a single
+// consolidated test would report only "table test failed" on either,
+// losing that at-a-glance diagnosis.
 
 /// `per_file_violations` must flag a genuinely over-budget file and must NOT
 /// flag sub-budget files, including a file landing exactly on the budget
