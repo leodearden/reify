@@ -607,6 +607,13 @@ fn v0_1_example_corpus_compile_and_check_time_is_bounded() {
         measurements.push((rel, elapsed));
     }
 
+    assert!(
+        !measurements.is_empty(),
+        "corpus discovery found no .ri files — discover_ri_files()/SKIP_SET may be \
+         misconfigured (e.g. examples dir moved or every entry skipped), which would \
+         silently turn this perf gate into a no-op"
+    );
+
     let violations = per_file_violations(&measurements, PER_FILE_BUDGET);
 
     let report_parts: Vec<String> = violations
@@ -623,68 +630,42 @@ fn v0_1_example_corpus_compile_and_check_time_is_bounded() {
 
 // ─── step-11 unit guard: per_file_violations pure-helper contract ─────────
 
-/// `per_file_violations` contract, table-driven so a failing row's label
-/// pins which guarantee broke: a real regression failing to go RED, or the
-/// aggregate/total budget task 5149 removed coming back.
+/// `per_file_violations` must flag a genuinely over-budget file and must NOT
+/// flag sub-budget files, including a file landing exactly on the budget
+/// boundary (`duration == budget` uses strict `>`, so it is NOT a
+/// violation). Covers under-budget (500ms, 9s), exactly-at-budget (10s), and
+/// over-budget (11s) in one fixture — the non-vacuous guarantee that the
+/// per-file gate exists to provide: a genuinely quadratic file still goes
+/// RED, while the off-by-one-prone `>` vs `>=` boundary is pinned in the
+/// other direction.
+///
+/// No aggregate/total-budget case here: `per_file_violations` is a pure
+/// per-file filter with no place to hold aggregate logic, so a case
+/// asserting "sub-budget files summing past 120s produce no violations"
+/// would only prove the filter filters per-file — it can't catch a
+/// regression that reintroduces a total budget, since that logic would live
+/// in the caller (`v0_1_example_corpus_compile_and_check_time_is_bounded`),
+/// not here. The absence of an aggregate budget is documented in that
+/// function's "# Budget rationale" section above instead.
 #[test]
 fn per_file_gate_violation_contract() {
-    struct Case {
-        label: &'static str,
-        measurements: Vec<(String, Duration)>,
-        budget: Duration,
-        expected: Vec<&'static str>,
-    }
-
-    // 20 files at 9s each (still under the 10s per-file budget) sum to 180s,
-    // comfortably past the old 120s total — enough to demonstrate "total >>
-    // budget while each file is under" without the allocation cost of a
-    // much larger fixture.
-    let aggregate_measurements: Vec<(String, Duration)> = (0..20)
-        .map(|i| (format!("file_{i}.ri"), Duration::from_secs(9)))
-        .collect();
-
-    // Sanity: the aggregate case's fixture sum must comfortably exceed the
-    // old 120s total budget, otherwise that row would pass vacuously.
-    let aggregate_total: Duration = aggregate_measurements.iter().map(|(_, d)| *d).sum();
-    assert!(
-        aggregate_total > Duration::from_secs(120),
-        "aggregate case fixture must exceed the old 120s total budget to be \
-         meaningful, got {aggregate_total:?}"
-    );
-
-    let cases = vec![
-        Case {
-            label: "flags a genuinely over-budget file and must NOT flag sub-budget \
-                    files, including a file landing exactly on the budget boundary \
-                    (duration == budget uses strict `>`, so it is NOT a violation)",
-            measurements: vec![
-                ("fast.ri".to_string(), Duration::from_millis(500)),
-                ("slow.ri".to_string(), Duration::from_secs(11)),
-                ("edge.ri".to_string(), Duration::from_secs(9)),
-                ("boundary.ri".to_string(), Duration::from_secs(10)),
-            ],
-            budget: Duration::from_secs(10),
-            expected: vec!["slow.ri"],
-        },
-        Case {
-            label: "has no aggregate/total concept: sub-budget files whose SUM \
-                    exceeds the old 120s total budget must still produce zero \
-                    violations",
-            measurements: aggregate_measurements,
-            budget: Duration::from_secs(10),
-            expected: vec![],
-        },
+    let measurements: Vec<(String, Duration)> = vec![
+        ("fast.ri".to_string(), Duration::from_millis(500)),
+        ("slow.ri".to_string(), Duration::from_secs(11)),
+        ("edge.ri".to_string(), Duration::from_secs(9)),
+        ("boundary.ri".to_string(), Duration::from_secs(10)),
     ];
 
-    for case in &cases {
-        let violations = per_file_violations(&case.measurements, case.budget);
-        let names: Vec<&str> = violations.iter().map(|(name, _)| name.as_str()).collect();
-        assert_eq!(
-            names, case.expected,
-            "case {:?}: expected {:?}, got {:?}",
-            case.label, case.expected, names
-        );
-    }
+    let violations = per_file_violations(&measurements, Duration::from_secs(10));
+
+    let names: Vec<&str> = violations.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["slow.ri"],
+        "expected only the 11s file (> 10s budget) to be flagged as a violation; \
+         sub-budget files (500ms, 9s) and the exact-boundary file (10s — strict `>` \
+         means duration == budget is NOT a violation) must not be flagged, got: {names:?}"
+    );
 }
 
 // ─── step-13: fixture is included in corpus ───────────────────────────────────
