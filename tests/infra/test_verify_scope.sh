@@ -415,6 +415,95 @@ assert "C5/no-main: full scope forced (RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1)" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1"' _ "$PLAN_C5"
 
 # ===========================================================================
+# DEL-* scenarios (task 5140): scope classification must be deletion-aware.
+# verify.sh derives its changed-file list with `git diff --diff-filter=ACMR`
+# at both scope sites (:718 branch, :725 staged) — ACMR silently omits
+# Deleted (D) paths, so a branch/stage whose ONLY change deletes a file is
+# invisible to decide_scope. A D-status diff requires the file to already
+# exist at the diff base, so each scenario seeds its artifact into the
+# fixture's committed base via make_branch_fixture, then deletes it on a
+# task-branch (branch scope) / stages its removal (staged scope). Dedicated
+# inline fixtures (FIX_B5/FIX_C5 idiom), left dirty and reclaimed by the
+# EXIT trap.
+#
+# All three are RED against current ACMR (deletion dropped from `_files` ->
+# decide_scope classifies nothing -> RUN_RUST=0 RUN_GUI=0 RUN_OCCT_GATE=0) and
+# GREEN once the diff-filter widens to ACMRD.
+# ===========================================================================
+echo ""
+echo "=== Deletion-aware scope classification (task 5140 DEL-* scenarios) ==="
+
+# ---------------------------------------------------------------------------
+# Scenario DEL-crate-branch: deleting a non-OCCT crate file on a branch is
+# still classified into scope. Locks the :718 branch-diff site.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario DEL-crate-branch: delete crates/reify-doc file on branch -> still classified (RED until ACMRD) ---"
+FIX_DEL_CRATE=""
+make_branch_fixture FIX_DEL_CRATE
+# Seed the artifact into the committed base on `main` — a Deleted-status diff
+# requires the file to already exist at $_MERGE_BASE.
+mkdir -p "$FIX_DEL_CRATE/crates/reify-doc/src"
+printf 'x\n' > "$FIX_DEL_CRATE/crates/reify-doc/src/lib.rs"
+git -C "$FIX_DEL_CRATE" add crates/reify-doc/src/lib.rs
+git -C "$FIX_DEL_CRATE" commit -q -m "seed reify-doc"
+git -C "$FIX_DEL_CRATE" checkout -q -b task-branch
+git -C "$FIX_DEL_CRATE" rm -q crates/reify-doc/src/lib.rs
+git -C "$FIX_DEL_CRATE" commit -q -m "delete reify-doc"
+PLAN_DEL_CRATE="$(cd "$FIX_DEL_CRATE" && bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
+git -C "$FIX_DEL_CRATE" checkout -q main
+git -C "$FIX_DEL_CRATE" branch -q -D task-branch
+# FIX_DEL_CRATE left dirty; cleaned up by the EXIT trap via _TMPDIRS.
+assert "DEL-crate-branch: scope=branch reported in plan header" \
+    bash -c 'printf "%s\n" "$1" | grep -q "scope=branch"' _ "$PLAN_DEL_CRATE"
+assert "DEL-crate-branch: RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0 (deleted non-OCCT crate classified)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0"' _ "$PLAN_DEL_CRATE"
+
+# ---------------------------------------------------------------------------
+# Scenario DEL-global-branch: deleting a workspace-global (Cargo.lock) on a
+# branch hits decide_scope's conservative-gate case AND forces affected=ALL
+# in Phase-2 narrowing. Locks the :718 branch-diff site.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario DEL-global-branch: delete Cargo.lock on branch -> conservative gate + affected=ALL (RED until ACMRD) ---"
+FIX_DEL_GLOBAL=""
+make_branch_fixture FIX_DEL_GLOBAL
+printf '# lockfile\n' > "$FIX_DEL_GLOBAL/Cargo.lock"
+git -C "$FIX_DEL_GLOBAL" add Cargo.lock
+git -C "$FIX_DEL_GLOBAL" commit -q -m "seed Cargo.lock"
+git -C "$FIX_DEL_GLOBAL" checkout -q -b task-branch
+git -C "$FIX_DEL_GLOBAL" rm -q Cargo.lock
+git -C "$FIX_DEL_GLOBAL" commit -q -m "delete Cargo.lock"
+PLAN_DEL_GLOBAL="$(cd "$FIX_DEL_GLOBAL" && bash scripts/verify.sh all --profile debug --scope branch --include-infra --print-plan 2>/dev/null)" || true
+git -C "$FIX_DEL_GLOBAL" checkout -q main
+git -C "$FIX_DEL_GLOBAL" branch -q -D task-branch
+# FIX_DEL_GLOBAL left dirty; cleaned up by the EXIT trap via _TMPDIRS.
+assert "DEL-global-branch: RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 (deleted workspace-global -> conservative gate)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1"' _ "$PLAN_DEL_GLOBAL"
+assert "DEL-global-branch: NARROW_ACTIVE=0 affected=ALL (deleted global defeats narrowing)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "NARROW_ACTIVE=0 affected=ALL"' _ "$PLAN_DEL_GLOBAL"
+
+# ---------------------------------------------------------------------------
+# Scenario DEL-crate-staged: staging the deletion of a non-OCCT crate file
+# (index-vs-HEAD = D) is still classified into scope. Locks the :725 staged
+# site.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario DEL-crate-staged: stage deletion of crates/reify-doc file -> still classified (RED until ACMRD) ---"
+FIX_DEL_STAGED=""
+make_branch_fixture FIX_DEL_STAGED
+mkdir -p "$FIX_DEL_STAGED/crates/reify-doc/src"
+printf 'x\n' > "$FIX_DEL_STAGED/crates/reify-doc/src/lib.rs"
+git -C "$FIX_DEL_STAGED" add crates/reify-doc/src/lib.rs
+git -C "$FIX_DEL_STAGED" commit -q -m "seed reify-doc"
+git -C "$FIX_DEL_STAGED" rm -q crates/reify-doc/src/lib.rs
+PLAN_DEL_STAGED="$(cd "$FIX_DEL_STAGED" && bash scripts/verify.sh all --profile debug --scope staged --include-infra --print-plan 2>/dev/null)" || true
+# FIX_DEL_STAGED left dirty (deletion staged, uncommitted); cleaned up by the
+# EXIT trap via _TMPDIRS.
+assert "DEL-crate-staged: RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0 (staged deletion of non-OCCT crate classified)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=0"' _ "$PLAN_DEL_STAGED"
+
+# ===========================================================================
 # Branch-scope narrowing scenarios: REIFY_AFFECTED_CRATES_OVERRIDE drives
 # -p flag wiring for clippy, nextest tail, and cargo check (step-2/step-4).
 # RED until step-2 lands (verify.sh has no narrowing yet).
