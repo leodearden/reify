@@ -3020,6 +3020,19 @@ fn eval_map_err(args: &[CompiledExpr], ctx: &EvalContext) -> Value {
             ref payload,
         } if type_name == "Result" && variant == "Err" => {
             let f = eval_expr(&args[1], ctx);
+            // The compiler (variant_construct.rs) guarantees every `Err`
+            // payload carries exactly one field named "error" — surface a
+            // violation via debug_assert (a wiring bug, not a user-reachable
+            // state) while still degrading gracefully to `Undef` for the
+            // mapped-over value in release builds, matching the eval
+            // anti-cascade convention used elsewhere in this module (cf. the
+            // `PurposeReflectiveAggregation` arm above).
+            debug_assert!(
+                payload.iter().any(|(field, _)| field == "error"),
+                "Result::Err payload should carry a single \"error\" field \
+                 (compiler-guaranteed by variant_construct.rs); got {:?}",
+                payload
+            );
             let error_val = payload
                 .iter()
                 .find(|(field, _)| field == "error")
