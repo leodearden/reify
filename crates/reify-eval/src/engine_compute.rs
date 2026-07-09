@@ -663,33 +663,14 @@ impl crate::Engine {
 
 /// Turn a [`catch_unwind`](std::panic::catch_unwind) panic payload into a
 /// printable message for the `Failed` diagnostic built in
-/// [`Engine::invoke_compute_trampoline`]: the standard downcast chain
-/// used elsewhere in the workspace (mirrors the idiom in
-/// `reify-stdlib`'s `orientation` module) — try `&str`, then `String`,
-/// else fall back to a fixed placeholder.
+/// [`Engine::invoke_compute_trampoline`].
 ///
-/// This duplicates rather than reuses that copy. Two distinct convergences
-/// are possible, and neither is attempted here — both are tracked as a
-/// follow-up via escalate_info (esc-5079-2):
-///
-/// - **In-crate**: the same downcast idiom is also inlined three times in
-///   `engine_eval.rs` (its `catch_unwind` payload handling). A private
-///   helper shared by `engine_compute.rs` and `engine_eval.rs` would
-///   consolidate all four copies without touching `reify-stdlib` at all —
-///   it is deferred only because editing `engine_eval.rs` falls outside
-///   this task's locked module (`engine_compute.rs` only).
-/// - **Cross-crate**: hoisting a shared `panic_payload_message` into a
-///   lower crate (e.g. `reify-core`) would additionally converge the
-///   `reify-stdlib` `orientation` copy, but requires touching `reify-stdlib`
-///   — a materially larger-scope change than the in-crate consolidation.
+/// Task #5121: delegates to the shared `reify_core::panic_payload_to_string`
+/// helper, which converges this copy with the near-identical downcast chain
+/// that used to be inlined in `reify-stdlib`'s `orientation` test module
+/// (deferred cross-crate follow-up from task #5079, esc-5079-2).
 fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
-    if let Some(s) = payload.downcast_ref::<&str>() {
-        (*s).to_string()
-    } else if let Some(s) = payload.downcast_ref::<String>() {
-        s.clone()
-    } else {
-        "<non-string panic payload>".to_string()
-    }
+    reify_core::panic_payload_to_string(payload)
 }
 
 /// Outcome of [`Engine::output_significance_outcome`] — richer than

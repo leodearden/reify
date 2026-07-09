@@ -24,6 +24,7 @@ pub mod field_calculus;
 pub mod kernel;
 pub mod hash;
 pub mod identity;
+pub mod panic_payload;
 pub mod persistent_cache;
 pub mod primitives;
 pub mod source_location;
@@ -56,6 +57,7 @@ pub use source_location::{
     SourceLocationInfo, build_line_offsets, byte_offset_to_line_col,
     line_col_to_byte_offset_with_offsets,
 };
+pub use panic_payload::panic_payload_to_string;
 pub use persistent_cache::PersistentlyCacheable;
 pub use spanned_ident::SpannedIdent;
 pub use ty::Type;
