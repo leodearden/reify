@@ -3313,21 +3313,19 @@ pub(crate) fn compile_entity(
                                 id,
                                 auto_free,
                                 cell_type,
-                                // Unconditionally Public — NOT priv-aware, unlike the
-                                // top-level structure-param site (entity.rs Site 1:
-                                // `if param.is_priv { Private } else { Public }`).
+                                // TODO(#5161): unconditionally Public — NOT priv-aware,
+                                // unlike the top-level structure-param site (entity.rs
+                                // Site 1: `if param.is_priv { Private } else { Public }`).
                                 // `priv` is grammatically legal on a port-member param
                                 // too (grammar.js `port_body` — `port_declaration`'s
                                 // `body` field — repeats `$.param_declaration`, whose
                                 // `optional('priv')` is unconditional), so
-                                // `param.is_priv` can be `true` here
-                                // and is silently dropped. Pre-existing asymmetry — the
-                                // original, pre-dedup code also hardcoded Public here —
-                                // that task #5058's decl-construction dedup preserves
-                                // byte-for-byte rather than fixes; making this
-                                // priv-aware would be a behavior change outside a pure
-                                // refactor's scope. Same known gap as the guarded-param
-                                // site in guards.rs; not addressed here.
+                                // `param.is_priv` can be `true` here and is silently
+                                // dropped. Pre-existing asymmetry — the original,
+                                // pre-dedup code also hardcoded Public here — that task
+                                // #5058's decl-construction dedup preserves byte-for-byte
+                                // rather than fixes; #5161 tracks making it priv-aware.
+                                // Same known gap as the guarded-param site in guards.rs.
                                 Visibility::Public,
                                 Vec::new(),
                                 param.span,
@@ -6458,29 +6456,11 @@ structure def Manifold {
         );
     }
 
-    // ── build_param_value_cell_decl: shared auto_free/param decl-construction
-    // helper (task ζ #5058, PRD compiler-type-hygiene.md §2 dup (e)) ──
-    //
-    // These tests exercise the helper directly, ahead of it being wired into
-    // the three duplicated call sites (entity.rs ×2 + guards.rs), and pin the
-    // one contract integration tests can't observe: whether `compile_default`
-    // is invoked on the auto branch.
-    //
-    // Ordering guarantee (ties into `check_param_default_type`, called from
-    // within the `compile_default` closure at the two entity.rs call sites,
-    // never inside the helper itself — see the helper's doc comment): that the
-    // diagnostic still fires, at its original site, after routing through the
-    // helper is covered end-to-end by
-    // `param_default_type_mismatch_tests.rs`'s
-    // `top_level_param_dimension_mismatch_errors_at_declaration` (Site 1) and
-    // `port_member_param_dimension_mismatch_errors_at_declaration` (Site 2),
-    // both of which compile real source and assert the diagnostic is present.
-    // `build_param_value_cell_decl_param_branch_preserves_diagnostics_pushed_in_closure`
-    // below complements that by pinning, at the helper level, that anything a
-    // `compile_default` closure pushes to `diagnostics` (as `check_param_default_type`
-    // does) is observable immediately after the helper call returns — i.e. the
-    // helper invokes the closure synchronously before constructing the decl,
-    // never deferring, reordering, or dropping its side effects.
+    // ── build_param_value_cell_decl tests (task ζ #5058) ──
+    // Exercise the helper's contracts directly (see its doc comment above its
+    // definition for the full invariants). Full-pipeline diagnostic coverage
+    // (that check_param_default_type still fires at Sites 1/2 after routing
+    // through the helper) lives in param_default_type_mismatch_tests.rs.
 
     /// Shared assertions for the fields that pass straight through
     /// `build_param_value_cell_decl` from its inputs to the returned decl on
@@ -6560,11 +6540,19 @@ structure def Manifold {
     /// over both cases, mirroring the auto-branch test's `for free in
     /// [true, false]` shape above. `CompiledExpr` has no `PartialEq` impl,
     /// so equality is pinned via `content_hash`.
+    ///
+    /// Uses a distinct, non-dimensionless `cell_type` (`Type::length()`) rather
+    /// than `Type::dimensionless_scalar()` so the equality checks below (both
+    /// here and in `assert_param_decl_passthrough_fields`) aren't trivially
+    /// satisfied by every dimensionless scalar comparing equal to every other
+    /// — this pins that the `&Type` `compile_default` observes and the `Type`
+    /// that ends up in `decl.cell_type` are the *same* value flowing through
+    /// the helper, not merely two coincidentally-equal defaults.
     #[test]
     fn build_param_value_cell_decl_param_branch_invokes_compile_default_exactly_once() {
         for yields_default in [true, false] {
             let id = ValueCellId::new("TestEntity", "y");
-            let cell_type = Type::dimensionless_scalar();
+            let cell_type = Type::length();
             let span = SourceSpan::new(11, 19);
             let solver_hints = vec![SolverHint {
                 kind: SolverHintKind::DiscreteSet,
@@ -6614,44 +6602,6 @@ structure def Manifold {
         }
     }
 
-    /// Non-auto branch (`auto_free = None`) with a distinct, non-dimensionless
-    /// `cell_type` (`Type::length()`, vs. the `Type::dimensionless_scalar()`
-    /// used by the other branch tests): makes explicit that the `&Type`
-    /// `compile_default` observes and the `Type` that ends up in
-    /// `decl.cell_type` are the *same* value flowing through the helper, not
-    /// merely two assertions that happen to hold because every
-    /// `dimensionless_scalar()` is trivially equal to every other.
-    #[test]
-    fn build_param_value_cell_decl_preserves_distinct_cell_type_identity() {
-        let id = ValueCellId::new("TestEntity", "w");
-        let cell_type = Type::length();
-        let span = SourceSpan::new(31, 37);
-        let observed_in_closure = std::cell::RefCell::new(None);
-
-        let decl = build_param_value_cell_decl(
-            id,
-            None,
-            cell_type.clone(),
-            Visibility::Public,
-            Vec::new(),
-            span,
-            |ct: &Type| {
-                *observed_in_closure.borrow_mut() = Some(ct.clone());
-                None
-            },
-        );
-
-        assert_eq!(
-            observed_in_closure.into_inner(),
-            Some(cell_type.clone()),
-            "compile_default must observe the same non-scalar cell_type that ends up in the decl"
-        );
-        assert_eq!(
-            decl.cell_type, cell_type,
-            "decl.cell_type must equal the distinct Length-dimensioned type passed in"
-        );
-    }
-
     /// The helper must not defer, reorder, or drop side effects a
     /// `compile_default` closure produces before returning — e.g. the
     /// diagnostic `check_param_default_type` pushes at the two entity.rs call
@@ -6659,8 +6609,9 @@ structure def Manifold {
     /// `build_param_value_cell_decl` constructs and returns the decl, so a
     /// diagnostic pushed inside the closure is observable immediately after
     /// the call returns. Complements (does not replace) the full-pipeline
-    /// coverage in `param_default_type_mismatch_tests.rs` — see the block
-    /// comment above this section for how the two fit together.
+    /// coverage in `param_default_type_mismatch_tests.rs`, which proves the
+    /// diagnostic fires at all — this pins the ordering guarantee that
+    /// integration tests can't observe directly.
     #[test]
     fn build_param_value_cell_decl_param_branch_preserves_diagnostics_pushed_in_closure() {
         let id = ValueCellId::new("TestEntity", "v");
