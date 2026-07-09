@@ -31,8 +31,8 @@ use std::time::Instant;
 
 use reify_compiler::{CompiledConnection, CompiledForallBody, CompiledFunction, CompiledModule};
 use reify_core::{
-    ConstraintNodeId, ContentHash, Diagnostic, RealizationNodeId, SnapshotId, Type, ValueCellId,
-    VersionId,
+    ConstraintNodeId, ContentHash, Diagnostic, DiagnosticCode, RealizationNodeId, Severity,
+    SnapshotId, Type, ValueCellId, VersionId,
 };
 use reify_ir::{
     AutoParam, CompiledExpr, DeterminacyState, PersistentMap, ResolutionProblem,
@@ -690,6 +690,56 @@ fn donate_warm_state_and_invalidate<'a, I, T, F>(
         }
         cache.invalidate(&nid);
     }
+}
+
+/// De-duplicate a diagnostics vec by rendered content, preserving the order
+/// of first occurrence (amend, task ε #4957 review round 2).
+///
+/// `edit_param` accumulates diagnostics from two independent sources that
+/// can both fire for the *same* consumer cell: the in-walk value loop's
+/// `try_eval_symbolic_topology_selector` fallback (drained from
+/// `selector_mint_diagnostics`) and the post-walk
+/// `re_eval_consumers_of_in_walk_mints_from_graph` pass (drained from
+/// `runtime_sink`). A consumer cell that (a) reads an upstream cell minted
+/// in-walk — so it qualifies for the post-walk re-eval pass — and (b) fails
+/// its *own* selector for a reason independent of that upstream, was
+/// visited (and diagnosed) once by the main loop AND once more by the
+/// post-walk pass, since neither loop tracks which cells the other already
+/// diagnosed. Before `selector_mint_diagnostics` existed the main-loop copy
+/// was silently dropped, so no duplication was possible; surfacing it
+/// (correctly, per the prior amendment) reopened this narrow duplicate-diagnostic
+/// edge case.
+///
+/// [`Diagnostic`] has no `PartialEq`/`Hash` derive (it lives in
+/// `reify-core`, outside this task's locked module), so this keys on the
+/// fields that jointly determine a diagnostic's rendered identity —
+/// severity, code, message, label `(span, message)` pairs, and candidates —
+/// rather than requiring an upstream derive change.
+fn dedup_diagnostics_preserve_order(diags: Vec<Diagnostic>) -> Vec<Diagnostic> {
+    let mut seen: HashSet<(
+        Severity,
+        Option<DiagnosticCode>,
+        String,
+        Vec<(u32, u32, String)>,
+        Vec<String>,
+    )> = HashSet::new();
+    let mut out = Vec::with_capacity(diags.len());
+    for d in diags {
+        let key = (
+            d.severity,
+            d.code,
+            d.message.clone(),
+            d.labels
+                .iter()
+                .map(|l| (l.span.start, l.span.end, l.message.clone()))
+                .collect(),
+            d.candidates.clone(),
+        );
+        if seen.insert(key) {
+            out.push(d);
+        }
+    }
+    out
 }
 
 impl Engine {
@@ -2299,6 +2349,14 @@ impl Engine {
         // populated above by `try_eval_symbolic_topology_selector` calls
         // during the in-walk mint retry — see the comment at that call site.
         diagnostics.append(&mut selector_mint_diagnostics);
+        // De-duplicate (amend, task ε #4957 review round 2): a consumer
+        // cell that reads an upstream in-walk mint AND independently fails
+        // its own selector can be diagnosed both by the main loop above
+        // (into `selector_mint_diagnostics`) and by
+        // `re_eval_consumers_of_in_walk_mints_from_graph` a few lines above
+        // (into `runtime_sink`) — see `dedup_diagnostics_preserve_order`'s
+        // doc. No-op on the happy path (all diagnostics already distinct).
+        let diagnostics = dedup_diagnostics_preserve_order(diagnostics);
 
         Ok(EvalResult {
             values,
