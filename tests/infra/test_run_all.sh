@@ -2220,5 +2220,306 @@ else
     assert "T23d: a single occurrence (< N) emits NO chronic WARNING (non-vacuity lock) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
 fi
 
+# -- Test 24: pool slot_acquire wait emits a live clock-stop reason marker (task #5147) --
+# On a REAL host-global pool-lock wait (forced here via an externally held
+# slot-1, the T16b/T17c external-holder pattern), the pool worker's
+# slot_acquire call must emit a LIVE @@REIFY_CLOCK_STOP@@ reason=<token>
+# marker to stderr -- the exact span dark_factory:1916 reads to pause/resume
+# its wall-clock verify-timeout budget (scripts/lib_clock_stop.sh). Today the
+# pool worker's slot_acquire call (run_all.sh) passes only 3 args (no REASON),
+# so no marker is emitted on a real wait -- this is the RED case. Intra-
+# invocation the pool never self-contends (worker-shell throttle == slot
+# count N), so this can only be forced via cross-invocation contention on a
+# shared lock: REIFY_RUN_ALL_POOL_CONCURRENCY=1 makes the lock have exactly
+# one slot (.slot-1), which is pre-held externally before invoking run_all.sh.
+echo ""
+echo "--- Test 24: pool slot_acquire wait emits a live clock-stop reason marker ---"
+
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+    TMPDIR_T24="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T24")
+
+    MANIFEST_T24="$TMPDIR_T24/classification.manifest"
+    printf 'test_pool_1.sh pool\n' > "$MANIFEST_T24"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T24/test_pool_1.sh"
+    chmod +x "$TMPDIR_T24/test_pool_1.sh"
+
+    LOCK_T24="$TMPDIR_T24/pool-t24.lock"
+
+    # Background holder: acquire the sole slot (.slot-1) and hold it for 30s
+    # (well past the REIFY_RUN_ALL_POOL_WAIT=2 deadline below), forcing the
+    # pool worker's own slot_acquire call to actually wait.
+    ( flock -x 9; sleep 30 ) 9>>"${LOCK_T24}.slot-1" &
+    _HOLDER_T24=$!
+
+    # Bounded poll (not a fixed sleep) confirming the holder actually owns
+    # slot-1 before invoking run_all.sh: under host load the holder's own
+    # `flock -x` might not land within a fixed 0.2s window, letting the pool
+    # worker acquire the uncontended slot with no wait and emit no marker --
+    # a false T24a (the same class of race Test 25's state poll avoids).
+    # A non-blocking acquire attempt on the same slot file (mirrors
+    # lib_slot_acquire.sh's own `flock -xn 9`) that FAILS is proof the holder
+    # holds it; cap at 5s as a deadlock backstop.
+    t24_i=0
+    while [ "$t24_i" -lt 50 ]; do
+        if ! ( flock -xn 9 ) 9>>"${LOCK_T24}.slot-1" 2>/dev/null; then
+            break
+        fi
+        sleep 0.1
+        t24_i=$((t24_i + 1))
+    done
+
+    # Separate stdout/stderr capture files (T22 pattern) -- the assertions
+    # below need to distinguish which stream the marker lands on.
+    T24_STDOUT="$TMPDIR_T24/stdout.txt"
+    T24_STDERR="$TMPDIR_T24/stderr.txt"
+    t24_rc=0
+    env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+        RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T24" \
+        REIFY_RUN_ALL_POOL_LOCK="$LOCK_T24" \
+        REIFY_RUN_ALL_POOL_CONCURRENCY=1 \
+        REIFY_RUN_ALL_POOL_WAIT=2 \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        bash "$RUN_ALL" "$TMPDIR_T24" >"$T24_STDOUT" 2>"$T24_STDERR" || t24_rc=$?
+
+    kill "$_HOLDER_T24" 2>/dev/null || true
+    wait "$_HOLDER_T24" 2>/dev/null || true
+    rm -f "$LOCK_T24" "${LOCK_T24}.slot-1"
+
+    if grep -Fq '@@REIFY_CLOCK_STOP@@ reason=test_slot_starvation' "$T24_STDERR"; then
+        assert "T24a: stderr contains a live @@REIFY_CLOCK_STOP@@ reason=test_slot_starvation marker" true
+    else
+        assert "T24a: stderr contains a live @@REIFY_CLOCK_STOP@@ reason=test_slot_starvation marker (got stderr: $(cat "$T24_STDERR"))" false
+    fi
+
+    if grep -Fq '@@REIFY_QUOTED_CLOCK_STOP@@' "$T24_STDERR"; then
+        assert "T24b: stderr does NOT contain the sanitized @@REIFY_QUOTED_CLOCK_STOP@@ form (marker rode the unsanitized parent stream) (got stderr: $(cat "$T24_STDERR"))" false
+    else
+        assert "T24b: stderr does NOT contain the sanitized @@REIFY_QUOTED_CLOCK_STOP@@ form (marker rode the unsanitized parent stream)" true
+    fi
+
+    if grep -Fq '@@REIFY_CLOCK_STOP@@' "$T24_STDOUT"; then
+        assert "T24c: STOP marker is on stderr, NOT stdout (got stdout: $(cat "$T24_STDOUT"))" false
+    else
+        assert "T24c: STOP marker is on stderr, NOT stdout" true
+    fi
+
+    if [[ "$(cat "$T24_STDOUT")" == *"=== Summary: 1 discovered, 0 failed ==="* ]]; then
+        assert "T24d: byte-exact Summary line intact (1 discovered, 0 failed)" true
+    else
+        assert "T24d: byte-exact Summary line intact (1 discovered, 0 failed) (got: $(cat "$T24_STDOUT"))" false
+    fi
+
+    assert "T24e: run_all.sh exits 0 (soft-admit past the wait deadline, member passes)" \
+        test "$t24_rc" -eq 0
+else
+    assert "T24a: stderr contains a live @@REIFY_CLOCK_STOP@@ reason=test_slot_starvation marker (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T24b: stderr does NOT contain the sanitized @@REIFY_QUOTED_CLOCK_STOP@@ form (marker rode the unsanitized parent stream) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T24c: STOP marker is on stderr, NOT stdout (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T24d: byte-exact Summary line intact (1 discovered, 0 failed) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T24e: run_all.sh exits 0 (soft-admit past the wait deadline, member passes) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+fi
+
+# -- Test 25: partial FAILED/INTERRUPTED marker on outer-timeout SIGTERM (task #5147) --
+# The merge-tier envelope wraps run_all.sh in `timeout --kill-after=60 30m`
+# (verify.sh). timeout sends SIGTERM first (SIGKILL only after the kill-after
+# grace period), so a TERM trap gets a real window to emit a reclassification
+# marker before death. Without one, a mid-run SIGTERM leaves no Summary/FAILED
+# line and dark-factory's classifier falls through to a tree_sitter_generate_error
+# mislabel instead of test_failure. RED sub-case: a fast-failing pool member
+# ("boom") plus a slow pool member ("hang") under REIFY_RUN_ALL_POOL_CONCURRENCY=2
+# (both admitted concurrently, no lock contention -- keeps this test's markers
+# independent of Test 24's). The harness polls (bounded, not a fixed sleep)
+# for boom's ACTUAL `.rc` bookkeeping write inside the real _H2_WORKDIR
+# (discovered via a private TMPDIR override -- the same authoritative state
+# _ra_partial_failed_names itself scans), confirming the failure landed
+# before firing SIGTERM itself -- decoupling the signal's timing from
+# absolute wall-clock guesswork under host load -- while the parent is
+# blocked in the Phase-1 `wait` for hang, into the new trap. Output is
+# captured to a FILE, not `$(...)`: the
+# orphaned hang-worker subshell (reparented on run_all.sh's death, still holding
+# an inherited copy of the original pipe's write end while it finishes its ~8s
+# sleep) would otherwise hold a command-substitution pipe open long past
+# run_all.sh's own death. GREEN regression sub-case: an all-pass run with NO
+# timeout must stay byte-identical (no INTERRUPTED/(partial), byte-exact
+# Summary) -- proves the trap is signal-only and never fires on the normal path.
+echo ""
+echo "--- Test 25: partial FAILED/INTERRUPTED marker on outer-timeout SIGTERM ---"
+
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+    # -- RED sub-case: mid-run SIGTERM ---------------------------------------
+    TMPDIR_T25="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T25")
+
+    MANIFEST_T25="$TMPDIR_T25/classification.manifest"
+    cat > "$MANIFEST_T25" <<'EOF'
+test_pool_boom.sh pool
+test_pool_hang.sh pool
+EOF
+    printf '#!/usr/bin/env bash\nexit 1\n' > "$TMPDIR_T25/test_pool_boom.sh"
+    printf '#!/usr/bin/env bash\nsleep 8\nexit 0\n' > "$TMPDIR_T25/test_pool_hang.sh"
+    chmod +x "$TMPDIR_T25/test_pool_boom.sh" "$TMPDIR_T25/test_pool_hang.sh"
+
+    LOCK_T25="$TMPDIR_T25/pool-t25.lock"
+    T25_OUT="$TMPDIR_T25/out.txt"
+    t25_rc=0
+
+    # run_all.sh's pool workdir (_H2_WORKDIR) is created via
+    # `mktemp -d "${TMPDIR:-/tmp}/reify-run-all-pool.XXXXXX"` -- the ONLY use
+    # of TMPDIR in run_all.sh (Test 19 relies on the same contract). Pointing
+    # TMPDIR at a private, empty directory lets the harness below discover
+    # the real workdir and poll for boom's ACTUAL `.rc` bookkeeping write --
+    # the same authoritative state _ra_partial_failed_names itself scans --
+    # before firing SIGTERM. A child-side signal (e.g. boom touching its own
+    # "done" marker) would still race the *parent* pool-worker subshell's
+    # separate `.rc` write; polling the `.rc` file itself removes that race
+    # entirely rather than trading one fixed wall-clock guess for another.
+    H2WD_PARENT_T25="$TMPDIR_T25/h2wd"
+    mkdir -p "$H2WD_PARENT_T25"
+
+    # Launch run_all.sh directly (rather than under a fixed `timeout N`) so
+    # the SIGTERM can be fired right after boom's `.rc` write confirms its
+    # failure landed. The bounded poll below caps the wait at 4s (comfortably
+    # under hang's 8s sleep, so a slow-but-not-wedged host still exercises
+    # the intended mid-run interrupt) and reacts as soon as the write lands
+    # rather than always waiting the full window. A background SIGKILL
+    # fallback mirrors `timeout`'s -k grace period, in case the TERM trap
+    # somehow doesn't reap it.
+    env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+        RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T25" \
+        REIFY_RUN_ALL_POOL_LOCK="$LOCK_T25" \
+        REIFY_RUN_ALL_POOL_CONCURRENCY=2 \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        TMPDIR="$H2WD_PARENT_T25" \
+        bash "$RUN_ALL" "$TMPDIR_T25" >"$T25_OUT" 2>&1 &
+    t25_pid=$!
+
+    # Poll bound: base 40 attempts (4s) on an idle host, scaled by the same
+    # /proc/loadavg-derived factor load_tolerance_lib.sh already applies
+    # elsewhere in this suite (e.g. Test 9's ARRIVED barrier) -- a heavily
+    # loaded host gets a proportionally longer window instead of a fixed
+    # guess, while the early-exit below still reacts immediately once boom's
+    # write lands (no extra wall-clock cost on an idle/normal host).
+    source "$LOAD_TOLERANCE_LIB_T9"
+    t25_poll_attempts=$(load_tolerant_attempts 40)
+
+    t25_wd=""
+    t25_rc_file=""
+    t25_i=0
+    while [ "$t25_i" -lt "$t25_poll_attempts" ]; do
+        if [ -z "$t25_wd" ]; then
+            for _d in "$H2WD_PARENT_T25"/reify-run-all-pool.*; do
+                [ -d "$_d" ] && t25_wd="$_d"
+                break
+            done
+        fi
+        if [ -n "$t25_wd" ]; then
+            for _f in "$t25_wd"/*.rc; do
+                case "$_f" in
+                    *.retry.rc) continue ;;
+                esac
+                # Gate on nonzero CONTENT, not mere existence: run_all.sh
+                # opens each `.rc` file with `>` (truncate) and then writes
+                # the exit code as a separate step, so there is a narrow
+                # window where the file exists but reads empty. _ra_on_term's
+                # own _ra_partial_failed_names scan already treats an
+                # empty/unreadable read as rc=0 ("not failed"); mirror that
+                # read here so the poll can't hand off to SIGTERM on a
+                # half-written file and starve T25c's attribution.
+                if [ -s "$_f" ] && [ "$(cat "$_f" 2>/dev/null)" != 0 ]; then
+                    t25_rc_file="$_f"
+                fi
+                break
+            done
+        fi
+        [ -n "$t25_rc_file" ] && break
+        sleep 0.1
+        t25_i=$((t25_i + 1))
+    done
+
+    # Confirm the poll actually observed boom's failure before firing
+    # SIGTERM. A timeout here (host severely overloaded) would otherwise
+    # surface downstream as an ambiguous T25b/T25c failure (empty partial-name
+    # attribution) that reads like an attribution bug rather than a timing
+    # miss -- say so plainly instead.
+    if [ -z "$t25_rc_file" ]; then
+        echo "T25 WARNING: poll timed out after $t25_i/$t25_poll_attempts attempts waiting for boom's .rc write under $H2WD_PARENT_T25 -- firing SIGTERM anyway; T25b/T25c may fail with an empty partial-name attribution" >&2
+    fi
+
+    kill -TERM "$t25_pid" 2>/dev/null || true
+    ( sleep 5; kill -KILL "$t25_pid" 2>/dev/null || true ) &
+    t25_killer=$!
+    wait "$t25_pid" 2>/dev/null || t25_rc=$?
+    kill "$t25_killer" 2>/dev/null || true
+    wait "$t25_killer" 2>/dev/null || true
+
+    if grep -q 'INTERRUPTED' "$T25_OUT"; then
+        assert "T25a: mid-run SIGTERM output contains an INTERRUPTED summary line" true
+    else
+        assert "T25a: mid-run SIGTERM output contains an INTERRUPTED summary line (got: $(cat "$T25_OUT"))" false
+    fi
+
+    if grep -Eq '^FAILED .*\(partial\)' "$T25_OUT"; then
+        assert "T25b: mid-run SIGTERM output has a '^FAILED ... (partial)' classifier line" true
+    else
+        assert "T25b: mid-run SIGTERM output has a '^FAILED ... (partial)' classifier line (got: $(cat "$T25_OUT"))" false
+    fi
+
+    if grep -Eq '^FAILED .*test_pool_boom\.sh.*\(partial\)' "$T25_OUT"; then
+        assert "T25c: the partial FAILED line names test_pool_boom.sh" true
+    else
+        assert "T25c: the partial FAILED line names test_pool_boom.sh (got: $(cat "$T25_OUT"))" false
+    fi
+
+    assert "T25d: run_all.sh did NOT exit 0 (interrupted mid-run)" \
+        test "$t25_rc" -ne 0
+
+    # -- GREEN regression sub-case: normal (untouched) path stays byte-identical --
+    TMPDIR_T25B="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T25B")
+
+    MANIFEST_T25B="$TMPDIR_T25B/classification.manifest"
+    printf 'test_pool_1.sh pool\n' > "$MANIFEST_T25B"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T25B/test_pool_1.sh"
+    chmod +x "$TMPDIR_T25B/test_pool_1.sh"
+
+    t25b_rc=0
+    t25b_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+        RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T25B" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T25B/pool.lock" \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        bash "$RUN_ALL" "$TMPDIR_T25B" 2>&1)" || t25b_rc=$?
+
+    if [[ "$t25b_out" == *"=== Summary: 1 discovered, 0 failed ==="* ]]; then
+        assert "T25e: GREEN regression -- byte-exact Summary line on the normal (untouched) path" true
+    else
+        assert "T25e: GREEN regression -- byte-exact Summary line on the normal (untouched) path (got: $t25b_out)" false
+    fi
+
+    if [[ "$t25b_out" != *"INTERRUPTED"* ]]; then
+        assert "T25f: GREEN regression -- normal path emits no INTERRUPTED marker" true
+    else
+        assert "T25f: GREEN regression -- normal path emits no INTERRUPTED marker (got: $t25b_out)" false
+    fi
+
+    if [[ "$t25b_out" != *"(partial)"* ]]; then
+        assert "T25g: GREEN regression -- normal path emits no (partial) marker" true
+    else
+        assert "T25g: GREEN regression -- normal path emits no (partial) marker (got: $t25b_out)" false
+    fi
+
+    assert "T25h: GREEN regression -- normal path exits 0" \
+        test "$t25b_rc" -eq 0
+else
+    assert "T25a: mid-run SIGTERM output contains an INTERRUPTED summary line (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T25b: mid-run SIGTERM output has a '^FAILED ... (partial)' classifier line (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T25c: the partial FAILED line names test_pool_boom.sh (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T25d: run_all.sh did NOT exit 0 (interrupted mid-run) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T25e: GREEN regression -- byte-exact Summary line on the normal (untouched) path (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T25f: GREEN regression -- normal path emits no INTERRUPTED marker (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T25g: GREEN regression -- normal path emits no (partial) marker (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T25h: GREEN regression -- normal path exits 0 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+fi
+
 # -- Summary --------------------------------------------------------------------
 test_summary
