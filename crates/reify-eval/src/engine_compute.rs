@@ -129,66 +129,21 @@ impl crate::Engine {
     ) -> Option<ComputeOutcome> {
         let f = self.compute_registry.fns.get(target).copied()?;
         // Task #5079 (INV-FEA-2 / PRD compute-fea-hardening.md D1, Contract
-        // C2): guard the single generic compute-dispatch point so a
-        // panicking `ComputeFn` becomes `ComputeOutcome::Failed` instead of
-        // unwinding out of the CLI and aborting the process. Both public
-        // dispatch entry points — `run_compute_dispatch` (below, the
-        // in-flight/async lowering path) and `Engine::dispatch_compute_node`
-        // (engine_admin.rs, the synchronous `@optimized` path) — route
-        // through this single guarded method, so the guard IS uniform across
-        // both. Any NEW dispatch path MUST call `invoke_compute_trampoline`
-        // rather than doing `compute_registry.fns.get(..)` + `f(..)`
-        // directly, or it will reopen this crash-safety gap.
-        // `AssertUnwindSafe` is sound: every captured value (`&[Value]`, `&Value`,
-        // `Option<&OpaqueState>`, `&CancellationHandle`) is a shared
-        // reference, none mutated across the unwind boundary. The default
-        // panic hook is intentionally NOT suppressed here — genuine-bug
-        // backtraces must still print to stderr (PRD resolved decision); the
-        // floor is "survive with a diagnostic," not "silent".
+        // C2): the single guarded compute-dispatch point — both
+        // `run_compute_dispatch` (below) and `Engine::dispatch_compute_node`
+        // (engine_admin.rs) route through here, so a panicking `ComputeFn`
+        // uniformly becomes `ComputeOutcome::Failed`. Any new dispatch path
+        // must do the same rather than calling `compute_registry.fns.get(..)`
+        // + `f(..)` directly.
         //
-        // Accepted limitation (FFI panics/aborts): `catch_unwind` intercepts
-        // only Rust unwinding panics. FEA trampolines (elastic_static,
-        // buckling, modal) ultimately drive native solver FFI (OCCT/
-        // manifold/gmsh); a foreign C++ exception or a native abort crossing
-        // the FFI boundary is NOT caught here and still terminates the
-        // process — full crash isolation for solver work would need
-        // subprocess isolation, as the `panic = "abort"` compile_error above
-        // already hints, not this in-process guard.
-        //
-        // Accepted limitation (shared-state consistency): `catch_unwind`
-        // restores control flow but does NOT roll back side effects a
-        // trampoline performed before panicking. Every trampoline registered
-        // today (elastic_static, buckling, modal, shell-extract, …) panics
-        // only during read-only input extraction, before any mesh/solve or
-        // cache/registry mutation, so no inconsistent shared state survives
-        // a caught panic. A future trampoline that mutates shared state (a
-        // poisoned `Mutex`, a partially-populated warm-state slot, a global
-        // registry) BEFORE any fallible step would silently violate this
-        // assumption — such a trampoline must reorder its mutation to after
-        // all fallible extraction, or this dispatcher needs a stronger
-        // recovery story than "convert to Failed".
-        //
-        // This is partially, not just documentation-only, backed by the
-        // `ComputeFn` signature itself: every parameter is an immutable
-        // domain value (`&[Value]`, `&Value`) or a narrow read-only/
-        // cooperative-signal handle (`&[RealizationReadHandle]`,
-        // `Option<&OpaqueState>`, `&CancellationHandle`) — none is `&mut`, so
-        // no trampoline can reach engine cache/registry state through its own
-        // arguments. `OpaqueState::new`'s `T: Send + Sync` bound
-        // (reify-ir/src/warm.rs) additionally rejects `Cell`/`RefCell`/`Rc`
-        // interior mutability from ever being smuggled through the
-        // warm-state channel. What is NOT mechanically caught: a trampoline
-        // reaching for its own module-level global (e.g. a `static
-        // OnceLock<Mutex<..>>`) is invisible to both this signature and to
-        // `catch_unwind` — that residual case still relies on code review,
-        // per the "must reorder its mutation" rule above. A stronger
-        // mechanical check (e.g. a lint against `static`/`thread_local`
-        // mutation under `compute_targets::*`, or a checklist item in
-        // compute-fea-hardening.md's registration contract) would touch
-        // `register_compute_fn` (engine_admin.rs) and/or the PRD doc, both
-        // outside this task's locked module (engine_compute.rs only);
-        // flagged via escalate_info as a follow-up rather than attempted
-        // here.
+        // `AssertUnwindSafe` is sound (every capture is a shared, unmutated
+        // reference); the `panic = "abort"` no-op case is pinned by the
+        // `compile_error!` above. The panic hook is left installed, so caught
+        // panics still print to stderr — accepted, including the volume
+        // under a repeatedly-panicking target in a hot loop (esc-5079-3).
+        // Other accepted limitations (FFI/native aborts escape uncaught; no
+        // rollback of pre-panic side effects) are detailed in the PRD, not
+        // repeated here.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             f(
                 value_inputs,
@@ -716,8 +671,8 @@ impl crate::Engine {
 /// This duplicates rather than reuses that copy: hoisting a shared
 /// `panic_payload_message` into a lower crate (e.g. `reify-core`) so both
 /// call sites converge would touch `reify-stdlib`, outside this task's
-/// locked module (`engine_compute.rs` only); flagged via `escalate_info`
-/// as a follow-up rather than attempted here.
+/// locked module (`engine_compute.rs` only); tracked as a follow-up via
+/// escalate_info (esc-5079-2) rather than attempted here.
 fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
     if let Some(s) = payload.downcast_ref::<&str>() {
         (*s).to_string()
