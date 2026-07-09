@@ -213,19 +213,13 @@ fn watcher_with_target_file_only_fires_for_that_file() {
         paths.iter().any(|p| p.ends_with("project.ri"))
     });
 
-    // The negative check below (other.ri must never appear) leans on event
-    // ordering: other.ri was modified 500ms before project.ri (see above),
-    // so if the target_file filter were broken, other.ri's Changed event
-    // would already be sitting in `changed_paths` by the time we observe
-    // project.ri's event. That 500ms gap is load-bearing for this
-    // assertion — shortening it (or a backend that reorders/coalesces
-    // events across distinct paths) would quietly weaken the check. (Note:
-    // the watcher's ~100ms debounce only suppresses duplicate same-path
-    // events; it does not delay or order emission of events for distinct
-    // paths.) To avoid relying solely on that ordering assumption, also
-    // give a bounded extra window for a delayed-but-broken-filter other.ri
-    // event to surface before asserting its absence.
-    let other_appeared = wait_for(&changed_paths, Duration::from_millis(150), |paths| {
+    // Backstop for the negative assert below: the 500ms gap before project.ri
+    // (above) means a broken target_file filter's other.ri event would
+    // already be present in `changed_paths` by the time project.ri's event
+    // is observed (per-path debounce delays same-path duplicates only, not
+    // cross-path ordering). This poll just bounds a delayed-but-broken
+    // filter event; kept short since it's paid on every green run.
+    let other_appeared = wait_for(&changed_paths, Duration::from_millis(100), |paths| {
         paths.iter().any(|p| p.ends_with("other.ri"))
     });
 
