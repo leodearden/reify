@@ -1542,6 +1542,27 @@ fn is_mul_div_scalar_like(ty: &Type) -> bool {
     matches!(ty, Type::Int | Type::Scalar { .. })
 }
 
+/// Bare dimensionless number for `+`/`-` Complex widening: `Int` or
+/// `Scalar{DIMENSIONLESS}` (a `Real` literal — see `is_mul_div_scalar_like`).
+/// Narrower than `is_mul_div_scalar_like` on purpose: a DIMENSIONED `Scalar`
+/// (e.g. `Scalar<Length>`) must NOT widen against a dimensionless `Complex`
+/// (the runtime has no arm for it — `eval_add`/`eval_sub` in reify-expr only
+/// promote `Value::Real`/`Value::Int`, never `Value::Scalar`, against
+/// `Value::Complex`; see `is_dimensionless_complex`'s doc).
+fn is_dimensionless_numeric(ty: &Type) -> bool {
+    matches!(ty, Type::Int) || matches!(ty, Type::Scalar { dimension } if dimension.is_dimensionless())
+}
+
+/// Dimensionless `Complex` for `+`/`-` widening (see `is_dimensionless_numeric`).
+///
+/// A DIMENSIONED `Complex` (e.g. `Complex<Resistance>`) deliberately does NOT
+/// match — the runtime's `guard_dimensionless_complex` (reify-expr) returns
+/// `Value::Undef` for `Complex<Q> ± Real/Int` when `Q` is not dimensionless
+/// (D3 policy), so the static side must not claim a result type there either.
+fn is_dimensionless_complex(ty: &Type) -> bool {
+    matches!(ty, Type::Complex(q) if matches!(q.as_ref(), Type::Scalar { dimension } if dimension.is_dimensionless()))
+}
+
 /// Single source of truth for BOTH the correct static result type of `*`/`/`
 /// AND the runtime-supported/unsupported partition (task compiler-type-hygiene
 /// β2, INV-COMP-3).
@@ -1782,7 +1803,27 @@ pub(crate) fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
         | BinOp::And
         | BinOp::Or
         | BinOp::Implies => Type::Bool,
-        BinOp::Add | BinOp::Sub => left.clone(), // same dimension required
+        // Same dimension required, EXCEPT: a bare dimensionless number
+        // (`Int`/`Real`) widens against a dimensionless `Complex` (mirrors the
+        // runtime's `guard_dimensionless_complex` in reify-expr's
+        // eval_add/eval_sub). Needed for imaginary-literal sugar `n + mj`,
+        // which desugars to `n + complex(0, m)` (reify-syntax
+        // `lower_imaginary_literal`) — without this arm `w = 3 + 4j` statically
+        // typed `Int` (bare `left.clone()`), silently discarding the whole
+        // expression's Complex-ness (only surfaced once the β2 Mul/Div guard
+        // started rejecting the resulting `Int / Complex` as
+        // `E_ArithOperandKind` on e.g. `w / complex(1.0, 2.0)`). A DIMENSIONED
+        // Complex operand does not widen — falls through to the unchanged
+        // `left.clone()` fallback, same as before this arm existed.
+        BinOp::Add | BinOp::Sub => {
+            if is_dimensionless_complex(left) && is_dimensionless_numeric(right) {
+                left.clone()
+            } else if is_dimensionless_numeric(left) && is_dimensionless_complex(right) {
+                right.clone()
+            } else {
+                left.clone()
+            }
+        }
         // Delegates to the single source of truth for both the correct static
         // result type and the runtime-supported/unsupported partition (β2,
         // INV-COMP-3). The `Type::Int` fallback is a placeholder for
@@ -2200,6 +2241,58 @@ mod tests {
         assert_eq!(
             infer_binop_type(BinOp::Add, &Type::Error, &Type::Int),
             Type::Error,
+        );
+    }
+
+    /// Imaginary-literal sugar `n + mj` desugars to `n + complex(0, m)`
+    /// (reify-syntax `lower_imaginary_literal`) — `Int + Complex{DIMENSIONLESS}`
+    /// must statically widen to `Complex`, not fall to bare `left.clone()`
+    /// (`Int`). Mirrors the runtime's `guard_dimensionless_complex` arm in
+    /// reify-expr's `eval_add`. Regression pin for the `w = 3 + 4j` /
+    /// `w / complex(1.0, 2.0)` chain (compiler-type-hygiene β2 follow-on —
+    /// this combination silently mistyped `w` as `Int`, which the new
+    /// Mul/Div `E_ArithOperandKind` guard then correctly-but-spuriously
+    /// rejected on `w_div`).
+    #[test]
+    fn binop_add_int_plus_dimensionless_complex_widens_to_complex() {
+        let c = Type::complex(Type::dimensionless_scalar());
+        assert_eq!(infer_binop_type(BinOp::Add, &Type::Int, &c), c);
+    }
+
+    #[test]
+    fn binop_add_dimensionless_complex_plus_int_stays_complex() {
+        let c = Type::complex(Type::dimensionless_scalar());
+        assert_eq!(infer_binop_type(BinOp::Add, &c, &Type::Int), c);
+    }
+
+    #[test]
+    fn binop_add_real_plus_dimensionless_complex_widens_to_complex() {
+        // `Real` is not a distinct `Type` variant — `Scalar{DIMENSIONLESS}`
+        // covers the `3.2 + 4.1j` case (complex_literals.ri) for free.
+        let c = Type::complex(Type::dimensionless_scalar());
+        assert_eq!(
+            infer_binop_type(BinOp::Add, &Type::dimensionless_scalar(), &c),
+            c
+        );
+    }
+
+    #[test]
+    fn binop_sub_int_minus_dimensionless_complex_widens_to_complex() {
+        let c = Type::complex(Type::dimensionless_scalar());
+        assert_eq!(infer_binop_type(BinOp::Sub, &Type::Int, &c), c);
+    }
+
+    #[test]
+    fn binop_add_dimensioned_complex_plus_int_does_not_widen() {
+        // D3 policy (reify-expr `guard_dimensionless_complex`): a DIMENSIONED
+        // Complex does not promote against a bare Int/Real at runtime (evals
+        // Undef) — the static side must not claim a result type either, so
+        // this combination is deliberately left on the pre-existing
+        // `left.clone()` fallback (unchanged by this fix).
+        let dimensioned = Type::complex(Type::length());
+        assert_eq!(
+            infer_binop_type(BinOp::Add, &dimensioned, &Type::Int),
+            dimensioned
         );
     }
 
