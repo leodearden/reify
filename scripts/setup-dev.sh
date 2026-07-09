@@ -416,12 +416,17 @@ PartOf=orchestrator-reify.service
 
 [Service]
 Type=simple
-# Remove stale FIFOs and the pressure-reservoir state file so the daemon starts
-# clean (it recreates the FIFOs and publishes held_back=0 on startup).
-# Stale held_back must not mask a real token leak on restart (PRD canary §C2).
-ExecStartPre=-/bin/rm -f /tmp/reify-jobserver-merge /tmp/reify-jobserver-task /tmp/reify-jobserver-held-back
+# Remove stale FIFOs, owner stamps, and the pressure-reservoir state file so
+# the daemon starts clean (it recreates the FIFOs and stamps and publishes
+# held_back=0 on startup).  Stale held_back must not mask a real token leak
+# on restart (PRD canary §C2); a stale owner stamp must not survive a clean
+# restart either, or verify.sh's liveness probe (task 5146) would trust a
+# leftover pid from the previous incarnation.  The ".owner.tmp" paths catch
+# write_owner_stamp()'s tmp+rename sidecar in case a prior incarnation
+# crashed mid-write (rare, best-effort — see jobserver-balancer.py).
+ExecStartPre=-/bin/rm -f /tmp/reify-jobserver-merge /tmp/reify-jobserver-task /tmp/reify-jobserver-held-back /tmp/reify-jobserver-merge.owner /tmp/reify-jobserver-task.owner /tmp/reify-jobserver-merge.owner.tmp /tmp/reify-jobserver-task.owner.tmp
 ExecStart=${repo_dir}/scripts/jobserver-balancer.py
-ExecStopPost=/bin/rm -f /tmp/reify-jobserver-merge /tmp/reify-jobserver-task /tmp/reify-jobserver-held-back
+ExecStopPost=/bin/rm -f /tmp/reify-jobserver-merge /tmp/reify-jobserver-task /tmp/reify-jobserver-held-back /tmp/reify-jobserver-merge.owner /tmp/reify-jobserver-task.owner /tmp/reify-jobserver-merge.owner.tmp /tmp/reify-jobserver-task.owner.tmp
 Restart=on-failure
 RestartSec=2
 

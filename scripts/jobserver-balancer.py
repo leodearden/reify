@@ -181,6 +181,19 @@ HELD_BACK_FILE: str = os.environ.get(
 # compatibility with the canary and any downstream tools.
 TOKEN_BYTE: bytes = b"+"
 
+# Sidecar owner-stamp suffix: verify.sh (task 5146) probes "${FIFO}${OWNER_STAMP_SUFFIX}"
+# for "<pid> <boot_id>" before trusting a bare FIFO's existence, distinguishing a
+# live custodian from a FIFO left behind by a crashed balancer.
+OWNER_STAMP_SUFFIX: str = ".owner"
+
+# Path to the kernel boot-id file — read once at startup (main()) and stamped
+# beside each FIFO so a liveness probe can reject a stamp surviving a reboot
+# (post-reboot pid reuse).  No env override: verify.sh and this daemon must
+# read the same host file to agree on "current boot" (unlike PSI_PROC_PATH,
+# there is no hermetic-test need to point this elsewhere — tests compare
+# against the same real file).
+BOOT_ID_PROC_PATH: str = "/proc/sys/kernel/random/boot_id"
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Module-level stop flag — set by SIGTERM/SIGINT handler in main().
 # Defined at module scope so _transfer() can check it during the write-retry
@@ -338,13 +351,76 @@ def write_held_back(path: str, n: int) -> None:
         sys.stderr.write(f"WARNING: write_held_back({path!r}, {n}): {_exc}\n")
 
 
+def read_boot_id(proc_path: str = BOOT_ID_PROC_PATH) -> str:
+    """Read the kernel boot ID, stripped.  Returns "-" sentinel if unreadable.
+
+    Fail-open: an unreadable boot_id file must never crash the daemon.  The
+    "-" sentinel signals "info unavailable" to consumers of the owner stamp
+    (verify.sh's liveness probe skips the boot_id comparison whenever either
+    side reads "-", matching the PID check as the primary liveness signal).
+    """
+    try:
+        with open(proc_path) as _f:
+            return _f.read().strip() or "-"
+    except OSError:
+        return "-"
+
+
+def write_owner_stamp(fifo_path: str, pid: int, boot_id: str) -> None:
+    """Atomically publish an owner stamp "<pid> <boot_id>" beside fifo_path.
+
+    Written to "{fifo_path}{OWNER_STAMP_SUFFIX}" via tmp+rename (mirrors
+    write_held_back's idiom) so a concurrent reader (verify.sh) never sees a
+    partially-written stamp.  Tolerates OSError with a WARNING — fail-open,
+    must never crash the daemon; a missing stamp just falls back to the
+    pre-5146 existence-only trust in the FIFO.
+    """
+    path = fifo_path + OWNER_STAMP_SUFFIX
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w") as _f:
+            _f.write(f"{pid} {boot_id}\n")
+        os.rename(tmp, path)
+    except OSError as _exc:
+        sys.stderr.write(f"WARNING: write_owner_stamp({path!r}): {_exc}\n")
+
+
 def make_fifo(path: str) -> None:
-    """Remove any stale file/FIFO at path, then create a fresh FIFO."""
+    """Remove any stale file/FIFO at path, then create a fresh FIFO.
+
+    Also best-effort removes any stale owner-stamp sidecar(s) from a prior
+    crashed incarnation ("${path}.owner" and its ".owner.tmp" write-in-
+    progress sibling) BEFORE creating the fresh FIFO (task 5146 review
+    comment 3, round 3). This closes the window between this call and
+    write_owner_stamp() publishing the fresh stamp, during which a verify.sh
+    probe would otherwise read the PRIOR incarnation's now-dead-pid stamp and
+    report a false STALE even though a new balancer is starting up right
+    now — making this self-cleaning independent of systemd's ExecStartPre rm
+    (a manual restart or a non-systemd supervisor gets the same guarantee).
+    """
     try:
         os.remove(path)
     except FileNotFoundError:
         pass
+    for _stale in (path + OWNER_STAMP_SUFFIX, path + OWNER_STAMP_SUFFIX + ".tmp"):
+        try:
+            os.remove(_stale)
+        except FileNotFoundError:
+            pass
     os.mkfifo(path)
+
+
+def _unlink_best_effort(path: str) -> None:
+    """Best-effort remove: swallow FileNotFoundError and any other OSError.
+
+    Only called on the clean-exit path (never reachable on SIGKILL, since
+    Python cannot catch that signal) -- a stale-file removal failure must
+    never crash the daemon mid-shutdown and skip the remaining unlinks.
+    """
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 def open_rdwr(path: str) -> int:
@@ -547,6 +623,14 @@ def main() -> None:
     merge_fd = open_rdwr(MERGE_FIFO)
     task_fd  = open_rdwr(TASK_FIFO)
 
+    # Publish owner stamps now that both FIFOs are truly held (O_RDWR open) —
+    # verify.sh's liveness probe (task 5146) trusts a stamp only when the pid
+    # inside it is alive, distinguishing a live custodian from an orphaned
+    # FIFO left behind by a crashed balancer.
+    _boot_id = read_boot_id()
+    write_owner_stamp(MERGE_FIFO, os.getpid(), _boot_id)
+    write_owner_stamp(TASK_FIFO, os.getpid(), _boot_id)
+
     # ── Seed the pools ───────────────────────────────────────────────────────
     seed_fifo(merge_fd, merge_baseline)
     seed_fifo(task_fd,  task_baseline)
@@ -702,7 +786,35 @@ def main() -> None:
 
         time.sleep(POLL_INTERVAL)
 
-    # Clean exit — fds are closed by the OS when the process exits.
+    # Clean exit (SIGTERM/SIGINT) — fds are closed by the OS, and we also
+    # remove the FIFOs, owner stamps, and held-back file so a graceful
+    # restart never trips over stale state.  A SIGKILL bypasses this
+    # unlink entirely (Python cannot catch it) — that is what leaves the
+    # stamp behind naming the now-dead pid, making the crash detectable by
+    # verify.sh's liveness probe (task 5146).
+    #
+    # The ".owner.tmp" paths are write_owner_stamp()'s tmp+rename sidecars:
+    # normally renamed away before this point, but a write/rename failure
+    # mid-flight (e.g. ENOSPC) can leave one orphaned.  Best-effort unlink
+    # bounds that to a transient leftover on a crash only — a clean restart
+    # (this path) always clears it, and even absent that, the next
+    # write_owner_stamp() call truncates any stale tmp via open(tmp, "w").
+    _unlink_best_effort(MERGE_FIFO)
+    _unlink_best_effort(TASK_FIFO)
+    _unlink_best_effort(MERGE_FIFO + OWNER_STAMP_SUFFIX)
+    _unlink_best_effort(TASK_FIFO + OWNER_STAMP_SUFFIX)
+    _unlink_best_effort(MERGE_FIFO + OWNER_STAMP_SUFFIX + ".tmp")
+    _unlink_best_effort(TASK_FIFO + OWNER_STAMP_SUFFIX + ".tmp")
+    # Confirmed safe against jobserver-canary.sh (review comment 4, round 2):
+    # removing HELD_BACK_FILE here (in-process, on a clean exit) rather than
+    # relying solely on systemd's ExecStopPost is fine because the canary's
+    # read_held_back() already treats an absent/empty/garbage file identically
+    # to held_back=0 ("Absent or garbage file -> 0 (safe default)",
+    # scripts/jobserver-canary.sh) — exactly the state a graceful shutdown
+    # (no reservoir held) publishes anyway. A canary read racing this unlink
+    # therefore sees either the last-published integer or "absent" -> 0; both
+    # are fail-open-safe reads of a stopped daemon.
+    _unlink_best_effort(HELD_BACK_FILE)
 
 
 if __name__ == "__main__":
