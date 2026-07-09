@@ -9225,14 +9225,25 @@ mod tests {
     /// RED: `extract_material` currently returns a bare `IsotropicElastic`, so
     /// matching `Err(..)` fails to type-check until step-2 converts it to
     /// `Result<IsotropicElastic, FeaValueShapeError>`.
+    ///
+    /// Amendment (task #5081 review, suggestion 1): also assert `context ==
+    /// "extract_material"`. This is the leaf's own shape check (unlike the
+    /// wrong-typed/missing-field tests below, which exercise `context`s
+    /// delegated from `scalar_si_field`/`real_field`), so it's the one place
+    /// where pinning `context` locks `extract_material`'s own error
+    /// provenance rather than a helper's.
     #[test]
     fn extract_material_rejects_non_structure_instance() {
         let res = extract_material(&Value::Real(1.0));
-        assert!(
-            matches!(res, Err(FeaValueShapeError::ExpectedStructureInstance { .. })),
-            "expected Err(ExpectedStructureInstance) for a non-StructureInstance Value, got: {:?}",
-            res
-        );
+        match res {
+            Err(FeaValueShapeError::ExpectedStructureInstance { context, .. }) => {
+                assert_eq!(context, "extract_material");
+            }
+            other => panic!(
+                "expected Err(ExpectedStructureInstance) for a non-StructureInstance Value, got: {:?}",
+                other
+            ),
+        }
     }
 
     /// Amendment (task #5081 review round 3, suggestion 1): shared
