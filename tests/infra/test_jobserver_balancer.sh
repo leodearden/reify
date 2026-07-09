@@ -1789,11 +1789,29 @@ assert "Block 18: merge stamp pid is alive" \
 assert "Block 18: task stamp pid is alive" \
     bash -c '[ -n "$1" ] && { kill -0 "$1" 2>/dev/null || [ -d "/proc/$1" ]; }' _ "$_b18_task_pid"
 
-assert "Block 18: merge stamp boot_id == host boot_id" \
-    test "$_b18_merge_boot" = "$_b18_host_boot"
+# Guarded on _b18_host_boot being non-empty (task 5146 review comment 1,
+# round 2): read_boot_id() and this test's own `cat` read the same host file
+# under the same user, so if it's unreadable here it's unreadable to the
+# daemon too, and the daemon's stamp records the "-" fail-open sentinel
+# instead of a real boot_id. Asserting `test "-" = ""` would then false-fail
+# even though the code is behaving correctly (mirrors the HOST_BOOT_ID guard
+# in test_jobserver_role_fifo.sh case (h)). Rather than skip outright, assert
+# the fail-open sentinel directly in that branch so coverage holds either way.
+if [ -n "$_b18_host_boot" ]; then
+    assert "Block 18: merge stamp boot_id == host boot_id" \
+        test "$_b18_merge_boot" = "$_b18_host_boot"
 
-assert "Block 18: task stamp boot_id == host boot_id" \
-    test "$_b18_task_boot" = "$_b18_host_boot"
+    assert "Block 18: task stamp boot_id == host boot_id" \
+        test "$_b18_task_boot" = "$_b18_host_boot"
+else
+    echo "  NOTE: host boot_id unreadable here; asserting daemon's '-' fail-open sentinel instead"
+
+    assert "Block 18: merge stamp boot_id == '-' fail-open sentinel (host boot_id unreadable)" \
+        test "$_b18_merge_boot" = "-"
+
+    assert "Block 18: task stamp boot_id == '-' fail-open sentinel (host boot_id unreadable)" \
+        test "$_b18_task_boot" = "-"
+fi
 
 _cleanup_balancer
 
@@ -1920,5 +1938,56 @@ PY
 } || _b20_exit=$?
 assert "read_boot_id(): unreadable/nonexistent path returns '-' sentinel (fail-open)" \
     test "$_b20_exit" -eq 0
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 21: write_owner_stamp() OSError fail-open unit test (test-21, task 5146
+#   review comment 2, round 2)
+#
+#   write_owner_stamp()'s `except OSError` branch (WARNING, no raise) is the
+#   write-side safety valve symmetric to read_boot_id()'s "-" sentinel
+#   (Block 20): a stamp-write failure must never crash the daemon. It never
+#   executes via the live-daemon Block 18/19 tests above (those always write
+#   successfully under /tmp), so it is exercised directly here, via
+#   importlib, by pointing write_owner_stamp() at a fifo_path whose parent
+#   directory does not exist — open(tmp, "w") then raises FileNotFoundError
+#   (an OSError subtype) regardless of which user/permissions run the test.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 21: write_owner_stamp() OSError fail-open unit test ---"
+
+_b21_exit=0
+{
+python3 - "$BALANCER" <<'PY'
+import contextlib
+import importlib.util
+import io
+import sys
+
+spec = importlib.util.spec_from_file_location("jb", sys.argv[1])
+mod  = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+errors = []
+
+# ── nonexistent parent dir → swallowed OSError + WARNING (fail-open) ─────
+_captured = io.StringIO()
+with contextlib.redirect_stderr(_captured):
+    mod.write_owner_stamp("/nonexistent/path/does-not-exist-5146/fifo", 1234, "-")
+# Reaching this line at all proves the OSError did not propagate.
+
+_stderr = _captured.getvalue()
+if "WARNING" not in _stderr:
+    errors.append(
+        f"write_owner_stamp() OSError path emitted no WARNING on stderr; got {_stderr!r}"
+    )
+
+if errors:
+    sys.stderr.write("FAIL write_owner_stamp:\n" + "\n".join("  " + e for e in errors) + "\n")
+    sys.exit(1)
+print("OK: write_owner_stamp fail-open + WARNING")
+PY
+} || _b21_exit=$?
+assert "write_owner_stamp(): unwritable path swallows OSError (fail-open) and emits WARNING" \
+    test "$_b21_exit" -eq 0
 
 test_summary
