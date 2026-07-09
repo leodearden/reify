@@ -1455,11 +1455,14 @@ build_plan() {
         # interleaving concern — a stdout classifier line torn mid-write by
         # unbuffered stderr could in principle corrupt the ^FAILED\s anchor.
         # No change made: run_all emits "=== Summary: ..." / "=== FAILED: ..."
-        # via single `echo` calls (the summary block at the end of run_all.sh,
+        # via single `echo` calls, and the bare `FAILED <names>` classifier
+        # marker itself — the literal ^FAILED\s anchor DF keys on — via a
+        # single `printf` call (the summary block at the end of run_all.sh,
         # after the discovery/execution loop, that prints the
-        # discovered/failed counts and the FAILED name list — grep
-        # '=== Summary' / '=== FAILED' in run_all.sh to relocate it since line
-        # numbers drift), each one a `write()` syscall well under PIPE_BUF.
+        # discovered/failed counts, the FAILED name list, and the classifier
+        # marker — grep '=== Summary' / '=== FAILED' / "printf 'FAILED" in
+        # run_all.sh to relocate it since line numbers drift), each one a
+        # `write()` syscall well under PIPE_BUF.
         # PIPE_BUF atomicity is a POSIX guarantee for writes to pipes/FIFOs;
         # it isn't formally extended to a regular file the way DF captures
         # the merged 2>&1 stream. In practice the non-tearing property still
@@ -1467,10 +1470,12 @@ build_plan() {
         # stdout/stderr share one file description (hence one write
         # offset), so lines don't interleave-corrupt regardless of stderr
         # traffic —
-        # tests/infra/test_run_all.sh Test 7 asserts these exact markers
-        # survive a `2>&1`-merged capture. Revisit only if that assumption
-        # breaks (e.g. run_all starts assembling a classifier line across
-        # multiple writes).
+        # tests/infra/test_run_all.sh Test 8 (8a) asserts the actual
+        # `^FAILED ` classifier marker — the anchor this concern is about —
+        # survives a `2>&1`-merged capture; Test 7 separately covers the
+        # human-readable "=== Summary:" / "=== FAILED:" lines under the same
+        # capture. Revisit only if that assumption breaks (e.g. run_all
+        # starts assembling a classifier line across multiple writes).
         add "if test -f tests/infra/run_all.sh; then REIFY_AUDIT_NO_COLD_BUILD=1 REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 timeout --kill-after=60 30m bash tests/infra/run_all.sh 2>&1; fi"
     fi
 
