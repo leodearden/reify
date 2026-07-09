@@ -3313,6 +3313,21 @@ pub(crate) fn compile_entity(
                                 id,
                                 auto_free,
                                 cell_type,
+                                // Unconditionally Public — NOT priv-aware, unlike the
+                                // top-level structure-param site (entity.rs Site 1:
+                                // `if param.is_priv { Private } else { Public }`).
+                                // `priv` is grammatically legal on a port-member param
+                                // too (grammar.js `port_body` — `port_declaration`'s
+                                // `body` field — repeats `$.param_declaration`, whose
+                                // `optional('priv')` is unconditional), so
+                                // `param.is_priv` can be `true` here
+                                // and is silently dropped. Pre-existing asymmetry — the
+                                // original, pre-dedup code also hardcoded Public here —
+                                // that task #5058's decl-construction dedup preserves
+                                // byte-for-byte rather than fixes; making this
+                                // priv-aware would be a behavior change outside a pure
+                                // refactor's scope. Same known gap as the guarded-param
+                                // site in guards.rs; not addressed here.
                                 Visibility::Public,
                                 Vec::new(),
                                 param.span,
@@ -6538,61 +6553,65 @@ structure def Manifold {
         }
     }
 
-    /// Non-auto branch (`auto_free = None`) with a closure that yields a
-    /// default expression: `compile_default` must be invoked exactly once,
-    /// with a `&Type` equal to `cell_type`, and `default_expr` must equal
-    /// whatever the closure returned. `CompiledExpr` has no `PartialEq` impl,
+    /// Non-auto branch (`auto_free = None`): `compile_default` must be
+    /// invoked exactly once, with a `&Type` equal to `cell_type`, and
+    /// `default_expr` must equal whatever the closure returns — `Some` (a
+    /// typed param with an initializer) or `None` (no initializer). Loops
+    /// over both cases, mirroring the auto-branch test's `for free in
+    /// [true, false]` shape above. `CompiledExpr` has no `PartialEq` impl,
     /// so equality is pinned via `content_hash`.
     #[test]
-    fn build_param_value_cell_decl_param_branch_invokes_compile_default_with_some() {
-        let id = ValueCellId::new("TestEntity", "y");
-        let cell_type = Type::dimensionless_scalar();
-        let span = SourceSpan::new(11, 19);
-        let solver_hints = vec![SolverHint {
-            kind: SolverHintKind::DiscreteSet,
-            collection: "y_values".to_string(),
-            span,
-        }];
-        let call_count = std::cell::Cell::new(0u32);
-        let synthetic = CompiledExpr::literal(Value::Real(42.0), Type::dimensionless_scalar());
-        let expected_hash = synthetic.content_hash;
+    fn build_param_value_cell_decl_param_branch_invokes_compile_default_exactly_once() {
+        for yields_default in [true, false] {
+            let id = ValueCellId::new("TestEntity", "y");
+            let cell_type = Type::dimensionless_scalar();
+            let span = SourceSpan::new(11, 19);
+            let solver_hints = vec![SolverHint {
+                kind: SolverHintKind::DiscreteSet,
+                collection: "y_values".to_string(),
+                span,
+            }];
+            let call_count = std::cell::Cell::new(0u32);
+            let synthetic = CompiledExpr::literal(Value::Real(42.0), Type::dimensionless_scalar());
+            let expected_hash = synthetic.content_hash;
 
-        let decl = build_param_value_cell_decl(
-            id.clone(),
-            None,
-            cell_type.clone(),
-            Visibility::Public,
-            solver_hints.clone(),
-            span,
-            |ct: &Type| {
-                call_count.set(call_count.get() + 1);
-                assert_eq!(
-                    ct, &cell_type,
-                    "compile_default must receive cell_type by reference"
-                );
-                Some(synthetic)
-            },
-        );
+            let decl = build_param_value_cell_decl(
+                id.clone(),
+                None,
+                cell_type.clone(),
+                Visibility::Public,
+                solver_hints.clone(),
+                span,
+                |ct: &Type| {
+                    call_count.set(call_count.get() + 1);
+                    assert_eq!(
+                        ct, &cell_type,
+                        "compile_default must receive cell_type by reference"
+                    );
+                    if yields_default { Some(synthetic) } else { None }
+                },
+            );
 
-        assert_eq!(
-            call_count.get(),
-            1,
-            "compile_default must be invoked exactly once"
-        );
-        assert_eq!(decl.kind, ValueCellKind::Param);
-        assert_param_decl_passthrough_fields(
-            &decl,
-            &id,
-            span,
-            Visibility::Public,
-            &cell_type,
-            &solver_hints,
-        );
-        assert_eq!(
-            decl.default_expr.map(|e| e.content_hash),
-            Some(expected_hash),
-            "default_expr must equal whatever compile_default returned"
-        );
+            assert_eq!(
+                call_count.get(),
+                1,
+                "compile_default must be invoked exactly once (yields_default={yields_default})"
+            );
+            assert_eq!(decl.kind, ValueCellKind::Param);
+            assert_param_decl_passthrough_fields(
+                &decl,
+                &id,
+                span,
+                Visibility::Public,
+                &cell_type,
+                &solver_hints,
+            );
+            assert_eq!(
+                decl.default_expr.map(|e| e.content_hash),
+                if yields_default { Some(expected_hash) } else { None },
+                "default_expr must equal whatever compile_default returned (yields_default={yields_default})"
+            );
+        }
     }
 
     /// Non-auto branch (`auto_free = None`) with a distinct, non-dimensionless
@@ -6631,39 +6650,6 @@ structure def Manifold {
             decl.cell_type, cell_type,
             "decl.cell_type must equal the distinct Length-dimensioned type passed in"
         );
-    }
-
-    /// Non-auto branch (`auto_free = None`) with a closure that yields no
-    /// default expression (an untyped param with no initializer): the helper
-    /// must still invoke `compile_default` exactly once and set
-    /// `default_expr: None` from its return value, not skip the call.
-    #[test]
-    fn build_param_value_cell_decl_param_branch_invokes_compile_default_with_none() {
-        let id = ValueCellId::new("TestEntity", "z");
-        let cell_type = Type::dimensionless_scalar();
-        let span = SourceSpan::new(23, 29);
-        let call_count = std::cell::Cell::new(0u32);
-
-        let decl = build_param_value_cell_decl(
-            id,
-            None,
-            cell_type,
-            Visibility::Public,
-            Vec::new(),
-            span,
-            |_ct: &Type| {
-                call_count.set(call_count.get() + 1);
-                None
-            },
-        );
-
-        assert_eq!(
-            call_count.get(),
-            1,
-            "compile_default must be invoked exactly once"
-        );
-        assert_eq!(decl.kind, ValueCellKind::Param);
-        assert!(decl.default_expr.is_none());
     }
 
     /// The helper must not defer, reorder, or drop side effects a
