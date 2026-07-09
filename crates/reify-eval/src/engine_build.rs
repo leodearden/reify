@@ -2426,6 +2426,7 @@ fn demanded_reprs_for_template(
 ///     no-op when `demanded_repr == ReprKind::BRep` already).
 ///   - its DIRECT operand (e.g. `solid`) must demand Voxel, or the consumer's
 ///     `available_for_op` never contains Voxel and the same dispatch fails.
+///
 /// This narrow helper reproduces JUST those two overrides, leaving every
 /// other realization's demand at the pre-existing hardcoded BRep — no
 /// behavior change for any pipeline that does not use isosurface.
