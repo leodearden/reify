@@ -158,7 +158,7 @@ impl crate::Engine {
             Err(payload) => ComputeOutcome::Failed {
                 diagnostics: vec![Diagnostic::error(format!(
                     "compute trampoline '{target}' panicked: {}",
-                    panic_payload_message(payload.as_ref())
+                    reify_core::panic_payload_to_string(payload.as_ref())
                 ))],
                 structured_detail: vec![],
             },
@@ -661,18 +661,6 @@ impl crate::Engine {
     }
 }
 
-/// Turn a [`catch_unwind`](std::panic::catch_unwind) panic payload into a
-/// printable message for the `Failed` diagnostic built in
-/// [`Engine::invoke_compute_trampoline`].
-///
-/// Task #5121: delegates to the shared `reify_core::panic_payload_to_string`
-/// helper, which converges this copy with the near-identical downcast chain
-/// that used to be inlined in `reify-stdlib`'s `orientation` test module
-/// (deferred cross-crate follow-up from task #5079, esc-5079-2).
-fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
-    reify_core::panic_payload_to_string(payload)
-}
-
 /// Outcome of [`Engine::output_significance_outcome`] — richer than
 /// [`crate::significance_filter::FilterOutcome`] because the `Equivalent` arm
 /// bundles the already-fetched prior [`reify_ir::Value`].  This lets the caller
@@ -842,7 +830,7 @@ mod tests {
 
     use crate::Engine;
     use crate::engine_compute::{
-        ComputeFn, ComputeOutcome, RealizationReadHandle, RealizedContent, panic_payload_message,
+        ComputeFn, ComputeOutcome, RealizationReadHandle, RealizedContent,
     };
     use crate::graph::CancellationHandle;
 
@@ -4238,28 +4226,34 @@ mod tests {
 
     // ── Task #5079 step-3: RED — diagnostic enrichment ──────────────────────
     //
-    // `panic_payload_message` is exercised directly below in isolation. Its
-    // output is also asserted as a substring of the `Failed` diagnostic
-    // message built by tests (a)/(b) above: each of those drives the exact
-    // same `invoke_compute_trampoline` call already used for the
+    // `reify_core::panic_payload_to_string` is exercised directly below in
+    // isolation. Its output is also asserted as a substring of the `Failed`
+    // diagnostic message built by tests (a)/(b) above: each of those drives
+    // the exact same `invoke_compute_trampoline` call already used for the
     // target/"panicked" wording check, so the payload-text assertion lives
     // alongside it on the same diagnostic rather than in a separate test.
 
-    /// (h) `panic_payload_message` must extract the payload text from both
-    /// `&str` and `String` panic payloads, and fall back to a fixed message
-    /// for any other payload type.
+    /// (h) `reify_core::panic_payload_to_string` must extract the payload
+    /// text from both `&str` and `String` panic payloads, and fall back to a
+    /// fixed message for any other payload type.
     #[test]
-    fn panic_payload_message_extracts_str_string_and_falls_back() {
+    fn panic_payload_to_string_extracts_str_string_and_falls_back() {
         let str_payload: Box<dyn std::any::Any + Send> = Box::new("boom_str");
-        assert_eq!(panic_payload_message(str_payload.as_ref()), "boom_str");
+        assert_eq!(
+            reify_core::panic_payload_to_string(str_payload.as_ref()),
+            "boom_str"
+        );
 
         let string_payload: Box<dyn std::any::Any + Send> =
             Box::new(String::from("boom_string"));
-        assert_eq!(panic_payload_message(string_payload.as_ref()), "boom_string");
+        assert_eq!(
+            reify_core::panic_payload_to_string(string_payload.as_ref()),
+            "boom_string"
+        );
 
         let other_payload: Box<dyn std::any::Any + Send> = Box::new(42i32);
         assert_eq!(
-            panic_payload_message(other_payload.as_ref()),
+            reify_core::panic_payload_to_string(other_payload.as_ref()),
             "<non-string panic payload>"
         );
     }
