@@ -35,11 +35,16 @@
 # the checked-in ledger tests/infra/run-all-ambient-vars.manifest. The
 # ledger is cross-checked below against the LIVE injected-var set derived
 # from the real injection source(s), so a var newly added there without a
-# matching ledger entry fails this guard by construction -- closing the
-# exact gap that left REIFY_AUDIT_NO_COLD_BUILD uncovered (its hostile
-# sub-case would previously have passed vacuously anyway, since it makes the
-# reify-audit freshness guard SKIP rather than fail -- see
-# run-all-ambient-vars.manifest's header).
+# matching ledger entry fails this guard by construction. This closes the
+# LEDGER-DRIFT gap (no injected var can go unguarded-and-unnoticed again)
+# and ensures the set-equality guard now tracks REIFY_AUDIT_NO_COLD_BUILD
+# specifically -- it is NOT a claim that isolation-bug coverage for that
+# var is complete. REIFY_AUDIT_NO_COLD_BUILD's own hostile-ambient sub-case
+# below passes vacuously regardless of whether an isolation bug exists for
+# it, since setting it makes the reify-audit freshness guard SKIP rather
+# than fail (verify.sh:1410-1412), so test_run_all.sh exits 0 either way --
+# see run-all-ambient-vars.manifest's header for the same caveat recorded
+# next to its ledger entry.
 
 set -euo pipefail
 
