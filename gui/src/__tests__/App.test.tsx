@@ -4760,9 +4760,11 @@ describe('App persistence wiring — layout state compose (task-4768 ε)', () =>
         }),
       );
     } finally {
+      // Restore alongside the timer cleanup so spy teardown still happens if
+      // the assertion above throws (task 5155 amendment).
       vi.useRealTimers();
+      saveSpy.mockRestore();
     }
-    saveSpy.mockRestore();
     void realSave;
   });
 });
