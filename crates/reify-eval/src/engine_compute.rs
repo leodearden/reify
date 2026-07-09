@@ -85,6 +85,25 @@ impl ComputeDispatchRegistry {
     }
 }
 
+// Task #5079 / PRD compute-fea-hardening.md D1 (Contract C2): the
+// `catch_unwind` crash-safety floor in `Engine::invoke_compute_trampoline`
+// below is a documented no-op under `panic = "abort"` (the process would
+// still abort instead of converting a panicking `ComputeFn` into
+// `ComputeOutcome::Failed`). No `panic = "abort"` override exists anywhere
+// in the workspace today, so this cfg is inert — but it is a hard
+// compile-time tripwire against a *future* profile silently reintroducing
+// `abort` (e.g. for binary-size reasons) and defeating this hardening with
+// no other test signal.
+#[cfg(panic = "abort")]
+compile_error!(
+    "reify-eval requires panic = \"unwind\": Engine::invoke_compute_trampoline's \
+     catch_unwind crash-safety floor (task #5079) is a no-op under panic = \"abort\" and \
+     would silently stop converting panicking ComputeFn calls into \
+     ComputeOutcome::Failed. If this crate must build with panic = \"abort\", the \
+     hardening needs a different mechanism (e.g. isolating dispatch in a subprocess) \
+     before this guard can be removed."
+);
+
 impl crate::Engine {
     /// Invoke the registered compute trampoline for `target` with the supplied
     /// inputs and the **caller-provided** cancellation handle.
@@ -99,7 +118,7 @@ impl crate::Engine {
     /// lowering site thread the same `Arc<AtomicBool>` that it stores in the
     /// node's `running` slot, so a future async driver cancelling via `running`
     /// propagates to the trampoline's poll.
-    fn invoke_compute_trampoline(
+    pub(crate) fn invoke_compute_trampoline(
         &self,
         target: &str,
         value_inputs: &[Value],
@@ -109,13 +128,41 @@ impl crate::Engine {
         cancellation: &CancellationHandle,
     ) -> Option<ComputeOutcome> {
         let f = self.compute_registry.fns.get(target).copied()?;
-        Some(f(
-            value_inputs,
-            realization_inputs,
-            options,
-            prior_warm_state,
-            cancellation,
-        ))
+        // Task #5079 (INV-FEA-2 / PRD compute-fea-hardening.md D1, Contract
+        // C2): the single guarded compute-dispatch point — both
+        // `run_compute_dispatch` (below) and `Engine::dispatch_compute_node`
+        // (engine_admin.rs) route through here, so a panicking `ComputeFn`
+        // uniformly becomes `ComputeOutcome::Failed`. Any new dispatch path
+        // must do the same rather than calling `compute_registry.fns.get(..)`
+        // + `f(..)` directly.
+        //
+        // `AssertUnwindSafe` is sound (every capture is a shared, unmutated
+        // reference); the `panic = "abort"` no-op case is pinned by the
+        // `compile_error!` above. The panic hook is left installed, so caught
+        // panics still print to stderr — accepted, including the volume
+        // under a repeatedly-panicking target in a hot loop (esc-5079-3).
+        // Other accepted limitations (FFI/native aborts escape uncaught; no
+        // rollback of pre-panic side effects) are detailed in the PRD, not
+        // repeated here.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            f(
+                value_inputs,
+                realization_inputs,
+                options,
+                prior_warm_state,
+                cancellation,
+            )
+        }));
+        Some(match result {
+            Ok(outcome) => outcome,
+            Err(payload) => ComputeOutcome::Failed {
+                diagnostics: vec![Diagnostic::error(format!(
+                    "compute trampoline '{target}' panicked: {}",
+                    panic_payload_message(payload.as_ref())
+                ))],
+                structured_detail: vec![],
+            },
+        })
     }
 
     /// Run the full in-flight ComputeNode dispatch lifecycle for `c_id` —
@@ -614,6 +661,37 @@ impl crate::Engine {
     }
 }
 
+/// Turn a [`catch_unwind`](std::panic::catch_unwind) panic payload into a
+/// printable message for the `Failed` diagnostic built in
+/// [`Engine::invoke_compute_trampoline`]: the standard downcast chain
+/// used elsewhere in the workspace (mirrors the idiom in
+/// `reify-stdlib`'s `orientation` module) — try `&str`, then `String`,
+/// else fall back to a fixed placeholder.
+///
+/// This duplicates rather than reuses that copy. Two distinct convergences
+/// are possible, and neither is attempted here — both are tracked as a
+/// follow-up via escalate_info (esc-5079-2):
+///
+/// - **In-crate**: the same downcast idiom is also inlined three times in
+///   `engine_eval.rs` (its `catch_unwind` payload handling). A private
+///   helper shared by `engine_compute.rs` and `engine_eval.rs` would
+///   consolidate all four copies without touching `reify-stdlib` at all —
+///   it is deferred only because editing `engine_eval.rs` falls outside
+///   this task's locked module (`engine_compute.rs` only).
+/// - **Cross-crate**: hoisting a shared `panic_payload_message` into a
+///   lower crate (e.g. `reify-core`) would additionally converge the
+///   `reify-stdlib` `orientation` copy, but requires touching `reify-stdlib`
+///   — a materially larger-scope change than the in-crate consolidation.
+fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "<non-string panic payload>".to_string()
+    }
+}
+
 /// Outcome of [`Engine::output_significance_outcome`] — richer than
 /// [`crate::significance_filter::FilterOutcome`] because the `Equivalent` arm
 /// bundles the already-fetched prior [`reify_ir::Value`].  This lets the caller
@@ -783,7 +861,7 @@ mod tests {
 
     use crate::Engine;
     use crate::engine_compute::{
-        ComputeFn, ComputeOutcome, RealizationReadHandle, RealizedContent,
+        ComputeFn, ComputeOutcome, RealizationReadHandle, RealizedContent, panic_payload_message,
     };
     use crate::graph::CancellationHandle;
 
@@ -1027,6 +1105,85 @@ mod tests {
         assert!(
             matches!(engine.freshness(&node), Freshness::Pending { .. }),
             "post-failed-trampoline VC freshness must be Pending, not Final or Failed",
+        );
+    }
+
+    /// A panic must be caught the same way when driven through
+    /// `run_compute_dispatch` itself, not just
+    /// `invoke_compute_trampoline`/`dispatch_compute_node` directly.
+    /// `run_compute_dispatch`'s `Failed` arm does extra post-processing
+    /// (prior-warm-state restore via seed-then-donate) beyond what
+    /// `invoke_compute_trampoline` returns, so a caught panic needs its own
+    /// coverage of that arm distinct from the graceful `Failed` outcome
+    /// (test (b) above). Reuses the existing `panics_str_fn` synthetic
+    /// trampoline (no new fixture) under the same `run_compute_dispatch`
+    /// scaffolding as (a)/(b)/(c).
+    #[test]
+    fn run_compute_dispatch_panicking_trampoline_becomes_dispatch_error_failed() {
+        use crate::engine_compute::DispatchError;
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn(
+            "test::panic_run_compute_dispatch",
+            panics_str_fn as ComputeFn,
+        );
+
+        let cell = ValueCellId::new("T", "b");
+        let c_id = ComputeNodeId::new("T", 0);
+
+        engine.cache_store_mut().put(
+            NodeId::Value(cell.clone()),
+            NodeCache::new(
+                CachedResult::Value(Value::Int(7), DeterminacyState::Determined),
+                Freshness::Final,
+                DependencyTrace::default(),
+                VersionId(1),
+            ),
+        );
+
+        let handle = CancellationHandle::new(); // not cancelled
+
+        let result = engine.run_compute_dispatch(
+            &c_id,
+            std::slice::from_ref(&cell),
+            "test::panic_run_compute_dispatch",
+            &[Value::Int(7)],
+            &[],
+            &Value::Undef,
+            &handle,
+            VersionId(2),
+            ContentHash(0), // inert: no cache dir in tests
+        );
+
+        // Must return Err(DispatchError::Failed) with the caught panic's
+        // diagnostics — not a panic unwinding out of this test, and not
+        // Err(DispatchError::Cancelled).
+        match result {
+            Err(DispatchError::Failed(diags, _)) => {
+                assert!(
+                    diags.iter().any(|d| d.severity == reify_core::Severity::Error
+                        && d.message.contains("test::panic_run_compute_dispatch")
+                        && d.message.contains("panicked")
+                        && d.message.contains("boom_str")),
+                    "expected an Error diagnostic naming the target, \"panicked\", and \
+                     the panic payload \"boom_str\" — the same enriched conversion \
+                     invoke_compute_trampoline/dispatch_compute_node perform — got \
+                     {diags:?}",
+                );
+            }
+            other => panic!(
+                "expected Err(DispatchError::Failed(..)) for a panicking trampoline \
+                 driven through run_compute_dispatch, got {other:?}"
+            ),
+        }
+
+        // Output VC is left Pending — same cache contract a graceful Failed
+        // outcome takes (test (b) above): begin was called, complete was not.
+        let node = NodeId::Value(cell.clone());
+        assert!(
+            matches!(engine.freshness(&node), Freshness::Pending { .. }),
+            "post-panic (via run_compute_dispatch) VC freshness must be Pending, \
+             not Final or some other state",
         );
     }
 
@@ -3892,5 +4049,285 @@ mod tests {
                 "expected Err(DispatchError::Failed(_diags, sd)), got {other:?}"
             ),
         }
+    }
+
+    // ── Task #5079 step-1: RED — catch_unwind crash-safety floor ───────────
+    //
+    // `invoke_compute_trampoline` currently calls `f(...)` with no panic
+    // guard (engine_compute.rs:102-119). A panicking `ComputeFn` unwinds
+    // straight through this method and into the test functions below, which
+    // the test harness (panic=unwind, no `#[should_panic]`) reports as a
+    // failed test — every test in this section is RED today. Step-2 wraps
+    // the invocation in `std::panic::catch_unwind` so a panic becomes
+    // `Some(ComputeOutcome::Failed{diagnostics,..})` instead of aborting the
+    // test process (survey latent bug #9 / PRD compute-fea-hardening.md D1).
+    //
+    // Note: once GREEN, running these panic-driven tests still prints a full
+    // panic message and backtrace to stderr for every caught panic — this is
+    // expected noise, not a failure signal (assert on the returned
+    // `ComputeOutcome`, not on stderr being clean). We deliberately do NOT
+    // install a temporary no-op panic hook around these calls to quiet it:
+    // the panic hook is process-global (`std::panic::set_hook`/`take_hook`)
+    // and Rust runs tests on parallel threads by default, so swapping it
+    // per-test would race with every other test's panics in this crate's
+    // test binary and could flake or swallow a genuine failure's backtrace.
+    // Production leaves the default hook installed for the same reason (see
+    // `invoke_compute_trampoline` above) — one hook, one policy, everywhere.
+
+    /// Synthetic trampoline panicking with a `&str` payload.
+    fn panics_str_fn(
+        _value_inputs: &[Value],
+        _realization_inputs: &[RealizationReadHandle],
+        _options: &Value,
+        _prior_warm_state: Option<&OpaqueState>,
+        _cancellation: &CancellationHandle,
+    ) -> ComputeOutcome {
+        panic!("boom_str");
+    }
+
+    /// Synthetic trampoline panicking with a `String` payload — the format
+    /// args force `panic!`'s machinery to build an owned `String`, not a
+    /// `&'static str` literal payload.
+    fn panics_string_fn(
+        _value_inputs: &[Value],
+        _realization_inputs: &[RealizationReadHandle],
+        _options: &Value,
+        _prior_warm_state: Option<&OpaqueState>,
+        _cancellation: &CancellationHandle,
+    ) -> ComputeOutcome {
+        panic!("boom_{}", String::from("string"));
+    }
+
+    /// (a) A `&str`-payload panic must become `Some(ComputeOutcome::Failed{..})`
+    /// with a single Error diagnostic naming the target, "panicked", AND the
+    /// panic payload text — not an unwind out of this test.
+    #[test]
+    fn invoke_compute_trampoline_str_panic_becomes_failed_outcome() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn("test::panic_str", panics_str_fn as ComputeFn);
+
+        let result = engine.invoke_compute_trampoline(
+            "test::panic_str",
+            &[Value::Int(0)],
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        );
+
+        match result {
+            Some(ComputeOutcome::Failed { diagnostics, .. }) => {
+                assert!(
+                    diagnostics.iter().any(|d| d.severity == reify_core::Severity::Error
+                        && d.message.contains("test::panic_str")
+                        && d.message.contains("panicked")
+                        && d.message.contains("boom_str")),
+                    "expected an Error diagnostic naming the target, \"panicked\", and \
+                     the panic payload \"boom_str\", got {diagnostics:?}",
+                );
+            }
+            other => panic!(
+                "expected Some(ComputeOutcome::Failed {{ .. }}) after a panicking \
+                 trampoline, got {other:?}"
+            ),
+        }
+    }
+
+    /// (b) A `String`-payload panic must likewise become
+    /// `Some(ComputeOutcome::Failed{..})` with a single Error diagnostic
+    /// naming the target, "panicked", AND the panic payload text.
+    #[test]
+    fn invoke_compute_trampoline_string_panic_becomes_failed_outcome() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn("test::panic_string", panics_string_fn as ComputeFn);
+
+        let result = engine.invoke_compute_trampoline(
+            "test::panic_string",
+            &[Value::Int(0)],
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        );
+
+        match result {
+            Some(ComputeOutcome::Failed { diagnostics, .. }) => {
+                assert!(
+                    diagnostics.iter().any(|d| d.severity == reify_core::Severity::Error
+                        && d.message.contains("test::panic_string")
+                        && d.message.contains("panicked")
+                        && d.message.contains("boom_string")),
+                    "expected an Error diagnostic naming the target, \"panicked\", and \
+                     the panic payload \"boom_string\", got {diagnostics:?}",
+                );
+            }
+            other => panic!(
+                "expected Some(ComputeOutcome::Failed {{ .. }}) after a panicking \
+                 trampoline, got {other:?}"
+            ),
+        }
+    }
+
+    // ── Task #5079 step-1: read-then-panic integration test ────────────────
+    //
+    // One representative case (Undef material) stands in for all five Undef
+    // positions (material/length/width/height/loads): the `catch_unwind`
+    // boundary in `invoke_compute_trampoline` behaves identically regardless
+    // of which internal call panics, and the mechanism itself is already
+    // fully pinned by the synthetic tests (a)/(b) above, so five
+    // near-identical cases would only add coupling to `elastic_static`'s
+    // internal panic-site line numbers without proving anything more. The
+    // assertion checks for "panicked" wording specifically so this test
+    // cannot go green via a graceful (non-panic) `Failed` return instead of
+    // an actually-caught panic. The trampoline below is synthetic rather
+    // than the real `solve_elastic_static_trampoline` so this coverage does
+    // not depend on `compute_targets::elastic_static` continuing to panic on
+    // Undef material — a legitimate future hardening of that module (making
+    // it fail gracefully instead of panicking) should not be able to redden
+    // this test.
+
+    /// Synthetic trampoline mirroring `compute_targets::elastic_static`'s
+    /// read-then-panic shape: it reads the material input at [0] and panics
+    /// only as a *consequence* of that value being `Value::Undef` — the same
+    /// failure mode `classify_material`/`extract_material` hit today —
+    /// rather than panicking unconditionally like `panics_str_fn`/
+    /// `panics_string_fn` above. Kept independent of
+    /// `compute_targets::elastic_static` so this coverage does not depend on
+    /// that module continuing to panic (see the section comment above).
+    fn panics_on_undef_material_fn(
+        value_inputs: &[Value],
+        _realization_inputs: &[RealizationReadHandle],
+        _options: &Value,
+        _prior_warm_state: Option<&OpaqueState>,
+        _cancellation: &CancellationHandle,
+    ) -> ComputeOutcome {
+        match value_inputs.first() {
+            Some(Value::Undef) | None => panic!("material input is Undef"),
+            Some(material) => ComputeOutcome::Completed {
+                result: material.clone(),
+                new_warm_state: None,
+                cost_per_byte: None,
+                diagnostics: vec![],
+                structured_detail: vec![],
+            },
+        }
+    }
+
+    /// (c) A trampoline that panics as a consequence of reading a bad
+    /// argument — mirroring `compute_targets::elastic_static`'s
+    /// read-then-panic shape for Undef material — must also become
+    /// `Some(ComputeOutcome::Failed{..})` with a diagnostic naming the
+    /// target and "panicked", proving the mechanism protects a
+    /// realistically-shaped trampoline, not just the unconditionally
+    /// panicking ones in (a)/(b).
+    #[test]
+    fn invoke_compute_trampoline_read_then_panic_fn_undef_material_becomes_failed_outcome() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn(
+            "test::read_then_panic",
+            panics_on_undef_material_fn as ComputeFn,
+        );
+
+        let result = engine.invoke_compute_trampoline(
+            "test::read_then_panic",
+            &[Value::Undef], // material [0] — the arg under test
+            &[],
+            &Value::Undef,
+            None,
+            &CancellationHandle::new(),
+        );
+
+        match result {
+            Some(ComputeOutcome::Failed { diagnostics, .. }) => {
+                assert!(
+                    diagnostics.iter().any(|d| d.severity == reify_core::Severity::Error
+                        && d.message.contains("test::read_then_panic")
+                        && d.message.contains("panicked")),
+                    "expected an Error diagnostic naming the target and \"panicked\" \
+                     (i.e. caught by catch_unwind, not a graceful Failed return that \
+                     never panicked), got {diagnostics:?}",
+                );
+            }
+            other => panic!(
+                "expected Some(ComputeOutcome::Failed {{ .. }}) for Undef material, \
+                 got {other:?}"
+            ),
+        }
+    }
+
+    // ── Task #5079 step-3: RED — diagnostic enrichment ──────────────────────
+    //
+    // `panic_payload_message` is exercised directly below in isolation. Its
+    // output is also asserted as a substring of the `Failed` diagnostic
+    // message built by tests (a)/(b) above: each of those drives the exact
+    // same `invoke_compute_trampoline` call already used for the
+    // target/"panicked" wording check, so the payload-text assertion lives
+    // alongside it on the same diagnostic rather than in a separate test.
+
+    /// (h) `panic_payload_message` must extract the payload text from both
+    /// `&str` and `String` panic payloads, and fall back to a fixed message
+    /// for any other payload type.
+    #[test]
+    fn panic_payload_message_extracts_str_string_and_falls_back() {
+        let str_payload: Box<dyn std::any::Any + Send> = Box::new("boom_str");
+        assert_eq!(panic_payload_message(str_payload.as_ref()), "boom_str");
+
+        let string_payload: Box<dyn std::any::Any + Send> =
+            Box::new(String::from("boom_string"));
+        assert_eq!(panic_payload_message(string_payload.as_ref()), "boom_string");
+
+        let other_payload: Box<dyn std::any::Any + Send> = Box::new(42i32);
+        assert_eq!(
+            panic_payload_message(other_payload.as_ref()),
+            "<non-string panic payload>"
+        );
+    }
+
+    // ── Task #5079 step-5: RED — dispatch_compute_node must share the guard ──
+    //
+    // `Engine::dispatch_compute_node` (engine_admin.rs) is a SECOND public
+    // dispatch entry point. It resolves the SAME `compute_registry.fns`
+    // registry as `invoke_compute_trampoline` but today calls `f(...)`
+    // directly with no `catch_unwind` — so a trampoline that panics when
+    // reached via THIS path still unwinds out of the process, even after
+    // step-2/step-4 guarded `invoke_compute_trampoline`. RED today:
+    // `panic!("boom_str")` unwinds straight through `dispatch_compute_node`
+    // into this test fn, so `.expect_err(..)` is never reached and the
+    // harness (panic=unwind, pinned by the `#[cfg(panic = "abort")]
+    // compile_error!` above) reports a panicked-test failure. Step-6 makes
+    // this GREEN by routing `dispatch_compute_node` through the
+    // already-guarded `invoke_compute_trampoline`.
+
+    /// `dispatch_compute_node` must convert a panicking trampoline into
+    /// `Err(diagnostics)` — the SAME enriched conversion
+    /// `invoke_compute_trampoline` already performs — rather than letting
+    /// the panic unwind out of the process.
+    #[test]
+    fn dispatch_compute_node_catches_panicking_trampoline() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_compute_fn("test::panic_dispatch", panics_str_fn as ComputeFn);
+
+        let diags = engine
+            .dispatch_compute_node(
+                "test::panic_dispatch",
+                &[Value::Int(0)],
+                &[],
+                &Value::Undef,
+                None,
+            )
+            .expect_err(
+                "a panic via dispatch_compute_node must become Err(diagnostics), not \
+                 unwind out of the process",
+            );
+
+        assert!(
+            diags.iter().any(|d| d.severity == reify_core::Severity::Error
+                && d.message.contains("test::panic_dispatch")
+                && d.message.contains("panicked")
+                && d.message.contains("boom_str")),
+            "expected an Error diagnostic naming the target, \"panicked\", and the \
+             panic payload \"boom_str\" (i.e. the same enriched conversion \
+             invoke_compute_trampoline performs), got {diags:?}",
+        );
     }
 }
