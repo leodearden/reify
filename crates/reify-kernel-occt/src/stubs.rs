@@ -734,13 +734,13 @@ mod tests {
         assert_no_check_failures(failures);
     }
 
-    /// Representative sample of `OcctKernel`'s geometric-probe inherent
-    /// methods (none are on `GeometryKernel`, so `assert_kernel_contract!`
-    /// cannot see any of them), plus `apply_transform_to_handle` for the
-    /// `GeometryError`-family case. The remaining probes share this exact
-    /// assertion shape against a hardcoded stub return, so they rely on
-    /// compilation for signature parity rather than a dedicated check here
-    /// (task 5110 review).
+    /// Full set of `OcctKernel`'s geometric-probe inherent methods (none are
+    /// on `GeometryKernel`, so `assert_kernel_contract!` cannot see any of
+    /// them), plus `apply_transform_to_handle` for the `GeometryError`-family
+    /// case. Each probe's return value is checked at runtime via
+    /// `check_query_failed`/`check_operation_failed` rather than trusted to
+    /// compilation-only signature parity, so a probe that regresses to
+    /// `Ok(_)` or a different error family fails here (task 5110 review).
     #[test]
     fn stub_kernel_probe_methods_return_not_available_error() {
         let mut kernel = OcctKernel::new();
@@ -800,6 +800,47 @@ mod tests {
                 reify_ir::DEFAULT_CONTAINS_TOLERANCE_M,
             ),
             "contains",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_query_failed(
+            kernel.shapes_intersect(GeometryHandleId(1), GeometryHandleId(2)),
+            "shapes_intersect",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_query_failed(
+            kernel.interferes_with_transform(GeometryHandleId(1), GeometryHandleId(2), &identity),
+            "interferes_with_transform",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_query_failed(
+            kernel.min_clearance(GeometryHandleId(1), GeometryHandleId(2)),
+            "min_clearance",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_query_failed(
+            kernel.distance_with_transform(GeometryHandleId(1), GeometryHandleId(2), &identity),
+            "distance_with_transform",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) =
+            check_query_failed(kernel.vertex_point(GeometryHandleId(1)), "vertex_point")
+        {
+            failures.push(e);
+        }
+        if let Err(e) = check_query_failed(
+            kernel.surface_normal_at_point(GeometryHandleId(1), 0.0, 0.0, 0.0),
+            "surface_normal_at_point",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_query_failed(
+            kernel.curve_curvature_at(GeometryHandleId(1), 0.0, 0.0, 0.0),
+            "curve_curvature_at",
         ) {
             failures.push(e);
         }
