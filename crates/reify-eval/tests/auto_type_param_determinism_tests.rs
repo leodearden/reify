@@ -623,14 +623,18 @@ fn v0_1_example_corpus_compile_and_check_time_is_bounded() {
 // ─── step-11 unit guards: per_file_violations pure-helper contract ─────────
 
 /// `per_file_violations` must flag a genuinely over-budget file and must NOT
-/// flag sub-budget files. This is the non-vacuous guarantee that the per-file
-/// gate exists to provide: a genuinely quadratic file still goes RED.
+/// flag sub-budget files, including a file landing exactly on the budget
+/// boundary (`duration == budget` uses strict `>`, so it is NOT a
+/// violation). This is the non-vacuous guarantee that the per-file gate
+/// exists to provide: a genuinely quadratic file still goes RED, while the
+/// off-by-one-prone `>` vs `>=` boundary is pinned in the other direction.
 #[test]
 fn per_file_gate_flags_quadratic_overrun() {
     let measurements: Vec<(String, Duration)> = vec![
         ("fast.ri".to_string(), Duration::from_millis(500)),
         ("slow.ri".to_string(), Duration::from_secs(11)),
         ("edge.ri".to_string(), Duration::from_secs(9)),
+        ("boundary.ri".to_string(), Duration::from_secs(10)),
     ];
 
     let violations = per_file_violations(&measurements, Duration::from_secs(10));
@@ -639,18 +643,24 @@ fn per_file_gate_flags_quadratic_overrun() {
     assert_eq!(
         names,
         vec!["slow.ri"],
-        "expected only the 11s file (> 10s budget) to be flagged as a violation, got: {names:?}"
+        "expected only the 11s file (> 10s budget) to be flagged as a violation; \
+         a file at exactly the 10s budget (boundary.ri) must NOT be flagged since \
+         the comparison is strict `>`, got: {names:?}"
     );
 }
 
-/// `per_file_violations` has no aggregate/total concept: many sub-budget
-/// files whose SUM exceeds the old 120s total budget must still produce zero
-/// violations. Pins that the aggregate wall-clock budget is gone and
-/// RED-guards any future re-introduction of one.
+/// `per_file_violations` has no aggregate/total concept: a handful of
+/// sub-budget files whose SUM exceeds the old 120s total budget must still
+/// produce zero violations. Pins that the aggregate wall-clock budget is gone
+/// and RED-guards any future re-introduction of one.
 #[test]
 fn per_file_gate_ignores_aggregate_total_wall_clock() {
-    let measurements: Vec<(String, Duration)> = (0..300)
-        .map(|i| (format!("file_{i}.ri"), Duration::from_millis(500)))
+    // 20 files at 9s each (still under the 10s per-file budget) sum to 180s,
+    // comfortably past the old 120s total — enough to demonstrate "total >>
+    // budget while each file is under" without the allocation cost of a
+    // much larger fixture.
+    let measurements: Vec<(String, Duration)> = (0..20)
+        .map(|i| (format!("file_{i}.ri"), Duration::from_secs(9)))
         .collect();
 
     // Sanity: the fixture sum must comfortably exceed the old 120s total
