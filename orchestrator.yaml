@@ -316,25 +316,46 @@ max_turns:
 # ABSOLUTE per-role wall-clock ceiling regardless of progress
 # (defaults.yaml timeouts: implementer/debugger=1200s, unblock_auto.
 # timeout_seconds=600s). Reify's compile-heavy iterations routinely need
-# >20min — verify alone is budgeted 3600s (verify_command_timeout_secs
-# above) — so productive sessions with 26-100 transcript turns were killed
-# mid-run and misreported as "error_empty_output, 0 turns": 200 such kills
-# across 72 reify tasks since 2026-06-09, exhausting
-# max_execute_iterations and landing complete work in BLOCKED/L2 (task
-# 4827).
+# >20min — verify alone is budgeted verify_command_timeout_secs=7200s above
+# — so productive sessions with 26-100 transcript turns were killed mid-run
+# and misreported as "error_empty_output, 0 turns": 200 such kills across
+# 72 reify tasks since 2026-06-09, exhausting max_execute_iterations and
+# landing complete work in BLOCKED/L2 (task 4827).
 #
-# implementer/debugger 1200 -> 3600 matches reify's own verify budget;
-# unblock_auto.timeout_seconds 600 -> 1800. Genuine startup wedges are
-# still caught by the separate startup_grace_secs (120s, unchanged) — this
-# only lengthens the leash on runs that have already proven liveness.
+# implementer/debugger 1200 -> 7800 (verify's real 7200s budget + 600s
+# headroom — see the 2026-07-09 amendment below); unblock_auto.
+# timeout_seconds 600 -> 1800. Genuine startup wedges are still caught by
+# the separate startup_grace_secs (120s, unchanged) — this only lengthens
+# the leash on runs that have already proven liveness.
+#
+# 2026-07-09 review amendment (task 5157): two corrections from the first
+# landing of this override.
+# (1) implementer/debugger was originally set to 3600 with this comment
+#     claiming it "matches reify's own verify_command_timeout_secs
+#     budget" — that budget was actually bumped 3600 -> 7200 back on
+#     2026-06-19 (see the verify_command_timeout_secs comment above), so
+#     the cited figure was stale. 3600 left implementer/debugger UNDER the
+#     real verify ceiling rather than equal to it: a verify call running
+#     anywhere in the 3600-7200s range would still hit the role ceiling
+#     first, reproducing the exact misreported-kill symptom this task
+#     exists to fix. Corrected to 7800 so a verify call that runs right up
+#     to its own timeout still has room to be reported before the role
+#     ceiling also fires, instead of racing it.
+# (2) architect is intentionally NOT covered by this override:
+#     defaults.yaml already gives architect a 2400s ceiling (2x
+#     implementer/debugger's pre-amendment 1200s default), architect
+#     doesn't run the compile-heavy verify commands that are this task's
+#     documented root cause, and it's separately bounded by reify's own
+#     max_turns.architect=120 above. Revisit if architect sessions start
+#     showing the same 0-turn misreported-kill signature.
 #
 # Load-once config (orchestrator.yaml has no hot-reload): takes effect at
 # the next orchestrator restart. Do NOT restart mid-flight — land for the
 # next quiet window, the same restart that activates the
 # verify_clock_stop_heartbeat_idle_max bump (task 5156).
 timeouts:
-  implementer: 3600
-  debugger: 3600
+  implementer: 7800
+  debugger: 7800
 
 unblock_auto:
   timeout_seconds: 1800
