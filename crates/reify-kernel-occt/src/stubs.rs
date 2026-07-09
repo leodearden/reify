@@ -623,6 +623,42 @@ mod tests {
         }
     }
 
+    /// `ExportError` counterpart of [`check_query_failed`]: checks
+    /// `ExportError::FormatError` mentioning "OCCT" without panicking.
+    fn check_format_failed<T: std::fmt::Debug>(
+        result: Result<T, ExportError>,
+        method: &str,
+    ) -> Result<(), String> {
+        match result {
+            Err(ExportError::FormatError(msg)) if msg.contains("OCCT") => Ok(()),
+            Err(ExportError::FormatError(msg)) => {
+                Err(format!("{method} error should mention OCCT, got: {msg}"))
+            }
+            other => Err(format!(
+                "expected Err(ExportError::FormatError(_)) from {method}, got {:?}",
+                other
+            )),
+        }
+    }
+
+    /// `TessError` counterpart of [`check_query_failed`]: checks
+    /// `TessError::TessellationFailed` mentioning "OCCT" without panicking.
+    fn check_tess_failed<T: std::fmt::Debug>(
+        result: Result<T, TessError>,
+        method: &str,
+    ) -> Result<(), String> {
+        match result {
+            Err(TessError::TessellationFailed(msg)) if msg.contains("OCCT") => Ok(()),
+            Err(TessError::TessellationFailed(msg)) => {
+                Err(format!("{method} error should mention OCCT, got: {msg}"))
+            }
+            other => Err(format!(
+                "expected Err(TessError::TessellationFailed(_)) from {method}, got {:?}",
+                other
+            )),
+        }
+    }
+
     /// Panics naming every failed check when `failures` is non-empty, so a
     /// consolidated `#[test]` bundling several independent probes reports
     /// all violations from a single run instead of stopping at the first
@@ -688,26 +724,17 @@ mod tests {
         }
 
         let mut buf = Vec::new();
-        match kernel.export(GeometryHandleId(1), ExportFormat::Step, &mut buf) {
-            Err(ExportError::FormatError(msg)) if msg.contains("OCCT") => {}
-            Err(ExportError::FormatError(msg)) => {
-                failures.push(format!("export error should mention OCCT, got: {msg}"));
-            }
-            other => failures.push(format!(
-                "expected Err(ExportError::FormatError(_)) from export, got {:?}",
-                other
-            )),
+        if let Err(e) = check_format_failed(
+            kernel.export(GeometryHandleId(1), ExportFormat::Step, &mut buf),
+            "export",
+        ) {
+            failures.push(e);
         }
 
-        match kernel.tessellate(GeometryHandleId(1), 0.1) {
-            Err(TessError::TessellationFailed(msg)) if msg.contains("OCCT") => {}
-            Err(TessError::TessellationFailed(msg)) => {
-                failures.push(format!("tessellate error should mention OCCT, got: {msg}"));
-            }
-            other => failures.push(format!(
-                "expected Err(TessError::TessellationFailed(_)) from tessellate, got {:?}",
-                other
-            )),
+        if let Err(e) =
+            check_tess_failed(kernel.tessellate(GeometryHandleId(1), 0.1), "tessellate")
+        {
+            failures.push(e);
         }
 
         if let Err(e) =
