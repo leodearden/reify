@@ -10,7 +10,7 @@ use reify_compiler::{
     CompiledModule, TopologyTemplate, ValueCellDecl, ValueCellKind, find_template,
 };
 use reify_core::{
-    ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector,
+    ConstraintNodeId, ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector,
     FIELD_ENTITY_PREFIX, SnapshotId, SourceSpan, ValueCellId, VersionId,
 };
 use reify_ir::sampled::{LinspaceError, linspace_inclusive};
@@ -1393,6 +1393,53 @@ fn write_solved_pinned_connector_autos(
     }
 }
 
+/// Filters `constraints` to those whose dependency trace reads at least one
+/// id in `auto_ids`, pairing each surviving constraint's id with its
+/// expression — the shape `ResolutionProblem.constraints` expects.
+///
+/// Shared by `build_solver_problem` (single scope, `auto_ids` == that
+/// scope's own regular auto ids) and `build_merged_solver_problem` (called
+/// once per cluster member inside a loop, `auto_ids` == the CLUSTER-WIDE
+/// union so a member's constraint reading a co-solved sibling member's auto
+/// is still picked up) — factored out so a future fix to the filter
+/// semantics (e.g. the memoization noted on `build_merged_solver_problem`'s
+/// cost-note doc comment) is applied once instead of twice (amendment, task
+/// #5014).
+fn filter_constraints_reading_autos(
+    constraints: &[reify_compiler::CompiledConstraint],
+    auto_ids: &HashSet<&ValueCellId>,
+) -> Vec<(ConstraintNodeId, CompiledExpr)> {
+    constraints
+        .iter()
+        .filter(|c| {
+            let trace = extract_dependency_trace(&c.expr);
+            trace.reads.iter().any(|r| auto_ids.contains(r))
+        })
+        .map(|c| (c.id.clone(), c.expr.clone()))
+        .collect()
+}
+
+/// Builds the `AutoParam` list for `cells` — the shape
+/// `ResolutionProblem.auto_params` expects.
+///
+/// Shared by `build_solver_problem` and `build_merged_solver_problem`
+/// (amendment, task #5014); see `filter_constraints_reading_autos`'s doc
+/// comment for why these two builders share this per-scope tail instead of
+/// each inlining their own copy. Connector-pin partitioning (task #4710) —
+/// which cells make it into `cells` in the first place — stays each
+/// builder's own, site-specific step.
+fn build_auto_param_list(cells: &[&ValueCellDecl]) -> Vec<AutoParam> {
+    cells
+        .iter()
+        .map(|cell| AutoParam {
+            id: cell.id.clone(),
+            param_type: cell.cell_type.clone(),
+            bounds: None,
+            free: cell.kind.is_auto_free(),
+        })
+        .collect()
+}
+
 /// Builds the `ResolutionProblem` for the constraint solver from `template`'s
 /// auto-param cells and constraints, returning `None` when there are no auto
 /// cells (signalling "skip solver invocation").
@@ -1469,28 +1516,15 @@ fn build_solver_problem(
     }
 
     // Build auto_ids from non-pinned cells only; filter constraints accordingly.
+    // (Shared per-scope tail with `build_merged_solver_problem` via
+    // `filter_constraints_reading_autos`/`build_auto_param_list` — amendment,
+    // task #5014; the connector-pin partitioning above remains this
+    // function's own, site-specific step.)
     let auto_ids: HashSet<&ValueCellId> =
         regular_auto_cells.iter().map(|cell| &cell.id).collect();
 
-    let filtered_constraints: Vec<_> = template
-        .constraints
-        .iter()
-        .filter(|c| {
-            let trace = extract_dependency_trace(&c.expr);
-            trace.reads.iter().any(|r| auto_ids.contains(r))
-        })
-        .map(|c| (c.id.clone(), c.expr.clone()))
-        .collect();
-
-    let auto_param_list: Vec<AutoParam> = regular_auto_cells
-        .iter()
-        .map(|cell| AutoParam {
-            id: cell.id.clone(),
-            param_type: cell.cell_type.clone(),
-            bounds: None,
-            free: cell.kind.is_auto_free(),
-        })
-        .collect();
+    let filtered_constraints = filter_constraints_reading_autos(&template.constraints, &auto_ids);
+    let auto_param_list = build_auto_param_list(&regular_auto_cells);
 
     // Pre-populate current_values with pinned connector values so any remaining
     // constraint that transitively reads a pinned cell sees the correct value.
@@ -1528,19 +1562,27 @@ fn build_solver_problem(
 /// iteration contributes to ordering; the `HashSet` below is used only for
 /// O(1) constraint-filter membership tests.
 ///
-/// Simplification vs. `build_solver_problem`: this does not partition
-/// connector-pinned (task #4710) auto cells out of `auto_params` — no fixture
-/// in the β test suite places a connector-pinned auto inside a `MergedSolve`
+/// Simplification vs. `build_solver_problem`: this does not PIN
+/// connector-instance autos (task #4710) the way `build_solver_problem` does
+/// (`connector_pin_if_determined`'s child-Determined lookup) — no fixture in
+/// the β test suite places a connector-pinned auto inside a `MergedSolve`
 /// cluster, and this builder's mirror target (§5.2) is the regular-auto /
 /// constraint-filter / current_values / functions shape only. A module that
 /// combines connectors with a whole-model cluster spanning the connector's
 /// parent scope should extend this function to reuse
-/// `connector_pin_if_determined`/`is_strict_connector_instance_auto` the way
-/// `build_solver_problem` does. This assumption is now GUARDED (amendment,
-/// task #5014), not just documented: the union loop below `debug_assert!`s
-/// that no cluster member contributes a strict connector-instance auto, so a
-/// future module violating the assumption fails loudly in debug/test builds
-/// instead of silently mis-solving a connector pin as an unconstrained auto.
+/// `connector_pin_if_determined` the way `build_solver_problem` does, so
+/// such a module is actually SOLVED rather than merely refused.
+///
+/// Until then this is a REAL, always-on guard, not just documented
+/// (amendment, task #5014 — was previously a `debug_assert!`, which compiles
+/// out in release and would have let a strict connector-instance auto reach
+/// the solver as an unconstrained free variable, silently mis-solving the
+/// pin in exactly the build where that matters most): the union loop below
+/// detects a strict connector-instance auto via
+/// `is_strict_connector_instance_auto`, EXCLUDES it from `auto_params`
+/// (mirroring `build_solver_problem`'s "Skipped" case — the cell stays
+/// `Undetermined` rather than being handed to the solver unconstrained), and
+/// pushes an error `Diagnostic` in every build profile.
 ///
 /// Cost note (cold-path only): like `build_solver_problem`, the
 /// constraint-filter loop below re-runs `extract_dependency_trace` on every
@@ -1582,22 +1624,27 @@ fn build_merged_solver_problem(
         // `build_solver_problem`'s `connector_prefix`.
         let connector_prefix = format!("{}.", templates[idx].name);
         for cell in &templates[idx].value_cells {
-            if cell.kind.is_auto() {
-                debug_assert!(
-                    !is_strict_connector_instance_auto(cell, &connector_prefix),
-                    "build_merged_solver_problem: cluster member `{}` contributes a \
-                     strict connector-instance auto cell `{}` -- this builder does not \
-                     partition connector-pinned autos out of auto_params (see doc \
-                     comment); handing it to the solver as an unconstrained free \
-                     variable would silently mis-solve it. Extend this function to \
-                     reuse connector_pin_if_determined/is_strict_connector_instance_auto \
-                     the way build_solver_problem does before merging connectors into a \
-                     whole-model cluster.",
-                    templates[idx].name,
-                    cell.id.member,
-                );
-                auto_cells.push(cell);
+            if !cell.kind.is_auto() {
+                continue;
             }
+            if is_strict_connector_instance_auto(cell, &connector_prefix) {
+                // Real (non-debug_assert) guard, amendment task #5014 — see
+                // the doc comment above. Exclude the cell (mirrors
+                // `build_solver_problem`'s "Skipped" case: it stays
+                // `Undetermined`) instead of handing it to the solver as an
+                // unconstrained free variable, and fail LOUD in every build
+                // profile via a diagnostic rather than silently mis-solving it.
+                diagnostics.push(Diagnostic::error(format!(
+                    "Cluster member `{}` contributes strict connector-instance \
+                     auto cell `{}` to a MergedSolve cluster -- connector-pinned \
+                     autos inside a whole-model cluster are not yet supported \
+                     (task #5014); the cell is excluded from the merged solve \
+                     and remains undetermined.",
+                    templates[idx].name, cell.id.member,
+                )));
+                continue;
+            }
+            auto_cells.push(cell);
         }
     }
 
@@ -1605,23 +1652,17 @@ fn build_merged_solver_problem(
     // ordering (that stays on the Vec built above).
     let auto_ids: HashSet<&ValueCellId> = auto_cells.iter().map(|cell| &cell.id).collect();
 
+    // Shared per-scope tail with `build_solver_problem` (amendment, task
+    // #5014): filtered once per member so each member's OWN constraints are
+    // checked, but against the CLUSTER-WIDE `auto_ids` union so a member's
+    // constraint reading a co-solved sibling member's auto is still picked up.
     let mut filtered_constraints = Vec::new();
     for &idx in &cluster.scopes {
-        filtered_constraints.extend(templates[idx].constraints.iter().filter(|c| {
-            let trace = extract_dependency_trace(&c.expr);
-            trace.reads.iter().any(|r| auto_ids.contains(r))
-        }).map(|c| (c.id.clone(), c.expr.clone())));
+        filtered_constraints
+            .extend(filter_constraints_reading_autos(&templates[idx].constraints, &auto_ids));
     }
 
-    let auto_param_list: Vec<AutoParam> = auto_cells
-        .iter()
-        .map(|cell| AutoParam {
-            id: cell.id.clone(),
-            param_type: cell.cell_type.clone(),
-            bounds: None,
-            free: cell.kind.is_auto_free(),
-        })
-        .collect();
+    let auto_param_list = build_auto_param_list(&auto_cells);
 
     // Spanning objective: concatenate every DISTINCT governing objective's
     // ObjectiveTerms opaquely, in cluster.scopes order (same determinism rule as
@@ -5352,7 +5393,13 @@ impl Engine {
                 (solver.solve(&problem), None)
             };
 
-        let template = &module.templates[idx];
+        debug_assert!(
+            cluster.scopes.contains(&idx),
+            "dispatch_merged_cluster_solve: idx (template `{}`) must be a \
+             member of cluster.scopes ({:?})",
+            module.templates[idx].name,
+            cluster.scopes,
+        );
 
         match solve_result {
             SolveResult::Solved {
@@ -5471,8 +5518,24 @@ impl Engine {
 
                 snapshot.id = SnapshotId(res_snapshot_id);
                 snapshot.version = VersionId(res_version_id);
+                // `scope` records EVERY cluster member's name (cluster.scopes
+                // order — same determinism rule as auto_params/constraints in
+                // `build_merged_solver_problem`), not just `idx`'s (the
+                // first-in-order member that triggered this dispatch): a
+                // merged solve spans all of `resolved` below, so a single
+                // anchor name would be arbitrary and could mislead a
+                // consumer keying provenance display off
+                // `SnapshotProvenance::Resolution.scope` (amendment, task
+                // #5014; `scope` stays a plain `String` — no reify-ir shape
+                // change).
+                let merged_scope_label = cluster
+                    .scopes
+                    .iter()
+                    .map(|&member_idx| module.templates[member_idx].name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 snapshot.provenance = SnapshotProvenance::Resolution {
-                    scope: template.name.clone(),
+                    scope: merged_scope_label,
                     resolved: resolved_ids,
                     parent: parent_snap_id,
                 };
