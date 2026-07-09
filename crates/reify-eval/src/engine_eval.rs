@@ -1582,7 +1582,12 @@ fn build_solver_problem(
 /// `is_strict_connector_instance_auto`, EXCLUDES it from `auto_params`
 /// (mirroring `build_solver_problem`'s "Skipped" case — the cell stays
 /// `Undetermined` rather than being handed to the solver unconstrained), and
-/// pushes an error `Diagnostic` in every build profile.
+/// pushes an error `Diagnostic` in every build profile. If EVERY auto cell
+/// contributed by the cluster is excluded this way, `auto_params` comes back
+/// empty; the caller (`dispatch_merged_cluster_solve`, amendment task #5014)
+/// checks for this and skips the solver call entirely — mirroring
+/// `build_solver_problem`'s `None`-means-skip contract — instead of issuing a
+/// spurious solve over zero auto params.
 ///
 /// Cost note (cold-path only): like `build_solver_problem`, the
 /// constraint-filter loop below re-runs `extract_dependency_trace` on every
@@ -5352,6 +5357,24 @@ impl Engine {
             Arc::clone(&functions),
             diagnostics,
         );
+
+        // Amendment, task #5014: mirror `build_solver_problem`'s `None`-means-
+        // skip contract. `build_merged_solver_problem` always returns a
+        // `ResolutionProblem` (unlike `build_solver_problem`'s `Option`), but
+        // if every auto cell the cluster contributed was excluded by the
+        // strict connector-instance guard (see that function's doc comment),
+        // `auto_params` comes back empty and there is nothing for a solver to
+        // resolve. Calling `solve()`/`solve_ranked()` on a zero-auto-param
+        // problem would be a spurious solve with a misleading `Solved`
+        // write-back over nothing. `build_merged_solver_problem` has already
+        // pushed an error `Diagnostic` per excluded cell into `diagnostics`
+        // above, so the caller still learns why. No write-back, no
+        // let-cone re-eval here — consistent with the per-template
+        // `build_solver_problem` == `None` arm, which likewise `continue`s
+        // without invoking `evaluate_let_bindings`.
+        if problem.auto_params.is_empty() {
+            return;
+        }
 
         let solver = self
             .lookup_solver_for_module(module)
