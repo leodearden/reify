@@ -422,6 +422,18 @@ pub(crate) fn compile_guarded_members(
                     id,
                     auto_free,
                     cell_type,
+                    // Unconditionally Public — NOT priv-aware, unlike the top-level
+                    // structure-param site (entity.rs Site 1: `if param.is_priv {
+                    // Private } else { Public }`). `priv` IS grammatically legal on a
+                    // guarded-block param (grammar.js `param_declaration` always allows
+                    // `optional('priv')`, and `_guard_member`'s `commonMembers()` admits
+                    // `$.param_declaration`), so `param.is_priv` can be `true` here and
+                    // is silently dropped. This is a pre-existing asymmetry — the
+                    // original, pre-dedup guards.rs code also hardcoded Public — that
+                    // task #5058's decl-construction dedup preserves byte-for-byte
+                    // rather than fixes; making this priv-aware would be a behavior
+                    // change outside a pure refactor's scope. Known gap for a
+                    // follow-up task, not addressed here.
                     Visibility::Public,
                     solver_hints,
                     param.span,
