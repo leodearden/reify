@@ -668,11 +668,20 @@ impl crate::Engine {
 /// `reify-stdlib`'s `orientation` module) — try `&str`, then `String`,
 /// else fall back to a fixed placeholder.
 ///
-/// This duplicates rather than reuses that copy: hoisting a shared
-/// `panic_payload_message` into a lower crate (e.g. `reify-core`) so both
-/// call sites converge would touch `reify-stdlib`, outside this task's
-/// locked module (`engine_compute.rs` only); tracked as a follow-up via
-/// escalate_info (esc-5079-2) rather than attempted here.
+/// This duplicates rather than reuses that copy. Two distinct convergences
+/// are possible, and neither is attempted here — both are tracked as a
+/// follow-up via escalate_info (esc-5079-2):
+///
+/// - **In-crate**: the same downcast idiom is also inlined three times in
+///   `engine_eval.rs` (its `catch_unwind` payload handling). A private
+///   helper shared by `engine_compute.rs` and `engine_eval.rs` would
+///   consolidate all four copies without touching `reify-stdlib` at all —
+///   it is deferred only because editing `engine_eval.rs` falls outside
+///   this task's locked module (`engine_compute.rs` only).
+/// - **Cross-crate**: hoisting a shared `panic_payload_message` into a
+///   lower crate (e.g. `reify-core`) would additionally converge the
+///   `reify-stdlib` `orientation` copy, but requires touching `reify-stdlib`
+///   — a materially larger-scope change than the in-crate consolidation.
 fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
     if let Some(s) = payload.downcast_ref::<&str>() {
         (*s).to_string()
