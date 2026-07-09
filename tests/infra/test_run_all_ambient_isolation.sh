@@ -30,33 +30,36 @@
 # its sub-cases use temp-dir fixtures), so these direct invocations do not
 # themselves recurse.
 #
-# Task 5152 (coverage-completeness follow-up): generalized from a single
-# hardcoded var (REIFY_RUN_ALL_EXCLUDE_HOST_INFRA) to every var declared in
-# the checked-in ledger tests/infra/run-all-ambient-vars.manifest. The
-# ledger is cross-checked below against the LIVE injected-var set derived
-# from the real injection source(s), so a var newly added there without a
-# matching ledger entry fails this guard by construction. This closes the
-# LEDGER-DRIFT gap (no injected var can go unguarded-and-unnoticed again).
+# Task 5152 (coverage-completeness follow-up): generalized the ledger-drift
+# guard from a single hardcoded var (REIFY_RUN_ALL_EXCLUDE_HOST_INFRA) to
+# every var declared in the checked-in ledger
+# tests/infra/run-all-ambient-vars.manifest. The ledger is cross-checked
+# below against the LIVE injected-var set derived from the real injection
+# source(s), so a var newly added there without a matching ledger entry
+# fails this guard by construction. This closes the LEDGER-DRIFT gap (no
+# injected var can go unguarded-and-unnoticed again).
 #
-# Coverage-shape caveat (applies to the whole loop, not just one var):
-# closing the ledger-drift gap is a DIFFERENT claim from broadening
-# isolation-bug coverage, and the per-var hostile-ambient loop below only
-# delivers the former for most ledger vars. Of the ledger's entries, only
+# Coverage-shape note: closing the ledger-drift gap (full set-equality over
+# every ledger var, above) is a DIFFERENT claim from broadening
+# isolation-bug coverage. Of the ledger's entries, only
 # REIFY_RUN_ALL_EXCLUDE_HOST_INFRA has a matching knob-UNSET sub-case in
-# test_run_all.sh itself (T9a/T9b/T13b/T14b/T17c), so only its loop
-# iteration exercises a real isolation path. Every other var's iteration
-# passes near-vacuously regardless of whether an isolation bug exists for
-# it: REIFY_AUDIT_NO_COLD_BUILD merely makes the reify-audit freshness guard
-# SKIP rather than fail (verify.sh:1410-1412), so test_run_all.sh exits 0
-# either way, and REIFY_GATE_EXCLUDE_HEAVY, RUSTC_WRAPPER,
-# CARGO_INCREMENTAL, and the REIFY_TEST_SEMAPHORE_*/REIFY_PSI_GATE_MAX_WAIT
-# vars are knobs test_run_all.sh never reads at all, so ambiently exporting
-# them cannot perturb its behavior either way. Their real, load-bearing
-# value here is the ledger-drift / set-equality guard above, not broadened
-# isolation-bug detection -- a clean run of the loop over all ledger vars
-# is not proof that per-var isolation coverage is complete. (See
-# run-all-ambient-vars.manifest's header for a matching per-entry note next
-# to REIFY_AUDIT_NO_COLD_BUILD.)
+# test_run_all.sh itself (T9a/T9b/T13b/T14b/T17c); every other var is
+# either a knob test_run_all.sh never reads at all (REIFY_GATE_EXCLUDE_HEAVY,
+# RUSTC_WRAPPER, CARGO_INCREMENTAL, the REIFY_TEST_SEMAPHORE_*/
+# REIFY_PSI_GATE_MAX_WAIT vars) or one whose only effect is to make an
+# unrelated guard SKIP rather than fail (REIFY_AUDIT_NO_COLD_BUILD,
+# verify.sh:1410-1412) -- re-running the real ~103-test suite under any of
+# those would pass near-vacuously regardless of whether an isolation bug
+# exists for it, at real merge-gate wall-clock cost. So the hostile-ambient
+# RE-RUN loop below (which spawns the real test_run_all.sh once per
+# iteration) is driven off an explicit allow-list, HOSTILE_LOOP_KEYS, NOT
+# the full ledger (task 5152 reviewer follow-up: a full-ledger loop paid an
+# ~8x wall-clock cost over the single real sub-case for no additional
+# isolation-bug coverage). The ledger-drift / set-equality guard above is
+# unaffected by the allow-list and still covers every var; extend
+# HOSTILE_LOOP_KEYS only when a var gains a matching knob-UNSET sub-case in
+# test_run_all.sh. (See run-all-ambient-vars.manifest's header for a
+# matching per-entry note next to REIFY_AUDIT_NO_COLD_BUILD.)
 
 set -euo pipefail
 
@@ -285,9 +288,31 @@ while IFS= read -r _manifest_key; do
 done <<< "$MANIFEST_KEYS"
 
 # ---------------------------------------------------------------------------
-# Manifest-driven hostile-ambient loop: for each ledger var, run the REAL
-# test_run_all.sh once with every OTHER ledger var unset and just that one
-# var exported to its live value -- the same shape orchestrator.yaml's
+# Hostile-ambient RE-RUN allow-list (task 5152 reviewer follow-up): vars
+# with a matching knob-UNSET sub-case in test_run_all.sh itself. Deliberate
+# SUBSET of MANIFEST_KEYS, not the full ledger -- see the "Coverage-shape
+# note" above for why re-running the real ~103-test suite for every ledger
+# var would pay ~8x the wall-clock cost of this one real sub-case for no
+# additional isolation-bug coverage. The full-ledger set-equality guard
+# above is unaffected and still closes the drift gap for every var
+# regardless of this allow-list.
+#
+# Extend this list only when a var gains a genuine knob-UNSET sub-case in
+# test_run_all.sh (i.e. a sub-case whose assertions would actually differ
+# between "unset" and "ambiently inherited").
+# ---------------------------------------------------------------------------
+HOSTILE_LOOP_KEYS=$'REIFY_RUN_ALL_EXCLUDE_HOST_INFRA\n'
+
+while IFS= read -r _hkey; do
+    [ -z "$_hkey" ] && continue
+    assert "hostile-ambient allow-list var $_hkey is present in run-all-ambient-vars.manifest" \
+        kv_key_member "$_hkey" "$MANIFEST_KEYS"
+done <<< "$HOSTILE_LOOP_KEYS"
+
+# ---------------------------------------------------------------------------
+# Hostile-ambient RE-RUN loop: for each allow-listed var, run the REAL
+# test_run_all.sh once with every ledger var unset and just that one var
+# exported to its live value -- the same shape orchestrator.yaml's
 # verify_env / the run_all.sh plan line's prefix env produce. `unset` +
 # `export` + the nested `bash "$TARGET"` all run inside the `$( ... )`
 # command-substitution subshell, so none of it leaks back out to this
@@ -296,18 +321,18 @@ done <<< "$MANIFEST_KEYS"
 # nested test_run_all.sh's OWN test_summary line qualifies.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Manifest-driven hostile-ambient loop: test_run_all.sh under each ledger var, ambiently ---"
+echo "--- Hostile-ambient re-run loop: test_run_all.sh under each allow-listed var, ambiently ---"
 
 while IFS= read -r _key; do
     [ -z "$_key" ] && continue
 
     _val="$(kv_lookup "$LIVE_KV" "$_key")" || {
-        echo "ERROR: no live value found for ledger var $_key (checked plan-line + verify_env KV)"
+        echo "ERROR: no live value found for allow-listed var $_key (checked plan-line + verify_env KV)"
         exit 1
     }
 
     echo ""
-    echo "--- hostile-ambient: $_key=$_val (every other ledger var unset) ---"
+    echo "--- hostile-ambient: $_key=$_val (every ledger var unset, then only this one exported) ---"
 
     amb_rc=0
     amb_out="$(
@@ -327,6 +352,6 @@ while IFS= read -r _key; do
     else
         assert "test_run_all.sh reports 0 failed under ambient $_key=$_val (got: $amb_out)" false
     fi
-done <<< "$MANIFEST_KEYS"
+done <<< "$HOSTILE_LOOP_KEYS"
 
 test_summary
