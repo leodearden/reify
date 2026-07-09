@@ -112,6 +112,16 @@ Reify is numerically heavy; G6 branches 1 (numeric bound) and 2 (closed-form exa
 - **esc-3453-5/6** (`buckling-eigensolver.md` §13 task δ) — guessed 5% accuracy bound (bending lock gave 9–10%) + wrong BC mapping. "Tuned" fixture comment was aspirational. (Branches 1+2.)
 - **esc-3770-1** (`trajectory-input-shaping.md` §11 task β) — asserted a natural cubic spline reproduces a general cubic to 1e-12; provably impossible. (Branch 2.)
 
+## Gate-test drift-guard registration (authoring + decompose check)
+
+**Trigger:** a task adds a new gate-resident test — a `crates/*/tests/*.rs` integration test that stays on the merge/task gate (not excluded as heavy per `scripts/heavy-test-filter-lib.sh` / `tests/infra/test_verify_gate_exclude_heavy.sh`), or a new `tests/infra/test_*.sh`.
+
+**Author-mode rule (same-diff):** that task's own diff must carry the corresponding drift-guard registration(s) — a bucket row in `tests/infra/run-all-classification.manifest` for a new `tests/infra/test_*.sh` (declared-vs-discovered drift caught by `tests/infra/test_run_all_classification.sh`); the wallclock-bounds registration for any new elapsed-time/wall-clock assertion (`tests/infra/test_no_new_wallclock_upper_bounds.sh`); and nextest heavy/smoke partition entries in `.config/nextest.toml` where applicable (`tests/infra/test_nextest_slow_priority.sh`). **OR** the registration is a hard upstream dependency wired via `add_dependency` — never a sibling ordered only by PRD prose.
+
+**Decompose-mode rule:** reject a leaf batch where the registration task is downstream of, or unordered with respect to, the test-adding task. No deterministic guard automates this (unlike the metadata.files rule above) — the /prd session reading this subsection is the enforcement, at author Stage 2 and again at decompose time.
+
+**Worked case — esc-4914-162 (2026-07-01):** task 4914 landed `crates/reify-solver-elastic/tests/solver_gate_smoke.rs` (gate-resident smoke binary, offline-deep-test-lane PRD task A3) without its drift-guard registrations (`test_run_all_classification.sh` + `test_no_new_wallclock_upper_bounds.sh`), turning main RED for every subsequent merge; the registration (A6) was ordered after A3 by PRD prose only, not a hard `add_dependency` edge — the A3-before-A6 failure this check exists to catch.
+
 ## Capability Manifest — reify evidence forms
 
 Mechanizes `gates.md` → *Capability Manifest — mechanizing G3 + G6 per leaf* for reify. **Manifest path:** `docs/prds/<vM_N>/<slug>.capability-manifest.md` (commit beside the PRD).
