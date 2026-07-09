@@ -200,7 +200,7 @@ pub fn through_thickness_check(
         return Vec::new();
     }
 
-    centroids.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    centroids.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)); // nan-safe:allow — all centroids finite here (non-finite → early return above at :191)
 
     // Bin width: average per-tet extent along the thinnest axis. This is the
     // typical "vertical reach" of a single tet in the thickness direction,
