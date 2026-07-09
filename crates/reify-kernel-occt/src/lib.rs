@@ -4112,12 +4112,20 @@ impl WarmStartable for OcctKernel {
         // ordinary shapes/reprs entries but come out orphaned on the
         // consumer side: still queryable by id (repr_of, Volume, ...) but
         // unreachable via OwnerBody and never reused by a later extract_*
-        // call, which mints fresh ids against the cleared cache. This is
-        // pre-existing behavior (not introduced by the parent_handle clear
-        // above) and is left as-is — filtering sub-shape ids out here would
-        // need parent_handle's key set threaded into the loop below, which
-        // is out of scope for this task; revisit if warm-state payload size
-        // or phantom-entry enumeration becomes a real problem.
+        // call, which mints fresh ids against the cleared cache. Across
+        // repeated warm-start cycles this is unbounded, not just
+        // single-cycle bloat: each cycle serializes prior orphans, restores
+        // them, and the next extract_* mints yet more fresh ids on top of
+        // the cleared cache, so the shape table monotonically grows with
+        // phantom, unreachable entries. Pre-existing behavior, not
+        // introduced by the parent_handle clear above; left as-is here
+        // because filtering sub-shape ids out needs parent_handle's key set
+        // threaded into the loop below, which is out of scope for this
+        // task.
+        // TODO(#5162): filter sub-shape ids (parent_handle key set) out of
+        // the serialization loop below so warm-state payload size stays
+        // bounded across repeated warm-start cycles instead of
+        // accumulating orphaned sub-shape entries.
         let Self {
             shapes,
             reprs,
