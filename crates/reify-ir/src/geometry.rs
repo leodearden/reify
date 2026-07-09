@@ -4245,6 +4245,32 @@ pub trait GeometryKernel: Send + Sync {
         )))
     }
 
+    /// Register a [`Mesh`] directly as an honestly-Mesh-repr handle, WITHOUT
+    /// re-deriving or otherwise transforming it (task 5033, PRD
+    /// `voxel-to-mesh-surfacing.md` §10 OQ-1 option (a)).
+    ///
+    /// # Why this differs from `ingest_mesh`
+    ///
+    /// [`Self::ingest_mesh`]'s contract is kernel-specific and may legitimately
+    /// transform its input (e.g. `OpenVdbKernel::ingest_mesh` voxelizes: Mesh→
+    /// Voxel). That transformation is correct when `mesh` is a genuine INPUT
+    /// being adapted to the kernel's native representation. It is WRONG when
+    /// `mesh` is itself the exact output a Voxel→Mesh conversion stage just
+    /// produced FOR a `GeometryOp::Surface` terminal anchor on that SAME
+    /// kernel — voxelizing it back would be lossy and pointless. The
+    /// conversion executor (`reify-eval::engine_build`) calls this method
+    /// instead of `ingest_mesh` for exactly that one case.
+    ///
+    /// The **default** implementation delegates to [`Self::ingest_mesh`], so
+    /// every kernel whose `ingest_mesh` already stores a mesh without lossy
+    /// transformation (Manifold: genuine Mesh→Mesh) or correctly rejects mesh
+    /// input (the trait default: `Err(OperationFailed)`) needs no override.
+    /// `OpenVdbKernel` is the only current override — it stores `mesh`
+    /// verbatim in a side-table disjoint from its voxel-grid handles.
+    fn register_mesh_handle(&mut self, mesh: &Mesh) -> Result<GeometryHandle, GeometryError> {
+        self.ingest_mesh(mesh)
+    }
+
     /// Optional best-effort `TopologyAttribute` propagation hook for non-OCCT
     /// kernels with native parent→child correspondence (e.g. Manifold's
     /// `MeshGL` merge vectors + per-triangle `faceID` / `originalID`).

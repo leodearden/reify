@@ -161,6 +161,11 @@ fn isosurface_wiring_builds_honest_voxel_operand_and_mesh_terminal() {
     // ── terminal Mesh has vertices>0 (binary — no numeric bound) ──────────
     let terminal_path = terminal_id.to_string();
     let tess = engine.tessellate_realizations(&compiled);
+    eprintln!("DEBUG tess.diagnostics = {:#?}", tess.diagnostics);
+    eprintln!(
+        "DEBUG tess.meshes paths = {:?}",
+        tess.meshes.iter().map(|m| &m.entity_path).collect::<Vec<_>>()
+    );
     let terminal_mesh = tess
         .meshes
         .iter()

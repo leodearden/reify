@@ -42,6 +42,14 @@ use crate::init::ensure_initialized;
 /// the auto-derived `Send + Sync` fire without `unsafe impl`.
 pub struct OpenVdbKernel {
     handles: HashMap<GeometryHandleId, cxx::UniquePtr<openvdb_ffi::OpenVdbGridHandle>>,
+    /// Raw [`Mesh`] values registered via [`Self::register_mesh_handle`]
+    /// (task 5033 Gap #2/#3, PRD OQ-1(a)) — disjoint from `handles`' grid
+    /// table but sharing its `next_id` counter, so an id unambiguously
+    /// names an entry in exactly one of the two tables. Exists so a
+    /// marching-cubes-produced mesh feeding a `GeometryOp::Surface`
+    /// terminal anchor can be held honestly as Mesh-repr, without a lossy
+    /// `ingest_mesh` (Mesh→Voxel) round-trip through the grid table.
+    mesh_handles: HashMap<GeometryHandleId, Mesh>,
     next_id: u64,
 }
 
@@ -51,6 +59,7 @@ impl OpenVdbKernel {
         ensure_initialized();
         Self {
             handles: HashMap::new(),
+            mesh_handles: HashMap::new(),
             next_id: 1,
         }
     }
@@ -491,7 +500,38 @@ const VOXEL_BOOL_STUB_MSG: &str = "OpenVDB voxel-Boolean execution requires Voxe
      remains future work (task ε).";
 
 impl GeometryKernel for OpenVdbKernel {
-    fn execute(&mut self, _op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+    fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
+        // Task 5033 Gap #2/#3 (PRD OQ-1(a)): the isosurface terminal anchor.
+        // `openvdb_capability_descriptor()`'s `(Surface, Mesh)` entry makes
+        // the dispatcher route a Voxel-only `Surface` operand through a
+        // plan whose sole conversion stage is the MarchingCubes surfacing
+        // (engine_build.rs Phase 2), which — for exactly this op/source
+        // pairing — registers its result mesh via `register_mesh_handle`
+        // and substitutes `grid` to name it BEFORE `execute_with_history`
+        // reaches here. So the expected case is a cheap pass-through: the
+        // real marching-cubes computation already happened. Falls back to
+        // running it here (and self-registering the mesh) so `execute()`
+        // stays correct for a caller that reaches this arm with `grid`
+        // naming a genuine voxel grid instead.
+        if let GeometryOp::Surface {
+            grid,
+            iso_level,
+            adaptive,
+        } = op
+        {
+            if self.mesh_handles.contains_key(grid) {
+                return Ok(GeometryHandle {
+                    id: *grid,
+                    repr: None,
+                });
+            }
+            let opts = crate::MarchingCubesOptions {
+                iso_level: *iso_level,
+                adaptive: *adaptive,
+            };
+            let mesh = self.realize_mesh_from_voxel_with_options(*grid, &opts)?;
+            return self.register_mesh_handle(&mesh);
+        }
         // Voxel op execution through execute() degrades gracefully — see
         // VOXEL_BOOL_STUB_MSG and the planning-vs-execution contract note above.
         // The capability descriptor declares (Convert{from:Mesh},Voxel) and the
@@ -499,6 +539,21 @@ impl GeometryKernel for OpenVdbKernel {
         // OperationFailed (not a panic, not Ok(_)) until task ε wires the
         // realize_voxel_from_mesh_with_options wrapper into engine dispatch.
         Err(GeometryError::OperationFailed(VOXEL_BOOL_STUB_MSG.into()))
+    }
+
+    /// Register a [`Mesh`] directly as an honestly-Mesh-repr handle,
+    /// WITHOUT re-deriving it (task 5033 Gap #2/#3). Unlike [`Self::ingest_mesh`]
+    /// (which voxelizes — Mesh→Voxel, the correct behaviour for a genuine
+    /// mesh INPUT), this stores `mesh` verbatim in a side-table disjoint
+    /// from the grid `handles` table but sharing its id counter. Used by
+    /// the conversion executor (engine_build.rs) exactly when a
+    /// MarchingCubes conversion stage's output mesh IS the terminal
+    /// `Surface` op's own desired result — voxelizing it back would be
+    /// lossy and pointless.
+    fn register_mesh_handle(&mut self, mesh: &Mesh) -> Result<GeometryHandle, GeometryError> {
+        let id = self.alloc_id();
+        self.mesh_handles.insert(id, mesh.clone());
+        Ok(GeometryHandle { id, repr: None })
     }
 
     /// Convert a triangle-soup [`Mesh`] to a narrow-band SDF `FloatGrid` via
@@ -590,6 +645,12 @@ impl GeometryKernel for OpenVdbKernel {
     /// `volumeToMesh(const Grid&, ...)` is read-only and reaches none of the
     /// forbidden caching APIs (no `evalActiveVoxelBoundingBox`).
     fn tessellate(&self, handle: GeometryHandleId, _tolerance: f64) -> Result<Mesh, TessError> {
+        // Task 5033 Gap #2/#3: a handle registered via `register_mesh_handle`
+        // already IS a mesh — return it verbatim rather than looking it up in
+        // the (disjoint) grid `handles` table, where it would not be found.
+        if let Some(mesh) = self.mesh_handles.get(&handle) {
+            return Ok(mesh.clone());
+        }
         self.realize_mesh_from_voxel_with_options(handle, &crate::MarchingCubesOptions::default())
             .map_err(|e| TessError::TessellationFailed(format!("tessellate: {e}")))
     }

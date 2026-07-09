@@ -116,6 +116,16 @@ enum SingleParentSweepKind {
 struct RealizationOutputs<'a> {
     step_handles: &'a mut Vec<KernelHandle>,
     named_steps: &'a mut HashMap<String, KernelHandle>,
+    /// By-name sibling of `named_steps` (task 5033 Gap #2 Gap A): records
+    /// each named realization's resolved [`ReprKind`], so a LATER
+    /// realization's cross-realization `GeomRef::Sub(name)` parent (e.g.
+    /// "solid" in `let shell = isosurface(solid)`) can be resolved by NAME
+    /// rather than by bare `GeometryHandleId` — matching a cross-kernel id
+    /// against another realization's `realization_step_ids` risks a
+    /// same-integer collision (#4349; a `GeometryHandleId` is only unique
+    /// within its own kernel's handle space). See its two write sites and
+    /// its read site in `available_for_op` below.
+    named_step_reprs: &'a mut HashMap<String, ReprKind>,
     topology_attribute_table: &'a mut TopologyAttributeTable,
     swept_kind_table: &'a mut SweptKindTable,
     /// Terminal output [`ReprKind`] surfaced by the executor for the post-call
@@ -135,6 +145,7 @@ impl<'a> RealizationOutputs<'a> {
     fn new(
         step_handles: &'a mut Vec<KernelHandle>,
         named_steps: &'a mut HashMap<String, KernelHandle>,
+        named_step_reprs: &'a mut HashMap<String, ReprKind>,
         topology_attribute_table: &'a mut TopologyAttributeTable,
         swept_kind_table: &'a mut SweptKindTable,
         produced_repr_out: &'a mut Option<ReprKind>,
@@ -142,6 +153,7 @@ impl<'a> RealizationOutputs<'a> {
         Self {
             step_handles,
             named_steps,
+            named_step_reprs,
             topology_attribute_table,
             swept_kind_table,
             produced_repr_out,
@@ -1952,7 +1964,11 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
 }
 
 /// Collect all `GeomRef::Sub` operands referenced by a compiled geometry op.
-#[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
+///
+/// Used by `available_for_op`'s cross-realization name resolution (task
+/// 5033 Gap #2 Gap A) to look up a `GeomRef::Sub(name)` parent's produced
+/// repr in `named_step_reprs` when it names a DIFFERENT, already-completed
+/// realization rather than a step local to this one.
 fn sub_refs_in_op(op: &CompiledGeometryOp) -> Vec<&str> {
     let mut refs = Vec::new();
     match op {
@@ -2769,6 +2785,9 @@ impl Engine {
                 // compile-side diagnostic in `expr.rs::try_emit_cross_sub_geometry`
                 // continues to fire for those call sites).
                 let mut named_steps: HashMap<String, KernelHandle> = HashMap::new();
+                // Task 5033 Gap #2 Gap A: by-name repr sibling of `named_steps`.
+                // See `RealizationOutputs::named_step_reprs` doc for why.
+                let mut named_step_reprs: HashMap<String, ReprKind> = HashMap::new();
                 seed_cross_sub_named_steps(
                     template,
                     &module_named_steps,
@@ -2829,6 +2848,7 @@ impl Engine {
                         RealizationOutputs::new(
                             &mut step_handles,
                             &mut named_steps,
+                            &mut named_step_reprs,
                             &mut self.topology_attribute_table,
                             &mut self.swept_kind_table,
                             &mut produced_repr_out,
@@ -3530,6 +3550,9 @@ impl Engine {
                 // compile-side diagnostic in `expr.rs::try_emit_cross_sub_geometry`
                 // continues to fire for those call sites).
                 let mut named_steps: HashMap<String, KernelHandle> = HashMap::new();
+                // Task 5033 Gap #2 Gap A: by-name repr sibling of `named_steps`.
+                // See `RealizationOutputs::named_step_reprs` doc for why.
+                let mut named_step_reprs: HashMap<String, ReprKind> = HashMap::new();
                 seed_cross_sub_named_steps(
                     template,
                     &module_named_steps,
@@ -3708,6 +3731,7 @@ impl Engine {
                         RealizationOutputs::new(
                             &mut step_handles,
                             &mut named_steps,
+                            &mut named_step_reprs,
                             &mut self.topology_attribute_table,
                             &mut self.swept_kind_table,
                             &mut produced_repr_out,
@@ -4682,6 +4706,9 @@ impl Engine {
 
         for (t_idx, template) in module.templates.iter().enumerate() {
             let mut named_steps: HashMap<String, KernelHandle> = HashMap::new();
+            // Task 5033 Gap #2 Gap A: by-name repr sibling of `named_steps`.
+            // See `RealizationOutputs::named_step_reprs` doc for why.
+            let mut named_step_reprs: HashMap<String, ReprKind> = HashMap::new();
             seed_cross_sub_named_steps(
                 template,
                 &module_named_steps,
@@ -4714,6 +4741,7 @@ impl Engine {
                     RealizationOutputs::new(
                         &mut step_handles,
                         &mut named_steps,
+                        &mut named_step_reprs,
                         &mut scratch_topo_attrs,
                         &mut scratch_swept_kinds,
                         &mut produced_repr_out,
@@ -5614,6 +5642,9 @@ impl Engine {
             // compile-side diagnostic in `expr.rs::try_emit_cross_sub_geometry`
             // continues to fire for those call sites).
             let mut named_steps: HashMap<String, KernelHandle> = HashMap::new();
+            // Task 5033 Gap #2 Gap A: by-name repr sibling of `named_steps`.
+            // See `RealizationOutputs::named_step_reprs` doc for why.
+            let mut named_step_reprs: HashMap<String, ReprKind> = HashMap::new();
             seed_cross_sub_named_steps(
                 template,
                 &module_named_steps,
@@ -5768,6 +5799,7 @@ impl Engine {
                     RealizationOutputs::new(
                         &mut step_handles,
                         &mut named_steps,
+                        &mut named_step_reprs,
                         &mut *topology_attribute_table,
                         &mut *swept_kind_table,
                         &mut produced_repr_out,
@@ -6157,6 +6189,7 @@ impl Engine {
         let RealizationOutputs {
             step_handles,
             named_steps,
+            named_step_reprs,
             topology_attribute_table,
             swept_kind_table,
             produced_repr_out,
@@ -6287,6 +6320,12 @@ impl Engine {
                 topology_attribute_table.remove(cached_handle.id);
                 step_handles.push(cached_handle);
                 named_steps.insert(name.to_string(), cached_handle);
+                // Task 5033 Gap #2 Gap A: by-name repr sibling write. Mirrors
+                // the `named_steps` insert above — see
+                // `RealizationOutputs::named_step_reprs` doc for why a LATER
+                // realization's cross-realization `GeomRef::Sub` parent must
+                // be resolved by name rather than by bare handle-id.
+                named_step_reprs.insert(name.to_string(), resolved_repr);
                 // Step-10 (task ε / 3436): the [`RealizationCache`] key includes
                 // the repr (see the post-success `realization_cache.insert` call
                 // at the bottom of this function), so the cached terminal handle
@@ -6439,6 +6478,25 @@ impl Engine {
                                     .map(|idx| realization_step_reprs[idx])
                             })
                             .collect();
+                        // Task 5033 Gap #2 Gap A: the lookup above is blind to
+                        // a CROSS-realization parent (a `GeomRef::Sub(name)`
+                        // naming a DIFFERENT, already-completed realization —
+                        // e.g. "solid" in `let shell = isosurface(solid)`).
+                        // Its producer handle lives in THAT realization's
+                        // now-out-of-scope `realization_step_ids`, not this
+                        // one's, so the filter_map above always misses it.
+                        // Resolve it by NAME instead — never by matching the
+                        // bare `GeometryHandleId` across realizations, which
+                        // risks a same-integer collision (#4349: a
+                        // `GeometryHandleId` is only unique within its own
+                        // kernel's handle space) — via `named_step_reprs`,
+                        // the by-name sibling of `named_steps` populated at
+                        // this realization loop's two insertion points.
+                        for name in sub_refs_in_op(op) {
+                            if let Some(&repr) = named_step_reprs.get(name) {
+                                set.insert(repr);
+                            }
+                        }
                         if set.is_empty() {
                             set.insert(ReprKind::BRep);
                         }
@@ -6948,11 +7006,29 @@ impl Engine {
                                         };
                                         // Ingest into the target kernel (`&mut`).
                                         // For a Manifold kernel this is Mesh→Mesh;
-                                        // for an OpenVDB kernel this is Mesh→Voxel.
-                                        let ingested = kernels
+                                        // for an OpenVDB kernel this is normally
+                                        // Mesh→Voxel — EXCEPT when this stage's
+                                        // mesh IS the final op's own desired
+                                        // output (task 5033 Gap #2/#3): a
+                                        // MarchingCubes source feeding a
+                                        // `Surface` terminal anchor already
+                                        // produced exactly the mesh that op
+                                        // wants, so re-voxelizing it via
+                                        // `ingest_mesh` would be lossy and
+                                        // pointless. That one case calls
+                                        // `register_mesh_handle` instead, which
+                                        // stores the mesh honestly as Mesh-repr
+                                        // without re-deriving it.
+                                        let target_kernel = kernels
                                             .get_mut(plan.kernel.as_str())
-                                            .expect("plan.kernel presence checked above")
-                                            .ingest_mesh(&mesh);
+                                            .expect("plan.kernel presence checked above");
+                                        let ingested = if from_marching_cubes
+                                            && matches!(geom_op, GeometryOp::Surface { .. })
+                                        {
+                                            target_kernel.register_mesh_handle(&mesh)
+                                        } else {
+                                            target_kernel.ingest_mesh(&mesh)
+                                        };
                                         match ingested {
                                             Ok(handle) => {
                                                 // Wrap the fresh target-kernel handle
@@ -7974,6 +8050,17 @@ impl Engine {
                     // separately via the compound-key injection path below.  Both are
                     // consumed by geometry_ops.rs::resolve_geom_ref's Sub arm.
                     named_steps.insert(name.to_string(), last);
+                    // Task 5033 Gap #2 Gap A: by-name repr sibling write,
+                    // unconditional (unlike the terminal-only cache insert
+                    // below) because a NON-terminal cross-realization
+                    // producer (e.g. "solid" in `let shell =
+                    // isosurface(solid)`) still needs its repr resolvable
+                    // by name for `available_for_op` below. Same
+                    // resolved-repr expression as the terminal cache-key
+                    // computation just below: the RESOLVED repr
+                    // (`last_produced_repr`), falling back to `cache_repr`
+                    // only when no op captured one.
+                    named_step_reprs.insert(name.to_string(), last_produced_repr.unwrap_or(cache_repr));
                 }
                 if is_terminal_realization
                     && let (Some(tol), Some(_name)) = (demanded_tol, realization_name)
