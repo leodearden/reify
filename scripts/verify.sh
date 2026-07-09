@@ -637,6 +637,19 @@ ENV_LINES=()
 #                contract) or the stamp is malformed (pid field doesn't match
 #                ^[0-9]+$).  Ambiguous is not proof of death, so callers must
 #                treat UNKNOWN the same as LIVE (existence-only fallback).
+#
+#   KNOWN GAP (review comment 3, round 2): a live /proc/<pid> is trusted as
+#   proof the ORIGINAL custodian still holds the FIFO, but pid-alive is not
+#   pid-identity.  If the balancer crashes and the kernel reuses its exact
+#   pid for an unrelated live process within the SAME boot, this probe still
+#   returns LIVE (the boot_id check only closes the post-reboot reuse
+#   window, not same-boot reuse) and verify.sh would export the stale FIFO's
+#   CARGO_MAKEFLAGS — the wedge this task exists to prevent.  This is a
+#   residual gap, not a regression (pre-5146 was existence-only, strictly
+#   weaker), and same-boot reuse of one specific pid is rare in practice.
+#   Closing it fully would require the daemon to also stamp /proc/<pid>/stat
+#   field 22 (process start time) and this probe to compare it — not done
+#   here.
 _jobserver_owner_live() {
     local fifo="$1"
     local stamp="${fifo}.owner"
