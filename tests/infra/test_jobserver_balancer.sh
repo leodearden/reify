@@ -2051,4 +2051,66 @@ PY
 assert "write_owner_stamp(): unwritable path swallows OSError (fail-open) and emits WARNING" \
     test "$_b21_exit" -eq 0
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 22: make_fifo() cleans up a stale owner-stamp sidecar (test-22, task
+#   5146 review comment 3, round 3)
+#
+#   make_fifo() already removed a stale FIFO/file at `path`, but NOT the
+#   sibling "${path}.owner" (or its ".owner.tmp" write-in-progress sibling)
+#   left behind by a prior crashed incarnation. On any startup not mediated
+#   by systemd's ExecStartPre (manual restart, a different supervisor), a
+#   stale stamp survives the window between make_fifo() and
+#   write_owner_stamp() publishing the fresh one — a verify.sh probe landing
+#   in that window reads the OLD dead-pid stamp and returns a false STALE.
+#   Fail-safe (cargo just falls back to its own pool) but avoidable: this
+#   test proves make_fifo() is self-cleaning independent of ExecStartPre.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 22: make_fifo() cleans up a stale owner-stamp sidecar ---"
+
+_b22_exit=0
+{
+python3 - "$BALANCER" <<'PY'
+import importlib.util
+import os
+import stat
+import sys
+import tempfile
+
+spec = importlib.util.spec_from_file_location("jb", sys.argv[1])
+mod  = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+errors = []
+
+with tempfile.TemporaryDirectory() as d:
+    fifo_path = os.path.join(d, "fifo")
+    stamp_path = fifo_path + mod.OWNER_STAMP_SUFFIX
+    tmp_path = stamp_path + ".tmp"
+
+    # Simulate leftovers from a prior crashed incarnation (dead pid, in case
+    # anything ever reads them before make_fifo() removes them).
+    with open(stamp_path, "w") as f:
+        f.write("999999999 stale-boot\n")
+    with open(tmp_path, "w") as f:
+        f.write("partial-write")
+
+    mod.make_fifo(fifo_path)
+
+    if os.path.exists(stamp_path):
+        errors.append(f"{stamp_path!r} still exists after make_fifo()")
+    if os.path.exists(tmp_path):
+        errors.append(f"{tmp_path!r} still exists after make_fifo()")
+    if not stat.S_ISFIFO(os.stat(fifo_path).st_mode):
+        errors.append(f"{fifo_path!r} is not a FIFO after make_fifo()")
+
+if errors:
+    sys.stderr.write("FAIL make_fifo:\n" + "\n".join("  " + e for e in errors) + "\n")
+    sys.exit(1)
+print("OK: make_fifo() removes stale owner-stamp sidecars before creating fresh FIFO")
+PY
+} || _b22_exit=$?
+assert "make_fifo(): removes stale '.owner'/'.owner.tmp' sidecars before creating fresh FIFO" \
+    test "$_b22_exit" -eq 0
+
 test_summary

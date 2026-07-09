@@ -386,11 +386,27 @@ def write_owner_stamp(fifo_path: str, pid: int, boot_id: str) -> None:
 
 
 def make_fifo(path: str) -> None:
-    """Remove any stale file/FIFO at path, then create a fresh FIFO."""
+    """Remove any stale file/FIFO at path, then create a fresh FIFO.
+
+    Also best-effort removes any stale owner-stamp sidecar(s) from a prior
+    crashed incarnation ("${path}.owner" and its ".owner.tmp" write-in-
+    progress sibling) BEFORE creating the fresh FIFO (task 5146 review
+    comment 3, round 3). This closes the window between this call and
+    write_owner_stamp() publishing the fresh stamp, during which a verify.sh
+    probe would otherwise read the PRIOR incarnation's now-dead-pid stamp and
+    report a false STALE even though a new balancer is starting up right
+    now — making this self-cleaning independent of systemd's ExecStartPre rm
+    (a manual restart or a non-systemd supervisor gets the same guarantee).
+    """
     try:
         os.remove(path)
     except FileNotFoundError:
         pass
+    for _stale in (path + OWNER_STAMP_SUFFIX, path + OWNER_STAMP_SUFFIX + ".tmp"):
+        try:
+            os.remove(_stale)
+        except FileNotFoundError:
+            pass
     os.mkfifo(path)
 
 
