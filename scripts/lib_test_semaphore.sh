@@ -18,7 +18,11 @@
 #   REIFY_TEST_SEMAPHORE_DISABLE      set to 1 for a total bypass (no slot acquired)
 #   REIFY_TEST_SEMAPHORE_CONCURRENCY  N slot count (default 1, must be positive int)
 #   REIFY_TEST_SEMAPHORE_LOCK         base path for slot files
-#                                     default: ${TMPDIR:-/tmp}/reify-test-semaphore-$(id -u).lock
+#                                     default: /tmp/reify-test-semaphore-$(id -u).lock
+#                                     -- a FIXED host-global path, independent of
+#                                     TMPDIR, so a caller-private TMPDIR (a common
+#                                     per-lane isolation pattern) cannot fork the
+#                                     lock namespace (task 5145).
 #   REIFY_TEST_SEMAPHORE_WAIT         max seconds to wait for a slot (default 1800), OR
 #                                     the sentinel "unlimited" (case-insensitive) for a
 #                                     continuous blocking wait with no deadline (clock-stop
@@ -55,6 +59,17 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib_slot_acquire.sh"
 _REIFY_TEST_SEMAPHORE_HELD=0
 
 # ---------------------------------------------------------------------------
+# _test_semaphore_default_lock
+#   Pure resolver for the default REIFY_TEST_SEMAPHORE_LOCK base path: a
+#   FIXED host-global /tmp literal, independent of TMPDIR (task 5145) -- see
+#   the REIFY_TEST_SEMAPHORE_LOCK KNOB doc above. No I/O side effects (no
+#   flock, no acquire), so it is safe to call directly from tests.
+# ---------------------------------------------------------------------------
+_test_semaphore_default_lock() {
+    printf '%s' "/tmp/reify-test-semaphore-$(id -u).lock"
+}
+
+# ---------------------------------------------------------------------------
 # test_semaphore_acquire
 #   Acquire one slot from the N-slot counting semaphore.
 #   On success, FD 9 is held open (exclusive flock) in the calling process.
@@ -76,7 +91,7 @@ test_semaphore_acquire() {
 
     # Resolve knobs.
     local LOCK N WAIT
-    LOCK="${REIFY_TEST_SEMAPHORE_LOCK:-${TMPDIR:-/tmp}/reify-test-semaphore-$(id -u).lock}"
+    LOCK="${REIFY_TEST_SEMAPHORE_LOCK:-$(_test_semaphore_default_lock)}"
     N="${REIFY_TEST_SEMAPHORE_CONCURRENCY:-1}"
     WAIT="${REIFY_TEST_SEMAPHORE_WAIT:-1800}"
 
