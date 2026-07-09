@@ -17,10 +17,10 @@
 //! Both `Engine::check_no_stale_undef()` and
 //! `invariants::check_no_stale_undef` are reused UNCHANGED here — no
 //! edit-path-specific checker variant, no `TopologyTemplate` dependency. Both
-//! `edit_param` (engine_edit.rs:2255-2258) and `edit_source` (:3805-3809)
-//! install the post-edit snapshot/reverse_index/trace_map into
-//! `self.eval_state` immediately before returning, so the checker (which
-//! reads `eval_state()`) inspects exactly the state each edit path returns —
+//! `edit_param` and `edit_source`, at their respective `self.eval_state`
+//! install sites, install the post-edit snapshot/reverse_index/trace_map
+//! immediately before returning, so the checker (which reads
+//! `eval_state()`) inspects exactly the state each edit path returns —
 //! already graph-native, matching the `_from_graph` shape
 //! (`engine_eval.rs`'s `re_eval_consumers_of_in_walk_mints_from_graph`).
 
@@ -64,6 +64,7 @@ fn edit_param_let_backed_selector_consumer_reresolves_and_invariant_green() {
 
     let probe_id = ValueCellId::new("GeometryLetSelectorConsumerEdit", "probe");
     let w_id = ValueCellId::new("GeometryLetSelectorConsumerEdit", "w");
+    let loc_box_id = ValueCellId::new("GeometryLetSelectorConsumerEdit", "loc_box");
 
     // Baseline: prove the chain resolves BEFORE the edit too, so the
     // post-edit assertion below proves RE-resolution, not just initial
@@ -90,6 +91,22 @@ fn edit_param_let_backed_selector_consumer_reresolves_and_invariant_green() {
          Value::Selector (faces_by_normal is a kernel-free symbolic-eval-wired \
          leaf ctor) — got {baseline_probe:?}"
     );
+    // Non-vacuity guard (anti-silent-accept): capture loc_box's baseline
+    // minted upstream hash so the post-edit comparison below can prove
+    // genuine re-mint rather than a stale baseline value carried over —
+    // without this, a regression where edit_param fails to ride the dirty
+    // cone and simply retains the old Selector would still pass the
+    // non-Undef/is-Selector assertions further down.
+    let baseline_loc_box_hash = match baseline.values.get(&loc_box_id) {
+        Some(Value::GeometryHandle {
+            upstream_values_hash,
+            ..
+        }) => *upstream_values_hash,
+        other => panic!(
+            "baseline: GeometryLetSelectorConsumerEdit.loc_box must hydrate to a \
+             Value::GeometryHandle — got {other:?}"
+        ),
+    };
 
     let edited_w = Value::length(0.060);
     assert_ne!(
@@ -100,6 +117,28 @@ fn edit_param_let_backed_selector_consumer_reresolves_and_invariant_green() {
     let result = engine
         .edit_param(w_id, edited_w)
         .expect("edit_param should succeed after a prior eval()");
+
+    // Non-vacuity guard (anti-silent-accept): loc_box's minted upstream hash
+    // must actually change, or the re-resolution proved below would be
+    // vacuous — this is what distinguishes a genuine in-walk re-mint (miss
+    // #5 closure) from edit_param stale-carrying the baseline value while
+    // still reporting a non-Undef Selector.
+    let post_edit_loc_box_hash = match result.values.get(&loc_box_id) {
+        Some(Value::GeometryHandle {
+            upstream_values_hash,
+            ..
+        }) => *upstream_values_hash,
+        other => panic!(
+            "post-edit_param: GeometryLetSelectorConsumerEdit.loc_box must \
+             still hydrate to a Value::GeometryHandle — got {other:?}"
+        ),
+    };
+    assert_ne!(
+        baseline_loc_box_hash, post_edit_loc_box_hash,
+        "the edited w param must change loc_box's minted upstream hash \
+         (box(w, 30mm, 10mm) with w: 50mm -> 60mm), or the re-resolution \
+         this test proves would be vacuous"
+    );
 
     let post_edit_probe = result
         .values
@@ -154,8 +193,8 @@ const EDIT_FIXTURE_SOURCE_MODIFIED: &str = r#"structure def GeometryLetSelectorC
 /// edit_source"): the same geometry-let -> selector -> consumer chain must
 /// re-resolve (non-Undef) after `edit_source` too, AND the edit-path
 /// invariant must stay green — proving the graph-native checker is reused
-/// unchanged over edit_source's `eval_state` install (engine_edit.rs:3805-3809),
-/// not just edit_param's.
+/// unchanged over `edit_source`'s `eval_state` install site, not just
+/// `edit_param`'s.
 #[test]
 fn edit_source_geometry_let_selector_chain_invariant_green() {
     let source = read_edit_fixture();
