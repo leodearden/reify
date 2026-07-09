@@ -865,6 +865,21 @@ assert "_dump_captured_stderr: missing errfile -> output has a '(no stderr captu
 # corruption -> no cascade). Execute-mode sections (A/B/C/F1) below gate on
 # _TS_READY and fail loudly+cleanly instead of cascading cryptically when
 # tree-sitter could not be readied.
+#
+# Hard prerequisite (reviewer follow-up, task 5144): _ts_real_regenerate can
+# only ready tree-sitter-reify/src/ if the real tree-sitter CLI is on PATH
+# (or under ~/.cargo/bin — see its PATH prepend above). That CLI is installed
+# by scripts/setup-dev.sh ("---------- tree-sitter-cli ----------": `cargo
+# install tree-sitter-cli --locked`), which every dev/CI environment running
+# this suite is expected to have run — so its absence is an environment-
+# provisioning gap, not something this suite can route around. test_helpers.sh
+# (out of this task's scope) has only PASS/FAIL counters, no distinct SKIP
+# bucket, so a CLI-absent run necessarily reports as a FAIL — the
+# "Section X SKIPPED: tree-sitter artifacts not ready" wording in the asserts
+# below (and the WARNING line right here) is what distinguishes that failure
+# signature from a genuine semaphore regression: grep this file's own log
+# output for "ts-ready" or "SKIPPED: tree-sitter" before suspecting the
+# semaphore mechanism itself.
 echo ""
 echo "--- Tree-sitter readiness (suite start, task 5144 F1) ---"
 _TS_READY=0
@@ -872,7 +887,7 @@ ensure_tree_sitter_ready || true
 if [ "$_TS_READY" = "1" ]; then
     echo "  [ts-ready] tree-sitter artifacts ready — execute-mode sections will run" >&2
 else
-    echo "  [ts-ready] WARNING: tree-sitter artifacts NOT ready — execute-mode sections (A/B/C/F1) will FAIL loudly instead of cascading" >&2
+    echo "  [ts-ready] WARNING: tree-sitter artifacts NOT ready (environment-provisioning gap, e.g. missing tree-sitter CLI — see scripts/setup-dev.sh — not a semaphore regression) — execute-mode sections (A/B/C/F1) will FAIL loudly instead of cascading" >&2
 fi
 
 # ===========================================================================
