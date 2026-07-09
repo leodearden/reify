@@ -999,6 +999,13 @@ structure S {
     /// shape at the top-level structure-param site. `guards.rs`'s `compile_default`
     /// closure has never called `check_param_default_type`, and task #5058's
     /// decl-construction dedup preserves that byte-for-byte.
+    ///
+    /// Also anchors that the intended code path was actually reached: asserts
+    /// `bad_dim` still compiled to `ValueCellKind::Param` with a populated
+    /// `default_expr` (as the sibling positive test above does for `y`) —
+    /// without this, an unrelated regression that made compilation bail out
+    /// before ever reaching decl construction would leave the diagnostic
+    /// absent too, and this test would keep passing for the wrong reason.
     #[test]
     fn guarded_param_dimension_mismatched_default_does_not_check_param_default_type() {
         let source = r#"
@@ -1010,6 +1017,26 @@ structure S {
 }
 "#;
         let module = compile(source);
+
+        let template = &module.templates[0];
+        assert_eq!(template.guarded_groups.len(), 1, "expected 1 guarded group");
+        let group = &template.guarded_groups[0];
+        let bad_dim = group
+            .members
+            .iter()
+            .find(|m| m.id.member == "bad_dim")
+            .expect("expected guarded member 'bad_dim'");
+        assert_eq!(
+            bad_dim.kind,
+            ValueCellKind::Param,
+            "mismatched-dimension guarded param must still compile to ValueCellKind::Param"
+        );
+        assert!(
+            bad_dim.default_expr.is_some(),
+            "mismatched-dimension guarded param must still have a populated \
+             default_expr — proves compile_default's compile_expr_guarded path \
+             was reached, not short-circuited before decl construction"
+        );
 
         let mismatch = module
             .diagnostics
