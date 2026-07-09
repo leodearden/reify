@@ -560,8 +560,10 @@ fn per_file_violations(
 /// parse+compile+check pipeline exactly once per file).
 /// Asserts every per-file duration < 10s via `per_file_violations`.
 ///
-/// On failure, prints a sorted `(path, duration)` table so the slow file is
-/// immediately visible. Pinned by PRD acceptance criterion 12.
+/// On failure, prints a `(path, duration)` table in the corpus's alphabetical
+/// discovery order (inherited from `discover_ri_files`'s `paths.sort()`; the
+/// table itself is not re-sorted by duration) so the offending file can be
+/// located by name. Pinned by PRD acceptance criterion 12.
 ///
 /// # Budget rationale
 ///
