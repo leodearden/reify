@@ -2336,19 +2336,10 @@ async fn shutdown_not_blocked_during_ensure_sidecar_ready_spawn() {
     }
 
     // shutdown_sidecar should NOT block — the lock is free because spawn_fn
-    // runs outside the lock after step-31.  With the current code (lock held
-    // during spawn), this deadlocks and only resolves once the post-assert
-    // `tx.send(())` below unblocks spawn_fn — which never runs until this
-    // `.await` returns. So unlike a poll loop that exits immediately on
-    // success, a regression here blocks for the *entire* bound before the
-    // test can fail. Keep this bound modest (a few seconds, not the file's
-    // usual 10s deadlock-backstop) so a real regression still surfaces
-    // reasonably quickly. The happy path is just a lock-acquire + return
-    // (microseconds uncontended), but unlike the poll loops above this
-    // timeout wraps the operation directly, so it also bounds the happy
-    // path: 5s (rather than 3s) leaves more headroom for lock-acquire
-    // scheduling delay on a heavily contended CI runner before that margin
-    // starts trading away regression-detection speed.
+    // runs outside the lock after step-31. This timeout bounds the happy
+    // path too (unlike the poll loops above), and a regression blocks for
+    // the full bound before failing — 5s balances regression-detection
+    // speed against lock-acquire scheduling headroom on contended CI.
     let shutdown_result = tokio::time::timeout(
         Duration::from_secs(5),
         shutdown_sidecar(&sidecar_for_shutdown),
