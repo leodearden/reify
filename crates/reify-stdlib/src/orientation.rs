@@ -763,6 +763,11 @@ mod tests {
         for (label, case) in cases {
             match std::panic::catch_unwind(case) {
                 Err(err) => {
+                    // Non-string payload falls back to the shared helper's sentinel
+                    // "<non-string panic payload>" (this test-local idiom previously
+                    // returned "" for that case). Unobservable here: `assert!`
+                    // panics always carry a String payload, so `msg` never actually
+                    // takes the fallback branch — noted for future readers only.
                     let msg = reify_core::panic_payload_to_string(err.as_ref());
                     if !msg.contains(label) {
                         failures.push(format!("label {label:?}: panic message was {msg:?}"));
