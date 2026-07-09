@@ -2994,18 +2994,10 @@ fn eval_map_or(args: &[CompiledExpr], ctx: &EvalContext) -> Value {
 /// behaviour lives entirely here (same convention as the sibling combinators
 /// in `option_recovery.rs`).
 ///
-/// Payload rebuild is field-preserving: the `Err` arm maps over the
-/// *existing* payload and substitutes only the `error` field's value, rather
-/// than constructing a fresh single-field vec. Today's `Err { error: E }`
-/// shape only ever carries that one field, so this is currently equivalent
-/// to a fresh vec — but it means a future multi-field `Err` variant would
-/// survive `map_err` intact instead of having its other fields silently
-/// dropped. If no existing `error` field is found — unreachable under
-/// today's frozen `Err { error: E }` shape, but kept consistent with the
-/// `error_val` lookup above, which already tolerates a missing field by
-/// falling back to `Value::Undef` rather than assuming one is present —
-/// `mapped` is appended as a new `("error", mapped)` field instead of being
-/// silently dropped.
+/// Payload rebuild constructs a fresh single-field `vec![("error", mapped)]`,
+/// mirroring `eval_ok_or`'s `Err` construction in `option_recovery.rs` — the
+/// `Err { error: E }` shape only ever carries that one field, so there is no
+/// other-fields case to preserve.
 ///
 /// Evaluation is LAZY: `f` (args[1]) is only evaluated in the `Err` arm,
 /// mirroring `eval_map_or`'s laziness convention (the Ok-case never evaluates
@@ -3034,38 +3026,13 @@ fn eval_map_err(args: &[CompiledExpr], ctx: &EvalContext) -> Value {
                 .map(|(_, v)| v.clone())
                 .unwrap_or(Value::Undef);
             let mapped = apply_lambda(&f, &[error_val], ctx);
-            // Rebuild by mapping over the *existing* payload and substituting
-            // only the `error` field's value, rather than constructing a
-            // fresh single-field vec. Today's `Err { error: E }` shape only
-            // ever has one field, so the two approaches coincide now — but
-            // mapping preserves any additional field a future multi-field
-            // `Err` variant might carry, instead of silently dropping it.
-            let mut found_error_field = false;
-            let mut new_payload: Vec<(String, Value)> = payload
-                .iter()
-                .map(|(field, v)| {
-                    if field == "error" {
-                        found_error_field = true;
-                        (field.clone(), mapped.clone())
-                    } else {
-                        (field.clone(), v.clone())
-                    }
-                })
-                .collect();
-            if !found_error_field {
-                // Defensive: keeps this rebuild consistent with the
-                // `error_val` lookup above, which already tolerates a
-                // missing `error` field by falling back to `Value::Undef`
-                // instead of assuming one is present. Unreachable under
-                // today's frozen `Err { error: E }` shape — if it ever
-                // isn't, `mapped` still lands in the payload instead of
-                // being silently discarded.
-                new_payload.push(("error".to_string(), mapped));
-            }
+            // Fresh single-field payload, mirroring `eval_ok_or`'s Err
+            // construction — the `Err { error: E }` shape only ever carries
+            // that one field, so there is no other-fields case to preserve.
             Value::Enum {
                 type_name: type_name.clone(),
                 variant: variant.clone(),
-                payload: new_payload,
+                payload: vec![("error".to_string(), mapped)],
             }
         }
         // undef subject (Kleene INV-2) — propagate Undef; f is NOT evaluated.
@@ -9794,78 +9761,6 @@ mod tests {
             "forall m in [str, Undef]: determined(m) must be Bool(false); got {:?}",
             result,
         );
-    }
-
-    // ── map_err payload-preservation robustness (task 4037 amendment) ────────
-
-    /// `eval_map_err`'s `Err` arm used to rebuild the enum via a fresh
-    /// `vec![("error", mapped)]`, which would silently drop any payload field
-    /// beyond `error`. Today's frozen `Err { error: E }` shape only ever has
-    /// that one field, so this fabricates an extra field to prove the fix:
-    /// the rebuild now maps over the *existing* payload, substituting only
-    /// `error`, so any other field survives untouched.
-    #[test]
-    fn map_err_err_preserves_additional_payload_fields() {
-        let subject = lit(
-            Value::Enum {
-                type_name: "Result".to_string(),
-                variant: "Err".to_string(),
-                payload: vec![
-                    ("error".to_string(), Value::String("x".to_string())),
-                    ("extra".to_string(), Value::String("keep-me".to_string())),
-                ],
-            },
-            Type::Enum("Result".to_string()),
-        );
-        // f = |e| true — ignores its argument, so the mapped `error` value is
-        // trivially distinguishable from the original `"x"` string.
-        let e_id = ValueCellId::new("$lambda_map_err_extra.S", "e");
-        let f = lambda_lit(
-            vec![("e", e_id)],
-            lit(Value::Bool(true), Type::Bool),
-            ValueMap::new(),
-        );
-        let call_expr = CompiledExpr {
-            content_hash: ContentHash::of(b"map_err_extra_payload"),
-            result_type: Type::Enum("Result".to_string()),
-            kind: CompiledExprKind::UserFunctionCall {
-                function_name: "map_err".to_string(),
-                args: vec![subject, f],
-            },
-        };
-        let values = ValueMap::new();
-        let result = eval_expr(&call_expr, &EvalContext::simple(&values));
-        match result {
-            Value::Enum {
-                type_name,
-                variant,
-                payload,
-            } => {
-                assert_eq!(type_name, "Result");
-                assert_eq!(variant, "Err");
-                assert_eq!(
-                    payload.len(),
-                    2,
-                    "extra payload field must survive map_err untouched: {:?}",
-                    payload
-                );
-                let error_val = payload
-                    .iter()
-                    .find(|(field, _)| field == "error")
-                    .map(|(_, v)| v.clone());
-                assert_eq!(error_val, Some(Value::Bool(true)), "error field must be mapped by f");
-                let extra_val = payload
-                    .iter()
-                    .find(|(field, _)| field == "extra")
-                    .map(|(_, v)| v.clone());
-                assert_eq!(
-                    extra_val,
-                    Some(Value::String("keep-me".to_string())),
-                    "extra field must be preserved verbatim"
-                );
-            }
-            other => panic!("expected Result::Err enum, got {:?}", other),
-        }
     }
 
     /// `eval_map_err`'s "degrading `f`" contract (documented on `eval_map_err`
