@@ -11,6 +11,35 @@
 //! This module introduces the primitive and its unit tests only. Migrating
 //! existing call sites (`engine_eval.rs`, `engine_edit.rs`, ...) onto this
 //! primitive is out of scope here — see PRD leaves γ/δ/ε/ι.
+//!
+//! ## Known scope gaps for migration leaves (γ/δ/ε/ι)
+//!
+//! Both gaps below are deliberately left as documented limitations rather
+//! than closed by extending an enum now, since closing them would deviate
+//! from the two-variant `CacheLeg` shape the PRD's §2.4 contract sketch
+//! fixes for this task. A migration leaf that hits either gap must address
+//! it explicitly (extend the enum, or document why the site is left
+//! unmigrated) — not silently paper over it by routing through the existing
+//! variants as-is.
+//!
+//! - **No freshness dimension.** [`CacheLeg::Record`] always writes
+//!   `Freshness::Final` (see its doc comment) — there is no path to
+//!   `CacheStore::record_evaluation_propagating_freshness` (arch §7.2). The
+//!   dominant let/param commit sites in `engine_eval.rs`
+//!   (`evaluate_params_and_lets_unified`, `evaluate_let_bindings`) use the
+//!   propagating variant to derive freshness, so a migration leaf touching
+//!   them cannot represent that commit through `commit_cell_result` as
+//!   currently shaped.
+//! - **`CacheLeg::Skip`'s journal `Completed.outcome` is an unspecified
+//!   placeholder**, not a meaningful `EvalOutcome` — see the doc comment at
+//!   the `Completed` event construction inside [`commit_cell_result`], and
+//!   the `commit_skip_writes_values_snapshot_journal_but_no_cache_entry`
+//!   test that pins it. The authoritative signal that nothing was cached is
+//!   [`CommitOutcome::skip_reason`] (in-memory) or the paired `Started`
+//!   event's `cache-skip=` payload marker (journal-only). Making this
+//!   type-safe (e.g. `EventKind::Completed { outcome: Option<EvalOutcome> }`)
+//!   would change `journal.rs`'s `EventKind` shape — out of scope for this
+//!   module.
 
 use std::time::Instant;
 
@@ -107,10 +136,21 @@ impl TraceSource {
 /// `Record` is a unit variant (not value-carrying) — the cache leg's
 /// `DependencyTrace` rides as a separate `commit_cell_result` parameter,
 /// used only on that arm.
+///
+/// **Freshness scope gap:** `Record` always writes `Freshness::Final` (see
+/// its doc below) — there is no variant routing to
+/// `CacheStore::record_evaluation_propagating_freshness` (arch §7.2). See
+/// the module doc's "Known scope gaps" section before wiring a migration
+/// site that needs freshness propagation.
 #[allow(dead_code)] // constructed by migration call sites from leaves γ/δ/ε/ι; tests only until then
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CacheLeg {
-    /// Write the cache leg via [`CacheStore::record_evaluation`].
+    /// Write the cache leg via [`CacheStore::record_evaluation`], which is a
+    /// thin wrapper that hard-codes `Freshness::Final` (see its own doc
+    /// comment in `cache.rs`). Does NOT call
+    /// `record_evaluation_propagating_freshness` — a commit site that needs
+    /// derived freshness per arch §7.2 cannot be represented by this variant
+    /// as currently shaped.
     Record,
     /// Omit the cache leg. Carries the reason, surfaced on
     /// [`CommitOutcome::skip_reason`] for later divergence-audit exemptions.
