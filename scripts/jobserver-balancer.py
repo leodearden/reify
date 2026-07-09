@@ -789,6 +789,15 @@ def main() -> None:
     _unlink_best_effort(TASK_FIFO + OWNER_STAMP_SUFFIX)
     _unlink_best_effort(MERGE_FIFO + OWNER_STAMP_SUFFIX + ".tmp")
     _unlink_best_effort(TASK_FIFO + OWNER_STAMP_SUFFIX + ".tmp")
+    # Confirmed safe against jobserver-canary.sh (review comment 4, round 2):
+    # removing HELD_BACK_FILE here (in-process, on a clean exit) rather than
+    # relying solely on systemd's ExecStopPost is fine because the canary's
+    # read_held_back() already treats an absent/empty/garbage file identically
+    # to held_back=0 ("Absent or garbage file -> 0 (safe default)",
+    # scripts/jobserver-canary.sh) — exactly the state a graceful shutdown
+    # (no reservoir held) publishes anyway. A canary read racing this unlink
+    # therefore sees either the last-published integer or "absent" -> 0; both
+    # are fail-open-safe reads of a stopped daemon.
     _unlink_best_effort(HELD_BACK_FILE)
 
 
