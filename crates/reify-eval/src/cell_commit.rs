@@ -60,14 +60,13 @@ pub enum DeterminacyRule {
     /// Main-pass let/param binds: stamps `Determined` unconditionally,
     /// regardless of whether the evaluated value is `Value::Undef`. See
     /// `evaluate_params_and_lets_unified` / the `group.members` arm of
-    /// `Engine::eval` (engine_eval.rs ~:300).
+    /// `Engine::eval` in `engine_eval.rs`.
     UnconditionalDetermined,
-    /// The `reeval_cone_cell` rule (engine_eval.rs:4934-4937) and the
-    /// `DeterminacyPredicate` family (engine_eval.rs:4317,4356): maps
-    /// `Value::Undef` to `Undetermined`, everything else to `Determined`.
-    /// Intentionally diverges from `UnconditionalDetermined` — the doc
-    /// comment at engine_eval.rs:4883-4897 states a future reader should NOT
-    /// collapse the two rules together.
+    /// The `reeval_cone_cell` rule and the `DeterminacyPredicate` family in
+    /// `engine_eval.rs`: maps `Value::Undef` to `Undetermined`, everything
+    /// else to `Determined`. Intentionally diverges from
+    /// `UnconditionalDetermined` — `reeval_cone_cell`'s own doc comment
+    /// states a future reader should NOT collapse the two rules together.
     DeriveFromValue,
     /// Rejected-override-with-no-default, or a solver-owned Auto cell still
     /// awaiting a solve: always `Undetermined`, regardless of value.
@@ -216,8 +215,8 @@ impl CommitOutcome {
 }
 
 /// The four `&mut` leg targets a commit writes to, bundled as disjoint
-/// borrows — mirrors the `GuardedParamCtx` struct-bundle pattern
-/// (engine_eval.rs:336). `values`/`snapshot_values` are eval-pass locals
+/// borrows — mirrors the `GuardedParamCtx` struct-bundle pattern in
+/// `engine_eval.rs`. `values`/`snapshot_values` are eval-pass locals
 /// threaded by migration call sites; `cache`/`journal` are Engine fields.
 pub(crate) struct CommitLegs<'a> {
     values: &'a mut ValueMap,
@@ -231,7 +230,7 @@ pub(crate) struct CommitLegs<'a> {
 /// by omission (INV-EVAL-1).
 ///
 /// Emits the full journal `Started`/`Completed` `EvalEvent` pair, subsuming
-/// the `record_eval_completed` helper (engine_eval.rs:369), which today emits
+/// the `record_eval_completed` helper in `engine_eval.rs`, which today emits
 /// only `Completed`. On `CacheLeg::Skip`, the `Started` event's payload
 /// additionally carries a `cache-skip=<reason>` marker (see body), so the
 /// journal alone — with no access to the in-memory [`CommitOutcome`] — is
@@ -377,7 +376,7 @@ mod tests {
             DeterminacyState::Undetermined
         );
 
-        // DeriveFromValue (reeval_cone_cell rule, engine_eval.rs:4934-4937):
+        // DeriveFromValue (reeval_cone_cell rule in engine_eval.rs):
         // Undef -> Undetermined, else -> Determined. This is the rule that
         // must NOT be collapsed into UnconditionalDetermined's behaviour.
         assert_eq!(
