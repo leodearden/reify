@@ -105,6 +105,29 @@ _orphan_ppid_settled() {
     ps -o ppid= -p "$_child" 2>/dev/null | tr -d ' ' || echo ""
 }
 
+# _poll_survivor_alive <pid> <n>
+#   Condition-polled proof that <pid> is still alive (task 5148): retries up
+#   to <n> times via the zombie-aware _pid_effectively_gone (tolerating a
+#   transient-empty ps read instead of misreporting it as dead), ticking
+#   load_tolerant_sleep_tick between samples. Returns 0 (alive) on the first
+#   not-gone sample, 1 only once the whole budget is exhausted — still
+#   non-vacuous: a genuinely-dead pid exhausts the poll and returns 1.
+#   Shared by the Part 5 end-to-end survivor check and its Test 5b hermetic
+#   regression lock so BOTH exercise this ONE code path: a reversion to a
+#   single-shot ps sample anywhere in here flips both assertions, rather than
+#   a lock that only guards a duplicated copy of the loop (reviewer
+#   follow-up on the original Test 5b, which inlined its own copy).
+_poll_survivor_alive() {
+    local _pid="$1" _n="$2" _t
+    for ((_t=1; _t<=_n; _t++)); do
+        if ! _pid_effectively_gone "$_pid"; then
+            return 0
+        fi
+        load_tolerant_sleep_tick
+    done
+    return 1
+}
+
 # ---------------------------------------------------------------------------
 # _spawn_sentinel_pgroup <marker_bin> <count>
 #   Background <count> copies of "<marker_bin>" "${_SENTINEL_SLEEP_SECS}" and
@@ -137,7 +160,7 @@ _spawn_sentinel_pgroup() {
     wait
 }
 
-export -f _pid_effectively_gone _poll_pid_gone _orphan_ppid_settled _spawn_sentinel_pgroup
+export -f _pid_effectively_gone _poll_pid_gone _orphan_ppid_settled _poll_survivor_alive _spawn_sentinel_pgroup
 
 echo "=== lib_proc_reaper.sh unit tests ==="
 
@@ -795,11 +818,10 @@ chmod +x "$_E2E_FAKE"
 
 assert "SIGKILL to parent does NOT reap the backgrounded test binary (survivor exists)" \
     env _E2E_FAKE="$_E2E_FAKE" _SENT_FAKE="$_SENT_FAKE" \
-        _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" bash -c '
+        _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" \
+        _POLL_ATTEMPTS_ORPHAN="$_POLL_ATTEMPTS_ORPHAN" bash -c '
         _abs_sleep=$(command -v sleep)
-        _abs_ps=$(command -v ps)
         _abs_kill=$(command -v kill)
-        _abs_grep=$(command -v grep)
         _abs_bash=$(command -v bash)
         _pid_file=$(mktemp)
         trap "rm -f \"$_pid_file\"" EXIT
@@ -818,15 +840,92 @@ assert "SIGKILL to parent does NOT reap the backgrounded test binary (survivor e
         _fake_pid=$(cat "$_pid_file" 2>/dev/null || echo "")
         [ -n "$_fake_pid" ] || { echo "FAIL: did not get fake binary PID" >&2; exit 1; }
 
-        # SIGKILL the parent.
+        # SIGKILL the parent, then confirm it is effectively gone (reparenting
+        # completes at parent death) before sampling the survivor.
         "$_abs_kill" -9 "$_parent_pid" 2>/dev/null || true
-        "$_abs_sleep" 0.5
+        _poll_pid_gone "$_parent_pid" "$_POLL_ATTEMPTS_ORPHAN" || true
 
-        # Assert the fake binary is still alive after parent SIGKILL.
-        _alive=0
-        "$_abs_ps" -o pid= -p "$_fake_pid" 2>/dev/null | "$_abs_grep" -q . && _alive=1 || true
+        # STRUCTURAL/condition-polled survivor-alive proof (task 5148):
+        # replaces a fixed-wait + single ps sample, which raced a
+        # transient-empty ps read under pool load (data/verify-logs/4911).
+        # Delegates to the shared _poll_survivor_alive helper (exported at
+        # top-of-file) instead of an inline loop, so the Test 5b hermetic
+        # regression lock below — which drives this SAME helper — actually
+        # guards this code path: a reversion to a single-shot sample
+        # anywhere inside _poll_survivor_alive flips both this assertion and
+        # the lock, not just a duplicated copy of the loop. Non-vacuous: a
+        # genuinely-dead survivor exhausts the poll and returns 1 (RED).
+        _poll_survivor_alive "$_fake_pid" "$_POLL_ATTEMPTS_ORPHAN"
+        _alive_rc=$?
         "$_abs_kill" -9 "$_fake_pid" 2>/dev/null || true
-        exit $((1 - _alive))
+        exit "$_alive_rc"
+    '
+
+# -- Test 5b (regression lock, task 5148): the condition-polled survivor
+# check above tolerates a transient-empty ps read instead of misreporting a
+# genuinely-alive survivor as DEAD. Under real pool load this was a race
+# (observed in data/verify-logs/4911 etc: a fixed wait + ONE ps sample could
+# land on a transient-empty read); here it is forced deterministically via a
+# stateful `ps` stub (extends the Part 8 SLOW_PS_STUB idiom below) whose FIRST
+# invocation emits nothing and whose invocations #2+ delegate to the real ps.
+# The shared _poll_survivor_alive helper (see below — the SAME helper driven
+# by the production Test 5 check above) retries past that first empty read
+# and correctly converges on ALIVE. Locks the fix: a reversion to a
+# single-shot sample anywhere in that shared helper would make BOTH this and
+# Test 5 go RED again (as Test 5 did before task 5148).
+_P5_STUB_DIR="$(mktemp -d)"
+_TMPDIRS+=("$_P5_STUB_DIR")
+_P5_STUB_COUNTER="$_P5_STUB_DIR/ps_invocation_count"
+_abs_real_ps_p5="$(command -v ps)"
+
+cat > "$_P5_STUB_DIR/ps" <<STUB_PS_EOF
+#!/usr/bin/env bash
+_n=\$(cat "$_P5_STUB_COUNTER" 2>/dev/null || echo 0)
+_n=\$((_n + 1))
+echo "\$_n" > "$_P5_STUB_COUNTER"
+if [ "\$_n" -eq 1 ]; then
+    exit 0
+fi
+exec "$_abs_real_ps_p5" "\$@"
+STUB_PS_EOF
+chmod +x "$_P5_STUB_DIR/ps"
+
+assert "hermetic regression lock: condition-polled survivor check tolerates a transient-empty ps read (retries past invocation #1, task 5148)" \
+    env _E2E_FAKE="$_E2E_FAKE" _SENT_FAKE="$_SENT_FAKE" \
+        _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" \
+        _POLL_ATTEMPTS_ORPHAN="$_POLL_ATTEMPTS_ORPHAN" \
+        PATH="$_P5_STUB_DIR:$PATH" bash -c '
+        _abs_sleep=$(command -v sleep)
+        _abs_kill=$(command -v kill)
+        _abs_bash=$(command -v bash)
+        _pid_file=$(mktemp)
+        trap "rm -f \"$_pid_file\"" EXIT
+
+        "$_abs_bash" -c "\"$_E2E_FAKE\" \"$_SENTINEL_SLEEP_SECS\" </dev/null >/dev/null 2>&1 & echo \$! > \"$_pid_file\"; wait" &
+        _parent_pid=$!
+        for ((_t=1; _t<=20; _t++)); do
+            [ -s "$_pid_file" ] && break
+            "$_abs_sleep" 0.3
+        done
+        _fake_pid=$(cat "$_pid_file" 2>/dev/null || echo "")
+        [ -n "$_fake_pid" ] || { echo "FAIL: did not get fake binary PID" >&2; exit 1; }
+
+        # SIGKILL the parent (survivor is now orphaned but still alive).
+        "$_abs_kill" -9 "$_parent_pid" 2>/dev/null || true
+
+        # Drives the SAME shared _poll_survivor_alive helper (exported at
+        # top-of-file, task 5148) as the production Test 5 check above,
+        # rather than a duplicated for-loop, so this lock actually guards
+        # that shared code path: a regression to a single-shot sample
+        # anywhere inside _poll_survivor_alive flips BOTH Test 5 and this
+        # lock. _pid_effectively_gone (called by the helper) resolves ps via
+        # the PATH prepend above, so the helper FIRST call always hits the
+        # stubbed transient-empty invocation #1 and is retried instead of
+        # misreported as dead.
+        _poll_survivor_alive "$_fake_pid" "$_POLL_ATTEMPTS_ORPHAN"
+        _alive_rc=$?
+        "$_abs_kill" -9 "$_fake_pid" 2>/dev/null || true
+        exit "$_alive_rc"
     '
 
 assert "reap-orphaned-test-binaries.sh reaps an orphaned test binary after parent SIGKILL" \
@@ -1100,19 +1199,26 @@ sleep 30
 SLOW_PS_STUB
 chmod +x "$_P8_BINDIR/ps"
 
-# Test 8a: wall-clock bound -- reap-orphans must complete < 15s even though
-# the stub ps sleeps 30s without the timeout wrapper.
-# REIFY_REAPER_PS_TIMEOUT=2 -> timeout fires at ~2s -> 7x margin under 15s.
-assert "reap-orphans completes < 15s when ps stalls 30s (REIFY_REAPER_PS_TIMEOUT=2 bounds scan)" \
+# Test 8a: MECHANISM proof -- the ps-timeout wrapper fires (marker present in
+# stderr) and the sweep returns promptly under a generous anti-hang ceiling,
+# even though the stub ps sleeps 30s without the timeout wrapper.
+# NON-VACUOUS: unlike an elapsed bound, the marker appears ONLY when
+# _reaper_bounded_ps actually times out. If lib's bounding were removed
+# (bare-ps fallback), the sweep would still finish under the generous 60s
+# ceiling (30s stub < 60s) -- an elapsed bound would pass either way -- but
+# the marker would be ABSENT, so this assertion still goes RED.
+# REIFY_REAPER_PS_TIMEOUT=2 -> internal timeout fires at ~2s; the outer 60s
+# timeout is a pure anti-hang backstop, not a discriminator.
+assert "reap-orphans fires the ps-timeout mechanism under a generous anti-hang ceiling (REIFY_REAPER_PS_TIMEOUT=2 bounds scan)" \
     env LIB_REAPER="$LIB_REAPER" P8_BINDIR="$_P8_BINDIR" bash -c '
-        _start=$(date +%s)
+        _err=$(mktemp)
+        trap "rm -f \"$_err\"" EXIT
         PATH="$P8_BINDIR:$PATH" \
         REIFY_REAPER_PS_TIMEOUT=2 \
         REIFY_REAPER_UID=$(id -u) \
-            bash "$LIB_REAPER" reap-orphans >/dev/null 2>/dev/null || true
-        _end=$(date +%s)
-        _elapsed=$(( _end - _start ))
-        [ "$_elapsed" -lt 15 ]
+            timeout 60 bash "$LIB_REAPER" reap-orphans >/dev/null 2>"$_err"
+        _rc=$?
+        [ "$_rc" -ne 124 ] && grep -qF "host-wide ps scan exceeded" "$_err"
     '
 
 # Test 8b: non-vacuous proof -- stderr must carry the timeout-warning substring.
