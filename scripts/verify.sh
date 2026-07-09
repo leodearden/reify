@@ -1450,6 +1450,18 @@ build_plan() {
         # archived attempt-N.test-*.log. 2>&1 routes it into the same stream
         # DF already captures; run_all emits its Summary/FAILED classifier
         # markers to stdout, so the DF ^FAILED\s contract is preserved.
+        # task 5139 (amendment review, reviewer_comprehensive
+        # robustness_error_handling): merging the streams raised a theoretical
+        # interleaving concern — a stdout classifier line torn mid-write by
+        # unbuffered stderr could in principle corrupt the ^FAILED\s anchor.
+        # No change made: run_all emits "=== Summary: ..." / "=== FAILED: ..."
+        # via single `echo` calls (run_all.sh:813/815/818), each one `write()`
+        # syscall well under PIPE_BUF, so the OS guarantees each line lands
+        # atomically on the shared pipe regardless of stderr interleaving —
+        # tests/infra/test_run_all.sh Test 7 asserts these exact markers
+        # survive a `2>&1`-merged capture. Revisit only if that assumption
+        # breaks (e.g. run_all starts assembling a classifier line across
+        # multiple writes).
         add "if test -f tests/infra/run_all.sh; then REIFY_AUDIT_NO_COLD_BUILD=1 REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 timeout --kill-after=60 30m bash tests/infra/run_all.sh 2>&1; fi"
     fi
 
