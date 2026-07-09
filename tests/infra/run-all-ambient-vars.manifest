@@ -1,0 +1,48 @@
+# tests/infra/run-all-ambient-vars.manifest — the single acknowledged ledger
+# of every env var ambiently injected into the run_all.sh pool (every one of
+# its ~103 tests inherits ALL of these, whether or not a given test cares
+# about a given var).
+#
+# Co-maintained with the two live injection sources:
+#   - scripts/verify.sh's run_all.sh plan line (verify.sh:1430): a prefix env
+#     hardcoded onto the `bash tests/infra/run_all.sh` command.
+#   - orchestrator.yaml's verify_env block (orchestrator.yaml:148-152):
+#     exported into the whole verify.sh process tree by the orchestrator.
+#
+# tests/infra/test_run_all_ambient_isolation.sh derives the LIVE injected-var
+# set from both sources above and cross-checks it against this file's key set
+# for SET EQUALITY. A var newly added to either source without a matching
+# entry here (or a stale entry here for a var no longer injected) fails that
+# guard's drift assertion — so extending either injection source requires a
+# conscious edit to this ledger. The same guard also drives a per-var
+# hostile-ambient sub-case (real test_run_all.sh run once per var, with every
+# other ledger var unset) off this file's key set.
+#
+# Format: one env-var name per line. `#`-comment and blank lines ignored.
+# Values are NOT recorded here (this is a keys-only ledger) — each guard run
+# looks up the live value from whichever injection source actually carries
+# that key.
+
+# --- run_all.sh plan-line prefix env (verify.sh:1430) -----------------------
+# Coverage caveat (task 5152): REIFY_AUDIT_NO_COLD_BUILD's hostile-ambient
+# sub-case in test_run_all_ambient_isolation.sh passes vacuously regardless
+# of whether an isolation bug exists for it -- setting it to 1 makes the
+# reify-audit freshness guard SKIP rather than fail (verify.sh:1410-1412),
+# so test_run_all.sh exits 0 either way. Listing it here still closes the
+# LEDGER-DRIFT gap (this var can no longer silently go untracked if either
+# injection source changes); it does not by itself prove isolation-bug
+# coverage for this var the way REIFY_RUN_ALL_EXCLUDE_HOST_INFRA's sub-case
+# does.
+REIFY_AUDIT_NO_COLD_BUILD
+REIFY_RUN_ALL_EXCLUDE_HOST_INFRA
+
+# --- orchestrator.yaml verify_env block (orchestrator.yaml:148-152) ---------
+# REIFY_RUN_ALL_EXCLUDE_HOST_INFRA already declared above (both sources carry
+# it). CARGO_MAKEFLAGS is deliberately excluded: owned solely by verify.sh's
+# apply_env() (contract C3 / task 4518 delta), not injected by verify_env.
+REIFY_GATE_EXCLUDE_HEAVY
+RUSTC_WRAPPER
+CARGO_INCREMENTAL
+REIFY_TEST_SEMAPHORE_CONCURRENCY
+REIFY_TEST_SEMAPHORE_WAIT
+REIFY_PSI_GATE_MAX_WAIT
