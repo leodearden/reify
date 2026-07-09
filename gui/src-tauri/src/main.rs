@@ -813,9 +813,6 @@ fn main() {
             let emitter = Arc::new(TauriAutoResolveEmitter {
                 app: app.handle().clone(),
             });
-            if let Ok(mut session) = engine_arc.lock() {
-                session.set_auto_resolve_emitter(emitter);
-            }
 
             // Install the warm-pool emitter so the frontend receives eviction/donation events.
             // The backend emits unconditionally; the WarmPoolDebugPanel only subscribes under
@@ -823,9 +820,6 @@ fn main() {
             let warm_pool_emitter = Arc::new(TauriWarmPoolEventEmitter {
                 app: app.handle().clone(),
             });
-            if let Ok(mut session) = engine_arc.lock() {
-                session.set_warm_pool_event_emitter(warm_pool_emitter);
-            }
 
             // Install the fea-case-changed emitter so the frontend FeaCasePickerDropdown
             // receives the active case set whenever a MultiCaseResult is observed at commit
@@ -833,9 +827,6 @@ fn main() {
             let fea_case_emitter = Arc::new(TauriFeaCaseEmitter {
                 app: app.handle().clone(),
             });
-            if let Ok(mut session) = engine_arc.lock() {
-                session.set_fea_case_emitter(fea_case_emitter);
-            }
 
             // Install the fea-diagnostics-changed emitter so the frontend FEA diagnostic
             // overlay refreshes live on every commit (task #4884 — param-edit re-solve path).
@@ -843,9 +834,6 @@ fn main() {
             let fea_diagnostics_emitter = Arc::new(TauriFeaDiagnosticsEmitter {
                 app: app.handle().clone(),
             });
-            if let Ok(mut session) = engine_arc.lock() {
-                session.set_fea_diagnostics_emitter(fea_diagnostics_emitter);
-            }
 
             // Install the fea-convergence-changed emitter so the frontend FEA convergence
             // indicator refreshes live on every commit (task #5032 — param-edit re-solve
@@ -854,9 +842,6 @@ fn main() {
             let fea_convergence_emitter = Arc::new(TauriFeaConvergenceEmitter {
                 app: app.handle().clone(),
             });
-            if let Ok(mut session) = engine_arc.lock() {
-                session.set_fea_convergence_emitter(fea_convergence_emitter);
-            }
 
             // Install the mode-shape-frame emitter so the frontend BucklingPanel
             // receives reference frames (one undeformed base + one peak per mode)
@@ -864,9 +849,6 @@ fn main() {
             let mode_shape_frame_emitter = Arc::new(TauriModeShapeFrameEmitter {
                 app: app.handle().clone(),
             });
-            if let Ok(mut session) = engine_arc.lock() {
-                session.set_mode_shape_frame_emitter(mode_shape_frame_emitter);
-            }
 
             // Install the solve-cancellation sink so cancel_solve_impl can reach
             // the in-flight FEA handle (task γ/4086).  The sink holds the same
@@ -874,16 +856,25 @@ fn main() {
             let solve_cancel_sink = Arc::new(reify_gui::commands::PendingSolveCancelSink::new(
                 Arc::clone(&solve_cancel_slot),
             ));
-            if let Ok(mut session) = engine_arc.lock() {
-                session.set_solve_cancel_sink(solve_cancel_sink);
-            }
 
             // Install the solver-progress sink so the frontend receives per-CG-iteration
             // progress events on the "solver-progress" IPC channel (task 4079).
             let solver_progress_emitter = Arc::new(TauriSolverProgressEmitter {
                 app: app.handle().clone(),
             });
+
+            // Install all session emitters/sinks in a single lock acquisition instead of
+            // one lock/unlock per emitter — they all target the same engine_arc mutex, so
+            // there is no isolation benefit to separate critical sections (amendment,
+            // task #5032 review).
             if let Ok(mut session) = engine_arc.lock() {
+                session.set_auto_resolve_emitter(emitter);
+                session.set_warm_pool_event_emitter(warm_pool_emitter);
+                session.set_fea_case_emitter(fea_case_emitter);
+                session.set_fea_diagnostics_emitter(fea_diagnostics_emitter);
+                session.set_fea_convergence_emitter(fea_convergence_emitter);
+                session.set_mode_shape_frame_emitter(mode_shape_frame_emitter);
+                session.set_solve_cancel_sink(solve_cancel_sink);
                 session.set_solver_progress_sink(solver_progress_emitter);
             }
 
