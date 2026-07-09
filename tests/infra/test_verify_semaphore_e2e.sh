@@ -792,11 +792,12 @@ assert "_assert_serialized_events: empty event log -> output names the empty eve
 # ===========================================================================
 # _dump_captured_stderr unit tests (Part F helper, task 5144 F2 mode-4)
 # ===========================================================================
-# RED (step-7): _dump_captured_stderr is not yet defined (step-8 GREENs
-# this). New Part F helper for mode-4 observability (5111 "silent FAIL"): a
-# nested run's captured stderr, dumped under a clear bracketed header, so a
-# failing exit-code assertion (Sections A/B/C/F) or a set-e-safe capture
-# failure (Section F2) leaves a diagnosable reason instead of silence.
+# _dump_captured_stderr is defined above (line ~381), well ahead of these
+# tests — no ordering/definition dependency here. Part F helper for mode-4
+# observability (5111 "silent FAIL"): a nested run's captured stderr,
+# dumped under a clear bracketed header, so a failing exit-code assertion
+# (Sections A/B/C/F) or a set-e-safe capture failure (Section F2) leaves a
+# diagnosable reason instead of silence.
 # Contract: MUST NEVER abort its caller under set -euo pipefail — always
 # returns rc 0 regardless of whether the errfile has content, is empty, or
 # is missing — because it is invoked as a bare diagnostic statement, not
