@@ -1500,6 +1500,17 @@ impl EngineSession {
     /// `GuiState.fea_convergence`. Fires on EVERY commit including `None` (so a
     /// param edit that clears the FEA problem clears the stale indicator).
     ///
+    /// Accepted tradeoff (awareness, not enforcement): this re-derives
+    /// `build_fea_convergence()` independently of `build_gui_state()`'s own
+    /// call to the same helper, so a single commit pays for the
+    /// `extract_fea_convergence` scan twice (once here at the L4 choke-point,
+    /// once whenever `build_gui_state` is next requested). This mirrors
+    /// `emit_fea_diagnostics`'s identical pre-existing duplication and is
+    /// accepted for the same reason: the `ValueMap` scan is small and bounded.
+    /// If this choke-point ever becomes hot, compute the FEA-channel snapshots
+    /// once per commit and thread them into both `build_gui_state` and these
+    /// emit helpers.
+    ///
     /// Early-returns silently when no emitter is installed.
     fn emit_fea_convergence(&self) {
         let emitter = match &self.fea_convergence_emitter {
