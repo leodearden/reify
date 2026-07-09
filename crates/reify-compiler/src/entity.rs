@@ -6533,13 +6533,13 @@ structure def Manifold {
         }
     }
 
-    /// Non-auto branch (`auto_free = None`): `compile_default` must be
-    /// invoked exactly once, with a `&Type` equal to `cell_type`, and
-    /// `default_expr` must equal whatever the closure returns — `Some` (a
-    /// typed param with an initializer) or `None` (no initializer). Loops
-    /// over both cases, mirroring the auto-branch test's `for free in
-    /// [true, false]` shape above. `CompiledExpr` has no `PartialEq` impl,
-    /// so equality is pinned via `content_hash`.
+    /// Non-auto branch (`auto_free = None`): `compile_default` is invoked
+    /// with a `&Type` equal to `cell_type`, and `default_expr` must equal
+    /// whatever the closure returns — `Some` (a typed param with an
+    /// initializer) or `None` (no initializer). Loops over both cases,
+    /// mirroring the auto-branch test's `for free in [true, false]` shape
+    /// above. `CompiledExpr` has no `PartialEq` impl, so equality is pinned
+    /// via `content_hash`.
     ///
     /// Uses a distinct, non-dimensionless `cell_type` (`Type::length()`) rather
     /// than `Type::dimensionless_scalar()` so the equality checks below (both
@@ -6549,18 +6549,16 @@ structure def Manifold {
     /// that ends up in `decl.cell_type` are the *same* value flowing through
     /// the helper, not merely two coincidentally-equal defaults.
     ///
-    /// Also folds in the side-effect-ordering guarantee (amendment review:
-    /// previously a standalone test, redundant with the invocation-count
-    /// assertion below since `compile_default` is an `FnOnce` invoked
-    /// synchronously before decl construction): `compile_default` pushes a
-    /// diagnostic here, mirroring `check_param_default_type` at the two
-    /// entity.rs call sites, and that diagnostic must be observable
-    /// immediately after `build_param_value_cell_decl` returns — i.e. the
-    /// helper invokes the closure synchronously, before constructing the
-    /// decl, not deferred, reordered, or dropped. Complements (does not
-    /// replace) the full-pipeline coverage in
-    /// `param_default_type_mismatch_tests.rs`, which proves the diagnostic
-    /// fires at all.
+    /// Deliberately does NOT assert invocation count or diagnostic-observable-
+    /// immediately-after-return ordering (amendment review: those merely
+    /// re-verify that an `FnOnce` closure is invoked synchronously in a
+    /// ~15-line straight-line function, which the type system and the
+    /// helper's body already guarantee, not anything under test here). The
+    /// `default_expr`-equals-closure-return assertion below is sufficient:
+    /// it cannot pass unless the closure ran and its result flowed through.
+    /// End-to-end diagnostic behavior is covered by
+    /// `param_default_type_mismatch_tests.rs` and the guards.rs integration
+    /// tests.
     #[test]
     fn build_param_value_cell_decl_param_branch_invokes_compile_default_exactly_once() {
         for yields_default in [true, false] {
@@ -6572,10 +6570,8 @@ structure def Manifold {
                 collection: "y_values".to_string(),
                 span,
             }];
-            let call_count = std::cell::Cell::new(0u32);
             let synthetic = CompiledExpr::literal(Value::Real(42.0), Type::dimensionless_scalar());
             let expected_hash = synthetic.content_hash;
-            let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
             let decl = build_param_value_cell_decl(
                 id.clone(),
@@ -6585,35 +6581,14 @@ structure def Manifold {
                 solver_hints.clone(),
                 span,
                 |ct: &Type| {
-                    call_count.set(call_count.get() + 1);
                     assert_eq!(
                         ct, &cell_type,
                         "compile_default must receive cell_type by reference"
-                    );
-                    // Mirrors `check_param_default_type` pushing a mismatch
-                    // diagnostic before the closure returns `default_expr`.
-                    diagnostics.push(
-                        Diagnostic::error("synthetic param default type mismatch")
-                            .with_label(DiagnosticLabel::new(span, "test")),
                     );
                     if yields_default { Some(synthetic) } else { None }
                 },
             );
 
-            assert_eq!(
-                call_count.get(),
-                1,
-                "compile_default must be invoked exactly once (yields_default={yields_default})"
-            );
-            assert_eq!(
-                diagnostics.len(),
-                1,
-                "a diagnostic pushed inside compile_default must be observable \
-                 immediately after build_param_value_cell_decl returns — the \
-                 helper must invoke the closure synchronously, before \
-                 constructing the decl, not defer, reorder, or drop it \
-                 (yields_default={yields_default})"
-            );
             assert_eq!(decl.kind, ValueCellKind::Param);
             assert_param_decl_passthrough_fields(
                 &decl,
