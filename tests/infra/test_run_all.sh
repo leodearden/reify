@@ -2304,5 +2304,118 @@ else
     assert "T24e: run_all.sh exits 0 (soft-admit past the wait deadline, member passes) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
 fi
 
+# -- Test 25: partial FAILED/INTERRUPTED marker on outer-timeout SIGTERM (task #5147) --
+# The merge-tier envelope wraps run_all.sh in `timeout --kill-after=60 30m`
+# (verify.sh). timeout sends SIGTERM first (SIGKILL only after the kill-after
+# grace period), so a TERM trap gets a real window to emit a reclassification
+# marker before death. Without one, a mid-run SIGTERM leaves no Summary/FAILED
+# line and dark-factory's classifier falls through to a tree_sitter_generate_error
+# mislabel instead of test_failure. RED sub-case: a fast-failing pool member
+# ("boom") plus a slow pool member ("hang") under REIFY_RUN_ALL_POOL_CONCURRENCY=2
+# (both admitted concurrently, no lock contention -- keeps this test's markers
+# independent of Test 24's). At t~2s boom has already written its .rc=1 and the
+# parent is blocked in the Phase-1 `wait` for hang, so the outer `timeout -s TERM`
+# fires into the new trap. Output is captured to a FILE, not `$(...)`: the
+# orphaned hang-worker subshell (reparented on run_all.sh's death, still holding
+# an inherited copy of the original pipe's write end while it finishes its ~8s
+# sleep) would otherwise hold a command-substitution pipe open long past
+# run_all.sh's own death. GREEN regression sub-case: an all-pass run with NO
+# timeout must stay byte-identical (no INTERRUPTED/(partial), byte-exact
+# Summary) -- proves the trap is signal-only and never fires on the normal path.
+echo ""
+echo "--- Test 25: partial FAILED/INTERRUPTED marker on outer-timeout SIGTERM ---"
+
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+    # -- RED sub-case: mid-run SIGTERM ---------------------------------------
+    TMPDIR_T25="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T25")
+
+    MANIFEST_T25="$TMPDIR_T25/classification.manifest"
+    cat > "$MANIFEST_T25" <<'EOF'
+test_pool_boom.sh pool
+test_pool_hang.sh pool
+EOF
+    printf '#!/usr/bin/env bash\nexit 1\n' > "$TMPDIR_T25/test_pool_boom.sh"
+    printf '#!/usr/bin/env bash\nsleep 8\nexit 0\n' > "$TMPDIR_T25/test_pool_hang.sh"
+    chmod +x "$TMPDIR_T25/test_pool_boom.sh" "$TMPDIR_T25/test_pool_hang.sh"
+
+    LOCK_T25="$TMPDIR_T25/pool-t25.lock"
+    T25_OUT="$TMPDIR_T25/out.txt"
+    t25_rc=0
+    env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+        RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T25" \
+        REIFY_RUN_ALL_POOL_LOCK="$LOCK_T25" \
+        REIFY_RUN_ALL_POOL_CONCURRENCY=2 \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        timeout -s TERM -k 5 2 bash "$RUN_ALL" "$TMPDIR_T25" >"$T25_OUT" 2>&1 || t25_rc=$?
+
+    if grep -q 'INTERRUPTED' "$T25_OUT"; then
+        assert "T25a: mid-run SIGTERM output contains an INTERRUPTED summary line" true
+    else
+        assert "T25a: mid-run SIGTERM output contains an INTERRUPTED summary line (got: $(cat "$T25_OUT"))" false
+    fi
+
+    if grep -Eq '^FAILED .*\(partial\)' "$T25_OUT"; then
+        assert "T25b: mid-run SIGTERM output has a '^FAILED ... (partial)' classifier line" true
+    else
+        assert "T25b: mid-run SIGTERM output has a '^FAILED ... (partial)' classifier line (got: $(cat "$T25_OUT"))" false
+    fi
+
+    if grep -Eq '^FAILED .*test_pool_boom\.sh.*\(partial\)' "$T25_OUT"; then
+        assert "T25c: the partial FAILED line names test_pool_boom.sh" true
+    else
+        assert "T25c: the partial FAILED line names test_pool_boom.sh (got: $(cat "$T25_OUT"))" false
+    fi
+
+    assert "T25d: run_all.sh did NOT exit 0 (interrupted mid-run)" \
+        test "$t25_rc" -ne 0
+
+    # -- GREEN regression sub-case: normal (untouched) path stays byte-identical --
+    TMPDIR_T25B="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T25B")
+
+    MANIFEST_T25B="$TMPDIR_T25B/classification.manifest"
+    printf 'test_pool_1.sh pool\n' > "$MANIFEST_T25B"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T25B/test_pool_1.sh"
+    chmod +x "$TMPDIR_T25B/test_pool_1.sh"
+
+    t25b_rc=0
+    t25b_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+        RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T25B" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T25B/pool.lock" \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        bash "$RUN_ALL" "$TMPDIR_T25B" 2>&1)" || t25b_rc=$?
+
+    if [[ "$t25b_out" == *"=== Summary: 1 discovered, 0 failed ==="* ]]; then
+        assert "T25e: GREEN regression -- byte-exact Summary line on the normal (untouched) path" true
+    else
+        assert "T25e: GREEN regression -- byte-exact Summary line on the normal (untouched) path (got: $t25b_out)" false
+    fi
+
+    if [[ "$t25b_out" != *"INTERRUPTED"* ]]; then
+        assert "T25f: GREEN regression -- normal path emits no INTERRUPTED marker" true
+    else
+        assert "T25f: GREEN regression -- normal path emits no INTERRUPTED marker (got: $t25b_out)" false
+    fi
+
+    if [[ "$t25b_out" != *"(partial)"* ]]; then
+        assert "T25g: GREEN regression -- normal path emits no (partial) marker" true
+    else
+        assert "T25g: GREEN regression -- normal path emits no (partial) marker (got: $t25b_out)" false
+    fi
+
+    assert "T25h: GREEN regression -- normal path exits 0" \
+        test "$t25b_rc" -eq 0
+else
+    assert "T25a: mid-run SIGTERM output contains an INTERRUPTED summary line (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T25b: mid-run SIGTERM output has a '^FAILED ... (partial)' classifier line (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T25c: the partial FAILED line names test_pool_boom.sh (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T25d: run_all.sh did NOT exit 0 (interrupted mid-run) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T25e: GREEN regression -- byte-exact Summary line on the normal (untouched) path (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T25f: GREEN regression -- normal path emits no INTERRUPTED marker (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T25g: GREEN regression -- normal path emits no (partial) marker (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T25h: GREEN regression -- normal path exits 0 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+fi
+
 # -- Summary --------------------------------------------------------------------
 test_summary
