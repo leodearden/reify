@@ -3422,7 +3422,13 @@ fn classify_material(val: &Value) -> MaterialModel {
         }
         _ => {
             // Isotropic fallback: reads youngs_modulus + poisson_ratio (unchanged
-            // from the pre-δ trampoline).
+            // from the pre-δ trampoline). `val` is already known to be
+            // Value::StructureInstance here — the `data` match above panics on
+            // any other variant before control reaches this arm — so
+            // extract_material's own ExpectedStructureInstance check is
+            // defensive/unreachable from this call site; it exists so the leaf
+            // is directly unit-testable on a non-StructureInstance input (see
+            // extract_material_rejects_non_structure_instance).
             MaterialModel::Isotropic(extract_material(val).fea_shim())
         }
     }
