@@ -1900,6 +1900,67 @@ assert "setup-dev.sh ExecStartPre/ExecStopPost reference the .owner.tmp sidecar 
     bash -c "grep -Ev '^[[:space:]]*#' '$SETUP_DEV' | grep -qF 'reify-jobserver-merge.owner.tmp'"
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Block 19b: SIGKILL leaves FIFOs + owner stamps behind (test-19b, task 5146
+#   review comment 1, round 3)
+#
+#   The central invariant this whole feature rests on -- "a crash/SIGKILL
+#   must NOT unlink the stamp, which is what makes staleness detectable" --
+#   was, until now, asserted only in Block 19's prose comment above, never
+#   exercised. Block 19 proves a clean SIGTERM DOES unlink; this block proves
+#   the inverse: a SIGKILL (which Python cannot catch or run any cleanup
+#   for) leaves everything behind. A future refactor that installs a broad
+#   atexit/finally unlink (intending to only catch SIGTERM) could silently
+#   defeat the whole crash-detection mechanism, and no other test would
+#   catch it.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 19b: SIGKILL leaves FIFOs + owner stamps behind ---"
+
+_cleanup_balancer   # ensure clean state from any prior run
+
+start_balancer 4 0.05
+wait_for_seed 10 || true
+
+# Wait for both owner stamps to appear before SIGKILLing, so the
+# still-present assertions below prove survival, not "never created".
+_b19b_stamps_present=0
+_b19b_t0=$(date +%s)
+while true; do
+    if [ -f "${_MERGE_FIFO}.owner" ] && [ -f "${_TASK_FIFO}.owner" ]; then
+        _b19b_stamps_present=1; break
+    fi
+    [ $(( $(date +%s) - _b19b_t0 )) -ge 5 ] && break
+    sleep 0.05
+done
+assert "Block 19b: owner stamps present before SIGKILL (precondition)" \
+    test "$_b19b_stamps_present" -eq 1
+
+_b19b_merge_fifo="$_MERGE_FIFO"
+_b19b_task_fifo="$_TASK_FIFO"
+
+# SIGKILL -- the crash path the whole owner-stamp mechanism exists to detect.
+# Python cannot catch this signal, so none of the clean-exit unlink code runs.
+kill -9 "$_BALANCER_PID" 2>/dev/null || true
+wait "$_BALANCER_PID" 2>/dev/null || true
+_BALANCER_PID=""
+
+# Brief grace window for the kernel to finish the reap before asserting.
+sleep 0.2
+
+assert "Block 19b: merge FIFO still present after SIGKILL (crash leaves evidence)" \
+    test -e "$_b19b_merge_fifo"
+assert "Block 19b: task FIFO still present after SIGKILL (crash leaves evidence)" \
+    test -e "$_b19b_task_fifo"
+assert "Block 19b: merge owner stamp still present after SIGKILL (crash leaves evidence)" \
+    test -e "${_b19b_merge_fifo}.owner"
+assert "Block 19b: task owner stamp still present after SIGKILL (crash leaves evidence)" \
+    test -e "${_b19b_task_fifo}.owner"
+
+# _MERGE_FIFO/_TASK_FIFO still point at the (still-present) leaked paths;
+# _cleanup_balancer's rm -f removes them so this block stays leak-free.
+_cleanup_balancer
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Block 20: read_boot_id() fail-open "-" sentinel unit test (test-20, task 5146
 #   review comment 1)
 #
