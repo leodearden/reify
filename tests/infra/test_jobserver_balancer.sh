@@ -2113,4 +2113,27 @@ PY
 assert "make_fifo(): removes stale '.owner'/'.owner.tmp' sidecars before creating fresh FIFO" \
     test "$_b22_exit" -eq 0
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block 23: boot_id proc-path coherence guard (test-23, task 5146 review
+#   comment 4, round 3)
+#
+#   verify.sh's _jobserver_owner_live() reads /proc/sys/kernel/random/boot_id
+#   as an inline literal, while jobserver-balancer.py names the same path via
+#   the BOOT_ID_PROC_PATH constant. Both MUST read the same file for the "-"
+#   fail-open sentinel and the boot-id comparison to stay coherent across
+#   this cross-language contract — there is no compiler/typechecker to
+#   enforce it, so a plain grep-the-source guard (Block 5 pattern) is the
+#   only thing that would catch one side silently drifting from the other.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block 23: boot_id proc-path coherence guard (grep-the-source) ---"
+
+VERIFY_SH="$REPO_ROOT/scripts/verify.sh"
+
+assert "jobserver-balancer.py BOOT_ID_PROC_PATH literal is /proc/sys/kernel/random/boot_id" \
+    bash -c "grep -Ev '^[[:space:]]*#' '$BALANCER' | grep -qF '/proc/sys/kernel/random/boot_id'"
+
+assert "verify.sh _jobserver_owner_live() reads the same /proc/sys/kernel/random/boot_id path" \
+    bash -c "grep -Ev '^[[:space:]]*#' '$VERIFY_SH' | grep -qF '/proc/sys/kernel/random/boot_id'"
+
 test_summary
