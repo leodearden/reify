@@ -586,6 +586,14 @@ fn v0_1_example_corpus_compile_and_check_time_is_bounded() {
 
     const PER_FILE_BUDGET: Duration = Duration::from_secs(10);
 
+    // Conservative floor for corpus discovery: as of task 5149 the corpus
+    // yields ~232 measured files (243 under `examples/` minus 11 SKIP_SET
+    // entries). Set well below that so healthy corpus growth/shrinkage
+    // doesn't flake this guard, while still catching a partial-discovery
+    // regression (e.g. most files silently skipped) that a bare non-empty
+    // check would miss.
+    const EXPECTED_MIN_FILES: usize = 100;
+
     let skip: HashSet<&str> = SKIP_SET.iter().map(|(name, _)| *name).collect();
     let paths = discover_ri_files();
 
@@ -608,10 +616,13 @@ fn v0_1_example_corpus_compile_and_check_time_is_bounded() {
     }
 
     assert!(
-        !measurements.is_empty(),
-        "corpus discovery found no .ri files — discover_ri_files()/SKIP_SET may be \
-         misconfigured (e.g. examples dir moved or every entry skipped), which would \
-         silently turn this perf gate into a no-op"
+        measurements.len() >= EXPECTED_MIN_FILES,
+        "corpus discovery found only {} .ri file(s) (expected >= {}) — \
+         discover_ri_files()/SKIP_SET may be misconfigured (e.g. examples dir \
+         moved or most entries skipped), which would silently narrow this \
+         perf gate's coverage",
+        measurements.len(),
+        EXPECTED_MIN_FILES
     );
 
     let violations = per_file_violations(&measurements, PER_FILE_BUDGET);
