@@ -1459,9 +1459,14 @@ build_plan() {
         # after the discovery/execution loop, that prints the
         # discovered/failed counts and the FAILED name list — grep
         # '=== Summary' / '=== FAILED' in run_all.sh to relocate it since line
-        # numbers drift), each one a `write()` syscall well under PIPE_BUF, so
-        # the OS guarantees each line lands atomically on the shared pipe
-        # regardless of stderr interleaving —
+        # numbers drift), each one a `write()` syscall well under PIPE_BUF.
+        # PIPE_BUF atomicity is a POSIX guarantee for writes to pipes/FIFOs;
+        # it isn't formally extended to a regular file the way DF captures
+        # the merged 2>&1 stream. In practice the non-tearing property still
+        # holds here because each marker is a single write() call and
+        # stdout/stderr share one file description (hence one write
+        # offset), so lines don't interleave-corrupt regardless of stderr
+        # traffic —
         # tests/infra/test_run_all.sh Test 7 asserts these exact markers
         # survive a `2>&1`-merged capture. Revisit only if that assumption
         # breaks (e.g. run_all starts assembling a classifier line across
