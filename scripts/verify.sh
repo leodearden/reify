@@ -715,14 +715,14 @@ decide_scope() {
     # The staged path keeps || true to absorb grep's harmless "no matches" exit-1.
     local _files="" _diff_out=""
     if [ "$SCOPE" = "branch" ]; then
-        if ! _diff_out="$(git -C "$REPO_ROOT" diff --name-only --diff-filter=ACMR "$_MERGE_BASE")"; then
+        if ! _diff_out="$(git -C "$REPO_ROOT" diff --name-only --diff-filter=ACMRD "$_MERGE_BASE")"; then
             echo "verify.sh: WARNING — --scope branch git diff failed — failing WIDE to --scope all (contract C5)" >&2
             RUN_RUST=1; RUN_GUI=1; RUN_OCCT_GATE=1
             return
         fi
         _files="$(grep -v '^\.task/' <<< "$_diff_out" || true)"
     else
-        _files="$(git -C "$REPO_ROOT" diff --cached --name-only --diff-filter=ACMR | grep -v '^\.task/' || true)"
+        _files="$(git -C "$REPO_ROOT" diff --cached --name-only --diff-filter=ACMRD | grep -v '^\.task/' || true)"
     fi
     while IFS= read -r f; do
         [ -z "$f" ] && continue
