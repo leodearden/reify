@@ -3833,6 +3833,13 @@ fn real_field(
 /// the sole call site (`classify_material`'s isotropic fallback) bridges
 /// with `FeaShimExt::fea_shim` so external behavior is unchanged until D7
 /// Result-ifies `classify_material` and removes the shim.
+///
+/// Note (task #5081 review round 3, suggestion 2): `scalar_si_field` accepts
+/// any `Value::Scalar` for `youngs_modulus` regardless of its `dimension`
+/// (e.g. a length or dimensionless scalar would be silently accepted as a
+/// pressure). This is pre-existing behavior, not a D3 regression — dimension
+/// checking is deferred to a later D-step, if/when the `FeaValueShapeError`
+/// taxonomy grows a variant for it.
 fn extract_material(val: &Value) -> Result<IsotropicElastic, FeaValueShapeError> {
     let data = match val {
         Value::StructureInstance(d) => d,
@@ -9228,25 +9235,47 @@ mod tests {
         );
     }
 
+    /// Amendment (task #5081 review round 3, suggestion 1): shared
+    /// `Value::StructureInstance` builder for the `extract_material_*` tests
+    /// below, replacing the repeated ~8-line struct-literal boilerplate.
+    /// `PersistentMap`/`StructureInstanceData`/`StructureTypeId` are already
+    /// in scope via the `use super::*` at the top of this test module, so
+    /// the per-test `use reify_ir::{..}` imports these tests used to repeat
+    /// are no longer needed either.
+    fn isotropic_material(fields: PersistentMap<String, Value>) -> Value {
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_name: "IsotropicMaterial".to_string(),
+            type_id: StructureTypeId(u32::MAX),
+            version: 1,
+            fields,
+        }))
+    }
+
+    /// A well-formed `youngs_modulus` field pair (`Value::Scalar<Pressure>`),
+    /// shared by the `poisson_ratio`-focused tests below where
+    /// `youngs_modulus` must already be valid for control to reach the
+    /// `poisson_ratio` read.
+    fn valid_youngs_modulus_field() -> (String, Value) {
+        (
+            "youngs_modulus".to_string(),
+            Value::Scalar {
+                si_value: 2.0e9,
+                dimension: DimensionVector::PRESSURE,
+            },
+        )
+    }
+
     /// step-3: `extract_material` must reject a present-but-wrong-typed
     /// `youngs_modulus` field with `Err(FeaValueShapeError::ExpectedScalar {
     /// .. })`, routed through the reused `scalar_si_field` helper.
     #[test]
     fn extract_material_rejects_wrong_typed_youngs_modulus() {
-        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
-
         let fields: PersistentMap<String, Value> =
             [("youngs_modulus".to_string(), Value::Real(1.0))]
                 .into_iter()
                 .collect();
-        let material = Value::StructureInstance(Box::new(StructureInstanceData {
-            type_name: "IsotropicMaterial".to_string(),
-            type_id: StructureTypeId(u32::MAX),
-            version: 1,
-            fields,
-        }));
 
-        let res = extract_material(&material);
+        let res = extract_material(&isotropic_material(fields));
         assert!(
             matches!(res, Err(FeaValueShapeError::ExpectedScalar { .. })),
             "expected Err(ExpectedScalar) for a present-but-wrong-type \
@@ -9265,16 +9294,7 @@ mod tests {
     /// transitively covered.
     #[test]
     fn extract_material_rejects_missing_youngs_modulus() {
-        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
-
-        let material = Value::StructureInstance(Box::new(StructureInstanceData {
-            type_name: "IsotropicMaterial".to_string(),
-            type_id: StructureTypeId(u32::MAX),
-            version: 1,
-            fields: PersistentMap::<String, Value>::new(),
-        }));
-
-        let res = extract_material(&material);
+        let res = extract_material(&isotropic_material(PersistentMap::new()));
         assert!(
             matches!(res, Err(FeaValueShapeError::MissingField { .. })),
             "expected Err(MissingField) for an absent youngs_modulus field, got: {:?}",
@@ -9288,16 +9308,8 @@ mod tests {
     /// is well-formed so control reaches the `poisson_ratio` read.
     #[test]
     fn extract_material_rejects_wrong_typed_poisson_ratio() {
-        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
-
         let fields: PersistentMap<String, Value> = [
-            (
-                "youngs_modulus".to_string(),
-                Value::Scalar {
-                    si_value: 2.0e9,
-                    dimension: DimensionVector::PRESSURE,
-                },
-            ),
+            valid_youngs_modulus_field(),
             (
                 "poisson_ratio".to_string(),
                 Value::Scalar {
@@ -9308,14 +9320,8 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        let material = Value::StructureInstance(Box::new(StructureInstanceData {
-            type_name: "IsotropicMaterial".to_string(),
-            type_id: StructureTypeId(u32::MAX),
-            version: 1,
-            fields,
-        }));
 
-        let res = extract_material(&material);
+        let res = extract_material(&isotropic_material(fields));
         assert!(
             matches!(res, Err(FeaValueShapeError::ExpectedReal { .. })),
             "expected Err(ExpectedReal) for a present-but-wrong-type \
@@ -9335,25 +9341,10 @@ mod tests {
     /// by `real_field`'s own test).
     #[test]
     fn extract_material_rejects_missing_poisson_ratio() {
-        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+        let fields: PersistentMap<String, Value> =
+            [valid_youngs_modulus_field()].into_iter().collect();
 
-        let fields: PersistentMap<String, Value> = [(
-            "youngs_modulus".to_string(),
-            Value::Scalar {
-                si_value: 2.0e9,
-                dimension: DimensionVector::PRESSURE,
-            },
-        )]
-        .into_iter()
-        .collect();
-        let material = Value::StructureInstance(Box::new(StructureInstanceData {
-            type_name: "IsotropicMaterial".to_string(),
-            type_id: StructureTypeId(u32::MAX),
-            version: 1,
-            fields,
-        }));
-
-        let res = extract_material(&material);
+        let res = extract_material(&isotropic_material(fields));
         assert!(
             matches!(res, Err(FeaValueShapeError::MissingField { .. })),
             "expected Err(MissingField) for an absent poisson_ratio field, got: {:?}",
@@ -9366,29 +9357,15 @@ mod tests {
     /// locking the success path alongside the error paths above.
     #[test]
     fn extract_material_accepts_well_formed_material() {
-        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
-
         let fields: PersistentMap<String, Value> = [
-            (
-                "youngs_modulus".to_string(),
-                Value::Scalar {
-                    si_value: 2.0e9,
-                    dimension: DimensionVector::PRESSURE,
-                },
-            ),
+            valid_youngs_modulus_field(),
             ("poisson_ratio".to_string(), Value::Real(0.3)),
         ]
         .into_iter()
         .collect();
-        let material = Value::StructureInstance(Box::new(StructureInstanceData {
-            type_name: "IsotropicMaterial".to_string(),
-            type_id: StructureTypeId(u32::MAX),
-            version: 1,
-            fields,
-        }));
 
         assert_eq!(
-            extract_material(&material),
+            extract_material(&isotropic_material(fields)),
             Ok(IsotropicElastic {
                 youngs_modulus: 2.0e9,
                 poisson_ratio: 0.3,
