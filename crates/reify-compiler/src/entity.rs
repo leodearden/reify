@@ -6548,6 +6548,19 @@ structure def Manifold {
     /// — this pins that the `&Type` `compile_default` observes and the `Type`
     /// that ends up in `decl.cell_type` are the *same* value flowing through
     /// the helper, not merely two coincidentally-equal defaults.
+    ///
+    /// Also folds in the side-effect-ordering guarantee (amendment review:
+    /// previously a standalone test, redundant with the invocation-count
+    /// assertion below since `compile_default` is an `FnOnce` invoked
+    /// synchronously before decl construction): `compile_default` pushes a
+    /// diagnostic here, mirroring `check_param_default_type` at the two
+    /// entity.rs call sites, and that diagnostic must be observable
+    /// immediately after `build_param_value_cell_decl` returns — i.e. the
+    /// helper invokes the closure synchronously, before constructing the
+    /// decl, not deferred, reordered, or dropped. Complements (does not
+    /// replace) the full-pipeline coverage in
+    /// `param_default_type_mismatch_tests.rs`, which proves the diagnostic
+    /// fires at all.
     #[test]
     fn build_param_value_cell_decl_param_branch_invokes_compile_default_exactly_once() {
         for yields_default in [true, false] {
@@ -6562,6 +6575,7 @@ structure def Manifold {
             let call_count = std::cell::Cell::new(0u32);
             let synthetic = CompiledExpr::literal(Value::Real(42.0), Type::dimensionless_scalar());
             let expected_hash = synthetic.content_hash;
+            let mut diagnostics: Vec<Diagnostic> = Vec::new();
 
             let decl = build_param_value_cell_decl(
                 id.clone(),
@@ -6576,6 +6590,12 @@ structure def Manifold {
                         ct, &cell_type,
                         "compile_default must receive cell_type by reference"
                     );
+                    // Mirrors `check_param_default_type` pushing a mismatch
+                    // diagnostic before the closure returns `default_expr`.
+                    diagnostics.push(
+                        Diagnostic::error("synthetic param default type mismatch")
+                            .with_label(DiagnosticLabel::new(span, "test")),
+                    );
                     if yields_default { Some(synthetic) } else { None }
                 },
             );
@@ -6584,6 +6604,15 @@ structure def Manifold {
                 call_count.get(),
                 1,
                 "compile_default must be invoked exactly once (yields_default={yields_default})"
+            );
+            assert_eq!(
+                diagnostics.len(),
+                1,
+                "a diagnostic pushed inside compile_default must be observable \
+                 immediately after build_param_value_cell_decl returns — the \
+                 helper must invoke the closure synchronously, before \
+                 constructing the decl, not defer, reorder, or drop it \
+                 (yields_default={yields_default})"
             );
             assert_eq!(decl.kind, ValueCellKind::Param);
             assert_param_decl_passthrough_fields(
@@ -6600,56 +6629,5 @@ structure def Manifold {
                 "default_expr must equal whatever compile_default returned (yields_default={yields_default})"
             );
         }
-    }
-
-    /// The helper must not defer, reorder, or drop side effects a
-    /// `compile_default` closure produces before returning — e.g. the
-    /// diagnostic `check_param_default_type` pushes at the two entity.rs call
-    /// sites. Pins that `compile_default` runs synchronously, strictly before
-    /// `build_param_value_cell_decl` constructs and returns the decl, so a
-    /// diagnostic pushed inside the closure is observable immediately after
-    /// the call returns. Complements (does not replace) the full-pipeline
-    /// coverage in `param_default_type_mismatch_tests.rs`, which proves the
-    /// diagnostic fires at all — this pins the ordering guarantee that
-    /// integration tests can't observe directly.
-    #[test]
-    fn build_param_value_cell_decl_param_branch_preserves_diagnostics_pushed_in_closure() {
-        let id = ValueCellId::new("TestEntity", "v");
-        let cell_type = Type::length();
-        let span = SourceSpan::new(41, 47);
-        let mut diagnostics: Vec<Diagnostic> = Vec::new();
-
-        let decl = build_param_value_cell_decl(
-            id,
-            None,
-            cell_type,
-            Visibility::Public,
-            Vec::new(),
-            span,
-            |_ct: &Type| {
-                // Mirrors `check_param_default_type` pushing a mismatch
-                // diagnostic before the closure returns `default_expr`.
-                diagnostics.push(
-                    Diagnostic::error("synthetic param default type mismatch")
-                        .with_label(DiagnosticLabel::new(span, "test")),
-                );
-                None
-            },
-        );
-
-        assert_eq!(decl.kind, ValueCellKind::Param);
-        assert_eq!(
-            diagnostics.len(),
-            1,
-            "a diagnostic pushed inside compile_default must be observable \
-             immediately after build_param_value_cell_decl returns — the \
-             helper must invoke the closure synchronously, before \
-             constructing the decl, not defer, reorder, or drop it"
-        );
-        assert!(
-            diagnostics[0].message.contains("synthetic param default type mismatch"),
-            "unexpected diagnostic message: {:?}",
-            diagnostics[0].message
-        );
     }
 }

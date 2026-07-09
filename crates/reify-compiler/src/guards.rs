@@ -973,7 +973,7 @@ structure S {
         let y = group
             .members
             .iter()
-            .find(|m| m.id.member.contains('y'))
+            .find(|m| m.id.member == "y")
             .expect("expected guarded member 'y'");
 
         assert_eq!(
