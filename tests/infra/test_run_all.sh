@@ -2418,7 +2418,17 @@ EOF
                 case "$_f" in
                     *.retry.rc) continue ;;
                 esac
-                [ -f "$_f" ] && t25_rc_file="$_f"
+                # Gate on nonzero CONTENT, not mere existence: run_all.sh
+                # opens each `.rc` file with `>` (truncate) and then writes
+                # the exit code as a separate step, so there is a narrow
+                # window where the file exists but reads empty. _ra_on_term's
+                # own _ra_partial_failed_names scan already treats an
+                # empty/unreadable read as rc=0 ("not failed"); mirror that
+                # read here so the poll can't hand off to SIGTERM on a
+                # half-written file and starve T25c's attribution.
+                if [ -s "$_f" ] && [ "$(cat "$_f" 2>/dev/null)" != 0 ]; then
+                    t25_rc_file="$_f"
+                fi
                 break
             done
         fi
