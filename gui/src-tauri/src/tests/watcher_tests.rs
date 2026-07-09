@@ -54,47 +54,33 @@ where
 }
 
 #[test]
-fn wait_for_returns_true_promptly_when_condition_already_satisfied() {
-    let sink: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(vec![42]));
+fn wait_for_polls_until_predicate_holds_or_times_out() {
+    // Branch 1: predicate already satisfied -> returns true on the first
+    // check, without waiting out any part of the timeout. Cross-thread
+    // visibility of pushes into the sink is exercised end-to-end by the
+    // real watcher tests below (the notify callback runs on its own thread
+    // and pushes into the same kind of Arc<Mutex<Vec<_>>> this fn polls),
+    // so a dedicated unit test for that alone would just re-validate
+    // guarantees std's Mutex already provides.
+    let satisfied: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(vec![42]));
     let start = Instant::now();
-
-    let found = wait_for(&sink, Duration::from_secs(10), |v: &[u32]| v.contains(&42));
-
+    let found = wait_for(&satisfied, Duration::from_secs(10), |v: &[u32]| {
+        v.contains(&42)
+    });
     assert!(found, "predicate should be satisfied on the first check");
     assert!(
         start.elapsed() < Duration::from_secs(1),
         "should return promptly when already satisfied, took {:?}",
         start.elapsed()
     );
-}
 
-#[test]
-fn wait_for_detects_value_set_by_another_thread() {
-    let sink: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(vec![]));
-    let producer_sink = sink.clone();
-
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(50));
-        producer_sink.lock().unwrap().push(7);
-    });
-
-    let found = wait_for(&sink, Duration::from_secs(5), |v: &[u32]| v.contains(&7));
-
-    assert!(
-        found,
-        "should observe the value pushed by the producer thread"
-    );
-}
-
-#[test]
-fn wait_for_returns_false_after_timeout_when_never_satisfied() {
-    let sink: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(vec![]));
+    // Branch 2: predicate never satisfied -> returns false only after the
+    // full timeout has elapsed.
+    let never: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(vec![]));
     let start = Instant::now();
-
-    let found = wait_for(&sink, Duration::from_millis(150), |v: &[u32]| {
+    let found = wait_for(&never, Duration::from_millis(150), |v: &[u32]| {
         v.contains(&99)
     });
-
     assert!(!found, "predicate is never satisfied, should time out");
     assert!(
         start.elapsed() >= Duration::from_millis(150),
@@ -212,19 +198,30 @@ fn watcher_with_target_file_only_fires_for_that_file() {
         paths.iter().any(|p| p.ends_with("project.ri"))
     });
 
+    // The negative check below (other.ri must never appear) leans on event
+    // ordering: other.ri was modified 500ms before project.ri (see above),
+    // so if the target_file filter were broken, other.ri's Changed event
+    // would already be sitting in `changed_paths` by the time we observe
+    // project.ri's event. That 500ms gap is load-bearing for this
+    // assertion — shortening it (or a backend that reorders/coalesces
+    // events across distinct paths) would quietly weaken the check. (Note:
+    // the watcher's ~100ms debounce only suppresses duplicate same-path
+    // events; it does not delay or order emission of events for distinct
+    // paths.) To avoid relying solely on that ordering assumption, also
+    // give a bounded extra window for a delayed-but-broken-filter other.ri
+    // event to surface before asserting its absence.
+    let other_appeared = wait_for(&changed_paths, Duration::from_millis(300), |paths| {
+        paths.iter().any(|p| p.ends_with("other.ri"))
+    });
+
     let paths = changed_paths.lock().unwrap();
-    // Should have fired for project.ri only. The negative check below is not
-    // a race: other.ri was modified 500ms before project.ri (see above), so
-    // if the target_file filter were broken, other.ri's Changed event would
-    // already be sitting in `paths` by the time wait_for observes
-    // project.ri's event (itself gated behind the watcher's ~100ms debounce).
     assert!(
         found,
         "should have detected project.ri change, got: {:?}",
         *paths
     );
     assert!(
-        !paths.iter().any(|p| p.ends_with("other.ri")),
+        !other_appeared,
         "should NOT have detected other.ri change, got: {:?}",
         *paths
     );
