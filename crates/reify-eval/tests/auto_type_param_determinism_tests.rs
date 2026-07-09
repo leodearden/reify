@@ -558,10 +558,11 @@ fn per_file_violations(
 /// parse+compile+check pipeline exactly once per file).
 /// Asserts every per-file duration < 10s via `per_file_violations`.
 ///
-/// On failure, prints a `(path, duration)` table in the corpus's alphabetical
-/// discovery order (inherited from `discover_ri_files`'s `paths.sort()`; the
-/// table itself is not re-sorted by duration) so the offending file can be
-/// located by name. Pinned by PRD acceptance criterion 12.
+/// On failure, prints a `(path, duration)` table sorted alphabetically by
+/// file name — sorted explicitly at print time, so the ordering does not
+/// depend on `discover_ri_files`'s internal discovery order — so the
+/// offending file can be located by name. Pinned by PRD acceptance
+/// criterion 12.
 ///
 /// # Budget rationale
 ///
@@ -590,7 +591,10 @@ fn v0_1_example_corpus_compile_and_check_time_is_bounded() {
     // entries). Set well below that so healthy corpus growth/shrinkage
     // doesn't flake this guard, while still catching a partial-discovery
     // regression (e.g. most files silently skipped) that a bare non-empty
-    // check would miss.
+    // check would miss. This floor couples the guard to corpus size: if the
+    // corpus is ever intentionally trimmed below 100 files, lower this
+    // constant to match — the assertion below has no way to distinguish an
+    // intended shrink from a discovery regression.
     const EXPECTED_MIN_FILES: usize = 100;
 
     let skip: HashSet<&str> = SKIP_SET.iter().map(|(name, _)| *name).collect();
@@ -619,12 +623,14 @@ fn v0_1_example_corpus_compile_and_check_time_is_bounded() {
         "corpus discovery found only {} .ri file(s) (expected >= {}) — \
          discover_ri_files()/SKIP_SET may be misconfigured (e.g. examples dir \
          moved or most entries skipped), which would silently narrow this \
-         perf gate's coverage",
+         perf gate's coverage. If this is instead an intentional corpus \
+         reduction, lower EXPECTED_MIN_FILES to match.",
         measurements.len(),
         EXPECTED_MIN_FILES
     );
 
-    let violations = per_file_violations(&measurements, PER_FILE_BUDGET);
+    let mut violations = per_file_violations(&measurements, PER_FILE_BUDGET);
+    violations.sort_by(|a, b| a.0.cmp(&b.0));
 
     let report_parts: Vec<String> = violations
         .iter()
