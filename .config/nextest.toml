@@ -53,7 +53,7 @@ slow-timeout = { period = "120s", terminate-after = 10 }
 # cap and run unbounded in the nextest pool — the drift-catcher in
 # tests/infra/test_occt_gated_scope.sh catches this.
 [[profile.default.overrides]]
-filter = 'package(reify-kernel-occt) | package(reify-eval) | package(reify-cli) | package(reify-config)'
+filter = 'package(reify-kernel-occt) | package(reify-kernel-conformance) | package(reify-eval) | package(reify-cli) | package(reify-config)'
 test-group = 'occt'
 
 # LPT (Longest-Processing-Time-first) scheduling for the 5 heaviest test binaries.

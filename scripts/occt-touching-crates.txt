@@ -28,6 +28,7 @@
 #   (blocking CI) if this list drifts from the cargo-tree-derived set.
 
 reify-kernel-occt
+reify-kernel-conformance
 reify-eval
 reify-cli
 reify-config
