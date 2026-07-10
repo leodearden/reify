@@ -7969,6 +7969,42 @@ mod tests {
         );
     }
 
+    /// step-1 RED (task 5083 / PRD compute-fea-hardening D8): `extract_loads`
+    /// must reject a non-`Value::List` argument with
+    /// `Err(FeaValueShapeError::ExpectedList { .. })` instead of panicking.
+    ///
+    /// RED: `extract_loads` currently returns a bare
+    /// `([f64; 3], Vec<PressureSpec>, [f64; 3])` tuple, so matching `Err(..)`
+    /// fails to type-check until step-2 converts it to
+    /// `Result<([f64; 3], Vec<PressureSpec>, [f64; 3]), FeaValueShapeError>`.
+    #[test]
+    fn extract_loads_non_list_value_returns_err() {
+        let res = extract_loads(&Value::Real(1.0), 0.0);
+        assert!(
+            matches!(res, Err(FeaValueShapeError::ExpectedList { .. })),
+            "non-List load value must yield Err(ExpectedList), got {res:?}"
+        );
+    }
+
+    /// Companion guard (task 5083): a `Value::List` whose element is NOT a
+    /// `Value::StructureInstance` is silently skipped by the inner `if let`
+    /// — it must NOT be treated as a shape error. This pins the boundary
+    /// disambiguating the task's parenthetical fixture: only `val` itself
+    /// failing to be a `Value::List` produces `Err`; a malformed *item*
+    /// inside an otherwise well-formed list remains a silent no-op
+    /// (pre-existing convention, preserved by this task).
+    ///
+    /// RED for the same reason as the sibling test above: `.unwrap()` on a
+    /// bare tuple fails to type-check until step-2.
+    #[test]
+    fn extract_loads_non_structure_item_is_silently_skipped() {
+        let (tip, pressures, body) =
+            extract_loads(&Value::List(vec![Value::Real(1.0)]), 0.0).unwrap();
+        assert_eq!(tip, [0.0, 0.0, 0.0]);
+        assert!(pressures.is_empty());
+        assert_eq!(body, [0.0, 0.0, 0.0]);
+    }
+
     // ── task 4366: cancel short-circuit + cadence ─────────────────────────────
 
     /// step-1 RED (task 4366): when the progress closure returns
