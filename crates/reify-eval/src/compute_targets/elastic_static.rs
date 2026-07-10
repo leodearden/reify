@@ -9187,27 +9187,35 @@ mod tests {
     fn extract_zone_process_params_rejects_wrong_arity() {
         let short_list = Value::List(vec![Value::Real(1.0)]);
         let res = extract_zone_process_params(&short_list);
-        // Amendment (task #5082 review, suggestion 2): pin the distinguishing
-        // "wrong arity" wording (added in review round 1) so this test
-        // actually distinguishes the arity guard from the non-List shape
-        // mismatch above, rather than only asserting the shared
-        // `ExpectedList` variant both branches surface through.
-        match res {
-            Err(FeaValueShapeError::ExpectedList { got, .. }) => assert!(
-                got.contains("wrong arity"),
-                "expected the arity guard's distinguishing 'wrong arity' wording in `got`, got: {:?}",
-                got
-            ),
-            other => panic!(
-                "expected Err(ExpectedList) for a List with < 7 elements, got: {:?}",
-                other
-            ),
-        }
+        // Amendment (task #5082 review round 3, suggestion 1): deliberately
+        // NOT pinning `got`'s wording here. The arity guard and the non-List
+        // shape mismatch above both surface through the shared
+        // `ExpectedList` variant — a taxonomy reused verbatim across
+        // concurrent sibling D-tasks in this file per this task's D2 reuse
+        // decision, not redefined — so a substring assertion would carry no
+        // compiler/behavioral contract and could break on a harmless
+        // `format!` reword with no underlying regression. Structural
+        // (variant) matching is the stable contract; see
+        // `extract_zone_process_params_rejects_non_real_element` below,
+        // which follows the same policy for symmetry.
+        assert!(
+            matches!(res, Err(FeaValueShapeError::ExpectedList { .. })),
+            "expected Err(ExpectedList) for a List with < 7 elements, got: {:?}",
+            res
+        );
     }
 
     /// step-1 RED (task #5082, D4): a 7-element `Value::List` with a
     /// non-`Real` element must report `Err(FeaValueShapeError::ExpectedReal
     /// { .. })` from the per-index check, not `ExpectedList`.
+    ///
+    /// Amendment (task #5082 review round 3, suggestion 2): deliberately
+    /// does NOT assert that `got` contains the failing index (e.g.
+    /// `"params[2]"`), matching `extract_zone_process_params_rejects_wrong_arity`'s
+    /// policy of relying on structural (variant) matching only rather than
+    /// pinning runtime-message prose. The index-folding in the `real`
+    /// closure remains for panic-message diagnosability (see its doc
+    /// comment) — it is just not part of this test's asserted contract.
     #[test]
     fn extract_zone_process_params_rejects_non_real_element() {
         let mixed = Value::List(vec![
