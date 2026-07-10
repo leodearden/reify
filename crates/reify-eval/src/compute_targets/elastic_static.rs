@@ -3477,9 +3477,9 @@ fn classify_material_as_printed_zones(lambda: &Value) -> MaterialModel {
             other
         ),
     };
-    let mat_wall   = anisotropic_material_from_value(&list[4]);
-    let mat_skin   = anisotropic_material_from_value(&list[5]);
-    let mat_infill = anisotropic_material_from_value(&list[6]);
+    let mat_wall   = anisotropic_material_from_value(&list[4]).fea_shim();
+    let mat_skin   = anisotropic_material_from_value(&list[5]).fea_shim();
+    let mat_infill = anisotropic_material_from_value(&list[6]).fea_shim();
 
     let aabb = AxisAlignedBox { min: aabb_min, max: aabb_max };
 
@@ -3700,52 +3700,62 @@ fn extract_zone_process_params(val: &Value) -> Result<ZoneProcessParams, FeaValu
 /// frame: MaterialFrame }` Value to a Rust `AnisotropicMaterial`, honouring the
 /// frame's x/y/z axes as the local → global rotation (columns = local basis in global).
 ///
+/// PRD compute-fea-hardening D5: Result-ified leaf extractor. Returns
+/// `Err(FeaValueShapeError)` instead of panicking on a malformed `Value`; its
+/// 3 call sites (`classify_material_as_printed_zones`'s mat_wall/mat_skin/
+/// mat_infill) bridge with `FeaShimExt::fea_shim` so external behavior is
+/// unchanged until D6 Result-ifies `classify_material_as_printed_zones` and
+/// removes the shim.
+///
 /// Used by `classify_material_as_printed_zones` to parse the three zone-material
 /// Values packed in the AsPrintedZones lambda.
-fn anisotropic_material_from_value(val: &Value) -> AnisotropicMaterial {
+fn anisotropic_material_from_value(val: &Value) -> Result<AnisotropicMaterial, FeaValueShapeError> {
     let data = match val {
         Value::StructureInstance(d) => d,
-        other => panic!(
-            "solve_elastic_static_trampoline: zone material must be \
-             AnisotropicMaterial StructureInstance, got: {:?}",
-            other
-        ),
+        other => {
+            return Err(FeaValueShapeError::ExpectedStructureInstance {
+                context: "anisotropic_material_from_value",
+                got: format!("{other:?}"),
+            })
+        }
     };
 
-    let law_val = data.fields.get("law").unwrap_or_else(|| {
-        panic!(
-            "solve_elastic_static_trampoline: AnisotropicMaterial missing 'law' field"
-        )
-    });
-    let frame_val = data.fields.get("frame").unwrap_or_else(|| {
-        panic!(
-            "solve_elastic_static_trampoline: AnisotropicMaterial missing 'frame' field"
-        )
-    });
+    let law_val = data.fields.get("law").ok_or(FeaValueShapeError::MissingField {
+        context: "anisotropic_material_from_value",
+        field: "law",
+    })?;
+    let frame_val = data.fields.get("frame").ok_or(FeaValueShapeError::MissingField {
+        context: "anisotropic_material_from_value",
+        field: "frame",
+    })?;
 
     // Parse the MaterialFrame: extract x/y/z axes, build the local→global matrix
     // (columns = local basis vectors in global coordinates, i.e. frame[row][col]).
     let frame = {
         let frame_data = match frame_val {
             Value::StructureInstance(d) => d,
-            other => panic!(
-                "solve_elastic_static_trampoline: MaterialFrame must be \
-                 StructureInstance, got: {:?}",
-                other
-            ),
+            other => {
+                return Err(FeaValueShapeError::ExpectedStructureInstance {
+                    context: "anisotropic_material_from_value (frame)",
+                    got: format!("{other:?}"),
+                })
+            }
         };
-        let x = extract_vec3_si(frame_data.fields.get("x_axis").unwrap_or_else(|| {
-            panic!("solve_elastic_static_trampoline: MaterialFrame missing 'x_axis'")
-        }))
-        .fea_shim();
-        let y = extract_vec3_si(frame_data.fields.get("y_axis").unwrap_or_else(|| {
-            panic!("solve_elastic_static_trampoline: MaterialFrame missing 'y_axis'")
-        }))
-        .fea_shim();
-        let z = extract_vec3_si(frame_data.fields.get("z_axis").unwrap_or_else(|| {
-            panic!("solve_elastic_static_trampoline: MaterialFrame missing 'z_axis'")
-        }))
-        .fea_shim();
+        let x_axis = frame_data.fields.get("x_axis").ok_or(FeaValueShapeError::MissingField {
+            context: "anisotropic_material_from_value (frame)",
+            field: "x_axis",
+        })?;
+        let y_axis = frame_data.fields.get("y_axis").ok_or(FeaValueShapeError::MissingField {
+            context: "anisotropic_material_from_value (frame)",
+            field: "y_axis",
+        })?;
+        let z_axis = frame_data.fields.get("z_axis").ok_or(FeaValueShapeError::MissingField {
+            context: "anisotropic_material_from_value (frame)",
+            field: "z_axis",
+        })?;
+        let x = extract_vec3_si(x_axis)?;
+        let y = extract_vec3_si(y_axis)?;
+        let z = extract_vec3_si(z_axis)?;
         // Columns = local basis vectors in global: frame[row][col] = global-row-component
         // of local-col-axis.  rotate_voigt reads rows as direction cosines of global
         // axes in local coords (R[i] = global-i in local), which is the TRANSPOSE of
@@ -3763,37 +3773,38 @@ fn anisotropic_material_from_value(val: &Value) -> AnisotropicMaterial {
     // Parse the law: OrthotropicMaterial or TransverseIsotropicMaterial.
     let law_data = match law_val {
         Value::StructureInstance(d) => d,
-        other => panic!(
-            "solve_elastic_static_trampoline: AnisotropicMaterial.law must be \
-             StructureInstance, got: {:?}",
-            other
-        ),
+        other => {
+            return Err(FeaValueShapeError::ExpectedStructureInstance {
+                context: "anisotropic_material_from_value (law)",
+                got: format!("{other:?}"),
+            })
+        }
     };
 
     match law_data.type_name.as_str() {
         "OrthotropicMaterial" => {
             let law = OrthotropicMaterial {
-                e1:   scalar_si_field(law_data, "e1").fea_shim(),
-                e2:   scalar_si_field(law_data, "e2").fea_shim(),
-                e3:   scalar_si_field(law_data, "e3").fea_shim(),
-                g12:  scalar_si_field(law_data, "g12").fea_shim(),
-                g13:  scalar_si_field(law_data, "g13").fea_shim(),
-                g23:  scalar_si_field(law_data, "g23").fea_shim(),
-                nu12: real_field(law_data, "nu12").fea_shim(),
-                nu13: real_field(law_data, "nu13").fea_shim(),
-                nu23: real_field(law_data, "nu23").fea_shim(),
+                e1:   scalar_si_field(law_data, "e1")?,
+                e2:   scalar_si_field(law_data, "e2")?,
+                e3:   scalar_si_field(law_data, "e3")?,
+                g12:  scalar_si_field(law_data, "g12")?,
+                g13:  scalar_si_field(law_data, "g13")?,
+                g23:  scalar_si_field(law_data, "g23")?,
+                nu12: real_field(law_data, "nu12")?,
+                nu13: real_field(law_data, "nu13")?,
+                nu23: real_field(law_data, "nu23")?,
             };
-            AnisotropicMaterial::from_law(&law, frame)
+            Ok(AnisotropicMaterial::from_law(&law, frame))
         }
         "TransverseIsotropicMaterial" => {
             let law = TransverseIsotropicMaterial {
-                e_in_plane:  scalar_si_field(law_data, "e_in_plane").fea_shim(),
-                e_axial:     scalar_si_field(law_data, "e_axial").fea_shim(),
-                nu_in_plane: real_field(law_data, "nu_in_plane").fea_shim(),
-                nu_axial:    real_field(law_data, "nu_axial").fea_shim(),
-                g_axial:     scalar_si_field(law_data, "g_axial").fea_shim(),
+                e_in_plane:  scalar_si_field(law_data, "e_in_plane")?,
+                e_axial:     scalar_si_field(law_data, "e_axial")?,
+                nu_in_plane: real_field(law_data, "nu_in_plane")?,
+                nu_axial:    real_field(law_data, "nu_axial")?,
+                g_axial:     scalar_si_field(law_data, "g_axial")?,
             };
-            AnisotropicMaterial::from_law(&law, frame)
+            Ok(AnisotropicMaterial::from_law(&law, frame))
         }
         other => panic!(
             "solve_elastic_static_trampoline: unsupported law type for \
