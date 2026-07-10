@@ -24,6 +24,8 @@
 #   I — Tier-3 terminal-task reclaim: attached task/NNNN branch, status-oracle
 #       seam (--status-cmd / REIFY_LANE_LEAK_STATUS_CMD fallback) (task 5167)
 #   J — Tier-3 backing-task resolution for a detached HEAD lane (task 5167)
+#   K — disk-pressure fast-path: rm -rf target/ instead of an alpha reseed
+#       clone (--disk-pressure / REIFY_WARM_LANE_GC_DISK_PRESSURE) (task 5167)
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -1022,5 +1024,95 @@ assert "J2: no-task-branch detached lane seed-script invoked (reclaimed via exis
     bash -c 'test -f "$1" && grep -q "_lane-1" "$1"' _ "$J2_SEED_LOG"
 assert "J2: divergent target marker removed" \
     bash -c '[ ! -f "$1" ]' _ "$J2_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block K — disk-pressure fast-path
+# Under --disk-pressure, a reclaimable lane's target/ is deleted outright
+# (rm -rf) instead of going through the alpha reflink-reseed clone — valid
+# because acquire_lane always re-seeds from base. Mirrors the manual
+# 2026-07-10 remediation for the 768G/404G leaked lanes.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block K: disk-pressure fast-path ---"
+
+K_ROOT="$(mktemp -d /tmp/test-gc-k-XXXXXX)"
+_TMPDIRS+=("$K_ROOT")
+
+# ── K1: --disk-pressure deletes target/ outright, no seed-script invocation ────
+K1_REPO="$K_ROOT/k1-repo"
+K1_WORKTREES="$K_ROOT/k1-worktrees"
+K1_BASE="$K_ROOT/k1-base"
+mkdir -p "$K1_WORKTREES" "$K1_BASE"
+make_repo "$K1_REPO"
+mkdir -p "$K1_BASE/target.gen.1"
+touch "$K1_BASE/target.gen.1.lock"
+ln -sfn "$K1_BASE/target.gen.1" "$K1_BASE/target"
+
+make_task_lane "$K1_REPO" "$K1_WORKTREES" "_lane-1" "task/4827" "ahead"
+
+K1_MAP="$(mktemp /tmp/test-gc-oracle-map-XXXXXX)"
+_TMPDIRS+=("$K1_MAP")
+printf '4827 done\n' > "$K1_MAP"
+
+K1_SEED_LOG="$K_ROOT/k1-seed-calls.log"
+K1_SEED_STUB="$K_ROOT/k1-seed-stub.sh"
+_seed_stub_body > "$K1_SEED_STUB"
+chmod +x "$K1_SEED_STUB"
+export SEED_LOG="$K1_SEED_LOG"
+export ORACLE_MAP="$K1_MAP"
+
+run_helper reclaim \
+    --worktrees-dir "$K1_WORKTREES" \
+    --base-target "$K1_BASE/target" \
+    --seed-script "$K1_SEED_STUB" \
+    --status-cmd "$STUB_DIR/gc-status-oracle.sh" \
+    --disk-pressure
+
+assert "K1: exit 0" test "$RC" -eq 0
+assert "K1: target/ directory deleted outright (disk-pressure fast-path)" \
+    bash -c '[ ! -d "$1" ]' _ "$K1_WORKTREES/_lane-1/target"
+assert "K1: seed-script NOT invoked (no reflink clone under disk-pressure)" \
+    bash -c '[ ! -f "$1" ]' _ "$K1_SEED_LOG"
+assert "K1: summary line parses as reclaim: reset=.. removed=.. preserved=.." \
+    bash -c 'printf "%s\n" "$1" | grep -qE "reclaim:.*reset=.*removed=.*preserved="' _ "$OUT"
+assert "K1: summary shows reset=1 (disk-pressure delete still counts as reset)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "reset=1"' _ "$OUT"
+
+# ── K2: control — same fixture WITHOUT --disk-pressure resets via alpha ────────
+K2_REPO="$K_ROOT/k2-repo"
+K2_WORKTREES="$K_ROOT/k2-worktrees"
+K2_BASE="$K_ROOT/k2-base"
+mkdir -p "$K2_WORKTREES" "$K2_BASE"
+make_repo "$K2_REPO"
+mkdir -p "$K2_BASE/target.gen.1"
+touch "$K2_BASE/target.gen.1.lock"
+ln -sfn "$K2_BASE/target.gen.1" "$K2_BASE/target"
+
+make_task_lane "$K2_REPO" "$K2_WORKTREES" "_lane-1" "task/4827" "ahead"
+
+K2_MAP="$(mktemp /tmp/test-gc-oracle-map-XXXXXX)"
+_TMPDIRS+=("$K2_MAP")
+printf '4827 done\n' > "$K2_MAP"
+
+K2_SEED_LOG="$K_ROOT/k2-seed-calls.log"
+K2_SEED_STUB="$K_ROOT/k2-seed-stub.sh"
+_seed_stub_body > "$K2_SEED_STUB"
+chmod +x "$K2_SEED_STUB"
+export SEED_LOG="$K2_SEED_LOG"
+export ORACLE_MAP="$K2_MAP"
+
+run_helper reclaim \
+    --worktrees-dir "$K2_WORKTREES" \
+    --base-target "$K2_BASE/target" \
+    --seed-script "$K2_SEED_STUB" \
+    --status-cmd "$STUB_DIR/gc-status-oracle.sh"
+
+assert "K2: exit 0" test "$RC" -eq 0
+assert "K2: seed-script invoked (normal alpha reset path, no disk-pressure)" \
+    bash -c 'test -f "$1" && grep -q "_lane-1" "$1"' _ "$K2_SEED_LOG"
+assert "K2: target/ directory still present (thinned by alpha, not deleted)" \
+    test -d "$K2_WORKTREES/_lane-1/target"
+assert "K2: summary shows reset=1" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "reset=1"' _ "$OUT"
 
 test_summary
