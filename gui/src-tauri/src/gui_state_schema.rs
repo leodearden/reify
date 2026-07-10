@@ -92,6 +92,18 @@ where
     (changed, removed)
 }
 
+/// Diff two whole-value list fields as a single unit: `Some(new.to_vec())`
+/// when they differ, `None` when equal.
+///
+/// Mirrors the whole-list diff logic each non-keyed `GuiState` list field
+/// (tessellation_diagnostics, compile_diagnostics, tensegrity_wires,
+/// tensegrity_surfaces, display_panes, display_appearance) used before L5 —
+/// lifted here so the `gui_state!` macro's generated `diffed whole` arm can
+/// call one shared, independently testable implementation.
+pub fn diff_whole<T: Clone + PartialEq>(old: &[T], new: &[T]) -> Option<Vec<T>> {
+    if old != new { Some(new.to_vec()) } else { None }
+}
+
 /// Generates a GUI state struct, its diff-delta struct, and the pure diff /
 /// events functions between them from a single schema definition.
 ///
@@ -225,6 +237,74 @@ macro_rules! gui_state {
             }],
             evtwhole=[$($evtwhole)*],
             asserts=[$($asserts)*],
+            fields=[$($rest)*]
+        }
+    };
+
+    // --- `diffed whole(..)` field arm. ---
+    (
+        @munch
+        state=$state:ident, delta=$delta:ident, diff_fn=$diff_fn:ident, events_fn=$events_fn:ident,
+        old=$old:ident, new=$new:ident, cur=$cur:ident, dst=$dst:ident, evs=$evs:ident,
+        sfields=[$($sfields:tt)*], dfields=[$($dfields:tt)*], full=[$($full:tt)*],
+        diffpre=[$($diffpre:tt)*], diffbody=[$($diffbody:tt)*],
+        evtupd=[$($evtupd:tt)*], evtrem=[$($evtrem:tt)*], evtwhole=[$($evtwhole:tt)*],
+        asserts=[$($asserts:tt)*],
+        fields=[
+            diffed whole(event=$e:literal, item_type=$it:literal, item_id=$id:literal, changed=$cf:ident)
+            $(#[$a:meta])*
+            $vis:vis $name:ident : Vec<$ty:ty> ,
+            $($rest:tt)*
+        ]
+    ) => {
+        $crate::gui_state_schema::gui_state! {
+            @munch
+            state=$state, delta=$delta, diff_fn=$diff_fn, events_fn=$events_fn,
+            old=$old, new=$new, cur=$cur, dst=$dst, evs=$evs,
+            sfields=[$($sfields)* $(#[$a])* $vis $name: Vec<$ty>,],
+            dfields=[$($dfields)* pub $cf: ::std::option::Option<::std::vec::Vec<$ty>>,],
+            full=[$($full)* $cf: if $cur.$name.is_empty() { ::std::option::Option::None } else { ::std::option::Option::Some($cur.$name.clone()) },],
+            diffpre=[$($diffpre)* let $cf = $crate::gui_state_schema::diff_whole(&$old.$name, &$new.$name);],
+            diffbody=[$($diffbody)* $cf,],
+            evtupd=[$($evtupd)*],
+            evtrem=[$($evtrem)*],
+            evtwhole=[$($evtwhole)* if let ::std::option::Option::Some(v) = &$dst.$cf {
+                $crate::diff::push_serialized_event(&mut $evs, $e, $it, $id, ::serde_json::to_value(v));
+            }],
+            asserts=[$($asserts)*],
+            fields=[$($rest)*]
+        }
+    };
+
+    // --- `full_reload_only(..)` field arm. ---
+    (
+        @munch
+        state=$state:ident, delta=$delta:ident, diff_fn=$diff_fn:ident, events_fn=$events_fn:ident,
+        old=$old:ident, new=$new:ident, cur=$cur:ident, dst=$dst:ident, evs=$evs:ident,
+        sfields=[$($sfields:tt)*], dfields=[$($dfields:tt)*], full=[$($full:tt)*],
+        diffpre=[$($diffpre:tt)*], diffbody=[$($diffbody:tt)*],
+        evtupd=[$($evtupd:tt)*], evtrem=[$($evtrem:tt)*], evtwhole=[$($evtwhole:tt)*],
+        asserts=[$($asserts:tt)*],
+        fields=[
+            full_reload_only($reason:literal)
+            $(#[$a:meta])*
+            $vis:vis $name:ident : $ty:ty ,
+            $($rest:tt)*
+        ]
+    ) => {
+        $crate::gui_state_schema::gui_state! {
+            @munch
+            state=$state, delta=$delta, diff_fn=$diff_fn, events_fn=$events_fn,
+            old=$old, new=$new, cur=$cur, dst=$dst, evs=$evs,
+            sfields=[$($sfields)* $(#[$a])* $vis $name: $ty,],
+            dfields=[$($dfields)*],
+            full=[$($full)*],
+            diffpre=[$($diffpre)*],
+            diffbody=[$($diffbody)*],
+            evtupd=[$($evtupd)*],
+            evtrem=[$($evtrem)*],
+            evtwhole=[$($evtwhole)*],
+            asserts=[$($asserts)* const _: () = { ::std::assert!(!$reason.is_empty(), "full_reload_only reason must be non-empty"); };],
             fields=[$($rest)*]
         }
     };
