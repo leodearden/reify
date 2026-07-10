@@ -947,13 +947,6 @@ mod tests {
                 "{name}(geometry) must classify build-only (structural rule)"
             );
         }
-        // (2) STRUCTURAL — composition selectors, keyed by selector-typed args.
-        for name in ["union", "intersect", "difference"] {
-            assert!(
-                is_build_only_dispatch_call(&fn_call(name, &[sel.clone(), sel.clone()])),
-                "{name}(selector, selector) must classify build-only (structural)"
-            );
-        }
 
         // (3) REGISTRY — build-only query families that consume ABSTRACTED
         // handles (direction vectors, mechanism snapshots, body-ids), NOT a
@@ -988,6 +981,16 @@ mod tests {
             assert!(
                 !is_build_only_dispatch_call(&fn_call(name, std::slice::from_ref(&geom))),
                 "{name}(geometry) is eval-wired — must NOT be exempted"
+            );
+        }
+        // task #5120 R2c: composition selectors are now eval-wired too — kept
+        // in their own loop with selector-typed args (the shape these
+        // operators actually consume), mirroring the STRUCTURAL composition
+        // loop's arg shape this replaces.
+        for name in ["union", "intersect", "difference"] {
+            assert!(
+                !is_build_only_dispatch_call(&fn_call(name, &[sel.clone(), sel.clone()])),
+                "{name}(selector, selector) is eval-wired — must NOT be exempted"
             );
         }
 
