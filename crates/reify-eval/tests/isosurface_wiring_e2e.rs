@@ -347,3 +347,124 @@ structure PlacedAssembly {
          mean_x = {mean_x}"
     );
 }
+
+/// Review fix-forward: test-coverage for the Voxel post-loop conversion
+/// edge's honest-degradation branches (`engine_build.rs`, the
+/// `demanded_repr == ReprKind::Voxel` post-loop edge added for GAP #2).
+/// That edge has several `Diagnostic::warning(...)` branches (no OpenVDB
+/// kernel registered, terminal source kernel absent from the map,
+/// tessellate failure, `ingest_mesh` failure) — but both tests above call
+/// `ensure_openvdb_kernel()`, so only the happy path runs in CI. A
+/// regression that turned one of those warnings into a panic or an `Error`
+/// diagnostic would go uncaught.
+///
+/// Builds the SAME inline `IsoWire` module as the identity-pose test above,
+/// but deliberately skips `ensure_openvdb_kernel()` — this exercises the
+/// "no openvdb kernel registered" branch specifically: OCCT is present and
+/// real, so the operand's own dispatch resolves a BRep terminal and its
+/// `tessellate()` call inside the post-loop edge succeeds, but the
+/// subsequent `kernels.get_mut(KernelId::OpenVdb...)` lookup misses.
+///
+/// Asserts (1) that branch's diagnostic is present with `Severity::Warning`
+/// — not silently dropped, not escalated to `Error`, and reached without a
+/// panic — and (2) the operand's `produced_repr` stays at its `BRep`
+/// fallback (never dishonestly recorded as `Voxel`).
+///
+/// Note: the `shell` (isosurface consumer) realization is expected to
+/// separately surface its OWN `Error` diagnostic in this configuration —
+/// marching cubes fundamentally requires OpenVDB and has no BRep/Mesh-input
+/// fallback (PRD OQ-1), so `Operation::Surface` has no possible dispatch
+/// plan at all without it. That failure is independent of (and expected
+/// alongside) the operand-side warning under test here, so this test does
+/// NOT assert a globally diagnostic-free build.
+#[cfg(has_openvdb)]
+#[test]
+fn isosurface_wiring_degrades_to_warning_without_openvdb_kernel() {
+    use reify_constraints::SimpleConstraintChecker;
+    use reify_core::Severity;
+    use reify_ir::{ExportFormat, ReprKind};
+    use reify_test_support::parse_and_compile_with_stdlib;
+
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping isosurface_wiring_degrades_to_warning_without_openvdb_kernel: \
+             OCCT not available (cfg(has_occt) not set — stub-mode build)"
+        );
+        return;
+    }
+
+    let source = r#"structure IsoWire {
+    param size: Length = 20mm
+    let solid = box(size, size, size)
+    let shell = isosurface(solid)
+}"#;
+
+    let compiled = parse_and_compile_with_stdlib(source);
+
+    let checker = SimpleConstraintChecker;
+    let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
+    // Deliberately DOES NOT call `ensure_openvdb_kernel()` — no OpenVDB
+    // kernel is registered, so the operand's post-loop Voxel conversion
+    // edge must degrade honestly instead of panicking or erroring.
+
+    let _eval = engine.eval(&compiled);
+    let build = engine.build(&compiled, ExportFormat::Stl);
+
+    // ── the targeted degradation branch: present, and a Warning ───────────
+    let voxel_warning = build
+        .diagnostics
+        .iter()
+        .find(|d| {
+            d.message.contains("no openvdb kernel registered")
+                && d.message.contains("leaving the BRep/Mesh fallback")
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a 'no openvdb kernel registered ... leaving the \
+                 BRep/Mesh fallback' diagnostic from the operand's post-loop \
+                 Voxel conversion edge; got: {:?}",
+                build
+                    .diagnostics
+                    .iter()
+                    .map(|d| (d.severity, d.message.as_str()))
+                    .collect::<Vec<_>>()
+            )
+        });
+    assert!(
+        matches!(voxel_warning.severity, Severity::Warning),
+        "the operand's missing-OpenVDB degradation must surface as a \
+         Warning, not an Error (this is honest degradation, not a build \
+         failure); got severity {:?} for {:?}",
+        voxel_warning.severity,
+        voxel_warning.message
+    );
+
+    // ── BRep/Mesh fallback intact: the operand must not dishonestly record
+    //    produced_repr == Voxel when the ingest that would have produced it
+    //    never ran ─────────────────────────────────────────────────────────
+    let snap = engine
+        .snapshot()
+        .expect("snapshot must be Some after a build() call");
+    let mut nodes: Vec<_> = snap
+        .graph
+        .realizations
+        .iter()
+        .filter(|(id, _)| id.entity == "IsoWire")
+        .collect();
+    assert!(
+        nodes.len() >= 2,
+        "expected at least 2 realization nodes (solid operand + shell \
+         terminal) for entity IsoWire; got {}",
+        nodes.len()
+    );
+    nodes.sort_by_key(|(id, _)| id.index);
+    let (_, operand_node) = nodes[0];
+    assert_eq!(
+        operand_node.produced_repr,
+        ReprKind::BRep,
+        "operand realization (solid = box(...)) must stay at its BRep \
+         fallback when no OpenVDB kernel is registered to ingest the \
+         tessellated mesh; got {:?}",
+        operand_node.produced_repr
+    );
+}
