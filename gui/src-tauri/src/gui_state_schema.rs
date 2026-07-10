@@ -171,6 +171,14 @@ pub fn diff_whole<T: Clone + PartialEq>(old: &[T], new: &[T]) -> Option<Vec<T>> 
 // (non-test) library build genuinely has no call site, which would
 // otherwise warn `unused_macros`/`unused_imports` on every build. Expected
 // to go away once production code invokes it.
+// `#[macro_export]`: places `gui_state!` at the crate root (`$crate::gui_state!`
+// from inside the crate, `reify_gui::gui_state!` from an external crate) so the
+// producer-face doctests below — compiled as a separate crate that only sees
+// `reify_gui`'s public API — can invoke it. This is also required for the
+// INV-GUI-1 compile-fail guarantee to be checkable from outside the crate: a
+// macro that only external code can reach demonstrates the classification
+// requirement isn't an internal convention callers could route around.
+#[macro_export]
 #[allow(unused_macros)]
 macro_rules! gui_state {
     // --- Entry point: parse the header, mint the shared idents, kick off the muncher. ---
@@ -178,7 +186,7 @@ macro_rules! gui_state {
         state=$state:ident, delta=$delta:ident, diff_fn=$diff_fn:ident, events_fn=$events_fn:ident;
         $($fields:tt)*
     ) => {
-        $crate::gui_state_schema::gui_state! {
+        $crate::gui_state! {
             @munch
             state=$state, delta=$delta, diff_fn=$diff_fn, events_fn=$events_fn,
             old=old, new=new, cur=cur, dst=dst, evs=evs,
@@ -258,7 +266,7 @@ macro_rules! gui_state {
             $($rest:tt)*
         ]
     ) => {
-        $crate::gui_state_schema::gui_state! {
+        $crate::gui_state! {
             @munch
             state=$state, delta=$delta, diff_fn=$diff_fn, events_fn=$events_fn,
             old=$old, new=$new, cur=$cur, dst=$dst, evs=$evs,
@@ -295,7 +303,7 @@ macro_rules! gui_state {
             $($rest:tt)*
         ]
     ) => {
-        $crate::gui_state_schema::gui_state! {
+        $crate::gui_state! {
             @munch
             state=$state, delta=$delta, diff_fn=$diff_fn, events_fn=$events_fn,
             old=$old, new=$new, cur=$cur, dst=$dst, evs=$evs,
@@ -330,7 +338,7 @@ macro_rules! gui_state {
             $($rest:tt)*
         ]
     ) => {
-        $crate::gui_state_schema::gui_state! {
+        $crate::gui_state! {
             @munch
             state=$state, delta=$delta, diff_fn=$diff_fn, events_fn=$events_fn,
             old=$old, new=$new, cur=$cur, dst=$dst, evs=$evs,
