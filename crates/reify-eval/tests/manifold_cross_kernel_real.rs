@@ -36,7 +36,7 @@
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::{DiagnosticCode, Severity};
-use reify_ir::{ExportFormat, GeometryKernel, GeometryOp, KernelId, ReprKind, Value};
+use reify_ir::{ExportFormat, GeometryError, GeometryKernel, GeometryOp, KernelId, ReprKind, Value};
 use reify_kernel_manifold::ManifoldKernel;
 use reify_test_support::{errors_only, manufacturing_purpose, parse_and_compile_with_stdlib};
 
@@ -339,5 +339,78 @@ fn manifold_real_boolean_union_is_nondegenerate_solid() {
         m.bounding_box().is_some(),
         "union of two overlapping unit cubes must have a bounding box \
          (bounding_box() returned None — the solid has no geometry)"
+    );
+}
+
+// ── Item 4: kernel-seam γ — structured mesh-contract diagnostics (INV-GEO-1) ─
+
+/// End-to-end observable-signal + regression guard for kernel-seam γ (task
+/// 5104, PRD `kernel-seam-contracts.md` §4 site-2): `ManifoldKernel::ingest_mesh`
+/// surfaces a structured `GeometryError::MeshContractViolation` for a
+/// contract-violating mesh — diagnosed by `Mesh::validate` *before*
+/// `Manifold::from_mesh_f64`'s generic `NotManifold` error — while a valid
+/// mesh still ingests.
+///
+/// Unconditional (no OCCT gate): the violating mesh is constructed directly
+/// by reversing one triangle's winding in the `unit_cube_mesh` fixture, so
+/// this test needs no real OCCT tessellation.
+///
+/// 1. Negative half: clone `unit_cube_mesh([0,0,0])` and reverse the first
+///    triangle's winding (swap its 2nd/3rd index, `(0, 2, 1)` -> `(0, 1, 2)`)
+///    so that triangle's directed edges duplicate two neighboring faces'
+///    edge directions instead of reversing them — a `ConsistentWinding`
+///    violation (the PRD's canonical reversed-winding case). Asserts
+///    `ingest_mesh` returns `Err(GeometryError::MeshContractViolation {
+///    kernel: "manifold", counts.reversed_edges > 0, .. })`.
+/// 2. Positive half ("valid unwelded OCCT still ingests"): the pristine
+///    `unit_cube_mesh` fixture ingests as `Ok(_)` — kernel-seam γ's
+///    validation (tol = 0.0) adds no rejections beyond `from_mesh_f64`'s
+///    existing set.
+///
+/// RED on pre-γ main: the reversed cube used to return
+/// `Err(GeometryError::OperationFailed(_))` (from_mesh_f64's generic
+/// rejection) rather than the structured `MeshContractViolation`.
+#[test]
+fn manifold_ingest_contract_violating_mesh_yields_structured_diagnostic() {
+    use reify_kernel_manifold::test_fixtures::unit_cube_mesh;
+
+    // Reverse the first triangle's winding: (0, 2, 1) -> (0, 1, 2). Its
+    // directed edges now duplicate two neighboring faces' edge directions
+    // instead of reversing them, violating ConsistentWinding.
+    let mut bad = unit_cube_mesh([0.0, 0.0, 0.0]);
+    bad.indices.swap(1, 2);
+
+    let result = ManifoldKernel::new().ingest_mesh(&bad);
+    match result {
+        Err(GeometryError::MeshContractViolation {
+            kernel: kernel_name,
+            counts,
+            ..
+        }) => {
+            assert_eq!(
+                kernel_name, "manifold",
+                "MeshContractViolation must carry the producing kernel's name",
+            );
+            assert!(
+                counts.reversed_edges > 0,
+                "reversing one triangle's winding must be caught as a \
+                 ConsistentWinding violation (reversed_edges > 0); got {counts:?}",
+            );
+        }
+        other => panic!(
+            "ingest_mesh of a reversed-winding cube must return \
+             Err(GeometryError::MeshContractViolation {{ kernel: \"manifold\", .. }}); \
+             got {other:?}"
+        ),
+    }
+
+    // Positive half: the pristine (valid) cube still ingests successfully —
+    // kernel-seam γ's validation adds no rejections beyond from_mesh_f64's
+    // existing set.
+    let ok = ManifoldKernel::new().ingest_mesh(&unit_cube_mesh([0.0, 0.0, 0.0]));
+    assert!(
+        ok.is_ok(),
+        "a valid closed-orientable mesh must still ingest after wiring \
+         Mesh::validate(); got {ok:?}",
     );
 }
