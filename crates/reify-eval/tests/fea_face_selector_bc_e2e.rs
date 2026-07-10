@@ -302,6 +302,15 @@ fn non_boundary_demanded_realization_yields_no_boundary() {
 /// welding its own output, or α gating weldedness / rejecting unwelded
 /// input outright.
 ///
+/// Greenness is also contingent on OCCT emitting bit-exact (identical f32)
+/// coordinates for corner/edge vertices shared across faces, since welding
+/// is bit-exact (`weld_positions` compares `to_bits`). This holds for a
+/// unit axis-aligned box (corner coords 0.0/1.0 are exact f32, planar faces
+/// are not subdivided); a future OCCT/tessellation-tolerance change that
+/// emits a shared face-perimeter vertex with even a 1-ULP difference
+/// between its two incident faces would surface here first, as a spurious
+/// `validate(0.0)` failure unrelated to the α contract this test pins.
+///
 /// RED before the next step: `real_occt_box_surface` does not yet exist →
 /// the gmsh test binary fails to compile.
 #[cfg(has_gmsh)]
@@ -323,16 +332,15 @@ fn characterizes_4876_occt_tessellation_unwelded_witness() {
     // position-welded quotient — unwelded is a capability gap, not a
     // producer-obligation violation (PRD §2).
     let w = mesh.weldedness(0.0);
+    // `raw_welded` is defined as `weld_merged_verts == 0` (geometry.rs), so
+    // asserting `weld_merged_verts > 0` below also pins `!raw_welded` — one
+    // witness, not two independent ones.
     assert!(
-        !w.raw_welded,
+        w.weld_merged_verts > 0,
         "real OCCT box tessellation must be unwelded (per-face vertex \
          blocks, occt_wrapper.cpp:5847) — a box shares corners across 3 \
          faces and edge vertices across 2 faces, so position-welding must \
          collapse duplicates: {w:?}"
-    );
-    assert!(
-        w.weld_merged_verts > 0,
-        "weld_merged_verts must be > 0 for a real OCCT box surface: {w:?}"
     );
     let validated = mesh.validate(0.0);
     assert!(
@@ -453,19 +461,19 @@ fn real_occt_box_surface() -> reify_ir::Mesh {
 /// different topological question.
 #[cfg(has_gmsh)]
 fn raw_open_edge_count(mesh: &reify_ir::Mesh) -> usize {
-    use std::collections::HashMap;
+    use std::collections::HashSet;
 
-    let mut directed: HashMap<(u32, u32), usize> = HashMap::new();
+    let mut directed: HashSet<(u32, u32)> = HashSet::new();
     for tri in mesh.indices.chunks_exact(3) {
         let (a, b, c) = (tri[0], tri[1], tri[2]);
         for &(u, v) in &[(a, b), (b, c), (c, a)] {
-            *directed.entry((u, v)).or_insert(0) += 1;
+            directed.insert((u, v));
         }
     }
 
     directed
-        .keys()
-        .filter(|&&(u, v)| !directed.contains_key(&(v, u)))
+        .iter()
+        .filter(|&&(u, v)| !directed.contains(&(v, u)))
         .count()
 }
 
