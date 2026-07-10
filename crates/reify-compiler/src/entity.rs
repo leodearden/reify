@@ -6621,3 +6621,88 @@ structure def Manifold {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Port-member priv-visibility characterization (task ζ #5058 amendment
+// review). Site 2 (port-member `MemberDecl::Param`, above) hardcodes
+// `Visibility::Public` regardless of `param.is_priv` — see the TODO(#5161)
+// comment at that call site. This pins the CURRENT (pre-existing, deliberately
+// preserved) behaviour end-to-end, symmetric to
+// `compile_priv_auto_free_param_is_private_and_auto` in boundary2_producer.rs,
+// which pins the analogous priv/auto intersection at Site 1. Without this, a
+// future accidental fix of #5161 could silently change port-member visibility
+// semantics with no test forcing a conscious update.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod port_param_priv_visibility_tests {
+    use super::*;
+
+    /// Parse + compile `source` using this crate's own (in-build) `compile`,
+    /// never `reify_test_support::compile_source`: that helper links against
+    /// reify-compiler through `reify-test-support`'s own dependency edge, a
+    /// *different* compilation of this crate than the one this test runs
+    /// inside of, so comparing a `ValueCellKind`/`Visibility` from that build
+    /// against this build's would be an E0308 type mismatch (see
+    /// `guards.rs`'s `guarded_param_default_tests::compile` for the same
+    /// rationale spelled out in full). Parsing and compiling in-crate keeps
+    /// every type on one instantiation.
+    fn compile(source: &str) -> CompiledModule {
+        let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
+        super::compile(&parsed)
+    }
+
+    /// `priv param` on a port member currently compiles to `Visibility::Public`
+    /// — not `Private` — unlike the priv-aware top-level structure-param site
+    /// (Site 1, pinned by `compile_priv_auto_free_param_is_private_and_auto`
+    /// in boundary2_producer.rs). This is the pre-existing asymmetry tracked
+    /// by TODO(#5161) at the port-member call site; characterized here so
+    /// #5058's decl-construction dedup is proven not to have introduced or
+    /// hidden it, and so #5161's eventual fix must consciously update this
+    /// assertion rather than silently flip behaviour underneath it.
+    #[test]
+    fn priv_param_on_port_member_compiles_to_public_not_private() {
+        let source = r#"
+trait MyPort {
+    param foo : Length
+}
+
+structure def S {
+    port mount : MyPort {
+        priv param foo : Length = 5mm
+    }
+}
+"#;
+        let module = compile(source);
+        let errors: Vec<_> = module
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+        let template = module
+            .templates
+            .iter()
+            .find(|t| t.name.as_str().contains('S'))
+            .expect("expected template S");
+        assert_eq!(template.ports.len(), 1, "expected 1 port");
+        let port = &template.ports[0];
+        assert_eq!(port.members.len(), 1, "expected 1 port member");
+
+        let foo = &port.members[0];
+        assert_eq!(
+            foo.visibility,
+            Visibility::Public,
+            "known gap (TODO #5161): `priv param` on a port member is currently \
+             silently dropped to Visibility::Public rather than Private, unlike \
+             Site 1's priv-aware top-level param. This test pins the CURRENT \
+             behaviour — update it as part of #5161, not incidentally."
+        );
+    }
+}
