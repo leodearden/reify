@@ -3369,24 +3369,20 @@ pub(crate) fn compile_entity(
 
                             let auto_free = param.default.as_ref().and_then(extract_auto_free);
 
+                            // `priv param` → hidden from external dot-access (task #3978 δ).
+                            // Mirrors Site 1 (top-level structure-param) — `priv` is
+                            // grammatically legal on a port-member param too, so thread
+                            // `param.is_priv` through instead of hardcoding Public (#5161).
+                            let visibility = if param.is_priv {
+                                Visibility::Private
+                            } else {
+                                Visibility::Public
+                            };
                             let decl = build_param_value_cell_decl(
                                 id,
                                 auto_free,
                                 cell_type,
-                                // TODO(#5161): unconditionally Public — NOT priv-aware,
-                                // unlike the top-level structure-param site (entity.rs
-                                // Site 1: `if param.is_priv { Private } else { Public }`).
-                                // `priv` is grammatically legal on a port-member param
-                                // too (grammar.js `port_body` — `port_declaration`'s
-                                // `body` field — repeats `$.param_declaration`, whose
-                                // `optional('priv')` is unconditional), so
-                                // `param.is_priv` can be `true` here and is silently
-                                // dropped. Pre-existing asymmetry — the original,
-                                // pre-dedup code also hardcoded Public here — that task
-                                // #5058's decl-construction dedup preserves byte-for-byte
-                                // rather than fixes; #5161 tracks making it priv-aware.
-                                // Same known gap as the guarded-param site in guards.rs.
-                                Visibility::Public,
+                                visibility,
                                 Vec::new(),
                                 param.span,
                                 |ct| {
