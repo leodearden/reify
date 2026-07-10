@@ -341,9 +341,25 @@ fn characterizes_4876_occt_tessellation_unwelded_witness() {
          violation): {:?}",
         mesh.validate(0.0).err()
     );
+
+    // Witness 3: the RAW (pre-weld) open-edge count — the "open/
+    // non-watertight edges" witness that only exists on the raw topology.
+    // α's `validate` welds internally, so its `open_edges` count is on the
+    // welded quotient, which is 0 for a box; this is a deliberately
+    // distinct, unwelded directed-edge tally recording exactly what the
+    // gmsh attributed producer (which forbids vertex-merge repair,
+    // mesh_boundary.rs:219-227) sees and SIGSEGVs on.
+    let raw_open_edges = raw_open_edge_count(&mesh);
+    assert!(
+        raw_open_edges > 0,
+        "the RAW per-face-block OCCT surface must be non-watertight (open \
+         edges at every shared face-perimeter edge) — this is the raw \
+         topology the gmsh attributed producer consumes: {raw_open_edges}"
+    );
+
     eprintln!(
         "characterizes_4876_occt_tessellation_unwelded_witness: \
-         weld_merged_verts={}",
+         weld_merged_verts={}, raw_open_edges={raw_open_edges}",
         w.weld_merged_verts
     );
 }
