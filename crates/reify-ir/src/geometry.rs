@@ -2488,6 +2488,537 @@ pub struct Mesh {
     pub normals: Option<Vec<f32>>,
 }
 
+// ── MeshContract (INV-GEO-1) ─────────────────────────────────────────────────
+//
+// See `docs/prds/kernel-seam-contracts.md` §2/§3 for the full contract. This
+// is the seam between `reify-ir` (kernel-agnostic) and the kernel crates:
+// `Mesh::validate` checks the producer obligations every kernel emitting a
+// `Mesh` must satisfy; `Mesh::weldedness` reports the orthogonal
+// consumer-capability axis (raw index welding), which is NOT gated by
+// `validate` — OCCT's per-face-block tessellation output
+// (`occt_wrapper.cpp:5847`) is unwelded by design and still fully valid.
+
+/// A [`Mesh`] that has passed [`Mesh::validate`] — a proof-carrying newtype
+/// witnessing that the wrapped mesh satisfies every producer obligation of
+/// the mesh contract (finite, index-valid, non-degenerate, closed, and
+/// consistently wound on its position-welded quotient topology).
+///
+/// Minted only by [`Mesh::validate`]; there is no public constructor, so
+/// holding a `ValidatedMesh` is itself evidence the checks ran and passed.
+#[derive(Debug, Clone)]
+pub struct ValidatedMesh(Mesh);
+
+impl ValidatedMesh {
+    /// Borrow the validated mesh.
+    pub fn mesh(&self) -> &Mesh {
+        &self.0
+    }
+
+    /// Consume the wrapper and recover the plain [`Mesh`].
+    pub fn into_inner(self) -> Mesh {
+        self.0
+    }
+}
+
+/// Consumer-CAPABILITY report: whether a mesh's raw (unwelded) index buffer
+/// already references each distinct vertex position exactly once, as opposed
+/// to per-face vertex blocks (each corner duplicated per incident face).
+///
+/// Orthogonal to [`Mesh::validate`]'s producer obligations — an unwelded mesh
+/// can still be a fully valid mesh; this is reported, not gated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WeldednessReport {
+    /// `true` if the raw vertex buffer contained no duplicate positions
+    /// (equivalently, `weld_merged_verts == 0`).
+    pub raw_welded: bool,
+    /// Number of raw vertices collapsed away by position-welding
+    /// (`raw vertex count - welded vertex count`).
+    pub weld_merged_verts: usize,
+}
+
+/// A single producer obligation checked by [`Mesh::validate`]. See
+/// `docs/prds/kernel-seam-contracts.md` §2 for the full obligation ladder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeshInvariant {
+    /// Every vertex coordinate and (if present) normal component is finite
+    /// (no NaN or ±Infinity).
+    Finite,
+    /// Buffer shapes are well-formed and self-consistent: `vertices.len()`
+    /// and `indices.len()` are each a multiple of 3, every index is in
+    /// bounds for `vertices`, and (if present) `normals.len() ==
+    /// vertices.len()`.
+    IndexValid,
+    /// No triangle has a repeated welded vertex index or (near-)zero area.
+    NonDegenerate,
+    /// On the position-welded quotient topology, every directed edge has its
+    /// reverse exactly once (no open boundary).
+    Closed,
+    /// On the position-welded quotient topology, no directed edge appears
+    /// twice in the same direction (consistent, orientable winding).
+    ConsistentWinding,
+}
+
+/// Per-category offender counts populated by [`Mesh::validate`]. Only the
+/// categories belonging to the obligation that actually failed are nonzero
+/// — except [`MeshInvariant::ConsistentWinding`] and [`MeshInvariant::Closed`]
+/// which share one directed-edge pass and so populate both
+/// `reversed_edges` and `open_edges` together regardless of which is
+/// reported as `invariant`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MeshViolationCounts {
+    /// Vertices (or normals) with a non-finite coordinate.
+    pub nan_verts: usize,
+    /// Triangle index entries referencing an out-of-bounds vertex; or, for
+    /// a buffer-shape defect (a non-multiple-of-3 `indices`/`vertices`
+    /// length, or a `normals` buffer whose length doesn't match
+    /// `vertices`), the one dangling/malformed buffer counted as a single
+    /// offender.
+    pub oob_indices: usize,
+    /// Triangles with a repeated welded index or (near-)zero area.
+    pub degenerate_tris: usize,
+    /// Directed edges (on the welded quotient) missing their reverse.
+    pub open_edges: usize,
+    /// Directed edges (on the welded quotient) that occur more than once in
+    /// the same direction.
+    pub reversed_edges: usize,
+}
+
+/// A single concrete offender pinpointing a [`MeshContractViolation`] — kept
+/// minimal (§13 Q3 of the PRD: start with one witness variant per failure
+/// shape, widen additively).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MeshWitness {
+    /// The first non-finite vertex found: its raw index and coordinate
+    /// (the coordinate carries the NaN/Inf value itself for diagnostics).
+    ///
+    /// Also reused by the `IndexValid` buffer-shape guard (a malformed
+    /// `vertices`/`normals` length) with a `[NaN; 3]` sentinel coordinate,
+    /// standing in for "no single vertex is at fault — the whole buffer's
+    /// shape is."
+    Vertex { index: u32, coord: [f32; 3] },
+    /// The first offending triangle: its 0-based triangle index (into
+    /// `indices.len() / 3`) and its raw (unwelded) vertex indices.
+    Triangle { tri: usize, indices: [u32; 3] },
+    /// The first offending directed edge, as welded (canonical) vertex
+    /// indices `(u, v)`.
+    Edge { u: u32, v: u32 },
+}
+
+/// Kernel-agnostic mesh-contract violation returned by [`Mesh::validate`].
+///
+/// Deliberately has no `kernel` field: `reify-ir` has no kernel dependencies
+/// and cannot know which kernel produced the mesh. The kernel-aware wiring
+/// site attaches the kernel name to obtain a
+/// `GeometryError::MeshContractViolation` (see that variant's bridge).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MeshContractViolation {
+    /// The first obligation that failed.
+    pub invariant: MeshInvariant,
+    /// Per-category offender counts (see [`MeshViolationCounts`] for which
+    /// categories are populated together).
+    pub counts: MeshViolationCounts,
+    /// One concrete offender illustrating `invariant`.
+    pub witness: MeshWitness,
+}
+
+impl MeshContractViolation {
+    /// Attach the producing kernel's name, bridging this kernel-agnostic
+    /// violation into a [`GeometryError::MeshContractViolation`] for the
+    /// kernel-aware wiring sites (e.g. the OCCT/Manifold ingest paths) that
+    /// know which kernel produced the offending mesh.
+    pub fn into_geometry_error(self, kernel: &'static str) -> GeometryError {
+        GeometryError::MeshContractViolation {
+            kernel,
+            invariant: self.invariant,
+            counts: self.counts,
+            witness: self.witness,
+        }
+    }
+}
+
+impl Mesh {
+    /// Position-weld the raw vertex buffer: map every distinct `(x, y, z)`
+    /// triple to one canonical index, in first-seen order.
+    ///
+    /// Keying is bit-exact — `(c + 0.0f32).to_bits()`, which normalizes
+    /// `-0.0` to `+0.0` so origin-plane corners weld — pinned to Manifold's
+    /// `from_mesh_f64` default weld for cross-consumer consistency
+    /// (`docs/prds/kernel-seam-contracts.md` §13 Q2). This is the canonical
+    /// implementation shared by [`Mesh::validate`] and [`Mesh::weldedness`];
+    /// distance-tolerant welding is deferred (no current consumer needs it).
+    ///
+    /// Returns `(canonical_vertices, old_to_canonical)` where
+    /// `old_to_canonical[old_idx] == canonical_idx`.
+    pub fn weld_positions(&self) -> (Vec<[f32; 3]>, Vec<u32>) {
+        let n = self.vertices.len() / 3;
+        let mut key_to_canon: HashMap<(u32, u32, u32), u32> = HashMap::new();
+        let mut canon_verts: Vec<[f32; 3]> = Vec::new();
+        let mut remap = Vec::with_capacity(n);
+        for i in 0..n {
+            let x = self.vertices[i * 3];
+            let y = self.vertices[i * 3 + 1];
+            let z = self.vertices[i * 3 + 2];
+            let key = (
+                (x + 0.0_f32).to_bits(),
+                (y + 0.0_f32).to_bits(),
+                (z + 0.0_f32).to_bits(),
+            );
+            let next_idx = canon_verts.len() as u32;
+            let canon_idx = *key_to_canon.entry(key).or_insert_with(|| {
+                canon_verts.push([x, y, z]);
+                next_idx
+            });
+            remap.push(canon_idx);
+        }
+        (canon_verts, remap)
+    }
+
+    /// Report the CONSUMER-CAPABILITY axis: does the raw index buffer
+    /// already reference each distinct vertex position exactly once?
+    ///
+    /// Orthogonal to [`Mesh::validate`]'s obligations — OCCT's per-face-block
+    /// tessellation output (`occt_wrapper.cpp:5847`) is unwelded by design
+    /// and still a fully valid mesh.
+    ///
+    /// `tol` is accepted for forward API symmetry with [`Mesh::validate`] but
+    /// currently unused: welding is bit-exact (§13 Q2); distance-tolerant
+    /// welding is deferred.
+    pub fn weldedness(&self, _tol: f64) -> WeldednessReport {
+        let (canon_verts, _) = self.weld_positions();
+        let raw_len = self.vertices.len() / 3;
+        let weld_merged_verts = raw_len.saturating_sub(canon_verts.len());
+        WeldednessReport {
+            raw_welded: weld_merged_verts == 0,
+            weld_merged_verts,
+        }
+    }
+
+    /// Shared obligation-checking body for [`Self::validate`] (borrowing;
+    /// clones `self` into the witness on success) and
+    /// [`Self::into_validated`] (by-value; moves `self` instead, to avoid
+    /// the clone on hot paths) — see those methods' docs for the full mesh
+    /// contract.
+    fn check_contract(&self, tol: f64) -> Result<(), MeshContractViolation> {
+        // Obligation 2, part A — IndexValid (buffer shape): `vertices.len()`
+        // must be a multiple of 3, and if `normals` is present its length
+        // must equal `vertices.len()`. Checked FIRST, before Obligation 1
+        // (Finite) below, because Finite's scan walks `vertices.len() / 3`
+        // vertices and only inspects a normal when `base + 3 <=
+        // normals.len()` — a shape defect here would otherwise let a
+        // non-finite value hide in a truncated `vertices` tail or an
+        // unmatched/out-of-sync `normals` region rather than being caught.
+        // Reported as `IndexValid` (reusing its `oob_indices` counter,
+        // parallel to the dangling index-tail case in part B below) rather
+        // than a new invariant, since it's the same "malformed buffer
+        // shape" category.
+        if !self.vertices.len().is_multiple_of(3)
+            || self
+                .normals
+                .as_ref()
+                .is_some_and(|normals| normals.len() != self.vertices.len())
+        {
+            return Err(MeshContractViolation {
+                invariant: MeshInvariant::IndexValid,
+                counts: MeshViolationCounts {
+                    oob_indices: 1,
+                    ..Default::default()
+                },
+                witness: MeshWitness::Vertex {
+                    index: (self.vertices.len() / 3) as u32,
+                    coord: [f32::NAN, f32::NAN, f32::NAN],
+                },
+            });
+        }
+
+        // Obligation 1 — Finite: every vertex coordinate and (if present)
+        // normal component must be finite (no NaN/±Infinity). Runs before
+        // every other check since a non-finite coordinate poisons all
+        // downstream geometric tests (bounds, area, winding).
+        let n = self.vertices.len() / 3;
+        let mut nan_verts = 0usize;
+        let mut first_witness: Option<(u32, [f32; 3])> = None;
+        for i in 0..n {
+            let pos = [
+                self.vertices[i * 3],
+                self.vertices[i * 3 + 1],
+                self.vertices[i * 3 + 2],
+            ];
+            let pos_finite = pos.iter().all(|c| c.is_finite());
+            let normal = self.normals.as_ref().and_then(|normals| {
+                let base = i * 3;
+                (base + 3 <= normals.len())
+                    .then(|| [normals[base], normals[base + 1], normals[base + 2]])
+            });
+            let normal_finite = normal.is_none_or(|nv| nv.iter().all(|c| c.is_finite()));
+            if !pos_finite || !normal_finite {
+                nan_verts += 1;
+                if first_witness.is_none() {
+                    // Report whichever of position/normal actually carries
+                    // the non-finite value, so the witness coordinate is
+                    // diagnostic rather than a finite decoy.
+                    let coord = if !pos_finite { pos } else { normal.unwrap() };
+                    first_witness = Some((i as u32, coord));
+                }
+            }
+        }
+        if let Some((index, coord)) = first_witness {
+            return Err(MeshContractViolation {
+                invariant: MeshInvariant::Finite,
+                counts: MeshViolationCounts {
+                    nan_verts,
+                    ..Default::default()
+                },
+                witness: MeshWitness::Vertex { index, coord },
+            });
+        }
+
+        // Obligation 2, part B — IndexValid (index bounds): `indices.len()`
+        // must be a multiple of 3 and every index must reference an
+        // in-bounds vertex. Runs before welding (later obligations) so an
+        // out-of-bounds index cannot panic the weld remap.
+        let mut oob_indices = 0usize;
+        let mut index_witness: Option<(usize, [u32; 3])> = None;
+        let complete_tris = self.indices.len() / 3;
+        for tri in 0..complete_tris {
+            let base = tri * 3;
+            let tri_indices = [
+                self.indices[base],
+                self.indices[base + 1],
+                self.indices[base + 2],
+            ];
+            let oob_here = tri_indices
+                .iter()
+                .filter(|&&idx| mesh_vertex(&self.vertices, idx).is_none())
+                .count();
+            if oob_here > 0 {
+                oob_indices += oob_here;
+                if index_witness.is_none() {
+                    index_witness = Some((tri, tri_indices));
+                }
+            }
+        }
+        if !self.indices.len().is_multiple_of(3) {
+            // A dangling trailing group that doesn't form a full triangle —
+            // counted as the one offending group (not per leftover index).
+            oob_indices += 1;
+            if index_witness.is_none() {
+                let base = complete_tris * 3;
+                let mut tail = [u32::MAX; 3];
+                for (slot, &v) in tail.iter_mut().zip(&self.indices[base..]) {
+                    *slot = v;
+                }
+                index_witness = Some((complete_tris, tail));
+            }
+        }
+        if let Some((tri, tri_indices)) = index_witness {
+            return Err(MeshContractViolation {
+                invariant: MeshInvariant::IndexValid,
+                counts: MeshViolationCounts {
+                    oob_indices,
+                    ..Default::default()
+                },
+                witness: MeshWitness::Triangle {
+                    tri,
+                    indices: tri_indices,
+                },
+            });
+        }
+
+        // Obligation 3 — NonDegenerate: no triangle may have (near-)zero
+        // area. This also catches a repeated raw index or two distinct
+        // indices at coincident positions: either collapses one edge to
+        // the zero vector, so the cross product is exactly zero regardless
+        // of the third corner — no separate index-repeat check is needed.
+        // Reuses the same `(b-a) × (c-a)` cross-product math as
+        // `compute_facet_normal`, but keeps the raw magnitude (twice the
+        // triangle's area) instead of a normalized direction, since that
+        // magnitude is what `tol` gates. Indices are already bounds-checked
+        // by the IndexValid obligation above, so `mesh_vertex` cannot fail
+        // here.
+        let mut degenerate_tris = 0usize;
+        let mut degenerate_witness: Option<(usize, [u32; 3])> = None;
+        let tol_area = tol * tol;
+        for tri in 0..complete_tris {
+            let base = tri * 3;
+            let tri_indices = [
+                self.indices[base],
+                self.indices[base + 1],
+                self.indices[base + 2],
+            ];
+            let [a, b, c] = tri_indices.map(|idx| {
+                mesh_vertex(&self.vertices, idx)
+                    .expect("index bounds already checked by the IndexValid obligation")
+            });
+            let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+            let cross = [
+                ab[1] * ac[2] - ab[2] * ac[1],
+                ab[2] * ac[0] - ab[0] * ac[2],
+                ab[0] * ac[1] - ab[1] * ac[0],
+            ];
+            let twice_area =
+                (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt() as f64;
+            if twice_area <= tol_area {
+                degenerate_tris += 1;
+                if degenerate_witness.is_none() {
+                    degenerate_witness = Some((tri, tri_indices));
+                }
+            }
+        }
+        if let Some((tri, tri_indices)) = degenerate_witness {
+            return Err(MeshContractViolation {
+                invariant: MeshInvariant::NonDegenerate,
+                counts: MeshViolationCounts {
+                    degenerate_tris,
+                    ..Default::default()
+                },
+                witness: MeshWitness::Triangle {
+                    tri,
+                    indices: tri_indices,
+                },
+            });
+        }
+
+        // Obligations 4/5 — ConsistentWinding + Closed: on the
+        // position-welded quotient topology, every directed edge must have
+        // its reverse exactly once. Position-welding first is essential:
+        // OCCT's per-face tessellation output (`occt_wrapper.cpp:5847`)
+        // emits each corner once per incident face, so the RAW index buffer
+        // is (by design) never closed — only the welded quotient is. Lifted
+        // from the closed-orientable-manifold invariant in
+        // `tessellation_winding_integration.rs` (task 4336): a single
+        // directed-edge occurrence map serves both obligations —
+        // `reversed_edges` counts directed edges occurring more than once
+        // in the SAME direction (two triangles agreeing on a shared edge's
+        // direction, which is a winding inconsistency), `open_edges` counts
+        // directed edges whose reverse never occurs at all (a boundary
+        // hole). A same-direction duplicate always also leaves its true
+        // reverse absent, so both counts populate together for that input
+        // — but ConsistentWinding is reported first (PRD §11.1): it is the
+        // more specific diagnosis of the two.
+        let (_, welded_indices) = self.weld_positions();
+        let remapped: Vec<u32> = self
+            .indices
+            .iter()
+            .map(|&idx| welded_indices[idx as usize])
+            .collect();
+        let mut edge_count: HashMap<(u32, u32), usize> = HashMap::new();
+        for tri in 0..complete_tris {
+            let base = tri * 3;
+            let a = remapped[base];
+            let b = remapped[base + 1];
+            let c = remapped[base + 2];
+            *edge_count.entry((a, b)).or_insert(0) += 1;
+            *edge_count.entry((b, c)).or_insert(0) += 1;
+            *edge_count.entry((c, a)).or_insert(0) += 1;
+        }
+        // Totals: a sum of a per-key predicate over the whole map, so the
+        // result doesn't depend on (nondeterministic) hash-map iteration
+        // order.
+        let mut reversed_edges = 0usize;
+        let mut open_edges = 0usize;
+        for (&(u, v), &count) in &edge_count {
+            if count >= 2 {
+                reversed_edges += 1;
+            }
+            if *edge_count.get(&(v, u)).unwrap_or(&0) == 0 {
+                open_edges += 1;
+            }
+        }
+        // Witnesses: a separate, deterministic pass in triangle-emission
+        // order so the reported offender doesn't depend on hash-map
+        // iteration order, even though the totals above don't need it.
+        let mut winding_witness: Option<(u32, u32)> = None;
+        let mut open_witness: Option<(u32, u32)> = None;
+        'witness_search: for tri in 0..complete_tris {
+            let base = tri * 3;
+            let tri_edges = [
+                (remapped[base], remapped[base + 1]),
+                (remapped[base + 1], remapped[base + 2]),
+                (remapped[base + 2], remapped[base]),
+            ];
+            for (u, v) in tri_edges {
+                if winding_witness.is_none() && *edge_count.get(&(u, v)).unwrap_or(&0) >= 2 {
+                    winding_witness = Some((u, v));
+                }
+                if open_witness.is_none() && *edge_count.get(&(v, u)).unwrap_or(&0) == 0 {
+                    open_witness = Some((u, v));
+                }
+                if winding_witness.is_some() && open_witness.is_some() {
+                    break 'witness_search;
+                }
+            }
+        }
+        if reversed_edges > 0 {
+            let (u, v) =
+                winding_witness.expect("reversed_edges > 0 implies a winding witness was found");
+            return Err(MeshContractViolation {
+                invariant: MeshInvariant::ConsistentWinding,
+                counts: MeshViolationCounts {
+                    open_edges,
+                    reversed_edges,
+                    ..Default::default()
+                },
+                witness: MeshWitness::Edge { u, v },
+            });
+        }
+        if open_edges > 0 {
+            let (u, v) = open_witness.expect("open_edges > 0 implies an open witness was found");
+            return Err(MeshContractViolation {
+                invariant: MeshInvariant::Closed,
+                counts: MeshViolationCounts {
+                    open_edges,
+                    reversed_edges,
+                    ..Default::default()
+                },
+                witness: MeshWitness::Edge { u, v },
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Check every producer obligation of the mesh contract and, on success,
+    /// mint a [`ValidatedMesh`] witnessing it. See
+    /// `docs/prds/kernel-seam-contracts.md` §2/§3 for the full contract;
+    /// real rustdoc naming each obligation lives on
+    /// [`GeometryKernel::tessellate`] and [`GeometryKernel::ingest_mesh`].
+    ///
+    /// `tol` is the [`MeshInvariant::NonDegenerate`] twice-area epsilon (a
+    /// length-scale value; a triangle is degenerate when the magnitude of
+    /// its `(b-a) × (c-a)` cross product is `<= tol * tol`). It does NOT
+    /// affect [`Mesh::weld_positions`], which is always bit-exact.
+    ///
+    /// Clones `self` to mint the witness — this sits on the kernel
+    /// tessellation/ingest hot path, so if the caller doesn't need the
+    /// original `Mesh` back after a successful check, prefer
+    /// [`Self::into_validated`] to move it in instead and skip the clone.
+    pub fn validate(&self, tol: f64) -> Result<ValidatedMesh, MeshContractViolation> {
+        self.check_contract(tol)?;
+        Ok(ValidatedMesh(self.clone()))
+    }
+
+    /// By-value sibling of [`Self::validate`]: moves `self` into the minted
+    /// [`ValidatedMesh`] on success instead of cloning it, for callers
+    /// (e.g. kernel tessellation/ingest paths) that don't need to retain
+    /// the original `Mesh` once it's been validated.
+    ///
+    /// On failure, hands `self` back alongside the [`MeshContractViolation`]
+    /// so the mesh isn't lost; callers that must retain ownership on
+    /// failure too should use the borrowing [`Self::validate`] instead.
+    /// Boxed per `clippy::result_large_err` — the tuple carries a whole
+    /// [`Mesh`], so returning it unboxed would bloat every `Ok` path too.
+    pub fn into_validated(
+        self,
+        tol: f64,
+    ) -> Result<ValidatedMesh, Box<(Mesh, MeshContractViolation)>> {
+        match self.check_contract(tol) {
+            Ok(()) => Ok(ValidatedMesh(self)),
+            Err(violation) => Err(Box::new((self, violation))),
+        }
+    }
+}
+
 // ── STL serializers ──────────────────────────────────────────────────────────
 
 /// Compute the geometric facet normal for a triangle given its three XYZ
@@ -3103,6 +3634,21 @@ pub enum GeometryError {
     OperationFailed(String),
     /// Kernel initialization error.
     InitFailed(String),
+    /// A kernel-emitted [`Mesh`] failed [`Mesh::validate`]'s producer
+    /// obligations (INV-GEO-1). Kernel-aware wiring sites obtain this from
+    /// the kernel-agnostic [`MeshContractViolation`] via
+    /// [`MeshContractViolation::into_geometry_error`].
+    MeshContractViolation {
+        /// Name of the kernel that produced the offending mesh (e.g.
+        /// `"occt"`, `"manifold"`).
+        kernel: &'static str,
+        /// The first obligation that failed.
+        invariant: MeshInvariant,
+        /// Per-category offender counts.
+        counts: MeshViolationCounts,
+        /// One concrete offender illustrating `invariant`.
+        witness: MeshWitness,
+    },
 }
 
 impl fmt::Display for GeometryError {
@@ -3116,6 +3662,18 @@ impl fmt::Display for GeometryError {
             }
             GeometryError::InitFailed(msg) => {
                 write!(f, "geometry kernel init failed: {}", msg)
+            }
+            GeometryError::MeshContractViolation {
+                kernel,
+                invariant,
+                counts,
+                witness,
+            } => {
+                write!(
+                    f,
+                    "kernel '{kernel}' emitted a mesh violating the mesh contract: \
+                     {invariant:?} ({counts:?}, witness: {witness:?})"
+                )
             }
         }
     }
@@ -3484,6 +4042,21 @@ pub trait GeometryKernel: Send + Sync {
     }
 
     /// Tessellate a handle into a mesh.
+    ///
+    /// # Mesh contract (INV-GEO-1)
+    ///
+    /// The returned [`Mesh`] must satisfy every producer obligation checked
+    /// by [`Mesh::validate`]: finite coordinates, in-bounds indices,
+    /// non-degenerate triangles, and — on the mesh's **position-welded
+    /// quotient topology** — closed and consistently wound. Closed and
+    /// consistently-wound are checked on the WELDED quotient, not the raw
+    /// index buffer, specifically so that per-face-block output (each
+    /// corner emitted once per incident face — e.g. OCCT's
+    /// `tessellate_shape`, `occt_wrapper.cpp:5847`) is legal: raw-index
+    /// welledness is a [`Mesh::weldedness`] ([`WeldednessReport`]) CONSUMER
+    /// CAPABILITY, reported but never gated — not one of `validate`'s
+    /// obligations. A [`ValidatedMesh`] is the proof-carrying witness that
+    /// these obligations held.
     fn tessellate(&self, handle: GeometryHandleId, tolerance: f64) -> Result<Mesh, TessError>;
 
     /// Extract the unique edges of a shape, storing each as a new handle.
@@ -3627,6 +4200,25 @@ pub trait GeometryKernel: Send + Sync {
     /// `ManifoldKernel` is the only current override; it accepts closed
     /// orientable triangle meshes and stores them as `Manifold` values (see
     /// `crates/reify-kernel-manifold/src/kernel.rs`).
+    ///
+    /// # Mesh contract (INV-GEO-1)
+    ///
+    /// An accepting override should require `_mesh` to satisfy every
+    /// producer obligation checked by [`Mesh::validate`]: finite
+    /// coordinates, in-bounds indices, non-degenerate triangles, and — on
+    /// the mesh's **position-welded quotient topology** — closed and
+    /// consistently wound. Closed and consistently-wound are checked on the
+    /// WELDED quotient, not the raw index buffer, so per-face-block input
+    /// (each corner emitted once per incident face — e.g. OCCT's
+    /// `tessellate_shape` output, `occt_wrapper.cpp:5847`) is legal and
+    /// unwelded-by-design. Raw-index welledness is a [`Mesh::weldedness`]
+    /// ([`WeldednessReport`]) CONSUMER CAPABILITY — reported, not gated — so
+    /// an override may reject an invalid mesh (bridging the
+    /// `Err(MeshContractViolation)` from `validate` into
+    /// `Err(GeometryError::MeshContractViolation)` via
+    /// [`MeshContractViolation::into_geometry_error`]) but must not reject
+    /// solely for being unwelded. A [`ValidatedMesh`] is the proof-carrying
+    /// witness that these obligations held.
     ///
     /// # Object safety
     ///
@@ -10360,5 +10952,392 @@ mod tests {
                 .any(|d| d == GeometryOpDiscriminants::EllipseProfile),
             "iter() must yield GeometryOpDiscriminants::EllipseProfile"
         );
+    }
+
+    // ── MeshContract (INV-GEO-1): validate() / weld_positions() / weldedness() ──
+
+    /// V0=(0,0,0) V1=(1,0,0) V2=(0,1,0) V3=(0,0,1) — a minimal outward-wound
+    /// closed tetrahedron shared by every `MeshContract` test below.
+    fn tetra_positions() -> [[f32; 3]; 4] {
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ]
+    }
+
+    /// The four outward-wound faces of [`tetra_positions`] (verified by
+    /// cross-product sign against the tetrahedron centroid).
+    fn tetra_faces() -> [[u32; 3]; 4] {
+        [[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]]
+    }
+
+    /// The tetrahedron with each corner referenced once — already
+    /// position-welded.
+    fn welded_tetra_mesh() -> Mesh {
+        let positions = tetra_positions();
+        let vertices: Vec<f32> = positions.iter().flat_map(|v| v.iter().copied()).collect();
+        let indices: Vec<u32> = tetra_faces().into_iter().flatten().collect();
+        Mesh {
+            vertices,
+            indices,
+            normals: None,
+        }
+    }
+
+    /// The same tetrahedron emitted as 12 per-face-block vertices (each
+    /// corner duplicated per incident face), mirroring OCCT's per-face
+    /// tessellation output (occt_wrapper.cpp:5847), which is unwelded by
+    /// design.
+    fn per_face_block_tetra_mesh() -> Mesh {
+        let positions = tetra_positions();
+        let mut vertices = Vec::with_capacity(12 * 3);
+        for face in tetra_faces() {
+            for corner in face {
+                vertices.extend_from_slice(&positions[corner as usize]);
+            }
+        }
+        let indices: Vec<u32> = (0..12).collect();
+        Mesh {
+            vertices,
+            indices,
+            normals: None,
+        }
+    }
+
+    #[test]
+    fn validate_accepts_valid_closed_welded_tetra() {
+        let mesh = welded_tetra_mesh();
+        let validated = mesh
+            .validate(0.0)
+            .expect("closed outward-wound welded tetra must satisfy the mesh contract");
+        assert_eq!(validated.mesh().vertices, mesh.vertices);
+        assert_eq!(validated.mesh().indices, mesh.indices);
+    }
+
+    #[test]
+    fn validate_accepts_unwelded_per_face_blocks() {
+        let mesh = per_face_block_tetra_mesh();
+        mesh.validate(0.0).expect(
+            "unwelded per-face-block tetra (OCCT-style) must be accepted; internal \
+             position-welding makes it closed and consistently wound",
+        );
+    }
+
+    #[test]
+    fn weldedness_reports_merges() {
+        let unwelded = per_face_block_tetra_mesh().weldedness(0.0);
+        assert!(!unwelded.raw_welded);
+        assert_eq!(unwelded.weld_merged_verts, 8);
+
+        let welded = welded_tetra_mesh().weldedness(0.0);
+        assert!(welded.raw_welded);
+        assert_eq!(welded.weld_merged_verts, 0);
+
+        // `tol` is documented as unused — welding is always bit-exact (§13
+        // Q2 of the PRD) — so wildly different `tol` values must produce an
+        // identical report; pins that documented behavior against drift.
+        assert_eq!(
+            per_face_block_tetra_mesh().weldedness(0.0),
+            per_face_block_tetra_mesh().weldedness(999.0)
+        );
+        assert_eq!(
+            welded_tetra_mesh().weldedness(0.0),
+            welded_tetra_mesh().weldedness(999.0)
+        );
+    }
+
+    #[test]
+    fn validate_rejects_non_finite() {
+        // A NaN vertex coordinate on vertex 1 (x-component).
+        let mut nan_vertex_mesh = welded_tetra_mesh();
+        nan_vertex_mesh.vertices[3] = f32::NAN; // vertex 1, x-component (index * stride 3)
+        let err = nan_vertex_mesh
+            .validate(0.0)
+            .expect_err("a mesh with a NaN vertex coordinate must fail the mesh contract");
+        assert_eq!(err.invariant, MeshInvariant::Finite);
+        assert!(err.counts.nan_verts >= 1);
+        match err.witness {
+            MeshWitness::Vertex { index, .. } => {
+                assert_eq!(index, 1, "witness must name the offending vertex")
+            }
+            other => panic!("expected MeshWitness::Vertex naming the offender, got {other:?}"),
+        }
+
+        // A +Inf normal component (y-component of vertex 2's normal) — the
+        // vertex positions themselves stay all-finite.
+        let mut inf_normal_mesh = welded_tetra_mesh();
+        let normal_len = inf_normal_mesh.vertices.len();
+        inf_normal_mesh.normals = Some(vec![0.0_f32; normal_len]);
+        inf_normal_mesh.normals.as_mut().unwrap()[2 * 3 + 1] = f32::INFINITY;
+        let err = inf_normal_mesh
+            .validate(0.0)
+            .expect_err("a mesh with a +Inf normal component must fail the mesh contract");
+        assert_eq!(err.invariant, MeshInvariant::Finite);
+        assert!(err.counts.nan_verts >= 1);
+        match err.witness {
+            MeshWitness::Vertex { coord, .. } => assert!(
+                coord.iter().any(|c| !c.is_finite()),
+                "witness coord must carry the non-finite NORMAL value, not a finite \
+                 position decoy: {coord:?}"
+            ),
+            other => panic!("expected MeshWitness::Vertex naming the offender, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_out_of_bounds_index() {
+        // The last triangle's last index is bumped to 4, but the tetra only
+        // has 4 vertices (valid indices 0..=3).
+        let mut oob_mesh = welded_tetra_mesh();
+        let last = oob_mesh.indices.len() - 1;
+        oob_mesh.indices[last] = 4;
+        let err = oob_mesh
+            .validate(0.0)
+            .expect_err("a mesh with an out-of-bounds triangle index must fail the mesh contract");
+        assert_eq!(err.invariant, MeshInvariant::IndexValid);
+        assert!(err.counts.oob_indices >= 1);
+        match err.witness {
+            MeshWitness::Triangle { .. } => {}
+            other => panic!("expected MeshWitness::Triangle naming the offender, got {other:?}"),
+        }
+
+        // A dangling trailing group (indices.len() % 3 != 0) is also
+        // reported as IndexValid.
+        let mut truncated_mesh = welded_tetra_mesh();
+        truncated_mesh.indices.pop();
+        assert_ne!(truncated_mesh.indices.len() % 3, 0);
+        let err = truncated_mesh.validate(0.0).expect_err(
+            "a mesh whose index buffer length is not a multiple of 3 must fail the mesh contract",
+        );
+        assert_eq!(err.invariant, MeshInvariant::IndexValid);
+    }
+
+    #[test]
+    fn validate_rejects_malformed_vertex_buffer_length() {
+        // A `vertices` buffer whose length isn't a multiple of 3 (one
+        // dangling trailing float) must be a first-class IndexValid
+        // violation rather than silently truncated away by `len() / 3`,
+        // mirroring the analogous `indices` check above.
+        let mut mesh = welded_tetra_mesh();
+        mesh.vertices.push(0.0);
+        assert_ne!(mesh.vertices.len() % 3, 0);
+        let err = mesh.validate(0.0).expect_err(
+            "a vertices buffer whose length isn't a multiple of 3 must fail the mesh contract",
+        );
+        assert_eq!(err.invariant, MeshInvariant::IndexValid);
+        assert!(err.counts.oob_indices >= 1);
+    }
+
+    #[test]
+    fn validate_rejects_mismatched_normals_length() {
+        // A `normals` buffer present but not the same length as `vertices`
+        // must be rejected rather than silently under/over-scanned by the
+        // Finite check's `base + 3 <= normals.len()` guard (which would
+        // otherwise let a non-finite value hide in the unmatched region).
+        let mut short_normals = welded_tetra_mesh();
+        let full_len = short_normals.vertices.len();
+        short_normals.normals = Some(vec![0.0_f32; full_len - 3]); // one vertex short
+        let err = short_normals
+            .validate(0.0)
+            .expect_err("a normals buffer shorter than vertices must fail the mesh contract");
+        assert_eq!(err.invariant, MeshInvariant::IndexValid);
+
+        let mut long_normals = welded_tetra_mesh();
+        long_normals.normals = Some(vec![0.0_f32; full_len + 3]); // one vertex too many
+        let err = long_normals
+            .validate(0.0)
+            .expect_err("a normals buffer longer than vertices must fail the mesh contract");
+        assert_eq!(err.invariant, MeshInvariant::IndexValid);
+    }
+
+    #[test]
+    fn validate_rejects_degenerate_triangle() {
+        // (a) A repeated raw index within a triangle collapses two corners
+        // onto the same position — zero area regardless of tol.
+        let repeated_index_mesh = Mesh {
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            indices: vec![0, 1, 1],
+            normals: None,
+        };
+        let err = repeated_index_mesh
+            .validate(0.0)
+            .expect_err("a triangle with a repeated index must fail the mesh contract");
+        assert_eq!(err.invariant, MeshInvariant::NonDegenerate);
+        assert!(err.counts.degenerate_tris >= 1);
+        match err.witness {
+            MeshWitness::Triangle { .. } => {}
+            other => panic!("expected MeshWitness::Triangle naming the offender, got {other:?}"),
+        }
+
+        // (b) Three distinct raw indices, but two reference coincident
+        // vertex positions — also zero area at tol=0.0.
+        let coincident_position_mesh = Mesh {
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            indices: vec![0, 1, 2],
+            normals: None,
+        };
+        let err = coincident_position_mesh.validate(0.0).expect_err(
+            "a triangle with coincident vertex positions must fail the mesh contract",
+        );
+        assert_eq!(err.invariant, MeshInvariant::NonDegenerate);
+        assert!(err.counts.degenerate_tris >= 1);
+
+        // A real (non-degenerate) tetra face must NOT be flagged at
+        // tol=0.0 — guards against false-rejecting valid geometry.
+        welded_tetra_mesh()
+            .validate(0.0)
+            .expect("a closed outward-wound tetra has no degenerate triangles");
+    }
+
+    #[test]
+    fn validate_rejects_open_boundary() {
+        // A single non-degenerate triangle has three directed edges, none
+        // of which has a reverse anywhere in the mesh — an open boundary.
+        let open_mesh = Mesh {
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            indices: vec![0, 1, 2],
+            normals: None,
+        };
+        let err = open_mesh
+            .validate(0.0)
+            .expect_err("a single open triangle must fail the mesh contract");
+        assert_eq!(err.invariant, MeshInvariant::Closed);
+        assert!(err.counts.open_edges > 0);
+        match err.witness {
+            MeshWitness::Edge { .. } => {}
+            other => panic!("expected MeshWitness::Edge naming the offender, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_reversed_winding() {
+        // The valid welded tetra with exactly ONE face's winding reversed:
+        // face (0,2,1) becomes (0,1,2). This makes three directed edges
+        // occur twice in the same direction, while their true reverses
+        // never appear anywhere — tripping both ConsistentWinding
+        // (same-direction duplicate) and Closed (missing reverse). Winding
+        // must be reported with priority over closedness.
+        let mut faces = tetra_faces();
+        faces[0] = [faces[0][0], faces[0][2], faces[0][1]];
+        let positions = tetra_positions();
+        let vertices: Vec<f32> = positions.iter().flat_map(|v| v.iter().copied()).collect();
+        let indices: Vec<u32> = faces.into_iter().flatten().collect();
+        let mesh = Mesh {
+            vertices,
+            indices,
+            normals: None,
+        };
+        let err = mesh
+            .validate(0.0)
+            .expect_err("a mesh with one face's winding reversed must fail the mesh contract");
+        assert_eq!(
+            err.invariant,
+            MeshInvariant::ConsistentWinding,
+            "winding must be reported with priority over closedness when both trip"
+        );
+        assert!(err.counts.reversed_edges > 0);
+        assert!(
+            err.counts.open_edges > 0,
+            "the doubled edge's true reverse is entirely absent, so open_edges must also be \
+             nonzero even though ConsistentWinding is the reported invariant"
+        );
+        match err.witness {
+            MeshWitness::Edge { .. } => {}
+            other => panic!("expected MeshWitness::Edge naming the offender, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn geometry_error_mesh_contract_violation_display_and_bridge() {
+        let counts = MeshViolationCounts {
+            reversed_edges: 3,
+            open_edges: 3,
+            ..Default::default()
+        };
+        let witness = MeshWitness::Edge { u: 0, v: 1 };
+        let violation = MeshContractViolation {
+            invariant: MeshInvariant::ConsistentWinding,
+            counts,
+            witness,
+        };
+
+        let occt_error = GeometryError::MeshContractViolation {
+            kernel: "occt",
+            invariant: violation.invariant,
+            counts: violation.counts,
+            witness: violation.witness,
+        };
+        let rendered = occt_error.to_string();
+        assert!(
+            rendered.contains("occt"),
+            "Display must name the kernel: {rendered}"
+        );
+        assert!(
+            rendered.contains("ConsistentWinding"),
+            "Display must name the invariant: {rendered}"
+        );
+        assert!(
+            rendered.contains('3'),
+            "Display must include the violation counts: {rendered}"
+        );
+
+        match violation.into_geometry_error("manifold") {
+            GeometryError::MeshContractViolation {
+                kernel,
+                invariant,
+                counts: bridged_counts,
+                witness: bridged_witness,
+            } => {
+                assert_eq!(kernel, "manifold");
+                assert_eq!(invariant, MeshInvariant::ConsistentWinding);
+                assert_eq!(bridged_counts, counts);
+                assert_eq!(bridged_witness, witness);
+            }
+            other => panic!("expected MeshContractViolation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn into_validated_moves_mesh_without_cloning_on_success() {
+        let mesh = welded_tetra_mesh();
+        let expected_vertices = mesh.vertices.clone();
+        let expected_indices = mesh.indices.clone();
+        let validated = mesh
+            .into_validated(0.0)
+            .expect("closed outward-wound welded tetra must satisfy the mesh contract");
+        assert_eq!(validated.mesh().vertices, expected_vertices);
+        assert_eq!(validated.mesh().indices, expected_indices);
+    }
+
+    #[test]
+    fn into_validated_returns_mesh_back_on_failure() {
+        let mut mesh = welded_tetra_mesh();
+        mesh.vertices[3] = f32::NAN;
+        let expected_vertices = mesh.vertices.clone();
+        let expected_indices = mesh.indices.clone();
+        let (returned_mesh, err) = *mesh
+            .into_validated(0.0)
+            .expect_err("a mesh with a NaN vertex coordinate must fail the mesh contract");
+        assert_eq!(err.invariant, MeshInvariant::Finite);
+        // Bit-pattern comparison, not `assert_eq!` on the `Vec<f32>` directly:
+        // `expected_vertices` carries the injected NaN (cloned from `mesh`
+        // after poisoning it above), and IEEE-754 NaN != NaN under `==`, so a
+        // plain float comparison would fail here even when the mesh really
+        // is byte-for-byte unchanged.
+        assert_eq!(
+            returned_mesh
+                .vertices
+                .iter()
+                .map(|f| f.to_bits())
+                .collect::<Vec<_>>(),
+            expected_vertices
+                .iter()
+                .map(|f| f.to_bits())
+                .collect::<Vec<_>>(),
+            "the mesh must be handed back unchanged on failure"
+        );
+        assert_eq!(returned_mesh.indices, expected_indices);
     }
 }

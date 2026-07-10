@@ -15,8 +15,6 @@
 
 #![cfg(has_occt)]
 
-use std::collections::HashMap;
-
 use reify_ir::{GeometryOp, Value};
 use reify_kernel_occt::OcctKernel;
 
@@ -36,42 +34,6 @@ fn tessellate_box(width_mm: f64, height_mm: f64, depth_mm: f64, tol: f64) -> rei
     kernel
         .tessellate(h.id, tol)
         .expect("tessellate should succeed")
-}
-
-// ---------------------------------------------------------------------------
-// Bit-exact vertex weld (mirrors manifold_from_reify_mesh in reify-kernel-manifold)
-// ---------------------------------------------------------------------------
-
-/// Map every distinct (x, y, z) float triple to a canonical index.
-///
-/// Keying: `(c + 0.0f32).to_bits()` normalises −0.0 → +0.0 so origin-plane
-/// corners weld, exactly as in `manifold_from_reify_mesh`.
-///
-/// Returns `(canonical_vertices, old_to_canonical)` where
-/// `old_to_canonical[old_idx] == canonical_idx`.
-fn weld_vertices(vertices: &[f32]) -> (Vec<[f32; 3]>, Vec<u32>) {
-    assert_eq!(vertices.len() % 3, 0, "vertices must be flat xyz triples");
-    let n = vertices.len() / 3;
-    let mut key_to_canon: HashMap<(u32, u32, u32), u32> = HashMap::new();
-    let mut canon_verts: Vec<[f32; 3]> = Vec::new();
-    let mut remap = Vec::with_capacity(n);
-    for i in 0..n {
-        let x = vertices[i * 3];
-        let y = vertices[i * 3 + 1];
-        let z = vertices[i * 3 + 2];
-        let key = (
-            (x + 0.0_f32).to_bits(),
-            (y + 0.0_f32).to_bits(),
-            (z + 0.0_f32).to_bits(),
-        );
-        let next_idx = canon_verts.len() as u32;
-        let canon_idx = *key_to_canon.entry(key).or_insert_with(|| {
-            canon_verts.push([x, y, z]);
-            next_idx
-        });
-        remap.push(canon_idx);
-    }
-    (canon_verts, remap)
 }
 
 // ---------------------------------------------------------------------------
@@ -128,37 +90,14 @@ fn tessellated_box_welded_winding_is_closed_orientable_manifold() {
     // by the oriented-topology construction (`BRepPrimAPI_MakeBox` always
     // produces a shell with mixed-orientation faces).
 
-    let (canon_verts, remap) = weld_vertices(&mesh.vertices);
-
-    // Remap the per-face (unwelded) triangle indices to canonical indices.
-    let welded: Vec<u32> = mesh.indices.iter().map(|&i| remap[i as usize]).collect();
-
-    // Build directed-edge occurrence count.
-    let mut edge_count: HashMap<(u32, u32), i32> = HashMap::new();
-    let num_tris = welded.len() / 3;
-    for t in 0..num_tris {
-        let a = welded[t * 3];
-        let b = welded[t * 3 + 1];
-        let c = welded[t * 3 + 2];
-        *edge_count.entry((a, b)).or_insert(0) += 1;
-        *edge_count.entry((b, c)).or_insert(0) += 1;
-        *edge_count.entry((c, a)).or_insert(0) += 1;
-    }
-
-    // Closed-orientable-manifold winding invariant.
-    for (&(u, v), &count) in &edge_count {
-        assert_eq!(
-            count, 1,
-            "directed edge ({u},{v}) appears {count} times (expected 1); \
-             a count > 1 means mixed winding on a shared edge"
-        );
-        let rev = *edge_count.get(&(v, u)).unwrap_or(&0);
-        assert_eq!(
-            rev, 1,
-            "reverse edge ({v},{u}) of directed edge ({u},{v}) appears {rev} times \
-             (expected 1); a count == 0 means an open boundary or missing face"
-        );
-    }
+    // Closed-orientable-manifold winding invariant, checked on the
+    // position-welded quotient topology via `Mesh::validate`'s Closed +
+    // ConsistentWinding obligations (INV-GEO-1) — the same directed-edge
+    // invariant this test used to check by hand.  `tol=0.0`: this asserts
+    // real OCCT tessellation output, not a distance-tolerant approximation.
+    let _validated = mesh.validate(0.0).expect(
+        "real OCCT box tessellation must satisfy the mesh contract after internal welding",
+    );
 
     // Outward-orientation check.
     // Box centroid from the AABB (min+max per axis / 2).  Using the analytic
@@ -167,6 +106,7 @@ fn tessellated_box_welded_winding_is_closed_orientable_manifold() {
     // tolerance caused OCCT to add interior tessellation nodes on any face,
     // the vertex mean would shift toward the denser face whereas the AABB
     // center is unaffected.
+    let (canon_verts, welded) = mesh.weld_positions();
     let box_centroid = {
         let mut min = [f64::MAX; 3];
         let mut max = [f64::MIN; 3];
@@ -188,10 +128,11 @@ fn tessellated_box_welded_winding_is_closed_orientable_manifold() {
         ]
     };
 
+    let num_tris = mesh.indices.len() / 3;
     for t in 0..num_tris {
-        let a = welded[t * 3] as usize;
-        let b = welded[t * 3 + 1] as usize;
-        let c = welded[t * 3 + 2] as usize;
+        let a = welded[mesh.indices[t * 3] as usize] as usize;
+        let b = welded[mesh.indices[t * 3 + 1] as usize] as usize;
+        let c = welded[mesh.indices[t * 3 + 2] as usize] as usize;
         let pa = canon_verts[a];
         let pb = canon_verts[b];
         let pc = canon_verts[c];
