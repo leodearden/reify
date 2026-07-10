@@ -2404,4 +2404,130 @@ structure S {
             );
         }
     }
+
+    /// RED→GREEN driver for task 5078 step-3/step-4 (PRD
+    /// `compute-fea-hardening.md` task C2): pins that the FEA "not
+    /// evaluated in editor" hint (i) collapses to exactly ONE hint per
+    /// constraint even when that constraint's expression references the
+    /// FEA-derived value more than once (per-constraint, not per-value-ref,
+    /// dedup), and (ii) does NOT fire on an `Indeterminate` constraint whose
+    /// value is not FEA-derived. A genuinely-unresolved `auto` param has no
+    /// solver attached in the LSP's engine (`EvalState::new` never calls
+    /// `with_solver`), so it is *also* `Indeterminate` — but for a
+    /// different reason than the trampoline-free posture documented on
+    /// [`compute_diagnostics_with_state`], and the hint must not confuse the
+    /// two causes.
+    ///
+    /// RED against step-2's naive impl: with no FEA-dependence
+    /// discrimination, step-2 emits one hint per `Indeterminate`
+    /// `constraint_results` entry, i.e. TWO hints here (one for the
+    /// compound FEA constraint, one for the unrelated `gap` auto-param
+    /// constraint) — this test requires exactly one.
+    #[test]
+    fn fea_hint_excludes_auto_param_indeterminate_and_dedups_per_constraint() {
+        let uri = test_uri();
+
+        // FEA portion copied verbatim from `FEA_BEARING_SRC`'s known-good
+        // body (material / tip_load / mount / solve_elastic_static /
+        // peak_stress) so it compiles, collapsed to ONE compound constraint
+        // that references `peak_stress` twice, plus an unrelated
+        // genuinely-unresolved `auto` param with its own constraint.
+        const SRC: &str = r#"structure FeaBearingMixed {
+    param length : Length = 1000mm
+    param width  : Length = 100mm
+    param height : Length = 100mm
+    param gap : Length = auto
+
+    let material = Steel_AISI_1045()
+    let tip_load = PointLoad(point: "tip", force: 1000.0)
+    let mount = FixedSupport(target: "root")
+
+    let result = solve_elastic_static(
+        material, length, width, height, [tip_load], [mount], ElasticOptions()
+    )
+
+    let peak_stress = result.max_von_mises
+
+    constraint peak_stress < 1MPa && peak_stress < 100MPa
+    constraint gap > 1mm
+}"#;
+
+        let parsed = reify_compiler::parse_with_stdlib(SRC, ModulePath::single("test"));
+        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+
+        // Guard fixture validity like C1's lock: a fixture typo must fail
+        // loudly here rather than making the assertions below vacuous.
+        let compile_errors: Vec<_> = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(
+            compile_errors.is_empty(),
+            "fixture sanity: SRC must compile without errors; got: {compile_errors:#?}"
+        );
+
+        let mut state = EvalState::new();
+        let result = compute_diagnostics_with_state(&mut state, SRC, &uri);
+
+        const HINT_MESSAGE: &str = "FEA constraint not evaluated in editor — run `reify test`";
+        let hints: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Some(DiagnosticSeverity::INFORMATION) && d.message == HINT_MESSAGE
+            })
+            .collect();
+
+        // Fixture sanity: both constraints must actually be Indeterminate
+        // under the LSP's no-solver engine (2 total), so the assertion
+        // below on `hints.len() == 1` is a genuine discrimination check,
+        // not a vacuous pass because only one constraint was Indeterminate
+        // to begin with.
+        let check_result = state.engine.check_snapshot(&compiled).expect(
+            "state.engine should hold a snapshot for SRC's content hash \
+             immediately after compute_diagnostics_with_state evaluated it",
+        );
+        let indeterminate_count = check_result
+            .constraint_results
+            .iter()
+            .filter(|e| e.satisfaction == Satisfaction::Indeterminate)
+            .count();
+        assert_eq!(
+            indeterminate_count, 2,
+            "fixture sanity: expected 2 Indeterminate constraints (the \
+             compound FEA constraint + the gap auto-param constraint); got \
+             constraint_results: {:#?}",
+            check_result.constraint_results
+        );
+
+        assert_eq!(
+            hints.len(),
+            1,
+            "expected exactly one FEA hint: the compound FEA constraint's \
+             two `peak_stress` refs must dedup to one hint, and the \
+             unrelated `gap` auto-param constraint (Indeterminate for a \
+             non-FEA reason) must be excluded entirely; got {} hints: {:#?}",
+            hints.len(),
+            hints
+        );
+
+        // Belt-and-suspenders: directly confirm the surviving hint is not
+        // anchored to the `gap > 1mm` constraint's span (identify that
+        // constraint's span by slicing its source text out of SRC, rather
+        // than assuming declaration order).
+        let gap_constraint_span = compiled
+            .templates
+            .iter()
+            .flat_map(|t| t.constraints.iter())
+            .find(|c| SRC[c.span.start as usize..c.span.end as usize].contains("gap"))
+            .map(|c| c.span)
+            .expect("fixture sanity: expected a constraint referencing `gap`");
+        let gap_range = convert::span_to_range(SRC, gap_constraint_span);
+        assert!(
+            !hints.iter().any(|h| h.range == gap_range),
+            "no FEA hint should be anchored to the auto-param `gap` \
+             constraint's span ({gap_range:?}); got hints: {hints:#?}"
+        );
+    }
 }
