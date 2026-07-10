@@ -7135,6 +7135,34 @@ impl Engine {
                                                 break 'convert;
                                             }
                                         };
+                                        // Task #5103 (kernel-seam β, INV-GEO-1): check the
+                                        // interchange Mesh against the mesh contract
+                                        // (PRD docs/prds/kernel-seam-contracts.md §4 site 1)
+                                        // right after it's produced by the Tessellate
+                                        // (BRep→Mesh) source. WARN-default during rollout —
+                                        // on a violation, push a Severity::Warning diagnostic
+                                        // and fall through to ingest as normal; never abort
+                                        // the build here. The fail-closed enforce flip
+                                        // (reading a policy env var and aborting instead) is
+                                        // task δ's scope, not β's. Scoped to the tessellate
+                                        // producer only — the MarchingCubes (Voxel→Mesh)
+                                        // producer is task γ's domain and is backstopped by
+                                        // PRD site 2 (Manifold-ingest validation).
+                                        if !from_marching_cubes {
+                                            if let Err(violation) = mesh.validate(per_stage_tol) {
+                                                diagnostics.push(
+                                                    Diagnostic::warning(
+                                                        violation
+                                                            .into_geometry_error(source_name)
+                                                            .to_string(),
+                                                    )
+                                                    .with_label(DiagnosticLabel::new(
+                                                        realization_span,
+                                                        "in this realization",
+                                                    )),
+                                                );
+                                            }
+                                        }
                                         // Ingest into the target kernel (`&mut`).
                                         // For a Manifold kernel this is Mesh→Mesh;
                                         // for an OpenVDB kernel this is normally
