@@ -31,8 +31,8 @@ use std::time::Instant;
 
 use reify_compiler::{CompiledConnection, CompiledForallBody, CompiledFunction, CompiledModule};
 use reify_core::{
-    ConstraintNodeId, ContentHash, Diagnostic, RealizationNodeId, SnapshotId, Type, ValueCellId,
-    VersionId,
+    ConstraintNodeId, ContentHash, Diagnostic, DiagnosticCode, RealizationNodeId, Severity,
+    SnapshotId, Type, ValueCellId, VersionId,
 };
 use reify_ir::{
     AutoParam, CompiledExpr, DeterminacyState, PersistentMap, ResolutionProblem,
@@ -692,6 +692,111 @@ fn donate_warm_state_and_invalidate<'a, I, T, F>(
     }
 }
 
+/// Dedup key for [`dedup_diagnostics_preserve_order`]: the fields that
+/// jointly determine a [`Diagnostic`]'s rendered identity (see that
+/// function's doc comment for why `Diagnostic` itself can't derive
+/// `PartialEq`/`Hash`). Factored out of the function signature per
+/// `clippy::type_complexity`.
+type DiagnosticDedupKey = (
+    Severity,
+    Option<DiagnosticCode>,
+    String,
+    Vec<(u32, u32, String)>,
+    Vec<String>,
+);
+
+/// De-duplicate a diagnostics vec by rendered content, preserving the order
+/// of first occurrence (amend, task ε #4957 review round 2).
+///
+/// Both `edit_param` and `edit_source` (below) accumulate diagnostics from
+/// two independent sources that can both fire for the *same* consumer
+/// cell: a selector-mint pass over the value loop (`edit_param`'s in-walk
+/// `try_eval_symbolic_topology_selector` fallback, drained from
+/// `selector_mint_diagnostics`; `edit_source`'s whole-module
+/// `mint_symbolic_topology_selectors_into_values`, pushed straight into
+/// `diagnostics`) and a post-walk consumer re-eval pass
+/// (`re_eval_consumers_of_in_walk_mints_from_graph`, reached via
+/// `edit_param`'s direct call or `edit_source`'s
+/// `re_eval_post_walk_mints_from_graph` wrapper). A consumer cell that (a)
+/// reads an upstream cell minted by the first pass — so it qualifies for
+/// the post-walk re-eval pass — and (b) fails its *own* selector for a
+/// reason independent of that upstream, gets visited (and diagnosed) once
+/// by the first pass AND once more by the post-walk pass, since neither
+/// pass tracks which cells the other already diagnosed. Before
+/// `selector_mint_diagnostics` existed, `edit_param`'s main-loop copy was
+/// silently dropped, so no duplication was possible there; surfacing it
+/// (correctly, per the prior amendment) reopened this narrow
+/// duplicate-diagnostic edge case for both entry points.
+///
+/// [`Diagnostic`] has no `PartialEq`/`Hash` derive (it lives in
+/// `reify-core`, outside this task's locked module), so this keys on the
+/// fields that jointly determine a diagnostic's rendered identity —
+/// severity, code, message, label `(span, message)` pairs, and candidates —
+/// rather than requiring an upstream derive change.
+///
+/// # Caller scope (amend, task ε #4957 review rounds 4-5)
+///
+/// Both call sites invoke this ONLY on the specific two-source overlap
+/// described above — NEVER on the full `diagnostics` vec, and NEVER on a
+/// function-wide `runtime_sink` that also collects independent per-cell
+/// warnings (sampled-field OOB, RBF/Kriging fallbacks) from every other
+/// `eval_expr` call in the walk. Two genuinely distinct such warnings CAN
+/// render identically (e.g. two unrelated entity groups both hitting the
+/// solver's generic `NoProgress` reason string, or two unrelated cells
+/// both hitting the same OOB warning) — deduping across them would
+/// silently undercount real, independent occurrences. Concretely:
+///
+/// - `edit_param` runs its post-walk re-eval pass against a dedicated
+///   `post_walk_mint_reeval_sink` (NOT the function-wide `runtime_sink`)
+///   and dedups exactly `post_walk_mint_reeval_sink` +
+///   `selector_mint_diagnostics` (round 5, narrowing round 4's
+///   `runtime_sink`-suffix scoping, which was itself too broad — see the
+///   call site). `runtime_sink` itself, and the earlier-pushed
+///   constraint-solver / collection-count-resize diagnostics, are appended
+///   untouched.
+/// - `edit_source` already fully drains (and empties) its function-wide
+///   `runtime_sink` before its selector-mint/post-walk-reeval sequence
+///   runs, and nothing else writes to it in between, so its two-source
+///   overlap is safely isolated with a plain `split_off` from a
+///   pre-recorded length snapshot rather than needing a dedicated sink
+///   (round 5, `reviewer_comprehensive/design_coherence`; parity with
+///   `edit_param`'s fix).
+///
+/// Within each call site's own overlap, identical rendering IS treated as
+/// identity by design — that pair is the genuine two-source same-cell
+/// duplicate described above, and this is the same rendered-identity
+/// approximation this function already relies on in lieu of an upstream
+/// `PartialEq`/`Hash` derive.
+///
+/// Both call sites are on the interactive LSP edit hot path and the
+/// overwhelmingly common case is 0 or 1 diagnostics in the deduped slice,
+/// where a duplicate is impossible by construction — so that case returns
+/// `diags` unchanged before touching the `HashSet` or cloning any
+/// diagnostic field (amend, task ε #4957 review round 3).
+fn dedup_diagnostics_preserve_order(diags: Vec<Diagnostic>) -> Vec<Diagnostic> {
+    if diags.len() < 2 {
+        return diags;
+    }
+    let mut seen: HashSet<DiagnosticDedupKey> = HashSet::new();
+    let mut out = Vec::with_capacity(diags.len());
+    for d in diags {
+        let key: DiagnosticDedupKey = (
+            d.severity,
+            d.code,
+            d.message.clone(),
+            d.labels
+                .iter()
+                .map(|l| (l.span.start, l.span.end, l.message.clone()))
+                .collect(),
+            d.candidates.clone(),
+        );
+        if seen.insert(key) {
+            out.push(d);
+        }
+    }
+    out
+}
+
 impl Engine {
     /// Set a parameter override and invalidate cache entries that depend on it.
     pub fn set_param_and_invalidate(&mut self, param: &ValueCellId, value: reify_ir::Value) {
@@ -900,6 +1005,17 @@ impl Engine {
         // the local `diagnostics` vec immediately before the return.
         let runtime_sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
 
+        // Selector-mint diagnostics (amend, task ε #4957 review): accumulates
+        // `Diagnostic`s emitted by `try_eval_symbolic_topology_selector` during
+        // the in-walk mint retry below (e.g. a selector kind-closure violation
+        // that leaves a cell at `Undef`). `diagnostics` itself isn't declared
+        // until after this loop, so — like `runtime_sink` above — this collects
+        // across iterations and is drained into `diagnostics` immediately before
+        // the return, giving edit_param parity with edit_source's whole-module
+        // `mint_symbolic_topology_selectors_into_values` pass instead of
+        // silently dropping a real diagnostic.
+        let mut selector_mint_diagnostics: Vec<Diagnostic> = Vec::new();
+
         // Mark all nodes in the eval set as Pending before re-evaluation.
         // This transitions Final → Pending{last_substantive: hash}.
         self.cache.reset_pending_transition_count();
@@ -961,9 +1077,17 @@ impl Engine {
                 // at topo-order time rather than Undef.  Uses the graph's
                 // RealizationNodeData (same operations, same upstream_values_hash
                 // fold) because edit_param has no access to the CompiledModule.
-                // Note: `diagnostics` is declared later in this function; use a
-                // local sink here (selector-mint diagnostics are re-captured by
-                // the idempotent post-eval backstop mint passes).
+                // Note: `diagnostics` is declared later in this function; use
+                // `selector_mint_diagnostics` (declared above, alongside
+                // `runtime_sink`) here instead. This in-walk mint is the SOLE
+                // edit-path mint mechanism (γ, task 4954 — geometry-let cells
+                // ride the dirty cone and mint at their topo slot here);
+                // edit_param has no post-eval backstop mint pass. Diagnostics
+                // pushed by `try_eval_symbolic_topology_selector` (e.g. a
+                // selector kind-closure violation leaving the cell at `Undef`)
+                // are accumulated into `selector_mint_diagnostics` and drained
+                // into the function's `diagnostics` output below, matching
+                // edit_source's whole-module pass instead of dropping them.
                 let was_undef = matches!(val, Value::Undef);
                 let val = if was_undef {
                     let geom = Engine::mint_symbolic_geometry_handle_for_cell_from_graph(
@@ -977,12 +1101,14 @@ impl Engine {
                         v
                     } else {
                         let mut sel_diags: Vec<reify_core::Diagnostic> = Vec::new();
-                        crate::geometry_ops::try_eval_symbolic_topology_selector(
+                        let selector_val = crate::geometry_ops::try_eval_symbolic_topology_selector(
                             expr,
                             &values,
                             &mut sel_diags,
                         )
-                        .unwrap_or(val)
+                        .unwrap_or(val);
+                        selector_mint_diagnostics.extend(sel_diags);
+                        selector_val
                     }
                 } else {
                     val
@@ -1060,13 +1186,27 @@ impl Engine {
         // see `reeval_cone_cell`'s doc: a solver phase later in this function
         // would otherwise leave this re-eval's cache entries at a stale
         // version.
+        //
+        // Dedicated sink, NOT the function-wide `runtime_sink` (amend, task
+        // ε #4957 review round 5, `reviewer_comprehensive/robustness`):
+        // `runtime_sink` accumulates independent per-cell warnings from
+        // every OTHER `eval_expr` call in this walk (sampled-field OOB,
+        // RBF/Kriging fallbacks), where two genuinely distinct occurrences
+        // CAN render identically — the same risk the constraint-solver /
+        // collection-count-resize diagnostics near the return are already
+        // excluded from. Keeping this pass's output separate lets the
+        // dedup near the return see only the true two-source same-cell
+        // overlap (`selector_mint_diagnostics` vs. this pass), never
+        // `runtime_sink`'s unrelated warnings — see
+        // `dedup_diagnostics_preserve_order`'s doc.
+        let post_walk_mint_reeval_sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
         self.re_eval_consumers_of_in_walk_mints_from_graph(
             &new_snapshot.graph,
             &mut values,
             &mut new_snapshot.values,
             minted_in_walk,
             &functions,
-            &runtime_sink,
+            &post_walk_mint_reeval_sink,
             new_snapshot.version.0,
         );
 
@@ -2272,8 +2412,36 @@ impl Engine {
         // Drain runtime diagnostics (task 2341 step-16) into the result
         // diagnostics vec. The sink was populated by `eval_expr` calls
         // above whenever sampled-field OOB queries or RBF/Kriging
-        // fallbacks emitted warnings via `EvalContext::diagnostics`.
+        // fallbacks emitted warnings via `EvalContext::diagnostics` — one
+        // independent occurrence per cell/call site, so two entries that
+        // happen to render identically are still two genuine occurrences.
+        // Appended untouched, same treatment as the constraint-solver
+        // (`Infeasible`/`NoProgress`) and collection-count-resize
+        // diagnostics pushed earlier in this function: NOT part of the
+        // selector-mint/post-walk-reeval overlap the dedup below targets
+        // (amend, task ε #4957 review round 5,
+        // `reviewer_comprehensive/robustness`, narrowing round 4's
+        // `runtime_sink`-suffix scoping, which was itself too broad — see
+        // `post_walk_mint_reeval_sink`'s declaration above for why that
+        // pass no longer shares this sink).
         diagnostics.append(&mut runtime_sink.borrow_mut());
+        // De-duplicate (amend, task ε #4957 review round 2, narrowed round
+        // 5): a consumer cell that reads an upstream in-walk mint AND
+        // independently fails its own selector can be diagnosed both by the
+        // main loop above (into `selector_mint_diagnostics`) and by
+        // `re_eval_consumers_of_in_walk_mints_from_graph` a few lines above
+        // (into `post_walk_mint_reeval_sink`) — see
+        // `dedup_diagnostics_preserve_order`'s doc. No-op on the happy path
+        // (both sinks are typically empty). Scoped to exactly that pair —
+        // NEVER `runtime_sink` — since `runtime_sink` collects independent
+        // per-cell warnings from every OTHER `eval_expr` call in this walk,
+        // where two distinct occurrences CAN render identically; deduping
+        // it away would silently undercount them (the same hazard round 4
+        // already excluded the constraint-solver/collection-count prefix
+        // from).
+        let mut overlap = post_walk_mint_reeval_sink.into_inner();
+        overlap.append(&mut selector_mint_diagnostics);
+        diagnostics.extend(dedup_diagnostics_preserve_order(overlap));
 
         Ok(EvalResult {
             values,
@@ -3751,6 +3919,20 @@ impl Engine {
             &self.meta_map,
         );
 
+        // Snapshot the length here (amend, task ε #4957 review round 5,
+        // `reviewer_comprehensive/design_coherence`): the whole-module
+        // selector-mint pass just below and the post-walk consumer re-eval
+        // pass further down are the same two-source same-cell-duplicate
+        // pair `edit_param` guards against — see
+        // `dedup_diagnostics_preserve_order`'s doc. `runtime_sink` was
+        // already fully drained just above, and nothing else writes to it
+        // before the post-walk-reeval call below, so — unlike `edit_param`,
+        // which needs a dedicated sink because its `runtime_sink` stays
+        // live for the rest of the function — a plain length snapshot here
+        // plus `split_off` after that call is enough to isolate exactly
+        // this overlap.
+        let pre_overlap_len = diagnostics.len();
+
         // R2b symbolic selector-mint pass (task #4653, step-6): mirrors the
         // eval() and eval_cached() calls above so the edit/incremental path
         // also sees symbolic topology selectors.  Runs after handle-mint.
@@ -3799,6 +3981,19 @@ impl Engine {
             new_snapshot.version.0,
             &mut diagnostics,
         );
+        // De-duplicate (amend, task ε #4957 review round 5, parity with
+        // `edit_param`): a consumer cell that reads an upstream cell minted
+        // by the whole-module selector-mint pass above AND independently
+        // fails its own selector can be diagnosed once by that pass (pushed
+        // directly into `diagnostics`) and once more by the post-walk
+        // re-eval call just above (drained from `runtime_sink` inside
+        // `re_eval_post_walk_mints_from_graph`). No-op on the happy path
+        // (typically 0 or 1 diagnostics in this suffix). Scoped to exactly
+        // the suffix pushed since `pre_overlap_len` above — see
+        // `dedup_diagnostics_preserve_order`'s doc for why that's safe here
+        // without a dedicated sink.
+        let overlap_suffix = diagnostics.split_off(pre_overlap_len);
+        diagnostics.extend(dedup_diagnostics_preserve_order(overlap_suffix));
 
         // (15) Install the new snapshot, dep structures, and demand; record
         //      actual_eval_set (excludes early-cutoff-skipped nodes).
@@ -3848,14 +4043,20 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use reify_compiler::ValueCellKind;
-    use reify_core::{ContentHash, Type, ValueCellId};
+    use reify_core::{
+        ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, Severity, SourceSpan, Type,
+        ValueCellId,
+    };
     use reify_ir::{CompiledExpr, DeterminacyState, PersistentMap, Value, ValueMap};
 
     use std::collections::HashMap;
 
     use crate::graph::{EvaluationGraph, GuardedGroupInfo, ValueCellNode};
 
-    use super::{deactivate_if_not_auto, guard_value_unchanged, reelaborate_guarded_group};
+    use super::{
+        deactivate_if_not_auto, dedup_diagnostics_preserve_order, guard_value_unchanged,
+        reelaborate_guarded_group,
+    };
 
     /// Construct a [`ValueCellNode`] for use in unit tests.
     ///
@@ -5487,5 +5688,86 @@ mod tests {
             "Resolution(R) must be filtered out when R is absent from the new graph — \
              symmetric with the Value/Constraint/Realization/Compute arms"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // `dedup_diagnostics_preserve_order` (amend, task ε #4957 review round
+    // 4, `reviewer_comprehensive/test_coverage`): the dedup branch itself
+    // (`seen.insert` returning `false`) and its order-of-first-occurrence
+    // guarantee had no direct coverage — both integration tests only ever
+    // produce 0 or 1 diagnostics, which short-circuits on the `len() < 2`
+    // fast path before the `HashSet` is ever touched.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn dedup_diagnostics_preserve_order_drops_exact_duplicate_keeping_first() {
+        let a = Diagnostic::warning("boom")
+            .with_label(DiagnosticLabel::new(SourceSpan::new(1, 2), "here"))
+            .with_candidates(["x"]);
+        let out = dedup_diagnostics_preserve_order(vec![a.clone(), a.clone()]);
+        assert_eq!(
+            out.len(),
+            1,
+            "two byte-identical diagnostics must collapse to the first occurrence"
+        );
+        assert_eq!(out[0].message, a.message);
+        assert_eq!(out[0].severity, Severity::Warning);
+    }
+
+    #[test]
+    fn dedup_diagnostics_preserve_order_keeps_diagnostics_differing_only_by_label_span() {
+        let base = Diagnostic::warning("boom");
+        let d1 = base
+            .clone()
+            .with_label(DiagnosticLabel::new(SourceSpan::new(1, 2), "here"));
+        // Differs from `d1` only in the label's span *end* (2 vs 3).
+        let d2 = base.with_label(DiagnosticLabel::new(SourceSpan::new(1, 3), "here"));
+        let out = dedup_diagnostics_preserve_order(vec![d1, d2]);
+        assert_eq!(
+            out.len(),
+            2,
+            "a differing label span end is a distinct dedup key and must survive"
+        );
+    }
+
+    #[test]
+    fn dedup_diagnostics_preserve_order_keeps_diagnostics_differing_only_by_candidates() {
+        let base = Diagnostic::warning("boom");
+        let d1 = base.clone().with_candidates(["a"]);
+        // Differs from `d1` only in its candidate list.
+        let d2 = base.with_candidates(["b"]);
+        let out = dedup_diagnostics_preserve_order(vec![d1, d2]);
+        assert_eq!(
+            out.len(),
+            2,
+            "a differing candidate list is a distinct dedup key and must survive"
+        );
+    }
+
+    #[test]
+    fn dedup_diagnostics_preserve_order_keeps_diagnostics_differing_only_by_code() {
+        let base = Diagnostic::warning("boom");
+        let d1 = base.clone().with_code(DiagnosticCode::TraitNotImplemented);
+        // Differs from `d1` only in its attached `DiagnosticCode`.
+        let d2 = base.with_code(DiagnosticCode::UnresolvedTrait);
+        let out = dedup_diagnostics_preserve_order(vec![d1, d2]);
+        assert_eq!(
+            out.len(),
+            2,
+            "a differing diagnostic code is a distinct dedup key and must survive"
+        );
+    }
+
+    #[test]
+    fn dedup_diagnostics_preserve_order_preserves_order_with_interleaved_duplicate() {
+        let a = Diagnostic::warning("a");
+        let b = Diagnostic::warning("b");
+        let c = Diagnostic::warning("c");
+        // The second `a` is a duplicate of the first and must be dropped;
+        // `b` and `c` are distinct and must survive in their original
+        // relative order (order-of-first-occurrence guarantee).
+        let out = dedup_diagnostics_preserve_order(vec![a.clone(), b, a, c]);
+        let messages: Vec<&str> = out.iter().map(|d| d.message.as_str()).collect();
+        assert_eq!(messages, vec!["a", "b", "c"]);
     }
 }
