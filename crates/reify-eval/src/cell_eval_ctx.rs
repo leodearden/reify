@@ -13,6 +13,46 @@
 //! omitting a load-bearing capability at a call site is a compile error
 //! rather than a silent behavior change.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+
+use reify_core::{Diagnostic, ValueCellId};
+use reify_expr::{ContainmentQuery, EvalContext};
+use reify_ir::{CompiledFunction, DeterminacyState, PersistentMap, Value, ValueMap};
+
+/// The only sanctioned in-engine `cell_eval_ctx` constructor (INV-EVAL-2).
+///
+/// `determinacy`, `runtime_sink`, and `containment` are REQUIRED — plain
+/// `&'a T`, not `Option` — so no builder path can omit a load-bearing
+/// capability; leaving one out is a compile error (E0061), not a silent
+/// behavior change.
+///
+/// Lifts `functions`, `meta_map`, and `containment` out of `&self` into
+/// explicit params, which dissolves the borrow-scope excuse recorded on
+/// `Engine::cell_eval_ctx`'s doc comment (`engine_eval.rs:4875-4894`) for
+/// building `EvalContext` inline at some call sites.
+///
+/// `undef_causes` is intentionally left unset (`None`): it is not a
+/// cell-eval-ctx capability — the op/builtin contract-failure sink is
+/// attached separately by `record_op_contract_failures` during the
+/// post-eval re-evaluation pass.
+///
+/// This constructor does not migrate any existing call site (γ/δ/ε own
+/// adoption in `engine_eval.rs` / `engine_edit.rs` / `unfold.rs`).
+pub(crate) fn cell_eval_ctx<'a>(
+    values: &'a ValueMap,
+    functions: &'a [CompiledFunction],
+    meta_map: &'a HashMap<String, HashMap<String, String>>,
+    determinacy: &'a PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+    runtime_sink: &'a RefCell<Vec<Diagnostic>>,
+    containment: &'a dyn ContainmentQuery,
+) -> EvalContext<'a> {
+    crate::eval_ctx_with_meta(values, functions, meta_map)
+        .with_determinacy(determinacy)
+        .with_runtime_diagnostics(runtime_sink)
+        .with_containment(containment)
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
