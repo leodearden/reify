@@ -5039,6 +5039,29 @@ mod tests {
             3,
             "sanity check: a cylinder has 3 faces (two caps + the lateral surface)"
         );
+
+        // Also seed extracted_edges/extracted_vertices provenance on the same
+        // dirty kernel_b — not just extracted_faces. with_warm_state clears
+        // all three extraction caches independently (see its exhaustive
+        // destructure), so a hypothetical regression that cleared
+        // extracted_faces on restore but forgot one of its sister caches
+        // would not be caught behaviorally without this. See the
+        // `edges != cyl_edges` / `verts != cyl_verts` re-extraction checks
+        // below, mirroring `faces != cyl_faces`.
+        let cyl_edges = kernel_b
+            .extract_edges(GeometryHandleId(1))
+            .expect("extract_edges on the cylinder should succeed");
+        assert!(
+            !cyl_edges.is_empty(),
+            "cylinder extraction should yield at least one edge to seed a stale extracted_edges cache entry"
+        );
+        let cyl_verts = kernel_b
+            .extract_vertices(GeometryHandleId(1))
+            .expect("extract_vertices on the cylinder should succeed");
+        assert!(
+            !cyl_verts.is_empty(),
+            "cylinder extraction should yield at least one vertex to seed a stale extracted_vertices cache entry"
+        );
         let stale_child = cyl_faces[0];
 
         // Precondition: before the restore, OwnerBody correctly resolves the
@@ -5143,6 +5166,60 @@ mod tests {
         // it points to an OCCT-version/topology change, not a cache-clear
         // regression.
         assert_eq!(faces.len(), 6, "sanity check: a box has 6 faces");
+
+        // Mirror the extracted_faces regression check above for
+        // extracted_edges: this is a defense-in-depth gap the exhaustive-
+        // destructure type guard alone does not close, since it enforces
+        // that every field is *classified* but not that a CLEAR-on-restore
+        // field is cleared at the *correct* call site. (Same id-reuse
+        // caveat as `faces` above applies: `edges` is not asserted disjoint
+        // from `cyl_edges`, only unequal as a whole — see the note above.)
+        let edges = kernel_b
+            .extract_edges(GeometryHandleId(1))
+            .expect("extract_edges on the restored box should succeed");
+        assert_ne!(
+            edges, cyl_edges,
+            "re-extraction after warm-start restore returned the stale cached \
+             cylinder-edge list verbatim — extracted_edges was not cleared on restore"
+        );
+        assert!(
+            !edges.is_empty(),
+            "re-extraction after warm-start restore should yield at least one edge"
+        );
+        for edge in &edges {
+            assert_eq!(
+                kernel_b.query(&GeometryQuery::OwnerBody(*edge)).unwrap(),
+                Value::Int(1),
+                "post-restore re-extraction should rebuild edge provenance correctly for {edge:?}"
+            );
+        }
+        // Secondary sanity check, not the regression this test targets: a
+        // (rectangular) box has 12 edges.
+        assert_eq!(edges.len(), 12, "sanity check: a box has 12 edges");
+
+        // Mirror the same check for extracted_vertices.
+        let verts = kernel_b
+            .extract_vertices(GeometryHandleId(1))
+            .expect("extract_vertices on the restored box should succeed");
+        assert_ne!(
+            verts, cyl_verts,
+            "re-extraction after warm-start restore returned the stale cached \
+             cylinder-vertex list verbatim — extracted_vertices was not cleared on restore"
+        );
+        assert!(
+            !verts.is_empty(),
+            "re-extraction after warm-start restore should yield at least one vertex"
+        );
+        for vertex in &verts {
+            assert_eq!(
+                kernel_b.query(&GeometryQuery::OwnerBody(*vertex)).unwrap(),
+                Value::Int(1),
+                "post-restore re-extraction should rebuild vertex provenance correctly for {vertex:?}"
+            );
+        }
+        // Secondary sanity check, not the regression this test targets: a
+        // box has 8 vertices.
+        assert_eq!(verts.len(), 8, "sanity check: a box has 8 vertices");
     }
 
     #[test]
