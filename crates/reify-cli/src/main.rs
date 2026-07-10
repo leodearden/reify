@@ -998,6 +998,20 @@ fn cmd_build(args: &[String]) -> ExitCode {
     // for the (c) exit-code gate.
     let mut engine = reify_eval::Engine::with_registered_kernel(Box::new(checker));
     register_compute_trampolines(&mut engine);
+    // Lazily acquire the OpenVDB kernel when the module contains an
+    // `isosurface(...)` realization op (task δ/5002). Without OpenVDB
+    // registered, the operand's Mesh→Voxel voxelize stage and the terminal
+    // Voxel→Mesh marching-cubes stage (task γ/5001) have no kernel to
+    // dispatch to, so the build degrades to an Error diagnostic and exits
+    // non-zero. Mirrors cmd_check's `module_has_thickness_dfm_rule` →
+    // `ensure_openvdb_kernel()` gate: a static pre-eval detector keeps every
+    // non-isosurface build byte-identical and preserves the single-pick
+    // OCCT alloc-cost posture (engine_admin.rs). cfg(not(has_openvdb)) →
+    // registry lacks "openvdb" → returns false → no-op (an isosurface build
+    // would still degrade in that configuration).
+    if module_has_isosurface(&compiled) {
+        engine.ensure_openvdb_kernel();
+    }
     match output_path {
         // ===== Mode (A): imperative single-output (`-o` present). UNCHANGED
         //       back-compat path (B10): the `-o` extension selects the format,
@@ -1052,6 +1066,21 @@ fn cmd_build(args: &[String]) -> ExitCode {
                         return ExitCode::FAILURE;
                     }
                     println!("Wrote {} ({} bytes)", path, data.len());
+                    // Task δ/5002: print the exported triangle count for mesh
+                    // formats only (Stl/Obj/ThreeMF) — STEP/BRep builds are
+                    // unchanged. Sourced from `tessellate_realizations`, the
+                    // same mesh egress the GUI viewport `mesh_stats` uses
+                    // (debug_server.rs), so the CLI count and the viewport
+                    // agree by construction (PRD B5).
+                    if matches!(
+                        format,
+                        ExportFormat::Stl | ExportFormat::Obj | ExportFormat::ThreeMF
+                    ) {
+                        let tess = engine.tessellate_realizations(&compiled);
+                        let triangles: usize =
+                            tess.meshes.iter().map(|m| m.mesh.indices.len() / 3).sum();
+                        println!("Triangles: {triangles}");
+                    }
                     // Emit the per-outcome status message (unchanged from
                     // pre-4458), then decide exit via build_is_success — which
                     // also gates on Severity::Error diagnostics, matching
@@ -2534,6 +2563,31 @@ fn dfm_has_error_diagnostic(diagnostics: &[reify_core::Diagnostic]) -> bool {
     diagnostics
         .iter()
         .any(|d| d.severity == Severity::Error && d.message.contains("E_DFM_"))
+}
+
+/// Returns `true` when `module` contains at least one realization operation
+/// that is `CompiledGeometryOp::Isosurface` (the `isosurface(...)` builtin,
+/// which lowers to the runtime-IR `Operation::Surface` — engine_build.rs:1961).
+///
+/// This is a STATIC pre-eval proxy mirroring [`module_has_thickness_dfm_rule`]'s
+/// routing-gate shape: [`cmd_build`] calls this BEFORE
+/// `engine.ensure_openvdb_kernel()` so that non-isosurface modules keep the
+/// single-pick OCCT engine (alloc-cost contract, engine_admin.rs) and stay
+/// byte-identical (C2). Isosurface modules need OpenVDB registered because
+/// the operand's Mesh→Voxel voxelize stage and the terminal Voxel→Mesh
+/// marching-cubes stage (task γ/5001) both dispatch to the openvdb kernel.
+///
+/// Note: `CompiledGeometryOp::Surface { kind: SurfaceKind, .. }` (free-form
+/// `nurbs_surface` construction) is a DISTINCT variant from `Isosurface` —
+/// this predicate matches only the latter.
+fn module_has_isosurface(module: &reify_compiler::CompiledModule) -> bool {
+    module.templates.iter().any(|t| {
+        t.realizations.iter().any(|r| {
+            r.operations
+                .iter()
+                .any(|op| matches!(op, reify_compiler::CompiledGeometryOp::Isosurface { .. }))
+        })
+    })
 }
 
 /// Returns `true` when `module` carries a *geometric* `Conforms` instance — one
