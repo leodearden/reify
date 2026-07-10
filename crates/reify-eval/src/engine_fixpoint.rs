@@ -1304,11 +1304,14 @@ mod tests {
             .iter()
             .filter(|n| matches!(n, NodeId::Realization(_)))
             .count();
-        assert!(
-            realization_count >= 2,
-            "schedule must contain at least 2 Realization nodes for a module with \
-             box/union ops; got {} in a schedule of {} nodes",
-            realization_count,
+        // Exactly 3 (a, b, result) — a tight bound, not `>= 2`, so a dropped
+        // realization fails here with a clear message instead of surfacing
+        // later as an opaque HashMap-index panic at the `pos[&r_result]`
+        // lookup below.
+        assert_eq!(
+            realization_count, 3,
+            "schedule must contain exactly 3 Realization nodes (a, b, result) for this \
+             module; got a schedule of {} node(s) total",
             pass.schedule.len(),
         );
 
