@@ -7,6 +7,7 @@ mod engine_tests;
 mod event_bus_tests;
 mod gui_state_coverage_tests;
 mod gui_state_macro_tests;
+mod gui_state_parity_tests;
 mod kernel_status_tests;
 mod lsp_bridge_tests;
 mod main_helpers_tests;
