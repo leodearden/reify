@@ -215,6 +215,87 @@ pub fn assert_valid_volume_mesh(vm: &reify_ir::VolumeMesh) {
     }
 }
 
+// ── gmsh-attributed ξ arm helper (task #5116 acceptance test support) ──────
+
+/// Build the `(face_handle, centroid)` anchor list the attributed
+/// volume-meshing producer (`GeometryKernel::mesh_surface_to_volume_attributed`)
+/// needs: `extract_faces(solid)` then, for each face, query
+/// `GeometryQuery::Centroid` and parse the kernel's `{"x":..,"y":..,"z":..}`
+/// JSON payload into `[f64; 3]`. Mirrors the realization edge's own
+/// `build_face_anchors` (`reify-eval/src/compute_targets/bc_resolve.rs:97-127`,
+/// referenced from `reify-ir/src/geometry.rs:4389-4393`), simplified for test
+/// use: panics instead of collecting diagnostics (there is no honest-
+/// degradation contract to exercise here — a query failure means the fixture
+/// itself is broken).
+#[cfg(all(has_occt, has_gmsh, feature = "mesh-morph"))]
+pub fn occt_face_anchors(
+    kernel: &mut OcctKernel,
+    solid: reify_ir::GeometryHandleId,
+) -> Vec<(reify_ir::GeometryHandleId, [f64; 3])> {
+    let faces = kernel
+        .extract_faces(solid)
+        .expect("extract_faces should succeed on a real OCCT solid");
+    faces
+        .into_iter()
+        .map(|face_id| {
+            let value = kernel
+                .query(&reify_ir::GeometryQuery::Centroid(face_id))
+                .unwrap_or_else(|e| panic!("Centroid query failed for face {face_id:?}: {e:?}"));
+            (face_id, parse_centroid_json(&value))
+        })
+        .collect()
+}
+
+/// Parse the kernel's `{"x":..,"y":..,"z":..}` JSON `Value::String` payload
+/// (the exact wire format `GeometryQuery::Centroid` returns — see
+/// `reify-kernel-occt/src/lib.rs`'s `centroid_json`) into `[x, y, z]`.
+/// Duplicates (rather than calls) `reify_eval`'s own
+/// `topology_selectors::parse_xyz_json` — that helper is `pub(crate)` to
+/// reify-eval and therefore unreachable from this crate.
+#[cfg(all(has_occt, has_gmsh, feature = "mesh-morph"))]
+fn parse_centroid_json(value: &reify_ir::Value) -> [f64; 3] {
+    let s = match value {
+        reify_ir::Value::String(s) => s,
+        other => panic!("Centroid query returned a non-string Value: {other:?}"),
+    };
+    let inner = s
+        .trim()
+        .strip_prefix('{')
+        .and_then(|rest| rest.strip_suffix('}'))
+        .unwrap_or_else(|| panic!("Centroid JSON missing outer braces: {s:?}"));
+
+    let mut x: Option<f64> = None;
+    let mut y: Option<f64> = None;
+    let mut z: Option<f64> = None;
+    for part in inner.split(',') {
+        let mut kv = part.splitn(2, ':');
+        let key = kv
+            .next()
+            .unwrap_or_else(|| panic!("Centroid JSON malformed key/value pair: {part:?}"))
+            .trim()
+            .trim_matches('"');
+        let raw_val = kv
+            .next()
+            .unwrap_or_else(|| panic!("Centroid JSON malformed key/value pair: {part:?}"));
+        let val: f64 = raw_val
+            .trim()
+            .parse()
+            .unwrap_or_else(|e| panic!("Centroid JSON value not a number: {raw_val:?}: {e}"));
+        match key {
+            "x" => x = Some(val),
+            "y" => y = Some(val),
+            "z" => z = Some(val),
+            other => panic!("Centroid JSON unexpected key: {other:?}"),
+        }
+    }
+
+    [
+        x.unwrap_or_else(|| panic!("Centroid JSON missing \"x\": {s:?}")),
+        y.unwrap_or_else(|| panic!("Centroid JSON missing \"y\": {s:?}")),
+        z.unwrap_or_else(|| panic!("Centroid JSON missing \"z\": {s:?}")),
+    ]
+}
+
 // ── negative-signal helper ──────────────────────────────────────────────────
 
 /// Deliberately corrupt triangle 0's winding by swapping its 2nd and 3rd
