@@ -3,7 +3,7 @@
 //! docs/prds/v0_6/result-and-fallback.md §4.3/§5 D6/§8.B task B-δ).
 //!
 //! Mirrors `parse_length_e2e.rs`'s manual pipeline (`parse_and_compile_with_stdlib`
-//! + a fresh `Engine::new(MockConstraintChecker)`) and `fallback_recovery_e2e.rs`'s
+//! plus a fresh `Engine::new(MockConstraintChecker)`) and `fallback_recovery_e2e.rs`'s
 //! example-file-loading + value-cell-read pattern (task 3986's Option-subject
 //! sibling), retargeted from `parse_length`/`unwrap_or` (Option) to
 //! `parse_length_r`/`fallback` (Result).
