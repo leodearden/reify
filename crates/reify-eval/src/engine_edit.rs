@@ -5792,6 +5792,14 @@ mod tests {
     /// scalar-dimension) — it does not reject auto cells. It seeds the solver
     /// from the edited value, which is what lets this test control the solver
     /// seed and thereby distinguish the solved-vs-moved cases.
+    ///
+    /// **Task ο checklist:** together with `edit_param_back_props_moved_auto`
+    /// and `edit_param_skips_solve_when_no_auto_group_constraints_are_dirty`,
+    /// this is one of the three coverage-preserving replacements for the dead
+    /// concurrent stack's tests in this file — task ο's deletion checklist
+    /// must reference it before removing
+    /// `resolve_concurrent_edit_back_props_solved_auto` from
+    /// `concurrent.rs`, or the dead-stack removal silently drops coverage.
     #[test]
     fn edit_param_back_props_solved_auto() {
         use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
@@ -5886,6 +5894,14 @@ mod tests {
     ///
     /// Flow: eval() → edit_param(x, 20mm) → assert x re-derived to 10mm
     /// (Determined) + y = 15mm, NOT the injected 20mm seed.
+    ///
+    /// **Task ο checklist:** together with `edit_param_back_props_solved_auto`
+    /// and `edit_param_skips_solve_when_no_auto_group_constraints_are_dirty`,
+    /// this is one of the three coverage-preserving replacements for the dead
+    /// concurrent stack's tests in this file — task ο's deletion checklist
+    /// must reference it before removing
+    /// `resolve_concurrent_edit_back_props_moved_auto` from
+    /// `concurrent.rs`, or the dead-stack removal silently drops coverage.
     #[test]
     fn edit_param_back_props_moved_auto() {
         use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
@@ -5987,6 +6003,15 @@ mod tests {
     /// Solved{x: mm(999.0)}]`; if the guard fails to fire, the bogus second
     /// value (mm(999.0)) would leak into `resolved_params`, and the spy's
     /// captured-problems count would be 2 instead of 1.
+    ///
+    /// **Task ο checklist:** together with `edit_param_back_props_solved_auto`
+    /// and `edit_param_back_props_moved_auto`, this is one of the three
+    /// coverage-preserving replacements for the dead concurrent stack's tests
+    /// in this file — task ο's deletion checklist must reference it before
+    /// removing
+    /// `resolve_concurrent_edit_skips_solve_when_no_auto_group_constraints_are_dirty`
+    /// from `tests/concurrent.rs`, or the dead-stack removal silently drops
+    /// coverage.
     #[test]
     fn edit_param_skips_solve_when_no_auto_group_constraints_are_dirty() {
         use std::collections::HashMap;
