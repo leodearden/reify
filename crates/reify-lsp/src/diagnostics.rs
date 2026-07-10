@@ -2712,4 +2712,60 @@ structure S {
              constraint's span ({gap_range:?}); got hints: {hints:#?}"
         );
     }
+
+    /// Amendment regression lock (reviewer_comprehensive finding 5, task
+    /// 5078): the new FEA "not evaluated in editor" Info hint must not
+    /// double up with a freshness diagnostic (`computation-pending` /
+    /// `computation-failed`, arch §7.1/§9.2, emitted by the loop just below
+    /// this hint's emission block) for the same underlying unevaluated FEA
+    /// value cell over the [`FEA_BEARING_SRC`] fixture.
+    ///
+    /// Under the trampoline-free posture, an unregistered `@optimized`
+    /// target's handling in `engine_eval.rs` (the "no registered compute
+    /// trampoline (falling back to body-inlining)" branch) emits its own
+    /// `Severity::Error` diagnostic and falls through to ordinary
+    /// expression evaluation — it does NOT call `mark_failed` /
+    /// `mark_pending` the way a *registered*-but-failed trampoline dispatch
+    /// does. So the FEA-derived value cells (`result`, `peak_stress`)
+    /// resolve to `Freshness::Final`, not `Pending`/`Failed`, and the
+    /// freshness loop has nothing to say about them. This test locks that
+    /// observation so a future change to the unregistered-target fallback
+    /// path cannot silently reintroduce duplicated/noisy editor
+    /// diagnostics without failing a test.
+    #[test]
+    fn fea_hint_does_not_duplicate_as_freshness_diagnostic() {
+        let uri = test_uri();
+        let mut state = EvalState::new();
+        let result = compute_diagnostics_with_state(&mut state, FEA_BEARING_SRC, &uri);
+
+        const HINT_MESSAGE: &str = "FEA constraint not evaluated in editor — run `reify test`";
+        let hints: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Some(DiagnosticSeverity::INFORMATION) && d.message == HINT_MESSAGE
+            })
+            .collect();
+        assert!(
+            !hints.is_empty(),
+            "fixture sanity: expected at least one FEA Info hint; got: {:#?}",
+            result.diagnostics
+        );
+
+        let freshness_codes = [
+            lsp_types::NumberOrString::String("computation-pending".to_string()),
+            lsp_types::NumberOrString::String("computation-failed".to_string()),
+        ];
+        let freshness_diags: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| d.code.as_ref().is_some_and(|c| freshness_codes.contains(c)))
+            .collect();
+        assert!(
+            freshness_diags.is_empty(),
+            "FEA-bearing fixture must not ALSO produce freshness diagnostics \
+             (computation-pending/computation-failed) alongside the Info \
+             hint — got: {freshness_diags:#?}"
+        );
+    }
 }
