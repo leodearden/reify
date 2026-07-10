@@ -4521,6 +4521,7 @@ dependencies = [
  "reify-build-utils",
  "reify-eval",
  "reify-ir",
+ "reify-kernel-conformance",
  "reify-kernel-gmsh",
  "reify-kernel-manifold",
  "reify-kernel-occt",
