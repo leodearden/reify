@@ -876,6 +876,16 @@ fn main() {
                 session.set_mode_shape_frame_emitter(mode_shape_frame_emitter);
                 session.set_solve_cancel_sink(solve_cancel_sink);
                 session.set_solver_progress_sink(solver_progress_emitter);
+            } else {
+                // A poisoned mutex here silently skips installing ALL emitters/sinks,
+                // degrading the GUI to no live events with no other signal (amendment,
+                // task #5032 review) — surface it so a poisoned lock at startup is
+                // observable instead of a silent no-op.
+                warn!(
+                    "engine_arc lock poisoned during setup(): no session emitters/sinks \
+                     installed — GUI will not receive live auto-resolve/warm-pool/fea-case/\
+                     fea-diagnostics/fea-convergence/mode-shape/solver-progress events"
+                );
             }
 
             // Always create DebugBridge (inert when debug disabled — no JS listener, no HTTP server)
