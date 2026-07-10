@@ -708,20 +708,25 @@ type DiagnosticDedupKey = (
 /// De-duplicate a diagnostics vec by rendered content, preserving the order
 /// of first occurrence (amend, task ε #4957 review round 2).
 ///
-/// `edit_param` accumulates diagnostics from two independent sources that
-/// can both fire for the *same* consumer cell: the in-walk value loop's
-/// `try_eval_symbolic_topology_selector` fallback (drained from
-/// `selector_mint_diagnostics`) and the post-walk
-/// `re_eval_consumers_of_in_walk_mints_from_graph` pass (drained from
-/// `runtime_sink`). A consumer cell that (a) reads an upstream cell minted
-/// in-walk — so it qualifies for the post-walk re-eval pass — and (b) fails
-/// its *own* selector for a reason independent of that upstream, was
-/// visited (and diagnosed) once by the main loop AND once more by the
-/// post-walk pass, since neither loop tracks which cells the other already
-/// diagnosed. Before `selector_mint_diagnostics` existed the main-loop copy
-/// was silently dropped, so no duplication was possible; surfacing it
-/// (correctly, per the prior amendment) reopened this narrow duplicate-diagnostic
-/// edge case.
+/// Both `edit_param` and `edit_source` (below) accumulate diagnostics from
+/// two independent sources that can both fire for the *same* consumer
+/// cell: a selector-mint pass over the value loop (`edit_param`'s in-walk
+/// `try_eval_symbolic_topology_selector` fallback, drained from
+/// `selector_mint_diagnostics`; `edit_source`'s whole-module
+/// `mint_symbolic_topology_selectors_into_values`, pushed straight into
+/// `diagnostics`) and a post-walk consumer re-eval pass
+/// (`re_eval_consumers_of_in_walk_mints_from_graph`, reached via
+/// `edit_param`'s direct call or `edit_source`'s
+/// `re_eval_post_walk_mints_from_graph` wrapper). A consumer cell that (a)
+/// reads an upstream cell minted by the first pass — so it qualifies for
+/// the post-walk re-eval pass — and (b) fails its *own* selector for a
+/// reason independent of that upstream, gets visited (and diagnosed) once
+/// by the first pass AND once more by the post-walk pass, since neither
+/// pass tracks which cells the other already diagnosed. Before
+/// `selector_mint_diagnostics` existed, `edit_param`'s main-loop copy was
+/// silently dropped, so no duplication was possible there; surfacing it
+/// (correctly, per the prior amendment) reopened this narrow
+/// duplicate-diagnostic edge case for both entry points.
 ///
 /// [`Diagnostic`] has no `PartialEq`/`Hash` derive (it lives in
 /// `reify-core`, outside this task's locked module), so this keys on the
@@ -729,30 +734,45 @@ type DiagnosticDedupKey = (
 /// severity, code, message, label `(span, message)` pairs, and candidates —
 /// rather than requiring an upstream derive change.
 ///
-/// # Caller scope (amend, task ε #4957 review round 4)
+/// # Caller scope (amend, task ε #4957 review rounds 4-5)
 ///
-/// The sole call site (`edit_param`, below) invokes this ONLY on the
-/// `runtime_sink` + `selector_mint_diagnostics` suffix it appends
-/// immediately before calling this function — NOT on the full
-/// `diagnostics` vec. Earlier-pushed constraint-solver
-/// (`SolveResult::Infeasible`/`NoProgress`) and collection-count-resize
-/// diagnostics come from independent per-entity-group / per-collection-sub
-/// loops, where two genuinely distinct violations CAN render identically
-/// (e.g. two unrelated entity groups both hitting the solver's generic
-/// `NoProgress` reason string). Deduping those against each other would
-/// silently undercount real, independent occurrences, so the call site
-/// excludes them from this function's input by construction (see the
-/// `split_off` there). Within the runtime_sink/selector_mint suffix
-/// itself, identical rendering IS treated as identity by design — that
-/// pair is the genuine two-source same-cell duplicate described above,
-/// and this is the same rendered-identity approximation this function
-/// already relies on in lieu of an upstream `PartialEq`/`Hash` derive.
+/// Both call sites invoke this ONLY on the specific two-source overlap
+/// described above — NEVER on the full `diagnostics` vec, and NEVER on a
+/// function-wide `runtime_sink` that also collects independent per-cell
+/// warnings (sampled-field OOB, RBF/Kriging fallbacks) from every other
+/// `eval_expr` call in the walk. Two genuinely distinct such warnings CAN
+/// render identically (e.g. two unrelated entity groups both hitting the
+/// solver's generic `NoProgress` reason string, or two unrelated cells
+/// both hitting the same OOB warning) — deduping across them would
+/// silently undercount real, independent occurrences. Concretely:
 ///
-/// `edit_param` is on the interactive LSP edit hot path and the
-/// overwhelmingly common case is 0 or 1 diagnostics, where a duplicate is
-/// impossible by construction — so that case returns `diags` unchanged
-/// before touching the `HashSet` or cloning any diagnostic field (amend,
-/// task ε #4957 review round 3).
+/// - `edit_param` runs its post-walk re-eval pass against a dedicated
+///   `post_walk_mint_reeval_sink` (NOT the function-wide `runtime_sink`)
+///   and dedups exactly `post_walk_mint_reeval_sink` +
+///   `selector_mint_diagnostics` (round 5, narrowing round 4's
+///   `runtime_sink`-suffix scoping, which was itself too broad — see the
+///   call site). `runtime_sink` itself, and the earlier-pushed
+///   constraint-solver / collection-count-resize diagnostics, are appended
+///   untouched.
+/// - `edit_source` already fully drains (and empties) its function-wide
+///   `runtime_sink` before its selector-mint/post-walk-reeval sequence
+///   runs, and nothing else writes to it in between, so its two-source
+///   overlap is safely isolated with a plain `split_off` from a
+///   pre-recorded length snapshot rather than needing a dedicated sink
+///   (round 5, `reviewer_comprehensive/design_coherence`; parity with
+///   `edit_param`'s fix).
+///
+/// Within each call site's own overlap, identical rendering IS treated as
+/// identity by design — that pair is the genuine two-source same-cell
+/// duplicate described above, and this is the same rendered-identity
+/// approximation this function already relies on in lieu of an upstream
+/// `PartialEq`/`Hash` derive.
+///
+/// Both call sites are on the interactive LSP edit hot path and the
+/// overwhelmingly common case is 0 or 1 diagnostics in the deduped slice,
+/// where a duplicate is impossible by construction — so that case returns
+/// `diags` unchanged before touching the `HashSet` or cloning any
+/// diagnostic field (amend, task ε #4957 review round 3).
 fn dedup_diagnostics_preserve_order(diags: Vec<Diagnostic>) -> Vec<Diagnostic> {
     if diags.len() < 2 {
         return diags;
@@ -1166,13 +1186,27 @@ impl Engine {
         // see `reeval_cone_cell`'s doc: a solver phase later in this function
         // would otherwise leave this re-eval's cache entries at a stale
         // version.
+        //
+        // Dedicated sink, NOT the function-wide `runtime_sink` (amend, task
+        // ε #4957 review round 5, `reviewer_comprehensive/robustness`):
+        // `runtime_sink` accumulates independent per-cell warnings from
+        // every OTHER `eval_expr` call in this walk (sampled-field OOB,
+        // RBF/Kriging fallbacks), where two genuinely distinct occurrences
+        // CAN render identically — the same risk the constraint-solver /
+        // collection-count-resize diagnostics near the return are already
+        // excluded from. Keeping this pass's output separate lets the
+        // dedup near the return see only the true two-source same-cell
+        // overlap (`selector_mint_diagnostics` vs. this pass), never
+        // `runtime_sink`'s unrelated warnings — see
+        // `dedup_diagnostics_preserve_order`'s doc.
+        let post_walk_mint_reeval_sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
         self.re_eval_consumers_of_in_walk_mints_from_graph(
             &new_snapshot.graph,
             &mut values,
             &mut new_snapshot.values,
             minted_in_walk,
             &functions,
-            &runtime_sink,
+            &post_walk_mint_reeval_sink,
             new_snapshot.version.0,
         );
 
@@ -2378,38 +2412,36 @@ impl Engine {
         // Drain runtime diagnostics (task 2341 step-16) into the result
         // diagnostics vec. The sink was populated by `eval_expr` calls
         // above whenever sampled-field OOB queries or RBF/Kriging
-        // fallbacks emitted warnings via `EvalContext::diagnostics`.
-        //
-        // Snapshot the prefix length first (amend, task ε #4957 review
-        // round 4, `reviewer_comprehensive/robustness`): `diagnostics`
-        // already holds constraint-solver (`Infeasible`/`NoProgress`, one
-        // independent solve per entity group) and collection-count-resize
-        // warnings (one independent check per collection-sub) pushed
-        // earlier in this function. Those are NOT part of the
-        // selector-mint/runtime-sink overlap the dedup below targets —
-        // deduping them against each other risks silently collapsing two
-        // genuinely-independent violations that happen to render
-        // identically (e.g. two unrelated entity groups both hitting the
-        // solver's generic `NoProgress` reason string) — so `split_off`
-        // below excludes them from the dedup pass by construction.
-        let pre_overlap_len = diagnostics.len();
+        // fallbacks emitted warnings via `EvalContext::diagnostics` — one
+        // independent occurrence per cell/call site, so two entries that
+        // happen to render identically are still two genuine occurrences.
+        // Appended untouched, same treatment as the constraint-solver
+        // (`Infeasible`/`NoProgress`) and collection-count-resize
+        // diagnostics pushed earlier in this function: NOT part of the
+        // selector-mint/post-walk-reeval overlap the dedup below targets
+        // (amend, task ε #4957 review round 5,
+        // `reviewer_comprehensive/robustness`, narrowing round 4's
+        // `runtime_sink`-suffix scoping, which was itself too broad — see
+        // `post_walk_mint_reeval_sink`'s declaration above for why that
+        // pass no longer shares this sink).
         diagnostics.append(&mut runtime_sink.borrow_mut());
-        // Drain selector-mint diagnostics (amend, task ε #4957 review):
-        // populated above by `try_eval_symbolic_topology_selector` calls
-        // during the in-walk mint retry — see the comment at that call site.
-        diagnostics.append(&mut selector_mint_diagnostics);
-        // De-duplicate (amend, task ε #4957 review round 2): a consumer
-        // cell that reads an upstream in-walk mint AND independently fails
-        // its own selector can be diagnosed both by the main loop above
-        // (into `selector_mint_diagnostics`) and by
+        // De-duplicate (amend, task ε #4957 review round 2, narrowed round
+        // 5): a consumer cell that reads an upstream in-walk mint AND
+        // independently fails its own selector can be diagnosed both by the
+        // main loop above (into `selector_mint_diagnostics`) and by
         // `re_eval_consumers_of_in_walk_mints_from_graph` a few lines above
-        // (into `runtime_sink`) — see `dedup_diagnostics_preserve_order`'s
-        // doc. No-op on the happy path (all diagnostics already distinct).
-        // Scoped to just the runtime_sink/selector_mint suffix appended
-        // above (round 4): the constraint-solver/collection-count prefix
-        // captured in `pre_overlap_len` is left untouched by `split_off`.
-        let overlap_suffix = diagnostics.split_off(pre_overlap_len);
-        diagnostics.extend(dedup_diagnostics_preserve_order(overlap_suffix));
+        // (into `post_walk_mint_reeval_sink`) — see
+        // `dedup_diagnostics_preserve_order`'s doc. No-op on the happy path
+        // (both sinks are typically empty). Scoped to exactly that pair —
+        // NEVER `runtime_sink` — since `runtime_sink` collects independent
+        // per-cell warnings from every OTHER `eval_expr` call in this walk,
+        // where two distinct occurrences CAN render identically; deduping
+        // it away would silently undercount them (the same hazard round 4
+        // already excluded the constraint-solver/collection-count prefix
+        // from).
+        let mut overlap = post_walk_mint_reeval_sink.into_inner();
+        overlap.append(&mut selector_mint_diagnostics);
+        diagnostics.extend(dedup_diagnostics_preserve_order(overlap));
 
         Ok(EvalResult {
             values,
@@ -3887,6 +3919,20 @@ impl Engine {
             &self.meta_map,
         );
 
+        // Snapshot the length here (amend, task ε #4957 review round 5,
+        // `reviewer_comprehensive/design_coherence`): the whole-module
+        // selector-mint pass just below and the post-walk consumer re-eval
+        // pass further down are the same two-source same-cell-duplicate
+        // pair `edit_param` guards against — see
+        // `dedup_diagnostics_preserve_order`'s doc. `runtime_sink` was
+        // already fully drained just above, and nothing else writes to it
+        // before the post-walk-reeval call below, so — unlike `edit_param`,
+        // which needs a dedicated sink because its `runtime_sink` stays
+        // live for the rest of the function — a plain length snapshot here
+        // plus `split_off` after that call is enough to isolate exactly
+        // this overlap.
+        let pre_overlap_len = diagnostics.len();
+
         // R2b symbolic selector-mint pass (task #4653, step-6): mirrors the
         // eval() and eval_cached() calls above so the edit/incremental path
         // also sees symbolic topology selectors.  Runs after handle-mint.
@@ -3935,6 +3981,19 @@ impl Engine {
             new_snapshot.version.0,
             &mut diagnostics,
         );
+        // De-duplicate (amend, task ε #4957 review round 5, parity with
+        // `edit_param`): a consumer cell that reads an upstream cell minted
+        // by the whole-module selector-mint pass above AND independently
+        // fails its own selector can be diagnosed once by that pass (pushed
+        // directly into `diagnostics`) and once more by the post-walk
+        // re-eval call just above (drained from `runtime_sink` inside
+        // `re_eval_post_walk_mints_from_graph`). No-op on the happy path
+        // (typically 0 or 1 diagnostics in this suffix). Scoped to exactly
+        // the suffix pushed since `pre_overlap_len` above — see
+        // `dedup_diagnostics_preserve_order`'s doc for why that's safe here
+        // without a dedicated sink.
+        let overlap_suffix = diagnostics.split_off(pre_overlap_len);
+        diagnostics.extend(dedup_diagnostics_preserve_order(overlap_suffix));
 
         // (15) Install the new snapshot, dep structures, and demand; record
         //      actual_eval_set (excludes early-cutoff-skipped nodes).
