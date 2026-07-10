@@ -1618,6 +1618,77 @@ mod tests {
         }
     }
 
+    /// Pins the equivalence-boundary half of the [`MANIFOLD_INGEST_TOL`]
+    /// claim: pre-ingest validation must not reject any triangle
+    /// `from_mesh_f64` would itself have accepted. The genuine risk is
+    /// `MeshInvariant::NonDegenerate`, whose `tol = 0.0` rejects only
+    /// *exactly*-zero-area triangles — this test exercises a triangle
+    /// deliberately close to that boundary (a sliver of twice-area `1e-4`,
+    /// vs. `0.5`-ish for a normal cube-face triangle) but strictly nonzero,
+    /// and asserts `ingest_mesh` still returns `Ok`, rather than leaving the
+    /// "no new rejections beyond `from_mesh_f64`'s set" claim doc-only
+    /// (reviewer suggestion on task 5104).
+    ///
+    /// Built by fan-subdividing the unit cube's `-Z` face triangle `0,2,1`
+    /// (`v0=(0,0,0)`, `v2=(1,1,0)`, `v1=(1,0,0)`) around a new 9th vertex
+    /// `D = (0.5, 1e-4, 0.0)` placed just off the `v1`-`v0` edge, interior to
+    /// the original triangle: sub-triangles `0,2,8` and `2,1,8` retain
+    /// healthy area (twice-area `~0.5` each) and `1,0,8` is the sliver
+    /// (twice-area `1e-4`). A fan from an interior point preserves the
+    /// parent triangle's winding for every sub-triangle, and each of the 3
+    /// original boundary directed edges (`0->2`, `2->1`, `1->0`) is emitted
+    /// unchanged — so they still pair with their pre-existing neighbors
+    /// (`2->0` in `0,3,2`; `1->2` in the `+X` face's `1,2,6`; `0->1` in the
+    /// `-Y` face's `0,1,5`) exactly as before the split. The 3 new internal
+    /// "spoke" edges touching `8` pair reverse with each other within the
+    /// fan itself (`2->8`/`8->2`, `1->8`/`8->1`, `0->8`/`8->0`). So `Closed`
+    /// and `ConsistentWinding` both still hold on the whole mesh unchanged;
+    /// only `NonDegenerate`'s zero-area boundary is actually exercised.
+    #[test]
+    fn ingest_mesh_accepts_valid_mesh_with_sliver_triangle_at_nondegenerate_boundary() {
+        let mesh = Mesh {
+            #[rustfmt::skip]
+            vertices: vec![
+                0.0, 0.0, 0.0, // 0
+                1.0, 0.0, 0.0, // 1
+                1.0, 1.0, 0.0, // 2
+                0.0, 1.0, 0.0, // 3
+                0.0, 0.0, 1.0, // 4
+                1.0, 0.0, 1.0, // 5
+                1.0, 1.0, 1.0, // 6
+                0.0, 1.0, 1.0, // 7
+                0.5, 1.0e-4, 0.0, // 8 — sliver apex, just off the v1-v0 edge
+            ],
+            #[rustfmt::skip]
+            indices: vec![
+                // -Z bottom: `0,2,1` fan-subdivided around vertex 8 (the
+                // sliver is `1,0,8`); `0,3,2` unchanged.
+                0, 2, 8,  2, 1, 8,  1, 0, 8,  0, 3, 2,
+                // +Z top
+                4, 5, 6,  4, 6, 7,
+                // -Y front
+                0, 1, 5,  0, 5, 4,
+                // +Y back
+                3, 7, 6,  3, 6, 2,
+                // -X left
+                0, 4, 7,  0, 7, 3,
+                // +X right
+                1, 2, 6,  1, 6, 5,
+            ],
+            normals: None,
+        };
+
+        let result = ManifoldKernel::new().ingest_mesh(&mesh);
+
+        assert!(
+            result.is_ok(),
+            "a closed, consistently-wound mesh containing one nonzero-area \
+             sliver triangle must still ingest — MANIFOLD_INGEST_TOL = 0.0 \
+             must reject only exactly-zero-area triangles, matching \
+             from_mesh_f64's tolerance; got {result:?}",
+        );
+    }
+
     /// Pins the round-trip contract for `ManifoldKernel::ingest_mesh`: a
     /// valid closed-orientable mesh (the canonical `unit_cube_mesh` fixture)
     /// ingests without error and tessellates back to a geometrically faithful
