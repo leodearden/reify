@@ -96,6 +96,8 @@
 #   REIFY_WARM_LANE_GC_SEED_SCRIPT      — default --seed-script
 #   REIFY_WARM_LANE_GC_STATUS_CMD       — default --status-cmd; falls back to
 #                                         REIFY_LANE_LEAK_STATUS_CMD if unset
+#   REIFY_WARM_LANE_GC_DISK_PRESSURE    — default --disk-pressure (any non-empty
+#                                         value = on); off by default
 #
 # Design notes:
 #   - --mount is the dark-factory consumer interface.  Dark-factory passes the same
@@ -179,6 +181,9 @@ Usage: $(basename "$0") reclaim --mount WORKTREE_BASE [OPTIONS]
     --status-cmd PATH     Advisory status oracle for Tier-3 terminal-task reclaim
                           (default: REIFY_WARM_LANE_GC_STATUS_CMD, falling back to
                           REIFY_LANE_LEAK_STATUS_CMD).
+    --disk-pressure       Fast-path: reclaim via `rm -rf <lane>/target` instead
+                          of the α reflink-reseed clone (default:
+                          REIFY_WARM_LANE_GC_DISK_PRESSURE). Off by default.
     -h, --help            Print this message and exit.
 
   Exit codes:
@@ -205,6 +210,8 @@ SEED_SCRIPT="${REIFY_WARM_LANE_GC_SEED_SCRIPT:-}"
 # warm-lane-degenerate-ref-check.sh) so one env var lights up both the
 # advisory detector and this reclaimer.
 STATUS_CMD="${REIFY_WARM_LANE_GC_STATUS_CMD:-${REIFY_LANE_LEAK_STATUS_CMD:-}}"
+# Disk-pressure fast-path (task 5167): any non-empty value = on; off by default.
+DISK_PRESSURE="${REIFY_WARM_LANE_GC_DISK_PRESSURE:-}"
 
 # ── arg parsing ────────────────────────────────────────────────────────────────
 SUBCOMMAND=""
@@ -237,6 +244,8 @@ while [ $# -gt 0 ]; do
         --status-cmd)
             [ $# -ge 2 ] || { err "--status-cmd requires a value"; exit 2; }
             STATUS_CMD="$2"; shift 2 ;;
+        --disk-pressure)
+            DISK_PRESSURE="1"; shift ;;
         reclaim)
             SUBCOMMAND="reclaim"; shift ;;
         -*)
@@ -500,20 +509,40 @@ _do_reclaim() {
             continue
         fi
 
-        # Invoke α while the lane lock is held in the parent shell.
-        # The action subshell inherits FD 8; the parent still owns the lock.
-        # Also hold flock -s on the gen lock (D8 reader-refcount seam).
-        info "  resetting lane: $name"
-        if (
-            exec 9>"$gen_lock"
-            flock -s 9
-            "$SEED_SCRIPT" "$resolved_gen" "$lane" --fresh-checkout
-        ) 2>&1 | while IFS= read -r line; do warn "  [seed] $line"; done; then
-            ok "  reset lane: $name"
-            reset_count=$((reset_count + 1))
+        if [ -n "$DISK_PRESSURE" ]; then
+            # Disk-pressure fast-path (task 5167): delete target/ outright
+            # instead of invoking the α reflink-reseed clone — no transient
+            # 2×-space requirement (the clone briefly needs old+new to
+            # coexist; a straight rm never does). Valid because acquire_lane
+            # ALWAYS re-seeds from base (D10 §9.5), so an empty/missing
+            # target/ is a legal lane state. No gen-lock needed here: unlike
+            # α, this path never reads the base/gen tree. Still under the
+            # lane flock acquired above, mirroring the manual 2026-07-10
+            # remediation.
+            info "  resetting lane (disk-pressure): $name"
+            if rm -rf "$lane/target" 2>/dev/null; then
+                ok "  reset lane (disk-pressure): $name"
+                reset_count=$((reset_count + 1))
+            else
+                warn "  disk-pressure reset failed for $name (rm error); continuing"
+                preserved_count=$((preserved_count + 1))
+            fi
         else
-            warn "  reset failed for $name (seed-script error); continuing"
-            preserved_count=$((preserved_count + 1))
+            # Invoke α while the lane lock is held in the parent shell.
+            # The action subshell inherits FD 8; the parent still owns the lock.
+            # Also hold flock -s on the gen lock (D8 reader-refcount seam).
+            info "  resetting lane: $name"
+            if (
+                exec 9>"$gen_lock"
+                flock -s 9
+                "$SEED_SCRIPT" "$resolved_gen" "$lane" --fresh-checkout
+            ) 2>&1 | while IFS= read -r line; do warn "  [seed] $line"; done; then
+                ok "  reset lane: $name"
+                reset_count=$((reset_count + 1))
+            else
+                warn "  reset failed for $name (seed-script error); continuing"
+                preserved_count=$((preserved_count + 1))
+            fi
         fi
         exec 8>&-  # release lane lock; NOT removed — persists as per-lane mutex
     done
