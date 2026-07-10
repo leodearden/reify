@@ -115,6 +115,44 @@ pub fn diff_whole<T: Clone + PartialEq>(old: &[T], new: &[T]) -> Option<Vec<T>> 
 ///     <classified field>*
 /// }
 /// ```
+///
+/// # Examples
+///
+/// A minimal, fully-classified field compiles:
+///
+/// ```
+/// reify_gui::gui_state! {
+///     state=DocState, delta=DocDelta, diff_fn=diff_doc, events_fn=doc_events;
+///     full_reload_only("documented example — synced by some other mechanism")
+///     note: String,
+/// }
+///
+/// let state = DocState { note: "hello".to_string() };
+/// assert_eq!(state.note, "hello");
+/// ```
+///
+/// A field with no leading classification token (`diffed keyed(..)` /
+/// `diffed whole(..)` / `full_reload_only(..)`) matches no arm of the
+/// muncher below, so it fails to compile. This is the INV-GUI-1 enforcement
+/// mechanism: an unclassified `GuiState` field is unrepresentable.
+///
+/// ```compile_fail
+/// reify_gui::gui_state! {
+///     state=DocState, delta=DocDelta, diff_fn=diff_doc, events_fn=doc_events;
+///     note: String,
+/// }
+/// ```
+///
+/// A `full_reload_only` field's reason must be non-empty; an empty reason
+/// fails to compile via a `const` assertion:
+///
+/// ```compile_fail
+/// reify_gui::gui_state! {
+///     state=DocState, delta=DocDelta, diff_fn=diff_doc, events_fn=doc_events;
+///     full_reload_only("")
+///     note: String,
+/// }
+/// ```
 // Hygiene note: `old`/`new`/`cur`/`dst`/`evs` name the diff_fn/full/events_fn
 // parameters and the events accumulator local. They are threaded through
 // every `@munch` step as `ident` metavariables (minted ONCE, in the entry
