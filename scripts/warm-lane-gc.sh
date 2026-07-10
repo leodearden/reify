@@ -112,17 +112,20 @@
 #   - inv.preserve shared predicate (_is_reclaimable): skip on dirty tracked changes
 #     (git status --porcelain), unlanded ahead-of-main (merge-base --is-ancestor),
 #     or live consumer (flock -n -x <dir>.lock fails).
-#   - Tier-3 terminal-task reclaim (Pass 1 only, task 5167): a lane checked out
-#     on an attached task/NNNN branch whose backing task is terminal (done or
-#     cancelled, per --status-cmd) is reclaimable REGARDLESS of dirty/
-#     ahead-of-main. This closes the rebase-orphan leak — a task landed via
-#     merge-train REBASE has its work on main under new SHAs, while its lane's
-#     task/NNNN tip is an orphan SHA that is never an ancestor of main, so
-#     _is_reclaimable's ahead-of-main check would otherwise preserve it
-#     forever. Consulted BEFORE _is_reclaimable; still gated behind the same
-#     live-consumer flock acquisition, so inv.2 (one consumer per lane) is
-#     unaffected. Unresolvable/unknown/non-terminal status falls through to
-#     the existing dirty/ahead-of-main tiers (fail-safe: preserve).
+#   - Tier-3 terminal-task reclaim (Pass 1 only, task 5167): a lane whose
+#     backing task/NNNN is terminal (done or cancelled, per --status-cmd) is
+#     reclaimable REGARDLESS of dirty/ahead-of-main. The backing task id is
+#     resolved from an attached task/NNNN branch, or — for a detached HEAD —
+#     from the sole refs/heads/task/* branch that contains HEAD (zero or
+#     ambiguous matches yield no id). This closes the rebase-orphan leak: a
+#     task landed via merge-train REBASE has its work on main under new SHAs,
+#     while its lane's task/NNNN tip is an orphan SHA that is never an
+#     ancestor of main, so _is_reclaimable's ahead-of-main check would
+#     otherwise preserve it forever. Consulted BEFORE _is_reclaimable; still
+#     gated behind the same live-consumer flock acquisition, so inv.2 (one
+#     consumer per lane) is unaffected. Unresolvable/unknown/non-terminal
+#     status falls through to the existing dirty/ahead-of-main tiers
+#     (fail-safe: preserve).
 #   - α reuse: resolve base symlink → concrete gen, hold flock -s during α call
 #     (D8 reader-refcount seam; same contract as the acquire path).
 #   - Safety-ranked order: reset lanes first (cheap), then remove orphans (destructive).
@@ -300,23 +303,51 @@ _is_git_worktree() {
 
 # ── Tier-3: backing-task resolution + terminal-status check ──────────────────
 # _backing_task_id <dir>
-# Prints the numeric task id when <dir>'s HEAD is on an attached branch named
-# task/NNNN (purely numeric NNNN); prints nothing otherwise (detached HEAD,
-# non-task branch, non-numeric id). Never fails under set -e — a non-zero
-# symbolic-ref (detached HEAD) is guarded with `|| true`.
+# Prints the numeric task id backing <dir>'s HEAD, or nothing if none can be
+# resolved. Never fails under set -e (all git calls guarded with `|| true`).
+# Two resolution paths:
+#   attached  — HEAD is on a branch named task/NNNN (purely numeric NNNN).
+#   detached  — HEAD is detached; enumerate refs/heads/task/* branches that
+#               CONTAIN HEAD (i.e. HEAD is an ancestor of the branch tip, the
+#               case when a lane is detached at a task branch's own tip) and
+#               use the id ONLY when exactly one DISTINCT task/NNNN branch
+#               matches. Zero or ambiguous (>1) matches → no id, so the lane
+#               falls through to the existing dirty/ahead-of-main tiers.
+# A non-empty `git symbolic-ref --short HEAD` result always means "attached"
+# (the command never succeeds with empty output), so that alone distinguishes
+# the two paths without a separate exit-status capture.
 _backing_task_id() {
     local dir="$1"
     local br id
     br="$(git -C "$dir" symbolic-ref --short HEAD 2>/dev/null || true)"
-    case "$br" in
-        task/*)
-            id="${br#task/}"
-            case "$id" in
-                ''|*[!0-9]*) return 0 ;;  # non-numeric id — no match
-            esac
-            printf '%s' "$id"
-            ;;
-    esac
+    if [ -n "$br" ]; then
+        case "$br" in
+            task/*)
+                id="${br#task/}"
+                case "$id" in
+                    ''|*[!0-9]*) return 0 ;;  # non-numeric id — no match
+                esac
+                printf '%s' "$id"
+                ;;
+        esac
+        return 0  # attached to a non-task (or non-numeric-task) branch — no id
+    fi
+
+    # Detached HEAD: resolve via containing task/* branches.
+    local -a ids=()
+    local ref rid
+    while IFS= read -r ref; do
+        [ -n "$ref" ] || continue
+        rid="${ref#task/}"
+        case "$rid" in
+            ''|*[!0-9]*) continue ;;  # non-numeric id — skip
+        esac
+        ids+=("$rid")
+    done < <(git -C "$dir" for-each-ref --format='%(refname:short)' --contains HEAD refs/heads/task/* 2>/dev/null || true)
+
+    if [ "${#ids[@]}" -eq 1 ]; then
+        printf '%s' "${ids[0]}"
+    fi
     return 0
 }
 
