@@ -2281,4 +2281,80 @@ structure S {
             check_result.constraint_results
         );
     }
+
+    /// RED→GREEN driver for task 5078 (PRD `compute-fea-hardening.md` task
+    /// C2). Under the trampoline-free posture (see
+    /// [`compute_diagnostics_with_state`]'s doc comment), an FEA-result
+    /// constraint checks as `Satisfaction::Indeterminate` and — absent this
+    /// hint — produces no diagnostic at all, silently indistinguishable
+    /// from "no constraint" (neither the `violated_messages` skip-set nor
+    /// the span-aware `Satisfaction::Violated` ERROR loop emit anything for
+    /// `Indeterminate`). This locks that `compute_diagnostics_with_state`
+    /// emits one `Severity::Info` hint per Indeterminate constraint over the
+    /// FEA-only [`FEA_BEARING_SRC`] fixture, anchored to that constraint's
+    /// span, with the exact wording and source specified by the task.
+    #[test]
+    fn fea_indeterminate_constraint_emits_info_hint() {
+        let uri = test_uri();
+        let parsed =
+            reify_compiler::parse_with_stdlib(FEA_BEARING_SRC, ModulePath::single("test"));
+        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+
+        let mut state = EvalState::new();
+        let result = compute_diagnostics_with_state(&mut state, FEA_BEARING_SRC, &uri);
+
+        const HINT_MESSAGE: &str = "FEA constraint not evaluated in editor — run `reify test`";
+        let hints: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Some(DiagnosticSeverity::INFORMATION) && d.message == HINT_MESSAGE
+            })
+            .collect();
+        for hint in &hints {
+            assert_eq!(
+                hint.source,
+                Some("reify".to_string()),
+                "FEA hint must carry source \"reify\"; got: {hint:#?}"
+            );
+        }
+
+        // Compute the expected count dynamically (not a hardcoded magic
+        // number): read the persistent engine's snapshot for the content it
+        // just evaluated and count Indeterminate constraints (mirrors the
+        // stateful surface in
+        // `fea_bearing_constraint_produces_no_false_violation_or_false_pass`).
+        let check_result = state.engine.check_snapshot(&compiled).expect(
+            "state.engine should hold a snapshot for FEA_BEARING_SRC's content hash \
+             immediately after compute_diagnostics_with_state evaluated it",
+        );
+        let indeterminate_count = check_result
+            .constraint_results
+            .iter()
+            .filter(|e| e.satisfaction == Satisfaction::Indeterminate)
+            .count();
+        assert!(
+            indeterminate_count >= 1,
+            "fixture sanity: expected >= 1 Indeterminate constraint; got \
+             constraint_results: {:#?}",
+            check_result.constraint_results
+        );
+
+        assert_eq!(
+            hints.len(),
+            indeterminate_count,
+            "expected one FEA-not-evaluated hint per Indeterminate constraint \
+             ({indeterminate_count}); got {} hints: {:#?}",
+            hints.len(),
+            hints
+        );
+
+        for hint in &hints {
+            assert!(
+                hint.range.start != hint.range.end,
+                "hint range must be anchored to the constraint's span, not a \
+                 default/empty range; got: {hint:#?}"
+            );
+        }
+    }
 }
