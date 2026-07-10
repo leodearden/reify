@@ -1689,6 +1689,61 @@ mod tests {
         );
     }
 
+    /// Pins the weld-before-validate ordering that `manifold_from_reify_mesh`'s
+    /// rustdoc documents (and that `ingest_mesh`'s "Error surface" section
+    /// relies on): the weld-time triangle-index bounds check runs *before*
+    /// `Mesh::validate`, so an out-of-range triangle index is rejected as
+    /// `GeometryError::OperationFailed(_)` — a distinct error class from the
+    /// `MeshContractViolation` that `Mesh::validate`'s `IndexValid` obligation
+    /// would otherwise report for the same defect.
+    ///
+    /// Without this test, a future refactor that moved `mesh.validate(..)`
+    /// ahead of the weld's bounds check would silently flip this input's
+    /// error class from `OperationFailed` to `MeshContractViolation`,
+    /// changing the documented public error surface with nothing to catch
+    /// it (reviewer suggestion on task 5104).
+    ///
+    /// Fixture: a single triangle over 3 vertices (valid indices `0..=2`)
+    /// with one index (`3`) one-past-the-end. `indices.len() == 3` satisfies
+    /// `ingest_mesh`'s multiple-of-3 pre-check, so the input reaches
+    /// `manifold_from_reify_mesh` and specifically exercises the weld's
+    /// `old_to_new.get(3) == None` bounds-check branch — before
+    /// `mesh.validate(..)` is ever called.
+    #[test]
+    fn ingest_mesh_out_of_range_triangle_index_returns_operation_failed() {
+        let mut kernel = ManifoldKernel::new();
+        let bad_mesh = Mesh {
+            vertices: vec![
+                0.0_f32, 0.0, 0.0, // v0
+                1.0, 0.0, 0.0, // v1
+                0.0, 1.0, 0.0, // v2
+            ],
+            // Only 3 vertices exist (valid indices 0..=2); index 3 is out
+            // of range and must be caught by the weld's bounds check.
+            indices: vec![0, 1, 3],
+            normals: None,
+        };
+
+        let result = kernel.ingest_mesh(&bad_mesh);
+
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("out of range"),
+                    "OperationFailed payload should explain the out-of-range \
+                     triangle index for debuggability; got: {msg:?}",
+                );
+            }
+            other => panic!(
+                "ingest_mesh with an out-of-range triangle index must return \
+                 Err(GeometryError::OperationFailed(_)) — the weld-time bounds \
+                 check in manifold_from_reify_mesh runs BEFORE Mesh::validate, \
+                 so this is a distinct error class from MeshContractViolation; \
+                 got {other:?}"
+            ),
+        }
+    }
+
     /// Pins the round-trip contract for `ManifoldKernel::ingest_mesh`: a
     /// valid closed-orientable mesh (the canonical `unit_cube_mesh` fixture)
     /// ingests without error and tessellates back to a geometrically faithful
