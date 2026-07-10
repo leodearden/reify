@@ -763,11 +763,12 @@ mod tests {
         for (label, case) in cases {
             match std::panic::catch_unwind(case) {
                 Err(err) => {
-                    let msg = err
-                        .downcast_ref::<String>()
-                        .map(|s| s.as_str())
-                        .or_else(|| err.downcast_ref::<&str>().copied())
-                        .unwrap_or("");
+                    // Non-string payload falls back to the shared helper's sentinel
+                    // "<non-string panic payload>" (this test-local idiom previously
+                    // returned "" for that case). Unobservable here: `assert!`
+                    // panics always carry a String payload, so `msg` never actually
+                    // takes the fallback branch — noted for future readers only.
+                    let msg = reify_core::panic_payload_to_string(err.as_ref());
                     if !msg.contains(label) {
                         failures.push(format!("label {label:?}: panic message was {msg:?}"));
                     }
@@ -821,11 +822,7 @@ mod tests {
             );
         });
         let err = result.expect_err("expected assert_orientation_approx with tight tol to panic");
-        let msg = err
-            .downcast_ref::<String>()
-            .map(|s| s.as_str())
-            .or_else(|| err.downcast_ref::<&str>().copied())
-            .unwrap_or("");
+        let msg = reify_core::panic_payload_to_string(err.as_ref());
         assert!(
             msg.contains("x:"),
             "expected panic message to contain 'x:', got: {msg:?}"
@@ -963,11 +960,7 @@ mod tests {
         let err = result.expect_err(
             "expected assert_orientation_approx sign_insensitive to panic for wrong value",
         );
-        let msg = err
-            .downcast_ref::<String>()
-            .map(|s| s.as_str())
-            .or_else(|| err.downcast_ref::<&str>().copied())
-            .unwrap_or("");
+        let msg = reify_core::panic_payload_to_string(err.as_ref());
         assert!(
             msg.contains("expected Orientation(\u{b1}"),
             "expected panic message to contain 'expected Orientation(\u{b1}', got: {msg:?}"
@@ -2820,11 +2813,7 @@ mod tests {
             elementary_rotation_quat(3, 0.0);
         });
         let err = result.expect_err("expected elementary_rotation_quat(3, ...) to panic");
-        let msg = err
-            .downcast_ref::<String>()
-            .map(|s| s.as_str())
-            .or_else(|| err.downcast_ref::<&str>().copied())
-            .unwrap_or("");
+        let msg = reify_core::panic_payload_to_string(err.as_ref());
         assert!(
             msg.contains("elementary_rotation_quat called with axis > 2"),
             "expected panic message to contain 'elementary_rotation_quat called with axis > 2', got: {msg:?}"
