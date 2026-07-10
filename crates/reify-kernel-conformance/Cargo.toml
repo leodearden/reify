@@ -1,0 +1,24 @@
+[package]
+name = "reify-kernel-conformance"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Kernel-pair conformance matrix: producer×consumer tests over real tessellated fixtures through produce→validate→consume→re-validate (kernel-seam ε, INV-GEO-2)"
+build = "build.rs"
+
+[dependencies]
+
+[dev-dependencies]
+reify-ir.workspace = true
+reify-kernel-occt.workspace = true
+# `mesh-morph` activates the gmsh attribution producer
+# (`mesh_surface_to_volume_attributed`) so the ξ arm (step-7/8) compiles
+# against the real attributed path — mirrors reify-eval/Cargo.toml's own
+# self-dev-dep feature activation.
+reify-kernel-gmsh = { workspace = true, features = ["mesh-morph"] }
+reify-kernel-manifold.workspace = true
+reify-eval.workspace = true
+
+[build-dependencies]
+reify-build-utils.workspace = true

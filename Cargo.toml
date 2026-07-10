@@ -15,6 +15,7 @@ members = [
     "crates/reify-doc",
     "crates/reify-doc-build",
     "crates/reify-geometry",
+    "crates/reify-kernel-conformance",
     "crates/reify-kernel-fidget",
     "crates/reify-kernel-gmsh",
     "crates/reify-kernel-manifold",
