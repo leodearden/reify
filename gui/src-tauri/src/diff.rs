@@ -365,8 +365,11 @@ pub fn delta_to_events(delta: &StateDelta) -> Vec<(String, serde_json::Value)> {
 /// On `Err(err)`: emits a `warn!` and pushes a `"serialization-error"` event
 /// with `item_type`, `item_id`, and `error` fields.
 ///
-/// `pub(crate)` so the test module in `src/tests/` can unit-test it directly.
-pub(crate) fn push_serialized_event(
+/// `pub` (bumped from `pub(crate)` for L5, task #5034) so the `gui_state!`
+/// macro's generated `events_fn` bodies (invoked from `crate::types`) and the
+/// macro's external-crate `compile_fail`/positive doctests can reach it, in
+/// addition to the test module in `src/tests/`.
+pub fn push_serialized_event(
     events: &mut Vec<(String, serde_json::Value)>,
     event_name: &str,
     item_type: &str,
