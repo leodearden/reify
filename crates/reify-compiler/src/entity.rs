@@ -6484,12 +6484,9 @@ structure def Manifold {
         assert_eq!(decl.solver_hints, solver_hints);
     }
 
-    /// Auto branch (`auto_free = Some(free)`): the returned decl must carry
-    /// `ValueCellKind::Auto { free }`, `default_expr: None`, and every other
-    /// field verbatim from the inputs — and `compile_default` must NOT be
-    /// invoked. None of the three original duplicated sites ever compiled a
-    /// default expression on the auto branch, so the extracted helper must
-    /// preserve that.
+    /// Auto branch (`auto_free = Some(free)`): `compile_default` must not be
+    /// invoked, and the decl must carry `Auto { free }`, `default_expr: None`,
+    /// and every other field verbatim from the inputs.
     #[test]
     fn build_param_value_cell_decl_auto_branch_skips_compile_default() {
         for free in [true, false] {
@@ -6533,50 +6530,16 @@ structure def Manifold {
         }
     }
 
-    /// Non-auto branch (`auto_free = None`): `compile_default` is invoked
-    /// with a `&Type` equal to `cell_type`, and `default_expr` must equal
-    /// whatever the closure returns — `Some` (a typed param with an
-    /// initializer) or `None` (no initializer). Loops over both cases,
-    /// mirroring the auto-branch test's `for free in [true, false]` shape
-    /// above. `CompiledExpr` has no `PartialEq` impl, so equality is pinned
-    /// via `content_hash`.
-    ///
-    /// Uses a distinct, non-dimensionless `cell_type` (`Type::length()`) rather
-    /// than `Type::dimensionless_scalar()` so the cell_type equality check
-    /// below isn't trivially satisfied by every dimensionless scalar
-    /// comparing equal to every other — this pins that the `&Type`
-    /// `compile_default` observes and the `Type` that ends up in
-    /// `decl.cell_type` are the *same* value flowing through the helper,
-    /// not merely two coincidentally-equal defaults.
-    ///
-    /// Unlike the auto-branch test above, this test does not call
-    /// `assert_param_decl_passthrough_fields` (amendment review round 2):
-    /// `id`/`span`/`visibility`/`is_aux` passthrough on the non-auto arm
-    /// writes the identical struct-literal shorthand as the auto arm (which
-    /// the test above already exercises via that helper), and `visibility`
-    /// specifically is additionally pinned end-to-end by
-    /// `priv_member_visibility_tests.rs` (`param`/`priv param` with a
-    /// non-auto default). `cell_type` and `solver_hints` are asserted
-    /// directly below instead, because they are NOT redundant: no
-    /// integration fixture anywhere in the suite attaches `@solver_hint` to
-    /// a non-`auto` param (every case in `solver_hint_tests.rs` decorates
-    /// `= auto`), so this unit test is the only place that pins
-    /// `solver_hints` flowing through the non-auto arm.
-    ///
-    /// Deliberately does NOT assert invocation count or diagnostic-observable-
-    /// immediately-after-return ordering (amendment review: those merely
-    /// re-verify that an `FnOnce` closure is invoked synchronously in a
-    /// ~15-line straight-line function, which the type system and the
-    /// helper's body already guarantee, not anything under test here). The
-    /// `default_expr`-equals-closure-return assertion below is sufficient:
-    /// it cannot pass unless the closure ran and its result flowed through.
-    /// End-to-end diagnostic behavior is covered by
-    /// `param_default_type_mismatch_tests.rs` and the guards.rs integration
-    /// tests.
+    /// Non-auto branch (`auto_free = None`): `compile_default` is invoked once
+    /// with `&cell_type`, and `default_expr` equals its return value;
+    /// `cell_type` and `solver_hints` flow through unchanged. `CompiledExpr`
+    /// has no `PartialEq`, so equality here is pinned via `content_hash`.
     #[test]
     fn build_param_value_cell_decl_param_branch_returns_compile_default_result() {
         for yields_default in [true, false] {
             let id = ValueCellId::new("TestEntity", "y");
+            // Non-dimensionless, so cell_type equality below isn't trivially
+            // satisfied by every dimensionless scalar comparing equal.
             let cell_type = Type::length();
             let span = SourceSpan::new(11, 19);
             let solver_hints = vec![SolverHint {
