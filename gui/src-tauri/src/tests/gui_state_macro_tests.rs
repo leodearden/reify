@@ -15,8 +15,13 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::gui_state_schema::gui_state;
+
+// `pub(crate)` (not private) so the `pub` fields the macro generates on
+// `MiniDelta` don't warn `private_interfaces` — mirrors how every real
+// `GuiState` item type (`MeshData`, `ValueData`, ...) is `pub`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct MiniItem {
+pub(crate) struct MiniItem {
     id: String,
     val: i64,
 }
@@ -28,7 +33,7 @@ fn item(id: &str, val: i64) -> MiniItem {
     }
 }
 
-crate::gui_state_schema::gui_state! {
+gui_state! {
     state=MiniState, delta=MiniDelta, diff_fn=diff_mini, events_fn=mini_events;
     diffed keyed(key=id, item="item", update="item-update", remove="item-removed", changed=changed_items, removed=removed_item_ids)
     items: Vec<MiniItem>,
