@@ -425,21 +425,20 @@ pub(crate) fn compile_guarded_members(
                 let solver_hints = extract_solver_hints(&lowered_annotations, diagnostics);
                 validate_solver_hint_collections(&solver_hints, scope, functions, diagnostics);
 
+                // `priv param` → hidden from external dot-access (task #3978 δ).
+                // Mirrors entity.rs Site 1 — `priv` IS grammatically legal on a
+                // guarded-block param, so thread `param.is_priv` through instead of
+                // hardcoding Public (#5161).
+                let visibility = if param.is_priv {
+                    Visibility::Private
+                } else {
+                    Visibility::Public
+                };
                 let decl = build_param_value_cell_decl(
                     id,
                     auto_free,
                     cell_type,
-                    // TODO(#5161): unconditionally Public — NOT priv-aware, unlike the
-                    // top-level structure-param site (entity.rs Site 1: `if param.is_priv {
-                    // Private } else { Public }`). `priv` IS grammatically legal on a
-                    // guarded-block param (grammar.js `param_declaration` always allows
-                    // `optional('priv')`, and `_guard_member`'s `commonMembers()` admits
-                    // `$.param_declaration`), so `param.is_priv` can be `true` here and
-                    // is silently dropped. This is a pre-existing asymmetry — the
-                    // original, pre-dedup guards.rs code also hardcoded Public — that
-                    // task #5058's decl-construction dedup preserves byte-for-byte
-                    // rather than fixes; #5161 tracks making it priv-aware.
-                    Visibility::Public,
+                    visibility,
                     solver_hints,
                     param.span,
                     |ct| {
