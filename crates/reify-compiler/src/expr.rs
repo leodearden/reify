@@ -1585,11 +1585,37 @@ pub(crate) fn compile_expr_guarded_with_expected(
                             coerce_zero_operand(left, compiled_left, right, compiled_right);
                     }
 
-                    let mut result_type = infer_binop_type(
-                        bin_op,
-                        &compiled_left.result_type,
-                        &compiled_right.result_type,
-                    );
+                    // Mul/Div (task compiler-type-hygiene β2 amendment round 3): compute
+                    // `infer_mul_div_result` exactly ONCE here and reuse the `Option` both
+                    // for `result_type` (via `type_compat::mul_div_result_or_placeholder`,
+                    // the same fallback `infer_binop_type`'s own Mul/Div arm delegates to)
+                    // and for the operand-kind guard's poison decision further below.
+                    // Previously each site called `infer_mul_div_result` independently, so
+                    // the guard's `is_none()` check and this placeholder fallback had to be
+                    // kept in lockstep only by convention. `mul_div_inferred` is `Some(_)`
+                    // (outer) exactly when `bin_op` is `Mul`/`Div`; the guard's `if let
+                    // Some(None) = &mul_div_inferred` below relies on that to stay a no-op
+                    // for every other operator.
+                    let mul_div_inferred = matches!(bin_op, BinOp::Mul | BinOp::Div).then(|| {
+                        type_compat::infer_mul_div_result(
+                            bin_op,
+                            &compiled_left.result_type,
+                            &compiled_right.result_type,
+                        )
+                    });
+
+                    let mut result_type = match &mul_div_inferred {
+                        Some(inferred) => type_compat::mul_div_result_or_placeholder(
+                            inferred.clone(),
+                            &compiled_left.result_type,
+                            &compiled_right.result_type,
+                        ),
+                        None => infer_binop_type(
+                            bin_op,
+                            &compiled_left.result_type,
+                            &compiled_right.result_type,
+                        ),
+                    };
 
                     // Dimension-scaling for `Scalar<Q> ^ n → Scalar<Q^n>` (task-3805 / PRD §4.3).
                     //
@@ -1846,15 +1872,21 @@ pub(crate) fn compile_expr_guarded_with_expected(
                     // pairing the runtime evaluator (`eval_mul`/`eval_div`) has no
                     // intentional arm for — a structural, kind-level `Value::Undef`. See
                     // `infer_mul_div_result`'s doc for the full supported/unsupported
-                    // partition, pinned against the β1 runtime truth table.
+                    // partition, pinned against the β1 runtime truth table. The `None`
+                    // itself was already computed once, above, into `mul_div_inferred` —
+                    // reused here (amendment round 3) instead of calling
+                    // `infer_mul_div_result` a second time.
                     //
                     // Gradualism: skip when either operand is already `Type::Error`
-                    // (poison), `Type::TypeParam(_)` (unresolved generic), or
+                    // (poison), `Type::TypeParam(_)` (unresolved generic),
                     // `Type::Projection { base: Type::TypeParam(_), .. }` (unresolved
                     // trait-associated-type reference, e.g. `P::MotionValue` used inside
                     // the generic `structure def Coupling<P: DrivingJoint + HasMotion>`
-                    // that declares `P`, BEFORE a concrete arg is substituted for `P`) —
-                    // mirrors the Cmp/logical guards' skip (PRD decision 3 / §8 row 8).
+                    // that declares `P`, BEFORE a concrete arg is substituted for `P`), or
+                    // `Type::ScalarParam(_)` (unresolved dimension-kinded generic param,
+                    // e.g. `Scalar<Q>` inside `fn area<Q: Dimension>(x: Scalar<Q>)`, BEFORE
+                    // a concrete arg substitutes `Q`) — mirrors the Cmp/logical guards'
+                    // skip (PRD decision 3 / §8 row 8).
                     //
                     // `Type::Projection` is matched broadly (any `base`), not just the
                     // `TypeParam` case, but per `resolve_qualified_assoc_type`'s doc
@@ -1865,38 +1897,48 @@ pub(crate) fn compile_expr_guarded_with_expected(
                     // binding — so a *reduced* Projection or an *unreducible* one both
                     // arrive here as something other than a bare `Type::Projection`.
                     //
+                    // `Type::ScalarParam` is skipped for a DIFFERENT reason than
+                    // `TypeParam`/`Projection`: it is a genuine, well-formed scalar (not an
+                    // unresolved-shape placeholder) whose dimension merely hasn't been
+                    // substituted yet. `infer_mul_div_result` returns `None` for
+                    // `ScalarParam(Q) ⊗ ScalarParam(Q)` and `ScalarParam(Q) ⊗` a
+                    // non-dimensionless `Scalar` purely because the combined dimension
+                    // ("Q²", "Q*Length") has no representation in `ScalarParam`'s bare-name
+                    // form — NOT because the runtime lacks an arm for it (once `Q` is
+                    // substituted with a concrete dimension the combination is always
+                    // runtime-legal). Hard-erroring on that representational gap would
+                    // reject legitimate generic bodies like
+                    // `fn area<Q: Dimension>(x: Scalar<Q>) { x * x }` at the definition
+                    // site (amendment round 3; see `infer_mul_div_result`'s `ScalarParam`
+                    // doc comment for the full rationale).
+                    //
                     // By contrast, `Type::Applied`/`Type::StructureRef`/`Type::Union` are
                     // deliberately NOT added to this skip: they are concrete (not deferred)
                     // nominal/structural types — e.g. a struct instance handle or a
                     // match-block-decl union of struct arms — that the runtime has no
                     // `eval_mul`/`eval_div` arm for regardless of substitution. Prior to
                     // this guard they silently mistyped to `Int`; correctly hard-erroring
-                    // on them is this task's entire purpose, not a regression. Similarly,
-                    // `Type::ScalarParam` combinations that `infer_mul_div_result` leaves
-                    // unhandled (`ScalarParam`×`ScalarParam`, `Int`/`ScalarParam`) are a
-                    // documented representational limit (no compound-dimension carrier for
-                    // a bare `ScalarParam` name), not a gradualism gap — see that function's
-                    // doc — so `ScalarParam` is intentionally absent from this skip too.
+                    // on them is this task's entire purpose, not a regression.
                     //
                     // Unlike the Cmp/logical guards (which keep their unconditional `Bool`
                     // result), this guard POISONS `result_type` to `Type::Error` — `*`/`/`
                     // produce a value type, so a mistyped product must stop follow-on
                     // cascades on that value (mirrors the Pow/Mod poison precedent).
-                    if matches!(bin_op, BinOp::Mul | BinOp::Div)
+                    if let Some(None) = &mul_div_inferred
                         && !matches!(
                             compiled_left.result_type,
-                            Type::Error | Type::TypeParam(_) | Type::Projection { .. }
+                            Type::Error
+                                | Type::TypeParam(_)
+                                | Type::Projection { .. }
+                                | Type::ScalarParam(_)
                         )
                         && !matches!(
                             compiled_right.result_type,
-                            Type::Error | Type::TypeParam(_) | Type::Projection { .. }
+                            Type::Error
+                                | Type::TypeParam(_)
+                                | Type::Projection { .. }
+                                | Type::ScalarParam(_)
                         )
-                        && type_compat::infer_mul_div_result(
-                            bin_op,
-                            &compiled_left.result_type,
-                            &compiled_right.result_type,
-                        )
-                        .is_none()
                     {
                         result_type = make_poison_type(
                             diagnostics,
