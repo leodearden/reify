@@ -4198,7 +4198,11 @@ impl WarmStartable for OcctKernel {
                     staged.insert(id, shape);
                 }
                 Err(e) => {
-                    eprintln!("warning: warm-start deserialization failed for shape {id}: {e}");
+                    tracing::warn!(
+                        shape_id = id,
+                        error = %e,
+                        "warm-start deserialization failed"
+                    );
                     self.last_warm_start_failures += 1;
                     continue;
                 }
