@@ -308,66 +308,106 @@ pub fn compute_diagnostics_with_state(
     //
     // TODO(#5023): remove this stopgap when async-recalc Phase A lands
     // per-constraint computing/not-evaluated states that supersede this hint.
-    let value_cell_exprs: HashMap<ValueCellId, _> = compiled
-        .templates
+    //
+    // Perf guard (amend, reviewer_comprehensive finding 1): this whole block
+    // — including the lookup maps below — runs on the LSP keystroke hot
+    // path, so skip it entirely when there is no `Indeterminate` constraint
+    // in this document at all (the common case for non-FEA files). Nothing
+    // in the loop can fire without at least one.
+    if check_result
+        .constraint_results
         .iter()
-        .flat_map(|t| t.value_cells.iter())
-        .filter_map(|vc| vc.default_expr.as_ref().map(|e| (vc.id.clone(), e)))
-        .collect();
-    let compiled_constraints: HashMap<&ConstraintNodeId, _> = compiled
-        .templates
-        .iter()
-        .flat_map(|t| t.constraints.iter())
-        .map(|c| (&c.id, c))
-        .collect();
-    // Union of the compiled module's own functions and the engine's prelude
-    // functions — stdlib solvers like `solve_elastic_static` are prelude
-    // functions, not user-module functions, so the prelude must be included
-    // or every FEA constraint would fail to match.
-    let functions: Vec<_> = compiled
-        .functions
-        .iter()
-        .chain(
-            state
-                .engine
-                .prelude()
-                .iter()
-                .flat_map(|m| m.functions.iter()),
-        )
-        .collect();
+        .any(|e| e.satisfaction == Satisfaction::Indeterminate)
+    {
+        let value_cell_exprs: HashMap<ValueCellId, _> = compiled
+            .templates
+            .iter()
+            .flat_map(|t| t.value_cells.iter())
+            .filter_map(|vc| vc.default_expr.as_ref().map(|e| (vc.id.clone(), e)))
+            .collect();
+        let compiled_constraints: HashMap<&ConstraintNodeId, _> = compiled
+            .templates
+            .iter()
+            .flat_map(|t| t.constraints.iter())
+            .map(|c| (&c.id, c))
+            .collect();
+        // Union of the compiled module's own functions and the engine's
+        // prelude functions — stdlib solvers like `solve_elastic_static` are
+        // prelude functions, not user-module functions, so the prelude must
+        // be included or every FEA constraint would fail to match.
+        // Module-local functions are chained FIRST so that the name→bool
+        // map built below (which keeps only the first-seen function per
+        // name) resolves a name shared between a module-local function and
+        // a prelude solver to the module's own definition — see the doc
+        // comment on `constraint_depends_on_unregistered_optimized_compute`.
+        let functions: Vec<_> = compiled
+            .functions
+            .iter()
+            .chain(
+                state
+                    .engine
+                    .prelude()
+                    .iter()
+                    .flat_map(|m| m.functions.iter()),
+            )
+            .collect();
+        // Amend (reviewer_comprehensive finding 2): precompute name -> "names
+        // an unregistered @optimized compute target" once per document,
+        // instead of re-scanning all of `functions` (module + full prelude)
+        // for every `UserFunctionCall` node encountered across every
+        // constraint's transitive value-cell closure — O(nodes * functions)
+        // before, O(functions) once to build plus O(1) lookups after.
+        // `.or_insert_with` keeps only the FIRST occurrence per name, which
+        // doubles as the module-before-prelude shadowing fix for finding 4
+        // (see the chain-order comment above).
+        let mut unregistered_optimized_fn_names: HashMap<&str, bool> = HashMap::new();
+        for f in &functions {
+            unregistered_optimized_fn_names
+                .entry(f.name.as_str())
+                .or_insert_with(|| {
+                    f.optimized_target
+                        .as_deref()
+                        .is_some_and(|t| state.engine.compute_dispatch(t).is_none())
+                });
+        }
 
-    let mut hinted: std::collections::HashSet<(ConstraintNodeId, Option<String>)> =
-        std::collections::HashSet::new();
-    for entry in &check_result.constraint_results {
-        if entry.satisfaction != Satisfaction::Indeterminate {
-            continue;
+        // Amend (reviewer_comprehensive finding 3): no `(id, label)` dedup
+        // guard is needed here. `check_result.constraint_results` is built
+        // upstream (reify-eval) with at most one entry per constraint id:
+        // `forall` per-element constraints each get a fresh, unique
+        // `ConstraintNodeId` (`forall_elaborate.rs` increments
+        // `constraint_index` per element, so distinct elements never share
+        // an id), and the GD&T/Conforms path explicitly overrides any
+        // existing same-id entry in place rather than pushing a second one
+        // (`engine_constraints.rs`'s "OVERRIDE the matching entry ... push
+        // if absent" comment). So this single iteration already yields at
+        // most one hint per constraint without any extra bookkeeping.
+        for entry in &check_result.constraint_results {
+            if entry.satisfaction != Satisfaction::Indeterminate {
+                continue;
+            }
+            let Some(constraint) = compiled_constraints.get(&entry.id) else {
+                continue;
+            };
+            if !constraint_depends_on_unregistered_optimized_compute(
+                &constraint.expr,
+                &value_cell_exprs,
+                &unregistered_optimized_fn_names,
+            ) {
+                continue;
+            }
+            let range = constraint_spans
+                .get(&entry.id)
+                .map(|span| convert::span_to_range(source, *span))
+                .unwrap_or_default();
+            diagnostics.push(lsp_types::Diagnostic {
+                range,
+                severity: Some(lsp_types::DiagnosticSeverity::INFORMATION),
+                source: Some("reify".to_string()),
+                message: "FEA constraint not evaluated in editor — run `reify test`".to_string(),
+                ..Default::default()
+            });
         }
-        let Some(constraint) = compiled_constraints.get(&entry.id) else {
-            continue;
-        };
-        if !constraint_depends_on_unregistered_optimized_compute(
-            &constraint.expr,
-            &value_cell_exprs,
-            &functions,
-            &state.engine,
-        ) {
-            continue;
-        }
-        let key = (entry.id.clone(), entry.label.clone());
-        if !hinted.insert(key) {
-            continue;
-        }
-        let range = constraint_spans
-            .get(&entry.id)
-            .map(|span| convert::span_to_range(source, *span))
-            .unwrap_or_default();
-        diagnostics.push(lsp_types::Diagnostic {
-            range,
-            severity: Some(lsp_types::DiagnosticSeverity::INFORMATION),
-            source: Some("reify".to_string()),
-            message: "FEA constraint not evaluated in editor — run `reify test`".to_string(),
-            ..Default::default()
-        });
     }
 
     // Emit freshness diagnostics for Pending and Failed cells (arch §7.1, §9.2).
@@ -485,13 +525,35 @@ fn constraint_violated_message(entry: &reify_eval::ConstraintCheckEntry) -> Stri
 /// unevaluated FEA/compute solve, as opposed to some other cause (e.g. a
 /// genuinely-unresolved `auto` param)" test.
 ///
-/// `functions` should be the union of the compiled module's own functions
-/// and the engine's prelude functions — stdlib solvers (e.g.
-/// `solve_elastic_static`) are prelude functions, not user-module functions.
+/// `unregistered_optimized_fn_names` should map every visible function name
+/// (the union of the compiled module's own functions and the engine's
+/// prelude functions — stdlib solvers such as `solve_elastic_static` are
+/// prelude functions, not user-module functions) to whether that name's
+/// `@optimized("target")` annotation (if any) names a compute target with
+/// no registered trampoline on the engine. Building this map is the
+/// caller's responsibility (see `compute_diagnostics_with_state`) so it can
+/// be computed once per document rather than once per constraint.
+///
 /// Matching is by function NAME rather than full overload resolution: in
 /// this engine posture *every* `@optimized` target is unregistered, and the
 /// FEA solver overloads uniformly carry the same target string, so a name
-/// match cannot mis-resolve which target applies.
+/// match cannot mis-resolve which target applies among same-named prelude
+/// overloads.
+///
+/// Caller precedence note (amend, reviewer_comprehensive finding 4): the
+/// caller builds this map from module-local functions chained *before*
+/// prelude functions and inserts with "first occurrence wins" — mirroring
+/// `find_matching_compiled_function`'s (`reify-expr/src/lib.rs`)
+/// first-match-wins precedent for "which function does this name resolve
+/// to". This means a module-local function that happens to share a
+/// prelude solver's name (e.g. a user helper also named
+/// `solve_elastic_static`) correctly shadows the prelude entry here,
+/// avoiding a false-positive hint attributed to the prelude solver when the
+/// resolved call is actually the user's own (non-FEA) function. Residual
+/// limitation: if a *module* itself declares more than one same-named
+/// overload with differing `@optimized` status, the map keeps whichever
+/// happens to iterate first — this mirrors the same overload-blindness
+/// already accepted for prelude solver overloads above, not a new gap.
 ///
 /// Traversal is a work-queue over value-cell ids (seeded from
 /// `constraint_expr.collect_value_refs()`, expanded via each visited cell's
@@ -505,13 +567,11 @@ fn constraint_violated_message(entry: &reify_eval::ConstraintCheckEntry) -> Stri
 fn constraint_depends_on_unregistered_optimized_compute(
     constraint_expr: &reify_ir::CompiledExpr,
     value_cell_exprs: &HashMap<ValueCellId, &reify_ir::CompiledExpr>,
-    functions: &[&reify_ir::CompiledFunction],
-    engine: &reify_eval::Engine,
+    unregistered_optimized_fn_names: &HashMap<&str, bool>,
 ) -> bool {
     fn expr_calls_unregistered_optimized_fn(
         expr: &reify_ir::CompiledExpr,
-        functions: &[&reify_ir::CompiledFunction],
-        engine: &reify_eval::Engine,
+        unregistered_optimized_fn_names: &HashMap<&str, bool>,
     ) -> bool {
         let mut found = false;
         expr.walk(&mut |node| {
@@ -519,18 +579,16 @@ fn constraint_depends_on_unregistered_optimized_compute(
                 return;
             }
             if let reify_ir::CompiledExprKind::UserFunctionCall { function_name, .. } = &node.kind {
-                found = functions.iter().any(|f| {
-                    f.name == *function_name
-                        && f.optimized_target
-                            .as_deref()
-                            .is_some_and(|t| engine.compute_dispatch(t).is_none())
-                });
+                found = unregistered_optimized_fn_names
+                    .get(function_name.as_str())
+                    .copied()
+                    .unwrap_or(false);
             }
         });
         found
     }
 
-    if expr_calls_unregistered_optimized_fn(constraint_expr, functions, engine) {
+    if expr_calls_unregistered_optimized_fn(constraint_expr, unregistered_optimized_fn_names) {
         return true;
     }
 
@@ -543,7 +601,7 @@ fn constraint_depends_on_unregistered_optimized_compute(
         let Some(default_expr) = value_cell_exprs.get(&cell_id) else {
             continue;
         };
-        if expr_calls_unregistered_optimized_fn(default_expr, functions, engine) {
+        if expr_calls_unregistered_optimized_fn(default_expr, unregistered_optimized_fn_names) {
             return true;
         }
         for referenced in default_expr.collect_value_refs() {
