@@ -1066,20 +1066,57 @@ fn cmd_build(args: &[String]) -> ExitCode {
                         return ExitCode::FAILURE;
                     }
                     println!("Wrote {} ({} bytes)", path, data.len());
-                    // Task δ/5002: print the exported triangle count for mesh
-                    // formats only (Stl/Obj/ThreeMF) — STEP/BRep builds are
-                    // unchanged. Sourced from `tessellate_realizations`, the
-                    // same mesh egress the GUI viewport `mesh_stats` uses
-                    // (debug_server.rs), so the CLI count and the viewport
-                    // agree by construction (PRD B5).
-                    if matches!(
-                        format,
-                        ExportFormat::Stl | ExportFormat::Obj | ExportFormat::ThreeMF
-                    ) {
-                        let tess = engine.tessellate_realizations(&compiled);
-                        let triangles: usize =
-                            tess.meshes.iter().map(|m| m.mesh.indices.len() / 3).sum();
-                        println!("Triangles: {triangles}");
+                    // Task δ/5002 (amended): print the exported triangle count
+                    // for mesh formats only — STEP/BRep builds are unchanged.
+                    // `ExportFormat::Obj` is deliberately excluded: the format
+                    // matcher above (this Mode-A `-o` arm) has no `.obj` case,
+                    // so `format` can never be `Obj` here (an `.obj` path
+                    // falls through to the `_ =>` STEP default) — including it
+                    // in this gate implied OBJ support that does not exist on
+                    // this code path (amend: reviewer_comprehensive dead-code
+                    // finding).
+                    match format {
+                        ExportFormat::Stl => {
+                            // Binary STL only — `write_stl_binary`
+                            // (reify-ir/src/geometry.rs) is the sole `Stl`
+                            // writer in every kernel (occt/manifold), and a
+                            // multi-body compound export still serializes
+                            // through that same writer. Layout: 80-byte
+                            // header + u32 triangle count + 50 bytes/triangle,
+                            // so the count is derivable directly from the
+                            // bytes just written. This is both cheaper than
+                            // (avoids a second full `tessellate_realizations`
+                            // pass that re-drives kernel dispatch on the build
+                            // hot path — amend: reviewer_comprehensive
+                            // performance finding) and more correct than (a
+                            // raw sum over `tessellate_realizations` would
+                            // also count non-exported/aux realizations —
+                            // amend: reviewer_comprehensive correctness
+                            // finding) a re-tessellation-based count.
+                            let triangles = data.len().saturating_sub(84) / 50;
+                            println!("Triangles: {triangles}");
+                        }
+                        ExportFormat::ThreeMF => {
+                            // 3MF (zipped XML) has no fixed-width byte
+                            // framing, so this format still pays the
+                            // `tessellate_realizations` re-walk. Filter to
+                            // `default_visible` meshes — the same
+                            // product-body predicate `build()`'s own export
+                            // walk applies (engine_build.rs) — so the count
+                            // matches what was actually exported instead of
+                            // also counting non-exported aux/intermediate
+                            // realizations (amend: reviewer_comprehensive
+                            // correctness finding).
+                            let tess = engine.tessellate_realizations(&compiled);
+                            let triangles: usize = tess
+                                .meshes
+                                .iter()
+                                .filter(|m| m.default_visible)
+                                .map(|m| m.mesh.indices.len() / 3)
+                                .sum();
+                            println!("Triangles: {triangles}");
+                        }
+                        _ => {}
                     }
                     // Emit the per-outcome status message (unchanged from
                     // pre-4458), then decide exit via build_is_success — which
