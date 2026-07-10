@@ -23,6 +23,7 @@
 #   G — combined PRD δ signal: all five fixtures + protect-glob + summary line
 #   I — Tier-3 terminal-task reclaim: attached task/NNNN branch, status-oracle
 #       seam (--status-cmd / REIFY_LANE_LEAK_STATUS_CMD fallback) (task 5167)
+#   J — Tier-3 backing-task resolution for a detached HEAD lane (task 5167)
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -932,5 +933,94 @@ assert "I6: stderr mentions live consumer preservation" \
 # Release the lock
 kill "$I6_LOCK_PID" 2>/dev/null || true
 _BGPIDS=()  # clear so cleanup doesn't double-kill
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block J — Tier-3 backing-task resolution for a detached HEAD lane
+# Proves the resolver both (J1) resolves a detached HEAD to its containing
+# task/NNNN branch when exactly one such branch exists, and (J2) does NOT
+# over-match when no task/* branch is reachable from HEAD at all — that
+# fixture must fall through to the existing (unchanged) tiers.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block J: Tier-3 backing-task resolution (detached HEAD) ---"
+
+J_ROOT="$(mktemp -d /tmp/test-gc-j-XXXXXX)"
+_TMPDIRS+=("$J_ROOT")
+
+# ── J1: detached HEAD at the tip of task/7777 (ahead-of-main), oracle done ──────
+# Proves detached HEAD resolves to its (sole) containing task branch.
+J1_REPO="$J_ROOT/j1-repo"
+J1_WORKTREES="$J_ROOT/j1-worktrees"
+J1_BASE="$J_ROOT/j1-base"
+mkdir -p "$J1_WORKTREES" "$J1_BASE"
+make_repo "$J1_REPO"
+mkdir -p "$J1_BASE/target.gen.1"
+touch "$J1_BASE/target.gen.1.lock"
+ln -sfn "$J1_BASE/target.gen.1" "$J1_BASE/target"
+
+make_task_lane "$J1_REPO" "$J1_WORKTREES" "_lane-1" "task/7777" "ahead"
+# Detach HEAD at the (still-ahead-of-main) tip of task/7777; the branch ref
+# itself is left in place, only the worktree's HEAD becomes detached.
+git -C "$J1_WORKTREES/_lane-1" checkout -q --detach
+
+J1_MAP="$(mktemp /tmp/test-gc-oracle-map-XXXXXX)"
+_TMPDIRS+=("$J1_MAP")
+printf '7777 done\n' > "$J1_MAP"
+
+J1_SEED_LOG="$J_ROOT/j1-seed-calls.log"
+J1_SEED_STUB="$J_ROOT/j1-seed-stub.sh"
+_seed_stub_body > "$J1_SEED_STUB"
+chmod +x "$J1_SEED_STUB"
+export SEED_LOG="$J1_SEED_LOG"
+export ORACLE_MAP="$J1_MAP"
+
+run_helper reclaim \
+    --worktrees-dir "$J1_WORKTREES" \
+    --base-target "$J1_BASE/target" \
+    --seed-script "$J1_SEED_STUB" \
+    --status-cmd "$STUB_DIR/gc-status-oracle.sh"
+
+assert "J1: exit 0" test "$RC" -eq 0
+assert "J1: detached-HEAD done-task lane seed-script invoked (reclaimed)" \
+    bash -c 'test -f "$1" && grep -q "_lane-1" "$1"' _ "$J1_SEED_LOG"
+assert "J1: divergent target marker removed" \
+    bash -c '[ ! -f "$1" ]' _ "$J1_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
+
+# ── J2: detached HEAD reachable from NO task/* branch — no over-match ──────────
+# Separate repo with zero task/* branches ever created: HEAD == main tip
+# (landed, clean), so the resolver must find no containing task branch and
+# fall through to the existing tiers, which already reclaim a landed/clean lane.
+J2_REPO="$J_ROOT/j2-repo"
+J2_WORKTREES="$J_ROOT/j2-worktrees"
+J2_BASE="$J_ROOT/j2-base"
+mkdir -p "$J2_WORKTREES" "$J2_BASE"
+make_repo "$J2_REPO"
+mkdir -p "$J2_BASE/target.gen.1"
+touch "$J2_BASE/target.gen.1.lock"
+ln -sfn "$J2_BASE/target.gen.1" "$J2_BASE/target"
+
+git -C "$J2_REPO" worktree add -q --detach "$J2_WORKTREES/_lane-1"
+mkdir -p "$J2_WORKTREES/_lane-1/target"
+touch "$J2_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
+
+J2_SEED_LOG="$J_ROOT/j2-seed-calls.log"
+J2_SEED_STUB="$J_ROOT/j2-seed-stub.sh"
+_seed_stub_body > "$J2_SEED_STUB"
+chmod +x "$J2_SEED_STUB"
+export SEED_LOG="$J2_SEED_LOG"
+# No ORACLE_MAP entry can match (no task id resolves) — the fixture's outcome
+# must be driven purely by the pre-existing tiers, not the status oracle.
+
+run_helper reclaim \
+    --worktrees-dir "$J2_WORKTREES" \
+    --base-target "$J2_BASE/target" \
+    --seed-script "$J2_SEED_STUB" \
+    --status-cmd "$STUB_DIR/gc-status-oracle.sh"
+
+assert "J2: exit 0" test "$RC" -eq 0
+assert "J2: no-task-branch detached lane seed-script invoked (reclaimed via existing landed/clean tier)" \
+    bash -c 'test -f "$1" && grep -q "_lane-1" "$1"' _ "$J2_SEED_LOG"
+assert "J2: divergent target marker removed" \
+    bash -c '[ ! -f "$1" ]' _ "$J2_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
 
 test_summary
