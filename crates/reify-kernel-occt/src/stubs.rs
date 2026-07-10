@@ -578,79 +578,60 @@ mod tests {
         }
     }
 
-    /// Non-panicking `QueryError` taxonomy check: mirrors
-    /// `assert_all_error_taxonomy`'s matching for the inherent probe surface
-    /// the shared macro can't see. Collects into [`assert_no_check_failures`]
-    /// instead of panicking immediately (task 5110).
-    fn check_query_failed<T: std::fmt::Debug>(
-        result: Result<T, QueryError>,
-        method: &str,
-    ) -> Result<(), String> {
-        match result {
-            Err(QueryError::QueryFailed(msg)) if msg.contains("OCCT") => Ok(()),
-            Err(QueryError::QueryFailed(msg)) => {
-                Err(format!("{method} error should mention OCCT, got: {msg}"))
+    /// Generates a `check_*_failed` helper for one error taxonomy: `Ok(())`
+    /// when `result` is `Err($variant(msg))` and `msg` contains "OCCT",
+    /// else a descriptive `Err(String)` (never a panic, so bundled
+    /// `#[test]`s can collect every failed probe via
+    /// [`assert_no_check_failures`] instead of stopping at the first).
+    /// Collapses what were four hand-copied match blocks —
+    /// `QueryError`/`GeometryError`/`ExportError`/`TessError` — differing
+    /// only in the enum/variant matched (task 5110 review).
+    macro_rules! check_failed {
+        ($name:ident, $err_ty:ty, $variant:path, $variant_str:literal) => {
+            fn $name<T: std::fmt::Debug>(
+                result: Result<T, $err_ty>,
+                method: &str,
+            ) -> Result<(), String> {
+                match result {
+                    Err($variant(msg)) if msg.contains("OCCT") => Ok(()),
+                    Err($variant(msg)) => {
+                        Err(format!("{method} error should mention OCCT, got: {msg}"))
+                    }
+                    other => Err(format!(
+                        "expected Err({variant}(_)) from {method}, got {other:?}",
+                        variant = $variant_str,
+                    )),
+                }
             }
-            other => Err(format!(
-                "expected Err(QueryError::QueryFailed(_)) from {method}, got {:?}",
-                other
-            )),
-        }
+        };
     }
 
-    /// `GeometryError` counterpart of [`check_query_failed`]: checks
-    /// `GeometryError::OperationFailed` mentioning "OCCT" without panicking.
-    fn check_operation_failed<T: std::fmt::Debug>(
-        result: Result<T, GeometryError>,
-        method: &str,
-    ) -> Result<(), String> {
-        match result {
-            Err(GeometryError::OperationFailed(msg)) if msg.contains("OCCT") => Ok(()),
-            Err(GeometryError::OperationFailed(msg)) => {
-                Err(format!("{method} error should mention OCCT, got: {msg}"))
-            }
-            other => Err(format!(
-                "expected Err(GeometryError::OperationFailed(_)) from {method}, got {:?}",
-                other
-            )),
-        }
-    }
-
-    /// `ExportError` counterpart of [`check_query_failed`]: checks
-    /// `ExportError::FormatError` mentioning "OCCT" without panicking.
-    fn check_format_failed<T: std::fmt::Debug>(
-        result: Result<T, ExportError>,
-        method: &str,
-    ) -> Result<(), String> {
-        match result {
-            Err(ExportError::FormatError(msg)) if msg.contains("OCCT") => Ok(()),
-            Err(ExportError::FormatError(msg)) => {
-                Err(format!("{method} error should mention OCCT, got: {msg}"))
-            }
-            other => Err(format!(
-                "expected Err(ExportError::FormatError(_)) from {method}, got {:?}",
-                other
-            )),
-        }
-    }
-
-    /// `TessError` counterpart of [`check_query_failed`]: checks
-    /// `TessError::TessellationFailed` mentioning "OCCT" without panicking.
-    fn check_tess_failed<T: std::fmt::Debug>(
-        result: Result<T, TessError>,
-        method: &str,
-    ) -> Result<(), String> {
-        match result {
-            Err(TessError::TessellationFailed(msg)) if msg.contains("OCCT") => Ok(()),
-            Err(TessError::TessellationFailed(msg)) => {
-                Err(format!("{method} error should mention OCCT, got: {msg}"))
-            }
-            other => Err(format!(
-                "expected Err(TessError::TessellationFailed(_)) from {method}, got {:?}",
-                other
-            )),
-        }
-    }
+    // `QueryError` — mirrors `assert_all_error_taxonomy`'s matching for the
+    // inherent probe surface the shared macro can't see.
+    check_failed!(
+        check_query_failed,
+        QueryError,
+        QueryError::QueryFailed,
+        "QueryError::QueryFailed"
+    );
+    check_failed!(
+        check_operation_failed,
+        GeometryError,
+        GeometryError::OperationFailed,
+        "GeometryError::OperationFailed"
+    );
+    check_failed!(
+        check_format_failed,
+        ExportError,
+        ExportError::FormatError,
+        "ExportError::FormatError"
+    );
+    check_failed!(
+        check_tess_failed,
+        TessError,
+        TessError::TessellationFailed,
+        "TessError::TessellationFailed"
+    );
 
     /// Panics naming every failed check, so bundled probes report all
     /// violations from one run instead of stopping at the first (task 5110).
@@ -883,13 +864,70 @@ mod tests {
         assert_no_check_failures(failures);
     }
 
-    /// `OcctKernelHandle::{fillet,chamfer}_with_history` (task 2655/2821):
-    /// inherent methods not on `GeometryKernel`, invisible to the shared suite.
+    /// `OcctKernelHandle`'s full `*_with_history` inherent surface: the
+    /// booleans (task 2590/2656), `execute_with_history` (task 5a / #2573,
+    /// step-8), the sweep-family ops (task 5a/5b, #2573/#2619), and
+    /// fillet/chamfer (task 2655/2821). None are on `GeometryKernel`, so
+    /// the shared suite provides no coverage for any of them — previously
+    /// only fillet/chamfer were exercised here, leaving the other eight
+    /// variants untested by both the macro and the bespoke tests (task
+    /// 5110 review).
     #[test]
-    fn stub_handle_fillet_and_chamfer_with_history_return_not_available_error() {
+    fn stub_handle_with_history_methods_return_not_available_error() {
         let handle = OcctKernelHandle::spawn();
         let mut failures = Vec::new();
 
+        if let Err(e) = check_operation_failed(
+            handle.boolean_fuse_with_history(GeometryHandleId(1), GeometryHandleId(2)),
+            "boolean_fuse_with_history",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_operation_failed(
+            handle.boolean_cut_with_history(GeometryHandleId(1), GeometryHandleId(2)),
+            "boolean_cut_with_history",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_operation_failed(
+            handle.boolean_common_with_history(GeometryHandleId(1), GeometryHandleId(2)),
+            "boolean_common_with_history",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_operation_failed(
+            handle.execute_with_history(&GeometryOp::Union {
+                left: GeometryHandleId(1),
+                right: GeometryHandleId(2),
+            }),
+            "execute_with_history",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_operation_failed(
+            handle.extrude_with_history(GeometryHandleId(1), 1.0),
+            "extrude_with_history",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_operation_failed(
+            handle.revolve_with_history(GeometryHandleId(1), [0.0, 0.0, 0.0], [0.0, 0.0, 1.0], 1.0),
+            "revolve_with_history",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_operation_failed(
+            handle.sweep_with_history(GeometryHandleId(1), GeometryHandleId(2)),
+            "sweep_with_history",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_operation_failed(
+            handle.loft_with_history(&[GeometryHandleId(1), GeometryHandleId(2)]),
+            "loft_with_history",
+        ) {
+            failures.push(e);
+        }
         if let Err(e) = check_operation_failed(
             handle.fillet_with_history(GeometryHandleId(1), 1.0e-3),
             "fillet_with_history",
