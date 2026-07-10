@@ -334,12 +334,13 @@ fn characterizes_4876_occt_tessellation_unwelded_witness() {
         w.weld_merged_verts > 0,
         "weld_merged_verts must be > 0 for a real OCCT box surface: {w:?}"
     );
+    let validated = mesh.validate(0.0);
     assert!(
-        mesh.validate(0.0).is_ok(),
+        validated.is_ok(),
         "real OCCT box tessellation must satisfy every producer obligation \
          on the welded quotient (unwelded is a capability, not a \
          violation): {:?}",
-        mesh.validate(0.0).err()
+        validated.err()
     );
 
     // Witness 3: the RAW (pre-weld) open-edge count — the "open/
@@ -375,8 +376,9 @@ fn characterizes_4876_occt_tessellation_unwelded_witness() {
 /// never co-resident with the standalone-OCCT-kernel path, per the module
 /// doc's segfault warning above.
 ///
-/// Panics if tessellation reports an `Error`-severity diagnostic or
-/// produces no meshes at all.
+/// Panics if tessellation reports an `Error`-severity diagnostic, produces
+/// no meshes at all, or surfaces no mesh whose entity path is prefixed
+/// `FeaBcBox` (the box `body` realization).
 #[cfg(has_gmsh)]
 fn real_occt_box_surface() -> reify_ir::Mesh {
     use reify_core::Severity;
@@ -415,19 +417,25 @@ fn real_occt_box_surface() -> reify_ir::Mesh {
 
     // Select the box `body` realization: the sole geometry realization in
     // the fixture, surfaced under an entity path prefixed by the structure
-    // name `FeaBcBox`. Falls back to the mesh with the most vertices if the
-    // entity-path convention ever shifts (the non-empty assert above already
-    // guarantees a mesh is present either way).
+    // name `FeaBcBox`. Deliberately panics (rather than silently falling
+    // back to an unrelated mesh) if that convention ever drifts, so an
+    // entity-path rename surfaces as a test failure instead of this helper
+    // silently characterizing the wrong surface.
     let surface = result
         .meshes
         .iter()
         .find(|s| s.entity_path.starts_with("FeaBcBox"))
         .unwrap_or_else(|| {
-            result
-                .meshes
-                .iter()
-                .max_by_key(|s| s.mesh.vertices.len())
-                .expect("result.meshes is non-empty (checked above)")
+            panic!(
+                "no FeaBcBox realization mesh in fea_bc_box.ri output \
+                 (entity-path convention may have drifted); entity paths \
+                 present: {:?}",
+                result
+                    .meshes
+                    .iter()
+                    .map(|s| s.entity_path.as_str())
+                    .collect::<Vec<_>>()
+            )
         });
 
     surface.mesh.clone()
