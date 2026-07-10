@@ -2,23 +2,27 @@
 //!
 //! Sibling to `symbolic_selector_eval.rs` (R2b, task #4653): pins the
 //! user-observable signal that `Engine::eval` (kernel-free, no build) mints
-//! `Value::Selector` COMPOSITION cells (`union`/`intersect`/`difference`)
-//! over SYMBOLIC (`kernel_handle=None`) leaf operands, instead of leaving
-//! them at `Value::Undef`.
+//! `Value::Selector` COMPOSITION cells (`union`/`intersect`/`difference`,
+//! step-2) and NAMED-LEAF cells (`face`/`edge`/`solid_body`/`vertex`,
+//! step-4) over SYMBOLIC (`kernel_handle=None`) leaf operands, instead of
+//! leaving them at `Value::Undef`.
 //!
 //! ## TDD arc
 //!
-//! **Step-1 (RED):** every test below FAILS until step-2 wires the
-//! `union`/`intersect`/`difference` composition arms into
-//! `symbolic_eval_helper_for_name` + `try_eval_symbolic_topology_selector`
-//! (via the new kernel-free `eval_variadic_composition_symbolic` /
-//! `reconstruct_selector_value_symbolic` siblings).
+//! **Step-1/2 (composition):** wired via `eval_variadic_composition_symbolic`
+//! / `reconstruct_selector_value_symbolic`.
+//!
+//! **Step-3 (RED):** the named-leaf test below FAILS until step-4 wires
+//! `face`/`edge`/`solid_body`/`vertex` into `symbolic_eval_helper_for_name` +
+//! `try_eval_symbolic_topology_selector` (via the new kernel-free
+//! `eval_named_leaf_selector_ctor_symbolic` / `resolve_named_leaf_target_symbolic`
+//! siblings).
 
 use reify_constraints::SimpleConstraintChecker;
 use reify_core::identity::ValueCellId;
 use reify_core::ty::SelectorKind;
 use reify_eval::Engine;
-use reify_ir::value::SelectorNode;
+use reify_ir::value::{LeafQuery, SelectorNode};
 use reify_ir::{ExportFormat, Value};
 use reify_test_support::MockGeometryKernel;
 
@@ -205,5 +209,46 @@ fn bt2_union_eval_and_build_selectors_are_content_hash_equal() {
         eval_value, build_value,
         "PartialEq must hold between symbolic (eval) and realized (build) union selectors \
          (GHR-β §DD)"
+    );
+}
+
+/// BT8 — `Engine::eval` must mint `BT8NamedLeaf.s` (`face(b, "nope")`) as a
+/// symbolic `Value::Selector(Face)` with `LeafQuery::Named("nope")`, and
+/// `check_no_stale_undef` must report zero violations for this fixture.
+#[test]
+fn bt8_named_leaf_eval_yields_symbolic_named_selector() {
+    let source = std::fs::read_to_string(fixture_path("bt8_named_leaf_interim.ri"))
+        .expect("fixture bt8_named_leaf_interim.ri must exist");
+    let compiled = reify_test_support::compile_source_with_stdlib(&source);
+    let errors = reify_test_support::collect_errors(&compiled.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "bt8 fixture must compile without errors: {errors:#?}"
+    );
+
+    let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let result = engine.eval(&compiled);
+
+    let value = result.values.get(&ValueCellId::new("BT8NamedLeaf", "s"));
+    let sv = assert_selector(value, "BT8NamedLeaf.s", SelectorKind::Face);
+    match &sv.node {
+        SelectorNode::Leaf { target, query } => {
+            assert_eq!(
+                target.kernel_handle, None,
+                "BT8: symbolic target must have kernel_handle == None"
+            );
+            assert_eq!(
+                query,
+                &LeafQuery::Named("nope".to_string()),
+                "BT8: Named(\"nope\") leaf"
+            );
+        }
+        other => panic!("BT8NamedLeaf.s must be SelectorNode::Leaf, got {other:?}"),
+    }
+
+    let violations = engine.check_no_stale_undef();
+    assert!(
+        violations.is_empty(),
+        "BT8: expected zero stale-Undef violations post-eval; got {violations:?}"
     );
 }
