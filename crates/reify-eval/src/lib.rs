@@ -5,6 +5,10 @@
 #![allow(clippy::mutable_key_type)]
 
 pub mod cache;
+// Task α (#5038): commit_cell_result primitive + DeterminacyRule/TraceSource/
+// CacheLeg (PRD eval-cell-commit-substrate.md §2.1–2.4). pub(crate) — no
+// external callers yet; migration leaves γ/δ/ε/ι wire it in from within the crate.
+pub(crate) mod cell_commit;
 pub mod compute_cache_key;
 pub mod compute_targets;
 pub use compute_cache_key::compute_cache_key;
