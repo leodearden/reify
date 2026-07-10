@@ -218,6 +218,10 @@ fn classification_table() -> BTreeMap<&'static str, SyncMechanism> {
         SyncMechanism::Emitter("fea-diagnostics-changed"),
     );
     table.insert(
+        "fea_convergence",
+        SyncMechanism::Emitter("fea-convergence-changed"),
+    );
+    table.insert(
         "demand_prune_measurement",
         SyncMechanism::FullReloadOnly(
             "observability-only; read via reify-debug MCP engine_state_json \
@@ -227,45 +231,16 @@ fn classification_table() -> BTreeMap<&'static str, SyncMechanism> {
     table
 }
 
-/// True if `reference` cites a task in this repo's canonical `#NNNN` form
-/// (CLAUDE.md's TODO-citation convention: a bare `#` followed by at least
-/// one ASCII digit) — e.g. `"cleared by L2 (#5031)"`. A PRD-relative label
-/// like `"cleared by L2"` alone does not count: CLAUDE.md calls out
-/// PRD-relative indices as a `malformed-cite` shape.
-fn cites_task(reference: &str) -> bool {
-    reference
-        .find('#')
-        .is_some_and(|i| reference[i + 1..].starts_with(|c: char| c.is_ascii_digit()))
-}
-
-/// Validates a clearing-task reference cites a live task in the canonical
-/// `#NNNN` form at construction, so the known-stale ledger's "every entry
-/// names its clearing task" guarantee is structural (enforced wherever the
-/// reference is built, and re-checked by every test that constructs
-/// `known_stale_allowlist()`) rather than merely a non-empty string.
-fn clearing_task_reference(reference: &'static str) -> &'static str {
-    assert!(
-        cites_task(reference),
-        "clearing-task reference '{reference}' must cite a live task in the \
-         canonical #NNNN form (CLAUDE.md's TODO-citation convention)"
-    );
-    reference
-}
-
-/// Fields known to be stale (not wired to any live sync mechanism today),
-/// each mapped to a reference citing the live task that clears it — L2
-/// (#5031, "stopgap: four list fields -> StateDelta") cleared the four
-/// tensegrity/display fields by classifying them `Diffed` above; L3 (#5032,
-/// "stopgap: fea-convergence-changed emitter") clears `fea_convergence`.
-/// `clearing_task_reference` enforces the `#NNNN` citation structurally, not
-/// just non-emptiness.
+/// Fields known to be stale (not wired to any live sync mechanism today).
+/// Empty as of L3 (#5032): L2 (#5031, "stopgap: four list fields ->
+/// StateDelta") cleared the four tensegrity/display fields by classifying
+/// them `Diffed` above; L3 (#5032, "stopgap: fea-convergence-changed
+/// emitter") cleared the last remaining entry, `fea_convergence`, by
+/// classifying it `Emitter` above. Kept as a function (rather than deleted)
+/// because the forward/reverse coverage tests below still call it — a
+/// future stale field would be re-added here.
 fn known_stale_allowlist() -> BTreeMap<&'static str, &'static str> {
-    let mut allowlist = BTreeMap::new();
-    allowlist.insert(
-        "fea_convergence",
-        clearing_task_reference("cleared by L3 (#5032)"),
-    );
-    allowlist
+    BTreeMap::new()
 }
 
 /// A `GuiState` fixture with every field populated so all 13 serde keys
@@ -333,19 +308,25 @@ fn fixture_reflects_every_classified_and_allowlisted_field() {
 }
 
 /// The warn-mode debt ledger: `currently_unwired_fields` must report exactly
-/// the two fields not live on a param edit today (PRD §1) — the one
-/// allowlisted stale field (`fea_convergence`) plus the one `FullReloadOnly`
-/// field (`demand_prune_measurement`). L2 (#5031) shrank this from six to two
-/// by classifying the four tensegrity/display fields `Diffed`.
+/// the one field not live on a param edit today (PRD §1) — the one
+/// `FullReloadOnly` field (`demand_prune_measurement`). L2 (#5031) shrank this
+/// from six to two by classifying the four tensegrity/display fields
+/// `Diffed`; L3 (#5032) shrank it from two to one by classifying
+/// `fea_convergence` `Emitter`, leaving `known_stale_allowlist()` empty.
 #[test]
-fn warn_mode_report_lists_the_two_remaining_unwired_fields() {
+fn warn_mode_report_lists_the_one_remaining_unwired_field() {
     let fields = currently_unwired_fields(&classification_table(), &known_stale_allowlist());
+    assert_eq!(fields, vec!["demand_prune_measurement".to_string()]);
+}
+
+/// Pins that `fea_convergence` is classified as an `Emitter` on the
+/// `fea-convergence-changed` channel (L3/#5032 done-criteria) — the last
+/// entry moved off `known_stale_allowlist()` and into `classification_table()`.
+#[test]
+fn fea_convergence_classified_as_emitter() {
     assert_eq!(
-        fields,
-        vec![
-            "demand_prune_measurement".to_string(),
-            "fea_convergence".to_string(),
-        ]
+        classification_table().get("fea_convergence"),
+        Some(&SyncMechanism::Emitter("fea-convergence-changed"))
     );
 }
 

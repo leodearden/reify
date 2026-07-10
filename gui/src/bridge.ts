@@ -27,6 +27,7 @@ import type {
   SolverProgress,
   ModeShapeFrame,
   FeaDiagnosticInfo,
+  FeaConvergenceInfo,
   TensegrityWireData,
   TensegritySurfaceData,
   DisplayDirective,
@@ -530,6 +531,20 @@ export async function onFeaDiagnosticsChanged(
   callback: (data: FeaDiagnosticInfo[]) => void,
 ): Promise<UnlistenFn> {
   return listen<FeaDiagnosticInfo[]>('fea-diagnostics-changed', (event) => {
+    callback(event.payload);
+  });
+}
+
+/**
+ * Subscribe to FEA convergence change events. Carries the full current value as a
+ * full-value snapshot (same semantics as fea-diagnostics-changed).
+ * Fires on every EngineSession commit including null (clears stale indicator).
+ * Producer: engine.rs EngineSession::emit_fea_convergence via main.rs TauriFeaConvergenceEmitter.
+ */
+export async function onFeaConvergenceChanged(
+  callback: (data: FeaConvergenceInfo | null) => void,
+): Promise<UnlistenFn> {
+  return listen<FeaConvergenceInfo | null>('fea-convergence-changed', (event) => {
     callback(event.payload);
   });
 }

@@ -35,6 +35,7 @@ vi.mock('../bridge', () => ({
   onSolverProgress: vi.fn(() => Promise.resolve(() => {})),
   cancelSolve: vi.fn(() => Promise.resolve()),
   onFeaDiagnosticsChanged: vi.fn(() => Promise.resolve(() => {})),
+  onFeaConvergenceChanged: vi.fn(() => Promise.resolve(() => {})),
   onTensegrityWiresUpdate: vi.fn(() => Promise.resolve(() => {})),
   onTensegritySurfacesUpdate: vi.fn(() => Promise.resolve(() => {})),
   onDisplayPanesUpdate: vi.fn(() => Promise.resolve(() => {})),
@@ -57,6 +58,7 @@ import {
   onSolverProgress,
   cancelSolve,
   onFeaDiagnosticsChanged,
+  onFeaConvergenceChanged,
   onTensegrityWiresUpdate,
   onTensegritySurfacesUpdate,
   onDisplayPanesUpdate,
@@ -74,6 +76,7 @@ const mockOnConstraintRemoved = vi.mocked(onConstraintRemoved);
 const mockOnTessellationDiagnostics = vi.mocked(onTessellationDiagnostics);
 const mockOnCompileDiagnostics = vi.mocked(onCompileDiagnostics);
 const mockOnFeaDiagnosticsChanged = vi.mocked(onFeaDiagnosticsChanged);
+const mockOnFeaConvergenceChanged = vi.mocked(onFeaConvergenceChanged);
 const mockOnAutoResolveStart = vi.mocked(onAutoResolveStart);
 const mockOnAutoResolveIteration = vi.mocked(onAutoResolveIteration);
 const mockOnAutoResolveComplete = vi.mocked(onAutoResolveComplete);
@@ -2603,6 +2606,59 @@ describe('engineStore feaConvergence (task 3001)', () => {
       } as unknown as GuiState;
       initFromState(guiState);
       expect((state as any).feaConvergence).toBeNull();
+      dispose();
+    });
+  });
+});
+
+// ── step-8: setFeaConvergence reducer + subscribeToEvents wiring ───────────
+
+describe('engineStore setFeaConvergence and subscribeToEvents wiring (step-8)', () => {
+  it('setFeaConvergence replaces state.feaConvergence', () => {
+    // RED: setFeaConvergence does not exist yet.
+    createRoot((dispose) => {
+      const store = createEngineStore();
+      expect(store.state.feaConvergence).toBeNull();
+
+      (store as any).setFeaConvergence({ converged: true });
+      expect(store.state.feaConvergence).toEqual({ converged: true });
+
+      // A subsequent call with null clears it (pins the clear-stale-indicator path).
+      (store as any).setFeaConvergence(null);
+      expect(store.state.feaConvergence).toBeNull();
+      dispose();
+    });
+  });
+
+  it('subscribeToEvents wires onFeaConvergenceChanged and updates state', async () => {
+    // RED: onFeaConvergenceChanged not yet wired into subscribeToEvents.
+    await createRoot(async (dispose) => {
+      let feaConvergenceCb: ((conv: FeaConvergenceInfo | null) => void) | undefined;
+      const spyUnlisten = vi.fn();
+
+      mockOnMeshUpdate.mockResolvedValue(vi.fn());
+      mockOnValueUpdate.mockResolvedValue(vi.fn());
+      mockOnConstraintUpdate.mockResolvedValue(vi.fn());
+      mockOnEvaluationStatus.mockResolvedValue(vi.fn());
+      mockOnMeshRemoved.mockResolvedValue(vi.fn());
+      mockOnValueRemoved.mockResolvedValue(vi.fn());
+      mockOnConstraintRemoved.mockResolvedValue(vi.fn());
+      mockOnFeaConvergenceChanged.mockImplementation(async (cb) => {
+        feaConvergenceCb = cb as (conv: FeaConvergenceInfo | null) => void;
+        return spyUnlisten;
+      });
+
+      const store = createEngineStore();
+      const cleanup = await store.subscribeToEvents();
+
+      expect(mockOnFeaConvergenceChanged).toHaveBeenCalledWith(expect.any(Function));
+
+      const convergence: FeaConvergenceInfo = { converged: false, reason: 'MaxDofs' };
+      feaConvergenceCb!(convergence);
+      expect(store.state.feaConvergence).toEqual(convergence);
+
+      await cleanup();
+      expect(spyUnlisten).toHaveBeenCalled();
       dispose();
     });
   });
