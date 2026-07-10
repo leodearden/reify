@@ -926,11 +926,6 @@ mod tests {
             "geo_equiv",
             "is_on",
             "angle_between_surfaces",
-            // named-leaf ctors (the interim WIP name list — now structural)
-            "face",
-            "edge",
-            "solid_body",
-            "vertex",
             // GD&T + set-ops + conformance the name lists never covered
             "max_deviation",
             "split",
@@ -977,6 +972,11 @@ mod tests {
             "vertices",
             "mid_surface",
             "created_by_feature",
+            // task #5120 R2c: named-leaf ctors are now eval-wired.
+            "face",
+            "edge",
+            "solid_body",
+            "vertex",
         ] {
             assert!(
                 !is_build_only_dispatch_call(&fn_call(name, std::slice::from_ref(&geom))),

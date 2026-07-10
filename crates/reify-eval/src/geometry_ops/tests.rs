@@ -22919,3 +22919,195 @@
             result
         );
     }
+
+    // ── Task #5120 R2c: named-leaf (face/edge/solid_body/vertex) wired onto
+    // the kernel-free symbolic-eval surface ──────────────────────────────────
+    //
+    // Sibling to the composition tests above: pins
+    // `try_eval_symbolic_topology_selector`'s NEW named-leaf arms over a
+    // symbolic body handle, the 4583 chained-first-arg fallback (rooting a
+    // Named leaf at an inline nested selector's parent GHR), and the
+    // missing-target / arity-mismatch fallthroughs.
+    //
+    // **RED** until step-4 adds the `face`/`edge`/`solid_body`/`vertex` arms to
+    // `symbolic_eval_helper_for_name` + `try_eval_symbolic_topology_selector`
+    // (via the new kernel-free `eval_named_leaf_selector_ctor_symbolic` /
+    // `resolve_named_leaf_target_symbolic` siblings).
+
+    /// `face`/`edge`/`solid_body`/`vertex` (Named-leaf ctors, task 4119 δ)
+    /// over a SYMBOLIC body handle (`kernel_handle == None`) must mint
+    /// `Value::Selector(kind)` with `SelectorNode::Leaf { query:
+    /// LeafQuery::Named(tag), .. }` and a symbolic target.
+    #[test]
+    fn try_eval_symbolic_topology_selector_named_leaf_ctors() {
+        use reify_core::identity::{RealizationNodeId, ValueCellId};
+
+        let entity = "R2cNamedLeaf";
+        let rr = RealizationNodeId::new(entity, 0);
+        let uvh: [u8; 32] = [0x6Du8; 32];
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new(entity, "body"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: uvh,
+                kernel_handle: None,
+            },
+        );
+
+        let cases = [
+            ("face", reify_core::ty::SelectorKind::Face),
+            ("edge", reify_core::ty::SelectorKind::Edge),
+            ("solid_body", reify_core::ty::SelectorKind::Body),
+            ("vertex", reify_core::ty::SelectorKind::Vertex),
+        ];
+
+        for (name, want_kind) in cases {
+            let expr = named_selector_call(name, entity, "body", want_kind, "tag");
+            let mut diagnostics = Vec::new();
+            let result =
+                super::try_eval_symbolic_topology_selector(&expr, &values, &mut diagnostics);
+            let sv = match result {
+                Some(reify_ir::Value::Selector(sv)) => sv,
+                other => panic!(
+                    "{name}(body, \"tag\") over a symbolic target must yield \
+                     Some(Value::Selector(..)); got {:?}; diags: {:?}",
+                    other, diagnostics
+                ),
+            };
+            assert_eq!(sv.kind, want_kind, "{name} selector kind");
+            match &sv.node {
+                reify_ir::value::SelectorNode::Leaf { target, query } => {
+                    assert_eq!(
+                        target.kernel_handle, None,
+                        "{name}: symbolic target must have kernel_handle == None"
+                    );
+                    assert_eq!(
+                        target.realization_ref, rr,
+                        "{name}: realization_ref propagated"
+                    );
+                    assert_eq!(
+                        query,
+                        &reify_ir::value::LeafQuery::Named("tag".to_string()),
+                        "{name}: Named(\"tag\") leaf"
+                    );
+                }
+                other => panic!("{name}: must be a Leaf node; got {:?}", other),
+            }
+            assert!(
+                diagnostics.is_empty(),
+                "{name}: construction must emit zero diagnostics; got {:?}",
+                diagnostics
+            );
+        }
+    }
+
+    /// `face(mid_surface(bodyref), "r")` — arg0 is an INLINE nested selector
+    /// FunctionCall (not a ValueRef) — must resolve via the fallback path
+    /// (`resolve_named_leaf_target_symbolic`'s
+    /// `reconstruct_selector_value_symbolic` + `first_leaf_target`), rooting
+    /// the Named leaf at body's GHR. Task #5120 R2c / the 4583
+    /// chained-first-arg form.
+    #[test]
+    fn try_eval_symbolic_topology_selector_face_over_inline_nested_selector() {
+        use reify_core::identity::{RealizationNodeId, ValueCellId};
+
+        let entity = "R2cChainedFace";
+        let rr = RealizationNodeId::new(entity, 0);
+        let uvh: [u8; 32] = [0x6Eu8; 32];
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new(entity, "body"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: uvh,
+                kernel_handle: None,
+            },
+        );
+
+        let mid_surface_expr = topology_selector_call_one_value_ref(
+            "mid_surface",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            reify_core::Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let name_lit = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::String("r".to_string()),
+            reify_core::Type::String,
+        );
+        let expr = topology_selector_composition_call("face", mid_surface_expr, name_lit);
+
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_symbolic_topology_selector(&expr, &values, &mut diagnostics);
+        let sv = match result {
+            Some(reify_ir::Value::Selector(sv)) => sv,
+            other => panic!(
+                "face(mid_surface(body), \"r\") must yield Some(Value::Selector(..)) via the \
+                 fallback chained-first-arg path; got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(sv.kind, reify_core::ty::SelectorKind::Face);
+        match &sv.node {
+            reify_ir::value::SelectorNode::Leaf { target, query } => {
+                assert_eq!(target.kernel_handle, None, "chained target must be symbolic");
+                assert_eq!(target.realization_ref, rr, "leaf rooted at body's GHR");
+                assert_eq!(query, &reify_ir::value::LeafQuery::Named("r".to_string()));
+            }
+            other => panic!("must be a Leaf node; got {:?}", other),
+        }
+    }
+
+    /// `face` over a missing target cell (no entry in `values`) must yield
+    /// `None` (PRD invariant #2: never partially-construct a selector).
+    #[test]
+    fn try_eval_symbolic_topology_selector_face_returns_none_for_missing_target() {
+        let values = reify_ir::ValueMap::new(); // empty — "body" cell absent
+        let expr = named_selector_call(
+            "face",
+            "R2cMissing",
+            "body",
+            reify_core::ty::SelectorKind::Face,
+            "tag",
+        );
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_symbolic_topology_selector(&expr, &values, &mut diagnostics);
+        assert!(
+            result.is_none(),
+            "face over a missing target cell must yield None; got {:?}",
+            result
+        );
+    }
+
+    /// Arity guard: `face(body)` (1 arg, expects 2: geometry + name) → None.
+    #[test]
+    fn try_eval_symbolic_topology_selector_face_arity_mismatch_returns_none() {
+        use reify_core::identity::{RealizationNodeId, ValueCellId};
+
+        let entity = "R2cFaceArity";
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new(entity, "body"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new(entity, 0),
+                upstream_values_hash: [0x6Fu8; 32],
+                kernel_handle: None,
+            },
+        );
+        let body_ref = reify_ir::CompiledExpr::value_ref(
+            ValueCellId::new(entity, "body"),
+            reify_core::Type::Geometry,
+        );
+        let expr = mk_symbolic_call_3523("face", vec![body_ref]);
+
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_symbolic_topology_selector(&expr, &values, &mut diagnostics);
+        assert!(
+            result.is_none(),
+            "face with arity 1 (expects 2) must yield None; got {:?}",
+            result
+        );
+    }
