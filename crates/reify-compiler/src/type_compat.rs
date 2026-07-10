@@ -1922,8 +1922,20 @@ pub(crate) fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
 /// representationally-deferred) resolves to a placeholder that is NEVER
 /// user-observed for a genuinely-unsupported pairing — the `expr.rs` guard
 /// overwrites `result_type` to `Type::Error` for every such case — but DOES
-/// surface for the two pairings the guard deliberately defers on instead of
+/// surface for the three pairings the guard deliberately defers on instead of
 /// poisoning:
+/// - `Type::TypeParam` (either side): propagates the `TypeParam` itself.
+///   `infer_binop_type`'s own pre-match early-return (above) already handles
+///   this case when callers go through `infer_binop_type` — but
+///   `expr.rs::compile_binop` calls `infer_mul_div_result` and this function
+///   DIRECTLY for `*`/`/` (see this fn's own doc), bypassing that early
+///   return entirely, so without this arm a `TypeParam` operand (e.g. a
+///   purpose-subject member access, `Type::TypeParam("StructureMember")`)
+///   silently collapsed to `Int` on that path — e.g. `let m = subject.a -
+///   subject.b; let n = m * 2; constraint n > 0mm` statically typed `n` as
+///   `Int`, producing a false `Int vs Scalar[m]` mismatch on the
+///   `constraint`. Regression pin:
+///   `mul_div_result_or_placeholder_type_param_propagates_not_int` below.
 /// - `Type::Projection` (either side): propagates the `Projection` itself,
 ///   mirroring the `TypeParam` gradualism-propagation block above, so an
 ///   unresolved trait-associated-type reference survives arithmetic instead
@@ -1942,7 +1954,11 @@ pub(crate) fn mul_div_result_or_placeholder(
     right: &Type,
 ) -> Type {
     inferred.unwrap_or_else(|| {
-        if let Type::Projection { .. } = left {
+        if let Type::TypeParam(_) = left {
+            left.clone()
+        } else if let Type::TypeParam(_) = right {
+            right.clone()
+        } else if let Type::Projection { .. } = left {
             left.clone()
         } else if let Type::Projection { .. } = right {
             right.clone()
@@ -4773,6 +4789,53 @@ mod tests {
     fn infer_binop_type_int_div_scalar_param_propagates_q_not_int() {
         let q = Type::ScalarParam("Q".to_string());
         assert_eq!(infer_binop_type(BinOp::Div, &Type::Int, &q), q);
+    }
+
+    /// `TypeParam(_) * Int` (e.g. `Type::TypeParam("StructureMember")`, a
+    /// purpose-subject member access's static type — `subject.a` in
+    /// `purpose marg(subject: Widget) { let m = subject.a - subject.b; let n =
+    /// m * 2; constraint n > 0mm }`) must propagate the `TypeParam` itself,
+    /// NOT collapse to the `Type::Int` placeholder.
+    ///
+    /// Deliberately calls `mul_div_result_or_placeholder` directly rather than
+    /// `infer_binop_type`: `infer_binop_type`'s own pre-match early-return
+    /// (this file, `infer_binop_type`'s `BinOp::Add | BinOp::Sub | BinOp::Mul
+    /// | BinOp::Div | BinOp::Mod | BinOp::Pow` guard) already short-circuits a
+    /// `TypeParam` operand BEFORE reaching this function, so a test that goes
+    /// through `infer_binop_type` cannot observe a regression here.
+    /// `expr.rs::compile_binop` calls `infer_mul_div_result` and
+    /// `mul_div_result_or_placeholder` DIRECTLY for `*`/`/` (see this
+    /// function's own doc), bypassing `infer_binop_type`'s early-return
+    /// entirely — so this function needed its OWN `TypeParam` propagation arm
+    /// to close the same gradualism gap on that path. Without it, `n` above
+    /// statically typed `Int`, and `constraint n > 0mm` produced a false `Int
+    /// vs Scalar[m]` mismatch (`purpose_let_multi_let_earlier_let_visibility`
+    /// integration regression, `crates/reify-compiler/tests/purpose_compile_tests.rs`).
+    #[test]
+    fn mul_div_result_or_placeholder_type_param_propagates_not_int() {
+        let t = Type::TypeParam("StructureMember".to_string());
+        assert_eq!(
+            mul_div_result_or_placeholder(
+                infer_mul_div_result(BinOp::Mul, &t, &Type::Int),
+                &t,
+                &Type::Int
+            ),
+            t
+        );
+    }
+
+    /// Reverse-order (`Int * TypeParam(_)`) counterpart of the pin above.
+    #[test]
+    fn mul_div_result_or_placeholder_int_times_type_param_propagates_not_int() {
+        let t = Type::TypeParam("StructureMember".to_string());
+        assert_eq!(
+            mul_div_result_or_placeholder(
+                infer_mul_div_result(BinOp::Mul, &Type::Int, &t),
+                &Type::Int,
+                &t
+            ),
+            t
+        );
     }
 
     // ── β2 step-3 RED — infer_mul_div_result: Complex + Transform arms ──────
