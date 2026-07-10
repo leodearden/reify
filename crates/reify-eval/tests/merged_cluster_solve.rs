@@ -29,7 +29,7 @@ use reify_eval::Engine;
 use reify_ir::{
     BestFoundReason, BinOp, CompiledExpr, CompiledExprKind, ConstraintSolver, DeterminacyState,
     ObjectiveCombination, ObjectiveSense, ObjectiveSet, OptimalityStatus, RankedCandidate,
-    RankedSolveResult, ResolutionProblem, SolveResult, UndefCause, Value,
+    RankedSolveResult, ResolutionProblem, SnapshotProvenance, SolveResult, UndefCause, Value,
 };
 use reify_test_support::{
     CompiledModuleBuilder, MockConstraintChecker, MultiCallSpyConstraintSolver,
@@ -198,6 +198,60 @@ fn merged_cluster_writes_back_solved_values_to_every_member_scope() {
         DeterminacyState::Determined,
         "B.m must be Determined in the final snapshot -- not still Undetermined",
     );
+}
+
+/// Amendment (task #5014, reviewer_comprehensive round 3, suggestion 2):
+/// pins the exact wording of `SnapshotProvenance::Resolution.scope` after a
+/// merged solve, so a future change to `merged_scope_label`
+/// (`dispatch_merged_cluster_solve`) fails a test instead of silently
+/// drifting. `scope` stays a plain `String` -- confirmed by grepping every
+/// in-tree read site: the only OTHER consumers are (a) this crate's own
+/// per-template write site (a single template name, unaffected by this
+/// change), (b) `reify-ir`'s definition + its own unit test, and (c)
+/// `resolution.rs`'s per-template equality assertion -- none parse or key
+/// off the string, all treat it as opaque display/equality text. The
+/// unrelated `ResolutionNodeId`/`ResolutionNodeData` cache-key type (a
+/// different "Resolution" concept entirely, in `graph.rs`/`cache.rs`) is
+/// always constructed directly from a template/entity name, never derived
+/// from `SnapshotProvenance::Resolution.scope`, so it cannot be affected by
+/// this format either.
+#[test]
+fn merged_cluster_snapshot_provenance_scope_is_comma_joined_member_names() {
+    let module = two_cycle_cluster_module();
+
+    let a_k = ValueCellId::new("A", "k");
+    let b_m = ValueCellId::new("B", "m");
+
+    let mut solved = HashMap::new();
+    solved.insert(a_k.clone(), mm(3.0));
+    solved.insert(b_m.clone(), mm(7.0));
+
+    let spy = MultiCallSpyConstraintSolver::new(vec![SolveResult::Solved {
+        values: solved,
+        unique: true,
+    }]);
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+    engine.eval(&module);
+
+    let snapshot = engine
+        .snapshot()
+        .expect("engine must have a snapshot after eval()");
+    match &snapshot.provenance {
+        SnapshotProvenance::Resolution { scope, .. } => {
+            assert_eq!(
+                scope, "A, B",
+                "merged scope label must be every cluster member's template \
+                 name, \", \"-joined in cluster.scopes (ascending source \
+                 index) order -- NOT a single member's name; got {scope:?}",
+            );
+        }
+        other => panic!(
+            "expected SnapshotProvenance::Resolution after a merged solve; \
+             got {other:?}"
+        ),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1351,6 +1405,31 @@ fn merged_cluster_skips_solver_when_every_auto_is_excluded() {
     assert!(
         combined.contains("`B`") && combined.contains("`m`"),
         "expected an error naming template `B` and member `m`; got: {combined}",
+    );
+
+    // Amendment (task #5014, reviewer_comprehensive round 3, suggestion 1):
+    // when the WHOLE cluster's auto_params comes back empty, one more
+    // diagnostic must name the full cluster so the (here, vacuous, since
+    // BOTH members are excluded) collateral is an observable signal rather
+    // than silence. A dedicated two-member fixture where only one member
+    // contributes the excluded cell isn't needed to pin this: this test
+    // already exercises the exact early-return code path the new
+    // diagnostic is pushed from, and the message names every cluster
+    // member unconditionally (not just the excluded one).
+    let warnings: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .collect();
+    assert!(
+        warnings
+            .iter()
+            .any(|d| d.message.contains("MergedSolve cluster")
+                && d.message.contains("[A, B]")
+                && d.message.contains("entirely unresolved")),
+        "expected a warning Diagnostic naming the WHOLE cluster ([A, B]) as \
+         left entirely unresolved; got: {:#?}",
+        result.diagnostics,
     );
 
     let connector_k = ValueCellId::new("A.__connector_0", "k");

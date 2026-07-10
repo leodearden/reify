@@ -5365,7 +5365,31 @@ impl Engine {
         // the cluster. Falling back to per-template solving for the
         // non-excluded members is a possible follow-up, not implemented
         // here.
+        //
+        // Collateral observability (reviewer_comprehensive, amendment task
+        // #5014, round 3): the per-cell error(s) above name the SPECIFIC
+        // excluded connector-instance auto cell(s), but say nothing about
+        // the collateral members -- a user staring at an undetermined value
+        // on a sibling scope that contributed no excluded cell had no
+        // signal that it went unresolved because a DIFFERENT member's cell
+        // was unsupported. Push one more diagnostic naming the WHOLE
+        // cluster so that collateral is an observable signal, not silence.
         if problem.auto_params.is_empty() {
+            let cluster_scope_names: Vec<&str> = cluster
+                .scopes
+                .iter()
+                .map(|&member_idx| module.templates[member_idx].name.as_str())
+                .collect();
+            diagnostics.push(Diagnostic::warning(format!(
+                "MergedSolve cluster [{}] was left entirely unresolved: at \
+                 least one member contributed an unsupported connector-\
+                 pinned auto cell (see the error diagnostic above naming \
+                 the specific cell), so no merged solve was attempted -- \
+                 EVERY member of this cluster, not only the one that \
+                 contributed the excluded cell, remains undetermined \
+                 (task #5014).",
+                cluster_scope_names.join(", "),
+            )));
             return;
         }
 
@@ -5537,6 +5561,29 @@ impl Engine {
                     let is_synth = self
                         .centrality_synthesized_scopes
                         .contains(id.entity.as_str());
+                    // Amendment, task #5014 (reviewer_comprehensive
+                    // suggestion 3): `member_by_name` is keyed by
+                    // `templates[member_idx].name`, so this lookup silently
+                    // degrades `inherited_from` to `None` if `id.entity`
+                    // ever diverges from its owning member's bare template
+                    // name (e.g. an instanced/synthesized scope whose
+                    // entity string isn't the plain template name) -- a
+                    // divergence the per-template arm above can't hit (it
+                    // always reads `governance[idx]` directly, keyed by the
+                    // driver's own `idx`, never a name lookup). Trip this
+                    // in tests/debug builds rather than silently drop
+                    // provenance in release.
+                    debug_assert!(
+                        member_by_name.contains_key(id.entity.as_str()) || is_synth,
+                        "merged solve resolved cell `{:?}` whose owning entity \
+                         `{}` is neither a cluster member's template name \
+                         (member_by_name, built from cluster.scopes) nor a \
+                         recognized centrality-synthesized scope -- \
+                         inherited_from provenance would silently be dropped \
+                         to None; entity/template-name divergence?",
+                        id,
+                        id.entity,
+                    );
                     let inherited_from = member_by_name
                         .get(id.entity.as_str())
                         .and_then(|&member_idx| governance[member_idx].inherited_from.clone());
