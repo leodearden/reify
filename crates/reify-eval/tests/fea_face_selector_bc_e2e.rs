@@ -348,6 +348,75 @@ fn characterizes_4876_occt_tessellation_unwelded_witness() {
     );
 }
 
+/// `cfg(has_gmsh)`: obtain the REAL OCCT tessellation of the #4876 fixture's
+/// `body` (`fea_bc_box.ri`, a 1 m box), via engine-owned OCCT.
+///
+/// Drives `Engine::tessellate_realizations`, which calls the SAME
+/// `kernel.tessellate(handle, tol)` OCCT path the realization edge
+/// (engine_build.rs:7655) feeds to `mesh_surface_to_volume_attributed`, so
+/// the returned mesh is faithful to the crash input (G6 discipline).
+/// Deliberately never calls `ensure_gmsh_kernel()` — gmsh FFI is therefore
+/// never co-resident with the standalone-OCCT-kernel path, per the module
+/// doc's segfault warning above.
+///
+/// Panics if tessellation reports an `Error`-severity diagnostic or
+/// produces no meshes at all.
+#[cfg(has_gmsh)]
+fn real_occt_box_surface() -> reify_ir::Mesh {
+    use reify_core::Severity;
+
+    let compiled = reify_test_support::parse_and_compile_with_stdlib(include_str!(
+        "fixtures/fea_bc_box.ri"
+    ));
+
+    let mut engine = make_occt_engine();
+    // The fixture's `@optimized("test::vm-demand-probe")` target needs a
+    // registered compute trampoline, or evaluation falls back to
+    // body-inlining and records an Error-severity diagnostic (mirrors the
+    // registration the sibling tests above perform). This helper never
+    // reads the probe's captured result — it only needs the diagnostics to
+    // stay clean so the `errors.is_empty()` assert below is meaningful.
+    engine.register_compute_fn(
+        "test::vm-demand-probe",
+        bc_probe_capture_fn as reify_eval::ComputeFn,
+    );
+    let result = engine.tessellate_realizations(&compiled);
+
+    let errors: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "unexpected tessellation errors on fea_bc_box.ri: {:?}",
+        errors
+    );
+    assert!(
+        !result.meshes.is_empty(),
+        "tessellate_realizations must surface at least one mesh for fea_bc_box.ri"
+    );
+
+    // Select the box `body` realization: the sole geometry realization in
+    // the fixture, surfaced under an entity path prefixed by the structure
+    // name `FeaBcBox`. Falls back to the mesh with the most vertices if the
+    // entity-path convention ever shifts (the non-empty assert above already
+    // guarantees a mesh is present either way).
+    let surface = result
+        .meshes
+        .iter()
+        .find(|s| s.entity_path.starts_with("FeaBcBox"))
+        .unwrap_or_else(|| {
+            result
+                .meshes
+                .iter()
+                .max_by_key(|s| s.mesh.vertices.len())
+                .expect("result.meshes is non-empty (checked above)")
+        });
+
+    surface.mesh.clone()
+}
+
 /// `cfg(not(has_gmsh))`: skip-stub. Without the gmsh adapter the realization
 /// edge cannot produce a boundary; the gated tests above are compiled out.
 #[cfg(not(has_gmsh))]
