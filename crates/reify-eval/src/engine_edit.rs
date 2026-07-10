@@ -5771,7 +5771,18 @@ mod tests {
         assert_eq!(messages, vec!["a", "b", "c"]);
     }
 
-    /// [Re-homed from `reify-eval/src/concurrent.rs:780`
+    /// Assert that `v` is a `Value::Scalar` whose SI value is within the
+    /// solver's convergence tolerance (`1e-9`) of `si`. Shared by
+    /// `edit_param_back_props_solved_auto` / `edit_param_back_props_moved_auto`
+    /// to collapse their repeated Scalar-tolerance `matches!` assertions.
+    fn assert_len_eq(v: &reify_ir::Value, si: f64, ctx: &str) {
+        assert!(
+            matches!(v, reify_ir::Value::Scalar { si_value, .. } if (*si_value - si).abs() < 1e-9),
+            "{ctx}; got {v:?}",
+        );
+    }
+
+    /// [Re-homed from `reify-eval/src/concurrent.rs`
     /// (`resolve_concurrent_edit_back_props_solved_auto`), task ξ (#5046),
     /// ahead of task ο's deletion of the dead concurrent stack.] Regression
     /// guard: `edit_param`'s `SolveResult::Solved` arm correctly back-props
@@ -5834,9 +5845,10 @@ mod tests {
             .resolved_params
             .get(&x_id)
             .expect("x must be in resolved_params after SolveResult::Solved back-prop");
-        assert!(
-            matches!(x_resolved, Value::Scalar { si_value, .. } if (*si_value - 0.01).abs() < 1e-9),
-            "edit_param Solved arm: x must be resolved to 0.01 m (10mm); got {x_resolved:?}",
+        assert_len_eq(
+            x_resolved,
+            0.01,
+            "edit_param Solved arm: x must be resolved to 0.01 m (10mm)",
         );
 
         // (2) y must be re-evaluated to 15mm = 0.015 m (= x + 5mm) by the
@@ -5846,10 +5858,7 @@ mod tests {
             .values
             .get(&y_id)
             .expect("y must be in result.values after edit_param back-prop");
-        assert!(
-            matches!(y_val, Value::Scalar { si_value, .. } if (*si_value - 0.015).abs() < 1e-9),
-            "edit_param reseed: y must be 0.015 m (15mm = x + 5mm); got {y_val:?}",
-        );
+        assert_len_eq(y_val, 0.015, "edit_param reseed: y must be 0.015 m (15mm = x + 5mm)");
 
         // (3) engine.snapshot() must record y as (0.015 m, Determined).
         let snapshot = engine
@@ -5864,13 +5873,10 @@ mod tests {
             DeterminacyState::Determined,
             "y must be Determined in the snapshot after edit_param",
         );
-        assert!(
-            matches!(snap_y, Value::Scalar { si_value, .. } if (*si_value - 0.015).abs() < 1e-9),
-            "snapshot y must be 0.015 m after back-prop; got {snap_y:?}",
-        );
+        assert_len_eq(snap_y, 0.015, "snapshot y must be 0.015 m after back-prop");
     }
 
-    /// [Re-homed from `reify-eval/src/concurrent.rs:886`
+    /// [Re-homed from `reify-eval/src/concurrent.rs`
     /// (`resolve_concurrent_edit_back_props_moved_auto`), task ξ (#5046),
     /// ahead of task ο's deletion of the dead concurrent stack.] Regression
     /// guard for the warm re-solve convergence fix in task #4700: `edit_param`
@@ -5939,10 +5945,10 @@ mod tests {
             "x must be in resolved_params after SolveResult::Solved back-prop; \
              if absent, the solver returned Infeasible from the 20mm seed (pre-4700 bug)",
         );
-        assert!(
-            matches!(x_resolved, Value::Scalar { si_value, .. } if (*si_value - 0.01).abs() < 1e-9),
-            "edit_param moved-auto: x must be resolved to 0.01 m (10mm), \
-             not the injected 20mm seed; got {x_resolved:?}",
+        assert_len_eq(
+            x_resolved,
+            0.01,
+            "edit_param moved-auto: x must be resolved to 0.01 m (10mm), not the injected 20mm seed",
         );
 
         // (2) result.values[x] must be updated to 10mm (back-prop writes it).
@@ -5950,10 +5956,7 @@ mod tests {
             .values
             .get(&x_id)
             .expect("x must be in result.values after back-prop");
-        assert!(
-            matches!(x_val, Value::Scalar { si_value, .. } if (*si_value - 0.01).abs() < 1e-9),
-            "result.values[x] must be 0.01 m (10mm) after back-prop; got {x_val:?}",
-        );
+        assert_len_eq(x_val, 0.01, "result.values[x] must be 0.01 m (10mm) after back-prop");
 
         // (3) engine.snapshot() must record x as (10mm, Determined).
         let snapshot = engine
@@ -5968,10 +5971,7 @@ mod tests {
             DeterminacyState::Determined,
             "x must be Determined in the snapshot after edit_param",
         );
-        assert!(
-            matches!(snap_x, Value::Scalar { si_value, .. } if (*si_value - 0.01).abs() < 1e-9),
-            "snapshot x must be 0.01 m (10mm) after back-prop; got {snap_x:?}",
-        );
+        assert_len_eq(snap_x, 0.01, "snapshot x must be 0.01 m (10mm) after back-prop");
 
         // (4) y must be re-evaluated to 15mm = 0.015 m by the post-solve reseed.
         let y_id = ValueCellId::new("WarmMoveConc", "y");
@@ -5979,17 +5979,14 @@ mod tests {
             .values
             .get(&y_id)
             .expect("y must be in result.values after edit_param reseed");
-        assert!(
-            matches!(y_val, Value::Scalar { si_value, .. } if (*si_value - 0.015).abs() < 1e-9),
-            "edit_param reseed: y must be 0.015 m (15mm = x + 5mm); got {y_val:?}",
-        );
+        assert_len_eq(y_val, 0.015, "edit_param reseed: y must be 0.015 m (15mm = x + 5mm)");
     }
 
-    /// [Re-homed from `reify-eval/tests/concurrent.rs:923`
+    /// [Re-homed from `reify-eval/tests/concurrent.rs`
     /// (`resolve_concurrent_edit_skips_solve_when_no_auto_group_constraints_are_dirty`),
     /// task ξ (#5046), ahead of task ο's deletion of the dead concurrent
     /// stack.] Regression guard for the `constraints_dirty` short-circuit
-    /// inside `edit_param` (engine_edit.rs:1315): editing a param that does
+    /// inside `edit_param`: editing a param that does
     /// NOT dirty any constraint referencing an auto group must NOT
     /// re-invoke the solver — the live twin of `resolve_concurrent_edit`'s
     /// identical guard.
