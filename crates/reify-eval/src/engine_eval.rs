@@ -1590,12 +1590,20 @@ fn build_solver_problem(
 ///   template names are pairwise unique, the same compile-time-enforced
 ///   invariant every `ValueCellId` in this eval graph already relies on), so
 ///   a container and its inheriting children collapse to one contribution.
-///   `combination` and `cost_robustness_lambda` likewise carry through from
-///   the first contributing member rather than being hardcoded — a
-///   single-objective-owner cluster (the common case) keeps that owner's own
-///   `combination` (`WeightedSum` or `Lexicographic`) verbatim; a later,
-///   differing value from another distinct contributing member pushes a
-///   warning diagnostic and is dropped (first-found wins).
+///   `combination` — a mandatory field on every contributing member's
+///   `ObjectiveSet` — locks onto the first *distinct contributing member*
+///   unconditionally rather than being hardcoded: a single-objective-owner
+///   cluster (the common case) keeps that owner's own `combination`
+///   (`WeightedSum` or `Lexicographic`) verbatim; a later, differing value
+///   from another distinct contributing member pushes a warning diagnostic
+///   and is dropped (first-*member*-found wins). `cost_robustness_lambda` is
+///   optional per member, so it follows a related but distinct rule: a
+///   distinct contributing member whose own lambda is `None` does NOT lock
+///   the slot — the fold carries through the first *non-None* value seen in
+///   `cluster.scopes` order ("carry through when present"), and only a
+///   later, differing `Some` value pushes the same kind of divergence
+///   warning `combination` does (first-*non-None*-found wins, not simply
+///   first-member-found).
 ///   `objective` is `None` only when no member has a governing objective.
 ///
 /// Cost (cold-path only): like `build_solver_problem`, the constraint filter
@@ -1750,6 +1758,20 @@ fn build_merged_solver_problem(
                 }
                 _ => {}
             }
+            // `cost_robustness_lambda` is optional per member (unlike
+            // `combination` above, which is mandatory), so its fold uses a
+            // related but distinct rule: `(None, candidate)` fires again for
+            // every distinct contributing member until one supplies `Some`,
+            // so a member with no preference does NOT lock out a later
+            // member's explicit lambda -- this carries through the first
+            // *non-None* value in `cluster.scopes` order, not simply the
+            // first member's value (mirrors "carry through when present",
+            // amendment task #5014 §5.2; see the doc comment above).
+            //
+            // exact compare intended: lambdas are user-declared literals
+            // (parsed, not computed), so bitwise equality is the correct
+            // divergence test here, not an approximate/epsilon compare.
+            #[allow(clippy::float_cmp)]
             match (cost_robustness_lambda, obj.cost_robustness_lambda) {
                 (None, candidate) => cost_robustness_lambda = candidate,
                 (Some(existing), Some(candidate)) if candidate != existing => {
@@ -5613,6 +5635,28 @@ impl Engine {
                 // inherited governance (§6.1), unlike the single-scope
                 // per-template arm which uses one `governance[idx]` for every
                 // cell.
+                // Amendment, task #5014 (reviewer_comprehensive round 4,
+                // suggestion 2): mirrors `build_merged_solver_problem`'s
+                // identical pairwise-unique-names debug_assert. This
+                // `member_by_name` map is keyed by the same
+                // `templates[member_idx].name`, so a collision would
+                // silently keep only the LAST same-named member, mis-routing
+                // `inherited_from` provenance in the loop below. Pin the
+                // precondition at this second construction site too instead
+                // of relying on it only being checked where the merged
+                // problem is built.
+                debug_assert!(
+                    {
+                        let mut seen_names: HashSet<&str> = HashSet::new();
+                        cluster.scopes.iter().all(|&member_idx| {
+                            seen_names.insert(module.templates[member_idx].name.as_str())
+                        })
+                    },
+                    "cluster.scopes must have pairwise-unique template names -- \
+                     member_by_name's dedup key (template name) assumes this \
+                     compile-time-enforced invariant; cluster.scopes={:?}",
+                    cluster.scopes,
+                );
                 let member_by_name: HashMap<&str, usize> = cluster
                     .scopes
                     .iter()

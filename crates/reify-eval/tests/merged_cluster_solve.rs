@@ -201,21 +201,24 @@ fn merged_cluster_writes_back_solved_values_to_every_member_scope() {
     );
 }
 
-/// Amendment (task #5014, reviewer_comprehensive round 3, suggestion 2):
-/// pins the exact wording of `SnapshotProvenance::Resolution.scope` after a
-/// merged solve, so a future change to `merged_scope_label`
-/// (`dispatch_merged_cluster_solve`) fails a test instead of silently
-/// drifting. `scope` stays a plain `String` -- confirmed by grepping every
-/// in-tree read site: the only OTHER consumers are (a) this crate's own
-/// per-template write site (a single template name, unaffected by this
-/// change), (b) `reify-ir`'s definition + its own unit test, and (c)
-/// `resolution.rs`'s per-template equality assertion -- none parse or key
-/// off the string, all treat it as opaque display/equality text. The
-/// unrelated `ResolutionNodeId`/`ResolutionNodeData` cache-key type (a
-/// different "Resolution" concept entirely, in `graph.rs`/`cache.rs`) is
-/// always constructed directly from a template/entity name, never derived
-/// from `SnapshotProvenance::Resolution.scope`, so it cannot be affected by
-/// this format either.
+/// Amendment (task #5014, reviewer_comprehensive round 3, suggestion 2;
+/// loosened round 4 suggestion 3): pins the MEMBER-NAME SET AND ORDER
+/// encoded in `SnapshotProvenance::Resolution.scope` after a merged solve --
+/// not the exact joined string -- so a future change to `merged_scope_label`
+/// (`dispatch_merged_cluster_solve`) still fails this test if it drops or
+/// reorders a member name, while surviving a benign separator/format change
+/// (e.g. switching from ", " to another delimiter). `scope` stays a plain
+/// `String` -- confirmed by grepping every in-tree read site: the only OTHER
+/// consumers are (a) this crate's own per-template write site (a single
+/// template name, unaffected by this change), (b) `reify-ir`'s definition +
+/// its own unit test, and (c) `resolution.rs`'s per-template equality
+/// assertion -- none parse or key off the string, all treat it as opaque
+/// display/equality text. The unrelated `ResolutionNodeId`/
+/// `ResolutionNodeData` cache-key type (a different "Resolution" concept
+/// entirely, in `graph.rs`/`cache.rs`) is always constructed directly from a
+/// template/entity name, never derived from
+/// `SnapshotProvenance::Resolution.scope`, so it cannot be affected by this
+/// format either.
 #[test]
 fn merged_cluster_snapshot_provenance_scope_is_comma_joined_member_names() {
     let module = two_cycle_cluster_module();
@@ -241,11 +244,13 @@ fn merged_cluster_snapshot_provenance_scope_is_comma_joined_member_names() {
         .expect("engine must have a snapshot after eval()");
     match &snapshot.provenance {
         SnapshotProvenance::Resolution { scope, .. } => {
+            let member_names: Vec<&str> = scope.split(", ").collect();
             assert_eq!(
-                scope, "A, B",
-                "merged scope label must be every cluster member's template \
-                 name, \", \"-joined in cluster.scopes (ascending source \
-                 index) order -- NOT a single member's name; got {scope:?}",
+                member_names,
+                vec!["A", "B"],
+                "merged scope label must list every cluster member's \
+                 template name, in cluster.scopes (ascending source index) \
+                 order -- NOT a single member's name; got {scope:?}",
             );
         }
         other => panic!(
