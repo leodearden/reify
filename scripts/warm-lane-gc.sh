@@ -15,7 +15,8 @@
 #       [--lane-glob GLOB] \
 #       [--protect-glob GLOB] \
 #       [--seed-script PATH] \
-#       [--status-cmd PATH]
+#       [--status-cmd PATH] \
+#       [--disk-pressure]
 #
 #   OR (legacy / explicit form):
 #   scripts/warm-lane-gc.sh reclaim \
@@ -70,6 +71,14 @@
 #                          oracle warm-lane-preflight.sh Check 6 and
 #                          warm-lane-degenerate-ref-check.sh consume), so one
 #                          env var lights up detector + reclaimer together.
+#   --disk-pressure        Fast-path: reclaim a lane by `rm -rf <lane>/target`
+#                          instead of invoking the α reflink-reseed clone — no
+#                          transient 2×-space requirement. Valid because
+#                          acquire_lane always re-seeds from base (D10 §9.5).
+#                          Applies to every reclaimable lane in Pass 1 (Tier-3
+#                          or _is_reclaimable); counted as `reset` in the
+#                          summary. Default: REIFY_WARM_LANE_GC_DISK_PRESSURE
+#                          (any non-empty value = on). Off by default.
 #   -h, --help             Print this message and exit.
 #
 # Exit codes:
