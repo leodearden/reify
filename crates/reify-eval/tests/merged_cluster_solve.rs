@@ -28,8 +28,9 @@ use reify_core::{
 use reify_eval::Engine;
 use reify_ir::{
     BestFoundReason, BinOp, CompiledExpr, CompiledExprKind, ConstraintSolver, DeterminacyState,
-    ObjectiveCombination, ObjectiveSense, ObjectiveSet, OptimalityStatus, RankedCandidate,
-    RankedSolveResult, ResolutionProblem, SnapshotProvenance, SolveResult, UndefCause, Value,
+    ObjectiveCombination, ObjectiveSense, ObjectiveSet, ObjectiveTerm, OptimalityStatus,
+    RankedCandidate, RankedSolveResult, ResolutionProblem, SnapshotProvenance, SolveResult,
+    UndefCause, Value,
 };
 use reify_test_support::{
     CompiledModuleBuilder, MockConstraintChecker, MultiCallSpyConstraintSolver,
@@ -1488,5 +1489,200 @@ fn eval_cached_does_not_merge_within_cap_cluster_unlike_cold_eval() {
          MergedSolve cluster on the cold eval() path (accepted divergence, \
          TODO(#5118)); got {} call(s)",
         captured.lock().unwrap().len(),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// amendment (review round N): objective `combination` is preserved, not
+// hardcoded to WeightedSum (reviewer_comprehensive, engine_eval.rs:1710-1716).
+// ---------------------------------------------------------------------------
+
+/// Same spanning-cluster shape as `spanning_objective_cluster_module`
+/// (Parent(idx0) declares `minimize (ChildA.cost + ChildB.cost)`, ChildA/ChildB
+/// own no objective => one MergedSolve cluster [0, 1, 2]), except Parent's
+/// objective's own `combination` is `Lexicographic` instead of `WeightedSum`.
+fn spanning_objective_cluster_module_lexicographic() -> CompiledModule {
+    let parent = TopologyTemplateBuilder::new("Parent")
+        .auto_param("Parent", "total", Type::length())
+        .objective(ObjectiveSet {
+            terms: vec![ObjectiveTerm::new(
+                ObjectiveSense::Minimize,
+                binop(
+                    BinOp::Add,
+                    value_ref("ChildA", "cost"),
+                    value_ref("ChildB", "cost"),
+                ),
+            )],
+            combination: ObjectiveCombination::Lexicographic,
+            cost_robustness_lambda: None,
+        })
+        .build();
+
+    let child_a = TopologyTemplateBuilder::new("ChildA")
+        .auto_param("ChildA", "cost", Type::length())
+        .build();
+
+    let child_b = TopologyTemplateBuilder::new("ChildB")
+        .auto_param("ChildB", "cost", Type::length())
+        .build();
+
+    CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(parent)
+        .template(child_a)
+        .template(child_b)
+        .build()
+}
+
+/// The merged `ResolutionProblem` for a cluster with exactly ONE distinct
+/// contributing objective must carry that owner's `combination` through
+/// VERBATIM -- not silently flatten a `Lexicographic` combination to
+/// `WeightedSum`.
+///
+/// Before this amendment, `build_merged_solver_problem` unconditionally
+/// hardcoded `combination: ObjectiveCombination::WeightedSum`, which would
+/// have reinterpreted Parent's declared priority ordering ("earlier terms
+/// dominate later ones") as a weighted trade-off with no diagnostic -- a
+/// topology-dependent change to the optimum (reviewer_comprehensive,
+/// engine_eval.rs:1710-1716).
+#[test]
+fn merged_cluster_preserves_lexicographic_combination_from_single_owner() {
+    let module = spanning_objective_cluster_module_lexicographic();
+
+    let parent_total = ValueCellId::new("Parent", "total");
+    let child_a_cost = ValueCellId::new("ChildA", "cost");
+    let child_b_cost = ValueCellId::new("ChildB", "cost");
+
+    let mut solved = HashMap::new();
+    solved.insert(parent_total.clone(), mm(1.0));
+    solved.insert(child_a_cost.clone(), mm(2.0));
+    solved.insert(child_b_cost.clone(), mm(3.0));
+
+    let spy = SpyConstraintSolver::new_solved(solved);
+    let captured = spy.captured_problem();
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+    let _result = engine.eval(&module);
+
+    let problem = captured
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("solver must have been called with a merged ResolutionProblem");
+
+    let objective = problem.objective.expect(
+        "merged problem must carry the spanning objective (Parent's) -- got None",
+    );
+    assert_eq!(
+        objective.combination,
+        ObjectiveCombination::Lexicographic,
+        "merged objective must preserve Parent's OWN `Lexicographic` \
+         combination verbatim, not silently flatten it to WeightedSum; got {:?}",
+        objective.combination,
+    );
+    assert_eq!(
+        objective.terms.len(),
+        1,
+        "Parent's single term must still be folded exactly once regardless of \
+         combination; got {} term(s)",
+        objective.terms.len(),
+    );
+}
+
+/// Same {A, B} 2-cycle SCC (guarantees ONE `MergedSolve` cluster spanning both
+/// scopes, independent of objectives), but A and B EACH declare their OWN
+/// objective with a DIFFERENT `combination`.
+fn two_cycle_cluster_with_differing_combinations_module() -> CompiledModule {
+    let a = TopologyTemplateBuilder::new("A")
+        .auto_param("A", "k", Type::length())
+        .constraint("A", 0, None, gt(value_ref("B", "m"), literal(mm(0.0))))
+        .objective(ObjectiveSet {
+            terms: vec![ObjectiveTerm::new(ObjectiveSense::Minimize, value_ref("A", "k"))],
+            combination: ObjectiveCombination::WeightedSum,
+            cost_robustness_lambda: None,
+        })
+        .build();
+
+    let b = TopologyTemplateBuilder::new("B")
+        .auto_param("B", "m", Type::length())
+        .constraint("B", 0, None, gt(value_ref("A", "k"), literal(mm(0.0))))
+        .objective(ObjectiveSet {
+            terms: vec![ObjectiveTerm::new(ObjectiveSense::Minimize, value_ref("B", "m"))],
+            combination: ObjectiveCombination::Lexicographic,
+            cost_robustness_lambda: None,
+        })
+        .build();
+
+    CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(a)
+        .template(b)
+        .build()
+}
+
+/// When two distinct cluster members declare DIFFERING `combination`s, the
+/// merged objective must keep the FIRST-FOUND value (`cluster.scopes` order --
+/// A before B) and push a warning `Diagnostic` about the divergence, mirroring
+/// `merged_cluster_first_found_lambda_wins_with_divergence_warning`'s
+/// first-found-wins contract for `cost_robustness_lambda` (§5.2, amendment
+/// task #5014).
+#[test]
+fn merged_cluster_combination_divergence_warns_and_keeps_first_found() {
+    let module = two_cycle_cluster_with_differing_combinations_module();
+
+    let a_k = ValueCellId::new("A", "k");
+    let b_m = ValueCellId::new("B", "m");
+
+    let mut solved = HashMap::new();
+    solved.insert(a_k.clone(), mm(3.0));
+    solved.insert(b_m.clone(), mm(7.0));
+
+    let spy = SpyConstraintSolver::new_solved(solved);
+    let captured = spy.captured_problem();
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+    let result = engine.eval(&module);
+
+    let problem = captured
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("solver must have been called with a merged ResolutionProblem");
+    let objective = problem
+        .objective
+        .expect("merged problem must carry a spanning objective");
+    assert_eq!(
+        objective.combination,
+        ObjectiveCombination::WeightedSum,
+        "merged objective must keep A's (first-found, cluster.scopes order) \
+         WeightedSum combination -- not B's later-declared Lexicographic; got \
+         {:?}",
+        objective.combination,
+    );
+    assert_eq!(
+        objective.terms.len(),
+        2,
+        "both A's and B's own objective terms must still be folded in -- only \
+         the COMBINATION field keeps first-found, term concatenation is \
+         unaffected; got {} term(s)",
+        objective.terms.len(),
+    );
+
+    let warnings: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning && d.message.contains("combination"))
+        .collect();
+    assert!(
+        !warnings.is_empty(),
+        "expected a warning Diagnostic about the combination divergence \
+         between cluster members; got: {:#?}",
+        result.diagnostics,
+    );
+    assert!(
+        warnings[0].message.contains("Lexicographic") && warnings[0].message.contains("WeightedSum"),
+        "divergence warning must name both the differing (Lexicographic) and \
+         the already-governing (WeightedSum) combination; got: {}",
+        warnings[0].message,
     );
 }

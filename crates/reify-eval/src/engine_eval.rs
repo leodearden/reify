@@ -1580,16 +1580,22 @@ fn build_solver_problem(
 ///   combination is needed.
 /// * **Objective fold is opaque and deduped by owner (§6.1 INV-4).** Each
 ///   member's governing `ObjectiveTerm`s (from [`governing_objective`]) are
-///   cloned WHOLE into one `WeightedSum` `ObjectiveSet` — `weight` is never
-///   read or re-folded as an f64 here (the solver's `eval_objective_set`
-///   owns that fold, keeping this representation-agnostic w.r.t. a future
+///   cloned WHOLE into one `ObjectiveSet` — `weight` is never read or
+///   re-folded as an f64 here (the solver's `eval_objective_set` owns that
+///   fold, keeping this representation-agnostic w.r.t. a future
 ///   `weight: f64 -> Value::Scalar` flip). A container objective inherited
 ///   by several members must contribute its terms EXACTLY ONCE: the fold is
 ///   keyed by owner identity (the `inherited_from` container name, else the
-///   member's own template name), so a container and its inheriting
-///   children collapse to one contribution. `cost_robustness_lambda` carries
-///   through from the first member that sets one; a later, differing value
-///   pushes a warning diagnostic and is dropped (first-found wins).
+///   member's own template name — a `debug_assert` pins that `cluster.scopes`
+///   template names are pairwise unique, the same compile-time-enforced
+///   invariant every `ValueCellId` in this eval graph already relies on), so
+///   a container and its inheriting children collapse to one contribution.
+///   `combination` and `cost_robustness_lambda` likewise carry through from
+///   the first contributing member rather than being hardcoded — a
+///   single-objective-owner cluster (the common case) keeps that owner's own
+///   `combination` (`WeightedSum` or `Lexicographic`) verbatim; a later,
+///   differing value from another distinct contributing member pushes a
+///   warning diagnostic and is dropped (first-found wins).
 ///   `objective` is `None` only when no member has a governing objective.
 ///
 /// Cost (cold-path only): like `build_solver_problem`, the constraint filter
@@ -1674,7 +1680,30 @@ fn build_merged_solver_problem(
     // for inherited governance, else the member's own template name (own
     // objectives are unique per template, and a container that governs a child
     // shares its own name key so P-own and C-inherited collapse to one entry).
+    //
+    // Keying by `TopologyTemplate.name` (a `String`) is safe: names are already
+    // a compile-time-enforced whole-module key (duplicate template names are a
+    // hard compile error -- `reify_compiler`'s `record_or_report_duplicate` plus
+    // a post-compile `scc.rs` re-check) that every `ValueCellId` in this eval
+    // graph already depends on for correctness -- a collision here would break
+    // far more than this fold. Pin that precondition locally (amendment, task
+    // #5014; mirrors the analogous runtime check in `gui/src-tauri/src/engine.rs`'s
+    // `get_entity_tree`) rather than just assume it.
+    debug_assert!(
+        {
+            let mut seen_names: HashSet<&str> = HashSet::new();
+            cluster
+                .scopes
+                .iter()
+                .all(|&idx| seen_names.insert(templates[idx].name.as_str()))
+        },
+        "cluster.scopes must have pairwise-unique template names -- the spanning \
+         objective's fold-once dedup key (governing-scope name) assumes this \
+         compile-time-enforced invariant; cluster.scopes={:?}",
+        cluster.scopes,
+    );
     let mut spanning_terms = Vec::new();
+    let mut combination: Option<ObjectiveCombination> = None;
     let mut cost_robustness_lambda: Option<f64> = None;
     let mut seen_objective_sources: HashSet<String> = HashSet::new();
     for &idx in &cluster.scopes {
@@ -1689,6 +1718,38 @@ fn build_merged_solver_problem(
                 continue;
             }
             spanning_terms.extend(obj.terms.iter().cloned());
+            // `combination` carries through from the first distinct
+            // contributing member (amendment, task #5014) instead of being
+            // hardcoded to `WeightedSum`: the common single-objective-owner
+            // cluster then keeps that owner's own combination verbatim -- the
+            // same opaque pass-through `weight` already gets, so a
+            // `Lexicographic` objective is never silently reinterpreted as a
+            // weighted trade-off (a topology-dependent change to the optimum
+            // that a bare `WeightedSum` hardcode would otherwise cause with no
+            // diagnostic). A LATER, differing combination from another
+            // distinct contributing member has no well-defined merged reading
+            // today -- folding terms governed by different combinations into
+            // one `ObjectiveSet` is unsupported (real `Lexicographic` staged
+            // solving is task ε, PRD §6.3) -- so keep the first-found
+            // combination and warn rather than silently overwrite it.
+            match (combination, obj.combination) {
+                (None, candidate) => combination = Some(candidate),
+                (Some(existing), candidate) if candidate != existing => {
+                    let member_name = &templates[idx].name;
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "Cluster member `{member_name}` declares a \
+                         `{candidate:?}`-combination objective which differs from \
+                         the already-governing `{existing:?}` combination taken \
+                         from an earlier cluster member; the merged spanning \
+                         objective keeps the first-found combination and folds \
+                         ALL contributing terms under it (task #5014 §5.2) -- a \
+                         term governed by a different combination may not solve \
+                         to its standalone optimum; reconcile the two objectives \
+                         if this divergence is unintentional."
+                    )));
+                }
+                _ => {}
+            }
             match (cost_robustness_lambda, obj.cost_robustness_lambda) {
                 (None, candidate) => cost_robustness_lambda = candidate,
                 (Some(existing), Some(candidate)) if candidate != existing => {
@@ -1711,7 +1772,7 @@ fn build_merged_solver_problem(
     } else {
         Some(ObjectiveSet {
             terms: spanning_terms,
-            combination: ObjectiveCombination::WeightedSum,
+            combination: combination.unwrap_or(ObjectiveCombination::WeightedSum),
             cost_robustness_lambda,
         })
     };
