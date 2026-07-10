@@ -553,6 +553,83 @@ impl GeometryKernel for GmshKernel {
 mod tests {
     use super::*;
 
+    /// Classifies each per-handle side table reachable from [`GmshKernel`]
+    /// as `Persist`, `Clear`, or `Rebuild` across a warm-state swap
+    /// (INV-GEO-3 leaf μ3, `docs/prds/kernel-seam-contracts.md` §6 + §12).
+    ///
+    /// - `Persist` — carried over verbatim into the swapped-in state.
+    /// - `Clear` — dropped/reset because it depended on the swapped-out
+    ///   state.
+    /// - `Rebuild` — recomputed from the swapped-in state.
+    ///
+    /// `GmshKernel` has no `WarmStartable` impl / warm-state swap anywhere
+    /// in this crate, so every field below classifies as `Persist`;
+    /// `Clear`/`Rebuild` are unused by gmsh — they exist for shared
+    /// vocabulary with the occt/manifold state-inventory leaves
+    /// (`docs/prds/kernel-seam-contracts.md` §12, leaves κ and μ2).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum StateDisposition {
+        Persist,
+        Clear,
+        Rebuild,
+    }
+
+    /// Binds a field reference to its `(name, disposition)` classification.
+    ///
+    /// The `_field` argument is intentionally unread beyond being passed by
+    /// reference: its sole purpose is to force every field bound by
+    /// [`gmsh_state_inventory`]'s exhaustive destructure to be *consumed*
+    /// (passed somewhere), so an unclassified new field trips
+    /// `unused_variables` under `-D warnings` rather than compiling
+    /// silently.
+    fn entry<T>(
+        _field: &T,
+        name: &'static str,
+        disposition: StateDisposition,
+    ) -> (&'static str, StateDisposition) {
+        (name, disposition)
+    }
+
+    /// Per-kernel state inventory for `GmshKernel` (INV-GEO-3 leaf μ3).
+    ///
+    /// # Compile-time drift guard
+    ///
+    /// The destructure below is EXHAUSTIVE at BOTH levels (no `..` spread
+    /// anywhere): the outer `let GmshKernel { volume_mesh_store } = k;`
+    /// binds `GmshKernel`'s one field by name, and — after locking the
+    /// mutex — the inner `let VolumeMeshStore { next_id, meshes } = &*store;`
+    /// binds `VolumeMeshStore`'s two fields by name. Adding a field to
+    /// EITHER struct without updating this function becomes a hard compile
+    /// error:
+    /// - E0027 "pattern does not mention field `<new_field>`" on whichever
+    ///   `let` destructure the new field lands on (forces adding the field
+    ///   to the pattern);
+    /// - `unused_variables` under the enforced `-D warnings`
+    ///   (`cargo clippy --workspace --all-targets -- -D warnings`) once the
+    ///   field IS added to the pattern but not yet passed to [`entry`]
+    ///   (forces an actual classification, not just acknowledgment);
+    /// - the fixed-size return type `[(&'static str, StateDisposition); 2]`
+    ///   must also grow to match the new leaf count.
+    ///
+    /// # Classification (both leaves → `Persist`)
+    ///
+    /// `GmshKernel` has no `WarmStartable` impl anywhere in this crate —
+    /// there is no warm-state/restore swap to clear or rebuild against. The
+    /// store simply lives for the kernel's lifetime: `store_volume_mesh`
+    /// appends, `volume_mesh` reads back. This mirrors manifold μ2 verbatim
+    /// (append-only, no invalidation path → every field `Persist`) and
+    /// deliberately diverges from occt, which clears its extracted_* caches
+    /// on warm restore.
+    fn gmsh_state_inventory(k: &GmshKernel) -> [(&'static str, StateDisposition); 2] {
+        let GmshKernel { volume_mesh_store } = k;
+        let store = volume_mesh_store.lock().unwrap_or_else(|e| e.into_inner());
+        let VolumeMeshStore { next_id, meshes } = &*store;
+        [
+            entry(next_id, "next_id", StateDisposition::Persist),
+            entry(meshes, "meshes", StateDisposition::Persist),
+        ]
+    }
+
     /// [RED step-1 / task μ3 #5114] Completeness test for the INV-GEO-3
     /// per-kernel state-inventory drift guard
     /// (`docs/prds/kernel-seam-contracts.md` §6 + §12 leaf μ3).
