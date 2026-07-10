@@ -149,6 +149,208 @@ impl<'a> RealizationOutputs<'a> {
     }
 }
 
+/// Bundle of the positional inputs `Engine::execute_realization_ops` reads
+/// from. Input-side twin of [`RealizationOutputs`] above (task 3119 → task
+/// 5054 ζ): together the two structs are the executor's full parameter
+/// surface — `RealizationOpsInput` for what the op loop reads,
+/// `RealizationOutputs` for the `&mut` tables it writes into.
+///
+/// Split into two constructor tiers to end the historical "thread a new arg
+/// through every call site" signature-churn class (survey §H2, 11+ commits):
+/// the 14 CORE borrows that have no meaningful default (`&`/`&mut` refs
+/// can't implement `Default`, and these have not been the churn axis) are
+/// positional in [`Self::new`]; the 8 ORTHOGONAL fields below — the fields
+/// that HAVE been the historical churn axis — default in `new` and are set
+/// via chainable `with_*` setters. A future orthogonal addition touches only
+/// this struct and its producing call site, instead of every call site.
+struct RealizationOpsInput<'a> {
+    kernels: &'a mut BTreeMap<String, Box<dyn GeometryKernel>>,
+    registry: &'a BTreeMap<String, &'a CapabilityDescriptor>,
+    default_kernel_name: &'a str,
+    operations: &'a [reify_compiler::CompiledGeometryOp],
+    values: &'a ValueMap,
+    functions: &'a [CompiledFunction],
+    meta_map: &'a HashMap<String, HashMap<String, String>>,
+    diagnostics: &'a mut Vec<Diagnostic>,
+    realization_id: &'a RealizationNodeId,
+    realization_name: Option<&'a str>,
+    realization_span: SourceSpan,
+    kernel_error_out: &'a mut Option<ErrorRef>,
+    realization_cache: &'a mut RealizationCache<KernelHandle>,
+    demanded_tol: Option<f64>,
+    // Task 4050 step-8: the realization's requested terminal [`ReprKind`]
+    // (υ-derived in build/build_snapshot; `ReprKind::BRep` everywhere else).
+    // Each op dispatches at this repr; a `None` plan with
+    // `demanded_repr != BRep` falls back to a BRep dispatch (design_decision
+    // 3) so a Mesh demand no linked kernel can satisfy routes BRep instead
+    // of erroring. Slotted next to `demanded_tol`.
+    demanded_repr: ReprKind,
+    // Task 4092 step-18: whether this realization is *boundary*-demanded
+    // (a registered boundary-demanding consumer references it). When `true`
+    // AND `demanded_repr == VolumeMesh` AND the terminal is a BRep, the
+    // VolumeMesh realization edge builds face anchors on the source kernel
+    // and routes the surface through the gmsh
+    // `mesh_surface_to_volume_attributed` producer, threading a
+    // `BoundaryAssociation` onto the realized mesh; any failure degrades to
+    // the plain `mesh_surface_to_volume` path (boundary `None`). `false`
+    // everywhere boundary is not demanded (the tessellate/query paths and
+    // every non-FEA realization), keeping existing VolumeMesh consumers
+    // byte-identical.
+    demanded_boundary: bool,
+    // Task ε (3436) step-12: caller-write dispatch-count instrumentation
+    // channel. Incremented once per `dispatch(...)` call inside the per-op
+    // loop. The caller (build / build_snapshot / tessellate_*) resets the
+    // backing `Engine::last_dispatch_count` field to 0 at the entry-point
+    // and passes a mutable reference into it; the cache-hit short-circuit
+    // returns BEFORE the loop, so the counter stays at 0 on a re-hit.
+    dispatch_count: &'a mut usize,
+    // Task ε (4741): per-realization sibling of `dispatch_count`. Bumped at
+    // the SAME dispatch site, keyed by `realization_id`, so the caller's
+    // `Engine::last_dispatch_count_by_realization` map attributes each
+    // geometry-kernel dispatch to the realization that issued it. The
+    // cache-hit short-circuit returns BEFORE the loop, so a re-hit adds
+    // nothing for this realization (stays absent / unchanged).
+    dispatch_count_by_realization: &'a mut HashMap<RealizationNodeId, usize>,
+    // Task #3443 (ο): module-scoped `#kernel(...)` pragma preference.
+    // `Some(name)` steers the terminal-stage kernel selection in
+    // `dispatcher::dispatch` when the named kernel is registered and its
+    // descriptor supports the demanded (op, repr); absent/unsatisfiable
+    // falls through to the existing lex-min scan (PRD §5 "warning, not
+    // error"). Callers on the build/tessellate entry-point paths supply
+    // `module.kernel_pragma.as_deref()`; the tolerance-budget query and
+    // the `DispatchTestState` pragma-agnostic tests pass `None`.
+    prefer_kernel: Option<&'a str>,
+    // Task 3437 (ζ): only the TERMINAL realization of an entity (the one
+    // with the highest index, i.e. `r_idx + 1 == template.realizations.len()`)
+    // should probe or insert into the `RealizationCache`. Intermediate
+    // realizations all share the same `entity` cache key; if we probe/insert
+    // for them we get false hits (realization N finds realization N-1's
+    // result for the same entity key) which violates the per-build
+    // reset invariant and produces wrong geometry (the intermediate let-
+    // binding gets the terminal's handle instead of its own).
+    is_terminal_realization: bool,
+    // Task 4744 β (step-16): bundled morph-dispatch inputs. When a producer
+    // + prior source + new-BRep graph are all present, the VolumeMesh
+    // dispatch block attempts a connectivity-preserving morph before
+    // remeshing (PRD §4.3); `disabled()` (every call site in step-16) keeps
+    // the arm dormant so behaviour is byte-identical until a producer is
+    // registered (step-18/22) and the e2e (step-19/20) drives the active
+    // path.
+    morph_io: crate::morph_producer::MorphDispatchIo<'a>,
+    // GR-034 (task #3445): warn threshold for the long-chain diagnostic
+    // (`LongChainRealization`). Threaded from the caller so the wiring
+    // test can inject `Duration::ZERO` deterministically (env mutation is
+    // unsafe in edition 2024). Production callers pass
+    // `crate::dispatcher::long_chain_threshold_from_env()`.
+    long_chain_threshold: Duration,
+}
+
+impl<'a> RealizationOpsInput<'a> {
+    /// Positional constructor over the 14 CORE borrows that have no
+    /// meaningful default — `&`/`&mut` refs can't implement `Default`, and
+    /// these fields have not been the historical churn axis (see the
+    /// struct-level doc). The 8 ORTHOGONAL fields default here to their
+    /// documented values and are overridden via the chainable `with_*`
+    /// setters below.
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        kernels: &'a mut BTreeMap<String, Box<dyn GeometryKernel>>,
+        registry: &'a BTreeMap<String, &'a CapabilityDescriptor>,
+        default_kernel_name: &'a str,
+        operations: &'a [reify_compiler::CompiledGeometryOp],
+        values: &'a ValueMap,
+        functions: &'a [CompiledFunction],
+        meta_map: &'a HashMap<String, HashMap<String, String>>,
+        diagnostics: &'a mut Vec<Diagnostic>,
+        realization_id: &'a RealizationNodeId,
+        realization_span: SourceSpan,
+        kernel_error_out: &'a mut Option<ErrorRef>,
+        realization_cache: &'a mut RealizationCache<KernelHandle>,
+        dispatch_count: &'a mut usize,
+        dispatch_count_by_realization: &'a mut HashMap<RealizationNodeId, usize>,
+    ) -> Self {
+        Self {
+            kernels,
+            registry,
+            default_kernel_name,
+            operations,
+            values,
+            functions,
+            meta_map,
+            diagnostics,
+            realization_id,
+            realization_name: None,
+            realization_span,
+            kernel_error_out,
+            realization_cache,
+            demanded_tol: None,
+            demanded_repr: ReprKind::BRep,
+            demanded_boundary: false,
+            dispatch_count,
+            dispatch_count_by_realization,
+            prefer_kernel: None,
+            is_terminal_realization: false,
+            morph_io: crate::morph_producer::MorphDispatchIo::disabled(),
+            long_chain_threshold: crate::dispatcher::long_chain_threshold_from_env(),
+        }
+    }
+
+    /// Override the realization's display name (default `None`, an
+    /// anonymous realization).
+    fn with_realization_name(mut self, v: Option<&'a str>) -> Self {
+        self.realization_name = v;
+        self
+    }
+
+    /// Override the demanded tolerance (default `None` — no tolerance
+    /// contract, no cache write; see `Engine::execute_realization_ops`'s
+    /// `demanded_tol` + `realization_cache` doc).
+    fn with_demanded_tol(mut self, v: Option<f64>) -> Self {
+        self.demanded_tol = v;
+        self
+    }
+
+    /// Override the demanded terminal [`ReprKind`] (default `ReprKind::BRep`).
+    fn with_demanded_repr(mut self, v: ReprKind) -> Self {
+        self.demanded_repr = v;
+        self
+    }
+
+    /// Override whether this realization is boundary-demanded (default
+    /// `false`).
+    fn with_demanded_boundary(mut self, v: bool) -> Self {
+        self.demanded_boundary = v;
+        self
+    }
+
+    /// Override the `#kernel(...)` pragma preference (default `None`).
+    fn with_prefer_kernel(mut self, v: Option<&'a str>) -> Self {
+        self.prefer_kernel = v;
+        self
+    }
+
+    /// Override whether this is the entity's terminal realization (default
+    /// `false` — conservative: no `RealizationCache` probe/insert).
+    fn with_is_terminal_realization(mut self, v: bool) -> Self {
+        self.is_terminal_realization = v;
+        self
+    }
+
+    /// Override the morph-dispatch IO bundle (default
+    /// `MorphDispatchIo::disabled()` — the morph arm never fires).
+    fn with_morph_io(mut self, v: crate::morph_producer::MorphDispatchIo<'a>) -> Self {
+        self.morph_io = v;
+        self
+    }
+
+    /// Override the long-chain-diagnostic warn threshold (default
+    /// `crate::dispatcher::long_chain_threshold_from_env()`).
+    fn with_long_chain_threshold(mut self, v: Duration) -> Self {
+        self.long_chain_threshold = v;
+        self
+    }
+}
+
 /// One ordered action in a template's per-build schedule walk (task 4358 ε).
 ///
 /// Under [`crate::engine_fixpoint::BuildScheduler::UnifiedDag`] the per-template
@@ -2819,13 +3021,52 @@ impl Engine {
                         new_graph: self.eval_state.as_ref().map(|s| &s.snapshot.graph),
                     };
                     let morph_source_out = Engine::execute_realization_ops(
-                        &mut self.geometry_kernels,
-                        &registry_borrowed,
-                        name,
-                        &realization.operations,
-                        &values,
-                        &self.functions,
-                        &self.meta_map,
+                        RealizationOpsInput::new(
+                            &mut self.geometry_kernels,
+                            &registry_borrowed,
+                            name,
+                            &realization.operations,
+                            &values,
+                            &self.functions,
+                            &self.meta_map,
+                            &mut diagnostics,
+                            &realization.id,
+                            realization.span,
+                            &mut kernel_error,
+                            &mut self.realization_cache,
+                            &mut self.last_dispatch_count,
+                            &mut self.last_dispatch_count_by_realization,
+                        )
+                        .with_realization_name(realization.name.as_deref())
+                        .with_demanded_tol(demanded_tol)
+                        // Task 4050 step-16 (gap 3): pass the υ-derived
+                        // per-realization demanded terminal repr, positionally
+                        // aligned with `demanded_tols` (`[t_idx][r_idx]`);
+                        // out-of-range defaults to BRep (backward-compat).
+                        .with_demanded_repr(
+                            demanded_reprs
+                                .get(t_idx)
+                                .and_then(|v| v.get(r_idx))
+                                .copied()
+                                .unwrap_or(ReprKind::BRep),
+                        )
+                        .with_demanded_boundary(
+                            boundary_demands
+                                .get(t_idx)
+                                .and_then(|v| v.get(r_idx))
+                                .copied()
+                                .unwrap_or(false),
+                        )
+                        // Task #3443: thread module-scope #kernel(...) pragma
+                        // from the public entry point into the per-op dispatcher.
+                        .with_prefer_kernel(module.kernel_pragma.as_deref())
+                        .with_is_terminal_realization(r_idx + 1 == template.realizations.len())
+                        // Task 4744 β step-20: feed the real morph inputs
+                        // (producer + prior-tick source + new BRep graph),
+                        // bound to `morph_io` just above the call.
+                        .with_morph_io(morph_io)
+                        // GR-034: resolved once at entry (see above).
+                        .with_long_chain_threshold(long_chain_threshold),
                         RealizationOutputs::new(
                             &mut step_handles,
                             &mut named_steps,
@@ -2833,39 +3074,6 @@ impl Engine {
                             &mut self.swept_kind_table,
                             &mut produced_repr_out,
                         ),
-                        &mut diagnostics,
-                        &realization.id,
-                        realization.name.as_deref(),
-                        realization.span,
-                        &mut kernel_error,
-                        &mut self.realization_cache,
-                        demanded_tol,
-                        // Task 4050 step-16 (gap 3): pass the υ-derived
-                        // per-realization demanded terminal repr, positionally
-                        // aligned with `demanded_tols` (`[t_idx][r_idx]`);
-                        // out-of-range defaults to BRep (backward-compat).
-                        demanded_reprs
-                            .get(t_idx)
-                            .and_then(|v| v.get(r_idx))
-                            .copied()
-                            .unwrap_or(ReprKind::BRep),
-                        boundary_demands
-                            .get(t_idx)
-                            .and_then(|v| v.get(r_idx))
-                            .copied()
-                            .unwrap_or(false),
-                        &mut self.last_dispatch_count,
-                        &mut self.last_dispatch_count_by_realization,
-                        // Task #3443: thread module-scope #kernel(...) pragma
-                        // from the public entry point into the per-op dispatcher.
-                        module.kernel_pragma.as_deref(),
-                        r_idx + 1 == template.realizations.len(),
-                        // Task 4744 β step-20: feed the real morph inputs
-                        // (producer + prior-tick source + new BRep graph),
-                        // bound to `morph_io` just above the call.
-                        morph_io,
-                        // GR-034: resolved once at entry (see above).
-                        long_chain_threshold,
                     );
                     // θ (task 4361): record this realization's terminal handle
                     // by (t_idx, r_idx) for the Phase-B export walk, mirroring
@@ -3698,13 +3906,52 @@ impl Engine {
                         new_graph: self.eval_state.as_ref().map(|s| &s.snapshot.graph),
                     };
                     let morph_source_out = Engine::execute_realization_ops(
-                        &mut self.geometry_kernels,
-                        &registry_borrowed,
-                        name,
-                        &realization.operations,
-                        &values,
-                        &self.functions,
-                        &self.meta_map,
+                        RealizationOpsInput::new(
+                            &mut self.geometry_kernels,
+                            &registry_borrowed,
+                            name,
+                            &realization.operations,
+                            &values,
+                            &self.functions,
+                            &self.meta_map,
+                            &mut diagnostics,
+                            &realization.id,
+                            realization.span,
+                            &mut kernel_error,
+                            &mut self.realization_cache,
+                            &mut self.last_dispatch_count,
+                            &mut self.last_dispatch_count_by_realization,
+                        )
+                        .with_realization_name(realization.name.as_deref())
+                        .with_demanded_tol(demanded_tol)
+                        // Task 4050 step-16 (gap 3): pass the υ-derived
+                        // per-realization demanded terminal repr, positionally
+                        // aligned with `demanded_tols` (`[t_idx][r_idx]`);
+                        // out-of-range defaults to BRep (backward-compat).
+                        .with_demanded_repr(
+                            demanded_reprs
+                                .get(t_idx)
+                                .and_then(|v| v.get(r_idx))
+                                .copied()
+                                .unwrap_or(ReprKind::BRep),
+                        )
+                        .with_demanded_boundary(
+                            boundary_demands
+                                .get(t_idx)
+                                .and_then(|v| v.get(r_idx))
+                                .copied()
+                                .unwrap_or(false),
+                        )
+                        // Task #3443: thread module-scope #kernel(...) pragma
+                        // from the public entry point into the per-op dispatcher.
+                        .with_prefer_kernel(module.kernel_pragma.as_deref())
+                        .with_is_terminal_realization(r_idx + 1 == template.realizations.len())
+                        // Task 4744 β step-20: feed the real morph inputs
+                        // (producer + prior-tick source + new BRep graph),
+                        // bound to `morph_io` just above the call.
+                        .with_morph_io(morph_io)
+                        // GR-034: resolved once at entry (see above).
+                        .with_long_chain_threshold(long_chain_threshold),
                         RealizationOutputs::new(
                             &mut step_handles,
                             &mut named_steps,
@@ -3712,39 +3959,6 @@ impl Engine {
                             &mut self.swept_kind_table,
                             &mut produced_repr_out,
                         ),
-                        &mut diagnostics,
-                        &realization.id,
-                        realization.name.as_deref(),
-                        realization.span,
-                        &mut kernel_error,
-                        &mut self.realization_cache,
-                        demanded_tol,
-                        // Task 4050 step-16 (gap 3): pass the υ-derived
-                        // per-realization demanded terminal repr, positionally
-                        // aligned with `demanded_tols` (`[t_idx][r_idx]`);
-                        // out-of-range defaults to BRep (backward-compat).
-                        demanded_reprs
-                            .get(t_idx)
-                            .and_then(|v| v.get(r_idx))
-                            .copied()
-                            .unwrap_or(ReprKind::BRep),
-                        boundary_demands
-                            .get(t_idx)
-                            .and_then(|v| v.get(r_idx))
-                            .copied()
-                            .unwrap_or(false),
-                        &mut self.last_dispatch_count,
-                        &mut self.last_dispatch_count_by_realization,
-                        // Task #3443: thread module-scope #kernel(...) pragma
-                        // from the public entry point into the per-op dispatcher.
-                        module.kernel_pragma.as_deref(),
-                        r_idx + 1 == template.realizations.len(),
-                        // Task 4744 β step-20: feed the real morph inputs
-                        // (producer + prior-tick source + new BRep graph),
-                        // bound to `morph_io` just above the call.
-                        morph_io,
-                        // GR-034: resolved once at entry (see above).
-                        long_chain_threshold,
                     );
                     // T7 (task 3905): record this realization's terminal handle
                     // by (t_idx, r_idx) for the Phase-B export walk.  Mirrors
@@ -4704,13 +4918,47 @@ impl Engine {
                 let mut produced_repr_out: Option<ReprKind> = None;
                 let handle_start = step_handles.len();
                 Engine::execute_realization_ops(
-                    &mut self.geometry_kernels,
-                    &registry_borrowed,
-                    &name,
-                    &realization.operations,
-                    &values,
-                    &self.functions,
-                    &self.meta_map,
+                    RealizationOpsInput::new(
+                        &mut self.geometry_kernels,
+                        &registry_borrowed,
+                        &name,
+                        &realization.operations,
+                        &values,
+                        &self.functions,
+                        &self.meta_map,
+                        &mut diagnostics,
+                        &realization.id,
+                        realization.span,
+                        &mut kernel_error,
+                        &mut self.realization_cache,
+                        &mut self.last_dispatch_count,
+                        &mut self.last_dispatch_count_by_realization,
+                    )
+                    .with_realization_name(realization.name.as_deref())
+                    .with_demanded_tol(demanded_tol)
+                    .with_demanded_repr(
+                        demanded_reprs
+                            .get(t_idx)
+                            .and_then(|v| v.get(r_idx))
+                            .copied()
+                            .unwrap_or(ReprKind::BRep),
+                    )
+                    .with_demanded_boundary(
+                        boundary_demands
+                            .get(t_idx)
+                            .and_then(|v| v.get(r_idx))
+                            .copied()
+                            .unwrap_or(false),
+                    )
+                    // Task #3443: the distance query path is outside the
+                    // user's design pragma scope — pass None (lex-min default).
+                    .with_prefer_kernel(None)
+                    .with_is_terminal_realization(r_idx + 1 == template.realizations.len())
+                    // Task 4744 β step-16: distance query never demands
+                    // VolumeMesh, so the morph arm never fires here.
+                    .with_morph_io(crate::morph_producer::MorphDispatchIo::disabled())
+                    // GR-034: resolved once at entry (see above).
+                    .with_long_chain_threshold(long_chain_threshold),
                     RealizationOutputs::new(
                         &mut step_handles,
                         &mut named_steps,
@@ -4718,34 +4966,6 @@ impl Engine {
                         &mut scratch_swept_kinds,
                         &mut produced_repr_out,
                     ),
-                    &mut diagnostics,
-                    &realization.id,
-                    realization.name.as_deref(),
-                    realization.span,
-                    &mut kernel_error,
-                    &mut self.realization_cache,
-                    demanded_tol,
-                    demanded_reprs
-                        .get(t_idx)
-                        .and_then(|v| v.get(r_idx))
-                        .copied()
-                        .unwrap_or(ReprKind::BRep),
-                    boundary_demands
-                        .get(t_idx)
-                        .and_then(|v| v.get(r_idx))
-                        .copied()
-                        .unwrap_or(false),
-                    &mut self.last_dispatch_count,
-                    &mut self.last_dispatch_count_by_realization,
-                    // Task #3443: the distance query path is outside the
-                    // user's design pragma scope — pass None (lex-min default).
-                    None,
-                    r_idx + 1 == template.realizations.len(),
-                    // Task 4744 β step-16: distance query never demands
-                    // VolumeMesh, so the morph arm never fires here.
-                    crate::morph_producer::MorphDispatchIo::disabled(),
-                    // GR-034: resolved once at entry (see above).
-                    long_chain_threshold,
                 );
                 if step_handles.len() > handle_start {
                     terminal_handles[t_idx][r_idx] = step_handles.last().copied();
@@ -5758,13 +5978,40 @@ impl Engine {
                 // at runtime in both debug and release.
                 let demanded_tol = demanded_tols[t_idx][r_idx];
                 Engine::execute_realization_ops(
-                    geometry_kernels,
-                    registry,
-                    default_kernel_name,
-                    &realization.operations,
-                    values,
-                    functions,
-                    meta_map,
+                    RealizationOpsInput::new(
+                        geometry_kernels,
+                        registry,
+                        default_kernel_name,
+                        &realization.operations,
+                        values,
+                        functions,
+                        meta_map,
+                        diagnostics,
+                        &realization.id,
+                        realization.span,
+                        &mut kernel_error,
+                        realization_cache,
+                        &mut *dispatch_count,
+                        &mut *dispatch_count_by_realization,
+                    )
+                    .with_realization_name(realization.name.as_deref())
+                    .with_demanded_tol(demanded_tol)
+                    // Task 4050 step-8 / design_decision 4: the tessellate path
+                    // discards produced_repr and stays on a BRep demand
+                    // permanently (a Manifold terminal would break the trailing
+                    // default-kernel tessellate call).
+                    .with_demanded_repr(ReprKind::BRep)
+                    // Tessellate path never demands VolumeMesh, so never boundary.
+                    .with_demanded_boundary(false)
+                    // Task #3443: thread module-scope #kernel(...) pragma
+                    // from the tessellate entry point into the per-op dispatcher.
+                    .with_prefer_kernel(module.kernel_pragma.as_deref())
+                    .with_is_terminal_realization(r_idx + 1 == template.realizations.len())
+                    // Task 4744 β step-16: tessellate path never demands
+                    // VolumeMesh, so the morph arm never fires here.
+                    .with_morph_io(crate::morph_producer::MorphDispatchIo::disabled())
+                    // GR-034: resolved once at entry (see above).
+                    .with_long_chain_threshold(long_chain_threshold),
                     RealizationOutputs::new(
                         &mut step_handles,
                         &mut named_steps,
@@ -5772,31 +6019,6 @@ impl Engine {
                         &mut *swept_kind_table,
                         &mut produced_repr_out,
                     ),
-                    diagnostics,
-                    &realization.id,
-                    realization.name.as_deref(),
-                    realization.span,
-                    &mut kernel_error,
-                    realization_cache,
-                    demanded_tol,
-                    // Task 4050 step-8 / design_decision 4: the tessellate path
-                    // discards produced_repr and stays on a BRep demand
-                    // permanently (a Manifold terminal would break the trailing
-                    // default-kernel tessellate call).
-                    ReprKind::BRep,
-                    // Tessellate path never demands VolumeMesh, so never boundary.
-                    false,
-                    &mut *dispatch_count,
-                    &mut *dispatch_count_by_realization,
-                    // Task #3443: thread module-scope #kernel(...) pragma
-                    // from the tessellate entry point into the per-op dispatcher.
-                    module.kernel_pragma.as_deref(),
-                    r_idx + 1 == template.realizations.len(),
-                    // Task 4744 β step-16: tessellate path never demands
-                    // VolumeMesh, so the morph arm never fires here.
-                    crate::morph_producer::MorphDispatchIo::disabled(),
-                    // GR-034: resolved once at entry (see above).
-                    long_chain_threshold,
                 );
 
                 // T5 step-4 (Phase A): record this realization's terminal
@@ -6066,94 +6288,39 @@ impl Engine {
     /// the table) and enforces the #3226 spec ("cache-served handle has no entries
     /// in those tables") in the cross-kernel case. The principled re-key of the
     /// table to `KernelHandle` is deferred to follow-up task #4351.
-    #[allow(clippy::too_many_arguments)]
     fn execute_realization_ops(
-        kernels: &mut BTreeMap<String, Box<dyn GeometryKernel>>,
-        registry: &BTreeMap<String, &CapabilityDescriptor>,
-        default_kernel_name: &str,
-        operations: &[reify_compiler::CompiledGeometryOp],
-        values: &ValueMap,
-        functions: &[CompiledFunction],
-        meta_map: &HashMap<String, HashMap<String, String>>,
+        input: RealizationOpsInput<'_>,
         outputs: RealizationOutputs<'_>,
-        diagnostics: &mut Vec<Diagnostic>,
-        realization_id: &RealizationNodeId,
-        realization_name: Option<&str>,
-        realization_span: SourceSpan,
-        kernel_error_out: &mut Option<ErrorRef>,
-        realization_cache: &mut RealizationCache<KernelHandle>,
-        demanded_tol: Option<f64>,
-        // Task 4050 step-8: the realization's requested terminal [`ReprKind`]
-        // (υ-derived in build/build_snapshot; `ReprKind::BRep` everywhere else).
-        // Each op dispatches at this repr; a `None` plan with
-        // `demanded_repr != BRep` falls back to a BRep dispatch (design_decision
-        // 3) so a Mesh demand no linked kernel can satisfy routes BRep instead
-        // of erroring. Slotted next to `demanded_tol`.
-        demanded_repr: ReprKind,
-        // Task 4092 step-18: whether this realization is *boundary*-demanded
-        // (a registered boundary-demanding consumer references it). When `true`
-        // AND `demanded_repr == VolumeMesh` AND the terminal is a BRep, the
-        // VolumeMesh realization edge builds face anchors on the source kernel
-        // and routes the surface through the gmsh
-        // `mesh_surface_to_volume_attributed` producer, threading a
-        // `BoundaryAssociation` onto the realized mesh; any failure degrades to
-        // the plain `mesh_surface_to_volume` path (boundary `None`). `false`
-        // everywhere boundary is not demanded (the tessellate/query paths and
-        // every non-FEA realization), keeping existing VolumeMesh consumers
-        // byte-identical.
-        demanded_boundary: bool,
-        // Task ε (3436) step-12: caller-write dispatch-count instrumentation
-        // channel. Incremented once per `dispatch(...)` call inside the per-op
-        // loop. The caller (build / build_snapshot / tessellate_*) resets the
-        // backing `Engine::last_dispatch_count` field to 0 at the entry-point
-        // and passes a mutable reference into it; the cache-hit short-circuit
-        // returns BEFORE the loop, so the counter stays at 0 on a re-hit.
-        dispatch_count: &mut usize,
-        // Task ε (4741): per-realization sibling of `dispatch_count`. Bumped at
-        // the SAME dispatch site, keyed by `realization_id`, so the caller's
-        // `Engine::last_dispatch_count_by_realization` map attributes each
-        // geometry-kernel dispatch to the realization that issued it. The
-        // cache-hit short-circuit returns BEFORE the loop, so a re-hit adds
-        // nothing for this realization (stays absent / unchanged).
-        dispatch_count_by_realization: &mut HashMap<RealizationNodeId, usize>,
-        // Task #3443 (ο): module-scoped `#kernel(...)` pragma preference.
-        // `Some(name)` steers the terminal-stage kernel selection in
-        // `dispatcher::dispatch` when the named kernel is registered and its
-        // descriptor supports the demanded (op, repr); absent/unsatisfiable
-        // falls through to the existing lex-min scan (PRD §5 "warning, not
-        // error"). Callers on the build/tessellate entry-point paths supply
-        // `module.kernel_pragma.as_deref()`; the tolerance-budget query and
-        // the `DispatchTestState` pragma-agnostic tests pass `None`.
-        prefer_kernel: Option<&str>,
-        // Task 3437 (ζ): only the TERMINAL realization of an entity (the one
-        // with the highest index, i.e. `r_idx + 1 == template.realizations.len()`)
-        // should probe or insert into the `RealizationCache`. Intermediate
-        // realizations all share the same `entity` cache key; if we probe/insert
-        // for them we get false hits (realization N finds realization N-1's
-        // result for the same entity key) which violates the per-build
-        // reset invariant and produces wrong geometry (the intermediate let-
-        // binding gets the terminal's handle instead of its own).
-        is_terminal_realization: bool,
-        // Task 4744 β (step-16): bundled morph-dispatch inputs. When a producer
-        // + prior source + new-BRep graph are all present, the VolumeMesh
-        // dispatch block attempts a connectivity-preserving morph before
-        // remeshing (PRD §4.3); `disabled()` (every call site in step-16) keeps
-        // the arm dormant so behaviour is byte-identical until a producer is
-        // registered (step-18/22) and the e2e (step-19/20) drives the active
-        // path.
-        morph_io: crate::morph_producer::MorphDispatchIo<'_>,
-        // GR-034 (task #3445): warn threshold for the long-chain diagnostic
-        // (`LongChainRealization`). Threaded from the caller so the wiring
-        // test can inject `Duration::ZERO` deterministically (env mutation is
-        // unsafe in edition 2024). Production callers pass
-        // `crate::dispatcher::long_chain_threshold_from_env()`.
-        long_chain_threshold: Duration,
         // Task 4744 β step-20: returns the source-bundle stash for this
         // realization (the freshly-produced VolumeMesh + a snapshot of the BRep
         // it was meshed from) when a morph producer is active, so the caller can
         // store it for the NEXT tick's morph. `None` whenever no producer is
         // registered or no VolumeMesh was produced (every off-build call site).
     ) -> Option<crate::morph_producer::MorphSource> {
+        let RealizationOpsInput {
+            kernels,
+            registry,
+            default_kernel_name,
+            operations,
+            values,
+            functions,
+            meta_map,
+            diagnostics,
+            realization_id,
+            realization_name,
+            realization_span,
+            kernel_error_out,
+            realization_cache,
+            demanded_tol,
+            demanded_repr,
+            demanded_boundary,
+            dispatch_count,
+            dispatch_count_by_realization,
+            prefer_kernel,
+            is_terminal_realization,
+            morph_io,
+            long_chain_threshold,
+        } = input;
         let RealizationOutputs {
             step_handles,
             named_steps,
