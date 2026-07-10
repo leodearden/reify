@@ -12485,4 +12485,22 @@ mod tests {
             Err(other) => panic!("expected OperationFailed, got {:?}", other),
         }
     }
+
+    // Shared cross-cfg `GeometryKernel` contract (INV-GEO-4) against the
+    // real actor-backed kernel, so the has_occt merge gate actually runs
+    // the OCCT arm of the suite. Previously only reify-test-support's own
+    // self-test (against a fake `TestRealKernel`) exercised this arm; the
+    // genuine OCCT kernel was never driven through it. `OcctKernelHandle`
+    // is used (not the inner single-thread `OcctKernel`) because the
+    // macro's generated tests upcast to `Box<dyn GeometryKernel>` and the
+    // handle is the `Send + Sync` type that implements the trait.
+    reify_test_support::assert_kernel_contract!(
+        real;
+        OcctKernelHandle::spawn,
+        valid_op = GeometryOp::Box {
+            width: Value::Real(10.0),
+            height: Value::Real(10.0),
+            depth: Value::Real(10.0),
+        },
+    );
 }
