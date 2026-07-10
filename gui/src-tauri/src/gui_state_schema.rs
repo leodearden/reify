@@ -166,11 +166,6 @@ pub fn diff_whole<T: Clone + PartialEq>(old: &[T], new: &[T]) -> Option<Vec<T>> 
 // distinct expansion with its own hygiene context. Threading avoids that
 // trap.
 //
-// `#[allow(unused_macros)]`: until step-8 migrates the real `GuiState` to
-// this macro, it is invoked only from `#[cfg(test)]` fixtures — a plain
-// (non-test) library build genuinely has no call site, which would
-// otherwise warn `unused_macros`/`unused_imports` on every build. Expected
-// to go away once production code invokes it.
 // `#[macro_export]`: places `gui_state!` at the crate root (`$crate::gui_state!`
 // from inside the crate, `reify_gui::gui_state!` from an external crate) so the
 // producer-face doctests below — compiled as a separate crate that only sees
@@ -178,8 +173,13 @@ pub fn diff_whole<T: Clone + PartialEq>(old: &[T], new: &[T]) -> Option<Vec<T>> 
 // INV-GUI-1 compile-fail guarantee to be checkable from outside the crate: a
 // macro that only external code can reach demonstrates the classification
 // requirement isn't an internal convention callers could route around.
+//
+// Production call site (step-8, task #5034): `crate::types::GuiState` is
+// defined via this macro, so the `#[allow(unused_macros)]` this comment used
+// to note (needed while the macro was only invoked from `#[cfg(test)]`
+// fixtures) is no longer necessary — a non-test library build now has a real
+// call site.
 #[macro_export]
-#[allow(unused_macros)]
 macro_rules! gui_state {
     // --- Entry point: parse the header, mint the shared idents, kick off the muncher. ---
     (
@@ -356,5 +356,4 @@ macro_rules! gui_state {
     };
 }
 
-#[allow(unused_imports)]
 pub(crate) use gui_state;

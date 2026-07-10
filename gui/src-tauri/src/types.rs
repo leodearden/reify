@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use reify_core::DiagnosticInfo;
 use reify_ir::{DeterminacyState, Freshness, Value};
 
+use crate::gui_state_schema::gui_state;
+
 /// Custom serializer for `Vec<f32>` that rejects non-finite values.
 ///
 /// `serde_json::to_value` silently converts `f32::NAN` and `f32::INFINITY` to
@@ -157,19 +159,46 @@ pub struct TensegritySurfaceData {
     pub z2: f64,
 }
 
-/// Full GUI state snapshot sent to the frontend after each operation.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct GuiState {
+// Full GUI state snapshot sent to the frontend after each operation.
+//
+// Defined via the `gui_state!` macro (PRD `docs/prds/v0_6/gui-state-sync.md`
+// §8 L5, task #5034): every field below carries a leading sync
+// classification (`diffed keyed(..)` / `diffed whole(..)` /
+// `full_reload_only(..)`) — a field without one fails to compile, making
+// sync-drift unrepresentable (INV-GUI-1). The macro also generates
+// `StateDelta`, `StateDelta::full`, `diff_gui_state`, and `delta_to_events`
+// from this single definition; see `gui_state_schema.rs` for the macro and
+// `diff.rs` for the re-exports that keep every `crate::diff::*` import path
+// unchanged. Field order here is preserved from the pre-L5 hand-written
+// struct — it is the full-snapshot wire format, pinned by
+// `tests/gui_state_parity_tests.rs`'s key-order test.
+//
+// NOTE: this is a plain `//` comment (not `///`) because a doc comment
+// placed directly before a macro invocation decorates the invocation node,
+// not the item(s) it expands to — rustc emits an "unused doc comment"
+// warning ("rustdoc does not generate documentation for macro invocations").
+// Per-field doc comments below do NOT have this problem: they are matched
+// and re-emitted by the macro's own `$(#[$a:meta])*` field-attribute
+// capture, so they attach correctly to the generated struct fields.
+gui_state! {
+    state=GuiState, delta=StateDelta, diff_fn=diff_gui_state, events_fn=delta_to_events;
+
+    diffed keyed(key=entity_path, item="mesh", update="mesh-update", remove="mesh-removed", changed=changed_meshes, removed=removed_mesh_paths)
     pub meshes: Vec<MeshData>,
+    diffed keyed(key=cell_id, item="value", update="value-update", remove="value-removed", changed=changed_values, removed=removed_value_ids)
     pub values: Vec<ValueData>,
+    diffed keyed(key=node_id, item="constraint", update="constraint-update", remove="constraint-removed", changed=changed_constraints, removed=removed_constraint_ids)
     pub constraints: Vec<ConstraintData>,
+    full_reload_only("file-changed/file-removed emitter")
     pub files: Vec<FileData>,
+    diffed whole(event="tessellation-diagnostics", item_type="tessellation-diagnostics", item_id="diagnostics", changed=changed_tessellation_diagnostics)
     /// Diagnostics produced during the most recent tessellation pass.
     ///
     /// Non-empty when `tessellate_snapshot` encounters geometry errors (e.g.
     /// OCCT kernel failures). Empty on preview snapshots and after a clean eval.
     /// Distinct from `compile_diagnostics` — both streams are disjoint.
     pub tessellation_diagnostics: Vec<DiagnosticInfo>,
+    diffed whole(event="compile-diagnostics", item_type="compile-diagnostics", item_id="diagnostics", changed=changed_compile_diagnostics)
     /// Compile diagnostics (errors, warnings, info) from the most recently compiled module.
     ///
     /// Non-empty when the compiler emits any diagnostic — including recoverable
@@ -190,6 +219,7 @@ pub struct GuiState {
     ///    of `build_gui_state` (appended after `get_diagnostics()` output so
     ///    warnings from the prior good state remain visible alongside the error).
     pub compile_diagnostics: Vec<DiagnosticInfo>,
+    diffed whole(event="tensegrity-wires-update", item_type="tensegrity-wires-update", item_id="tensegrity-wires", changed=changed_tensegrity_wires)
     /// Tensegrity wire descriptors extracted from the current module's value cells.
     ///
     /// Populated by `build_tensegrity_wires` from cells that evaluate to a
@@ -201,6 +231,7 @@ pub struct GuiState {
     /// as an empty vec (forward-compat for older backend → newer frontend).
     #[serde(default)]
     pub tensegrity_wires: Vec<TensegrityWireData>,
+    diffed whole(event="tensegrity-surfaces-update", item_type="tensegrity-surfaces-update", item_id="tensegrity-surfaces", changed=changed_tensegrity_surfaces)
     /// Tensegrity surface facet descriptors extracted from the current module's value cells.
     ///
     /// Populated by `build_tensegrity_surfaces` from cells that evaluate to a
@@ -212,6 +243,7 @@ pub struct GuiState {
     /// as an empty vec (forward-compat for older backend → newer frontend).
     #[serde(default)]
     pub tensegrity_surfaces: Vec<TensegritySurfaceData>,
+    full_reload_only("observability-only via MCP engine_state_json (commands.rs) — task 4741")
     /// Passive selective-demand measurement for the most recent edit (task 4532).
     ///
     /// `Some` only on the post-edit success build path (`set_parameter` →
@@ -225,6 +257,7 @@ pub struct GuiState {
     /// `#[serde(default)]` keeps older payloads (without this field) deserializable.
     #[serde(default)]
     pub demand_prune_measurement: Option<DemandPruneMeasurementDto>,
+    diffed whole(event="display-panes-update", item_type="display-panes-update", item_id="display-panes", changed=changed_display_panes)
     /// Per-`DisplayOutput` occurrence routing directives extracted from the
     /// compiled module's sub-component walk (PRD-3 γ, task 4765).
     ///
@@ -247,6 +280,7 @@ pub struct GuiState {
     /// frontend).
     #[serde(default)]
     pub display_panes: Vec<DisplayDirective>,
+    diffed whole(event="display-appearance-update", item_type="display-appearance-update", item_id="display-appearance", changed=changed_display_appearance)
     /// Per-`DisplayOutput` occurrence style overrides (PRD-2 γ, task #4772).
     ///
     /// Each entry corresponds to a `DisplayOutput` occurrence that supplies an
@@ -262,6 +296,7 @@ pub struct GuiState {
     /// frontend).
     #[serde(default)]
     pub display_appearance: Vec<AppearanceDirective>,
+    full_reload_only("fea-diagnostics-changed emitter")
     /// FEA structured-diagnostic overlay data (R3b-2, task #4818).
     ///
     /// Populated from `CheckResult.structured_detail` on the `build_gui_state`
@@ -278,6 +313,7 @@ pub struct GuiState {
     /// frontend).
     #[serde(default)]
     pub fea_diagnostics: Vec<FeaDiagnosticInfo>,
+    full_reload_only("fea-convergence-changed emitter")
     /// A-posteriori convergence status of the most recent FEA solve (task 3001).
     ///
     /// Populated from the active `ElasticResult.convergence_status` on the
