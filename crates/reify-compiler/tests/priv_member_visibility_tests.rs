@@ -503,3 +503,108 @@ purpose okp(subject : Motor) {
             .collect::<Vec<_>>()
     );
 }
+
+// ── Part D: priv param inside port-member and guarded-block visibility ────────
+//
+// Task #5161: `priv param x` inside a `port { }` block or a block-form
+// `where cond { }` guarded block was silently lowered to `Visibility::Public`
+// at four hardcoded ValueCellDecl construction sites — entity.rs's port-member
+// arm (both the `Auto { free }` and `Param` branches) and guards.rs's
+// `compile_guarded_members` (same two branches) — even though `param.is_priv`
+// was available at every site. This defeats `priv`'s external dot-access
+// hiding for port members and guarded-block members.
+
+/// Locate a template by name in the compiled module (generalizes `motor_template`
+/// for the Part D fixtures below, which use distinct structure names).
+fn find_template<'a>(
+    module: &'a reify_compiler::CompiledModule,
+    name: &str,
+) -> &'a reify_compiler::TopologyTemplate {
+    module
+        .templates
+        .iter()
+        .find(|t| t.name == name)
+        .unwrap_or_else(|| panic!("{name} template not found in compiled module"))
+}
+
+/// `PortHost` exercises `priv param` inside a `port { }` block, covering both
+/// value-cell branches (plain Param and auto-form), plus a non-priv sibling
+/// port to guard against a naive Visibility::Private hardcode.
+fn port_host_source() -> &'static str {
+    r#"
+trait Iface {}
+
+structure def PortHost {
+    port secret : Iface {
+        priv param main : Length = 5mm
+        priv param aux : Length = auto(free)
+    }
+    port plain : Iface {
+        param vis : Length = 5mm
+    }
+}
+"#
+}
+
+/// `priv param main` inside `port secret { }` (Param-kind value cell) must
+/// lower to `Visibility::Private`.
+#[test]
+fn priv_param_in_port_compiles_to_visibility_private() {
+    let module = compile_source(port_host_source());
+    let template = find_template(&module, "PortHost");
+    let members: Vec<_> = template.ports.iter().flat_map(|p| &p.members).collect();
+
+    let main_cell = members
+        .iter()
+        .find(|vc| vc.id.member == "secret.main" && vc.kind == ValueCellKind::Param)
+        .expect("value cell 'secret.main' (Param kind) not found in PortHost template");
+
+    assert_eq!(
+        main_cell.visibility,
+        Visibility::Private,
+        "priv param main inside port secret must compile to Visibility::Private, got {:?}",
+        main_cell.visibility
+    );
+}
+
+/// `priv param aux = auto(free)` inside `port secret { }` (Auto-kind value
+/// cell) must lower to `Visibility::Private`.
+#[test]
+fn priv_auto_param_in_port_compiles_to_visibility_private() {
+    let module = compile_source(port_host_source());
+    let template = find_template(&module, "PortHost");
+    let members: Vec<_> = template.ports.iter().flat_map(|p| &p.members).collect();
+
+    let aux_cell = members
+        .iter()
+        .find(|vc| vc.id.member == "secret.aux" && matches!(vc.kind, ValueCellKind::Auto { .. }))
+        .expect("value cell 'secret.aux' (Auto kind) not found in PortHost template");
+
+    assert_eq!(
+        aux_cell.visibility,
+        Visibility::Private,
+        "priv param aux = auto(free) inside port secret must compile to Visibility::Private, got {:?}",
+        aux_cell.visibility
+    );
+}
+
+/// Plain `param vis` inside `port plain { }` must stay `Visibility::Public`
+/// (no regression / guards against a naive Visibility::Private hardcode).
+#[test]
+fn plain_param_in_port_compiles_to_visibility_public() {
+    let module = compile_source(port_host_source());
+    let template = find_template(&module, "PortHost");
+    let members: Vec<_> = template.ports.iter().flat_map(|p| &p.members).collect();
+
+    let vis_cell = members
+        .iter()
+        .find(|vc| vc.id.member == "plain.vis" && vc.kind == ValueCellKind::Param)
+        .expect("value cell 'plain.vis' (Param kind) not found in PortHost template");
+
+    assert_eq!(
+        vis_cell.visibility,
+        Visibility::Public,
+        "plain param vis inside port plain must compile to Visibility::Public, got {:?}",
+        vis_cell.visibility
+    );
+}
