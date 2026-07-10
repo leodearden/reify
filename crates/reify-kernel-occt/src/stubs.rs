@@ -633,6 +633,17 @@ mod tests {
         "TessError::TessellationFailed"
     );
 
+    /// `Ok(())` when `state` is `None`, else a descriptive `Err(String)` —
+    /// mirrors the `check_*_failed` collect pattern above for the one probe
+    /// (`WarmStartable::warm_state`) that signals "not available" via
+    /// `Option::None` rather than a `Result::Err` taxonomy (task 5110 review).
+    fn check_warm_state_none(state: Option<OpaqueState>) -> Result<(), String> {
+        match state {
+            None => Ok(()),
+            Some(_) => Err("stub warm_state should always be None".to_string()),
+        }
+    }
+
     /// Panics naming every failed check, so bundled probes report all
     /// violations from one run instead of stopping at the first (task 5110).
     fn assert_no_check_failures(failures: Vec<String>) {
@@ -657,8 +668,12 @@ mod tests {
 
     /// `OcctKernel`'s core trait-shaped inherent methods: a separate type
     /// from `OcctKernelHandle`, so the shared suite provides no coverage.
+    /// Named `_all_error_or_none` (not `_returns_error`) because it bundles
+    /// one non-`Result` probe — `warm_state()`, which signals unavailability
+    /// via `Option::None` — alongside the `Result`-returning methods (task
+    /// 5110 review).
     #[test]
-    fn stub_kernel_core_methods_return_not_available_error() {
+    fn stub_kernel_core_methods_all_error_or_none() {
         let mut kernel = OcctKernel::new();
         let mut failures = Vec::new();
 
@@ -708,8 +723,8 @@ mod tests {
         ) {
             failures.push(e);
         }
-        if kernel.warm_state().is_some() {
-            failures.push("stub warm_state should always be None".to_string());
+        if let Err(e) = check_warm_state_none(kernel.warm_state()) {
+            failures.push(e);
         }
 
         assert_no_check_failures(failures);
