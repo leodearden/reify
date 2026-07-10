@@ -5728,6 +5728,62 @@ mod tests {
         );
     }
 
+    /// INV-GEO-3: a shape that fails BRep deserialization during
+    /// `with_warm_state` must emit a `tracing::warn!` event (production
+    /// observability), not just increment the silent `last_warm_start_failures`
+    /// counter. Mirrors the 1-valid + 1-corrupt fixture from
+    /// `with_warm_state_partial_failure_logs_warning`, but asserts on the
+    /// tracing event instead of the counter: exactly 1 WARN, whose message
+    /// contains "warm-start deserialization failed" and whose structured
+    /// `shape_id` field identifies the failed shape (id 2).
+    #[test]
+    fn with_warm_state_partial_failure_emits_tracing_warn() {
+        use reify_test_support::warn_capturing_subscriber;
+
+        // Inoculate against tracing's per-callsite Interest cache — see
+        // `prime_tracing_callsite_cache` in reify-test-support for why.
+        reify_test_support::prime_tracing_callsite_cache();
+
+        // Create a helper kernel to get a valid cylinder BRep string
+        let mut helper = OcctKernel::new();
+        helper
+            .execute(&GeometryOp::Cylinder {
+                radius: Value::Real(5.0),
+                height: Value::Real(20.0),
+            })
+            .unwrap();
+        let helper_state = helper.warm_state().expect("helper should have warm state");
+        let helper_warm = helper_state
+            .downcast::<OcctWarmState>()
+            .expect("should downcast");
+        let valid_brep = helper_warm
+            .shapes
+            .get(&1)
+            .expect("handle 1 should exist")
+            .clone();
+
+        // Construct warm state: 1 valid + 1 corrupt
+        let mut shapes = HashMap::new();
+        shapes.insert(1, valid_brep);
+        shapes.insert(2, "CORRUPT_DATA".to_string());
+        let warm = OcctWarmState {
+            shapes,
+            reprs: HashMap::new(),
+            next_id: 10,
+        };
+        let state = OpaqueState::new(warm, 64);
+
+        let mut kernel = OcctKernel::new();
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+        tracing::subscriber::with_default(subscriber, || {
+            kernel.with_warm_state(state);
+        });
+
+        capture.assert_count_and_any_message_contains(1, "warm-start deserialization failed");
+        capture.assert_any_event_field_contains("shape_id", "2");
+    }
+
     #[test]
     fn with_warm_state_all_valid_zero_failures() {
         // Create a kernel with a box and extract its warm state
