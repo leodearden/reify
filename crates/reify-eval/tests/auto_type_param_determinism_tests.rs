@@ -661,10 +661,12 @@ fn v0_1_example_corpus_compile_and_check_time_is_bounded() {
 /// flag sub-budget files, including a file landing exactly on the budget
 /// boundary (`duration == budget` uses strict `>`, so it is NOT a
 /// violation). Covers under-budget (500ms, 9s), exactly-at-budget (10s), and
-/// over-budget (11s) in one fixture — the non-vacuous guarantee that the
-/// per-file gate exists to provide: a genuinely quadratic file still goes
-/// RED, while the off-by-one-prone `>` vs `>=` boundary is pinned in the
-/// other direction.
+/// two independent over-budget files (11s, 12s) in one fixture — the
+/// non-vacuous guarantee that the per-file gate exists to provide: a
+/// genuinely quadratic file still goes RED, the off-by-one-prone `>` vs `>=`
+/// boundary is pinned in the other direction, and the two-violation case
+/// confirms the helper returns the full offending set rather than
+/// short-circuiting on the first match.
 ///
 /// No aggregate/total-budget case here — `per_file_violations` is a pure
 /// per-file filter with no place to hold that logic. See the corpus test's
@@ -677,6 +679,7 @@ fn per_file_gate_violation_contract() {
         ("slow.ri".to_string(), Duration::from_secs(11)),
         ("edge.ri".to_string(), Duration::from_secs(9)),
         ("boundary.ri".to_string(), Duration::from_secs(10)),
+        ("slow2.ri".to_string(), Duration::from_secs(12)),
     ];
 
     let violations = per_file_violations(&measurements, Duration::from_secs(10));
@@ -684,10 +687,12 @@ fn per_file_gate_violation_contract() {
     let names: Vec<&str> = violations.iter().map(|(name, _)| name.as_str()).collect();
     assert_eq!(
         names,
-        vec!["slow.ri"],
-        "expected only the 11s file (> 10s budget) to be flagged as a violation; \
-         sub-budget files (500ms, 9s) and the exact-boundary file (10s — strict `>` \
-         means duration == budget is NOT a violation) must not be flagged, got: {names:?}"
+        vec!["slow.ri", "slow2.ri"],
+        "expected both over-budget files (11s and 12s, > 10s budget) to be flagged as \
+         violations — confirming the helper returns the full offending set rather than \
+         short-circuiting on the first match; sub-budget files (500ms, 9s) and the \
+         exact-boundary file (10s — strict `>` means duration == budget is NOT a \
+         violation) must not be flagged, got: {names:?}"
     );
 }
 
