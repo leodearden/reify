@@ -88,7 +88,12 @@ mod tests {
     /// doctests (they only run on `pub` items) and the workspace has no
     /// trybuild, so this fn-pointer coercion is the in-crate enforcement
     /// mechanism.
-    #[allow(dead_code)]
+    ///
+    /// `clippy::type_complexity`: the fully-spelled-out `for<'a> fn(..)` type
+    /// IS the regression guard — hiding it behind a `type` alias (clippy's
+    /// suggested fix) would defeat the point of pinning the exact signature
+    /// here, so the lint is allowed locally rather than refactored away.
+    #[allow(dead_code, clippy::type_complexity)]
     const _CELL_EVAL_CTX_REQUIRES_ALL_CAPS: for<'a> fn(
         &'a ValueMap,
         &'a [CompiledFunction],
