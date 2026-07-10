@@ -6542,12 +6542,26 @@ structure def Manifold {
     /// via `content_hash`.
     ///
     /// Uses a distinct, non-dimensionless `cell_type` (`Type::length()`) rather
-    /// than `Type::dimensionless_scalar()` so the equality checks below (both
-    /// here and in `assert_param_decl_passthrough_fields`) aren't trivially
-    /// satisfied by every dimensionless scalar comparing equal to every other
-    /// — this pins that the `&Type` `compile_default` observes and the `Type`
-    /// that ends up in `decl.cell_type` are the *same* value flowing through
-    /// the helper, not merely two coincidentally-equal defaults.
+    /// than `Type::dimensionless_scalar()` so the cell_type equality check
+    /// below isn't trivially satisfied by every dimensionless scalar
+    /// comparing equal to every other — this pins that the `&Type`
+    /// `compile_default` observes and the `Type` that ends up in
+    /// `decl.cell_type` are the *same* value flowing through the helper,
+    /// not merely two coincidentally-equal defaults.
+    ///
+    /// Unlike the auto-branch test above, this test does not call
+    /// `assert_param_decl_passthrough_fields` (amendment review round 2):
+    /// `id`/`span`/`visibility`/`is_aux` passthrough on the non-auto arm
+    /// writes the identical struct-literal shorthand as the auto arm (which
+    /// the test above already exercises via that helper), and `visibility`
+    /// specifically is additionally pinned end-to-end by
+    /// `priv_member_visibility_tests.rs` (`param`/`priv param` with a
+    /// non-auto default). `cell_type` and `solver_hints` are asserted
+    /// directly below instead, because they are NOT redundant: no
+    /// integration fixture anywhere in the suite attaches `@solver_hint` to
+    /// a non-`auto` param (every case in `solver_hint_tests.rs` decorates
+    /// `= auto`), so this unit test is the only place that pins
+    /// `solver_hints` flowing through the non-auto arm.
     ///
     /// Deliberately does NOT assert invocation count or diagnostic-observable-
     /// immediately-after-return ordering (amendment review: those merely
@@ -6560,7 +6574,7 @@ structure def Manifold {
     /// `param_default_type_mismatch_tests.rs` and the guards.rs integration
     /// tests.
     #[test]
-    fn build_param_value_cell_decl_param_branch_invokes_compile_default_exactly_once() {
+    fn build_param_value_cell_decl_param_branch_returns_compile_default_result() {
         for yields_default in [true, false] {
             let id = ValueCellId::new("TestEntity", "y");
             let cell_type = Type::length();
@@ -6590,13 +6604,14 @@ structure def Manifold {
             );
 
             assert_eq!(decl.kind, ValueCellKind::Param);
-            assert_param_decl_passthrough_fields(
-                &decl,
-                &id,
-                span,
-                Visibility::Public,
-                &cell_type,
-                &solver_hints,
+            assert_eq!(
+                &decl.cell_type, &cell_type,
+                "cell_type must flow through the helper unchanged"
+            );
+            assert_eq!(
+                decl.solver_hints, solver_hints,
+                "solver_hints must flow through the helper unchanged on the non-auto branch \
+                 (not otherwise pinned end-to-end — every @solver_hint fixture decorates auto)"
             );
             assert_eq!(
                 decl.default_expr.map(|e| e.content_hash),
