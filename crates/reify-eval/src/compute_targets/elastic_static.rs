@@ -9602,4 +9602,115 @@ mod tests {
             })
         );
     }
+
+    // ── task #5084 (PRD compute-fea-hardening D5): anisotropic_material_from_value
+    // Result-ify ──────────────────────────────────────────────────────────────
+    //
+    // RED: `anisotropic_material_from_value` currently returns a bare
+    // `AnisotropicMaterial`, so matching `Err(..)` below fails to type-check
+    // until step-2 converts its signature to
+    // `Result<AnisotropicMaterial, FeaValueShapeError>`, mirroring D2's
+    // compile-RED convention.
+
+    /// `anisotropic_material_from_value` must reject a present-but-wrong-typed
+    /// `e1` field on an `OrthotropicMaterial` law with
+    /// `Err(FeaValueShapeError::ExpectedScalar { .. })` instead of panicking.
+    ///
+    /// The wrapping `frame` field is a well-formed `het_material_frame`
+    /// because the frame is parsed before the law inside
+    /// `anisotropic_material_from_value`, so a malformed frame would surface
+    /// a frame error instead of exercising the `?`-threaded law extractors
+    /// this test targets. Only `e1` is set on the law (wrong-typed); the
+    /// other fields are left absent, relying on the struct literal's
+    /// left-to-right field evaluation (mirrors
+    /// `scalar_si_field_rejects_non_scalar_field`'s convention) to reach the
+    /// `e1` error before any missing-field error on a later field.
+    ///
+    /// RED: see module-section comment above.
+    #[test]
+    fn anisotropic_material_from_value_rejects_malformed_orthotropic_law() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        let law_fields: PersistentMap<String, Value> = [("e1".to_string(), Value::Real(1.0))]
+            .into_iter()
+            .collect();
+        let law = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "OrthotropicMaterial".to_string(),
+            version: 1,
+            fields: law_fields,
+        }));
+
+        let aniso_fields: PersistentMap<String, Value> = [
+            ("law".to_string(), law),
+            (
+                "frame".to_string(),
+                as_printed_zones_test_fixtures::het_material_frame([0.0, 0.0, 1.0]),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let val = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "AnisotropicMaterial".to_string(),
+            version: 1,
+            fields: aniso_fields,
+        }));
+
+        let res = anisotropic_material_from_value(&val);
+        assert!(
+            matches!(res, Err(FeaValueShapeError::ExpectedScalar { .. })),
+            "expected Err(ExpectedScalar) for a present-but-wrong-type e1 field, got: {:?}",
+            res
+        );
+    }
+
+    /// `anisotropic_material_from_value` must reject a present-but-wrong-typed
+    /// `e_in_plane` field on a `TransverseIsotropicMaterial` law with
+    /// `Err(FeaValueShapeError::ExpectedScalar { .. })` instead of panicking.
+    ///
+    /// Mirrors `anisotropic_material_from_value_rejects_malformed_orthotropic_law`
+    /// for the sibling law arm — an independent code path in the same
+    /// `match law_data.type_name.as_str()` — guarding against a partial
+    /// implementation that only threads one arm.
+    ///
+    /// RED: see module-section comment above.
+    #[test]
+    fn anisotropic_material_from_value_rejects_malformed_transverse_isotropic_law() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        let law_fields: PersistentMap<String, Value> =
+            [("e_in_plane".to_string(), Value::Real(1.0))]
+                .into_iter()
+                .collect();
+        let law = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "TransverseIsotropicMaterial".to_string(),
+            version: 1,
+            fields: law_fields,
+        }));
+
+        let aniso_fields: PersistentMap<String, Value> = [
+            ("law".to_string(), law),
+            (
+                "frame".to_string(),
+                as_printed_zones_test_fixtures::het_material_frame([0.0, 0.0, 1.0]),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let val = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "AnisotropicMaterial".to_string(),
+            version: 1,
+            fields: aniso_fields,
+        }));
+
+        let res = anisotropic_material_from_value(&val);
+        assert!(
+            matches!(res, Err(FeaValueShapeError::ExpectedScalar { .. })),
+            "expected Err(ExpectedScalar) for a present-but-wrong-type e_in_plane field, got: {:?}",
+            res
+        );
+    }
 }
