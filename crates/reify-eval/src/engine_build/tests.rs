@@ -1400,8 +1400,10 @@ structure Assembly {
         );
         assert_eq!(
             input.long_chain_threshold,
-            crate::dispatcher::long_chain_threshold_from_env(),
-            "long_chain_threshold must default to the env-resolved threshold"
+            Duration::from_millis(crate::dispatcher::LONG_CHAIN_DEFAULT_THRESHOLD_MS),
+            "long_chain_threshold must default to the cheap PRD-default constant \
+             (not an env read — every production call site overrides it with a \
+             once-per-entry-resolved value anyway)"
         );
 
         // ── (2) `with_*` setters roundtrip an override for each ORTHOGONAL field ──
@@ -1435,11 +1437,17 @@ structure Assembly {
             &mut dcbr2,
         )
         .with_demanded_repr(ReprKind::Voxel)
+        .with_demanded_tol(Some(0.01))
+        .with_demanded_boundary(true)
+        .with_prefer_kernel(Some("occt"))
         .with_is_terminal_realization(true)
         .with_long_chain_threshold(Duration::ZERO)
         .with_realization_name(Some("R"));
 
         assert_eq!(overridden.demanded_repr, ReprKind::Voxel);
+        assert_eq!(overridden.demanded_tol, Some(0.01));
+        assert!(overridden.demanded_boundary);
+        assert_eq!(overridden.prefer_kernel, Some("occt"));
         assert!(overridden.is_terminal_realization);
         assert_eq!(overridden.long_chain_threshold, Duration::ZERO);
         assert_eq!(overridden.realization_name, Some("R"));
