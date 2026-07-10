@@ -553,6 +553,19 @@ impl OcctKernel {
         self.reprs.get(&id.0).copied()
     }
 
+    /// Returns the number of shapes that failed BRep deserialization during
+    /// the last [`WarmStartable::with_warm_state`] call (0 if none failed, or
+    /// if `with_warm_state` has not yet been called on this kernel).
+    ///
+    /// INV-GEO-3 production observability accessor: each failure is also
+    /// reported via a `tracing::warn!` event at the point of failure (see
+    /// `with_warm_state`); this accessor exposes the cumulative count from
+    /// the most recent restore for production consumers that want the
+    /// summary figure without instrumenting tracing.
+    pub fn warm_start_failures(&self) -> usize {
+        self.last_warm_start_failures
+    }
+
     /// Store a shape and return the next handle (defaults to `BRepKind::Solid`).
     fn store(&mut self, shape: cxx::UniquePtr<ffi::ffi::OcctShape>) -> GeometryHandle {
         self.store_with_repr(shape, BRepKind::Solid)
@@ -4287,12 +4300,6 @@ impl OcctKernel {
         if id >= self.next_id {
             self.next_id = id + 1;
         }
-    }
-
-    /// Returns the number of shapes that failed deserialization during the
-    /// last `with_warm_state()` call.
-    pub fn warm_start_failures(&self) -> usize {
-        self.last_warm_start_failures
     }
 }
 
