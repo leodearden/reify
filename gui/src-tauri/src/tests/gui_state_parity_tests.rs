@@ -40,6 +40,13 @@ mod legacy {
     //! `crate::diff` logic (as of task #5034's base commit). See the parent
     //! module doc comment — this must never be updated to track future
     //! `diff.rs`/`gui_state_schema.rs` changes.
+    //!
+    //! TODO(#5165): delete this module (and the parity assertions that
+    //! compare against it, `assert_delta_parity`/`parity_holds_across_corpus`)
+    //! once the L5 migration has landed on main and baked. It duplicates
+    //! ~340 lines of retired logic, and because its oracle calls the *real*
+    //! `push_serialized_event`, a future signature change to that helper
+    //! would silently alter the "oracle" instead of failing loudly.
 
     use std::collections::HashMap;
 
