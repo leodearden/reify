@@ -433,6 +433,34 @@ fn real_occt_box_surface() -> reify_ir::Mesh {
     surface.mesh.clone()
 }
 
+/// `cfg(has_gmsh)`: count directed edges in the mesh's RAW (pre-weld) index
+/// buffer whose reverse does not occur — i.e. open/non-watertight boundary
+/// edges on the topology the gmsh attributed producer actually consumes (it
+/// forbids vertex-merge repair, mesh_boundary.rs:219-227).
+///
+/// Deliberately distinct from [`reify_ir::Mesh::validate`]'s
+/// `Closed`/`ConsistentWinding` obligations, which run on the
+/// POSITION-WELDED quotient topology (where a box is closed — 0 open
+/// edges). This is a raw, unwelded directed-edge tally answering a
+/// different topological question.
+#[cfg(has_gmsh)]
+fn raw_open_edge_count(mesh: &reify_ir::Mesh) -> usize {
+    use std::collections::HashMap;
+
+    let mut directed: HashMap<(u32, u32), usize> = HashMap::new();
+    for tri in mesh.indices.chunks_exact(3) {
+        let (a, b, c) = (tri[0], tri[1], tri[2]);
+        for &(u, v) in &[(a, b), (b, c), (c, a)] {
+            *directed.entry((u, v)).or_insert(0) += 1;
+        }
+    }
+
+    directed
+        .keys()
+        .filter(|&&(u, v)| !directed.contains_key(&(v, u)))
+        .count()
+}
+
 /// `cfg(not(has_gmsh))`: skip-stub. Without the gmsh adapter the realization
 /// edge cannot produce a boundary; the gated tests above are compiled out.
 #[cfg(not(has_gmsh))]
