@@ -44,6 +44,16 @@ pub fn occt_box() -> reify_ir::Mesh {
 }
 
 /// 8 mm-radius sphere.
+///
+/// NOT included in `fixtures()` — real OCCT tessellation of a full sphere
+/// (a periodic surface with poles) leaves 2 zero-area triangles at the poles
+/// once `Mesh::weld_positions` collapses OCCT's bit-identical duplicate pole
+/// nodes, violating `Mesh::validate`'s `NonDegenerate` producer obligation.
+/// This is a real, reproducible producer defect in `tessellate_shape`
+/// (`crates/reify-kernel-occt/cpp/occt_wrapper.cpp`), outside this crate's
+/// scope — tracked by #5164 (task ε escalation `esc-5106-1`, human-ratified
+/// resolution). Exercised on its own by the dedicated `#[ignore]`d arm in
+/// `occt_manifold_ingest_conformance.rs` that #5164 will un-ignore.
 #[cfg(has_occt)]
 pub fn occt_sphere() -> reify_ir::Mesh {
     let mut kernel = OcctKernel::new();
@@ -141,13 +151,16 @@ pub fn occt_fillet() -> reify_ir::Mesh {
         .expect("fillet tessellate should succeed")
 }
 
-/// Enumerate the five real fixtures for the producer×fixture matrix — every
-/// arm in this crate iterates this same set.
+/// Enumerate the four validate(0.0)-clean real fixtures for the
+/// producer×fixture matrix — every non-sphere arm in this crate iterates
+/// this same set. `sphere` is deliberately excluded (see `occt_sphere`'s
+/// doc comment: real OCCT sphere tessellation fails `NonDegenerate`,
+/// tracked by #5164) and is instead exercised only by its own dedicated
+/// `#[ignore]`d arm.
 #[cfg(has_occt)]
 pub fn fixtures() -> Vec<(&'static str, fn() -> reify_ir::Mesh)> {
     vec![
         ("box", occt_box as fn() -> reify_ir::Mesh),
-        ("sphere", occt_sphere as fn() -> reify_ir::Mesh),
         ("cylinder", occt_cylinder as fn() -> reify_ir::Mesh),
         ("boolean", occt_boolean_reversed as fn() -> reify_ir::Mesh),
         ("fillet", occt_fillet as fn() -> reify_ir::Mesh),

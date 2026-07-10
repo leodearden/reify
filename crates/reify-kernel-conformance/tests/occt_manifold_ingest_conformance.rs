@@ -84,3 +84,34 @@ fn occt_fixtures_ingest_and_revalidate_through_manifold() {
         });
     }
 }
+
+/// Sphere-only seam cycle, isolated from the shared `fixtures()` loop above
+/// (see `common::occt_sphere`'s doc comment: real OCCT sphere tessellation
+/// fails `Mesh::validate`'s `NonDegenerate` obligation at the poles — a
+/// producer defect outside this crate's scope). This is task #5164's
+/// acceptance test: once the OCCT producer dedups/drops the zero-area
+/// periodic-surface pole triangles, remove this `#[ignore]` and this test
+/// must pass the identical produce → validate → consume → re-validate cycle
+/// every other fixture already satisfies.
+#[test]
+#[ignore = "blocked on #5164 — OCCT periodic-surface pole node dedup / zero-area pole triangle"]
+fn occt_sphere_ingests_and_revalidates_through_manifold() {
+    let mesh = common::occt_sphere();
+
+    mesh.validate(0.0).unwrap_or_else(|e| {
+        panic!("real OCCT-tessellated sphere must satisfy the mesh contract: {e:?}")
+    });
+
+    let mut manifold = ManifoldKernel::new();
+    let handle = manifold.ingest_mesh(&mesh).unwrap_or_else(|e| {
+        panic!("ManifoldKernel::ingest_mesh must accept a validated OCCT sphere mesh: {e:?}")
+    });
+
+    let re_tessellated = manifold.tessellate(handle.id, 0.0).unwrap_or_else(|e| {
+        panic!("re-tessellating the ingested Manifold sphere handle must succeed: {e:?}")
+    });
+
+    re_tessellated.validate(0.0).unwrap_or_else(|e| {
+        panic!("re-tessellated Manifold sphere mesh must satisfy the mesh contract: {e:?}")
+    });
+}
