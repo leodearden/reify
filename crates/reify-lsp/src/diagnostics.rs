@@ -283,6 +283,53 @@ pub fn compute_diagnostics_with_state(
         }
     }
 
+    // Task 5078 (PRD `compute-fea-hardening.md` C2): hint diagnostic for
+    // FEA-dependent constraints that go unevaluated under this function's
+    // trampoline-free posture (see the doc comment above). A constraint
+    // reading an `@optimized` FEA result (e.g. `solve_elastic_static`'s
+    // `max_von_mises`) body-inlines to `Value::Undef` and therefore checks
+    // as `Satisfaction::Indeterminate` — neither the `violated_messages`
+    // skip-set above nor the span-aware `Satisfaction::Violated` loop emits
+    // anything for it, so today it surfaces NO diagnostic at all, silently
+    // indistinguishable from "no constraint". Surface a non-noisy
+    // `Severity::Info` hint instead, anchored to the constraint's span, so
+    // the user knows why the constraint shows nothing in the editor.
+    //
+    // NOTE: this emission is intentionally naive — it fires for every
+    // `Indeterminate` constraint, not just FEA-dependent ones. FEA
+    // discrimination (excluding e.g. a genuinely-unresolved `auto` param,
+    // which is also `Indeterminate` here but not FEA-dependent) is added in
+    // a follow-up step.
+    //
+    // Deliberately additive and easily removable: a single emission branch
+    // reading already-computed `check_result` data, no new `EvalState`
+    // fields, no keystroke-time solve.
+    //
+    // TODO(#5023): remove this stopgap when async-recalc Phase A lands
+    // per-constraint computing/not-evaluated states that supersede this hint.
+    let mut hinted: std::collections::HashSet<(ConstraintNodeId, Option<String>)> =
+        std::collections::HashSet::new();
+    for entry in &check_result.constraint_results {
+        if entry.satisfaction != Satisfaction::Indeterminate {
+            continue;
+        }
+        let key = (entry.id.clone(), entry.label.clone());
+        if !hinted.insert(key) {
+            continue;
+        }
+        let range = constraint_spans
+            .get(&entry.id)
+            .map(|span| convert::span_to_range(source, *span))
+            .unwrap_or_default();
+        diagnostics.push(lsp_types::Diagnostic {
+            range,
+            severity: Some(lsp_types::DiagnosticSeverity::INFORMATION),
+            source: Some("reify".to_string()),
+            message: "FEA constraint not evaluated in editor — run `reify test`".to_string(),
+            ..Default::default()
+        });
+    }
+
     // Emit freshness diagnostics for Pending and Failed cells (arch §7.1, §9.2).
     //
     // Iterate the compiled templates Vec directly (not a HashMap) so diagnostic
