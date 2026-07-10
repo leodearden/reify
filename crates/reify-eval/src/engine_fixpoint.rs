@@ -1251,16 +1251,20 @@ mod tests {
     /// required. This pin now guards the property directly on the live
     /// `run_unified_pass` planner so coverage survives the dead stack's removal.
     ///
-    /// **What this test asserts** (and what it does NOT assert):
+    /// **What this test asserts:**
     /// - All Realization nodes are present in the schedule (not stranded in
     ///   the residue).
     /// - The residue is empty (no cycles for an acyclic box+union graph).
     /// - Each node appears exactly once (no duplicates in the flat list).
+    /// - `result = union(a, b)` is scheduled strictly AFTER both `a` and `b`
+    ///   — the actual topologically-valid-order property. The no-duplicates
+    ///   check alone is tautological (Kahn's worklist enqueues each node's
+    ///   in-degree hitting zero exactly once, so it holds for any correct —
+    ///   or even mildly broken — planner) and would not catch a scheduler
+    ///   that emits a valid-but-wrong order.
     ///
     /// The `Vec<NodeId>` return type is the structural proof that the schedule
-    /// is sequential rather than parallel; the assertions above verify that
-    /// realization nodes are *present* and *acyclic*, not that any specific
-    /// topological order is enforced.
+    /// is sequential rather than parallel.
     #[test]
     fn run_unified_pass_returns_acyclic_linear_schedule() {
         use reify_constraints::SimpleConstraintChecker;
@@ -1325,6 +1329,30 @@ mod tests {
             sched_set.len(),
             pass.schedule.len(),
             "schedule must have no duplicates (each node appears exactly once in the linear order)",
+        );
+
+        // The no-duplicates check above cannot catch a scheduling regression
+        // by itself — assert the actual topological-order property: `result
+        // = union(a, b)` must come after both `a` and `b`. Realization
+        // indices are assigned in source declaration order by the compiler's
+        // realization-emission loop (reify_compiler::entity), so `a`/`b`/
+        // `result` map directly onto indices 0/1/2 of entity "MultiBody".
+        // Reuses this suite's `positions()` helper (see
+        // `unified_pass_acyclic_all_edge_kinds_schedules_everything` above
+        // for the same idiom).
+        let r_a = NodeId::Realization(RealizationNodeId::new("MultiBody", 0));
+        let r_b = NodeId::Realization(RealizationNodeId::new("MultiBody", 1));
+        let r_result = NodeId::Realization(RealizationNodeId::new("MultiBody", 2));
+        let pos = positions(&pass.schedule);
+        assert!(
+            pos[&r_result] > pos[&r_a] && pos[&r_result] > pos[&r_b],
+            "union(a, b) realization must be scheduled after both box \
+             realizations it depends on; got positions a={}, b={}, result={} \
+             in schedule {:?}",
+            pos[&r_a],
+            pos[&r_b],
+            pos[&r_result],
+            pass.schedule,
         );
     }
 
