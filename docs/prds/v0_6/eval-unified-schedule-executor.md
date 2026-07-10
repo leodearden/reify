@@ -1,8 +1,20 @@
 # PRD stub: eval consumes the unified-DAG schedule (uniform-dependency stage (b))
 
-**Milestone:** v0_6 · **Status:** deferred — forward stub + [MILESTONE] task; do NOT decompose from this document
+**Milestone:** v0_6 · **Status:** deferred — forward stub + [MILESTONE] task; do NOT decompose from this document (re-deferred 2026-07-10, now gated on #4727)
 **Predecessor:** `docs/prds/v0_6/eval-uniform-dependency-handling.md` (stages (c)+(a), active) · **Substrate:** `docs/prds/v0_6/engine-unified-build-dag.md` (+ `engine-build-dag-substrate.md`)
 Ratified 2026-07-02 (design session with Leo): staged (c) → (a) → **(b)**; (b) is the committed endgame, deliberately designed *after* (a) lands.
+
+### Premise re-verification & re-deferral (2026-07-10, `/prd` author-mode session — task 4958 milestone flip; HEAD `c1d284678a`)
+
+Milestone [MILESTONE] #4958 flipped runnable (deps δ#4956 / ε#4957 / #5125 all `done`; stage (a) landed). The mandated §4 premise check ran against HEAD `c1d284678a`:
+
+- ✅ `run_unified_pass` (`engine_fixpoint.rs:145`) + `run_unified_pass_seeded` (`:273`) exist and are **pure structural planners** — they do NOT branch on `BuildScheduler`; the enum/`from_env` gate *only* production activation inside `Engine::build()` (module doc `engine_fixpoint.rs:16–19`).
+- ✅ `build_combined_param_let_graph` — the deletion target — is present at `engine_eval.rs:509`.
+- ✅ Stage (a) capstones landed; the declared-cell substrate (b) targets is in place.
+- ⚠️ **#4727 (Stage-5 legacy deletion) is `pending`, fully runnable (deps 4362/4734/5125 `done`), but NOT landed.** `BuildScheduler`/`from_env_value`/`LegacyMultiPass` still live in `engine_fixpoint.rs`; the `unified-dag` feature still exists.
+- ⚠️ **Corrected premise (G6):** §3-reason-2's implied fear — that eval must be designed against a two-scheduler shape and would need a *legacy branch* — is **overstated**. `engine_eval.rs` has **zero** `BuildScheduler`/kill-switch references; the eval path never gated on the scheduler and the executor would consume the scheduler-independent planner directly. The **real** residual couplings are: (1) **file-lock contention** — #4727 edits `engine_eval.rs` + `engine_fixpoint.rs`, the exact two hot files (b) must edit, so queuing (b) now serializes/churns against a runnable-now task; (2) **migration-safety-pattern symmetry** — build's cutover kept `REIFY_BUILD_SCHEDULER=legacy` as a one-release kill-switch that #4727 is mid-flight deleting, and (b) is a structurally identical eval migration; designing eval's cutover before #4727 lands means guessing at a house-style decision (kill-switch vs hard cut) that's actively being resolved.
+
+**Decision (Leo, 2026-07-10): re-defer per §4.** Since #4727 is ready-to-land now, the clean path is *land #4727 first, then design (b) against the final single-scheduler shape.* Mechanized as a hard dependency edge **#4958 → #4727**; the milestone was returned to `pending` (re-arms when #4727 lands). No design authored, no batch queued this session — the stub stays the recorded direction. Resolves esc-4958-2 / esc-4958-1.
 
 ## 1. Goal (endgame statement)
 
@@ -23,11 +35,13 @@ The pure-eval surfaces (`eval`, `eval_cached`) consume the unified-DAG schedule 
 
 ## 4. Flip condition (the [MILESTONE] task)
 
-A single [MILESTONE] task is filed with the predecessor PRD's batch, depending on its capstone leaves (δ deletions + ε edit-path closure). When it becomes runnable:
+A single [MILESTONE] task (#4958) is filed with the predecessor PRD's batch, depending on its capstone leaves (δ deletions + ε edit-path closure). When it becomes runnable:
 
 > Run a `/prd` **author-mode design session** for this PRD: verify this stub's premises against HEAD (especially `engine_fixpoint.rs` shape, #4727 state, what (a) actually landed), design the eval-side executor (node-kind handling, symbolic mint step, @optimized/compute dispatch in executor context, cache write-back, `E_EVAL_UNRESOLVED` gating), then decompose.
 
 The milestone's deliverable is the **design session occurring**, not implementation. If at flip time the demand signal has changed (e.g. no new misses, low pressure), Leo may explicitly re-defer — the stub stays the recorded direction either way.
+
+**First flip resolved (2026-07-10) → re-deferred (see the re-verification block above).** The premise check ran and Leo exercised the re-defer clause: the design is cleaner against the post-#4727 single-scheduler shape, and #4727 edits the same hot files. The **flip condition is now re-pointed to `#4727 done`** — mechanized as the dependency edge **#4958 → #4727** (in addition to the already-satisfied δ/ε deps). The design session re-runs when #4727 lands; the mandate quoted above is unchanged, except that "#4727 state" will then read *landed*, removing the two-scheduler ambiguity and the file-lock contention.
 
 ## 5. Known design questions to resolve at flip time (recorded now, decided then)
 
@@ -44,6 +58,6 @@ The milestone's deliverable is the **design session occurring**, not implementat
 |---|---|---|---|---|
 | `eval-uniform-dependency-handling.md` | consumes its end state (declared cells, deleted sweeps, invariant as convergence oracle) | [MILESTONE] task filed in its batch | predecessor PRD's batch | queued |
 | `engine-unified-build-dag.md` | extends its driver to the last non-consuming surface | `run_unified_pass` consumption from `eval`/`eval_cached` | **this PRD** (at flip time) | deferred |
-| unified-dag Stage-5 (#4727) | sequencing input | legacy-scheduler deletion state | #4727 (unchanged) | pending at authoring |
+| unified-dag Stage-5 (#4727) | **sequencing gate** — (b) designs against #4727's post-deletion single-scheduler shape; #4727 edits the same hot files (`engine_eval.rs`, `engine_fixpoint.rs`) | legacy-scheduler deletion state | #4727 | **pending; hard edge #4958 → #4727 added 2026-07-10** (milestone re-armed on `#4727 done`) |
 
 No cross-repo seams.
