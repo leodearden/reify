@@ -3788,8 +3788,8 @@ const DOCUMENTED_KIND_FAMILY_CENSUS: usize = 52;
 /// variant is added, forcing the author through `ALL`. `VARIANT_COUNT` then
 /// catches the unregistered registry row.
 ///
-/// Census: 8 + 3 + 9 + 7 + 5 + 9 + 6 + 4 + 1 = 52 across the nine kind families
-/// (53 including the `ALL_ISOSURFACE` marker family).
+/// Census: 8 + 3 + 10 + 7 + 5 + 9 + 6 + 4 + 1 = 53 across the nine kind families
+/// (54 including the `ALL_ISOSURFACE` marker family).
 #[test]
 fn coverage_all_variant_families_and_nested_kinds() {
     // Per-family array widths, each cross-checked against the compiler's
@@ -3801,7 +3801,7 @@ fn coverage_all_variant_families_and_nested_kinds() {
     // and Boolean/Surface beside theirs above.)
     assert_eq!(ALL_PRIMITIVE.len(), PrimitiveKind::VARIANT_COUNT, "ALL_PRIMITIVE is out of sync with PrimitiveKind::VARIANT_COUNT — update both together");
     assert_eq!(ALL_BOOLEAN.len(), BooleanOp::VARIANT_COUNT, "ALL_BOOLEAN is out of sync with BooleanOp::VARIANT_COUNT — update both together");
-    assert_eq!(ALL_MODIFY.len(), 9, "ALL_MODIFY census");
+    assert_eq!(ALL_MODIFY.len(), 10, "ALL_MODIFY census");
     assert_eq!(ALL_TRANSFORM.len(), TransformKind::VARIANT_COUNT, "ALL_TRANSFORM is out of sync with TransformKind::VARIANT_COUNT — update both together");
     assert_eq!(ALL_PATTERN.len(), PatternKind::VARIANT_COUNT, "ALL_PATTERN is out of sync with PatternKind::VARIANT_COUNT — update both together");
     assert_eq!(ALL_SWEEP.len(), SweepKind::VARIANT_COUNT, "ALL_SWEEP is out of sync with SweepKind::VARIANT_COUNT — update both together");
@@ -3865,5 +3865,5 @@ fn coverage_all_variant_families_and_nested_kinds() {
     // Total nested-kind census across all ten families (the nine kind families
     // plus the Isosurface marker).
     let total: usize = family_widths.iter().sum();
-    assert_eq!(total, 53, "total nested-kind census; update if any ALL_* array is resized");
+    assert_eq!(total, 54, "total nested-kind census; update if any ALL_* array is resized");
 }
