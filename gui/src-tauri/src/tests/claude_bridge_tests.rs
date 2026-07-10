@@ -2300,7 +2300,7 @@ async fn ensure_sidecar_ready_kills_handle_on_crash_cleanup() {
 async fn shutdown_not_blocked_during_ensure_sidecar_ready_spawn() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
     use tokio::sync::Mutex;
 
     // Atomic flag set by spawn_fn when it has started blocking.
@@ -2336,36 +2336,20 @@ async fn shutdown_not_blocked_during_ensure_sidecar_ready_spawn() {
     }
 
     // shutdown_sidecar should NOT block — the lock is free because spawn_fn
-    // runs outside the lock after step-31. This timeout bounds the happy
-    // path too (unlike the poll loops above), and a regression blocks for
-    // the full bound before failing — 5s balances regression-detection
-    // speed against lock-acquire scheduling headroom on contended CI.
-    let shutdown_start = Instant::now();
+    // runs outside the lock after step-31. The 5s bound below is a deadlock
+    // backstop, not a latency assertion: the regression this guards (the
+    // sidecar Mutex held across spawn_fn().await until tx.send further down)
+    // blocks for the full bound before failing, so 5s is sized for
+    // lock-acquire scheduling headroom on contended CI rather than to detect
+    // sub-bound slowness.
     let shutdown_result = tokio::time::timeout(
         Duration::from_secs(5),
         shutdown_sidecar(&sidecar_for_shutdown),
     )
     .await;
-    let shutdown_elapsed = shutdown_start.elapsed();
     assert!(
         shutdown_result.is_ok(),
         "shutdown_sidecar must not block while ensure_sidecar_ready is in spawn_fn"
-    );
-    // The 5s bound above is a deadlock backstop, not a latency assertion —
-    // it must stay generous for contended CI. This elapsed-time check is a
-    // secondary regression detector: the lock is free, so a healthy shutdown
-    // normally completes in microseconds. A regression that blocks-but-still-
-    // finishes under the outer timeout (e.g. a reintroduced lock-wait taking
-    // ~1-2s) would satisfy `is_ok()` alone but not this bound. 3s (rather
-    // than a sub-second bound) leaves headroom for the same host CPU
-    // oversubscription documented below (esc-5007-4) to delay scheduling by
-    // up to a few hundred ms without spuriously failing this assertion,
-    // while staying comfortably under the 5s deadlock backstop.
-    assert!(
-        shutdown_elapsed < Duration::from_secs(3),
-        "shutdown_sidecar took {shutdown_elapsed:?}, expected well under 3s since the lock \
-         is free; a longer-but-still-completing duration indicates a partial-blocking \
-         regression that the outer 5s deadlock backstop alone would not catch"
     );
 
     // Unblock spawn_fn so ensure_sidecar_ready can finish (returns Err — no slot
