@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_core::{ConstraintNodeId, ContentHash, Diagnostic, ModulePath, SourceSpan, VersionId};
+use reify_core::{
+    ConstraintNodeId, ContentHash, Diagnostic, ModulePath, SourceSpan, ValueCellId, VersionId,
+};
 use reify_ir::{Freshness, Satisfaction};
 use tower_lsp::lsp_types::{self, Url};
 
@@ -295,22 +297,60 @@ pub fn compute_diagnostics_with_state(
     // `Severity::Info` hint instead, anchored to the constraint's span, so
     // the user knows why the constraint shows nothing in the editor.
     //
-    // NOTE: this emission is intentionally naive — it fires for every
-    // `Indeterminate` constraint, not just FEA-dependent ones. FEA
-    // discrimination (excluding e.g. a genuinely-unresolved `auto` param,
-    // which is also `Indeterminate` here but not FEA-dependent) is added in
-    // a follow-up step.
+    // Gated by `constraint_depends_on_unregistered_optimized_compute` so this
+    // does NOT fire on every `Indeterminate` constraint — e.g. a
+    // genuinely-unresolved `auto` param is also `Indeterminate` here (no
+    // solver attached), but is not FEA-dependent and must not get this hint.
     //
     // Deliberately additive and easily removable: a single emission branch
-    // reading already-computed `check_result` data, no new `EvalState`
-    // fields, no keystroke-time solve.
+    // plus one self-contained helper reading already-computed `check_result`
+    // / `compiled` data, no new `EvalState` fields, no keystroke-time solve.
     //
     // TODO(#5023): remove this stopgap when async-recalc Phase A lands
     // per-constraint computing/not-evaluated states that supersede this hint.
+    let value_cell_exprs: HashMap<ValueCellId, _> = compiled
+        .templates
+        .iter()
+        .flat_map(|t| t.value_cells.iter())
+        .filter_map(|vc| vc.default_expr.as_ref().map(|e| (vc.id.clone(), e)))
+        .collect();
+    let compiled_constraints: HashMap<&ConstraintNodeId, _> = compiled
+        .templates
+        .iter()
+        .flat_map(|t| t.constraints.iter())
+        .map(|c| (&c.id, c))
+        .collect();
+    // Union of the compiled module's own functions and the engine's prelude
+    // functions — stdlib solvers like `solve_elastic_static` are prelude
+    // functions, not user-module functions, so the prelude must be included
+    // or every FEA constraint would fail to match.
+    let functions: Vec<_> = compiled
+        .functions
+        .iter()
+        .chain(
+            state
+                .engine
+                .prelude()
+                .iter()
+                .flat_map(|m| m.functions.iter()),
+        )
+        .collect();
+
     let mut hinted: std::collections::HashSet<(ConstraintNodeId, Option<String>)> =
         std::collections::HashSet::new();
     for entry in &check_result.constraint_results {
         if entry.satisfaction != Satisfaction::Indeterminate {
+            continue;
+        }
+        let Some(constraint) = compiled_constraints.get(&entry.id) else {
+            continue;
+        };
+        if !constraint_depends_on_unregistered_optimized_compute(
+            &constraint.expr,
+            &value_cell_exprs,
+            &functions,
+            &state.engine,
+        ) {
             continue;
         }
         let key = (entry.id.clone(), entry.label.clone());
@@ -430,6 +470,90 @@ fn constraint_violated_message(entry: &reify_eval::ConstraintCheckEntry) -> Stri
         Some(label) => format!("constraint violated: {}", label),
         None => format!("constraint {} violated", entry.id),
     }
+}
+
+/// Static discriminator for task 5078's FEA "not evaluated in editor" hint
+/// (PRD `compute-fea-hardening.md` C2).
+///
+/// Returns `true` when `constraint_expr` — or the `default_expr` of any
+/// value cell it transitively depends on — calls a function whose
+/// `@optimized("target")` annotation names a compute target with no
+/// registered trampoline on `engine`. Under this crate's trampoline-free LSP
+/// posture (see [`compute_diagnostics_with_state`]'s doc comment) such a
+/// target always body-inlines to `Value::Undef`, so this predicate is
+/// exactly the "is this constraint's `Indeterminate` result caused by an
+/// unevaluated FEA/compute solve, as opposed to some other cause (e.g. a
+/// genuinely-unresolved `auto` param)" test.
+///
+/// `functions` should be the union of the compiled module's own functions
+/// and the engine's prelude functions — stdlib solvers (e.g.
+/// `solve_elastic_static`) are prelude functions, not user-module functions.
+/// Matching is by function NAME rather than full overload resolution: in
+/// this engine posture *every* `@optimized` target is unregistered, and the
+/// FEA solver overloads uniformly carry the same target string, so a name
+/// match cannot mis-resolve which target applies.
+///
+/// Traversal is a work-queue over value-cell ids (seeded from
+/// `constraint_expr.collect_value_refs()`, expanded via each visited cell's
+/// own `default_expr.collect_value_refs()`) guarded by a `visited` set for
+/// cycle-safety, mirroring the leaf-walk shape of `classify_undef_origins`
+/// (`reify-eval/src/engine_eval.rs`) but over static `default_expr`s rather
+/// than runtime snapshot values — under this posture the runtime
+/// `ComputeNode` graph is empty (insertion is gated on
+/// `compute_dispatch(target).is_some()`), so the `@optimized` marker
+/// survives only statically on `CompiledFunction.optimized_target`.
+fn constraint_depends_on_unregistered_optimized_compute(
+    constraint_expr: &reify_ir::CompiledExpr,
+    value_cell_exprs: &HashMap<ValueCellId, &reify_ir::CompiledExpr>,
+    functions: &[&reify_ir::CompiledFunction],
+    engine: &reify_eval::Engine,
+) -> bool {
+    fn expr_calls_unregistered_optimized_fn(
+        expr: &reify_ir::CompiledExpr,
+        functions: &[&reify_ir::CompiledFunction],
+        engine: &reify_eval::Engine,
+    ) -> bool {
+        let mut found = false;
+        expr.walk(&mut |node| {
+            if found {
+                return;
+            }
+            if let reify_ir::CompiledExprKind::UserFunctionCall { function_name, .. } = &node.kind {
+                found = functions.iter().any(|f| {
+                    f.name == *function_name
+                        && f.optimized_target
+                            .as_deref()
+                            .is_some_and(|t| engine.compute_dispatch(t).is_none())
+                });
+            }
+        });
+        found
+    }
+
+    if expr_calls_unregistered_optimized_fn(constraint_expr, functions, engine) {
+        return true;
+    }
+
+    let mut visited: std::collections::HashSet<ValueCellId> = std::collections::HashSet::new();
+    let mut queue: Vec<ValueCellId> = constraint_expr.collect_value_refs();
+    while let Some(cell_id) = queue.pop() {
+        if !visited.insert(cell_id.clone()) {
+            continue;
+        }
+        let Some(default_expr) = value_cell_exprs.get(&cell_id) else {
+            continue;
+        };
+        if expr_calls_unregistered_optimized_fn(default_expr, functions, engine) {
+            return true;
+        }
+        for referenced in default_expr.collect_value_refs() {
+            if !visited.contains(&referenced) {
+                queue.push(referenced);
+            }
+        }
+    }
+
+    false
 }
 
 /// Run the full parse → compile → check pipeline and return LSP diagnostics.
