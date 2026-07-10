@@ -22472,3 +22472,450 @@
         assert_eq!(diagnostics[0].code, Some(DiagnosticCode::QueryNotSupportedOnRepr));
         assert_eq!(diagnostics[0].severity, Severity::Error);
     }
+
+    // ── Task #5120 R2c: composition (union/intersect/difference) wired onto
+    // the kernel-free symbolic-eval surface ──────────────────────────────────
+    //
+    // Sibling to the R2b leaf-ctor tests above (tests.rs:20630+): pins
+    // `try_eval_symbolic_topology_selector`'s NEW composition arms over
+    // INLINE nested leaf-ctor operands (the bt2/bt3 shape —
+    // `union(faces_by_normal(b,up,tol), faces_by_normal(b,down,tol))`),
+    // resolving within the single kernel-free mint pass (no cross-cell
+    // chaining), plus the union/intersect/difference overload
+    // disambiguation against the solid-CSG boolean (non-Selector operands).
+    //
+    // **RED** until step-2 adds the `union`/`intersect`/`difference` arms to
+    // `symbolic_eval_helper_for_name` + `try_eval_symbolic_topology_selector`
+    // (via the new kernel-free `eval_variadic_composition_symbolic` /
+    // `reconstruct_selector_value_symbolic` siblings).
+
+    /// `union(faces_by_normal(b,up,tol), faces_by_normal(b,down,tol))` over a
+    /// SYMBOLIC body handle (`kernel_handle == None`) must yield
+    /// `Some(Value::Selector(Face))` with a `SelectorNode::Union` of two Leaf
+    /// children, each with a symbolic (`kernel_handle == None`) target.
+    /// Mirrors BT2 (`bt2_same_kind_union.ri`).
+    #[test]
+    fn try_eval_symbolic_topology_selector_union_of_inline_nested_leaves() {
+        use reify_core::identity::{RealizationNodeId, ValueCellId};
+        use reify_core::DimensionVector;
+        use reify_ir::value::{LeafQuery, SelectorNode};
+
+        let entity = "R2cUnion";
+        let rr = RealizationNodeId::new(entity, 0);
+        let uvh: [u8; 32] = [0x5Cu8; 32];
+        let tol_rad = std::f64::consts::PI / 180.0;
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new(entity, "body"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: uvh,
+                kernel_handle: None,
+            },
+        );
+        values.insert(
+            ValueCellId::new(entity, "up"),
+            reify_ir::Value::Vector(vec![
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(1.0),
+            ]),
+        );
+        values.insert(
+            ValueCellId::new(entity, "down"),
+            reify_ir::Value::Vector(vec![
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(-1.0),
+            ]),
+        );
+        values.insert(
+            ValueCellId::new(entity, "tol"),
+            reify_ir::Value::Scalar {
+                si_value: tol_rad,
+                dimension: DimensionVector::ANGLE,
+            },
+        );
+
+        let vec3_ty = reify_core::Type::vec3(reify_core::Type::dimensionless_scalar());
+        let angle_ty = reify_core::Type::angle();
+
+        let up_leaf = symbolic_selector_call_three_value_refs(
+            "faces_by_normal",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            "up",
+            vec3_ty.clone(),
+            "tol",
+            angle_ty.clone(),
+        );
+        let down_leaf = symbolic_selector_call_three_value_refs(
+            "faces_by_normal",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            "down",
+            vec3_ty,
+            "tol",
+            angle_ty,
+        );
+        let union_expr = mk_symbolic_call_3523("union", vec![up_leaf, down_leaf]);
+
+        let mut diagnostics = Vec::new();
+        let result =
+            super::try_eval_symbolic_topology_selector(&union_expr, &values, &mut diagnostics);
+
+        let sv = match result {
+            Some(reify_ir::Value::Selector(sv)) => sv,
+            other => panic!(
+                "union(faces_by_normal(b,up,tol), faces_by_normal(b,down,tol)) over a \
+                 symbolic target must yield Some(Value::Selector(..)); got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(
+            sv.kind,
+            reify_core::ty::SelectorKind::Face,
+            "union of Face selectors → Face kind"
+        );
+        match &sv.node {
+            SelectorNode::Union(children) => {
+                assert_eq!(children.len(), 2, "union of 2 operands → 2 children");
+                for (i, child) in children.iter().enumerate() {
+                    match &child.node {
+                        SelectorNode::Leaf { target, query } => {
+                            assert_eq!(
+                                target.kernel_handle, None,
+                                "child[{i}] target must be symbolic"
+                            );
+                            assert_eq!(
+                                target.realization_ref, rr,
+                                "child[{i}] realization_ref propagated"
+                            );
+                            assert!(
+                                matches!(query, LeafQuery::ByNormal { .. }),
+                                "child[{i}] must be a ByNormal leaf; got {:?}",
+                                query
+                            );
+                        }
+                        other => panic!("child[{i}] must be a Leaf, got {:?}", other),
+                    }
+                }
+            }
+            other => panic!("expected SelectorNode::Union, got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "clean symbolic composition must emit no diagnostics; got {:?}",
+            diagnostics
+        );
+    }
+
+    /// `intersect(faces_by_normal(b,up,tol), faces_by_normal(b,down,tol))`
+    /// over a symbolic body handle must yield `Some(Value::Selector(Face))`
+    /// with a `SelectorNode::Intersect` of two symbolic Leaf children.
+    /// Mirrors BT3's intersect half (`bt3_difference_intersect.ri`).
+    #[test]
+    fn try_eval_symbolic_topology_selector_intersect_of_inline_nested_leaves() {
+        use reify_core::identity::{RealizationNodeId, ValueCellId};
+        use reify_core::DimensionVector;
+        use reify_ir::value::{LeafQuery, SelectorNode};
+
+        let entity = "R2cIntersect";
+        let rr = RealizationNodeId::new(entity, 0);
+        let uvh: [u8; 32] = [0x5Du8; 32];
+        let tol_rad = std::f64::consts::PI / 180.0;
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new(entity, "body"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: uvh,
+                kernel_handle: None,
+            },
+        );
+        values.insert(
+            ValueCellId::new(entity, "up"),
+            reify_ir::Value::Vector(vec![
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(1.0),
+            ]),
+        );
+        values.insert(
+            ValueCellId::new(entity, "down"),
+            reify_ir::Value::Vector(vec![
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(-1.0),
+            ]),
+        );
+        values.insert(
+            ValueCellId::new(entity, "tol"),
+            reify_ir::Value::Scalar {
+                si_value: tol_rad,
+                dimension: DimensionVector::ANGLE,
+            },
+        );
+
+        let vec3_ty = reify_core::Type::vec3(reify_core::Type::dimensionless_scalar());
+        let angle_ty = reify_core::Type::angle();
+
+        let up_leaf = symbolic_selector_call_three_value_refs(
+            "faces_by_normal",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            "up",
+            vec3_ty.clone(),
+            "tol",
+            angle_ty.clone(),
+        );
+        let down_leaf = symbolic_selector_call_three_value_refs(
+            "faces_by_normal",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            "down",
+            vec3_ty,
+            "tol",
+            angle_ty,
+        );
+        let intersect_expr = mk_symbolic_call_3523("intersect", vec![up_leaf, down_leaf]);
+
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_symbolic_topology_selector(
+            &intersect_expr,
+            &values,
+            &mut diagnostics,
+        );
+
+        let sv = match result {
+            Some(reify_ir::Value::Selector(sv)) => sv,
+            other => panic!(
+                "intersect(faces_by_normal(b,up,tol), faces_by_normal(b,down,tol)) over a \
+                 symbolic target must yield Some(Value::Selector(..)); got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(sv.kind, reify_core::ty::SelectorKind::Face);
+        match &sv.node {
+            SelectorNode::Intersect(children) => {
+                assert_eq!(children.len(), 2, "intersect of 2 operands → 2 children");
+                for (i, child) in children.iter().enumerate() {
+                    match &child.node {
+                        SelectorNode::Leaf { target, query } => {
+                            assert_eq!(
+                                target.kernel_handle, None,
+                                "child[{i}] target must be symbolic"
+                            );
+                            assert!(
+                                matches!(query, LeafQuery::ByNormal { .. }),
+                                "child[{i}] must be a ByNormal leaf; got {:?}",
+                                query
+                            );
+                        }
+                        other => panic!("child[{i}] must be a Leaf, got {:?}", other),
+                    }
+                }
+            }
+            other => panic!("expected SelectorNode::Intersect, got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "clean symbolic composition must emit no diagnostics; got {:?}",
+            diagnostics
+        );
+    }
+
+    /// `difference(faces(b), faces_by_normal(b,up,tol))` over a symbolic body
+    /// handle must yield `Some(Value::Selector(Face))` with a
+    /// `SelectorNode::Difference(a, b)` whose minuend/subtrahend are both
+    /// symbolic Leaf nodes. Mirrors BT3's difference half.
+    #[test]
+    fn try_eval_symbolic_topology_selector_difference_of_inline_nested_leaves() {
+        use reify_core::identity::{RealizationNodeId, ValueCellId};
+        use reify_core::DimensionVector;
+        use reify_ir::value::SelectorNode;
+
+        let entity = "R2cDifference";
+        let rr = RealizationNodeId::new(entity, 0);
+        let uvh: [u8; 32] = [0x5Eu8; 32];
+        let tol_rad = std::f64::consts::PI / 180.0;
+
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new(entity, "body"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: uvh,
+                kernel_handle: None,
+            },
+        );
+        values.insert(
+            ValueCellId::new(entity, "up"),
+            reify_ir::Value::Vector(vec![
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(1.0),
+            ]),
+        );
+        values.insert(
+            ValueCellId::new(entity, "tol"),
+            reify_ir::Value::Scalar {
+                si_value: tol_rad,
+                dimension: DimensionVector::ANGLE,
+            },
+        );
+
+        let faces_expr = topology_selector_call_one_value_ref(
+            "faces",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            reify_core::Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let fbn_expr = symbolic_selector_call_three_value_refs(
+            "faces_by_normal",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            "up",
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+            "tol",
+            reify_core::Type::angle(),
+        );
+        let diff_expr = topology_selector_composition_call("difference", faces_expr, fbn_expr);
+
+        let mut diagnostics = Vec::new();
+        let result =
+            super::try_eval_symbolic_topology_selector(&diff_expr, &values, &mut diagnostics);
+
+        let sv = match result {
+            Some(reify_ir::Value::Selector(sv)) => sv,
+            other => panic!(
+                "difference(faces(b), faces_by_normal(b,up,tol)) over a symbolic target must \
+                 yield Some(Value::Selector(..)); got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(sv.kind, reify_core::ty::SelectorKind::Face);
+        match &sv.node {
+            SelectorNode::Difference(a, b) => {
+                match &a.node {
+                    SelectorNode::Leaf { target, .. } => {
+                        assert_eq!(target.kernel_handle, None, "minuend target must be symbolic")
+                    }
+                    other => panic!("minuend must be a Leaf, got {:?}", other),
+                }
+                match &b.node {
+                    SelectorNode::Leaf { target, .. } => {
+                        assert_eq!(
+                            target.kernel_handle, None,
+                            "subtrahend target must be symbolic"
+                        )
+                    }
+                    other => panic!("subtrahend must be a Leaf, got {:?}", other),
+                }
+            }
+            other => panic!("expected SelectorNode::Difference, got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "clean symbolic composition must emit no diagnostics; got {:?}",
+            diagnostics
+        );
+    }
+
+    /// Overload disambiguation: `union(box_a, box_b)` where BOTH operands are
+    /// `Value::GeometryHandle` (NOT `Value::Selector`) — the solid-CSG-boolean
+    /// overload shape (e.g. `manifold_boolean`'s `union(box_a,box_b):Solid`) —
+    /// must yield `None` so the mint falls through and the cell stays
+    /// `Value::Undef` (`Type::Geometry`-exempt via clause 7), NOT a
+    /// mis-constructed selector.
+    #[test]
+    fn try_eval_symbolic_topology_selector_union_returns_none_for_non_selector_operands() {
+        use reify_core::identity::{RealizationNodeId, ValueCellId};
+
+        let entity = "R2cSolidBoolean";
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new(entity, "box_a"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new(entity, 0),
+                upstream_values_hash: [0x01u8; 32],
+                kernel_handle: None,
+            },
+        );
+        values.insert(
+            ValueCellId::new(entity, "box_b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new(entity, 1),
+                upstream_values_hash: [0x02u8; 32],
+                kernel_handle: None,
+            },
+        );
+
+        let arg_a = reify_ir::CompiledExpr::value_ref(
+            ValueCellId::new(entity, "box_a"),
+            reify_core::Type::Geometry,
+        );
+        let arg_b = reify_ir::CompiledExpr::value_ref(
+            ValueCellId::new(entity, "box_b"),
+            reify_core::Type::Geometry,
+        );
+        let union_expr = mk_symbolic_call_3523("union", vec![arg_a, arg_b]);
+
+        let mut diagnostics = Vec::new();
+        let result =
+            super::try_eval_symbolic_topology_selector(&union_expr, &values, &mut diagnostics);
+        assert!(
+            result.is_none(),
+            "union(geometry, geometry) is the solid-CSG-boolean overload, not selector \
+             composition — must yield None; got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "overload fallthrough must emit no diagnostics; got {:?}",
+            diagnostics
+        );
+    }
+
+    /// Arity guard: `union` with a single operand (< 2, below the variadic
+    /// minimum) must yield `None`.
+    #[test]
+    fn try_eval_symbolic_topology_selector_union_arity_below_two_returns_none() {
+        use reify_core::identity::{RealizationNodeId, ValueCellId};
+
+        let entity = "R2cUnionArity";
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new(entity, "body"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new(entity, 0),
+                upstream_values_hash: [0x03u8; 32],
+                kernel_handle: None,
+            },
+        );
+        let faces_expr = topology_selector_call_one_value_ref(
+            "faces",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            reify_core::Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let union_expr = mk_symbolic_call_3523("union", vec![faces_expr]);
+
+        let mut diagnostics = Vec::new();
+        let result =
+            super::try_eval_symbolic_topology_selector(&union_expr, &values, &mut diagnostics);
+        assert!(
+            result.is_none(),
+            "union with < 2 args must yield None (arity gate); got {:?}",
+            result
+        );
+    }

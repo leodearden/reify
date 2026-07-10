@@ -93,6 +93,134 @@ fn seeded_stale_undef_violation_is_reported() {
     );
 }
 
+/// Seeded state (task #5120 R2c): a `union` composition cell whose two
+/// operands are ALREADY resolved `Value::Selector(Face)` cells, but the
+/// union cell itself is (mis-scheduled) still `Value::Undef`. Once
+/// composition is wired onto the kernel-free symbolic-eval surface
+/// (`geometry_ops::is_symbolic_eval_wired_selector_ctor` returns `true` for
+/// `union`), clause 8's build-only exemption no longer applies to this call
+/// — so this is precisely the causeless staleness §6.1 exists to catch, and
+/// the checker MUST report it. A well-formed composition can never actually
+/// go stale like this once wired (both operands resolve within the same
+/// mint pass), so this fabricated state is the only way to exercise the
+/// class-coverage change — mirrors `seeded_stale_undef_violation_is_reported`
+/// above.
+///
+/// **RED before wiring**: `union` is still build-only-exempt (clause 8 rule
+/// 2), so the checker does NOT report this cell — this test FAILS.
+/// **GREEN after wiring** (task #5120 step-2): `union` leaves the build-only
+/// exemption by construction, so the checker reports it.
+#[test]
+fn seeded_stale_undef_composition_violation_is_reported() {
+    use reify_core::ty::SelectorKind;
+    use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorValue};
+
+    let op1_id = ValueCellId::new("SeededComposition", "op1");
+    let op2_id = ValueCellId::new("SeededComposition", "op2");
+    let union_id = ValueCellId::new("SeededComposition", "u");
+
+    let selector_type = Type::Selector(SelectorKind::Face);
+
+    let mut graph = EvaluationGraph::default();
+
+    // op1 / op2: Selector(Face) leaf producers. Their own default_expr is
+    // irrelevant to this seeded state — only their STORED value and
+    // cell_type matter — so a harmless Undef literal is used.
+    graph.value_cells.insert(
+        op1_id.clone(),
+        ValueCellNode {
+            id: op1_id.clone(),
+            kind: reify_compiler::ValueCellKind::Let,
+            cell_type: selector_type.clone(),
+            default_expr: Some(CompiledExpr::literal(Value::Undef, selector_type.clone())),
+            content_hash: ContentHash::of_str("seeded-op1"),
+        },
+    );
+    graph.value_cells.insert(
+        op2_id.clone(),
+        ValueCellNode {
+            id: op2_id.clone(),
+            kind: reify_compiler::ValueCellKind::Let,
+            cell_type: selector_type.clone(),
+            default_expr: Some(CompiledExpr::literal(Value::Undef, selector_type.clone())),
+            content_hash: ContentHash::of_str("seeded-op2"),
+        },
+    );
+
+    // The union cell: default_expr = FunctionCall{"union", [ValueRef(op1), ValueRef(op2)]},
+    // both args typed Type::Selector(Face) — the structural key
+    // `consumes_geometry_or_selector` reads.
+    let union_expr = CompiledExpr {
+        kind: reify_ir::CompiledExprKind::FunctionCall {
+            function: reify_ir::ResolvedFunction {
+                name: "union".to_string(),
+                qualified_name: "std::union".to_string(),
+            },
+            args: vec![
+                CompiledExpr::value_ref(op1_id.clone(), selector_type.clone()),
+                CompiledExpr::value_ref(op2_id.clone(), selector_type.clone()),
+            ],
+        },
+        result_type: selector_type.clone(),
+        content_hash: ContentHash::of_str("seeded-union"),
+    };
+    graph.value_cells.insert(
+        union_id.clone(),
+        ValueCellNode {
+            id: union_id.clone(),
+            kind: reify_compiler::ValueCellKind::Let,
+            cell_type: selector_type,
+            default_expr: Some(union_expr),
+            content_hash: ContentHash::of_str("seeded-union-cell"),
+        },
+    );
+
+    // Resolved Selector(Face) leaf value, reused for both operands.
+    let ghr = GeometryHandleRef {
+        realization_ref: reify_core::identity::RealizationNodeId::new("SeededComposition", 0),
+        upstream_values_hash: [0x7Cu8; 32],
+        kernel_handle: None,
+    };
+    let leaf_sv = SelectorValue::leaf(SelectorKind::Face, ghr, LeafQuery::All)
+        .expect("Face/All is a valid kind-closure");
+
+    let mut values: PersistentMap<ValueCellId, (Value, DeterminacyState)> = PersistentMap::new();
+    values.insert(
+        op1_id.clone(),
+        (Value::Selector(leaf_sv.clone()), DeterminacyState::Determined),
+    );
+    values.insert(
+        op2_id.clone(),
+        (Value::Selector(leaf_sv), DeterminacyState::Determined),
+    );
+    // The union cell is (mis-scheduled) still Undef despite both operands
+    // being fully resolved — the causeless staleness this test seeds.
+    values.insert(
+        union_id.clone(),
+        (Value::Undef, DeterminacyState::Undetermined),
+    );
+
+    let mut trace_map: HashMap<NodeId, DependencyTrace> = HashMap::new();
+    trace_map.insert(
+        NodeId::Value(union_id.clone()),
+        DependencyTrace {
+            reads: vec![op1_id.clone(), op2_id.clone()],
+            realization_reads: Vec::new(),
+        },
+    );
+
+    let violations =
+        reify_eval::invariants::check_no_stale_undef(&graph, &values, &trace_map, &[]);
+
+    assert!(
+        violations.iter().any(|v| v.cell == union_id),
+        "expected a stale-Undef violation naming the union cell {:?} now that composition \
+         is eval-wired (task #5120 R2c) — got {:?}",
+        union_id,
+        violations.iter().map(|v| &v.cell).collect::<Vec<_>>()
+    );
+}
+
 // ── Step-7: Engine-path corpus test over the deliberately-undef fixtures ────
 
 /// The four fixtures purpose-built for the undef-self-describing PRD family
