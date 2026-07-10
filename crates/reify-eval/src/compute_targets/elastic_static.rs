@@ -3701,11 +3701,23 @@ fn extract_zone_process_params(val: &Value) -> Result<ZoneProcessParams, FeaValu
 /// frame's x/y/z axes as the local → global rotation (columns = local basis in global).
 ///
 /// PRD compute-fea-hardening D5: Result-ified leaf extractor. Returns
-/// `Err(FeaValueShapeError)` instead of panicking on a malformed `Value`; its
-/// 3 call sites (`classify_material_as_printed_zones`'s mat_wall/mat_skin/
-/// mat_infill) bridge with `FeaShimExt::fea_shim` so external behavior is
-/// unchanged until D6 Result-ifies `classify_material_as_printed_zones` and
-/// removes the shim.
+/// `Err(FeaValueShapeError)` instead of panicking on a malformed `Value`,
+/// with one deliberate, permanent exception: an unsupported law `type_name`
+/// (neither `OrthotropicMaterial` nor `TransverseIsotropicMaterial`) still
+/// panics. The fixed C3 taxonomy (`FeaValueShapeError`'s 5 variants, reused
+/// here — not redefined) has no shape for "type_name is neither known law";
+/// it describes `Value`-variant mismatches and missing fields, not unknown
+/// symbolic dispatch tags. That branch is also unreachable-by-construction
+/// (the DSL only ever emits `Orthotropic`/`TransverseIsotropic` laws into
+/// `AnisotropicMaterial.law`), mirroring `classify_material`'s own
+/// type_name dispatch, which likewise sits outside the shape-error
+/// taxonomy. This is not deferred to a later D-task — see the design
+/// decision on this task's plan.
+///
+/// Its 3 call sites (`classify_material_as_printed_zones`'s mat_wall/
+/// mat_skin/mat_infill) bridge the `Result` arms with `FeaShimExt::fea_shim`
+/// so external behavior is unchanged until D6 Result-ifies
+/// `classify_material_as_printed_zones` and removes the shim.
 ///
 /// Used by `classify_material_as_printed_zones` to parse the three zone-material
 /// Values packed in the AsPrintedZones lambda.
@@ -3806,6 +3818,9 @@ fn anisotropic_material_from_value(val: &Value) -> Result<AnisotropicMaterial, F
             };
             Ok(AnisotropicMaterial::from_law(&law, frame))
         }
+        // Intentionally still a panic (not deferred): unreachable-by-construction
+        // (the DSL only emits Orthotropic/TransverseIsotropic laws) and outside
+        // FeaValueShapeError's fixed C3 taxonomy — see the function doc comment.
         other => panic!(
             "solve_elastic_static_trampoline: unsupported law type for \
              AsPrintedZones AnisotropicMaterial: {:?}",
