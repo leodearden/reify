@@ -614,12 +614,17 @@ fn v0_1_example_corpus_compile_and_check_time_is_bounded() {
     assert!(
         candidates.len() >= EXPECTED_MIN_FILES,
         "corpus discovery found only {} .ri file(s) (expected >= {}) — \
+         raw discover_ri_files() count: {}, SKIP_SET size: {} — \
          discover_ri_files()/SKIP_SET may be misconfigured (e.g. examples dir \
          moved or most entries skipped), which would silently narrow this \
          perf gate's coverage. If this is instead an intentional corpus \
-         reduction, lower EXPECTED_MIN_FILES to match.",
+         reduction, lower EXPECTED_MIN_FILES to match. The raw/SKIP_SET counts \
+         above distinguish a discovery regression (raw count also low) from an \
+         intentional corpus shrink (raw count normal, candidates below floor).",
         candidates.len(),
-        EXPECTED_MIN_FILES
+        EXPECTED_MIN_FILES,
+        paths.len(),
+        skip.len()
     );
 
     let mut measurements: Vec<(String, Duration)> = Vec::new();
