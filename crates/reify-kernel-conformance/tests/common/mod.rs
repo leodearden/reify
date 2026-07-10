@@ -166,3 +166,51 @@ pub fn fixtures() -> Vec<(&'static str, fn() -> reify_ir::Mesh)> {
         ("fillet", occt_fillet as fn() -> reify_ir::Mesh),
     ]
 }
+
+// ── gmsh volume-leg re-validate helper ──────────────────────────────────────
+
+/// Assert the `VolumeMesh` structural invariants that stand in for a
+/// surface re-validate on the volume leg (α ships no `VolumeMesh`
+/// validator): P1 tet connectivity (`tet_indices` is `Some`, non-empty,
+/// `len % 4 == 0`), a flat XYZ vertex buffer (`vertices.len() % 3 == 0`)
+/// with every coordinate finite, and `element_order() == Some(P1)`. Mirrors
+/// the structural-assertion set in
+/// `reify-kernel-gmsh/tests/mesh_to_volume_tests.rs:63-110` (no
+/// numeric-accuracy bound).
+#[cfg(all(has_occt, has_gmsh))]
+pub fn assert_valid_volume_mesh(vm: &reify_ir::VolumeMesh) {
+    assert_eq!(
+        vm.element_order(),
+        Some(reify_ir::ElementOrderTag::P1),
+        "element_order must be Some(P1); got {:?}",
+        vm.element_order()
+    );
+
+    let tet_indices = vm
+        .tet_indices()
+        .expect("P1 VolumeMesh must have tet_indices");
+    assert_eq!(
+        tet_indices.len() % 4,
+        0,
+        "P1 tets carry 4 nodes/element; tet_indices.len() = {} is not divisible by 4",
+        tet_indices.len()
+    );
+    assert!(
+        tet_indices.len() / 4 > 0,
+        "expected at least one tet; tet_indices.len() = {}",
+        tet_indices.len()
+    );
+
+    assert_eq!(
+        vm.vertices.len() % 3,
+        0,
+        "VolumeMesh.vertices is flat XYZ; len() = {} is not divisible by 3",
+        vm.vertices.len()
+    );
+    for (i, &component) in vm.vertices.iter().enumerate() {
+        assert!(
+            component.is_finite(),
+            "vertex buffer component {i} = {component} is not finite"
+        );
+    }
+}
