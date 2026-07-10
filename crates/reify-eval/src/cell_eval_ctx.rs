@@ -39,6 +39,12 @@ use reify_ir::{CompiledFunction, DeterminacyState, PersistentMap, Value, ValueMa
 ///
 /// This constructor does not migrate any existing call site (γ/δ/ε own
 /// adoption in `engine_eval.rs` / `engine_edit.rs` / `unfold.rs`).
+//
+// `allow(dead_code)`: in this task (P1 β, #5039) the only caller is the
+// golden unit test below; the production callers land when γ/δ/ε migrate
+// `engine_eval.rs` / `engine_edit.rs` / `unfold.rs` onto this constructor.
+// See docs/prds/v0_6/eval-cell-commit-substrate.md §2.5, §8.
+#[allow(dead_code)]
 pub(crate) fn cell_eval_ctx<'a>(
     values: &'a ValueMap,
     functions: &'a [CompiledFunction],
