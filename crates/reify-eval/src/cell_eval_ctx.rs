@@ -111,6 +111,8 @@ mod tests {
         let determinacy: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
             PersistentMap::new();
         let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let containment = NoContainment;
+        let containment_ref: &dyn ContainmentQuery = &containment;
 
         let ctx = cell_eval_ctx(
             &values,
@@ -118,12 +120,16 @@ mod tests {
             &meta_map,
             &determinacy,
             &sink,
-            &NoContainment,
+            containment_ref,
         );
 
-        assert!(ctx.determinacy.is_some());
-        assert!(ctx.diagnostics.is_some());
-        assert!(ctx.containment.is_some());
-        assert!(ctx.meta.is_some());
+        // Pointer-identity, not just `.is_some()`: proves `cell_eval_ctx`
+        // threads the caller's own references through unchanged, rather than
+        // silently substituting a different (e.g. default/empty) instance
+        // for one capability while leaving its `Option` `Some`.
+        assert!(ctx.determinacy.is_some_and(|d| std::ptr::eq(d, &determinacy)));
+        assert!(ctx.diagnostics.is_some_and(|d| std::ptr::eq(d, &sink)));
+        assert!(ctx.containment.is_some_and(|c| std::ptr::eq(c, containment_ref)));
+        assert!(ctx.meta.is_some_and(|m| std::ptr::eq(m, &meta_map)));
     }
 }
