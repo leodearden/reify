@@ -266,7 +266,13 @@ impl Default for ManifoldKernel {
 /// `reify-ir` API (a non-cloning check, and/or threading this function's
 /// already-computed weld into the contract check instead of recomputing it)
 /// — out of scope for this file-scoped change (this task holds a lock on
-/// `kernel.rs` only). The cost is accepted for now: it buys the structured
+/// `kernel.rs` only).
+///
+/// TODO(#5166): track the non-cloning by-reference `Mesh` contract-check API
+/// (and/or weld-threading) as a follow-up task, so this accepted cost has a
+/// live citation instead of living only in prose.
+///
+/// The cost is accepted for now: it buys the structured
 /// `MeshContractViolation` diagnostic this call site exists to deliver.
 ///
 /// Returns `Err(GeometryError::OperationFailed(_))` if a triangle index is out
