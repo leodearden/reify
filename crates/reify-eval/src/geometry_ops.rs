@@ -5303,8 +5303,8 @@ fn build_leaf_selector(
 /// name→helper map. A `Some(helper)` result means the named ctor is wired into
 /// the `eval()`/`eval_cached()` surface (via [`try_eval_symbolic_topology_selector`])
 /// and is EXPECTED to mint a `Value::Selector` there without a kernel; `None`
-/// means the name is kernel-bearing / composition / named-leaf / unknown and
-/// resolves only on the `build()` path.
+/// means the name is kernel-bearing / named-leaf / unknown and resolves only
+/// on the `build()` path.
 ///
 /// Both the dispatcher ([`try_eval_symbolic_topology_selector`]) and clause-8's
 /// "still in the α net" guard ([`is_symbolic_eval_wired_selector_ctor`]) read
@@ -5337,6 +5337,12 @@ fn symbolic_eval_helper_for_name(name: &str) -> Option<TopologySelectorHelper> {
         // task 4831 (P3β): feature-provenance leaf ctors (kernel-free).
         "created_by_feature" => TopologySelectorHelper::CreatedByFeature,
         "split_by_feature" => TopologySelectorHelper::SplitByFeature,
+        // task #5120 R2c: selector-composition algebra. Pure reconstruct over
+        // already-minted Value::Selector operands (no kernel query) — see
+        // reconstruct_selector_value_symbolic / eval_variadic_composition_symbolic.
+        "union" => TopologySelectorHelper::Union,
+        "intersect" => TopologySelectorHelper::Intersect,
+        "difference" => TopologySelectorHelper::Difference,
         _ => return None,
     })
 }
@@ -5402,16 +5408,87 @@ pub(crate) fn consumes_geometry_or_selector(expr: &reify_ir::CompiledExpr) -> bo
     }
 }
 
-/// Kernel-FREE eval-path dispatch for the leaf selector constructors over a
-/// SYMBOLIC target (R2b, task #4653).
+/// Kernel-FREE sibling of [`reconstruct_selector_value`] for the symbolic
+/// eval-path composition arms (task #5120 R2c). Same PREFERRED/fallback
+/// shape — inline reconstruction from a nested selector `FunctionCall` (via
+/// the kernel-free [`try_eval_symbolic_topology_selector`], NOT the
+/// kernel-bearing [`try_eval_topology_selector`]) or a `ValueRef` to an
+/// already-patched `Value::Selector` cell — but with no kernel and no
+/// `named_steps` in scope.
+///
+/// Returns `None` for any other expr shape OR a non-`Selector` resolved
+/// value — this doubles as the OVERLOAD DISAMBIGUATION for the solid-CSG
+/// booleans that share the `union`/`intersect`/`difference` names: a solid
+/// boolean's operands are `Value::GeometryHandle`, not `Value::Selector`, so
+/// this returns `None` and the caller's composition mint falls through
+/// (leaving the cell `Undef`, `Type::Geometry`-exempt via clause 7).
+fn reconstruct_selector_value_symbolic(
+    arg: &reify_ir::CompiledExpr,
+    values: &reify_ir::ValueMap,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::value::SelectorValue> {
+    match &arg.kind {
+        reify_ir::CompiledExprKind::FunctionCall { .. } => {
+            match try_eval_symbolic_topology_selector(arg, values, diagnostics)? {
+                reify_ir::Value::Selector(sv) => Some(sv),
+                // FunctionCall resolved to a non-selector (e.g. Undef) —
+                // not ours to wrap.
+                _ => None,
+            }
+        }
+        reify_ir::CompiledExprKind::ValueRef(id) => match values.get(id) {
+            Some(reify_ir::Value::Selector(sv)) => Some(sv.clone()),
+            // Cell not yet patched to a selector / not a selector — skip.
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Kernel-FREE sibling of [`eval_variadic_composition`] for the symbolic
+/// eval-path `union`/`intersect` arms (task #5120 R2c). Same collect+
+/// construct+error shape, over [`reconstruct_selector_value_symbolic`]
+/// instead of the kernel-bearing reconstruct.
+fn eval_variadic_composition_symbolic(
+    op_name: &str,
+    args: &[reify_ir::CompiledExpr],
+    values: &reify_ir::ValueMap,
+    diagnostics: &mut Vec<Diagnostic>,
+    constructor: fn(
+        Vec<reify_ir::value::SelectorValue>,
+    ) -> Result<reify_ir::value::SelectorValue, reify_ir::value::SelectorError>,
+) -> Option<reify_ir::Value> {
+    let children: Vec<reify_ir::value::SelectorValue> = args
+        .iter()
+        .map(|arg| reconstruct_selector_value_symbolic(arg, values, diagnostics))
+        .collect::<Option<Vec<_>>>()?;
+    match constructor(children) {
+        Ok(sv) => Some(reify_ir::Value::Selector(sv)),
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{op_name}: selector kind-closure violation ({err:?}); cell left at Undef"
+            )));
+            Some(reify_ir::Value::Undef)
+        }
+    }
+}
+
+/// Kernel-FREE eval-path dispatch for the leaf and composition selector
+/// constructors over a SYMBOLIC target (R2b, task #4653; composition added by
+/// R2c, task #5120).
 ///
 /// Maps the function name to a [`TopologySelectorHelper`] via
-/// [`symbolic_eval_helper_for_name`], runs the per-helper arity check (via
-/// `helper.expected_arity()`), and delegates construction to the shared
-/// [`try_build_kernel_free_leaf_selector`] helper. Returns `None` for every
-/// kernel-bearing / composition / named-leaf ctor and for any
-/// non-`FunctionCall` expr shape — the cell stays at `Value::Undef` (R1a /
-/// deferred to R3).
+/// [`symbolic_eval_helper_for_name`], runs the per-helper arity check
+/// (variadic ≥2 for `union`/`intersect`, exact `helper.expected_arity()` for
+/// everything else — mirroring [`try_eval_topology_selector`]'s gate), then
+/// dispatches: `union`/`intersect`/`difference` recurse through THIS
+/// kernel-free dispatcher (via [`eval_variadic_composition_symbolic`] /
+/// [`reconstruct_selector_value_symbolic`]) so an inline nested-leaf operand
+/// (`union(faces_by_normal(b,up,tol), ...)`) resolves within the single mint
+/// pass; every other (leaf) ctor falls through to the shared
+/// [`try_build_kernel_free_leaf_selector`], unchanged from R2b. Returns `None`
+/// for every kernel-bearing / named-leaf ctor and for any non-`FunctionCall`
+/// expr shape — the cell stays at `Value::Undef` (R1a / deferred to R3).
 pub(crate) fn try_eval_symbolic_topology_selector(
     expr: &reify_ir::CompiledExpr,
     values: &reify_ir::ValueMap,
@@ -5423,17 +5500,57 @@ pub(crate) fn try_eval_symbolic_topology_selector(
         _ => return None,
     };
 
-    // Kernel-free leaf ctor name→helper (single source of truth). All other
-    // helpers (kernel-bearing, composition, named-leaf, unknown) → None.
+    // Kernel-free ctor name→helper (single source of truth). All other
+    // helpers (kernel-bearing, named-leaf, unknown) → None.
     let helper = symbolic_eval_helper_for_name(&function.name)?;
 
-    // Per-helper arity check (same contract as try_eval_topology_selector).
-    let expected_arity = helper.expected_arity();
-    if args.len() != expected_arity {
-        return None;
+    // Per-helper arity check (same contract as try_eval_topology_selector):
+    // task #5120 R2c — union/intersect are variadic (≥ 2); every other
+    // helper (difference included) uses the exact expected_arity() check.
+    match helper {
+        TopologySelectorHelper::Union | TopologySelectorHelper::Intersect => {
+            if args.len() < 2 {
+                return None;
+            }
+        }
+        _ => {
+            if args.len() != helper.expected_arity() {
+                return None;
+            }
+        }
     }
 
-    try_build_kernel_free_leaf_selector(helper, args, values, &function.name, diagnostics)
+    match helper {
+        TopologySelectorHelper::Union => eval_variadic_composition_symbolic(
+            "union",
+            args,
+            values,
+            diagnostics,
+            reify_ir::value::SelectorValue::union,
+        ),
+        TopologySelectorHelper::Intersect => eval_variadic_composition_symbolic(
+            "intersect",
+            args,
+            values,
+            diagnostics,
+            reify_ir::value::SelectorValue::intersect,
+        ),
+        TopologySelectorHelper::Difference => {
+            // args[0]/args[1] guaranteed by the == 2 arity gate above.
+            let a = reconstruct_selector_value_symbolic(&args[0], values, diagnostics)?;
+            let b = reconstruct_selector_value_symbolic(&args[1], values, diagnostics)?;
+            match reify_ir::value::SelectorValue::difference(a, b) {
+                Ok(sv) => Some(reify_ir::Value::Selector(sv)),
+                Err(err) => {
+                    diagnostics.push(Diagnostic::warning(format!(
+                        "difference: selector kind-closure violation ({err:?}); cell left at Undef"
+                    )));
+                    Some(reify_ir::Value::Undef)
+                }
+            }
+        }
+        _ => try_build_kernel_free_leaf_selector(helper, args, values, &function.name, diagnostics),
+    }
 }
 
 
