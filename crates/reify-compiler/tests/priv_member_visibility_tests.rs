@@ -24,7 +24,7 @@
 //! access stay clean. RED until step-6 wires the `expr.rs` enforcement.
 
 use reify_compiler::{ValueCellKind, Visibility};
-use reify_core::{Diagnostic, DiagnosticCode};
+use reify_core::{Diagnostic, DiagnosticCode, Severity};
 use reify_test_support::compile_source;
 
 // ── Source fixture ───────────────────────────────────────────────────────────
@@ -511,8 +511,19 @@ purpose okp(subject : Motor) {
 // at four hardcoded ValueCellDecl construction sites — entity.rs's port-member
 // arm (both the `Auto { free }` and `Param` branches) and guards.rs's
 // `compile_guarded_members` (same two branches) — even though `param.is_priv`
-// was available at every site. This defeats `priv`'s external dot-access
-// hiding for port members and guarded-block members.
+// was available at every site. This fixes the lowered `ValueCellDecl.visibility`
+// field to match `param.is_priv` at all four sites.
+//
+// Scope note: `template_member_is_priv` (expr.rs), the sole predicate behind
+// E_PRIV_MEMBER_ACCESS enforcement on external dot-access, only scans
+// `template.value_cells`, `template.sub_components`, and whole-port
+// `ports[].is_priv` — it does not inspect `ports[].members[].visibility` or
+// `guarded_groups[].members[].visibility`. So the field this task corrects is
+// not yet consulted for these two member kinds, and external dot-access to a
+// `priv param` inside a port or guarded block is not actually blocked yet.
+// That enforcement gap is out of this task's scope (task #5161 is scoped to
+// the lowering sites, mirroring the sibling top-level structure-param site);
+// it has been escalated as a follow-up rather than fixed here.
 
 /// Locate a template by name in the compiled module (generalizes `motor_template`
 /// for the Part D fixtures below, which use distinct structure names).
@@ -525,6 +536,25 @@ fn find_template<'a>(
         .iter()
         .find(|t| t.name == name)
         .unwrap_or_else(|| panic!("{name} template not found in compiled module"))
+}
+
+/// Assert `module` compiled its fixture cleanly (no error-severity
+/// diagnostics). Guards the Part D field-only assertions below against a
+/// false pass: without this, a fixture that regressed to a partial compile
+/// (e.g. an unrelated diagnostic on `priv param aux = auto(free)`) could
+/// still surface a findable, correctly-`Private` value cell and mask the
+/// regression.
+fn assert_fixture_compiles_cleanly(module: &reify_compiler::CompiledModule, fixture_name: &str) {
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "{fixture_name} fixture must compile without error-severity diagnostics; got: {:?}",
+        errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
 }
 
 /// `PortHost` exercises `priv param` inside a `port { }` block, covering both
@@ -551,6 +581,7 @@ structure def PortHost {
 #[test]
 fn priv_param_in_port_compiles_to_visibility_private() {
     let module = compile_source(port_host_source());
+    assert_fixture_compiles_cleanly(&module, "PortHost");
     let template = find_template(&module, "PortHost");
     let members: Vec<_> = template.ports.iter().flat_map(|p| &p.members).collect();
 
@@ -572,6 +603,7 @@ fn priv_param_in_port_compiles_to_visibility_private() {
 #[test]
 fn priv_auto_param_in_port_compiles_to_visibility_private() {
     let module = compile_source(port_host_source());
+    assert_fixture_compiles_cleanly(&module, "PortHost");
     let template = find_template(&module, "PortHost");
     let members: Vec<_> = template.ports.iter().flat_map(|p| &p.members).collect();
 
@@ -593,6 +625,7 @@ fn priv_auto_param_in_port_compiles_to_visibility_private() {
 #[test]
 fn plain_param_in_port_compiles_to_visibility_public() {
     let module = compile_source(port_host_source());
+    assert_fixture_compiles_cleanly(&module, "PortHost");
     let template = find_template(&module, "PortHost");
     let members: Vec<_> = template.ports.iter().flat_map(|p| &p.members).collect();
 
@@ -633,6 +666,7 @@ structure def GuardHost {
 #[test]
 fn priv_param_in_guarded_block_compiles_to_visibility_private() {
     let module = compile_source(guard_host_source());
+    assert_fixture_compiles_cleanly(&module, "GuardHost");
     let template = find_template(&module, "GuardHost");
 
     let g_cell = template.guarded_groups[0]
@@ -654,6 +688,7 @@ fn priv_param_in_guarded_block_compiles_to_visibility_private() {
 #[test]
 fn priv_auto_param_in_guarded_block_compiles_to_visibility_private() {
     let module = compile_source(guard_host_source());
+    assert_fixture_compiles_cleanly(&module, "GuardHost");
     let template = find_template(&module, "GuardHost");
 
     let h_cell = template.guarded_groups[0]
@@ -676,6 +711,7 @@ fn priv_auto_param_in_guarded_block_compiles_to_visibility_private() {
 #[test]
 fn plain_param_in_guarded_block_compiles_to_visibility_public() {
     let module = compile_source(guard_host_source());
+    assert_fixture_compiles_cleanly(&module, "GuardHost");
     let template = find_template(&module, "GuardHost");
 
     let vis_cell = template.guarded_groups[0]
