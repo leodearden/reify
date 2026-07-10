@@ -548,3 +548,61 @@ impl GeometryKernel for GmshKernel {
         Ok(volume)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// [RED step-1 / task μ3 #5114] Completeness test for the INV-GEO-3
+    /// per-kernel state-inventory drift guard
+    /// (`docs/prds/kernel-seam-contracts.md` §6 + §12 leaf μ3).
+    ///
+    /// `gmsh_state_inventory` must classify EVERY per-handle side table
+    /// reachable from `GmshKernel` — including the fields nested inside its
+    /// `Mutex<VolumeMeshStore>` — via an exhaustive, no-wildcard struct
+    /// destructure at BOTH levels, so this test asserts:
+    /// (a) completeness — the returned names equal exactly
+    ///     `{"meshes", "next_id"}`, array length 2, no duplicates;
+    /// (b) every field's disposition is `StateDisposition::Persist` — gmsh
+    ///     has no `WarmStartable` impl / no warm-state swap, so nothing is
+    ///     ever cleared or rebuilt (mirrors manifold's append-only
+    ///     reasoning);
+    /// (c) the full persist/clear/rebuild taxonomy vocabulary is
+    ///     constructible (`Clear`/`Rebuild` are unused by gmsh today but
+    ///     exist for parity with the occt/manifold state-inventory leaves).
+    ///
+    /// Fails to compile until step-2 adds `StateDisposition`, `entry`, and
+    /// `gmsh_state_inventory`.
+    #[test]
+    fn gmsh_state_inventory_classifies_every_side_table() {
+        let kernel = GmshKernel::new();
+        let inventory = gmsh_state_inventory(&kernel);
+
+        assert_eq!(inventory.len(), 2, "inventory must classify exactly 2 fields");
+
+        let mut names: Vec<&str> = inventory.iter().map(|(name, _)| *name).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(
+            names,
+            vec!["meshes", "next_id"],
+            "inventory must cover exactly VolumeMeshStore's 2 leaf fields, with no duplicates"
+        );
+
+        for (name, disposition) in &inventory {
+            assert_eq!(
+                *disposition,
+                StateDisposition::Persist,
+                "field `{name}` must be classified Persist: gmsh has no WarmStartable impl \
+                 / no warm-state swap to clear or rebuild against"
+            );
+        }
+
+        // Pin the shared persist/clear/rebuild taxonomy vocabulary once, even
+        // though gmsh classifies every field as `Persist`: `Clear` and
+        // `Rebuild` exist for parity with the occt/manifold state-inventory
+        // leaves.
+        let _taxonomy =
+            [StateDisposition::Persist, StateDisposition::Clear, StateDisposition::Rebuild];
+    }
+}
