@@ -473,9 +473,12 @@ const LOCAL_FEATURE_OP_ACCESSORS: SixBufferHistoryAccessors<ffi::ffi::LocalFeatu
 pub struct OcctKernel {
     shapes: HashMap<u64, cxx::UniquePtr<ffi::ffi::OcctShape>>,
     /// Per-handle BRepKind, populated alongside `shapes` in `store_with_repr`.
-    /// Looked up via the public `repr_of(id)` accessor. Warm-start does not
-    /// repopulate this map (best-effort: post-restore queries return `None`
-    /// until the handle is re-stored locally).
+    /// Looked up via the public `repr_of(id)` accessor. Persisted and
+    /// restored in lock-step with `shapes` across warm-start (see
+    /// `warm_state` / `with_warm_state`): entries missing at restore time
+    /// (e.g. because the shape failed to serialize) fall back to
+    /// `BRepKind::Solid`, matching the implicit default in
+    /// [`Self::store`].
     reprs: HashMap<u64, BRepKind>,
     /// Idempotency cache for [`Self::extract_edges`]: parent handle id →
     /// previously-minted edge handle list (in canonical
@@ -4091,13 +4094,55 @@ fn analytic_curve_datum_to_value(
 #[cfg(has_occt)]
 impl WarmStartable for OcctKernel {
     fn warm_state(&self) -> Option<OpaqueState> {
-        if self.shapes.is_empty() {
+        // INV-GEO-3 state-inventory guard: exhaustive destructure (no `..`
+        // spread) so a newly-added OcctKernel field forces a compile-time
+        // persist/clear/runtime classification here instead of being
+        // silently omitted from warm-start state.
+        //   PERSIST (serialized into OcctWarmState): shapes, reprs, next_id
+        //   CLEAR-on-restore (derived provenance, rebuilt by extract_*;
+        //     see with_warm_state): extracted_edges, extracted_faces,
+        //     extracted_vertices, parent_handle
+        //   RUNTIME-only (not part of warm-start state): last_warm_start_failures
+        //
+        // Accepted bloat: `shapes` is persisted wholesale below, which
+        // includes sub-shape blobs previously minted by extract_edges/
+        // extract_faces/extract_vertices (ids that appear as values in
+        // extracted_* / keys in parent_handle). Since parent_handle and the
+        // extracted_* caches are CLEAR-on-restore, those blobs round-trip as
+        // ordinary shapes/reprs entries but come out orphaned on the
+        // consumer side: still queryable by id (repr_of, Volume, ...) but
+        // unreachable via OwnerBody and never reused by a later extract_*
+        // call, which mints fresh ids against the cleared cache. Across
+        // repeated warm-start cycles this is unbounded, not just
+        // single-cycle bloat: each cycle serializes prior orphans, restores
+        // them, and the next extract_* mints yet more fresh ids on top of
+        // the cleared cache, so the shape table monotonically grows with
+        // phantom, unreachable entries. Pre-existing behavior, not
+        // introduced by the parent_handle clear above; left as-is here
+        // because filtering sub-shape ids out needs parent_handle's key set
+        // threaded into the loop below, which is out of scope for this
+        // task.
+        // TODO(#5162): filter sub-shape ids (parent_handle key set) out of
+        // the serialization loop below so warm-state payload size stays
+        // bounded across repeated warm-start cycles instead of
+        // accumulating orphaned sub-shape entries.
+        let Self {
+            shapes,
+            reprs,
+            next_id,
+            extracted_edges: _,
+            extracted_faces: _,
+            extracted_vertices: _,
+            parent_handle: _,
+            last_warm_start_failures: _,
+        } = self;
+        if shapes.is_empty() {
             return None;
         }
         let mut warm_shapes = HashMap::new();
         let mut warm_reprs: HashMap<u64, BRepKind> = HashMap::new();
         let mut total_bytes: usize = 0;
-        for (&id, shape) in &self.shapes {
+        for (&id, shape) in shapes {
             let Some(shape_ref) = shape.as_ref() else {
                 continue; // Skip null shapes (best-effort, like serialization failures)
             };
@@ -4107,7 +4152,7 @@ impl WarmStartable for OcctKernel {
                     warm_shapes.insert(id, brep);
                     // Mirror repr entry only for ids that successfully serialized,
                     // keeping shapes and reprs in lock-step.
-                    if let Some(&repr) = self.reprs.get(&id) {
+                    if let Some(&repr) = reprs.get(&id) {
                         warm_reprs.insert(id, repr);
                     }
                 }
@@ -4131,7 +4176,7 @@ impl WarmStartable for OcctKernel {
             OcctWarmState {
                 shapes: warm_shapes,
                 reprs: warm_reprs,
-                next_id: self.next_id,
+                next_id: *next_id,
             },
             size_estimate,
         ))
@@ -4161,6 +4206,15 @@ impl WarmStartable for OcctKernel {
         }
         // Atomic swap: only replace kernel state if at least one shape was
         // successfully deserialized. Otherwise the kernel state is untouched.
+        //
+        // Coverage boundary: the INV-GEO-3 exhaustive-destructure drift guard
+        // below only fires on this swap-occurs path. A future field that must
+        // be cleared even on the no-op (total-failure) branch is NOT caught
+        // by that guard — it would need its own explicit handling above this
+        // `if`, plus a behavioral pin (see
+        // `with_warm_state_total_failure_preserves_dirty_state_and_provenance`,
+        // which asserts the no-op path leaves every current field, including
+        // `parent_handle`, untouched on a dirty kernel).
         if !staged.is_empty() {
             // Rebuild repr map: for every successfully staged id, take the
             // persisted repr if present, falling back to BRepKind::Solid
@@ -4179,15 +4233,36 @@ impl WarmStartable for OcctKernel {
                 let repr = warm.reprs.get(&id).copied().unwrap_or(BRepKind::Solid);
                 new_reprs.insert(id, repr);
             }
-            self.shapes = staged;
-            self.reprs = new_reprs;
-            self.next_id = warm.next_id;
-            // Wholesale shape replacement invalidates any cached parent →
-            // children mapping (the cached child ids may not correspond to
-            // any face/edge/vertex of the freshly-restored parent shapes).
-            self.extracted_edges.clear();
-            self.extracted_faces.clear();
-            self.extracted_vertices.clear();
+            // INV-GEO-3 state-inventory guard: this exhaustive destructure (no
+            // `..` spread) forces every OcctKernel field to be classified here
+            // as PERSIST (overwritten from the restored state) or CLEAR-on-restore
+            // (derived/cached provenance invalidated by the wholesale shape
+            // swap). Adding a new field to OcctKernel without extending this
+            // pattern is a hard compile error (E0027), so the consumer-side
+            // clear/rebuild decision can't be silently skipped.
+            let Self {
+                shapes,
+                reprs,
+                next_id,
+                extracted_edges,
+                extracted_faces,
+                extracted_vertices,
+                parent_handle,
+                last_warm_start_failures: _, // finalized above; not part of the swap
+            } = self;
+            // PERSIST: overwritten wholesale from the restored warm state.
+            *shapes = staged;
+            *reprs = new_reprs;
+            *next_id = warm.next_id;
+            // CLEAR-on-restore: derived provenance/idempotency caches keyed to
+            // the pre-restore shape table. Cached child ids may not correspond
+            // to any face/edge/vertex of the freshly-restored shapes, and
+            // parent_handle's child → parent entries are likewise stale
+            // (rebuilt on demand by a later extract_edges/faces/vertices call).
+            extracted_edges.clear();
+            extracted_faces.clear();
+            extracted_vertices.clear();
+            parent_handle.clear();
         }
     }
 }
@@ -4683,6 +4758,18 @@ mod tests {
         entries
     }
 
+    /// Capture `from`'s warm state and restore it into `into` — which may be
+    /// a freshly constructed kernel or one that already has its own state
+    /// (a "dirty" consumer) — returning the restored kernel. Shared by the
+    /// warm-start round-trip tests so each test body leads with its distinct
+    /// scenario setup and assertions instead of repeating the
+    /// capture/restore boilerplate.
+    fn warm_restore(from: &OcctKernel, mut into: OcctKernel) -> OcctKernel {
+        let state = from.warm_state().expect("kernel should have warm state");
+        into.with_warm_state(state);
+        into
+    }
+
     /// RED step-1 (task 4999): `GeometryOp::Surface` is a Mesh-repr terminal
     /// anchor fed by a Voxel→Mesh conversion edge (PRD
     /// docs/prds/v0_3/voxel-to-mesh-surfacing.md C-1) — it must never reach
@@ -4890,11 +4977,7 @@ mod tests {
         );
 
         // 4. Round-trip.
-        let state = kernel_a
-            .warm_state()
-            .expect("kernel should have warm state");
-        let mut kernel_b = OcctKernel::new();
-        kernel_b.with_warm_state(state);
+        let kernel_b = warm_restore(&kernel_a, OcctKernel::new());
 
         // 5. Post-warm: face handle must still report BRepKind::Face (the regression).
         assert_eq!(
@@ -4915,6 +4998,286 @@ mod tests {
             kernel_b.repr_of(GeometryHandleId(99999)),
             None,
             "repr_of for unknown id should return None"
+        );
+    }
+
+    #[test]
+    fn owner_body_survives_warm_start() {
+        // Kernel A: a lone box; its warm state will be restored into a
+        // *dirty* kernel B below.
+        let mut kernel_a = OcctKernel::new();
+        kernel_a
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+
+        // Kernel B: dirty consumer. It already has extraction provenance
+        // (parent_handle entries) from its own cylinder before the restore.
+        let mut kernel_b = OcctKernel::new();
+        kernel_b
+            .execute(&GeometryOp::Cylinder {
+                radius: Value::Real(5.0),
+                height: Value::Real(20.0),
+            })
+            .unwrap();
+        let cyl_faces = kernel_b
+            .extract_faces(GeometryHandleId(1))
+            .expect("extract_faces on the cylinder should succeed");
+        assert!(
+            !cyl_faces.is_empty(),
+            "cylinder extraction should yield at least one face to seed a stale parent_handle entry"
+        );
+        // Secondary sanity check, not load-bearing for the regression this
+        // test targets below: a cylinder has 3 faces (two caps + the
+        // lateral surface). An OCCT-version/topology change would fail
+        // this without indicating a provenance-clearing regression.
+        assert_eq!(
+            cyl_faces.len(),
+            3,
+            "sanity check: a cylinder has 3 faces (two caps + the lateral surface)"
+        );
+
+        // Also seed extracted_edges/extracted_vertices provenance on the same
+        // dirty kernel_b — not just extracted_faces. with_warm_state clears
+        // all three extraction caches independently (see its exhaustive
+        // destructure), so a hypothetical regression that cleared
+        // extracted_faces on restore but forgot one of its sister caches
+        // would not be caught behaviorally without this. See the
+        // `edges != cyl_edges` / `verts != cyl_verts` re-extraction checks
+        // below, mirroring `faces != cyl_faces`.
+        let cyl_edges = kernel_b
+            .extract_edges(GeometryHandleId(1))
+            .expect("extract_edges on the cylinder should succeed");
+        assert!(
+            !cyl_edges.is_empty(),
+            "cylinder extraction should yield at least one edge to seed a stale extracted_edges cache entry"
+        );
+        let cyl_verts = kernel_b
+            .extract_vertices(GeometryHandleId(1))
+            .expect("extract_vertices on the cylinder should succeed");
+        assert!(
+            !cyl_verts.is_empty(),
+            "cylinder extraction should yield at least one vertex to seed a stale extracted_vertices cache entry"
+        );
+        let stale_child = cyl_faces[0];
+
+        // Precondition: before the restore, OwnerBody correctly resolves the
+        // cylinder face back to its parent (handle 1).
+        assert_eq!(
+            kernel_b
+                .query(&GeometryQuery::OwnerBody(stale_child))
+                .unwrap(),
+            Value::Int(1),
+            "precondition: stale_child should resolve to its cylinder parent before warm-start"
+        );
+
+        // Warm-start kernel B with kernel A's box-only state (shapes={1},
+        // next_id=2). This wholesale-swaps kernel B's shape table out from
+        // under its stale parent_handle entries.
+        let mut kernel_b = warm_restore(&kernel_a, kernel_b);
+
+        // RED on current main: parent_handle is never cleared by
+        // with_warm_state, so OwnerBody(stale_child) still resolves to
+        // Value::Int(1) — WRONG, because stale_child no longer corresponds
+        // to any sub-shape of the freshly-restored box. After the fix, the
+        // stale entry is cleared and this query correctly reports
+        // QueryFailed.
+        let post_restore = kernel_b.query(&GeometryQuery::OwnerBody(stale_child));
+        assert!(
+            matches!(post_restore, Err(QueryError::QueryFailed(_))),
+            "stale parent_handle must be cleared on warm-start; got {:?}",
+            post_restore
+        );
+
+        // PERSIST path: reprs must be restored from kernel_a's state. Handle
+        // 1 now names kernel_a's box (kernel_b's own cylinder used the same
+        // id before the wholesale swap), so repr_of(1) must report the
+        // restored box's BRepKind, not a stale leftover.
+        assert_eq!(
+            kernel_b.repr_of(GeometryHandleId(1)),
+            Some(BRepKind::Solid),
+            "post-restore: handle 1 should report the restored box's BRepKind::Solid"
+        );
+
+        // PERSIST path: next_id must come from kernel_a's state (2, after
+        // minting one handle) — not kernel_b's own dirty next_id, which the
+        // cylinder + extract_faces above already advanced past kernel_a's.
+        // This dirty-consumer setup is the only round-trip test where
+        // kernel_b's pre-restore next_id exceeds kernel_a's, so it is the
+        // one place a "keep the larger of the two" merge regression (instead
+        // of an overwrite) would actually surface.
+        let minted = kernel_b
+            .execute(&GeometryOp::Sphere {
+                radius: Value::Real(1.0),
+            })
+            .unwrap();
+        assert_eq!(
+            minted.id,
+            GeometryHandleId(2),
+            "next_id should be restored from kernel_a's warm state, not kernel_b's dirty pre-restore value"
+        );
+
+        // Re-extraction on the restored (box) shape correctly rebuilds
+        // provenance. If extracted_faces had not been cleared on restore,
+        // this call would hit the idempotency cache under parent id 1 and
+        // return the stale 3-entry cylinder-face list verbatim instead of
+        // re-extracting — so the assert_ne! below (faces != cyl_faces)
+        // already proves the cache was cleared, independent of the box's
+        // exact face count (which OCCT-version/topology drift could
+        // otherwise change without indicating this regression).
+        //
+        // Note: the returned ids are deliberately *not* asserted disjoint
+        // from `cyl_faces`. next_id is restored wholesale from kernel_a's
+        // state (asserted above) rather than merged/maxed against kernel_b's
+        // dirty pre-restore counter, and this test mints a sphere in
+        // between — so numeric id reuse across the warm-start boundary
+        // (e.g. a new box face landing on the same integer as an old
+        // cylinder face) is an expected consequence of that design, not a
+        // staleness bug. The correctness guarantee under test is that every
+        // *current* handle resolves correctly (see the OwnerBody loop
+        // below), not that ids stay globally unique across a kernel's
+        // lifetime.
+        let faces = kernel_b
+            .extract_faces(GeometryHandleId(1))
+            .expect("extract_faces on the restored box should succeed");
+        assert_ne!(
+            faces, cyl_faces,
+            "re-extraction after warm-start restore returned the stale cached \
+             cylinder-face list verbatim — extracted_faces was not cleared on restore"
+        );
+        assert!(
+            !faces.is_empty(),
+            "re-extraction after warm-start restore should yield at least one face"
+        );
+
+        for face in &faces {
+            assert_eq!(
+                kernel_b.query(&GeometryQuery::OwnerBody(*face)).unwrap(),
+                Value::Int(1),
+                "post-restore re-extraction should rebuild provenance correctly for {face:?}"
+            );
+        }
+
+        // Secondary sanity check, not the regression this test targets: a
+        // box has 6 faces. If this fails while the assertions above pass,
+        // it points to an OCCT-version/topology change, not a cache-clear
+        // regression.
+        assert_eq!(faces.len(), 6, "sanity check: a box has 6 faces");
+
+        // Mirror the extracted_faces regression check above for
+        // extracted_edges: this is a defense-in-depth gap the exhaustive-
+        // destructure type guard alone does not close, since it enforces
+        // that every field is *classified* but not that a CLEAR-on-restore
+        // field is cleared at the *correct* call site. (Same id-reuse
+        // caveat as `faces` above applies: `edges` is not asserted disjoint
+        // from `cyl_edges`, only unequal as a whole — see the note above.)
+        let edges = kernel_b
+            .extract_edges(GeometryHandleId(1))
+            .expect("extract_edges on the restored box should succeed");
+        assert_ne!(
+            edges, cyl_edges,
+            "re-extraction after warm-start restore returned the stale cached \
+             cylinder-edge list verbatim — extracted_edges was not cleared on restore"
+        );
+        assert!(
+            !edges.is_empty(),
+            "re-extraction after warm-start restore should yield at least one edge"
+        );
+        for edge in &edges {
+            assert_eq!(
+                kernel_b.query(&GeometryQuery::OwnerBody(*edge)).unwrap(),
+                Value::Int(1),
+                "post-restore re-extraction should rebuild edge provenance correctly for {edge:?}"
+            );
+        }
+        // Secondary sanity check, not the regression this test targets: a
+        // (rectangular) box has 12 edges.
+        assert_eq!(edges.len(), 12, "sanity check: a box has 12 edges");
+
+        // Mirror the same check for extracted_vertices.
+        let verts = kernel_b
+            .extract_vertices(GeometryHandleId(1))
+            .expect("extract_vertices on the restored box should succeed");
+        assert_ne!(
+            verts, cyl_verts,
+            "re-extraction after warm-start restore returned the stale cached \
+             cylinder-vertex list verbatim — extracted_vertices was not cleared on restore"
+        );
+        assert!(
+            !verts.is_empty(),
+            "re-extraction after warm-start restore should yield at least one vertex"
+        );
+        for vertex in &verts {
+            assert_eq!(
+                kernel_b.query(&GeometryQuery::OwnerBody(*vertex)).unwrap(),
+                Value::Int(1),
+                "post-restore re-extraction should rebuild vertex provenance correctly for {vertex:?}"
+            );
+        }
+        // Secondary sanity check, not the regression this test targets: a
+        // box has 8 vertices.
+        assert_eq!(verts.len(), 8, "sanity check: a box has 8 vertices");
+    }
+
+    #[test]
+    fn warm_state_producer_does_not_serialize_extraction_provenance() {
+        // Kernel A extracts its own box's faces, populating parent_handle
+        // (child face id -> parent box id) before any warm-state round-trip.
+        let mut kernel_a = OcctKernel::new();
+        kernel_a
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+        let faces_a = kernel_a
+            .extract_faces(GeometryHandleId(1))
+            .expect("extract_faces on the box should succeed");
+        assert!(
+            !faces_a.is_empty(),
+            "box extraction should yield at least one face"
+        );
+
+        // Precondition: kernel_a resolves its own freshly-extracted face's
+        // owner correctly, pre-restore.
+        assert_eq!(
+            kernel_a
+                .query(&GeometryQuery::OwnerBody(faces_a[0]))
+                .unwrap(),
+            Value::Int(1),
+            "precondition: kernel_a should resolve its own extracted face's owner"
+        );
+
+        // Restore kernel_a's warm state into a FRESH kernel_b — no dirty
+        // pre-existing provenance of its own, so a `parent_handle.clear()`
+        // on the consumer side would be a no-op regardless. This isolates
+        // the *producer* half of the persist/clear classification: it
+        // proves `warm_state()` never serialized kernel_a's parent_handle
+        // entries into `OcctWarmState` at all, independent of whether the
+        // consumer clears on restore (that consumer-side behavior is
+        // covered separately by `owner_body_survives_warm_start`, which
+        // uses a *dirty* consumer to get a RED-on-main signal).
+        let kernel_b = warm_restore(&kernel_a, OcctKernel::new());
+
+        // faces_a[0]'s underlying shape blob round-trips into kernel_b's
+        // shape table verbatim (extracted sub-shapes are ordinary entries in
+        // `shapes`/`reprs`, PERSIST-classified like any other handle) — but
+        // its provenance link must not have survived. If `warm_state()` ever
+        // starts serializing `parent_handle`, this fresh kernel_b would
+        // silently resolve the owner "correctly" (there is no stale state
+        // here to expose the bug the way a dirty consumer would), so this
+        // assertion is the only thing pinning the "derived, not persisted"
+        // half of the classification.
+        let result = kernel_b.query(&GeometryQuery::OwnerBody(faces_a[0]));
+        assert!(
+            matches!(result, Err(QueryError::QueryFailed(_))),
+            "warm_state() must not serialize extraction provenance \
+             (parent_handle); got {:?}",
+            result
         );
     }
 
@@ -5101,6 +5464,89 @@ mod tests {
     }
 
     #[test]
+    fn with_warm_state_total_failure_preserves_dirty_state_and_provenance() {
+        // Dirty consumer: box + cylinder, with extraction provenance already
+        // populated (parent_handle non-empty) before the restore attempt.
+        let mut kernel = OcctKernel::new();
+        kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+        kernel
+            .execute(&GeometryOp::Cylinder {
+                radius: Value::Real(5.0),
+                height: Value::Real(20.0),
+            })
+            .unwrap();
+        let cyl_faces = kernel
+            .extract_faces(GeometryHandleId(2))
+            .expect("extract_faces on the cylinder should succeed");
+
+        // Snapshot every field the atomic-swap guard in `with_warm_state` is
+        // responsible for leaving untouched when every incoming shape fails
+        // to deserialize (the `staged.is_empty()` no-op path) — the exact
+        // opposite of the clear-on-successful-restore behavior this PR
+        // establishes for the swap-occurs path, so it needs its own pin.
+        let shape_ids_before: std::collections::HashSet<u64> =
+            kernel.shapes.keys().copied().collect();
+        let reprs_before = kernel.reprs.clone();
+        let next_id_before = kernel.next_id;
+        let parent_handle_before = kernel.parent_handle.clone();
+
+        // Construct a warm state with only undeserializable shape blobs.
+        let mut corrupted_shapes = HashMap::new();
+        corrupted_shapes.insert(1, "INVALID_BREP_DATA".to_string());
+        corrupted_shapes.insert(2, "ALSO_GARBAGE".to_string());
+        let corrupted_warm = OcctWarmState {
+            shapes: corrupted_shapes,
+            reprs: HashMap::new(),
+            next_id: 999,
+        };
+        kernel.with_warm_state(OpaqueState::new(corrupted_warm, 64));
+
+        // Nothing should have changed: staged ends up empty, so the atomic
+        // swap — and the parent_handle/extracted_* clears that ride along
+        // with it — must not run at all.
+        let shape_ids_after: std::collections::HashSet<u64> =
+            kernel.shapes.keys().copied().collect();
+        assert_eq!(
+            shape_ids_after, shape_ids_before,
+            "shapes must be untouched when every entry fails to deserialize"
+        );
+        assert_eq!(
+            kernel.reprs, reprs_before,
+            "reprs must be untouched when every entry fails to deserialize"
+        );
+        assert_eq!(
+            kernel.next_id, next_id_before,
+            "next_id must be untouched when every entry fails to deserialize"
+        );
+        assert_eq!(
+            kernel.parent_handle, parent_handle_before,
+            "parent_handle provenance must survive a fully-failed warm-start restore \
+             untouched, not just a successful one — the no-op path must not clear it"
+        );
+        assert_eq!(
+            kernel.warm_start_failures(),
+            2,
+            "both corrupt entries should be counted even though the swap was skipped"
+        );
+
+        // And the provenance is still live end-to-end: OwnerBody for a
+        // pre-existing cylinder face still resolves correctly post-no-op.
+        assert_eq!(
+            kernel
+                .query(&GeometryQuery::OwnerBody(cyl_faces[0]))
+                .unwrap(),
+            Value::Int(2),
+            "provenance should remain queryable after a fully-failed warm-start restore"
+        );
+    }
+
+    #[test]
     fn with_warm_state_partial_deserialization_replaces_state() {
         // Create a helper kernel to get a valid cylinder BRep string
         let mut helper = OcctKernel::new();
@@ -5139,6 +5585,28 @@ mod tests {
             other => panic!("expected Real, got {:?}", other),
         }
 
+        // Seed a stale parent_handle entry, mirroring
+        // `owner_body_survives_warm_start`, so this PARTIAL-deserialization
+        // restore (some shapes fail, `staged` non-empty) is pinned to clear
+        // parent_handle too — not just the full-swap (all-shapes-succeed)
+        // path that test covers.
+        let box_faces = kernel
+            .extract_faces(GeometryHandleId(1))
+            .expect("extract_faces on the box should succeed");
+        assert!(
+            !box_faces.is_empty(),
+            "box extraction should yield at least one face to seed a stale parent_handle entry"
+        );
+        let stale_child = box_faces[0];
+
+        // Precondition: before the restore, OwnerBody correctly resolves the
+        // box face back to its parent (handle 1).
+        assert_eq!(
+            kernel.query(&GeometryQuery::OwnerBody(stale_child)).unwrap(),
+            Value::Int(1),
+            "precondition: stale_child should resolve to its box parent before warm-start"
+        );
+
         // Construct partially-corrupted warm state:
         // handle 1 = valid cylinder BRep, handle 2 = corrupt data
         let mut partial_shapes = HashMap::new();
@@ -5153,6 +5621,21 @@ mod tests {
 
         // Apply partially-corrupted warm state
         kernel.with_warm_state(partial_state);
+
+        // parent_handle must be cleared even on a PARTIAL-deserialization
+        // restore — the clear rides along the same `if !staged.is_empty()`
+        // branch as the full-swap path pinned by
+        // `owner_body_survives_warm_start`. stale_child's underlying shape
+        // (an old box face) is gone regardless post-swap, but OwnerBody
+        // looks up `parent_handle` directly (see the query handler), so
+        // this assertion is the only thing pinning that the map itself —
+        // not just the shape table — was cleared on this branch.
+        let post_restore = kernel.query(&GeometryQuery::OwnerBody(stale_child));
+        assert!(
+            matches!(post_restore, Err(QueryError::QueryFailed(_))),
+            "stale parent_handle must be cleared on a partial warm-start restore too; got {:?}",
+            post_restore
+        );
 
         // Handle 1 should now be a cylinder (not a box)
         let vol_after = kernel
