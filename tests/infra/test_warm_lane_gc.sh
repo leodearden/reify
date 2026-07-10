@@ -21,6 +21,8 @@
 #   E — preserve unlanded ahead-of-main commits
 #   F — preserve a lane with a live-consumer lock
 #   G — combined PRD δ signal: all five fixtures + protect-glob + summary line
+#   I — Tier-3 terminal-task reclaim: attached task/NNNN branch, status-oracle
+#       seam (--status-cmd / REIFY_LANE_LEAK_STATUS_CMD fallback) (task 5167)
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -688,5 +690,247 @@ run_helper reclaim \
 
 assert "H6: explicit --base-target overrides --mount derived base (uses alt gen.99)" \
     bash -c 'grep -q "target.gen.99" "$1"' _ "$H6_SEED_LOG"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block I — Tier-3 terminal-task reclaim (attached task/NNNN branch)
+# A FREE lane whose backing task/NNNN is terminal (done|cancelled) is
+# reclaimable REGARDLESS of ahead-of-main (rebase-orphan tip) — closing the
+# 2026-07-10 ENOSPC leak (task 5167). Each sub-case gets its own repo/
+# worktrees/base under a shared I_ROOT.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block I: Tier-3 terminal-task reclaim (attached branch) ---"
+
+I_ROOT="$(mktemp -d /tmp/test-gc-i-XXXXXX)"
+_TMPDIRS+=("$I_ROOT")
+
+_seed_stub_body() {
+    cat << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$SEED_LOG"
+LANE_DIR="$2"
+rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
+exit 0
+STUB_EOF
+}
+
+# ── I1: done-task, ahead-of-main (rebase-orphan) lane IS reclaimed ─────────────
+I1_REPO="$I_ROOT/i1-repo"
+I1_WORKTREES="$I_ROOT/i1-worktrees"
+I1_BASE="$I_ROOT/i1-base"
+mkdir -p "$I1_WORKTREES" "$I1_BASE"
+make_repo "$I1_REPO"
+mkdir -p "$I1_BASE/target.gen.1"
+touch "$I1_BASE/target.gen.1.lock"
+ln -sfn "$I1_BASE/target.gen.1" "$I1_BASE/target"
+
+make_task_lane "$I1_REPO" "$I1_WORKTREES" "_lane-1" "task/4827" "ahead"
+
+I1_MAP="$(mktemp /tmp/test-gc-oracle-map-XXXXXX)"
+_TMPDIRS+=("$I1_MAP")
+printf '4827 done\n' > "$I1_MAP"
+
+I1_SEED_LOG="$I_ROOT/i1-seed-calls.log"
+I1_SEED_STUB="$I_ROOT/i1-seed-stub.sh"
+_seed_stub_body > "$I1_SEED_STUB"
+chmod +x "$I1_SEED_STUB"
+export SEED_LOG="$I1_SEED_LOG"
+export ORACLE_MAP="$I1_MAP"
+
+run_helper reclaim \
+    --worktrees-dir "$I1_WORKTREES" \
+    --base-target "$I1_BASE/target" \
+    --seed-script "$I1_SEED_STUB" \
+    --status-cmd "$STUB_DIR/gc-status-oracle.sh"
+
+assert "I1: exit 0" test "$RC" -eq 0
+assert "I1: done-task ahead-of-main lane seed-script invoked (reclaimed)" \
+    bash -c 'test -f "$1" && grep -q "_lane-1" "$1"' _ "$I1_SEED_LOG"
+assert "I1: divergent target marker removed" \
+    bash -c '[ ! -f "$1" ]' _ "$I1_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
+
+# ── I2: cancelled-task, ahead-of-main lane IS reclaimed ────────────────────────
+I2_REPO="$I_ROOT/i2-repo"
+I2_WORKTREES="$I_ROOT/i2-worktrees"
+I2_BASE="$I_ROOT/i2-base"
+mkdir -p "$I2_WORKTREES" "$I2_BASE"
+make_repo "$I2_REPO"
+mkdir -p "$I2_BASE/target.gen.1"
+touch "$I2_BASE/target.gen.1.lock"
+ln -sfn "$I2_BASE/target.gen.1" "$I2_BASE/target"
+
+make_task_lane "$I2_REPO" "$I2_WORKTREES" "_lane-1" "task/5033" "ahead"
+
+I2_MAP="$(mktemp /tmp/test-gc-oracle-map-XXXXXX)"
+_TMPDIRS+=("$I2_MAP")
+printf '5033 cancelled\n' > "$I2_MAP"
+
+I2_SEED_LOG="$I_ROOT/i2-seed-calls.log"
+I2_SEED_STUB="$I_ROOT/i2-seed-stub.sh"
+_seed_stub_body > "$I2_SEED_STUB"
+chmod +x "$I2_SEED_STUB"
+export SEED_LOG="$I2_SEED_LOG"
+export ORACLE_MAP="$I2_MAP"
+
+run_helper reclaim \
+    --worktrees-dir "$I2_WORKTREES" \
+    --base-target "$I2_BASE/target" \
+    --seed-script "$I2_SEED_STUB" \
+    --status-cmd "$STUB_DIR/gc-status-oracle.sh"
+
+assert "I2: exit 0" test "$RC" -eq 0
+assert "I2: cancelled-task ahead-of-main lane seed-script invoked (reclaimed)" \
+    bash -c 'test -f "$1" && grep -q "_lane-1" "$1"' _ "$I2_SEED_LOG"
+assert "I2: divergent target marker removed" \
+    bash -c '[ ! -f "$1" ]' _ "$I2_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
+
+# ── I3: non-terminal (pending), ahead-of-main lane is PRESERVED ────────────────
+I3_REPO="$I_ROOT/i3-repo"
+I3_WORKTREES="$I_ROOT/i3-worktrees"
+I3_BASE="$I_ROOT/i3-base"
+mkdir -p "$I3_WORKTREES" "$I3_BASE"
+make_repo "$I3_REPO"
+mkdir -p "$I3_BASE/target.gen.1"
+touch "$I3_BASE/target.gen.1.lock"
+ln -sfn "$I3_BASE/target.gen.1" "$I3_BASE/target"
+
+make_task_lane "$I3_REPO" "$I3_WORKTREES" "_lane-1" "task/9001" "ahead"
+
+I3_MAP="$(mktemp /tmp/test-gc-oracle-map-XXXXXX)"
+_TMPDIRS+=("$I3_MAP")
+printf '9001 pending\n' > "$I3_MAP"
+
+I3_SEED_LOG="$I_ROOT/i3-seed-calls.log"
+I3_SEED_STUB="$I_ROOT/i3-seed-stub.sh"
+_seed_stub_body > "$I3_SEED_STUB"
+chmod +x "$I3_SEED_STUB"
+export SEED_LOG="$I3_SEED_LOG"
+export ORACLE_MAP="$I3_MAP"
+
+run_helper reclaim \
+    --worktrees-dir "$I3_WORKTREES" \
+    --base-target "$I3_BASE/target" \
+    --seed-script "$I3_SEED_STUB" \
+    --status-cmd "$STUB_DIR/gc-status-oracle.sh"
+
+assert "I3: exit 0" test "$RC" -eq 0
+assert "I3: non-terminal ahead-of-main lane seed-script NOT invoked (preserved)" \
+    bash -c '[ ! -f "$1" ] || ! grep -q "_lane-1" "$1"' _ "$I3_SEED_LOG"
+assert "I3: non-terminal lane divergent marker intact" \
+    test -f "$I3_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
+assert "I3: stderr names ahead-of-main preservation" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "unlanded|ahead|preserving"' _ "$ERR_OUT"
+
+# ── I4: oracle-failure lane is PRESERVED; script still exits 0 ─────────────────
+I4_REPO="$I_ROOT/i4-repo"
+I4_WORKTREES="$I_ROOT/i4-worktrees"
+I4_BASE="$I_ROOT/i4-base"
+mkdir -p "$I4_WORKTREES" "$I4_BASE"
+make_repo "$I4_REPO"
+mkdir -p "$I4_BASE/target.gen.1"
+touch "$I4_BASE/target.gen.1.lock"
+ln -sfn "$I4_BASE/target.gen.1" "$I4_BASE/target"
+
+make_task_lane "$I4_REPO" "$I4_WORKTREES" "_lane-1" "task/6000" "ahead"
+
+I4_SEED_LOG="$I_ROOT/i4-seed-calls.log"
+I4_SEED_STUB="$I_ROOT/i4-seed-stub.sh"
+_seed_stub_body > "$I4_SEED_STUB"
+chmod +x "$I4_SEED_STUB"
+export SEED_LOG="$I4_SEED_LOG"
+
+run_helper reclaim \
+    --worktrees-dir "$I4_WORKTREES" \
+    --base-target "$I4_BASE/target" \
+    --seed-script "$I4_SEED_STUB" \
+    --status-cmd "$STUB_DIR/gc-status-oracle-fail.sh"
+
+assert "I4: exit 0 (fail-oracle does not abort the sweep)" test "$RC" -eq 0
+assert "I4: fail-oracle lane seed-script NOT invoked (unknown=non-terminal, preserved)" \
+    bash -c '[ ! -f "$1" ] || ! grep -q "_lane-1" "$1"' _ "$I4_SEED_LOG"
+assert "I4: fail-oracle lane divergent marker intact" \
+    test -f "$I4_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
+
+# ── I5: env fallback — REIFY_LANE_LEAK_STATUS_CMD with NO --status-cmd flag ────
+I5_REPO="$I_ROOT/i5-repo"
+I5_WORKTREES="$I_ROOT/i5-worktrees"
+I5_BASE="$I_ROOT/i5-base"
+mkdir -p "$I5_WORKTREES" "$I5_BASE"
+make_repo "$I5_REPO"
+mkdir -p "$I5_BASE/target.gen.1"
+touch "$I5_BASE/target.gen.1.lock"
+ln -sfn "$I5_BASE/target.gen.1" "$I5_BASE/target"
+
+make_task_lane "$I5_REPO" "$I5_WORKTREES" "_lane-1" "task/4827" "ahead"
+
+I5_MAP="$(mktemp /tmp/test-gc-oracle-map-XXXXXX)"
+_TMPDIRS+=("$I5_MAP")
+printf '4827 done\n' > "$I5_MAP"
+
+I5_SEED_LOG="$I_ROOT/i5-seed-calls.log"
+I5_SEED_STUB="$I_ROOT/i5-seed-stub.sh"
+_seed_stub_body > "$I5_SEED_STUB"
+chmod +x "$I5_SEED_STUB"
+export SEED_LOG="$I5_SEED_LOG"
+
+ORACLE_MAP="$I5_MAP" REIFY_LANE_LEAK_STATUS_CMD="$STUB_DIR/gc-status-oracle.sh" \
+    run_helper reclaim \
+        --worktrees-dir "$I5_WORKTREES" \
+        --base-target "$I5_BASE/target" \
+        --seed-script "$I5_SEED_STUB"
+
+assert "I5: exit 0" test "$RC" -eq 0
+assert "I5: env-fallback done-task lane seed-script invoked (reclaimed)" \
+    bash -c 'test -f "$1" && grep -q "_lane-1" "$1"' _ "$I5_SEED_LOG"
+assert "I5: env-fallback divergent target marker removed" \
+    bash -c '[ ! -f "$1" ]' _ "$I5_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
+
+# ── I6: live-consumer flock on a done-task lane is STILL preserved ─────────────
+I6_REPO="$I_ROOT/i6-repo"
+I6_WORKTREES="$I_ROOT/i6-worktrees"
+I6_BASE="$I_ROOT/i6-base"
+mkdir -p "$I6_WORKTREES" "$I6_BASE"
+make_repo "$I6_REPO"
+mkdir -p "$I6_BASE/target.gen.1"
+touch "$I6_BASE/target.gen.1.lock"
+ln -sfn "$I6_BASE/target.gen.1" "$I6_BASE/target"
+
+make_task_lane "$I6_REPO" "$I6_WORKTREES" "_lane-1" "task/4827" "ahead"
+
+I6_MAP="$(mktemp /tmp/test-gc-oracle-map-XXXXXX)"
+_TMPDIRS+=("$I6_MAP")
+printf '4827 done\n' > "$I6_MAP"
+
+# Hold the lane's exclusive flock in the background (live consumer).
+touch "$I6_WORKTREES/_lane-1.lock"
+( flock -x 9 && sleep 300 ) 9>"$I6_WORKTREES/_lane-1.lock" &
+I6_LOCK_PID=$!
+_BGPIDS+=("$I6_LOCK_PID")
+sleep 0.1
+
+I6_SEED_LOG="$I_ROOT/i6-seed-calls.log"
+I6_SEED_STUB="$I_ROOT/i6-seed-stub.sh"
+_seed_stub_body > "$I6_SEED_STUB"
+chmod +x "$I6_SEED_STUB"
+export SEED_LOG="$I6_SEED_LOG"
+export ORACLE_MAP="$I6_MAP"
+
+run_helper reclaim \
+    --worktrees-dir "$I6_WORKTREES" \
+    --base-target "$I6_BASE/target" \
+    --seed-script "$I6_SEED_STUB" \
+    --status-cmd "$STUB_DIR/gc-status-oracle.sh"
+
+assert "I6: exit 0" test "$RC" -eq 0
+assert "I6: live-consumer done-task lane seed-script NOT invoked (flock wins)" \
+    bash -c '[ ! -f "$1" ] || ! grep -q "_lane-1" "$1"' _ "$I6_SEED_LOG"
+assert "I6: live-consumer lane divergent marker intact" \
+    test -f "$I6_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
+assert "I6: stderr mentions live consumer preservation" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "live.consumer|locked|preserving|consumer"' _ "$ERR_OUT"
+
+# Release the lock
+kill "$I6_LOCK_PID" 2>/dev/null || true
+_BGPIDS=()  # clear so cleanup doesn't double-kill
 
 test_summary
