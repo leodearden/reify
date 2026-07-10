@@ -608,3 +608,86 @@ fn plain_param_in_port_compiles_to_visibility_public() {
         vis_cell.visibility
     );
 }
+
+/// `GuardHost` exercises `priv param` inside a BLOCK-form `where cond { }`
+/// guarded block, covering both value-cell branches (plain Param and
+/// auto-form), plus a non-priv sibling member to guard against a naive
+/// Visibility::Private hardcode. Uses the block form (not the per-decl
+/// `param x where cond`, which already routes through the correct
+/// entity.rs structure-body site via compile_per_decl_guard).
+fn guard_host_source() -> &'static str {
+    r#"
+structure def GuardHost {
+    param active : Bool = true
+    where active {
+        priv param g : Length = 5mm
+        priv param h : Length = auto
+        param vis : Length = 5mm
+    }
+}
+"#
+}
+
+/// `priv param g` inside a block-form `where active { }` (Param-kind value
+/// cell) must lower to `Visibility::Private`.
+#[test]
+fn priv_param_in_guarded_block_compiles_to_visibility_private() {
+    let module = compile_source(guard_host_source());
+    let template = find_template(&module, "GuardHost");
+
+    let g_cell = template.guarded_groups[0]
+        .members
+        .iter()
+        .find(|vc| vc.id.member == "g" && vc.kind == ValueCellKind::Param)
+        .expect("value cell 'g' (Param kind) not found in GuardHost guarded_groups[0]");
+
+    assert_eq!(
+        g_cell.visibility,
+        Visibility::Private,
+        "priv param g inside where-block must compile to Visibility::Private, got {:?}",
+        g_cell.visibility
+    );
+}
+
+/// `priv param h = auto` inside a block-form `where active { }` (Auto-kind
+/// value cell) must lower to `Visibility::Private`.
+#[test]
+fn priv_auto_param_in_guarded_block_compiles_to_visibility_private() {
+    let module = compile_source(guard_host_source());
+    let template = find_template(&module, "GuardHost");
+
+    let h_cell = template.guarded_groups[0]
+        .members
+        .iter()
+        .find(|vc| vc.id.member == "h" && matches!(vc.kind, ValueCellKind::Auto { .. }))
+        .expect("value cell 'h' (Auto kind) not found in GuardHost guarded_groups[0]");
+
+    assert_eq!(
+        h_cell.visibility,
+        Visibility::Private,
+        "priv param h = auto inside where-block must compile to Visibility::Private, got {:?}",
+        h_cell.visibility
+    );
+}
+
+/// Plain `param vis` inside a block-form `where active { }` must stay
+/// `Visibility::Public` (no regression / guards against a naive
+/// Visibility::Private hardcode).
+#[test]
+fn plain_param_in_guarded_block_compiles_to_visibility_public() {
+    let module = compile_source(guard_host_source());
+    let template = find_template(&module, "GuardHost");
+
+    let vis_cell = template.guarded_groups[0]
+        .members
+        .iter()
+        .find(|vc| vc.id.member == "vis" && vc.kind == ValueCellKind::Param)
+        .expect("value cell 'vis' (Param kind) not found in GuardHost guarded_groups[0]");
+
+    assert_eq!(
+        vis_cell.visibility,
+        Visibility::Public,
+        "plain param vis inside where-block must compile to Visibility::Public, got {:?}",
+        vis_cell.visibility
+    );
+}
