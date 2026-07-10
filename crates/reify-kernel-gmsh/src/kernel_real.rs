@@ -570,7 +570,9 @@ mod tests {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum StateDisposition {
         Persist,
+        #[allow(dead_code)] // never constructed by gmsh; see doc comment above
         Clear,
+        #[allow(dead_code)] // never constructed by gmsh; see doc comment above
         Rebuild,
     }
 
@@ -637,16 +639,18 @@ mod tests {
     /// `gmsh_state_inventory` must classify EVERY per-handle side table
     /// reachable from `GmshKernel` — including the fields nested inside its
     /// `Mutex<VolumeMeshStore>` — via an exhaustive, no-wildcard struct
-    /// destructure at BOTH levels, so this test asserts:
-    /// (a) completeness — the returned names equal exactly
-    ///     `{"meshes", "next_id"}`, array length 2, no duplicates;
+    /// destructure at BOTH levels. The real drift protection is the
+    /// compile-time guard documented on `gmsh_state_inventory` itself
+    /// (E0027 on either struct level, `unused_variables` under `-D
+    /// warnings`, and the fixed-size return type) — an unclassified field
+    /// fails to compile before this test ever runs. This test asserts only
+    /// what the compiler cannot:
+    /// (a) the returned array has exactly 2 entries (a regression pin on
+    ///     the leaf count);
     /// (b) every field's disposition is `StateDisposition::Persist` — gmsh
     ///     has no `WarmStartable` impl / no warm-state swap, so nothing is
     ///     ever cleared or rebuilt (mirrors manifold's append-only
-    ///     reasoning);
-    /// (c) the full persist/clear/rebuild taxonomy vocabulary is
-    ///     constructible (`Clear`/`Rebuild` are unused by gmsh today but
-    ///     exist for parity with the occt/manifold state-inventory leaves).
+    ///     reasoning).
     ///
     /// Fails to compile until step-2 adds `StateDisposition`, `entry`, and
     /// `gmsh_state_inventory`.
@@ -657,15 +661,6 @@ mod tests {
 
         assert_eq!(inventory.len(), 2, "inventory must classify exactly 2 fields");
 
-        let mut names: Vec<&str> = inventory.iter().map(|(name, _)| *name).collect();
-        names.sort_unstable();
-        names.dedup();
-        assert_eq!(
-            names,
-            vec!["meshes", "next_id"],
-            "inventory must cover exactly VolumeMeshStore's 2 leaf fields, with no duplicates"
-        );
-
         for (name, disposition) in &inventory {
             assert_eq!(
                 *disposition,
@@ -674,12 +669,5 @@ mod tests {
                  / no warm-state swap to clear or rebuild against"
             );
         }
-
-        // Pin the shared persist/clear/rebuild taxonomy vocabulary once, even
-        // though gmsh classifies every field as `Persist`: `Clear` and
-        // `Rebuild` exist for parity with the occt/manifold state-inventory
-        // leaves.
-        let _taxonomy =
-            [StateDisposition::Persist, StateDisposition::Clear, StateDisposition::Rebuild];
     }
 }
