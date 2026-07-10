@@ -936,6 +936,50 @@ assert "I6: stderr mentions live consumer preservation" \
 kill "$I6_LOCK_PID" 2>/dev/null || true
 _BGPIDS=()  # clear so cleanup doesn't double-kill
 
+# ── I7: done-task lane with DIRTY tracked changes (uncommitted) IS reclaimed ───
+# The PRD claim is "regardless of ahead-of-main AND dirty tracked changes"
+# (warm-lane-gc.sh Tier-3 docstring); I1/I2/I5/I6 only ever exercise the
+# ahead-of-main dimension. This proves Tier-3 also overrides
+# _is_reclaimable's dirty-WIP check, not only its ahead-of-main check — a
+# lane that's on its task/NNNN branch tip (not ahead) but has an uncommitted
+# tracked-file edit.
+I7_REPO="$I_ROOT/i7-repo"
+I7_WORKTREES="$I_ROOT/i7-worktrees"
+I7_BASE="$I_ROOT/i7-base"
+mkdir -p "$I7_WORKTREES" "$I7_BASE"
+make_repo "$I7_REPO"
+mkdir -p "$I7_BASE/target.gen.1"
+touch "$I7_BASE/target.gen.1.lock"
+ln -sfn "$I7_BASE/target.gen.1" "$I7_BASE/target"
+
+make_task_lane "$I7_REPO" "$I7_WORKTREES" "_lane-1" "task/4827"
+# Dirty tracked change: modify README.md WITHOUT committing, so
+# `git status --porcelain --untracked-files=no` is non-empty.
+echo "dirty uncommitted change" >> "$I7_WORKTREES/_lane-1/README.md"
+
+I7_MAP="$(mktemp /tmp/test-gc-oracle-map-XXXXXX)"
+_TMPDIRS+=("$I7_MAP")
+printf '4827 done\n' > "$I7_MAP"
+
+I7_SEED_LOG="$I_ROOT/i7-seed-calls.log"
+I7_SEED_STUB="$I_ROOT/i7-seed-stub.sh"
+_seed_stub_body > "$I7_SEED_STUB"
+chmod +x "$I7_SEED_STUB"
+export SEED_LOG="$I7_SEED_LOG"
+export ORACLE_MAP="$I7_MAP"
+
+run_helper reclaim \
+    --worktrees-dir "$I7_WORKTREES" \
+    --base-target "$I7_BASE/target" \
+    --seed-script "$I7_SEED_STUB" \
+    --status-cmd "$STUB_DIR/gc-status-oracle.sh"
+
+assert "I7: exit 0" test "$RC" -eq 0
+assert "I7: dirty done-task lane seed-script invoked (reclaimed despite dirty tracked changes)" \
+    bash -c 'test -f "$1" && grep -q "_lane-1" "$1"' _ "$I7_SEED_LOG"
+assert "I7: divergent target marker removed" \
+    bash -c '[ ! -f "$1" ]' _ "$I7_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Block J — Tier-3 backing-task resolution for a detached HEAD lane
 # Proves the resolver both (J1) resolves a detached HEAD to its containing
@@ -1025,6 +1069,53 @@ assert "J2: no-task-branch detached lane seed-script invoked (reclaimed via exis
 assert "J2: divergent target marker removed" \
     bash -c '[ ! -f "$1" ]' _ "$J2_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
 
+# ── J3: detached HEAD reachable from TWO task/* branches — ambiguous, no over-match ─
+# Proves the exactly-one-match guard in _backing_task_id (ids array length
+# check): when two task/* branches both contain HEAD, the resolver must
+# yield NO id — not silently pick one — even though one of the two
+# candidate ids maps to a terminal status in the oracle. The lane must fall
+# through to the existing ahead-of-main tier and be PRESERVED, proving the
+# ambiguous match never drives a Tier-3 reclaim.
+J3_REPO="$J_ROOT/j3-repo"
+J3_WORKTREES="$J_ROOT/j3-worktrees"
+J3_BASE="$J_ROOT/j3-base"
+mkdir -p "$J3_WORKTREES" "$J3_BASE"
+make_repo "$J3_REPO"
+mkdir -p "$J3_BASE/target.gen.1"
+touch "$J3_BASE/target.gen.1.lock"
+ln -sfn "$J3_BASE/target.gen.1" "$J3_BASE/target"
+
+make_task_lane "$J3_REPO" "$J3_WORKTREES" "_lane-1" "task/8881" "ahead"
+# Second branch pointing at the SAME (ahead-of-main) commit as task/8881's
+# tip, so it ALSO "contains" the detached HEAD below — the ambiguous case.
+git -C "$J3_WORKTREES/_lane-1" branch -q task/8882 HEAD
+git -C "$J3_WORKTREES/_lane-1" checkout -q --detach
+
+J3_MAP="$(mktemp /tmp/test-gc-oracle-map-XXXXXX)"
+_TMPDIRS+=("$J3_MAP")
+printf '8881 done\n' > "$J3_MAP"
+
+J3_SEED_LOG="$J_ROOT/j3-seed-calls.log"
+J3_SEED_STUB="$J_ROOT/j3-seed-stub.sh"
+_seed_stub_body > "$J3_SEED_STUB"
+chmod +x "$J3_SEED_STUB"
+export SEED_LOG="$J3_SEED_LOG"
+export ORACLE_MAP="$J3_MAP"
+
+run_helper reclaim \
+    --worktrees-dir "$J3_WORKTREES" \
+    --base-target "$J3_BASE/target" \
+    --seed-script "$J3_SEED_STUB" \
+    --status-cmd "$STUB_DIR/gc-status-oracle.sh"
+
+assert "J3: exit 0" test "$RC" -eq 0
+assert "J3: ambiguous-branch lane seed-script NOT invoked (no Tier-3 over-match)" \
+    bash -c '[ ! -f "$1" ] || ! grep -q "_lane-1" "$1"' _ "$J3_SEED_LOG"
+assert "J3: ambiguous-branch lane divergent marker intact (preserved via ahead-of-main tier)" \
+    test -f "$J3_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
+assert "J3: stderr names ahead-of-main preservation (fell through Tier-3)" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "unlanded|ahead|preserving"' _ "$ERR_OUT"
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Block K — disk-pressure fast-path
 # Under --disk-pressure, a reclaimable lane's target/ is deleted outright
@@ -1113,6 +1204,46 @@ assert "K2: seed-script invoked (normal alpha reset path, no disk-pressure)" \
 assert "K2: target/ directory still present (thinned by alpha, not deleted)" \
     test -d "$K2_WORKTREES/_lane-1/target"
 assert "K2: summary shows reset=1" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "reset=1"' _ "$OUT"
+
+# ── K3: landed-clean NON-task-branch lane under --disk-pressure ────────────────
+# --disk-pressure is documented (usage()/header) as applying to EVERY
+# reclaimable Pass-1 lane, not only Tier-3-reclaimed leaked lanes. This locks
+# that pool-wide scope: an ordinary landed/clean lane (no task/NNNN branch,
+# no --status-cmd wired, reclaimed purely via _is_reclaimable) also gets its
+# target/ deleted outright under --disk-pressure rather than alpha-reseeded.
+K3_REPO="$K_ROOT/k3-repo"
+K3_WORKTREES="$K_ROOT/k3-worktrees"
+K3_BASE="$K_ROOT/k3-base"
+mkdir -p "$K3_WORKTREES" "$K3_BASE"
+make_repo "$K3_REPO"
+mkdir -p "$K3_BASE/target.gen.1"
+touch "$K3_BASE/target.gen.1.lock"
+ln -sfn "$K3_BASE/target.gen.1" "$K3_BASE/target"
+
+# Landed, clean, non-task-branch lane (mirrors Block B's fixture).
+git -C "$K3_REPO" worktree add -q "$K3_WORKTREES/_lane-1"
+mkdir -p "$K3_WORKTREES/_lane-1/target"
+touch "$K3_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
+
+K3_SEED_LOG="$K_ROOT/k3-seed-calls.log"
+K3_SEED_STUB="$K_ROOT/k3-seed-stub.sh"
+_seed_stub_body > "$K3_SEED_STUB"
+chmod +x "$K3_SEED_STUB"
+export SEED_LOG="$K3_SEED_LOG"
+
+run_helper reclaim \
+    --worktrees-dir "$K3_WORKTREES" \
+    --base-target "$K3_BASE/target" \
+    --seed-script "$K3_SEED_STUB" \
+    --disk-pressure
+
+assert "K3: exit 0" test "$RC" -eq 0
+assert "K3: landed-clean non-task-branch lane target/ deleted outright (pool-wide disk-pressure scope)" \
+    bash -c '[ ! -d "$1" ]' _ "$K3_WORKTREES/_lane-1/target"
+assert "K3: seed-script NOT invoked (no reflink clone under disk-pressure)" \
+    bash -c '[ ! -f "$1" ]' _ "$K3_SEED_LOG"
+assert "K3: summary shows reset=1" \
     bash -c 'printf "%s\n" "$1" | grep -qE "reset=1"' _ "$OUT"
 
 test_summary
