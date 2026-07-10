@@ -4571,6 +4571,7 @@ dependencies = [
  "reify-test-support",
  "serde_json",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
