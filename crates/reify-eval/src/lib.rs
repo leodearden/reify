@@ -61,6 +61,7 @@ pub use engine_constraints::GdtCallout;
 mod engine_demand;
 mod engine_edit;
 mod engine_eval;
+mod cell_eval_ctx;
 mod engine_helpers;
 mod resolve_order;
 pub mod scope_containment;
