@@ -131,5 +131,11 @@ mod tests {
         assert!(ctx.diagnostics.is_some_and(|d| std::ptr::eq(d, &sink)));
         assert!(ctx.containment.is_some_and(|c| std::ptr::eq(c, containment_ref)));
         assert!(ctx.meta.is_some_and(|m| std::ptr::eq(m, &meta_map)));
+        // Locks the doc-commented "intentionally unset" contract: undef_causes
+        // is not a cell-eval-ctx capability (it's wired separately by
+        // `record_op_contract_failures`), so a future edit that accidentally
+        // threads an undef-cause sink through this constructor should fail
+        // this assertion rather than pass unnoticed.
+        assert!(ctx.undef_causes.is_none());
     }
 }
