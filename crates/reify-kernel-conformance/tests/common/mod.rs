@@ -151,6 +151,10 @@ pub fn occt_fillet() -> reify_ir::Mesh {
         .expect("fillet tessellate should succeed")
 }
 
+/// A fixture builder: produces one real OCCT-tessellated `Mesh` per call.
+#[cfg(has_occt)]
+pub type FixtureFn = fn() -> reify_ir::Mesh;
+
 /// Enumerate the four validate(0.0)-clean real fixtures for the
 /// producer×fixture matrix — every non-sphere arm in this crate iterates
 /// this same set. `sphere` is deliberately excluded (see `occt_sphere`'s
@@ -158,12 +162,12 @@ pub fn occt_fillet() -> reify_ir::Mesh {
 /// tracked by #5164) and is instead exercised only by its own dedicated
 /// `#[ignore]`d arm.
 #[cfg(has_occt)]
-pub fn fixtures() -> Vec<(&'static str, fn() -> reify_ir::Mesh)> {
+pub fn fixtures() -> Vec<(&'static str, FixtureFn)> {
     vec![
-        ("box", occt_box as fn() -> reify_ir::Mesh),
-        ("cylinder", occt_cylinder as fn() -> reify_ir::Mesh),
-        ("boolean", occt_boolean_reversed as fn() -> reify_ir::Mesh),
-        ("fillet", occt_fillet as fn() -> reify_ir::Mesh),
+        ("box", occt_box as FixtureFn),
+        ("cylinder", occt_cylinder as FixtureFn),
+        ("boolean", occt_boolean_reversed as FixtureFn),
+        ("fillet", occt_fillet as FixtureFn),
     ]
 }
 
