@@ -291,7 +291,19 @@ impl<'a> RealizationOpsInput<'a> {
             prefer_kernel: None,
             is_terminal_realization: false,
             morph_io: crate::morph_producer::MorphDispatchIo::disabled(),
-            long_chain_threshold: crate::dispatcher::long_chain_threshold_from_env(),
+            // Cheap PRD-default constant, NOT `long_chain_threshold_from_env()`:
+            // `new()` runs once per realization on the hot build path, and
+            // every production call site immediately overrides this via
+            // `.with_long_chain_threshold(long_chain_threshold)` with a value
+            // it already resolved once at eval-loop entry (see the "GR-034:
+            // resolve once per eval-loop entry" call sites). Reading + parsing
+            // the env var here would be redundant work whose result is always
+            // discarded on that path. Equal to `long_chain_threshold_from_env()`
+            // when the env var is unset, so callers that omit the override
+            // (the `run`/`run_demand` test wrapper) see unchanged behavior.
+            long_chain_threshold: Duration::from_millis(
+                crate::dispatcher::LONG_CHAIN_DEFAULT_THRESHOLD_MS,
+            ),
         }
     }
 
@@ -344,7 +356,9 @@ impl<'a> RealizationOpsInput<'a> {
     }
 
     /// Override the long-chain-diagnostic warn threshold (default
-    /// `crate::dispatcher::long_chain_threshold_from_env()`).
+    /// `Duration::from_millis(crate::dispatcher::LONG_CHAIN_DEFAULT_THRESHOLD_MS)`
+    /// — a cheap constant, not an env read; see the comment above this field's
+    /// initializer in [`Self::new`] for why).
     fn with_long_chain_threshold(mut self, v: Duration) -> Self {
         self.long_chain_threshold = v;
         self
