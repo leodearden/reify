@@ -132,11 +132,14 @@
 #     task landed via merge-train REBASE has its work on main under new SHAs,
 #     while its lane's task/NNNN tip is an orphan SHA that is never an
 #     ancestor of main, so _is_reclaimable's ahead-of-main check would
-#     otherwise preserve it forever. Consulted BEFORE _is_reclaimable; still
-#     gated behind the same live-consumer flock acquisition, so inv.2 (one
-#     consumer per lane) is unaffected. Unresolvable/unknown/non-terminal
-#     status falls through to the existing dirty/ahead-of-main tiers
-#     (fail-safe: preserve).
+#     otherwise preserve it forever. Consulted only when the cheap local
+#     _is_reclaimable predicate (filesystem + git, no subprocess) would
+#     otherwise preserve the lane — avoids spawning the --status-cmd oracle
+#     subprocess per lane in the common already-reclaimable steady-state case,
+#     with an identical reclaim set either way. Still gated behind the same
+#     live-consumer flock acquisition, so inv.2 (one consumer per lane) is
+#     unaffected. Unresolvable/unknown/non-terminal status falls through to
+#     preserve.
 #   - α reuse: resolve base symlink → concrete gen, hold flock -s during α call
 #     (D8 reader-refcount seam; same contract as the acquire path).
 #   - Safety-ranked order: reset lanes first (cheap), then remove orphans (destructive).
@@ -497,13 +500,19 @@ _do_reclaim() {
         fi
 
         # Reclaimability check (under the lock).
-        # Tier-3 short-circuit (task 5167): a terminal backing task makes the
-        # lane reclaimable regardless of dirty/ahead-of-main — consulted
-        # BEFORE the shared _is_reclaimable predicate. Falls through to it
-        # when the backing task is unresolvable/non-terminal/unknown.
-        if _backing_task_terminal "$lane"; then
+        # Cheap local predicate first (_is_reclaimable: filesystem + git,
+        # no subprocess); the Tier-3 --status-cmd oracle (task 5167, which
+        # may be a DB/network-backed query) is consulted ONLY when that
+        # predicate would otherwise preserve the lane — same reclaim set,
+        # no oracle subprocess spent on lanes that are already reclaimable.
+        # A terminal backing task makes the lane reclaimable regardless of
+        # dirty/ahead-of-main. Falls through to preserve when the backing
+        # task is unresolvable/non-terminal/unknown.
+        if _is_reclaimable "$lane"; then
+            :
+        elif _backing_task_terminal "$lane"; then
             info "  lane $name: backing task $_BACKING_TASK_ID is terminal (status=$_BACKING_TASK_STATUS) — reclaiming regardless of dirty/ahead-of-main"
-        elif ! _is_reclaimable "$lane"; then
+        else
             exec 8>&-
             preserved_count=$((preserved_count + 1))
             continue
