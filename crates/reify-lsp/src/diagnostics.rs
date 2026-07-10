@@ -2151,9 +2151,11 @@ structure S {
         // No persistent engine survives the call, so we probe an
         // independently constructed Engine sharing its exact, documented
         // posture (Engine::new(SimpleConstraintChecker, None), no
-        // trampoline registration) — a sanity check on that shared
-        // construction idiom, not a direct introspection of
-        // compute_diagnostics's own internal engine.
+        // trampoline registration) rather than compute_diagnostics's own
+        // internal engine — a redundant belt-and-suspenders check, not the
+        // authoritative lock (see `assert_no_false_violation_or_pass`'s doc
+        // comment for the full rationale; the stateful surface below is
+        // authoritative).
         let stateless_diags = compute_diagnostics(FEA_BEARING_SRC, &uri);
 
         let checker = SimpleConstraintChecker;
@@ -2213,6 +2215,17 @@ structure S {
     /// a drift-prone substring); (b) zero `Violated` and zero `Satisfied`
     /// constraints, with at least one `Indeterminate` (no false pass on any
     /// individual constraint, and not silently missing or all-satisfied).
+    /// The three counts are tallied via an exhaustive `match` (no wildcard
+    /// arm) on `Satisfaction`, so this fn fails to *compile* — rather than
+    /// silently passing — the moment `Satisfaction` grows a fourth variant.
+    ///
+    /// Belt-and-suspenders note (applies to both call sites below): the
+    /// stateless (`compute_diagnostics`) call site passes a `check_result`
+    /// from an independently constructed probe engine, not the exact
+    /// internal engine `compute_diagnostics` builds and drops — a redundant
+    /// check, not the authoritative lock. The stateful
+    /// (`compute_diagnostics_with_state`) call site, which reads
+    /// `state.engine` directly, is the authoritative lock for this contract.
     fn assert_no_false_violation_or_pass(
         diagnostics: &[lsp_types::Diagnostic],
         check_result: &reify_eval::CheckResult,
@@ -2233,21 +2246,17 @@ structure S {
              FEA constraint; got: {false_violations:#?}"
         );
 
-        let violated_count = check_result
-            .constraint_results
-            .iter()
-            .filter(|e| e.satisfaction == Satisfaction::Violated)
-            .count();
-        let satisfied_count = check_result
-            .constraint_results
-            .iter()
-            .filter(|e| e.satisfaction == Satisfaction::Satisfied)
-            .count();
-        let indeterminate_count = check_result
-            .constraint_results
-            .iter()
-            .filter(|e| e.satisfaction == Satisfaction::Indeterminate)
-            .count();
+        // Exhaustive `match` (no wildcard arm) — see this fn's doc comment
+        // for why that alone suffices as the variant-drift guard.
+        let (violated_count, satisfied_count, indeterminate_count) =
+            check_result.constraint_results.iter().fold(
+                (0usize, 0usize, 0usize),
+                |(violated, satisfied, indeterminate), e| match e.satisfaction {
+                    Satisfaction::Violated => (violated + 1, satisfied, indeterminate),
+                    Satisfaction::Satisfied => (violated, satisfied + 1, indeterminate),
+                    Satisfaction::Indeterminate => (violated, satisfied, indeterminate + 1),
+                },
+            );
 
         assert_eq!(
             violated_count, 0,
