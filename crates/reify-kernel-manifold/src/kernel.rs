@@ -1486,13 +1486,17 @@ mod tests {
     }
 
     /// Pins that `GeometryKernel::ingest_mesh` returns
-    /// `Err(GeometryError::OperationFailed(_))` when given an invalid
-    /// (non-manifold) mesh.
+    /// `Err(GeometryError::MeshContractViolation { kernel: "manifold", .. })`
+    /// when given an invalid (non-closed) mesh — INV-GEO-1 kernel-seam γ.
     ///
     /// A single open triangle is structurally not a closed orientable manifold
-    /// (it has three boundary edges with no closing surface), so
-    /// `Manifold::from_mesh_f64` must reject it. Match-on-variant rather than
-    /// equality because `GeometryError` does not derive `PartialEq` — mirrors
+    /// (it has three boundary edges with no closing surface): `Mesh::validate`
+    /// rejects it under `MeshInvariant::Closed` — with `counts.open_edges == 3`
+    /// (each of the triangle's 3 directed edges lacks a reverse on the
+    /// position-welded quotient) — *before* `Manifold::from_mesh_f64` is ever
+    /// called, surfacing a structured diagnostic earlier than the generic
+    /// `NotManifold` string. Match-on-variant rather than equality because
+    /// `GeometryError` does not derive `PartialEq` — mirrors
     /// `execute_union_with_unknown_handle_returns_invalid_reference`.
     ///
     /// This test does not need `#[cfg(feature = "test-fixtures")]` because it
@@ -1500,12 +1504,10 @@ mod tests {
     /// `cfg(test)` — the gating predicate `cfg(any(test, feature =
     /// "test-fixtures"))` is satisfied by `cfg(test)` alone.
     #[test]
-    fn ingest_mesh_with_invalid_mesh_returns_err_operation_failed() {
+    fn ingest_mesh_non_closed_mesh_returns_mesh_contract_violation() {
         let mut kernel = ManifoldKernel::new();
         // A single open triangle — three vertices, one triangle face.
         // Not a closed manifold: three boundary edges, no closing surface.
-        // `Manifold::from_mesh_f64` requires closed orientable surfaces and
-        // must fail on this input.
         let bad_mesh = Mesh {
             vertices: vec![
                 0.0_f32, 0.0, 0.0, // v0
@@ -1519,15 +1521,31 @@ mod tests {
         let result = kernel.ingest_mesh(&bad_mesh);
 
         match result {
-            Err(GeometryError::OperationFailed(msg)) => assert!(
-                !msg.is_empty(),
-                "OperationFailed payload must surface the manifold3d error — an empty message \
-                 would hide the root cause from fixture authors debugging winding-order \
-                 regressions (doc comment promises the underlying manifold3d error is surfaced)",
-            ),
+            Err(GeometryError::MeshContractViolation {
+                kernel: kernel_name,
+                invariant,
+                counts,
+                ..
+            }) => {
+                assert_eq!(
+                    kernel_name, "manifold",
+                    "MeshContractViolation must carry the producing kernel's name",
+                );
+                assert!(
+                    matches!(invariant, reify_ir::geometry::MeshInvariant::Closed),
+                    "a single open triangle has boundary edges, so validate() must \
+                     report the Closed obligation; got {invariant:?}",
+                );
+                assert_eq!(
+                    counts.open_edges, 3,
+                    "a lone triangle's 3 directed edges each lack a reverse on the \
+                     welded quotient, so open_edges must be exactly 3; got {counts:?}",
+                );
+            }
             other => panic!(
-                "ingest_mesh with a single-triangle (non-manifold) mesh must return \
-                 Err(GeometryError::OperationFailed(_)); got {other:?}"
+                "ingest_mesh with a single-triangle (non-closed) mesh must return \
+                 Err(GeometryError::MeshContractViolation {{ kernel: \"manifold\", .. }}); \
+                 got {other:?}"
             ),
         }
     }
