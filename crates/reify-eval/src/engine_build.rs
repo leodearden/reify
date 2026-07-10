@@ -7148,20 +7148,21 @@ impl Engine {
                                         // producer only — the MarchingCubes (Voxel→Mesh)
                                         // producer is task γ's domain and is backstopped by
                                         // PRD site 2 (Manifold-ingest validation).
-                                        if !from_marching_cubes {
-                                            if let Err(violation) = mesh.validate(per_stage_tol) {
-                                                diagnostics.push(
-                                                    Diagnostic::warning(
-                                                        violation
-                                                            .into_geometry_error(source_name)
-                                                            .to_string(),
-                                                    )
-                                                    .with_label(DiagnosticLabel::new(
-                                                        realization_span,
-                                                        "in this realization",
-                                                    )),
-                                                );
-                                            }
+                                        if !from_marching_cubes
+                                            && let Err(violation) =
+                                                mesh.validate(per_stage_tol)
+                                        {
+                                            diagnostics.push(
+                                                Diagnostic::warning(
+                                                    violation
+                                                        .into_geometry_error(source_name)
+                                                        .to_string(),
+                                                )
+                                                .with_label(DiagnosticLabel::new(
+                                                    realization_span,
+                                                    "in this realization",
+                                                )),
+                                            );
                                         }
                                         // Ingest into the target kernel (`&mut`).
                                         // For a Manifold kernel this is Mesh→Mesh;
