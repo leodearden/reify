@@ -5689,8 +5689,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn with_warm_state_partial_failure_logs_warning() {
+    /// Build a warm state with 1 valid cylinder BRep (id 1) + 1 corrupt
+    /// entry (id 2, `"CORRUPT_DATA"`) — deterministically drives the
+    /// `deserialize_brep` `Err` branch for exactly one shape. Shared fixture
+    /// for `with_warm_state_partial_failure_logs_warning` and
+    /// `with_warm_state_partial_failure_emits_tracing_warn`, which differ
+    /// only in what they assert about the resulting failure (the counter
+    /// vs. the tracing event).
+    fn one_valid_one_corrupt_state() -> OpaqueState {
         // Create a helper kernel to get a valid cylinder BRep string
         let mut helper = OcctKernel::new();
         helper
@@ -5718,7 +5724,12 @@ mod tests {
             reprs: HashMap::new(),
             next_id: 10,
         };
-        let state = OpaqueState::new(warm, 64);
+        OpaqueState::new(warm, 64)
+    }
+
+    #[test]
+    fn with_warm_state_partial_failure_logs_warning() {
+        let state = one_valid_one_corrupt_state();
 
         let mut kernel = OcctKernel::new();
         kernel.with_warm_state(state);
@@ -5761,35 +5772,7 @@ mod tests {
         // `prime_tracing_callsite_cache` in reify-test-support for why.
         reify_test_support::prime_tracing_callsite_cache();
 
-        // Create a helper kernel to get a valid cylinder BRep string
-        let mut helper = OcctKernel::new();
-        helper
-            .execute(&GeometryOp::Cylinder {
-                radius: Value::Real(5.0),
-                height: Value::Real(20.0),
-            })
-            .unwrap();
-        let helper_state = helper.warm_state().expect("helper should have warm state");
-        let helper_warm = helper_state
-            .downcast::<OcctWarmState>()
-            .expect("should downcast");
-        let valid_brep = helper_warm
-            .shapes
-            .get(&1)
-            .expect("handle 1 should exist")
-            .clone();
-
-        // Construct warm state: 1 valid + 1 corrupt
-        let mut shapes = HashMap::new();
-        shapes.insert(1, valid_brep);
-        shapes.insert(2, "CORRUPT_DATA".to_string());
-        let warm = OcctWarmState {
-            shapes,
-            reprs: HashMap::new(),
-            next_id: 10,
-        };
-        let state = OpaqueState::new(warm, 64);
-
+        let state = one_valid_one_corrupt_state();
         let mut kernel = OcctKernel::new();
 
         let (subscriber, capture) = warn_capturing_subscriber();
