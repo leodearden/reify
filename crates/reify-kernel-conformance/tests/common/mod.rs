@@ -214,3 +214,16 @@ pub fn assert_valid_volume_mesh(vm: &reify_ir::VolumeMesh) {
         );
     }
 }
+
+// ── negative-signal helper ──────────────────────────────────────────────────
+
+/// Deliberately corrupt triangle 0's winding by swapping its 2nd and 3rd
+/// indices, reversing that triangle's directed edges. Pure index
+/// manipulation — cfg-free (no OCCT/gmsh dependency) so any integration
+/// binary in this crate can drive the negative "contract-violating
+/// producer" signal (c) off of a real-kernel-derived `Mesh`.
+pub fn corrupt_winding(mesh: &reify_ir::Mesh) -> reify_ir::Mesh {
+    let mut out = mesh.clone();
+    out.indices.swap(1, 2);
+    out
+}
