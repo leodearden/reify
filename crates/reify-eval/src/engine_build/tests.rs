@@ -1264,7 +1264,15 @@ structure Assembly {
                 // the cross-kernel tests use `run_demand`.
                 .with_prefer_kernel(prefer_kernel)
                 // Test helpers operate on a single realization; it is always terminal.
-                .with_is_terminal_realization(true),
+                .with_is_terminal_realization(true)
+                // Amendment (reviewer_comprehensive robustness @ engine_build.rs:230):
+                // `RealizationOpsInput::new`'s `long_chain_threshold` now defaults to
+                // a cheap constant, not an env read (see that field's doc). This is a
+                // general-purpose helper shared by every test in this module, so keep
+                // it explicitly env-sensitive rather than silently inheriting the
+                // constant default — preserves the pre-refactor contract for any test
+                // that sets `REIFY_LONG_CHAIN_THRESHOLD_MS`.
+                .with_long_chain_threshold(crate::dispatcher::long_chain_threshold_from_env()),
                 RealizationOutputs::new(
                     &mut self.step_handles,
                     &mut self.named_steps,
@@ -1325,7 +1333,15 @@ structure Assembly {
                 .with_demanded_repr(demanded_repr)
                 .with_prefer_kernel(prefer_kernel)
                 // Test helpers operate on a single realization; it is always terminal.
-                .with_is_terminal_realization(true),
+                .with_is_terminal_realization(true)
+                // Amendment (reviewer_comprehensive robustness @ engine_build.rs:230):
+                // `RealizationOpsInput::new`'s `long_chain_threshold` now defaults to
+                // a cheap constant, not an env read (see that field's doc). This is a
+                // general-purpose helper shared by every test in this module, so keep
+                // it explicitly env-sensitive rather than silently inheriting the
+                // constant default — preserves the pre-refactor contract for any test
+                // that sets `REIFY_LONG_CHAIN_THRESHOLD_MS`.
+                .with_long_chain_threshold(crate::dispatcher::long_chain_threshold_from_env()),
                 RealizationOutputs::new(
                     &mut self.step_handles,
                     &mut self.named_steps,
