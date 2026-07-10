@@ -2476,6 +2476,17 @@ fn voxel_pipeline_demand_overrides(template: &TopologyTemplate) -> HashMap<usize
                     // pipelines never hit this branch (no node is ever both
                     // a `c_idx` and someone else's `p_idx`), so this is a
                     // pure no-op guard for the task's actual scope.
+                    //
+                    // Amendment (review): the clobber guard's correctness
+                    // relies entirely on this ordering invariant — assert it
+                    // rather than let a future realization-ordering change
+                    // (e.g. a reordering compile pass) silently mis-demand a
+                    // chained pipeline instead of failing loudly.
+                    debug_assert!(
+                        p_idx < c_idx,
+                        "GeomRef::Sub({sub_name:?}) must name an earlier-declared \
+                         realization (p_idx={p_idx}, c_idx={c_idx})"
+                    );
                     if overrides.get(&p_idx) != Some(&ReprKind::Mesh) {
                         overrides.insert(p_idx, ReprKind::Voxel);
                     }
@@ -6594,9 +6605,27 @@ impl Engine {
                         // kernel's handle space) — via `named_step_reprs`,
                         // the by-name sibling of `named_steps` populated at
                         // this realization loop's two insertion points.
-                        for name in sub_refs_in_op(op) {
-                            if let Some(&repr) = named_step_reprs.get(name) {
-                                set.insert(repr);
+                        //
+                        // Amendment (review): only DO this resolution for ops
+                        // that cannot accept the `{BRep}` default at all
+                        // (`op_is_voxel_only_input` — today exactly
+                        // `Operation::Surface`, the isosurface builtin, per
+                        // PRD OQ-1). For every other op the pre-existing
+                        // `{BRep}` default (design_decision 6) remains
+                        // exactly as before: it is always a member of a
+                        // BRep/Mesh-accepting op's input set, so surfacing
+                        // the producer's true repr here would only ever
+                        // change *which* available entry the dispatcher
+                        // picks among several acceptable ones — a kernel-
+                        // selection shift with no existing regression
+                        // coverage for non-isosurface multi-realization
+                        // pipelines. Gating keeps this resolution scoped to
+                        // the one op family that actually needs it.
+                        if op_is_voxel_only_input(&operation) {
+                            for name in sub_refs_in_op(op) {
+                                if let Some(&repr) = named_step_reprs.get(name) {
+                                    set.insert(repr);
+                                }
                             }
                         }
                         if set.is_empty() {
