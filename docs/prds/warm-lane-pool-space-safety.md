@@ -178,6 +178,30 @@ of scope here (§12).
   orphaned worktrees that are clean **and** landed (`git merge-base --is-ancestor <branch> main`)
   **and** have no live consumer. **inv.preserve:** dirty WIP / unlanded-ahead / live-consumer is
   never touched.
+- **Terminal-task reclaim tier (task 5167).** A pool-lane FREE entry (Pass 1 only — orphan cold
+  worktrees in Pass 2, which never match `task/NNNN`, are unaffected) whose checked-out branch is
+  `task/NNNN` — or a detached HEAD reachable from exactly one `task/NNNN` branch — is reclaimable
+  **regardless of ahead-of-main and dirty tracked changes** once the backing task's status is
+  terminal (`done`/`cancelled`). This closes the rebase-orphan leak: a task landed via merge-train
+  REBASE has its work on `main` under new SHAs, while its lane's `task/NNNN` tip is an orphan SHA
+  that is never an ancestor of `main`, so the ahead-of-main guard alone preserved such lanes
+  forever (root cause of the 2026-07-10 ENOSPC outage — two terminal-task lanes leaked to
+  768G/404G and wedged ~8 verifies). Status comes from an advisory oracle — `--status-cmd PATH` /
+  `REIFY_WARM_LANE_GC_STATUS_CMD`, falling back to the shared `REIFY_LANE_LEAK_STATUS_CMD` (the
+  same oracle `warm-lane-preflight.sh` Check 6 and `warm-lane-degenerate-ref-check.sh` consume, so
+  one env var lights up detector + reclaimer together) — invoked as `<cmd> <task_id>` → status on
+  stdout; a non-zero exit or empty output is unknown/non-terminal (fail-safe: preserve).
+  **inv.preserve still holds for the live-consumer case:** the lane flock is acquired, and checked,
+  before the terminal-status check runs, so a flock-held lane is never reclaimed even when its
+  backing task is terminal.
+- **Disk-pressure fast-path (task 5167).** `--disk-pressure` / `REIFY_WARM_LANE_GC_DISK_PRESSURE`
+  (off by default) switches the Pass-1 reset action, for any lane already found reclaimable under
+  either tier, from the α reflink-reseed clone to a direct `rm -rf <lane>/target` — no reseed
+  clone, so none of the clone's transient 2×-space window (old divergent `target/` and the new
+  clone briefly coexisting). Valid because `acquire_lane` always re-seeds from base
+  (warm-lane-pool-cow-seeding.md §9.5), so an empty/missing `target/` is a legal lane state. Still
+  counted as `reset` in the `reclaim: reset=N removed=M preserved=K` summary. Mirrors the manual
+  2026-07-10 remediation for the leaked lanes above.
 
 ## 9. Boundary-test sketch (two-way; B+H, closes G2 for η)
 
