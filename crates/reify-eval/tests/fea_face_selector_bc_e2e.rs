@@ -281,6 +281,73 @@ fn non_boundary_demanded_realization_yields_no_boundary() {
     );
 }
 
+/// `cfg(has_gmsh)`: characterizes the REAL OCCT tessellation of the #4876
+/// fixture (`fea_bc_box.ri`, a 1 m box) against the α `MeshContract`
+/// validator (`Mesh::validate`, INV-GEO-1) and the `weldedness()` axis,
+/// pinning the concrete witness the gmsh attributed producer's SIGSEGV
+/// (#4876) trips on.
+///
+/// `tessellate_realizations` drives the SAME `kernel.tessellate(handle,
+/// tol)` OCCT path the realization edge (engine_build.rs:7655) feeds to
+/// `mesh_surface_to_volume_attributed`, so the characterized mesh is
+/// faithful to the crash input (G6 discipline). OCCT tessellates per-face
+/// vertex blocks (occt_wrapper.cpp:5847) — unwelded by design — so the
+/// surface is a valid closed 2-manifold ONLY on the position-welded
+/// quotient; on the RAW indices it is non-watertight (the gmsh attributed
+/// producer forbids vertex-merge repair, mesh_boundary.rs:219-227, and
+/// consumes exactly that raw non-watertight surface).
+///
+/// This is a CHARACTERIZATION (pinning) test documenting EXISTING behavior
+/// — green on arrival by design. It would go RED under a regression: OCCT
+/// welding its own output, or α gating weldedness / rejecting unwelded
+/// input outright.
+///
+/// RED before the next step: `real_occt_box_surface` does not yet exist →
+/// the gmsh test binary fails to compile.
+#[cfg(has_gmsh)]
+#[test]
+fn characterizes_4876_occt_tessellation_unwelded_witness() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping characterizes_4876_occt_tessellation_unwelded_witness: \
+             OCCT not available (no BRep kernel to build the box body)"
+        );
+        return;
+    }
+
+    let mesh = real_occt_box_surface();
+
+    // Witness 1+2 (coupled): the raw OCCT surface is UNWELDED (the
+    // consumer-capability axis the gmsh `requires_welded` producer trips
+    // on) yet fully satisfies every producer obligation on the
+    // position-welded quotient — unwelded is a capability gap, not a
+    // producer-obligation violation (PRD §2).
+    let w = mesh.weldedness(0.0);
+    assert!(
+        !w.raw_welded,
+        "real OCCT box tessellation must be unwelded (per-face vertex \
+         blocks, occt_wrapper.cpp:5847) — a box shares corners across 3 \
+         faces and edge vertices across 2 faces, so position-welding must \
+         collapse duplicates: {w:?}"
+    );
+    assert!(
+        w.weld_merged_verts > 0,
+        "weld_merged_verts must be > 0 for a real OCCT box surface: {w:?}"
+    );
+    assert!(
+        mesh.validate(0.0).is_ok(),
+        "real OCCT box tessellation must satisfy every producer obligation \
+         on the welded quotient (unwelded is a capability, not a \
+         violation): {:?}",
+        mesh.validate(0.0).err()
+    );
+    eprintln!(
+        "characterizes_4876_occt_tessellation_unwelded_witness: \
+         weld_merged_verts={}",
+        w.weld_merged_verts
+    );
+}
+
 /// `cfg(not(has_gmsh))`: skip-stub. Without the gmsh adapter the realization
 /// edge cannot produce a boundary; the gated tests above are compiled out.
 #[cfg(not(has_gmsh))]
