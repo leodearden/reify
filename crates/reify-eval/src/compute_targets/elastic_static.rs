@@ -3678,9 +3678,13 @@ fn extract_zone_process_params(val: &Value) -> Result<ZoneProcessParams, FeaValu
     }
     let real = |idx: usize| match &list[idx] {
         Value::Real(r) => Ok(*r),
+        // Amendment (task #5082 review, suggestion 1): fold the failing
+        // index into `got` so the error (and the eventual fea_shim panic)
+        // still identifies which of the 7 positions was malformed, matching
+        // the diagnosability of the pre-refactor panic message.
         other => Err(FeaValueShapeError::ExpectedReal {
             context: "extract_zone_process_params element",
-            got: format!("{other:?}"),
+            got: format!("params[{idx}] = {other:?}"),
         }),
     };
     Ok(ZoneProcessParams {
@@ -9183,11 +9187,22 @@ mod tests {
     fn extract_zone_process_params_rejects_wrong_arity() {
         let short_list = Value::List(vec![Value::Real(1.0)]);
         let res = extract_zone_process_params(&short_list);
-        assert!(
-            matches!(res, Err(FeaValueShapeError::ExpectedList { .. })),
-            "expected Err(ExpectedList) for a List with < 7 elements, got: {:?}",
-            res
-        );
+        // Amendment (task #5082 review, suggestion 2): pin the distinguishing
+        // "wrong arity" wording (added in review round 1) so this test
+        // actually distinguishes the arity guard from the non-List shape
+        // mismatch above, rather than only asserting the shared
+        // `ExpectedList` variant both branches surface through.
+        match res {
+            Err(FeaValueShapeError::ExpectedList { got, .. }) => assert!(
+                got.contains("wrong arity"),
+                "expected the arity guard's distinguishing 'wrong arity' wording in `got`, got: {:?}",
+                got
+            ),
+            other => panic!(
+                "expected Err(ExpectedList) for a List with < 7 elements, got: {:?}",
+                other
+            ),
+        }
     }
 
     /// step-1 RED (task #5082, D4): a 7-element `Value::List` with a
