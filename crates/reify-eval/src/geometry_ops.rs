@@ -5303,8 +5303,8 @@ fn build_leaf_selector(
 /// name→helper map. A `Some(helper)` result means the named ctor is wired into
 /// the `eval()`/`eval_cached()` surface (via [`try_eval_symbolic_topology_selector`])
 /// and is EXPECTED to mint a `Value::Selector` there without a kernel; `None`
-/// means the name is kernel-bearing / named-leaf / unknown and resolves only
-/// on the `build()` path.
+/// means the name is kernel-bearing / unknown and resolves only on the
+/// `build()` path.
 ///
 /// Both the dispatcher ([`try_eval_symbolic_topology_selector`]) and clause-8's
 /// "still in the α net" guard ([`is_symbolic_eval_wired_selector_ctor`]) read
@@ -5343,6 +5343,13 @@ fn symbolic_eval_helper_for_name(name: &str) -> Option<TopologySelectorHelper> {
         "union" => TopologySelectorHelper::Union,
         "intersect" => TopologySelectorHelper::Intersect,
         "difference" => TopologySelectorHelper::Difference,
+        // task #5120 R2c: named-leaf ctors. Pure reconstruct (target resolved
+        // symbolically, tag resolved kernel-free) — see
+        // resolve_named_leaf_target_symbolic / eval_named_leaf_selector_ctor_symbolic.
+        "face" => TopologySelectorHelper::Face,
+        "edge" => TopologySelectorHelper::Edge,
+        "solid_body" => TopologySelectorHelper::SolidBody,
+        "vertex" => TopologySelectorHelper::Vertex,
         _ => return None,
     })
 }
@@ -5473,9 +5480,49 @@ fn eval_variadic_composition_symbolic(
     }
 }
 
-/// Kernel-FREE eval-path dispatch for the leaf and composition selector
-/// constructors over a SYMBOLIC target (R2b, task #4653; composition added by
-/// R2c, task #5120).
+/// Kernel-FREE sibling of [`resolve_named_leaf_target`] for the symbolic
+/// eval-path named-leaf ctors (task #5120 R2c). Primary path: the R2b
+/// [`resolve_symbolic_selector_target`] (accepts `kernel_handle=None`).
+/// Fallback: [`reconstruct_selector_value_symbolic`] + [`first_leaf_target`]
+/// (the 4583 chained-first-arg form, e.g. `face(mid_surface(body),"r")`),
+/// rooting the Named leaf at the input selector's parent-geometry target.
+fn resolve_named_leaf_target_symbolic(
+    arg: &reify_ir::CompiledExpr,
+    values: &reify_ir::ValueMap,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::value::GeometryHandleRef> {
+    if let Some(ghr) = resolve_symbolic_selector_target(arg, values) {
+        return Some(ghr);
+    }
+    let sv = reconstruct_selector_value_symbolic(arg, values, diagnostics)?;
+    first_leaf_target(&sv).cloned()
+}
+
+/// Kernel-FREE sibling of [`eval_named_leaf_selector_ctor`] for the symbolic
+/// eval-path (task #5120 R2c). Same two-arg shape (target, name) but resolves
+/// the target via [`resolve_named_leaf_target_symbolic`] (symbolic-accepting)
+/// and threads no kernel/named_steps.
+fn eval_named_leaf_selector_ctor_symbolic(
+    kind: reify_core::ty::SelectorKind,
+    args: &[reify_ir::CompiledExpr],
+    values: &reify_ir::ValueMap,
+    function_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    let target = resolve_named_leaf_target_symbolic(&args[0], values, diagnostics)?;
+    let name = resolve_string_literal_arg(&args[1], values, function_name, "name", diagnostics)?;
+    build_leaf_selector(
+        kind,
+        target,
+        reify_ir::value::LeafQuery::Named(name),
+        function_name,
+        diagnostics,
+    )
+}
+
+/// Kernel-FREE eval-path dispatch for the leaf, composition, and named-leaf
+/// selector constructors over a SYMBOLIC target (R2b, task #4653; composition
+/// + named-leaf added by R2c, task #5120).
 ///
 /// Maps the function name to a [`TopologySelectorHelper`] via
 /// [`symbolic_eval_helper_for_name`], runs the per-helper arity check
@@ -5485,10 +5532,12 @@ fn eval_variadic_composition_symbolic(
 /// kernel-free dispatcher (via [`eval_variadic_composition_symbolic`] /
 /// [`reconstruct_selector_value_symbolic`]) so an inline nested-leaf operand
 /// (`union(faces_by_normal(b,up,tol), ...)`) resolves within the single mint
-/// pass; every other (leaf) ctor falls through to the shared
-/// [`try_build_kernel_free_leaf_selector`], unchanged from R2b. Returns `None`
-/// for every kernel-bearing / named-leaf ctor and for any non-`FunctionCall`
-/// expr shape — the cell stays at `Value::Undef` (R1a / deferred to R3).
+/// pass; `face`/`edge`/`solid_body`/`vertex` dispatch to
+/// [`eval_named_leaf_selector_ctor_symbolic`]; every other (leaf) ctor falls
+/// through to the shared [`try_build_kernel_free_leaf_selector`], unchanged
+/// from R2b. Returns `None` for every kernel-bearing ctor and for any
+/// non-`FunctionCall` expr shape — the cell stays at `Value::Undef` (R1a /
+/// deferred to R3).
 pub(crate) fn try_eval_symbolic_topology_selector(
     expr: &reify_ir::CompiledExpr,
     values: &reify_ir::ValueMap,
@@ -5549,6 +5598,34 @@ pub(crate) fn try_eval_symbolic_topology_selector(
                 }
             }
         }
+        TopologySelectorHelper::Face => eval_named_leaf_selector_ctor_symbolic(
+            reify_core::ty::SelectorKind::Face,
+            args,
+            values,
+            &function.name,
+            diagnostics,
+        ),
+        TopologySelectorHelper::Edge => eval_named_leaf_selector_ctor_symbolic(
+            reify_core::ty::SelectorKind::Edge,
+            args,
+            values,
+            &function.name,
+            diagnostics,
+        ),
+        TopologySelectorHelper::SolidBody => eval_named_leaf_selector_ctor_symbolic(
+            reify_core::ty::SelectorKind::Body,
+            args,
+            values,
+            &function.name,
+            diagnostics,
+        ),
+        TopologySelectorHelper::Vertex => eval_named_leaf_selector_ctor_symbolic(
+            reify_core::ty::SelectorKind::Vertex,
+            args,
+            values,
+            &function.name,
+            diagnostics,
+        ),
         _ => try_build_kernel_free_leaf_selector(helper, args, values, &function.name, diagnostics),
     }
 }
