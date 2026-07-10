@@ -853,6 +853,50 @@ fn full_reload_only_fields_never_produce_delta_events() {
 /// key order. `GuiState` (unlike `StateDelta`) is serialized directly to the
 /// wire (the full-snapshot command return), so its field order must be
 /// byte-preserved across the step-8 migration to the `gui_state!` macro.
+///
+/// Reads the key order via the custom `Deserialize` below (`TopLevelKeys`)
+/// rather than `serde_json::Value::as_object().keys()`: this workspace does
+/// not enable serde_json's `preserve_order` feature, so `Value`'s object map
+/// is a `BTreeMap` that silently re-sorts keys alphabetically — round-
+/// tripping through it would discard the very ordering information this
+/// test exists to pin. `TopLevelKeys` instead reads keys directly off
+/// `MapAccess` (the true serialization order, structurally skipping each
+/// value via `IgnoredAny`), which also means a same-named key nested inside
+/// a value (e.g. `demand_prune_measurement`'s `WouldPruneByKindDto` payload)
+/// can never be mistaken for a top-level key — unlike a raw substring scan.
+struct TopLevelKeys(Vec<String>);
+
+impl<'de> serde::Deserialize<'de> for TopLevelKeys {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct KeyOrderVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for KeyOrderVisitor {
+            type Value = TopLevelKeys;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a JSON object")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut keys = Vec::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    map.next_value::<serde::de::IgnoredAny>()?;
+                    keys.push(key);
+                }
+                Ok(TopLevelKeys(keys))
+            }
+        }
+
+        deserializer.deserialize_map(KeyOrderVisitor)
+    }
+}
+
 #[test]
 fn gui_state_full_snapshot_key_order_is_stable() {
     let state = fully_populated_gui_state();
@@ -874,15 +918,10 @@ fn gui_state_full_snapshot_key_order_is_stable() {
         "fea_convergence",
     ];
 
-    let mut cursor = 0usize;
-    for key in expected_key_order {
-        let needle = format!("\"{key}\":");
-        let found_at = json[cursor..].find(needle.as_str()).unwrap_or_else(|| {
-            panic!(
-                "expected top-level key '{key}' not found (in order) at or after byte \
-                 {cursor} in GuiState JSON: {json}"
-            )
-        });
-        cursor += found_at + needle.len();
-    }
+    let TopLevelKeys(actual_key_order) = serde_json::from_str(&json)
+        .expect("fully-populated GuiState JSON must deserialize as a top-level object");
+    assert_eq!(
+        actual_key_order, expected_key_order,
+        "GuiState top-level key order changed (full-snapshot wire contract); got JSON: {json}"
+    );
 }
