@@ -9739,4 +9739,186 @@ mod tests {
             res
         );
     }
+
+    // ── task #5084 amendment (reviewer_comprehensive, suggestion 2) ───────────
+    //
+    // The two tests above only exercise `anisotropic_material_from_value`'s
+    // delegation to `scalar_si_field` (the `ExpectedScalar` path). The
+    // structural `Err` branches this function constructs directly — a
+    // non-`StructureInstance` `val`/`frame`/`law`, a missing `law`/`frame`
+    // field, and a missing frame-axis field — were previously only covered
+    // transitively (via the leaf helpers' own tests), so a partial or
+    // transposed error-construction here (wrong `context`/`field` label, or
+    // a swapped axis `MissingField`) would have gone uncaught. The tests
+    // below assert on the exact `context`/`field` label (not just the
+    // variant), mirroring `extract_material_rejects_non_structure_instance`'s
+    // precedent, to directly guard against that.
+
+    /// Amendment (task #5084 review, suggestion 2): shared `Value::
+    /// StructureInstance` builder for the structural-error tests below,
+    /// mirroring `isotropic_material`'s precedent (task #5081 review round 3,
+    /// suggestion 1) of factoring out repeated struct-literal boilerplate.
+    fn anisotropic_material(fields: PersistentMap<String, Value>) -> Value {
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_name: "AnisotropicMaterial".to_string(),
+            type_id: StructureTypeId(u32::MAX),
+            version: 1,
+            fields,
+        }))
+    }
+
+    /// `anisotropic_material_from_value` must reject a non-`StructureInstance`
+    /// top-level `Value` with `Err(FeaValueShapeError::ExpectedStructureInstance
+    /// { context: "anisotropic_material_from_value", .. })` rather than
+    /// panicking.
+    #[test]
+    fn anisotropic_material_from_value_rejects_non_structure_instance_val() {
+        let res = anisotropic_material_from_value(&Value::Real(1.0));
+        match res {
+            Err(FeaValueShapeError::ExpectedStructureInstance { context, .. }) => {
+                assert_eq!(context, "anisotropic_material_from_value");
+            }
+            other => panic!(
+                "expected Err(ExpectedStructureInstance) for a non-StructureInstance \
+                 Value, got: {:?}",
+                other
+            ),
+        }
+    }
+
+    /// `anisotropic_material_from_value` must reject a `val` whose `law`
+    /// field is absent with `Err(FeaValueShapeError::MissingField { field:
+    /// "law", .. })`. `law` is read before `frame`, so an empty fields map
+    /// surfaces this error first.
+    #[test]
+    fn anisotropic_material_from_value_rejects_missing_law_field() {
+        let res = anisotropic_material_from_value(&anisotropic_material(PersistentMap::new()));
+        match res {
+            Err(FeaValueShapeError::MissingField { field, .. }) => {
+                assert_eq!(field, "law");
+            }
+            other => panic!(
+                "expected Err(MissingField {{ field: \"law\" }}) for an absent law \
+                 field, got: {:?}",
+                other
+            ),
+        }
+    }
+
+    /// `anisotropic_material_from_value` must reject a `val` whose `frame`
+    /// field is absent with `Err(FeaValueShapeError::MissingField { field:
+    /// "frame", .. })`. `law` is present (its value is irrelevant here — the
+    /// `law` field is only presence-checked, not parsed, before `frame` is
+    /// read) so control reaches the `frame` check.
+    #[test]
+    fn anisotropic_material_from_value_rejects_missing_frame_field() {
+        let fields: PersistentMap<String, Value> = [("law".to_string(), Value::Real(1.0))]
+            .into_iter()
+            .collect();
+
+        let res = anisotropic_material_from_value(&anisotropic_material(fields));
+        match res {
+            Err(FeaValueShapeError::MissingField { field, .. }) => {
+                assert_eq!(field, "frame");
+            }
+            other => panic!(
+                "expected Err(MissingField {{ field: \"frame\" }}) for an absent frame \
+                 field, got: {:?}",
+                other
+            ),
+        }
+    }
+
+    /// `anisotropic_material_from_value` must reject a `frame` field that is
+    /// not a `Value::StructureInstance` with `Err(FeaValueShapeError::
+    /// ExpectedStructureInstance { context: "anisotropic_material_from_value
+    /// (frame)", .. })` — a distinct `context` label from the top-level
+    /// `val`/`law` shape checks.
+    #[test]
+    fn anisotropic_material_from_value_rejects_non_structure_instance_frame() {
+        let fields: PersistentMap<String, Value> = [
+            ("law".to_string(), Value::Real(1.0)),
+            ("frame".to_string(), Value::Real(1.0)),
+        ]
+        .into_iter()
+        .collect();
+
+        let res = anisotropic_material_from_value(&anisotropic_material(fields));
+        match res {
+            Err(FeaValueShapeError::ExpectedStructureInstance { context, .. }) => {
+                assert_eq!(context, "anisotropic_material_from_value (frame)");
+            }
+            other => panic!(
+                "expected Err(ExpectedStructureInstance) for a non-StructureInstance \
+                 frame, got: {:?}",
+                other
+            ),
+        }
+    }
+
+    /// `anisotropic_material_from_value` must reject a `law` field that is
+    /// not a `Value::StructureInstance` with `Err(FeaValueShapeError::
+    /// ExpectedStructureInstance { context: "anisotropic_material_from_value
+    /// (law)", .. })`. The `frame` field is a well-formed `het_material_frame`
+    /// so control reaches the law-shape check (mirrors the two malformed-law
+    /// tests above, which exercise the law arms' leaf fields once law_data is
+    /// already known to be a StructureInstance).
+    #[test]
+    fn anisotropic_material_from_value_rejects_non_structure_instance_law() {
+        let fields: PersistentMap<String, Value> = [
+            ("law".to_string(), Value::Real(1.0)),
+            (
+                "frame".to_string(),
+                as_printed_zones_test_fixtures::het_material_frame([0.0, 0.0, 1.0]),
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        let res = anisotropic_material_from_value(&anisotropic_material(fields));
+        match res {
+            Err(FeaValueShapeError::ExpectedStructureInstance { context, .. }) => {
+                assert_eq!(context, "anisotropic_material_from_value (law)");
+            }
+            other => panic!(
+                "expected Err(ExpectedStructureInstance) for a non-StructureInstance \
+                 law, got: {:?}",
+                other
+            ),
+        }
+    }
+
+    /// `anisotropic_material_from_value` must reject a `frame` StructureInstance
+    /// whose `x_axis` field is absent with `Err(FeaValueShapeError::
+    /// MissingField { field: "x_axis", .. })`. `x_axis` is read before
+    /// `y_axis`/`z_axis`, so an empty frame fields map deterministically
+    /// surfaces this specific axis label — guarding against a swapped axis
+    /// label, the review's stated concern.
+    #[test]
+    fn anisotropic_material_from_value_rejects_missing_frame_axis_field() {
+        let frame = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "MaterialFrame".to_string(),
+            version: 1,
+            fields: PersistentMap::new(),
+        }));
+        let fields: PersistentMap<String, Value> = [
+            ("law".to_string(), Value::Real(1.0)),
+            ("frame".to_string(), frame),
+        ]
+        .into_iter()
+        .collect();
+
+        let res = anisotropic_material_from_value(&anisotropic_material(fields));
+        match res {
+            Err(FeaValueShapeError::MissingField { field, .. }) => {
+                assert_eq!(field, "x_axis");
+            }
+            other => panic!(
+                "expected Err(MissingField {{ field: \"x_axis\" }}) for an absent \
+                 x_axis field, got: {:?}",
+                other
+            ),
+        }
+    }
 }
