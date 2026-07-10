@@ -247,6 +247,28 @@ impl Default for ManifoldKernel {
 /// obligation, per-category offender counts, and a concrete witness *earlier*
 /// than (and instead of) `from_mesh_f64`'s generic `NotManifold` error.
 ///
+/// ## Known hot-path cost (accepted)
+///
+/// `Mesh::validate` welds `mesh` a *second* time internally (its private
+/// `check_contract` re-derives the position-welded quotient via
+/// `Mesh::weld_positions` to evaluate the closed/wound obligations — the same
+/// quotient this function's own weld above already computed) and, on
+/// success, clones the entire vertex+index buffer to mint the `ValidatedMesh`
+/// witness, which this call site immediately discards (only `map_err` below
+/// is used). So every successful ingest currently pays one redundant O(n)
+/// weld plus one full-mesh clone on top of the weld this function performs.
+///
+/// `reify_ir::geometry::Mesh` exposes no by-reference, non-cloning contract
+/// check: `check_contract` is private, `validate` clones on success, and
+/// `into_validated` moves `self` — calling it here would require cloning
+/// `mesh` *before* the check even runs, strictly worse than `validate`'s
+/// clone-only-on-success behavior. Removing the redundancy needs a new
+/// `reify-ir` API (a non-cloning check, and/or threading this function's
+/// already-computed weld into the contract check instead of recomputing it)
+/// — out of scope for this file-scoped change (this task holds a lock on
+/// `kernel.rs` only). The cost is accepted for now: it buys the structured
+/// `MeshContractViolation` diagnostic this call site exists to deliver.
+///
 /// Returns `Err(GeometryError::OperationFailed(_))` if a triangle index is out
 /// of range for the vertex array (weld-time bounds check) or if
 /// `from_mesh_f64` itself rejects the welded mesh after contract validation
@@ -299,7 +321,8 @@ pub(crate) fn manifold_from_reify_mesh(mesh: &Mesh) -> Result<Manifold, Geometry
     // same closed/wound quotient as the weld above). Front-runs
     // from_mesh_f64's generic NotManifold failure with a structured
     // diagnostic; the ValidatedMesh witness itself isn't needed here, only
-    // the check.
+    // the check — see this function's rustdoc "Known hot-path cost" section
+    // for the accepted redundant-weld/clone tradeoff this implies.
     mesh.validate(MANIFOLD_INGEST_TOL)
         .map_err(|v| v.into_geometry_error("manifold"))?;
 
