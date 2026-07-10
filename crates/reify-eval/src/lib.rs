@@ -58,10 +58,12 @@ pub mod dynamics_ops;
 mod dynamics_psd;
 mod engine_constraints;
 pub use engine_constraints::GdtCallout;
+// Task β (#5039): required-args cell_eval_ctx free-function constructor
+// (INV-EVAL-2; PRD eval-cell-commit-substrate.md §2.5, §8).
+mod cell_eval_ctx;
 mod engine_demand;
 mod engine_edit;
 mod engine_eval;
-mod cell_eval_ctx;
 mod engine_helpers;
 mod resolve_order;
 pub mod scope_containment;
