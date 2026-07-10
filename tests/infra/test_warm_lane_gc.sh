@@ -80,6 +80,62 @@ make_repo() {
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Shared scaffolding: status-oracle stubs + task-lane factory (Blocks I/J/K)
+# ──────────────────────────────────────────────────────────────────────────────
+# Status-oracle contract mirrors tests/infra/test_warm_lane_preflight.sh Block D
+# (leak-oracle.sh / leak-oracle-fail.sh) and warm-lane-preflight.sh Check 6 /
+# warm-lane-degenerate-ref-check.sh _ref_status byte-for-byte: `<cmd> <task_id>`
+# prints a status on stdout (or empty for unknown ids), exits 0. Threaded via
+# ORACLE_MAP (one "<id> <status>" pair per line, exported before run_helper).
+
+STUB_DIR="$(mktemp -d /tmp/test-warm-lane-gc-stub-XXXXXX)"
+_TMPDIRS+=("$STUB_DIR")
+
+# gc-status-oracle.sh: given task-id $1, looks up status in ORACLE_MAP file
+# (one "id status" pair per line). Exits 0 with empty output for unknown ids.
+cat > "$STUB_DIR/gc-status-oracle.sh" << 'STUB_EOF'
+#!/usr/bin/env bash
+_qid="$1"
+if [ -f "${ORACLE_MAP:-}" ]; then
+    while IFS=' ' read -r _mid _mst; do
+        if [ "$_mid" = "$_qid" ]; then
+            printf '%s\n' "$_mst"
+            exit 0
+        fi
+    done < "$ORACLE_MAP"
+fi
+exit 0
+STUB_EOF
+chmod +x "$STUB_DIR/gc-status-oracle.sh"
+
+# gc-status-oracle-fail.sh: always exits non-zero — drives the set -e/pipefail
+# hardening test (oracle failure must NOT abort the sweep; unknown = non-terminal).
+cat > "$STUB_DIR/gc-status-oracle-fail.sh" << 'STUB_EOF'
+#!/usr/bin/env bash
+exit 1
+STUB_EOF
+chmod +x "$STUB_DIR/gc-status-oracle-fail.sh"
+
+# make_task_lane REPO WORKTREES NAME BRANCH [ahead]
+# Creates a lane at WORKTREES/NAME as a git worktree checked out on BRANCH
+# (task/NNNN), seeded with a target/DIVERGENT_MARKER. When ahead="ahead", adds
+# a committed change NOT reachable from main (rebase-orphan simulation: HEAD
+# stands in for a task that landed via merge-train REBASE, so its actual work
+# is on main under new SHAs while this lane's branch tip is an orphan —
+# `git merge-base --is-ancestor HEAD main` is false).
+make_task_lane() {
+    local repo="$1" worktrees="$2" name="$3" branch="$4" ahead="${5:-}"
+    git -C "$repo" worktree add -q -b "$branch" "$worktrees/$name"
+    if [ "$ahead" = "ahead" ]; then
+        echo "ahead (rebase-orphan simulation)" >> "$worktrees/$name/README.md"
+        git -C "$worktrees/$name" add README.md
+        git -C "$worktrees/$name" commit -q -m "rebase-orphan simulation: ahead-of-main tip"
+    fi
+    mkdir -p "$worktrees/$name/target"
+    touch "$worktrees/$name/target/DIVERGENT_MARKER"
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Block A — CLI guard
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""
