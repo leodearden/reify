@@ -562,6 +562,12 @@ impl OcctKernel {
     /// `with_warm_state`); this accessor exposes the cumulative count from
     /// the most recent restore for production consumers that want the
     /// summary figure without instrumenting tracing.
+    ///
+    /// Edge case: a `with_warm_state` call whose [`OpaqueState`] fails the
+    /// type check is a no-op per the trait contract (state silently
+    /// ignored) and returns *before* the counter reset — it does not zero
+    /// or otherwise change the count left by the previous successful
+    /// restore.
     pub fn warm_start_failures(&self) -> usize {
         self.last_warm_start_failures
     }
