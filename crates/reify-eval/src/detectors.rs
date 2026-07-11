@@ -33,6 +33,80 @@
 //!   the three eval paths (foundation-then-migrate, mirroring how task α
 //!   shipped `commit_cell_result` ahead of its own migration leaves).
 
+use reify_core::{Diagnostic, ValueCellId};
+use reify_ir::{DeterminacyState, PersistentMap, Value, ValueMap};
+
+/// The minimal UNIVERSAL mutable state a detector reads/mutates, bundled as
+/// disjoint `&mut` borrows — mirrors [`crate::cell_commit::CommitLegs`].
+///
+/// All three fields are present on every eval path: `Engine::eval` and
+/// `Engine::eval_cached` both hold a `values` map, a `snapshot.values` map,
+/// and a `diagnostics` sink at their post-pass point. A detector operating
+/// only on this bundle therefore runs identically regardless of which path
+/// assembled the state — INV-EVAL-3.
+///
+/// Detectors needing heavier READ-ONLY context (e.g. the annotation-args
+/// driver's module/prelude/functions + `EvalContext`) are out of scope for
+/// this task; see the module doc's "Known scope gaps for task μ". Task μ
+/// may extend this struct if a migrated detector needs more.
+#[allow(dead_code)] // wired in by task μ; exercised by tests until then
+pub(crate) struct PostPassState<'a> {
+    pub(crate) values: &'a mut ValueMap,
+    pub(crate) snapshot_values: &'a mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+    pub(crate) diagnostics: &'a mut Vec<Diagnostic>,
+}
+
+/// A single post-pass check runnable identically on any eval path.
+///
+/// Contract: equal input [`PostPassState`] → equal diagnostic sequence +
+/// equal state mutations (INV-EVAL-3). Implementations should treat `state`
+/// as the only source of truth — no hidden global/interior state.
+#[allow(dead_code)] // wired in by task μ; exercised by tests until then
+pub(crate) trait PostPassDetector {
+    /// A stable kebab-case slug identifying this detector — used for
+    /// ordering introspection ([`DetectorRegistry::ids`]) and debugging.
+    fn id(&self) -> &'static str;
+
+    /// Runs the check against `state`, mutating it in place (pushing
+    /// diagnostics, replacing values) as needed.
+    fn run(&self, state: &mut PostPassState<'_>);
+}
+
+/// An ordered collection of [`PostPassDetector`]s — registration order IS
+/// run order.
+///
+/// This is the single owner of post-pass ordering (INV-EVAL-3), replacing
+/// the scattered "must run before …" / "MUST run AFTER …" ordering-
+/// convention comments (e.g. `engine_eval.rs:6312`,
+/// `structural_query.rs:531,610`, `significance_filter.rs:1025,1032`) with
+/// one readable, explicit `Vec`.
+#[allow(dead_code)] // wired in by task μ; exercised by tests until then
+#[derive(Default)]
+pub(crate) struct DetectorRegistry {
+    detectors: Vec<Box<dyn PostPassDetector>>,
+}
+
+#[allow(dead_code)] // wired in by task μ; exercised by tests until then
+impl DetectorRegistry {
+    /// An empty registry.
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Appends `detector` to the registry. Registration order is run order.
+    pub(crate) fn register(&mut self, detector: Box<dyn PostPassDetector>) {
+        self.detectors.push(detector);
+    }
+
+    /// Runs every registered detector, in registration order, against
+    /// `state`.
+    pub(crate) fn run_all(&self, state: &mut PostPassState<'_>) {
+        for detector in &self.detectors {
+            detector.run(state);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use reify_core::{Diagnostic, DiagnosticCode, ValueCellId};
