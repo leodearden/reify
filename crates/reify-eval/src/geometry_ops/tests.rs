@@ -22885,6 +22885,122 @@
         );
     }
 
+    /// Symmetric overload-disambiguation coverage (review amendment, task
+    /// #5120 R2c): `intersect` shares the same solid-CSG-boolean-overloaded
+    /// name as `union` (e.g. `manifold_boolean`'s `intersect(a,b):Solid`), so
+    /// `intersect(box_a, box_b)` over two `Value::GeometryHandle` operands
+    /// must ALSO fall through to `None` — pinned separately from `union`
+    /// above so a future refactor cannot special-case one operator's
+    /// fall-through without the other.
+    #[test]
+    fn try_eval_symbolic_topology_selector_intersect_returns_none_for_non_selector_operands() {
+        use reify_core::identity::{RealizationNodeId, ValueCellId};
+
+        let entity = "R2cSolidBooleanIntersect";
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new(entity, "box_a"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new(entity, 0),
+                upstream_values_hash: [0x01u8; 32],
+                kernel_handle: None,
+            },
+        );
+        values.insert(
+            ValueCellId::new(entity, "box_b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new(entity, 1),
+                upstream_values_hash: [0x02u8; 32],
+                kernel_handle: None,
+            },
+        );
+
+        let arg_a = reify_ir::CompiledExpr::value_ref(
+            ValueCellId::new(entity, "box_a"),
+            reify_core::Type::Geometry,
+        );
+        let arg_b = reify_ir::CompiledExpr::value_ref(
+            ValueCellId::new(entity, "box_b"),
+            reify_core::Type::Geometry,
+        );
+        let intersect_expr = mk_symbolic_call_3523("intersect", vec![arg_a, arg_b]);
+
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_symbolic_topology_selector(
+            &intersect_expr,
+            &values,
+            &mut diagnostics,
+        );
+        assert!(
+            result.is_none(),
+            "intersect(geometry, geometry) is the solid-CSG-boolean overload, not selector \
+             composition — must yield None; got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "overload fallthrough must emit no diagnostics; got {:?}",
+            diagnostics
+        );
+    }
+
+    /// Symmetric overload-disambiguation coverage (review amendment, task
+    /// #5120 R2c): `difference` shares the same solid-CSG-boolean-overloaded
+    /// name (e.g. `m5_geometry_flange`'s `difference(body,holes):Solid`), so
+    /// `difference(box_a, box_b)` over two `Value::GeometryHandle` operands
+    /// must ALSO fall through to `None`.
+    #[test]
+    fn try_eval_symbolic_topology_selector_difference_returns_none_for_non_selector_operands() {
+        use reify_core::identity::{RealizationNodeId, ValueCellId};
+
+        let entity = "R2cSolidBooleanDifference";
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new(entity, "box_a"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new(entity, 0),
+                upstream_values_hash: [0x01u8; 32],
+                kernel_handle: None,
+            },
+        );
+        values.insert(
+            ValueCellId::new(entity, "box_b"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new(entity, 1),
+                upstream_values_hash: [0x02u8; 32],
+                kernel_handle: None,
+            },
+        );
+
+        let arg_a = reify_ir::CompiledExpr::value_ref(
+            ValueCellId::new(entity, "box_a"),
+            reify_core::Type::Geometry,
+        );
+        let arg_b = reify_ir::CompiledExpr::value_ref(
+            ValueCellId::new(entity, "box_b"),
+            reify_core::Type::Geometry,
+        );
+        let difference_expr = mk_symbolic_call_3523("difference", vec![arg_a, arg_b]);
+
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_symbolic_topology_selector(
+            &difference_expr,
+            &values,
+            &mut diagnostics,
+        );
+        assert!(
+            result.is_none(),
+            "difference(geometry, geometry) is the solid-CSG-boolean overload, not selector \
+             composition — must yield None; got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "overload fallthrough must emit no diagnostics; got {:?}",
+            diagnostics
+        );
+    }
+
     /// Arity guard: `union` with a single operand (< 2, below the variadic
     /// minimum) must yield `None`.
     #[test]
@@ -22917,6 +23033,323 @@
             result.is_none(),
             "union with < 2 args must yield None (arity gate); got {:?}",
             result
+        );
+    }
+
+    /// Arity guard, symmetric coverage (review amendment, task #5120 R2c):
+    /// `intersect` with a single operand (< 2) must ALSO yield `None` —
+    /// pinned separately from `union` above so a future refactor cannot
+    /// special-case one operator's arity gate without the other.
+    #[test]
+    fn try_eval_symbolic_topology_selector_intersect_arity_below_two_returns_none() {
+        use reify_core::identity::{RealizationNodeId, ValueCellId};
+
+        let entity = "R2cIntersectArity";
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new(entity, "body"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new(entity, 0),
+                upstream_values_hash: [0x04u8; 32],
+                kernel_handle: None,
+            },
+        );
+        let faces_expr = topology_selector_call_one_value_ref(
+            "faces",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            reify_core::Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let intersect_expr = mk_symbolic_call_3523("intersect", vec![faces_expr]);
+
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_symbolic_topology_selector(
+            &intersect_expr,
+            &values,
+            &mut diagnostics,
+        );
+        assert!(
+            result.is_none(),
+            "intersect with < 2 args must yield None (arity gate); got {:?}",
+            result
+        );
+    }
+
+    // ── Task #5120 R2c amendment: kind-closure-violation (`Err`) coverage for
+    // ALL THREE composition operators ─────────────────────────────────────────
+    //
+    // The clean (`Ok`) path and the `None` arity/overload fall-throughs are
+    // pinned above; the defensive `SelectorError::KindMismatch` backstop —
+    // `Some(Value::Undef)` + a Warning diagnostic, mirroring the build-path
+    // `eval_variadic_composition_kind_mismatch_yields_undef_with_warning`
+    // test at :12710 — was previously untested on the symbolic-eval surface.
+
+    /// `union(faces(b), edges(b))` over a SYMBOLIC body handle mixes Face and
+    /// Edge kinds (hand-crafted IR, bypassing the compiler's
+    /// `E_SELECTOR_KIND_MISMATCH`): `SelectorValue::union` must return
+    /// `SelectorError::KindMismatch`, minting `Some(Value::Undef)` + exactly
+    /// one Warning diagnostic naming the kind-closure violation.
+    #[test]
+    fn try_eval_symbolic_topology_selector_union_kind_mismatch_yields_undef_with_warning() {
+        use reify_core::identity::{RealizationNodeId, ValueCellId};
+
+        let entity = "R2cUnionKindMismatch";
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new(entity, "body"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new(entity, 0),
+                upstream_values_hash: [0xC0u8; 32],
+                kernel_handle: None,
+            },
+        );
+        let faces_expr = topology_selector_call_one_value_ref(
+            "faces",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            reify_core::Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let edges_expr = topology_selector_call_one_value_ref(
+            "edges",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            reify_core::Type::Selector(reify_core::ty::SelectorKind::Edge),
+        );
+        let union_expr = mk_symbolic_call_3523("union", vec![faces_expr, edges_expr]);
+
+        let mut diagnostics = Vec::new();
+        let result =
+            super::try_eval_symbolic_topology_selector(&union_expr, &values, &mut diagnostics);
+
+        assert!(
+            matches!(result, Some(reify_ir::Value::Undef)),
+            "union(faces(b), edges(b)) kind-mismatch must yield Some(Value::Undef); got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "kind-mismatch must emit exactly 1 Warning diagnostic; got {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_core::Severity::Warning,
+            "backstop diagnostic must be Warning severity"
+        );
+        assert!(
+            diagnostics[0].message.contains("kind-closure violation"),
+            "backstop diagnostic must name the kind-closure violation; got {:?}",
+            diagnostics[0].message
+        );
+    }
+
+    /// `intersect(faces(b), edges(b))` — same kind-mismatch backstop as
+    /// `union` above, pinned separately for `intersect`.
+    #[test]
+    fn try_eval_symbolic_topology_selector_intersect_kind_mismatch_yields_undef_with_warning() {
+        use reify_core::identity::{RealizationNodeId, ValueCellId};
+
+        let entity = "R2cIntersectKindMismatch";
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new(entity, "body"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new(entity, 0),
+                upstream_values_hash: [0xC1u8; 32],
+                kernel_handle: None,
+            },
+        );
+        let faces_expr = topology_selector_call_one_value_ref(
+            "faces",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            reify_core::Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let edges_expr = topology_selector_call_one_value_ref(
+            "edges",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            reify_core::Type::Selector(reify_core::ty::SelectorKind::Edge),
+        );
+        let intersect_expr = mk_symbolic_call_3523("intersect", vec![faces_expr, edges_expr]);
+
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_symbolic_topology_selector(
+            &intersect_expr,
+            &values,
+            &mut diagnostics,
+        );
+
+        assert!(
+            matches!(result, Some(reify_ir::Value::Undef)),
+            "intersect(faces(b), edges(b)) kind-mismatch must yield Some(Value::Undef); \
+             got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "kind-mismatch must emit exactly 1 Warning diagnostic; got {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_core::Severity::Warning,
+            "backstop diagnostic must be Warning severity"
+        );
+        assert!(
+            diagnostics[0].message.contains("kind-closure violation"),
+            "backstop diagnostic must name the kind-closure violation; got {:?}",
+            diagnostics[0].message
+        );
+    }
+
+    /// `difference(faces(b), edges(b))` — same kind-mismatch backstop,
+    /// pinned for the binary `difference` operator.
+    #[test]
+    fn try_eval_symbolic_topology_selector_difference_kind_mismatch_yields_undef_with_warning() {
+        use reify_core::identity::{RealizationNodeId, ValueCellId};
+
+        let entity = "R2cDifferenceKindMismatch";
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new(entity, "body"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new(entity, 0),
+                upstream_values_hash: [0xC2u8; 32],
+                kernel_handle: None,
+            },
+        );
+        let faces_expr = topology_selector_call_one_value_ref(
+            "faces",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            reify_core::Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let edges_expr = topology_selector_call_one_value_ref(
+            "edges",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            reify_core::Type::Selector(reify_core::ty::SelectorKind::Edge),
+        );
+        let difference_expr =
+            topology_selector_composition_call("difference", faces_expr, edges_expr);
+
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_symbolic_topology_selector(
+            &difference_expr,
+            &values,
+            &mut diagnostics,
+        );
+
+        assert!(
+            matches!(result, Some(reify_ir::Value::Undef)),
+            "difference(faces(b), edges(b)) kind-mismatch must yield Some(Value::Undef); \
+             got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "kind-mismatch must emit exactly 1 Warning diagnostic; got {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_core::Severity::Warning,
+            "backstop diagnostic must be Warning severity"
+        );
+        assert!(
+            diagnostics[0].message.contains("kind-closure violation"),
+            "backstop diagnostic must name the kind-closure violation; got {:?}",
+            diagnostics[0].message
+        );
+    }
+
+    /// Robustness (review amendment, task #5120 R2c): a `None` return from
+    /// the composition mint must be a SILENT fall-through, per the
+    /// overload-disambiguation contract — a solid-CSG-boolean operand is
+    /// `Value::GeometryHandle`, not `Value::Selector`, so the composition
+    /// mint returns `None` and the cell stays `Undef`, `Type::Geometry`-
+    /// exempt via clause 7. `union(union(faces(b), edges(b)), box_a)`: the
+    /// INNER `union` is Face/Edge-kind-mismatched (hand-crafted IR) and
+    /// resolves to `Some(Value::Undef)` + a Warning; back in the OUTER
+    /// `union`'s operand reconstruction, `Value::Undef` is not a
+    /// `Value::Selector`, so that operand fails to reconstruct and the
+    /// OUTER `union` must fall through to `None` — with the inner Warning
+    /// NOT leaked into the caller's `diagnostics`.
+    #[test]
+    fn try_eval_symbolic_topology_selector_union_none_fallthrough_no_diagnostic_leak() {
+        use reify_core::identity::{RealizationNodeId, ValueCellId};
+
+        let entity = "R2cUnionDiagLeak";
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new(entity, "body"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new(entity, 0),
+                upstream_values_hash: [0xD0u8; 32],
+                kernel_handle: None,
+            },
+        );
+        values.insert(
+            ValueCellId::new(entity, "box_a"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new(entity, 1),
+                upstream_values_hash: [0xD1u8; 32],
+                kernel_handle: None,
+            },
+        );
+
+        let faces_expr = topology_selector_call_one_value_ref(
+            "faces",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            reify_core::Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let edges_expr = topology_selector_call_one_value_ref(
+            "edges",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            reify_core::Type::Selector(reify_core::ty::SelectorKind::Edge),
+        );
+        // Malformed nested selector (kind-mismatched union), hand-crafted IR.
+        let nested_union = mk_symbolic_call_3523("union", vec![faces_expr, edges_expr]);
+
+        let box_a_ref = reify_ir::CompiledExpr::value_ref(
+            ValueCellId::new(entity, "box_a"),
+            reify_core::Type::Geometry,
+        );
+        // Outer op shares the `union` name with the malformed nested
+        // selector, but its second operand is a plain GeometryHandle — the
+        // overload-disambiguation shape.
+        let outer_union = mk_symbolic_call_3523("union", vec![nested_union, box_a_ref]);
+
+        let mut diagnostics = Vec::new();
+        let result =
+            super::try_eval_symbolic_topology_selector(&outer_union, &values, &mut diagnostics);
+
+        assert!(
+            result.is_none(),
+            "not every operand resolved to a Selector (inner union hit a kind-closure \
+             violation) — outer union must fall through to None; got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "a None fall-through must be silent — the inner union's kind-closure warning must \
+             not leak into the caller's diagnostics; got {:?}",
+            diagnostics
         );
     }
 

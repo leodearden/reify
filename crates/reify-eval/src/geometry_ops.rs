@@ -5453,9 +5453,23 @@ fn reconstruct_selector_value_symbolic(
 }
 
 /// Kernel-FREE sibling of [`eval_variadic_composition`] for the symbolic
-/// eval-path `union`/`intersect` arms (task #5120 R2c). Same collect+
-/// construct+error shape, over [`reconstruct_selector_value_symbolic`]
-/// instead of the kernel-bearing reconstruct.
+/// eval-path `union`/`intersect`/`difference` arms (task #5120 R2c; the
+/// binary `difference` operator is adapted onto this shared Vec-based
+/// collect+construct+error path via [`selector_value_difference_pair`] —
+/// review amendment — instead of duplicating the "kind-closure violation"
+/// diagnostic text in its own inline arm).
+///
+/// Operands are reconstructed into a local `scratch` buffer FIRST and only
+/// merged into the caller's `diagnostics` once every operand has resolved
+/// (i.e. this composition is "ours"). This matters for the overload
+/// disambiguation contract: a solid-CSG-boolean operand is a
+/// `Value::GeometryHandle`, not `Value::Selector`, so
+/// `reconstruct_selector_value_symbolic` returns `None` for it — and a
+/// `None` return from THIS function must be a SILENT fall-through. But a
+/// NESTED selector-shaped operand can itself push a diagnostic (e.g. its own
+/// kind-closure warning) before ultimately failing to resolve; buffering
+/// first (review amendment) keeps that diagnostic from leaking into
+/// `diagnostics` on the `None` path.
 fn eval_variadic_composition_symbolic(
     op_name: &str,
     args: &[reify_ir::CompiledExpr],
@@ -5465,10 +5479,12 @@ fn eval_variadic_composition_symbolic(
         Vec<reify_ir::value::SelectorValue>,
     ) -> Result<reify_ir::value::SelectorValue, reify_ir::value::SelectorError>,
 ) -> Option<reify_ir::Value> {
+    let mut scratch = Vec::new();
     let children: Vec<reify_ir::value::SelectorValue> = args
         .iter()
-        .map(|arg| reconstruct_selector_value_symbolic(arg, values, diagnostics))
+        .map(|arg| reconstruct_selector_value_symbolic(arg, values, &mut scratch))
         .collect::<Option<Vec<_>>>()?;
+    diagnostics.append(&mut scratch);
     match constructor(children) {
         Ok(sv) => Some(reify_ir::Value::Selector(sv)),
         Err(err) => {
@@ -5478,6 +5494,30 @@ fn eval_variadic_composition_symbolic(
             Some(reify_ir::Value::Undef)
         }
     }
+}
+
+/// Adapts [`reify_ir::value::SelectorValue::difference`]'s binary signature
+/// to the `Vec`-based constructor shape [`eval_variadic_composition_symbolic`]
+/// expects, so `difference` shares that collect+construct+warning path
+/// instead of duplicating it inline (review amendment, task #5120 R2c). Only
+/// ever invoked with exactly 2 elements — guaranteed by the `== 2` arity
+/// gate in [`try_eval_symbolic_topology_selector`] before this is reached.
+fn selector_value_difference_pair(
+    children: Vec<reify_ir::value::SelectorValue>,
+) -> Result<reify_ir::value::SelectorValue, reify_ir::value::SelectorError> {
+    debug_assert_eq!(
+        children.len(),
+        2,
+        "difference arity is gated to exactly 2 upstream"
+    );
+    let mut children = children.into_iter();
+    let a = children
+        .next()
+        .expect("difference: exactly 2 operands (arity-gated)");
+    let b = children
+        .next()
+        .expect("difference: exactly 2 operands (arity-gated)");
+    reify_ir::value::SelectorValue::difference(a, b)
 }
 
 /// Kernel-FREE sibling of [`resolve_named_leaf_target`] for the symbolic
@@ -5584,20 +5624,13 @@ pub(crate) fn try_eval_symbolic_topology_selector(
             diagnostics,
             reify_ir::value::SelectorValue::intersect,
         ),
-        TopologySelectorHelper::Difference => {
-            // args[0]/args[1] guaranteed by the == 2 arity gate above.
-            let a = reconstruct_selector_value_symbolic(&args[0], values, diagnostics)?;
-            let b = reconstruct_selector_value_symbolic(&args[1], values, diagnostics)?;
-            match reify_ir::value::SelectorValue::difference(a, b) {
-                Ok(sv) => Some(reify_ir::Value::Selector(sv)),
-                Err(err) => {
-                    diagnostics.push(Diagnostic::warning(format!(
-                        "difference: selector kind-closure violation ({err:?}); cell left at Undef"
-                    )));
-                    Some(reify_ir::Value::Undef)
-                }
-            }
-        }
+        TopologySelectorHelper::Difference => eval_variadic_composition_symbolic(
+            "difference",
+            args,
+            values,
+            diagnostics,
+            selector_value_difference_pair,
+        ),
         TopologySelectorHelper::Face => eval_named_leaf_selector_ctor_symbolic(
             reify_core::ty::SelectorKind::Face,
             args,
