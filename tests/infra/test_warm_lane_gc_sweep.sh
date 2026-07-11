@@ -25,6 +25,10 @@
 #         floor or on a df failure, plain reclaim runs unchanged (fail-to-α);
 #         end-to-end proof via the real gc.sh that target/ is deleted
 #         outright, with inv.preserve (dirty/live-consumer) still honored.
+#         Also covers the --critical-free-gib integer-format guard (exit 2
+#         on a non-numeric value, via flag or env) and the df-succeeds-but
+#         -unparseable-output fallback (a code path distinct from a df exit
+#         failure).
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -110,6 +114,20 @@ _df_fail_stub() {
     cat > "$outfile" << 'EOF'
 #!/usr/bin/env bash
 exit 1
+EOF
+    chmod +x "$outfile"
+}
+
+# _df_garbage_stub OUTFILE — writes a df stub that EXITS 0 (succeeds) but
+# emits a non-numeric avail field (e.g. a locale/column mismatch), distinct
+# from _df_fail_stub's non-zero exit: this drives the sweep's separate
+# "df succeeded but output failed the numeric guard" fallback branch.
+_df_garbage_stub() {
+    local outfile="$1"
+    cat > "$outfile" << 'EOF'
+#!/usr/bin/env bash
+printf 'Avail\nN/A\n'
+exit 0
 EOF
     chmod +x "$outfile"
 }
@@ -620,5 +638,93 @@ assert "G5: live-consumer lane target/ marker intact (inv.preserve inherited und
 # Release the background lock holder.
 kill "$G5_LOCK_PID" 2>/dev/null || true
 _BGPIDS=()  # clear so cleanup doesn't double-kill
+
+# ── G6: non-integer --critical-free-gib → exit 2 + stderr warning ────────────
+# Regression guard for the CRITICAL_FREE_GIB integer-format validation
+# (scripts/warm-lane-gc-sweep.sh: `grep -qE '^[0-9]+$'` guard, ~L139-143). A
+# dropped or weakened guard (e.g. accepting "2G" or an empty value) would let
+# the sweep silently compare avail_bytes against a bogus/zero floor and never
+# engage --disk-pressure, with nothing to catch it. Mirrors Block A's
+# unknown-flag CLI-guard assertions (A3).
+G6_ROOT="$(mktemp -d /tmp/test-gc-sweep-g6-XXXXXX)"
+_TMPDIRS+=("$G6_ROOT")
+
+G6_MOUNT="$G6_ROOT/worktrees"
+mkdir -p "$G6_MOUNT"
+
+G6_GC_LOG="$G6_ROOT/gc_calls.log"
+G6_GC_STUB="$G6_ROOT/gc_stub.sh"
+cat > "$G6_GC_STUB" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$GC_LOG"
+exit 0
+STUB_EOF
+chmod +x "$G6_GC_STUB"
+
+# G6a: non-numeric value via --critical-free-gib
+GC_LOG="$G6_GC_LOG" run_sweep --mount "$G6_MOUNT" --gc-script "$G6_GC_STUB" --critical-free-gib abc
+
+assert "G6a: --critical-free-gib abc exits 2" test "$RC" -eq 2
+assert "G6a: stderr warns of invalid integer" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "valid integer"' _ "$ERR_OUT"
+assert "G6a: gc-script NOT invoked (usage error precedes exec)" \
+    bash -c '[ ! -f "$1" ] || [ ! -s "$1" ]' _ "$G6_GC_LOG"
+
+# G6b: numeric-with-suffix value ("2G") is rejected too — pins the ^[0-9]+$
+# anchoring; an unanchored or partial-match regression could let this slip
+# through and silently truncate to a bogus floor.
+GC_LOG="$G6_GC_LOG" run_sweep --mount "$G6_MOUNT" --gc-script "$G6_GC_STUB" --critical-free-gib 2G
+
+assert "G6b: --critical-free-gib 2G (numeric+suffix) exits 2" test "$RC" -eq 2
+assert "G6b: stderr warns of invalid integer" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "valid integer"' _ "$ERR_OUT"
+assert "G6b: gc-script NOT invoked (usage error precedes exec)" \
+    bash -c '[ ! -f "$1" ] || [ ! -s "$1" ]' _ "$G6_GC_LOG"
+
+# G6c: same non-numeric value via the env knob
+GC_LOG="$G6_GC_LOG" REIFY_WARM_LANE_GC_SWEEP_CRITICAL_FREE_GIB="abc" \
+    run_sweep --mount "$G6_MOUNT" --gc-script "$G6_GC_STUB"
+
+assert "G6c: REIFY_WARM_LANE_GC_SWEEP_CRITICAL_FREE_GIB=abc exits 2" test "$RC" -eq 2
+assert "G6c: stderr warns of invalid integer (env-var path)" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "valid integer"' _ "$ERR_OUT"
+assert "G6c: gc-script NOT invoked (usage error precedes exec)" \
+    bash -c '[ ! -f "$1" ] || [ ! -s "$1" ]' _ "$G6_GC_LOG"
+
+# ── G7: df succeeds (exit 0) but reports unparseable avail bytes ─────────────
+# Distinct code path from G3 (which covers a non-zero df EXIT CODE): here df
+# exits 0 but its second line fails the `^[0-9]+$` numeric guard
+# (scripts/warm-lane-gc-sweep.sh: the "else" branch after the numeric check,
+# ~L173-175) — e.g. a locale/column mismatch. A mis-anchored regex accepting
+# non-numeric input here would feed a bogus value into the arithmetic
+# avail_bytes -le critical_bytes comparison.
+G7_ROOT="$(mktemp -d /tmp/test-gc-sweep-g7-XXXXXX)"
+_TMPDIRS+=("$G7_ROOT")
+
+G7_MOUNT="$G7_ROOT/worktrees"
+mkdir -p "$G7_MOUNT"
+
+G7_GC_LOG="$G7_ROOT/gc_calls.log"
+G7_GC_STUB="$G7_ROOT/gc_stub.sh"
+cat > "$G7_GC_STUB" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$GC_LOG"
+exit 0
+STUB_EOF
+chmod +x "$G7_GC_STUB"
+
+G7_DF_STUB="$G7_ROOT/df_garbage_stub.sh"
+_df_garbage_stub "$G7_DF_STUB"
+
+GC_LOG="$G7_GC_LOG" REIFY_WARM_LANE_GC_SWEEP_DF="$G7_DF_STUB" \
+    run_sweep --mount "$G7_MOUNT" --gc-script "$G7_GC_STUB" --critical-free-gib 2
+
+assert "G7: exit 0 (unparseable avail must not abort the sweep)" test "$RC" -eq 0
+assert "G7: gc-script invoked with plain reclaim (unparseable avail falls back to α)" \
+    bash -c 'grep -qE "^reclaim --mount " "$1"' _ "$G7_GC_LOG"
+assert "G7: --disk-pressure NOT appended (unparseable avail → fail-to-α)" \
+    bash -c '! grep -q -- "--disk-pressure" "$1"' _ "$G7_GC_LOG"
+assert "G7: stderr warns about unparseable avail bytes" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "unparseable"' _ "$ERR_OUT"
 
 test_summary
