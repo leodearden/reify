@@ -425,15 +425,10 @@ pub(crate) fn compile_guarded_members(
                 let solver_hints = extract_solver_hints(&lowered_annotations, diagnostics);
                 validate_solver_hint_collections(&solver_hints, scope, functions, diagnostics);
 
-                // `priv param` → hidden from external dot-access (task #3978 δ).
-                // Mirrors entity.rs Site 1 — `priv` IS grammatically legal on a
-                // guarded-block param, so thread `param.is_priv` through instead of
-                // hardcoding Public (#5161).
-                let visibility = if param.is_priv {
-                    Visibility::Private
-                } else {
-                    Visibility::Public
-                };
+                // `priv` IS grammatically legal on a guarded-block param, so thread
+                // `param.is_priv` through instead of hardcoding Public — mirrors
+                // entity.rs Site 1 (#5161).
+                let visibility = priv_flag_to_visibility(param.is_priv);
                 let decl = build_param_value_cell_decl(
                     id,
                     auto_free,

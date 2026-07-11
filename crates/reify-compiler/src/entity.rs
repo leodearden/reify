@@ -851,6 +851,22 @@ fn dimension_display_name(dim: DimensionVector) -> String {
     }
 }
 
+/// Maps a param's `is_priv` flag to the compiled cell's `Visibility`:
+/// `priv param` → `Visibility::Private` (hidden from external dot-access,
+/// task #3978 δ); otherwise `Visibility::Public`. Shared by every
+/// `ValueCellDecl` construction site that lowers a param's visibility —
+/// top-level structure-param, port-member, guarded-block (`guards.rs`), and
+/// the structure-def skeleton pass — so the mapping can't drift between
+/// sites. `pub(crate)` so `guards.rs` can call it unqualified via the
+/// `pub(crate) use entity::*;` re-export in `lib.rs`.
+pub(crate) fn priv_flag_to_visibility(is_priv: bool) -> Visibility {
+    if is_priv {
+        Visibility::Private
+    } else {
+        Visibility::Public
+    }
+}
+
 /// # Shadowing
 ///
 /// `CompilationScope::register` (`scope.rs`) uses `HashMap::insert`, so a
@@ -2064,12 +2080,7 @@ pub(crate) fn compile_entity(
                 let solver_hints = extract_solver_hints(&lowered_annotations, diagnostics);
                 validate_solver_hint_collections(&solver_hints, &scope, functions, diagnostics);
 
-                // `priv param` → hidden from external dot-access (task #3978 δ).
-                let visibility = if param.is_priv {
-                    Visibility::Private
-                } else {
-                    Visibility::Public
-                };
+                let visibility = priv_flag_to_visibility(param.is_priv);
                 let decl = build_param_value_cell_decl(
                     id,
                     auto_free,
@@ -3369,15 +3380,10 @@ pub(crate) fn compile_entity(
 
                             let auto_free = param.default.as_ref().and_then(extract_auto_free);
 
-                            // `priv param` → hidden from external dot-access (task #3978 δ).
-                            // Mirrors Site 1 (top-level structure-param) — `priv` is
-                            // grammatically legal on a port-member param too, so thread
-                            // `param.is_priv` through instead of hardcoding Public (#5161).
-                            let visibility = if param.is_priv {
-                                Visibility::Private
-                            } else {
-                                Visibility::Public
-                            };
+                            // `priv` is grammatically legal on a port-member param too,
+                            // so thread `param.is_priv` through instead of hardcoding
+                            // Public — mirrors Site 1 (#5161).
+                            let visibility = priv_flag_to_visibility(param.is_priv);
                             let decl = build_param_value_cell_decl(
                                 id,
                                 auto_free,
@@ -6063,16 +6069,12 @@ pub(crate) fn build_structure_def_skeleton(
             value_cells.push(ValueCellDecl {
                 id,
                 kind: ValueCellKind::Param,
-                // `priv param` → hidden from external dot-access (task #3978 δ). The
-                // skeleton template is the one consulted during function-body member
-                // access (functions_phase merged_registry), so this site MUST mirror
-                // the authoritative compile_entity param sites or a `priv` member
-                // leaks through a function body.
-                visibility: if param.is_priv {
-                    Visibility::Private
-                } else {
-                    Visibility::Public
-                },
+                // The skeleton template is the one consulted during function-body
+                // member access (functions_phase merged_registry), so this site MUST
+                // mirror the authoritative compile_entity param sites (via
+                // priv_flag_to_visibility) or a `priv` member leaks through a
+                // function body.
+                visibility: priv_flag_to_visibility(param.is_priv),
                 is_aux: false,
                 cell_type,
                 default_expr,
