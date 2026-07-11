@@ -11686,6 +11686,18 @@ mod mixed_region_tests;
 #[cfg(test)]
 mod post_process_mechanism_mass_props_tests;
 
+// ── post_process_cross_sub_value_cells unit tests (task 4725 amendment) ──────
+//
+// Direct-call unit pin (`MockGeometryKernel`, no OCCT) for the rescope
+// (`CompiledExpr::map_value_refs`) + dispatch + is_collection /
+// already-folded guards inside `post_process_cross_sub_value_cells`. The
+// OCCT-gated `cross_entity_aggregate_folds_via_fixpoint` /
+// `total_mass_computed` integration pins only exercise this pass when OCCT
+// is available (reviewer finding: no isolated regression pin existed).
+
+#[cfg(test)]
+mod post_process_cross_sub_value_cells_tests;
+
 // ── diagnose_topology_correspondence_drops unit tests (task 4545 step-3) ─────
 //
 // RED: `diagnose_topology_correspondence_drops` does not exist yet.
