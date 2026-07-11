@@ -522,8 +522,14 @@ purpose okp(subject : Motor) {
 // not yet consulted for these two member kinds, and external dot-access to a
 // `priv param` inside a port or guarded block is not actually blocked yet.
 // That enforcement gap is out of this task's scope (task #5161 is scoped to
-// the lowering sites, mirroring the sibling top-level structure-param site);
-// it has been escalated as a follow-up rather than fixed here.
+// the lowering sites, mirroring the sibling top-level structure-param site).
+// Tracked as follow-up escalation esc-5161-2 (risk_identified): extend
+// `template_member_is_priv` to also scan `ports[].members[].visibility` and
+// `guarded_groups[].members[].visibility`, then add a RED-until-fixed
+// enforcement test mirroring Part B's priv-param/sub/port cases. Part D below
+// deliberately asserts only the lowered `visibility` field, not dot-access
+// enforcement — so it stays green regardless of whether that follow-up has
+// landed yet.
 
 /// Locate a template by name in the compiled module (generalizes `motor_template`
 /// for the Part D fixtures below, which use distinct structure names).
