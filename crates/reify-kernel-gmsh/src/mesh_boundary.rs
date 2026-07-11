@@ -17,13 +17,14 @@
 //! only exists in the real FFI build.
 
 use reify_ir::{BoundaryAssociation, GeometryError, GeometryHandleId, Mesh, NodeAttachment, VolumeConnectivity, VolumeMesh};
-// `MeshInvariant` names the obligation reported by the #4876 watertightness
-// preflight's `GeometryError::MeshContractViolation`. Not re-exported at the
-// `reify_ir` crate root (see `reify_ir::lib::pub use geometry::{..}`), so it
-// is imported from its defining submodule, mirroring the `reify_ir::geometry::`
-// qualified-path precedent used elsewhere in the workspace (e.g.
+// `MeshInvariant` / `MeshViolationCounts` / `MeshWitness` compose the
+// #4876 watertightness preflight's `GeometryError::MeshContractViolation`.
+// Not re-exported at the `reify_ir` crate root (see
+// `reify_ir::lib::pub use geometry::{..}`), so they are imported from their
+// defining submodule, mirroring the `reify_ir::geometry::` qualified-path
+// precedent used elsewhere in the workspace (e.g.
 // `crates/reify-eval/tests/result_carried_topology.rs`).
-use reify_ir::geometry::MeshInvariant;
+use reify_ir::geometry::{MeshInvariant, MeshViolationCounts, MeshWitness};
 
 // `ElementOrderTag` is only referenced inside `#[cfg(has_gmsh)]` functions
 // (`mesh_surface_to_volume_with_attribution`, `run_meshing_with_entity_queries`).
@@ -180,6 +181,118 @@ pub struct BoundaryAttributedReport {
     /// Interior tet nodes (not on any B-rep entity) are absent.
     /// Keys are 0-based local indices into `volume.vertices`.
     pub boundary: BoundaryAssociation,
+}
+
+// ---------------------------------------------------------------------------
+// Watertightness preflight (task #4876, PRD kernel-seam-contracts.md §9
+// NEAR-TERM preflight leaf; INV-GEO-1)
+// ---------------------------------------------------------------------------
+
+/// Preflight the RAW watertightness of `surface` before it is handed to the
+/// gmsh attributed producer ([`mesh_surface_to_volume_with_attribution`]).
+///
+/// # Why weldedness, not just `validate`
+///
+/// OCCT emits per-face vertex blocks (unwelded by design,
+/// `occt_wrapper.cpp:5847`): every corner shared by several faces is
+/// duplicated once per incident face. Such a surface is a fully valid,
+/// closed, consistently-wound 2-manifold on its POSITION-WELDED QUOTIENT
+/// topology, so [`Mesh::validate`] alone happily returns `Ok`. But
+/// `mesh_surface_to_volume_with_attribution` forbids vertex-merging repair
+/// (it would invalidate per-vertex attribution, see its repair guard) and so
+/// consumes the RAW, unwelded index buffer directly — which is genuinely
+/// non-watertight (an open edge at every shared face-perimeter edge).
+/// Feeding that raw surface into gmsh SIGSEGVs inside the FFI, a failure
+/// mode the caller's `Result`-based honest-degradation fallback cannot
+/// catch.
+///
+/// This is the `docs/prds/kernel-seam-contracts.md` §4 site-3 fail-closed
+/// exception: rather than let an uncatchable crash happen, this preflight
+/// returns `Err` up front so the caller degrades to the plain
+/// (non-attributed) producer instead.
+///
+/// # Checks (in order)
+///
+/// 1. [`Mesh::validate`] — the producer obligations (finite coordinates,
+///    in-bounds indices, non-degenerate triangles, closed + consistently
+///    wound on the welded quotient), bridged to a
+///    [`GeometryError::MeshContractViolation`] naming kernel `"gmsh"` via
+///    [`reify_ir::geometry::MeshContractViolation::into_geometry_error`].
+/// 2. [`Mesh::weldedness`] — the CONSUMER-CAPABILITY axis: is the raw index
+///    buffer already welded? If not, a raw (unwelded) directed-edge scan
+///    ([`raw_open_edge_census`]) computes a truthful open-edge count and a
+///    first-open-edge witness, and this synthesizes a
+///    `MeshContractViolation` naming [`MeshInvariant::Closed`] — there is no
+///    dedicated "unwelded" variant; the raw surface genuinely has open
+///    boundary edges, so `Closed` is the honest obligation to report.
+///
+/// `tol` is forwarded to both `validate` and `weldedness` unchanged.
+pub fn preflight_watertight_surface(surface: &Mesh, tol: f64) -> Result<(), GeometryError> {
+    surface
+        .validate(tol)
+        .map_err(|violation| violation.into_geometry_error("gmsh"))?;
+
+    if !surface.weldedness(tol).raw_welded {
+        let (open_edges, (u, v)) = raw_open_edge_census(surface);
+        return Err(GeometryError::MeshContractViolation {
+            kernel: "gmsh",
+            invariant: MeshInvariant::Closed,
+            counts: MeshViolationCounts {
+                open_edges,
+                ..Default::default()
+            },
+            witness: MeshWitness::Edge { u, v },
+        });
+    }
+
+    Ok(())
+}
+
+/// Count RAW (pre-weld) directed edges whose reverse is absent, and return a
+/// first-offender witness `(u, v)` in triangle-emission order (deterministic,
+/// independent of the internal `HashSet`'s iteration order).
+///
+/// Mirrors `crates/reify-eval/tests/fea_face_selector_bc_e2e.rs::raw_open_edge_count`
+/// (the #4876/#5115 characterization witness), additionally returning a
+/// concrete witness edge for [`preflight_watertight_surface`]'s synthesized
+/// [`GeometryError::MeshContractViolation`].
+///
+/// The witness defaults to `(u32::MAX, u32::MAX)` (mirroring the dangling-tail
+/// sentinel in `reify_ir::geometry::Mesh::check_contract`) in the degenerate
+/// case where `open_edges == 0` — every triangle-referenced edge already has
+/// its reverse, so there is no offending edge to name even though the caller
+/// observed `weldedness(tol).raw_welded == false` (e.g. an unreferenced
+/// duplicate-position vertex outside `indices`). Preferred over panicking:
+/// this helper backs a fail-closed preflight whose entire purpose is
+/// avoiding an uncatchable crash.
+fn raw_open_edge_census(surface: &Mesh) -> (usize, (u32, u32)) {
+    use std::collections::HashSet;
+
+    let mut directed: HashSet<(u32, u32)> = HashSet::new();
+    for tri in surface.indices.chunks_exact(3) {
+        let (a, b, c) = (tri[0], tri[1], tri[2]);
+        for &(u, v) in &[(a, b), (b, c), (c, a)] {
+            directed.insert((u, v));
+        }
+    }
+
+    let open_edges = directed
+        .iter()
+        .filter(|&&(u, v)| !directed.contains(&(v, u)))
+        .count();
+
+    let witness = surface
+        .indices
+        .chunks_exact(3)
+        .find_map(|tri| {
+            let (a, b, c) = (tri[0], tri[1], tri[2]);
+            [(a, b), (b, c), (c, a)]
+                .into_iter()
+                .find(|&(u, v)| !directed.contains(&(v, u)))
+        })
+        .unwrap_or((u32::MAX, u32::MAX));
+
+    (open_edges, witness)
 }
 
 // ---------------------------------------------------------------------------
