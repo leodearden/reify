@@ -146,8 +146,20 @@ provision-warm-lane-fs.sh --grow --size-gib <N> [--img <path>] [--mount <dir>]
   STDOUT: the resolved mount dir. STDERR: diagnostics.
 budget formula (documented in orchestrator.yaml + β doc, recomputed from LIVE measurement — NOT frozen):
   resident_divergent_budget_gib = floor( (image_free_gib − base_gib − 2×base_gib_flip_reserve) / safety )
+    image_free_gib, base_gib, base_gib_flip_reserve : GiB (live `df`/`du` measurements, never frozen)
+      base_gib_flip_reserve ≈ one base generation's footprint; the leading 2× reserves old+new
+      generations resident during a refresh-warm-base.sh flip — exact value tuned during β (open-Q 2)
+    safety : dimensionless factor > 1, applied as a DIVISOR (a haircut on the free headroom),
+      NOT a subtractive GiB reserve — e.g. 1.5 below; tuned from audit headroom history during β
+    result : resident_divergent_budget_gib is a GiB ceiling (NOT a lane count) — compared directly
+      against measured_resident_divergent_gib in the ADVISORY relation below
   effective_N (task) = max_concurrent_tasks + spare_warm_lanes ; K = _MERGE_AHEAD_BOUND
   ADVISORY relation the audit/admission assert: measured_resident_divergent_gib ≤ resident_divergent_budget_gib
+  worked example, live 2026-07-11 (§2/§6 measurements; safety=1.5 illustrative):
+    image_free_gib≈462, base_gib≈108, base_gib_flip_reserve≈108
+    → floor( (462 − 108 − 2×108) / 1.5 ) = floor(138 / 1.5) = 92 GiB budget
+    (< one lane's ~122 GB mean footprint at today's free space — this is the arithmetic behind
+     why the 6.0 TB image is already budget-constrained, motivating β's grow, open-Q 2)
 ```
 *Invariant P3:* grow is monotone (never shrinks a populated image). *Invariant P4:* the budget is a *derived, recomputed* quantity, never a hardcoded lane-count or GB constant frozen into a test (G6).
 
