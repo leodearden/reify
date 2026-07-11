@@ -574,6 +574,8 @@ assert "I9: HEADROOM reclaimable=2" \
     bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "reclaimable=2"' _ "$OUT"
 assert "I10: HEADROOM leaked=1" \
     bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "leaked=1"' _ "$OUT"
+assert "I10a: HEADROOM leak_unknown=0 when the status oracle resolves cleanly" \
+    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "leak_unknown=0"' _ "$OUT"
 
 # A3: a status oracle that exits non-zero degrades the task lanes to
 # `unknown`; the run still exits 0; no lane is reclassified
@@ -596,6 +598,16 @@ assert "I15: _lane-leaked classification PRESERVED-OK (never falsely LEAKED unde
     bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-leaked .*classification=PRESERVED-OK"' _ "$OUT"
 assert "I16: _lane-residue classification still RECLAIMABLE (residue-only reclaim is status-independent)" \
     bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-residue .*classification=RECLAIMABLE"' _ "$OUT"
+
+# A3 observability: an unresolvable status that suppresses a would-be LEAKED
+# verdict (_lane-leaked: ORPHAN + stale, but status=unknown under the failing
+# oracle) must be surfaced -- not silently folded into "no leaks" -- via a
+# distinct HEADROOM leak_unknown count and a stderr warning naming the lane.
+# _lane-done is unknown+ORPHAN too but NOT stale, so it must NOT be counted.
+assert "I16a: HEADROOM leak_unknown=1 under oracle failure (distinguishes 'no leaks' from 'unverifiable')" \
+    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "leak_unknown=1"' _ "$OUT"
+assert "I16b: stderr warns _lane-leaked's LEAKED verdict is unconfirmable under unknown status" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-leaked.*status unknown"' _ "$ERR_OUT"
 
 # A3: a failing df seam also degrades gracefully -- exit 0, HEADROOM line
 # still emitted, free_gib/budget_gib degrade to 0 (never abort; PRD §9.5
