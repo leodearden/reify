@@ -50,6 +50,7 @@ scripts/warm-lane-degenerate-ref-check.sh    tests/infra/test_warm_lane_degenera
 scripts/warm-lane-gc.sh              tests/infra/test_warm_lane_gc.sh
 scripts/warm-lane-gc-sweep.sh        tests/infra/test_warm_lane_gc_sweep.sh
 scripts/install-warm-lane-units.sh   tests/infra/test_warm_lane_boot_persistence.sh
+scripts/warm-lane-audit.sh           tests/infra/test_warm_lane_audit.sh
 
 # H1 (#4921) run_all.sh classification drift-guard — declares every
 # tests/infra/test_*.sh into pool / intra-run-serial / host-exclusive; the
