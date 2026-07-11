@@ -175,4 +175,80 @@ assert "B7: HEADROOM line shows free=1" \
 kill "$B_LOCK_PID" 2>/dev/null || true
 _BGPIDS=()  # clear so cleanup doesn't double-kill
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Shared scaffolding: status-oracle stub + ahead-of-main commit helper
+# ──────────────────────────────────────────────────────────────────────────────
+
+# _add_ahead_commit DIR — add a committed change NOT reachable from main.
+_add_ahead_commit() {
+    local dir="$1"
+    echo "ahead" >> "$dir/README.md"
+    git -C "$dir" add README.md
+    git -C "$dir" commit -q -m "ahead-of-main commit"
+}
+
+# leak-oracle.sh: given task-id $1, looks up status in ORACLE_MAP file (one
+# "id status" pair per line). Exits 0 with empty output for unknown ids.
+# Mirrors tests/infra/test_warm_lane_preflight.sh Block D / test_warm_lane_gc.sh
+# byte-for-byte (the shared task-4749 status-oracle contract).
+ORACLE_STUB_DIR="$(mktemp -d /tmp/test-warm-lane-audit-oracle-stub-XXXXXX)"
+_TMPDIRS+=("$ORACLE_STUB_DIR")
+cat > "$ORACLE_STUB_DIR/leak-oracle.sh" << 'STUB_EOF'
+#!/usr/bin/env bash
+_qid="$1"
+if [ -f "${ORACLE_MAP:-}" ]; then
+    while IFS=' ' read -r _mid _mst; do
+        if [ "$_mid" = "$_qid" ]; then
+            printf '%s\n' "$_mst"
+            exit 0
+        fi
+    done < "$ORACLE_MAP"
+fi
+exit 0
+STUB_EOF
+chmod +x "$ORACLE_STUB_DIR/leak-oracle.sh"
+
+# leak-oracle-fail.sh: always exits non-zero -- drives the A3 hardening test
+# (oracle failure must NOT abort; unknown = neither terminal nor non-terminal).
+cat > "$ORACLE_STUB_DIR/leak-oracle-fail.sh" << 'STUB_EOF'
+#!/usr/bin/env bash
+exit 1
+STUB_EOF
+chmod +x "$ORACLE_STUB_DIR/leak-oracle-fail.sh"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block C — backing-task-status via the 4749 seam + terminal -> RECLAIMABLE
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block C: backing-task-status + terminal -> RECLAIMABLE ---"
+
+C_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-c-XXXXXX)"
+_TMPDIRS+=("$C_MOUNT")
+
+C_MAP="$(mktemp /tmp/test-warm-lane-audit-c-map-XXXXXX)"
+_TMPDIRS+=("$C_MAP")
+printf '100 done\n200 pending\n' > "$C_MAP"
+
+# _lane-done: FREE, task/100, oracle=done, ahead-of-main.
+make_lane "$C_MOUNT/_lane-done" "task/100"
+_add_ahead_commit "$C_MOUNT/_lane-done"
+
+# _lane-pending: FREE, task/200, oracle=pending, ahead-of-main.
+make_lane "$C_MOUNT/_lane-pending" "task/200"
+_add_ahead_commit "$C_MOUNT/_lane-pending"
+
+ORACLE_MAP="$C_MAP" run_helper --mount "$C_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh"
+
+assert "C1: exit 0" test "$RC" -eq 0
+assert "C2: _lane-done backing-task-status=terminal" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-done .*status=terminal"' _ "$OUT"
+assert "C3: _lane-done classification RECLAIMABLE" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-done .*classification=RECLAIMABLE"' _ "$OUT"
+assert "C4: HEADROOM line shows reclaimable=1" \
+    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "reclaimable=1"' _ "$OUT"
+assert "C5: _lane-pending backing-task-status=non-terminal" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-pending .*status=non-terminal"' _ "$OUT"
+assert "C6: _lane-pending classification PRESERVED-OK (not reclaimable-via-terminal)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-pending .*classification=PRESERVED-OK"' _ "$OUT"
+
 test_summary
