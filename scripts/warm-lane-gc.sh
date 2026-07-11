@@ -14,7 +14,9 @@
 #       [--main-ref REF] \
 #       [--lane-glob GLOB] \
 #       [--protect-glob GLOB] \
-#       [--seed-script PATH]
+#       [--seed-script PATH] \
+#       [--status-cmd PATH] \
+#       [--disk-pressure]
 #
 #   OR (legacy / explicit form):
 #   scripts/warm-lane-gc.sh reclaim \
@@ -59,6 +61,24 @@
 #                          Matched entries are skipped entirely.
 #   --seed-script PATH     Path to the α seed primitive (default: sibling seed-warm-lane.sh).
 #                          Overridable for hermetic testing.
+#   --status-cmd PATH      Optional advisory status oracle for the Tier-3
+#                          terminal-task reclaim: invoked as `<cmd> <task_id>`,
+#                          expected to print a task status (e.g. done/
+#                          cancelled/pending) to stdout. Empty output or a
+#                          non-zero exit is treated as unknown (non-terminal).
+#                          Default: REIFY_WARM_LANE_GC_STATUS_CMD, falling
+#                          back to REIFY_LANE_LEAK_STATUS_CMD (the same
+#                          oracle warm-lane-preflight.sh Check 6 and
+#                          warm-lane-degenerate-ref-check.sh consume), so one
+#                          env var lights up detector + reclaimer together.
+#   --disk-pressure        Fast-path: reclaim a lane by `rm -rf <lane>/target`
+#                          instead of invoking the α reflink-reseed clone — no
+#                          transient 2×-space requirement. Valid because
+#                          acquire_lane always re-seeds from base (D10 §9.5).
+#                          Applies to every reclaimable lane in Pass 1 (Tier-3
+#                          or _is_reclaimable); counted as `reset` in the
+#                          summary. Default: REIFY_WARM_LANE_GC_DISK_PRESSURE
+#                          (any non-empty value = on). Off by default.
 #   -h, --help             Print this message and exit.
 #
 # Exit codes:
@@ -74,6 +94,10 @@
 #   REIFY_WARM_LANE_GC_LANE_GLOB        — default --lane-glob
 #   REIFY_WARM_LANE_GC_PROTECT_GLOB     — default --protect-glob
 #   REIFY_WARM_LANE_GC_SEED_SCRIPT      — default --seed-script
+#   REIFY_WARM_LANE_GC_STATUS_CMD       — default --status-cmd; falls back to
+#                                         REIFY_LANE_LEAK_STATUS_CMD if unset
+#   REIFY_WARM_LANE_GC_DISK_PRESSURE    — default --disk-pressure (any non-empty
+#                                         value = on); off by default
 #
 # Design notes:
 #   - --mount is the dark-factory consumer interface.  Dark-factory passes the same
@@ -99,6 +123,23 @@
 #   - inv.preserve shared predicate (_is_reclaimable): skip on dirty tracked changes
 #     (git status --porcelain), unlanded ahead-of-main (merge-base --is-ancestor),
 #     or live consumer (flock -n -x <dir>.lock fails).
+#   - Tier-3 terminal-task reclaim (Pass 1 only, task 5167): a lane whose
+#     backing task/NNNN is terminal (done or cancelled, per --status-cmd) is
+#     reclaimable REGARDLESS of dirty/ahead-of-main. The backing task id is
+#     resolved from an attached task/NNNN branch, or — for a detached HEAD —
+#     from the sole refs/heads/task/* branch that contains HEAD (zero or
+#     ambiguous matches yield no id). This closes the rebase-orphan leak: a
+#     task landed via merge-train REBASE has its work on main under new SHAs,
+#     while its lane's task/NNNN tip is an orphan SHA that is never an
+#     ancestor of main, so _is_reclaimable's ahead-of-main check would
+#     otherwise preserve it forever. Consulted only when the cheap local
+#     _is_reclaimable predicate (filesystem + git, no subprocess) would
+#     otherwise preserve the lane — avoids spawning the --status-cmd oracle
+#     subprocess per lane in the common already-reclaimable steady-state case,
+#     with an identical reclaim set either way. Still gated behind the same
+#     live-consumer flock acquisition, so inv.2 (one consumer per lane) is
+#     unaffected. Unresolvable/unknown/non-terminal status falls through to
+#     preserve.
 #   - α reuse: resolve base symlink → concrete gen, hold flock -s during α call
 #     (D8 reader-refcount seam; same contract as the acquire path).
 #   - Safety-ranked order: reset lanes first (cheap), then remove orphans (destructive).
@@ -140,6 +181,12 @@ Usage: $(basename "$0") reclaim --mount WORKTREE_BASE [OPTIONS]
     --lane-glob GLOB      Glob for pool-lane entries (default: _lane-*,_spec-*).
     --protect-glob GLOB   Glob for protected entries (default: _merge-*).
     --seed-script PATH    Path to α seed primitive (default: sibling seed-warm-lane.sh).
+    --status-cmd PATH     Advisory status oracle for Tier-3 terminal-task reclaim
+                          (default: REIFY_WARM_LANE_GC_STATUS_CMD, falling back to
+                          REIFY_LANE_LEAK_STATUS_CMD).
+    --disk-pressure       Fast-path: reclaim via `rm -rf <lane>/target` instead
+                          of the α reflink-reseed clone (default:
+                          REIFY_WARM_LANE_GC_DISK_PRESSURE). Off by default.
     -h, --help            Print this message and exit.
 
   Exit codes:
@@ -161,6 +208,13 @@ MAIN_REF="${REIFY_WARM_LANE_GC_MAIN_REF:-main}"
 LANE_GLOB="${REIFY_WARM_LANE_GC_LANE_GLOB:-}"
 PROTECT_GLOB="${REIFY_WARM_LANE_GC_PROTECT_GLOB:-}"
 SEED_SCRIPT="${REIFY_WARM_LANE_GC_SEED_SCRIPT:-}"
+# Tier-3 status oracle: REIFY_WARM_LANE_GC_STATUS_CMD, falling back to the
+# shared REIFY_LANE_LEAK_STATUS_CMD (warm-lane-preflight.sh Check 6 /
+# warm-lane-degenerate-ref-check.sh) so one env var lights up both the
+# advisory detector and this reclaimer.
+STATUS_CMD="${REIFY_WARM_LANE_GC_STATUS_CMD:-${REIFY_LANE_LEAK_STATUS_CMD:-}}"
+# Disk-pressure fast-path (task 5167): any non-empty value = on; off by default.
+DISK_PRESSURE="${REIFY_WARM_LANE_GC_DISK_PRESSURE:-}"
 
 # ── arg parsing ────────────────────────────────────────────────────────────────
 SUBCOMMAND=""
@@ -190,6 +244,11 @@ while [ $# -gt 0 ]; do
         --seed-script)
             [ $# -ge 2 ] || { err "--seed-script requires a value"; exit 2; }
             SEED_SCRIPT="$2"; shift 2 ;;
+        --status-cmd)
+            [ $# -ge 2 ] || { err "--status-cmd requires a value"; exit 2; }
+            STATUS_CMD="$2"; shift 2 ;;
+        --disk-pressure)
+            DISK_PRESSURE="1"; shift ;;
         reclaim)
             SUBCOMMAND="reclaim"; shift ;;
         -*)
@@ -261,6 +320,79 @@ _is_git_worktree() {
     local dir="$1"
     [ -d "$dir" ] || return 1
     git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || return 1
+}
+
+# ── Tier-3: backing-task resolution + terminal-status check ──────────────────
+# _backing_task_id <dir>
+# Prints the numeric task id backing <dir>'s HEAD, or nothing if none can be
+# resolved. Never fails under set -e (all git calls guarded with `|| true`).
+# Two resolution paths:
+#   attached  — HEAD is on a branch named task/NNNN (purely numeric NNNN).
+#   detached  — HEAD is detached; enumerate refs/heads/task/* branches that
+#               CONTAIN HEAD (i.e. HEAD is an ancestor of the branch tip, the
+#               case when a lane is detached at a task branch's own tip) and
+#               use the id ONLY when exactly one DISTINCT task/NNNN branch
+#               matches. Zero or ambiguous (>1) matches → no id, so the lane
+#               falls through to the existing dirty/ahead-of-main tiers.
+# A non-empty `git symbolic-ref --short HEAD` result always means "attached"
+# (the command never succeeds with empty output), so that alone distinguishes
+# the two paths without a separate exit-status capture.
+_backing_task_id() {
+    local dir="$1"
+    local br id
+    br="$(git -C "$dir" symbolic-ref --short HEAD 2>/dev/null || true)"
+    if [ -n "$br" ]; then
+        case "$br" in
+            task/*)
+                id="${br#task/}"
+                case "$id" in
+                    ''|*[!0-9]*) return 0 ;;  # non-numeric id — no match
+                esac
+                printf '%s' "$id"
+                ;;
+        esac
+        return 0  # attached to a non-task (or non-numeric-task) branch — no id
+    fi
+
+    # Detached HEAD: resolve via containing task/* branches.
+    local -a ids=()
+    local ref rid
+    while IFS= read -r ref; do
+        [ -n "$ref" ] || continue
+        rid="${ref#task/}"
+        case "$rid" in
+            ''|*[!0-9]*) continue ;;  # non-numeric id — skip
+        esac
+        ids+=("$rid")
+    done < <(git -C "$dir" for-each-ref --format='%(refname:short)' --contains HEAD refs/heads/task/* 2>/dev/null || true)
+
+    if [ "${#ids[@]}" -eq 1 ]; then
+        printf '%s' "${ids[0]}"
+    fi
+    return 0
+}
+
+# _backing_task_terminal <dir>
+# Returns 0 (terminal: done|cancelled) or 1 (non-terminal/unresolvable/unknown
+# — never aborts under set -e). On a 0 return, sets _BACKING_TASK_ID and
+# _BACKING_TASK_STATUS for the caller's diagnostic message.
+# Oracle contract mirrors warm-lane-preflight.sh Check 6 / warm-lane-degenerate-
+# ref-check.sh _ref_status byte-for-byte: non-zero exit / empty output = unknown.
+_backing_task_terminal() {
+    local dir="$1"
+    local id st
+    [ -n "$STATUS_CMD" ] || return 1
+    id="$(_backing_task_id "$dir")"
+    [ -n "$id" ] || return 1
+    st="$("$STATUS_CMD" "$id" 2>/dev/null | tr -d '[:space:]' || true)"
+    case "$st" in
+        done|cancelled)
+            _BACKING_TASK_ID="$id"
+            _BACKING_TASK_STATUS="$st"
+            return 0
+            ;;
+    esac
+    return 1
 }
 
 # ── shared reclaimability predicate ───────────────────────────────────────────
@@ -368,26 +500,59 @@ _do_reclaim() {
         fi
 
         # Reclaimability check (under the lock).
-        if ! _is_reclaimable "$lane"; then
+        # Cheap local predicate first (_is_reclaimable: filesystem + git,
+        # no subprocess); the Tier-3 --status-cmd oracle (task 5167, which
+        # may be a DB/network-backed query) is consulted ONLY when that
+        # predicate would otherwise preserve the lane — same reclaim set,
+        # no oracle subprocess spent on lanes that are already reclaimable.
+        # A terminal backing task makes the lane reclaimable regardless of
+        # dirty/ahead-of-main. Falls through to preserve when the backing
+        # task is unresolvable/non-terminal/unknown.
+        if _is_reclaimable "$lane"; then
+            :
+        elif _backing_task_terminal "$lane"; then
+            info "  lane $name: backing task $_BACKING_TASK_ID is terminal (status=$_BACKING_TASK_STATUS) — reclaiming regardless of dirty/ahead-of-main"
+        else
             exec 8>&-
             preserved_count=$((preserved_count + 1))
             continue
         fi
 
-        # Invoke α while the lane lock is held in the parent shell.
-        # The action subshell inherits FD 8; the parent still owns the lock.
-        # Also hold flock -s on the gen lock (D8 reader-refcount seam).
-        info "  resetting lane: $name"
-        if (
-            exec 9>"$gen_lock"
-            flock -s 9
-            "$SEED_SCRIPT" "$resolved_gen" "$lane" --fresh-checkout
-        ) 2>&1 | while IFS= read -r line; do warn "  [seed] $line"; done; then
-            ok "  reset lane: $name"
-            reset_count=$((reset_count + 1))
+        if [ -n "$DISK_PRESSURE" ]; then
+            # Disk-pressure fast-path (task 5167): delete target/ outright
+            # instead of invoking the α reflink-reseed clone — no transient
+            # 2×-space requirement (the clone briefly needs old+new to
+            # coexist; a straight rm never does). Valid because acquire_lane
+            # ALWAYS re-seeds from base (D10 §9.5), so an empty/missing
+            # target/ is a legal lane state. No gen-lock needed here: unlike
+            # α, this path never reads the base/gen tree. Still under the
+            # lane flock acquired above, mirroring the manual 2026-07-10
+            # remediation.
+            info "  resetting lane (disk-pressure): $name"
+            local rm_err
+            if rm_err="$(rm -rf "$lane/target" 2>&1)"; then
+                ok "  reset lane (disk-pressure): $name"
+                reset_count=$((reset_count + 1))
+            else
+                warn "  disk-pressure reset failed for $name: ${rm_err:-<rm produced no output>}; continuing"
+                preserved_count=$((preserved_count + 1))
+            fi
         else
-            warn "  reset failed for $name (seed-script error); continuing"
-            preserved_count=$((preserved_count + 1))
+            # Invoke α while the lane lock is held in the parent shell.
+            # The action subshell inherits FD 8; the parent still owns the lock.
+            # Also hold flock -s on the gen lock (D8 reader-refcount seam).
+            info "  resetting lane: $name"
+            if (
+                exec 9>"$gen_lock"
+                flock -s 9
+                "$SEED_SCRIPT" "$resolved_gen" "$lane" --fresh-checkout
+            ) 2>&1 | while IFS= read -r line; do warn "  [seed] $line"; done; then
+                ok "  reset lane: $name"
+                reset_count=$((reset_count + 1))
+            else
+                warn "  reset failed for $name (seed-script error); continuing"
+                preserved_count=$((preserved_count + 1))
+            fi
         fi
         exec 8>&-  # release lane lock; NOT removed — persists as per-lane mutex
     done
