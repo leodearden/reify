@@ -93,6 +93,14 @@ mod tests {
     /// IS the regression guard — hiding it behind a `type` alias (clippy's
     /// suggested fix) would defeat the point of pinning the exact signature
     /// here, so the lint is allowed locally rather than refactored away.
+    ///
+    /// Relation to the test below: `cell_eval_ctx_wires_all_required_capabilities`'s
+    /// direct call to `cell_eval_ctx(..)` already pins call-site arity and
+    /// argument types too (a dropped/reordered/mistyped param fails that
+    /// call to compile) — the two are not unrelated coverage. This const's
+    /// own marginal catch is a required `&'a T` silently becoming
+    /// `Option<&'a T>`, which stays enforced even if the test is later
+    /// deleted or refactored.
     #[allow(dead_code, clippy::type_complexity)]
     const _CELL_EVAL_CTX_REQUIRES_ALL_CAPS: for<'a> fn(
         &'a ValueMap,
