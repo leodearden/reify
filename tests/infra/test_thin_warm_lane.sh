@@ -191,6 +191,47 @@ assert "B3: stderr mentions the lock/live-consumer refusal" \
 kill "$B3_LOCK_PID" 2>/dev/null || true
 wait "$B3_LOCK_PID" 2>/dev/null || true
 
+# ── B4: lane_dir literally IS the mount root is refused (self-clobber) ────────
+# The under-mount guard's trailing-slash case-match ("$_rp_mount"/* against
+# "$_rp_lane_dir/") treats the mount root itself as "under" the mount (glob
+# * also matches the empty tail), so this case slips past that guard and is
+# caught only by the separate self-clobber check's explicit ==mount-root test.
+B4_MOUNT="$(mktemp -d /tmp/test-thin-warm-lane-b4-mount-XXXXXX)"
+_TMPDIRS+=("$B4_MOUNT")
+mkdir -p "$B4_MOUNT/target"
+touch "$B4_MOUNT/target/MARKER"
+
+REIFY_WARM_LANE_MOUNT="$B4_MOUNT" run_helper "$B4_MOUNT"
+assert "B4: lane_dir == mount root exits 1 (self-clobber)" test "$RC" -eq 1
+assert "B4: target/ untouched (mount-root self-clobber refusal)" \
+    test -f "$B4_MOUNT/target/MARKER"
+
+# ── B5: a lane_dir literally named 'base' is refused even when
+# REIFY_WARM_LANE_MOUNT is unset (the basename=='base' guard is unconditional,
+# independent of the under-mount guard) ────────────────────────────────────────
+B5_PARENT="$(mktemp -d /tmp/test-thin-warm-lane-b5-parent-XXXXXX)"
+_TMPDIRS+=("$B5_PARENT")
+B5_LANE="$B5_PARENT/base"
+mkdir -p "$B5_LANE/target"
+touch "$B5_LANE/target/MARKER"
+
+# Save/restore rather than a bare unset: the OPTIONAL df-delta layer in Block C
+# gates on an operator-supplied REIFY_WARM_LANE_MOUNT (private reflink mount),
+# and this test must not silently disable that layer for the rest of the run.
+_B5_HAD_MOUNT=0
+if [ -n "${REIFY_WARM_LANE_MOUNT+x}" ]; then
+    _B5_HAD_MOUNT=1
+    _B5_SAVED_MOUNT="$REIFY_WARM_LANE_MOUNT"
+fi
+unset REIFY_WARM_LANE_MOUNT
+run_helper "$B5_LANE"
+assert "B5: lane_dir named 'base' exits 1 (REIFY_WARM_LANE_MOUNT unset)" test "$RC" -eq 1
+assert "B5: target/ untouched ('base'-name refusal, mount unset)" \
+    test -f "$B5_LANE/target/MARKER"
+if [ "$_B5_HAD_MOUNT" = "1" ]; then
+    export REIFY_WARM_LANE_MOUNT="$_B5_SAVED_MOUNT"
+fi
+
 # _thin_detect_private_mount() — rung-1-only substrate detector (no loopback
 # self-provisioning, unlike test_warm_lane_pool.sh's detect_private_substrate,
 # to stay `pool`-safe): returns 0 when REIFY_WARM_LANE_MOUNT is set and
@@ -263,8 +304,8 @@ assert "C5: .git/ intact (HEAD unchanged)" \
     bash -c '[ "$(git -C "$1" rev-parse HEAD)" = "$2" ]' _ "$C_LANE" "$C_HEAD_BEFORE"
 assert "C6: uncommitted WIP file byte-intact" \
     bash -c '[ "$(cat "$1")" = "uncommitted work" ]' _ "$C_LANE/WIP.txt"
-assert "C7: STDOUT equals the lane_dir (single line, no diagnostics mixed in)" \
-    test "$OUT" = "$C_LANE"
+assert "C7: STDOUT equals the realpath-resolved lane_dir (single line, no diagnostics mixed in)" \
+    test "$OUT" = "$(realpath -m "$C_LANE")"
 assert "C8: seed-script NOT invoked (no reseed staged by default)" \
     bash -c '[ ! -s "$1" ]' _ "$C_SEED_LOG"
 
