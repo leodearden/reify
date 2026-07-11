@@ -130,7 +130,11 @@ trap 'rm -rf "$_SELFCHECK_TMPDIR"' EXIT
 # against this fixture must report NON-empty (a declared entry silently
 # disappearing must surface as drift).
 _DRIFT_MANIFEST="$_SELFCHECK_TMPDIR/drift.manifest"
-_FIRST_ENTRY="$(classification_declared_union | head -n1)"
+# NB: `awk 'NR==1'` (not `head -n1`) — under `set -o pipefail` a `head` that
+# closes the pipe after line 1 can SIGPIPE (141) the still-writing producer,
+# aborting the script under load (esc-5172-1 flake). awk consumes the whole
+# stream, so the producer never gets SIGPIPE; output is identical.
+_FIRST_ENTRY="$(classification_declared_union | awk 'NR==1')"
 awk -v drop="$_FIRST_ENTRY" '$1 != drop' "$MANIFEST" > "$_DRIFT_MANIFEST"
 
 _DRIFT_DIFF="$(classification_coverage_diff "$_DRIFT_MANIFEST")"
@@ -142,10 +146,10 @@ assert "coverage_diff on a manifest missing a declared entry ('$_FIRST_ENTRY') r
 # this fixture must report NON-empty.
 _OVERLAP_MANIFEST="$_SELFCHECK_TMPDIR/overlap.manifest"
 cp "$MANIFEST" "$_OVERLAP_MANIFEST"
-_DUP_LINE="$(grep -v '^[[:space:]]*#' "$MANIFEST" | grep -v '^[[:space:]]*$' | head -n1)"
+_DUP_LINE="$(grep -v '^[[:space:]]*#' "$MANIFEST" | grep -v '^[[:space:]]*$' | awk 'NR==1')"
 _DUP_NAME="$(awk '{print $1}' <<< "$_DUP_LINE")"
 _DUP_BUCKET="$(awk '{print $2}' <<< "$_DUP_LINE")"
-_OTHER_BUCKET="$(classification_all_buckets | grep -vxF "$_DUP_BUCKET" | head -n1)"
+_OTHER_BUCKET="$(classification_all_buckets | grep -vxF "$_DUP_BUCKET" | awk 'NR==1')"
 echo "$_DUP_NAME $_OTHER_BUCKET" >> "$_OVERLAP_MANIFEST"
 
 _OVERLAP_DIFF="$(classification_overlap "$_OVERLAP_MANIFEST")"
