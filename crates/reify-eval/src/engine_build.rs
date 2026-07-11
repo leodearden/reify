@@ -10186,10 +10186,31 @@ impl Engine {
     /// `moment_of_inertia` is patched by `post_process_topology_selectors`.
     ///
     /// This pass iterates over `Let`-kind cells that are currently `Undef`
-    /// and re-evaluates their `default_expr` using the now-updated `values`
-    /// map.  Only cells whose re-evaluation yields a non-`Undef` result are
-    /// updated — cells whose arguments are still `Undef` (missing kernel,
-    /// no geometry) remain `Undef` and are left untouched.
+    /// (deeply — see below) and re-evaluates their `default_expr` using the
+    /// now-updated `values` map, REPEATING until a full round writes no
+    /// new value — a true fixpoint (task 4725 amendment), not a single
+    /// pass. Only cells whose re-evaluation yields a non-`Undef` result are
+    /// written back; cells whose arguments are still `Undef` (missing
+    /// kernel, no geometry) remain `Undef` and are left untouched.
+    ///
+    /// **Why a real fixpoint, not one pass**: a round evaluates candidates
+    /// in `template.value_cells` declaration order, mutating `values` as it
+    /// goes — so a later cell in the SAME round observes an earlier cell's
+    /// freshly-folded value, but an earlier cell does not observe a later
+    /// one's. `let total_mass = all_masses.sum` only folds within a single
+    /// round if `all_masses` happens to be declared first. Looping to a
+    /// fixpoint removes that declaration-order dependency: a cell that
+    /// missed its dependency this round (e.g. `total_mass` before
+    /// `all_masses` folded) is still deep-Undef, so it re-enters the
+    /// candidate set on the next round and folds once its dependency has.
+    /// Rounds are capped at `value_cells.len()` (a same-template Let-cell
+    /// dependency chain cannot be deeper than the number of Let cells) as a
+    /// defensive backstop, not because termination depends on it —
+    /// progress is tracked by VALUE equality, not merely "was written", so
+    /// a round that re-derives the identical value for every remaining
+    /// candidate (e.g. a `List` that stays partially `Undef` forever)
+    /// reports no change and the loop stops after that round regardless of
+    /// the cap.
     ///
     /// **Ordering contract**: must run after `post_process_topology_selectors`
     /// (and `post_process_geometry_queries`) so that patched-in geometry-derived
@@ -10206,9 +10227,6 @@ impl Engine {
         meta_map: &HashMap<String, HashMap<String, String>>,
         _diagnostics: &mut Vec<Diagnostic>,
     ) {
-        // Collect candidates first to avoid holding a borrow on `values`
-        // while also inserting into it.
-        //
         // task 4725: the Undef check is DEEP (`value_is_or_contains_undef`),
         // not `Value::is_undef`'s shallow top-level check. An aggregate cell
         // like `let all_masses = [self.a.mass, self.b.mass]` evaluates to a
@@ -10219,34 +10237,65 @@ impl Engine {
         // re-evaluation even after its element dependencies resolve. The
         // deep check (already used by the §6.1 stale-Undef invariant checker
         // for the identical `all_masses`/`total_mass` shape) re-selects it.
-        let candidates: Vec<(reify_core::ValueCellId, reify_ir::CompiledExpr)> = template
-            .value_cells
-            .iter()
-            .filter(|cell| matches!(cell.kind, reify_compiler::ValueCellKind::Let))
-            .filter(|cell| {
-                values
-                    .get(&cell.id)
-                    .is_none_or(crate::invariants::value_is_or_contains_undef)
-            })
-            .filter_map(|cell| {
-                cell.default_expr
-                    .as_ref()
-                    // Skip expressions that contain a CrossSubGeometryRef — those
-                    // are consumed by entity.rs at the bare-let drop site and must
-                    // never reach `reify_expr::eval_expr`, which `unreachable!()`s
-                    // on them (see reify-expr/src/lib.rs:179, task-3508).
-                    .filter(|e| !arg_contains_cross_sub_geometry_ref(e))
-                    .map(|e| (cell.id.clone(), e.clone()))
-            })
-            .collect();
+        //
+        // The write-back guard just below stays SHALLOW (`!new_val.is_undef()`),
+        // deliberately asymmetric with the deep candidate filter above: a
+        // `List` (or other aggregate) result is written back even when it
+        // still contains a nested `Undef`, so a partially-resolved aggregate
+        // is visible to — and can converge further via — a later round of
+        // this same fixpoint. This is safe only because (a) each round
+        // re-derives a candidate's value FRESH from `default_expr` against
+        // the current `values` map, never incrementally from the cell's own
+        // prior value, and (b) no other pass populates a `List`-valued `Let`
+        // cell with out-of-band per-element data — every element ultimately
+        // comes from a scoped scalar cross-sub cell
+        // (`post_process_cross_sub_value_cells`) or a same-template cell,
+        // both of which only move `Undef` → resolved, never the reverse. If
+        // a future pass ever writes partially-resolved elements directly
+        // into a `List` `Let` cell (bypassing `default_expr` re-evaluation),
+        // this guard would need to become "no less resolved than before"
+        // rather than merely shallow-non-Undef.
+        let max_rounds = template.value_cells.len().max(1);
+        for _round in 0..max_rounds {
+            // Collect candidates first to avoid holding a borrow on `values`
+            // while also inserting into it.
+            let candidates: Vec<(reify_core::ValueCellId, reify_ir::CompiledExpr)> = template
+                .value_cells
+                .iter()
+                .filter(|cell| matches!(cell.kind, reify_compiler::ValueCellKind::Let))
+                .filter(|cell| {
+                    values
+                        .get(&cell.id)
+                        .is_none_or(crate::invariants::value_is_or_contains_undef)
+                })
+                .filter_map(|cell| {
+                    cell.default_expr
+                        .as_ref()
+                        // Skip expressions that contain a CrossSubGeometryRef — those
+                        // are consumed by entity.rs at the bare-let drop site and must
+                        // never reach `reify_expr::eval_expr`, which `unreachable!()`s
+                        // on them (see reify-expr/src/lib.rs:179, task-3508).
+                        .filter(|e| !arg_contains_cross_sub_geometry_ref(e))
+                        .map(|e| (cell.id.clone(), e.clone()))
+                })
+                .collect();
 
-        for (cell_id, expr) in candidates {
-            let new_val = {
-                let ctx = crate::eval_ctx_with_meta(values, functions, meta_map);
-                reify_expr::eval_expr(&expr, &ctx)
-            };
-            if !new_val.is_undef() {
-                values.insert(cell_id, new_val);
+            let mut changed = false;
+            for (cell_id, expr) in candidates {
+                let new_val = {
+                    let ctx = crate::eval_ctx_with_meta(values, functions, meta_map);
+                    reify_expr::eval_expr(&expr, &ctx)
+                };
+                if !new_val.is_undef() {
+                    if values.get(&cell_id) != Some(&new_val) {
+                        changed = true;
+                    }
+                    values.insert(cell_id, new_val);
+                }
+            }
+
+            if !changed {
+                break;
             }
         }
     }

@@ -597,3 +597,37 @@ fn cross_entity_aggregate_folds_via_fixpoint() {
         "CrossEntityParent.total_mass (cross-entity aggregate folds via fixpoint)",
     );
 }
+
+// ── declaration-order independence (task 4725 amendment) ────────────────────
+//
+// A test pinning `total_mass = all_masses.sum` folding correctly when
+// `total_mass` is declared BEFORE `all_masses` (to exercise the multi-round
+// fixpoint added to `post_process_derived_lets` below) was attempted here
+// and dropped: that source does not compile, even with an explicit
+// `all_masses : List<Mass>` annotation. Reify's own-member two-pass
+// compilation (`reify-compiler/src/entity.rs`'s `compile_entity`) only
+// registers a `Let`'s REAL type in scope once Pass 2 reaches that let's own
+// declaration, in source order — Pass 1 pre-registers every `Let` name with
+// a placeholder `Type::dimensionless_scalar()` regardless of any
+// annotation, so an earlier unannotated/annotated-but-unconsulted let
+// referencing a later one sees the placeholder, not the real type.
+// Empirically this reversed source fails with `AggregationReceiverNotCollection`
+// ("'.sum' requires a List receiver, but got Real"). This is the same class
+// of intentional, documented compiler simplification pinned for trait
+// defaults by
+// `let_type_disambiguation_tests::mutual_unannotated_lets_documented_limitation`
+// (task 1834: "a topological ordering pass would fix the general case but
+// is out of scope") — out of scope here too, since task 4725 is confined to
+// reify-eval post-processes, not the compiler (see the task's design
+// decisions).
+//
+// The multi-round fixpoint in `post_process_derived_lets` remains correct
+// and worth keeping defensively (e.g. for cells depending on
+// topology-selector-patched values across rounds), but it cannot be pinned
+// via *this* declaration-order shape: every same-entity Let→Let reference
+// that compiles at all already has its dependency declared first, so
+// `template.value_cells` iteration order matches dependency order for this
+// case and a single round already suffices — see
+// `cross_entity_aggregate_folds_via_fixpoint` above, which pins the
+// (compilable, forward-declared) cross-entity aggregate fold this pass
+// exists for.
