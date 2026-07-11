@@ -39,10 +39,35 @@ echo "=== scripts/thin-warm-lane.sh hermetic tests (task 5174) ==="
 # Shared temp state + cleanup
 # ──────────────────────────────────────────────────────────────────────────────
 _TMPDIRS=()
+_BGPIDS=()
 cleanup() {
+    for pid in "${_BGPIDS[@]+${_BGPIDS[@]}}"; do
+        kill "$pid" 2>/dev/null || true
+    done
     for d in "${_TMPDIRS[@]+${_TMPDIRS[@]}}"; do rm -rf "$d"; done
 }
 trap cleanup EXIT
+
+# _wait_for_reader_lock <ready-marker> <deadline-seconds>
+# Causal ordering (technique R, docs/prds/infra-test-wallclock-deflake.md,
+# task #4847): polls for the READY marker file in 0.05s ticks instead of a
+# fixed sleep, so a background flock holder's acquisition is causally
+# guaranteed complete before the caller's next statement runs -- a fixed
+# sleep races the holder under CPU/IO load (the script-under-test's flock -n
+# could win first, spuriously turning a T3-refusal assertion green->red).
+# Mirrors tests/infra/test_warm_lane_gc.sh's identically-named helper.
+_wait_for_reader_lock() {
+    local ready_marker="$1"
+    local deadline_s="$2"
+    local max_ticks=$(( deadline_s * 20 ))
+    local tick=0
+    while [ "$tick" -lt "$max_ticks" ]; do
+        [ -f "$ready_marker" ] && return 0
+        sleep 0.05
+        tick=$(( tick + 1 ))
+    done
+    return 1
+}
 
 ERR_FILE="$(mktemp /tmp/test-thin-warm-lane-err-XXXXXX)"
 _TMPDIRS+=("$ERR_FILE")
@@ -97,5 +122,64 @@ _TMPDIRS+=("$A9_LANE")
 run_helper "$A9_LANE"
 assert "A9: lane_dir that is a regular file exits 1" test "$RC" -eq 1
 assert "A9: regular-file lane_dir is untouched" test -f "$A9_LANE"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block B — precondition-refusal + T3 flock guard
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block B: precondition-refusal + T3 flock guard ---"
+
+# ── B1: lane_dir OUTSIDE REIFY_WARM_LANE_MOUNT is refused ─────────────────────
+B1_MOUNT="$(mktemp -d /tmp/test-thin-warm-lane-b1-mount-XXXXXX)"
+_TMPDIRS+=("$B1_MOUNT")
+B1_OUTSIDE_LANE="$(mktemp -d /tmp/test-thin-warm-lane-b1-outside-XXXXXX)"
+_TMPDIRS+=("$B1_OUTSIDE_LANE")
+mkdir -p "$B1_OUTSIDE_LANE/target"
+touch "$B1_OUTSIDE_LANE/target/MARKER"
+
+REIFY_WARM_LANE_MOUNT="$B1_MOUNT" run_helper "$B1_OUTSIDE_LANE"
+assert "B1: lane_dir outside REIFY_WARM_LANE_MOUNT exits 1" test "$RC" -eq 1
+assert "B1: target/ untouched (outside-mount refusal)" \
+    test -f "$B1_OUTSIDE_LANE/target/MARKER"
+
+# ── B2: lane_dir resolving to the mount's base dir is refused (self-clobber) ──
+B2_MOUNT="$(mktemp -d /tmp/test-thin-warm-lane-b2-mount-XXXXXX)"
+_TMPDIRS+=("$B2_MOUNT")
+mkdir -p "$B2_MOUNT/base/target"
+touch "$B2_MOUNT/base/target/MARKER"
+
+REIFY_WARM_LANE_MOUNT="$B2_MOUNT" run_helper "$B2_MOUNT/base"
+assert "B2: lane_dir resolving to the mount's base dir exits 1" test "$RC" -eq 1
+assert "B2: target/ untouched (self-clobber refusal)" \
+    test -f "$B2_MOUNT/base/target/MARKER"
+
+# ── B3: an ASSIGNED lane (external flock held) is refused with EX_TEMPFAIL ────
+B3_LANE="$(mktemp -d /tmp/test-thin-warm-lane-b3-lane-XXXXXX)"
+_TMPDIRS+=("$B3_LANE")
+mkdir -p "$B3_LANE/target"
+touch "$B3_LANE/target/MARKER"
+
+B3_LOCK="${B3_LANE}.lock"
+_TMPDIRS+=("$B3_LOCK")
+B3_READY="${B3_LOCK}.ready-marker"
+_TMPDIRS+=("$B3_READY")
+touch "$B3_LOCK"
+# Causal handshake (see _wait_for_reader_lock above) instead of a fixed sleep:
+# the subshell touches B3_READY AFTER acquiring flock -x, so the assertions
+# below only run once the lock is provably held.
+( flock -x 9 && touch "$B3_READY" && sleep 300 ) 9>"$B3_LOCK" &
+B3_LOCK_PID=$!
+_BGPIDS+=("$B3_LOCK_PID")
+_wait_for_reader_lock "$B3_READY" 30
+
+run_helper "$B3_LANE"
+assert "B3: ASSIGNED lane (flock held) exits 75 (EX_TEMPFAIL)" test "$RC" -eq 75
+assert "B3: target/ byte-intact under lock contention (T3)" \
+    test -f "$B3_LANE/target/MARKER"
+assert "B3: stderr mentions the lock/live-consumer refusal" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "lock|consumer|assigned"' _ "$ERR_OUT"
+
+kill "$B3_LOCK_PID" 2>/dev/null || true
+wait "$B3_LOCK_PID" 2>/dev/null || true
 
 test_summary
