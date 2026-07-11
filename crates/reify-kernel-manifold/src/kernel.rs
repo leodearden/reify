@@ -2270,6 +2270,70 @@ mod tests {
         );
     }
 
+    /// Characterization guard for the task-5166 kernel repoint: bounds weld
+    /// remap correctness from the OPEN side, complementing
+    /// `weld_collapses_unwelded_occt_style_cube_for_manifold_ingest` above
+    /// (which bounds it from the closed side).
+    ///
+    /// Built from `unwelded_unit_cube_mesh()` with one face's 2 triangles (6
+    /// indices, the fixture's trailing chunk) dropped — the 4 now-unreferenced
+    /// vertices are harmless (`Finite` scans every vertex regardless of
+    /// whether it's referenced; `IndexValid` only checks that referenced
+    /// indices are in-bounds). The remaining 5 faces still weld to a valid
+    /// 8-corner quotient, but that quotient is now open where the dropped
+    /// face used to close it.
+    ///
+    /// Passes on the current `Mesh::validate`-based path (this pins an
+    /// already-true, previously-unpinned property) and must stay green
+    /// through the task-5166 repoint to `check_mesh_contract_welded`: a
+    /// wrong/over-collapsing threaded remap would flip this to `Ok`.
+    #[cfg(feature = "test-fixtures")]
+    #[test]
+    fn ingest_mesh_open_unwelded_cube_reports_closed_on_welded_quotient() {
+        let mut mesh = unwelded_unit_cube_mesh();
+        assert_eq!(
+            mesh.indices.len() % 6,
+            0,
+            "unwelded_unit_cube_mesh must emit indices in 6-index (one face) chunks"
+        );
+        mesh.indices.truncate(mesh.indices.len() - 6);
+
+        let result = ManifoldKernel::new().ingest_mesh(&mesh);
+
+        match result {
+            Err(GeometryError::MeshContractViolation {
+                kernel: kernel_name,
+                invariant,
+                counts,
+                ..
+            }) => {
+                assert_eq!(
+                    kernel_name, "manifold",
+                    "MeshContractViolation must carry the producing kernel's name",
+                );
+                assert!(
+                    matches!(invariant, reify_ir::geometry::MeshInvariant::Closed),
+                    "dropping one face must leave the welded quotient open; got {invariant:?}",
+                );
+                assert!(
+                    counts.open_edges > 0,
+                    "dropping one face's 2 triangles must leave that face's boundary \
+                     edges without a reverse on the welded quotient; got {counts:?}",
+                );
+                assert_eq!(
+                    counts.reversed_edges, 0,
+                    "removing a whole face only removes edges, introducing no \
+                     duplicate-direction (winding) conflicts; got {counts:?}",
+                );
+            }
+            other => panic!(
+                "ingest_mesh on an unwelded cube missing one face must return \
+                 Err(GeometryError::MeshContractViolation {{ kernel: \"manifold\", \
+                 invariant: Closed, .. }}); got {other:?}"
+            ),
+        }
+    }
+
     /// Completion-condition test (task 3525): after a real Manifold union,
     /// `correlate_facets` maps every surviving triangle back to a source attribute.
     ///
