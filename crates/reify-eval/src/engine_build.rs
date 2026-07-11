@@ -6365,6 +6365,44 @@ impl Engine {
     /// returns `None` — with ZERO side effects on `outputs` — when the guard
     /// (`is_terminal_realization && demanded_tol.is_some() &&
     /// realization_name.is_some()`) is unmet or the cache probe misses.
+    ///
+    /// # Invariants
+    ///
+    /// This method IS the enforcement mechanism for INV-BUILD-3 ("a
+    /// cache-hit short-circuit produces the same observable side-effect set
+    /// as the path it short-circuits" — `docs/invariants.md`, PRD §5.1).
+    /// Four contract pins, each with its own unit test:
+    ///
+    /// 1. **Probes ONLY when `is_terminal_realization && demanded_tol.is_some()
+    ///    && realization_name.is_some()`.** A guard-fail (or a plain cache
+    ///    miss) returns `None` with zero side effects on `outputs` — no
+    ///    push/insert on any output view, no `topology_attribute_table`
+    ///    eviction. Pinned by
+    ///    `probe_realization_cache_guard_requires_terminal_named_and_tol`.
+    /// 2. **Primary lookup at `demanded_repr`; `BRep` fallback on a
+    ///    non-`BRep` miss.** A `demanded_repr == BRep` demand never falls
+    ///    back (the `or_else` short-circuits); both lookups honor the
+    ///    cache's tol partial order (`cached_tol ≤ requested_tol`
+    ///    satisfies). Pinned by
+    ///    `probe_realization_cache_falls_back_to_brep_and_honors_tol_partial_order`.
+    /// 3. **On a hit, the FULL cold-path side-effect set — and nothing
+    ///    else.** `step_handles` push, `named_steps` + `named_step_reprs`
+    ///    insert, `produced_repr_out` write, the `debug_assert_eq!`
+    ///    consistency guard; dispatch counters are left at their entry
+    ///    values, and the function returns before the op loop ever runs.
+    ///    Pinned by
+    ///    `probe_realization_cache_primary_hit_applies_full_side_effect_set`
+    ///    (single hit) and, cold-vs-warm,
+    ///    `probe_realization_cache_cold_warm_side_effect_set_parity`.
+    /// 4. **The 4349 cross-kernel eviction is a documented interim
+    ///    trade-off, not a fix.** `topology_attribute_table.remove(cached_handle.id)`
+    ///    also evicts a same-id sibling entry recorded by a different
+    ///    kernel in this build (every kernel's `GeometryHandleId` counter
+    ///    starts at 1). Retiring it in favor of a fail-closed
+    ///    `KernelHandle`-keyed table is follow-up task θ's job, gated on
+    ///    #4351 — this task lands the mechanism only, so INV-BUILD-3 stays
+    ///    `proposed`. Pinned by
+    ///    `cache_hit_short_circuit_tolerates_cross_kernel_topology_attribute_id_collision`.
     #[allow(clippy::too_many_arguments)]
     fn probe_realization_cache(
         realization_cache: &RealizationCache<KernelHandle>,
@@ -6569,38 +6607,15 @@ impl Engine {
     /// for this realization) no cache entry is written — preserving the
     /// historical "no tolerance contract → no caching" semantics.
     ///
-    /// **Cache-hit short-circuit** (task 2874, step-8 wiring): at the very
-    /// start of the helper — BEFORE the `for (op_idx, op) in
-    /// operations.iter().enumerate()` op loop — when both `demanded_tol`
-    /// and `realization_name` are `Some(_)` AND
-    /// `realization_cache.lookup(realization_id.entity, ReprKind::BRep, t, NO_OPTIONS)`
-    /// returns `Some(&handle)`, the helper:
-    ///   - pushes the cached handle onto `step_handles` (mirrors the
-    ///     successful-realization handle-stack post-condition),
-    ///   - inserts `(name, cached_handle)` into `named_steps` (mirrors the
-    ///     post-rollback `named_steps` write so downstream
-    ///     `GeomRef::Sub("body")` lookups continue to resolve),
-    ///   - returns early — skipping the kernel op loop, the
-    ///     `compile_geometry_op` evaluations, the per-op
-    ///     `topology_attribute_table` population, the
-    ///     rollback-truncation gate, and the post-loop cache-insert
-    ///     (idempotent: the entry already exists, and re-inserting at the
-    ///     same `(entity, repr, tol, NO_OPTIONS)` key would be a no-op under
-    ///     the partial-order semantics).
-    ///
-    ///   `NO_OPTIONS` = `ContentHash(0)` is the PRD §4 "no options" sentinel;
-    ///   tasks δ (3435) and ξ (3442) will thread real per-op option hashes
-    ///   here when wiring `TessellateOptions` / `VolumeMeshOptions`.
-    ///
-    /// `realization_name = None` paths (anonymous realizations) bypass the
-    /// short-circuit so the named_steps write is never skipped where it
-    /// otherwise would not happen — anonymous realizations are not part of
-    /// the cache contract today. The post-condition the cache-hit branch
-    /// preserves is "after this helper returns successfully, the terminal
-    /// handle is the last entry in `step_handles[handle_start..]` AND
-    /// `named_steps[name] = terminal_handle`" — exactly the contract the
-    /// op-loop success path establishes (see the post-rollback
-    /// `step_handles[handle_start..].last()` block below).
+    /// **Cache-hit short-circuit**: before the op loop even starts, this
+    /// helper delegates to [`Self::probe_realization_cache`], which — on a
+    /// hit — applies the realization's cold-path success side effects
+    /// (`step_handles` push, `named_steps` + `named_step_reprs` insert,
+    /// `produced_repr_out` write, and the task-4349 cross-kernel
+    /// `topology_attribute_table` eviction) and returns early, before this
+    /// helper's `RealizationOutputs` destructure ever runs. See that
+    /// method's `# Invariants` doc (INV-BUILD-3) for the full
+    /// guard/fallback/side-effect/eviction contract and its pinning tests.
     ///
     /// **Known limitation** (recorded as a design decision): a cache-hit
     /// short-circuit skips per-op `topology_attribute_table` population,
@@ -6613,21 +6628,9 @@ impl Engine {
     /// queries today, so this is documented (not regressed) in scope; a
     /// follow-up task can either cache the table entries alongside the
     /// handle or skip the table reset for engines with non-empty cache.
-    ///
-    /// **Cross-kernel collision guard** (task 4349): on cache-hit the helper
-    /// calls `topology_attribute_table.remove(cached_handle.id)` to evict any
-    /// entry that a cross-kernel sibling op may have recorded at the same
-    /// bare `GeometryHandleId`. The table is keyed by `GeometryHandleId` only
-    /// (not the full `KernelHandle`), and each kernel's counter starts at 1 —
-    /// so OCCT and Manifold independently produce `GeometryHandleId(1)`. A
-    /// Manifold op earlier in the same build may have written
-    /// `topology_attribute_table.record(GeometryHandleId(1), attr)` before
-    /// this cache-hit returns `{Occt, GeometryHandleId(1)}` from a prior build,
-    /// collapsing two distinct `KernelHandle`s onto one key. The `remove` is a
-    /// no-op in the common single-kernel case (the per-build reset already cleared
-    /// the table) and enforces the #3226 spec ("cache-served handle has no entries
-    /// in those tables") in the cross-kernel case. The principled re-key of the
-    /// table to `KernelHandle` is deferred to follow-up task #4351.
+    /// (The task-4349 cross-kernel `GeometryHandleId` collision guard that
+    /// partially compensates for this on a cache-hit now lives on
+    /// [`Self::probe_realization_cache`] — see that method's doc.)
     fn execute_realization_ops(
         input: RealizationOpsInput<'_>,
         mut outputs: RealizationOutputs<'_>,
