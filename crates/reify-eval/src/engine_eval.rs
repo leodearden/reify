@@ -5434,29 +5434,28 @@ impl Engine {
         // `build_solver_problem` == `None` arm, which likewise `continue`s
         // without invoking `evaluate_let_bindings`.
         //
-        // Blast radius (reviewer_comprehensive, amendment task #5014): this
-        // early return is scoped to the WHOLE cluster, not just the
-        // member(s) that contributed an excluded cell. EVERY member in
-        // `cluster.scopes` is left unresolved by this `return` — including a
-        // member whose own cells contained no excluded auto and would have
-        // solved fine standalone. This is an accepted, documented tradeoff,
-        // not an oversight: a member only reaches this dispatch because α's
-        // `compute_clusters` already coupled it into the same `MergedSolve`
-        // SCC/objective span as the excluded cell's scope, so silently
-        // falling back to solving it alone would ignore that real coupling
-        // and could produce a value inconsistent with the (unsolved) rest of
-        // the cluster. Falling back to per-template solving for the
-        // non-excluded members is a possible follow-up, not implemented
-        // here.
+        // Blast radius (amendment, task #5014): this early return is scoped
+        // to the WHOLE cluster, not just the member(s) that contributed an
+        // excluded cell. EVERY member in `cluster.scopes` is left unresolved
+        // by this `return` — including a member whose own cells contained no
+        // excluded auto and would have solved fine standalone. This is an
+        // accepted, documented tradeoff, not an oversight: a member only
+        // reaches this dispatch because α's `compute_clusters` already
+        // coupled it into the same `MergedSolve` SCC/objective span as the
+        // excluded cell's scope, so silently falling back to solving it
+        // alone would ignore that real coupling and could produce a value
+        // inconsistent with the (unsolved) rest of the cluster. Falling back
+        // to per-template solving for the non-excluded members is a possible
+        // follow-up, not implemented here.
         //
-        // Collateral observability (reviewer_comprehensive, amendment task
-        // #5014, round 3): the per-cell error(s) above name the SPECIFIC
-        // excluded connector-instance auto cell(s), but say nothing about
-        // the collateral members -- a user staring at an undetermined value
-        // on a sibling scope that contributed no excluded cell had no
-        // signal that it went unresolved because a DIFFERENT member's cell
-        // was unsupported. Push one more diagnostic naming the WHOLE
-        // cluster so that collateral is an observable signal, not silence.
+        // Collateral observability (amendment, task #5014): the per-cell
+        // error(s) above name the SPECIFIC excluded connector-instance auto
+        // cell(s), but say nothing about the collateral members -- a user
+        // staring at an undetermined value on a sibling scope that
+        // contributed no excluded cell had no signal that it went unresolved
+        // because a DIFFERENT member's cell was unsupported. Push one more
+        // diagnostic naming the WHOLE cluster so that collateral is an
+        // observable signal, not silence.
         if problem.auto_params.is_empty() {
             let cluster_scope_names: Vec<&str> = cluster
                 .scopes
@@ -5539,21 +5538,21 @@ impl Engine {
                 // pass — each ValueCellId already encodes its owning scope
                 // (id.entity), so no per-member filtering is needed here.
                 //
-                // Defensive auto_params filter (amendment, task #5014,
-                // reviewer_comprehensive): `SolveResult::Solved.values` is
-                // documented as "resolved values for auto parameters" —
-                // i.e. keyed by `problem.auto_params` — but nothing enforces
-                // that contract structurally. `problem.current_values` (the
-                // frozen snapshot passed to the solver, including every
-                // OTHER cluster's constants) was also visible to it; if a
-                // misbehaving `ConstraintSolver` impl ever echoed one of
-                // those keys back in `solver_values`, an unfiltered pass
-                // would wrongly stamp a cell OUTSIDE this cluster's auto set
-                // as `Determined` — and because one merged solve spans N
-                // scopes, the blast radius is wider here than the
-                // identically-shaped single-template loop this mirrors.
-                // Restricting to `problem.auto_params` ids makes the
-                // existing contract explicit rather than merely assumed.
+                // Defensive auto_params filter (amendment, task #5014):
+                // `SolveResult::Solved.values` is documented as "resolved
+                // values for auto parameters" — i.e. keyed by
+                // `problem.auto_params` — but nothing enforces that contract
+                // structurally. `problem.current_values` (the frozen snapshot
+                // passed to the solver, including every OTHER cluster's
+                // constants) was also visible to it; if a misbehaving
+                // `ConstraintSolver` impl ever echoed one of those keys back
+                // in `solver_values`, an unfiltered pass would wrongly stamp
+                // a cell OUTSIDE this cluster's auto set as `Determined` —
+                // and because one merged solve spans N scopes, the blast
+                // radius is wider here than the identically-shaped
+                // single-template loop this mirrors. Restricting to
+                // `problem.auto_params` ids makes the existing contract
+                // explicit rather than merely assumed.
                 let auto_param_ids: HashSet<&ValueCellId> =
                     problem.auto_params.iter().map(|ap| &ap.id).collect();
                 let mut resolved_ids = HashSet::new();
@@ -5598,6 +5597,15 @@ impl Engine {
                     });
                 }
 
+                // Non-uniqueness is reported cluster-wide by design (amendment,
+                // task #5014): `unique` is a single flag over the WHOLE merged
+                // solve, so this warns on every free auto param across ALL
+                // `cluster.scopes` -- not scoped to whichever member(s) actually
+                // caused the non-uniqueness, unlike the per-template arm above
+                // (which reports per single-scope `problem`). A merged
+                // cluster's autos are jointly solved as one system, so a free
+                // auto on any member can be a contributing degree of freedom
+                // for the whole cluster's solution, not just its own scope's.
                 if !unique {
                     for ap in &problem.auto_params {
                         if ap.free {
@@ -5635,8 +5643,7 @@ impl Engine {
                 // inherited governance (§6.1), unlike the single-scope
                 // per-template arm which uses one `governance[idx]` for every
                 // cell.
-                // Amendment, task #5014 (reviewer_comprehensive round 4,
-                // suggestion 2): mirrors `build_merged_solver_problem`'s
+                // Amendment, task #5014: mirrors `build_merged_solver_problem`'s
                 // identical pairwise-unique-names debug_assert. This
                 // `member_by_name` map is keyed by the same
                 // `templates[member_idx].name`, so a collision would
@@ -5666,8 +5673,7 @@ impl Engine {
                     let is_synth = self
                         .centrality_synthesized_scopes
                         .contains(id.entity.as_str());
-                    // Amendment, task #5014 (reviewer_comprehensive
-                    // suggestion 3): `member_by_name` is keyed by
+                    // Amendment, task #5014: `member_by_name` is keyed by
                     // `templates[member_idx].name`, so this lookup silently
                     // degrades `inherited_from` to `None` if `id.entity`
                     // ever diverges from its owning member's bare template
