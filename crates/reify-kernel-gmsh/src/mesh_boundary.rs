@@ -252,20 +252,27 @@ pub fn preflight_watertight_surface(surface: &Mesh, tol: f64) -> Result<(), Geom
 /// first-offender witness `(u, v)` in triangle-emission order (deterministic,
 /// independent of the internal `HashSet`'s iteration order).
 ///
-/// Mirrors `crates/reify-eval/tests/fea_face_selector_bc_e2e.rs::raw_open_edge_count`
-/// (the #4876/#5115 characterization witness), additionally returning a
-/// concrete witness edge for [`preflight_watertight_surface`]'s synthesized
-/// [`GeometryError::MeshContractViolation`].
+/// `pub` (not crate-private): this is the SINGLE shared implementation of
+/// the raw directed-edge scan. Both [`preflight_watertight_surface`] (above)
+/// and the #4876/#5115 characterization test
+/// (`crates/reify-eval/tests/fea_face_selector_bc_e2e.rs::characterizes_4876_occt_tessellation_unwelded_witness`)
+/// call this same function — the latter as
+/// `reify_kernel_gmsh::mesh_boundary::raw_open_edge_census`, reachable
+/// because `reify-eval`'s dev-dependency on this crate enables the
+/// `mesh-morph` feature this module is gated on — rather than each
+/// maintaining its own copy of the `HashSet` directed-edge scan, which could
+/// silently diverge.
 ///
 /// The witness defaults to `(u32::MAX, u32::MAX)` (mirroring the dangling-tail
 /// sentinel in `reify_ir::geometry::Mesh::check_contract`) in the degenerate
 /// case where `open_edges == 0` — every triangle-referenced edge already has
 /// its reverse, so there is no offending edge to name even though the caller
 /// observed `weldedness(tol).raw_welded == false` (e.g. an unreferenced
-/// duplicate-position vertex outside `indices`). Preferred over panicking:
-/// this helper backs a fail-closed preflight whose entire purpose is
-/// avoiding an uncatchable crash.
-fn raw_open_edge_census(surface: &Mesh) -> (usize, (u32, u32)) {
+/// duplicate-position vertex outside `indices`; pinned by
+/// `preflight_rejects_unreferenced_duplicate_vertex_with_zero_open_edges`
+/// below). Preferred over panicking: this helper backs a fail-closed
+/// preflight whose entire purpose is avoiding an uncatchable crash.
+pub fn raw_open_edge_census(surface: &Mesh) -> (usize, (u32, u32)) {
     use std::collections::HashSet;
 
     let mut directed: HashSet<(u32, u32)> = HashSet::new();

@@ -355,8 +355,14 @@ fn characterizes_4876_occt_tessellation_unwelded_witness() {
     // welded quotient, which is 0 for a box; this is a deliberately
     // distinct, unwelded directed-edge tally recording exactly what the
     // gmsh attributed producer (which forbids vertex-merge repair,
-    // mesh_boundary.rs:219-227) sees and SIGSEGVs on.
-    let raw_open_edges = raw_open_edge_count(&mesh);
+    // mesh_boundary.rs:219-227) sees and SIGSEGVs on. Calls the SAME
+    // `raw_open_edge_census` the #4876 preflight itself gates on (`pub` in
+    // `reify_kernel_gmsh::mesh_boundary`, reachable here because this
+    // crate's dev-dependency enables the `mesh-morph` feature that module
+    // is gated on) instead of maintaining an independent copy of the
+    // directed-edge scan that could silently diverge from the preflight's.
+    let (raw_open_edges, _first_open_edge) =
+        reify_kernel_gmsh::mesh_boundary::raw_open_edge_census(&mesh);
     assert!(
         raw_open_edges > 0,
         "the RAW per-face-block OCCT surface must be non-watertight (open \
@@ -445,34 +451,6 @@ fn real_occt_box_surface() -> reify_ir::Mesh {
         });
 
     surface.mesh.clone()
-}
-
-/// `cfg(has_gmsh)`: count directed edges in the mesh's RAW (pre-weld) index
-/// buffer whose reverse does not occur — i.e. open/non-watertight boundary
-/// edges on the topology the gmsh attributed producer actually consumes (it
-/// forbids vertex-merge repair, mesh_boundary.rs:219-227).
-///
-/// Deliberately distinct from [`reify_ir::Mesh::validate`]'s
-/// `Closed`/`ConsistentWinding` obligations, which run on the
-/// POSITION-WELDED quotient topology (where a box is closed — 0 open
-/// edges). This is a raw, unwelded directed-edge tally answering a
-/// different topological question.
-#[cfg(has_gmsh)]
-fn raw_open_edge_count(mesh: &reify_ir::Mesh) -> usize {
-    use std::collections::HashSet;
-
-    let mut directed: HashSet<(u32, u32)> = HashSet::new();
-    for tri in mesh.indices.chunks_exact(3) {
-        let (a, b, c) = (tri[0], tri[1], tri[2]);
-        for &(u, v) in &[(a, b), (b, c), (c, a)] {
-            directed.insert((u, v));
-        }
-    }
-
-    directed
-        .iter()
-        .filter(|&&(u, v)| !directed.contains(&(v, u)))
-        .count()
 }
 
 /// `cfg(not(has_gmsh))`: skip-stub. Without the gmsh adapter the realization
