@@ -357,4 +357,48 @@ assert "E5: _lane-wip dirty=wip" \
 assert "E6: _lane-wip classification PRESERVED-OK (genuine WIP, not stale)" \
     bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-wip .*classification=PRESERVED-OK"' _ "$OUT"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block F — LEAKED + stale A4 relation
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block F: LEAKED + stale A4 relation ---"
+
+F_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-f-XXXXXX)"
+_TMPDIRS+=("$F_MOUNT")
+F_MAP="$(mktemp /tmp/test-warm-lane-audit-f-map-XXXXXX)"
+_TMPDIRS+=("$F_MAP")
+printf '800 pending\n' > "$F_MAP"
+
+# FREE, non-terminal (task/800, oracle=pending), ORPHAN (ahead-of-main commit,
+# no origin) -- built FIRST; the lane dir's mtime is aged past the default
+# 60-minute knob LAST (touch -d), so the staleness measurement reflects only
+# the deliberate backdate, not repo setup (git commit only touches paths
+# inside .git/ and README.md's own mtime, never the lane dir's own entries).
+make_lane "$F_MOUNT/_lane-leaked" "task/800"
+_add_ahead_commit "$F_MOUNT/_lane-leaked"
+touch -d '90 minutes ago' "$F_MOUNT/_lane-leaked"
+
+ORACLE_MAP="$F_MAP" run_helper --mount "$F_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh"
+assert "F1: exit 0" test "$RC" -eq 0
+assert "F2: _lane-leaked classification LEAKED (default stale-age-min=60, age~90min)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-leaked .*classification=LEAKED"' _ "$OUT"
+assert "F3: HEADROOM line shows leaked=1" \
+    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "leaked=1"' _ "$OUT"
+
+# A4 relation (not a frozen age): the SAME lane, re-run with --stale-age-min
+# raised far above its ~90-minute age -> PRESERVED-OK, leaked=0.
+ORACLE_MAP="$F_MAP" run_helper --mount "$F_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh" --stale-age-min 100000
+assert "F4: exit 0" test "$RC" -eq 0
+assert "F5: _lane-leaked classification PRESERVED-OK under --stale-age-min 100000" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-leaked .*classification=PRESERVED-OK"' _ "$OUT"
+assert "F6: HEADROOM line shows leaked=0 under --stale-age-min 100000" \
+    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "leaked=0"' _ "$OUT"
+
+# Same relation via the env knob (no --stale-age-min flag) -- confirms the
+# knob is read from REIFY_WARM_LANE_AUDIT_STALE_AGE_MIN, not just the flag.
+REIFY_WARM_LANE_AUDIT_STALE_AGE_MIN=100000 ORACLE_MAP="$F_MAP" run_helper --mount "$F_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh"
+assert "F7: exit 0" test "$RC" -eq 0
+assert "F8: _lane-leaked classification PRESERVED-OK under env REIFY_WARM_LANE_AUDIT_STALE_AGE_MIN=100000" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-leaked .*classification=PRESERVED-OK"' _ "$OUT"
+
 test_summary
