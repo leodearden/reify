@@ -47,6 +47,17 @@ const STUB_MSG: &str = "Manifold query/export not yet implemented for v0.2; \
     boolean ops and tessellate are wired via manifold3d 0.1, but query/export \
     are follow-up work (see docs/prds/v0_2/multi-kernel.md).";
 
+/// [`MeshInvariant::NonDegenerate`](reify_ir::geometry::MeshInvariant::NonDegenerate)
+/// twice-area epsilon used by the pre-ingest [`Mesh::validate`] call in
+/// [`manifold_from_reify_mesh`].
+///
+/// `0.0` rejects only *exactly*-zero-area triangles. `Manifold::from_mesh_f64`
+/// — the check this validation front-runs — does not reject small-but-nonzero-area
+/// triangles either, so this tolerance introduces no rejections beyond
+/// `from_mesh_f64`'s existing set: every mesh that ingested successfully before
+/// this validation was added still ingests successfully after.
+const MANIFOLD_INGEST_TOL: f64 = 0.0;
+
 /// A sub-element (planar face or edge segment) extracted from a parent
 /// Manifold mesh by [`GeometryKernel::extract_faces`] /
 /// [`GeometryKernel::extract_edges`].
@@ -222,10 +233,53 @@ impl Default for ManifoldKernel {
 /// `unit_cube_manifold` test fixture. Keeping the weld here ensures both
 /// callers benefit automatically.
 ///
-/// Returns `Err(String)` (the `Debug` repr of the underlying manifold3d error)
-/// if the mesh is not a valid closed orientable manifold after welding, or if
-/// any triangle index references a vertex beyond the vertex array.
-pub(crate) fn manifold_from_reify_mesh(mesh: &Mesh) -> Result<Manifold, String> {
+/// # Pre-ingest contract validation (INV-GEO-1)
+///
+/// Immediately before handing the welded buffers to `Manifold::from_mesh_f64`,
+/// the *original* `mesh` is checked against [`Mesh::validate`] (tolerance
+/// [`MANIFOLD_INGEST_TOL`]). `validate` internally re-runs the same bit-exact
+/// position weld (pinned to `from_mesh_f64`'s default weld — see
+/// `docs/prds/kernel-seam-contracts.md` §13 Q2), so it evaluates the
+/// closed/consistently-wound obligations on the same quotient topology this
+/// function welds above. A violation short-circuits with
+/// `Err(GeometryError::MeshContractViolation { kernel: "manifold", invariant,
+/// counts, witness })` — a structured diagnostic that surfaces the failing
+/// obligation, per-category offender counts, and a concrete witness *earlier*
+/// than (and instead of) `from_mesh_f64`'s generic `NotManifold` error.
+///
+/// ## Known hot-path cost (accepted)
+///
+/// `Mesh::validate` welds `mesh` a *second* time internally (its private
+/// `check_contract` re-derives the position-welded quotient via
+/// `Mesh::weld_positions` to evaluate the closed/wound obligations — the same
+/// quotient this function's own weld above already computed) and, on
+/// success, clones the entire vertex+index buffer to mint the `ValidatedMesh`
+/// witness, which this call site immediately discards (only `map_err` below
+/// is used). So every successful ingest currently pays one redundant O(n)
+/// weld plus one full-mesh clone on top of the weld this function performs.
+///
+/// `reify_ir::geometry::Mesh` exposes no by-reference, non-cloning contract
+/// check: `check_contract` is private, `validate` clones on success, and
+/// `into_validated` moves `self` — calling it here would require cloning
+/// `mesh` *before* the check even runs, strictly worse than `validate`'s
+/// clone-only-on-success behavior. Removing the redundancy needs a new
+/// `reify-ir` API (a non-cloning check, and/or threading this function's
+/// already-computed weld into the contract check instead of recomputing it)
+/// — out of scope for this file-scoped change (this task holds a lock on
+/// `kernel.rs` only).
+///
+/// TODO(#5166): track the non-cloning by-reference `Mesh` contract-check API
+/// (and/or weld-threading) as a follow-up task, so this accepted cost has a
+/// live citation instead of living only in prose.
+///
+/// The cost is accepted for now: it buys the structured
+/// `MeshContractViolation` diagnostic this call site exists to deliver.
+///
+/// Returns `Err(GeometryError::OperationFailed(_))` if a triangle index is out
+/// of range for the vertex array (weld-time bounds check) or if
+/// `from_mesh_f64` itself rejects the welded mesh after contract validation
+/// passed (e.g. a defect `Mesh::validate` doesn't check for).
+pub(crate) fn manifold_from_reify_mesh(mesh: &Mesh) -> Result<Manifold, GeometryError> {
     // --- bit-exact vertex weld ---
     // Map (x.to_bits(), y.to_bits(), z.to_bits()) → canonical vertex index.
     let mut seen: HashMap<(u32, u32, u32), u64> = HashMap::new();
@@ -251,24 +305,38 @@ pub(crate) fn manifold_from_reify_mesh(mesh: &Mesh) -> Result<Manifold, String> 
 
     // Remap triangle indices through the weld map.
     // Use bounds-checked access so a malformed mesh with an out-of-range index
-    // returns Err instead of panicking — preserving the Result<_, String> contract
-    // that callers rely on (previously from_mesh_f64 would return Err for such
-    // inputs; the weld must not introduce a new panic path).
+    // returns Err instead of panicking — preserving the Result<_, GeometryError>
+    // contract that callers rely on (previously from_mesh_f64 would return Err
+    // for such inputs; the weld must not introduce a new panic path).
     let tri_indices_u64: Vec<u64> = mesh
         .indices
         .iter()
         .map(|&i| {
             old_to_new.get(i as usize).copied().ok_or_else(|| {
-                format!(
-                    "triangle index {i} out of range for {} vertices",
+                GeometryError::OperationFailed(format!(
+                    "manifold ingest: triangle index {i} out of range for {} vertices",
                     old_to_new.len()
-                )
+                ))
             })
         })
-        .collect::<Result<_, String>>()?;
+        .collect::<Result<_, GeometryError>>()?;
 
-    Manifold::from_mesh_f64(&canonical_f64, 3, &tri_indices_u64)
-        .map_err(|e| format!("{e:?}"))
+    // --- pre-ingest mesh-contract validation (INV-GEO-1) ---
+    // Operates on the original &mesh (validate() internally position-welds,
+    // bit-exact and pinned to from_mesh_f64's default weld, so it sees the
+    // same closed/wound quotient as the weld above). Front-runs
+    // from_mesh_f64's generic NotManifold failure with a structured
+    // diagnostic; the ValidatedMesh witness itself isn't needed here, only
+    // the check — see this function's rustdoc "Known hot-path cost" section
+    // for the accepted redundant-weld/clone tradeoff this implies.
+    mesh.validate(MANIFOLD_INGEST_TOL)
+        .map_err(|v| v.into_geometry_error("manifold"))?;
+
+    Manifold::from_mesh_f64(&canonical_f64, 3, &tri_indices_u64).map_err(|e| {
+        GeometryError::OperationFailed(format!(
+            "manifold ingest: from_mesh_f64 rejected mesh: {e:?}"
+        ))
+    })
 }
 
 impl GeometryKernel for ManifoldKernel {
@@ -849,11 +917,16 @@ impl GeometryKernel for ManifoldKernel {
     ///
     /// # Error surface
     ///
-    /// Returns `Err(GeometryError::OperationFailed(_))` if the input is not a
-    /// closed orientable manifold (e.g. a mesh with boundary edges, inverted
-    /// winding, or degenerate geometry). The underlying `manifold3d` error is
-    /// included in the `OperationFailed` payload so winding-order regressions
-    /// in fixture meshes are debuggable without source-diving.
+    /// Returns `Err(GeometryError::MeshContractViolation { kernel: "manifold",
+    /// .. })` if the input fails a [`Mesh::validate`] producer obligation
+    /// (INV-GEO-1) — e.g. a mesh with boundary edges, inconsistent winding,
+    /// non-finite coordinates, or degenerate triangles — with structured
+    /// per-category counts and a concrete witness identifying the offender.
+    /// Returns `Err(GeometryError::OperationFailed(_))` for defects outside
+    /// the mesh contract: an out-of-range triangle index, or (rarely) a mesh
+    /// that passes contract validation but `Manifold::from_mesh_f64` still
+    /// rejects; the underlying `manifold3d` error is included in that payload
+    /// so such regressions are debuggable without source-diving.
     fn ingest_mesh(&mut self, mesh: &Mesh) -> Result<GeometryHandle, GeometryError> {
         if !mesh.vertices.len().is_multiple_of(3) {
             return Err(GeometryError::OperationFailed(format!(
@@ -869,12 +942,7 @@ impl GeometryKernel for ManifoldKernel {
                 mesh.indices.len()
             )));
         }
-        let manifold = manifold_from_reify_mesh(mesh).map_err(|e| {
-            GeometryError::OperationFailed(format!(
-                "ingest_mesh: input Mesh must be a valid manifold; \
-                 manifold3d::from_mesh_f64 reported: {e}"
-            ))
-        })?;
+        let manifold = manifold_from_reify_mesh(mesh)?;
         // Tag each ingested mesh as an "original" so Manifold assigns it a stable,
         // non-negative originalID that survives through boolean operations and
         // appears in the result's `run_original_id` vector.  Without this call
@@ -1486,13 +1554,17 @@ mod tests {
     }
 
     /// Pins that `GeometryKernel::ingest_mesh` returns
-    /// `Err(GeometryError::OperationFailed(_))` when given an invalid
-    /// (non-manifold) mesh.
+    /// `Err(GeometryError::MeshContractViolation { kernel: "manifold", .. })`
+    /// when given an invalid (non-closed) mesh — INV-GEO-1 kernel-seam γ.
     ///
     /// A single open triangle is structurally not a closed orientable manifold
-    /// (it has three boundary edges with no closing surface), so
-    /// `Manifold::from_mesh_f64` must reject it. Match-on-variant rather than
-    /// equality because `GeometryError` does not derive `PartialEq` — mirrors
+    /// (it has three boundary edges with no closing surface): `Mesh::validate`
+    /// rejects it under `MeshInvariant::Closed` — with `counts.open_edges == 3`
+    /// (each of the triangle's 3 directed edges lacks a reverse on the
+    /// position-welded quotient) — *before* `Manifold::from_mesh_f64` is ever
+    /// called, surfacing a structured diagnostic earlier than the generic
+    /// `NotManifold` string. Match-on-variant rather than equality because
+    /// `GeometryError` does not derive `PartialEq` — mirrors
     /// `execute_union_with_unknown_handle_returns_invalid_reference`.
     ///
     /// This test does not need `#[cfg(feature = "test-fixtures")]` because it
@@ -1500,12 +1572,10 @@ mod tests {
     /// `cfg(test)` — the gating predicate `cfg(any(test, feature =
     /// "test-fixtures"))` is satisfied by `cfg(test)` alone.
     #[test]
-    fn ingest_mesh_with_invalid_mesh_returns_err_operation_failed() {
+    fn ingest_mesh_non_closed_mesh_returns_mesh_contract_violation() {
         let mut kernel = ManifoldKernel::new();
         // A single open triangle — three vertices, one triangle face.
         // Not a closed manifold: three boundary edges, no closing surface.
-        // `Manifold::from_mesh_f64` requires closed orientable surfaces and
-        // must fail on this input.
         let bad_mesh = Mesh {
             vertices: vec![
                 0.0_f32, 0.0, 0.0, // v0
@@ -1519,15 +1589,169 @@ mod tests {
         let result = kernel.ingest_mesh(&bad_mesh);
 
         match result {
-            Err(GeometryError::OperationFailed(msg)) => assert!(
-                !msg.is_empty(),
-                "OperationFailed payload must surface the manifold3d error — an empty message \
-                 would hide the root cause from fixture authors debugging winding-order \
-                 regressions (doc comment promises the underlying manifold3d error is surfaced)",
-            ),
+            Err(GeometryError::MeshContractViolation {
+                kernel: kernel_name,
+                invariant,
+                counts,
+                ..
+            }) => {
+                assert_eq!(
+                    kernel_name, "manifold",
+                    "MeshContractViolation must carry the producing kernel's name",
+                );
+                assert!(
+                    matches!(invariant, reify_ir::geometry::MeshInvariant::Closed),
+                    "a single open triangle has boundary edges, so validate() must \
+                     report the Closed obligation; got {invariant:?}",
+                );
+                assert_eq!(
+                    counts.open_edges, 3,
+                    "a lone triangle's 3 directed edges each lack a reverse on the \
+                     welded quotient, so open_edges must be exactly 3; got {counts:?}",
+                );
+            }
             other => panic!(
-                "ingest_mesh with a single-triangle (non-manifold) mesh must return \
-                 Err(GeometryError::OperationFailed(_)); got {other:?}"
+                "ingest_mesh with a single-triangle (non-closed) mesh must return \
+                 Err(GeometryError::MeshContractViolation {{ kernel: \"manifold\", .. }}); \
+                 got {other:?}"
+            ),
+        }
+    }
+
+    /// Pins the equivalence-boundary half of the [`MANIFOLD_INGEST_TOL`]
+    /// claim: pre-ingest validation must not reject any triangle
+    /// `from_mesh_f64` would itself have accepted. The genuine risk is
+    /// `MeshInvariant::NonDegenerate`, whose `tol = 0.0` rejects only
+    /// *exactly*-zero-area triangles — this test exercises a triangle
+    /// deliberately close to that boundary (a sliver of twice-area `1e-4`,
+    /// vs. `0.5`-ish for a normal cube-face triangle) but strictly nonzero,
+    /// and asserts `ingest_mesh` still returns `Ok`, rather than leaving the
+    /// "no new rejections beyond `from_mesh_f64`'s set" claim doc-only
+    /// (reviewer suggestion on task 5104).
+    ///
+    /// Built by fan-subdividing the unit cube's `-Z` face triangle `0,2,1`
+    /// (`v0=(0,0,0)`, `v2=(1,1,0)`, `v1=(1,0,0)`) around a new 9th vertex
+    /// `D = (0.5, 1e-4, 0.0)` placed just off the `v1`-`v0` edge, interior to
+    /// the original triangle: sub-triangles `0,2,8` and `2,1,8` retain
+    /// healthy area (twice-area `~0.5` each) and `1,0,8` is the sliver
+    /// (twice-area `1e-4`). A fan from an interior point preserves the
+    /// parent triangle's winding for every sub-triangle, and each of the 3
+    /// original boundary directed edges (`0->2`, `2->1`, `1->0`) is emitted
+    /// unchanged — so they still pair with their pre-existing neighbors
+    /// (`2->0` in `0,3,2`; `1->2` in the `+X` face's `1,2,6`; `0->1` in the
+    /// `-Y` face's `0,1,5`) exactly as before the split. The 3 new internal
+    /// "spoke" edges touching `8` pair reverse with each other within the
+    /// fan itself (`2->8`/`8->2`, `1->8`/`8->1`, `0->8`/`8->0`). So `Closed`
+    /// and `ConsistentWinding` both still hold on the whole mesh unchanged;
+    /// only `NonDegenerate`'s zero-area boundary is actually exercised.
+    ///
+    /// Caveat: `result.is_ok()` also depends on the real
+    /// `manifold3d::from_mesh_f64` itself accepting a triangle of twice-area
+    /// `1e-4` (this test calls `ingest_mesh`, not `Mesh::validate` directly).
+    /// If a future `manifold3d` upgrade tightens its own near-degeneracy
+    /// tolerance, this test could start failing for a reason unrelated to
+    /// `MANIFOLD_INGEST_TOL` — an upstream tolerance change, not a
+    /// `Mesh::validate`-wiring regression. Isolating the `MANIFOLD_INGEST_TOL`
+    /// boundary claim from that upstream dependency would need a direct
+    /// `Mesh::validate(0.0)` unit assertion in `reify-ir`
+    /// (`crates/reify-ir/src/geometry.rs`) — outside this task's locked scope
+    /// (`kernel.rs` only), so noted here rather than added blind.
+    #[test]
+    fn ingest_mesh_accepts_valid_mesh_with_sliver_triangle_at_nondegenerate_boundary() {
+        let mesh = Mesh {
+            #[rustfmt::skip]
+            vertices: vec![
+                0.0, 0.0, 0.0, // 0
+                1.0, 0.0, 0.0, // 1
+                1.0, 1.0, 0.0, // 2
+                0.0, 1.0, 0.0, // 3
+                0.0, 0.0, 1.0, // 4
+                1.0, 0.0, 1.0, // 5
+                1.0, 1.0, 1.0, // 6
+                0.0, 1.0, 1.0, // 7
+                0.5, 1.0e-4, 0.0, // 8 — sliver apex, just off the v1-v0 edge
+            ],
+            #[rustfmt::skip]
+            indices: vec![
+                // -Z bottom: `0,2,1` fan-subdivided around vertex 8 (the
+                // sliver is `1,0,8`); `0,3,2` unchanged.
+                0, 2, 8,  2, 1, 8,  1, 0, 8,  0, 3, 2,
+                // +Z top
+                4, 5, 6,  4, 6, 7,
+                // -Y front
+                0, 1, 5,  0, 5, 4,
+                // +Y back
+                3, 7, 6,  3, 6, 2,
+                // -X left
+                0, 4, 7,  0, 7, 3,
+                // +X right
+                1, 2, 6,  1, 6, 5,
+            ],
+            normals: None,
+        };
+
+        let result = ManifoldKernel::new().ingest_mesh(&mesh);
+
+        assert!(
+            result.is_ok(),
+            "a closed, consistently-wound mesh containing one nonzero-area \
+             sliver triangle must still ingest — MANIFOLD_INGEST_TOL = 0.0 \
+             must reject only exactly-zero-area triangles, matching \
+             from_mesh_f64's tolerance; got {result:?}",
+        );
+    }
+
+    /// Pins the weld-before-validate ordering that `manifold_from_reify_mesh`'s
+    /// rustdoc documents (and that `ingest_mesh`'s "Error surface" section
+    /// relies on): the weld-time triangle-index bounds check runs *before*
+    /// `Mesh::validate`, so an out-of-range triangle index is rejected as
+    /// `GeometryError::OperationFailed(_)` — a distinct error class from the
+    /// `MeshContractViolation` that `Mesh::validate`'s `IndexValid` obligation
+    /// would otherwise report for the same defect.
+    ///
+    /// Without this test, a future refactor that moved `mesh.validate(..)`
+    /// ahead of the weld's bounds check would silently flip this input's
+    /// error class from `OperationFailed` to `MeshContractViolation`,
+    /// changing the documented public error surface with nothing to catch
+    /// it (reviewer suggestion on task 5104).
+    ///
+    /// Fixture: a single triangle over 3 vertices (valid indices `0..=2`)
+    /// with one index (`3`) one-past-the-end. `indices.len() == 3` satisfies
+    /// `ingest_mesh`'s multiple-of-3 pre-check, so the input reaches
+    /// `manifold_from_reify_mesh` and specifically exercises the weld's
+    /// `old_to_new.get(3) == None` bounds-check branch — before
+    /// `mesh.validate(..)` is ever called.
+    #[test]
+    fn ingest_mesh_out_of_range_triangle_index_returns_operation_failed() {
+        let mut kernel = ManifoldKernel::new();
+        let bad_mesh = Mesh {
+            vertices: vec![
+                0.0_f32, 0.0, 0.0, // v0
+                1.0, 0.0, 0.0, // v1
+                0.0, 1.0, 0.0, // v2
+            ],
+            // Only 3 vertices exist (valid indices 0..=2); index 3 is out
+            // of range and must be caught by the weld's bounds check.
+            indices: vec![0, 1, 3],
+            normals: None,
+        };
+
+        let result = kernel.ingest_mesh(&bad_mesh);
+
+        match result {
+            Err(GeometryError::OperationFailed(msg)) => {
+                assert!(
+                    msg.contains("out of range"),
+                    "OperationFailed payload should explain the out-of-range \
+                     triangle index for debuggability; got: {msg:?}",
+                );
+            }
+            other => panic!(
+                "ingest_mesh with an out-of-range triangle index must return \
+                 Err(GeometryError::OperationFailed(_)) — the weld-time bounds \
+                 check in manifold_from_reify_mesh runs BEFORE Mesh::validate, \
+                 so this is a distinct error class from MeshContractViolation; \
+                 got {other:?}"
             ),
         }
     }
