@@ -2,8 +2,8 @@
 # tests/infra/test_provision_warm_lane_fs.sh
 # Hermetic tests for scripts/provision-warm-lane-fs.sh.
 #
-# PATH-stubs fallocate/mkfs.xfs/losetup/mount/umount/mountpoint/blkid/cp/sudo/chown
-# record their argv to a CALLS_FILE; env-driven stub behaviour:
+# PATH-stubs fallocate/mkfs.xfs/losetup/mount/umount/mountpoint/blkid/cp/sudo/chown/
+# df/xfs_growfs/findmnt record their argv to a CALLS_FILE; env-driven stub behaviour:
 #   REIFY_TEST_REFLINK_OK  — cp stub: "1" -> exit 0; else print error + exit 1
 #   REIFY_TEST_MOUNTED     — mountpoint stub: "1" -> exit 0 (mounted); else exit 1
 #   REIFY_TEST_IMG_XFS     — blkid stub default-type fallback: "1" -> type "xfs"; else empty
@@ -18,6 +18,14 @@
 #   REIFY_TEST_UNDER_SUDO  — exported "1" by the sudo stub (after stripping a
 #                            leading -n) before it exec's, so downstream stubs
 #                            (blkid) know they're running under sudo
+#   REIFY_TEST_FS_SIZE_GIB — df stub (--grow live-size measurement): current FS size
+#                            in GiB, emitted as bytes on the `df -B1 --output=size`
+#                            value line (default 0)
+#   REIFY_TEST_LOOP_FOR_IMG — losetup stub: loop device echoed for `-j` (existing-
+#                            attachment lookup); GATED on being set — unset preserves
+#                            the default-empty "no existing attachment" behaviour
+#   REIFY_TEST_MNT_SOURCE  — findmnt stub: mount SOURCE device echoed (default
+#                            /dev/loop99), used by --grow's backing-file guard
 #   REIFY_WARM_LANE_SUDO   — set "" in all run_helper calls to bypass sudo
 #
 # run_helper captures STDOUT and STDERR SEPARATELY:
@@ -32,6 +40,7 @@
 #   D — Idempotent no-op (boundary B1 / invariant P1): second-run mounted
 #   E — P1 deep: existing populated image (XFS magic), unmounted
 #   F — setup-dev.sh wiring (structural)
+#   P — Online grow (boundary B3 / invariants P3/P4): happy path + guards
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -87,7 +96,11 @@ exit 0
 STUB_EOF
 chmod +x "$STUB_DIR/mkfs.xfs"
 
-# losetup stub: record argv; print fake loop device when --show is present
+# losetup stub: record argv; print fake loop device when --show is present.
+# -j (existing-attachment lookup, used by _attach_loop AND the --grow branch's
+# loop-resolve step): emits $REIFY_TEST_LOOP_FOR_IMG when that env is SET,
+# GATED on it being set so the default-empty behaviour blocks E/K/N depend on
+# (no existing attachment -> fall through to `--find --show`) is unchanged.
 cat > "$STUB_DIR/losetup" << 'STUB_EOF'
 #!/usr/bin/env bash
 echo "losetup $*" >> "${REIFY_TEST_CALLS_FILE:-/dev/null}"
@@ -97,6 +110,14 @@ for arg in "$@"; do
         exit 0
     fi
 done
+if [ -n "${REIFY_TEST_LOOP_FOR_IMG:-}" ]; then
+    for arg in "$@"; do
+        if [ "$arg" = "-j" ]; then
+            echo "$REIFY_TEST_LOOP_FOR_IMG"
+            exit 0
+        fi
+    done
+fi
 exit 0
 STUB_EOF
 chmod +x "$STUB_DIR/losetup"
@@ -189,6 +210,36 @@ echo "chown $*" >> "${REIFY_TEST_CALLS_FILE:-/dev/null}"
 exit 0
 STUB_EOF
 chmod +x "$STUB_DIR/chown"
+
+# df stub (--grow live-size measurement): record argv, emit a two-line
+# `df -B1 --output=size` lookalike (header + value) so the script's
+# `tail -n1 | tr -d ' '` parse yields REIFY_TEST_FS_SIZE_GIB GiB in bytes.
+cat > "$STUB_DIR/df" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "df $*" >> "${REIFY_TEST_CALLS_FILE:-/dev/null}"
+echo "1-blocks"
+echo "$(( ${REIFY_TEST_FS_SIZE_GIB:-0} * 1073741824 ))"
+exit 0
+STUB_EOF
+chmod +x "$STUB_DIR/df"
+
+# xfs_growfs stub (--grow online-grow step): record argv, exit 0
+cat > "$STUB_DIR/xfs_growfs" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "xfs_growfs $*" >> "${REIFY_TEST_CALLS_FILE:-/dev/null}"
+exit 0
+STUB_EOF
+chmod +x "$STUB_DIR/xfs_growfs"
+
+# findmnt stub (--grow backing-file guard): record argv, echo the mount's
+# SOURCE device (default /dev/loop99, overridable via REIFY_TEST_MNT_SOURCE)
+cat > "$STUB_DIR/findmnt" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "findmnt $*" >> "${REIFY_TEST_CALLS_FILE:-/dev/null}"
+echo "${REIFY_TEST_MNT_SOURCE:-/dev/loop99}"
+exit 0
+STUB_EOF
+chmod +x "$STUB_DIR/findmnt"
 
 # ── run_helper ─────────────────────────────────────────────────────────────────
 # Invokes the script under the stub PATH with REIFY_WARM_LANE_SUDO="" by
@@ -963,6 +1014,54 @@ assert "O8: perm-denied probe + failed privileged re-probe: NO mkfs.xfs invoked"
 
 assert "O9: perm-denied probe + failed privileged re-probe: STDOUT is EMPTY" \
     bash -c '[ -z "$1" ]' _ "$OUT"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block P — Online grow (boundary B3): happy path (task #5173, β).
+# `--grow --size-gib <N>` performs an ONLINE grow of the mounted loopback XFS:
+#   fallocate -l <N>GiB <img>  →  losetup -c <loopdev>  →  xfs_growfs <mount>
+# Guard cases (idempotent no-op, no-shrink P3, backing-file mismatch,
+# requires-size) are added on top of this happy path in a later iteration.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block P: online grow (B3) ---"
+
+P_TMP="$(mktemp -d /tmp/test-warm-lane-p-XXXXXX)"
+_TMPDIRS+=("$P_TMP")
+P_IMG="$P_TMP/img"
+P_MNT="$P_TMP/mnt"
+mkdir -p "$P_MNT"
+# Simulate: img exists and is currently mounted (online grow requires this).
+touch "$P_IMG"
+
+# P-happy: mounted 6144 GiB FS; `--grow --size-gib 8192` grows it to 8192 GiB.
+reset_calls
+REIFY_TEST_MOUNTED=1 REIFY_TEST_LOOP_FOR_IMG=/dev/loop99 REIFY_TEST_MNT_SOURCE=/dev/loop99 \
+REIFY_TEST_FS_SIZE_GIB=6144 REIFY_WARM_LANE_SUDO="" \
+    run_helper --img "$P_IMG" --mount "$P_MNT" --grow --size-gib 8192
+
+assert "P-happy1: --grow (N > current size) exits 0" test "$RC" -eq 0
+
+assert "P-happy2: STDOUT is exactly the mount path" \
+    bash -c '[ "$1" = "$2" ]' _ "$OUT" "$P_MNT"
+
+assert "P-happy3: fallocate invoked with 8192GiB" \
+    bash -c 'grep "^fallocate" "$1" | grep -q "8192GiB"' _ "$CALLS_FILE"
+
+assert "P-happy4: losetup -c /dev/loop99 invoked (grow the loop device to match)" \
+    bash -c 'grep "^losetup" "$1" | grep -q -- "-c /dev/loop99"' _ "$CALLS_FILE"
+
+assert "P-happy5: xfs_growfs invoked targeting the mount dir" \
+    bash -c 'grep "^xfs_growfs" "$1" | grep -qF "'"$P_MNT"'"' _ "$CALLS_FILE"
+
+assert "P-happy6: fallocate precedes losetup -c precedes xfs_growfs" \
+    bash -c '
+        falloc_line=$(grep -n "^fallocate" "$1" | head -1 | cut -d: -f1)
+        losetup_c_line=$(grep -n -- "^losetup.*-c /dev/loop99" "$1" | head -1 | cut -d: -f1)
+        growfs_line=$(grep -n "^xfs_growfs" "$1" | head -1 | cut -d: -f1)
+        [ -n "$falloc_line" ] && [ -n "$losetup_c_line" ] && [ -n "$growfs_line" ] || exit 1
+        [ "$falloc_line" -lt "$losetup_c_line" ] && [ "$losetup_c_line" -lt "$growfs_line" ]
+    ' _ "$CALLS_FILE"
 
 
 test_summary
