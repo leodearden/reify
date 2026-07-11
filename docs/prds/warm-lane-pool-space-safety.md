@@ -202,6 +202,22 @@ of scope here (§12).
   (warm-lane-pool-cow-seeding.md §9.5), so an empty/missing `target/` is a legal lane state. Still
   counted as `reset` in the `reclaim: reset=N removed=M preserved=K` summary. Mirrors the manual
   2026-07-10 remediation for the leaked lanes above.
+- **Emergency low-water trigger (task 5168).** `warm-lane-gc-sweep.sh` (the periodic-timer and
+  hand-run GC backstop) now measures available bytes on `--mount` (`df`; override via `--df` /
+  `REIFY_WARM_LANE_GC_SWEEP_DF`) once, after its fail-open mount-exists check, and — at or below a
+  critical free-GiB floor (`--critical-free-gib` / `REIFY_WARM_LANE_GC_SWEEP_CRITICAL_FREE_GIB`,
+  default 2 GiB, deliberately well below the γ disk-guard's 50 GiB admission floor) — appends
+  `--disk-pressure` to its `reclaim` invocation, engaging the rm-outright reset above instead of
+  the α reflink-reseed clone. This closes the trigger gap the mechanism alone left open: without
+  it, a sweep at true ENOSPC still took the α path, whose rename-to-trash (frees 0 bytes) followed
+  by a reflink clone would have its metadata write denied by the near-full volume — the
+  reset=N/removed=0 deadlock (and sometimes free-lowering) behind the 2026-07-10 outage. A hand-run
+  or periodic sweep now makes forward progress at true ENOSPC instead of wedging. The mechanism
+  itself (rm-outright, its `_is_reclaimable` + per-lane flock gate, inv.preserve) is unchanged from
+  task 5167; the trigger fires only on a positive low-water measurement — a df failure or
+  unparseable output falls back to the plain (α) `reclaim` invocation unchanged (fail-to-α), so a
+  benign df misconfiguration in steady state never silently cold-ifies every reclaimable lane on
+  every periodic sweep. `warm-lane-gc.sh reclaim` itself is untouched by this trigger.
 
 ## 9. Boundary-test sketch (two-way; B+H, closes G2 for η)
 
@@ -254,7 +270,10 @@ DAG: α→β; α→δ; {β,γ,δ}→ε; {α,β,γ,δ,ε,ζ}→η.
 ## 12. Open questions (tactical — surfaced, not blocking)
 
 - α trash-collection cadence: async `rm` per reseed vs a batched sweep (default: per-reseed background `rm`).
-- δ GC trigger: invoked only by the ε disk-pressure path (default) vs also a low-frequency timer backstop.
+- δ GC trigger: invoked only by the ε disk-pressure path (default) vs also a low-frequency timer
+  backstop. **Resolved (task 5168):** both. The timer/hand-run sweep backstop (`warm-lane-gc-sweep.sh`)
+  now self-protects at an emergency low-water floor (§8.4), independently engaging `--disk-pressure`
+  when `--mount` is critically low regardless of whether the ε disk-pressure path also fired.
 - ε threshold defaults (`min_free_gib`, `min_free_inodes`) — set conservative defaults; tune post-deploy.
 - Whether to also reset FREE lanes to thin at **release** (cheaper FREE-lane footprint) vs only at
   acquire (D10) — deferred; acquire-reset + GC reclaim covers it.
