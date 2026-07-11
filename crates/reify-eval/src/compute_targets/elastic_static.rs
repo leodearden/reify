@@ -499,7 +499,7 @@ pub fn solve_elastic_static_trampoline(
     // Both accumulate into disjoint targets and compose: a scene may mix
     // PointLoad and PressureLoad in the same LoadCase.
     let (tip_force, pressures, body_force) =
-        extract_loads(&value_inputs[4], extract_density(&value_inputs[0]));
+        extract_loads(&value_inputs[4], extract_density(&value_inputs[0])).fea_shim();
 
     // ── (3b) Shell-route dispatch (task 3594/δ) ──────────────────────────────
     //
@@ -3928,13 +3928,18 @@ fn extract_density(val: &Value) -> f64 {
 /// Panics with a descriptive message if `val` is not a `Value::List`.
 /// A scene may mix `PointLoad`, `PressureLoad`, and `Gravity`; all accumulate
 /// into their respective targets in a single pass.
-fn extract_loads(val: &Value, density: f64) -> ([f64; 3], Vec<PressureSpec>, [f64; 3]) {
+fn extract_loads(
+    val: &Value,
+    density: f64,
+) -> Result<([f64; 3], Vec<PressureSpec>, [f64; 3]), FeaValueShapeError> {
     let items = match val {
         Value::List(v) => v,
-        other => panic!(
-            "solve_elastic_static_trampoline: expected Value::List for loads, got: {:?}",
-            other
-        ),
+        other => {
+            return Err(FeaValueShapeError::ExpectedList {
+                context: "extract_loads",
+                got: format!("{:?}", other),
+            });
+        }
     };
     let mut tip_force_vec = [0.0f64; 3];
     let mut pressures = Vec::new();
@@ -4012,7 +4017,7 @@ fn extract_loads(val: &Value, density: f64) -> ([f64; 3], Vec<PressureSpec>, [f6
             }
         }
     }
-    (tip_force_vec, pressures, body_force)
+    Ok((tip_force_vec, pressures, body_force))
 }
 
 /// A single pressure load parsed from a `PressureLoad` StructureInstance.
@@ -7604,7 +7609,7 @@ mod tests {
 
         // (a) explicit direction [0,-1,0] with force 1000 → [0,-1000,0]
         let loads_a = Value::List(vec![make_point_load_with_dir(1000.0, [0.0, -1.0, 0.0])]);
-        let ([fx, fy, fz], _, _) = extract_loads(&loads_a, 0.0);
+        let ([fx, fy, fz], _, _) = extract_loads(&loads_a, 0.0).unwrap();
         assert!((fx).abs() < 1e-9, "(a) expected fx≈0, got {fx}");
         assert!(
             (fy - (-1000.0)).abs() < 1e-9,
@@ -7614,7 +7619,7 @@ mod tests {
 
         // (b) no direction field → default [0,0,-1]; force 500 → [0,0,-500]
         let loads_b = Value::List(vec![make_point_load_no_dir(500.0)]);
-        let ([fx, fy, fz], _, _) = extract_loads(&loads_b, 0.0);
+        let ([fx, fy, fz], _, _) = extract_loads(&loads_b, 0.0).unwrap();
         assert!((fx).abs() < 1e-9, "(b) expected fx≈0, got {fx}");
         assert!((fy).abs() < 1e-9, "(b) expected fy≈0, got {fy}");
         assert!(
@@ -7627,7 +7632,7 @@ mod tests {
             make_point_load_with_dir(1000.0, [0.0, 0.0, -1.0]),
             make_point_load_with_dir(500.0, [0.0, -1.0, 0.0]),
         ]);
-        let ([fx, fy, fz], _, _) = extract_loads(&loads_c, 0.0);
+        let ([fx, fy, fz], _, _) = extract_loads(&loads_c, 0.0).unwrap();
         assert!((fx).abs() < 1e-9, "(c) expected fx≈0, got {fx}");
         assert!(
             (fy - (-500.0)).abs() < 1e-9,
@@ -7674,7 +7679,7 @@ mod tests {
         }));
 
         let loads = Value::List(vec![point_load]);
-        let ([fx, fy, fz], _, _) = extract_loads(&loads, 0.0);
+        let ([fx, fy, fz], _, _) = extract_loads(&loads, 0.0).unwrap();
         // force=800, direction=[0,-1,0] → tip_force_vec=[0,-800,0]
         assert!((fx).abs() < 1e-9, "expected fx≈0, got {fx}");
         assert!((fy - (-800.0)).abs() < 1e-9, "expected fy=-800, got {fy}");
@@ -7713,7 +7718,7 @@ mod tests {
         // (a) too-short list [0.0, -1.0] → fallback to [0,0,-1]; force=300
         let short_dir = Value::List(vec![Value::Real(0.0), Value::Real(-1.0)]);
         let loads_a = Value::List(vec![make_point_load(300.0, short_dir)]);
-        let ([fx, fy, fz], _, _) = extract_loads(&loads_a, 0.0);
+        let ([fx, fy, fz], _, _) = extract_loads(&loads_a, 0.0).unwrap();
         assert!((fx).abs() < 1e-9, "(a) fx: expected 0, got {fx}");
         assert!((fy).abs() < 1e-9, "(a) fy: expected 0, got {fy}");
         assert!(
@@ -7724,7 +7729,7 @@ mod tests {
         // (b) direction is a String (entirely wrong type) → fallback to [0,0,-1]
         let str_dir = Value::String("neg_z".to_string());
         let loads_b = Value::List(vec![make_point_load(400.0, str_dir)]);
-        let ([fx, fy, fz], _, _) = extract_loads(&loads_b, 0.0);
+        let ([fx, fy, fz], _, _) = extract_loads(&loads_b, 0.0).unwrap();
         assert!((fx).abs() < 1e-9, "(b) fx: expected 0, got {fx}");
         assert!((fy).abs() < 1e-9, "(b) fy: expected 0, got {fy}");
         assert!(
@@ -7803,7 +7808,7 @@ mod tests {
 
         // (a) Standard gravity, direction [0,0,-1] → body_force≈[0,0,-76982.2]
         let loads_a = Value::List(vec![make_gravity(GRAV, [0.0, 0.0, -1.0])]);
-        let ([tfx, tfy, tfz], pressures_a, [bfx, bfy, bfz]) = extract_loads(&loads_a, DENSITY);
+        let ([tfx, tfy, tfz], pressures_a, [bfx, bfy, bfz]) = extract_loads(&loads_a, DENSITY).unwrap();
         assert!(pressures_a.is_empty(), "(a) no pressures expected");
         assert!((tfx).abs() < 1e-9, "(a) tip_force x must be 0, got {tfx}");
         assert!((tfy).abs() < 1e-9, "(a) tip_force y must be 0, got {tfy}");
@@ -7817,14 +7822,14 @@ mod tests {
 
         // (b) magnitude=0 → body_force=[0,0,0]
         let loads_b = Value::List(vec![make_gravity(0.0, [0.0, 0.0, -1.0])]);
-        let (_, _, [bfx, bfy, bfz]) = extract_loads(&loads_b, DENSITY);
+        let (_, _, [bfx, bfy, bfz]) = extract_loads(&loads_b, DENSITY).unwrap();
         assert!((bfx).abs() < 1e-9, "(b) body_force x must be 0, got {bfx}");
         assert!((bfy).abs() < 1e-9, "(b) body_force y must be 0, got {bfy}");
         assert!((bfz).abs() < 1e-9, "(b) body_force z must be 0, got {bfz}");
 
         // (c) direction [1,0,0] → body_force along +X only
         let loads_c = Value::List(vec![make_gravity(GRAV, [1.0, 0.0, 0.0])]);
-        let (_, _, [bfx, bfy, bfz]) = extract_loads(&loads_c, DENSITY);
+        let (_, _, [bfx, bfy, bfz]) = extract_loads(&loads_c, DENSITY).unwrap();
         assert!(
             (bfx - (DENSITY * GRAV)).abs() < TOL,
             "(c) body_force x must be ≈{:.1}, got {bfx}",
@@ -7838,7 +7843,7 @@ mod tests {
             make_gravity(GRAV, [0.0, 0.0, -1.0]),
             make_point_load(500.0),
         ]);
-        let ([tfx, tfy, tfz], _, [bfx, bfy, bfz]) = extract_loads(&loads_d, DENSITY);
+        let ([tfx, tfy, tfz], _, [bfx, bfy, bfz]) = extract_loads(&loads_d, DENSITY).unwrap();
         // PointLoad (no direction) → default -Z → tip_force = [0, 0, -500]
         assert!((tfx).abs() < 1e-9, "(d) tip_force x must be 0, got {tfx}");
         assert!((tfy).abs() < 1e-9, "(d) tip_force y must be 0, got {tfy}");
@@ -7859,7 +7864,7 @@ mod tests {
             make_gravity(GRAV, [0.0, 0.0, -1.0]),
             make_gravity(GRAV, [0.0, 0.0, -1.0]),
         ]);
-        let (_, _, [_, _, bfz]) = extract_loads(&loads_e, DENSITY);
+        let (_, _, [_, _, bfz]) = extract_loads(&loads_e, DENSITY).unwrap();
         let expected_double = 2.0 * expected_bfz;
         assert!(
             (bfz - expected_double).abs() < TOL,
@@ -7961,7 +7966,7 @@ mod tests {
         let loads = Value::List(vec![gravity]);
 
         // density=0.0 → body_force = ρ·magnitude·direction = 0·anything = [0,0,0]
-        let (_, _, body_force) = extract_loads(&loads, 0.0);
+        let (_, _, body_force) = extract_loads(&loads, 0.0).unwrap();
         assert_eq!(
             body_force,
             [0.0, 0.0, 0.0],
