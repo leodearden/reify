@@ -622,4 +622,116 @@ assert "I19: HEADROOM free_gib=0 budget_gib=0 under df failure" \
 kill "$I_LOCK_PID" 2>/dev/null || true
 _BGPIDS=()  # clear so cleanup doesn't double-kill
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block J — B2 read-only / byte-identical
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block J: B2 read-only / byte-identical ---"
+
+J_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-j-XXXXXX)"
+_TMPDIRS+=("$J_MOUNT")
+J_MAP="$(mktemp /tmp/test-warm-lane-audit-j-map-XXXXXX)"
+_TMPDIRS+=("$J_MAP")
+printf '910 done\n911 pending\n912 pending\n' > "$J_MAP"
+
+# The same B1-shape 4-lane pool as Block I (live/done/residue/leaked), so the
+# read-only guarantee is proven across every git-state variety the script
+# handles (clean, ahead-only, residue-dirty, detached-stale) -- PLUS a
+# target/ directory on one lane (none of Block I's fixtures had one), so the
+# content/size/mtime manifest check is exercised for real, not vacuously.
+make_lane "$J_MOUNT/_lane-live"
+touch "$J_MOUNT/_lane-live.lock"
+J_READY="$J_MOUNT/_lane-live.lock.ready-marker"
+( flock -x 9 && touch "$J_READY" && sleep 300 ) 9>"$J_MOUNT/_lane-live.lock" &
+J_LOCK_PID=$!
+_BGPIDS+=("$J_LOCK_PID")
+_wait_for_reader_lock "$J_READY" 30
+
+make_lane "$J_MOUNT/_lane-done" "task/910"
+_add_ahead_commit "$J_MOUNT/_lane-done"
+mkdir -p "$J_MOUNT/_lane-done/target"
+printf 'built-artifact\n' > "$J_MOUNT/_lane-done/target/artifact.bin"
+
+make_lane "$J_MOUNT/_lane-residue" "task/911"
+_add_ahead_commit "$J_MOUNT/_lane-residue"
+mkdir -p "$J_MOUNT/_lane-residue/data/queue"
+printf 'db-v1\n' > "$J_MOUNT/_lane-residue/data/queue/write_queue.db"
+git -C "$J_MOUNT/_lane-residue" add data/queue/write_queue.db
+git -C "$J_MOUNT/_lane-residue" commit -q -m "add residue db"
+printf 'db-v2\n' > "$J_MOUNT/_lane-residue/data/queue/write_queue.db"
+
+make_lane "$J_MOUNT/_lane-leaked" "task/912"
+_add_ahead_commit "$J_MOUNT/_lane-leaked"
+git -C "$J_MOUNT/_lane-leaked" checkout -q --detach
+touch -d '90 minutes ago' "$J_MOUNT/_lane-leaked"
+
+# _snapshot_lane <lane_dir> — prints HEAD sha, the full `git status
+# --porcelain` (untracked entries included, so an unexpected new/removed
+# file anywhere in the tree -- not just target/ -- would show up), and a
+# sorted path/size/mtime manifest of target/ (or a sentinel when absent).
+# Two snapshots of the SAME lane compare byte-identical iff nothing in its
+# git state or target/ changed -- the A1/B2 read-only proof. This only
+# compares two point-in-time strings for equality -- no wall-clock bound
+# anywhere (DD5).
+_snapshot_lane() {
+    local dir="$1"
+    printf 'HEAD=%s\n' "$(git -C "$dir" rev-parse HEAD 2>/dev/null || echo NONE)"
+    printf '== status ==\n'
+    git -C "$dir" status --porcelain 2>/dev/null
+    printf '== target manifest ==\n'
+    if [ -e "$dir/target" ]; then
+        find "$dir/target" -printf '%p %s %T@\n' 2>/dev/null | sort
+    else
+        printf '(no target)\n'
+    fi
+}
+
+J_LANES=(_lane-live _lane-done _lane-residue _lane-leaked)
+declare -A J_BEFORE
+for j_lane in "${J_LANES[@]}"; do
+    J_BEFORE["$j_lane"]="$(_snapshot_lane "$J_MOUNT/$j_lane")"
+done
+
+# A FREE lane (_lane-done) with NO pre-created <dir>.lock -- confirm the
+# probe never creates one (A1: a missing lock is FREE and is NEVER created).
+assert "J0: _lane-done has no .lock before the run" \
+    bash -c '[ ! -e "$1" ]' _ "$J_MOUNT/_lane-done.lock"
+
+ORACLE_MAP="$J_MAP" run_helper --mount "$J_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh"
+assert "J1: exit 0" test "$RC" -eq 0
+
+for j_lane in "${J_LANES[@]}"; do
+    j_after="$(_snapshot_lane "$J_MOUNT/$j_lane")"
+    assert "J2: $j_lane is byte-identical before/after the audit run (A1/B2)" \
+        bash -c '[ "$1" = "$2" ]' _ "${J_BEFORE[$j_lane]}" "$j_after"
+done
+
+assert "J3: _lane-done still has no .lock after the run (probe never creates a sidecar)" \
+    bash -c '[ ! -e "$1" ]' _ "$J_MOUNT/_lane-done.lock"
+
+# _is_locked <lock_file> — a TEST-side (not script-under-test) non-blocking
+# probe, entirely within an isolated subshell so its fd manipulation never
+# leaks into this test script's own shell: exit 0 if the lock is currently
+# held by someone else, exit 1 if free/missing. Proves A2 -- the audit's own
+# probe released its own fd immediately and never stole or retained the
+# background job's lock.
+_is_locked() {
+    local lock="$1"
+    (
+        exec 8<"$lock" 2>/dev/null || exit 1
+        if flock -n -x 8 2>/dev/null; then
+            flock -u 8
+            exit 1
+        else
+            exit 0
+        fi
+    )
+}
+assert "J4: _lane-live's flock is still held by the background job after the run (A2)" \
+    _is_locked "$J_MOUNT/_lane-live.lock"
+
+# Release the live-flock lock.
+kill "$J_LOCK_PID" 2>/dev/null || true
+_BGPIDS=()  # clear so cleanup doesn't double-kill
+
 test_summary
