@@ -1246,13 +1246,37 @@ structure Assembly {
             let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
             let test_realization_id = RealizationNodeId::new("TestEntity", 0);
             Engine::execute_realization_ops(
-                kernels,
-                registry,
-                default_kernel,
-                ops,
-                &values,
-                &functions,
-                &meta_map,
+                RealizationOpsInput::new(
+                    kernels,
+                    registry,
+                    default_kernel,
+                    ops,
+                    &values,
+                    &functions,
+                    &meta_map,
+                    &mut self.diagnostics,
+                    &test_realization_id,
+                    realization_span,
+                    &mut self.kernel_error_out,
+                    &mut self.realization_cache,
+                    &mut self.dispatch_count,
+                    &mut self.dispatch_count_by_realization,
+                )
+                .with_realization_name(realization_name)
+                // Task 4050 step-8: the existing single-kernel unit tests want
+                // the v0.2 BRep demand (the `RealizationOpsInput::new` default);
+                // the cross-kernel tests use `run_demand`.
+                .with_prefer_kernel(prefer_kernel)
+                // Test helpers operate on a single realization; it is always terminal.
+                .with_is_terminal_realization(true)
+                // Amendment (reviewer_comprehensive robustness @ engine_build.rs:230):
+                // `RealizationOpsInput::new`'s `long_chain_threshold` now defaults to
+                // a cheap constant, not an env read (see that field's doc). This is a
+                // general-purpose helper shared by every test in this module, so keep
+                // it explicitly env-sensitive rather than silently inheriting the
+                // constant default — preserves the pre-refactor contract for any test
+                // that sets `REIFY_LONG_CHAIN_THRESHOLD_MS`.
+                .with_long_chain_threshold(crate::dispatcher::long_chain_threshold_from_env()),
                 RealizationOutputs::new(
                     &mut self.step_handles,
                     &mut self.named_steps,
@@ -1261,27 +1285,6 @@ structure Assembly {
                     &mut self.swept_kind_table,
                     &mut self.produced_repr_out,
                 ),
-                &mut self.diagnostics,
-                &test_realization_id,
-                realization_name,
-                realization_span,
-                &mut self.kernel_error_out,
-                &mut self.realization_cache,
-                None,
-                // Task 4050 step-8: the existing single-kernel unit tests want
-                // the v0.2 BRep demand; the cross-kernel tests use `run_demand`.
-                ReprKind::BRep,
-                false,
-                &mut self.dispatch_count,
-                &mut self.dispatch_count_by_realization,
-                prefer_kernel,
-                // Test helpers operate on a single realization; it is always terminal.
-                true,
-                // Task 4744 β step-16: test helpers never register a producer.
-                crate::morph_producer::MorphDispatchIo::disabled(),
-                // GR-034 (#3445): use the env threshold so existing test callers
-                // are byte-unchanged (no env var set ⇒ threshold = default 5 s).
-                crate::dispatcher::long_chain_threshold_from_env(),
             );
         }
 
@@ -1314,13 +1317,36 @@ structure Assembly {
             let functions: Vec<CompiledFunction> = vec![];
             let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
             Engine::execute_realization_ops(
-                kernels,
-                registry,
-                default_kernel,
-                ops,
-                &values,
-                &functions,
-                &meta_map,
+                RealizationOpsInput::new(
+                    kernels,
+                    registry,
+                    default_kernel,
+                    ops,
+                    &values,
+                    &functions,
+                    &meta_map,
+                    &mut self.diagnostics,
+                    realization_id,
+                    realization_span,
+                    &mut self.kernel_error_out,
+                    &mut self.realization_cache,
+                    &mut self.dispatch_count,
+                    &mut self.dispatch_count_by_realization,
+                )
+                .with_realization_name(realization_name)
+                .with_demanded_tol(demanded_tol)
+                .with_demanded_repr(demanded_repr)
+                .with_prefer_kernel(prefer_kernel)
+                // Test helpers operate on a single realization; it is always terminal.
+                .with_is_terminal_realization(true)
+                // Amendment (reviewer_comprehensive robustness @ engine_build.rs:230):
+                // `RealizationOpsInput::new`'s `long_chain_threshold` now defaults to
+                // a cheap constant, not an env read (see that field's doc). This is a
+                // general-purpose helper shared by every test in this module, so keep
+                // it explicitly env-sensitive rather than silently inheriting the
+                // constant default — preserves the pre-refactor contract for any test
+                // that sets `REIFY_LONG_CHAIN_THRESHOLD_MS`.
+                .with_long_chain_threshold(crate::dispatcher::long_chain_threshold_from_env()),
                 RealizationOutputs::new(
                     &mut self.step_handles,
                     &mut self.named_steps,
@@ -1329,27 +1355,124 @@ structure Assembly {
                     &mut self.swept_kind_table,
                     &mut self.produced_repr_out,
                 ),
-                &mut self.diagnostics,
-                realization_id,
-                realization_name,
-                realization_span,
-                &mut self.kernel_error_out,
-                &mut self.realization_cache,
-                demanded_tol,
-                demanded_repr,
-                false,
-                &mut self.dispatch_count,
-                &mut self.dispatch_count_by_realization,
-                prefer_kernel,
-                // Test helpers operate on a single realization; it is always terminal.
-                true,
-                // Task 4744 β step-16: test helpers never register a producer.
-                crate::morph_producer::MorphDispatchIo::disabled(),
-                // GR-034 (#3445): use the env threshold so existing test callers
-                // are byte-unchanged (no env var set ⇒ threshold = default 5 s).
-                crate::dispatcher::long_chain_threshold_from_env(),
             );
         }
+    }
+
+    // ── RealizationOpsInput builder unit tests (task 5054 ζ) ──────────────────
+
+    /// `RealizationOpsInput` is the input-side twin of `RealizationOutputs`
+    /// (task 3119): `new()` takes the 14 CORE borrows that have no meaningful
+    /// default, and the 8 ORTHOGONAL fields — the historical signature-churn
+    /// axis (survey §H2) — default and are overridable via chainable
+    /// `with_*` setters. This is the one genuinely new testable surface the
+    /// input-twin introduces; the ~600-line executor body itself stays
+    /// guarded by the pre-existing `execute_realization_ops_*` unit tests
+    /// below (this task makes zero behavior changes to that body).
+    #[test]
+    fn realization_ops_input_builder_defaults_and_overrides() {
+        // ── (1) `new()` defaults every ORTHOGONAL field to its documented value ──
+        let mut kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
+        let registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        let ops: Vec<CompiledGeometryOp> = vec![];
+        let values = ValueMap::new();
+        let functions: Vec<CompiledFunction> = vec![];
+        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let id = RealizationNodeId::new("TestEntity", 0);
+        let mut diags: Vec<Diagnostic> = vec![];
+        let mut kerr: Option<ErrorRef> = None;
+        let mut cache = RealizationCache::new();
+        let mut dc = 0usize;
+        let mut dcbr: HashMap<RealizationNodeId, usize> = HashMap::new();
+
+        let input = RealizationOpsInput::new(
+            &mut kernels,
+            &registry,
+            "occt",
+            &ops,
+            &values,
+            &functions,
+            &meta_map,
+            &mut diags,
+            &id,
+            SourceSpan::new(0, 0),
+            &mut kerr,
+            &mut cache,
+            &mut dc,
+            &mut dcbr,
+        );
+        assert!(
+            input.realization_name.is_none(),
+            "realization_name must default to None"
+        );
+        assert!(input.demanded_tol.is_none(), "demanded_tol must default to None");
+        assert_eq!(
+            input.demanded_repr,
+            ReprKind::BRep,
+            "demanded_repr must default to BRep"
+        );
+        assert!(
+            !input.demanded_boundary,
+            "demanded_boundary must default to false"
+        );
+        assert!(input.prefer_kernel.is_none(), "prefer_kernel must default to None");
+        assert!(
+            !input.is_terminal_realization,
+            "is_terminal_realization must default to false (conservative: no cache probe)"
+        );
+        assert_eq!(
+            input.long_chain_threshold,
+            Duration::from_millis(crate::dispatcher::LONG_CHAIN_DEFAULT_THRESHOLD_MS),
+            "long_chain_threshold must default to the cheap PRD-default constant \
+             (not an env read — every production call site overrides it with a \
+             once-per-entry-resolved value anyway)"
+        );
+
+        // ── (2) `with_*` setters roundtrip an override for each ORTHOGONAL field ──
+        let mut kernels2: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
+        let registry2: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        let ops2: Vec<CompiledGeometryOp> = vec![];
+        let values2 = ValueMap::new();
+        let functions2: Vec<CompiledFunction> = vec![];
+        let meta_map2: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let id2 = RealizationNodeId::new("TestEntity", 0);
+        let mut diags2: Vec<Diagnostic> = vec![];
+        let mut kerr2: Option<ErrorRef> = None;
+        let mut cache2 = RealizationCache::new();
+        let mut dc2 = 0usize;
+        let mut dcbr2: HashMap<RealizationNodeId, usize> = HashMap::new();
+
+        let overridden = RealizationOpsInput::new(
+            &mut kernels2,
+            &registry2,
+            "occt",
+            &ops2,
+            &values2,
+            &functions2,
+            &meta_map2,
+            &mut diags2,
+            &id2,
+            SourceSpan::new(0, 0),
+            &mut kerr2,
+            &mut cache2,
+            &mut dc2,
+            &mut dcbr2,
+        )
+        .with_demanded_repr(ReprKind::Voxel)
+        .with_demanded_tol(Some(0.01))
+        .with_demanded_boundary(true)
+        .with_prefer_kernel(Some("occt"))
+        .with_is_terminal_realization(true)
+        .with_long_chain_threshold(Duration::ZERO)
+        .with_realization_name(Some("R"));
+
+        assert_eq!(overridden.demanded_repr, ReprKind::Voxel);
+        assert_eq!(overridden.demanded_tol, Some(0.01));
+        assert!(overridden.demanded_boundary);
+        assert_eq!(overridden.prefer_kernel, Some("occt"));
+        assert!(overridden.is_terminal_realization);
+        assert_eq!(overridden.long_chain_threshold, Duration::ZERO);
+        assert_eq!(overridden.realization_name, Some("R"));
     }
 
     // ── execute_realization_ops unit tests ────────────────────────────────────
@@ -3240,13 +3363,26 @@ structure Assembly {
         let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
         let realization_id = RealizationNodeId::new("LongChain", 0);
         Engine::execute_realization_ops(
-            &mut kernels,
-            &registry,
-            "occt",
-            &ops,
-            &values,
-            &functions,
-            &meta_map,
+            RealizationOpsInput::new(
+                &mut kernels,
+                &registry,
+                "occt",
+                &ops,
+                &values,
+                &functions,
+                &meta_map,
+                &mut state.diagnostics,
+                &realization_id,
+                SourceSpan::new(0, 0),
+                &mut state.kernel_error_out,
+                &mut state.realization_cache,
+                &mut state.dispatch_count,
+                &mut state.dispatch_count_by_realization,
+            )
+            .with_realization_name(Some("LongChain"))
+            .with_demanded_repr(ReprKind::Voxel)
+            .with_is_terminal_realization(true)
+            .with_long_chain_threshold(Duration::ZERO), // GR-034 / #3445
             RealizationOutputs::new(
                 &mut state.step_handles,
                 &mut state.named_steps,
@@ -3255,22 +3391,6 @@ structure Assembly {
                 &mut state.swept_kind_table,
                 &mut state.produced_repr_out,
             ),
-            &mut state.diagnostics,
-            &realization_id,
-            Some("LongChain"),
-            SourceSpan::new(0, 0),
-            &mut state.kernel_error_out,
-            &mut state.realization_cache,
-            None,            // demanded_tol
-            ReprKind::Voxel, // demanded_repr
-            false,           // demanded_boundary
-            &mut state.dispatch_count,
-            &mut state.dispatch_count_by_realization,
-            None,            // prefer_kernel
-            true,            // is_terminal_realization
-            // Task 4744 β: test registers no morph producer — disabled arm.
-            crate::morph_producer::MorphDispatchIo::disabled(),
-            Duration::ZERO,  // long_chain_threshold (GR-034 / #3445)
         );
 
         // Exactly one LongChainRealization Warning must be emitted.
@@ -3406,13 +3526,27 @@ structure Assembly {
         let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
         let realization_id = RealizationNodeId::new("TwoStage", 0);
         Engine::execute_realization_ops(
-            &mut kernels,
-            &registry,
-            "occt",
-            &ops,
-            &values,
-            &functions,
-            &meta_map,
+            RealizationOpsInput::new(
+                &mut kernels,
+                &registry,
+                "occt",
+                &ops,
+                &values,
+                &functions,
+                &meta_map,
+                &mut state.diagnostics,
+                &realization_id,
+                SourceSpan::new(0, 0),
+                &mut state.kernel_error_out,
+                &mut state.realization_cache,
+                &mut state.dispatch_count,
+                &mut state.dispatch_count_by_realization,
+            )
+            .with_realization_name(Some("TwoStage"))
+            .with_demanded_repr(ReprKind::Voxel)
+            .with_is_terminal_realization(true)
+            // long_chain_threshold=ZERO → only the stage gate matters.
+            .with_long_chain_threshold(Duration::ZERO),
             RealizationOutputs::new(
                 &mut state.step_handles,
                 &mut state.named_steps,
@@ -3421,22 +3555,6 @@ structure Assembly {
                 &mut state.swept_kind_table,
                 &mut state.produced_repr_out,
             ),
-            &mut state.diagnostics,
-            &realization_id,
-            Some("TwoStage"),
-            SourceSpan::new(0, 0),
-            &mut state.kernel_error_out,
-            &mut state.realization_cache,
-            None,            // demanded_tol
-            ReprKind::Voxel, // demanded_repr
-            false,           // demanded_boundary
-            &mut state.dispatch_count,
-            &mut state.dispatch_count_by_realization,
-            None,            // prefer_kernel
-            true,            // is_terminal_realization
-            // Task 4744 β: test registers no morph producer — disabled arm.
-            crate::morph_producer::MorphDispatchIo::disabled(),
-            Duration::ZERO,  // long_chain_threshold (threshold=ZERO → only stage gate matters)
         );
 
         // ZERO LongChainRealization diagnostics — the 2-stage gate `> 2` is false.
@@ -3558,13 +3676,27 @@ structure Assembly {
         let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
         let realization_id = RealizationNodeId::new("HighThreshold", 0);
         Engine::execute_realization_ops(
-            &mut kernels,
-            &registry,
-            "occt",
-            &ops,
-            &values,
-            &functions,
-            &meta_map,
+            RealizationOpsInput::new(
+                &mut kernels,
+                &registry,
+                "occt",
+                &ops,
+                &values,
+                &functions,
+                &meta_map,
+                &mut state.diagnostics,
+                &realization_id,
+                SourceSpan::new(0, 0),
+                &mut state.kernel_error_out,
+                &mut state.realization_cache,
+                &mut state.dispatch_count,
+                &mut state.dispatch_count_by_realization,
+            )
+            .with_realization_name(Some("HighThreshold"))
+            .with_demanded_repr(ReprKind::Voxel)
+            .with_is_terminal_realization(true)
+            // long_chain_threshold: far above any real elapsed.
+            .with_long_chain_threshold(Duration::from_secs(3600)),
             RealizationOutputs::new(
                 &mut state.step_handles,
                 &mut state.named_steps,
@@ -3573,22 +3705,6 @@ structure Assembly {
                 &mut state.swept_kind_table,
                 &mut state.produced_repr_out,
             ),
-            &mut state.diagnostics,
-            &realization_id,
-            Some("HighThreshold"),
-            SourceSpan::new(0, 0),
-            &mut state.kernel_error_out,
-            &mut state.realization_cache,
-            None,                         // demanded_tol
-            ReprKind::Voxel,              // demanded_repr
-            false,                        // demanded_boundary
-            &mut state.dispatch_count,
-            &mut state.dispatch_count_by_realization,
-            None,                         // prefer_kernel
-            true,                         // is_terminal_realization
-            // Task 4744 β: test registers no morph producer — disabled arm.
-            crate::morph_producer::MorphDispatchIo::disabled(),
-            Duration::from_secs(3600),    // long_chain_threshold: far above any real elapsed
         );
 
         // ZERO LongChainRealization diagnostics — the elapsed gate suppresses it
