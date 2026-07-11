@@ -523,9 +523,11 @@ purpose okp(subject : Motor) {
 // `priv param` inside a port or guarded block is not actually blocked yet.
 // That enforcement gap is out of this task's scope (task #5161 is scoped to
 // the lowering sites, mirroring the sibling top-level structure-param site).
-// Tracked as follow-up escalation esc-5161-2 (risk_identified): extend
-// `template_member_is_priv` to also scan `ports[].members[].visibility` and
-// `guarded_groups[].members[].visibility`, then add a RED-until-fixed
+// Tracked as follow-up task #5171 ("Enforce lowered priv visibility in
+// E_PRIV_MEMBER_ACCESS (port-member / guarded-block params)", depends on
+// #5161 — filed from risk_identified esc-5161-4 per operator decision):
+// extend `template_member_is_priv` to also scan `ports[].members[].visibility`
+// and `guarded_groups[].members[].visibility`, then add a RED-until-fixed
 // enforcement test mirroring Part B's priv-param/sub/port cases. Part D below
 // deliberately asserts only the lowered `visibility` field, not dot-access
 // enforcement — so it stays green regardless of whether that follow-up has
