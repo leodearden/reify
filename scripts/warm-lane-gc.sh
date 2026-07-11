@@ -529,11 +529,12 @@ _do_reclaim() {
             # lane flock acquired above, mirroring the manual 2026-07-10
             # remediation.
             info "  resetting lane (disk-pressure): $name"
-            if rm -rf "$lane/target" 2>/dev/null; then
+            local rm_err
+            if rm_err="$(rm -rf "$lane/target" 2>&1)"; then
                 ok "  reset lane (disk-pressure): $name"
                 reset_count=$((reset_count + 1))
             else
-                warn "  disk-pressure reset failed for $name (rm error); continuing"
+                warn "  disk-pressure reset failed for $name: ${rm_err:-<rm produced no output>}; continuing"
                 preserved_count=$((preserved_count + 1))
             fi
         else

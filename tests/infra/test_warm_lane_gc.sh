@@ -1277,4 +1277,67 @@ assert "K3: seed-script NOT invoked (no reflink clone under disk-pressure)" \
 assert "K3: summary shows reset=1" \
     bash -c 'printf "%s\n" "$1" | grep -qE "reset=1"' _ "$OUT"
 
+# ── K4: rm failure under --disk-pressure is preserved, not silently reset ──────
+# The rm-failure branch (warn + preserve, scripts/warm-lane-gc.sh) is the
+# failure-mode handling for the exact scenario --disk-pressure exists to
+# remediate (ENOSPC / disk pressure) — an untested regression here would
+# silently mis-count reclaim results. Stubs `rm` via PATH to fail
+# deterministically: unlike a chmod-0-parent-dir permission trick, this is
+# root-safe (permission bits are bypassed when the test process runs as
+# root, which a filesystem-based trick cannot guarantee against).
+K4_REPO="$K_ROOT/k4-repo"
+K4_WORKTREES="$K_ROOT/k4-worktrees"
+K4_BASE="$K_ROOT/k4-base"
+mkdir -p "$K4_WORKTREES" "$K4_BASE"
+make_repo "$K4_REPO"
+mkdir -p "$K4_BASE/target.gen.1"
+touch "$K4_BASE/target.gen.1.lock"
+ln -sfn "$K4_BASE/target.gen.1" "$K4_BASE/target"
+
+make_task_lane "$K4_REPO" "$K4_WORKTREES" "_lane-1" "task/4827" "ahead"
+
+K4_MAP="$(mktemp /tmp/test-gc-oracle-map-XXXXXX)"
+_TMPDIRS+=("$K4_MAP")
+printf '4827 done\n' > "$K4_MAP"
+
+K4_SEED_LOG="$K_ROOT/k4-seed-calls.log"
+K4_SEED_STUB="$K_ROOT/k4-seed-stub.sh"
+_seed_stub_body > "$K4_SEED_STUB"
+chmod +x "$K4_SEED_STUB"
+export SEED_LOG="$K4_SEED_LOG"
+export ORACLE_MAP="$K4_MAP"
+
+# rm stub: always fails — simulates rm -rf hitting EACCES / a busy mount /
+# an immutable file under real disk pressure. Prepended to PATH only for
+# the run_helper call below (bash's temporary-environment semantics for a
+# prefix assignment on a function call: visible for that call's duration,
+# including subprocesses it spawns, and reverted immediately after).
+K4_RMSTUB_DIR="$(mktemp -d /tmp/test-gc-k4-rmstub-XXXXXX)"
+_TMPDIRS+=("$K4_RMSTUB_DIR")
+cat > "$K4_RMSTUB_DIR/rm" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "rm: cannot remove target: simulated failure (test stub)" >&2
+exit 1
+STUB_EOF
+chmod +x "$K4_RMSTUB_DIR/rm"
+
+PATH="$K4_RMSTUB_DIR:$PATH" run_helper reclaim \
+    --worktrees-dir "$K4_WORKTREES" \
+    --base-target "$K4_BASE/target" \
+    --seed-script "$K4_SEED_STUB" \
+    --status-cmd "$STUB_DIR/gc-status-oracle.sh" \
+    --disk-pressure
+
+assert "K4: exit 0 (rm failure does not abort the sweep)" test "$RC" -eq 0
+assert "K4: seed-script NOT invoked (disk-pressure path has no alpha fallback)" \
+    bash -c '[ ! -f "$1" ] || ! grep -q "_lane-1" "$1"' _ "$K4_SEED_LOG"
+assert "K4: target/ NOT removed (rm failed, lane left untouched)" \
+    test -d "$K4_WORKTREES/_lane-1/target"
+assert "K4: divergent marker intact (nothing was reset)" \
+    test -f "$K4_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
+assert "K4: summary counts the failed reset as preserved, not reset" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "reset=0 removed=0 preserved=1"' _ "$OUT"
+assert "K4: stderr captures the rm failure detail (not swallowed)" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "simulated failure"' _ "$ERR_OUT"
+
 test_summary
