@@ -282,4 +282,61 @@ else
     echo "SKIP: Block C df-delta assertion -- REIFY_WARM_LANE_MOUNT not set to a private reflink mount" >&2
 fi
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block D — --reseed opt-in + free-BEFORE-stage ordering (T2)
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block D: --reseed opt-in + free-BEFORE-stage ordering (T2) ---"
+
+D_BASE="$(mktemp -d /tmp/test-thin-warm-lane-d-base-XXXXXX)"
+_TMPDIRS+=("$D_BASE")
+
+# --seed-script stub: logs argv AND whether <lane>/target existed AT CALL TIME
+# (proves free-before-stage ordering when it's invoked under --reseed).
+D_SEED_LOG="$(mktemp /tmp/test-thin-warm-lane-d-seedlog-XXXXXX)"
+_TMPDIRS+=("$D_SEED_LOG")
+D_SEED_STUB="$(mktemp /tmp/test-thin-warm-lane-d-seedstub-XXXXXX)"
+_TMPDIRS+=("$D_SEED_STUB")
+cat > "$D_SEED_STUB" << 'STUB_EOF'
+#!/usr/bin/env bash
+{
+    echo "ARGV: $*"
+    if [ -e "$2/target" ]; then
+        echo "PRESENCE: PRESENT"
+    else
+        echo "PRESENCE: ABSENT"
+    fi
+} >> "$SEED_LOG"
+exit 0
+STUB_EOF
+chmod +x "$D_SEED_STUB"
+export SEED_LOG="$D_SEED_LOG"
+
+# ── D1: default run (no --reseed) leaves the seed-script log EMPTY ────────────
+D_LANE_A="$(mktemp -d /tmp/test-thin-warm-lane-d-a-XXXXXX)"
+_TMPDIRS+=("$D_LANE_A")
+mkdir -p "$D_LANE_A/target"
+touch "$D_LANE_A/target/MARKER"
+
+run_helper "$D_LANE_A" --seed-script "$D_SEED_STUB"
+assert "D1: default (no --reseed) run exits 0" test "$RC" -eq 0
+assert "D1: default run leaves the seed-script log EMPTY (no clone staged)" \
+    bash -c '[ ! -s "$1" ]' _ "$D_SEED_LOG"
+
+# ── D2: --reseed invokes the seed-script AFTER the free (T2) ──────────────────
+D_LANE_B="$(mktemp -d /tmp/test-thin-warm-lane-d-b-XXXXXX)"
+_TMPDIRS+=("$D_LANE_B")
+mkdir -p "$D_LANE_B/target"
+touch "$D_LANE_B/target/MARKER"
+
+run_helper "$D_LANE_B" --reseed --base "$D_BASE" --seed-script "$D_SEED_STUB"
+assert "D2: --reseed run exits 0" test "$RC" -eq 0
+assert "D2: seed-script WAS invoked" bash -c '[ -s "$1" ]' _ "$D_SEED_LOG"
+assert "D2: seed-script argv includes --fresh-checkout" \
+    bash -c 'grep -q -- "--fresh-checkout" "$1"' _ "$D_SEED_LOG"
+assert "D2: seed-script argv includes the lane_dir" \
+    bash -c 'grep -qF "$2" "$1"' _ "$D_SEED_LOG" "$D_LANE_B"
+assert "D2: seed-script observed target ABSENT at invocation (free-before-stage, T2)" \
+    bash -c 'grep -q "PRESENCE: ABSENT" "$1"' _ "$D_SEED_LOG"
+
 test_summary
