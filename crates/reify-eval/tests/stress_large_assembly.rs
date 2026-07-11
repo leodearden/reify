@@ -125,6 +125,28 @@ fn material_density_si(result: &reify_eval::BuildResult, structure: &str) -> f64
     }
 }
 
+/// Read a DEF template's own folded `mass` cell (`Value::Scalar<MASS>`,
+/// `ValueCellId(def_name, "mass")`) as its SI `si_value`. Used to build the
+/// reference `total_mass` sum from the 8 per-DEF masses × instance counts
+/// (`total_mass_computed`), since every `LargeAssembly` sub-instance uses
+/// default params and so has instance mass == its DEF mass.
+fn def_mass_si(result: &reify_eval::BuildResult, def_name: &str) -> f64 {
+    match result.values.get(&ValueCellId::new(def_name, "mass")) {
+        Some(Value::Scalar {
+            si_value,
+            dimension,
+        }) => {
+            assert_eq!(
+                *dimension,
+                DimensionVector::MASS,
+                "{def_name}.mass: expected dimension MASS, got {dimension:?}"
+            );
+            *si_value
+        }
+        other => panic!("{def_name}.mass: expected Value::Scalar{{MASS}}, got {other:?}"),
+    }
+}
+
 /// Assert `value` is a `Value::Scalar` of dimension `dim` whose `si_value` is
 /// within 1e-6 relative of `expected`.
 fn assert_scalar_rel(value: Option<&Value>, dim: DimensionVector, expected: f64, what: &str) {
@@ -293,25 +315,68 @@ fn mass_propagation_aluminum_plate() {
 
 /// `LargeAssembly.total_mass = all_masses.sum` aggregates cross-entity
 /// geometry-query-derived sub masses. GHR-ζ (task 3608) landed and per-entity
-/// `mass` now folds (see `mass_propagation_steel_beam`/`_aluminum_plate`), but
-/// the PARENT aggregate cell reads CROSS-ENTITY member access (`self.bNN.mass`,
-/// 54 sub-instances). `post_process_geometry_queries` inserts only into
-/// geometry-query cells, and the `post_process_derived_lets` fixpoint (task 4229,
-/// `cross_cell_factored_dependent_folds_via_fixpoint`) resolves only SAME-ENTITY
-/// cross-cell factoring — it does NOT re-evaluate cross-entity aggregate cells
-/// whose inputs are sub-instance geometry-derived values. So each `self.bNN.mass`
-/// stays Undef → `all_masses` holds Undef → `total_mass` stays `Value::Undef` on
-/// the real-OCCT build path. (Confirmed empirically on main: per-def masses fold,
-/// all 54 `self.<inst>.mass` cells are Undef.)
+/// `mass` now folds (see `mass_propagation_steel_beam`/`_aluminum_plate`), and
+/// the cross-entity aggregate gap is now closed by #4725:
+/// `post_process_cross_sub_value_cells` folds each scoped scalar cross-sub cell
+/// (`ValueCellId("<parent>.<sub>", "mass")`, e.g. `self.b01.mass`) from the
+/// sub-instance's realized geometry, and the `post_process_derived_lets`
+/// fixpoint (task 4229) — now filtering on a DEEP Undef check
+/// (`value_is_or_contains_undef`, so a `List` holding `Undef` elements is
+/// re-selected too, not just a bare `Value::Undef` cell) — re-evaluates the
+/// parent `all_masses` / `total_mass` `Let` cells once every referenced
+/// scoped cell is folded.
 ///
 /// This value-cell aggregate gap is distinct from cross-`let` CONSTRAINT folding
-/// (task 4628, done — PRD §9 geometry-in-the-loop is excluded from it). Closing
-/// the value-cell gap is tracked by #4725.
+/// (task 4628, done — PRD §9 geometry-in-the-loop is excluded from it).
 #[test]
-#[ignore = "Blocked on #4725 (cross-entity aggregate value-cell folding): LargeAssembly.total_mass = all_masses.sum stays Undef — the 54 cross-entity self.<inst>.mass refs don't re-evaluate after sub-instance geometry-query masses fold; post_process_derived_lets covers only same-entity factoring"]
 fn total_mass_computed() {
-    // TODO(#4725): when cross-entity aggregate value-cell re-eval lands, remove
-    // #[ignore], call build_canonical_occt(), and assert LargeAssembly.total_mass > 0.
+    let Some(result) = build_canonical_occt() else {
+        return;
+    };
+
+    // Primary, always-checked signal (and the #[ignore]-removal gate):
+    // `total_mass` is a positive `Scalar<MASS>`, not `Value::Undef`.
+    let total_mass = result
+        .values
+        .get(&ValueCellId::new("LargeAssembly", "total_mass"));
+    match total_mass {
+        Some(Value::Scalar {
+            si_value,
+            dimension,
+        }) => {
+            assert_eq!(
+                *dimension,
+                DimensionVector::MASS,
+                "LargeAssembly.total_mass: expected dimension MASS, got {dimension:?}"
+            );
+            assert!(
+                *si_value > 0.0,
+                "LargeAssembly.total_mass: expected si_value > 0, got {si_value}"
+            );
+        }
+        other => panic!("LargeAssembly.total_mass: expected Value::Scalar{{MASS}}, got {other:?}"),
+    }
+
+    // Reference check: total_mass ≈ Σ over the 8 DEF types of (instance_count ×
+    // per-DEF folded mass). Every sub-instance uses default params (e.g. `sub b01
+    // = SteelBeam()` with no overrides), so instance mass == its DEF mass — this
+    // sums the same 8 DEF mass cells `mass_propagation_steel_beam`/`_aluminum_plate`
+    // already pin, rather than reading the 54 scoped instance cells directly.
+    let expected_total = 16.0 * def_mass_si(result, "SteelBeam")
+        + 8.0 * def_mass_si(result, "AluminumPlate")
+        + 8.0 * def_mass_si(result, "StiffenerBracket")
+        + 6.0 * def_mass_si(result, "BoltConnector")
+        + 4.0 * def_mass_si(result, "MotorUnit")
+        + 4.0 * def_mass_si(result, "GearboxUnit")
+        + 4.0 * def_mass_si(result, "CoverPanel")
+        + 4.0 * def_mass_si(result, "SensorPod");
+
+    assert_scalar_rel(
+        total_mass,
+        DimensionVector::MASS,
+        expected_total,
+        "LargeAssembly.total_mass (Σ instance_count × per-DEF mass)",
+    );
 }
 
 // ── step-9: constraint, purpose, and performance tests ────────────────────────

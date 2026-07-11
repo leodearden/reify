@@ -526,3 +526,108 @@ fn cross_cell_factored_dependent_folds_via_fixpoint() {
         "m = v * 2 (cross-cell dependent folds via fixpoint re-eval)",
     );
 }
+
+// ── cross-entity aggregate: a parent aggregate folds via fixpoint re-eval ───
+
+const CROSS_ENTITY_SOURCE: &str = r#"
+structure def CrossEntityChild : Physical {
+    param geometry : Solid = box(10mm, 20mm, 30mm)
+    param material : Material = Material(
+        name: "Steel AISI 1045",
+        density: 7850kg/m^3,
+        youngs_modulus: 205GPa
+    )
+}
+
+structure def CrossEntityParent {
+    sub a = CrossEntityChild()
+    sub b = CrossEntityChild()
+
+    let all_masses = [self.a.mass, self.b.mass]
+    let total_mass = all_masses.sum
+}
+"#;
+
+/// Regression pin for cross-ENTITY aggregate folding (task 4725).
+///
+/// `self.a.mass` / `self.b.mass` are cross-sub SCALAR member accesses (the
+/// `Physical` trait's geometry-query-derived `mass = volume(geometry) *
+/// material.density`). Each compiles to a plain scoped `ValueRef` keyed
+/// `ValueCellId("CrossEntityParent.a", "mass")` (reify-compiler/src/expr.rs's
+/// scalar cross-sub path) — deliberately NOT the `CrossSubGeometryRef` variant,
+/// which is reserved for genuine geometry-realization members (e.g.
+/// `self.sub.body`) and `unreachable!()`s in `reify_expr::eval_expr` outside a
+/// bare-let top level.
+///
+/// Unlike the SAME-entity `cross_cell_factored_dependent_folds_via_fixpoint`
+/// pin above (`m = v * 2` within one entity), `self.a.mass` / `self.b.mass`
+/// are CROSS-entity: folding them requires dispatching a geometry query
+/// against the CHILD sub-instance's own realized geometry — something
+/// `post_process_derived_lets` (task 4229's same-entity fixpoint) does not do.
+///
+/// The compile-clean assertion inside `compile_and_build_occt` runs
+/// unconditionally, proving cross-sub scalar access to a trait-injected `Let`
+/// member compiles even without OCCT. Gated on OCCT availability, this test
+/// then asserts the parent aggregate `total_mass` folds to a positive
+/// `Scalar<MASS>` ≈ 2× the single child's mass — i.e. both `self.a.mass` and
+/// `self.b.mass` folded from `Undef` and the aggregate re-evaluated via
+/// fixpoint.
+///
+/// RED on the base branch (task 4725): `self.a.mass` / `self.b.mass` stay
+/// `Value::Undef` (no pass folds a cross-entity scoped scalar cell from the
+/// sub-instance's realized geometry), so `all_masses` holds `Undef` and
+/// `total_mass = all_masses.sum` stays `Value::Undef`.
+#[test]
+fn cross_entity_aggregate_folds_via_fixpoint() {
+    let Some(result) = compile_and_build_occt(CROSS_ENTITY_SOURCE) else {
+        return;
+    };
+
+    // box(10mm, 20mm, 30mm) = 0.010 * 0.020 * 0.030 = 6.0e-6 m³; density 7850 kg/m³.
+    let box_v = 0.010 * 0.020 * 0.030;
+    let density = 7850.0;
+    let single_mass = box_v * density;
+
+    assert_scalar_rel(
+        result
+            .values
+            .get(&ValueCellId::new("CrossEntityParent", "total_mass")),
+        DimensionVector::MASS,
+        single_mass * 2.0,
+        "CrossEntityParent.total_mass (cross-entity aggregate folds via fixpoint)",
+    );
+}
+
+// ── declaration-order independence (task 4725 amendment) ────────────────────
+//
+// A test pinning `total_mass = all_masses.sum` folding correctly when
+// `total_mass` is declared BEFORE `all_masses` (to exercise the multi-round
+// fixpoint added to `post_process_derived_lets` below) was attempted here
+// and dropped: that source does not compile, even with an explicit
+// `all_masses : List<Mass>` annotation. Reify's own-member two-pass
+// compilation (`reify-compiler/src/entity.rs`'s `compile_entity`) only
+// registers a `Let`'s REAL type in scope once Pass 2 reaches that let's own
+// declaration, in source order — Pass 1 pre-registers every `Let` name with
+// a placeholder `Type::dimensionless_scalar()` regardless of any
+// annotation, so an earlier unannotated/annotated-but-unconsulted let
+// referencing a later one sees the placeholder, not the real type.
+// Empirically this reversed source fails with `AggregationReceiverNotCollection`
+// ("'.sum' requires a List receiver, but got Real"). This is the same class
+// of intentional, documented compiler simplification pinned for trait
+// defaults by
+// `let_type_disambiguation_tests::mutual_unannotated_lets_documented_limitation`
+// (task 1834: "a topological ordering pass would fix the general case but
+// is out of scope") — out of scope here too, since task 4725 is confined to
+// reify-eval post-processes, not the compiler (see the task's design
+// decisions).
+//
+// The multi-round fixpoint in `post_process_derived_lets` remains correct
+// and worth keeping defensively (e.g. for cells depending on
+// topology-selector-patched values across rounds), but it cannot be pinned
+// via *this* declaration-order shape: every same-entity Let→Let reference
+// that compiles at all already has its dependency declared first, so
+// `template.value_cells` iteration order matches dependency order for this
+// case and a single round already suffices — see
+// `cross_entity_aggregate_folds_via_fixpoint` above, which pins the
+// (compilable, forward-declared) cross-entity aggregate fold this pass
+// exists for.
