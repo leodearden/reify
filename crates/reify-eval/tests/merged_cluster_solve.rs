@@ -1446,6 +1446,28 @@ fn merged_cluster_skips_solver_when_every_auto_is_excluded() {
         "neither excluded connector cell can appear in resolved_params -- no \
          solve ever ran",
     );
+
+    // Amendment (task #5014): the early-return arm must leave EVERY member's
+    // cells in their pre-seeded `Auto`/`Undef` state, not just absent from
+    // `resolved_params` -- mirrors the snapshot-state check
+    // `merged_cluster_excludes_strict_connector_instance_auto` makes for its
+    // (partial-exclusion) connector cell.
+    let snapshot = engine
+        .snapshot()
+        .expect("engine must have a snapshot after eval()");
+    for id in [&connector_k, &connector_m] {
+        let (val, det) = snapshot
+            .values
+            .get(id)
+            .unwrap_or_else(|| panic!("{id:?} must still be pre-seeded in the snapshot"));
+        assert_eq!(*val, Value::Undef, "{id:?} must stay Undef -- no solve ever ran");
+        assert_eq!(
+            *det,
+            DeterminacyState::Auto,
+            "{id:?} must never reach Determined when the whole cluster is left \
+             unresolved -- got {det:?}",
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
