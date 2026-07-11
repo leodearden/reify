@@ -230,10 +230,87 @@ _lane_branch() {
     fi
 }
 
+# ── backing-task resolution (D6 reuse, lifted from warm-lane-gc.sh) ──────────
+# _backing_task_id <dir>
+# Prints the numeric task id backing <dir>'s HEAD, or nothing if none can be
+# resolved. Never fails under set -e (all git calls guarded with `|| true`).
+# attached  — HEAD is on a branch named task/NNNN (purely numeric NNNN).
+# detached  — enumerate refs/heads/task/* branches that CONTAIN HEAD; use the
+#             id ONLY when exactly one DISTINCT task/NNNN branch matches.
+_backing_task_id() {
+    local dir="$1"
+    local br id
+    br="$(git -C "$dir" symbolic-ref --short HEAD 2>/dev/null || true)"
+    if [ -n "$br" ]; then
+        case "$br" in
+            task/*)
+                id="${br#task/}"
+                case "$id" in
+                    ''|*[!0-9]*) return 0 ;;  # non-numeric id — no match
+                esac
+                printf '%s' "$id"
+                ;;
+        esac
+        return 0  # attached to a non-task (or non-numeric-task) branch — no id
+    fi
+
+    # Detached HEAD: resolve via containing task/* branches.
+    local -a ids=()
+    local ref rid
+    while IFS= read -r ref; do
+        [ -n "$ref" ] || continue
+        rid="${ref#task/}"
+        case "$rid" in
+            ''|*[!0-9]*) continue ;;  # non-numeric id — skip
+        esac
+        ids+=("$rid")
+    done < <(git -C "$dir" for-each-ref --format='%(refname:short)' --contains HEAD refs/heads/task/* 2>/dev/null || true)
+
+    if [ "${#ids[@]}" -eq 1 ]; then
+        printf '%s' "${ids[0]}"
+    fi
+    return 0
+}
+
+# _backing_task_status <dir>
+# Prints terminal|non-terminal|unknown (A3: a status-lookup failure/unresolved
+# id/unset STATUS_CMD always degrades to unknown, never aborts). Oracle
+# contract mirrors warm-lane-preflight.sh Check 6 / warm-lane-gc.sh
+# _backing_task_terminal byte-for-byte: non-zero exit / empty output = unknown.
+_backing_task_status() {
+    local dir="$1"
+    local id st
+    [ -n "$STATUS_CMD" ] || { printf 'unknown'; return 0; }
+    id="$(_backing_task_id "$dir")"
+    [ -n "$id" ] || { printf 'unknown'; return 0; }
+    st="$("$STATUS_CMD" "$id" 2>/dev/null | tr -d '[:space:]' || true)"
+    case "$st" in
+        done|cancelled) printf 'terminal' ;;
+        '') printf 'unknown' ;;
+        *) printf 'non-terminal' ;;
+    esac
+    return 0
+}
+
+# ── classification (monotonically refined across the walk's build-out) ───────
+# _classify assigned status
+_classify() {
+    local assigned="$1" status="$2"
+    if [ "$assigned" = "ASSIGNED" ]; then
+        printf 'LIVE'; return 0
+    fi
+    # FREE lane.
+    if [ "$status" = "terminal" ]; then
+        printf 'RECLAIMABLE'; return 0
+    fi
+    printf 'PRESERVED-OK'
+}
+
 # ── resident walk ──────────────────────────────────────────────────────────────
 RESIDENT=0
 ASSIGNED_COUNT=0
 FREE_COUNT=0
+RECLAIMABLE_COUNT=0
 TABLE_OUT=""
 
 # A nonexistent/empty --mount is NOT an error (advisory-only script): the walk
@@ -256,21 +333,20 @@ if [ -n "$MOUNT" ] && [ -d "$MOUNT" ]; then
         fi
 
         branch="$(_lane_branch "$entry")"
+        status="$(_backing_task_status "$entry")"
 
-        # Classification (monotonically refined in later steps): ASSIGNED is
-        # always LIVE; every FREE lane defaults to PRESERVED-OK for now.
-        if [ "$assigned" = "ASSIGNED" ]; then
-            classification="LIVE"
-        else
-            classification="PRESERVED-OK"
-        fi
+        classification="$(_classify "$assigned" "$status")"
+        case "$classification" in
+            RECLAIMABLE) RECLAIMABLE_COUNT=$((RECLAIMABLE_COUNT + 1)) ;;
+        esac
 
-        TABLE_OUT="${TABLE_OUT}lane=${name} role=${role} assigned=${assigned} branch=${branch} classification=${classification}
+        TABLE_OUT="${TABLE_OUT}lane=${name} role=${role} assigned=${assigned} branch=${branch} status=${status} classification=${classification}
 "
     done
 fi
 
 printf '%s' "$TABLE_OUT"
-printf 'HEADROOM resident=%d assigned=%d free=%d\n' "$RESIDENT" "$ASSIGNED_COUNT" "$FREE_COUNT"
+printf 'HEADROOM resident=%d assigned=%d free=%d reclaimable=%d\n' \
+    "$RESIDENT" "$ASSIGNED_COUNT" "$FREE_COUNT" "$RECLAIMABLE_COUNT"
 
 exit 0
