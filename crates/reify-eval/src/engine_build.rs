@@ -377,6 +377,16 @@ impl<'a> RealizationOpsInput<'a> {
     }
 }
 
+/// Result of a [`Engine::probe_realization_cache`] hit: the cached terminal
+/// [`KernelHandle`] plus the [`ReprKind`] it was resolved at (the demanded
+/// repr on a primary hit, or `BRep` on the fallback hit — see that method's
+/// doc for the full contract).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CacheHit {
+    handle: KernelHandle,
+    resolved_repr: ReprKind,
+}
+
 /// One ordered action in a template's per-build schedule walk (task 4358 ε).
 ///
 /// Under [`crate::engine_fixpoint::BuildScheduler::UnifiedDag`] the per-template
@@ -6342,6 +6352,174 @@ impl Engine {
         meshes
     }
 
+    /// Probe the per-engine [`RealizationCache`] for a cached terminal handle
+    /// and — on a hit — apply the realization's cold-path success side
+    /// effects, short-circuiting the kernel op loop.
+    ///
+    /// Extracted (task 5059 η, zero behavior change) from the inline
+    /// cache-hit short-circuit that used to open [`Self::execute_realization_ops`]
+    /// (task 2874 step-8); see that method's doc for the surrounding op-loop
+    /// contract this probe short-circuits.
+    ///
+    /// Returns `Some(CacheHit)` after writing the full side-effect set below;
+    /// returns `None` — with ZERO side effects on `outputs` — when the guard
+    /// (`is_terminal_realization && demanded_tol.is_some() &&
+    /// realization_name.is_some()`) is unmet or the cache probe misses.
+    #[allow(clippy::too_many_arguments)]
+    fn probe_realization_cache(
+        realization_cache: &RealizationCache<KernelHandle>,
+        realization_id: &RealizationNodeId,
+        realization_name: Option<&str>,
+        demanded_repr: ReprKind,
+        demanded_tol: Option<f64>,
+        is_terminal_realization: bool,
+        outputs: &mut RealizationOutputs<'_>,
+    ) -> Option<CacheHit> {
+        // Task 2874, step-8: cache-hit short-circuit. When the caller has
+        // threaded a demanded tolerance AND the realization is named (the
+        // `named_steps` contract requires a name to write into the map),
+        // probe the per-engine `RealizationCache` at
+        // `(entity_id, cache_repr, demanded_tol)`. On hit we push the
+        // cached terminal handle, write `named_steps[name] = cached_handle`,
+        // and return — preserving the post-condition the success path
+        // establishes below. On miss (or when either guard is `None`) we
+        // fall through to the kernel op loop, and step-6's post-success
+        // insert at the bottom of the helper populates the cache for the
+        // NEXT call. The lookup uses `RealizationCache`'s partial-order
+        // "tighter satisfies looser" rule (`cached_tol ≤ requested_tol`),
+        // so a tighter request automatically misses a looser cached entry
+        // (see step-13's pin).
+        //
+        // **Amendment (suggestion #3)**: the cache repr is bound to a local
+        // `cache_repr` so the lookup-key repr and the `produced_repr_out`
+        // write below are sourced from the same value. If a future change
+        // shifts the cache key to a non-`BRep` `ReprKind` (the cache's
+        // `(entity, repr, tol, options)` shape already supports it; see
+        // `RealizationCache::lookup`), the `produced_repr_out` write follows
+        // without a separate edit.
+        //
+        // **Task 4050 step-10 (gap 4)**: `cache_repr` is unpinned from `BRep` to
+        // the realization's `demanded_repr` (the υ-derived requested terminal
+        // repr, known before the op loop). The cache-hit LOOKUP keys on it, so a
+        // second identical Mesh build short-circuits at `(entity, Mesh, tol)`.
+        // The post-loop INSERT keys on the RESOLVED repr instead (see below), so
+        // a fallback realization that demanded Mesh but resolved BRep is stored
+        // at BRep: a later Mesh lookup correctly MISSES at the Mesh key (never
+        // returning a BRep handle as if it were Mesh), and the BRep fallback
+        // probe added below then recovers the hit at the resolved BRep key.
+        let cache_repr = demanded_repr;
+        // **Amendment (reviewer_comprehensive #1, perf regression)**: probe the
+        // terminal cache at the demanded repr first, then — for a non-BRep
+        // demand that missed — RETRY at `BRep`. This mirrors the per-op dispatch
+        // BRep fallback (design_decision 3) at the cache layer, and is the fix
+        // for the realization-cache regression flagged in review.
+        //
+        // WHY THE FALLBACK PROBE IS LOAD-BEARING. With υ wired, an Stl/Obj export
+        // marks its terminal realization `Mesh`, so the primary probe keys on
+        // `(entity, Mesh, tol)`. But reify-eval links no Mesh-capable boolean
+        // kernel (Cargo.toml: openvdb dep, occt dev-dep, no manifold), so every
+        // op falls back to a BRep dispatch, the terminal RESOLVES to BRep, and
+        // the post-loop INSERT keys on `(entity, BRep, tol)` (the resolved repr;
+        // design_decision 2). Without this fallback probe a Mesh demand would
+        // miss the BRep entry on EVERY rebuild and recompute the (typically most
+        // expensive) terminal body in full — defeating the task-2874 cache for
+        // the dominant production export path. Retrying at BRep lets the
+        // fell-back realization hit its true resolved repr and report
+        // `produced_repr = BRep` (exactly the cold-path value).
+        //
+        // SAFETY (no stale Mesh↦BRep substitution). A `BRep` cache entry is
+        // written ONLY when a realization RESOLVED to BRep (the INSERT keys on
+        // the resolved repr). On a Mesh-CAPABLE engine a Mesh demand resolves
+        // Mesh and inserts at `(entity, Mesh, tol)`, so the PRIMARY probe hits
+        // and the BRep fallback is never consulted for that entity. The only
+        // residual edge — a Mesh-capable engine doing both a `Step` (BRep) build
+        // and an `Stl` (Mesh) build of the SAME entity at the SAME tol, where the
+        // fallback could serve the Step entry to the Stl demand — cannot arise in
+        // reify-eval (no Mesh boolean kernel is linked, so a Mesh demand can never
+        // resolve Mesh here) and is task ζ's (#3437) surface, not this task's.
+        if is_terminal_realization && let (Some(tol), Some(name)) = (demanded_tol, realization_name)
+        {
+            let cache_probe = realization_cache
+                .lookup(&realization_id.entity, cache_repr, tol, NO_OPTIONS)
+                .map(|&handle| (handle, cache_repr))
+                .or_else(|| {
+                    if cache_repr != ReprKind::BRep {
+                        realization_cache
+                            .lookup(&realization_id.entity, ReprKind::BRep, tol, NO_OPTIONS)
+                            .map(|&handle| (handle, ReprKind::BRep))
+                    } else {
+                        None
+                    }
+                });
+            if let Some((cached_handle, resolved_repr)) = cache_probe {
+                // Cross-kernel collision guard (task 4349): `TopologyAttributeTable`
+                // is keyed by bare `GeometryHandleId` — NOT by the full
+                // `KernelHandle`. Each kernel's handle-id counter starts at 1, so
+                // OCCT and Manifold independently produce `GeometryHandleId(1)`
+                // for their first handle. Within one build a Manifold op may
+                // record `topology_attribute_table.record(GeometryHandleId(1),
+                // attr)` before this cache-hit short-circuit returns the cached
+                // `{Occt, GeometryHandleId(1)}` from a prior build — two
+                // distinct `KernelHandle`s collapsing onto the same numeric key.
+                //
+                // Rather than asserting the table is empty at the cached key
+                // (which fails under cross-kernel collision even though the
+                // per-build reset is unconditional), we defensively remove any
+                // entry at `cached_handle.id` from the table. This is a no-op
+                // in the common single-kernel case (the per-build reset already
+                // cleared the table) and enforces the #3226 spec ("a cache-served
+                // handle has no entries in those tables on the second build") in
+                // the cross-kernel case by evicting the colliding sibling entry.
+                //
+                // Trade-off: before this change the SIBLING handle (e.g.
+                // Manifold's `GeometryHandleId(1)`) was the last writer and
+                // therefore returned its correct attribute on `lookup(1)` — only
+                // the cache-served handle read the wrong (foreign) value.  After
+                // `remove()`, the sibling's `lookup(1)` also returns `None`,
+                // regressing it from correct to absent.  This is the accepted
+                // interim cost of enforcing the #3226 spec on the cached handle;
+                // only follow-up task #4351's `KernelHandle` re-key will
+                // preserve both entries independently and eliminate the
+                // regression.
+                outputs.topology_attribute_table.remove(cached_handle.id);
+                outputs.step_handles.push(cached_handle);
+                outputs.named_steps.insert(name.to_string(), cached_handle);
+                // Task 5033 Gap #2 Gap A: by-name repr sibling write. Mirrors
+                // the `named_steps` insert above — see
+                // `RealizationOutputs::named_step_reprs` doc for why a LATER
+                // realization's cross-realization `GeomRef::Sub` parent must
+                // be resolved by name rather than by bare handle-id.
+                outputs.named_step_reprs.insert(name.to_string(), resolved_repr);
+                // Step-10 (task ε / 3436): the [`RealizationCache`] key includes
+                // the repr (see the post-success `realization_cache.insert` call
+                // at the bottom of this function), so the cached terminal handle
+                // was produced by a kernel capable of `resolved_repr` —
+                // `cache_repr` on a primary hit, or `BRep` on the fallback hit.
+                // Surface that SAME repr through `produced_repr_out` so the
+                // caller writes into the realization graph node exactly what a
+                // cold-path build of this realization would have written.
+                *outputs.produced_repr_out = Some(resolved_repr);
+                // **Task 4050 step-10**: consistency guard, reordered AFTER the
+                // `produced_repr_out` write. The surfaced produced_repr always
+                // equals the cache key's repr on the cache-hit branch (the line
+                // above just wrote `Some(resolved_repr)`); kept as a documented
+                // invariant guarding future edits to the probe/surface pair.
+                debug_assert_eq!(
+                    resolved_repr,
+                    outputs.produced_repr_out.unwrap_or(ReprKind::BRep),
+                    "cache-hit produced_repr must equal the cache key's repr",
+                );
+                // Task 4744 β step-20: a cache-served terminal produced no fresh
+                // VolumeMesh this call, so there is nothing to stash.
+                return Some(CacheHit {
+                    handle: cached_handle,
+                    resolved_repr,
+                });
+            }
+        } // end is_terminal_realization cache-probe guard
+        None
+    }
+
     /// Execute the per-realization geometry operation loop and perform rollback
     /// on partial failure.
     ///
@@ -6452,7 +6630,7 @@ impl Engine {
     /// table to `KernelHandle` is deferred to follow-up task #4351.
     fn execute_realization_ops(
         input: RealizationOpsInput<'_>,
-        outputs: RealizationOutputs<'_>,
+        mut outputs: RealizationOutputs<'_>,
         // Task 4744 β step-20: returns the source-bundle stash for this
         // realization (the freshly-produced VolumeMesh + a snapshot of the BRep
         // it was meshed from) when a morph producer is active, so the caller can
@@ -6483,6 +6661,19 @@ impl Engine {
             morph_io,
             long_chain_threshold,
         } = input;
+        if Self::probe_realization_cache(
+            realization_cache,
+            realization_id,
+            realization_name,
+            demanded_repr,
+            demanded_tol,
+            is_terminal_realization,
+            &mut outputs,
+        )
+        .is_some()
+        {
+            return None;
+        }
         let RealizationOutputs {
             step_handles,
             named_steps,
@@ -6507,146 +6698,15 @@ impl Engine {
         // `{BRep}` for primitives / unresolved refs (design_decision 6). This
         // lets a conversion stage that materialises a Mesh handle propagate the
         // Mesh repr to downstream ops while staying `{BRep}` for the v0.2 path.
-
-        // Task 2874, step-8: cache-hit short-circuit. When the caller has
-        // threaded a demanded tolerance AND the realization is named (the
-        // `named_steps` contract requires a name to write into the map),
-        // probe the per-engine `RealizationCache` at
-        // `(entity_id, cache_repr, demanded_tol)`. On hit we push the
-        // cached terminal handle, write `named_steps[name] = cached_handle`,
-        // and return — preserving the post-condition the success path
-        // establishes below. On miss (or when either guard is `None`) we
-        // fall through to the kernel op loop, and step-6's post-success
-        // insert at the bottom of the helper populates the cache for the
-        // NEXT call. The lookup uses `RealizationCache`'s partial-order
-        // "tighter satisfies looser" rule (`cached_tol ≤ requested_tol`),
-        // so a tighter request automatically misses a looser cached entry
-        // (see step-13's pin).
-        //
-        // **Amendment (suggestion #3)**: the cache repr is bound to a local
-        // `cache_repr` so the lookup-key repr and the `produced_repr_out`
-        // write below are sourced from the same value. If a future change
-        // shifts the cache key to a non-`BRep` `ReprKind` (the cache's
-        // `(entity, repr, tol, options)` shape already supports it; see
-        // `RealizationCache::lookup`), the `produced_repr_out` write follows
-        // without a separate edit.
-        //
-        // **Task 4050 step-10 (gap 4)**: `cache_repr` is unpinned from `BRep` to
-        // the realization's `demanded_repr` (the υ-derived requested terminal
-        // repr, known before the op loop). The cache-hit LOOKUP keys on it, so a
-        // second identical Mesh build short-circuits at `(entity, Mesh, tol)`.
-        // The post-loop INSERT keys on the RESOLVED repr instead (see below), so
-        // a fallback realization that demanded Mesh but resolved BRep is stored
-        // at BRep: a later Mesh lookup correctly MISSES at the Mesh key (never
-        // returning a BRep handle as if it were Mesh), and the BRep fallback
-        // probe added below then recovers the hit at the resolved BRep key.
+        // Task 5059 η: `cache_repr` is also read by the post-loop cache-insert
+        // below (`named_step_reprs`'s and `realization_cache.insert`'s
+        // `last_produced_repr.unwrap_or(cache_repr)` fallback) — code that is
+        // NOT part of the extracted `Self::probe_realization_cache`
+        // short-circuit above. Re-bind it here, identically to how that
+        // helper binds its own `cache_repr`, so those post-loop reads keep
+        // resolving; see `probe_realization_cache`'s doc for why this equals
+        // `demanded_repr`.
         let cache_repr = demanded_repr;
-        // **Amendment (reviewer_comprehensive #1, perf regression)**: probe the
-        // terminal cache at the demanded repr first, then — for a non-BRep
-        // demand that missed — RETRY at `BRep`. This mirrors the per-op dispatch
-        // BRep fallback (design_decision 3) at the cache layer, and is the fix
-        // for the realization-cache regression flagged in review.
-        //
-        // WHY THE FALLBACK PROBE IS LOAD-BEARING. With υ wired, an Stl/Obj export
-        // marks its terminal realization `Mesh`, so the primary probe keys on
-        // `(entity, Mesh, tol)`. But reify-eval links no Mesh-capable boolean
-        // kernel (Cargo.toml: openvdb dep, occt dev-dep, no manifold), so every
-        // op falls back to a BRep dispatch, the terminal RESOLVES to BRep, and
-        // the post-loop INSERT keys on `(entity, BRep, tol)` (the resolved repr;
-        // design_decision 2). Without this fallback probe a Mesh demand would
-        // miss the BRep entry on EVERY rebuild and recompute the (typically most
-        // expensive) terminal body in full — defeating the task-2874 cache for
-        // the dominant production export path. Retrying at BRep lets the
-        // fell-back realization hit its true resolved repr and report
-        // `produced_repr = BRep` (exactly the cold-path value).
-        //
-        // SAFETY (no stale Mesh↦BRep substitution). A `BRep` cache entry is
-        // written ONLY when a realization RESOLVED to BRep (the INSERT keys on
-        // the resolved repr). On a Mesh-CAPABLE engine a Mesh demand resolves
-        // Mesh and inserts at `(entity, Mesh, tol)`, so the PRIMARY probe hits
-        // and the BRep fallback is never consulted for that entity. The only
-        // residual edge — a Mesh-capable engine doing both a `Step` (BRep) build
-        // and an `Stl` (Mesh) build of the SAME entity at the SAME tol, where the
-        // fallback could serve the Step entry to the Stl demand — cannot arise in
-        // reify-eval (no Mesh boolean kernel is linked, so a Mesh demand can never
-        // resolve Mesh here) and is task ζ's (#3437) surface, not this task's.
-        if is_terminal_realization && let (Some(tol), Some(name)) = (demanded_tol, realization_name)
-        {
-            let cache_probe = realization_cache
-                .lookup(&realization_id.entity, cache_repr, tol, NO_OPTIONS)
-                .map(|&handle| (handle, cache_repr))
-                .or_else(|| {
-                    if cache_repr != ReprKind::BRep {
-                        realization_cache
-                            .lookup(&realization_id.entity, ReprKind::BRep, tol, NO_OPTIONS)
-                            .map(|&handle| (handle, ReprKind::BRep))
-                    } else {
-                        None
-                    }
-                });
-            if let Some((cached_handle, resolved_repr)) = cache_probe {
-                // Cross-kernel collision guard (task 4349): `TopologyAttributeTable`
-                // is keyed by bare `GeometryHandleId` — NOT by the full
-                // `KernelHandle`. Each kernel's handle-id counter starts at 1, so
-                // OCCT and Manifold independently produce `GeometryHandleId(1)`
-                // for their first handle. Within one build a Manifold op may
-                // record `topology_attribute_table.record(GeometryHandleId(1),
-                // attr)` before this cache-hit short-circuit returns the cached
-                // `{Occt, GeometryHandleId(1)}` from a prior build — two
-                // distinct `KernelHandle`s collapsing onto the same numeric key.
-                //
-                // Rather than asserting the table is empty at the cached key
-                // (which fails under cross-kernel collision even though the
-                // per-build reset is unconditional), we defensively remove any
-                // entry at `cached_handle.id` from the table. This is a no-op
-                // in the common single-kernel case (the per-build reset already
-                // cleared the table) and enforces the #3226 spec ("a cache-served
-                // handle has no entries in those tables on the second build") in
-                // the cross-kernel case by evicting the colliding sibling entry.
-                //
-                // Trade-off: before this change the SIBLING handle (e.g.
-                // Manifold's `GeometryHandleId(1)`) was the last writer and
-                // therefore returned its correct attribute on `lookup(1)` — only
-                // the cache-served handle read the wrong (foreign) value.  After
-                // `remove()`, the sibling's `lookup(1)` also returns `None`,
-                // regressing it from correct to absent.  This is the accepted
-                // interim cost of enforcing the #3226 spec on the cached handle;
-                // only follow-up task #4351's `KernelHandle` re-key will
-                // preserve both entries independently and eliminate the
-                // regression.
-                topology_attribute_table.remove(cached_handle.id);
-                step_handles.push(cached_handle);
-                named_steps.insert(name.to_string(), cached_handle);
-                // Task 5033 Gap #2 Gap A: by-name repr sibling write. Mirrors
-                // the `named_steps` insert above — see
-                // `RealizationOutputs::named_step_reprs` doc for why a LATER
-                // realization's cross-realization `GeomRef::Sub` parent must
-                // be resolved by name rather than by bare handle-id.
-                named_step_reprs.insert(name.to_string(), resolved_repr);
-                // Step-10 (task ε / 3436): the [`RealizationCache`] key includes
-                // the repr (see the post-success `realization_cache.insert` call
-                // at the bottom of this function), so the cached terminal handle
-                // was produced by a kernel capable of `resolved_repr` —
-                // `cache_repr` on a primary hit, or `BRep` on the fallback hit.
-                // Surface that SAME repr through `produced_repr_out` so the
-                // caller writes into the realization graph node exactly what a
-                // cold-path build of this realization would have written.
-                *produced_repr_out = Some(resolved_repr);
-                // **Task 4050 step-10**: consistency guard, reordered AFTER the
-                // `produced_repr_out` write. The surfaced produced_repr always
-                // equals the cache key's repr on the cache-hit branch (the line
-                // above just wrote `Some(resolved_repr)`); kept as a documented
-                // invariant guarding future edits to the probe/surface pair.
-                debug_assert_eq!(
-                    resolved_repr,
-                    produced_repr_out.unwrap_or(ReprKind::BRep),
-                    "cache-hit produced_repr must equal the cache key's repr",
-                );
-                // Task 4744 β step-20: a cache-served terminal produced no fresh
-                // VolumeMesh this call, so there is nothing to stash.
-                return None;
-            }
-        } // end is_terminal_realization cache-probe guard
 
         // GR-034 (task #3445): measure realization wall-time from this point
         // so cache hits (which returned above) never contribute to elapsed.

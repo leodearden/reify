@@ -8035,6 +8035,96 @@ structure Assembly {
         );
     }
 
+    // ── probe_realization_cache direct unit tests (task 5059 η / INV-BUILD-3) ──
+    //
+    // `Engine::probe_realization_cache` is the extracted cache-hit
+    // short-circuit that used to live inline in `execute_realization_ops`
+    // (task 2874 step-8; extracted task 5059 η, zero behavior change). These
+    // tests drive the helper directly — bypassing the op loop entirely — to
+    // pin its contract (PRD §5.1 / INV-BUILD-3) as a reviewable unit.
+
+    /// step-1 (RED): a primary cache hit must apply the FULL side-effect set
+    /// documented on `probe_realization_cache` — not just push a handle.
+    ///
+    /// Pre-seeds a `RealizationCache` at `(entity, BRep, tol)` with a known
+    /// handle, then probes at the SAME repr/tol with the terminal+named+tol
+    /// guard satisfied. Asserts every write the cold path's success branch
+    /// would have made: `step_handles`, `named_steps`, `named_step_reprs`,
+    /// and `produced_repr_out` — plus the `Some(CacheHit)` return itself.
+    #[test]
+    fn probe_realization_cache_primary_hit_applies_full_side_effect_set() {
+        let realization_id = RealizationNodeId::new("PrimaryHit", 0);
+        let tol = 1e-4_f64;
+        let seeded = KernelHandle {
+            kernel: KernelId::Occt,
+            id: GeometryHandleId(7),
+        };
+
+        let mut cache = RealizationCache::<KernelHandle>::new();
+        cache.insert(
+            &realization_id.entity,
+            ReprKind::BRep,
+            tol,
+            NO_OPTIONS,
+            seeded,
+        );
+
+        let mut step_handles: Vec<KernelHandle> = Vec::new();
+        let mut named_steps: HashMap<String, KernelHandle> = HashMap::new();
+        let mut named_step_reprs: HashMap<String, ReprKind> = HashMap::new();
+        let mut topology_attribute_table = TopologyAttributeTable::default();
+        let mut swept_kind_table = SweptKindTable::default();
+        let mut produced_repr_out: Option<ReprKind> = None;
+
+        let mut outputs = RealizationOutputs::new(
+            &mut step_handles,
+            &mut named_steps,
+            &mut named_step_reprs,
+            &mut topology_attribute_table,
+            &mut swept_kind_table,
+            &mut produced_repr_out,
+        );
+
+        let hit = Engine::probe_realization_cache(
+            &cache,
+            &realization_id,
+            Some("part"),
+            ReprKind::BRep,
+            Some(tol),
+            true,
+            &mut outputs,
+        );
+
+        assert_eq!(
+            hit,
+            Some(CacheHit {
+                handle: seeded,
+                resolved_repr: ReprKind::BRep,
+            }),
+            "primary hit must report the seeded handle at the demanded (BRep) repr"
+        );
+        assert_eq!(
+            step_handles,
+            vec![seeded],
+            "cached handle must be pushed onto step_handles"
+        );
+        assert_eq!(
+            named_steps.get("part"),
+            Some(&seeded),
+            "named_steps[name] must resolve to the cached handle"
+        );
+        assert_eq!(
+            named_step_reprs.get("part"),
+            Some(&ReprKind::BRep),
+            "named_step_reprs[name] must record the resolved repr"
+        );
+        assert_eq!(
+            produced_repr_out,
+            Some(ReprKind::BRep),
+            "produced_repr_out must surface the resolved repr"
+        );
+    }
+
     // ── Task 4349: cross-kernel GeometryHandleId collision regression tests ─────
 
     /// Shared scaffolding for the two cross-kernel `GeometryHandleId` collision
