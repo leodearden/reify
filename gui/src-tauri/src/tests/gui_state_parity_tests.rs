@@ -46,7 +46,13 @@ mod legacy {
     //! once the L5 migration has landed on main and baked. It duplicates
     //! ~340 lines of retired logic, and because its oracle calls the *real*
     //! `push_serialized_event`, a future signature change to that helper
-    //! would silently alter the "oracle" instead of failing loudly.
+    //! would silently alter the "oracle" instead of failing loudly. That
+    //! coupling is a known, accepted bake-window risk, not a deferred
+    //! decision: #5165's plan is deletion (retiring the parity guarantee
+    //! deliberately). If deletion is ever pushed past the bake window,
+    //! self-contain this oracle instead — inline a frozen copy of
+    //! `push_serialized_event` here — rather than leaving it coupled to
+    //! live code indefinitely.
 
     use std::collections::HashMap;
 
