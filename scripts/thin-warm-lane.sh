@@ -143,6 +143,20 @@ fi
 # never land inside the lane instead of beside it.
 LANE_DIR="${_POSITIONALS[0]%/}"
 
+# --reseed requires --base (usage-shape check; fail fast, before any work).
+if [ -n "$RESEED" ] && [ -z "$BASE_TARGET_DIR" ]; then
+    err "--reseed requires --base <base_target_dir>"
+    err "Run '$(basename "$0") --help' for usage."
+    exit 2
+fi
+
+# Default --seed-script: sibling scripts/seed-warm-lane.sh, resolved via
+# BASH_SOURCE so this script works when invoked via a relative/symlinked path.
+if [ -z "$SEED_SCRIPT" ]; then
+    _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    SEED_SCRIPT="$_script_dir/seed-warm-lane.sh"
+fi
+
 # ── lane_dir existence guard ───────────────────────────────────────────────────
 if [ ! -d "$LANE_DIR" ]; then
     err "lane_dir does not exist or is not a directory: $LANE_DIR"
@@ -206,6 +220,20 @@ if _rm_err="$(rm -rf "$LANE_DIR/target" 2>&1)"; then
 else
     err "rm -rf $LANE_DIR/target failed: ${_rm_err:-<rm produced no output>}"
     exit 1
+fi
+
+# ── optional --reseed (AFTER the free; T2 free-before-stage ordering) ─────────
+# Redirect the seed-script's own stdout to stderr: thin-warm-lane's stdout
+# contract is exactly one line (the resolved lane_dir, echoed below) and
+# seed-warm-lane.sh has its own "resolved target path" stdout contract that
+# would otherwise corrupt it.
+if [ -n "$RESEED" ]; then
+    info "Re-seeding thin base clone via $SEED_SCRIPT ..."
+    if "$SEED_SCRIPT" "$BASE_TARGET_DIR" "$LANE_DIR" --fresh-checkout >&2; then
+        ok "Re-seeded: $LANE_DIR/target"
+    else
+        warn "Re-seed FAILED ($SEED_SCRIPT); lane target/ was already freed (success not masked)"
+    fi
 fi
 
 ok "Thinned lane: $_rp_lane_dir"
