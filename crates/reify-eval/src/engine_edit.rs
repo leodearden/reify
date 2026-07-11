@@ -5771,14 +5771,18 @@ mod tests {
         assert_eq!(messages, vec!["a", "b", "c"]);
     }
 
-    /// Assert that `v` is a `Value::Scalar` whose SI value is within the
-    /// solver's convergence tolerance (`1e-9`) of `si`. Dimension-agnostic
-    /// (works for any scalar, not just lengths) — shared by
-    /// `edit_param_back_props_solved_auto` / `edit_param_back_props_moved_auto`
-    /// to collapse their repeated Scalar-tolerance `matches!` assertions.
-    fn assert_scalar_si_approx_eq(v: &reify_ir::Value, si: f64, ctx: &str) {
+    /// Assert that `v` is a `Value::Scalar` whose SI value is within `tol`
+    /// of `si`. Dimension-agnostic (works for any scalar, not just lengths)
+    /// — shared by `edit_param_back_props_solved_auto` /
+    /// `edit_param_back_props_moved_auto` to collapse their repeated
+    /// Scalar-tolerance `matches!` assertions. Callers pass an explicit
+    /// tolerance rather than a hardcoded default: the exact-seed early-exit
+    /// case can assert tight (`1e-9`), while a case whose value is the
+    /// output of a real solver search should use a looser tolerance so the
+    /// test pins the shared property, not solver floating-point precision.
+    fn assert_scalar_si_approx_eq(v: &reify_ir::Value, si: f64, tol: f64, ctx: &str) {
         assert!(
-            matches!(v, reify_ir::Value::Scalar { si_value, .. } if (*si_value - si).abs() < 1e-9),
+            matches!(v, reify_ir::Value::Scalar { si_value, .. } if (*si_value - si).abs() < tol),
             "{ctx}; got {v:?}",
         );
     }
@@ -5843,6 +5847,7 @@ mod tests {
         assert_scalar_si_approx_eq(
             x_resolved,
             0.01,
+            1e-9,
             "edit_param Solved arm: x must be resolved to 0.01 m (10mm)",
         );
 
@@ -5856,6 +5861,7 @@ mod tests {
         assert_scalar_si_approx_eq(
             y_val,
             0.015,
+            1e-9,
             "edit_param reseed: y must be 0.015 m (15mm = x + 5mm)",
         );
 
@@ -5872,7 +5878,12 @@ mod tests {
             DeterminacyState::Determined,
             "y must be Determined in the snapshot after edit_param",
         );
-        assert_scalar_si_approx_eq(snap_y, 0.015, "snapshot y must be 0.015 m after back-prop");
+        assert_scalar_si_approx_eq(
+            snap_y,
+            0.015,
+            1e-9,
+            "snapshot y must be 0.015 m after back-prop",
+        );
     }
 
     /// [Re-homed from `reify-eval/src/concurrent.rs`
@@ -5932,6 +5943,18 @@ mod tests {
             .edit_param(x_id.clone(), Value::length(0.02))
             .expect("edit_param must succeed");
 
+        // This test's purpose is to prove the Solved arm fires and back-props
+        // on a MOVED (off-target) seed, not to pin the solver's convergence
+        // precision. Unlike the sibling `edit_param_back_props_solved_auto`
+        // (exact-seed early-exit, no search — asserted at 1e-9), the value
+        // here is the output of a real Nelder-Mead search; a future retune of
+        // NM_SD_TOLERANCE / termination criteria could shift the recovered
+        // residual without indicating a back-prop regression. 1e-6 m on a
+        // 10mm target is loose enough to absorb that drift while still
+        // failing on a genuine back-prop bug (e.g. the pre-4700 seed leaking
+        // through unresolved).
+        const MOVED_AUTO_TOL: f64 = 1e-6;
+
         // (1) x must be in resolved_params — the Solved arm fires and back-props.
         // The constraint overrides the edited value: x = 10mm, not 20mm.
         let x_resolved = result.resolved_params.get(&x_id).expect(
@@ -5941,6 +5964,7 @@ mod tests {
         assert_scalar_si_approx_eq(
             x_resolved,
             0.01,
+            MOVED_AUTO_TOL,
             "edit_param moved-auto: x must be resolved to 0.01 m (10mm), not the injected 20mm seed",
         );
 
@@ -5952,6 +5976,7 @@ mod tests {
         assert_scalar_si_approx_eq(
             x_val,
             0.01,
+            MOVED_AUTO_TOL,
             "result.values[x] must be 0.01 m (10mm) after back-prop",
         );
 
@@ -5971,6 +5996,7 @@ mod tests {
         assert_scalar_si_approx_eq(
             snap_x,
             0.01,
+            MOVED_AUTO_TOL,
             "snapshot x must be 0.01 m (10mm) after back-prop",
         );
 
@@ -5983,6 +6009,7 @@ mod tests {
         assert_scalar_si_approx_eq(
             y_val,
             0.015,
+            MOVED_AUTO_TOL,
             "edit_param reseed: y must be 0.015 m (15mm = x + 5mm)",
         );
     }
