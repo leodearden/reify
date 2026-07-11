@@ -31,8 +31,12 @@
 #         drift     — each YAML value == the guard script's `:-` fallback
 #                     default (A2 pattern, PyYAML-gated)
 #         name      — each REIFY_WARM_LANE_DISK_GUARD_{MIN,SOFT}_FREE_{GIB,
-#                     INODES} name appears in BOTH orchestrator.yaml and
-#                     warm-lane-disk-guard.sh (B, plain grep, always runs)
+#                     INODES} name is referenced in warm-lane-disk-guard.sh
+#                     (B, plain grep, always runs). The orchestrator.yaml side
+#                     of the contract is the real YAML key (min_free_gib,
+#                     soft_free_gib, ...), already covered by the presence/
+#                     relation/drift checks above — not re-pinned via a
+#                     comment-wording grep against the env-var name.
 #
 # (A) and (A2) are SKIPPED if python3 + PyYAML are unavailable (mirrors the
 #     tomllib SKIP idiom in test_cargo_incremental_lane_decision.sh:25).
@@ -452,25 +456,21 @@ assert "REIFY_WARM_LANE_MOUNT cited in orchestrator.yaml" \
 assert "REIFY_WARM_LANE_MOUNT referenced in scripts/provision-warm-lane-fs.sh" \
     grep -q "REIFY_WARM_LANE_MOUNT" "$PROVISION_SH"
 
-# (B7) disk-guard admission knobs (task 5175): each REIFY_* name must appear
-# in BOTH orchestrator.yaml and its owning script (no python needed).
-assert "REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_GIB cited in orchestrator.yaml" \
-    grep -q "REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_GIB" "$ORCH_YAML"
+# (B7) disk-guard admission knobs (task 5175): each REIFY_* env-var name must
+# be referenced in its owning script (no python needed). The orchestrator.yaml
+# side of the contract is the real YAML key, not the env-var name — already
+# covered by the presence/relation/drift PyYAML checks above, so it is not
+# re-pinned here via a grep for the env-var name in a YAML comment (that would
+# only pin comment wording, not the actual config↔script contract).
 assert "REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_GIB referenced in scripts/warm-lane-disk-guard.sh" \
     grep -q "REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_GIB" "$GUARD_SH"
 
-assert "REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_INODES cited in orchestrator.yaml" \
-    grep -q "REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_INODES" "$ORCH_YAML"
 assert "REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_INODES referenced in scripts/warm-lane-disk-guard.sh" \
     grep -q "REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_INODES" "$GUARD_SH"
 
-assert "REIFY_WARM_LANE_DISK_GUARD_SOFT_FREE_GIB cited in orchestrator.yaml" \
-    grep -q "REIFY_WARM_LANE_DISK_GUARD_SOFT_FREE_GIB" "$ORCH_YAML"
 assert "REIFY_WARM_LANE_DISK_GUARD_SOFT_FREE_GIB referenced in scripts/warm-lane-disk-guard.sh" \
     grep -q "REIFY_WARM_LANE_DISK_GUARD_SOFT_FREE_GIB" "$GUARD_SH"
 
-assert "REIFY_WARM_LANE_DISK_GUARD_SOFT_FREE_INODES cited in orchestrator.yaml" \
-    grep -q "REIFY_WARM_LANE_DISK_GUARD_SOFT_FREE_INODES" "$ORCH_YAML"
 assert "REIFY_WARM_LANE_DISK_GUARD_SOFT_FREE_INODES referenced in scripts/warm-lane-disk-guard.sh" \
     grep -q "REIFY_WARM_LANE_DISK_GUARD_SOFT_FREE_INODES" "$GUARD_SH"
 
