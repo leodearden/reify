@@ -2706,7 +2706,7 @@ impl Mesh {
     fn check_contract(
         &self,
         tol: f64,
-        _welded: Option<&[u32]>,
+        welded: Option<&[u32]>,
     ) -> Result<(), MeshContractViolation> {
         // Obligation 2, part A — IndexValid (buffer shape): `vertices.len()`
         // must be a multiple of 3, and if `normals` is present its length
@@ -2905,7 +2905,26 @@ impl Mesh {
         // reverse absent, so both counts populate together for that input
         // — but ConsistentWinding is reported first (PRD §11.1): it is the
         // more specific diagnosis of the two.
-        let (_, welded_indices) = self.weld_positions();
+        // Reuse the caller's weld remap when threaded (already computed on
+        // this exact mesh — see `check_mesh_contract_welded`'s precondition),
+        // else recompute via `weld_positions()` as before. The owned
+        // `Vec<u32>` is declared here (outside the match) so a borrow of it
+        // can outlive the match and unify with the `Some` arm's `&[u32]`.
+        let recomputed_weld: Vec<u32>;
+        let welded_indices: &[u32] = match welded {
+            Some(w) => {
+                debug_assert_eq!(
+                    w.len(),
+                    self.vertices.len() / 3,
+                    "check_contract: threaded weld remap length must equal vertex count"
+                );
+                w
+            }
+            None => {
+                recomputed_weld = self.weld_positions().1;
+                &recomputed_weld
+            }
+        };
         let remapped: Vec<u32> = self
             .indices
             .iter()
@@ -3039,6 +3058,30 @@ impl Mesh {
     /// `validate`'s `tol`.
     pub fn check_mesh_contract(&self, tol: f64) -> Result<(), MeshContractViolation> {
         self.check_contract(tol, None)
+    }
+
+    /// Weld-threaded sibling of [`Self::check_mesh_contract`], for callers
+    /// that have already position-welded this exact mesh (e.g. via their
+    /// own bit-exact weld pinned to the same keying as
+    /// [`Self::weld_positions`]) and want to avoid a redundant internal
+    /// re-weld inside the Closed/ConsistentWinding obligation.
+    ///
+    /// # Precondition
+    ///
+    /// `welded_indices` MUST equal `self.weld_positions().1` — the bit-exact
+    /// position-weld remap, indexed by raw vertex index, with length
+    /// `self.vertices.len() / 3`. Debug builds assert the length invariant;
+    /// there is no `MeshContractViolation` shape for "caller passed a bogus
+    /// remap", so a mismatched-but-same-length remap is a silent caller bug
+    /// (garbage in, garbage out). Callers that cannot guarantee the
+    /// precondition must use [`Self::check_mesh_contract`] instead, which
+    /// recomputes the weld internally.
+    pub fn check_mesh_contract_welded(
+        &self,
+        tol: f64,
+        welded_indices: &[u32],
+    ) -> Result<(), MeshContractViolation> {
+        self.check_contract(tol, Some(welded_indices))
     }
 }
 
