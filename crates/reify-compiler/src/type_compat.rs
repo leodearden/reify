@@ -1860,8 +1860,27 @@ pub(crate) fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
         // operand-kind guard to surface it as a diagnostic. Pinned (as
         // current, not desired, behavior) by
         // `binop_add_dimensioned_complex_plus_int_does_not_widen` below.
-        // TODO(#5163): add an Add/Sub operand-kind guard for this case, or
-        // document it as a permanently-accepted static/runtime gap.
+        //
+        // ORDER-DEPENDENT ASYMMETRY: the gap is not even consistent across
+        // operand order. `Complex<Length> + Int` hits the `else` fallthrough
+        // below with `left` = the dimensioned Complex, so `left.clone()`
+        // preserves `Complex<Length>`. The REVERSE `Int + Complex<Length>`
+        // hits neither widening branch either (the dimensioned Complex is on
+        // `right`, and `is_dimensionless_complex(right)` is false — it's
+        // dimensioned, not dimensionless), but `left.clone()` there means
+        // `left` = the bare `Int` — so the result collapses to plain `Int`,
+        // silently discarding the Complex-ness entirely. The same
+        // runtime-Undef expression class therefore yields TWO DIFFERENT
+        // static types depending purely on operand order, and the bare-`Int`
+        // collapse can trigger a spurious downstream `E_ArithOperandKind` on
+        // a follow-on `/ Complex` — the exact widening-gap failure class β2
+        // fixed for the dimensionless case (see the imaginary-literal-sugar
+        // note above this match arm). Pinned (as current, not desired,
+        // behavior) by `binop_add_int_plus_dimensioned_complex_does_not_widen`
+        // below.
+        // TODO(#5163): add an Add/Sub operand-kind guard for this case
+        // (covering BOTH operand orders), or document it as a
+        // permanently-accepted static/runtime gap.
         BinOp::Add | BinOp::Sub => {
             if is_dimensionless_complex(left) && is_dimensionless_numeric(right) {
                 left.clone()
@@ -2459,6 +2478,25 @@ mod tests {
         assert_eq!(
             infer_binop_type(BinOp::Add, &dimensioned, &Type::Int),
             dimensioned
+        );
+    }
+
+    /// Order-reversed counterpart of `binop_add_dimensioned_complex_plus_int_does_not_widen`
+    /// above: with the DIMENSIONED Complex on the RIGHT, neither widening
+    /// branch fires (`is_dimensionless_complex(right)` is false — the Complex
+    /// is dimensioned, not dimensionless), so the `else` fallthrough returns
+    /// `left.clone()` = the bare `Int`, NOT the Complex. This is the
+    /// order-dependent asymmetry documented in the TODO(#5163) comment above
+    /// this match arm: `Complex<Length> + Int` preserves `Complex<Length>`
+    /// (previous test) but `Int + Complex<Length>` collapses to bare `Int`.
+    /// Pins the CURRENT (accepted-gap) behavior, not the desired one —
+    /// closing the gap in both directions is tracked by #5163.
+    #[test]
+    fn binop_add_int_plus_dimensioned_complex_does_not_widen() {
+        let dimensioned = Type::complex(Type::length());
+        assert_eq!(
+            infer_binop_type(BinOp::Add, &Type::Int, &dimensioned),
+            Type::Int
         );
     }
 
