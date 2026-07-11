@@ -2654,7 +2654,11 @@ std::unique_ptr<OcctShape> make_offset_surface(const OcctShape& shape, double di
         if (std::abs(distance) < Precision::Confusion()) {
             throw std::runtime_error("make_offset_surface: zero distance");
         }
-        const double tol = 1e-3 * std::abs(distance);
+        // Floor the tolerance at Precision::Confusion() so sub-micron (but
+        // still valid, non-zero) offsets don't get an unusably tight
+        // tolerance from the 1e-3 scale factor -- matches the fixed-scale
+        // guard used just above for the zero-distance check.
+        const double tol = std::max(1e-3 * std::abs(distance), Precision::Confusion());
         BRepOffsetAPI_MakeOffsetShape maker;
         maker.PerformByJoin(shape.shape, distance, tol, BRepOffset_Skin,
             Standard_False, Standard_False, GeomAbs_Intersection);
