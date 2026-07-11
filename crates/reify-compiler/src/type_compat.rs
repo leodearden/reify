@@ -1922,8 +1922,24 @@ pub(crate) fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
 /// representationally-deferred) resolves to a placeholder that is NEVER
 /// user-observed for a genuinely-unsupported pairing — the `expr.rs` guard
 /// overwrites `result_type` to `Type::Error` for every such case — but DOES
-/// surface for the three pairings the guard deliberately defers on instead of
+/// surface for the four pairings the guard deliberately defers on instead of
 /// poisoning:
+/// - `Type::Error` (either side): propagates `Type::Error` itself — the same
+///   anti-cascade poison propagation as `infer_binop_type`'s own pre-match
+///   `left.is_error() || right.is_error()` early-return (above). That
+///   early-return only fires for callers that go through `infer_binop_type`;
+///   `expr.rs::compile_binop` calls `infer_mul_div_result` and this function
+///   DIRECTLY for `*`/`/` (see this fn's own doc), bypassing it entirely —
+///   so without this arm an already-poisoned operand (e.g. `undef`, which
+///   compiles to `Literal(Value::Undef, Type::Error)`) silently collapsed to
+///   `Int` on that path. The `expr.rs` guard deliberately skips re-poisoning
+///   an already-`Type::Error` operand (its gradualism skip, same as
+///   `TypeParam`/`Projection`/`ScalarParam` below), so that spurious `Int`
+///   was never corrected downstream — e.g. `let a = 5 * undef` statically
+///   typed the whole expression `Int` instead of the anti-cascade `Error`.
+///   Regression pin: `mul_div_result_or_placeholder_error_propagates_not_int`
+///   below; integration-level symptom:
+///   `undef_literal_compile_tests::binary_with_undef_emits_no_unresolved_name_diagnostic`.
 /// - `Type::TypeParam` (either side): propagates the `TypeParam` itself.
 ///   `infer_binop_type`'s own pre-match early-return (above) already handles
 ///   this case when callers go through `infer_binop_type` — but
@@ -1954,7 +1970,9 @@ pub(crate) fn mul_div_result_or_placeholder(
     right: &Type,
 ) -> Type {
     inferred.unwrap_or_else(|| {
-        if let Type::TypeParam(_) = left {
+        if left.is_error() || right.is_error() {
+            Type::Error
+        } else if let Type::TypeParam(_) = left {
             left.clone()
         } else if let Type::TypeParam(_) = right {
             right.clone()
@@ -4811,6 +4829,46 @@ mod tests {
     /// statically typed `Int`, and `constraint n > 0mm` produced a false `Int
     /// vs Scalar[m]` mismatch (`purpose_let_multi_let_earlier_let_visibility`
     /// integration regression, `crates/reify-compiler/tests/purpose_compile_tests.rs`).
+    /// `Type::Error * Int` (e.g. `undef * 5`, since `undef` compiles to
+    /// `Literal(Value::Undef, Type::Error)`) must propagate `Type::Error`
+    /// itself, NOT collapse to the `Type::Int` placeholder — same
+    /// gradualism-leak class as the `TypeParam`/`Projection`/`ScalarParam`
+    /// pins below. `infer_binop_type`'s own pre-match `is_error()`
+    /// early-return (above) already handles this case when callers go
+    /// through `infer_binop_type` — but `expr.rs::compile_binop` calls
+    /// `infer_mul_div_result` and this function DIRECTLY for `*`/`/`,
+    /// bypassing that early-return entirely, so without this arm `5 * undef`
+    /// statically typed `Int` instead of the anti-cascade `Error`. The
+    /// `expr.rs` guard deliberately skips re-poisoning an already-`Error`
+    /// operand (gradualism), so nothing downstream corrects the leak.
+    /// Regression pin for the `Type::Error` arm in
+    /// `mul_div_result_or_placeholder`; integration-level symptom:
+    /// `undef_literal_compile_tests::binary_with_undef_emits_no_unresolved_name_diagnostic`.
+    #[test]
+    fn mul_div_result_or_placeholder_error_propagates_not_int() {
+        assert_eq!(
+            mul_div_result_or_placeholder(
+                infer_mul_div_result(BinOp::Mul, &Type::Error, &Type::Int),
+                &Type::Error,
+                &Type::Int
+            ),
+            Type::Error
+        );
+    }
+
+    /// Reverse-order (`Int * Type::Error`) counterpart of the pin above.
+    #[test]
+    fn mul_div_result_or_placeholder_int_times_error_propagates_not_int() {
+        assert_eq!(
+            mul_div_result_or_placeholder(
+                infer_mul_div_result(BinOp::Mul, &Type::Int, &Type::Error),
+                &Type::Int,
+                &Type::Error
+            ),
+            Type::Error
+        );
+    }
+
     #[test]
     fn mul_div_result_or_placeholder_type_param_propagates_not_int() {
         let t = Type::TypeParam("StructureMember".to_string());
