@@ -3925,7 +3925,8 @@ fn extract_density(val: &Value) -> f64 {
 ///   is the material density passed as `density`.  The caller obtains `density`
 ///   from `extract_density(&value_inputs[0])`.
 ///
-/// Panics with a descriptive message if `val` is not a `Value::List`.
+/// Returns `Err(FeaValueShapeError::ExpectedList)` if `val` is not a
+/// `Value::List`.
 /// A scene may mix `PointLoad`, `PressureLoad`, and `Gravity`; all accumulate
 /// into their respective targets in a single pass.
 fn extract_loads(
