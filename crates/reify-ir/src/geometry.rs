@@ -11743,6 +11743,76 @@ mod tests {
         assert_check_mesh_contract_matches_validate(&reversed_winding_mesh, 0.0);
     }
 
+    /// [`Mesh::check_mesh_contract_welded`] must return the same verdict as
+    /// [`Mesh::check_mesh_contract`] when handed the mesh's own
+    /// `weld_positions().1` remap — proving the threaded remap is actually
+    /// consumed by the Closed/ConsistentWinding obligation (not silently
+    /// ignored), and that a real (non-identity) remap yields the correct
+    /// welded-quotient verdict. `per_face_block_tetra_mesh()` is the key
+    /// case: its raw index buffer is open, and only welding makes it
+    /// closed, so a broken/identity remap would fail this test on that
+    /// fixture.
+    ///
+    /// RED: fails to compile until `check_mesh_contract_welded` is added to
+    /// `Mesh`.
+    #[test]
+    fn check_mesh_contract_welded_matches_unthreaded() {
+        fn assert_welded_matches_unthreaded(mesh: &Mesh, tol: f64) {
+            let remap = mesh.weld_positions().1;
+            let via_welded = mesh.check_mesh_contract_welded(tol, &remap);
+            let via_unthreaded = mesh.check_mesh_contract(tol);
+            match (via_welded, via_unthreaded) {
+                (Ok(()), Ok(())) => {}
+                (Err(a), Err(b)) => {
+                    assert_eq!(
+                        a.invariant, b.invariant,
+                        "check_mesh_contract_welded and check_mesh_contract must \
+                         report the same invariant"
+                    );
+                    assert_eq!(
+                        a.counts, b.counts,
+                        "check_mesh_contract_welded and check_mesh_contract must \
+                         report the same counts"
+                    );
+                    assert_witness_bits_eq(a.witness, b.witness);
+                }
+                (a, b) => panic!(
+                    "check_mesh_contract_welded and check_mesh_contract must agree \
+                     on verdict: {a:?} vs {b:?}"
+                ),
+            }
+        }
+
+        // Already-welded valid tetra — both methods must accept.
+        assert_welded_matches_unthreaded(&welded_tetra_mesh(), 0.0);
+
+        // Unwelded per-face-block tetra: the raw buffer is open; only the
+        // welded quotient is closed. This is the load-bearing case — it
+        // proves the threaded remap is actually used.
+        assert_welded_matches_unthreaded(&per_face_block_tetra_mesh(), 0.0);
+
+        // Open boundary — mirrors `validate_rejects_open_boundary`.
+        let open_mesh = Mesh {
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            indices: vec![0, 1, 2],
+            normals: None,
+        };
+        assert_welded_matches_unthreaded(&open_mesh, 0.0);
+
+        // Reversed winding — mirrors `validate_rejects_reversed_winding`.
+        let mut faces = tetra_faces();
+        faces[0] = [faces[0][0], faces[0][2], faces[0][1]];
+        let positions = tetra_positions();
+        let vertices: Vec<f32> = positions.iter().flat_map(|v| v.iter().copied()).collect();
+        let indices: Vec<u32> = faces.into_iter().flatten().collect();
+        let reversed_winding_mesh = Mesh {
+            vertices,
+            indices,
+            normals: None,
+        };
+        assert_welded_matches_unthreaded(&reversed_winding_mesh, 0.0);
+    }
+
     #[test]
     fn geometry_error_mesh_contract_violation_display_and_bridge() {
         let counts = MeshViolationCounts {
