@@ -123,6 +123,15 @@ run_helper "$A9_LANE"
 assert "A9: lane_dir that is a regular file exits 1" test "$RC" -eq 1
 assert "A9: regular-file lane_dir is untouched" test -f "$A9_LANE"
 
+# A10: --reseed without --base is a usage error (exit 2), fired during arg
+# parsing before any existence/lock/rm work.
+run_helper /tmp --reseed
+assert "A10: --reseed without --base exits 2" test "$RC" -eq 2
+
+# A11: --base given with no following value exits 2
+run_helper /tmp --base
+assert "A11: --base with no value exits 2" test "$RC" -eq 2
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Block B — precondition-refusal + T3 flock guard
 # ──────────────────────────────────────────────────────────────────────────────
@@ -338,5 +347,27 @@ assert "D2: seed-script argv includes the lane_dir" \
     bash -c 'grep -qF "$2" "$1"' _ "$D_SEED_LOG" "$D_LANE_B"
 assert "D2: seed-script observed target ABSENT at invocation (free-before-stage, T2)" \
     bash -c 'grep -q "PRESENCE: ABSENT" "$1"' _ "$D_SEED_LOG"
+
+# ── D3: --reseed best-effort — a failing seed-script does not flip the exit
+# code. The free already succeeded (target/ is gone); that is the operation
+# this script guarantees, so a reseed failure is logged, not fatal.
+D_LANE_C="$(mktemp -d /tmp/test-thin-warm-lane-d-c-XXXXXX)"
+_TMPDIRS+=("$D_LANE_C")
+mkdir -p "$D_LANE_C/target"
+touch "$D_LANE_C/target/MARKER"
+
+D_FAIL_STUB="$(mktemp /tmp/test-thin-warm-lane-d-failstub-XXXXXX)"
+_TMPDIRS+=("$D_FAIL_STUB")
+cat > "$D_FAIL_STUB" << 'STUB_EOF'
+#!/usr/bin/env bash
+exit 1
+STUB_EOF
+chmod +x "$D_FAIL_STUB"
+
+run_helper "$D_LANE_C" --reseed --base "$D_BASE" --seed-script "$D_FAIL_STUB"
+assert "D3: --reseed with a failing seed-script still exits 0 (best-effort)" \
+    test "$RC" -eq 0
+assert "D3: target/ is still gone despite the reseed failure" \
+    bash -c '[ ! -e "$1" ]' _ "$D_LANE_C/target"
 
 test_summary
