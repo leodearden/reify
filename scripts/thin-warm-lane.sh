@@ -142,3 +142,9 @@ fi
 # Strip a trailing slash so sibling-path constructions (e.g. "$LANE_DIR.lock")
 # never land inside the lane instead of beside it.
 LANE_DIR="${_POSITIONALS[0]%/}"
+
+# ── lane_dir existence guard ───────────────────────────────────────────────────
+if [ ! -d "$LANE_DIR" ]; then
+    err "lane_dir does not exist or is not a directory: $LANE_DIR"
+    exit 1
+fi
