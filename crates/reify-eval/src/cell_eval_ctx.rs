@@ -29,8 +29,8 @@ use reify_ir::{CompiledFunction, DeterminacyState, PersistentMap, Value, ValueMa
 ///
 /// Lifts `functions`, `meta_map`, and `containment` out of `&self` into
 /// explicit params, which dissolves the borrow-scope excuse recorded on
-/// `Engine::cell_eval_ctx`'s doc comment (`engine_eval.rs:4875-4894`) for
-/// building `EvalContext` inline at some call sites.
+/// `Engine::cell_eval_ctx`'s doc comment for building `EvalContext` inline
+/// at some call sites.
 ///
 /// `undef_causes` is intentionally left unset (`None`): it is not a
 /// cell-eval-ctx capability — the op/builtin contract-failure sink is
