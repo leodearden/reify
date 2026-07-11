@@ -5692,7 +5692,7 @@ mod tests {
     /// Build a warm state with 1 valid cylinder BRep (id 1) + 1 corrupt
     /// entry (id 2, `"CORRUPT_DATA"`) — deterministically drives the
     /// `deserialize_brep` `Err` branch for exactly one shape. Shared fixture
-    /// for `with_warm_state_partial_failure_logs_warning` and
+    /// for `with_warm_state_partial_failure_counts_and_restores_valid` and
     /// `with_warm_state_partial_failure_emits_tracing_warn`, which differ
     /// only in what they assert about the resulting failure (the counter
     /// vs. the tracing event).
@@ -5728,7 +5728,7 @@ mod tests {
     }
 
     #[test]
-    fn with_warm_state_partial_failure_logs_warning() {
+    fn with_warm_state_partial_failure_counts_and_restores_valid() {
         let state = one_valid_one_corrupt_state();
 
         let mut kernel = OcctKernel::new();
@@ -5760,7 +5760,7 @@ mod tests {
     /// `with_warm_state` must emit a `tracing::warn!` event (production
     /// observability), not just increment the silent `last_warm_start_failures`
     /// counter. Mirrors the 1-valid + 1-corrupt fixture from
-    /// `with_warm_state_partial_failure_logs_warning`, but asserts on the
+    /// `with_warm_state_partial_failure_counts_and_restores_valid`, but asserts on the
     /// tracing event instead of the counter: exactly 1 WARN, whose message
     /// contains "warm-start deserialization failed" and whose structured
     /// `shape_id` field identifies the failed shape (id 2).
