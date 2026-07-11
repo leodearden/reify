@@ -17,6 +17,8 @@
 # (LANDED|PUSHED|ORPHAN) · dirty (clean|residue-only|wip) · divergent_gib ·
 # age_min · classification (LIVE|RECLAIMABLE|LEAKED|PRESERVED-OK). A trailing
 # HEADROOM line summarizes: resident/assigned/free/reclaimable/leaked counts
+# + leak_unknown (FREE/stale/ORPHAN lanes whose LEAKED verdict could NOT be
+# confirmed because the backing-task status is unknown -- see A3)
 # + divergent_gib/free_gib/budget_gib.
 #
 # Options (env defaults shown):
@@ -63,9 +65,20 @@
 #   A1 — read-only: never mutates a lane (no reset/rm/reclaim); the ASSIGNED/
 #        FREE probe opens an EXISTING <dir>.lock read-only and never creates
 #        a missing one.
-#   A2 — the flock -n -x probe is non-blocking and released immediately.
+#   A2 — the flock -n -s (shared) probe is non-blocking and released
+#        immediately. A shared request still correctly detects ASSIGNED (a
+#        live consumer's exclusive flock blocks a new shared request too),
+#        but never contends with another concurrent reader (e.g. a second
+#        audit run) — only a genuine writer's non-blocking attempt could
+#        ever be perturbed, and only for the instant this probe's fd is
+#        open.
 #   A3 — a status-lookup failure degrades that lane to `unknown` (never
-#        aborts, never reclassifies as reclaimable/leaked).
+#        aborts, never reclassifies as reclaimable/leaked). When this
+#        suppresses what would otherwise be a LEAKED verdict, the lane is
+#        still reported PRESERVED-OK (conservative default), but a stderr
+#        warning fires and the lane is counted in the HEADROOM
+#        `leak_unknown` field, so "no leaks" stays distinguishable from
+#        "leaks could not be evaluated".
 #   A4 — `stale` is always the relation age_min >= stale_age_min against the
 #        declared knob — never an inline/undeclared literal.
 
@@ -197,17 +210,30 @@ _lane_role() {
 }
 
 # ── helper: non-mutating ASSIGNED/FREE probe (A1/A2/DD1) ──────────────────────
-# Opens an EXISTING <dir>.lock read-only and attempts a non-blocking exclusive
+# Opens an EXISTING <dir>.lock read-only and attempts a non-blocking SHARED
 # flock on that read-only fd: success (lock acquired) => FREE, released
-# immediately; failure (already held) => ASSIGNED. A missing lock file is
-# FREE and is NEVER created (no `>`-open/truncation, no `flock <file> <cmd>`
-# convenience form -- both would mutate the pool).
+# immediately; failure (blocked by a live consumer's exclusive flock) =>
+# ASSIGNED. A missing lock file is FREE and is NEVER created (no `>`-open/
+# truncation, no `flock <file> <cmd>` convenience form -- both would mutate
+# the pool).
+#
+# Shared (-s), not exclusive (-x): this probe is a pure reader, and every
+# real lane-assignment consumer holds an EXCLUSIVE flock while live
+# (mirroring warm-lane-gc.sh's own `flock -n <lock>` reclaim-eligibility
+# check, which defaults to exclusive because IT proceeds to a real mutation
+# on success -- this script never does). A shared request still correctly
+# fails against a live consumer's exclusive lock, so ASSIGNED detection is
+# unchanged; but two readers (e.g. two concurrent audit runs) never contend
+# with each other. Only a genuine writer's non-blocking attempt could still
+# be transiently perturbed, and only for the instant this fd is open (A2) --
+# an unavoidable characteristic of any momentary lock-state probe, and
+# benign for this script's advisory-only output.
 _probe_assigned() {
     local lock="$1"
     local result='FREE'
     if [ -e "$lock" ]; then
         if exec 7<"$lock" 2>/dev/null; then
-            if flock -n -x 7 2>/dev/null; then
+            if flock -n -s 7 2>/dev/null; then
                 flock -u 7 2>/dev/null || true
             else
                 result='ASSIGNED'
@@ -372,29 +398,37 @@ _age_min() {
     printf '%d' $(( (now - mtime) / 60 ))
 }
 
-# ── divergent_gib: measured (real du), never a frozen constant (DD3/G6/D8) ───
-# _divergent_gib <dir>
-# `du -sB1 <dir>/target`, floored to GiB (0 when target/ is absent). A du
+# ── divergent_bytes: measured (real du), never a frozen constant (DD3/G6/D8) ─
+# _divergent_bytes <dir>
+# `du -sB1 <dir>/target`, in raw bytes (0 when target/ is absent). A du
 # failure or unparseable output degrades this figure to 0 with a stderr
 # note -- fail-open, this script must never abort (PRD §9.5 inv.12).
-_divergent_gib() {
+#
+# Callers floor this to GiB for the per-lane row. The pool-wide HEADROOM
+# total is accumulated from these RAW bytes and floored exactly ONCE at
+# emission time (sum-then-floor) -- summing already-floored per-lane GiB
+# values (floor-then-sum) would systematically undercount: e.g. four lanes
+# each holding ~0.9 GiB would each floor to 0 individually and sum to a
+# false divergent_gib=0, silently hiding ~3.6 real GiB (performance_accuracy
+# fix).
+_divergent_bytes() {
     local dir="$1"
     local target="$dir/target"
     [ -e "$target" ] || { printf '0'; return 0; }
 
     local du_out bytes
     du_out="$(du -sB1 "$target" 2>/dev/null)" || {
-        warn "du failed for $target; divergent_gib degraded to 0"
+        warn "du failed for $target; divergent size degraded to 0"
         printf '0'
         return 0
     }
     bytes="$(printf '%s\n' "$du_out" | awk '{print $1}')"
     if ! printf '%s\n' "$bytes" | grep -qE '^[0-9]+$'; then
-        warn "du reported non-integer size for $target; divergent_gib degraded to 0"
+        warn "du reported non-integer size for $target; divergent size degraded to 0"
         printf '0'
         return 0
     fi
-    printf '%d' $(( bytes / 1073741824 ))
+    printf '%d' "$bytes"
 }
 
 # ── classification (monotonically refined across the walk's build-out) ───────
@@ -419,6 +453,21 @@ _classify() {
     printf 'PRESERVED-OK'
 }
 
+# ── leak-unknown suspect (A3 observability) ───────────────────────────────────
+# _is_leak_unknown_suspect status recoverable age_min
+# Mirrors _classify's LEAKED predicate exactly, substituting status=="unknown"
+# for status=="non-terminal": true iff the ONLY reason a FREE lane isn't
+# classified LEAKED is that its backing-task status could not be resolved.
+# Never changes the reported classification -- PRESERVED-OK remains A3's
+# conservative default -- this purely flags the ambiguity (stderr warning +
+# HEADROOM leak_unknown count) so "no leaks" stays distinguishable from
+# "leaks could not be evaluated" (an unresolvable status must never silently
+# zero the headline leaked metric).
+_is_leak_unknown_suspect() {
+    local status="$1" recoverable="$2" age_min="$3"
+    [ "$status" = "unknown" ] && [ "$recoverable" = "ORPHAN" ] && [ "$age_min" -ge "$STALE_AGE_MIN" ]
+}
+
 # ── minimal JSON string escaping (backslash, double-quote, control chars) ────
 # _json_escape <string>
 # Only lane/branch are free-form (every other column is a fixed enum or
@@ -439,7 +488,8 @@ ASSIGNED_COUNT=0
 FREE_COUNT=0
 RECLAIMABLE_COUNT=0
 LEAKED_COUNT=0
-DIVERGENT_TOTAL_GIB=0
+LEAK_UNKNOWN_COUNT=0
+DIVERGENT_TOTAL_BYTES=0
 TABLE_OUT=""
 JSON_LANE_OBJS=()
 
@@ -467,9 +517,10 @@ if [ -n "$MOUNT" ] && [ -d "$MOUNT" ]; then
         status="$(_backing_task_status "$entry")"
         recoverable="$(_recoverable "$entry" "$raw_branch")"
         dirty="$(_dirty_state "$entry")"
-        divergent_gib="$(_divergent_gib "$entry")"
+        divergent_bytes="$(_divergent_bytes "$entry")"
+        divergent_gib=$(( divergent_bytes / 1073741824 ))
         age_min="$(_age_min "$entry")"
-        DIVERGENT_TOTAL_GIB=$((DIVERGENT_TOTAL_GIB + divergent_gib))
+        DIVERGENT_TOTAL_BYTES=$((DIVERGENT_TOTAL_BYTES + divergent_bytes))
 
         classification="$(_classify "$assigned" "$status" "$recoverable" "$dirty" "$age_min")"
         case "$classification" in
@@ -477,11 +528,23 @@ if [ -n "$MOUNT" ] && [ -d "$MOUNT" ]; then
             LEAKED) LEAKED_COUNT=$((LEAKED_COUNT + 1)) ;;
         esac
 
+        # A3 observability: surface (never reclassify) a lane whose LEAKED
+        # verdict is suppressed solely because its status is unknown.
+        if [ "$classification" = "PRESERVED-OK" ] && _is_leak_unknown_suspect "$status" "$recoverable" "$age_min"; then
+            LEAK_UNKNOWN_COUNT=$((LEAK_UNKNOWN_COUNT + 1))
+            warn "lane=$name: backing-task status unknown -- cannot confirm LEAKED (would classify LEAKED if status resolved non-terminal); reported PRESERVED-OK. See HEADROOM leak_unknown."
+        fi
+
         TABLE_OUT="${TABLE_OUT}lane=${name} role=${role} assigned=${assigned} branch=${branch} status=${status} recoverable=${recoverable} dirty=${dirty} divergent_gib=${divergent_gib} age_min=${age_min} classification=${classification}
 "
         JSON_LANE_OBJS+=("{\"lane\":\"$(_json_escape "$name")\",\"role\":\"${role}\",\"assigned\":\"${assigned}\",\"branch\":\"$(_json_escape "$branch")\",\"status\":\"${status}\",\"recoverable\":\"${recoverable}\",\"dirty\":\"${dirty}\",\"divergent_gib\":${divergent_gib},\"age_min\":${age_min},\"classification\":\"${classification}\"}")
     done
 fi
+
+# Floor the pool-wide divergent total ONCE from the raw summed bytes
+# (sum-then-floor) -- never from a sum of already-floored per-lane GiB
+# values (see _divergent_bytes).
+DIVERGENT_TOTAL_GIB=$((DIVERGENT_TOTAL_BYTES / 1073741824))
 
 # ── free_gib / budget_gib: measured via the stubbable df seam (DD3/G6/D8) ────
 # A df failure or unparseable output degrades both figures to 0 with a stderr
@@ -511,12 +574,12 @@ if [ "$FORMAT" = "json" ]; then
         lanes_json="${JSON_LANE_OBJS[*]}"
         unset IFS
     fi
-    printf '{"lanes":[%s],"headroom":{"resident":%d,"assigned":%d,"free":%d,"reclaimable":%d,"leaked":%d,"divergent_gib":%d,"free_gib":%d,"budget_gib":%d}}\n' \
-        "$lanes_json" "$RESIDENT" "$ASSIGNED_COUNT" "$FREE_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT" "$DIVERGENT_TOTAL_GIB" "$FREE_GIB" "$BUDGET_GIB"
+    printf '{"lanes":[%s],"headroom":{"resident":%d,"assigned":%d,"free":%d,"reclaimable":%d,"leaked":%d,"leak_unknown":%d,"divergent_gib":%d,"free_gib":%d,"budget_gib":%d}}\n' \
+        "$lanes_json" "$RESIDENT" "$ASSIGNED_COUNT" "$FREE_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT" "$LEAK_UNKNOWN_COUNT" "$DIVERGENT_TOTAL_GIB" "$FREE_GIB" "$BUDGET_GIB"
 else
     printf '%s' "$TABLE_OUT"
-    printf 'HEADROOM resident=%d assigned=%d free=%d reclaimable=%d leaked=%d divergent_gib=%d free_gib=%d budget_gib=%d\n' \
-        "$RESIDENT" "$ASSIGNED_COUNT" "$FREE_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT" "$DIVERGENT_TOTAL_GIB" "$FREE_GIB" "$BUDGET_GIB"
+    printf 'HEADROOM resident=%d assigned=%d free=%d reclaimable=%d leaked=%d leak_unknown=%d divergent_gib=%d free_gib=%d budget_gib=%d\n' \
+        "$RESIDENT" "$ASSIGNED_COUNT" "$FREE_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT" "$LEAK_UNKNOWN_COUNT" "$DIVERGENT_TOTAL_GIB" "$FREE_GIB" "$BUDGET_GIB"
 fi
 
 exit 0
