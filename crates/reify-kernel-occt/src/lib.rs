@@ -2987,6 +2987,11 @@ impl OcctKernel {
                 let d = extract_f64(distance)?;
                 let out = ffi::ffi::make_offset_surface(shape, d)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                // `BRepKind::Face` assumes a single-face input/result, true
+                // for every current DSL surface producer. See
+                // `make_offset_surface`'s header doc comment (occt_wrapper.h)
+                // for the shell-input caveat this would need if that ever
+                // changes.
                 return Ok(self.store_with_repr(out, BRepKind::Face));
             }
             GeometryOp::Shell {
