@@ -332,6 +332,10 @@ fn lsp_full_interactive_loop_through_binary() {
 
     drop(stdin);
 
+    // 30s deadlock/flakiness backstop for contended CI (mirrors
+    // wait_for_response's CPU-saturation rationale above), not a
+    // shutdown-speed assertion: a genuine hang still exceeds this bound
+    // and fails, so widening it loses no discrimination.
     let status = wait_for_exit(&mut child, 30);
     assert!(
         status.success(),
