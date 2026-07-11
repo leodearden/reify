@@ -308,4 +308,53 @@ assert "D8: _lane-orphan recoverable=ORPHAN" \
 assert "D9: _lane-orphan classification PRESERVED-OK (not stale)" \
     bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-orphan .*classification=PRESERVED-OK"' _ "$OUT"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block E — residue-only-dirty -> RECLAIMABLE vs genuine WIP
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block E: residue-only-dirty vs genuine WIP ---"
+
+# E(a): FREE, pending, ahead-of-main, ORPHAN lane whose ONLY dirty tracked path
+# is the residue file data/queue/write_queue.db (committed first, then
+# modified in place) -> dirty=residue-only -> classification RECLAIMABLE,
+# despite being non-terminal and ORPHAN.
+EA_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-ea-XXXXXX)"
+_TMPDIRS+=("$EA_MOUNT")
+EA_MAP="$(mktemp /tmp/test-warm-lane-audit-ea-map-XXXXXX)"
+_TMPDIRS+=("$EA_MAP")
+printf '600 pending\n' > "$EA_MAP"
+make_lane "$EA_MOUNT/_lane-residue" "task/600"
+_add_ahead_commit "$EA_MOUNT/_lane-residue"
+mkdir -p "$EA_MOUNT/_lane-residue/data/queue"
+printf 'db-v1\n' > "$EA_MOUNT/_lane-residue/data/queue/write_queue.db"
+git -C "$EA_MOUNT/_lane-residue" add data/queue/write_queue.db
+git -C "$EA_MOUNT/_lane-residue" commit -q -m "add residue db"
+printf 'db-v2\n' > "$EA_MOUNT/_lane-residue/data/queue/write_queue.db"
+
+ORACLE_MAP="$EA_MAP" run_helper --mount "$EA_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh"
+assert "E1: exit 0" test "$RC" -eq 0
+assert "E2: _lane-residue dirty=residue-only" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-residue .*dirty=residue-only"' _ "$OUT"
+assert "E3: _lane-residue classification RECLAIMABLE" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-residue .*classification=RECLAIMABLE"' _ "$OUT"
+
+# E(b): FREE, pending, ahead-of-main, ORPHAN lane with a dirty tracked SOURCE
+# file (README.md) -> dirty=wip -> classification PRESERVED-OK (genuine
+# unrecoverable WIP; not yet stale — Block F introduces the LEAKED carve-out).
+EB_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-eb-XXXXXX)"
+_TMPDIRS+=("$EB_MOUNT")
+EB_MAP="$(mktemp /tmp/test-warm-lane-audit-eb-map-XXXXXX)"
+_TMPDIRS+=("$EB_MAP")
+printf '700 pending\n' > "$EB_MAP"
+make_lane "$EB_MOUNT/_lane-wip" "task/700"
+_add_ahead_commit "$EB_MOUNT/_lane-wip"
+printf 'uncommitted wip change\n' >> "$EB_MOUNT/_lane-wip/README.md"
+
+ORACLE_MAP="$EB_MAP" run_helper --mount "$EB_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh"
+assert "E4: exit 0" test "$RC" -eq 0
+assert "E5: _lane-wip dirty=wip" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-wip .*dirty=wip"' _ "$OUT"
+assert "E6: _lane-wip classification PRESERVED-OK (genuine WIP, not stale)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-wip .*classification=PRESERVED-OK"' _ "$OUT"
+
 test_summary
