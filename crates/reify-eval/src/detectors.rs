@@ -105,6 +105,12 @@ impl DetectorRegistry {
             detector.run(state);
         }
     }
+
+    /// The registered detectors' ids, in registration (= run) order — the
+    /// fixed, introspectable order task μ relies on.
+    pub(crate) fn ids(&self) -> Vec<&'static str> {
+        self.detectors.iter().map(|d| d.id()).collect()
+    }
 }
 
 #[cfg(test)]
