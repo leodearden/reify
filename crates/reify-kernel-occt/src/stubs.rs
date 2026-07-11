@@ -551,6 +551,13 @@ impl Drop for OcctKernelHandle {
 mod tests {
     use super::*;
 
+    // `OcctKernel` (bare) has no `GeometryKernel` impl — only
+    // `OcctKernelHandle` does — and is never boxed as `Box<dyn
+    // GeometryKernel>` in production; the sole factory
+    // (`register::occt_factory`) boxes `OcctKernelHandle::spawn()`. A second
+    // `assert_kernel_contract!` instantiation for `OcctKernel` isn't possible
+    // (no trait impl to exercise) and isn't needed (task 5110 review): its
+    // inherent-method coverage lives in the bundled tests below.
     reify_test_support::assert_kernel_contract!(stub; OcctKernelHandle::spawn, "OCCT");
 
     /// Inherent `OcctKernel::topology_cache_build_counts` cross-cfg contract
