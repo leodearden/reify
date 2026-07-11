@@ -448,4 +448,60 @@ assert "G5: HEADROOM free_gib == floor(stub_avail_bytes / 2^30)" \
 assert "G6: HEADROOM budget_gib == floor(free_gib / safety)" \
     bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -qE "budget_gib=$2\$"' _ "$OUT" "$G_EXPECTED_BUDGET_GIB"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block H — --format json
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block H: --format json ---"
+
+H_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-h-XXXXXX)"
+_TMPDIRS+=("$H_MOUNT")
+make_lane "$H_MOUNT/_lane-h1"
+make_lane "$H_MOUNT/_lane-h2"
+
+# Small python3 checker scripts (avoids nested-quoting hazards of inlining a
+# multi-line python one-liner inside a single-quoted bash -c inside assert).
+H_PY_KEYS="$(mktemp /tmp/test-warm-lane-audit-h-keys-XXXXXX.py)"
+_TMPDIRS+=("$H_PY_KEYS")
+cat > "$H_PY_KEYS" << 'PYEOF'
+import json, sys
+data = json.load(sys.stdin)
+lanes = data["lanes"] if isinstance(data, dict) and "lanes" in data else data
+assert isinstance(lanes, list) and len(lanes) == 2, lanes
+expected_keys = {"lane", "role", "assigned", "branch", "status", "recoverable",
+                  "dirty", "divergent_gib", "age_min", "classification"}
+for obj in lanes:
+    assert expected_keys.issubset(obj.keys()), obj
+names = {obj["lane"] for obj in lanes}
+assert names == {"_lane-h1", "_lane-h2"}, names
+PYEOF
+
+H_PY_HEADROOM="$(mktemp /tmp/test-warm-lane-audit-h-headroom-XXXXXX.py)"
+_TMPDIRS+=("$H_PY_HEADROOM")
+cat > "$H_PY_HEADROOM" << 'PYEOF'
+import json, sys
+data = json.load(sys.stdin)
+headroom = data["headroom"] if isinstance(data, dict) and "headroom" in data else data
+assert headroom["resident"] == 2, headroom
+PYEOF
+
+# Default (no --format) is still the table.
+run_helper --mount "$H_MOUNT"
+assert "H1: exit 0 (default format)" test "$RC" -eq 0
+assert "H2: default format is the table (a lane= row is present)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "^lane=_lane-h1 "' _ "$OUT"
+
+# --format json: parses via python3 json.load; carries one object per lane
+# with the full column set, plus a headroom summary.
+run_helper --mount "$H_MOUNT" --format json
+assert "H3: exit 0 (json format)" test "$RC" -eq 0
+assert "H4: --format json output parses as JSON (python3 json.load)" \
+    bash -c 'printf "%s" "$1" | python3 -c "import json,sys; json.load(sys.stdin)"' _ "$OUT"
+assert "H5: json output contains a classification key" \
+    bash -c 'printf "%s\n" "$1" | grep -q "\"classification\""' _ "$OUT"
+assert "H6: json carries 2 lane objects with the full expected key set" \
+    bash -c 'printf "%s" "$1" | python3 "$2"' _ "$OUT" "$H_PY_KEYS"
+assert "H7: json headroom object has resident=2" \
+    bash -c 'printf "%s" "$1" | python3 "$2"' _ "$OUT" "$H_PY_HEADROOM"
+
 test_summary
