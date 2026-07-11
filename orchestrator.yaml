@@ -289,6 +289,26 @@ warm_lane_pool:
     image_path: /media/leo/data_lv_1/leo/reify-warm-lanes.img  # provision-warm-lane-fs.sh --img / IMG= default
     size_gib: 4096                             # provision-warm-lane-fs.sh --size-gib / SIZE_GIB= default
     mount_env: REIFY_WARM_LANE_MOUNT           # mount-dir override env provision-warm-lane-fs.sh reads
+  # sizing (β, task #5173) — resident-divergent disk-budget formula. The budget
+  # itself is a RECOMPUTED quantity, never a frozen GiB/lane-count constant (P4/D8):
+  #   resident_divergent_budget_gib = floor( (image_free_gib − base_gib − 2×base_gib_flip_reserve) / safety )
+  #     image_free_gib, base_gib, base_gib_flip_reserve : GiB — LIVE df/du measurements, recomputed
+  #       each time, NEVER frozen into config or a test. base_gib_flip_reserve ≈ one base generation's
+  #       footprint; the leading 2× reserves old+new generations resident during a
+  #       refresh-warm-base.sh flip.
+  #     safety : dimensionless factor > 1, applied as a DIVISOR (a haircut on free headroom), NOT a
+  #       subtractive GiB reserve — declared below as sizing.safety_divisor.
+  #     result : resident_divergent_budget_gib is a GiB ceiling (NOT a lane count).
+  #   effective_N (task) = max_concurrent_tasks + spare_warm_lanes (both above)
+  #   K (merge-spec)     = _MERGE_AHEAD_BOUND (== merge_spec_pool_size_source above)
+  #   ADVISORY relation the audit/admission assert: measured_resident_divergent_gib ≤ resident_divergent_budget_gib
+  #   Worked example — ILLUSTRATIVE ONLY (D8), a live 2026-07-11 snapshot, NOT a pinned value:
+  #     image_free_gib≈462, base_gib≈108, base_gib_flip_reserve≈108, safety=1.5
+  #     → floor( (462 − 108 − 2×108) / 1.5 ) = floor(138 / 1.5) = 92 GiB budget
+  #   Full derivation: docs/prds/warm-lane-pool-sizing-lifecycle.md §9.2
+  sizing:
+    safety_divisor: 1.5  # the tunable divisor (>1) — the ONLY real policy knob here; every other
+                          # quantity in the formula above is live-measured, never frozen (P4)
   defrag_extent_threshold: 64                  # refresh-warm-base.sh --frag-threshold / FRAG_THRESHOLD= default
 
 # A′ coupling-tolerant merge train former — enabled per the s(N) go/no-go gate

@@ -167,6 +167,8 @@ budget formula (documented in orchestrator.yaml + β doc, recomputed from LIVE m
 ```
 *Invariant P3:* grow is monotone (never shrinks a populated image). *Invariant P4:* the budget is a *derived, recomputed* quantity, never a hardcoded lane-count or GB constant frozen into a test (G6).
 
+Status: `--grow` is implemented in `scripts/provision-warm-lane-fs.sh`; the formula's declared inputs (`safety_divisor`, and the pre-existing `spare_warm_lanes`/`merge_spec_pool_size_source`) are declared in `orchestrator.yaml` under `warm_lane_pool.sizing` (config contract: `tests/infra/test_warm_lane_pool_config.sh`).
+
 ### 9.3 Free-first target-reclaim primitive — `scripts/thin-warm-lane.sh` (δ)
 
 ```
