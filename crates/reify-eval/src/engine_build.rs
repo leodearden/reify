@@ -6413,20 +6413,22 @@ impl Engine {
         is_terminal_realization: bool,
         outputs: &mut RealizationOutputs<'_>,
     ) -> Option<CacheHit> {
-        // Task 2874, step-8: cache-hit short-circuit. When the caller has
-        // threaded a demanded tolerance AND the realization is named (the
-        // `named_steps` contract requires a name to write into the map),
-        // probe the per-engine `RealizationCache` at
-        // `(entity_id, cache_repr, demanded_tol)`. On hit we push the
-        // cached terminal handle, write `named_steps[name] = cached_handle`,
-        // and return — preserving the post-condition the success path
-        // establishes below. On miss (or when either guard is `None`) we
-        // fall through to the kernel op loop, and step-6's post-success
-        // insert at the bottom of the helper populates the cache for the
-        // NEXT call. The lookup uses `RealizationCache`'s partial-order
-        // "tighter satisfies looser" rule (`cached_tol ≤ requested_tol`),
-        // so a tighter request automatically misses a looser cached entry
-        // (see step-13's pin).
+        // Task 2874, step-8: cache-hit short-circuit (extracted into this
+        // helper by task 5059 η — see this function's rustdoc `# Invariants`
+        // for the full contract). When the caller has threaded a demanded
+        // tolerance AND the realization is named (the `named_steps` contract
+        // requires a name to write into the map), probe the per-engine
+        // `RealizationCache` at `(entity_id, cache_repr, demanded_tol)`. On
+        // hit we push the cached terminal handle, write
+        // `named_steps[name] = cached_handle`, and return `Some(CacheHit)` —
+        // preserving the post-condition the success path establishes in the
+        // caller, [`Self::execute_realization_ops`]. On miss (or when either
+        // guard is `None`) we return `None`; the caller then falls through
+        // to the kernel op loop, and step-6's post-success insert at the
+        // bottom of that caller populates the cache for the NEXT call. The
+        // lookup uses `RealizationCache`'s partial-order "tighter satisfies
+        // looser" rule (`cached_tol ≤ requested_tol`), so a tighter request
+        // automatically misses a looser cached entry (see step-13's pin).
         //
         // **Amendment (suggestion #3)**: the cache repr is bound to a local
         // `cache_repr` so the lookup-key repr and the `produced_repr_out`
@@ -6438,13 +6440,14 @@ impl Engine {
         //
         // **Task 4050 step-10 (gap 4)**: `cache_repr` is unpinned from `BRep` to
         // the realization's `demanded_repr` (the υ-derived requested terminal
-        // repr, known before the op loop). The cache-hit LOOKUP keys on it, so a
-        // second identical Mesh build short-circuits at `(entity, Mesh, tol)`.
-        // The post-loop INSERT keys on the RESOLVED repr instead (see below), so
-        // a fallback realization that demanded Mesh but resolved BRep is stored
-        // at BRep: a later Mesh lookup correctly MISSES at the Mesh key (never
-        // returning a BRep handle as if it were Mesh), and the BRep fallback
-        // probe added below then recovers the hit at the resolved BRep key.
+        // repr, known before the caller's op loop). The cache-hit LOOKUP keys on
+        // it, so a second identical Mesh build short-circuits at
+        // `(entity, Mesh, tol)`. The caller's post-loop INSERT keys on the
+        // RESOLVED repr instead, so a fallback realization that demanded Mesh
+        // but resolved BRep is stored at BRep: a later Mesh lookup correctly
+        // MISSES at the Mesh key (never returning a BRep handle as if it were
+        // Mesh), and the BRep fallback probe added below then recovers the hit
+        // at the resolved BRep key.
         let cache_repr = demanded_repr;
         // **Amendment (reviewer_comprehensive #1, perf regression)**: probe the
         // terminal cache at the demanded repr first, then — for a non-BRep
