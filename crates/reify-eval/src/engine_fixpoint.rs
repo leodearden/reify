@@ -1348,14 +1348,26 @@ mod tests {
         let r_b = NodeId::Realization(RealizationNodeId::new("MultiBody", 1));
         let r_result = NodeId::Realization(RealizationNodeId::new("MultiBody", 2));
         let pos = positions(&pass.schedule);
+        // `.get(...).expect(...)` rather than direct HashMap indexing: the
+        // `realization_count == 3` check above only proves three
+        // Realization nodes exist, not that they carry indices 0/1/2 for
+        // entity "MultiBody" — if a future compiler change makes realization
+        // indices non-contiguous or reordered, this must fail with an
+        // explanatory message instead of an opaque HashMap-index panic.
+        let pos_a = *pos
+            .get(&r_a)
+            .expect("box `a` (MultiBody index 0) must be scheduled — index-to-declaration-order assumption broke");
+        let pos_b = *pos
+            .get(&r_b)
+            .expect("box `b` (MultiBody index 1) must be scheduled — index-to-declaration-order assumption broke");
+        let pos_result = *pos
+            .get(&r_result)
+            .expect("union `result` (MultiBody index 2) must be scheduled — index-to-declaration-order assumption broke");
         assert!(
-            pos[&r_result] > pos[&r_a] && pos[&r_result] > pos[&r_b],
+            pos_result > pos_a && pos_result > pos_b,
             "union(a, b) realization must be scheduled after both box \
-             realizations it depends on; got positions a={}, b={}, result={} \
-             in schedule {:?}",
-            pos[&r_a],
-            pos[&r_b],
-            pos[&r_result],
+             realizations it depends on; got positions a={pos_a}, b={pos_b}, \
+             result={pos_result} in schedule {:?}",
             pass.schedule,
         );
     }
