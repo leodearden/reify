@@ -8125,6 +8125,105 @@ structure Assembly {
         );
     }
 
+    /// step-3: pin invariant #1 (probes ONLY when `is_terminal_realization &&
+    /// demanded_tol.is_some() && realization_name.is_some()`).
+    ///
+    /// Pre-seeds the cache at `(entity, BRep, tol)` — the exact key a real hit
+    /// would probe — and pre-seeds `topology_attribute_table` at the cached
+    /// handle's id (so an accidental unconditional eviction would also be
+    /// caught). Exercises the three ways to leave exactly one guard term
+    /// unmet; each must miss with `None` AND perform ZERO side effects — the
+    /// guard wraps the ENTIRE hit body, so a failed guard must not push/insert
+    /// into any output view or evict the attribute table.
+    #[test]
+    fn probe_realization_cache_guard_requires_terminal_named_and_tol() {
+        use reify_ir::{FeatureId, Role};
+
+        let realization_id = RealizationNodeId::new("GuardEntity", 0);
+        let tol = 1e-4_f64;
+        let seeded = KernelHandle {
+            kernel: KernelId::Occt,
+            id: GeometryHandleId(9),
+        };
+
+        // Each case leaves exactly one of the three guard terms unmet.
+        let cases: [(bool, Option<&str>, Option<f64>, &str); 3] = [
+            (false, Some("part"), Some(tol), "is_terminal_realization = false"),
+            (true, None, Some(tol), "realization_name = None"),
+            (true, Some("part"), None, "demanded_tol = None"),
+        ];
+
+        for (is_terminal, name, tol_arg, label) in cases {
+            let mut cache = RealizationCache::<KernelHandle>::new();
+            cache.insert(
+                &realization_id.entity,
+                ReprKind::BRep,
+                tol,
+                NO_OPTIONS,
+                seeded,
+            );
+
+            let mut step_handles: Vec<KernelHandle> = Vec::new();
+            let mut named_steps: HashMap<String, KernelHandle> = HashMap::new();
+            let mut named_step_reprs: HashMap<String, ReprKind> = HashMap::new();
+            let mut topology_attribute_table = TopologyAttributeTable::default();
+            topology_attribute_table.record(
+                seeded.id,
+                TopologyAttribute {
+                    feature_id: FeatureId::from(&realization_id),
+                    role: Role::Side,
+                    local_index: 0,
+                    user_label: None,
+                    mod_history: Vec::new(),
+                },
+            );
+            let mut swept_kind_table = SweptKindTable::default();
+            let mut produced_repr_out: Option<ReprKind> = None;
+
+            let mut outputs = RealizationOutputs::new(
+                &mut step_handles,
+                &mut named_steps,
+                &mut named_step_reprs,
+                &mut topology_attribute_table,
+                &mut swept_kind_table,
+                &mut produced_repr_out,
+            );
+
+            let hit = Engine::probe_realization_cache(
+                &cache,
+                &realization_id,
+                name,
+                ReprKind::BRep,
+                tol_arg,
+                is_terminal,
+                &mut outputs,
+            );
+
+            assert_eq!(hit, None, "guard case [{label}] must miss (return None)");
+            assert!(
+                step_handles.is_empty(),
+                "guard case [{label}] must not push step_handles"
+            );
+            assert!(
+                named_steps.is_empty(),
+                "guard case [{label}] must not insert named_steps"
+            );
+            assert!(
+                named_step_reprs.is_empty(),
+                "guard case [{label}] must not insert named_step_reprs"
+            );
+            assert_eq!(
+                produced_repr_out, None,
+                "guard case [{label}] must not write produced_repr_out"
+            );
+            assert!(
+                topology_attribute_table.lookup(seeded.id).is_some(),
+                "guard case [{label}] must NOT evict the pre-seeded \
+                 topology_attribute_table entry (eviction only runs on a hit)"
+            );
+        }
+    }
+
     // ── Task 4349: cross-kernel GeometryHandleId collision regression tests ─────
 
     /// Shared scaffolding for the two cross-kernel `GeometryHandleId` collision
