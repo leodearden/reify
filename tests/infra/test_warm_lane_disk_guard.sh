@@ -350,6 +350,19 @@ REIFY_TEST_AVAIL_BYTES=21474836480 REIFY_TEST_AVAIL_INODES=1000000 \
 assert "D4: exactly at soft floor exits 0 (exclusive-below)" test "$RC" -eq 0
 assert "D4: stdout empty at soft boundary (healthy)" bash -c '[ -z "$1" ]' _ "$OUT"
 
+# D4b (B6, soft boundary, inodes axis): avail inodes EXACTLY == soft floor
+# (200000), bytes ample (> soft) → exclusive-below, so `check --soft` exits 0.
+# Regression guard for the inode-axis comparator (`-lt` vs `-le`); the soft
+# gate ORs both axes together, so an off-by-one on the inode comparison alone
+# would go uncaught by D4 (which only exercises the bytes axis).
+REIFY_TEST_AVAIL_BYTES=107374182400 REIFY_TEST_AVAIL_INODES=200000 \
+    run_helper check --mount "$D_TMP" \
+    --min-free-gib 10 --soft-free-gib 20 \
+    --min-free-inodes 100000 --soft-free-inodes 200000 \
+    --soft
+assert "D4b: exactly at soft inodes floor exits 0 (exclusive-below)" test "$RC" -eq 0
+assert "D4b: stdout empty at soft inodes boundary (healthy)" bash -c '[ -z "$1" ]' _ "$OUT"
+
 # D5 (E1, bytes axis config error): soft_free_gib <= min_free_gib is a wiring
 # bug, not transient pressure → loud exit 2 (checked before the df call).
 run_helper check --mount "$D_TMP" --soft --min-free-gib 50 --soft-free-gib 40
@@ -358,6 +371,15 @@ assert "D5: stderr names the soft/hard misconfiguration" \
     bash -c 'printf "%s\n" "$1" | grep -qiE "soft.*floor|floor.*soft"' _ "$ERR_OUT"
 assert "D5: stderr identifies the bytes (gib) axis" \
     bash -c 'printf "%s\n" "$1" | grep -qi "gib"' _ "$ERR_OUT"
+
+# D5b (soft-floor integer validation, bytes axis): non-integer --soft-free-gib
+# under --soft exits 2 before the df call — a distinct exit-2 path from D5's
+# soft<=hard relation check (script lines 208-212) — mirroring A7's
+# hard-floor integer guard.
+run_helper check --mount "$D_TMP" --soft --min-free-gib 10 --soft-free-gib abc
+assert "D5b: non-integer --soft-free-gib exits 2" test "$RC" -eq 2
+assert "D5b: stderr names integer/soft-free-gib misconfiguration" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "integer\|invalid\|soft.free.gib"' _ "$ERR_OUT"
 
 # D6 (E1, inodes axis config error): soft_free_inodes <= min_free_inodes, with
 # a VALID soft-free-gib supplied so only the inodes axis is misconfigured.
@@ -369,6 +391,18 @@ assert "D6: stderr names the soft/hard misconfiguration" \
     bash -c 'printf "%s\n" "$1" | grep -qiE "soft.*floor|floor.*soft"' _ "$ERR_OUT"
 assert "D6: stderr identifies the inodes axis" \
     bash -c 'printf "%s\n" "$1" | grep -qi "inode"' _ "$ERR_OUT"
+
+# D6b (soft-floor integer validation, inodes axis): non-integer
+# --soft-free-inodes under --soft exits 2 (valid --soft-free-gib supplied so
+# only the inodes axis is exercised) — a distinct exit-2 path from D6's
+# soft<=hard relation check (script lines 213-217) — mirroring A7/A8's
+# hard-floor integer guard.
+run_helper check --mount "$D_TMP" --soft \
+    --min-free-gib 10 --soft-free-gib 20 \
+    --min-free-inodes 100000 --soft-free-inodes abc
+assert "D6b: non-integer --soft-free-inodes exits 2" test "$RC" -eq 2
+assert "D6b: stderr names integer/soft-free-inodes misconfiguration" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "integer\|invalid\|soft.free.inodes"' _ "$ERR_OUT"
 
 # D7 (E2, scope/unchanged): hard `check` (no --soft) with the SAME
 # misconfigured soft floor as D5 and ample avail still exits 0 — the soft
