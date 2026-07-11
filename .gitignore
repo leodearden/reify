@@ -60,3 +60,6 @@ gui/src-tauri/sidecar/reify-sidecar-*
 # Python bytecode (CPython __pycache__ directories and .pyc files)
 __pycache__/
 *.pyc
+
+# orchestrator runtime queue DB (not version-controlled)
+data/queue/write_queue.db*
