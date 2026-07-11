@@ -14,7 +14,7 @@ The XFS-reflink warm-lane pool (`/dev/loop29`, 6.0 TB, mounted `/home/leo/src/wa
 
 | Axis | Today | With this PRD |
 |---|---|---|
-| Resident divergent lanes | grows to the count cap (47/56 resident, ~122 GB each ⇒ 93% full) | ≈ the ASSIGNED working set (~12–15); FREE lanes hold no divergent target |
+| Resident divergent lanes | grows to the count cap (47/56 resident, ~122 GB mean footprint; `df`-measured 5.6 TB/6.0 TB used ⇒ 93% full — §6) | ≈ the ASSIGNED working set (~12–15); FREE lanes hold no divergent target |
 | Accretion visibility | none until the disk-guard trips at the 50 GiB cliff (which *is* the wedge) | `warm-lane-audit.sh` reports resident/free/reclaimable/leaked/stale + projected headroom on demand and on a timer |
 | Dispatch under disk pressure | allocates new divergent lanes straight into the hard floor → ENOSPC | throttles new-lane allocation at a **soft floor** (prefers reclaim/reuse) before the hard floor is reached |
 | Pool capacity | fixed 6.0 TB image, hand-grown in incidents | budget-derived sizing + a supported online-grow operation (insurance, not the primary lever) |
@@ -123,17 +123,21 @@ All scripts follow the repo's stdout-contract convention (resolved value on stdo
 
 ```
 warm-lane-audit.sh [--mount <worktrees_dir>] [--format table|json] [--status-cmd <cmd>]
+                    [--stale-age-min <N>]
   For each resident worktree under <mount> (lanes _lane-*/_spec-* and orphan dirs), emit:
     lane · role · ASSIGNED|FREE (flock -n -x <dir>.lock) · branch · backing-task-status
       (terminal|non-terminal|unknown, via REIFY_LANE_LEAK_STATUS_CMD — 4749 seam) ·
       recoverable (LANDED | PUSHED | ORPHAN) · divergent_gib (du or df-delta) · age_min (mtime)
     classification: LIVE | RECLAIMABLE (free ∧ (terminal ∨ recoverable ∨ residue-only-dirty)) |
-                    LEAKED (free ∧ non-terminal ∧ unrecoverable-WIP ∧ stale) | PRESERVED-OK
+                    LEAKED (free ∧ non-terminal ∧ unrecoverable-WIP ∧ stale, where
+                      stale ⟺ age_min ≥ stale_age_min) | PRESERVED-OK
   STDOUT: the table/json. Trailing one-line HEADROOM summary:
     "resident=N assigned=A free=F reclaimable=R leaked=L divergent_gib=D free_gib=G budget_gib=B"
   Exit 0 always (advisory/observability — NEVER fail-closed; it must not gate anything).
+knobs: --stale-age-min <N>  minutes (env: REIFY_WARM_LANE_AUDIT_STALE_AGE_MIN; default: 60 —
+  promotes the §2 working-set mtime<60min example from an incidental figure to a declared knob)
 ```
-*Invariant A1:* read-only — `warm-lane-audit.sh` never mutates a lane (no reset/rm/reclaim); it observes. *Invariant A2:* `flock -n -x` probe is non-blocking and released immediately (never holds a lane lock across the walk). *Invariant A3:* a status-lookup failure degrades that lane to `unknown` (never aborts the report, never reclassifies as reclaimable).
+*Invariant A1:* read-only — `warm-lane-audit.sh` never mutates a lane (no reset/rm/reclaim); it observes. *Invariant A2:* `flock -n -x` probe is non-blocking and released immediately (never holds a lane lock across the walk). *Invariant A3:* a status-lookup failure degrades that lane to `unknown` (never aborts the report, never reclassifies as reclaimable). *Invariant A4:* `stale` is always the relation `age_min ≥ stale_age_min` against the declared knob (default 60 min) — never an inline/undeclared literal (D8/G6 no-frozen-constant rule); B1's fixture ages its leaked lane past the knob so the assertion tests the relation, not a guessed age.
 
 ### 9.2 Sizing budget + online-grow — `scripts/provision-warm-lane-fs.sh --grow` (β) + budget formula
 
@@ -182,13 +186,15 @@ thin-warm-lane.sh <lane_dir>
 warm-lane-disk-guard.sh check [--soft]           (extends the existing hard-floor guard)
   hard floor (existing): free_bytes < min_free_gib OR free_inodes < min_free_inodes → exit 75 (EX_TEMPFAIL)
   --soft: additionally, min_free_gib ≤ free < soft_free_gib (or inode analogue) →
-    exit <SOFT_CODE> + stdout sentinel "@@REIFY_WARM_LANE_SOFT_PRESSURE@@ free_gib=<G> budget_gib=<B>"
-    (distinct from the hard 75 so DF can throttle-not-requeue)
+    exit 3 + stdout sentinel "@@REIFY_WARM_LANE_SOFT_PRESSURE@@ free_gib=<G> budget_gib=<B>"
+    (3 is the pinned cross-repo contract value — distinct from the hard-floor 75 (EX_TEMPFAIL)
+     AND the E1 config-error 2; mirrors fleet-load-detector.sh's exit-3 "oversubscribed"
+     convention, so DF's admission loop can treat 3 as one shared throttle-not-requeue signal)
 orchestrator.yaml warm_lane_pool: (DECLARE the currently-missing knobs; config-test asserts presence)
   min_free_gib, min_free_inodes            (hard floor — today only defaulted in the script)
   soft_free_gib, soft_free_inodes          (NEW — the proactive throttle floor; soft > hard)
 ```
-*Invariant E1:* soft > hard (a soft floor below the hard floor is a config error → exit 2, loud). *Invariant E2:* the hard-floor exit-75 contract is unchanged (space-safety ε still requeues at the cliff); `--soft` only *adds* a distinct earlier signal. *Invariant E3:* fail-closed measurement (df error) maps to the hard path (75), never a false "healthy".
+*Invariant E1:* soft > hard (a soft floor below the hard floor is a config error → exit 2, loud). *Invariant E2:* the hard-floor exit-75 contract is unchanged (space-safety ε still requeues at the cliff); `--soft` only *adds* a distinct earlier signal — soft-pressure exits **3** (never 75, never 2; §9.4), the unambiguous integer θ (DF) matches on. *Invariant E3:* fail-closed measurement (df error) maps to the hard path (75), never a false "healthy".
 
 ### 9.5 Pool lifecycle additions (consumed by dark-factory η/θ)
 
@@ -219,12 +225,13 @@ dispatch/acquire admission                               (θ — new soft-floor 
 | B4 | **Free-first thin frees a divergent lane** | FREE lane with a large divergent `target/` | `thin-warm-lane.sh` frees the divergent extents (`df` recovers ≈ the lane's footprint); source tree + branch untouched; **no reseed staged** (progresses even with a near-full fixture) | reify (δ) |
 | B5 | Thin never touches assigned/source | ASSIGNED lane (flock held) OR a lane with uncommitted source WIP | δ refuses the assigned lane (T3); on a FREE lane it removes only `target/`, leaving uncommitted source WIP intact (T1) | reify (δ) |
 | B6 | Soft floor fires above hard floor | free between soft and hard floors | `check --soft` emits the soft sentinel + distinct exit; `check` (hard) still exits 0; below hard floor both trip 75 | reify (ε) |
+| B6b | Soft-floor guard fails closed on a measurement error | `df` invocation fails / emits unparseable output (fixture stubs `REIFY_WARM_LANE_DISK_GUARD_DF`) | both `check` and `check --soft` exit 75 (the hard path) — never exit 0 and never emit the soft sentinel; a measurement failure never reads as healthy (E3) | reify (ε) |
 | B7 | Config knobs declared | orchestrator.yaml | `test_warm_lane_pool_config.sh` asserts `min_free_gib/inodes` + `soft_free_gib/inodes` present + soft>hard | reify (ε) |
 | B8 | **Integration: release-thin bounds resident-divergent** | seed 3 lanes divergent, release 2 | after release, resident-divergent ≈ the 1 still-assigned (freed ≈ 2× footprint); audit headroom reflects it | reify (ζ) |
 | B9 | Eager release-thin in the pool | DF releases a lane after a dispatched agent finishes | orchestrator journal shows the released lane's target thinned promptly; next acquire re-seeds warm (delta vs cold) | dark-factory (η) |
 | B10 | Soft-floor dispatch throttle | pool free between soft and hard floors, a new dispatch arrives | DF prefers a FREE-lane reclaim/reuse or defers; it does **not** allocate a new divergent lane toward the hard floor; no ENOSPC | dark-factory (θ) |
 
-ζ (reify integration gate) realizes B1–B8; η realizes B9; θ realizes B10.
+ζ (reify integration gate) realizes B1–B8 (incl. B6b); η realizes B9; θ realizes B10.
 
 ## 11. Decomposition plan — task DAG with observable signals (G2)
 
@@ -234,7 +241,7 @@ Greek labels; task IDs assigned at decompose. All disk/footprint signals are *me
 - **α — reify · `scripts/warm-lane-audit.sh` (audit & telemetry).** Per §9.1, reusing the 4749 status seam (D6). *Intermediate.* **Signal:** on the live pool prints the assigned/free/reclaimable/leaked/stale table + headroom line; `tests/infra/test_warm_lane_audit.sh` asserts correct classification of a seeded fixture (B1/B2). *Modules:* `scripts/`, `tests/infra/`.
 - **β — reify · sizing-budget formula + `provision-warm-lane-fs.sh --grow`.** Per §9.2. *Intermediate.* **Signal:** `--grow --size-gib 8192` grows the mounted image online (`df` shows the new ceiling), idempotent + no-shrink (B3); the budget formula + knobs documented (`orchestrator.yaml`, β doc). *Modules:* `scripts/`, `orchestrator.yaml`, `docs/`.
 - **δ — reify · `scripts/thin-warm-lane.sh` (free-first target reclaim primitive).** Per §9.3. *Intermediate* (unlocks DF η). **Signal:** `tests/infra/test_thin_warm_lane.sh` — frees a divergent FREE lane's target (`df` recovers ≈ its footprint) with no reseed staged; refuses an assigned lane; leaves source WIP intact (B4/B5). *Modules:* `scripts/`, `tests/infra/`.
-- **ε — reify · soft-floor headroom oracle + `orchestrator.yaml` admission knobs.** Per §9.4. *Intermediate* (the DF-facing contract; unlocks DF θ). **Signal:** `check --soft` emits the soft sentinel between the floors while hard `check` stays green (B6); `test_warm_lane_pool_config.sh` asserts the declared `min_free_*`/`soft_free_*` knobs + soft>hard (B7). *Modules:* `scripts/`, `orchestrator.yaml`, `tests/infra/`.
+- **ε — reify · soft-floor headroom oracle + `orchestrator.yaml` admission knobs.** Per §9.4. *Intermediate* (the DF-facing contract; unlocks DF θ). **Signal:** `check --soft` emits the soft sentinel between the floors while hard `check` stays green (B6); a stubbed `df` failure fail-closes both `check` and `check --soft` to exit 75, never a false-healthy 0 (B6b, E3); `test_warm_lane_pool_config.sh` asserts the declared `min_free_*`/`soft_free_*` knobs + soft>hard (B7). *Modules:* `scripts/`, `orchestrator.yaml`, `tests/infra/`.
 - **ζ — reify · END-TO-END INTEGRATION GATE (the C-as-integration-gate leaf).** `tests/infra/test_warm_lane_sizing_lifecycle.sh`: seed divergent lanes → thin-on-release → assert resident-divergent tracks the assigned set + audit headroom reflects it (B8), and the soft floor fires before the hard floor on a shrinking-free fixture (B6 end-to-end). *Leaf.* *(depends_on α, β, δ, ε; soft-dep on γ for the residue-clean baseline.)* **Signal:** the harness runs green in CI and records the measured free-recovered-on-release delta. *Modules:* `tests/infra/`, `scripts/`.
 - **ι — reify · companion doc corrections.** Amend `warm-lane-pool-cow-seeding.md` (N=24→56; §9.5 release now thins) + `warm-lane-pool-space-safety.md` (§11 capacity in-scope here; §12 release-thin resolved; ε soft-floor extension) + CLAUDE.md warm-lane invariants (audit + soft-floor admission) + a `docs/notes` audit runbook. *Leaf.* *(depends_on ζ — prove before recording.)* **Signal:** the record reflects the landed pillars; the "N=24" references are corrected. *Modules:* `docs/`, `CLAUDE.md`.
 - **η — dark-factory · wire eager release-thin into `release_lane`.** Call `thin-warm-lane.sh` on release (free-first), per §9.5. *Leaf (DF-side).* *(depends_on δ + ε contract, cross-project.)* **Signal:** orchestrator journal shows a released lane's target thinned promptly + resident-divergent bounded to the assigned set; next acquire re-seeds warm (B9). *Repo:* dark-factory.
