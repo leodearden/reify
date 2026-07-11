@@ -79,4 +79,100 @@ assert "A1: --help prints 'usage' or 'Usage' on stderr" \
 run_helper --nope
 assert "A2: unknown flag exits 2" test "$RC" -eq 2
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Shared fixture scaffolding: make_lane + _wait_for_reader_lock
+# ──────────────────────────────────────────────────────────────────────────────
+
+# make_lane DIR [BRANCH]
+# Creates a minimal standalone git repo at DIR (one initial commit on main).
+# BRANCH: task/NNNN -> checkout a new branch; DETACH -> detach HEAD;
+# main/"" -> stay on main. Mirrors tests/infra/test_warm_lane_preflight.sh's
+# identically-named helper (Block D) — each lane is its OWN independent repo
+# (not a linked worktree of a shared primary), which is sufficient for
+# warm-lane-audit.sh's per-lane git predicates (merge-base/status/symbolic-ref
+# all operate within a single lane's own repo).
+make_lane() {
+    local dir="$1" branch="${2:-}"
+    git init -q -b main "$dir"
+    git -C "$dir" config user.email "test@test.local"
+    git -C "$dir" config user.name "Test"
+    touch "$dir/README.md"
+    git -C "$dir" add README.md
+    git -C "$dir" commit -q -m "initial"
+    case "$branch" in
+        task/*)
+            git -C "$dir" checkout -q -b "$branch" ;;
+        DETACH)
+            git -C "$dir" checkout -q --detach ;;
+        main|"")
+            : ;;
+    esac
+}
+
+# _wait_for_reader_lock <ready-marker> <deadline-seconds>
+# Causal ordering (technique R, docs/prds/infra-test-wallclock-deflake.md,
+# task #4847): polls for the READY marker file in 0.05s ticks, returning 0 as
+# soon as it appears, or non-zero once the anti-hang deadline elapses. The
+# READY marker is touched by a backgrounded lock holder AFTER it acquires its
+# flock, so returning 0 causally guarantees the flock is held at the caller's
+# next statement -- replacing a fixed `sleep` that races the background
+# subshell's lock acquisition under load. Mirrors tests/infra/test_warm_lane_gc.sh's
+# identically-named helper.
+_wait_for_reader_lock() {
+    local ready_marker="$1"
+    local deadline_s="$2"
+    local max_ticks=$(( deadline_s * 20 ))
+    local tick=0
+    while [ "$tick" -lt "$max_ticks" ]; do
+        [ -f "$ready_marker" ] && return 0
+        sleep 0.05
+        tick=$(( tick + 1 ))
+    done
+    return 1
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block B — ASSIGNED/FREE probe + LIVE + headroom counts
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block B: ASSIGNED/FREE probe + LIVE + headroom counts ---"
+
+B_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-b-XXXXXX)"
+_TMPDIRS+=("$B_MOUNT")
+
+# _lane-live: a live consumer holds the lane's exclusive flock (ASSIGNED -> LIVE).
+# Causal READY-marker handshake instead of a fixed sleep (de-flake convention,
+# tests/infra/test_warm_lane_gc.sh Block I6 precedent).
+make_lane "$B_MOUNT/_lane-live"
+touch "$B_MOUNT/_lane-live.lock"
+B_READY="$B_MOUNT/_lane-live.lock.ready-marker"
+( flock -x 9 && touch "$B_READY" && sleep 300 ) 9>"$B_MOUNT/_lane-live.lock" &
+B_LOCK_PID=$!
+_BGPIDS+=("$B_LOCK_PID")
+_wait_for_reader_lock "$B_READY" 30
+
+# _lane-free: unheld, pre-created lock file (FREE).
+make_lane "$B_MOUNT/_lane-free"
+touch "$B_MOUNT/_lane-free.lock"
+
+run_helper --mount "$B_MOUNT"
+
+assert "B1: exit 0" test "$RC" -eq 0
+assert "B2: _lane-live row shows ASSIGNED" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-live .*assigned=ASSIGNED"' _ "$OUT"
+assert "B3: _lane-live classification LIVE" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-live .*classification=LIVE"' _ "$OUT"
+assert "B4: _lane-free row shows FREE" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-free .*assigned=FREE"' _ "$OUT"
+assert "B5: HEADROOM line shows resident=2" \
+    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "resident=2"' _ "$OUT"
+assert "B6: HEADROOM line shows assigned=1" \
+    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "assigned=1"' _ "$OUT"
+assert "B7: HEADROOM line shows free=1" \
+    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "free=1"' _ "$OUT"
+
+# Release the lock
+kill "$B_LOCK_PID" 2>/dev/null || true
+_BGPIDS=()  # clear so cleanup doesn't double-kill
+
 test_summary
