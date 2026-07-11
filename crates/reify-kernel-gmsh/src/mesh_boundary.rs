@@ -17,6 +17,13 @@
 //! only exists in the real FFI build.
 
 use reify_ir::{BoundaryAssociation, GeometryError, GeometryHandleId, Mesh, NodeAttachment, VolumeConnectivity, VolumeMesh};
+// `MeshInvariant` names the obligation reported by the #4876 watertightness
+// preflight's `GeometryError::MeshContractViolation`. Not re-exported at the
+// `reify_ir` crate root (see `reify_ir::lib::pub use geometry::{..}`), so it
+// is imported from its defining submodule, mirroring the `reify_ir::geometry::`
+// qualified-path precedent used elsewhere in the workspace (e.g.
+// `crates/reify-eval/tests/result_carried_topology.rs`).
+use reify_ir::geometry::MeshInvariant;
 
 // `ElementOrderTag` is only referenced inside `#[cfg(has_gmsh)]` functions
 // (`mesh_surface_to_volume_with_attribution`, `run_meshing_with_entity_queries`).
@@ -810,5 +817,139 @@ mod tests {
             "expected a WARN event with n_candidates=3 but n_excluded=1 (only the \
              single non-finite candidate, not the whole candidate set); got {fields:?}"
         );
+    }
+
+    // ── Watertightness preflight (task #4876, PRD kernel-seam-contracts.md
+    //    §9 NEAR-TERM preflight leaf; INV-GEO-1) ─────────────────────────────
+    //
+    // These fixtures hand-rebuild the shapes of the private
+    // `reify_ir::geometry::tests::{tetra_positions,tetra_faces,
+    // welded_tetra_mesh,per_face_block_tetra_mesh}` fixtures (a different
+    // crate's private test module, not reusable here) so
+    // `preflight_watertight_surface` — a pure fn with no gmsh/OCCT
+    // dependency — can be unit-tested in the fast stub build.
+
+    /// V0=(0,0,0) V1=(1,0,0) V2=(0,1,0) V3=(0,0,1) — a minimal outward-wound
+    /// closed tetrahedron shared by the preflight tests below.
+    fn tetra_positions() -> [[f32; 3]; 4] {
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ]
+    }
+
+    /// The four outward-wound faces of [`tetra_positions`].
+    fn tetra_faces() -> [[u32; 3]; 4] {
+        [[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]]
+    }
+
+    /// The tetrahedron with each corner referenced once — already
+    /// position-welded (`weldedness().raw_welded == true`).
+    fn welded_tetra_mesh() -> Mesh {
+        let positions = tetra_positions();
+        let vertices: Vec<f32> = positions.iter().flat_map(|v| v.iter().copied()).collect();
+        let indices: Vec<u32> = tetra_faces().into_iter().flatten().collect();
+        Mesh {
+            vertices,
+            indices,
+            normals: None,
+        }
+    }
+
+    /// The same tetrahedron emitted as 12 per-face-block vertices (each
+    /// corner duplicated per incident face), mirroring OCCT's per-face
+    /// tessellation output (occt_wrapper.cpp:5847), which is unwelded by
+    /// design. Closed + consistently wound on the position-welded quotient
+    /// (`Mesh::validate` accepts it) while `weldedness().raw_welded` is
+    /// `false` on the raw index buffer the gmsh attributed producer
+    /// actually consumes.
+    fn per_face_block_tetra_mesh() -> Mesh {
+        let positions = tetra_positions();
+        let mut vertices = Vec::with_capacity(12 * 3);
+        for face in tetra_faces() {
+            for corner in face {
+                vertices.extend_from_slice(&positions[corner as usize]);
+            }
+        }
+        let indices: Vec<u32> = (0..12).collect();
+        Mesh {
+            vertices,
+            indices,
+            normals: None,
+        }
+    }
+
+    /// An unwelded-but-quotient-closed surface must be rejected: the raw
+    /// per-face-block tetra passes `Mesh::validate` (closed on the welded
+    /// quotient) but fails `weldedness().raw_welded`, so the preflight must
+    /// report a `Closed` violation with a truthful nonzero open-edge count
+    /// — the raw watertightness signal the gmsh SIGSEGV actually trips on.
+    #[test]
+    fn preflight_rejects_unwelded_per_face_block_surface() {
+        let mesh = per_face_block_tetra_mesh();
+        let err = preflight_watertight_surface(&mesh, 0.0).expect_err(
+            "an unwelded per-face-block tetra (OCCT-style) must fail the watertightness \
+             preflight — the gmsh attributed producer consumes the raw index buffer, which \
+             is genuinely non-watertight even though the welded quotient is closed",
+        );
+        match err {
+            GeometryError::MeshContractViolation {
+                kernel,
+                invariant,
+                counts,
+                ..
+            } => {
+                assert_eq!(kernel, "gmsh", "violation must name the gmsh kernel");
+                assert_eq!(invariant, MeshInvariant::Closed);
+                assert!(
+                    counts.open_edges > 0,
+                    "the raw per-face-block surface must report a nonzero open-edge \
+                     count: {counts:?}"
+                );
+            }
+            other => panic!("expected GeometryError::MeshContractViolation, got {other:?}"),
+        }
+    }
+
+    /// Negative control: a welded, closed, consistently-wound surface must
+    /// NOT be rejected — guards against over-rejecting the watertight input
+    /// the plain (non-attributed) producer and the existing watertight-cube
+    /// attributed-producer test both rely on staying accepted.
+    #[test]
+    fn preflight_accepts_welded_watertight_surface() {
+        let mesh = welded_tetra_mesh();
+        preflight_watertight_surface(&mesh, 0.0).expect(
+            "a welded, closed, consistently-wound tetra must pass the watertightness \
+             preflight",
+        );
+    }
+
+    /// The `Mesh::validate` bridge must run BEFORE the weldedness gate: a
+    /// raw-welded mesh (which the weldedness check alone would accept)
+    /// carrying a non-finite vertex coordinate must still be rejected, and
+    /// with the `Finite` invariant the weldedness gate itself can never
+    /// produce.
+    #[test]
+    fn preflight_rejects_non_finite_before_weldedness_check() {
+        let mut mesh = welded_tetra_mesh();
+        mesh.vertices[3] = f32::NAN; // vertex 1, x-component
+        let err = preflight_watertight_surface(&mesh, 0.0).expect_err(
+            "a mesh with a NaN vertex coordinate must fail the watertightness preflight",
+        );
+        match err {
+            GeometryError::MeshContractViolation {
+                kernel, invariant, ..
+            } => {
+                assert_eq!(kernel, "gmsh", "violation must name the gmsh kernel");
+                assert_eq!(
+                    invariant,
+                    MeshInvariant::Finite,
+                    "validate() must be checked first, ahead of weldedness"
+                );
+            }
+            other => panic!("expected GeometryError::MeshContractViolation, got {other:?}"),
+        }
     }
 }
