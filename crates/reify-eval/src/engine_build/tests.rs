@@ -8397,6 +8397,7 @@ structure Assembly {
             &SweptKindTable::default(),
             &HashMap::new(),
             &mut diagnostics,
+            &[],
         );
 
         let mp_val = values
@@ -8592,6 +8593,7 @@ structure Assembly {
             &SweptKindTable::default(),
             &HashMap::new(),
             &mut diagnostics,
+            &[],
         );
 
         let mp_val = values
