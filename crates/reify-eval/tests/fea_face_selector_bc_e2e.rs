@@ -191,20 +191,32 @@ fn boundary_demand_realization_edge_degrades_gracefully_on_occt_surface() {
 
     // The degradation must be VISIBLE: a Severity::Warning diagnostic naming
     // both the attributed-producer failure and the plain-producer fallback
-    // (the existing engine_build.rs honest-degradation arm).
+    // (the existing engine_build.rs honest-degradation arm). Matched on the
+    // stable keyword tokens "attributed" + "gmsh" + "plain producer" rather
+    // than the full sentence as one contiguous phrase: scanning
+    // engine_build.rs's other realization Warning messages around this arm
+    // shows "attributed" + "gmsh" together uniquely identify this branch
+    // (the sibling "attributed store_volume_mesh failed" message shares
+    // "attributed" and "plain producer" but never says "gmsh"; the
+    // plain-producer "gmsh ... failed" messages never say "attributed"), so
+    // this survives a benign reword of the message's phrasing/word-order.
+    // engine_build.rs is outside this task's locked scope, so factoring the
+    // text into a shared const both sites reference isn't available here.
     let degradation_warnings: Vec<_> = result
         .diagnostics
         .iter()
         .filter(|d| {
             matches!(d.severity, Severity::Warning)
-                && d.message.contains("attributed gmsh meshing failed")
-                && d.message.contains("degrading to the plain producer")
+                && d.message.contains("attributed")
+                && d.message.contains("gmsh")
+                && d.message.contains("plain producer")
         })
         .collect();
     assert!(
         !degradation_warnings.is_empty(),
         "the attributed-producer refusal must surface a visible honest-degradation \
-         warning diagnostic naming both the failure and the plain-producer fallback; \
+         warning diagnostic naming both the failure and the plain-producer fallback \
+         (matched loosely on 'attributed' + 'gmsh' + 'plain producer' tokens); \
          got diagnostics: {:?}",
         result.diagnostics
     );
