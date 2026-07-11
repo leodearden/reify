@@ -57,4 +57,45 @@ run_helper() {
     RC=$rc
 }
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block A — CLI/usage contract + lane_dir existence guard
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block A: CLI/usage contract + lane_dir existence guard ---"
+
+assert "A1: script exists" test -f "$SCRIPT"
+assert "A2: script is executable" test -x "$SCRIPT"
+assert "A3: script has the #!/usr/bin/env bash shebang" \
+    bash -c 'head -1 "$1" | grep -qx "#!/usr/bin/env bash"' _ "$SCRIPT"
+
+# A4/A5: --help exits 0 and prints a usage line to stderr
+run_helper --help
+assert "A4: --help exits 0" test "$RC" -eq 0
+assert "A5: --help prints a 'Usage' line to stderr" \
+    bash -c 'printf "%s\n" "$1" | grep -qi usage' _ "$ERR_OUT"
+
+# A6: an unknown flag exits 2
+run_helper /tmp --totally-bogus-flag-xyz
+assert "A6: unknown flag exits 2" test "$RC" -eq 2
+
+# A7: a missing positional lane_dir exits 2
+run_helper
+assert "A7: missing positional lane_dir exits 2" test "$RC" -eq 2
+
+# A8: a nonexistent lane_dir exits 1 with a diagnostic on stderr, touches nothing
+A8_LANE="$(mktemp -u /tmp/test-thin-warm-lane-a8-XXXXXX)"
+run_helper "$A8_LANE"
+assert "A8: nonexistent lane_dir exits 1" test "$RC" -eq 1
+assert "A8: nonexistent lane_dir prints a diagnostic on stderr" \
+    bash -c '[ -n "$1" ]' _ "$ERR_OUT"
+assert "A8: nonexistent lane_dir still does not exist afterward (touches nothing)" \
+    bash -c '[ ! -e "$1" ]' _ "$A8_LANE"
+
+# A9: a lane_dir that exists but is a regular file (not a directory) exits 1
+A9_LANE="$(mktemp /tmp/test-thin-warm-lane-a9-XXXXXX)"
+_TMPDIRS+=("$A9_LANE")
+run_helper "$A9_LANE"
+assert "A9: lane_dir that is a regular file exits 1" test "$RC" -eq 1
+assert "A9: regular-file lane_dir is untouched" test -f "$A9_LANE"
+
 test_summary
