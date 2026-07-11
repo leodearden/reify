@@ -69,6 +69,11 @@ Checks (no <script_path>):
   size_gib_is_int                    — warm_lane_pool.substrate.size_gib is an int (value validated by A2 drift check)
   defrag_threshold_is_int            — warm_lane_pool.defrag_extent_threshold is an int (value validated by A2 drift check)
   no_hardcoded_task_pool_size        — warm_lane_pool has NO integer 'task_pool_size' key (D9 negative guard)
+  has_sizing_block                   — warm_lane_pool.sizing is a mapping (β, task #5173)
+  safety_divisor_is_number_gt1       — warm_lane_pool.sizing.safety_divisor is int|float AND > 1 (§9.2)
+  has_spare_warm_lanes               — top-level 'spare_warm_lanes' key exists (effective_N input)
+  no_frozen_resident_divergent_budget — NO frozen 'resident_divergent_budget_gib'/'budget_gib' integer
+                                        under warm_lane_pool or warm_lane_pool.sizing (P4 negative guard)
 Checks (with <script_path> — value-drift cross-check):
   image_path_yaml_vs_provision    — YAML image_path == provision-warm-lane-fs.sh IMG= default
   size_gib_yaml_vs_provision      — YAML size_gib == provision-warm-lane-fs.sh SIZE_GIB= default
@@ -123,6 +128,42 @@ if check == "no_hardcoded_task_pool_size":
     if val is not None and isinstance(val, int):
         print(f"D9 violation: warm_lane_pool.task_pool_size is a hardcoded integer ({val}); use task_pool_size_source instead", file=sys.stderr)
         sys.exit(1)
+    sys.exit(0)
+
+# --- β sizing-budget config contract (task #5173) ---------------------------
+# Structural/type checks only: the resident-divergent budget is a RECOMPUTED
+# quantity (live df/du), never a frozen GB/lane-count value (P4/D8) — so
+# these assert presence/shape of the declared INPUTS (safety_divisor,
+# spare_warm_lanes), not any computed number.
+
+if check == "has_sizing_block":
+    val = wlp.get("sizing")
+    sys.exit(0 if isinstance(val, dict) else 1)
+
+if check == "safety_divisor_is_number_gt1":
+    sizing = wlp.get("sizing")
+    val = sizing.get("safety_divisor") if isinstance(sizing, dict) else None
+    # bool is an int subclass in Python; exclude it explicitly (True/False
+    # are not a legitimate safety-divisor value even though True > 1 is False
+    # and isinstance(True, int) is True).
+    if isinstance(val, bool):
+        sys.exit(1)
+    sys.exit(0 if isinstance(val, (int, float)) and val > 1 else 1)
+
+if check == "has_spare_warm_lanes":
+    sys.exit(0 if "spare_warm_lanes" in d else 1)
+
+if check == "no_frozen_resident_divergent_budget":
+    # P4 negative guard (mirrors D9 above): the computed budget must stay
+    # derived/recomputed from live measurement, never re-frozen as a constant
+    # under warm_lane_pool or warm_lane_pool.sizing.
+    sizing = wlp.get("sizing") if isinstance(wlp.get("sizing"), dict) else {}
+    for key in ("resident_divergent_budget_gib", "budget_gib"):
+        for scope_name, scope in (("warm_lane_pool", wlp), ("warm_lane_pool.sizing", sizing)):
+            val = scope.get(key)
+            if val is not None and isinstance(val, (int, float)) and not isinstance(val, bool):
+                print(f"P4 violation: {scope_name}.{key} is a frozen number ({val}); the budget must be recomputed from live measurement, never hardcoded", file=sys.stderr)
+                sys.exit(1)
     sys.exit(0)
 
 # Value-drift checks: require sys.argv[3] = path to owning bash script.
@@ -246,6 +287,25 @@ PYEOF
 
     assert "warm_lane_pool has no hardcoded integer task_pool_size key (D9 negative guard)" \
         python3 "$_PARSE_PY" "$ORCH_YAML" no_hardcoded_task_pool_size
+
+    # (A1b) SIZING BUDGET CONFIG CONTRACT (β, task #5173) — structural/type
+    # assertions only. The resident-divergent budget formula is documented
+    # in orchestrator.yaml as a comment + recomputed from LIVE df/du
+    # measurement (P4/D8) — NEVER a frozen GB/lane-count value, so no such
+    # number is asserted here (rule 5); only the declared INPUTS are checked.
+    echo "--- (A1b) sizing budget config contract (β) ---"
+
+    assert "warm_lane_pool.sizing is a mapping" \
+        python3 "$_PARSE_PY" "$ORCH_YAML" has_sizing_block
+
+    assert "warm_lane_pool.sizing.safety_divisor is a number > 1 (§9.2: a DIVISOR, not a subtractive GiB reserve)" \
+        python3 "$_PARSE_PY" "$ORCH_YAML" safety_divisor_is_number_gt1
+
+    assert "top-level 'spare_warm_lanes' key exists (effective_N = max_concurrent_tasks + spare_warm_lanes)" \
+        python3 "$_PARSE_PY" "$ORCH_YAML" has_spare_warm_lanes
+
+    assert "no frozen resident_divergent_budget_gib/budget_gib integer under warm_lane_pool(.sizing) (P4 negative guard)" \
+        python3 "$_PARSE_PY" "$ORCH_YAML" no_frozen_resident_divergent_budget
 
     # (A2) VALUE DRIFT — YAML default values MUST match the :-fallback defaults
     # in the owning scripts.  Catches the case where YAML is updated (e.g.
