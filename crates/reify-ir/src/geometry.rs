@@ -11550,6 +11550,176 @@ mod tests {
         }
     }
 
+    /// Verdict-equivalence check shared by the `check_mesh_contract*`
+    /// equivalence tests: the private `check_contract` body backs both
+    /// [`Mesh::check_mesh_contract`] and [`Mesh::validate`], so for any mesh
+    /// the two must agree — same `Ok`/`Err`, and on `Err` the same
+    /// `invariant`/`counts`, with a witness naming the same offender.
+    ///
+    /// Witness fields are compared by bit pattern (via `to_bits`) rather
+    /// than `==` because several witnesses embed the mesh's own injected
+    /// `f32::NAN` coordinate (or a synthetic `[NAN, NAN, NAN]` marker), and
+    /// IEEE-754 NaN is never equal to itself under `PartialEq` — this is
+    /// exactly why `MeshWitness` derives `PartialEq` but not `Eq`.
+    fn assert_check_mesh_contract_matches_validate(mesh: &Mesh, tol: f64) {
+        let via_check = mesh.check_mesh_contract(tol);
+        let via_validate = mesh.validate(tol).map(|_| ());
+        match (via_check, via_validate) {
+            (Ok(()), Ok(())) => {}
+            (Err(a), Err(b)) => {
+                assert_eq!(
+                    a.invariant, b.invariant,
+                    "check_mesh_contract and validate must report the same invariant"
+                );
+                assert_eq!(
+                    a.counts, b.counts,
+                    "check_mesh_contract and validate must report the same counts"
+                );
+                assert_witness_bits_eq(a.witness, b.witness);
+            }
+            (a, b) => panic!(
+                "check_mesh_contract and validate must agree on verdict: {a:?} vs {b:?}"
+            ),
+        }
+    }
+
+    /// NaN-safe structural comparison of two [`MeshWitness`] values — see
+    /// [`assert_check_mesh_contract_matches_validate`] for why plain `==`
+    /// isn't used.
+    fn assert_witness_bits_eq(a: MeshWitness, b: MeshWitness) {
+        match (a, b) {
+            (
+                MeshWitness::Vertex {
+                    index: i1,
+                    coord: c1,
+                },
+                MeshWitness::Vertex {
+                    index: i2,
+                    coord: c2,
+                },
+            ) => {
+                assert_eq!(i1, i2, "witness must name the same vertex");
+                assert_eq!(
+                    c1.map(f32::to_bits),
+                    c2.map(f32::to_bits),
+                    "witness coord bit patterns must match"
+                );
+            }
+            (
+                MeshWitness::Triangle {
+                    tri: t1,
+                    indices: idx1,
+                },
+                MeshWitness::Triangle {
+                    tri: t2,
+                    indices: idx2,
+                },
+            ) => {
+                assert_eq!(t1, t2, "witness must name the same triangle");
+                assert_eq!(idx1, idx2, "witness must name the same triangle indices");
+            }
+            (MeshWitness::Edge { u: u1, v: v1 }, MeshWitness::Edge { u: u2, v: v2 }) => {
+                assert_eq!(u1, u2, "witness must name the same edge start");
+                assert_eq!(v1, v2, "witness must name the same edge end");
+            }
+            (a, b) => panic!("witness variant mismatch: {a:?} vs {b:?}"),
+        }
+    }
+
+    /// [`Mesh::check_mesh_contract`] must return the same verdict as
+    /// [`Mesh::validate`] (mapped to drop the witness) across every fixture
+    /// exercised by the `validate_accepts_*` / `validate_rejects_*` tests
+    /// above — it wraps the identical private `check_contract` body, just
+    /// without minting/cloning a `ValidatedMesh`.
+    ///
+    /// RED: fails to compile until `check_mesh_contract` is added to `Mesh`.
+    #[test]
+    fn check_mesh_contract_matches_validate_verdict() {
+        // Valid meshes — both methods must accept.
+        assert_check_mesh_contract_matches_validate(&welded_tetra_mesh(), 0.0);
+        assert_check_mesh_contract_matches_validate(&per_face_block_tetra_mesh(), 0.0);
+
+        // NaN vertex coordinate — mirrors `validate_rejects_non_finite`.
+        let mut nan_vertex_mesh = welded_tetra_mesh();
+        nan_vertex_mesh.vertices[3] = f32::NAN;
+        assert_check_mesh_contract_matches_validate(&nan_vertex_mesh, 0.0);
+
+        // +Inf normal component — mirrors `validate_rejects_non_finite`.
+        let mut inf_normal_mesh = welded_tetra_mesh();
+        let normal_len = inf_normal_mesh.vertices.len();
+        inf_normal_mesh.normals = Some(vec![0.0_f32; normal_len]);
+        inf_normal_mesh.normals.as_mut().unwrap()[2 * 3 + 1] = f32::INFINITY;
+        assert_check_mesh_contract_matches_validate(&inf_normal_mesh, 0.0);
+
+        // Out-of-bounds triangle index — mirrors
+        // `validate_rejects_out_of_bounds_index`.
+        let mut oob_mesh = welded_tetra_mesh();
+        let last = oob_mesh.indices.len() - 1;
+        oob_mesh.indices[last] = 4;
+        assert_check_mesh_contract_matches_validate(&oob_mesh, 0.0);
+
+        // Dangling trailing index group — same test.
+        let mut truncated_mesh = welded_tetra_mesh();
+        truncated_mesh.indices.pop();
+        assert_check_mesh_contract_matches_validate(&truncated_mesh, 0.0);
+
+        // Non-multiple-of-3 vertex buffer — mirrors
+        // `validate_rejects_malformed_vertex_buffer_length`.
+        let mut malformed_vertices_mesh = welded_tetra_mesh();
+        malformed_vertices_mesh.vertices.push(0.0);
+        assert_check_mesh_contract_matches_validate(&malformed_vertices_mesh, 0.0);
+
+        // Mismatched normals length (short and long) — mirrors
+        // `validate_rejects_mismatched_normals_length`.
+        let mut short_normals = welded_tetra_mesh();
+        let full_len = short_normals.vertices.len();
+        short_normals.normals = Some(vec![0.0_f32; full_len - 3]);
+        assert_check_mesh_contract_matches_validate(&short_normals, 0.0);
+
+        let mut long_normals = welded_tetra_mesh();
+        long_normals.normals = Some(vec![0.0_f32; full_len + 3]);
+        assert_check_mesh_contract_matches_validate(&long_normals, 0.0);
+
+        // Degenerate triangle: repeated raw index — mirrors
+        // `validate_rejects_degenerate_triangle`.
+        let repeated_index_mesh = Mesh {
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            indices: vec![0, 1, 1],
+            normals: None,
+        };
+        assert_check_mesh_contract_matches_validate(&repeated_index_mesh, 0.0);
+
+        // Degenerate triangle: coincident positions, distinct indices —
+        // same test.
+        let coincident_position_mesh = Mesh {
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+            indices: vec![0, 1, 2],
+            normals: None,
+        };
+        assert_check_mesh_contract_matches_validate(&coincident_position_mesh, 0.0);
+
+        // Open boundary — mirrors `validate_rejects_open_boundary`.
+        let open_mesh = Mesh {
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            indices: vec![0, 1, 2],
+            normals: None,
+        };
+        assert_check_mesh_contract_matches_validate(&open_mesh, 0.0);
+
+        // Reversed winding — mirrors `validate_rejects_reversed_winding`.
+        let mut faces = tetra_faces();
+        faces[0] = [faces[0][0], faces[0][2], faces[0][1]];
+        let positions = tetra_positions();
+        let vertices: Vec<f32> = positions.iter().flat_map(|v| v.iter().copied()).collect();
+        let indices: Vec<u32> = faces.into_iter().flatten().collect();
+        let reversed_winding_mesh = Mesh {
+            vertices,
+            indices,
+            normals: None,
+        };
+        assert_check_mesh_contract_matches_validate(&reversed_winding_mesh, 0.0);
+    }
+
     #[test]
     fn geometry_error_mesh_contract_violation_display_and_bridge() {
         let counts = MeshViolationCounts {
