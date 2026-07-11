@@ -75,6 +75,7 @@ _default_mount() {
 _usage() {
     cat >&2 <<EOF
 Usage: $(basename "$0") [--size-gib N] [--img PATH] [--mount DIR]
+       $(basename "$0") --grow --size-gib N [--img PATH] [--mount DIR]
 
   Provision (or idempotently verify) the XFS-reflink loopback volume used as
   the warm-lane CoW pool substrate.
@@ -83,6 +84,9 @@ Usage: $(basename "$0") [--size-gib N] [--img PATH] [--mount DIR]
     --size-gib N    Image size in GiB (default: 4096)
     --img PATH      Image file path (default: /media/leo/data_lv_1/leo/reify-warm-lanes.img)
     --mount DIR     Mount point (default: \${REIFY_WARM_LANE_MOUNT:-$(_default_mount)})
+    --grow          ONLINE grow the ALREADY-MOUNTED volume to --size-gib N GiB
+                     (requires --size-gib explicitly; monotone — idempotent
+                     no-op if already exactly N GiB, refuses to shrink; see P3)
     -h, --help      Print this message and exit
 
   Stdout:  the resolved mount directory (bare path)
@@ -93,6 +97,9 @@ Usage: $(basename "$0") [--size-gib N] [--img PATH] [--mount DIR]
          the blkid probe result: mkfs only when absent, or byte-empty with
          REIFY_WARM_LANE_ALLOW_MKFS=1)
     P2 — reflink probe mandatory and fail-closed (cp --reflink=always)
+    P3 — --grow is monotone: never shrinks a populated image. Already at N
+         GiB is a silent idempotent no-op; a smaller N is refused LOUDLY
+         (non-zero exit, no mutation) rather than absorbed.
 
   \$SUDO override: set REIFY_WARM_LANE_SUDO='' to bypass sudo (for tests).
   REIFY_WARM_LANE_ALLOW_MKFS=1: opt-in to (re)format a PRESENT but
@@ -104,6 +111,8 @@ EOF
 SIZE_GIB=4096
 IMG="/media/leo/data_lv_1/leo/reify-warm-lanes.img"
 MOUNT="${REIFY_WARM_LANE_MOUNT:-$(_default_mount)}"
+GROW=0
+SIZE_GIB_SET=0   # tracks whether --size-gib was EXPLICITLY passed (--grow requires it)
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -111,9 +120,14 @@ while [ $# -gt 0 ]; do
             _usage
             exit 0
             ;;
+        --grow)
+            GROW=1
+            shift
+            ;;
         --size-gib)
             [ $# -ge 2 ] || { err "--size-gib requires a value"; exit 2; }
             SIZE_GIB="$2"
+            SIZE_GIB_SET=1
             shift 2
             ;;
         --img)
@@ -139,6 +153,17 @@ if ! [[ "$SIZE_GIB" =~ ^[0-9]+$ ]]; then
     err "--size-gib requires a positive integer, got: '$SIZE_GIB'"
     exit 2
 fi
+
+# Canonicalize IMG to an absolute, symlink-resolved path ONCE, up front, so
+# every `losetup -j "$IMG"` lookup below (fresh-provision's _attach_loop AND
+# --grow's loop-resolve/backing-file guard) matches the SAME path losetup
+# recorded at attach time. A relative or symlinked --img would otherwise
+# resolve to an empty LOOP and --grow would wrongly refuse to grow a
+# filesystem that is genuinely mounted from that image. Falls back to the
+# given value if it can't be resolved yet (e.g. parent dir doesn't exist)
+# rather than aborting — the existing fresh-provision path surfaces that
+# failure with a clearer error at fallocate/mkfs time.
+IMG="$(readlink -f "$IMG" 2>/dev/null || echo "$IMG")"
 
 # ── $SUDO indirection ──────────────────────────────────────────────────────────
 # Override: REIFY_WARM_LANE_SUDO (set to '' in tests to bypass sudo entirely)
@@ -170,6 +195,71 @@ _cleanup_on_exit() {
     fi
 }
 trap _cleanup_on_exit EXIT
+
+# ── --grow: online grow of the mounted loopback XFS (task #5173, β) ───────────
+# Its own mode, dispatched BEFORE the B1/re-attach/fresh-provision logic below:
+# fallocate -l <N>GiB <img>  →  losetup -c <loopdev>  →  xfs_growfs <mount>.
+# The cleanup-tracking vars above stay empty on this path, so the EXIT trap
+# above never fires a false unmount/detach for a grow run.
+if [ "$GROW" -eq 1 ]; then
+    # Guard order: requires-size -> mountpoint -> loop-resolve -> backing ->
+    # size-measure -> three-way decision.
+
+    # Requires-size: no default grow target is ever baked in (§13 Q2) — the
+    # operator must supply the live-measured value explicitly.
+    [ "$SIZE_GIB_SET" -eq 1 ] || {
+        err "--grow requires an explicit --size-gib <N> (no default grow target)"
+        exit 2
+    }
+
+    mountpoint -q "$MOUNT" || {
+        err "--grow requires an already-mounted filesystem at $MOUNT"
+        exit 1
+    }
+
+    # Resolve the loop device already backing $IMG (mirrors _attach_loop's
+    # `losetup -j` pattern below) — grow never allocates a NEW loop device.
+    LOOP="$($SUDO losetup -j "$IMG" -O NAME --noheadings 2>/dev/null | head -1 || true)"
+
+    # Backing-file guard: refuse unless $IMG is confirmed to be the CURRENT
+    # backing file for $MOUNT — never grow the wrong image.
+    SRC="$(findmnt -n -o SOURCE "$MOUNT" 2>/dev/null || true)"
+    if [ -z "$LOOP" ] || [ "$SRC" != "$LOOP" ]; then
+        err "$IMG is not the mounted backing file at $MOUNT (resolved loop='$LOOP', mount source='$SRC') — refusing to grow"
+        exit 1
+    fi
+
+    # Live current size — measured from the IMG file itself, the exact
+    # quantity `fallocate -l <N>GiB "$IMG"` mutates (never a frozen constant
+    # — P4). Deliberately NOT the mounted filesystem's `df`-reported usable
+    # size: XFS log/AG-header/metadata overhead makes df's usable size a few
+    # GiB below the raw N-GiB image size, which would leave the exact-equal
+    # idempotent branch below practically unreachable after a real grow (a
+    # re-run at the same N would keep seeing cur_gib < N via df and re-fire
+    # fallocate/losetup -c/xfs_growfs every time).
+    cur_bytes="$(stat -c '%s' "$IMG")"
+    cur_gib=$((cur_bytes / 1073741824))
+
+    # Three-way monotone decision (P3): smaller refuses LOUD; equal is a
+    # silent idempotent no-op; larger grows. Never absorb a shrink request.
+    if [ "$SIZE_GIB" -lt "$cur_gib" ]; then
+        err "--size-gib $SIZE_GIB is smaller than the current ${cur_gib}GiB at $MOUNT — refusing to shrink (P3: grow is monotone)"
+        exit 1
+    elif [ "$SIZE_GIB" -eq "$cur_gib" ]; then
+        info "$MOUNT is already ${cur_gib}GiB (>= requested ${SIZE_GIB}GiB) — no-op"
+        echo "$MOUNT"
+        exit 0
+    fi
+
+    info "Growing $IMG from ${cur_gib}GiB to ${SIZE_GIB}GiB (online, mounted at $MOUNT) ..."
+    $SUDO fallocate -l "${SIZE_GIB}GiB" "$IMG"
+    $SUDO losetup -c "$LOOP"
+    $SUDO xfs_growfs "$MOUNT"
+    ok "Grew warm-lane volume to ${SIZE_GIB}GiB at $MOUNT"
+
+    echo "$MOUNT"
+    exit 0
+fi
 
 # ── reflink probe (P2) ─────────────────────────────────────────────────────────
 # Mandatory on every success path.  Uses cp --reflink=always (NOT auto) so a
