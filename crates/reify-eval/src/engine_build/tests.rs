@@ -8380,21 +8380,18 @@ structure Assembly {
     /// Builds `DispatchTestState`, pre-seeds the realization cache with
     /// `{Occt, GeometryHandleId(1)}`, calls the `pre_seed` closure (so each
     /// test can populate its own table at `GeometryHandleId(1)` to simulate the
-    /// colliding sibling op), then drives the cache-hit short-circuit via
-    /// `state.run_demand` with `operations=&[]`. Returns the state after the
+    /// colliding sibling op), then drives the cache-hit short-circuit by
+    /// calling [`Engine::probe_realization_cache`] directly (task 5059 η —
+    /// re-pointed from `state.run_demand(..., ops=&[], ...)` now that the
+    /// short-circuit is its own unit; no op-loop / kernel / registry
+    /// scaffolding is needed to exercise it). Returns the state after the
     /// call for post-condition assertions.
     fn run_cross_kernel_cache_hit_short_circuit(
         entity_name: &str,
         pre_seed: impl FnOnce(&mut DispatchTestState, &RealizationNodeId),
     ) -> DispatchTestState {
-        use reify_test_support::mocks::MockGeometryKernel;
-
         let realization_id = RealizationNodeId::new(entity_name, 0);
         let tol = 1e-4_f64;
-
-        let desc = dispatch_test_descriptor_all_brep();
-        let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
-        let registry = dispatch_test_single_default_registry(&desc);
 
         let mut state = DispatchTestState::default();
 
@@ -8414,20 +8411,26 @@ structure Assembly {
         // Allow each test to pre-seed its specific table before the run.
         pre_seed(&mut state, &realization_id);
 
-        // Drive the cache-hit short-circuit: operations=&[] ensures the function
-        // returns BEFORE the op loop. demanded_tol=Some(tol) and
-        // realization_name=Some("part") together enable the cache probe path.
-        state.run_demand(
-            &mut kernels,
-            &registry,
-            "default",
-            &[], // empty ops — cache-hit fires before the op loop
+        // Drive the cache-hit short-circuit directly: is_terminal_realization=true,
+        // realization_name=Some("part"), and demanded_tol=Some(tol) together
+        // satisfy the probe's guard, and ReprKind::BRep matches the pre-seeded
+        // cache key so the primary lookup hits.
+        let mut outputs = RealizationOutputs::new(
+            &mut state.step_handles,
+            &mut state.named_steps,
+            &mut state.named_step_reprs,
+            &mut state.topology_attribute_table,
+            &mut state.swept_kind_table,
+            &mut state.produced_repr_out,
+        );
+        Engine::probe_realization_cache(
+            &state.realization_cache,
             &realization_id,
             Some("part"),
-            SourceSpan::new(0, 0),
             ReprKind::BRep,
             Some(tol),
-            None,
+            true,
+            &mut outputs,
         );
 
         state
