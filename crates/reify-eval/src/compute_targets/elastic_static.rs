@@ -9921,4 +9921,35 @@ mod tests {
             ),
         }
     }
+
+    /// Amendment (task #5084 review, suggestion 1): `anisotropic_material_from_value`
+    /// must still `panic!` — not return `Err` — when the law `StructureInstance`'s
+    /// `type_name` is neither `OrthotropicMaterial` nor `TransverseIsotropicMaterial`.
+    /// This is the one deliberate, permanent exception documented on the function
+    /// (see doc comment and this task's design decision): the fixed
+    /// `FeaValueShapeError` taxonomy has no variant for "type_name is neither known
+    /// law", and the branch is unreachable-by-construction since the DSL only ever
+    /// emits the two known laws. Pinning this as `#[should_panic]` guards against a
+    /// future refactor (e.g. D6/D9) silently swallowing or downgrading this panic.
+    #[test]
+    #[should_panic(expected = "unsupported law type")]
+    fn anisotropic_material_from_value_panics_on_unsupported_law_type() {
+        let law = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "BogusMaterial".to_string(),
+            version: 1,
+            fields: PersistentMap::new(),
+        }));
+        let fields: PersistentMap<String, Value> = [
+            ("law".to_string(), law),
+            (
+                "frame".to_string(),
+                as_printed_zones_test_fixtures::het_material_frame([0.0, 0.0, 1.0]),
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        let _ = anisotropic_material_from_value(&anisotropic_material(fields));
+    }
 }
