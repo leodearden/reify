@@ -372,6 +372,31 @@ _age_min() {
     printf '%d' $(( (now - mtime) / 60 ))
 }
 
+# ── divergent_gib: measured (real du), never a frozen constant (DD3/G6/D8) ───
+# _divergent_gib <dir>
+# `du -sB1 <dir>/target`, floored to GiB (0 when target/ is absent). A du
+# failure or unparseable output degrades this figure to 0 with a stderr
+# note -- fail-open, this script must never abort (PRD §9.5 inv.12).
+_divergent_gib() {
+    local dir="$1"
+    local target="$dir/target"
+    [ -e "$target" ] || { printf '0'; return 0; }
+
+    local du_out bytes
+    du_out="$(du -sB1 "$target" 2>/dev/null)" || {
+        warn "du failed for $target; divergent_gib degraded to 0"
+        printf '0'
+        return 0
+    }
+    bytes="$(printf '%s\n' "$du_out" | awk '{print $1}')"
+    if ! printf '%s\n' "$bytes" | grep -qE '^[0-9]+$'; then
+        warn "du reported non-integer size for $target; divergent_gib degraded to 0"
+        printf '0'
+        return 0
+    fi
+    printf '%d' $(( bytes / 1073741824 ))
+}
+
 # ── classification (monotonically refined across the walk's build-out) ───────
 # _classify assigned status recoverable dirty age_min
 _classify() {
@@ -400,6 +425,7 @@ ASSIGNED_COUNT=0
 FREE_COUNT=0
 RECLAIMABLE_COUNT=0
 LEAKED_COUNT=0
+DIVERGENT_TOTAL_GIB=0
 TABLE_OUT=""
 
 # A nonexistent/empty --mount is NOT an error (advisory-only script): the walk
@@ -426,7 +452,9 @@ if [ -n "$MOUNT" ] && [ -d "$MOUNT" ]; then
         status="$(_backing_task_status "$entry")"
         recoverable="$(_recoverable "$entry" "$raw_branch")"
         dirty="$(_dirty_state "$entry")"
+        divergent_gib="$(_divergent_gib "$entry")"
         age_min="$(_age_min "$entry")"
+        DIVERGENT_TOTAL_GIB=$((DIVERGENT_TOTAL_GIB + divergent_gib))
 
         classification="$(_classify "$assigned" "$status" "$recoverable" "$dirty" "$age_min")"
         case "$classification" in
@@ -434,13 +462,31 @@ if [ -n "$MOUNT" ] && [ -d "$MOUNT" ]; then
             LEAKED) LEAKED_COUNT=$((LEAKED_COUNT + 1)) ;;
         esac
 
-        TABLE_OUT="${TABLE_OUT}lane=${name} role=${role} assigned=${assigned} branch=${branch} status=${status} recoverable=${recoverable} dirty=${dirty} age_min=${age_min} classification=${classification}
+        TABLE_OUT="${TABLE_OUT}lane=${name} role=${role} assigned=${assigned} branch=${branch} status=${status} recoverable=${recoverable} dirty=${dirty} divergent_gib=${divergent_gib} age_min=${age_min} classification=${classification}
 "
     done
 fi
 
+# ── free_gib / budget_gib: measured via the stubbable df seam (DD3/G6/D8) ────
+# A df failure or unparseable output degrades both figures to 0 with a stderr
+# note (fail-open -- this script must never abort; PRD §9.5 inv.12). Skipped
+# (stays 0) for a nonexistent/empty --mount, mirroring the resident walk's
+# own guard.
+FREE_GIB=0
+BUDGET_GIB=0
+if [ -n "$MOUNT" ] && [ -d "$MOUNT" ]; then
+    df_out="$("$DF" -B1 --output=avail -- "$MOUNT" 2>/dev/null)" || df_out=""
+    avail_bytes="$(printf '%s\n' "$df_out" | tail -n +2 | head -n 1 | awk '{print $1}')"
+    if printf '%s\n' "$avail_bytes" | grep -qE '^[0-9]+$'; then
+        FREE_GIB=$((avail_bytes / 1073741824))
+        BUDGET_GIB="$(awk -v f="$FREE_GIB" -v s="$SAFETY" 'BEGIN{printf "%d", (f/s)}')"
+    else
+        warn "df ($DF) failed or returned unparseable avail bytes for mount '$MOUNT'; free_gib/budget_gib degraded to 0."
+    fi
+fi
+
 printf '%s' "$TABLE_OUT"
-printf 'HEADROOM resident=%d assigned=%d free=%d reclaimable=%d leaked=%d\n' \
-    "$RESIDENT" "$ASSIGNED_COUNT" "$FREE_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT"
+printf 'HEADROOM resident=%d assigned=%d free=%d reclaimable=%d leaked=%d divergent_gib=%d free_gib=%d budget_gib=%d\n' \
+    "$RESIDENT" "$ASSIGNED_COUNT" "$FREE_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT" "$DIVERGENT_TOTAL_GIB" "$FREE_GIB" "$BUDGET_GIB"
 
 exit 0
