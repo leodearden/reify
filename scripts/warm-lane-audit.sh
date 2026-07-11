@@ -360,16 +360,36 @@ _dirty_state() {
     return 0
 }
 
+# ── age_min: whole minutes since <dir>'s mtime ────────────────────────────────
+# _age_min <dir>
+# floor((now - mtime(dir)) / 60), via lib_portable.sh's portable_mtime. A
+# missing/unreadable dir degrades to 0 (never stale) rather than aborting.
+_age_min() {
+    local dir="$1"
+    local mtime now
+    mtime="$(portable_mtime "$dir" 2>/dev/null)" || { printf '0'; return 0; }
+    now="$(date +%s)"
+    printf '%d' $(( (now - mtime) / 60 ))
+}
+
 # ── classification (monotonically refined across the walk's build-out) ───────
-# _classify assigned status recoverable dirty
+# _classify assigned status recoverable dirty age_min
 _classify() {
-    local assigned="$1" status="$2" recoverable="$3" dirty="$4"
+    local assigned="$1" status="$2" recoverable="$3" dirty="$4" age_min="$5"
     if [ "$assigned" = "ASSIGNED" ]; then
         printf 'LIVE'; return 0
     fi
     # FREE lane.
     if [ "$status" = "terminal" ] || [ "$recoverable" = "LANDED" ] || [ "$recoverable" = "PUSHED" ] || [ "$dirty" = "residue-only" ]; then
         printf 'RECLAIMABLE'; return 0
+    fi
+    # LEAKED (A4: stale is always the age_min >= STALE_AGE_MIN relation vs the
+    # declared knob, never an inline literal). recoverable==ORPHAN is, by
+    # _recoverable's construction (HEAD is not an ancestor of MAIN_REF),
+    # always "ahead-of-main" in the PRD's sense, so the "(genuine-WIP ∨
+    # ahead-of-main)" disjunct is satisfied automatically here.
+    if [ "$status" = "non-terminal" ] && [ "$recoverable" = "ORPHAN" ] && [ "$age_min" -ge "$STALE_AGE_MIN" ]; then
+        printf 'LEAKED'; return 0
     fi
     printf 'PRESERVED-OK'
 }
@@ -379,6 +399,7 @@ RESIDENT=0
 ASSIGNED_COUNT=0
 FREE_COUNT=0
 RECLAIMABLE_COUNT=0
+LEAKED_COUNT=0
 TABLE_OUT=""
 
 # A nonexistent/empty --mount is NOT an error (advisory-only script): the walk
@@ -405,19 +426,21 @@ if [ -n "$MOUNT" ] && [ -d "$MOUNT" ]; then
         status="$(_backing_task_status "$entry")"
         recoverable="$(_recoverable "$entry" "$raw_branch")"
         dirty="$(_dirty_state "$entry")"
+        age_min="$(_age_min "$entry")"
 
-        classification="$(_classify "$assigned" "$status" "$recoverable" "$dirty")"
+        classification="$(_classify "$assigned" "$status" "$recoverable" "$dirty" "$age_min")"
         case "$classification" in
             RECLAIMABLE) RECLAIMABLE_COUNT=$((RECLAIMABLE_COUNT + 1)) ;;
+            LEAKED) LEAKED_COUNT=$((LEAKED_COUNT + 1)) ;;
         esac
 
-        TABLE_OUT="${TABLE_OUT}lane=${name} role=${role} assigned=${assigned} branch=${branch} status=${status} recoverable=${recoverable} dirty=${dirty} classification=${classification}
+        TABLE_OUT="${TABLE_OUT}lane=${name} role=${role} assigned=${assigned} branch=${branch} status=${status} recoverable=${recoverable} dirty=${dirty} age_min=${age_min} classification=${classification}
 "
     done
 fi
 
 printf '%s' "$TABLE_OUT"
-printf 'HEADROOM resident=%d assigned=%d free=%d reclaimable=%d\n' \
-    "$RESIDENT" "$ASSIGNED_COUNT" "$FREE_COUNT" "$RECLAIMABLE_COUNT"
+printf 'HEADROOM resident=%d assigned=%d free=%d reclaimable=%d leaked=%d\n' \
+    "$RESIDENT" "$ASSIGNED_COUNT" "$FREE_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT"
 
 exit 0
