@@ -311,8 +311,32 @@ pub fn compute_diagnostics_with_state(
     //
     // Perf guard: this whole block — including the lookup maps below — runs
     // on the LSP keystroke hot path, so skip it entirely when there is no
-    // `Indeterminate` constraint in this document at all (the common case
-    // for non-FEA files). Nothing in the loop can fire without at least one.
+    // `Indeterminate` constraint in this document at all. Nothing in the
+    // loop below can fire without at least one such entry, so this still
+    // frees the common fully-resolved (no `auto` params, no FEA) document
+    // from all of the cost below.
+    //
+    // This guard is intentionally coarse — it is NOT "only FEA documents pay
+    // this cost". A genuinely-unresolved `auto` param is *also*
+    // `Indeterminate` with no solver attached, and `auto` params are routine
+    // in this parametric DSL (this file's own
+    // `fea_hint_excludes_auto_param_indeterminate_and_dedups_per_constraint`
+    // test uses `param gap : Length = auto` as its non-FEA control case), so
+    // plenty of non-FEA documents still build the maps below on every
+    // keystroke. A cheaper *and correct* pre-filter isn't available for
+    // free: `state.engine.prelude()` is the full stdlib, which always
+    // declares `@optimized` functions (`solve_elastic_static` and its
+    // siblings), so "does `compiled.functions` ∪ prelude declare any
+    // function with `optimized_target.is_some()`" is trivially true on every
+    // call and would filter nothing; narrowing that check to
+    // `compiled.functions` alone would filter too much, since a real FEA
+    // constraint reaches its solver call through a *prelude* function, not a
+    // module-local one, and would wrongly lose its hint. A correct tighter
+    // filter would have to either walk the same constraint/value-cell
+    // closure the block below already performs (no savings) or cache
+    // results across calls, which would need new persistent state — ruled
+    // out by this hint's "no new `EvalState` fields" design (see the block
+    // comment above this `if`).
     if check_result
         .constraint_results
         .iter()
@@ -330,37 +354,31 @@ pub fn compute_diagnostics_with_state(
             .flat_map(|t| t.constraints.iter())
             .map(|c| (&c.id, c))
             .collect();
-        // Union of the compiled module's own functions and the engine's
-        // prelude functions — stdlib solvers like `solve_elastic_static` are
-        // prelude functions, not user-module functions, so the prelude must
-        // be included or every FEA constraint would fail to match.
-        // Module-local functions are chained FIRST so that the name→bool
-        // map built below (which keeps only the first-seen function per
-        // name) resolves a name shared between a module-local function and
-        // a prelude solver to the module's own definition — see the doc
-        // comment on `constraint_depends_on_unregistered_optimized_compute`.
-        let functions: Vec<_> = compiled
-            .functions
-            .iter()
-            .chain(
-                state
-                    .engine
-                    .prelude()
-                    .iter()
-                    .flat_map(|m| m.functions.iter()),
-            )
-            .collect();
         // Precompute name -> "names an unregistered @optimized compute
-        // target" once per document, instead of re-scanning all of
-        // `functions` (module + full prelude) for every `UserFunctionCall`
-        // node encountered across every constraint's transitive value-cell
-        // closure — O(nodes * functions) before, O(functions) once to build
-        // plus O(1) lookups after. `.or_insert_with` keeps only the FIRST
-        // occurrence per name, which doubles as the module-before-prelude
-        // shadowing fix (see the chain-order comment above and the caller
-        // precedence note on `constraint_depends_on_unregistered_optimized_compute`).
+        // target" once per document, instead of re-scanning all visible
+        // functions for every `UserFunctionCall` node encountered across
+        // every constraint's transitive value-cell closure — O(nodes *
+        // functions) before, O(functions) once to build plus O(1) lookups
+        // after.
+        //
+        // Iterate the union of the compiled module's own functions and the
+        // engine's prelude functions directly, with no intermediate `Vec` —
+        // stdlib solvers like `solve_elastic_static` are prelude functions,
+        // not user-module functions, so the prelude must be included or
+        // every FEA constraint would fail to match. Module-local functions
+        // are chained FIRST so that `.or_insert_with` (which keeps only the
+        // first-seen function per name) resolves a name shared between a
+        // module-local function and a prelude solver to the module's own
+        // definition — see the caller precedence note on
+        // `constraint_depends_on_unregistered_optimized_compute`.
         let mut unregistered_optimized_fn_names: HashMap<&str, bool> = HashMap::new();
-        for f in &functions {
+        for f in compiled.functions.iter().chain(
+            state
+                .engine
+                .prelude()
+                .iter()
+                .flat_map(|m| m.functions.iter()),
+        ) {
             unregistered_optimized_fn_names
                 .entry(f.name.as_str())
                 .or_insert_with(|| {
