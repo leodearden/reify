@@ -302,6 +302,11 @@ warm_lane_pool:
   #   effective_N (task) = max_concurrent_tasks + spare_warm_lanes (both above)
   #   K (merge-spec)     = _MERGE_AHEAD_BOUND (== merge_spec_pool_size_source above)
   #   ADVISORY relation the audit/admission assert: measured_resident_divergent_gib ≤ resident_divergent_budget_gib
+  #   NOTE: declarative only as of task #5173 — no code in this repo yet computes
+  #   resident_divergent_budget_gib or reads sizing.safety_divisor; the ADVISORY
+  #   relation above is meant to be asserted by the future ζ end-to-end
+  #   integration-gate task (§5/§9 DAG in the doc below), not by any landed code
+  #   today. Don't assume this knob is live before that lands.
   #   Worked example — ILLUSTRATIVE ONLY (D8), a live 2026-07-11 snapshot, NOT a pinned value:
   #     image_free_gib≈462, base_gib≈108, base_gib_flip_reserve≈108, safety=1.5
   #     → floor( (462 − 108 − 2×108) / 1.5 ) = floor(138 / 1.5) = 92 GiB budget
