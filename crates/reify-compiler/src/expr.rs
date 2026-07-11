@@ -1874,71 +1874,25 @@ pub(crate) fn compile_expr_guarded_with_expected(
                     // `infer_mul_div_result`'s doc for the full supported/unsupported
                     // partition, pinned against the β1 runtime truth table. The `None`
                     // itself was already computed once, above, into `mul_div_inferred` —
-                    // reused here (amendment round 3) instead of calling
-                    // `infer_mul_div_result` a second time.
+                    // reused here instead of calling `infer_mul_div_result` a second time.
                     //
-                    // Gradualism: skip when either operand is already `Type::Error`
-                    // (poison), `Type::TypeParam(_)` (unresolved generic),
-                    // `Type::Projection { base: Type::TypeParam(_), .. }` (unresolved
-                    // trait-associated-type reference, e.g. `P::MotionValue` used inside
-                    // the generic `structure def Coupling<P: DrivingJoint + HasMotion>`
-                    // that declares `P`, BEFORE a concrete arg is substituted for `P`), or
-                    // `Type::ScalarParam(_)` (unresolved dimension-kinded generic param,
-                    // e.g. `Scalar<Q>` inside `fn area<Q: Dimension>(x: Scalar<Q>)`, BEFORE
-                    // a concrete arg substitutes `Q`) — mirrors the Cmp/logical guards'
-                    // skip (PRD decision 3 / §8 row 8).
-                    //
-                    // `Type::Projection` is matched broadly (any `base`), not just the
-                    // `TypeParam` case, but per `resolve_qualified_assoc_type`'s doc
-                    // (type_resolution.rs) that IS the only shape reachable here: every
-                    // other base either reduces to a concrete type via `normalize_type`
-                    // (Applied-base and StructureRef-base bindings are always normalized
-                    // before being stored) or poisons to `Type::Error` on an unknown/cyclic
-                    // binding — so a *reduced* Projection or an *unreducible* one both
-                    // arrive here as something other than a bare `Type::Projection`.
-                    //
-                    // `Type::ScalarParam` is skipped for a DIFFERENT reason than
-                    // `TypeParam`/`Projection`: it is a genuine, well-formed scalar (not an
-                    // unresolved-shape placeholder) whose dimension merely hasn't been
-                    // substituted yet. `infer_mul_div_result` returns `None` for
-                    // `ScalarParam(Q) ⊗ ScalarParam(Q)` and `ScalarParam(Q) ⊗` a
-                    // non-dimensionless `Scalar` purely because the combined dimension
-                    // ("Q²", "Q*Length") has no representation in `ScalarParam`'s bare-name
-                    // form — NOT because the runtime lacks an arm for it (once `Q` is
-                    // substituted with a concrete dimension the combination is always
-                    // runtime-legal). Hard-erroring on that representational gap would
-                    // reject legitimate generic bodies like
-                    // `fn area<Q: Dimension>(x: Scalar<Q>) { x * x }` at the definition
-                    // site (amendment round 3; see `infer_mul_div_result`'s `ScalarParam`
-                    // doc comment for the full rationale).
-                    //
-                    // By contrast, `Type::Applied`/`Type::StructureRef`/`Type::Union` are
-                    // deliberately NOT added to this skip: they are concrete (not deferred)
-                    // nominal/structural types — e.g. a struct instance handle or a
-                    // match-block-decl union of struct arms — that the runtime has no
-                    // `eval_mul`/`eval_div` arm for regardless of substitution. Prior to
-                    // this guard they silently mistyped to `Int`; correctly hard-erroring
-                    // on them is this task's entire purpose, not a regression.
+                    // Gradualism: skip (no poison, no diagnostic) when either operand
+                    // matches `type_compat::is_mul_div_gradualism_skip` — mirrors the
+                    // Cmp/logical guards' Error/TypeParam skip (PRD decision 3 / §8 row 8),
+                    // extended to also defer on `Projection`/`ScalarParam` operands. See
+                    // that predicate's doc for the full per-variant rationale, including
+                    // why `Type::Applied`/`Type::StructureRef`/`Type::Union` are
+                    // deliberately NOT deferred (hard-erroring on those, rather than
+                    // silently mistyping to `Int` as before this guard existed, is this
+                    // task's entire purpose).
                     //
                     // Unlike the Cmp/logical guards (which keep their unconditional `Bool`
                     // result), this guard POISONS `result_type` to `Type::Error` — `*`/`/`
                     // produce a value type, so a mistyped product must stop follow-on
                     // cascades on that value (mirrors the Pow/Mod poison precedent).
                     if let Some(None) = &mul_div_inferred
-                        && !matches!(
-                            compiled_left.result_type,
-                            Type::Error
-                                | Type::TypeParam(_)
-                                | Type::Projection { .. }
-                                | Type::ScalarParam(_)
-                        )
-                        && !matches!(
-                            compiled_right.result_type,
-                            Type::Error
-                                | Type::TypeParam(_)
-                                | Type::Projection { .. }
-                                | Type::ScalarParam(_)
-                        )
+                        && !type_compat::is_mul_div_gradualism_skip(&compiled_left.result_type)
+                        && !type_compat::is_mul_div_gradualism_skip(&compiled_right.result_type)
                     {
                         result_type = make_poison_type(
                             diagnostics,
@@ -8711,6 +8665,61 @@ structure S {
             "`w1 * w2` (struct × struct) must poison `a`'s result_type to \
              Type::Error, got: {:?}",
             expr.result_type
+        );
+    }
+
+    /// End-to-end anti-cascade SKIP regression for the Mul/Div operand-kind
+    /// guard's gradualism, complementing the HARD-ERROR test above:
+    /// `Scalar<Q> * Scalar<Q>` inside a dimension-kinded generic fn body —
+    /// `Type::ScalarParam("Q")` on both sides, before any call site
+    /// substitutes a concrete dimension for `Q` — must NOT emit
+    /// `ArithOperandKind` through the real `compile_source` pipeline. Mirrors
+    /// `comparison_operand_guard_tests.rs`'s
+    /// `scalar_param_order_comparison_in_generic_fn_is_accepted` (the Cmp
+    /// guard's sibling regression for the same `std.fields::threshold<D, Q:
+    /// Dimension>`-shaped body), but for the Mul/Div guard's own
+    /// `is_mul_div_gradualism_skip` check, which was previously exercised only
+    /// at the `infer_mul_div_result`/`mul_div_result_or_placeholder` unit
+    /// level, never through the actual guard in `compile_binop`.
+    #[test]
+    fn scalar_param_times_scalar_param_in_generic_fn_emits_no_arith_operand_kind() {
+        use reify_test_support::compile_source;
+
+        let source = r#"
+fn area<Q: Dimension>(x: Scalar<Q>) -> Scalar<Q> {
+    x * x
+}
+"#;
+        let compiled = compile_source(source);
+
+        let arith_count = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::ArithOperandKind))
+            .count();
+        assert_eq!(
+            arith_count, 0,
+            "`Scalar<Q> * Scalar<Q>` inside a generic fn body must NOT emit \
+             ArithOperandKind (gradualism skip on ScalarParam operands); got \
+             {arith_count}: {:?}",
+            compiled.diagnostics
+        );
+
+        // Half two of the contract: the guard must not just stay silent, but
+        // also must NOT poison — `x * x`'s result_type should propagate the
+        // ScalarParam itself (`mul_div_result_or_placeholder`'s skip-set
+        // fallback), not collapse to Type::Error nor leak Type::Int.
+        let area_fn = compiled
+            .functions
+            .iter()
+            .find(|f| f.name == "area")
+            .expect("area function should be compiled");
+        assert_eq!(
+            area_fn.body.result_expr.result_type,
+            Type::ScalarParam("Q".to_string()),
+            "`x * x` must propagate ScalarParam(\"Q\"), not poison to \
+             Type::Error nor collapse to Type::Int; got: {:?}",
+            area_fn.body.result_expr.result_type
         );
     }
 }

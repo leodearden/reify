@@ -1778,23 +1778,13 @@ pub(crate) fn infer_mul_div_result(op: BinOp, left: &Type, right: &Type) -> Opti
 
         // Every other operand-kind pairing (aggregate×aggregate; degenerate
         // Tensor×Vector; order-reversed Vector/Point×Transform; Matrix in
-        // either position; List/String/Bool; non-commutative Div reversals)
-        // has no runtime-intentional arm.
-        //
-        // This also covers `Type::Applied`/`Type::StructureRef`/`Type::Union`
-        // operands (nominal struct-instance/union types — never numeric,
-        // regardless of substitution). These ARE INTENTIONALLY `None` here,
-        // not merely deferred: the `expr.rs` operand-kind guard's gradualism
-        // skip does NOT bypass them (only `Type::Error`, `Type::TypeParam`,
-        // `Type::Projection`, and `Type::ScalarParam` are bypassed —
-        // `Type::Projection` because a `Type::Projection` reaching this
-        // function is always the `TypeParam`-base irreducible form,
-        // `resolve_qualified_assoc_type`'s doc in type_resolution.rs;
-        // `Type::ScalarParam` because its unhandled combinations noted above
-        // are a static representational gap, not a runtime-unsupported one —
-        // see the `ScalarParam` arms' doc comment above), so `Applied`/
-        // `StructureRef`/`Union` pairings correctly poison + emit
-        // `E_ArithOperandKind` rather than silently mistyping to `Int`.
+        // either position; List/String/Bool; non-commutative Div reversals;
+        // and `Type::Applied`/`Type::StructureRef`/`Type::Union` nominal
+        // struct/union types) has no runtime-intentional arm and is
+        // INTENTIONALLY `None`: none of these are in the
+        // `is_mul_div_gradualism_skip` deferred set below, so they correctly
+        // poison + emit `E_ArithOperandKind` rather than silently mistyping to
+        // `Int`.
         _ => None,
     }
 }
@@ -1892,33 +1882,14 @@ pub(crate) fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
         }
         // Delegates to the single source of truth for both the correct static
         // result type and the runtime-supported/unsupported partition (β2,
-        // INV-COMP-3). The `Type::Int` fallback is a placeholder for
-        // runtime-unsupported combos: it preserves base (pre-β2) behavior
-        // until the `expr.rs` operand-kind guard poisons + emits together
-        // (mirrors the Mod/Pow precedent) — see `infer_mul_div_result`'s doc.
-        //
-        // EXCEPT `Type::Projection` (an unresolved trait-associated-type
-        // reference, e.g. `P::MotionValue` before a concrete arg substitutes
-        // `P`): `infer_mul_div_result` has no arm for it, so a bare
-        // `unwrap_or(Type::Int)` would collapse it to `Int` — and unlike
-        // every OTHER `None` case, the `expr.rs` guard deliberately SKIPS
-        // `Type::Projection` operands (mirrors its `TypeParam` skip just
-        // above, PRD decision 3), so that `Int` is never poisoned. It would
-        // instead leak downstream as a bare, seemingly-concrete `Int`: e.g.
-        // the Add/Sub dimension guard (expr.rs `compile_binop`, ~1747)
-        // misreads a follow-on `result + x` (`x: Scalar<Length>`) as
-        // `Int + Scalar<Length>` and emits a spurious dimensioned/
-        // dimensionless mismatch that did not exist pre-β2 (the old Mul/Div
-        // fallback arms preserved a `Scalar` operand's type against ANY other
-        // operand kind, including `Projection`). Propagating the `Projection`
-        // itself — rather than collapsing to `Int` or eagerly adjudicating
-        // the concrete operand's type — mirrors the `TypeParam` gradualism
-        // propagation above (task #4629 W5): an unresolved type must survive
-        // arithmetic so downstream guards keep early-returning on it instead
-        // of adjudicating a spuriously-collapsed concrete type. Scoped to
-        // this arm only (not the shared `TypeParam` block above) because
-        // Add/Sub/Mod/Pow are outside β2's scope (PRD decision 2; Add/Sub's
-        // own dimensioned-Complex gap is already tracked, TODO(#5163)).
+        // INV-COMP-3) — see `infer_mul_div_result`'s doc. `None` collapses via
+        // `mul_div_result_or_placeholder`, which propagates an
+        // `is_mul_div_gradualism_skip` operand (`Error`/`TypeParam`/
+        // `Projection`/`ScalarParam`) unchanged — so an unresolved or poisoned
+        // operand survives arithmetic instead of leaking downstream as a
+        // spuriously-concrete `Int` a later guard could misjudge — and
+        // otherwise falls back to `Type::Int`, a placeholder the `expr.rs`
+        // guard poisons + diagnoses (mirrors the Mod/Pow precedent).
         BinOp::Mul | BinOp::Div => {
             mul_div_result_or_placeholder(infer_mul_div_result(op, left, right), left, right)
         }
@@ -1927,62 +1898,65 @@ pub(crate) fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
     }
 }
 
+/// The Mul/Div "gradualism" skip-set: operand kinds that must be deferred
+/// rather than adjudicated as runtime-unsupported. Single source of truth for
+/// two decisions that previously lived in two independently-maintained copies
+/// — the `expr.rs` operand-kind guard's skip check, and this file's
+/// `mul_div_result_or_placeholder` `None`-collapse cascade below — kept in
+/// lockstep only by convention until amendment round 4 factored both out to
+/// this one predicate.
+///
+/// Matches four variants, each deferred for a different reason:
+/// - `Type::Error` — already-poisoned (anti-cascade); takes priority over the
+///   other three when an operand pair mixes kinds (see
+///   `mul_div_result_or_placeholder`'s explicit `is_error` priority check,
+///   which mirrors `infer_binop_type`'s own pre-match early-return).
+/// - `Type::TypeParam(_)` — unresolved auto/generic type (task #4629 W5).
+/// - `Type::Projection { .. }` — an unresolved trait-associated-type
+///   reference (e.g. `P::MotionValue` inside a generic `structure def` that
+///   declares `P`, before a concrete arg substitutes it). Matched broadly
+///   (any `base`) because per `resolve_qualified_assoc_type`'s doc
+///   (type_resolution.rs) that is the only shape reachable here — every
+///   other base either normalizes to a concrete type or poisons to
+///   `Type::Error` first.
+/// - `Type::ScalarParam(_)` — a dimension-kinded generic param (`Scalar<Q>`
+///   before `Q` substitutes). Unlike the other three this is a STATIC
+///   REPRESENTATIONAL gap, not a runtime-unsupported one: `ScalarParam ⊗
+///   ScalarParam` is always runtime-legal once substituted, `ScalarParam`
+///   just can't represent the combined dimension yet (see
+///   `infer_mul_div_result`'s `ScalarParam` arms for the full rationale).
+///
+/// `Type::Applied`/`Type::StructureRef`/`Type::Union` are deliberately NOT in
+/// this set: they are concrete nominal/structural types the runtime has no
+/// `eval_mul`/`eval_div` arm for regardless of substitution, so hard-erroring
+/// on them (rather than silently mistyping to `Int`, the pre-β2 behavior) is
+/// this task's purpose.
+pub(crate) fn is_mul_div_gradualism_skip(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Error | Type::TypeParam(_) | Type::Projection { .. } | Type::ScalarParam(_)
+    )
+}
+
 /// Resolves `infer_mul_div_result`'s `Option<Type>` to the concrete static
 /// `Type` used both as `infer_binop_type`'s `Mul`/`Div` result (above) and,
-/// via `expr.rs::compile_binop` calling this function directly with an
-/// already-computed `Option`, as the input to the operand-kind guard's poison
-/// decision (task compiler-type-hygiene β2 amendment round 3). Factoring the
-/// placeholder fallback out here — rather than inlining it at both call
-/// sites — means there is exactly ONE place that decides what a `None`
-/// collapses to, instead of two independently-maintained copies that could
-/// drift out of lockstep.
+/// via `expr.rs::compile_binop` calling this function directly, as the input
+/// to the operand-kind guard's poison decision.
 ///
-/// `Some(ty)` passes through unchanged. `None` (runtime-unsupported or
-/// representationally-deferred) resolves to a placeholder that is NEVER
-/// user-observed for a genuinely-unsupported pairing — the `expr.rs` guard
-/// overwrites `result_type` to `Type::Error` for every such case — but DOES
-/// surface for the four pairings the guard deliberately defers on instead of
-/// poisoning:
-/// - `Type::Error` (either side): propagates `Type::Error` itself — the same
-///   anti-cascade poison propagation as `infer_binop_type`'s own pre-match
-///   `left.is_error() || right.is_error()` early-return (above). That
-///   early-return only fires for callers that go through `infer_binop_type`;
-///   `expr.rs::compile_binop` calls `infer_mul_div_result` and this function
-///   DIRECTLY for `*`/`/` (see this fn's own doc), bypassing it entirely —
-///   so without this arm an already-poisoned operand (e.g. `undef`, which
-///   compiles to `Literal(Value::Undef, Type::Error)`) silently collapsed to
-///   `Int` on that path. The `expr.rs` guard deliberately skips re-poisoning
-///   an already-`Type::Error` operand (its gradualism skip, same as
-///   `TypeParam`/`Projection`/`ScalarParam` below), so that spurious `Int`
-///   was never corrected downstream — e.g. `let a = 5 * undef` statically
-///   typed the whole expression `Int` instead of the anti-cascade `Error`.
-///   Regression pin: `mul_div_result_or_placeholder_error_propagates_not_int`
-///   below; integration-level symptom:
-///   `undef_literal_compile_tests::binary_with_undef_emits_no_unresolved_name_diagnostic`.
-/// - `Type::TypeParam` (either side): propagates the `TypeParam` itself.
-///   `infer_binop_type`'s own pre-match early-return (above) already handles
-///   this case when callers go through `infer_binop_type` — but
-///   `expr.rs::compile_binop` calls `infer_mul_div_result` and this function
-///   DIRECTLY for `*`/`/` (see this fn's own doc), bypassing that early
-///   return entirely, so without this arm a `TypeParam` operand (e.g. a
-///   purpose-subject member access, `Type::TypeParam("StructureMember")`)
-///   silently collapsed to `Int` on that path — e.g. `let m = subject.a -
-///   subject.b; let n = m * 2; constraint n > 0mm` statically typed `n` as
-///   `Int`, producing a false `Int vs Scalar[m]` mismatch on the
-///   `constraint`. Regression pin:
-///   `mul_div_result_or_placeholder_type_param_propagates_not_int` below.
-/// - `Type::Projection` (either side): propagates the `Projection` itself,
-///   mirroring the `TypeParam` gradualism-propagation block above, so an
-///   unresolved trait-associated-type reference survives arithmetic instead
-///   of collapsing to a spuriously-concrete `Int` (amendment round 2).
-/// - `Type::ScalarParam` (either side): propagates the `ScalarParam` itself
-///   for the same reason — its unhandled `None` combinations (see the
-///   `ScalarParam` arms' doc comment above) are a static representational
-///   gap, not a runtime error (amendment round 3).
+/// `Some(ty)` passes through unchanged. `None` collapses to the pre-β2
+/// `Type::Int` placeholder (which the `expr.rs` guard then poisons to
+/// `Type::Error`), EXCEPT when an operand matches `is_mul_div_gradualism_skip`
+/// above — then that operand's own type propagates unchanged instead, so an
+/// unresolved/poisoned operand survives arithmetic rather than leaking
+/// downstream as a spuriously-concrete `Int` a later guard could misjudge.
+/// `Type::Error` takes priority when operands mix skip kinds, matching
+/// `infer_binop_type`'s own pre-match early-return.
 ///
-/// Every other `None` pairing has no gradualism claim on it, so it resolves
-/// to the pre-β2 `Type::Int` placeholder, which the guard then poisons to
-/// `Type::Error`.
+/// Regression pins: `mul_div_result_or_placeholder_error_propagates_not_int`,
+/// `_int_times_error_propagates_not_int`, `_type_param_propagates_not_int`,
+/// `_int_times_type_param_propagates_not_int` below, plus the `Projection`/
+/// `ScalarParam` pins nearby. Integration-level symptom of the gap this
+/// closes: `undef_literal_compile_tests::binary_with_undef_emits_no_unresolved_name_diagnostic`.
 pub(crate) fn mul_div_result_or_placeholder(
     inferred: Option<Type>,
     left: &Type,
@@ -1991,17 +1965,9 @@ pub(crate) fn mul_div_result_or_placeholder(
     inferred.unwrap_or_else(|| {
         if left.is_error() || right.is_error() {
             Type::Error
-        } else if let Type::TypeParam(_) = left {
+        } else if is_mul_div_gradualism_skip(left) {
             left.clone()
-        } else if let Type::TypeParam(_) = right {
-            right.clone()
-        } else if let Type::Projection { .. } = left {
-            left.clone()
-        } else if let Type::Projection { .. } = right {
-            right.clone()
-        } else if let Type::ScalarParam(_) = left {
-            left.clone()
-        } else if let Type::ScalarParam(_) = right {
+        } else if is_mul_div_gradualism_skip(right) {
             right.clone()
         } else {
             Type::Int
