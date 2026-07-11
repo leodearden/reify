@@ -8372,6 +8372,120 @@ structure Assembly {
         }
     }
 
+    /// step-6: pin INV-BUILD-3 — cold/warm side-effect-set parity.
+    ///
+    /// Drives ONE `DispatchTestState` through a COLD pass (a real primitive
+    /// `Box` op dispatches through the op loop, populating
+    /// `realization_cache` and writing the full output side-effect set) and,
+    /// after resetting only the per-build OUTPUT state (mirroring the
+    /// production per-build reset) while KEEPING the shared
+    /// `realization_cache`, a WARM pass with the identical demand. Asserts
+    /// the warm pass's observable side-effect set — `step_handles`,
+    /// `named_steps`, `named_step_reprs`, `produced_repr_out` — is IDENTICAL
+    /// to the cold snapshot, and that `dispatch_count` does not increase
+    /// across the warm pass (the cache-hit short-circuit returns before the
+    /// op loop). This is INV-BUILD-3's contract directly: the short-circuit
+    /// produces "the same observable side-effect set as the path it
+    /// short-circuits."
+    #[test]
+    fn probe_realization_cache_cold_warm_side_effect_set_parity() {
+        use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+        use reify_core::Type;
+        use reify_ir::CompiledExpr;
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+        let ops = vec![CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![
+                ("width".into(), mm_lit(10.0)),
+                ("height".into(), mm_lit(20.0)),
+                ("depth".into(), mm_lit(5.0)),
+            ],
+        }];
+
+        let desc = dispatch_test_descriptor_all_brep();
+        let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
+        let registry = dispatch_test_single_default_registry(&desc);
+
+        let realization_id = RealizationNodeId::new("ColdWarmParity", 0);
+        let tol = 1e-3;
+        let mut state = DispatchTestState::default();
+
+        // COLD pass: the op loop dispatches the primitive Box op, producing a
+        // terminal handle and populating realization_cache + the output views.
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "default",
+            &ops,
+            &realization_id,
+            Some("part"),
+            SourceSpan::new(0, 0),
+            ReprKind::BRep,
+            Some(tol),
+            None,
+        );
+        assert!(
+            state.dispatch_count > 0,
+            "cold pass must dispatch through the op loop"
+        );
+
+        // Snapshot the cold side-effect set and the post-cold dispatch count.
+        let cold_step_handles = state.step_handles.clone();
+        let cold_named_steps = state.named_steps.clone();
+        let cold_named_step_reprs = state.named_step_reprs.clone();
+        let cold_produced_repr_out = state.produced_repr_out;
+        let dispatch_count_after_cold = state.dispatch_count;
+
+        // Reset only the per-build OUTPUT state (mirroring the per-build reset
+        // in production: `build`/`build_snapshot` reset step_handles,
+        // named_steps, named_step_reprs, produced_repr_out, and the attribute
+        // tables before each build) — the shared `realization_cache` is left
+        // untouched, exactly like a real second build against a warm engine.
+        state.step_handles.clear();
+        state.named_steps.clear();
+        state.named_step_reprs.clear();
+        state.produced_repr_out = None;
+        state.reset_attribute_tables();
+
+        // WARM pass: identical demand — the cache-hit short-circuit must fire.
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "default",
+            &ops,
+            &realization_id,
+            Some("part"),
+            SourceSpan::new(0, 0),
+            ReprKind::BRep,
+            Some(tol),
+            None,
+        );
+
+        assert_eq!(
+            state.step_handles, cold_step_handles,
+            "warm step_handles must be IDENTICAL to the cold snapshot"
+        );
+        assert_eq!(
+            state.named_steps, cold_named_steps,
+            "warm named_steps must be IDENTICAL to the cold snapshot"
+        );
+        assert_eq!(
+            state.named_step_reprs, cold_named_step_reprs,
+            "warm named_step_reprs must be IDENTICAL to the cold snapshot"
+        );
+        assert_eq!(
+            state.produced_repr_out, cold_produced_repr_out,
+            "warm produced_repr_out must be IDENTICAL to the cold snapshot"
+        );
+        assert_eq!(
+            state.dispatch_count, dispatch_count_after_cold,
+            "dispatch_count must not increase across the warm pass — the \
+             cache-hit short-circuit returns before the op loop"
+        );
+    }
+
     // ── Task 4349: cross-kernel GeometryHandleId collision regression tests ─────
 
     /// Shared scaffolding for the two cross-kernel `GeometryHandleId` collision
