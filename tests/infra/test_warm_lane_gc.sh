@@ -140,6 +140,30 @@ make_task_lane() {
     touch "$worktrees/$name/target/DIVERGENT_MARKER"
 }
 
+# _wait_for_reader_lock <ready-marker> <deadline-seconds>
+# Causal ordering (technique R, docs/prds/infra-test-wallclock-deflake.md,
+# task #4847): polls for the READY marker file in 0.05s ticks, returning 0
+# as soon as it appears, or non-zero once the generous anti-hang deadline
+# (technique T) elapses. The READY marker is touched by a backgrounded lock
+# holder AFTER it acquires its flock, so returning 0 causally guarantees the
+# flock is held at the caller's next statement — replacing a fixed `sleep`
+# that races the background subshell's lock acquisition under load (the
+# subshell may not have won the lock within a short fixed sleep, letting a
+# competing acquisition — e.g. the GC sweep under test — win instead).
+# Mirrors tests/infra/test_warm_lane_pool.sh's identically-named helper.
+_wait_for_reader_lock() {
+    local ready_marker="$1"
+    local deadline_s="$2"
+    local max_ticks=$(( deadline_s * 20 ))
+    local tick=0
+    while [ "$tick" -lt "$max_ticks" ]; do
+        [ -f "$ready_marker" ] && return 0
+        sleep 0.05
+        tick=$(( tick + 1 ))
+    done
+    return 1
+}
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Block A — CLI guard
 # ──────────────────────────────────────────────────────────────────────────────
@@ -905,11 +929,18 @@ _TMPDIRS+=("$I6_MAP")
 printf '4827 done\n' > "$I6_MAP"
 
 # Hold the lane's exclusive flock in the background (live consumer).
+# Causal handshake (technique R, #4847) instead of a fixed sleep: the
+# subshell touches a READY marker AFTER acquiring flock -x, and we poll for
+# it, so the assertions below only run once the flock is provably held —
+# a fixed `sleep 0.1` races the backgrounded acquisition under CPU/IO load,
+# in which case the GC sweep could win the lock first and reclaim the lane,
+# spuriously failing I6.
 touch "$I6_WORKTREES/_lane-1.lock"
-( flock -x 9 && sleep 300 ) 9>"$I6_WORKTREES/_lane-1.lock" &
+I6_READY="$I6_WORKTREES/_lane-1.lock.ready-marker"
+( flock -x 9 && touch "$I6_READY" && sleep 300 ) 9>"$I6_WORKTREES/_lane-1.lock" &
 I6_LOCK_PID=$!
 _BGPIDS+=("$I6_LOCK_PID")
-sleep 0.1
+_wait_for_reader_lock "$I6_READY" 30
 
 I6_SEED_LOG="$I_ROOT/i6-seed-calls.log"
 I6_SEED_STUB="$I_ROOT/i6-seed-stub.sh"
