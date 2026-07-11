@@ -5787,29 +5787,20 @@ mod tests {
         );
     }
 
-    /// [Re-homed from `reify-eval/src/concurrent.rs`
-    /// (`resolve_concurrent_edit_back_props_solved_auto`), task ξ (#5046),
-    /// ahead of task ο's deletion of the dead concurrent stack.] Regression
-    /// guard: `edit_param`'s `SolveResult::Solved` arm correctly back-props
-    /// resolved auto params into `resolved_params` / `values`, and the
-    /// post-solve reseed re-evaluates downstream `let` bindings — the live
-    /// twin of the (now dead) `resolve_concurrent_edit`'s identical arm.
+    /// [Re-homed from `concurrent.rs`'s
+    /// `resolve_concurrent_edit_back_props_solved_auto`, task ξ #5046 — the
+    /// dead concurrent stack is deleted by task ο.] Pins `edit_param`'s
+    /// `SolveResult::Solved` arm: it back-props a resolved auto param into
+    /// `resolved_params` / `values`, and the post-solve reseed re-evaluates
+    /// downstream `let` bindings.
     ///
-    /// Module: `param x: Length = auto; constraint x == 10mm; let y = x + 5mm`
-    ///
-    /// Flow: eval() → edit_param(x, 10mm). Seeding x at exactly the solution
-    /// (10mm) drives `DimensionalSolver`'s early-exit path (initially_feasible
-    /// = true, no objective) rather than a Nelder-Mead search — the sibling
-    /// `edit_param_back_props_moved_auto` test pins the MOVED (off-target
-    /// seed) counterpart.
-    ///
-    /// Why is editing an auto cell directly legal? `edit_param`'s only entry
-    /// validation is CellNotFound + `validate_param_override` (type-kind /
-    /// scalar-dimension) — it does not reject auto cells. It seeds the solver
-    /// from the edited value, which is what lets this test control the solver
-    /// seed and thereby distinguish the solved-vs-moved cases.
-    ///
-    /// Coverage-preserving re-home of concurrent.rs's solved-auto test; see #5046.
+    /// Module: `param x: Length = auto; constraint x == 10mm; let y = x + 5mm`.
+    /// Seeding the edit at exactly the solution (10mm) drives the solver's
+    /// early-exit path (no Nelder-Mead search); the sibling
+    /// `edit_param_back_props_moved_auto` pins the off-target (MOVED) case.
+    /// `edit_param` accepts editing an auto cell directly (its only entry
+    /// validation is CellNotFound + type/dimension checks), which is what
+    /// lets this test control the solver's seed.
     #[test]
     fn edit_param_back_props_solved_auto() {
         use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
@@ -5886,32 +5877,24 @@ mod tests {
         );
     }
 
-    /// [Re-homed from `reify-eval/src/concurrent.rs`
-    /// (`resolve_concurrent_edit_back_props_moved_auto`), task ξ (#5046),
-    /// ahead of task ο's deletion of the dead concurrent stack.] Regression
-    /// guard for the warm re-solve convergence fix in task #4700: `edit_param`
-    /// correctly back-props an auto param even when the edit SEEDS the solver
-    /// off-target (MOVED), not just when the seed already satisfies the
-    /// constraint — the live twin of the (now dead)
-    /// `resolve_concurrent_edit`'s identical MOVED-seed arm.
+    /// [Re-homed from `concurrent.rs`'s
+    /// `resolve_concurrent_edit_back_props_moved_auto`, task ξ #5046 — the
+    /// dead concurrent stack is deleted by task ο.] Regression guard for the
+    /// warm re-solve convergence fix in task #4700: `edit_param` back-props
+    /// an auto param even when the edit seeds the solver off-target (MOVED),
+    /// not just when the seed already satisfies the constraint.
     ///
-    /// Before the `NM_SD_TOLERANCE = 1e-30` fix, `DimensionalSolver` starting
-    /// from 20mm returned `Infeasible` (linear residual ~1e-8 >
-    /// `FEASIBILITY_THRESHOLD` = 1e-12), so the `Solved` back-prop arm never
-    /// fired and x was absent from `resolved_params`. After the fix, the
-    /// residual drops to ~1e-16 and the arm fires correctly.
+    /// Pre-#4700, `DimensionalSolver` starting from 20mm returned
+    /// `Infeasible` (residual ~1e-8 > `FEASIBILITY_THRESHOLD` = 1e-12), so
+    /// the `Solved` back-prop arm never fired; post-fix the residual is
+    /// ~1e-16 and the arm fires. **Differs from
+    /// `edit_param_back_props_solved_auto`:** that test seeds x at the
+    /// solution (10mm, early-exit); this one seeds 20mm, forcing a real
+    /// Nelder-Mead search.
     ///
-    /// **Differs from `edit_param_back_props_solved_auto`:** that test seeds
-    /// x at exactly 10mm (the solution) → early-exit Solved without
-    /// Nelder-Mead search. This test seeds x at 20mm (the MOVED case) →
-    /// Nelder-Mead must search.
-    ///
-    /// Module: `param x: Length = auto; constraint x == 10mm; let y = x + 5mm`
-    ///
-    /// Flow: eval() → edit_param(x, 20mm) → assert x re-derived to 10mm
-    /// (Determined) + y = 15mm, NOT the injected 20mm seed.
-    ///
-    /// Coverage-preserving re-home of concurrent.rs's moved-auto test; see #5046.
+    /// Module: `param x: Length = auto; constraint x == 10mm; let y = x + 5mm`.
+    /// Flow: eval() → edit_param(x, 20mm) → x re-derived to 10mm (Determined)
+    /// + y = 15mm, NOT the injected 20mm seed.
     #[test]
     fn edit_param_back_props_moved_auto() {
         use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
@@ -6014,27 +5997,19 @@ mod tests {
         );
     }
 
-    /// [Re-homed from `reify-eval/tests/concurrent.rs`
-    /// (`resolve_concurrent_edit_skips_solve_when_no_auto_group_constraints_are_dirty`),
-    /// task ξ (#5046), ahead of task ο's deletion of the dead concurrent
-    /// stack.] Regression guard for the `constraints_dirty` short-circuit
-    /// inside `edit_param`: editing a param that does
-    /// NOT dirty any constraint referencing an auto group must NOT
-    /// re-invoke the solver — the live twin of `resolve_concurrent_edit`'s
-    /// identical guard.
+    /// [Re-homed from `tests/concurrent.rs`'s
+    /// `resolve_concurrent_edit_skips_solve_when_no_auto_group_constraints_are_dirty`,
+    /// task ξ #5046 — the dead concurrent stack is deleted by task ο.] Pins
+    /// the `constraints_dirty` short-circuit inside `edit_param`: editing a
+    /// param that does not dirty any constraint referencing an auto group
+    /// must not re-invoke the solver.
     ///
     /// Template: `auto x` (length), `constraint 0: x > 2mm` (literal, no
     /// reference to `a`), `param a = mm(3.0)`, `let b = a * 2`. Editing `a`
-    /// dirties `b` but NOT constraint 0 (which only reads `x` and a
-    /// literal) — so the solver must not run a second time.
-    ///
+    /// dirties `b` but not constraint 0, so the solver must not run again.
     /// Uses `MultiCallSpyConstraintSolver` seeded `[Solved{x: mm(5.0)},
-    /// Solved{x: mm(999.0)}]`; if the guard fails to fire, the bogus second
-    /// value (mm(999.0)) would leak into `resolved_params`, and the spy's
-    /// captured-problems count would be 2 instead of 1.
-    ///
-    /// Coverage-preserving re-home of tests/concurrent.rs's
-    /// constraints-dirty-guard test; see #5046.
+    /// Solved{x: mm(999.0)}]`: if the guard fails, the bogus second value
+    /// leaks into `resolved_params` and the spy's call count is 2, not 1.
     #[test]
     fn edit_param_skips_solve_when_no_auto_group_constraints_are_dirty() {
         use std::collections::HashMap;
