@@ -5526,6 +5526,18 @@ fn selector_value_difference_pair(
 /// Fallback: [`reconstruct_selector_value_symbolic`] + [`first_leaf_target`]
 /// (the 4583 chained-first-arg form, e.g. `face(mid_surface(body),"r")`),
 /// rooting the Named leaf at the input selector's parent-geometry target.
+///
+/// Diagnostic-buffering asymmetry (review note, task #5120 R2c): the
+/// fallback writes straight into the caller's `diagnostics` — no local
+/// `scratch` buffer like [`eval_variadic_composition_symbolic`] — even
+/// though the `?` on the next line can still turn this into a `None`
+/// return. That's fine TODAY only because `face`/`edge`/`solid_body`/
+/// `vertex` carry no non-selector overload (unlike `union`/`intersect`/
+/// `difference`, which are name-shared with the solid-CSG booleans), so a
+/// `None` here is never "fall through past an unrelated overload" — there's
+/// no sibling meaning for these names to protect from a spurious warning.
+/// If a named-leaf name ever gains a non-selector overload, adopt the same
+/// scratch-then-merge-on-success pattern used there.
 fn resolve_named_leaf_target_symbolic(
     arg: &reify_ir::CompiledExpr,
     values: &reify_ir::ValueMap,
@@ -5542,6 +5554,10 @@ fn resolve_named_leaf_target_symbolic(
 /// eval-path (task #5120 R2c). Same two-arg shape (target, name) but resolves
 /// the target via [`resolve_named_leaf_target_symbolic`] (symbolic-accepting)
 /// and threads no kernel/named_steps.
+///
+/// No diagnostic scratch-buffering here (contrast
+/// [`eval_variadic_composition_symbolic`]'s local `scratch`): see the note on
+/// [`resolve_named_leaf_target_symbolic`] for why that's safe today.
 fn eval_named_leaf_selector_ctor_symbolic(
     kind: reify_core::ty::SelectorKind,
     args: &[reify_ir::CompiledExpr],
