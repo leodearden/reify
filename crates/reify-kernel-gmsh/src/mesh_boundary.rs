@@ -347,6 +347,17 @@ pub fn mesh_surface_to_volume_with_attribution(
         ));
     }
 
+    // --- Watertightness preflight (task #4876) ---
+    //
+    // This producer forbids vertex-merging repair (guard above) and so
+    // consumes the RAW, unwelded index buffer directly. A real
+    // OCCT-tessellated surface is unwelded by design (per-face vertex
+    // blocks) and SIGSEGVs inside gmsh's FFI if handed straight in — a crash
+    // the caller's `Result`-based honest-degradation fallback cannot catch.
+    // Fail closed here, before any gmsh FFI call, so a non-watertight
+    // surface degrades gracefully to the plain producer instead.
+    preflight_watertight_surface(surface, 0.0)?;
+
     // --- Pre-stage: resolve mesh size ---
     let resolved = resolve_mesh_size(surface, options, auto_size_cfg)?;
     let inner_options = MeshingOptions { mesh_size: resolved, ..options.clone() };
