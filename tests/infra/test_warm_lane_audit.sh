@@ -504,4 +504,122 @@ assert "H6: json carries 2 lane objects with the full expected key set" \
 assert "H7: json headroom object has resident=2" \
     bash -c 'printf "%s" "$1" | python3 "$2"' _ "$OUT" "$H_PY_HEADROOM"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block I — B1 headline boundary (4-lane pool) + A3 exit-0 degradation
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block I: B1 headline boundary + A3 degradation ---"
+
+I_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-i-XXXXXX)"
+_TMPDIRS+=("$I_MOUNT")
+I_MAP="$(mktemp /tmp/test-warm-lane-audit-i-map-XXXXXX)"
+_TMPDIRS+=("$I_MAP")
+printf '900 done\n901 pending\n902 pending\n' > "$I_MAP"
+
+# (1) _lane-live: a live consumer holds the lane's exclusive flock (causal
+# READY-marker handshake, no fixed sleep) -> ASSIGNED -> LIVE.
+make_lane "$I_MOUNT/_lane-live"
+touch "$I_MOUNT/_lane-live.lock"
+I_READY="$I_MOUNT/_lane-live.lock.ready-marker"
+( flock -x 9 && touch "$I_READY" && sleep 300 ) 9>"$I_MOUNT/_lane-live.lock" &
+I_LOCK_PID=$!
+_BGPIDS+=("$I_LOCK_PID")
+_wait_for_reader_lock "$I_READY" 30
+
+# (2) _lane-done: FREE, task/900, oracle=done, ahead-of-main -> RECLAIMABLE
+# (via terminal status).
+make_lane "$I_MOUNT/_lane-done" "task/900"
+_add_ahead_commit "$I_MOUNT/_lane-done"
+
+# (3) _lane-residue: FREE, task/901, oracle=pending (non-terminal),
+# ahead-of-main, residue-only-dirty (data/queue/write_queue.db committed then
+# modified in place) -> RECLAIMABLE (via residue-only-dirty, independent of
+# status).
+make_lane "$I_MOUNT/_lane-residue" "task/901"
+_add_ahead_commit "$I_MOUNT/_lane-residue"
+mkdir -p "$I_MOUNT/_lane-residue/data/queue"
+printf 'db-v1\n' > "$I_MOUNT/_lane-residue/data/queue/write_queue.db"
+git -C "$I_MOUNT/_lane-residue" add data/queue/write_queue.db
+git -C "$I_MOUNT/_lane-residue" commit -q -m "add residue db"
+printf 'db-v2\n' > "$I_MOUNT/_lane-residue/data/queue/write_queue.db"
+
+# (4) _lane-leaked: FREE, task/902 then DETACHED (backing task resolved via
+# the containing-branch enumeration path, not symbolic-ref -- this is the
+# first fixture to exercise that path), oracle=pending (non-terminal),
+# ahead-of-main/no-origin -> ORPHAN, aged past the default stale-age-min knob
+# (60) -- built FIRST, backdated LAST (mirrors Block F) -> LEAKED.
+make_lane "$I_MOUNT/_lane-leaked" "task/902"
+_add_ahead_commit "$I_MOUNT/_lane-leaked"
+git -C "$I_MOUNT/_lane-leaked" checkout -q --detach
+touch -d '90 minutes ago' "$I_MOUNT/_lane-leaked"
+
+ORACLE_MAP="$I_MAP" run_helper --mount "$I_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh"
+
+assert "I1: exit 0" test "$RC" -eq 0
+assert "I2: _lane-live classification LIVE" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-live .*classification=LIVE"' _ "$OUT"
+assert "I3: _lane-done classification RECLAIMABLE" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-done .*classification=RECLAIMABLE"' _ "$OUT"
+assert "I4: _lane-residue classification RECLAIMABLE" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-residue .*classification=RECLAIMABLE"' _ "$OUT"
+assert "I5: _lane-leaked classification LEAKED" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-leaked .*classification=LEAKED"' _ "$OUT"
+assert "I6: HEADROOM resident=4" \
+    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "resident=4"' _ "$OUT"
+assert "I7: HEADROOM assigned=1" \
+    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "assigned=1"' _ "$OUT"
+assert "I8: HEADROOM free=3" \
+    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "free=3"' _ "$OUT"
+assert "I9: HEADROOM reclaimable=2" \
+    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "reclaimable=2"' _ "$OUT"
+assert "I10: HEADROOM leaked=1" \
+    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "leaked=1"' _ "$OUT"
+
+# A3: a status oracle that exits non-zero degrades the task lanes to
+# `unknown`; the run still exits 0; no lane is reclassified
+# RECLAIMABLE-via-terminal (the previously-terminal _lane-done demotes to
+# PRESERVED-OK, and the previously-LEAKED _lane-leaked -- whose backing task
+# is resolved via the DETACHED-HEAD containing-branch path -- never falls
+# into a false LEAKED under an unknown status); the residue-only-dirty
+# _lane-residue's RECLAIMABLE holds regardless (that reclaim path is
+# independent of status).
+ORACLE_MAP="$I_MAP" run_helper --mount "$I_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle-fail.sh"
+
+assert "I11: exit 0 (oracle failure degrades, never aborts)" test "$RC" -eq 0
+assert "I12: _lane-done status=unknown under oracle failure" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-done .*status=unknown"' _ "$OUT"
+assert "I13: _lane-done classification PRESERVED-OK (not reclassified RECLAIMABLE-via-terminal)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-done .*classification=PRESERVED-OK"' _ "$OUT"
+assert "I14: _lane-leaked status=unknown under oracle failure" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-leaked .*status=unknown"' _ "$OUT"
+assert "I15: _lane-leaked classification PRESERVED-OK (never falsely LEAKED under unknown status)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-leaked .*classification=PRESERVED-OK"' _ "$OUT"
+assert "I16: _lane-residue classification still RECLAIMABLE (residue-only reclaim is status-independent)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-residue .*classification=RECLAIMABLE"' _ "$OUT"
+
+# A3: a failing df seam also degrades gracefully -- exit 0, HEADROOM line
+# still emitted, free_gib/budget_gib degrade to 0 (never abort; PRD §9.5
+# inv.12).
+I_DF_FAIL_DIR="$(mktemp -d /tmp/test-warm-lane-audit-i-dffail-XXXXXX)"
+_TMPDIRS+=("$I_DF_FAIL_DIR")
+cat > "$I_DF_FAIL_DIR/df-fail.sh" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "df: simulated failure" >&2
+exit 1
+STUB_EOF
+chmod +x "$I_DF_FAIL_DIR/df-fail.sh"
+
+ORACLE_MAP="$I_MAP" REIFY_WARM_LANE_AUDIT_DF="$I_DF_FAIL_DIR/df-fail.sh" \
+    run_helper --mount "$I_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh"
+
+assert "I17: exit 0 (df failure degrades, never aborts)" test "$RC" -eq 0
+assert "I18: HEADROOM line still emitted under df failure" \
+    bash -c 'printf "%s\n" "$1" | grep -q "^HEADROOM"' _ "$OUT"
+assert "I19: HEADROOM free_gib=0 budget_gib=0 under df failure" \
+    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -qE "free_gib=0 budget_gib=0$"' _ "$OUT"
+
+# Release the live-flock lock.
+kill "$I_LOCK_PID" 2>/dev/null || true
+_BGPIDS=()  # clear so cleanup doesn't double-kill
+
 test_summary
