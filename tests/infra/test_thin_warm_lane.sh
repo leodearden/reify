@@ -182,4 +182,104 @@ assert "B3: stderr mentions the lock/live-consumer refusal" \
 kill "$B3_LOCK_PID" 2>/dev/null || true
 wait "$B3_LOCK_PID" 2>/dev/null || true
 
+# _thin_detect_private_mount() — rung-1-only substrate detector (no loopback
+# self-provisioning, unlike test_warm_lane_pool.sh's detect_private_substrate,
+# to stay `pool`-safe): returns 0 when REIFY_WARM_LANE_MOUNT is set and
+# reflink-capable, 1 otherwise. Gates the OPTIONAL df-delta assertion below;
+# never gates (or skips) the hermetic core.
+_thin_detect_private_mount() {
+    [ -n "${REIFY_WARM_LANE_MOUNT:-}" ] || return 1
+    [ -d "${REIFY_WARM_LANE_MOUNT}" ] || return 1
+    local probe_src probe_dst
+    probe_src="$(mktemp "${REIFY_WARM_LANE_MOUNT}/.thin-reflink-probe-XXXXXX" 2>/dev/null)" || return 1
+    probe_dst="${probe_src}.dst"
+    if cp --reflink=always "$probe_src" "$probe_dst" 2>/dev/null; then
+        rm -f "$probe_src" "$probe_dst" 2>/dev/null || true
+        return 0
+    fi
+    rm -f "$probe_src" "$probe_dst" 2>/dev/null || true
+    return 1
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block C — FREE-FIRST reclaim + T1 source-intact
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block C: FREE-FIRST reclaim + T1 source-intact ---"
+
+C_LANE="$(mktemp -d /tmp/test-thin-warm-lane-c-lane-XXXXXX)"
+_TMPDIRS+=("$C_LANE")
+
+# target/ with real weight (du -sb footprint > 0), so removal is meaningful.
+mkdir -p "$C_LANE/target/debug"
+dd if=/dev/zero of="$C_LANE/target/debug/blob.bin" bs=1024 count=256 2>/dev/null
+
+C_TARGET_FOOTPRINT_BEFORE="$(du -sb "$C_LANE/target" | cut -f1)"
+assert "C1: target/ fixture has nonzero footprint before thinning" \
+    test "$C_TARGET_FOOTPRINT_BEFORE" -gt 0
+
+# Source tree + real .git + an uncommitted WIP file (unlanded work) -- all
+# must survive thinning byte-intact (T1).
+mkdir -p "$C_LANE/src"
+echo 'fn main() {}' > "$C_LANE/src/main.rs"
+git init -q "$C_LANE"
+git -C "$C_LANE" config user.email "test@test.local"
+git -C "$C_LANE" config user.name "Test"
+git -C "$C_LANE" add src/main.rs
+git -C "$C_LANE" commit -q -m "initial"
+C_HEAD_BEFORE="$(git -C "$C_LANE" rev-parse HEAD)"
+echo "uncommitted work" > "$C_LANE/WIP.txt"
+
+# --seed-script stub: records invocations. Must NOT be called on the default
+# (no --reseed) path.
+C_SEED_LOG="$(mktemp /tmp/test-thin-warm-lane-c-seedlog-XXXXXX)"
+_TMPDIRS+=("$C_SEED_LOG")
+C_SEED_STUB="$(mktemp /tmp/test-thin-warm-lane-c-seedstub-XXXXXX)"
+_TMPDIRS+=("$C_SEED_STUB")
+cat > "$C_SEED_STUB" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$SEED_LOG"
+exit 0
+STUB_EOF
+chmod +x "$C_SEED_STUB"
+export SEED_LOG="$C_SEED_LOG"
+
+run_helper "$C_LANE" --seed-script "$C_SEED_STUB"
+
+assert "C2: exit 0" test "$RC" -eq 0
+assert "C3: target/ is GONE" bash -c '[ ! -e "$1" ]' _ "$C_LANE/target"
+assert "C4: source tree byte-intact (src/main.rs unchanged)" \
+    bash -c '[ "$(cat "$1")" = "fn main() {}" ]' _ "$C_LANE/src/main.rs"
+assert "C5: .git/ intact (HEAD unchanged)" \
+    bash -c '[ "$(git -C "$1" rev-parse HEAD)" = "$2" ]' _ "$C_LANE" "$C_HEAD_BEFORE"
+assert "C6: uncommitted WIP file byte-intact" \
+    bash -c '[ "$(cat "$1")" = "uncommitted work" ]' _ "$C_LANE/WIP.txt"
+assert "C7: STDOUT equals the lane_dir (single line, no diagnostics mixed in)" \
+    test "$OUT" = "$C_LANE"
+assert "C8: seed-script NOT invoked (no reseed staged by default)" \
+    bash -c '[ ! -s "$1" ]' _ "$C_SEED_LOG"
+
+# ── OPTIONAL substrate-gated df-delta (B4 literal, direction-only per G6/D8) ───
+# Runs only when REIFY_WARM_LANE_MOUNT points at a private reflink mount;
+# skips gracefully otherwise (never a frozen GB constant, never false-RED off
+# substrate). Only this one assertion is gated -- not the hermetic core above.
+if _thin_detect_private_mount; then
+    C_DF_LANE="$(mktemp -d "${REIFY_WARM_LANE_MOUNT}/test-thin-warm-lane-df-XXXXXX")"
+    _TMPDIRS+=("$C_DF_LANE")
+    mkdir -p "$C_DF_LANE/target"
+    dd if=/dev/zero of="$C_DF_LANE/target/blob.bin" bs=1M count=2 2>/dev/null
+
+    C_DF_BEFORE="$(df --output=avail -m "$C_DF_LANE" 2>/dev/null | tail -1 | tr -d ' ')"
+    run_helper "$C_DF_LANE"
+    C_DF_RC="$RC"
+    C_DF_AFTER="$(df --output=avail -m "$C_DF_LANE" 2>/dev/null | tail -1 | tr -d ' ')"
+    echo "Block C df: before=${C_DF_BEFORE}MiB after=${C_DF_AFTER}MiB" >&2
+
+    assert "C9: df-gated control run exits 0" test "$C_DF_RC" -eq 0
+    assert "C9: df available did not decrease after thinning (direction-only, private mount)" \
+        test "$C_DF_AFTER" -ge "$C_DF_BEFORE"
+else
+    echo "SKIP: Block C df-delta assertion -- REIFY_WARM_LANE_MOUNT not set to a private reflink mount" >&2
+fi
+
 test_summary
