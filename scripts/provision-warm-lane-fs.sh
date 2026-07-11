@@ -104,12 +104,17 @@ EOF
 SIZE_GIB=4096
 IMG="/media/leo/data_lv_1/leo/reify-warm-lanes.img"
 MOUNT="${REIFY_WARM_LANE_MOUNT:-$(_default_mount)}"
+GROW=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
         -h|--help)
             _usage
             exit 0
+            ;;
+        --grow)
+            GROW=1
+            shift
             ;;
         --size-gib)
             [ $# -ge 2 ] || { err "--size-gib requires a value"; exit 2; }
@@ -170,6 +175,37 @@ _cleanup_on_exit() {
     fi
 }
 trap _cleanup_on_exit EXIT
+
+# ── --grow: online grow of the mounted loopback XFS (task #5173, β) ───────────
+# Its own mode, dispatched BEFORE the B1/re-attach/fresh-provision logic below:
+# fallocate -l <N>GiB <img>  →  losetup -c <loopdev>  →  xfs_growfs <mount>.
+# The cleanup-tracking vars above stay empty on this path, so the EXIT trap
+# above never fires a false unmount/detach for a grow run.
+if [ "$GROW" -eq 1 ]; then
+    mountpoint -q "$MOUNT" || {
+        err "--grow requires an already-mounted filesystem at $MOUNT"
+        exit 1
+    }
+
+    # Resolve the loop device already backing $IMG (mirrors _attach_loop's
+    # `losetup -j` pattern below) — grow never allocates a NEW loop device.
+    LOOP="$($SUDO losetup -j "$IMG" -O NAME --noheadings 2>/dev/null | head -1 || true)"
+
+    # Live current size (never a frozen constant — P4).
+    cur_bytes="$(df -B1 --output=size "$MOUNT" | tail -n1 | tr -d ' ')"
+    cur_gib=$((cur_bytes / 1073741824))
+
+    if [ "$SIZE_GIB" -gt "$cur_gib" ]; then
+        info "Growing $IMG from ${cur_gib}GiB to ${SIZE_GIB}GiB (online, mounted at $MOUNT) ..."
+        $SUDO fallocate -l "${SIZE_GIB}GiB" "$IMG"
+        $SUDO losetup -c "$LOOP"
+        $SUDO xfs_growfs "$MOUNT"
+        ok "Grew warm-lane volume to ${SIZE_GIB}GiB at $MOUNT"
+    fi
+
+    echo "$MOUNT"
+    exit 0
+fi
 
 # ── reflink probe (P2) ─────────────────────────────────────────────────────────
 # Mandatory on every success path.  Uses cp --reflink=always (NOT auto) so a
