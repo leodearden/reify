@@ -177,4 +177,100 @@ fi
 
 info "warm-lane-audit.sh: mount=$MOUNT format=$FORMAT stale_age_min=$STALE_AGE_MIN main_ref=$MAIN_REF safety=$SAFETY"
 
+# ── helper: is this dir a git worktree? ───────────────────────────────────────
+_is_git_worktree() {
+    local dir="$1"
+    [ -d "$dir" ] || return 1
+    git -C "$dir" rev-parse --git-dir >/dev/null 2>&1
+}
+
+# ── helper: role from the resident dir's basename ─────────────────────────────
+# _lane-* -> lane; _spec-* -> spec; anything else (that is still a git
+# worktree) -> orphan. Mirrors warm-lane-gc.sh's lane-glob/orphan bucketing.
+_lane_role() {
+    local name="$1"
+    case "$name" in
+        _lane-*) printf 'lane' ;;
+        _spec-*) printf 'spec' ;;
+        *) printf 'orphan' ;;
+    esac
+}
+
+# ── helper: non-mutating ASSIGNED/FREE probe (A1/A2/DD1) ──────────────────────
+# Opens an EXISTING <dir>.lock read-only and attempts a non-blocking exclusive
+# flock on that read-only fd: success (lock acquired) => FREE, released
+# immediately; failure (already held) => ASSIGNED. A missing lock file is
+# FREE and is NEVER created (no `>`-open/truncation, no `flock <file> <cmd>`
+# convenience form -- both would mutate the pool).
+_probe_assigned() {
+    local lock="$1"
+    local result='FREE'
+    if [ -e "$lock" ]; then
+        if exec 7<"$lock" 2>/dev/null; then
+            if flock -n -x 7 2>/dev/null; then
+                flock -u 7 2>/dev/null || true
+            else
+                result='ASSIGNED'
+            fi
+            exec 7<&- 2>/dev/null || true
+        fi
+    fi
+    printf '%s' "$result"
+    return 0
+}
+
+# ── helper: resolve the lane's branch (detached HEAD -> a note) ───────────────
+_lane_branch() {
+    local dir="$1" br
+    br="$(git -C "$dir" symbolic-ref --short HEAD 2>/dev/null || true)"
+    if [ -n "$br" ]; then
+        printf '%s' "$br"
+    else
+        printf '(detached)'
+    fi
+}
+
+# ── resident walk ──────────────────────────────────────────────────────────────
+RESIDENT=0
+ASSIGNED_COUNT=0
+FREE_COUNT=0
+TABLE_OUT=""
+
+# A nonexistent/empty --mount is NOT an error (advisory-only script): the walk
+# below simply visits nothing and resident stays 0.
+if [ -n "$MOUNT" ] && [ -d "$MOUNT" ]; then
+    for entry in "$MOUNT"/*/; do
+        entry="${entry%/}"
+        [ -d "$entry" ] || continue
+        name="$(basename "$entry")"
+        _is_git_worktree "$entry" || continue
+
+        RESIDENT=$((RESIDENT + 1))
+        role="$(_lane_role "$name")"
+
+        assigned="$(_probe_assigned "$MOUNT/$name.lock")"
+        if [ "$assigned" = "ASSIGNED" ]; then
+            ASSIGNED_COUNT=$((ASSIGNED_COUNT + 1))
+        else
+            FREE_COUNT=$((FREE_COUNT + 1))
+        fi
+
+        branch="$(_lane_branch "$entry")"
+
+        # Classification (monotonically refined in later steps): ASSIGNED is
+        # always LIVE; every FREE lane defaults to PRESERVED-OK for now.
+        if [ "$assigned" = "ASSIGNED" ]; then
+            classification="LIVE"
+        else
+            classification="PRESERVED-OK"
+        fi
+
+        TABLE_OUT="${TABLE_OUT}lane=${name} role=${role} assigned=${assigned} branch=${branch} classification=${classification}
+"
+    done
+fi
+
+printf '%s' "$TABLE_OUT"
+printf 'HEADROOM resident=%d assigned=%d free=%d\n' "$RESIDENT" "$ASSIGNED_COUNT" "$FREE_COUNT"
+
 exit 0
