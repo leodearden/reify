@@ -10226,7 +10226,7 @@ impl Engine {
             .filter(|cell| {
                 values
                     .get(&cell.id)
-                    .is_none_or(|v| crate::invariants::value_is_or_contains_undef(v))
+                    .is_none_or(crate::invariants::value_is_or_contains_undef)
             })
             .filter_map(|cell| {
                 cell.default_expr
