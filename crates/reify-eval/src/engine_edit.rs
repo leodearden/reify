@@ -5772,10 +5772,11 @@ mod tests {
     }
 
     /// Assert that `v` is a `Value::Scalar` whose SI value is within the
-    /// solver's convergence tolerance (`1e-9`) of `si`. Shared by
+    /// solver's convergence tolerance (`1e-9`) of `si`. Dimension-agnostic
+    /// (works for any scalar, not just lengths) — shared by
     /// `edit_param_back_props_solved_auto` / `edit_param_back_props_moved_auto`
     /// to collapse their repeated Scalar-tolerance `matches!` assertions.
-    fn assert_len_eq(v: &reify_ir::Value, si: f64, ctx: &str) {
+    fn assert_scalar_si_approx_eq(v: &reify_ir::Value, si: f64, ctx: &str) {
         assert!(
             matches!(v, reify_ir::Value::Scalar { si_value, .. } if (*si_value - si).abs() < 1e-9),
             "{ctx}; got {v:?}",
@@ -5804,13 +5805,7 @@ mod tests {
     /// from the edited value, which is what lets this test control the solver
     /// seed and thereby distinguish the solved-vs-moved cases.
     ///
-    /// **Task ο checklist:** together with `edit_param_back_props_moved_auto`
-    /// and `edit_param_skips_solve_when_no_auto_group_constraints_are_dirty`,
-    /// this is one of the three coverage-preserving replacements for the dead
-    /// concurrent stack's tests in this file — task ο's deletion checklist
-    /// must reference it before removing
-    /// `resolve_concurrent_edit_back_props_solved_auto` from
-    /// `concurrent.rs`, or the dead-stack removal silently drops coverage.
+    /// Coverage-preserving re-home of concurrent.rs's solved-auto test; see #5046.
     #[test]
     fn edit_param_back_props_solved_auto() {
         use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
@@ -5845,7 +5840,7 @@ mod tests {
             .resolved_params
             .get(&x_id)
             .expect("x must be in resolved_params after SolveResult::Solved back-prop");
-        assert_len_eq(
+        assert_scalar_si_approx_eq(
             x_resolved,
             0.01,
             "edit_param Solved arm: x must be resolved to 0.01 m (10mm)",
@@ -5858,7 +5853,11 @@ mod tests {
             .values
             .get(&y_id)
             .expect("y must be in result.values after edit_param back-prop");
-        assert_len_eq(y_val, 0.015, "edit_param reseed: y must be 0.015 m (15mm = x + 5mm)");
+        assert_scalar_si_approx_eq(
+            y_val,
+            0.015,
+            "edit_param reseed: y must be 0.015 m (15mm = x + 5mm)",
+        );
 
         // (3) engine.snapshot() must record y as (0.015 m, Determined).
         let snapshot = engine
@@ -5873,7 +5872,7 @@ mod tests {
             DeterminacyState::Determined,
             "y must be Determined in the snapshot after edit_param",
         );
-        assert_len_eq(snap_y, 0.015, "snapshot y must be 0.015 m after back-prop");
+        assert_scalar_si_approx_eq(snap_y, 0.015, "snapshot y must be 0.015 m after back-prop");
     }
 
     /// [Re-homed from `reify-eval/src/concurrent.rs`
@@ -5901,13 +5900,7 @@ mod tests {
     /// Flow: eval() → edit_param(x, 20mm) → assert x re-derived to 10mm
     /// (Determined) + y = 15mm, NOT the injected 20mm seed.
     ///
-    /// **Task ο checklist:** together with `edit_param_back_props_solved_auto`
-    /// and `edit_param_skips_solve_when_no_auto_group_constraints_are_dirty`,
-    /// this is one of the three coverage-preserving replacements for the dead
-    /// concurrent stack's tests in this file — task ο's deletion checklist
-    /// must reference it before removing
-    /// `resolve_concurrent_edit_back_props_moved_auto` from
-    /// `concurrent.rs`, or the dead-stack removal silently drops coverage.
+    /// Coverage-preserving re-home of concurrent.rs's moved-auto test; see #5046.
     #[test]
     fn edit_param_back_props_moved_auto() {
         use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
@@ -5945,7 +5938,7 @@ mod tests {
             "x must be in resolved_params after SolveResult::Solved back-prop; \
              if absent, the solver returned Infeasible from the 20mm seed (pre-4700 bug)",
         );
-        assert_len_eq(
+        assert_scalar_si_approx_eq(
             x_resolved,
             0.01,
             "edit_param moved-auto: x must be resolved to 0.01 m (10mm), not the injected 20mm seed",
@@ -5956,7 +5949,11 @@ mod tests {
             .values
             .get(&x_id)
             .expect("x must be in result.values after back-prop");
-        assert_len_eq(x_val, 0.01, "result.values[x] must be 0.01 m (10mm) after back-prop");
+        assert_scalar_si_approx_eq(
+            x_val,
+            0.01,
+            "result.values[x] must be 0.01 m (10mm) after back-prop",
+        );
 
         // (3) engine.snapshot() must record x as (10mm, Determined).
         let snapshot = engine
@@ -5971,7 +5968,11 @@ mod tests {
             DeterminacyState::Determined,
             "x must be Determined in the snapshot after edit_param",
         );
-        assert_len_eq(snap_x, 0.01, "snapshot x must be 0.01 m (10mm) after back-prop");
+        assert_scalar_si_approx_eq(
+            snap_x,
+            0.01,
+            "snapshot x must be 0.01 m (10mm) after back-prop",
+        );
 
         // (4) y must be re-evaluated to 15mm = 0.015 m by the post-solve reseed.
         let y_id = ValueCellId::new("WarmMoveConc", "y");
@@ -5979,7 +5980,11 @@ mod tests {
             .values
             .get(&y_id)
             .expect("y must be in result.values after edit_param reseed");
-        assert_len_eq(y_val, 0.015, "edit_param reseed: y must be 0.015 m (15mm = x + 5mm)");
+        assert_scalar_si_approx_eq(
+            y_val,
+            0.015,
+            "edit_param reseed: y must be 0.015 m (15mm = x + 5mm)",
+        );
     }
 
     /// [Re-homed from `reify-eval/tests/concurrent.rs`
@@ -6001,14 +6006,8 @@ mod tests {
     /// value (mm(999.0)) would leak into `resolved_params`, and the spy's
     /// captured-problems count would be 2 instead of 1.
     ///
-    /// **Task ο checklist:** together with `edit_param_back_props_solved_auto`
-    /// and `edit_param_back_props_moved_auto`, this is one of the three
-    /// coverage-preserving replacements for the dead concurrent stack's tests
-    /// in this file — task ο's deletion checklist must reference it before
-    /// removing
-    /// `resolve_concurrent_edit_skips_solve_when_no_auto_group_constraints_are_dirty`
-    /// from `tests/concurrent.rs`, or the dead-stack removal silently drops
-    /// coverage.
+    /// Coverage-preserving re-home of tests/concurrent.rs's
+    /// constraints-dirty-guard test; see #5046.
     #[test]
     fn edit_param_skips_solve_when_no_auto_group_constraints_are_dirty() {
         use std::collections::HashMap;
