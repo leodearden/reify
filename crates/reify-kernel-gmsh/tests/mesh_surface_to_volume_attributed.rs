@@ -14,7 +14,8 @@
 //! `Cargo.toml` activates `mesh-morph` for all integration test binaries.
 #![cfg(all(has_gmsh, feature = "mesh-morph"))]
 
-use reify_ir::{ElementOrderTag, GeometryHandleId, GeometryKernel, Mesh, NodeAttachment};
+use reify_ir::{ElementOrderTag, GeometryError, GeometryHandleId, GeometryKernel, Mesh, NodeAttachment};
+use reify_ir::geometry::MeshInvariant;
 use reify_kernel_gmsh::GmshKernel;
 
 fn h(n: u64) -> GeometryHandleId {
@@ -73,6 +74,78 @@ fn subdivided_unit_cube_surface() -> Mesh {
        17,25,14, 17,14, 5, 25,19, 7, 25, 7,14,
     ];
     Mesh { vertices, indices, normals: None }
+}
+
+/// Per-face-explode [`subdivided_unit_cube_surface`]: duplicate every
+/// triangle-corner reference into a fresh raw vertex slot, so
+/// `Mesh::weldedness(_).raw_welded` is `false` (the raw index buffer no
+/// longer references each distinct position exactly once) while the
+/// position-welded quotient stays the identical closed, consistently-wound
+/// cube (`Mesh::validate` still accepts it unchanged). Mirrors OCCT's
+/// per-face-block tessellation output (occt_wrapper.cpp:5847) — the shape
+/// the #4876 preflight (`preflight_watertight_surface`, mesh_boundary.rs)
+/// and the gmsh attributed producer actually consume.
+fn unwelded_subdivided_unit_cube_surface() -> Mesh {
+    let welded = subdivided_unit_cube_surface();
+    let mut vertices: Vec<f32> = Vec::with_capacity(welded.indices.len() * 3);
+    for &raw_idx in &welded.indices {
+        let base = raw_idx as usize * 3;
+        vertices.extend_from_slice(&welded.vertices[base..base + 3]);
+    }
+    let indices: Vec<u32> = (0..welded.indices.len() as u32).collect();
+    Mesh { vertices, indices, normals: None }
+}
+
+/// RED (task #4876): the attributed producer must reject a non-watertight
+/// (unwelded) surface via the watertightness preflight
+/// (`preflight_watertight_surface`, mesh_boundary.rs) BEFORE any gmsh FFI
+/// call, returning `Err(GeometryError::MeshContractViolation{Closed})`
+/// rather than crashing. Pins that the preflight is actually WIRED into
+/// `mesh_surface_to_volume_attributed` (the trait override wraps
+/// `mesh_surface_to_volume_with_attribution`).
+///
+/// The watertight-cube sibling test below
+/// (`gmsh_mesh_surface_to_volume_attributed_threads_boundary_onto_volume_mesh`)
+/// is the `Ok` negative control and must remain GREEN once the preflight is
+/// wired (it accepts welded input unchanged).
+///
+/// RED now: with no preflight wired, the producer enters gmsh on the
+/// unwelded surface (a crash under nextest process isolation, or a
+/// non-`MeshContractViolation` error), so the
+/// `Err(MeshContractViolation{Closed})` assertion fails. GREENed by the
+/// mesh_boundary.rs wiring step.
+#[test]
+fn mesh_surface_to_volume_attributed_rejects_unwelded_surface() {
+    let kernel = GmshKernel::new();
+    let unwelded = unwelded_subdivided_unit_cube_surface();
+
+    // Same 6 face anchors as the watertight-cube sibling test below.
+    let face_anchors: Vec<(GeometryHandleId, [f64; 3])> = vec![
+        (h(101), [0.0, 0.0, -0.5]),
+        (h(102), [0.0, 0.0, 0.5]),
+        (h(103), [0.0, -0.5, 0.0]),
+        (h(104), [0.0, 0.5, 0.0]),
+        (h(105), [-0.5, 0.0, 0.0]),
+        (h(106), [0.5, 0.0, 0.0]),
+    ];
+
+    let err = kernel
+        .mesh_surface_to_volume_attributed(&unwelded, ElementOrderTag::P1, &face_anchors, 0.3)
+        .expect_err(
+            "an unwelded (per-face-exploded) cube surface must be rejected by the \
+             watertightness preflight before any gmsh FFI call — it must NOT crash",
+        );
+
+    match err {
+        GeometryError::MeshContractViolation { invariant, .. } => {
+            assert_eq!(
+                invariant,
+                MeshInvariant::Closed,
+                "the preflight's synthesized violation must name the Closed obligation"
+            );
+        }
+        other => panic!("expected GeometryError::MeshContractViolation, got {other:?}"),
+    }
 }
 
 /// RED (task 4092 step-5): the gmsh `mesh_surface_to_volume_attributed` trait

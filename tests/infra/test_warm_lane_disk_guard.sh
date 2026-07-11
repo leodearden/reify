@@ -21,6 +21,13 @@
 #   C1 — bytes below floor → exits 75
 #   C2 — inodes below floor → exits 75
 #   C3 — fail-closed measurement failure → exits 75
+#   D — soft floor (`check --soft`, task 5175, contract §9.4 of
+#       docs/prds/warm-lane-pool-sizing-lifecycle.md): between-floors → exit 3 +
+#       @@REIFY_WARM_LANE_SOFT_PRESSURE@@ stdout sentinel (B6); below hard floor →
+#       exit 75, sentinel ABSENT; soft==avail boundary → exit 0 (exclusive-below);
+#       soft<=hard config error → exit 2 (E1); hard `check` unaffected by a
+#       misconfigured/ignored soft floor (E2); df failure/garbage under --soft
+#       still fail-closes to 75, never the sentinel (B6b/E3).
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -264,5 +271,162 @@ assert "C3b: garbage df output exits 75" test "$RC" -eq 75
 assert "C3b: stdout is empty on garbage output" bash -c '[ -z "$1" ]' _ "$OUT"
 assert "C3b: stderr names parse failure" \
     bash -c 'printf "%s\n" "$1" | grep -qiE "integer|parse|health|fail|denied|admission"' _ "$ERR_OUT"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block D — soft floor (`check --soft`), task 5175, contract §9.4
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block D: soft floor (--soft) ---"
+
+D_TMP="$(mktemp -d /tmp/test-warm-lane-disk-guard-d-XXXXXX)"
+_TMPDIRS+=("$D_TMP")
+
+# D1 (B6, bytes axis): avail BETWEEN the hard(10 GiB) and soft(20 GiB) floors,
+# inodes ample → `check --soft` exits 3 with the soft-pressure sentinel on
+# stdout; the SAME avail under hard `check` (no --soft) exits 0.
+REIFY_TEST_AVAIL_BYTES=16106127360 REIFY_TEST_AVAIL_INODES=1000000 \
+    run_helper check --mount "$D_TMP" \
+    --min-free-gib 10 --soft-free-gib 20 \
+    --min-free-inodes 100000 --soft-free-inodes 200000 \
+    --soft
+assert "D1: bytes between hard/soft floors, --soft exits 3" test "$RC" -eq 3
+assert "D1: stdout carries the soft-pressure sentinel" \
+    bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_WARM_LANE_SOFT_PRESSURE@@"' _ "$OUT"
+assert "D1: stdout sentinel carries free_gib=" \
+    bash -c 'printf "%s\n" "$1" | grep -q "free_gib="' _ "$OUT"
+assert "D1: stdout sentinel carries budget_gib=" \
+    bash -c 'printf "%s\n" "$1" | grep -q "budget_gib="' _ "$OUT"
+
+REIFY_TEST_AVAIL_BYTES=16106127360 REIFY_TEST_AVAIL_INODES=1000000 \
+    run_helper check --mount "$D_TMP" \
+    --min-free-gib 10 --soft-free-gib 20 \
+    --min-free-inodes 100000 --soft-free-inodes 200000
+assert "D1: same avail, hard check (no --soft) exits 0" test "$RC" -eq 0
+
+# D2 (B6, inodes axis): bytes ample (> soft), avail inodes BETWEEN the
+# hard(100000) and soft(200000) floors → `check --soft` exits 3 + sentinel;
+# hard `check` (same avail) exits 0.
+REIFY_TEST_AVAIL_BYTES=107374182400 REIFY_TEST_AVAIL_INODES=150000 \
+    run_helper check --mount "$D_TMP" \
+    --min-free-gib 10 --soft-free-gib 20 \
+    --min-free-inodes 100000 --soft-free-inodes 200000 \
+    --soft
+assert "D2: inodes between hard/soft floors, --soft exits 3" test "$RC" -eq 3
+assert "D2: stdout carries the soft-pressure sentinel" \
+    bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_WARM_LANE_SOFT_PRESSURE@@"' _ "$OUT"
+
+REIFY_TEST_AVAIL_BYTES=107374182400 REIFY_TEST_AVAIL_INODES=150000 \
+    run_helper check --mount "$D_TMP" \
+    --min-free-gib 10 --soft-free-gib 20 \
+    --min-free-inodes 100000 --soft-free-inodes 200000
+assert "D2: same avail, hard check (no --soft) exits 0" test "$RC" -eq 0
+
+# D3 (B6, below hard floor): avail 5 GiB < hard(10 GiB) → BOTH `check` and
+# `check --soft` exit 75; under --soft the sentinel is ABSENT (stdout empty) —
+# fail-closed/below-hard-floor never emits the soft-pressure sentinel.
+REIFY_TEST_AVAIL_BYTES=5368709120 REIFY_TEST_AVAIL_INODES=1000000 \
+    run_helper check --mount "$D_TMP" \
+    --min-free-gib 10 --soft-free-gib 20 \
+    --min-free-inodes 100000 --soft-free-inodes 200000 \
+    --soft
+assert "D3: below hard floor, --soft exits 75" test "$RC" -eq 75
+assert "D3: stdout empty (no sentinel) below hard floor under --soft" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+
+REIFY_TEST_AVAIL_BYTES=5368709120 REIFY_TEST_AVAIL_INODES=1000000 \
+    run_helper check --mount "$D_TMP" \
+    --min-free-gib 10 --soft-free-gib 20 \
+    --min-free-inodes 100000 --soft-free-inodes 200000
+assert "D3: below hard floor, hard check (no --soft) exits 75" test "$RC" -eq 75
+
+# D4 (B6, soft boundary): avail bytes EXACTLY == soft floor (20 GiB) →
+# exclusive-below, so `check --soft` exits 0 (matches the hard-floor C1b
+# exclusive-lower-bound convention: avail == floor is healthy).
+REIFY_TEST_AVAIL_BYTES=21474836480 REIFY_TEST_AVAIL_INODES=1000000 \
+    run_helper check --mount "$D_TMP" \
+    --min-free-gib 10 --soft-free-gib 20 \
+    --min-free-inodes 100000 --soft-free-inodes 200000 \
+    --soft
+assert "D4: exactly at soft floor exits 0 (exclusive-below)" test "$RC" -eq 0
+assert "D4: stdout empty at soft boundary (healthy)" bash -c '[ -z "$1" ]' _ "$OUT"
+
+# D4b (B6, soft boundary, inodes axis): avail inodes EXACTLY == soft floor
+# (200000), bytes ample (> soft) → exclusive-below, so `check --soft` exits 0.
+# Regression guard for the inode-axis comparator (`-lt` vs `-le`); the soft
+# gate ORs both axes together, so an off-by-one on the inode comparison alone
+# would go uncaught by D4 (which only exercises the bytes axis).
+REIFY_TEST_AVAIL_BYTES=107374182400 REIFY_TEST_AVAIL_INODES=200000 \
+    run_helper check --mount "$D_TMP" \
+    --min-free-gib 10 --soft-free-gib 20 \
+    --min-free-inodes 100000 --soft-free-inodes 200000 \
+    --soft
+assert "D4b: exactly at soft inodes floor exits 0 (exclusive-below)" test "$RC" -eq 0
+assert "D4b: stdout empty at soft inodes boundary (healthy)" bash -c '[ -z "$1" ]' _ "$OUT"
+
+# D5 (E1, bytes axis config error): soft_free_gib <= min_free_gib is a wiring
+# bug, not transient pressure → loud exit 2 (checked before the df call).
+run_helper check --mount "$D_TMP" --soft --min-free-gib 50 --soft-free-gib 40
+assert "D5: soft-free-gib <= min-free-gib (bytes axis) exits 2" test "$RC" -eq 2
+assert "D5: stderr names the soft/hard misconfiguration" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "soft.*floor|floor.*soft"' _ "$ERR_OUT"
+assert "D5: stderr identifies the bytes (gib) axis" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "gib"' _ "$ERR_OUT"
+
+# D5b (soft-floor integer validation, bytes axis): non-integer --soft-free-gib
+# under --soft exits 2 before the df call — a distinct exit-2 path from D5's
+# soft<=hard relation check (script lines 208-212) — mirroring A7's
+# hard-floor integer guard.
+run_helper check --mount "$D_TMP" --soft --min-free-gib 10 --soft-free-gib abc
+assert "D5b: non-integer --soft-free-gib exits 2" test "$RC" -eq 2
+assert "D5b: stderr names integer/soft-free-gib misconfiguration" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "integer\|invalid\|soft.free.gib"' _ "$ERR_OUT"
+
+# D6 (E1, inodes axis config error): soft_free_inodes <= min_free_inodes, with
+# a VALID soft-free-gib supplied so only the inodes axis is misconfigured.
+run_helper check --mount "$D_TMP" --soft \
+    --min-free-gib 10 --soft-free-gib 20 \
+    --min-free-inodes 500000 --soft-free-inodes 400000
+assert "D6: soft-free-inodes <= min-free-inodes exits 2" test "$RC" -eq 2
+assert "D6: stderr names the soft/hard misconfiguration" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "soft.*floor|floor.*soft"' _ "$ERR_OUT"
+assert "D6: stderr identifies the inodes axis" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "inode"' _ "$ERR_OUT"
+
+# D6b (soft-floor integer validation, inodes axis): non-integer
+# --soft-free-inodes under --soft exits 2 (valid --soft-free-gib supplied so
+# only the inodes axis is exercised) — a distinct exit-2 path from D6's
+# soft<=hard relation check (script lines 213-217) — mirroring A7/A8's
+# hard-floor integer guard.
+run_helper check --mount "$D_TMP" --soft \
+    --min-free-gib 10 --soft-free-gib 20 \
+    --min-free-inodes 100000 --soft-free-inodes abc
+assert "D6b: non-integer --soft-free-inodes exits 2" test "$RC" -eq 2
+assert "D6b: stderr names integer/soft-free-inodes misconfiguration" \
+    bash -c 'printf "%s\n" "$1" | grep -qi "integer\|invalid\|soft.free.inodes"' _ "$ERR_OUT"
+
+# D7 (E2, scope/unchanged): hard `check` (no --soft) with the SAME
+# misconfigured soft floor as D5 and ample avail still exits 0 — the soft
+# knobs are inert without --soft, so the hard-floor contract is untouched.
+REIFY_TEST_AVAIL_BYTES=107374182400 REIFY_TEST_AVAIL_INODES=1000000 \
+    run_helper check --mount "$D_TMP" --min-free-gib 50 --soft-free-gib 40
+assert "D7: hard check ignores misconfigured soft floor, exits 0" test "$RC" -eq 0
+
+# D8 (B6b, fail-closed under --soft): df failure/garbage output → exit 75
+# even under --soft (stdout stays empty — never 3, never the sentinel; E3
+# precedence over the soft gate). Soft config here is VALID so E1 does not
+# interfere; the fail-closed path is what determines the outcome.
+REIFY_TEST_DF_FAIL=1 \
+    run_helper check --mount "$D_TMP" --soft \
+    --min-free-gib 10 --soft-free-gib 20 \
+    --min-free-inodes 100000 --soft-free-inodes 200000
+assert "D8a: df failure under --soft exits 75" test "$RC" -eq 75
+assert "D8a: stdout empty on df failure under --soft" bash -c '[ -z "$1" ]' _ "$OUT"
+
+REIFY_TEST_DF_GARBAGE=1 \
+    run_helper check --mount "$D_TMP" --soft \
+    --min-free-gib 10 --soft-free-gib 20 \
+    --min-free-inodes 100000 --soft-free-inodes 200000
+assert "D8b: garbage df output under --soft exits 75" test "$RC" -eq 75
+assert "D8b: stdout empty on garbage df output under --soft" bash -c '[ -z "$1" ]' _ "$OUT"
 
 test_summary

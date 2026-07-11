@@ -51,7 +51,7 @@ test_cpu_load_governance.sh host-exclusive
 test_cpu_load_governance_deflake.sh host-exclusive
 test_warm_lane_pool.sh host-exclusive
 
-# --- pool (108, the hermetic majority incl. this drift-guard itself) -------
+# --- pool (110, the hermetic majority incl. this drift-guard itself) -------
 test_affected_crates_lib.sh pool
 test_agent_cargo_shim.sh pool
 test_audit_orphan_producers.sh pool
@@ -139,6 +139,7 @@ test_target_per_lane_independence.sh pool
 test_test_helpers.sh pool
 test_test_pycache_gitignored.sh pool
 test_test_run_semaphore.sh pool
+test_thin_warm_lane.sh pool
 test_typecheck_compiles_tests.sh pool
 test_verify_compile_gate.sh pool
 test_verify_env_ambient_isolation.sh pool

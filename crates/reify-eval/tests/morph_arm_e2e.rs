@@ -127,19 +127,23 @@ fn captured_tet_indices(stage: &str) -> Vec<u32> {
 /// tests; this end-to-end assertion un-gates when #4876 hardens the producer.
 #[cfg(has_gmsh)]
 #[test]
-#[ignore = "blocked on #4876 — the morph source needs a BoundaryAssociation, \
-            which only the task-4092 gmsh attributed producer \
-            (mesh_surface_to_volume_attributed) threads; that producer SIGSEGVs in \
-            tetgen boundary recovery (recoveredgebyflips → hxt_boundary_recovery) \
-            on real OCCT-tessellated surfaces — the same crash gating the sibling \
-            fea_face_selector_bc_e2e::boundary_demand_realization_edge_produces_nonempty_boundary. \
-            A SIGSEGV cannot be caught by the dispatch's honest degradation, so this \
-            real-OCCT morph e2e is gated until #4876 hardens the producer (weld the \
-            surface watertight / return Err). The morph arm itself is fully wired \
-            (engine_build.rs dispatch + source-bundle stash) and validated by the \
-            reify-mesh-morph compose_morph/register_morph_producer unit tests and \
-            the reify-eval morph_producer decision-helper tests, none of which need \
-            the crashing producer."]
+#[ignore = "blocked on #5116 — the morph source needs a non-empty \
+            BoundaryAssociation, which only the task-4092 gmsh attributed producer \
+            (mesh_surface_to_volume_attributed) threads. On real OCCT-tessellated \
+            surfaces that producer used to SIGSEGV in tetgen boundary recovery \
+            (recoveredgebyflips → hxt_boundary_recovery); #4876 hardened it with a \
+            Rust-side watertightness preflight, so it now returns Err instead of \
+            crashing (see the sibling \
+            fea_face_selector_bc_e2e::boundary_demand_realization_edge_degrades_gracefully_on_occt_surface). \
+            But the preflight's fail-closed Err degrades to the plain producer \
+            (boundary None), which still cannot satisfy this test's non-empty- \
+            BoundaryAssociation need — only the attribution-preserving repair \
+            tracked by #5116 will produce one from a real OCCT surface. The morph \
+            arm itself is fully wired (engine_build.rs dispatch + source-bundle \
+            stash) and validated by the reify-mesh-morph \
+            compose_morph/register_morph_producer unit tests and the reify-eval \
+            morph_producer decision-helper tests, none of which need the real-OCCT \
+            attributed producer."]
 fn e2e_non_structural_tick_morphs_and_preserves_connectivity() {
     use reify_core::ValueCellId;
     use reify_ir::{ExportFormat, Value};
@@ -306,17 +310,21 @@ fn e2e_no_producer_engine_remeshes_volume_mesh() {
 /// Stage-B count-mismatch test.
 #[cfg(has_gmsh)]
 #[test]
-#[ignore = "blocked on #4876 — the structural-tick ineligible-bucket assertion \
+#[ignore = "blocked on #5116 — the structural-tick ineligible-bucket assertion \
             requires a boundary-carrying source mesh (so morph_eligible runs and \
             reports CountMismatch); that source comes only from the task-4092 \
-            attributed gmsh producer (mesh_surface_to_volume_attributed), which \
-            SIGSEGVs in tetgen boundary recovery (recoveredgebyflips → \
-            hxt_boundary_recovery) on real OCCT-tessellated surfaces — the same \
-            crash gating e2e_non_structural_tick_morphs_and_preserves_connectivity \
-            and fea_face_selector_bc_e2e. The ineligible→remesh fallback is \
+            attributed gmsh producer (mesh_surface_to_volume_attributed). On real \
+            OCCT-tessellated surfaces that producer used to SIGSEGV in tetgen \
+            boundary recovery (recoveredgebyflips → hxt_boundary_recovery) — the \
+            same crash gating e2e_non_structural_tick_morphs_and_preserves_connectivity \
+            and fea_face_selector_bc_e2e; #4876 hardened it with a watertightness \
+            preflight that returns Err instead of crashing, but the fail-closed Err \
+            degrades to the plain producer (boundary None), still not the boundary- \
+            carrying source this test needs. Only the attribution-preserving repair \
+            tracked by #5116 will produce one. The ineligible→remesh fallback is \
             otherwise validated by the reify-eval morph_producer decision-helper \
             tests and the reify-mesh-morph compose_morph Stage-B count-mismatch \
-            test; this real-OCCT e2e un-gates when #4876 hardens the producer."]
+            test; this real-OCCT e2e un-gates when #5116 hardens the producer."]
 fn e2e_structural_tick_remeshes_and_records_ineligible() {
     use reify_core::ValueCellId;
     use reify_ir::{ExportFormat, Value};
