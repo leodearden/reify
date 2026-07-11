@@ -33,7 +33,7 @@
 //!   the three eval paths (foundation-then-migrate, mirroring how task α
 //!   shipped `commit_cell_result` ahead of its own migration leaves).
 
-use reify_core::{Diagnostic, ValueCellId};
+use reify_core::{Diagnostic, DiagnosticCode, ValueCellId};
 use reify_ir::{DeterminacyState, PersistentMap, Value, ValueMap};
 
 /// The minimal UNIVERSAL mutable state a detector reads/mutates, bundled as
@@ -110,6 +110,128 @@ impl DetectorRegistry {
     /// fixed, introspectable order task μ relies on.
     pub(crate) fn ids(&self) -> Vec<&'static str> {
         self.detectors.iter().map(|d| d.id()).collect()
+    }
+
+    /// The canonical ordered registry of built-in detectors (INV-EVAL-3).
+    ///
+    /// Currently registers only [`MassPropertiesPsdDetector`]. This is the
+    /// single slot task μ's migrated annotation-args detector registers
+    /// into, in whatever relative order the PRD's ordering constraints
+    /// (`engine_eval.rs:6312`, `structural_query.rs:531,610`,
+    /// `significance_filter.rs:1025,1032`) dictate.
+    pub(crate) fn with_builtins() -> Self {
+        let mut registry = Self::new();
+        registry.register(Box::new(MassPropertiesPsdDetector));
+        registry
+    }
+}
+
+/// A faithful, characterization-preserving port of the inline `MassProperties`
+/// PSD inertia validation at `engine_eval.rs:4298-4397` (RBD-α, task 3822).
+///
+/// For every cell whose value is a `StructureInstance` with
+/// `type_name == "MassProperties"`, classifies the `inertia` field and
+/// replaces the cell with `Value::Undef` (in both `values` and
+/// `snapshot_values`, paired with `DeterminacyState::Determined`) when the
+/// field is malformed (unparseable as a 3×3 numeric matrix) or non-PSD,
+/// emitting a [`DiagnosticCode::DynamicsInertiaNotPSD`] diagnostic in either
+/// case. A cell with no `inertia` field (or an already-`Undef` one) is left
+/// untouched — no false positives.
+///
+/// The inline copy in `engine_eval.rs` stays in place until task μ removes
+/// it and wires this registry into the eval paths.
+#[allow(dead_code)] // wired in by task μ; exercised by tests until then
+pub(crate) struct MassPropertiesPsdDetector;
+
+impl PostPassDetector for MassPropertiesPsdDetector {
+    fn id(&self) -> &'static str {
+        "mass-properties-psd"
+    }
+
+    fn run(&self, state: &mut PostPassState<'_>) {
+        // Fast early-out: skip the O(n) extraction pass when no MassProperties
+        // cell exists (the common case when std.dynamics is unused). Mirrors
+        // the inline pass's guard.
+        let has_mass_props = state.values.iter().any(|(_, v)| {
+            matches!(v, Value::StructureInstance(d) if d.type_name == "MassProperties")
+        });
+        if !has_mass_props {
+            return;
+        }
+
+        // Classify each MassProperties cell's inertia field.
+        enum InertiaResult {
+            /// Field is absent or already Undef — leave untouched (no false positives).
+            Skip,
+            /// Field is present but could not be parsed as a 3×3 numeric matrix.
+            Malformed,
+            /// Field parsed successfully — run PSD check.
+            Valid([[f64; 3]; 3]),
+        }
+
+        // The immutable `values` borrow is released before any mutable insert
+        // by collecting target pairs first.
+        let mass_props_cells: Vec<(ValueCellId, InertiaResult)> = state
+            .values
+            .iter()
+            .filter_map(|(id, val)| {
+                if let Value::StructureInstance(data) = val
+                    && data.type_name == "MassProperties"
+                {
+                    let result = match data.fields.get("inertia") {
+                        None | Some(Value::Undef) => InertiaResult::Skip,
+                        Some(v) => match crate::dynamics_psd::inertia_3x3_from_value(v) {
+                            Some(m) => InertiaResult::Valid(m),
+                            None => InertiaResult::Malformed,
+                        },
+                    };
+                    match result {
+                        InertiaResult::Skip => None,
+                        other => Some((id.clone(), other)),
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for (id, result) in mass_props_cells {
+            match result {
+                InertiaResult::Skip => unreachable!("Skip filtered above"),
+                InertiaResult::Malformed => {
+                    state.diagnostics.push(
+                        Diagnostic::error(format!(
+                            "MassProperties '{}': inertia field cannot be parsed as \
+                             a 3×3 numeric matrix",
+                            id,
+                        ))
+                        .with_code(DiagnosticCode::DynamicsInertiaNotPSD),
+                    );
+                    state.values.insert(id.clone(), Value::Undef);
+                    state
+                        .snapshot_values
+                        .insert(id.clone(), (Value::Undef, DeterminacyState::Determined));
+                }
+                InertiaResult::Valid(m) => {
+                    let tol = crate::dynamics_psd::psd_tol(&m);
+                    if !crate::dynamics_psd::is_symmetric_psd(&m, tol) {
+                        let min_eig = crate::dynamics_psd::min_eigenvalue(&m);
+                        state.diagnostics.push(
+                            Diagnostic::error(format!(
+                                "MassProperties '{}': inertia tensor is not positive \
+                                 semi-definite (min eigenvalue ≈ {:.3e})",
+                                id, min_eig,
+                            ))
+                            .with_code(DiagnosticCode::DynamicsInertiaNotPSD),
+                        );
+                        state.values.insert(id.clone(), Value::Undef);
+                        state
+                            .snapshot_values
+                            .insert(id.clone(), (Value::Undef, DeterminacyState::Determined));
+                    }
+                }
+            }
+        }
     }
 }
 
