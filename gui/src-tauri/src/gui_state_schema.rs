@@ -131,6 +131,38 @@ pub fn diff_whole<T: Clone + PartialEq>(old: &[T], new: &[T]) -> Option<Vec<T>> 
 /// assert_eq!(state.note, "hello");
 /// ```
 ///
+/// A `diffed keyed` field's generated `events_fn` serializes each changed
+/// item through `crate::diff::push_serialized_event` — `pub` (not
+/// `pub(crate)`) precisely so this external-crate doctest can call the
+/// generated function and reach it:
+///
+/// ```
+/// use serde::{Deserialize, Serialize};
+///
+/// #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// struct MiniItem {
+///     id: String,
+///     val: i64,
+/// }
+///
+/// reify_gui::gui_state! {
+///     state=MiniState, delta=MiniDelta, diff_fn=diff_mini, events_fn=mini_events;
+///     diffed keyed(key=id, item="item", update="item-update", remove="item-removed", changed=changed_items, removed=removed_item_ids)
+///     items: Vec<MiniItem>,
+/// }
+///
+/// let old = MiniState { items: vec![] };
+/// let new = MiniState {
+///     items: vec![MiniItem { id: "a".to_string(), val: 1 }],
+/// };
+///
+/// let events = mini_events(&diff_mini(&old, &new));
+/// assert_eq!(
+///     events,
+///     vec![("item-update".to_string(), serde_json::to_value(&new.items[0]).unwrap())]
+/// );
+/// ```
+///
 /// A field with no leading classification token (`diffed keyed(..)` /
 /// `diffed whole(..)` / `full_reload_only(..)`) matches no arm of the
 /// muncher below, so it fails to compile. This is the INV-GUI-1 enforcement

@@ -26,9 +26,13 @@ pub use crate::types::{StateDelta, delta_to_events, diff_gui_state};
 /// with `item_type`, `item_id`, and `error` fields.
 ///
 /// `pub` (bumped from `pub(crate)` for L5, task #5034) so the `gui_state!`
-/// macro's generated `events_fn` bodies (invoked from `crate::types`) and the
-/// macro's external-crate `compile_fail`/positive doctests can reach it, in
-/// addition to the test module in `src/tests/`.
+/// macro's generated `events_fn` bodies (invoked from `crate::types`) can
+/// reach it, in addition to the test module in `src/tests/`. This also
+/// includes the macro's external-crate doctests in `gui_state_schema.rs`:
+/// the `compile_fail` ones never expand to code that calls it (classifying
+/// a field is what makes the call site exist at all), but the `diffed
+/// keyed` positive doctest does — it invokes the generated `events_fn` and
+/// so exercises this `pub` path for real, not just by assertion.
 pub fn push_serialized_event(
     events: &mut Vec<(String, serde_json::Value)>,
     event_name: &str,
