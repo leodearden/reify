@@ -290,6 +290,18 @@ warm_lane_pool:
     size_gib: 4096                             # provision-warm-lane-fs.sh --size-gib / SIZE_GIB= default
     mount_env: REIFY_WARM_LANE_MOUNT           # mount-dir override env provision-warm-lane-fs.sh reads
   defrag_extent_threshold: 64                  # refresh-warm-base.sh --frag-threshold / FRAG_THRESHOLD= default
+  # Disk-pressure admission knobs (task 5175, PRD warm-lane-pool-sizing-lifecycle.md
+  # §9.4) for scripts/warm-lane-disk-guard.sh. hard = space-safety ε (#4716):
+  # below-floor is EX_TEMPFAIL 75 (requeue). soft = proactive throttle ε (#5175):
+  # below-floor (but still above hard) is exit 3, consumed by dark-factory's θ
+  # dispatch throttle to back off admission BEFORE the hard floor is ever hit.
+  # soft > hard on both axes is a hard invariant (E1) enforced by `check --soft`
+  # itself (exit 2 if violated). Values cross-checked against the script's `:-`
+  # fallback defaults by tests/infra/test_warm_lane_pool_config.sh (B7).
+  min_free_gib: 50                # REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_GIB (hard floor, exit 75) (scripts/warm-lane-disk-guard.sh)
+  min_free_inodes: 500000         # REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_INODES (hard floor, exit 75) (scripts/warm-lane-disk-guard.sh)
+  soft_free_gib: 500              # REIFY_WARM_LANE_DISK_GUARD_SOFT_FREE_GIB (soft throttle floor, exit 3; §13 Q1 tuning) (scripts/warm-lane-disk-guard.sh)
+  soft_free_inodes: 5000000       # REIFY_WARM_LANE_DISK_GUARD_SOFT_FREE_INODES (soft throttle floor, exit 3) (scripts/warm-lane-disk-guard.sh)
 
 # A′ coupling-tolerant merge train former — enabled per the s(N) go/no-go gate
 # (reify esc-4455-16: GO at N=3; s(3)=0.962 ≫ 1/3, observed coupling-failure 0/104).
