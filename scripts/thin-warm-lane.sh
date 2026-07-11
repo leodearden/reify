@@ -194,3 +194,20 @@ if ! flock -n 9; then
     exit 75
 fi
 # FD 9 stays open (lock held) for the rest of the run; bash releases it on exit.
+
+# ── FREE-FIRST reclaim (T1/T2): only target/ is ever removed ──────────────────
+# Mirrors warm-lane-gc.sh's disk-pressure fast-path (L521-539): rm-stderr
+# capture avoided set -e (the if-condition context) so a failure is reported
+# with the actual error rather than a bare non-zero abort.
+info "Thinning lane: $_rp_lane_dir"
+_rm_err=""
+if _rm_err="$(rm -rf "$LANE_DIR/target" 2>&1)"; then
+    ok "Freed $LANE_DIR/target"
+else
+    err "rm -rf $LANE_DIR/target failed: ${_rm_err:-<rm produced no output>}"
+    exit 1
+fi
+
+ok "Thinned lane: $_rp_lane_dir"
+echo "$_rp_lane_dir"
+exit 0
