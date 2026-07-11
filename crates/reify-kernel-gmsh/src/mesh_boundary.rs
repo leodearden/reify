@@ -1083,4 +1083,74 @@ mod tests {
             other => panic!("expected GeometryError::MeshContractViolation, got {other:?}"),
         }
     }
+
+    /// [`welded_tetra_mesh`] plus one TRAILING vertex whose position exactly
+    /// duplicates vertex 0's, which `indices` never references.
+    /// `Mesh::weld_positions` (backing `weldedness`) walks the full raw
+    /// `vertices` buffer regardless of whether `indices` references a given
+    /// slot, so this extra vertex alone makes `weldedness().raw_welded ==
+    /// false` — while [`raw_open_edge_census`], which only walks `indices`,
+    /// sees exactly the original closed tetra and reports zero open edges.
+    /// This is the counterintuitive degenerate case documented on
+    /// [`raw_open_edge_census`]: `raw_welded == false` yet `open_edges ==
+    /// 0`.
+    fn welded_tetra_with_unreferenced_duplicate_vertex() -> Mesh {
+        let mut mesh = welded_tetra_mesh();
+        let dup = tetra_positions()[0];
+        mesh.vertices.extend_from_slice(&dup);
+        mesh
+    }
+
+    /// Degenerate fail-closed branch: an unreferenced duplicate-position
+    /// vertex trips `weldedness().raw_welded == false` (the gate
+    /// `preflight_watertight_surface` checks) even though the referenced raw
+    /// index buffer is already closed, so `raw_open_edge_census` reports
+    /// `open_edges == 0` and falls back to the `(u32::MAX, u32::MAX)`
+    /// sentinel witness — no real offending edge exists to name. The
+    /// preflight must still report `Err(MeshContractViolation { Closed,
+    /// .. })`: it fails closed on the `raw_welded == false` signal alone,
+    /// rather than inferring "safe" from a zero open-edge count that here
+    /// just means no offender was reachable via `indices`.
+    #[test]
+    fn preflight_rejects_unreferenced_duplicate_vertex_with_zero_open_edges() {
+        let mesh = welded_tetra_with_unreferenced_duplicate_vertex();
+        assert!(
+            !mesh.weldedness(0.0).raw_welded,
+            "fixture setup: the trailing duplicate-position vertex must make \
+             the raw vertex buffer unwelded"
+        );
+
+        let err = preflight_watertight_surface(&mesh, 0.0).expect_err(
+            "an unreferenced duplicate-position vertex must still fail the \
+             watertightness preflight (fail-closed on raw_welded == false) \
+             even though the referenced index buffer has no open edges",
+        );
+        match err {
+            GeometryError::MeshContractViolation {
+                kernel,
+                invariant,
+                counts,
+                witness,
+            } => {
+                assert_eq!(kernel, "gmsh", "violation must name the gmsh kernel");
+                assert_eq!(invariant, MeshInvariant::Closed);
+                assert_eq!(
+                    counts.open_edges, 0,
+                    "the referenced raw index buffer is already closed — the \
+                     unreferenced duplicate vertex contributes no triangles/edges: \
+                     {counts:?}"
+                );
+                assert_eq!(
+                    witness,
+                    MeshWitness::Edge {
+                        u: u32::MAX,
+                        v: u32::MAX
+                    },
+                    "with no offending edge reachable via `indices`, the witness \
+                     must fall back to the documented sentinel"
+                );
+            }
+            other => panic!("expected GeometryError::MeshContractViolation, got {other:?}"),
+        }
+    }
 }
