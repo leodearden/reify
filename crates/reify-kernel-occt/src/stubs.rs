@@ -38,6 +38,18 @@ impl OcctKernel {
         Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
     }
 
+    /// Always fails with [`ExportError::FormatError`], not `IoError`,
+    /// because the shared STUB-arm taxonomy (`assert_all_error_taxonomy` in
+    /// `reify-test-support`) pins `export` to `FormatError` for every
+    /// all-error kernel. The real `OcctKernelHandle::export` (handle.rs)
+    /// reports its infra/availability failures (kernel-thread death, writer
+    /// errors) via `ExportError::IoError` instead — an intentional
+    /// stub-vs-real divergence in the export error taxonomy that the shared
+    /// suite does not assert (its real-arm contract,
+    /// `assert_dangling_reference_taxonomy`, deliberately excludes the
+    /// `export`/`tessellate` variants; see its doc comment). Code branching
+    /// on the `ExportError` variant for "kernel unavailable" will observe
+    /// `FormatError` under `not(has_occt)` and `IoError` under `has_occt`.
     pub fn export(
         &self,
         _handle: GeometryHandleId,
@@ -320,6 +332,11 @@ impl OcctKernelHandle {
         Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
     }
 
+    /// Always fails with `ExportError::FormatError`, not `IoError` — see
+    /// `OcctKernel::export`'s doc comment for why (forced by the shared
+    /// STUB-arm taxonomy; intentionally diverges from the real
+    /// `OcctKernelHandle::export`'s `IoError` for the same "unavailable"
+    /// condition).
     pub fn export(
         &self,
         _handle: GeometryHandleId,
