@@ -26,6 +26,9 @@
 #   J — Tier-3 backing-task resolution for a detached HEAD lane (task 5167)
 #   K — disk-pressure fast-path: rm -rf target/ instead of an alpha reseed
 #       clone (--disk-pressure / REIFY_WARM_LANE_GC_DISK_PRESSURE) (task 5167)
+#   L — Tier-3 Pass-2 boundary: an orphan worktree (non-lane-glob name) on a
+#       terminal, ahead-of-main task/NNNN branch is still governed solely by
+#       _is_reclaimable — _backing_task_terminal never runs in Pass 2 (task 5167)
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -120,6 +123,31 @@ cat > "$STUB_DIR/gc-status-oracle-fail.sh" << 'STUB_EOF'
 exit 1
 STUB_EOF
 chmod +x "$STUB_DIR/gc-status-oracle-fail.sh"
+
+# gc-status-oracle-counting.sh: same ORACLE_MAP lookup as gc-status-oracle.sh,
+# but first appends the queried task-id to ORACLE_CALL_LOG (when set). Used to
+# prove the Tier-3 oracle subprocess is SKIPPED entirely (not merely
+# outcome-neutral) for a lane the cheap local _is_reclaimable predicate
+# already reclaims (warm-lane-gc.sh:502-507 ordering) — asserting on the
+# reclaim outcome alone can't distinguish "oracle wasn't asked" from "oracle
+# was asked and agreed".
+cat > "$STUB_DIR/gc-status-oracle-counting.sh" << 'STUB_EOF'
+#!/usr/bin/env bash
+_qid="$1"
+if [ -n "${ORACLE_CALL_LOG:-}" ]; then
+    printf '%s\n' "$_qid" >> "$ORACLE_CALL_LOG"
+fi
+if [ -f "${ORACLE_MAP:-}" ]; then
+    while IFS=' ' read -r _mid _mst; do
+        if [ "$_mid" = "$_qid" ]; then
+            printf '%s\n' "$_mst"
+            exit 0
+        fi
+    done < "$ORACLE_MAP"
+fi
+exit 0
+STUB_EOF
+chmod +x "$STUB_DIR/gc-status-oracle-counting.sh"
 
 # make_task_lane REPO WORKTREES NAME BRANCH [ahead]
 # Creates a lane at WORKTREES/NAME as a git worktree checked out on BRANCH
@@ -1011,6 +1039,61 @@ assert "I7: dirty done-task lane seed-script invoked (reclaimed despite dirty tr
 assert "I7: divergent target marker removed" \
     bash -c '[ ! -f "$1" ]' _ "$I7_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
 
+# ── I8: landed/clean lane reclaimed via _is_reclaimable does NOT spawn the ─────
+# Tier-3 status oracle (efficiency ordering, warm-lane-gc.sh:502-507)
+# A landed (not ahead-of-main), clean task/NNNN-branch lane is reclaimable via
+# the cheap local _is_reclaimable predicate alone. Wiring a call-logging
+# oracle stub (whose ORACLE_MAP entry WOULD report the backing task as done,
+# if ever asked) and asserting its call-log stays empty proves the
+# --status-cmd subprocess is skipped entirely — not merely that the reclaim
+# outcome happens to match. A regression that invoked the oracle
+# unconditionally would still reclaim this lane (same outcome, same I1-I7
+# assertions) but would silently spawn an oracle subprocess for every
+# already-reclaimable lane in the pool.
+I8_REPO="$I_ROOT/i8-repo"
+I8_WORKTREES="$I_ROOT/i8-worktrees"
+I8_BASE="$I_ROOT/i8-base"
+mkdir -p "$I8_WORKTREES" "$I8_BASE"
+make_repo "$I8_REPO"
+mkdir -p "$I8_BASE/target.gen.1"
+touch "$I8_BASE/target.gen.1.lock"
+ln -sfn "$I8_BASE/target.gen.1" "$I8_BASE/target"
+
+# Landed (no "ahead" arg), clean task/NNNN-branch lane — reclaimable via
+# _is_reclaimable alone; a backing task id CAN still be resolved (task/4827),
+# so the test would be meaningless if the ordering were reversed.
+make_task_lane "$I8_REPO" "$I8_WORKTREES" "_lane-1" "task/4827"
+
+I8_MAP="$(mktemp /tmp/test-gc-oracle-map-XXXXXX)"
+_TMPDIRS+=("$I8_MAP")
+printf '4827 done\n' > "$I8_MAP"
+
+I8_CALL_LOG="$I_ROOT/i8-oracle-calls.log"
+
+I8_SEED_LOG="$I_ROOT/i8-seed-calls.log"
+I8_SEED_STUB="$I_ROOT/i8-seed-stub.sh"
+_seed_stub_body > "$I8_SEED_STUB"
+chmod +x "$I8_SEED_STUB"
+export SEED_LOG="$I8_SEED_LOG"
+export ORACLE_MAP="$I8_MAP"
+export ORACLE_CALL_LOG="$I8_CALL_LOG"
+
+run_helper reclaim \
+    --worktrees-dir "$I8_WORKTREES" \
+    --base-target "$I8_BASE/target" \
+    --seed-script "$I8_SEED_STUB" \
+    --status-cmd "$STUB_DIR/gc-status-oracle-counting.sh"
+
+assert "I8: exit 0" test "$RC" -eq 0
+assert "I8: landed/clean lane seed-script invoked (reclaimed via _is_reclaimable)" \
+    bash -c 'test -f "$1" && grep -q "_lane-1" "$1"' _ "$I8_SEED_LOG"
+assert "I8: divergent target marker removed" \
+    bash -c '[ ! -f "$1" ]' _ "$I8_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
+assert "I8: status oracle NOT invoked (skipped for already-reclaimable lane)" \
+    bash -c '[ ! -f "$1" ] || [ ! -s "$1" ]' _ "$I8_CALL_LOG"
+
+unset ORACLE_CALL_LOG
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Block J — Tier-3 backing-task resolution for a detached HEAD lane
 # Proves the resolver both (J1) resolves a detached HEAD to its containing
@@ -1339,5 +1422,74 @@ assert "K4: summary counts the failed reset as preserved, not reset" \
     bash -c 'printf "%s\n" "$1" | grep -qE "reset=0 removed=0 preserved=1"' _ "$OUT"
 assert "K4: stderr captures the rm failure detail (not swallowed)" \
     bash -c 'printf "%s\n" "$1" | grep -qi "simulated failure"' _ "$ERR_OUT"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block L — Tier-3 Pass-2 boundary: orphan worktrees are never Tier-3-reclaimed
+# The Tier-3 terminal-task short-circuit (_backing_task_terminal) is wired
+# into Pass 1 (pool lanes) ONLY — Pass 2 (destructive orphan cold-worktree
+# removal) must stay governed solely by the existing clean+landed
+# _is_reclaimable predicate. This proves the boundary holds even for an
+# orphan that WOULD be Tier-3-reclaimable under Pass-1 rules (ahead-of-main
+# tip + terminal oracle status) — the higher-consequence direction, since an
+# accidental future wiring here would destroy a worktree outright rather than
+# merely reset a lane's target/.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block L: Tier-3 Pass-2 boundary (orphan worktrees) ---"
+
+L_ROOT="$(mktemp -d /tmp/test-gc-l-XXXXXX)"
+_TMPDIRS+=("$L_ROOT")
+
+# ── L1: orphan (non-lane-glob dir name) on an ahead-of-main task/NNNN branch,
+# oracle maps the task to "done" — must be PRESERVED (not removed), and the
+# status oracle must never even be invoked for it.
+L1_REPO="$L_ROOT/l1-repo"
+L1_WORKTREES="$L_ROOT/l1-worktrees"
+L1_BASE="$L_ROOT/l1-base"
+mkdir -p "$L1_WORKTREES" "$L1_BASE"
+make_repo "$L1_REPO"
+mkdir -p "$L1_BASE/target.gen.1"
+touch "$L1_BASE/target.gen.1.lock"
+ln -sfn "$L1_BASE/target.gen.1" "$L1_BASE/target"
+
+# Directory name "orphan-4827" does not match the default --lane-glob
+# (_lane-*,_spec-*) or --protect-glob (_merge-*), so it is routed to Pass 2
+# (orphan_candidates) even though its checked-out branch is task/4827 — the
+# same shape _backing_task_id resolves for Pass-1 lanes in Block I.
+make_task_lane "$L1_REPO" "$L1_WORKTREES" "orphan-4827" "task/4827" "ahead"
+
+L1_MAP="$(mktemp /tmp/test-gc-oracle-map-XXXXXX)"
+_TMPDIRS+=("$L1_MAP")
+printf '4827 done\n' > "$L1_MAP"
+
+L1_CALL_LOG="$L_ROOT/l1-oracle-calls.log"
+
+L1_SEED_LOG="$L_ROOT/l1-seed-calls.log"
+L1_SEED_STUB="$L_ROOT/l1-seed-stub.sh"
+_seed_stub_body > "$L1_SEED_STUB"
+chmod +x "$L1_SEED_STUB"
+export SEED_LOG="$L1_SEED_LOG"
+export ORACLE_MAP="$L1_MAP"
+export ORACLE_CALL_LOG="$L1_CALL_LOG"
+
+run_helper reclaim \
+    --worktrees-dir "$L1_WORKTREES" \
+    --base-target "$L1_BASE/target" \
+    --seed-script "$L1_SEED_STUB" \
+    --status-cmd "$STUB_DIR/gc-status-oracle-counting.sh"
+
+assert "L1: exit 0" test "$RC" -eq 0
+assert "L1: orphan on ahead-of-main done-task branch is NOT removed (dir still present)" \
+    test -d "$L1_WORKTREES/orphan-4827"
+assert "L1: orphan still appears in git worktree list" \
+    bash -c 'git -C "$1" worktree list | grep -q "orphan-4827"' _ "$L1_REPO"
+assert "L1: orphan divergent target marker intact (untouched, not reset)" \
+    test -f "$L1_WORKTREES/orphan-4827/target/DIVERGENT_MARKER"
+assert "L1: stderr names ahead-of-main preservation (governed by _is_reclaimable, not Tier-3)" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "unlanded|ahead|preserving"' _ "$ERR_OUT"
+assert "L1: status oracle NOT invoked (_backing_task_terminal never runs in Pass 2)" \
+    bash -c '[ ! -f "$1" ] || [ ! -s "$1" ]' _ "$L1_CALL_LOG"
+
+unset ORACLE_CALL_LOG
 
 test_summary
