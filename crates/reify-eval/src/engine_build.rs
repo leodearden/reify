@@ -10208,11 +10208,26 @@ impl Engine {
     ) {
         // Collect candidates first to avoid holding a borrow on `values`
         // while also inserting into it.
+        //
+        // task 4725: the Undef check is DEEP (`value_is_or_contains_undef`),
+        // not `Value::is_undef`'s shallow top-level check. An aggregate cell
+        // like `let all_masses = [self.a.mass, self.b.mass]` evaluates to a
+        // concrete `Value::List([Value::Undef, Value::Undef])` on the pure
+        // pass (before `post_process_cross_sub_value_cells` folds the scoped
+        // `mass` cells) — a `List` is never `Value::Undef` at the top level,
+        // so the shallow check would permanently exclude it from
+        // re-evaluation even after its element dependencies resolve. The
+        // deep check (already used by the §6.1 stale-Undef invariant checker
+        // for the identical `all_masses`/`total_mass` shape) re-selects it.
         let candidates: Vec<(reify_core::ValueCellId, reify_ir::CompiledExpr)> = template
             .value_cells
             .iter()
             .filter(|cell| matches!(cell.kind, reify_compiler::ValueCellKind::Let))
-            .filter(|cell| values.get(&cell.id).is_none_or(|v| v.is_undef()))
+            .filter(|cell| {
+                values
+                    .get(&cell.id)
+                    .is_none_or(|v| crate::invariants::value_is_or_contains_undef(v))
+            })
             .filter_map(|cell| {
                 cell.default_expr
                     .as_ref()

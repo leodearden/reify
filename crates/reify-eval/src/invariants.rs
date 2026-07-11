@@ -493,7 +493,16 @@ fn value_cell_dep_is_resolved(
 /// single composite mathematical/geometric object, not a collection of
 /// independently-sourced sub-results, and no corpus fixture forces that
 /// case — extending to them would be speculative, not evidence-driven.
-fn value_is_or_contains_undef(value: &Value) -> bool {
+///
+/// `pub(crate)`: also reused by
+/// [`crate::engine_build::Engine::post_process_derived_lets`] (task 4725) as
+/// its Undef-Let candidate-selection filter, for the identical reason —
+/// `all_masses`'s stored value is a concrete `List` with `Undef` elements
+/// (not top-level `Value::Undef`), so the shallow `Value::is_undef` check
+/// used there previously never re-selected it once its cross-sub `mass`
+/// dependencies folded, leaving `total_mass = all_masses.sum` permanently
+/// stuck at `Value::Undef`.
+pub(crate) fn value_is_or_contains_undef(value: &Value) -> bool {
     match value {
         Value::Undef => true,
         Value::List(items) => items.iter().any(value_is_or_contains_undef),
