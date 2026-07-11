@@ -242,4 +242,69 @@ mod tests {
             );
         }
     }
+
+    /// Registration order IS run order — the single ordering core that
+    /// replaces the scattered "must run before …" / "MUST run AFTER …"
+    /// convention comments (e.g. `engine_eval.rs:6312`,
+    /// `structural_query.rs:531,610`, `significance_filter.rs:1025,1032`).
+    /// Order is caller-controlled registration order, not source-file
+    /// scatter: the SAME three detectors registered in two DIFFERENT orders
+    /// each run — and report via `ids()` — in their own registration order.
+    #[test]
+    fn run_all_executes_in_registration_order() {
+        fn detector(slug: &'static str, code: DiagnosticCode) -> Box<dyn PostPassDetector> {
+            Box::new(FixedMarkerDetector {
+                slug,
+                code,
+                message: "fired",
+                marker_cell: ValueCellId::new("Body", slug),
+            })
+        }
+
+        // Registered in source order A, B, C.
+        let mut registry_abc = DetectorRegistry::new();
+        registry_abc.register(detector("a", DiagnosticCode::ConstraintViolated));
+        registry_abc.register(detector("b", DiagnosticCode::SelectorKindMismatch));
+        registry_abc.register(detector("c", DiagnosticCode::ConstraintIndeterminate));
+
+        assert_eq!(registry_abc.ids(), vec!["a", "b", "c"]);
+
+        let mut state_abc = OwnedState::empty();
+        registry_abc.run_all(&mut state_abc.as_state());
+        assert_eq!(
+            diag_keys(&state_abc.diagnostics),
+            vec![
+                (Some(DiagnosticCode::ConstraintViolated), "fired".to_string()),
+                (Some(DiagnosticCode::SelectorKindMismatch), "fired".to_string()),
+                (
+                    Some(DiagnosticCode::ConstraintIndeterminate),
+                    "fired".to_string()
+                ),
+            ]
+        );
+
+        // The SAME three detectors, registered in a DIFFERENT order
+        // (C, A, B): both the effect order and ids() follow the new
+        // registration order, not the order above.
+        let mut registry_cab = DetectorRegistry::new();
+        registry_cab.register(detector("c", DiagnosticCode::ConstraintIndeterminate));
+        registry_cab.register(detector("a", DiagnosticCode::ConstraintViolated));
+        registry_cab.register(detector("b", DiagnosticCode::SelectorKindMismatch));
+
+        assert_eq!(registry_cab.ids(), vec!["c", "a", "b"]);
+
+        let mut state_cab = OwnedState::empty();
+        registry_cab.run_all(&mut state_cab.as_state());
+        assert_eq!(
+            diag_keys(&state_cab.diagnostics),
+            vec![
+                (
+                    Some(DiagnosticCode::ConstraintIndeterminate),
+                    "fired".to_string()
+                ),
+                (Some(DiagnosticCode::ConstraintViolated), "fired".to_string()),
+                (Some(DiagnosticCode::SelectorKindMismatch), "fired".to_string()),
+            ]
+        );
+    }
 }
