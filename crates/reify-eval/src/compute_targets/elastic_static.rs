@@ -3909,6 +3909,9 @@ fn extract_density(val: &Value) -> f64 {
     }
 }
 
+/// `(tip_force, pressures, body_force)` — see [`extract_loads`].
+type ExtractedLoads = ([f64; 3], Vec<PressureSpec>, [f64; 3]);
+
 /// Extract all load contributions from a `Value::List` of load `StructureInstance`s
 /// in a **single pass**, returning `(tip_force, pressures, body_force)`.
 ///
@@ -3929,10 +3932,7 @@ fn extract_density(val: &Value) -> f64 {
 /// `Value::List`.
 /// A scene may mix `PointLoad`, `PressureLoad`, and `Gravity`; all accumulate
 /// into their respective targets in a single pass.
-fn extract_loads(
-    val: &Value,
-    density: f64,
-) -> Result<([f64; 3], Vec<PressureSpec>, [f64; 3]), FeaValueShapeError> {
+fn extract_loads(val: &Value, density: f64) -> Result<ExtractedLoads, FeaValueShapeError> {
     let items = match val {
         Value::List(v) => v,
         other => {
