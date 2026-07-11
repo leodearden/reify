@@ -3,7 +3,7 @@
 # Hermetic tests for scripts/provision-warm-lane-fs.sh.
 #
 # PATH-stubs fallocate/mkfs.xfs/losetup/mount/umount/mountpoint/blkid/cp/sudo/chown/
-# df/xfs_growfs/findmnt record their argv to a CALLS_FILE; env-driven stub behaviour:
+# stat/xfs_growfs/findmnt record their argv to a CALLS_FILE; env-driven stub behaviour:
 #   REIFY_TEST_REFLINK_OK  — cp stub: "1" -> exit 0; else print error + exit 1
 #   REIFY_TEST_MOUNTED     — mountpoint stub: "1" -> exit 0 (mounted); else exit 1
 #   REIFY_TEST_IMG_XFS     — blkid stub default-type fallback: "1" -> type "xfs"; else empty
@@ -18,9 +18,11 @@
 #   REIFY_TEST_UNDER_SUDO  — exported "1" by the sudo stub (after stripping a
 #                            leading -n) before it exec's, so downstream stubs
 #                            (blkid) know they're running under sudo
-#   REIFY_TEST_FS_SIZE_GIB — df stub (--grow live-size measurement): current FS size
-#                            in GiB, emitted as bytes on the `df -B1 --output=size`
-#                            value line (default 0)
+#   REIFY_TEST_FS_SIZE_GIB — stat stub (--grow live-size measurement): current IMG
+#                            file size in GiB, emitted as bytes (`stat -c '%s'`
+#                            lookalike; matches what `fallocate -l <N>GiB "$IMG"`
+#                            mutates, NOT the mounted filesystem's smaller
+#                            df-reported usable size) (default 0)
 #   REIFY_TEST_LOOP_FOR_IMG — losetup stub: loop device echoed for `-j` (existing-
 #                            attachment lookup); GATED on being set — unset preserves
 #                            the default-empty "no existing attachment" behaviour
@@ -211,17 +213,18 @@ exit 0
 STUB_EOF
 chmod +x "$STUB_DIR/chown"
 
-# df stub (--grow live-size measurement): record argv, emit a two-line
-# `df -B1 --output=size` lookalike (header + value) so the script's
-# `tail -n1 | tr -d ' '` parse yields REIFY_TEST_FS_SIZE_GIB GiB in bytes.
-cat > "$STUB_DIR/df" << 'STUB_EOF'
+# stat stub (--grow live-size measurement): record argv, emit the IMG file's
+# "current size" in bytes per REIFY_TEST_FS_SIZE_GIB — measures the image
+# file itself (the exact quantity `fallocate -l <N>GiB "$IMG"` mutates), NOT
+# the mounted filesystem's smaller df-reported usable size (see the script's
+# comment at the --grow cur_bytes measurement for why that mismatch matters).
+cat > "$STUB_DIR/stat" << 'STUB_EOF'
 #!/usr/bin/env bash
-echo "df $*" >> "${REIFY_TEST_CALLS_FILE:-/dev/null}"
-echo "1-blocks"
+echo "stat $*" >> "${REIFY_TEST_CALLS_FILE:-/dev/null}"
 echo "$(( ${REIFY_TEST_FS_SIZE_GIB:-0} * 1073741824 ))"
 exit 0
 STUB_EOF
-chmod +x "$STUB_DIR/df"
+chmod +x "$STUB_DIR/stat"
 
 # xfs_growfs stub (--grow online-grow step): record argv, exit 0
 cat > "$STUB_DIR/xfs_growfs" << 'STUB_EOF'

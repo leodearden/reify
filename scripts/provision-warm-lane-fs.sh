@@ -154,6 +154,17 @@ if ! [[ "$SIZE_GIB" =~ ^[0-9]+$ ]]; then
     exit 2
 fi
 
+# Canonicalize IMG to an absolute, symlink-resolved path ONCE, up front, so
+# every `losetup -j "$IMG"` lookup below (fresh-provision's _attach_loop AND
+# --grow's loop-resolve/backing-file guard) matches the SAME path losetup
+# recorded at attach time. A relative or symlinked --img would otherwise
+# resolve to an empty LOOP and --grow would wrongly refuse to grow a
+# filesystem that is genuinely mounted from that image. Falls back to the
+# given value if it can't be resolved yet (e.g. parent dir doesn't exist)
+# rather than aborting — the existing fresh-provision path surfaces that
+# failure with a clearer error at fallocate/mkfs time.
+IMG="$(readlink -f "$IMG" 2>/dev/null || echo "$IMG")"
+
 # ── $SUDO indirection ──────────────────────────────────────────────────────────
 # Override: REIFY_WARM_LANE_SUDO (set to '' in tests to bypass sudo entirely)
 if [ -n "${REIFY_WARM_LANE_SUDO+x}" ]; then
@@ -218,8 +229,15 @@ if [ "$GROW" -eq 1 ]; then
         exit 1
     fi
 
-    # Live current size (never a frozen constant — P4).
-    cur_bytes="$(df -B1 --output=size "$MOUNT" | tail -n1 | tr -d ' ')"
+    # Live current size — measured from the IMG file itself, the exact
+    # quantity `fallocate -l <N>GiB "$IMG"` mutates (never a frozen constant
+    # — P4). Deliberately NOT the mounted filesystem's `df`-reported usable
+    # size: XFS log/AG-header/metadata overhead makes df's usable size a few
+    # GiB below the raw N-GiB image size, which would leave the exact-equal
+    # idempotent branch below practically unreachable after a real grow (a
+    # re-run at the same N would keep seeing cur_gib < N via df and re-fire
+    # fallocate/losetup -c/xfs_growfs every time).
+    cur_bytes="$(stat -c '%s' "$IMG")"
     cur_gib=$((cur_bytes / 1073741824))
 
     # Three-way monotone decision (P3): smaller refuses LOUD; equal is a
