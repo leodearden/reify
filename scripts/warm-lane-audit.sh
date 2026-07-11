@@ -219,15 +219,13 @@ _probe_assigned() {
     return 0
 }
 
-# ── helper: resolve the lane's branch (detached HEAD -> a note) ───────────────
-_lane_branch() {
-    local dir="$1" br
-    br="$(git -C "$dir" symbolic-ref --short HEAD 2>/dev/null || true)"
-    if [ -n "$br" ]; then
-        printf '%s' "$br"
-    else
-        printf '(detached)'
-    fi
+# ── helper: resolve the lane's raw branch (empty string when detached) ────────
+# Callers needing a display value substitute "(detached)" for an empty result
+# (e.g. the table row); recoverable's PUSHED check needs the raw (possibly
+# empty) value so a detached lane never spuriously matches refs/remotes/origin/.
+_lane_branch_raw() {
+    local dir="$1"
+    git -C "$dir" symbolic-ref --short HEAD 2>/dev/null || true
 }
 
 # ── backing-task resolution (D6 reuse, lifted from warm-lane-gc.sh) ──────────
@@ -292,15 +290,33 @@ _backing_task_status() {
     return 0
 }
 
+# ── recoverable: LANDED | PUSHED | ORPHAN ─────────────────────────────────────
+# _recoverable <dir> <branch>
+# LANDED <=> HEAD is an ancestor of --main-ref. Else PUSHED <=> HEAD is an
+# ancestor of refs/remotes/origin/<branch> (attached branches only -- a
+# detached lane, branch=="", is never PUSHED; the merge-base call against a
+# nonexistent remote ref fails harmlessly and falls through). Else ORPHAN.
+_recoverable() {
+    local dir="$1" branch="$2"
+    if git -C "$dir" merge-base --is-ancestor HEAD "$MAIN_REF" 2>/dev/null; then
+        printf 'LANDED'; return 0
+    fi
+    if [ -n "$branch" ] && git -C "$dir" merge-base --is-ancestor HEAD "refs/remotes/origin/$branch" 2>/dev/null; then
+        printf 'PUSHED'; return 0
+    fi
+    printf 'ORPHAN'
+    return 0
+}
+
 # ── classification (monotonically refined across the walk's build-out) ───────
-# _classify assigned status
+# _classify assigned status recoverable
 _classify() {
-    local assigned="$1" status="$2"
+    local assigned="$1" status="$2" recoverable="$3"
     if [ "$assigned" = "ASSIGNED" ]; then
         printf 'LIVE'; return 0
     fi
     # FREE lane.
-    if [ "$status" = "terminal" ]; then
+    if [ "$status" = "terminal" ] || [ "$recoverable" = "LANDED" ] || [ "$recoverable" = "PUSHED" ]; then
         printf 'RECLAIMABLE'; return 0
     fi
     printf 'PRESERVED-OK'
@@ -332,15 +348,17 @@ if [ -n "$MOUNT" ] && [ -d "$MOUNT" ]; then
             FREE_COUNT=$((FREE_COUNT + 1))
         fi
 
-        branch="$(_lane_branch "$entry")"
+        raw_branch="$(_lane_branch_raw "$entry")"
+        branch="${raw_branch:-(detached)}"
         status="$(_backing_task_status "$entry")"
+        recoverable="$(_recoverable "$entry" "$raw_branch")"
 
-        classification="$(_classify "$assigned" "$status")"
+        classification="$(_classify "$assigned" "$status" "$recoverable")"
         case "$classification" in
             RECLAIMABLE) RECLAIMABLE_COUNT=$((RECLAIMABLE_COUNT + 1)) ;;
         esac
 
-        TABLE_OUT="${TABLE_OUT}lane=${name} role=${role} assigned=${assigned} branch=${branch} status=${status} classification=${classification}
+        TABLE_OUT="${TABLE_OUT}lane=${name} role=${role} assigned=${assigned} branch=${branch} status=${status} recoverable=${recoverable} classification=${classification}
 "
     done
 fi
