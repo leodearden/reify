@@ -526,3 +526,74 @@ fn cross_cell_factored_dependent_folds_via_fixpoint() {
         "m = v * 2 (cross-cell dependent folds via fixpoint re-eval)",
     );
 }
+
+// ── cross-entity aggregate: a parent aggregate folds via fixpoint re-eval ───
+
+const CROSS_ENTITY_SOURCE: &str = r#"
+structure def CrossEntityChild : Physical {
+    param geometry : Solid = box(10mm, 20mm, 30mm)
+    param material : Material = Material(
+        name: "Steel AISI 1045",
+        density: 7850kg/m^3,
+        youngs_modulus: 205GPa
+    )
+}
+
+structure def CrossEntityParent {
+    sub a = CrossEntityChild()
+    sub b = CrossEntityChild()
+
+    let all_masses = [self.a.mass, self.b.mass]
+    let total_mass = all_masses.sum
+}
+"#;
+
+/// Regression pin for cross-ENTITY aggregate folding (task 4725).
+///
+/// `self.a.mass` / `self.b.mass` are cross-sub SCALAR member accesses (the
+/// `Physical` trait's geometry-query-derived `mass = volume(geometry) *
+/// material.density`). Each compiles to a plain scoped `ValueRef` keyed
+/// `ValueCellId("CrossEntityParent.a", "mass")` (reify-compiler/src/expr.rs's
+/// scalar cross-sub path) — deliberately NOT the `CrossSubGeometryRef` variant,
+/// which is reserved for genuine geometry-realization members (e.g.
+/// `self.sub.body`) and `unreachable!()`s in `reify_expr::eval_expr` outside a
+/// bare-let top level.
+///
+/// Unlike the SAME-entity `cross_cell_factored_dependent_folds_via_fixpoint`
+/// pin above (`m = v * 2` within one entity), `self.a.mass` / `self.b.mass`
+/// are CROSS-entity: folding them requires dispatching a geometry query
+/// against the CHILD sub-instance's own realized geometry — something
+/// `post_process_derived_lets` (task 4229's same-entity fixpoint) does not do.
+///
+/// The compile-clean assertion inside `compile_and_build_occt` runs
+/// unconditionally, proving cross-sub scalar access to a trait-injected `Let`
+/// member compiles even without OCCT. Gated on OCCT availability, this test
+/// then asserts the parent aggregate `total_mass` folds to a positive
+/// `Scalar<MASS>` ≈ 2× the single child's mass — i.e. both `self.a.mass` and
+/// `self.b.mass` folded from `Undef` and the aggregate re-evaluated via
+/// fixpoint.
+///
+/// RED on the base branch (task 4725): `self.a.mass` / `self.b.mass` stay
+/// `Value::Undef` (no pass folds a cross-entity scoped scalar cell from the
+/// sub-instance's realized geometry), so `all_masses` holds `Undef` and
+/// `total_mass = all_masses.sum` stays `Value::Undef`.
+#[test]
+fn cross_entity_aggregate_folds_via_fixpoint() {
+    let Some(result) = compile_and_build_occt(CROSS_ENTITY_SOURCE) else {
+        return;
+    };
+
+    // box(10mm, 20mm, 30mm) = 0.010 * 0.020 * 0.030 = 6.0e-6 m³; density 7850 kg/m³.
+    let box_v = 0.010 * 0.020 * 0.030;
+    let density = 7850.0;
+    let single_mass = box_v * density;
+
+    assert_scalar_rel(
+        result
+            .values
+            .get(&ValueCellId::new("CrossEntityParent", "total_mass")),
+        DimensionVector::MASS,
+        single_mass * 2.0,
+        "CrossEntityParent.total_mass (cross-entity aggregate folds via fixpoint)",
+    );
+}
