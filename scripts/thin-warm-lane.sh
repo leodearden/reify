@@ -148,3 +148,49 @@ if [ ! -d "$LANE_DIR" ]; then
     err "lane_dir does not exist or is not a directory: $LANE_DIR"
     exit 1
 fi
+
+_rp_lane_dir="$(realpath -m "$LANE_DIR")"
+
+# ── under-mount guard: gated on REIFY_WARM_LANE_MOUNT being set, trailing-
+# slash prefix compare (mirrors seed-warm-lane.sh L428-440) so a sibling path
+# like /mnt/warm-lanes-evil never falsely matches /mnt/warm-lanes ──────────────
+if [ -n "${REIFY_WARM_LANE_MOUNT:-}" ]; then
+    _rp_mount="$(realpath -m "${REIFY_WARM_LANE_MOUNT}")"
+    case "$_rp_lane_dir/" in
+        "$_rp_mount"/*) ;;
+        *)
+            err "Precondition guard: lane_dir is not under REIFY_WARM_LANE_MOUNT"
+            err "  lane_dir: $_rp_lane_dir"
+            err "  REIFY_WARM_LANE_MOUNT (canonicalized): $_rp_mount"
+            exit 1
+            ;;
+    esac
+fi
+
+# ── self-clobber (≠base) guard: refuse if lane_dir resolves to <mount>/base
+# (when REIFY_WARM_LANE_MOUNT is set), or is literally named "base" regardless
+# of the mount (mirrors seed-warm-lane.sh's self-clobber guard) ───────────────
+_self_clobber=0
+if [ -n "${REIFY_WARM_LANE_MOUNT:-}" ]; then
+    _rp_mount_base="$(realpath -m "${REIFY_WARM_LANE_MOUNT}/base")"
+    [ "$_rp_lane_dir" = "$_rp_mount_base" ] && _self_clobber=1
+fi
+[ "$(basename "$_rp_lane_dir")" = "base" ] && _self_clobber=1
+if [ "$_self_clobber" = "1" ]; then
+    err "Precondition guard: lane_dir resolves to (or is named) the base dir — refusing to thin the warm base"
+    err "  lane_dir: $_rp_lane_dir"
+    exit 1
+fi
+
+# ── T3: acquire the lane's own flock (non-blocking); refuse on contention ─────
+# Mirrors warm-lane-gc.sh's live-consumer probe (L488-500): the same lane-lock
+# convention (<lane_dir>.lock) other pool tooling (acquire/release, GC) uses.
+LANE_LOCK="${LANE_DIR}.lock"
+exec 9>"$LANE_LOCK"
+if ! flock -n 9; then
+    exec 9>&-
+    err "Lane lock held by a live consumer (flock -n failed): $LANE_LOCK"
+    err "Refusing to thin an ASSIGNED lane (inv.2: one consumer per lane at a time)."
+    exit 75
+fi
+# FD 9 stays open (lock held) for the rest of the run; bash releases it on exit.
