@@ -30,7 +30,8 @@
 # lane flock — T3; the other two are checked here before any work):
 #   lane_dir must exist and be a directory.
 #   lane_dir must be under $REIFY_WARM_LANE_MOUNT, when that env var is set.
-#   lane_dir must not resolve to (or be literally named) the base dir.
+#   lane_dir must not resolve to (or be literally named) the base dir, and
+#   must not be the mount root itself.
 #
 # Stdout: resolved <lane_dir> on success. Stderr: all diagnostics.
 #
@@ -181,17 +182,22 @@ if [ -n "${REIFY_WARM_LANE_MOUNT:-}" ]; then
     esac
 fi
 
-# ── self-clobber (≠base) guard: refuse if lane_dir resolves to <mount>/base
-# (when REIFY_WARM_LANE_MOUNT is set), or is literally named "base" regardless
-# of the mount (mirrors seed-warm-lane.sh's self-clobber guard) ───────────────
+# ── self-clobber (≠base, ≠mount-root) guard: refuse if lane_dir resolves to
+# <mount>/base (when REIFY_WARM_LANE_MOUNT is set), is literally named "base"
+# regardless of the mount, or IS the mount root itself (mirrors seed-warm-lane.sh's
+# self-clobber guard). The mount-root case is NOT caught by the under-mount
+# guard above: its trailing-slash case-match treats "$mount/" as matching
+# "$mount"/* (glob * also matches the empty tail), so the mount root alone
+# would otherwise slip through as "under" the mount ───────────────────────────
 _self_clobber=0
 if [ -n "${REIFY_WARM_LANE_MOUNT:-}" ]; then
     _rp_mount_base="$(realpath -m "${REIFY_WARM_LANE_MOUNT}/base")"
     [ "$_rp_lane_dir" = "$_rp_mount_base" ] && _self_clobber=1
+    [ "$_rp_lane_dir" = "$_rp_mount" ] && _self_clobber=1
 fi
 [ "$(basename "$_rp_lane_dir")" = "base" ] && _self_clobber=1
 if [ "$_self_clobber" = "1" ]; then
-    err "Precondition guard: lane_dir resolves to (or is named) the base dir — refusing to thin the warm base"
+    err "Precondition guard: lane_dir resolves to (or is named) the base dir, or is the mount root — refusing to thin"
     err "  lane_dir: $_rp_lane_dir"
     exit 1
 fi
