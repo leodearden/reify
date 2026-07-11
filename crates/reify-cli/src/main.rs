@@ -1075,6 +1075,14 @@ fn cmd_build(args: &[String]) -> ExitCode {
                     // in this gate implied OBJ support that does not exist on
                     // this code path (amend: reviewer_comprehensive dead-code
                     // finding).
+                    //
+                    // Scope note (amend: reviewer_comprehensive completeness
+                    // finding): this `Triangles: N` line is intentionally
+                    // Mode-A-only. Task δ/5002's deliverable is the imperative
+                    // `-o` CLI path (exactly what `cli_build_voxel_to_mesh.rs`
+                    // exercises); Mode-B's declarative `: Output`-occurrence
+                    // path (the `None =>` arm below) does not print a
+                    // per-artifact count — see the note there.
                     match format {
                         ExportFormat::Stl => {
                             // Binary STL only — `write_stl_binary`
@@ -1216,6 +1224,19 @@ fn cmd_build(args: &[String]) -> ExitCode {
             // Write one file per artifact. Gate on non-empty bytes (NEVER on
             // format): a DisplayOutput-deferred or failed-occurrence artifact
             // carries empty bytes and must write no file.
+            //
+            // Scope note (amend: reviewer_comprehensive completeness finding,
+            // task δ/5002): unlike Mode-A above, this declarative per-artifact
+            // loop does NOT print a `Triangles: N` count for mesh-format
+            // artifacts (e.g. an `STLOutput`/`ThreeMFOutput` occurrence).
+            // Task 5002's PRD scope is the imperative `-o` CLI path only
+            // (proven by `cli_build_voxel_to_mesh.rs`); it deliberately does
+            // not extend the isosurface honest-signal observability to the
+            // declarative `: Output`-occurrence path. Each `artifact` here
+            // does carry `format` + `bytes`, so a future task could factor
+            // Mode-A's byte-derived-for-Stl / tessellate-derived-for-ThreeMF
+            // counting into a shared helper keyed on `artifact.format` if
+            // Mode-B triangle-count observability is ever wanted.
             let mut files_written = 0usize;
             for artifact in artifacts {
                 if artifact.bytes.is_empty() {
