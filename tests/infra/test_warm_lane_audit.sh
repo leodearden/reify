@@ -251,4 +251,61 @@ assert "C5: _lane-pending backing-task-status=non-terminal" \
 assert "C6: _lane-pending classification PRESERVED-OK (not reclaimable-via-terminal)" \
     bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-pending .*classification=PRESERVED-OK"' _ "$OUT"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block D — recoverable LANDED|PUSHED|ORPHAN + recoverable -> RECLAIMABLE
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block D: recoverable LANDED|PUSHED|ORPHAN ---"
+
+# D(a): HEAD is an ancestor of main (no ahead commit) -> LANDED -> RECLAIMABLE.
+DA_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-da-XXXXXX)"
+_TMPDIRS+=("$DA_MOUNT")
+DA_MAP="$(mktemp /tmp/test-warm-lane-audit-da-map-XXXXXX)"
+_TMPDIRS+=("$DA_MAP")
+printf '300 pending\n' > "$DA_MAP"
+make_lane "$DA_MOUNT/_lane-landed" "task/300"
+
+ORACLE_MAP="$DA_MAP" run_helper --mount "$DA_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh"
+assert "D1: exit 0" test "$RC" -eq 0
+assert "D2: _lane-landed recoverable=LANDED" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-landed .*recoverable=LANDED"' _ "$OUT"
+assert "D3: _lane-landed classification RECLAIMABLE" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-landed .*classification=RECLAIMABLE"' _ "$OUT"
+
+# D(b): pushed to a bare origin remote (origin/<branch> contains HEAD), ahead
+# of local main -> PUSHED -> RECLAIMABLE.
+DB_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-db-XXXXXX)"
+_TMPDIRS+=("$DB_MOUNT")
+DB_MAP="$(mktemp /tmp/test-warm-lane-audit-db-map-XXXXXX)"
+_TMPDIRS+=("$DB_MAP")
+printf '400 pending\n' > "$DB_MAP"
+git init -q --bare "$DB_MOUNT/origin.git"
+make_lane "$DB_MOUNT/_lane-pushed" "task/400"
+_add_ahead_commit "$DB_MOUNT/_lane-pushed"
+git -C "$DB_MOUNT/_lane-pushed" remote add origin "$DB_MOUNT/origin.git"
+git -C "$DB_MOUNT/_lane-pushed" push -q origin task/400
+
+ORACLE_MAP="$DB_MAP" run_helper --mount "$DB_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh"
+assert "D4: exit 0" test "$RC" -eq 0
+assert "D5: _lane-pushed recoverable=PUSHED" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-pushed .*recoverable=PUSHED"' _ "$OUT"
+assert "D6: _lane-pushed classification RECLAIMABLE" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-pushed .*classification=RECLAIMABLE"' _ "$OUT"
+
+# D(c): ahead of main, no origin -> ORPHAN; not stale -> PRESERVED-OK.
+DC_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-dc-XXXXXX)"
+_TMPDIRS+=("$DC_MOUNT")
+DC_MAP="$(mktemp /tmp/test-warm-lane-audit-dc-map-XXXXXX)"
+_TMPDIRS+=("$DC_MAP")
+printf '500 pending\n' > "$DC_MAP"
+make_lane "$DC_MOUNT/_lane-orphan" "task/500"
+_add_ahead_commit "$DC_MOUNT/_lane-orphan"
+
+ORACLE_MAP="$DC_MAP" run_helper --mount "$DC_MOUNT" --status-cmd "$ORACLE_STUB_DIR/leak-oracle.sh"
+assert "D7: exit 0" test "$RC" -eq 0
+assert "D8: _lane-orphan recoverable=ORPHAN" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-orphan .*recoverable=ORPHAN"' _ "$OUT"
+assert "D9: _lane-orphan classification PRESERVED-OK (not stale)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-orphan .*classification=PRESERVED-OK"' _ "$OUT"
+
 test_summary
