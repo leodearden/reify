@@ -1311,7 +1311,8 @@ mod tests {
         assert_eq!(
             realization_count, 3,
             "schedule must contain exactly 3 Realization nodes (a, b, result) for this \
-             module; got a schedule of {} node(s) total",
+             module; got {realization_count} Realization node(s) in a schedule of {} node(s) \
+             total",
             pass.schedule.len(),
         );
 
