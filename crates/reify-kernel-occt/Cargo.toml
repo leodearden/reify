@@ -11,6 +11,7 @@ reify-core.workspace = true
 reify-ir.workspace = true
 cxx = "1"
 inventory.workspace = true
+tracing.workspace = true
 tokio = { workspace = true }
 # Optional dep behind the `mesh-morph` feature flag — gates the `OcctProjector`
 # impl of `reify_mesh_morph::Projector` in `src/projector_impl.rs`. Kept

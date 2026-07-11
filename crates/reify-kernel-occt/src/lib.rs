@@ -553,6 +553,25 @@ impl OcctKernel {
         self.reprs.get(&id.0).copied()
     }
 
+    /// Returns the number of shapes that failed BRep deserialization during
+    /// the last [`WarmStartable::with_warm_state`] call (0 if none failed, or
+    /// if `with_warm_state` has not yet been called on this kernel).
+    ///
+    /// INV-GEO-3 production observability accessor: each failure is also
+    /// reported via a `tracing::warn!` event at the point of failure (see
+    /// `with_warm_state`); this accessor exposes the failure count from
+    /// the most recent restore for production consumers that want the
+    /// summary figure without instrumenting tracing.
+    ///
+    /// Edge case: a `with_warm_state` call whose [`OpaqueState`] fails the
+    /// type check is a no-op per the trait contract (state silently
+    /// ignored) and returns *before* the counter reset — it does not zero
+    /// or otherwise change the count left by the previous successful
+    /// restore.
+    pub fn warm_start_failures(&self) -> usize {
+        self.last_warm_start_failures
+    }
+
     /// Store a shape and return the next handle (defaults to `BRepKind::Solid`).
     fn store(&mut self, shape: cxx::UniquePtr<ffi::ffi::OcctShape>) -> GeometryHandle {
         self.store_with_repr(shape, BRepKind::Solid)
@@ -4198,7 +4217,11 @@ impl WarmStartable for OcctKernel {
                     staged.insert(id, shape);
                 }
                 Err(e) => {
-                    eprintln!("warning: warm-start deserialization failed for shape {id}: {e}");
+                    tracing::warn!(
+                        shape_id = id,
+                        error = %e,
+                        "warm-start deserialization failed"
+                    );
                     self.last_warm_start_failures += 1;
                     continue;
                 }
@@ -4283,12 +4306,6 @@ impl OcctKernel {
         if id >= self.next_id {
             self.next_id = id + 1;
         }
-    }
-
-    /// Returns the number of shapes that failed deserialization during the
-    /// last `with_warm_state()` call.
-    pub fn warm_start_failures(&self) -> usize {
-        self.last_warm_start_failures
     }
 }
 
@@ -5672,8 +5689,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn with_warm_state_partial_failure_logs_warning() {
+    /// Build a warm state with 1 valid cylinder BRep (id 1) + 1 corrupt
+    /// entry (id 2, `"CORRUPT_DATA"`) — deterministically drives the
+    /// `deserialize_brep` `Err` branch for exactly one shape. Shared fixture
+    /// for `with_warm_state_partial_failure_counts_and_restores_valid` and
+    /// `with_warm_state_partial_failure_emits_tracing_warn`, which differ
+    /// only in what they assert about the resulting failure (the counter
+    /// vs. the tracing event).
+    fn one_valid_one_corrupt_state() -> OpaqueState {
         // Create a helper kernel to get a valid cylinder BRep string
         let mut helper = OcctKernel::new();
         helper
@@ -5701,7 +5724,12 @@ mod tests {
             reprs: HashMap::new(),
             next_id: 10,
         };
-        let state = OpaqueState::new(warm, 64);
+        OpaqueState::new(warm, 64)
+    }
+
+    #[test]
+    fn with_warm_state_partial_failure_counts_and_restores_valid() {
+        let state = one_valid_one_corrupt_state();
 
         let mut kernel = OcctKernel::new();
         kernel.with_warm_state(state);
@@ -5726,6 +5754,34 @@ mod tests {
             1,
             "should report 1 failed deserialization"
         );
+    }
+
+    /// INV-GEO-3: a shape that fails BRep deserialization during
+    /// `with_warm_state` must emit a `tracing::warn!` event (production
+    /// observability), not just increment the silent `last_warm_start_failures`
+    /// counter. Mirrors the 1-valid + 1-corrupt fixture from
+    /// `with_warm_state_partial_failure_counts_and_restores_valid`, but asserts on the
+    /// tracing event instead of the counter: exactly 1 WARN, whose message
+    /// contains "warm-start deserialization failed" and whose structured
+    /// `shape_id` field identifies the failed shape (id 2).
+    #[test]
+    fn with_warm_state_partial_failure_emits_tracing_warn() {
+        use reify_test_support::warn_capturing_subscriber;
+
+        // Inoculate against tracing's per-callsite Interest cache — see
+        // `prime_tracing_callsite_cache` in reify-test-support for why.
+        reify_test_support::prime_tracing_callsite_cache();
+
+        let state = one_valid_one_corrupt_state();
+        let mut kernel = OcctKernel::new();
+
+        let (subscriber, capture) = warn_capturing_subscriber();
+        tracing::subscriber::with_default(subscriber, || {
+            kernel.with_warm_state(state);
+        });
+
+        capture.assert_count_and_any_message_contains(1, "warm-start deserialization failed");
+        capture.assert_any_event_field_contains("shape_id", "2");
     }
 
     #[test]
