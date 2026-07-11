@@ -1063,5 +1063,75 @@ assert "P-happy6: fallocate precedes losetup -c precedes xfs_growfs" \
         [ "$falloc_line" -lt "$losetup_c_line" ] && [ "$losetup_c_line" -lt "$growfs_line" ]
     ' _ "$CALLS_FILE"
 
+# P-idempotent: FS already AT the target size -> silent no-op (exit 0, echo
+# mount, but NO mutation) — the exact-equal half of the three-way decision.
+reset_calls
+REIFY_TEST_MOUNTED=1 REIFY_TEST_LOOP_FOR_IMG=/dev/loop99 REIFY_TEST_MNT_SOURCE=/dev/loop99 \
+REIFY_TEST_FS_SIZE_GIB=8192 REIFY_WARM_LANE_SUDO="" \
+    run_helper --img "$P_IMG" --mount "$P_MNT" --grow --size-gib 8192
+
+assert "P-idempotent1: --grow (N == current size) exits 0 (pure no-op)" \
+    test "$RC" -eq 0
+
+assert "P-idempotent2: STDOUT is exactly the mount path" \
+    bash -c '[ "$1" = "$2" ]' _ "$OUT" "$P_MNT"
+
+assert "P-idempotent3: NO fallocate recorded (pure no-op)" \
+    bash -c '! grep -q "^fallocate" "$1"' _ "$CALLS_FILE"
+
+assert "P-idempotent4: NO xfs_growfs recorded (pure no-op)" \
+    bash -c '! grep -q "^xfs_growfs" "$1"' _ "$CALLS_FILE"
+
+# P-noshrink: N < current size -> refuse LOUDLY (P3 no-shrink/monotone), never
+# absorbed as a silent no-op — surfaces an operator's mistyped smaller target.
+reset_calls
+REIFY_TEST_MOUNTED=1 REIFY_TEST_LOOP_FOR_IMG=/dev/loop99 \
+REIFY_TEST_FS_SIZE_GIB=8192 REIFY_WARM_LANE_SUDO="" \
+    run_helper --img "$P_IMG" --mount "$P_MNT" --grow --size-gib 4096
+
+assert "P-noshrink1: --grow (N < current size) exits non-zero (P3 no-shrink)" \
+    test "$RC" -ne 0
+
+assert "P-noshrink2: STDOUT is EMPTY" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+
+assert "P-noshrink3: stderr names shrink/no-shrink/monotone" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "shrink|monotone"' _ "$ERR_OUT"
+
+assert "P-noshrink4: NO fallocate recorded" \
+    bash -c '! grep -q "^fallocate" "$1"' _ "$CALLS_FILE"
+
+# P-backing: img is NOT the mounted backing file (findmnt SOURCE mismatches
+# the resolved loop device) -> refuse, never grow the wrong image.
+reset_calls
+REIFY_TEST_MOUNTED=1 REIFY_TEST_LOOP_FOR_IMG=/dev/loop99 REIFY_TEST_MNT_SOURCE=/dev/loopOTHER \
+REIFY_TEST_FS_SIZE_GIB=6144 REIFY_WARM_LANE_SUDO="" \
+    run_helper --img "$P_IMG" --mount "$P_MNT" --grow --size-gib 8192
+
+assert "P-backing1: --grow (img not the mounted backing file) exits non-zero" \
+    test "$RC" -ne 0
+
+assert "P-backing2: STDOUT is EMPTY" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+
+assert "P-backing3: stderr names the backing-file mismatch" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "backing|not the mounted"' _ "$ERR_OUT"
+
+assert "P-backing4: NO fallocate recorded" \
+    bash -c '! grep -q "^fallocate" "$1"' _ "$CALLS_FILE"
+
+# P-requires-size: --grow with no --size-gib -> exit 2, actionable stderr (no
+# default grow target is ever baked in — the operator must supply the
+# live-measured value, §13 Q2).
+reset_calls
+REIFY_TEST_MOUNTED=1 REIFY_TEST_LOOP_FOR_IMG=/dev/loop99 REIFY_WARM_LANE_SUDO="" \
+    run_helper --img "$P_IMG" --mount "$P_MNT" --grow
+
+assert "P-requires-size1: --grow without --size-gib exits 2" \
+    test "$RC" -eq 2
+
+assert "P-requires-size2: stderr names the --size-gib requirement" \
+    bash -c 'printf "%s\n" "$1" | grep -q -- "--size-gib"' _ "$ERR_OUT"
+
 
 test_summary
