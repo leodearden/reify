@@ -747,7 +747,7 @@ async fn crash_detection_sets_state_to_crashed_on_eof() {
     // Poll under timeout: the spawned reader task must notice EOF and set Crashed.
     // A fixed yield count is flaky on loaded CI runners — same race as the wiring
     // test (`from_parts_with_mcp_emits_sidecar_crashed_on_eof`) below.
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             if matches!(*handle.state().lock().await, SidecarState::Crashed(_)) {
                 break;
@@ -793,7 +793,7 @@ async fn from_parts_with_mcp_emits_sidecar_crashed_on_eof() {
 
     // Poll under timeout: the spawned on_exit task must acquire the state mutex
     // and emit the event; a fixed yield count is flaky on loaded CI runners.
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             if matches!(*handle.state().lock().await, SidecarState::Crashed(_)) {
                 break;
@@ -2336,10 +2336,14 @@ async fn shutdown_not_blocked_during_ensure_sidecar_ready_spawn() {
     }
 
     // shutdown_sidecar should NOT block — the lock is free because spawn_fn
-    // runs outside the lock after step-31.  With the current code (lock held
-    // during spawn), this times out.
+    // runs outside the lock after step-31. The 5s bound below is a deadlock
+    // backstop, not a latency assertion: the regression this guards (the
+    // sidecar Mutex held across spawn_fn().await until tx.send further down)
+    // blocks for the full bound before failing, so 5s is sized for
+    // lock-acquire scheduling headroom on contended CI rather than to detect
+    // sub-bound slowness.
     let shutdown_result = tokio::time::timeout(
-        Duration::from_millis(200),
+        Duration::from_secs(5),
         shutdown_sidecar(&sidecar_for_shutdown),
     )
     .await;
