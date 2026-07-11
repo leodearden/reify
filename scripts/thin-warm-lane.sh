@@ -24,6 +24,10 @@
 #                         change the exit code (see Exit codes below).
 #                         Requires --base. Default OFF (no clone staged).
 #   --base DIR             base_target_dir to seed from. Required with --reseed.
+#                         Per seed-warm-lane.sh's D8 resolve convention, this MUST
+#                         be the CONCRETE .gen.N path, NOT the <base>/target
+#                         symlink -- thin-warm-lane.sh forwards it verbatim,
+#                         unresolved, to seed-warm-lane.sh.
 #   --seed-script PATH     Seed primitive invoked by --reseed (default: sibling
 #                         scripts/seed-warm-lane.sh). Hermetic test seam.
 #   -h, --help              Print this message and exit (0).
@@ -55,6 +59,11 @@
 #   T2 — free-first: bytes are freed BEFORE any reseed clone is staged.
 #   T3 — the lane's own flock (<lane_dir>.lock) is acquired non-blocking;
 #        refuses (75) rather than blocking or stealing an ASSIGNED lane.
+#        Assumes <lane_dir>.lock already exists (pool acquire/release
+#        convention, inv.2): if it does not, opening it below creates it on
+#        the fly, which can itself fail under a truly exhausted filesystem
+#        (ENOSPC) before any bytes are freed. Only bites a lane thinned
+#        outside the pool's acquire/release lifecycle.
 
 set -euo pipefail
 
@@ -83,6 +92,9 @@ Usage: $(basename "$0") <lane_dir> [--reseed] [--base <base_target_dir>] [--seed
                           Best-effort: a failed re-seed is logged but does not
                           change the exit code. Requires --base. Default OFF.
   --base DIR              base_target_dir to seed from. Required with --reseed.
+                          Per seed-warm-lane.sh's D8 resolve convention, this MUST
+                          be the CONCRETE .gen.N path, NOT the <base>/target
+                          symlink -- forwarded verbatim, unresolved.
   --seed-script PATH      Seed primitive to invoke for --reseed (default:
                           sibling scripts/seed-warm-lane.sh). Hermetic test seam.
   -h, --help              Print this message and exit (0).
@@ -214,6 +226,13 @@ fi
 # Mirrors warm-lane-gc.sh's live-consumer probe (L488-500): the same lane-lock
 # convention (<lane_dir>.lock) other pool tooling (acquire/release, GC) uses.
 LANE_LOCK="${LANE_DIR}.lock"
+# The pool's acquire/release convention (inv.2) guarantees <lane_dir>.lock
+# already exists for any lane that went through acquire_lane. If it is
+# missing here, the exec below creates it on the fly -- on a genuinely
+# exhausted filesystem that create can itself fail with ENOSPC before any
+# bytes are freed. Log a breadcrumb so that failure mode reads as a lock-file
+# creation problem rather than a bare, unexplained set -e abort.
+[ -e "$LANE_LOCK" ] || info "Lane lock does not exist yet, creating: $LANE_LOCK (lane may never have been acquired through the pool)"
 exec 9>"$LANE_LOCK"
 if ! flock -n 9; then
     exec 9>&-
