@@ -419,6 +419,20 @@ _classify() {
     printf 'PRESERVED-OK'
 }
 
+# ── minimal JSON string escaping (backslash, double-quote, control chars) ────
+# _json_escape <string>
+# Only lane/branch are free-form (every other column is a fixed enum or
+# integer); this covers the characters that would otherwise break the emitted
+# JSON.
+_json_escape() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    s="${s//$'\n'/\\n}"
+    s="${s//$'\t'/\\t}"
+    printf '%s' "$s"
+}
+
 # ── resident walk ──────────────────────────────────────────────────────────────
 RESIDENT=0
 ASSIGNED_COUNT=0
@@ -427,6 +441,7 @@ RECLAIMABLE_COUNT=0
 LEAKED_COUNT=0
 DIVERGENT_TOTAL_GIB=0
 TABLE_OUT=""
+JSON_LANE_OBJS=()
 
 # A nonexistent/empty --mount is NOT an error (advisory-only script): the walk
 # below simply visits nothing and resident stays 0.
@@ -464,6 +479,7 @@ if [ -n "$MOUNT" ] && [ -d "$MOUNT" ]; then
 
         TABLE_OUT="${TABLE_OUT}lane=${name} role=${role} assigned=${assigned} branch=${branch} status=${status} recoverable=${recoverable} dirty=${dirty} divergent_gib=${divergent_gib} age_min=${age_min} classification=${classification}
 "
+        JSON_LANE_OBJS+=("{\"lane\":\"$(_json_escape "$name")\",\"role\":\"${role}\",\"assigned\":\"${assigned}\",\"branch\":\"$(_json_escape "$branch")\",\"status\":\"${status}\",\"recoverable\":\"${recoverable}\",\"dirty\":\"${dirty}\",\"divergent_gib\":${divergent_gib},\"age_min\":${age_min},\"classification\":\"${classification}\"}")
     done
 fi
 
@@ -485,8 +501,22 @@ if [ -n "$MOUNT" ] && [ -d "$MOUNT" ]; then
     fi
 fi
 
-printf '%s' "$TABLE_OUT"
-printf 'HEADROOM resident=%d assigned=%d free=%d reclaimable=%d leaked=%d divergent_gib=%d free_gib=%d budget_gib=%d\n' \
-    "$RESIDENT" "$ASSIGNED_COUNT" "$FREE_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT" "$DIVERGENT_TOTAL_GIB" "$FREE_GIB" "$BUDGET_GIB"
+# ── emit: table (default) or json ─────────────────────────────────────────────
+# The machine report goes to stdout; all diagnostics above went to stderr
+# (unchanged stdout-contract convention, mirroring warm-lane-disk-guard.sh).
+if [ "$FORMAT" = "json" ]; then
+    lanes_json=""
+    if [ "${#JSON_LANE_OBJS[@]}" -gt 0 ]; then
+        IFS=,
+        lanes_json="${JSON_LANE_OBJS[*]}"
+        unset IFS
+    fi
+    printf '{"lanes":[%s],"headroom":{"resident":%d,"assigned":%d,"free":%d,"reclaimable":%d,"leaked":%d,"divergent_gib":%d,"free_gib":%d,"budget_gib":%d}}\n' \
+        "$lanes_json" "$RESIDENT" "$ASSIGNED_COUNT" "$FREE_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT" "$DIVERGENT_TOTAL_GIB" "$FREE_GIB" "$BUDGET_GIB"
+else
+    printf '%s' "$TABLE_OUT"
+    printf 'HEADROOM resident=%d assigned=%d free=%d reclaimable=%d leaked=%d divergent_gib=%d free_gib=%d budget_gib=%d\n' \
+        "$RESIDENT" "$ASSIGNED_COUNT" "$FREE_COUNT" "$RECLAIMABLE_COUNT" "$LEAKED_COUNT" "$DIVERGENT_TOTAL_GIB" "$FREE_GIB" "$BUDGET_GIB"
+fi
 
 exit 0
