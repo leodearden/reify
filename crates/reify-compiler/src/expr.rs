@@ -8654,4 +8654,63 @@ pub structure Rack {
         );
     }
     // ── end task-4702 step-1 ─────────────────────────────────────────────────
+
+    /// End-to-end compile-pipeline test for the Mul/Div operand-kind guard
+    /// (task compiler-type-hygiene β2, `E_ArithOperandKind`): a concrete,
+    /// runtime-unsupported operand pairing — a struct instance × a struct
+    /// instance, one of the `Type::StructureRef`/`Type::Applied`/`Type::Union`
+    /// kinds the guard above deliberately does NOT skip (see its doc comment:
+    /// "correctly hard-erroring on them is this task's entire purpose, not a
+    /// regression") — must actually reach the guard through the full
+    /// `compile_source` pipeline (parse → resolve → `compile_binop`), not
+    /// just the unit-level `infer_mul_div_result` partition exercised in
+    /// `type_compat.rs`'s test module. Mirrors
+    /// `undef_literal_compile_tests.rs`'s `get_let_expr`-based pattern for
+    /// inspecting a compiled `let` binding's `result_type` directly, via
+    /// `get_let_expr_in` (this module declares two structure defs, so the
+    /// template is looked up by name rather than relying on "first template").
+    #[test]
+    fn struct_times_struct_emits_arith_operand_kind_and_poisons_result() {
+        use reify_test_support::{compile_source, get_let_expr_in};
+
+        let source = r#"
+structure def Widget {
+    param width : Real = 3.5
+}
+structure S {
+    param w1 : Widget
+    param w2 : Widget
+    let a = w1 * w2
+}
+"#;
+        let compiled = compile_source(source);
+
+        // Exactly one ArithOperandKind — the guard's poison-and-emit contract,
+        // not just an absence/presence check.
+        let arith_count = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::ArithOperandKind))
+            .count();
+        assert_eq!(
+            arith_count, 1,
+            "expected exactly ONE ArithOperandKind for `w1 * w2` (struct × \
+             struct, a concrete runtime-unsupported operand kind); got \
+             {arith_count}: {:?}",
+            compiled.diagnostics
+        );
+
+        // The guard must also poison `a`'s static result type to Type::Error
+        // (not merely emit a diagnostic beside an unpoisoned type) — this is
+        // the anti-cascade half of the contract, unverified by a diagnostics-
+        // only assertion.
+        let expr = get_let_expr_in(&compiled, "S", "a");
+        assert_eq!(
+            expr.result_type,
+            Type::Error,
+            "`w1 * w2` (struct × struct) must poison `a`'s result_type to \
+             Type::Error, got: {:?}",
+            expr.result_type
+        );
+    }
 }
