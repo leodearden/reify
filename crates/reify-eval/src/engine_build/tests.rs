@@ -8224,6 +8224,154 @@ structure Assembly {
         }
     }
 
+    /// step-4: pin invariant #2 (BRep fallback on a non-BRep miss, and the
+    /// underlying cache's tol partial-order "tighter satisfies looser" rule),
+    /// exercised through the probe.
+    ///
+    /// (a) Fallback: only a `(entity, BRep, tol)` entry exists; a `Mesh`
+    /// demand's primary lookup at `(entity, Mesh, tol)` misses, the `BRep`
+    /// fallback probe hits, and `resolved_repr`/`produced_repr_out` surface
+    /// `BRep` — the true cold-path value for a realization that demanded Mesh
+    /// but resolved BRep (see the helper's "WHY THE FALLBACK PROBE IS
+    /// LOAD-BEARING" doc).
+    ///
+    /// (b) No fallback for a `BRep` demand: only a `Mesh`-keyed entry exists;
+    /// `cache_repr == BRep` short-circuits the `or_else`, so the fallback is
+    /// never consulted and the probe misses.
+    ///
+    /// (c) tol partial-order: a tighter cached entry (`tol=0.01`) satisfies a
+    /// looser request (`tol=0.1`); a looser cached entry (`tol=0.1`) misses a
+    /// tighter request (`tol=0.001`).
+    #[test]
+    fn probe_realization_cache_falls_back_to_brep_and_honors_tol_partial_order() {
+        // Builds fresh output views, probes, and returns (hit, produced_repr_out)
+        // — every case in this test needs its own untouched output set.
+        let probe = |cache: &RealizationCache<KernelHandle>,
+                     realization_id: &RealizationNodeId,
+                     demanded_repr: ReprKind,
+                     demanded_tol: f64|
+         -> (Option<CacheHit>, Option<ReprKind>) {
+            let mut step_handles: Vec<KernelHandle> = Vec::new();
+            let mut named_steps: HashMap<String, KernelHandle> = HashMap::new();
+            let mut named_step_reprs: HashMap<String, ReprKind> = HashMap::new();
+            let mut topology_attribute_table = TopologyAttributeTable::default();
+            let mut swept_kind_table = SweptKindTable::default();
+            let mut produced_repr_out: Option<ReprKind> = None;
+
+            let mut outputs = RealizationOutputs::new(
+                &mut step_handles,
+                &mut named_steps,
+                &mut named_step_reprs,
+                &mut topology_attribute_table,
+                &mut swept_kind_table,
+                &mut produced_repr_out,
+            );
+
+            let hit = Engine::probe_realization_cache(
+                cache,
+                realization_id,
+                Some("part"),
+                demanded_repr,
+                Some(demanded_tol),
+                true,
+                &mut outputs,
+            );
+            (hit, produced_repr_out)
+        };
+
+        // (a) Fallback: only a BRep entry present; a Mesh demand falls back to it.
+        {
+            let realization_id = RealizationNodeId::new("FallbackEntity", 0);
+            let tol = 1e-4_f64;
+            let seeded = KernelHandle {
+                kernel: KernelId::Occt,
+                id: GeometryHandleId(11),
+            };
+            let mut cache = RealizationCache::<KernelHandle>::new();
+            cache.insert(&realization_id.entity, ReprKind::BRep, tol, NO_OPTIONS, seeded);
+
+            let (hit, produced_repr_out) = probe(&cache, &realization_id, ReprKind::Mesh, tol);
+
+            assert_eq!(
+                hit,
+                Some(CacheHit {
+                    handle: seeded,
+                    resolved_repr: ReprKind::BRep,
+                }),
+                "a Mesh demand must fall back to the BRep-keyed entry when the \
+                 primary Mesh-keyed lookup misses"
+            );
+            assert_eq!(
+                produced_repr_out,
+                Some(ReprKind::BRep),
+                "produced_repr_out must surface the resolved (fallback) BRep \
+                 repr, not the demanded Mesh repr"
+            );
+        }
+
+        // (b) No fallback for a BRep demand: only a Mesh-keyed entry present.
+        {
+            let realization_id = RealizationNodeId::new("NoFallbackEntity", 0);
+            let tol = 1e-4_f64;
+            let seeded = KernelHandle {
+                kernel: KernelId::Occt,
+                id: GeometryHandleId(12),
+            };
+            let mut cache = RealizationCache::<KernelHandle>::new();
+            cache.insert(&realization_id.entity, ReprKind::Mesh, tol, NO_OPTIONS, seeded);
+
+            let (hit, produced_repr_out) = probe(&cache, &realization_id, ReprKind::BRep, tol);
+
+            assert_eq!(
+                hit, None,
+                "a BRep demand must NOT fall back to a Mesh-keyed entry \
+                 (demanded_repr == BRep short-circuits the or_else)"
+            );
+            assert_eq!(produced_repr_out, None);
+        }
+
+        // (c-i) tol partial-order: a tighter cached entry satisfies a looser request.
+        {
+            let realization_id = RealizationNodeId::new("TolOrderTighterCached", 0);
+            let seeded = KernelHandle {
+                kernel: KernelId::Occt,
+                id: GeometryHandleId(13),
+            };
+            let mut cache = RealizationCache::<KernelHandle>::new();
+            cache.insert(&realization_id.entity, ReprKind::BRep, 0.01, NO_OPTIONS, seeded);
+
+            let (hit, _) = probe(&cache, &realization_id, ReprKind::BRep, 0.1);
+
+            assert_eq!(
+                hit,
+                Some(CacheHit {
+                    handle: seeded,
+                    resolved_repr: ReprKind::BRep,
+                }),
+                "a tighter cached entry (tol=0.01) must satisfy a looser \
+                 request (tol=0.1)"
+            );
+        }
+
+        // (c-ii) tol partial-order: a looser cached entry misses a tighter request.
+        {
+            let realization_id = RealizationNodeId::new("TolOrderLooserCached", 0);
+            let seeded = KernelHandle {
+                kernel: KernelId::Occt,
+                id: GeometryHandleId(14),
+            };
+            let mut cache = RealizationCache::<KernelHandle>::new();
+            cache.insert(&realization_id.entity, ReprKind::BRep, 0.1, NO_OPTIONS, seeded);
+
+            let (hit, _) = probe(&cache, &realization_id, ReprKind::BRep, 0.001);
+
+            assert_eq!(
+                hit, None,
+                "a looser cached entry (tol=0.1) must miss a tighter request (tol=0.001)"
+            );
+        }
+    }
+
     // ── Task 4349: cross-kernel GeometryHandleId collision regression tests ─────
 
     /// Shared scaffolding for the two cross-kernel `GeometryHandleId` collision
