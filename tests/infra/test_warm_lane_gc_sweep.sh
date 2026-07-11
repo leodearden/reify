@@ -19,6 +19,12 @@
 #         single DF value (worktrees-dir), agreeing semantics across gc.sh + disk-guard.sh
 #         pins: exit 1 on unresolvable base-target (not exit 2); stderr names correct
 #         sibling-derived path; df volume agreement between --mount value and base-target
+#   G — emergency low-water trigger (task 5168): df measurement below a
+#         critical free-GiB floor appends --disk-pressure to the reclaim
+#         invocation (engaging the 5167 rm-outright mechanism); above the
+#         floor or on a df failure, plain reclaim runs unchanged (fail-to-α);
+#         end-to-end proof via the real gc.sh that target/ is deleted
+#         outright, with inv.preserve (dirty/live-consumer) still honored.
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -45,7 +51,11 @@ echo "=== scripts/warm-lane-gc-sweep.sh hermetic tests (task 4863) ==="
 # Shared temp state + cleanup
 # ──────────────────────────────────────────────────────────────────────────────
 _TMPDIRS=()
+_BGPIDS=()
 cleanup() {
+    for pid in "${_BGPIDS[@]+${_BGPIDS[@]}}"; do
+        kill "$pid" 2>/dev/null || true
+    done
     for d in "${_TMPDIRS[@]+${_TMPDIRS[@]}}"; do rm -rf "$d"; done
 }
 trap cleanup EXIT
@@ -60,6 +70,85 @@ run_sweep() {
     OUT="$(bash "$SCRIPT" "$@" 2>"$ERR_FILE")" || rc=$?
     ERR_OUT="$(cat "$ERR_FILE")"
     RC=$rc
+}
+
+# ── shared scaffolding for Block G (emergency low-water trigger, task 5168) ───
+# This file does not source tests/infra/test_warm_lane_gc.sh, so the pieces
+# needed from it (make_repo, a thinning seed-script stub, the causal
+# live-consumer-lock handshake) are reproduced locally, mirroring it exactly.
+
+# make_repo DIR — initialize a minimal git repo with one commit on main.
+make_repo() {
+    local dir="$1"
+    git init -q -b main "$dir"
+    git -C "$dir" config user.email "test@test.local"
+    git -C "$dir" config user.name "Test"
+    touch "$dir/README.md"
+    git -C "$dir" add README.md
+    git -C "$dir" commit -q -m "initial"
+}
+
+# _df_stub OUTFILE AVAIL_BYTES — writes a df-lookalike stub emitting
+# `df -B1 --output=avail`-style output (line 1 a header, line 2 the avail
+# byte count), ignoring its invocation args. Block G's branch selection is
+# driven entirely by this injected value vs an explicit --critical-free-gib,
+# never by real disk state.
+_df_stub() {
+    local outfile="$1" avail="$2"
+    cat > "$outfile" << EOF
+#!/usr/bin/env bash
+printf 'Avail\n%s\n' '$avail'
+exit 0
+EOF
+    chmod +x "$outfile"
+}
+
+# _df_fail_stub OUTFILE — writes a df stub that always fails (simulates a
+# df measurement failure: wrong path, non-GNU df, transient I/O error, etc.).
+_df_fail_stub() {
+    local outfile="$1"
+    cat > "$outfile" << 'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+    chmod +x "$outfile"
+}
+
+# _thinning_seed_stub_body — printed to stdout; redirect into a seed-script
+# stub file. Logs its argv to $SEED_LOG and removes the lane's divergent
+# marker (simulates the α reflink-reseed's thinning effect). Used only to
+# prove it is NOT invoked when --disk-pressure short-circuits α.
+# Mirrors tests/infra/test_warm_lane_gc.sh's _seed_stub_body.
+_thinning_seed_stub_body() {
+    cat << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$SEED_LOG"
+LANE_DIR="$2"
+rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
+exit 0
+STUB_EOF
+}
+
+# _wait_for_reader_lock <ready-marker> <deadline-seconds>
+# Causal ordering (technique R, docs/prds/infra-test-wallclock-deflake.md,
+# task #4847): polls for the READY marker file in 0.05s ticks, returning 0
+# as soon as it appears, or non-zero once the anti-hang deadline elapses.
+# The READY marker is touched by a backgrounded lock holder AFTER it
+# acquires its flock, so callers only proceed once the flock is provably
+# held — replacing a fixed `sleep` that would race the background
+# subshell's lock acquisition under load. Mirrors
+# tests/infra/test_warm_lane_gc.sh's identically-named helper.
+_wait_for_reader_lock() {
+    local ready_marker="$1"
+    local deadline_s="$2"
+    local max_ticks=$(( deadline_s * 20 ))
+    local tick=0
+    while [ "$tick" -lt "$max_ticks" ]; do
+        [ -f "$ready_marker" ] && return 0
+        sleep 0.05
+        tick=$(( tick + 1 ))
+    done
+    return 1
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -338,5 +427,198 @@ WB_FS="$(df --output=target -- "$WB" 2>/dev/null | tail -n1)"
 BT_FS="$(df --output=target -- "$W_ROOT/base/target" 2>/dev/null | tail -n1)"
 assert "W5: --mount worktrees-dir and derived base-target are on the same filesystem (df volume agreement)" \
     bash -c '[ "$1" = "$2" ]' _ "$WB_FS" "$BT_FS"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block G — emergency low-water trigger (task 5168)
+# ──────────────────────────────────────────────────────────────────────────────
+# Below a critical free-GiB floor, the sweep appends --disk-pressure to its
+# reclaim invocation, engaging the existing rm-outright reset (task 5167)
+# instead of the α reflink-reseed clone that deadlocks at true ENOSPC. All
+# branch selection is driven by an INJECTED df stub value vs an explicit
+# --critical-free-gib — no real-disk numeric premise.
+echo ""
+echo "--- Block G: emergency low-water trigger ---"
+
+# ── G1: below-floor → --disk-pressure appended (avail 1 GiB < floor 2 GiB) ────
+# RED today: the sweep does not yet parse --critical-free-gib or measure df,
+# so it never appends --disk-pressure.
+G1_ROOT="$(mktemp -d /tmp/test-gc-sweep-g1-XXXXXX)"
+_TMPDIRS+=("$G1_ROOT")
+
+G1_MOUNT="$G1_ROOT/worktrees"
+mkdir -p "$G1_MOUNT"
+
+G1_GC_LOG="$G1_ROOT/gc_calls.log"
+G1_GC_STUB="$G1_ROOT/gc_stub.sh"
+cat > "$G1_GC_STUB" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$GC_LOG"
+exit 0
+STUB_EOF
+chmod +x "$G1_GC_STUB"
+
+G1_DF_STUB="$G1_ROOT/df_stub.sh"
+_df_stub "$G1_DF_STUB" 1073741824  # 1 GiB avail
+
+GC_LOG="$G1_GC_LOG" REIFY_WARM_LANE_GC_SWEEP_DF="$G1_DF_STUB" \
+    run_sweep --mount "$G1_MOUNT" --gc-script "$G1_GC_STUB" --critical-free-gib 2
+
+assert "G1: exit 0" test "$RC" -eq 0
+assert "G1: gc-script invoked with reclaim --mount <dir> ... --disk-pressure (below floor)" \
+    bash -c 'grep -qE "^reclaim --mount .*--disk-pressure" "$1"' _ "$G1_GC_LOG"
+
+# ── G2: above-floor → plain reclaim, no flag (avail 100 GiB >= floor 2 GiB) ───
+G2_ROOT="$(mktemp -d /tmp/test-gc-sweep-g2-XXXXXX)"
+_TMPDIRS+=("$G2_ROOT")
+
+G2_MOUNT="$G2_ROOT/worktrees"
+mkdir -p "$G2_MOUNT"
+
+G2_GC_LOG="$G2_ROOT/gc_calls.log"
+G2_GC_STUB="$G2_ROOT/gc_stub.sh"
+cat > "$G2_GC_STUB" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$GC_LOG"
+exit 0
+STUB_EOF
+chmod +x "$G2_GC_STUB"
+
+G2_DF_STUB="$G2_ROOT/df_stub.sh"
+_df_stub "$G2_DF_STUB" 107374182400  # 100 GiB avail
+
+GC_LOG="$G2_GC_LOG" REIFY_WARM_LANE_GC_SWEEP_DF="$G2_DF_STUB" \
+    run_sweep --mount "$G2_MOUNT" --gc-script "$G2_GC_STUB" --critical-free-gib 2
+
+assert "G2: exit 0" test "$RC" -eq 0
+assert "G2: gc-script invoked with plain reclaim --mount <dir> (above floor)" \
+    bash -c 'grep -qE "^reclaim --mount " "$1"' _ "$G2_GC_LOG"
+assert "G2: --disk-pressure NOT appended (above floor)" \
+    bash -c '! grep -q -- "--disk-pressure" "$1"' _ "$G2_GC_LOG"
+
+# ── G3: df failure → plain reclaim + exit 0 (fail-to-α) ───────────────────────
+G3_ROOT="$(mktemp -d /tmp/test-gc-sweep-g3-XXXXXX)"
+_TMPDIRS+=("$G3_ROOT")
+
+G3_MOUNT="$G3_ROOT/worktrees"
+mkdir -p "$G3_MOUNT"
+
+G3_GC_LOG="$G3_ROOT/gc_calls.log"
+G3_GC_STUB="$G3_ROOT/gc_stub.sh"
+cat > "$G3_GC_STUB" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$GC_LOG"
+exit 0
+STUB_EOF
+chmod +x "$G3_GC_STUB"
+
+G3_DF_STUB="$G3_ROOT/df_fail_stub.sh"
+_df_fail_stub "$G3_DF_STUB"
+
+GC_LOG="$G3_GC_LOG" REIFY_WARM_LANE_GC_SWEEP_DF="$G3_DF_STUB" \
+    run_sweep --mount "$G3_MOUNT" --gc-script "$G3_GC_STUB" --critical-free-gib 2
+
+assert "G3: exit 0 (df failure must not abort the sweep under set -euo pipefail)" \
+    test "$RC" -eq 0
+assert "G3: gc-script invoked with plain reclaim (df failure falls back to α)" \
+    bash -c 'grep -qE "^reclaim --mount " "$1"' _ "$G3_GC_LOG"
+assert "G3: --disk-pressure NOT appended (df failure → fail-to-α)" \
+    bash -c '! grep -q -- "--disk-pressure" "$1"' _ "$G3_GC_LOG"
+assert "G3: stderr warns about the df measurement fallback" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "df|measurement|disk-pressure"' _ "$ERR_OUT"
+
+# ── G4: end-to-end below-floor → target/ deleted outright via real gc.sh ──────
+# RED today: the sweep runs plain reclaim → α → the seed stub thins the
+# marker but keeps the target/ dir → dir present, seed log non-empty.
+G4_ROOT="$(mktemp -d /tmp/test-gc-sweep-g4-XXXXXX)"
+_TMPDIRS+=("$G4_ROOT")
+
+G4_REPO="$G4_ROOT/repo"
+G4_WORKTREES="$G4_ROOT/worktrees"
+G4_BASE="$G4_ROOT/base"
+mkdir -p "$G4_WORKTREES" "$G4_BASE"
+make_repo "$G4_REPO"
+mkdir -p "$G4_BASE/target.gen.1"
+touch "$G4_BASE/target.gen.1.lock"
+ln -sfn "$G4_BASE/target.gen.1" "$G4_BASE/target"
+
+# Reclaimable FREE lane: clean, landed (HEAD==main), holding a divergent marker.
+git -C "$G4_REPO" worktree add -q "$G4_WORKTREES/_lane-1"
+mkdir -p "$G4_WORKTREES/_lane-1/target"
+touch "$G4_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
+
+G4_DF_STUB="$G4_ROOT/df_stub.sh"
+_df_stub "$G4_DF_STUB" 1073741824  # 1 GiB avail (below the 2 GiB floor)
+
+G4_SEED_LOG="$G4_ROOT/seed_calls.log"
+G4_SEED_STUB="$G4_ROOT/seed_stub.sh"
+_thinning_seed_stub_body > "$G4_SEED_STUB"
+chmod +x "$G4_SEED_STUB"
+
+REIFY_WARM_LANE_GC_SWEEP_DF="$G4_DF_STUB" \
+REIFY_WARM_LANE_GC_SEED_SCRIPT="$G4_SEED_STUB" \
+SEED_LOG="$G4_SEED_LOG" \
+    run_sweep --mount "$G4_WORKTREES" --gc-script "$GC_REAL" --critical-free-gib 2
+
+assert "G4: exit 0" test "$RC" -eq 0
+assert "G4: _lane-1/target deleted outright end-to-end (emergency trigger engaged --disk-pressure)" \
+    bash -c '[ ! -d "$1" ]' _ "$G4_WORKTREES/_lane-1/target"
+assert "G4: seed stub NOT invoked (--disk-pressure skips the α reseed)" \
+    bash -c '[ ! -s "$1" ]' _ "$G4_SEED_LOG"
+
+# ── G5: inv.preserve inherited (dirty + live-consumer lanes stay intact) ──────
+G5_ROOT="$(mktemp -d /tmp/test-gc-sweep-g5-XXXXXX)"
+_TMPDIRS+=("$G5_ROOT")
+
+G5_REPO="$G5_ROOT/repo"
+G5_WORKTREES="$G5_ROOT/worktrees"
+G5_BASE="$G5_ROOT/base"
+mkdir -p "$G5_WORKTREES" "$G5_BASE"
+make_repo "$G5_REPO"
+mkdir -p "$G5_BASE/target.gen.1"
+touch "$G5_BASE/target.gen.1.lock"
+ln -sfn "$G5_BASE/target.gen.1" "$G5_BASE/target"
+
+# _lane-dirty: uncommitted tracked change. Must be preserved regardless of
+# --disk-pressure — inv.preserve is enforced by _is_reclaimable, upstream of
+# the disk-pressure/α branch.
+git -C "$G5_REPO" worktree add -q "$G5_WORKTREES/_lane-dirty"
+echo "dirty" >> "$G5_WORKTREES/_lane-dirty/README.md"
+mkdir -p "$G5_WORKTREES/_lane-dirty/target"
+touch "$G5_WORKTREES/_lane-dirty/target/DIVERGENT_MARKER"
+
+# _lane-locked: clean, landed, but a live consumer holds the exclusive lock.
+git -C "$G5_REPO" worktree add -q "$G5_WORKTREES/_lane-locked"
+mkdir -p "$G5_WORKTREES/_lane-locked/target"
+touch "$G5_WORKTREES/_lane-locked/target/DIVERGENT_MARKER"
+
+touch "$G5_WORKTREES/_lane-locked.lock"
+G5_READY="$G5_WORKTREES/_lane-locked.lock.ready-marker"
+( flock -x 9 && touch "$G5_READY" && sleep 300 ) 9>"$G5_WORKTREES/_lane-locked.lock" &
+G5_LOCK_PID=$!
+_BGPIDS+=("$G5_LOCK_PID")
+_wait_for_reader_lock "$G5_READY" 30
+
+G5_DF_STUB="$G5_ROOT/df_stub.sh"
+_df_stub "$G5_DF_STUB" 1073741824  # 1 GiB avail (below the 2 GiB floor)
+
+G5_SEED_LOG="$G5_ROOT/seed_calls.log"
+G5_SEED_STUB="$G5_ROOT/seed_stub.sh"
+_thinning_seed_stub_body > "$G5_SEED_STUB"
+chmod +x "$G5_SEED_STUB"
+
+REIFY_WARM_LANE_GC_SWEEP_DF="$G5_DF_STUB" \
+REIFY_WARM_LANE_GC_SEED_SCRIPT="$G5_SEED_STUB" \
+SEED_LOG="$G5_SEED_LOG" \
+    run_sweep --mount "$G5_WORKTREES" --gc-script "$GC_REAL" --critical-free-gib 2
+
+assert "G5: exit 0" test "$RC" -eq 0
+assert "G5: dirty lane target/ marker intact (inv.preserve inherited under --disk-pressure)" \
+    test -f "$G5_WORKTREES/_lane-dirty/target/DIVERGENT_MARKER"
+assert "G5: live-consumer lane target/ marker intact (inv.preserve inherited under --disk-pressure)" \
+    test -f "$G5_WORKTREES/_lane-locked/target/DIVERGENT_MARKER"
+
+# Release the background lock holder.
+kill "$G5_LOCK_PID" 2>/dev/null || true
+_BGPIDS=()  # clear so cleanup doesn't double-kill
 
 test_summary
