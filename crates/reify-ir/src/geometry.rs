@@ -2698,7 +2698,16 @@ impl Mesh {
     /// [`Self::into_validated`] (by-value; moves `self` instead, to avoid
     /// the clone on hot paths) — see those methods' docs for the full mesh
     /// contract.
-    fn check_contract(&self, tol: f64) -> Result<(), MeshContractViolation> {
+    ///
+    /// `welded`, when `Some`, is a caller-supplied position-weld remap (see
+    /// [`Self::weld_positions`]) threaded into the Closed/ConsistentWinding
+    /// obligation in place of a redundant internal re-weld; `None`
+    /// recomputes it via `weld_positions()`.
+    fn check_contract(
+        &self,
+        tol: f64,
+        _welded: Option<&[u32]>,
+    ) -> Result<(), MeshContractViolation> {
         // Obligation 2, part A — IndexValid (buffer shape): `vertices.len()`
         // must be a multiple of 3, and if `normals` is present its length
         // must equal `vertices.len()`. Checked FIRST, before Obligation 1
@@ -2994,7 +3003,7 @@ impl Mesh {
     /// original `Mesh` back after a successful check, prefer
     /// [`Self::into_validated`] to move it in instead and skip the clone.
     pub fn validate(&self, tol: f64) -> Result<ValidatedMesh, MeshContractViolation> {
-        self.check_contract(tol)?;
+        self.check_contract(tol, None)?;
         Ok(ValidatedMesh(self.clone()))
     }
 
@@ -3012,10 +3021,24 @@ impl Mesh {
         self,
         tol: f64,
     ) -> Result<ValidatedMesh, Box<(Mesh, MeshContractViolation)>> {
-        match self.check_contract(tol) {
+        match self.check_contract(tol, None) {
             Ok(()) => Ok(ValidatedMesh(self)),
             Err(violation) => Err(Box::new((self, violation))),
         }
+    }
+
+    /// Non-cloning by-reference sibling of [`Self::validate`]: runs the
+    /// identical producer-obligation checks (see that method's docs for the
+    /// full mesh contract) but returns `Result<(), MeshContractViolation>`
+    /// without minting — and therefore without cloning `self` into — a
+    /// [`ValidatedMesh`] witness. Prefer this over `validate` on hot paths
+    /// (e.g. kernel ingest paths) that only need the `Err` side and don't
+    /// need the witness back.
+    ///
+    /// `tol` has the same [`MeshInvariant::NonDegenerate`] semantics as
+    /// `validate`'s `tol`.
+    pub fn check_mesh_contract(&self, tol: f64) -> Result<(), MeshContractViolation> {
+        self.check_contract(tol, None)
     }
 }
 
