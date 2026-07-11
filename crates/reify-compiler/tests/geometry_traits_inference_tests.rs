@@ -184,6 +184,27 @@ fn name_dispatch_assigns_solid_to_primitives_and_combinators() {
     }
 }
 
+/// Name-dispatch: `isosurface` (marching-cubes extraction from a voxel grid)
+/// infers `GeomDim::Solid` — mirrors the already-correct op-array arm
+/// `CompiledGeometryOp::Isosurface { .. } => InferredTraits::solid()` at
+/// geometry_traits_inference.rs:682 (a watertight bounded/connected Solid,
+/// not provably convex). The argument content is irrelevant here — like the
+/// op-array arm, the name-based arm returns a constant regardless of the
+/// (Voxel-repr) grid operand's shape.
+///
+/// Task 5033 GAP #1(b) RED: falls through the `_ => None` fallback (→
+/// `InferredTraits::all()`) until the `"isosurface" => Some(InferredTraits::solid())`
+/// name-based arm is added immediately before that fallback.
+#[test]
+fn name_dispatch_assigns_solid_to_isosurface() {
+    use reify_compiler::geometry_traits_inference::try_infer_traits_for_function_call;
+    let g = || CompiledExpr::literal(Value::Real(10.0), Type::length());
+    let box_g = || make_function_call("box", vec![g(), g(), g()], Type::Geometry);
+
+    let t = try_infer_traits_for_function_call("isosurface", &[box_g()]).unwrap();
+    assert_eq!(t.dimension, GeomDim::Solid, "isosurface must infer Solid");
+}
+
 /// Name-dispatch: every curve constructor infers `GeomDim::Curve`.
 /// RED until step-6 (currently the curve arm returns `all()` → Solid).
 #[test]

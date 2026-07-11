@@ -2029,20 +2029,20 @@ pub(crate) fn compile_entity(
                 let solver_hints = extract_solver_hints(&lowered_annotations, diagnostics);
                 validate_solver_hint_collections(&solver_hints, &scope, functions, diagnostics);
 
-                let decl = if let Some(free) = auto_free {
-                    ValueCellDecl {
-                        id,
-                        kind: ValueCellKind::Auto { free },
-                        // `priv param` → hidden from external dot-access (task #3978 δ).
-                        visibility: if param.is_priv { Visibility::Private } else { Visibility::Public },
-                        is_aux: false,
-                        cell_type,
-                        default_expr: None,
-                        solver_hints,
-                        span: param.span,
-                    }
+                // `priv param` → hidden from external dot-access (task #3978 δ).
+                let visibility = if param.is_priv {
+                    Visibility::Private
                 } else {
-                    let default_expr = param.default.as_ref().map(|expr| {
+                    Visibility::Public
+                };
+                let decl = build_param_value_cell_decl(
+                    id,
+                    auto_free,
+                    cell_type,
+                    visibility,
+                    solver_hints,
+                    param.span,
+                    |ct| {
                         // Thread the declared annotation as `expected_type` (task γ
                         // #4031) ONLY when the param is explicitly typed — mirrors the
                         // let seam's Some-gating (entity.rs let-init site below). This
@@ -2051,42 +2051,34 @@ pub(crate) fn compile_entity(
                         // positional pin-subst path. `cell_type` is already the
                         // resolved annotation (see the adjacent check_param_default_type
                         // call), so no re-resolution is needed.
-                        let mut compiled = compile_expr_with_expected(
-                            expr,
-                            &scope,
-                            enum_defs,
-                            functions,
+                        let default_expr = param.default.as_ref().map(|expr| {
+                            let mut compiled = compile_expr_with_expected(
+                                expr,
+                                &scope,
+                                enum_defs,
+                                functions,
+                                diagnostics,
+                                param.type_expr.is_some().then_some(ct),
+                            );
+                            fixup_option_none_for_param(&mut compiled, ct);
+                            compiled
+                        });
+
+                        // Site 1: top-level structure-param declared-vs-initializer check.
+                        // Pass `param.type_expr.is_some()` to suppress the check for
+                        // untyped params whose cell_type is only a dimensionless-scalar fallback.
+                        check_param_default_type(
+                            &param.name,
+                            ct,
+                            param.type_expr.is_some(),
+                            default_expr.as_ref(),
+                            param.span,
                             diagnostics,
-                            param.type_expr.is_some().then_some(&cell_type),
                         );
-                        fixup_option_none_for_param(&mut compiled, &cell_type);
-                        compiled
-                    });
 
-                    // Site 1: top-level structure-param declared-vs-initializer check.
-                    // Pass `param.type_expr.is_some()` to suppress the check for
-                    // untyped params whose cell_type is only a dimensionless-scalar fallback.
-                    check_param_default_type(
-                        &param.name,
-                        &cell_type,
-                        param.type_expr.is_some(),
-                        default_expr.as_ref(),
-                        param.span,
-                        diagnostics,
-                    );
-
-                    ValueCellDecl {
-                        id,
-                        kind: ValueCellKind::Param,
-                        // `priv param` → hidden from external dot-access (task #3978 δ).
-                        visibility: if param.is_priv { Visibility::Private } else { Visibility::Public },
-                        is_aux: false,
-                        cell_type,
-                        default_expr,
-                        solver_hints,
-                        span: param.span,
-                    }
-                };
+                        default_expr
+                    },
+                );
 
                 if let Some(wc) = &param.where_clause {
                     compile_per_decl_guard(
@@ -3317,57 +3309,58 @@ pub(crate) fn compile_entity(
 
                             let auto_free = param.default.as_ref().and_then(extract_auto_free);
 
-                            let decl = if let Some(free) = auto_free {
-                                ValueCellDecl {
-                                    id,
-                                    kind: ValueCellKind::Auto { free },
-                                    visibility: Visibility::Public,
-                                    is_aux: false,
-                                    cell_type,
-                                    default_expr: None,
-                                    solver_hints: Vec::new(),
-                                    span: param.span,
-                                }
-                            } else {
-                                let default_expr = param.default.as_ref().map(|expr| {
+                            let decl = build_param_value_cell_decl(
+                                id,
+                                auto_free,
+                                cell_type,
+                                // TODO(#5161): unconditionally Public — NOT priv-aware,
+                                // unlike the top-level structure-param site (entity.rs
+                                // Site 1: `if param.is_priv { Private } else { Public }`).
+                                // `priv` is grammatically legal on a port-member param
+                                // too (grammar.js `port_body` — `port_declaration`'s
+                                // `body` field — repeats `$.param_declaration`, whose
+                                // `optional('priv')` is unconditional), so
+                                // `param.is_priv` can be `true` here and is silently
+                                // dropped. Pre-existing asymmetry — the original,
+                                // pre-dedup code also hardcoded Public here — that task
+                                // #5058's decl-construction dedup preserves byte-for-byte
+                                // rather than fixes; #5161 tracks making it priv-aware.
+                                // Same known gap as the guarded-param site in guards.rs.
+                                Visibility::Public,
+                                Vec::new(),
+                                param.span,
+                                |ct| {
                                     // Thread the declared annotation as `expected_type`
                                     // (task γ #4031) ONLY when the param is explicitly
                                     // typed — mirrors Site 1 / the let seam's Some-gating.
-                                    let mut compiled = compile_expr_with_expected(
-                                        expr,
-                                        &scope,
-                                        enum_defs,
-                                        functions,
+                                    let default_expr = param.default.as_ref().map(|expr| {
+                                        let mut compiled = compile_expr_with_expected(
+                                            expr,
+                                            &scope,
+                                            enum_defs,
+                                            functions,
+                                            diagnostics,
+                                            param.type_expr.is_some().then_some(ct),
+                                        );
+                                        fixup_option_none_for_param(&mut compiled, ct);
+                                        compiled
+                                    });
+
+                                    // Site 2: port-member param declared-vs-initializer check.
+                                    // Pass `param.type_expr.is_some()` to suppress the check for
+                                    // untyped params whose cell_type is only a dimensionless-scalar fallback.
+                                    check_param_default_type(
+                                        &param.name,
+                                        ct,
+                                        param.type_expr.is_some(),
+                                        default_expr.as_ref(),
+                                        param.span,
                                         diagnostics,
-                                        param.type_expr.is_some().then_some(&cell_type),
                                     );
-                                    fixup_option_none_for_param(&mut compiled, &cell_type);
-                                    compiled
-                                });
 
-                                // Site 2: port-member param declared-vs-initializer check.
-                                // Pass `param.type_expr.is_some()` to suppress the check for
-                                // untyped params whose cell_type is only a dimensionless-scalar fallback.
-                                check_param_default_type(
-                                    &param.name,
-                                    &cell_type,
-                                    param.type_expr.is_some(),
-                                    default_expr.as_ref(),
-                                    param.span,
-                                    diagnostics,
-                                );
-
-                                ValueCellDecl {
-                                    id,
-                                    kind: ValueCellKind::Param,
-                                    visibility: Visibility::Public,
-                                    is_aux: false,
-                                    cell_type,
-                                    default_expr,
-                                    solver_hints: Vec::new(),
-                                    span: param.span,
-                                }
-                            };
+                                    default_expr
+                                },
+                            );
                             port_members.push(decl);
                         }
                         reify_ast::MemberDecl::Let(let_decl) => {
@@ -5455,6 +5448,76 @@ pub(crate) fn fixup_option_none_for_let(
 }
 
 // ---------------------------------------------------------------------------
+// Param value-cell decl construction (shared auto_free/param decl-building
+// block, task ζ #5058, PRD compiler-type-hygiene.md §2 dup (e) / §3 decision
+// 10). Single home for the `ValueCellDecl` construction previously
+// copy-pasted at three sites: top-level structure params (entity.rs),
+// port-member params (entity.rs), and guarded-member params (guards.rs,
+// reached via `pub(crate) use entity::*`).
+// ---------------------------------------------------------------------------
+
+/// Build the `ValueCellDecl` for a `param` member, shared by all three
+/// param-decl sites (top-level structure params, port-member params, and
+/// guarded-member params).
+///
+/// Fixes the fields identical across all three sites (`is_aux: false`, the
+/// `Auto`-vs-`Param` branch shape keyed on `auto_free`) and parameterizes the
+/// three axes that differ (`visibility`, `solver_hints`, and default-value
+/// compilation via `compile_default`).
+///
+/// On the auto branch (`auto_free = Some(free)`) `compile_default` is NOT
+/// invoked — `default_expr` is unconditionally `None` — matching the
+/// original duplicated code at all three sites, none of which ever compiled
+/// a default expression for an auto param. On the non-auto branch
+/// (`auto_free = None`), `compile_default` is invoked exactly once with a
+/// `&Type` view of `cell_type` (passed by reference so the caller's
+/// compile/fixup/type-check logic can use it before `cell_type` is moved
+/// into the returned decl) and its return value becomes `default_expr`
+/// verbatim.
+///
+/// `compile_default` encapsulates each call site's own compile-expr variant
+/// (`compile_expr_with_expected` at the two entity.rs sites vs.
+/// `compile_expr_guarded` at the guards.rs site), the `fixup_option_none_for_param`
+/// call, and — at the two entity.rs sites only — the `check_param_default_type`
+/// cross-check. `guards.rs`'s guarded param never calls `check_param_default_type`
+/// today, so keeping that check inside the closure (rather than hoisting it into
+/// this helper) preserves each site's exact diagnostic surface.
+pub(crate) fn build_param_value_cell_decl(
+    id: ValueCellId,
+    auto_free: Option<bool>,
+    cell_type: Type,
+    visibility: Visibility,
+    solver_hints: Vec<SolverHint>,
+    span: SourceSpan,
+    compile_default: impl FnOnce(&Type) -> Option<CompiledExpr>,
+) -> ValueCellDecl {
+    if let Some(free) = auto_free {
+        ValueCellDecl {
+            id,
+            kind: ValueCellKind::Auto { free },
+            visibility,
+            is_aux: false,
+            cell_type,
+            default_expr: None,
+            solver_hints,
+            span,
+        }
+    } else {
+        let default_expr = compile_default(&cell_type);
+        ValueCellDecl {
+            id,
+            kind: ValueCellKind::Param,
+            visibility,
+            is_aux: false,
+            cell_type,
+            default_expr,
+            solver_hints,
+            span,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Constraint-instantiation expansion (shared by `MemberDecl::ConstraintInst`
 // and the `forall` `ConstraintBody::Instantiation` branch in
 // `forall_elaborate.rs`)
@@ -6390,6 +6453,219 @@ structure def Manifold {
             diagnostics[0].message.contains("unsupported member kind"),
             "expected the wildcard-arm diagnostic, got: {:?}",
             diagnostics[0].message,
+        );
+    }
+
+    // ── build_param_value_cell_decl tests (task ζ #5058) ──
+    // Exercise the helper's contracts directly (see its doc comment above its
+    // definition for the full invariants). Full-pipeline diagnostic coverage
+    // (that check_param_default_type still fires at Sites 1/2 after routing
+    // through the helper) lives in param_default_type_mismatch_tests.rs.
+
+    /// Shared assertions for the fields that pass straight through
+    /// `build_param_value_cell_decl` from its inputs to the returned decl on
+    /// both branches (`id`, `span`, `visibility`, `is_aux`, `cell_type`,
+    /// `solver_hints`) — factored out so each test below only spells out the
+    /// contract unique to it (auto-vs-param `kind`/`default_expr` behavior,
+    /// `compile_default` invocation, or cell_type identity).
+    fn assert_param_decl_passthrough_fields(
+        decl: &ValueCellDecl,
+        id: &ValueCellId,
+        span: SourceSpan,
+        visibility: Visibility,
+        cell_type: &Type,
+        solver_hints: &[SolverHint],
+    ) {
+        assert_eq!(&decl.id, id);
+        assert_eq!(decl.span, span);
+        assert_eq!(decl.visibility, visibility);
+        assert!(!decl.is_aux);
+        assert_eq!(&decl.cell_type, cell_type);
+        assert_eq!(decl.solver_hints, solver_hints);
+    }
+
+    /// Auto branch (`auto_free = Some(free)`): `compile_default` must not be
+    /// invoked, and the decl must carry `Auto { free }`, `default_expr: None`,
+    /// and every other field verbatim from the inputs.
+    #[test]
+    fn build_param_value_cell_decl_auto_branch_skips_compile_default() {
+        for free in [true, false] {
+            let id = ValueCellId::new("TestEntity", "x");
+            let cell_type = Type::dimensionless_scalar();
+            let span = SourceSpan::new(3, 7);
+            let solver_hints = vec![SolverHint {
+                kind: SolverHintKind::PreferStock,
+                collection: "stock_lengths".to_string(),
+                span,
+            }];
+            let invoked = std::cell::Cell::new(false);
+
+            let decl = build_param_value_cell_decl(
+                id.clone(),
+                Some(free),
+                cell_type.clone(),
+                Visibility::Private,
+                solver_hints.clone(),
+                span,
+                |_ct: &Type| {
+                    invoked.set(true);
+                    None
+                },
+            );
+
+            assert!(
+                !invoked.get(),
+                "compile_default must not be invoked on the auto branch (free={free})"
+            );
+            assert_eq!(decl.kind, ValueCellKind::Auto { free });
+            assert!(decl.default_expr.is_none());
+            assert_param_decl_passthrough_fields(
+                &decl,
+                &id,
+                span,
+                Visibility::Private,
+                &cell_type,
+                &solver_hints,
+            );
+        }
+    }
+
+    /// Non-auto branch (`auto_free = None`): `compile_default` is invoked once
+    /// with `&cell_type`, and `default_expr` equals its return value;
+    /// `cell_type` and `solver_hints` flow through unchanged. `CompiledExpr`
+    /// has no `PartialEq`, so equality here is pinned via `content_hash`.
+    #[test]
+    fn build_param_value_cell_decl_param_branch_returns_compile_default_result() {
+        for yields_default in [true, false] {
+            let id = ValueCellId::new("TestEntity", "y");
+            // Non-dimensionless, so cell_type equality below isn't trivially
+            // satisfied by every dimensionless scalar comparing equal.
+            let cell_type = Type::length();
+            let span = SourceSpan::new(11, 19);
+            let solver_hints = vec![SolverHint {
+                kind: SolverHintKind::DiscreteSet,
+                collection: "y_values".to_string(),
+                span,
+            }];
+            let synthetic = CompiledExpr::literal(Value::Real(42.0), Type::dimensionless_scalar());
+            let expected_hash = synthetic.content_hash;
+
+            let decl = build_param_value_cell_decl(
+                id.clone(),
+                None,
+                cell_type.clone(),
+                Visibility::Public,
+                solver_hints.clone(),
+                span,
+                |ct: &Type| {
+                    assert_eq!(
+                        ct, &cell_type,
+                        "compile_default must receive cell_type by reference"
+                    );
+                    if yields_default { Some(synthetic) } else { None }
+                },
+            );
+
+            assert_eq!(decl.kind, ValueCellKind::Param);
+            assert_eq!(
+                &decl.cell_type, &cell_type,
+                "cell_type must flow through the helper unchanged"
+            );
+            assert_eq!(
+                decl.solver_hints, solver_hints,
+                "solver_hints must flow through the helper unchanged on the non-auto branch \
+                 (not otherwise pinned end-to-end — every @solver_hint fixture decorates auto)"
+            );
+            assert_eq!(
+                decl.default_expr.map(|e| e.content_hash),
+                if yields_default { Some(expected_hash) } else { None },
+                "default_expr must equal whatever compile_default returned (yields_default={yields_default})"
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Port-member priv-visibility characterization (task ζ #5058 amendment
+// review). Site 2 (port-member `MemberDecl::Param`, above) hardcodes
+// `Visibility::Public` regardless of `param.is_priv` — see the TODO(#5161)
+// comment at that call site. This pins the CURRENT (pre-existing, deliberately
+// preserved) behaviour end-to-end, symmetric to
+// `compile_priv_auto_free_param_is_private_and_auto` in boundary2_producer.rs,
+// which pins the analogous priv/auto intersection at Site 1. Without this, a
+// future accidental fix of #5161 could silently change port-member visibility
+// semantics with no test forcing a conscious update.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod port_param_priv_visibility_tests {
+    use super::*;
+
+    /// Parse + compile `source` using this crate's own (in-build) `compile`,
+    /// never `reify_test_support::compile_source`: that helper links against
+    /// reify-compiler through `reify-test-support`'s own dependency edge, a
+    /// *different* compilation of this crate than the one this test runs
+    /// inside of, so comparing a `ValueCellKind`/`Visibility` from that build
+    /// against this build's would be an E0308 type mismatch (see
+    /// `guards.rs`'s `guarded_param_default_tests::compile` for the same
+    /// rationale spelled out in full). Parsing and compiling in-crate keeps
+    /// every type on one instantiation.
+    fn compile(source: &str) -> CompiledModule {
+        let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
+        super::compile(&parsed)
+    }
+
+    /// `priv param` on a port member currently compiles to `Visibility::Public`
+    /// — not `Private` — unlike the priv-aware top-level structure-param site
+    /// (Site 1, pinned by `compile_priv_auto_free_param_is_private_and_auto`
+    /// in boundary2_producer.rs). This is the pre-existing asymmetry tracked
+    /// by TODO(#5161) at the port-member call site; characterized here so
+    /// #5058's decl-construction dedup is proven not to have introduced or
+    /// hidden it, and so #5161's eventual fix must consciously update this
+    /// assertion rather than silently flip behaviour underneath it.
+    #[test]
+    fn priv_param_on_port_member_compiles_to_public_not_private() {
+        let source = r#"
+trait MyPort {
+    param foo : Length
+}
+
+structure def S {
+    port mount : MyPort {
+        priv param foo : Length = 5mm
+    }
+}
+"#;
+        let module = compile(source);
+        let errors: Vec<_> = module
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(errors.is_empty(), "compile errors: {:?}", errors);
+
+        let template = module
+            .templates
+            .iter()
+            .find(|t| t.name.as_str().contains('S'))
+            .expect("expected template S");
+        assert_eq!(template.ports.len(), 1, "expected 1 port");
+        let port = &template.ports[0];
+        assert_eq!(port.members.len(), 1, "expected 1 port member");
+
+        let foo = &port.members[0];
+        assert_eq!(
+            foo.visibility,
+            Visibility::Public,
+            "known gap (TODO #5161): `priv param` on a port member is currently \
+             silently dropped to Visibility::Public rather than Private, unlike \
+             Site 1's priv-aware top-level param. This test pins the CURRENT \
+             behaviour — update it as part of #5161, not incidentally."
         );
     }
 }

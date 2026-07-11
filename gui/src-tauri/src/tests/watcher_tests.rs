@@ -57,9 +57,7 @@ where
 fn wait_for_returns_true_promptly_when_condition_already_satisfied() {
     let sink: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(vec![42]));
     let start = Instant::now();
-
     let found = wait_for(&sink, Duration::from_secs(10), |v: &[u32]| v.contains(&42));
-
     assert!(found, "predicate should be satisfied on the first check");
     assert!(
         start.elapsed() < Duration::from_secs(1),
@@ -70,6 +68,11 @@ fn wait_for_returns_true_promptly_when_condition_already_satisfied() {
 
 #[test]
 fn wait_for_detects_value_set_by_another_thread() {
+    // Dedicated inotify-free coverage of wait_for's cross-thread poll path:
+    // this must keep passing even on hosts where every watcher test below
+    // skips (e.g. "OS file watch limit reached"), since that skip would
+    // otherwise remove all exercise of a producer thread pushing into the
+    // same kind of sink wait_for polls.
     let sink: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(vec![]));
     let producer_sink = sink.clone();
 
@@ -90,11 +93,9 @@ fn wait_for_detects_value_set_by_another_thread() {
 fn wait_for_returns_false_after_timeout_when_never_satisfied() {
     let sink: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(vec![]));
     let start = Instant::now();
-
     let found = wait_for(&sink, Duration::from_millis(150), |v: &[u32]| {
         v.contains(&99)
     });
-
     assert!(!found, "predicate is never satisfied, should time out");
     assert!(
         start.elapsed() >= Duration::from_millis(150),
@@ -212,12 +213,21 @@ fn watcher_with_target_file_only_fires_for_that_file() {
         paths.iter().any(|p| p.ends_with("project.ri"))
     });
 
+    // The negative check below is an immediate snapshot, not a poll:
+    // asserting an event's absence can only ever false-PASS under a
+    // condition-poll (there's no positive condition to wait for), so
+    // polling here would just add latency on every green run for no
+    // correctness benefit. It is race-free by construction, not by
+    // timeout: other.ri was modified 500ms before project.ri (above) — 5x
+    // the production debounce window (100ms, watcher.rs:15) — and the
+    // watcher's debounce only suppresses duplicate same-path events; it
+    // does not delay or reorder emission across distinct paths. So a
+    // broken target_file filter's other.ri push would already be sitting
+    // in `changed_paths` well before project.ri's push makes `found` true
+    // above. That's a wall-clock ordering argument sized to catch "the
+    // filter is simply broken" (what this test exists to catch), not a
+    // formal guarantee against an adversarially delayed event.
     let paths = changed_paths.lock().unwrap();
-    // Should have fired for project.ri only. The negative check below is not
-    // a race: other.ri was modified 500ms before project.ri (see above), so
-    // if the target_file filter were broken, other.ri's Changed event would
-    // already be sitting in `paths` by the time wait_for observes
-    // project.ri's event (itself gated behind the watcher's ~100ms debounce).
     assert!(
         found,
         "should have detected project.ri change, got: {:?}",

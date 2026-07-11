@@ -116,6 +116,16 @@ enum SingleParentSweepKind {
 struct RealizationOutputs<'a> {
     step_handles: &'a mut Vec<KernelHandle>,
     named_steps: &'a mut HashMap<String, KernelHandle>,
+    /// By-name sibling of `named_steps` (task 5033 Gap #2 Gap A): records
+    /// each named realization's resolved [`ReprKind`], so a LATER
+    /// realization's cross-realization `GeomRef::Sub(name)` parent (e.g.
+    /// "solid" in `let shell = isosurface(solid)`) can be resolved by NAME
+    /// rather than by bare `GeometryHandleId` — matching a cross-kernel id
+    /// against another realization's `realization_step_ids` risks a
+    /// same-integer collision (#4349; a `GeometryHandleId` is only unique
+    /// within its own kernel's handle space). See its two write sites and
+    /// its read site in `available_for_op` below.
+    named_step_reprs: &'a mut HashMap<String, ReprKind>,
     topology_attribute_table: &'a mut TopologyAttributeTable,
     swept_kind_table: &'a mut SweptKindTable,
     /// Terminal output [`ReprKind`] surfaced by the executor for the post-call
@@ -135,6 +145,7 @@ impl<'a> RealizationOutputs<'a> {
     fn new(
         step_handles: &'a mut Vec<KernelHandle>,
         named_steps: &'a mut HashMap<String, KernelHandle>,
+        named_step_reprs: &'a mut HashMap<String, ReprKind>,
         topology_attribute_table: &'a mut TopologyAttributeTable,
         swept_kind_table: &'a mut SweptKindTable,
         produced_repr_out: &'a mut Option<ReprKind>,
@@ -142,6 +153,7 @@ impl<'a> RealizationOutputs<'a> {
         Self {
             step_handles,
             named_steps,
+            named_step_reprs,
             topology_attribute_table,
             swept_kind_table,
             produced_repr_out,
@@ -2082,7 +2094,6 @@ fn op_is_voxel_only_input(op: &Operation) -> bool {
 /// Exhaustive match over `CompiledGeometryOp`/kind sub-enums so a new variant
 /// fails to compile until mapped — same discipline as `geometry_op_to_operation`
 /// at :902, but over the compiled-IR form rather than the runtime `GeometryOp`.
-#[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
 fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
     match op {
         CompiledGeometryOp::Primitive { kind, .. } => match kind {
@@ -2168,7 +2179,11 @@ fn compiled_geometry_op_to_operation(op: &CompiledGeometryOp) -> Operation {
 }
 
 /// Collect all `GeomRef::Sub` operands referenced by a compiled geometry op.
-#[allow(dead_code)] // production wiring deferred to task 4050 (in-realization conversion executor)
+///
+/// Used by `available_for_op`'s cross-realization name resolution (task
+/// 5033 Gap #2 Gap A) to look up a `GeomRef::Sub(name)` parent's produced
+/// repr in `named_step_reprs` when it names a DIFFERENT, already-completed
+/// realization rather than a step local to this one.
 fn sub_refs_in_op(op: &CompiledGeometryOp) -> Vec<&str> {
     let mut refs = Vec::new();
     match op {
@@ -2604,6 +2619,100 @@ fn demanded_reprs_for_template(
     demand
 }
 
+/// Compute per-realization dispatch-demand OVERRIDES for the two roles in an
+/// isosurface-shaped Voxel/Mesh pipeline (task 5033 Gap D: the
+/// `tessellate_from_values` sibling of `demanded_reprs_for_template`'s
+/// `needs_voxel` rule above). Absent from the returned map ⇒ the caller's
+/// pre-existing hardcoded `ReprKind::BRep` applies, unchanged.
+///
+/// `tessellate_from_values` (unlike `build`/`build_snapshot`/
+/// `build_with_geometry_output`) does not call `compute_demanded_reprs`: its
+/// per-op dispatch demand is unconditionally `ReprKind::BRep` (task 4050
+/// step-8 design_decision 4), because every realization's terminal handle is
+/// tessellated at the end regardless of demand, and forcing BRep keeps every
+/// terminal handle on the default kernel for that trailing tessellate call.
+/// A Voxel-only-input op (e.g. `isosurface`) is the one shape BRep-everywhere
+/// cannot satisfy, in BOTH roles simultaneously:
+///   - the CONSUMER realization itself (e.g. `shell` in `let shell =
+///     isosurface(solid)`) must demand Mesh — no kernel declares a
+///     `(Surface, BRep)` capability entry (only `(Surface, Mesh)`,
+///     register.rs), so a BRep demand makes its own dispatch unsatisfiable
+///     with no fallback (the BRep-fallback in `execute_realization_ops` is a
+///     no-op when `demanded_repr == ReprKind::BRep` already).
+///   - its DIRECT operand (e.g. `solid`) must demand Voxel, or the consumer's
+///     `available_for_op` never contains Voxel and the same dispatch fails.
+///
+/// This narrow helper reproduces JUST those two overrides, leaving every
+/// other realization's demand at the pre-existing hardcoded BRep — no
+/// behavior change for any pipeline that does not use isosurface.
+fn voxel_pipeline_demand_overrides(template: &TopologyTemplate) -> HashMap<usize, ReprKind> {
+    let name_to_idx: HashMap<&str, usize> = template
+        .realizations
+        .iter()
+        .enumerate()
+        .filter_map(|(i, r)| r.name.as_deref().map(|name| (name, i)))
+        .collect();
+    let mut overrides = HashMap::new();
+    for (c_idx, realization) in template.realizations.iter().enumerate() {
+        for op in &realization.operations {
+            // Review fix-forward (task 5033 amendment): cheap discriminant
+            // pre-filter before building the full `Operation` classifier.
+            // `Operation::Surface` — the only Voxel-only-input op — is
+            // produced exclusively by `CompiledGeometryOp::Isosurface` (see
+            // `compiled_geometry_op_to_operation`'s match arms), so every
+            // other op discriminant can skip the
+            // `compiled_geometry_op_to_operation` + `op_is_voxel_only_input`
+            // call chain entirely. This function runs once per template on
+            // EVERY `tessellate_from_values` call (potentially once per
+            // tessellation), so avoiding the full classification for the
+            // overwhelmingly common non-isosurface op is not just cosmetic.
+            if !matches!(op, CompiledGeometryOp::Isosurface { .. }) {
+                continue;
+            }
+            if !op_is_voxel_only_input(&compiled_geometry_op_to_operation(op)) {
+                continue;
+            }
+            overrides.insert(c_idx, ReprKind::Mesh);
+            for sub_name in sub_refs_in_op(op) {
+                if let Some(&p_idx) = name_to_idx.get(sub_name) {
+                    // Review fix-forward (task 5033 amendment): a realization
+                    // can be BOTH an isosurface consumer (own demand = Mesh,
+                    // inserted above at its own `c_idx`) and the Voxel
+                    // operand of a DOWNSTREAM isosurface (chained: `b =
+                    // isosurface(a); c = isosurface(b)`). A `GeomRef::Sub`
+                    // operand only ever names an earlier-declared realization
+                    // (`p_idx < c_idx`), so by construction any consumer-Mesh
+                    // entry for `p_idx` was already inserted in an earlier
+                    // iteration of this outer loop — don't clobber it here.
+                    // Chained voxel pipelines are out of this task's scope
+                    // (PRD voxel-to-mesh-surfacing.md targets the
+                    // single-isosurface slice); silently overwriting would
+                    // leave `b` demanding Voxel instead of the Mesh its own
+                    // `Surface` dispatch requires. Single-isosurface
+                    // pipelines never hit this branch (no node is ever both
+                    // a `c_idx` and someone else's `p_idx`), so this is a
+                    // pure no-op guard for the task's actual scope.
+                    //
+                    // Amendment (review): the clobber guard's correctness
+                    // relies entirely on this ordering invariant — assert it
+                    // rather than let a future realization-ordering change
+                    // (e.g. a reordering compile pass) silently mis-demand a
+                    // chained pipeline instead of failing loudly.
+                    debug_assert!(
+                        p_idx < c_idx,
+                        "GeomRef::Sub({sub_name:?}) must name an earlier-declared \
+                         realization (p_idx={p_idx}, c_idx={c_idx})"
+                    );
+                    if overrides.get(&p_idx) != Some(&ReprKind::Mesh) {
+                        overrides.insert(p_idx, ReprKind::Voxel);
+                    }
+                }
+            }
+        }
+    }
+    overrides
+}
+
 /// Derive the output [`ReprKind`] for a dispatched op by reading the chosen
 /// kernel's capability descriptor (task ε / 3436, PRD §8 step-6).
 ///
@@ -2985,6 +3094,9 @@ impl Engine {
                 // compile-side diagnostic in `expr.rs::try_emit_cross_sub_geometry`
                 // continues to fire for those call sites).
                 let mut named_steps: HashMap<String, KernelHandle> = HashMap::new();
+                // Task 5033 Gap #2 Gap A: by-name repr sibling of `named_steps`.
+                // See `RealizationOutputs::named_step_reprs` doc for why.
+                let mut named_step_reprs: HashMap<String, ReprKind> = HashMap::new();
                 seed_cross_sub_named_steps(
                     template,
                     &module_named_steps,
@@ -3084,6 +3196,7 @@ impl Engine {
                         RealizationOutputs::new(
                             &mut step_handles,
                             &mut named_steps,
+                            &mut named_step_reprs,
                             &mut self.topology_attribute_table,
                             &mut self.swept_kind_table,
                             &mut produced_repr_out,
@@ -3752,6 +3865,9 @@ impl Engine {
                 // compile-side diagnostic in `expr.rs::try_emit_cross_sub_geometry`
                 // continues to fire for those call sites).
                 let mut named_steps: HashMap<String, KernelHandle> = HashMap::new();
+                // Task 5033 Gap #2 Gap A: by-name repr sibling of `named_steps`.
+                // See `RealizationOutputs::named_step_reprs` doc for why.
+                let mut named_step_reprs: HashMap<String, ReprKind> = HashMap::new();
                 seed_cross_sub_named_steps(
                     template,
                     &module_named_steps,
@@ -3969,6 +4085,7 @@ impl Engine {
                         RealizationOutputs::new(
                             &mut step_handles,
                             &mut named_steps,
+                            &mut named_step_reprs,
                             &mut self.topology_attribute_table,
                             &mut self.swept_kind_table,
                             &mut produced_repr_out,
@@ -4910,6 +5027,9 @@ impl Engine {
 
         for (t_idx, template) in module.templates.iter().enumerate() {
             let mut named_steps: HashMap<String, KernelHandle> = HashMap::new();
+            // Task 5033 Gap #2 Gap A: by-name repr sibling of `named_steps`.
+            // See `RealizationOutputs::named_step_reprs` doc for why.
+            let mut named_step_reprs: HashMap<String, ReprKind> = HashMap::new();
             seed_cross_sub_named_steps(
                 template,
                 &module_named_steps,
@@ -4976,6 +5096,7 @@ impl Engine {
                     RealizationOutputs::new(
                         &mut step_handles,
                         &mut named_steps,
+                        &mut named_step_reprs,
                         &mut scratch_topo_attrs,
                         &mut scratch_swept_kinds,
                         &mut produced_repr_out,
@@ -5839,6 +5960,11 @@ impl Engine {
         let long_chain_threshold = crate::dispatcher::long_chain_threshold_from_env();
 
         for (t_idx, template) in module.templates.iter().enumerate() {
+            // Task 5033 Gap D: the isosurface-pipeline exception to this
+            // function's hardcoded-BRep dispatch demand — see
+            // `voxel_pipeline_demand_overrides` doc for why this is scoped
+            // narrowly rather than reusing `compute_demanded_reprs`.
+            let voxel_demand_overrides = voxel_pipeline_demand_overrides(template);
             // `named_steps` is scoped per-template so that two structures
             // that each declare `let body = …` cannot clobber each other's
             // name → handle entries.  Cross-template `GeomRef::Sub`
@@ -5848,6 +5974,9 @@ impl Engine {
             // compile-side diagnostic in `expr.rs::try_emit_cross_sub_geometry`
             // continues to fire for those call sites).
             let mut named_steps: HashMap<String, KernelHandle> = HashMap::new();
+            // Task 5033 Gap #2 Gap A: by-name repr sibling of `named_steps`.
+            // See `RealizationOutputs::named_step_reprs` doc for why.
+            let mut named_step_reprs: HashMap<String, ReprKind> = HashMap::new();
             seed_cross_sub_named_steps(
                 template,
                 &module_named_steps,
@@ -5991,6 +6120,16 @@ impl Engine {
                 // bug; Rust's slice indexing panics with a precise OOB message
                 // at runtime in both debug and release.
                 let demanded_tol = demanded_tols[t_idx][r_idx];
+                // Task 5033 Gap D: BRep for every realization EXCEPT the two
+                // isosurface-pipeline roles overridden above — see
+                // `voxel_pipeline_demand_overrides` doc for why this narrow
+                // exception is correct and safe (every other realization's
+                // demand is byte-identical to the pre-existing hardcoded-BRep
+                // behavior below).
+                let demanded_repr = voxel_demand_overrides
+                    .get(&r_idx)
+                    .copied()
+                    .unwrap_or(ReprKind::BRep);
                 Engine::execute_realization_ops(
                     RealizationOpsInput::new(
                         geometry_kernels,
@@ -6010,11 +6149,16 @@ impl Engine {
                     )
                     .with_realization_name(realization.name.as_deref())
                     .with_demanded_tol(demanded_tol)
-                    // Task 4050 step-8 / design_decision 4: the tessellate path
-                    // discards produced_repr and stays on a BRep demand
-                    // permanently (a Manifold terminal would break the trailing
-                    // default-kernel tessellate call).
-                    .with_demanded_repr(ReprKind::BRep)
+                    // Task 4050 step-8 / design_decision 4 (narrowed by task
+                    // 5033 Gap D): BRep for every realization except the two
+                    // isosurface-pipeline roles (operand → Voxel, consumer →
+                    // Mesh) — computed above (`voxel_demand_overrides`).
+                    // `walk_placed_realizations` (geometry_ops.rs) resolves the
+                    // trailing tessellate call's kernel from each terminal
+                    // handle's own `KernelHandle.kernel` (task 5033 Gap D
+                    // sibling fix), so a non-default-kernel terminal (e.g. an
+                    // OpenVDB Voxel/Mesh handle) no longer breaks that call.
+                    .with_demanded_repr(demanded_repr)
                     // Tessellate path never demands VolumeMesh, so never boundary.
                     .with_demanded_boundary(false)
                     // Task #3443: thread module-scope #kernel(...) pragma
@@ -6029,6 +6173,7 @@ impl Engine {
                     RealizationOutputs::new(
                         &mut step_handles,
                         &mut named_steps,
+                        &mut named_step_reprs,
                         &mut *topology_attribute_table,
                         &mut *swept_kind_table,
                         &mut produced_repr_out,
@@ -6338,6 +6483,7 @@ impl Engine {
         let RealizationOutputs {
             step_handles,
             named_steps,
+            named_step_reprs,
             topology_attribute_table,
             swept_kind_table,
             produced_repr_out,
@@ -6468,6 +6614,12 @@ impl Engine {
                 topology_attribute_table.remove(cached_handle.id);
                 step_handles.push(cached_handle);
                 named_steps.insert(name.to_string(), cached_handle);
+                // Task 5033 Gap #2 Gap A: by-name repr sibling write. Mirrors
+                // the `named_steps` insert above — see
+                // `RealizationOutputs::named_step_reprs` doc for why a LATER
+                // realization's cross-realization `GeomRef::Sub` parent must
+                // be resolved by name rather than by bare handle-id.
+                named_step_reprs.insert(name.to_string(), resolved_repr);
                 // Step-10 (task ε / 3436): the [`RealizationCache`] key includes
                 // the repr (see the post-success `realization_cache.insert` call
                 // at the bottom of this function), so the cached terminal handle
@@ -6620,6 +6772,43 @@ impl Engine {
                                     .map(|idx| realization_step_reprs[idx])
                             })
                             .collect();
+                        // Task 5033 Gap #2 Gap A: the lookup above is blind to
+                        // a CROSS-realization parent (a `GeomRef::Sub(name)`
+                        // naming a DIFFERENT, already-completed realization —
+                        // e.g. "solid" in `let shell = isosurface(solid)`).
+                        // Its producer handle lives in THAT realization's
+                        // now-out-of-scope `realization_step_ids`, not this
+                        // one's, so the filter_map above always misses it.
+                        // Resolve it by NAME instead — never by matching the
+                        // bare `GeometryHandleId` across realizations, which
+                        // risks a same-integer collision (#4349: a
+                        // `GeometryHandleId` is only unique within its own
+                        // kernel's handle space) — via `named_step_reprs`,
+                        // the by-name sibling of `named_steps` populated at
+                        // this realization loop's two insertion points.
+                        //
+                        // Amendment (review): only DO this resolution for ops
+                        // that cannot accept the `{BRep}` default at all
+                        // (`op_is_voxel_only_input` — today exactly
+                        // `Operation::Surface`, the isosurface builtin, per
+                        // PRD OQ-1). For every other op the pre-existing
+                        // `{BRep}` default (design_decision 6) remains
+                        // exactly as before: it is always a member of a
+                        // BRep/Mesh-accepting op's input set, so surfacing
+                        // the producer's true repr here would only ever
+                        // change *which* available entry the dispatcher
+                        // picks among several acceptable ones — a kernel-
+                        // selection shift with no existing regression
+                        // coverage for non-isosurface multi-realization
+                        // pipelines. Gating keeps this resolution scoped to
+                        // the one op family that actually needs it.
+                        if op_is_voxel_only_input(&operation) {
+                            for name in sub_refs_in_op(op) {
+                                if let Some(&repr) = named_step_reprs.get(name) {
+                                    set.insert(repr);
+                                }
+                            }
+                        }
                         if set.is_empty() {
                             set.insert(ReprKind::BRep);
                         }
@@ -7129,11 +7318,29 @@ impl Engine {
                                         };
                                         // Ingest into the target kernel (`&mut`).
                                         // For a Manifold kernel this is Mesh→Mesh;
-                                        // for an OpenVDB kernel this is Mesh→Voxel.
-                                        let ingested = kernels
+                                        // for an OpenVDB kernel this is normally
+                                        // Mesh→Voxel — EXCEPT when this stage's
+                                        // mesh IS the final op's own desired
+                                        // output (task 5033 Gap #2/#3): a
+                                        // MarchingCubes source feeding a
+                                        // `Surface` terminal anchor already
+                                        // produced exactly the mesh that op
+                                        // wants, so re-voxelizing it via
+                                        // `ingest_mesh` would be lossy and
+                                        // pointless. That one case calls
+                                        // `register_mesh_handle` instead, which
+                                        // stores the mesh honestly as Mesh-repr
+                                        // without re-deriving it.
+                                        let target_kernel = kernels
                                             .get_mut(plan.kernel.as_str())
-                                            .expect("plan.kernel presence checked above")
-                                            .ingest_mesh(&mesh);
+                                            .expect("plan.kernel presence checked above");
+                                        let ingested = if from_marching_cubes
+                                            && matches!(geom_op, GeometryOp::Surface { .. })
+                                        {
+                                            target_kernel.register_mesh_handle(&mesh)
+                                        } else {
+                                            target_kernel.ingest_mesh(&mesh)
+                                        };
                                         match ingested {
                                             Ok(handle) => {
                                                 // Wrap the fresh target-kernel handle
@@ -8043,6 +8250,82 @@ impl Engine {
                     }
                 }
             }
+            // ── Task 5033 (GAP #2): Voxel realization call edge ───────────────
+            //
+            // Mirrors the VolumeMesh edge above but for `demanded_repr ==
+            // Voxel` and NON-terminal-gated: `isosurface`'s operand (e.g.
+            // `solid` in `let shell = isosurface(solid)`) is demanded Voxel by
+            // `compute_demanded_reprs`' Voxel-only-input consumer rule (β,
+            // task 5000), and — unlike VolumeMesh, which only ever anchors a
+            // terminal FEA/optimization consumer — this operand is virtually
+            // always a NON-terminal (intermediate let-binding) realization. A
+            // primitive/BRep op has no kernel that emits Voxel directly, so
+            // design_decision 3's BRep fallback already ran in the per-op loop
+            // above; this dedicated post-loop edge forces that BRep/Mesh
+            // terminal THROUGH the existing BRep→Mesh (Tessellate) → Mesh→Voxel
+            // (Voxelize) conversion pair, mirroring the VolumeMesh edge's
+            // tessellate→ingest shape. Guarded on `last_produced_repr !=
+            // Some(Voxel)` so this edge is purely additive: a realization whose
+            // per-op loop already resolved Voxel directly (e.g. an OpenVDB-
+            // native Boolean op) skips it untouched. Any failure (no OpenVDB
+            // kernel, tessellation/ingest error) leaves the realization at its
+            // BRep/Mesh fallback — honest degradation, never a hard error.
+            if demanded_repr == ReprKind::Voxel
+                && last_produced_repr != Some(ReprKind::Voxel)
+                && let Some(&terminal) = step_handles[handle_start..].last()
+            {
+                let tol = demanded_tol.unwrap_or(Self::DEFAULT_TESSELLATION_TOLERANCE);
+                // Same registry-name-vs-map-key dance as the VolumeMesh edge
+                // above (backward-compat sentinel mode keys OCCT's handle under
+                // `default_kernel_name`, not `"occt"`).
+                let terminal_name = if kernels.contains_key(terminal.kernel.as_registry_name()) {
+                    terminal.kernel.as_registry_name()
+                } else {
+                    default_kernel_name
+                };
+                let surface = match kernels.get(terminal_name) {
+                    Some(src) => match src.tessellate(terminal.id, tol) {
+                        Ok(mesh) => Some(mesh),
+                        Err(e) => {
+                            diagnostics.push(Diagnostic::warning(format!(
+                                "Voxel realization {realization_id}: tessellation of the \
+                                 terminal handle on kernel '{terminal_name}' failed ({e}); \
+                                 leaving the BRep/Mesh fallback"
+                            )));
+                            None
+                        }
+                    },
+                    None => {
+                        diagnostics.push(Diagnostic::warning(format!(
+                            "Voxel realization {realization_id}: terminal source kernel \
+                             '{terminal_name}' absent from the kernel map; leaving the BRep/Mesh \
+                             fallback"
+                        )));
+                        None
+                    }
+                };
+                if let Some(surface) = surface {
+                    match kernels.get_mut(KernelId::OpenVdb.as_registry_name()) {
+                        Some(openvdb) => match openvdb.ingest_mesh(&surface) {
+                            Ok(handle) => {
+                                step_handles.push(KernelHandle {
+                                    kernel: KernelId::OpenVdb,
+                                    id: handle.id,
+                                });
+                                last_produced_repr = Some(ReprKind::Voxel);
+                            }
+                            Err(e) => diagnostics.push(Diagnostic::warning(format!(
+                                "Voxel realization {realization_id}: openvdb ingest_mesh failed \
+                                 ({e}); leaving the BRep/Mesh fallback"
+                            ))),
+                        },
+                        None => diagnostics.push(Diagnostic::warning(format!(
+                            "Voxel realization {realization_id}: no openvdb kernel registered \
+                             (call ensure_openvdb_kernel()); leaving the BRep/Mesh fallback"
+                        ))),
+                    }
+                }
+            }
             // ── Task 4744 β step-20: source-bundle stash ─────────────────────
             //
             // When a morph producer is active and this realization produced a
@@ -8079,6 +8362,17 @@ impl Engine {
                     // separately via the compound-key injection path below.  Both are
                     // consumed by geometry_ops.rs::resolve_geom_ref's Sub arm.
                     named_steps.insert(name.to_string(), last);
+                    // Task 5033 Gap #2 Gap A: by-name repr sibling write,
+                    // unconditional (unlike the terminal-only cache insert
+                    // below) because a NON-terminal cross-realization
+                    // producer (e.g. "solid" in `let shell =
+                    // isosurface(solid)`) still needs its repr resolvable
+                    // by name for `available_for_op` below. Same
+                    // resolved-repr expression as the terminal cache-key
+                    // computation just below: the RESOLVED repr
+                    // (`last_produced_repr`), falling back to `cache_repr`
+                    // only when no op captured one.
+                    named_step_reprs.insert(name.to_string(), last_produced_repr.unwrap_or(cache_repr));
                 }
                 if is_terminal_realization
                     && let (Some(tol), Some(_name)) = (demanded_tol, realization_name)

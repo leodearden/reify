@@ -418,43 +418,46 @@ pub(crate) fn compile_guarded_members(
                 let solver_hints = extract_solver_hints(&lowered_annotations, diagnostics);
                 validate_solver_hint_collections(&solver_hints, scope, functions, diagnostics);
 
-                let decl = if let Some(free) = auto_free {
-                    ValueCellDecl {
-                        id,
-                        kind: ValueCellKind::Auto { free },
-                        visibility: Visibility::Public,
-                        is_aux: false,
-                        cell_type,
-                        default_expr: None,
-                        solver_hints,
-                        span: param.span,
-                    }
-                } else {
-                    let default_expr = param.default.as_ref().map(|expr| {
-                        let mut lc = 0u32;
-                        let mut compiled = compile_expr_guarded(
-                            expr,
-                            scope,
-                            enum_defs,
-                            functions,
-                            diagnostics,
-                            guard_ctx,
-                            &mut lc,
-                        );
-                        fixup_option_none_for_param(&mut compiled, &cell_type);
-                        compiled
-                    });
-                    ValueCellDecl {
-                        id,
-                        kind: ValueCellKind::Param,
-                        visibility: Visibility::Public,
-                        is_aux: false,
-                        cell_type,
-                        default_expr,
-                        solver_hints,
-                        span: param.span,
-                    }
-                };
+                let decl = build_param_value_cell_decl(
+                    id,
+                    auto_free,
+                    cell_type,
+                    // TODO(#5161): unconditionally Public — NOT priv-aware, unlike the
+                    // top-level structure-param site (entity.rs Site 1: `if param.is_priv {
+                    // Private } else { Public }`). `priv` IS grammatically legal on a
+                    // guarded-block param (grammar.js `param_declaration` always allows
+                    // `optional('priv')`, and `_guard_member`'s `commonMembers()` admits
+                    // `$.param_declaration`), so `param.is_priv` can be `true` here and
+                    // is silently dropped. This is a pre-existing asymmetry — the
+                    // original, pre-dedup guards.rs code also hardcoded Public — that
+                    // task #5058's decl-construction dedup preserves byte-for-byte
+                    // rather than fixes; #5161 tracks making it priv-aware.
+                    Visibility::Public,
+                    solver_hints,
+                    param.span,
+                    |ct| {
+                        // Intentionally no `check_param_default_type` call in this
+                        // closure: guarded params have never run that cross-check
+                        // (see `build_param_value_cell_decl`'s doc comment in
+                        // entity.rs). Task #5058's dedup preserves that byte-for-byte
+                        // — adding the call here would introduce a new diagnostic
+                        // path for guarded params, not merely refactor an existing one.
+                        param.default.as_ref().map(|expr| {
+                            let mut lc = 0u32;
+                            let mut compiled = compile_expr_guarded(
+                                expr,
+                                scope,
+                                enum_defs,
+                                functions,
+                                diagnostics,
+                                guard_ctx,
+                                &mut lc,
+                            );
+                            fixup_option_none_for_param(&mut compiled, ct);
+                            compiled
+                        })
+                    },
+                );
                 members.push(decl);
             }
             reify_ast::MemberDecl::Let(let_decl) => {
@@ -904,6 +907,150 @@ mod narrow_arms_under_guard_tests {
             2,
             "narrowing under an outer (parent-of-arms) guard must not establish \
              implication and falls back to the full arm set"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Guarded-param decl-construction integration coverage (task ζ #5058 amendment,
+// reviewer suggestion 2). The auto/auto(free) shape of this site is already
+// covered end-to-end by boundary2_producer.rs's `compile_auto_free_in_guarded_param`;
+// these pin the non-auto (typed default) shape end-to-end, including the
+// deliberate absence of `check_param_default_type` at this site.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod guarded_param_default_tests {
+    use super::*;
+
+    /// Parse + compile `source` using this crate's own (in-build) `compile`,
+    /// never `reify_test_support::compile_source`: that helper links against
+    /// reify-compiler through `reify-test-support`'s own dependency edge, a
+    /// *different* compilation of this crate than the one these unit tests run
+    /// inside of (this crate is also a dev-dependency of itself, feature
+    /// `test-support`, for `tests/annotation_schema_registry_parity.rs`).
+    /// Comparing a `ValueCellKind`/`ValueCellDecl` from that other build
+    /// against this build's `ValueCellKind::Param` etc. is an E0308 type
+    /// mismatch ("multiple different versions of crate `reify_compiler`"),
+    /// since those types are defined in this crate, not re-exported from
+    /// reify_core. Parsing and compiling in-crate keeps every type on one
+    /// instantiation.
+    fn compile(source: &str) -> CompiledModule {
+        let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
+        super::compile(&parsed)
+    }
+
+    /// A guarded-block param with a typed, dimensionally-correct default must
+    /// compile to `ValueCellKind::Param` with `default_expr` populated (not
+    /// `None`) — exercising the `compile_expr_guarded` + `fixup_option_none_for_param`
+    /// shape of the `compile_default` closure at this site.
+    #[test]
+    fn guarded_param_typed_default_compiles_with_expected_kind_and_default_expr() {
+        let source = r#"
+structure S {
+    param active : Bool = true
+    where active {
+        param y : Length = 5mm
+    }
+}
+"#;
+        let module = compile(source);
+        let errors: Vec<_> = module
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(errors.is_empty(), "expected no errors, got: {:?}", errors);
+
+        let template = &module.templates[0];
+        assert_eq!(template.guarded_groups.len(), 1, "expected 1 guarded group");
+        let group = &template.guarded_groups[0];
+        let y = group
+            .members
+            .iter()
+            .find(|m| m.id.member == "y")
+            .expect("expected guarded member 'y'");
+
+        assert_eq!(
+            y.kind,
+            ValueCellKind::Param,
+            "typed guarded param with a default must compile to ValueCellKind::Param"
+        );
+        let default_expr = y
+            .default_expr
+            .as_ref()
+            .expect("guarded param default should compile to Some(expr)");
+        assert_eq!(
+            default_expr.result_type,
+            Type::length(),
+            "default_expr should carry the fixed-up Length result type"
+        );
+    }
+
+    /// A guarded-block param whose declared type and initializer dimension
+    /// mismatch (`Length` declared, `5kg` initializer) must NOT produce
+    /// `ParamDefaultTypeMismatch` — mirrors `param_default_type_mismatch_tests.rs`'s
+    /// `param_different_scalar_dimensions_error`, which DOES flag the identical
+    /// shape at the top-level structure-param site. `guards.rs`'s `compile_default`
+    /// closure has never called `check_param_default_type`, and task #5058's
+    /// decl-construction dedup preserves that byte-for-byte.
+    ///
+    /// Also anchors that the intended code path was actually reached: asserts
+    /// `bad_dim` still compiled to `ValueCellKind::Param` with a populated
+    /// `default_expr` (as the sibling positive test above does for `y`) —
+    /// without this, an unrelated regression that made compilation bail out
+    /// before ever reaching decl construction would leave the diagnostic
+    /// absent too, and this test would keep passing for the wrong reason.
+    #[test]
+    fn guarded_param_dimension_mismatched_default_does_not_check_param_default_type() {
+        let source = r#"
+structure S {
+    param active : Bool = true
+    where active {
+        param bad_dim : Length = 5kg
+    }
+}
+"#;
+        let module = compile(source);
+
+        let template = &module.templates[0];
+        assert_eq!(template.guarded_groups.len(), 1, "expected 1 guarded group");
+        let group = &template.guarded_groups[0];
+        let bad_dim = group
+            .members
+            .iter()
+            .find(|m| m.id.member == "bad_dim")
+            .expect("expected guarded member 'bad_dim'");
+        assert_eq!(
+            bad_dim.kind,
+            ValueCellKind::Param,
+            "mismatched-dimension guarded param must still compile to ValueCellKind::Param"
+        );
+        assert!(
+            bad_dim.default_expr.is_some(),
+            "mismatched-dimension guarded param must still have a populated \
+             default_expr — proves compile_default's compile_expr_guarded path \
+             was reached, not short-circuited before decl construction"
+        );
+
+        let mismatch = module
+            .diagnostics
+            .iter()
+            .find(|d| d.code == Some(DiagnosticCode::ParamDefaultTypeMismatch));
+        assert!(
+            mismatch.is_none(),
+            "guarded-block params must NOT trigger ParamDefaultTypeMismatch (guards.rs \
+             never calls check_param_default_type); got: {:?}",
+            module
+                .diagnostics
+                .iter()
+                .map(|d| (&d.message, &d.code))
+                .collect::<Vec<_>>()
         );
     }
 }

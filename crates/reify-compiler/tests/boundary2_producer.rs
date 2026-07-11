@@ -714,6 +714,67 @@ fn compiled_auto_param_span_not_zero() {
     );
 }
 
+/// Characterization test (task #5058 step-3): priv-aware visibility must
+/// apply on the AUTO branch, not just the Param branch.
+///
+/// `priv_member_visibility_tests.rs` pins `priv param` → `Visibility::Private`
+/// only for non-auto params; the auto/auto(free) tests above pin `Auto` /
+/// `Auto { free: true }` only for non-priv params. Neither covers the
+/// intersection. This test pins that intersection so steps 4-6 (routing the
+/// three duplicated decl-construction sites through `build_param_value_cell_decl`)
+/// can't silently drop priv-awareness on the auto branch.
+#[test]
+fn compile_priv_auto_free_param_is_private_and_auto() {
+    let source = r#"structure S {
+    priv param x: Length = auto(free)
+    param y: Length = auto
+}"#;
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+
+    let compiled = reify_compiler::compile(&parsed);
+    assert!(
+        compiled.diagnostics.is_empty(),
+        "compile diagnostics: {:?}",
+        compiled.diagnostics
+    );
+
+    let template = &compiled.templates[0];
+    assert_eq!(template.value_cells.len(), 2);
+
+    // x: priv + auto(free) — must be BOTH Private AND Auto { free: true }.
+    let x = &template.value_cells[0];
+    assert_eq!(x.id, reify_core::ValueCellId::new("S", "x"));
+    assert_eq!(
+        x.kind,
+        ValueCellKind::Auto { free: true },
+        "priv auto(free) param should still compile to Auto {{ free: true }}"
+    );
+    assert_eq!(
+        x.visibility,
+        Visibility::Private,
+        "priv param's auto branch must carry Visibility::Private, not fall back to Public"
+    );
+
+    // y: non-priv + bare auto — sibling control, should stay Public + Auto { free: false }.
+    let y = &template.value_cells[1];
+    assert_eq!(y.id, reify_core::ValueCellId::new("S", "y"));
+    assert_eq!(
+        y.kind,
+        ValueCellKind::Auto { free: false },
+        "bare auto should compile to Auto {{ free: false }}"
+    );
+    assert_eq!(
+        y.visibility,
+        Visibility::Public,
+        "non-priv param's auto branch should be Visibility::Public"
+    );
+}
+
 /// Regression: bracket fixture compiles with zero diagnostics.
 /// The dimension and constraint checks must not false-positive on valid expressions.
 #[test]
