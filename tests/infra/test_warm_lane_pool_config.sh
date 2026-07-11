@@ -22,6 +22,18 @@
 #       NOT grep-checked: _MERGE_AHEAD_BOUND, max_concurrent_tasks (DF-consumed /
 #       orchestrator-level; no reify script reads them).
 #
+# (B7) SOFT/HARD DISK-GUARD KNOBS (task 5175, PRD warm-lane-pool-sizing-
+#       lifecycle.md §9.4) — warm_lane_pool.{min,soft}_free_{gib,inodes} are
+#       the four admission knobs for scripts/warm-lane-disk-guard.sh:
+#         presence  — each is an int (A, PyYAML-gated)
+#         relation  — soft_free_gib > min_free_gib; soft_free_inodes >
+#                     min_free_inodes (E1, PyYAML-gated)
+#         drift     — each YAML value == the guard script's `:-` fallback
+#                     default (A2 pattern, PyYAML-gated)
+#         name      — each REIFY_WARM_LANE_DISK_GUARD_{MIN,SOFT}_FREE_{GIB,
+#                     INODES} name appears in BOTH orchestrator.yaml and
+#                     warm-lane-disk-guard.sh (B, plain grep, always runs)
+#
 # (A) and (A2) are SKIPPED if python3 + PyYAML are unavailable (mirrors the
 #     tomllib SKIP idiom in test_cargo_incremental_lane_decision.sh:25).
 # (B) always runs — plain bash grep, no python needed.
@@ -40,6 +52,7 @@ ORCH_YAML="$REPO_ROOT/orchestrator.yaml"
 PROVISION_SH="$REPO_ROOT/scripts/provision-warm-lane-fs.sh"
 REFRESH_SH="$REPO_ROOT/scripts/refresh-warm-base.sh"
 INSTALLER_SH="$REPO_ROOT/scripts/install-warm-lane-units.sh"
+GUARD_SH="$REPO_ROOT/scripts/warm-lane-disk-guard.sh"
 
 # ---------------------------------------------------------------------------
 # (A) STRUCTURE — parse YAML and assert key/value shape
@@ -69,10 +82,20 @@ Checks (no <script_path>):
   size_gib_is_int                    — warm_lane_pool.substrate.size_gib is an int (value validated by A2 drift check)
   defrag_threshold_is_int            — warm_lane_pool.defrag_extent_threshold is an int (value validated by A2 drift check)
   no_hardcoded_task_pool_size        — warm_lane_pool has NO integer 'task_pool_size' key (D9 negative guard)
+  min_free_gib_is_int                — warm_lane_pool.min_free_gib is an int (task 5175, B7)
+  min_free_inodes_is_int             — warm_lane_pool.min_free_inodes is an int (task 5175, B7)
+  soft_free_gib_is_int               — warm_lane_pool.soft_free_gib is an int (task 5175, B7)
+  soft_free_inodes_is_int            — warm_lane_pool.soft_free_inodes is an int (task 5175, B7)
+  soft_free_gib_exceeds_min_free_gib       — soft_free_gib > min_free_gib (E1, task 5175)
+  soft_free_inodes_exceeds_min_free_inodes — soft_free_inodes > min_free_inodes (E1, task 5175)
 Checks (with <script_path> — value-drift cross-check):
   image_path_yaml_vs_provision    — YAML image_path == provision-warm-lane-fs.sh IMG= default
   size_gib_yaml_vs_provision      — YAML size_gib == provision-warm-lane-fs.sh SIZE_GIB= default
   defrag_yaml_vs_refresh          — YAML defrag_extent_threshold == refresh-warm-base.sh FRAG_THRESHOLD= default
+  min_free_gib_yaml_vs_guard      — YAML min_free_gib == warm-lane-disk-guard.sh REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_GIB:- default
+  min_free_inodes_yaml_vs_guard  — YAML min_free_inodes == warm-lane-disk-guard.sh REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_INODES:- default
+  soft_free_gib_yaml_vs_guard    — YAML soft_free_gib == warm-lane-disk-guard.sh REIFY_WARM_LANE_DISK_GUARD_SOFT_FREE_GIB:- default
+  soft_free_inodes_yaml_vs_guard — YAML soft_free_inodes == warm-lane-disk-guard.sh REIFY_WARM_LANE_DISK_GUARD_SOFT_FREE_INODES:- default
 Exit 0 on pass, 1 on fail.
 """
 import sys, yaml, re
@@ -125,6 +148,39 @@ if check == "no_hardcoded_task_pool_size":
         sys.exit(1)
     sys.exit(0)
 
+# (B7) disk-guard admission knobs (task 5175) — presence, then soft>hard relation.
+if check == "min_free_gib_is_int":
+    val = wlp.get("min_free_gib")
+    sys.exit(0 if isinstance(val, int) else 1)
+
+if check == "min_free_inodes_is_int":
+    val = wlp.get("min_free_inodes")
+    sys.exit(0 if isinstance(val, int) else 1)
+
+if check == "soft_free_gib_is_int":
+    val = wlp.get("soft_free_gib")
+    sys.exit(0 if isinstance(val, int) else 1)
+
+if check == "soft_free_inodes_is_int":
+    val = wlp.get("soft_free_inodes")
+    sys.exit(0 if isinstance(val, int) else 1)
+
+if check == "soft_free_gib_exceeds_min_free_gib":
+    soft = wlp.get("soft_free_gib")
+    hard = wlp.get("min_free_gib")
+    if not (isinstance(soft, int) and isinstance(hard, int) and soft > hard):
+        print(f"E1 violation: warm_lane_pool.soft_free_gib={soft!r} must exceed min_free_gib={hard!r}", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0)
+
+if check == "soft_free_inodes_exceeds_min_free_inodes":
+    soft = wlp.get("soft_free_inodes")
+    hard = wlp.get("min_free_inodes")
+    if not (isinstance(soft, int) and isinstance(hard, int) and soft > hard):
+        print(f"E1 violation: warm_lane_pool.soft_free_inodes={soft!r} must exceed min_free_inodes={hard!r}", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0)
+
 # Value-drift checks: require sys.argv[3] = path to owning bash script.
 if check == "image_path_yaml_vs_provision":
     script_path = sys.argv[3]
@@ -165,6 +221,65 @@ if check == "defrag_yaml_vs_refresh":
     yaml_val = wlp.get("defrag_extent_threshold")
     if yaml_val != script_val:
         print(f"Drift: YAML defrag_extent_threshold={yaml_val} != refresh-warm-base.sh FRAG_THRESHOLD={script_val}", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0)
+
+# (B7) disk-guard admission knobs (task 5175): YAML value == the guard
+# script's `:-` fallback default, extracted by regex from the env-var
+# assignment (e.g. MIN_FREE_GIB="${REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_GIB:-50}").
+if check == "min_free_gib_yaml_vs_guard":
+    script_path = sys.argv[3]
+    content = open(script_path).read()
+    m = re.search(r'REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_GIB:-([0-9]+)', content)
+    if not m:
+        print(f"REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_GIB:- default not found in {script_path}", file=sys.stderr)
+        sys.exit(1)
+    script_val = int(m.group(1))
+    yaml_val = wlp.get("min_free_gib")
+    if yaml_val != script_val:
+        print(f"Drift: YAML min_free_gib={yaml_val} != warm-lane-disk-guard.sh REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_GIB default={script_val}", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0)
+
+if check == "min_free_inodes_yaml_vs_guard":
+    script_path = sys.argv[3]
+    content = open(script_path).read()
+    m = re.search(r'REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_INODES:-([0-9]+)', content)
+    if not m:
+        print(f"REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_INODES:- default not found in {script_path}", file=sys.stderr)
+        sys.exit(1)
+    script_val = int(m.group(1))
+    yaml_val = wlp.get("min_free_inodes")
+    if yaml_val != script_val:
+        print(f"Drift: YAML min_free_inodes={yaml_val} != warm-lane-disk-guard.sh REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_INODES default={script_val}", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0)
+
+if check == "soft_free_gib_yaml_vs_guard":
+    script_path = sys.argv[3]
+    content = open(script_path).read()
+    m = re.search(r'REIFY_WARM_LANE_DISK_GUARD_SOFT_FREE_GIB:-([0-9]+)', content)
+    if not m:
+        print(f"REIFY_WARM_LANE_DISK_GUARD_SOFT_FREE_GIB:- default not found in {script_path}", file=sys.stderr)
+        sys.exit(1)
+    script_val = int(m.group(1))
+    yaml_val = wlp.get("soft_free_gib")
+    if yaml_val != script_val:
+        print(f"Drift: YAML soft_free_gib={yaml_val} != warm-lane-disk-guard.sh REIFY_WARM_LANE_DISK_GUARD_SOFT_FREE_GIB default={script_val}", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0)
+
+if check == "soft_free_inodes_yaml_vs_guard":
+    script_path = sys.argv[3]
+    content = open(script_path).read()
+    m = re.search(r'REIFY_WARM_LANE_DISK_GUARD_SOFT_FREE_INODES:-([0-9]+)', content)
+    if not m:
+        print(f"REIFY_WARM_LANE_DISK_GUARD_SOFT_FREE_INODES:- default not found in {script_path}", file=sys.stderr)
+        sys.exit(1)
+    script_val = int(m.group(1))
+    yaml_val = wlp.get("soft_free_inodes")
+    if yaml_val != script_val:
+        print(f"Drift: YAML soft_free_inodes={yaml_val} != warm-lane-disk-guard.sh REIFY_WARM_LANE_DISK_GUARD_SOFT_FREE_INODES default={script_val}", file=sys.stderr)
         sys.exit(1)
     sys.exit(0)
 
@@ -247,6 +362,29 @@ PYEOF
     assert "warm_lane_pool has no hardcoded integer task_pool_size key (D9 negative guard)" \
         python3 "$_PARSE_PY" "$ORCH_YAML" no_hardcoded_task_pool_size
 
+    # (B7) disk-guard admission knobs (task 5175, PRD warm-lane-pool-sizing-lifecycle.md
+    # §9.4): presence, then the soft>hard relation (E1). Values are cross-checked against
+    # scripts/warm-lane-disk-guard.sh below (A2-style drift).
+    echo "--- (B7) disk-guard admission knobs: presence + soft>hard relation ---"
+
+    assert "warm_lane_pool.min_free_gib is an int (value validated by B7 drift check)" \
+        python3 "$_PARSE_PY" "$ORCH_YAML" min_free_gib_is_int
+
+    assert "warm_lane_pool.min_free_inodes is an int (value validated by B7 drift check)" \
+        python3 "$_PARSE_PY" "$ORCH_YAML" min_free_inodes_is_int
+
+    assert "warm_lane_pool.soft_free_gib is an int (value validated by B7 drift check)" \
+        python3 "$_PARSE_PY" "$ORCH_YAML" soft_free_gib_is_int
+
+    assert "warm_lane_pool.soft_free_inodes is an int (value validated by B7 drift check)" \
+        python3 "$_PARSE_PY" "$ORCH_YAML" soft_free_inodes_is_int
+
+    assert "warm_lane_pool.soft_free_gib > min_free_gib (E1: soft exceeds hard floor)" \
+        python3 "$_PARSE_PY" "$ORCH_YAML" soft_free_gib_exceeds_min_free_gib
+
+    assert "warm_lane_pool.soft_free_inodes > min_free_inodes (E1: soft exceeds hard floor)" \
+        python3 "$_PARSE_PY" "$ORCH_YAML" soft_free_inodes_exceeds_min_free_inodes
+
     # (A2) VALUE DRIFT — YAML default values MUST match the :-fallback defaults
     # in the owning scripts.  Catches the case where YAML is updated (e.g.
     # size_gib: 500) but the script still defaults to the old value (SIZE_GIB=600),
@@ -264,6 +402,20 @@ PYEOF
 
     assert "defrag_extent_threshold: YAML matches refresh-warm-base.sh FRAG_THRESHOLD= default" \
         python3 "$_PARSE_PY" "$ORCH_YAML" defrag_yaml_vs_refresh "$REFRESH_SH"
+
+    # (B7) disk-guard admission knobs: YAML values MUST byte-match the guard
+    # script's `:-` fallback defaults (task 5175).
+    assert "min_free_gib: YAML matches warm-lane-disk-guard.sh REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_GIB:- default" \
+        python3 "$_PARSE_PY" "$ORCH_YAML" min_free_gib_yaml_vs_guard "$GUARD_SH"
+
+    assert "min_free_inodes: YAML matches warm-lane-disk-guard.sh REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_INODES:- default" \
+        python3 "$_PARSE_PY" "$ORCH_YAML" min_free_inodes_yaml_vs_guard "$GUARD_SH"
+
+    assert "soft_free_gib: YAML matches warm-lane-disk-guard.sh REIFY_WARM_LANE_DISK_GUARD_SOFT_FREE_GIB:- default" \
+        python3 "$_PARSE_PY" "$ORCH_YAML" soft_free_gib_yaml_vs_guard "$GUARD_SH"
+
+    assert "soft_free_inodes: YAML matches warm-lane-disk-guard.sh REIFY_WARM_LANE_DISK_GUARD_SOFT_FREE_INODES:- default" \
+        python3 "$_PARSE_PY" "$ORCH_YAML" soft_free_inodes_yaml_vs_guard "$GUARD_SH"
 
     # (A3) PINNED VALUES — assert the literal new canonical defaults are in place.
     # These fail RED until both provision-warm-lane-fs.sh and orchestrator.yaml are
@@ -299,5 +451,27 @@ assert "REIFY_WARM_LANE_MOUNT cited in orchestrator.yaml" \
 
 assert "REIFY_WARM_LANE_MOUNT referenced in scripts/provision-warm-lane-fs.sh" \
     grep -q "REIFY_WARM_LANE_MOUNT" "$PROVISION_SH"
+
+# (B7) disk-guard admission knobs (task 5175): each REIFY_* name must appear
+# in BOTH orchestrator.yaml and its owning script (no python needed).
+assert "REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_GIB cited in orchestrator.yaml" \
+    grep -q "REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_GIB" "$ORCH_YAML"
+assert "REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_GIB referenced in scripts/warm-lane-disk-guard.sh" \
+    grep -q "REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_GIB" "$GUARD_SH"
+
+assert "REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_INODES cited in orchestrator.yaml" \
+    grep -q "REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_INODES" "$ORCH_YAML"
+assert "REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_INODES referenced in scripts/warm-lane-disk-guard.sh" \
+    grep -q "REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_INODES" "$GUARD_SH"
+
+assert "REIFY_WARM_LANE_DISK_GUARD_SOFT_FREE_GIB cited in orchestrator.yaml" \
+    grep -q "REIFY_WARM_LANE_DISK_GUARD_SOFT_FREE_GIB" "$ORCH_YAML"
+assert "REIFY_WARM_LANE_DISK_GUARD_SOFT_FREE_GIB referenced in scripts/warm-lane-disk-guard.sh" \
+    grep -q "REIFY_WARM_LANE_DISK_GUARD_SOFT_FREE_GIB" "$GUARD_SH"
+
+assert "REIFY_WARM_LANE_DISK_GUARD_SOFT_FREE_INODES cited in orchestrator.yaml" \
+    grep -q "REIFY_WARM_LANE_DISK_GUARD_SOFT_FREE_INODES" "$ORCH_YAML"
+assert "REIFY_WARM_LANE_DISK_GUARD_SOFT_FREE_INODES referenced in scripts/warm-lane-disk-guard.sh" \
+    grep -q "REIFY_WARM_LANE_DISK_GUARD_SOFT_FREE_INODES" "$GUARD_SH"
 
 test_summary
