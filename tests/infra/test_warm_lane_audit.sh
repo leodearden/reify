@@ -401,4 +401,51 @@ assert "F7: exit 0" test "$RC" -eq 0
 assert "F8: _lane-leaked classification PRESERVED-OK under env REIFY_WARM_LANE_AUDIT_STALE_AGE_MIN=100000" \
     bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-leaked .*classification=PRESERVED-OK"' _ "$OUT"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block G — measured divergent_gib / free_gib / budget_gib (DD3, no frozen constant)
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block G: measured disk figures (DD3, no frozen GB constant) ---"
+
+G_MOUNT="$(mktemp -d /tmp/test-warm-lane-audit-g-XXXXXX)"
+_TMPDIRS+=("$G_MOUNT")
+
+# A lane with no target/ -> divergent_gib must report 0.
+make_lane "$G_MOUNT/_lane-g"
+
+# Stub df: ignores all args, emits a KNOWN avail byte count in the same shape
+# as `df -B1 --output=avail -- <mount>` (a header line + one data line). The
+# byte count is deliberately non-round (+123456789) so the floor-to-GiB
+# truncation is exercised for real, not a coincidental passthrough.
+G_DF_STUB_DIR="$(mktemp -d /tmp/test-warm-lane-audit-g-dfstub-XXXXXX)"
+_TMPDIRS+=("$G_DF_STUB_DIR")
+G_AVAIL_BYTES=$(( 200 * 1024 * 1024 * 1024 + 123456789 ))
+cat > "$G_DF_STUB_DIR/df-fake.sh" << EOF
+#!/usr/bin/env bash
+printf '     Avail\n'
+printf '%s\n' "$G_AVAIL_BYTES"
+EOF
+chmod +x "$G_DF_STUB_DIR/df-fake.sh"
+
+# The test COMPUTES the expected free_gib/budget_gib from the SAME stub input
+# + the SAME --safety knob passed to the script -- a derived relation, not a
+# hardcoded literal (DD3/G6/D8 no-frozen-constant rule).
+G_SAFETY=4
+G_EXPECTED_FREE_GIB=$(( G_AVAIL_BYTES / 1073741824 ))
+G_EXPECTED_BUDGET_GIB=$(( G_EXPECTED_FREE_GIB / G_SAFETY ))
+
+REIFY_WARM_LANE_AUDIT_DF="$G_DF_STUB_DIR/df-fake.sh" run_helper --mount "$G_MOUNT" --safety "$G_SAFETY"
+
+assert "G1: exit 0" test "$RC" -eq 0
+assert "G2: _lane-g row has a non-negative integer divergent_gib" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "lane=_lane-g .*divergent_gib=[0-9]+"' _ "$OUT"
+assert "G3: _lane-g divergent_gib=0 (no target/)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-g .*divergent_gib=0"' _ "$OUT"
+assert "G4: HEADROOM divergent_gib is a non-negative integer" \
+    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -qE "divergent_gib=[0-9]+"' _ "$OUT"
+assert "G5: HEADROOM free_gib == floor(stub_avail_bytes / 2^30)" \
+    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "free_gib=$2 budget_gib="' _ "$OUT" "$G_EXPECTED_FREE_GIB"
+assert "G6: HEADROOM budget_gib == floor(free_gib / safety)" \
+    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -qE "budget_gib=$2\$"' _ "$OUT" "$G_EXPECTED_BUDGET_GIB"
+
 test_summary
