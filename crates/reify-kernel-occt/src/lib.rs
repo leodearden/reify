@@ -559,7 +559,7 @@ impl OcctKernel {
     ///
     /// INV-GEO-3 production observability accessor: each failure is also
     /// reported via a `tracing::warn!` event at the point of failure (see
-    /// `with_warm_state`); this accessor exposes the cumulative count from
+    /// `with_warm_state`); this accessor exposes the failure count from
     /// the most recent restore for production consumers that want the
     /// summary figure without instrumenting tracing.
     ///
