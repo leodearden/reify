@@ -116,7 +116,9 @@ impl DetectorRegistry {
 #[cfg(test)]
 mod tests {
     use reify_core::{Diagnostic, DiagnosticCode, ValueCellId};
-    use reify_ir::{DeterminacyState, PersistentMap, Value, ValueMap};
+    use reify_ir::{
+        DeterminacyState, PersistentMap, StructureInstanceData, StructureTypeId, Value, ValueMap,
+    };
 
     use super::*;
 
@@ -189,6 +191,22 @@ mod tests {
                 snapshot_values: PersistentMap::new(),
                 diagnostics: Vec::new(),
             }
+        }
+
+        /// A post-pass state seeded with `entries`, mirroring what every eval
+        /// path holds at its post-pass point: `values` and `snapshot_values`
+        /// carry the SAME per-cell value (the snapshot side paired with
+        /// `DeterminacyState::Determined`, matching the pre-post-pass state
+        /// `Engine::eval` assembles before the inline PSD pass runs).
+        fn seeded(entries: &[(ValueCellId, Value)]) -> Self {
+            let mut state = Self::empty();
+            for (id, value) in entries {
+                state.values.insert(id.clone(), value.clone());
+                state
+                    .snapshot_values
+                    .insert(id.clone(), (value.clone(), DeterminacyState::Determined));
+            }
+            state
         }
 
         fn as_state(&mut self) -> PostPassState<'_> {
@@ -312,5 +330,130 @@ mod tests {
                 (Some(DiagnosticCode::SelectorKindMismatch), "fired".to_string()),
             ]
         );
+    }
+
+    /// Builds a `MassProperties` `StructureInstance`, optionally carrying an
+    /// `inertia` field — the `dynamics_ops.rs:722+` test-construction
+    /// pattern (registry-free sentinel `type_id`, `version: 0`).
+    fn mass_properties(inertia_field: Option<Value>) -> Value {
+        let mut entries: Vec<(String, Value)> = Vec::new();
+        if let Some(v) = inertia_field {
+            entries.push(("inertia".to_string(), v));
+        }
+        let fields: PersistentMap<String, Value> = entries.into_iter().collect();
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "MassProperties".to_string(),
+            version: 0,
+            fields,
+        }))
+    }
+
+    /// A `Value::Matrix` built from a plain `[[f64; 3]; 3]`.
+    fn matrix3(rows: [[f64; 3]; 3]) -> Value {
+        Value::Matrix(
+            rows.iter()
+                .map(|row| row.iter().map(|c| Value::Real(*c)).collect())
+                .collect(),
+        )
+    }
+
+    /// INV-EVAL-3 over a REAL detector: `MassPropertiesPsdDetector` (via
+    /// `DetectorRegistry::with_builtins()`) classifies each `MassProperties`
+    /// cell's `inertia` field identically across two independently-seeded
+    /// but equal states — proving the trait/state design hosts real,
+    /// mutating production logic, not just test doubles. Ports the
+    /// characterization at `engine_eval.rs:4298-4397`. Only unambiguous
+    /// matrices are used (clearly-PSD identity vs. clearly-non-PSD
+    /// `diag(1,1,-1)`) — no near-tolerance-boundary premise.
+    #[test]
+    fn mass_properties_psd_detector_flags_and_replaces_deterministically() {
+        let identity_cell = ValueCellId::new("BodyA", "mass_props");
+        let neg_eig_cell = ValueCellId::new("BodyB", "mass_props");
+        let malformed_cell = ValueCellId::new("BodyC", "mass_props");
+        let no_inertia_cell = ValueCellId::new("BodyD", "mass_props");
+
+        // (a) identity = clearly PSD.
+        let identity_value = mass_properties(Some(matrix3([
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ])));
+        // (b) diag(1,1,-1) = clearly non-PSD (one negative eigenvalue).
+        let neg_eig_value = mass_properties(Some(matrix3([
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, -1.0],
+        ])));
+        // (c) wrong-shape (2×2) inertia — unparseable as a 3×3 matrix.
+        let malformed_value = mass_properties(Some(Value::Matrix(vec![
+            vec![Value::Real(1.0), Value::Real(0.0)],
+            vec![Value::Real(0.0), Value::Real(1.0)],
+        ])));
+        // (d) no `inertia` field at all.
+        let no_inertia_value = mass_properties(None);
+
+        let entries = [
+            (identity_cell.clone(), identity_value.clone()),
+            (neg_eig_cell.clone(), neg_eig_value.clone()),
+            (malformed_cell.clone(), malformed_value.clone()),
+            (no_inertia_cell.clone(), no_inertia_value.clone()),
+        ];
+
+        let registry = DetectorRegistry::with_builtins();
+        assert!(
+            registry.ids().contains(&"mass-properties-psd"),
+            "with_builtins() must register the PSD detector; got ids {:?}",
+            registry.ids()
+        );
+
+        let mut run1 = OwnedState::seeded(&entries);
+        registry.run_all(&mut run1.as_state());
+
+        let mut run2 = OwnedState::seeded(&entries);
+        registry.run_all(&mut run2.as_state());
+
+        // Exactly the non-PSD and malformed cells are flagged, both runs
+        // agreeing bit-for-bit via the (code, message) projection.
+        assert_eq!(diag_keys(&run1.diagnostics), diag_keys(&run2.diagnostics));
+        assert_eq!(
+            run1.diagnostics.len(),
+            2,
+            "expected exactly the non-PSD + malformed cells to be flagged, got {:?}",
+            diag_keys(&run1.diagnostics)
+        );
+        for key in diag_keys(&run1.diagnostics) {
+            assert_eq!(key.0, Some(DiagnosticCode::DynamicsInertiaNotPSD));
+        }
+
+        for run in [&run1, &run2] {
+            // (a) identity = PSD → left untouched in both values and snapshot.
+            assert_eq!(run.values.get(&identity_cell), Some(&identity_value));
+            assert_eq!(
+                run.snapshot_values.get(&identity_cell),
+                Some(&(identity_value.clone(), DeterminacyState::Determined))
+            );
+
+            // (b) non-PSD → Undef-replaced in both values and snapshot.
+            assert_eq!(run.values.get(&neg_eig_cell), Some(&Value::Undef));
+            assert_eq!(
+                run.snapshot_values.get(&neg_eig_cell),
+                Some(&(Value::Undef, DeterminacyState::Determined))
+            );
+
+            // (c) malformed → Undef-replaced in both values and snapshot.
+            assert_eq!(run.values.get(&malformed_cell), Some(&Value::Undef));
+            assert_eq!(
+                run.snapshot_values.get(&malformed_cell),
+                Some(&(Value::Undef, DeterminacyState::Determined))
+            );
+
+            // (d) no inertia field = Skip → left untouched.
+            assert_eq!(run.values.get(&no_inertia_cell), Some(&no_inertia_value));
+            assert_eq!(
+                run.snapshot_values.get(&no_inertia_cell),
+                Some(&(no_inertia_value.clone(), DeterminacyState::Determined))
+            );
+        }
     }
 }
