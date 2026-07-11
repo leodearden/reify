@@ -20,6 +20,8 @@
 # Options:
 #   --reseed              After freeing target/, re-seed a thin base clone:
 #                         <seed-script> <base_target_dir> <lane_dir> --fresh-checkout.
+#                         Best-effort: a failed re-seed is logged but does not
+#                         change the exit code (see Exit codes below).
 #                         Requires --base. Default OFF (no clone staged).
 #   --base DIR             base_target_dir to seed from. Required with --reseed.
 #   --seed-script PATH     Seed primitive invoked by --reseed (default: sibling
@@ -36,7 +38,11 @@
 # Stdout: resolved <lane_dir> on success. Stderr: all diagnostics.
 #
 # Exit codes:
-#   0   — Freed (and re-seeded, if --reseed).
+#   0   — target/ freed. With --reseed, re-seeding is attempted best-effort:
+#         a failed re-seed is logged (stderr "Re-seed FAILED") but does NOT
+#         change the exit code, since the free — the operation this script
+#         guarantees — already succeeded (D10: acquire always re-seeds from
+#         base anyway, so a lane a caller re-acquires is never left cold).
 #   1   — Precondition guard refusal (nonexistent lane, ==base dir, not under
 #         $REIFY_WARM_LANE_MOUNT).
 #   2   — Usage error (unknown flag, missing positional, --reseed without --base).
@@ -74,7 +80,8 @@ Usage: $(basename "$0") <lane_dir> [--reseed] [--base <base_target_dir>] [--seed
 
   --reseed                After freeing target/, re-seed a thin base clone
                           (--seed-script <base_target_dir> <lane_dir> --fresh-checkout).
-                          Requires --base. Default OFF.
+                          Best-effort: a failed re-seed is logged but does not
+                          change the exit code. Requires --base. Default OFF.
   --base DIR              base_target_dir to seed from. Required with --reseed.
   --seed-script PATH      Seed primitive to invoke for --reseed (default:
                           sibling scripts/seed-warm-lane.sh). Hermetic test seam.
@@ -84,7 +91,8 @@ Usage: $(basename "$0") <lane_dir> [--reseed] [--base <base_target_dir>] [--seed
   Stderr: all diagnostics.
 
   Exit codes:
-    0   — Freed (and re-seeded, if --reseed).
+    0   — target/ freed. With --reseed, re-seeding is best-effort: a failed
+          re-seed is logged (stderr) but does not change the exit code.
     1   — Precondition guard refusal (nonexistent lane, ==base dir, not under
           \$REIFY_WARM_LANE_MOUNT).
     2   — Usage error (unknown flag, missing positional, --reseed without --base).
