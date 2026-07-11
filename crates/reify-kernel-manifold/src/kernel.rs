@@ -1644,6 +1644,18 @@ mod tests {
     /// fan itself (`2->8`/`8->2`, `1->8`/`8->1`, `0->8`/`8->0`). So `Closed`
     /// and `ConsistentWinding` both still hold on the whole mesh unchanged;
     /// only `NonDegenerate`'s zero-area boundary is actually exercised.
+    ///
+    /// Caveat: `result.is_ok()` also depends on the real
+    /// `manifold3d::from_mesh_f64` itself accepting a triangle of twice-area
+    /// `1e-4` (this test calls `ingest_mesh`, not `Mesh::validate` directly).
+    /// If a future `manifold3d` upgrade tightens its own near-degeneracy
+    /// tolerance, this test could start failing for a reason unrelated to
+    /// `MANIFOLD_INGEST_TOL` — an upstream tolerance change, not a
+    /// `Mesh::validate`-wiring regression. Isolating the `MANIFOLD_INGEST_TOL`
+    /// boundary claim from that upstream dependency would need a direct
+    /// `Mesh::validate(0.0)` unit assertion in `reify-ir`
+    /// (`crates/reify-ir/src/geometry.rs`) — outside this task's locked scope
+    /// (`kernel.rs` only), so noted here rather than added blind.
     #[test]
     fn ingest_mesh_accepts_valid_mesh_with_sliver_triangle_at_nondegenerate_boundary() {
         let mesh = Mesh {
