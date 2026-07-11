@@ -308,15 +308,67 @@ _recoverable() {
     return 0
 }
 
+# ── helper: name/path matches a glob pattern ──────────────────────────────────
+# _matches_glob <value> <comma-separated-globs>
+# Lifted verbatim from warm-lane-gc.sh's identically-named helper.
+_matches_glob() {
+    local value="$1"
+    local globs="$2"
+    local g
+    # Split comma-separated globs
+    local IFS=","
+    for g in $globs; do
+        # shellcheck disable=SC2254
+        case "$value" in
+            $g) return 0 ;;
+        esac
+    done
+    return 1
+}
+
+# ── dirty-state: clean | residue-only | wip ───────────────────────────────────
+# _dirty_state <dir>
+# git status --porcelain --untracked-files=no (reuse gc.sh's _is_reclaimable
+# dirty predicate verbatim: --untracked-files=no excludes untracked artifacts
+# like target/, so only uncommitted changes to TRACKED files are considered).
+# Empty -> clean. Non-empty AND every changed path matches RESIDUE_GLOB
+# (default data/queue/*.db*, the §2/D1 write_queue.db residue) -> residue-only.
+# Any non-residue path -> wip (genuine unrecoverable WIP). A `git status`
+# failure degrades fail-closed to wip (never mistakenly reclaimable).
+_dirty_state() {
+    local dir="$1"
+    local status_out
+    status_out="$(git -C "$dir" status --porcelain --untracked-files=no 2>/dev/null)" || { printf 'wip'; return 0; }
+    [ -n "$status_out" ] || { printf 'clean'; return 0; }
+
+    local line path
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        # Porcelain v1 short format: "XY path" (renames/copies: "XY orig -> new"
+        # -- use the new path). Strip the 2-char status code + separating space.
+        path="${line:3}"
+        case "$path" in
+            *' -> '*) path="${path#*' -> '}" ;;
+        esac
+        if ! _matches_glob "$path" "$RESIDUE_GLOB"; then
+            printf 'wip'
+            return 0
+        fi
+    done <<< "$status_out"
+
+    printf 'residue-only'
+    return 0
+}
+
 # ── classification (monotonically refined across the walk's build-out) ───────
-# _classify assigned status recoverable
+# _classify assigned status recoverable dirty
 _classify() {
-    local assigned="$1" status="$2" recoverable="$3"
+    local assigned="$1" status="$2" recoverable="$3" dirty="$4"
     if [ "$assigned" = "ASSIGNED" ]; then
         printf 'LIVE'; return 0
     fi
     # FREE lane.
-    if [ "$status" = "terminal" ] || [ "$recoverable" = "LANDED" ] || [ "$recoverable" = "PUSHED" ]; then
+    if [ "$status" = "terminal" ] || [ "$recoverable" = "LANDED" ] || [ "$recoverable" = "PUSHED" ] || [ "$dirty" = "residue-only" ]; then
         printf 'RECLAIMABLE'; return 0
     fi
     printf 'PRESERVED-OK'
@@ -352,13 +404,14 @@ if [ -n "$MOUNT" ] && [ -d "$MOUNT" ]; then
         branch="${raw_branch:-(detached)}"
         status="$(_backing_task_status "$entry")"
         recoverable="$(_recoverable "$entry" "$raw_branch")"
+        dirty="$(_dirty_state "$entry")"
 
-        classification="$(_classify "$assigned" "$status" "$recoverable")"
+        classification="$(_classify "$assigned" "$status" "$recoverable" "$dirty")"
         case "$classification" in
             RECLAIMABLE) RECLAIMABLE_COUNT=$((RECLAIMABLE_COUNT + 1)) ;;
         esac
 
-        TABLE_OUT="${TABLE_OUT}lane=${name} role=${role} assigned=${assigned} branch=${branch} status=${status} recoverable=${recoverable} classification=${classification}
+        TABLE_OUT="${TABLE_OUT}lane=${name} role=${role} assigned=${assigned} branch=${branch} status=${status} recoverable=${recoverable} dirty=${dirty} classification=${classification}
 "
     done
 fi
