@@ -8011,6 +8011,49 @@ mod tests {
         assert_eq!(body, [0.0, 0.0, 0.0]);
     }
 
+    /// amendment (task 5083 review): a `StructureInstance` whose `type_name`
+    /// doesn't match any of `"PointLoad"` / `"PressureLoad"` / `"Gravity"`
+    /// (e.g. a typo'd `"PointLaod"`) falls through the `if`/`else if`
+    /// dispatch chain with no trailing `else` — it must be silently skipped,
+    /// NOT treated as a shape error. This is the most likely real-world
+    /// malformation and pins the boundary the PRD's G2(a) top-level
+    /// diagnostic (D9) ultimately targets: D9 only surfaces `Err`s that
+    /// `extract_loads` already returns (its outer `Value::List` check, this
+    /// task/D8) — it does not change per-item dispatch, so an unrecognized
+    /// load `type_name` remains a silent no-op both before and after D9
+    /// lands. This is the pre-existing convention, preserved (not newly
+    /// introduced) by this task.
+    #[test]
+    fn extract_loads_unknown_type_name_is_silently_skipped() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        let fields: PersistentMap<String, Value> = [("force".to_string(), Value::Real(1000.0))]
+            .into_iter()
+            .collect();
+        let unrecognized = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_name: "PointLaod".to_string(), // typo — not a recognized load type
+            type_id: StructureTypeId(u32::MAX),
+            version: 0,
+            fields,
+        }));
+
+        let (tip, pressures, body) = extract_loads(&Value::List(vec![unrecognized]), 0.0).unwrap();
+        assert_eq!(
+            tip,
+            [0.0, 0.0, 0.0],
+            "unrecognized type_name must not contribute to tip_force"
+        );
+        assert!(
+            pressures.is_empty(),
+            "unrecognized type_name must not produce a PressureSpec"
+        );
+        assert_eq!(
+            body,
+            [0.0, 0.0, 0.0],
+            "unrecognized type_name must not contribute to body_force"
+        );
+    }
+
     // ── task 4366: cancel short-circuit + cadence ─────────────────────────────
 
     /// step-1 RED (task 4366): when the progress closure returns
