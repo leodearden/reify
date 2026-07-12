@@ -356,12 +356,25 @@ impl SolverRegistry {
         // `other_unique && candidates[0].unique == all_unique`, since
         // `merged_values`/`all_unique` above were folded from the SAME
         // `other_values`/`other_unique` plus the SAME winner.
+        // Perf (reviewer_comprehensive amend, task #5016): when there is no
+        // independent non-objective component, `other_values` is empty and
+        // `other_values.clone().extend(c.values)` is exactly `c.values` —
+        // skip the clone-and-rehash for every one of the K captured
+        // candidates in that (common, single-component merged-cluster) case
+        // instead of paying an unconditional allocation+rehash K times over.
+        // When `other_values` IS non-empty (a real independent component to
+        // cross-merge, e.g. the (c) test fixture), behaviour is unchanged.
         let objective_candidates = captured_candidates.map(|candidates| {
             candidates
                 .into_iter()
                 .map(|c| {
-                    let mut values = other_values.clone();
-                    values.extend(c.values);
+                    let values = if other_values.is_empty() {
+                        c.values
+                    } else {
+                        let mut values = other_values.clone();
+                        values.extend(c.values);
+                        values
+                    };
                     RankedCandidate {
                         values,
                         objective_score: c.objective_score,
