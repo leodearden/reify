@@ -328,11 +328,19 @@ fn positive_parity_batch() {
 /// Rejection-parity assertion (PRD §7.2, second clause): runtime
 /// structurally-Undef ⇒ static `None` (`infer_mul_div_result` rejects the
 /// same pairing). `label` names the row for panic attribution.
-///
-/// Stub for step-5 RED — step-6 implements the real body.
 fn assert_rejects(op: BinOp, lv: Value, rv: Value, lt: Type, rt: Type, label: &str) {
-    let _ = (op, lv, rv, lt, rt, label);
-    todo!("step-6: implement assert_rejects (runtime Undef + static None)")
+    let runtime = eval_binop(op, lv.clone(), rv.clone());
+    assert!(
+        runtime.is_undef(),
+        "{label}: expected structurally-Undef runtime result for {op:?}({lv:?}, {rv:?}), \
+         got {runtime:?}"
+    );
+    let static_result = reify_compiler::__infer_mul_div_result_for_parity_test(op, &lt, &rt);
+    assert!(
+        static_result.is_none(),
+        "{label}: expected static None (reject) for {op:?}({lt:?}, {rt:?}) \
+         (runtime={runtime:?}), got {static_result:?}"
+    );
 }
 
 // ── Rejection-parity batch (step-5 RED / step-6 GREEN) ──────────────────────
