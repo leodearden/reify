@@ -3130,3 +3130,100 @@ fn solve_ranked_multistart_inherits_money_robustness_floor() {
         ),
     }
 }
+
+// ---- multistart cost-growth regression (reviewer amendment, task δ #5016 review pass) ----
+//
+// `solve_ranked`'s best-of-K multistart runs K = 2*(dim+1) full Nelder-Mead
+// solves per objective-bearing merged cluster (PRD §11 Q4 resolved this
+// growth rate deliberately -- no cap, since real merged clusters are
+// expected to stay in the single-digit-to-low-tens dimension range, and a
+// seeded global solver for larger clusters is explicitly out of scope, §10).
+// This fixture makes that linear-in-dim cost observable at a HIGHER
+// dimension than the dim=2 fixtures above, so a future change that silently
+// alters the growth rate (e.g. an accidental combinatorial blow-up) or caps
+// K shows up here first.
+
+/// Regression fixture: dim=6 interior-optimum quadratic (generalizes
+/// `two_param_interior_quadratic_problem` to N params), asserting
+/// `solve_ranked` still returns exactly K = 2*(6+1) = 14 ranked candidates
+/// and completes within a generous time ceiling. Not a strict perf gate
+/// (wall-clock is machine-dependent) -- it exists so the K = 2*(dim+1) cost
+/// growth is exercised and observable, not merely documented in a comment.
+#[test]
+fn solve_ranked_multistart_k_scales_linearly_with_dim_high_dim_regression() {
+    use reify_ir::RankedSolveResult;
+    use std::time::Instant;
+
+    const DIM: usize = 6;
+    let solver = DimensionalSolver;
+
+    let ids: Vec<_> = (0..DIM).map(|i| vcid("Part", &format!("p{i}"))).collect();
+    let refs: Vec<_> = (0..DIM).map(|i| value_ref("Part", &format!("p{i}"))).collect();
+    // Interior targets spaced across [1mm, 100mm] so every multistart point
+    // (seed, midpoint, per-axis corners) stays trivially feasible -- same
+    // shape as `two_param_interior_quadratic_problem`, generalized to N.
+    let targets_mm: Vec<f64> = (0..DIM).map(|i| 10.0 + 10.0 * i as f64).collect();
+
+    let quad_expr = refs
+        .iter()
+        .zip(&targets_mm)
+        .map(|(r, &t)| {
+            let d = binop(BinOp::Sub, r.clone(), literal(mm(t)));
+            binop(BinOp::Mul, d.clone(), d)
+        })
+        .reduce(|acc, term| binop(BinOp::Add, acc, term))
+        .expect("DIM >= 1");
+    let objective = ObjectiveSet::single(ObjectiveSense::Minimize, quad_expr);
+
+    let mut current = ValueMap::new();
+    for (id, &t) in ids.iter().zip(&targets_mm) {
+        // Seed 15mm off each target so the optimizer has real work to do.
+        current.insert(id.clone(), mm(t + 15.0));
+    }
+
+    let auto_params = ids
+        .iter()
+        .map(|id| AutoParam {
+            id: id.clone(),
+            param_type: Type::length(),
+            bounds: Some((0.001, 0.1)),
+            free: true,
+        })
+        .collect();
+
+    let problem = ResolutionProblem {
+        auto_params,
+        constraints: vec![],
+        current_values: current,
+        objective: Some(objective),
+        functions: vec![].into(),
+    };
+
+    let started = Instant::now();
+    let ranked = solver.solve_ranked(&problem);
+    let elapsed = started.elapsed();
+
+    match ranked {
+        RankedSolveResult::Ranked { candidates, .. } => {
+            let expected_k = 2 * (DIM + 1);
+            assert_eq!(
+                candidates.len(),
+                expected_k,
+                "K = 2*(dim+1) must scale linearly with dim (PRD §11 Q4, no \
+                 cap): dim={DIM} -> expected {expected_k}, got {}",
+                candidates.len()
+            );
+            assert!(
+                elapsed.as_secs() < 10,
+                "solve_ranked over a dim={DIM} (K={expected_k}) merged \
+                 cluster took {:?} -- investigate a possible super-linear \
+                 regression in multistart cost",
+                elapsed
+            );
+        }
+        other => panic!(
+            "expected Ranked for a feasible dim={DIM} interior quadratic, got {:?}",
+            other
+        ),
+    }
+}
