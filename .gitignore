@@ -60,3 +60,6 @@ gui/src-tauri/sidecar/reify-sidecar-*
 # Python bytecode (CPython __pycache__ directories and .pyc files)
 __pycache__/
 *.pyc
+
+# orchestrator runtime queue DB (live SQLite, not version-controlled) — re #5178/#5169
+data/queue/*.db*
