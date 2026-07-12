@@ -4221,10 +4221,9 @@ impl Engine {
                         // entries so all resolution-phase entries share the same
                         // basis_version as the snapshot. This preserves the invariant
                         // that try_fast_path relies on for incremental evaluation.
-                        let res_snapshot_id = self.next_snapshot_id;
-                        self.next_snapshot_id += 1;
-                        let res_version_id = self.next_version_id;
-                        self.next_version_id += 1;
+                        let (snap_id, ver_id) = self.allocate_snapshot_version();
+                        let res_snapshot_id = snap_id.0;
+                        let res_version_id = ver_id.0;
 
                         // Write pinned connector-instance autos (task #4710): excluded from
                         // auto_params by build_solver_problem, written here as Determined
