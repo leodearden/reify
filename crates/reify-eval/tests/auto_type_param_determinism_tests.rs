@@ -603,6 +603,14 @@ fn v0_1_example_corpus_compile_and_check_time_is_bounded() {
     // corpus is ever intentionally trimmed below 100 files, lower this
     // constant to match — the assertion below has no way to distinguish an
     // intended shrink from a discovery regression.
+    //
+    // Why not a relative check (`candidates.len() >= paths.len() -
+    // skip.len()`) instead: it only bounds skip-matching removals, so a
+    // discover_ri_files() regression (e.g. finding only 50 of 243 files)
+    // shrinks paths.len() and candidates.len() together and still passes —
+    // missing the exact regression this floor exists to catch. It's also
+    // near-tautological, since relative paths are unique per file and
+    // skip-matching can't remove more than skip.len() files regardless.
     const EXPECTED_MIN_FILES: usize = 100;
 
     let skip: HashSet<&str> = SKIP_SET.iter().map(|(name, _)| *name).collect();
