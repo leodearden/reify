@@ -295,7 +295,7 @@ fn positive_rows() -> Vec<PositiveRow> {
         PositiveRow { label: "Div Real/Real",              op: Div, lv: Value::Real(10.0), rv: Value::Real(4.0), lt: Type::dimensionless_scalar(), rt: Type::dimensionless_scalar() },
         PositiveRow { label: "Div Int/Real",                op: Div, lv: Value::Int(9),   rv: Value::Real(2.0), lt: Type::Int, rt: Type::dimensionless_scalar() },
         PositiveRow { label: "Div Real/Int",                op: Div, lv: Value::Real(9.0), rv: Value::Int(2),   lt: Type::dimensionless_scalar(), rt: Type::Int },
-        PositiveRow { label: "Div Scalar[Area]/Scalar[L]->Scalar[L]", op: Div, lv: sc(12.0, D::AREA), rv: Value::length(4.0), lt: area_ty(), rt: Type::length() },
+        PositiveRow { label: "Div Scalar[Area]/Scalar[L] dims divide", op: Div, lv: sc(12.0, D::AREA), rv: Value::length(4.0), lt: area_ty(), rt: Type::length() },
         PositiveRow { label: "Div Scalar[L]/Scalar[L]->collapses Real", op: Div, lv: Value::length(12.0), rv: Value::length(4.0), lt: Type::length(), rt: Type::length() },
         PositiveRow { label: "Div Scalar[L]/Int preserves dim",  op: Div, lv: Value::length(15.0), rv: Value::Int(3), lt: Type::length(), rt: Type::Int },
         PositiveRow { label: "Div Scalar[L]/Real preserves dim", op: Div, lv: Value::length(15.0), rv: Value::Real(2.0), lt: Type::length(), rt: Type::dimensionless_scalar() },
