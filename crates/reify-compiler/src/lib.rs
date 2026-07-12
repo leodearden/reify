@@ -138,6 +138,28 @@ pub fn __validate_annotations_for_parity_test(
     diagnostics
 }
 
+/// Expose `infer_mul_div_result` to the static-vs-runtime Mul/Div parity
+/// integration test without widening the compiler's public API.
+///
+/// # Stability
+///
+/// This function is intentionally named with `__` prefix to signal that it is
+/// an internal test shim and **not part of the public API**. It may be removed
+/// or changed at any time. Gated behind `feature = "test-support"` (or
+/// `cfg(test)` for in-crate tests); not part of the released public API.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+// G-allow: task #5063 — test-support-gated parity shim, consumed by
+// tests/mul_div_static_runtime_parity.rs (static-vs-runtime Mul/Div parity,
+// INV-COMP-3 enforcement).
+pub fn __infer_mul_div_result_for_parity_test(
+    op: reify_ir::BinOp,
+    left: &reify_core::Type,
+    right: &reify_core::Type,
+) -> Option<reify_core::Type> {
+    type_compat::infer_mul_div_result(op, left, right)
+}
+
 /// Compile a parsed module into a compiled module.
 ///
 /// Performs name resolution, type checking, and expression compilation.
