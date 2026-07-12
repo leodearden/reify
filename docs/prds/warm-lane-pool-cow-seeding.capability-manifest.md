@@ -48,7 +48,7 @@ Legend: PASS evidence per binding; a FAIL value (`producer-absent`, `declared-on
 
 | Capability asserted | Evidence | Verdict |
 |---|---|---|
-| `max_concurrent_tasks` readable to size the pool (D9) | `orchestrator.yaml:11` (=24, tunable) | PASS (host-check) |
+| `max_concurrent_tasks` + `spare_warm_lanes` readable to size the pool (D9, corrected 2026-07-12 — task 5177) | `orchestrator.yaml` `max_concurrent_tasks`=48 + `spare_warm_lanes`=8 ⇒ effective N=56 (tunable; see sizing-lifecycle §2) | PASS (host-check) |
 | the §9.5 lifecycle contract is implementable by DF | §9.5 gives acquire/reset/release signatures + 7 invariants | PASS (contract specified) |
 | consumer: ζ/η implement against this contract | ζ/η depend_on ε cross-project | PASS |
 
