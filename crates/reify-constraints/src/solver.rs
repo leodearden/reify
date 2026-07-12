@@ -1884,6 +1884,15 @@ impl ConstraintSolver for DimensionalSolver {
             None => false,
         };
 
+        // step-6 (task δ #5016) confirmation: all three exclusion arms of the
+        // predicate above are pinned by dedicated guard tests in
+        // solver_integration.rs — `solve_ranked_gate_dim1_objective_single_candidate`
+        // (dim<=1), `solve_ranked_gate_dim2_no_objective_feasibility_only`
+        // (`objective: None`), and
+        // `solve_ranked_gate_dim2_cost_robustness_tradeoff_single_candidate`
+        // (`cost_robustness_lambda.is_some()`) — each verified green against
+        // this predicate as written; no gap was found, so the predicate is
+        // unchanged from step-4.
         if !multistart_eligible {
             let (result, meta) = self.solve_with_meta(problem);
             return rank_single(problem, result, meta);
@@ -1896,6 +1905,15 @@ impl ConstraintSolver for DimensionalSolver {
         // deterministic seed from `multistart_points`; score each Solved
         // candidate against the USER objective (I3/I4), exactly as the
         // single-candidate path above already does.
+        //
+        // step-6 (task δ #5016) confirmation: because this loop calls
+        // `solve_core` directly — the SAME function `solve_with_meta` calls
+        // for the single-start path — the Money-dimension robustness floor
+        // (task #4789 α, `apply_robustness_floor = true` inside `solve_core`)
+        // is INHERITED per start, not re-implemented here. Pinned by
+        // `solve_ranked_multistart_inherits_money_robustness_floor` in
+        // solver_integration.rs (step-5 guard (d)), which passes unchanged
+        // against this loop.
         let starts = multistart_points(problem);
         let mut scored: Vec<(usize, HashMap<ValueCellId, Value>, f64, bool)> = Vec::new();
 
