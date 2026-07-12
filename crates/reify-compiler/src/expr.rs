@@ -8668,6 +8668,60 @@ structure S {
         );
     }
 
+    /// End-to-end no-false-positive test for the Mul/Div operand-kind guard,
+    /// complementing the hard-error test above: a concrete, runtime-SUPPORTED
+    /// operand pairing — two dimensioned `Scalar` params of DIFFERENT
+    /// dimensions (`Length` and `Time`) — must reach the guard through the
+    /// full `compile_source` pipeline and emit ZERO `ArithOperandKind`, while
+    /// the COMBINED dimension `infer_mul_div_result`'s Scalar⊗Scalar arm
+    /// computes (pinned at the unit level by
+    /// `infer_mul_div_result_scalar_times_scalar_multiplies_dimensions` in
+    /// `type_compat.rs`) actually reaches `result_type` unchanged. The
+    /// supported partition was previously exercised only at the
+    /// `infer_mul_div_result` unit level (never through the real guard's `if
+    /// let Some(None)` branch in `compile_binop`) — a diagnostics-only
+    /// no-error assertion alone would not catch the guard misfiring on a
+    /// `Some` result and falling back to the `Type::Int` placeholder instead
+    /// of the correctly-dimensioned type.
+    #[test]
+    fn scalar_times_scalar_of_different_dimensions_emits_no_arith_operand_kind_and_combines_dimension()
+     {
+        use reify_test_support::{compile_source, get_let_expr_in};
+
+        let source = r#"
+structure S {
+    param len : Length
+    param t : Time
+    let v = len * t
+}
+"#;
+        let compiled = compile_source(source);
+
+        let arith_count = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::ArithOperandKind))
+            .count();
+        assert_eq!(
+            arith_count, 0,
+            "`len * t` (Scalar<Length> * Scalar<Time>, runtime-supported \
+             dimension algebra) must NOT emit ArithOperandKind; got \
+             {arith_count}: {:?}",
+            compiled.diagnostics
+        );
+
+        let expr = get_let_expr_in(&compiled, "S", "v");
+        assert_eq!(
+            expr.result_type,
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH.mul(&DimensionVector::TIME),
+            },
+            "`len * t` must produce the correctly-COMBINED Length\u{d7}Time \
+             dimension (not a placeholder or poisoned type); got: {:?}",
+            expr.result_type
+        );
+    }
+
     /// End-to-end anti-cascade SKIP regression for the Mul/Div operand-kind
     /// guard's gradualism, complementing the HARD-ERROR test above:
     /// `Scalar<Q> * Scalar<Q>` inside a dimension-kinded generic fn body —
