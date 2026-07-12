@@ -3479,6 +3479,22 @@ pub(crate) fn compile_expr_guarded_with_expected(
             }
         }
         reify_ast::ExprKind::MemberAccess { object, member } => {
+            // ── compiler-type-hygiene ε1: PART A — name-directed pre-pass ───────
+            //
+            // Everything from here down to the `compile_expr_guarded` call that
+            // builds `compiled_obj` (below) dispatches on the *AST SHAPE* of
+            // `object` itself — self.member / self.<cluster>.<inner> /
+            // self.sub.member / <sub>.<cluster>.<inner> / port.member /
+            // <col>[i].<cluster>.<inner> / keyed[k].member / <col>[i].member /
+            // <col>.count / meta.key — and runs BEFORE `compiled_obj` (and
+            // therefore `compiled_obj.result_type`) exists. It is structurally
+            // already a pre-pass, not part of the receiver-*type* dispatch
+            // reshaped below (ε1 step-6): it is intentionally left VERBATIM.
+            //
+            // PART B — the type-directed dispatch on `compiled_obj.result_type`
+            // — begins at the exhaustive `match` following the
+            // `compile_expr_guarded` call below.
+            //
             // Check if this is a `self.member` or `self.sub.member` access in entity scope.
             if scope.is_entity_scope {
                 // Pattern: self.member
@@ -4131,59 +4147,105 @@ pub(crate) fn compile_expr_guarded_with_expected(
                 lambda_counter,
             );
 
-            // ── compiler-type-hygiene ε1 step-4: named per-kind handlers ────────
+            // ── compiler-type-hygiene ε1 step-6: exhaustive receiver-type match ─
             //
-            // Each type-directed branch below has been extracted into a named
-            // handler fn — still invoked from this if-chain exactly as before
-            // (step-6 converts the chain itself into an exhaustive
-            // `match &compiled_obj.result_type`; the handlers do not change
-            // shape again). See each handler's own doc comment (defined below
-            // `member_access_aggregation_or_unsupported`) for the precedence
-            // and behavior it preserves verbatim from the pre-extraction
-            // if-chain.
-            if !compiled_obj.result_type.is_error()
-                && matches!(
-                    &compiled_obj.result_type,
-                    Type::StructureRef(_) | Type::TraitObject(_)
-                )
-            {
-                return member_access_on_structure_like(
+            // THE RESHAPE (PRD docs/prds/v0_6/compiler-type-hygiene.md §7.4 /
+            // decision 8, INV-COMP-1). ONE exhaustive `match &compiled_obj
+            // .result_type` over all 39 `Type` variants, deliberately with NO
+            // `_` arm: a future 40th variant makes this fail to compile,
+            // forcing its author to make an explicit MemberAccess decision
+            // instead of silently inheriting the poison tail.
+            //
+            // The four special-receiver arms below partition a set of 11
+            // variants that is DISJOINT from the 28-variant tail arm (and from
+            // each other) — every `Type` variant appears in EXACTLY one arm —
+            // so, unlike the pre-step-6 if-chain, arm order cannot change
+            // which handler fires. That disjointness is also why the former
+            // `!compiled_obj.result_type.is_error()` guards ahead of the
+            // StructureRef/TraitObject and TypeParam checks are dropped here:
+            // they are subsumed by exhaustiveness — `Type::Error` is its own
+            // discriminant, grouped into the tail arm below, so an
+            // already-poisoned receiver can no longer reach a special handler
+            // at all. It always lands on `member_access_aggregation_or_
+            // unsupported`, whose own `is_error()` short-circuit (unchanged
+            // since step-2) propagates the poison exactly as before.
+            //
+            // Each handler's OWN doc comment (below) documents the
+            // intra-handler precedence it preserves verbatim from the
+            // pre-extraction if-chain (e.g. purpose-subject reflection running
+            // before StructureInstance projection inside
+            // `member_access_on_structure_like`).
+            //
+            // Collection-aggregation (`count`/`sum`/`keys`/`values`) is
+            // deliberately NOT its own arm and NOT hoisted ahead of this
+            // match: it is name-directed but NOT order-independent across
+            // receiver KINDS — `structRef.count` / `traitObj.count` / a
+            // non-ValueRef `typeParam.count` must keep resolving via their own
+            // handler (StructureMemberNotFound / projection / poison), not
+            // the receiver-agnostic `Type::Int` arm inside the tail. So it
+            // stays the shared residual: the 28 plain variants below map to
+            // it directly, and the 3 fall-through handlers (TypeParam
+            // non-ValueRef, datum non-projection-member, feature
+            // aggregation-member) delegate to it internally as their own
+            // residual.
+            match &compiled_obj.result_type {
+                Type::StructureRef(_) | Type::TraitObject(_) => member_access_on_structure_like(
                     compiled_obj,
                     member,
                     scope,
                     expr.span,
                     diagnostics,
-                );
+                ),
+                Type::TypeParam(_) => {
+                    member_access_on_type_param(compiled_obj, member, scope, expr.span, diagnostics)
+                }
+                Type::Axis
+                | Type::Plane
+                | Type::Frame(_)
+                | Type::Direction
+                | Type::Point { .. } => {
+                    member_access_on_datum(compiled_obj, member, expr.span, diagnostics)
+                }
+                Type::Geometry | Type::Selector(_) | Type::AnySelector => {
+                    member_access_on_feature(compiled_obj, member, expr.span, diagnostics)
+                }
+                // The remaining 28 variants carry no special MemberAccess
+                // receiver-type semantics: collection-aggregation members
+                // (count/sum/keys/values) resolve here, and every other
+                // member is the generic unsupported-member poison.
+                // `Type::Error` is included here (not a fifth special arm) —
+                // see the module note above for why that is behavior-neutral.
+                Type::Bool
+                | Type::Int
+                | Type::String
+                | Type::Scalar { .. }
+                | Type::Enum(_)
+                | Type::List(_)
+                | Type::Set(_)
+                | Type::Map(_, _)
+                | Type::Keyed(_)
+                | Type::Option(_)
+                | Type::Function { .. }
+                | Type::Field { .. }
+                | Type::Feature
+                | Type::Vector { .. }
+                | Type::Tensor { .. }
+                | Type::Complex(_)
+                | Type::Orientation(_)
+                | Type::Transform(_)
+                | Type::AffineMap(_)
+                | Type::Range(_)
+                | Type::BoundingBox
+                | Type::ScalarParam(_)
+                | Type::Matrix { .. }
+                | Type::Error
+                | Type::Union(_)
+                | Type::Relation
+                | Type::Applied { .. }
+                | Type::Projection { .. } => {
+                    member_access_aggregation_or_unsupported(compiled_obj, member, expr.span, diagnostics)
+                }
             }
-
-            if !compiled_obj.result_type.is_error()
-                && matches!(&compiled_obj.result_type, Type::TypeParam(_))
-            {
-                return member_access_on_type_param(
-                    compiled_obj,
-                    member,
-                    scope,
-                    expr.span,
-                    diagnostics,
-                );
-            }
-
-            let receiver_is_datum = matches!(
-                &compiled_obj.result_type,
-                Type::Axis | Type::Plane | Type::Frame(_) | Type::Direction | Type::Point { .. }
-            );
-            let receiver_is_feature = matches!(
-                &compiled_obj.result_type,
-                Type::Geometry | Type::Selector(_) | Type::AnySelector
-            );
-            if receiver_is_datum {
-                return member_access_on_datum(compiled_obj, member, expr.span, diagnostics);
-            }
-            if receiver_is_feature {
-                return member_access_on_feature(compiled_obj, member, expr.span, diagnostics);
-            }
-
-            member_access_aggregation_or_unsupported(compiled_obj, member, expr.span, diagnostics)
         }
         reify_ast::ExprKind::ListLiteral(elements) => {
             // Classify engagement once: derive child_expected (pushed into each child)
