@@ -178,8 +178,26 @@ fn area_ty() -> Type {
 /// aggregate-scale recursion through `infer_mul_div_result`). `Transform`
 /// only needs kind agreement — it has no quantity slot to check.
 fn value_kind_matches_type(runtime: &Value, static_ty: &Type) -> bool {
-    let _ = (runtime, static_ty);
-    todo!("step-4: implement the runtime-Value-kind <-> static-Type-kind mapping")
+    match (runtime, static_ty) {
+        (Value::Int(_), Type::Int) => true,
+        (Value::Real(_), Type::Scalar { dimension }) => dimension.is_dimensionless(),
+        (Value::Scalar { dimension: rd, .. }, Type::Scalar { dimension: sd }) => rd == sd,
+        (Value::Complex { dimension: rd, .. }, Type::Complex(sq)) => match sq.as_ref() {
+            Type::Scalar { dimension: sd } => rd == sd,
+            _ => false,
+        },
+        (Value::Vector(items), Type::Vector { quantity, .. }) => items
+            .iter()
+            .all(|item| value_kind_matches_type(item, quantity)),
+        (Value::Point(items), Type::Point { quantity, .. }) => items
+            .iter()
+            .all(|item| value_kind_matches_type(item, quantity)),
+        (Value::Tensor(items), Type::Tensor { quantity, .. }) => items
+            .iter()
+            .all(|item| value_kind_matches_type(item, quantity)),
+        (Value::Transform { .. }, Type::Transform(_)) => true,
+        _ => false,
+    }
 }
 
 // ── Positive-parity assertion engine (step-3 RED / step-8 GREEN ledger) ────
