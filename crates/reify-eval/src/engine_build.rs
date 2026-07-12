@@ -377,22 +377,6 @@ impl<'a> RealizationOpsInput<'a> {
     }
 }
 
-/// Result of a [`Engine::probe_realization_cache`] hit: the cached terminal
-/// [`KernelHandle`] plus the [`ReprKind`] it was resolved at (the demanded
-/// repr on a primary hit, or `BRep` on the fallback hit — see that method's
-/// doc for the full contract).
-///
-/// Both fields are contract-observability payload for the unit tests that
-/// pin `probe_realization_cache`'s four invariants; the sole production
-/// caller (`execute_realization_ops`) only checks `.is_some()` to decide
-/// whether to short-circuit and does not read `handle` or `resolved_repr`
-/// itself.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct CacheHit {
-    handle: KernelHandle,
-    resolved_repr: ReprKind,
-}
-
 /// One ordered action in a template's per-build schedule walk (task 4358 ε).
 ///
 /// Under [`crate::engine_fixpoint::BuildScheduler::UnifiedDag`] the per-template
@@ -6367,10 +6351,19 @@ impl Engine {
     /// (task 2874 step-8); see that method's doc for the surrounding op-loop
     /// contract this probe short-circuits.
     ///
-    /// Returns `Some(CacheHit)` after writing the full side-effect set below;
-    /// returns `None` — with ZERO side effects on `outputs` — when the guard
+    /// Returns `true` after writing the full side-effect set below; returns
+    /// `false` — with ZERO side effects on `outputs` — when the guard
     /// (`is_terminal_realization && demanded_tol.is_some() &&
     /// realization_name.is_some()`) is unmet or the cache probe misses.
+    ///
+    /// The hit/miss bit is all the sole production caller
+    /// ([`Self::execute_realization_ops`]) needs — it only branches on
+    /// whether to short-circuit, never on the cached handle or repr (both
+    /// already landed in `outputs` as part of the side-effect set above). A
+    /// prior revision returned `Option<CacheHit { handle, resolved_repr }>`
+    /// so the unit tests below could assert the resolved handle/repr
+    /// directly; that duplicated what the `outputs`-view assertions already
+    /// cover, so the tests now assert this `bool` plus those views instead.
     ///
     /// # Invariants
     ///
@@ -6418,7 +6411,7 @@ impl Engine {
         demanded_tol: Option<f64>,
         is_terminal_realization: bool,
         outputs: &mut RealizationOutputs<'_>,
-    ) -> Option<CacheHit> {
+    ) -> bool {
         // Task 2874, step-8: cache-hit short-circuit (extracted into this
         // helper by task 5059 η — see this function's rustdoc `# Invariants`
         // for the full contract). When the caller has threaded a demanded
@@ -6426,10 +6419,10 @@ impl Engine {
         // requires a name to write into the map), probe the per-engine
         // `RealizationCache` at `(entity_id, cache_repr, demanded_tol)`. On
         // hit we push the cached terminal handle, write
-        // `named_steps[name] = cached_handle`, and return `Some(CacheHit)` —
+        // `named_steps[name] = cached_handle`, and return `true` —
         // preserving the post-condition the success path establishes in the
         // caller, [`Self::execute_realization_ops`]. On miss (or when either
-        // guard is `None`) we return `None`; the caller then falls through
+        // guard is `None`) we return `false`; the caller then falls through
         // to the kernel op loop, and step-6's post-success insert at the
         // bottom of that caller populates the cache for the NEXT call. The
         // lookup uses `RealizationCache`'s partial-order "tighter satisfies
@@ -6550,10 +6543,19 @@ impl Engine {
                 // cold-path build of this realization would have written.
                 *outputs.produced_repr_out = Some(resolved_repr);
                 // **Task 4050 step-10**: consistency guard, reordered AFTER the
-                // `produced_repr_out` write. The surfaced produced_repr always
-                // equals the cache key's repr on the cache-hit branch (the line
-                // above just wrote `Some(resolved_repr)`); kept as a documented
-                // invariant guarding future edits to the probe/surface pair.
+                // `produced_repr_out` write. As positioned, this is
+                // tautological today — `produced_repr_out` was just set to
+                // `Some(resolved_repr)` on the line above, so the
+                // `unwrap_or` side can never disagree with `resolved_repr`
+                // and the assert can never fire against the current code.
+                // It is kept anyway as executable documentation of the
+                // invariant it names (the surfaced `produced_repr` always
+                // equals the cache key's repr on the cache-hit branch): if a
+                // future edit reorders this write or lets the two values be
+                // derived independently, the assert starts actually
+                // exercising the check and will trip in any debug-assertions
+                // build (including `cargo test`) the moment that invariant
+                // breaks, rather than staying silently wrong.
                 debug_assert_eq!(
                     resolved_repr,
                     outputs.produced_repr_out.unwrap_or(ReprKind::BRep),
@@ -6561,13 +6563,10 @@ impl Engine {
                 );
                 // Task 4744 β step-20: a cache-served terminal produced no fresh
                 // VolumeMesh this call, so there is nothing to stash.
-                return Some(CacheHit {
-                    handle: cached_handle,
-                    resolved_repr,
-                });
+                return true;
             }
         } // end is_terminal_realization cache-probe guard
-        None
+        false
     }
 
     /// Execute the per-realization geometry operation loop and perform rollback
@@ -6684,9 +6683,7 @@ impl Engine {
             demanded_tol,
             is_terminal_realization,
             &mut outputs,
-        )
-        .is_some()
-        {
+        ) {
             return None;
         }
         let RealizationOutputs {

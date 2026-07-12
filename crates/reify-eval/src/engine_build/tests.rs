@@ -8050,7 +8050,7 @@ structure Assembly {
     /// handle, then probes at the SAME repr/tol with the terminal+named+tol
     /// guard satisfied. Asserts every write the cold path's success branch
     /// would have made: `step_handles`, `named_steps`, `named_step_reprs`,
-    /// and `produced_repr_out` — plus the `Some(CacheHit)` return itself.
+    /// and `produced_repr_out` — plus the `true` return itself.
     #[test]
     fn probe_realization_cache_primary_hit_applies_full_side_effect_set() {
         let realization_id = RealizationNodeId::new("PrimaryHit", 0);
@@ -8095,13 +8095,10 @@ structure Assembly {
             &mut outputs,
         );
 
-        assert_eq!(
+        assert!(
             hit,
-            Some(CacheHit {
-                handle: seeded,
-                resolved_repr: ReprKind::BRep,
-            }),
-            "primary hit must report the seeded handle at the demanded (BRep) repr"
+            "primary hit must return true (the seeded handle/repr are \
+             verified below via the outputs views)"
         );
         assert_eq!(
             step_handles,
@@ -8199,7 +8196,7 @@ structure Assembly {
                 &mut outputs,
             );
 
-            assert_eq!(hit, None, "guard case [{label}] must miss (return None)");
+            assert!(!hit, "guard case [{label}] must miss (return false)");
             assert!(
                 step_handles.is_empty(),
                 "guard case [{label}] must not push step_handles"
@@ -8250,7 +8247,7 @@ structure Assembly {
                      realization_id: &RealizationNodeId,
                      demanded_repr: ReprKind,
                      demanded_tol: f64|
-         -> (Option<CacheHit>, Option<ReprKind>) {
+         -> (bool, Option<ReprKind>) {
             let mut step_handles: Vec<KernelHandle> = Vec::new();
             let mut named_steps: HashMap<String, KernelHandle> = HashMap::new();
             let mut named_step_reprs: HashMap<String, ReprKind> = HashMap::new();
@@ -8292,12 +8289,8 @@ structure Assembly {
 
             let (hit, produced_repr_out) = probe(&cache, &realization_id, ReprKind::Mesh, tol);
 
-            assert_eq!(
+            assert!(
                 hit,
-                Some(CacheHit {
-                    handle: seeded,
-                    resolved_repr: ReprKind::BRep,
-                }),
                 "a Mesh demand must fall back to the BRep-keyed entry when the \
                  primary Mesh-keyed lookup misses"
             );
@@ -8322,8 +8315,8 @@ structure Assembly {
 
             let (hit, produced_repr_out) = probe(&cache, &realization_id, ReprKind::BRep, tol);
 
-            assert_eq!(
-                hit, None,
+            assert!(
+                !hit,
                 "a BRep demand must NOT fall back to a Mesh-keyed entry \
                  (demanded_repr == BRep short-circuits the or_else)"
             );
@@ -8342,12 +8335,8 @@ structure Assembly {
 
             let (hit, _) = probe(&cache, &realization_id, ReprKind::BRep, 0.1);
 
-            assert_eq!(
+            assert!(
                 hit,
-                Some(CacheHit {
-                    handle: seeded,
-                    resolved_repr: ReprKind::BRep,
-                }),
                 "a tighter cached entry (tol=0.01) must satisfy a looser \
                  request (tol=0.1)"
             );
@@ -8365,8 +8354,8 @@ structure Assembly {
 
             let (hit, _) = probe(&cache, &realization_id, ReprKind::BRep, 0.001);
 
-            assert_eq!(
-                hit, None,
+            assert!(
+                !hit,
                 "a looser cached entry (tol=0.1) must miss a tighter request (tol=0.001)"
             );
         }
