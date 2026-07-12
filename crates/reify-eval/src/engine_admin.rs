@@ -6,7 +6,7 @@ use crate::journal::EventJournal;
 use crate::snapshot::Snapshot;
 use crate::{Engine, EvaluationState};
 use reify_compiler::{CompiledModule, EntityKind, ValueCellKind};
-use reify_core::Diagnostic;
+use reify_core::{Diagnostic, SnapshotId, VersionId};
 use reify_ir::{
     CompiledFunction, ConstraintChecker, ConstraintSolver, GeometryKernel, OptimizedImpl,
     TopologyAttributeTable,
@@ -380,6 +380,30 @@ impl Engine {
             persistent_hit_count: 0,
             persistent_miss_count: 0,
         }
+    }
+
+    /// Allocate a fresh, lockstep `(SnapshotId, VersionId)` pair for the
+    /// "paired allocate-and-bump" pattern: `next_snapshot_id` and
+    /// `next_version_id` are each read and advanced by exactly one, snapshot
+    /// first then version, so the two returned ids share the same numeric
+    /// value on every call.
+    ///
+    /// This is the allocate half of INV-BUILD-2 (docs/invariants.md):
+    /// "Version/snapshot IDs are allocated and read through exactly one API
+    /// each." Call sites that need a fresh snapshot id AND a fresh version
+    /// id together (e.g. `eval()`'s cold-path snapshot construction, the
+    /// resolution phase, and `dispatch_merged_cluster_solve`) MUST go
+    /// through this method rather than bumping `next_snapshot_id`/
+    /// `next_version_id` directly. This does not (yet) cover every raw
+    /// counter write in the crate: `eval_cached()`'s snapshot-only cold-path
+    /// bump has no matching version bump and is a distinct, non-paired
+    /// concern outside this helper's scope.
+    fn allocate_snapshot_version(&mut self) -> (SnapshotId, VersionId) {
+        let snapshot_id = SnapshotId(self.next_snapshot_id);
+        self.next_snapshot_id += 1;
+        let version_id = VersionId(self.next_version_id);
+        self.next_version_id += 1;
+        (snapshot_id, version_id)
     }
 
     /// **`#[cfg(any(test, feature = "test-instrumentation"))]`-gated** test
