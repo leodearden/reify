@@ -1704,6 +1704,119 @@ fn best_found_reason(iter_limited: bool) -> reify_ir::BestFoundReason {
     }
 }
 
+/// Finalises the uniqueness verdict for a `Solved` result.
+///
+/// For problems with any strict (non-free) auto param, re-solves from a
+/// perturbed starting point ([`verify_uniqueness`]) and either confirms
+/// `unique: true` or demotes the whole result to
+/// `SolveResult::Infeasible` (`ConstraintNonUnique`) when a different
+/// solution is found — a strict auto param MUST be uniquely determined by
+/// the constraints, independent of which candidate is being finalised.
+/// All-free problems skip the re-solve entirely and report `unique: false`
+/// (free auto params accept any feasible solution).
+///
+/// Shared by [`DimensionalSolver::solve_with_meta`] (applied to the sole
+/// candidate — `solve()`'s behaviour is unchanged by this extraction) and
+/// the best-of-K [`ConstraintSolver::solve_ranked`] override (applied ONLY
+/// to the winning candidate; alternative optima are by definition not *the*
+/// unique solution, so non-winning candidates carry `unique: false`
+/// directly, without a re-solve).
+fn finalise_uniqueness(
+    problem: &ResolutionProblem,
+    values: HashMap<ValueCellId, Value>,
+) -> SolveResult {
+    // Check if any param requires uniqueness verification (strict auto)
+    let has_strict = problem.auto_params.iter().any(|p| !p.free);
+    if has_strict {
+        if verify_uniqueness(problem, &values) {
+            SolveResult::Solved {
+                values,
+                unique: true,
+            }
+        } else {
+            // Strict auto params require a unique solution. The
+            // perturbation-based check found a different solution,
+            // indicating the problem is underdetermined.
+            SolveResult::Infeasible {
+                diagnostics: vec![
+                    reify_core::Diagnostic::error(
+                        "strict auto parameter resolution is not uniquely \
+                              determined \u{2014} consider using auto(free) \
+                              for exploration",
+                    )
+                    .with_code(DiagnosticCode::ConstraintNonUnique),
+                ],
+            }
+        }
+    } else {
+        // All params are free — skip uniqueness verification entirely.
+        // Free auto params accept any feasible solution, so we report
+        // unique=false to let the eval engine emit appropriate warnings.
+        SolveResult::Solved {
+            values,
+            unique: false,
+        }
+    }
+}
+
+/// The historical single-candidate [`ConstraintSolver::solve_ranked`] body
+/// (pre-δ #5016): wraps one `(SolveResult, SolveMeta)` pair into a
+/// 1-candidate [`reify_ir::RankedSolveResult`].
+///
+/// Used verbatim by every multistart-ineligible gate branch (dim<=1, no
+/// objective, or a `cost_robustness_tradeoff` objective — PRD §5.3) AND as
+/// the best-of-K all-infeasible fallback (`solve_ranked`'s multistart branch,
+/// re-anchored on the historical seed via `solve_with_meta`), so neither path
+/// can drift from the single-candidate contract invariants (F-result I1
+/// byte-identical test, B1/B2, BT6 — all dim=1 fixtures).
+fn rank_single(
+    problem: &ResolutionProblem,
+    result: SolveResult,
+    meta: SolveMeta,
+) -> reify_ir::RankedSolveResult {
+    use reify_ir::{OptimalityStatus, RankedCandidate, RankedSolveResult};
+    match result {
+        SolveResult::Solved { values, unique } => {
+            // Compute objective score at the solved value map.
+            // Keys off problem.objective (the USER objective), NOT effective_objective,
+            // per I3/I4: a feasibility-only solve reports FeasibilityOnly + None even
+            // when the solver internally optimized a synthetic centrality objective.
+            let objective_score = problem.objective.as_ref().and_then(|obj| {
+                let mut full = problem.current_values.clone();
+                for (id, v) in &values {
+                    full.insert(id.clone(), v.clone());
+                }
+                eval_objective_set(obj, &full, &problem.functions)
+            });
+            // Key optimality off objective_score (not problem.objective.is_some())
+            // to preserve I4: BestFound is only emitted when the score is present.
+            // In the edge case where eval_objective_set returns None despite
+            // problem.objective.is_some() (e.g. objective expression non-numeric
+            // at the solved map), fall back to FeasibilityOnly so that
+            // objective_score: None is never paired with BestFound.
+            let optimality = match &objective_score {
+                Some(_) => OptimalityStatus::BestFound {
+                    reason: best_found_reason(meta.iter_limited),
+                },
+                None => OptimalityStatus::FeasibilityOnly,
+            };
+            RankedSolveResult::Ranked {
+                candidates: vec![RankedCandidate {
+                    values,
+                    objective_score,
+                    unique,
+                }],
+                optimality,
+            }
+        }
+        // Infeasible and NoProgress are structurally identical to the default
+        // trait lift — delegate to the shared helper to avoid drift.
+        non_solved => non_solved
+            .into_ranked_pass_through()
+            .expect("Solved arm already handled above"),
+    }
+}
+
 impl DimensionalSolver {
     /// Run the full solve orchestration and return both the result and its metadata.
     ///
@@ -1738,40 +1851,7 @@ impl DimensionalSolver {
         };
 
         let final_result = match result {
-            SolveResult::Solved { values, .. } => {
-                // Check if any param requires uniqueness verification (strict auto)
-                let has_strict = problem.auto_params.iter().any(|p| !p.free);
-                if has_strict {
-                    if verify_uniqueness(problem, &values) {
-                        SolveResult::Solved {
-                            values,
-                            unique: true,
-                        }
-                    } else {
-                        // Strict auto params require a unique solution. The
-                        // perturbation-based check found a different solution,
-                        // indicating the problem is underdetermined.
-                        SolveResult::Infeasible {
-                            diagnostics: vec![
-                                reify_core::Diagnostic::error(
-                                    "strict auto parameter resolution is not uniquely \
-                                          determined \u{2014} consider using auto(free) \
-                                          for exploration",
-                                )
-                                .with_code(DiagnosticCode::ConstraintNonUnique),
-                            ],
-                        }
-                    }
-                } else {
-                    // All params are free — skip uniqueness verification entirely.
-                    // Free auto params accept any feasible solution, so we report
-                    // unique=false to let the eval engine emit appropriate warnings.
-                    SolveResult::Solved {
-                        values,
-                        unique: false,
-                    }
-                }
-            }
+            SolveResult::Solved { values, .. } => finalise_uniqueness(problem, values),
             other => other, // Infeasible, NoProgress pass through unchanged
         };
         (final_result, meta)
@@ -1788,13 +1868,40 @@ impl ConstraintSolver for DimensionalSolver {
         problem: &ResolutionProblem,
     ) -> reify_ir::RankedSolveResult {
         use reify_ir::{OptimalityStatus, RankedCandidate, RankedSolveResult};
-        let (result, meta) = self.solve_with_meta(problem);
-        match result {
-            SolveResult::Solved { values, unique } => {
-                // Compute objective score at the solved value map.
-                // Keys off problem.objective (the USER objective), NOT effective_objective,
-                // per I3/I4: a feasibility-only solve reports FeasibilityOnly + None even
-                // when the solver internally optimized a synthetic centrality objective.
+
+        // Best-of-K deterministic multistart gate (PRD
+        // `docs/prds/v0_6/whole-model-objective-coupling.md` §5.3, §11 Q4,
+        // task δ #5016): a merged cluster is always >=2 coupled auto params
+        // under a governing objective, so dim>=2 + objective is the in-scope
+        // proxy for "merged cluster" (`ResolutionProblem` carries no cluster
+        // marker — see design notes). dim<=1, no-objective, and the
+        // `cost_robustness_tradeoff` special form (its own single-start
+        // two-anchor blend, task γ #4791) keep today's single-candidate path
+        // VERBATIM — this is REQUIRED to preserve the dim=1 invariants
+        // (F-result I1 byte-identical test, B1/B2, BT6).
+        let multistart_eligible = match &problem.objective {
+            Some(obj) => problem.auto_params.len() >= 2 && obj.cost_robustness_lambda.is_none(),
+            None => false,
+        };
+
+        if !multistart_eligible {
+            let (result, meta) = self.solve_with_meta(problem);
+            return rank_single(problem, result, meta);
+        }
+
+        // ---- best-of-K multistart (dim>=2 + objective, §5.3/§11 Q4) ----
+        //
+        // Run the EXISTING solve_core (Money robustness floor + centrality
+        // synth + drift fallback all inherited unchanged) once per
+        // deterministic seed from `multistart_points`; score each Solved
+        // candidate against the USER objective (I3/I4), exactly as the
+        // single-candidate path above already does.
+        let starts = multistart_points(problem);
+        let mut scored: Vec<(usize, HashMap<ValueCellId, Value>, f64, bool)> = Vec::new();
+
+        for (start_index, start) in starts.iter().enumerate() {
+            let (result, meta) = solve_core(problem, start);
+            if let SolveResult::Solved { values, .. } = result {
                 let objective_score = problem.objective.as_ref().and_then(|obj| {
                     let mut full = problem.current_values.clone();
                     for (id, v) in &values {
@@ -1802,32 +1909,74 @@ impl ConstraintSolver for DimensionalSolver {
                     }
                     eval_objective_set(obj, &full, &problem.functions)
                 });
-                // Key optimality off objective_score (not problem.objective.is_some())
-                // to preserve I4: BestFound is only emitted when the score is present.
-                // In the edge case where eval_objective_set returns None despite
-                // problem.objective.is_some() (e.g. objective expression non-numeric
-                // at the solved map), fall back to FeasibilityOnly so that
-                // objective_score: None is never paired with BestFound.
-                let optimality = match &objective_score {
-                    Some(_) => OptimalityStatus::BestFound {
-                        reason: best_found_reason(meta.iter_limited),
-                    },
-                    None => OptimalityStatus::FeasibilityOnly,
-                };
-                RankedSolveResult::Ranked {
-                    candidates: vec![RankedCandidate {
+                if let Some(score) = objective_score {
+                    scored.push((start_index, values, score, meta.iter_limited));
+                }
+                // A Solved-but-unscored candidate (objective non-numeric at
+                // this particular start) is dropped — it cannot be ranked,
+                // and the all-starts-unscored case is exactly the
+                // `scored.is_empty()` fallback below (I4: never pair
+                // BestFound with objective_score: None).
+            }
+        }
+
+        // No start yielded a feasible, scoreable candidate — map the
+        // seed-start's own result (recomputed via the single-candidate path,
+        // which uses the same `extract_initial_point` seed as start #0) via
+        // the shared pass-through, exactly like every other Infeasible/
+        // NoProgress arm in this module.
+        if scored.is_empty() {
+            let (result, meta) = self.solve_with_meta(problem);
+            return rank_single(problem, result, meta);
+        }
+
+        // Rank feasible candidates by strict ascending objective_score, ties
+        // broken by ascending start index (start #0, the historical seed,
+        // wins exact ties). candidates[0] is the optimum (I2). `partial_cmp`
+        // only returns `None` for NaN, which `eval_objective_set` already
+        // filters out (`.filter(|v| v.is_finite())`), so every score here is
+        // a well-ordered finite f64 — `unwrap_or(Equal)` is a defensive
+        // fallback, never actually exercised.
+        scored.sort_by(|a, b| {
+            a.2.partial_cmp(&b.2)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.0.cmp(&b.0))
+        });
+
+        let (_winner_start, winner_values, winner_score, winner_iter_limited) = scored.remove(0);
+
+        // Only the winner is uniqueness-finalised — alternative optima are
+        // by definition not *the* unique solution, so non-winners carry
+        // `unique: false` directly (no re-solve). If the winner turns out to
+        // be non-unique (strict auto params only), `finalise_uniqueness`
+        // demotes it to Infeasible exactly as `solve_with_meta` would — the
+        // whole ranked result reflects that via the shared pass-through, so
+        // a non-unique winner can never be silently reported as BestFound.
+        match finalise_uniqueness(problem, winner_values) {
+            SolveResult::Solved { values, unique } => {
+                let mut candidates = Vec::with_capacity(scored.len() + 1);
+                candidates.push(RankedCandidate {
+                    values,
+                    objective_score: Some(winner_score),
+                    unique,
+                });
+                candidates.extend(scored.into_iter().map(|(_, values, score, _)| {
+                    RankedCandidate {
                         values,
-                        objective_score,
-                        unique,
-                    }],
-                    optimality,
+                        objective_score: Some(score),
+                        unique: false,
+                    }
+                }));
+                RankedSolveResult::Ranked {
+                    candidates,
+                    optimality: OptimalityStatus::BestFound {
+                        reason: best_found_reason(winner_iter_limited),
+                    },
                 }
             }
-            // Infeasible and NoProgress are structurally identical to the default
-            // trait lift — delegate to the shared helper to avoid drift.
             non_solved => non_solved
                 .into_ranked_pass_through()
-                .expect("Solved arm already handled above"),
+                .expect("finalise_uniqueness only ever returns Solved or Infeasible"),
         }
     }
 }
