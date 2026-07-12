@@ -398,7 +398,13 @@ impl Engine {
     /// counter write in the crate: `eval_cached()`'s snapshot-only cold-path
     /// bump has no matching version bump and is a distinct, non-paired
     /// concern outside this helper's scope.
-    fn allocate_snapshot_version(&mut self) -> (SnapshotId, VersionId) {
+    ///
+    /// `pub(crate)`, not private: `engine_admin` and `engine_eval` are
+    /// separate sibling `mod`s (see lib.rs), so a bare-private fn here is
+    /// invisible to engine_eval.rs's call sites despite being the same
+    /// crate. `pub(crate)` is the minimal fix — it stays fully contained to
+    /// `reify-eval`, preserving the "sole writer of the counters" property.
+    pub(crate) fn allocate_snapshot_version(&mut self) -> (SnapshotId, VersionId) {
         let snapshot_id = SnapshotId(self.next_snapshot_id);
         self.next_snapshot_id += 1;
         let version_id = VersionId(self.next_version_id);

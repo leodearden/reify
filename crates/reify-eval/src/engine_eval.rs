@@ -3270,10 +3270,9 @@ impl Engine {
         self.last_undef_causes.clear();
 
         // Build Snapshot from CompiledModule (creates EvaluationGraph internally)
-        let snapshot_id = self.next_snapshot_id;
-        self.next_snapshot_id += 1;
-        let version_id = self.next_version_id;
-        self.next_version_id += 1;
+        let (snap_id, ver_id) = self.allocate_snapshot_version();
+        let snapshot_id = snap_id.0;
+        let version_id = ver_id.0;
         let version = VersionId(version_id);
 
         let mut snapshot = Snapshot::from_compiled_module(module);
