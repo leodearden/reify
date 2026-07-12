@@ -1914,6 +1914,16 @@ impl ConstraintSolver for DimensionalSolver {
         // `solve_ranked_multistart_inherits_money_robustness_floor` in
         // solver_integration.rs (step-5 guard (d)), which passes unchanged
         // against this loop.
+        //
+        // Cost (reviewer amendment, task δ #5016 review pass): this runs
+        // K = 2*(dim+1) full `solve_core` solves — linear in `dim`, with no
+        // cap. §11 Q4 resolved this growth rate deliberately (a seeded
+        // per-cluster global solver for larger clusters is out of scope,
+        // §10), on the expectation that real merged clusters stay in the
+        // single-digit-to-low-tens dimension range.
+        // `solve_ranked_multistart_k_scales_linearly_with_dim_high_dim_regression`
+        // (solver_integration.rs) exercises this at dim=6 (K=14) so the cost
+        // growth is observable, not merely asserted in this comment.
         let starts = multistart_points(problem);
         let mut scored: Vec<(usize, HashMap<ValueCellId, Value>, f64, bool)> = Vec::new();
 
@@ -1970,6 +1980,20 @@ impl ConstraintSolver for DimensionalSolver {
         // demotes it to Infeasible exactly as `solve_with_meta` would — the
         // whole ranked result reflects that via the shared pass-through, so
         // a non-unique winner can never be silently reported as BestFound.
+        //
+        // NOT deduplicated (reviewer amendment, task δ #5016 review pass):
+        // `scored` (the non-winning candidates folded in below) carries
+        // every feasible start verbatim. For a single-basin objective — the
+        // common case, since most merged clusters have one attracting
+        // optimum, e.g. every fixture in this module except the dedicated
+        // two-basin test — most or all of the K starts converge to the SAME
+        // point, so `candidates[1..]` are near-/byte-identical convergences
+        // of that ONE optimum, not K distinct alternative designs. Today's
+        // only consumers (`SolverRegistry::solve_ranked`, engine_eval.rs)
+        // read `candidates[0]` alone, so this is currently harmless; a
+        // future consumer that iterates `candidates[1..]` expecting
+        // genuinely different solutions must dedupe by resolved-value
+        // fingerprint (e.g. within `UNIQUENESS_REL_TOL`) itself first.
         match finalise_uniqueness(problem, winner_values) {
             SolveResult::Solved { values, unique } => {
                 let mut candidates = Vec::with_capacity(scored.len() + 1);

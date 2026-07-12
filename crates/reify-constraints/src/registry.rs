@@ -407,6 +407,15 @@ impl ConstraintSolver for SolverRegistry {
     /// staging, dim<=1, or a degenerate/all-infeasible solve) — every dim=1
     /// fixture (F-result I1 byte-identical test, B1/B2, BT6) stays on this
     /// unchanged fallback path.
+    ///
+    /// `candidates[1..]` are NOT deduplicated (reviewer amendment, task δ
+    /// #5016 review pass): they are `DimensionalSolver::solve_ranked`'s
+    /// non-winning starts cross-merged verbatim, so for a single-basin
+    /// objective (most merged clusters) they may be near-/byte-identical
+    /// repeats of the SAME resolved point rather than distinct alternative
+    /// designs — best-of-K runner-ups, not a guaranteed-distinct alternative
+    /// set. Callers that need genuinely distinct alternatives must dedupe by
+    /// resolved-value fingerprint themselves.
     fn solve_ranked(&self, problem: &ResolutionProblem) -> RankedSolveResult {
         let (result, optimality, objective_score, objective_candidates) =
             self.solve_inner(problem, true);
