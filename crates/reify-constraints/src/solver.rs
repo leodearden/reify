@@ -928,6 +928,63 @@ fn effective_bounds(param: &AutoParam) -> (f64, f64) {
         .unwrap_or_else(|| default_bounds_for(&param.param_type))
 }
 
+/// Deterministic multistart seed generator for best-of-K multistart
+/// (PRD `docs/prds/v0_6/whole-model-objective-coupling.md` §5.3, §11 Q4, task δ).
+///
+/// Produces exactly `K = 2 * (dim + 1)` start vectors for a `dim`-dimensional
+/// problem (`dim = problem.auto_params.len()`):
+///   - start #0: the historical [`extract_initial_point`] seed. Anchoring the
+///     incumbent as one of the K starts guarantees best-of-K is a superset of
+///     today's single start, so `candidate[0]` can never be worse than
+///     `solve()`'s result (dominance).
+///   - start #1: the all-midpoint point — every axis at its [`effective_bounds`]
+///     midpoint.
+///   - starts #2..K-1: per axis `i` (in `auto_params` order), one vector with
+///     axis `i` at its low `effective_bounds` and one with axis `i` at its
+///     high bound, every other axis held at its own midpoint.
+///
+/// Pure function of `problem` — no RNG, clock, or seed (§3.2 determinism
+/// contract; BT5). Two calls on the same `problem` return identical vectors.
+fn multistart_points(problem: &ResolutionProblem) -> Vec<Vec<f64>> {
+    let dim = problem.auto_params.len();
+    let mut points = Vec::with_capacity(2 * (dim + 1));
+
+    // Start #0: the historical single-start seed (dominance anchor).
+    points.push(extract_initial_point(problem));
+
+    // Per-axis midpoint — shared by the all-midpoint point and as the
+    // "other axes" value for every corner anchor below.
+    let midpoint: Vec<f64> = problem
+        .auto_params
+        .iter()
+        .map(|p| {
+            let (lo, hi) = effective_bounds(p);
+            (lo + hi) / 2.0
+        })
+        .collect();
+    points.push(midpoint.clone());
+
+    // Per-axis low/high corner anchors, every other axis held at midpoint.
+    for (i, param) in problem.auto_params.iter().enumerate() {
+        let (lo, hi) = effective_bounds(param);
+
+        let mut low = midpoint.clone();
+        low[i] = lo;
+        points.push(low);
+
+        let mut high = midpoint.clone();
+        high[i] = hi;
+        points.push(high);
+    }
+
+    debug_assert_eq!(
+        points.len(),
+        2 * (dim + 1),
+        "multistart_points must produce exactly K = 2*(dim+1) starts"
+    );
+    points
+}
+
 /// Relative tolerance for uniqueness comparison between two solutions.
 const UNIQUENESS_REL_TOL: f64 = 1e-6;
 
