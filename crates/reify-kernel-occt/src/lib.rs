@@ -12493,7 +12493,16 @@ mod tests {
     // genuine OCCT kernel was never driven through it. `OcctKernelHandle`
     // is used (not the inner single-thread `OcctKernel`) because the
     // macro's generated tests upcast to `Box<dyn GeometryKernel>` and the
-    // handle is the `Send + Sync` type that implements the trait.
+    // handle is the `Send + Sync` type that implements the trait. Each
+    // generated test spawns its own handle (and OCCT worker thread) for
+    // isolation; the resulting startup cost is an accepted tradeoff, not
+    // a correctness concern.
+    //
+    // The `stub;` arm (`not(has_occt)`) is deliberately not instantiated
+    // here: the stub OCCT adapter's all-error taxonomy is already covered
+    // by bespoke hand-written tests in stubs.rs, and migrating it onto
+    // this shared suite is tracked as a separate follow-up (task iota) —
+    // out of scope for this real-arm-only wiring.
     reify_test_support::assert_kernel_contract!(
         real;
         OcctKernelHandle::spawn,
