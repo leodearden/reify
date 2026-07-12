@@ -381,6 +381,12 @@ impl<'a> RealizationOpsInput<'a> {
 /// [`KernelHandle`] plus the [`ReprKind`] it was resolved at (the demanded
 /// repr on a primary hit, or `BRep` on the fallback hit — see that method's
 /// doc for the full contract).
+///
+/// Both fields are contract-observability payload for the unit tests that
+/// pin `probe_realization_cache`'s four invariants; the sole production
+/// caller (`execute_realization_ops`) only checks `.is_some()` to decide
+/// whether to short-circuit and does not read `handle` or `resolved_repr`
+/// itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct CacheHit {
     handle: KernelHandle,
@@ -6430,22 +6436,17 @@ impl Engine {
         // looser" rule (`cached_tol ≤ requested_tol`), so a tighter request
         // automatically misses a looser cached entry (see step-13's pin).
         //
-        // **Amendment (suggestion #3)**: the cache repr is bound to a local
-        // `cache_repr` so the lookup-key repr and the `produced_repr_out`
-        // write below are sourced from the same value. If a future change
-        // shifts the cache key to a non-`BRep` `ReprKind` (the cache's
-        // `(entity, repr, tol, options)` shape already supports it; see
-        // `RealizationCache::lookup`), the `produced_repr_out` write follows
-        // without a separate edit.
+        // `cache_repr` is bound to a local so the lookup-key repr and the
+        // `produced_repr_out` write below are sourced from the same value.
+        // If a future change shifts the cache key to a non-`BRep` `ReprKind`
+        // (the cache's `(entity, repr, tol, options)` shape already
+        // supports it; see `RealizationCache::lookup`), the
+        // `produced_repr_out` write follows without a separate edit.
+        // `execute_realization_ops`'s post-loop insert-key fallback binds
+        // the identical `demanded_repr` value independently below (not
+        // through this function) — see its own comment for why.
         //
-        // **Amendment (reviewer_comprehensive amend-1)**: bound via
-        // [`Self::cache_repr`], the same shared definition
-        // `execute_realization_ops`'s post-loop insert-key fallback now
-        // calls — the lookup-key repr here and the insert-key-fallback repr
-        // there are provably sourced from one function instead of two
-        // independent bindings that could silently diverge.
-        //
-        // **Task 4050 step-10 (gap 4)**: `cache_repr` is unpinned from `BRep` to
+        // Task 4050 step-10 (gap 4): `cache_repr` is unpinned from `BRep` to
         // the realization's `demanded_repr` (the υ-derived requested terminal
         // repr, known before the caller's op loop). The cache-hit LOOKUP keys on
         // it, so a second identical Mesh build short-circuits at
@@ -6455,12 +6456,13 @@ impl Engine {
         // MISSES at the Mesh key (never returning a BRep handle as if it were
         // Mesh), and the BRep fallback probe added below then recovers the hit
         // at the resolved BRep key.
-        let cache_repr = Self::cache_repr(demanded_repr);
-        // **Amendment (reviewer_comprehensive #1, perf regression)**: probe the
-        // terminal cache at the demanded repr first, then — for a non-BRep
-        // demand that missed — RETRY at `BRep`. This mirrors the per-op dispatch
-        // BRep fallback (design_decision 3) at the cache layer, and is the fix
-        // for the realization-cache regression flagged in review.
+        let cache_repr = demanded_repr;
+        // Probe the terminal cache at the demanded repr first, then — for a
+        // non-BRep demand that missed — retry at `BRep`. This mirrors the
+        // per-op dispatch BRep fallback (design_decision 3) at the cache
+        // layer, and is the fix for a realization-cache perf regression
+        // (reviewer_comprehensive #1) where a Mesh demand always missed; see
+        // below for why.
         //
         // WHY THE FALLBACK PROBE IS LOAD-BEARING. With υ wired, an Stl/Obj export
         // marks its terminal realization `Mesh`, so the primary probe keys on
@@ -6566,20 +6568,6 @@ impl Engine {
             }
         } // end is_terminal_realization cache-probe guard
         None
-    }
-
-    /// The `RealizationCache` key `ReprKind` derived from a realization's
-    /// demanded output repr. Single shared definition for the repr
-    /// [`Self::probe_realization_cache`] probes the cache at and the repr
-    /// [`Self::execute_realization_ops`]'s post-loop insert falls back to
-    /// when no op captured a resolved repr
-    /// (`last_produced_repr.unwrap_or(..)`) — sourcing both sites from one
-    /// function instead of two independent `let cache_repr = demanded_repr;`
-    /// bindings so the lookup-key and insert-key-fallback reprs cannot drift
-    /// out of lockstep (reviewer_comprehensive amend-1 maintainability
-    /// suggestion).
-    fn cache_repr(demanded_repr: ReprKind) -> ReprKind {
-        demanded_repr
     }
 
     /// Execute the per-realization geometry operation loop and perform rollback
@@ -6729,13 +6717,12 @@ impl Engine {
         // below (`named_step_reprs`'s and `realization_cache.insert`'s
         // `last_produced_repr.unwrap_or(cache_repr)` fallback) — code that is
         // NOT part of the extracted `Self::probe_realization_cache`
-        // short-circuit above. **Amendment (reviewer_comprehensive
-        // amend-1)**: bind it via the same [`Self::cache_repr`] call the
-        // helper uses, rather than an independent `demanded_repr` alias, so
-        // the lookup-key and insert-key-fallback reprs are provably sourced
-        // from one definition and cannot drift; see `Self::cache_repr`'s
-        // doc.
-        let cache_repr = Self::cache_repr(demanded_repr);
+        // short-circuit above. Bound independently here to the same
+        // `demanded_repr` value that helper's own `cache_repr` binds (see
+        // its comment) — a plain alias with no anticipated transform, so a
+        // second identical binding is simpler than threading a shared
+        // function through both call sites.
+        let cache_repr = demanded_repr;
 
         // GR-034 (task #3445): measure realization wall-time from this point
         // so cache hits (which returned above) never contribute to elapsed.
