@@ -83,27 +83,18 @@ mod tests {
         }
     }
 
-    /// Type-level regression guard for INV-EVAL-2: `cell_eval_ctx` must keep
-    /// this exact all-required signature — `determinacy`, `runtime_sink`,
-    /// and `containment` are plain `&'a T`, never `Option`. If a future edit
-    /// makes any of them optional (or drops a parameter), this `const`
-    /// binding fails to compile. `pub(crate)` blocks rustdoc `compile_fail`
-    /// doctests (they only run on `pub` items) and the workspace has no
+    /// Type-level regression guard for INV-EVAL-2: pins `cell_eval_ctx`'s
+    /// all-required signature (`determinacy`/`runtime_sink`/`containment` as
+    /// plain `&'a T`, never `Option`), so an edit that Option-ifies any of
+    /// them — or drops a param — fails to compile. `pub(crate)` blocks
+    /// rustdoc `compile_fail` doctests (`pub`-only) and the workspace has no
     /// trybuild, so this fn-pointer coercion is the in-crate enforcement
-    /// mechanism.
+    /// mechanism; unlike the call-site test below, it stays enforced even if
+    /// that test is later deleted or refactored.
     ///
-    /// `clippy::type_complexity`: the fully-spelled-out `for<'a> fn(..)` type
-    /// IS the regression guard — hiding it behind a `type` alias (clippy's
-    /// suggested fix) would defeat the point of pinning the exact signature
-    /// here, so the lint is allowed locally rather than refactored away.
-    ///
-    /// Relation to the test below: `cell_eval_ctx_wires_all_required_capabilities`'s
-    /// direct call to `cell_eval_ctx(..)` already pins call-site arity and
-    /// argument types too (a dropped/reordered/mistyped param fails that
-    /// call to compile) — the two are not unrelated coverage. This const's
-    /// own marginal catch is a required `&'a T` silently becoming
-    /// `Option<&'a T>`, which stays enforced even if the test is later
-    /// deleted or refactored.
+    /// `clippy::type_complexity` is allowed locally: the fully-spelled-out
+    /// `for<'a> fn(..)` type IS the guard — hiding it behind a `type` alias
+    /// would defeat the point of pinning the exact signature.
     #[allow(dead_code, clippy::type_complexity)]
     const _CELL_EVAL_CTX_REQUIRES_ALL_CAPS: for<'a> fn(
         &'a ValueMap,
@@ -138,9 +129,15 @@ mod tests {
         // threads the caller's own references through unchanged, rather than
         // silently substituting a different (e.g. default/empty) instance
         // for one capability while leaving its `Option` `Some`.
-        assert!(ctx.determinacy.is_some_and(|d| std::ptr::eq(d, &determinacy)));
+        assert!(
+            ctx.determinacy
+                .is_some_and(|d| std::ptr::eq(d, &determinacy))
+        );
         assert!(ctx.diagnostics.is_some_and(|d| std::ptr::eq(d, &sink)));
-        assert!(ctx.containment.is_some_and(|c| std::ptr::eq(c, containment_ref)));
+        assert!(
+            ctx.containment
+                .is_some_and(|c| std::ptr::eq(c, containment_ref))
+        );
         assert!(ctx.meta.is_some_and(|m| std::ptr::eq(m, &meta_map)));
         // Locks the doc-commented "intentionally unset" contract: undef_causes
         // is not a cell-eval-ctx capability (it's wired separately by
