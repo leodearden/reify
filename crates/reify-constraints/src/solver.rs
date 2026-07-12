@@ -3925,6 +3925,160 @@ mod tests {
         assert_eq!(simplex.len(), 4, "3D simplex must have N+1=4 vertices");
     }
 
+    // ---- multistart_points unit tests (task δ #5016, step-1 RED / step-2 GREEN) ----
+    //
+    // `multistart_points` is the pure deterministic seed generator behind
+    // `DimensionalSolver::solve_ranked`'s best-of-K multistart (PRD §5.3, §11 Q4).
+    // These tests pin its K-count, seed-first ordering, bounds containment,
+    // determinism, and corner/midpoint anchor shape before any call site wires it
+    // into `solve_ranked` (step-3/4).
+
+    /// Builds a 2-param length `ResolutionProblem` with distinct per-axis bounds and a
+    /// `current_values` seed that sits off both axes' bounds-midpoints, so the seed
+    /// point (start #0) is distinguishable from the all-midpoint point and every axis
+    /// corner anchor. No constraints/objective — `multistart_points` reads only
+    /// `auto_params` and `current_values` (via `extract_initial_point`).
+    fn two_param_multistart_problem() -> ResolutionProblem {
+        use reify_core::Type;
+        use reify_ir::AutoParam;
+        use reify_test_support::{mm, vcid};
+
+        let x_id = vcid("Part", "x");
+        let y_id = vcid("Part", "y");
+
+        let mut current = ValueMap::new();
+        current.insert(x_id.clone(), mm(10.0)); // 0.010 m — off the [5mm,100mm] midpoint (52.5mm)
+        current.insert(y_id.clone(), mm(40.0)); // 0.040 m — off the [2mm,50mm] midpoint (26mm)
+
+        ResolutionProblem {
+            auto_params: vec![
+                AutoParam {
+                    id: x_id,
+                    param_type: Type::length(),
+                    bounds: Some((0.005, 0.100)),
+                    free: false,
+                },
+                AutoParam {
+                    id: y_id,
+                    param_type: Type::length(),
+                    bounds: Some((0.002, 0.050)),
+                    free: false,
+                },
+            ],
+            constraints: vec![],
+            current_values: current,
+            objective: None,
+            functions: vec![].into(),
+        }
+    }
+
+    #[test]
+    fn multistart_points_count_is_2_times_dim_plus_1() {
+        use super::multistart_points;
+
+        let problem = two_param_multistart_problem();
+        let points = multistart_points(&problem);
+        // dim = 2 → K = 2*(2+1) = 6
+        assert_eq!(
+            points.len(),
+            6,
+            "expected K=2*(dim+1)=6 starts for a 2-param problem, got {}",
+            points.len()
+        );
+        for p in &points {
+            assert_eq!(
+                p.len(),
+                2,
+                "each start vector must have one coordinate per auto param"
+            );
+        }
+    }
+
+    #[test]
+    fn multistart_points_start_0_is_extract_initial_point_seed() {
+        use super::{extract_initial_point, multistart_points};
+
+        let problem = two_param_multistart_problem();
+        let points = multistart_points(&problem);
+        let seed = extract_initial_point(&problem);
+        assert_eq!(
+            points[0], seed,
+            "start #0 must be the historical extract_initial_point seed \
+             (dominance: best-of-K must never be worse than today's single start)"
+        );
+    }
+
+    #[test]
+    fn multistart_points_all_starts_within_effective_bounds() {
+        use super::{effective_bounds, multistart_points};
+
+        let problem = two_param_multistart_problem();
+        let points = multistart_points(&problem);
+        for (start_idx, point) in points.iter().enumerate() {
+            for (axis, (&coord, param)) in point.iter().zip(problem.auto_params.iter()).enumerate()
+            {
+                let (lo, hi) = effective_bounds(param);
+                assert!(
+                    coord >= lo && coord <= hi,
+                    "start {start_idx} axis {axis}: coordinate {coord} outside effective bounds [{lo}, {hi}]"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn multistart_points_is_deterministic_across_calls() {
+        use super::multistart_points;
+
+        let problem = two_param_multistart_problem();
+        let first = multistart_points(&problem);
+        let second = multistart_points(&problem);
+        assert_eq!(
+            first, second,
+            "multistart_points is a pure function of `problem` (no RNG/clock/seed, BT5) — \
+             two calls on the same problem must return identical vectors"
+        );
+    }
+
+    #[test]
+    fn multistart_points_includes_midpoint_and_per_axis_corner_anchors() {
+        use super::{effective_bounds, multistart_points};
+
+        let problem = two_param_multistart_problem();
+        let points = multistart_points(&problem);
+
+        let (lo_x, hi_x) = effective_bounds(&problem.auto_params[0]);
+        let (lo_y, hi_y) = effective_bounds(&problem.auto_params[1]);
+        let mid_x = (lo_x + hi_x) / 2.0;
+        let mid_y = (lo_y + hi_y) / 2.0;
+
+        // All-midpoint point.
+        assert!(
+            points.iter().any(|p| p[0] == mid_x && p[1] == mid_y),
+            "expected an all-midpoint start [{mid_x}, {mid_y}]; got {points:?}"
+        );
+        // Axis 0 (x) low/high anchors, y held at its midpoint.
+        assert!(
+            points.iter().any(|p| p[0] == lo_x && p[1] == mid_y),
+            "expected an x-low/y-mid corner anchor [{lo_x}, {mid_y}]; got {points:?}"
+        );
+        assert!(
+            points.iter().any(|p| p[0] == hi_x && p[1] == mid_y),
+            "expected an x-high/y-mid corner anchor [{hi_x}, {mid_y}]; got {points:?}"
+        );
+        // Axis 1 (y) low/high anchors, x held at its midpoint.
+        assert!(
+            points.iter().any(|p| p[0] == mid_x && p[1] == lo_y),
+            "expected a y-low/x-mid corner anchor [{mid_x}, {lo_y}]; got {points:?}"
+        );
+        assert!(
+            points.iter().any(|p| p[0] == mid_x && p[1] == hi_y),
+            "expected a y-high/x-mid corner anchor [{mid_x}, {hi_y}]; got {points:?}"
+        );
+    }
+
+    // ---- end multistart_points unit tests ----
+
     /// Verify that the optimizer converges near the lower bound when minimizing.
     /// With auto param bounds [5mm, 100mm] and a trivially-satisfied constraint
     /// (x > 1mm), minimizing x should drive it toward the 5mm lower bound,
