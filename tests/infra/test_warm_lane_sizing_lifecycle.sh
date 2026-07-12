@@ -309,4 +309,164 @@ assert "A4: scripts/warm-lane-audit.sh is executable" test -x "$AUDIT_SCRIPT"
 assert "A5: scripts/warm-lane-disk-guard.sh exists" test -f "$GUARD_SCRIPT"
 assert "A6: scripts/warm-lane-disk-guard.sh is executable" test -x "$GUARD_SCRIPT"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block B (B8) — release-thin bounds resident-divergent + audit headroom
+# reflects it
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block B (B8): release-thin bounds resident-divergent + audit headroom reflects it ---"
+
+B_MOUNT="$(mktemp -d /tmp/test-warm-lane-sizing-b-XXXXXX)"
+_TMPDIRS+=("$B_MOUNT")
+
+# Blob size: a few MiB per lane -- large enough that `du -sB1` is
+# unambiguously nonzero and the freed-bytes assertion is meaningful, small
+# enough to stay a fast pool test. Deliberately NOT GiB-scale: divergent_gib
+# would floor to a vacuous 0 for a fast fixture either way (see design
+# decision -- "headroom reflects it" is proven via the deterministic COUNT
+# fields + this test's own `du` delta below, not via divergent_gib).
+B_BLOB_KIB=4096   # 4 MiB
+
+_seed_divergent_lane() {
+    local dir="$1" branch="$2"
+    make_lane "$dir" "$branch"
+    mkdir -p "$dir/target"
+    dd if=/dev/zero of="$dir/target/blob.bin" bs=1024 count="$B_BLOB_KIB" 2>/dev/null
+}
+
+_seed_divergent_lane "$B_MOUNT/_lane-a" "task/5176101"
+_seed_divergent_lane "$B_MOUNT/_lane-b" "task/5176102"
+_seed_divergent_lane "$B_MOUNT/_lane-c" "task/5176103"
+
+B_LANE_A_BEFORE="$(du -sB1 "$B_MOUNT/_lane-a/target" | cut -f1)"
+B_LANE_B_BEFORE="$(du -sB1 "$B_MOUNT/_lane-b/target" | cut -f1)"
+B_LANE_C_BEFORE="$(du -sB1 "$B_MOUNT/_lane-c/target" | cut -f1)"
+assert "B0a: _lane-a target fixture has nonzero footprint before thinning" test "$B_LANE_A_BEFORE" -gt 0
+assert "B0b: _lane-b target fixture has nonzero footprint before thinning" test "$B_LANE_B_BEFORE" -gt 0
+assert "B0c: _lane-c target fixture has nonzero footprint before thinning" test "$B_LANE_C_BEFORE" -gt 0
+
+B_POOL_BEFORE="$(_pool_target_bytes "$B_MOUNT")"
+assert "B0d: pool footprint BEFORE equals the sum of the three seeded lane footprints" \
+    test "$B_POOL_BEFORE" -eq "$(( B_LANE_A_BEFORE + B_LANE_B_BEFORE + B_LANE_C_BEFORE ))"
+
+# Lane locks: _lane-a/_lane-b get a RELEASE-marker holder (cleanly releasable
+# before thinning); _lane-c gets a plain sleep-holder that stays ASSIGNED for
+# the whole block (killed at block end). All three use the causal
+# READY-marker handshake (_wait_for_reader_lock) before the fixture proceeds.
+touch "$B_MOUNT/_lane-a.lock" "$B_MOUNT/_lane-b.lock" "$B_MOUNT/_lane-c.lock"
+B_READY_A="$B_MOUNT/_lane-a.lock.ready-marker"
+B_RELEASE_A="$B_MOUNT/_lane-a.lock.release-marker"
+B_READY_B="$B_MOUNT/_lane-b.lock.ready-marker"
+B_RELEASE_B="$B_MOUNT/_lane-b.lock.release-marker"
+B_READY_C="$B_MOUNT/_lane-c.lock.ready-marker"
+
+( _release_holder_body "$B_READY_A" "$B_RELEASE_A" ) 9>"$B_MOUNT/_lane-a.lock" &
+B_PID_A=$!
+_BGPIDS+=("$B_PID_A")
+
+( _release_holder_body "$B_READY_B" "$B_RELEASE_B" ) 9>"$B_MOUNT/_lane-b.lock" &
+B_PID_B=$!
+_BGPIDS+=("$B_PID_B")
+
+( flock -x 9 && touch "$B_READY_C" && sleep 300 ) 9>"$B_MOUNT/_lane-c.lock" &
+B_PID_C=$!
+_BGPIDS+=("$B_PID_C")
+
+_wait_for_reader_lock "$B_READY_A" 30
+_wait_for_reader_lock "$B_READY_B" 30
+_wait_for_reader_lock "$B_READY_C" 30
+
+# BEFORE: all three ASSIGNED -> LIVE; none free/reclaimable yet.
+run_audit --mount "$B_MOUNT" --status-cmd "$NULL_STATUS_CMD"
+assert "B1: audit BEFORE exit 0" test "$AUDIT_RC" -eq 0
+assert "B2: audit BEFORE HEADROOM assigned=3" \
+    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "assigned=3"' _ "$AUDIT_OUT"
+assert "B3: audit BEFORE HEADROOM free=0" \
+    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "free=0"' _ "$AUDIT_OUT"
+assert "B4: audit BEFORE HEADROOM reclaimable=0" \
+    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "reclaimable=0"' _ "$AUDIT_OUT"
+assert "B5: audit BEFORE _lane-a classification LIVE" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-a .*classification=LIVE"' _ "$AUDIT_OUT"
+assert "B6: audit BEFORE _lane-c classification LIVE" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-c .*classification=LIVE"' _ "$AUDIT_OUT"
+
+B_DIVERGENT_GIB_BEFORE="$(_headroom_field "$AUDIT_OUT" divergent_gib)"
+assert "B7: audit BEFORE divergent_gib is a well-formed non-negative integer" \
+    bash -c '[[ "$1" =~ ^[0-9]+$ ]]' _ "$B_DIVERGENT_GIB_BEFORE"
+
+# Release _lane-a and _lane-b: touch their RELEASE markers, then `wait` each
+# PID -- a causal guarantee the flock is dropped (fd 9 closed) before the
+# next statement runs (see _release_holder_body). _lane-c stays held.
+touch "$B_RELEASE_A" "$B_RELEASE_B"
+wait "$B_PID_A"
+wait "$B_PID_B"
+
+# Thin the two released lanes via the REAL primitive (REIFY_WARM_LANE_MOUNT
+# set so its under-mount guard is exercised for real, not skipped).
+run_thin "$B_MOUNT" "$B_MOUNT/_lane-a"
+assert "B8: thin _lane-a (released) exits 0" test "$THIN_RC" -eq 0
+assert "B9: _lane-a/target is GONE" bash -c '[ ! -e "$1" ]' _ "$B_MOUNT/_lane-a/target"
+
+run_thin "$B_MOUNT" "$B_MOUNT/_lane-b"
+assert "B10: thin _lane-b (released) exits 0" test "$THIN_RC" -eq 0
+assert "B11: _lane-b/target is GONE" bash -c '[ ! -e "$1" ]' _ "$B_MOUNT/_lane-b/target"
+
+# _lane-c is still ASSIGNED (ready-holder never released) -- thin refuses it
+# (T3, exit 75); target/ stays byte-intact. This is the "resident-divergent
+# tracks the still-ASSIGNED set" proof: the still-live lane's divergent bytes
+# are NEVER touched by a release-triggered thin sweep.
+run_thin "$B_MOUNT" "$B_MOUNT/_lane-c"
+assert "B12: thin _lane-c (still ASSIGNED) exits 75 (T3 refusal)" test "$THIN_RC" -eq 75
+assert "B13: _lane-c/target intact after the refused thin" test -f "$B_MOUNT/_lane-c/target/blob.bin"
+
+B_LANE_C_AFTER="$(du -sB1 "$B_MOUNT/_lane-c/target" | cut -f1)"
+assert "B14: _lane-c/target footprint unchanged by the refused thin" \
+    test "$B_LANE_C_AFTER" -eq "$B_LANE_C_BEFORE"
+
+B_POOL_AFTER="$(_pool_target_bytes "$B_MOUNT")"
+B_FREED=$(( B_POOL_BEFORE - B_POOL_AFTER ))
+B_EXPECTED_FREED=$(( B_LANE_A_BEFORE + B_LANE_B_BEFORE ))
+
+assert "B15: pool footprint AFTER equals _lane-c's own (untouched) footprint" \
+    test "$B_POOL_AFTER" -eq "$B_LANE_C_BEFORE"
+assert "B16: freed bytes == sum of the released a+b footprints (release-thin bounds resident-divergent to the still-assigned set)" \
+    test "$B_FREED" -eq "$B_EXPECTED_FREED"
+assert "B17: freed bytes >= one full lane footprint (>=1x; ~2x-per-lane B8 headline)" \
+    test "$B_FREED" -ge "$B_LANE_A_BEFORE"
+
+echo "RECOVERED-ON-RELEASE-DELTA: before=${B_POOL_BEFORE} after=${B_POOL_AFTER} freed=${B_FREED}"
+
+# AFTER: assigned 3->1, free 0->2, reclaimable 0->2 (a+b are FREE + LANDED,
+# via make_lane's no-ahead-commit branch -- recoverable=LANDED short-circuits
+# RECLAIMABLE regardless of backing-task status).
+run_audit --mount "$B_MOUNT" --status-cmd "$NULL_STATUS_CMD"
+assert "B18: audit AFTER exit 0" test "$AUDIT_RC" -eq 0
+assert "B19: audit AFTER HEADROOM assigned=1" \
+    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "assigned=1"' _ "$AUDIT_OUT"
+assert "B20: audit AFTER HEADROOM free=2" \
+    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "free=2"' _ "$AUDIT_OUT"
+assert "B21: audit AFTER HEADROOM reclaimable=2" \
+    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "reclaimable=2"' _ "$AUDIT_OUT"
+assert "B22: audit AFTER HEADROOM leaked=0" \
+    bash -c 'printf "%s\n" "$1" | grep "^HEADROOM" | grep -q "leaked=0"' _ "$AUDIT_OUT"
+assert "B23: audit AFTER _lane-a classification RECLAIMABLE" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-a .*classification=RECLAIMABLE"' _ "$AUDIT_OUT"
+assert "B24: audit AFTER _lane-b classification RECLAIMABLE" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-b .*classification=RECLAIMABLE"' _ "$AUDIT_OUT"
+assert "B25: audit AFTER _lane-c classification LIVE (still assigned, untouched)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "lane=_lane-c .*classification=LIVE"' _ "$AUDIT_OUT"
+
+B_DIVERGENT_GIB_AFTER="$(_headroom_field "$AUDIT_OUT" divergent_gib)"
+assert "B26: audit AFTER divergent_gib is a well-formed non-negative integer" \
+    bash -c '[[ "$1" =~ ^[0-9]+$ ]]' _ "$B_DIVERGENT_GIB_AFTER"
+assert "B27: audit AFTER divergent_gib non-increasing vs BEFORE (headroom reflects the release-thin)" \
+    test "$B_DIVERGENT_GIB_AFTER" -le "$B_DIVERGENT_GIB_BEFORE"
+
+# _lane-c's holder is never released mid-block by design; kill it now and
+# clear _BGPIDS so the final EXIT trap doesn't try to double-kill an already-
+# reaped pid.
+kill "$B_PID_C" 2>/dev/null || true
+wait "$B_PID_C" 2>/dev/null || true
+_BGPIDS=()
+
 test_summary
