@@ -221,6 +221,141 @@ fn seeded_stale_undef_composition_violation_is_reported() {
     );
 }
 
+/// Positive companion to `seeded_stale_undef_composition_violation_is_reported`
+/// above (review suggestion, task #5120 R2c): proves the by-NAME clause-8
+/// classification change for `union`/`intersect`/`difference` cannot regress
+/// the SOLID-CSG-BOOLEAN overload sharing those names (e.g.
+/// `manifold_boolean`'s `union(box_a, box_b): Solid`, `m5_geometry_flange`'s
+/// `difference(body, holes): Solid`).
+///
+/// `geometry_ops::is_symbolic_eval_wired_selector_ctor` classifies a `union`
+/// `FunctionCall` as eval-wired BY NAME ALONE — it inspects only
+/// `function.name`, never arg/result types — so it cannot distinguish the
+/// selector-composition overload from the solid-boolean one. For a
+/// solid-boolean `union` cell this means clause 8 rule 2
+/// (`consumes_geometry_or_selector(expr) &&
+/// !is_symbolic_eval_wired_selector_ctor(expr)`) evaluates to `false` — i.e.
+/// clause 8 ALONE no longer exempts it, exactly as for the selector overload
+/// seeded above.
+///
+/// This seeds that exact shape — a `union` cell typed `Type::Geometry` with
+/// `Type::Geometry`-typed args (contrast the `Type::Selector(Face)` shape
+/// above), both operands resolved to `Value::GeometryHandle` — left
+/// `Value::Undef`, and asserts the checker does NOT report it. That proves
+/// clause 7's `Type::Geometry` cell-type check (this module's doc comment,
+/// clause 7 — which runs BEFORE clause 8 and never consults the call's name)
+/// exempts it end-to-end regardless of clause 8's by-name classification, so
+/// solid-boolean diagnostics cannot regress from the R2c by-name wiring.
+/// Were clause 7 ever removed, weakened, or reordered after clause 8, this
+/// test would fail.
+#[test]
+fn seeded_solid_boolean_union_undef_is_exempted_by_geometry_clause() {
+    let box_a_id = ValueCellId::new("SeededSolidBoolean", "box_a");
+    let box_b_id = ValueCellId::new("SeededSolidBoolean", "box_b");
+    let union_id = ValueCellId::new("SeededSolidBoolean", "u");
+
+    let geometry_type = Type::Geometry;
+
+    let mut graph = EvaluationGraph::default();
+
+    // box_a / box_b: Type::Geometry leaf producers (realized solid handles).
+    // Their own default_expr is irrelevant to this seeded state — only their
+    // STORED value and cell_type matter — so a harmless Undef literal is used
+    // (mirrors op1/op2 above).
+    graph.value_cells.insert(
+        box_a_id.clone(),
+        ValueCellNode {
+            id: box_a_id.clone(),
+            kind: reify_compiler::ValueCellKind::Let,
+            cell_type: geometry_type.clone(),
+            default_expr: Some(CompiledExpr::literal(Value::Undef, geometry_type.clone())),
+            content_hash: ContentHash::of_str("seeded-box-a"),
+        },
+    );
+    graph.value_cells.insert(
+        box_b_id.clone(),
+        ValueCellNode {
+            id: box_b_id.clone(),
+            kind: reify_compiler::ValueCellKind::Let,
+            cell_type: geometry_type.clone(),
+            default_expr: Some(CompiledExpr::literal(Value::Undef, geometry_type.clone())),
+            content_hash: ContentHash::of_str("seeded-box-b"),
+        },
+    );
+
+    // The union cell: default_expr = FunctionCall{"union", [ValueRef(box_a),
+    // ValueRef(box_b)]}, both args typed Type::Geometry — the solid-boolean
+    // overload shape (contrast the Type::Selector(Face) args seeded above).
+    let union_expr = CompiledExpr {
+        kind: reify_ir::CompiledExprKind::FunctionCall {
+            function: reify_ir::ResolvedFunction {
+                name: "union".to_string(),
+                qualified_name: "std::union".to_string(),
+            },
+            args: vec![
+                CompiledExpr::value_ref(box_a_id.clone(), geometry_type.clone()),
+                CompiledExpr::value_ref(box_b_id.clone(), geometry_type.clone()),
+            ],
+        },
+        result_type: geometry_type.clone(),
+        content_hash: ContentHash::of_str("seeded-solid-union"),
+    };
+    graph.value_cells.insert(
+        union_id.clone(),
+        ValueCellNode {
+            id: union_id.clone(),
+            kind: reify_compiler::ValueCellKind::Let,
+            cell_type: geometry_type,
+            default_expr: Some(union_expr),
+            content_hash: ContentHash::of_str("seeded-solid-union-cell"),
+        },
+    );
+
+    // Resolved GeometryHandle value (a realized solid body), reused for both
+    // operands.
+    let handle = Value::GeometryHandle {
+        realization_ref: reify_core::identity::RealizationNodeId::new("SeededSolidBoolean", 0),
+        upstream_values_hash: [0x51u8; 32],
+        kernel_handle: None,
+    };
+
+    let mut values: PersistentMap<ValueCellId, (Value, DeterminacyState)> = PersistentMap::new();
+    values.insert(
+        box_a_id.clone(),
+        (handle.clone(), DeterminacyState::Determined),
+    );
+    values.insert(box_b_id.clone(), (handle, DeterminacyState::Determined));
+    // The union cell is left Undef despite both operands being fully
+    // resolved — clause 7's documented standing surface gap (Type::Geometry
+    // cells are hydrated only inside build()'s local ValueMap, never written
+    // back into the retained eval_state() this checker inspects).
+    values.insert(
+        union_id.clone(),
+        (Value::Undef, DeterminacyState::Undetermined),
+    );
+
+    let mut trace_map: HashMap<NodeId, DependencyTrace> = HashMap::new();
+    trace_map.insert(
+        NodeId::Value(union_id.clone()),
+        DependencyTrace {
+            reads: vec![box_a_id.clone(), box_b_id.clone()],
+            realization_reads: Vec::new(),
+        },
+    );
+
+    let violations =
+        reify_eval::invariants::check_no_stale_undef(&graph, &values, &trace_map, &[]);
+
+    assert!(
+        !violations.iter().any(|v| v.cell == union_id),
+        "expected the solid-boolean union cell {:?} to be EXEMPTED by clause 7 \
+         (Type::Geometry) end-to-end, regardless of clause 8's by-name eval-wired \
+         classification of `union` — got a reported violation: {:?}",
+        union_id,
+        violations.iter().map(|v| &v.cell).collect::<Vec<_>>()
+    );
+}
+
 // ── Step-7: Engine-path corpus test over the deliberately-undef fixtures ────
 
 /// The four fixtures purpose-built for the undef-self-describing PRD family
