@@ -191,14 +191,14 @@ gui_state! {
     pub constraints: Vec<ConstraintData>,
     full_reload_only("file-changed/file-removed emitter")
     pub files: Vec<FileData>,
-    diffed whole(event="tessellation-diagnostics", item_type="tessellation-diagnostics", item_id="diagnostics", changed=changed_tessellation_diagnostics)
+    diffed whole(event="tessellation-diagnostics", item_type="tessellation-diagnostics", item_id="diagnostics", changed=changed_tessellation_diagnostics, doc="Some(vec) when the tessellation diagnostics list changed; None when unchanged.")
     /// Diagnostics produced during the most recent tessellation pass.
     ///
     /// Non-empty when `tessellate_snapshot` encounters geometry errors (e.g.
     /// OCCT kernel failures). Empty on preview snapshots and after a clean eval.
     /// Distinct from `compile_diagnostics` — both streams are disjoint.
     pub tessellation_diagnostics: Vec<DiagnosticInfo>,
-    diffed whole(event="compile-diagnostics", item_type="compile-diagnostics", item_id="diagnostics", changed=changed_compile_diagnostics)
+    diffed whole(event="compile-diagnostics", item_type="compile-diagnostics", item_id="diagnostics", changed=changed_compile_diagnostics, doc="Some(vec) when the compile diagnostics list changed; None when unchanged.")
     /// Compile diagnostics (errors, warnings, info) from the most recently compiled module.
     ///
     /// Non-empty when the compiler emits any diagnostic — including recoverable
@@ -219,7 +219,7 @@ gui_state! {
     ///    of `build_gui_state` (appended after `get_diagnostics()` output so
     ///    warnings from the prior good state remain visible alongside the error).
     pub compile_diagnostics: Vec<DiagnosticInfo>,
-    diffed whole(event="tensegrity-wires-update", item_type="tensegrity-wires-update", item_id="tensegrity-wires", changed=changed_tensegrity_wires)
+    diffed whole(event="tensegrity-wires-update", item_type="tensegrity-wires-update", item_id="tensegrity-wires", changed=changed_tensegrity_wires, doc="Some(vec) when the tensegrity wires list changed; None when unchanged.")
     /// Tensegrity wire descriptors extracted from the current module's value cells.
     ///
     /// Populated by `build_tensegrity_wires` from cells that evaluate to a
@@ -231,7 +231,7 @@ gui_state! {
     /// as an empty vec (forward-compat for older backend → newer frontend).
     #[serde(default)]
     pub tensegrity_wires: Vec<TensegrityWireData>,
-    diffed whole(event="tensegrity-surfaces-update", item_type="tensegrity-surfaces-update", item_id="tensegrity-surfaces", changed=changed_tensegrity_surfaces)
+    diffed whole(event="tensegrity-surfaces-update", item_type="tensegrity-surfaces-update", item_id="tensegrity-surfaces", changed=changed_tensegrity_surfaces, doc="Some(vec) when the tensegrity surfaces list changed; None when unchanged.")
     /// Tensegrity surface facet descriptors extracted from the current module's value cells.
     ///
     /// Populated by `build_tensegrity_surfaces` from cells that evaluate to a
@@ -257,7 +257,7 @@ gui_state! {
     /// `#[serde(default)]` keeps older payloads (without this field) deserializable.
     #[serde(default)]
     pub demand_prune_measurement: Option<DemandPruneMeasurementDto>,
-    diffed whole(event="display-panes-update", item_type="display-panes-update", item_id="display-panes", changed=changed_display_panes)
+    diffed whole(event="display-panes-update", item_type="display-panes-update", item_id="display-panes", changed=changed_display_panes, doc="Some(vec) when the display panes list changed; None when unchanged.")
     /// Per-`DisplayOutput` occurrence routing directives extracted from the
     /// compiled module's sub-component walk (PRD-3 γ, task 4765).
     ///
@@ -280,7 +280,7 @@ gui_state! {
     /// frontend).
     #[serde(default)]
     pub display_panes: Vec<DisplayDirective>,
-    diffed whole(event="display-appearance-update", item_type="display-appearance-update", item_id="display-appearance", changed=changed_display_appearance)
+    diffed whole(event="display-appearance-update", item_type="display-appearance-update", item_id="display-appearance", changed=changed_display_appearance, doc="Some(vec) when the display appearance list changed; None when unchanged.")
     /// Per-`DisplayOutput` occurrence style overrides (PRD-2 γ, task #4772).
     ///
     /// Each entry corresponds to a `DisplayOutput` occurrence that supplies an

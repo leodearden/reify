@@ -17,9 +17,14 @@
 //!   Diffed by key: an item present in `new` but absent (or changed) vs.
 //!   `old` is "changed"; a key present in `old` but absent from `new` is
 //!   "removed".
-//! - `diffed whole(event=.., item_type=.., item_id=.., changed=..)` — a
-//!   `Vec<T>` field diffed as a single unit: the whole list is "changed"
+//! - `diffed whole(event=.., item_type=.., item_id=.., changed=.., doc=..)`
+//!   — a `Vec<T>` field diffed as a single unit: the whole list is "changed"
 //!   when it differs from the previous snapshot (no per-item granularity).
+//!   `doc` is re-emitted as the doc comment on the generated delta field
+//!   (documenting its Some/None semantics), since the field's own
+//!   `$(#[$a])*` attributes decorate the `state` struct field, not the
+//!   `delta` one — see "Why `changed=`/`removed=` are explicit" below for
+//!   why this can't just be derived from the state field's doc comment.
 //! - `full_reload_only("reason")` — the field is not carried on the diff
 //!   channel at all; it is synced some other way (a bespoke Tauri emitter,
 //!   or is observability-only), named by `reason`. The macro generates
@@ -341,7 +346,7 @@ macro_rules! gui_state {
         evtupd=[$($evtupd:tt)*], evtrem=[$($evtrem:tt)*], evtwhole=[$($evtwhole:tt)*],
         asserts=[$($asserts:tt)*],
         fields=[
-            diffed whole(event=$e:literal, item_type=$it:literal, item_id=$id:literal, changed=$cf:ident)
+            diffed whole(event=$e:literal, item_type=$it:literal, item_id=$id:literal, changed=$cf:ident, doc=$doc:literal)
             $(#[$a:meta])*
             $vis:vis $name:ident : Vec<$ty:ty> ,
             $($rest:tt)*
@@ -352,7 +357,7 @@ macro_rules! gui_state {
             state=$state, delta=$delta, diff_fn=$diff_fn, events_fn=$events_fn,
             old=$old, new=$new, cur=$cur, dst=$dst, evs=$evs,
             sfields=[$($sfields)* $(#[$a])* $vis $name: Vec<$ty>,],
-            dfields=[$($dfields)* pub $cf: ::std::option::Option<::std::vec::Vec<$ty>>,],
+            dfields=[$($dfields)* #[doc = $doc] pub $cf: ::std::option::Option<::std::vec::Vec<$ty>>,],
             full=[$($full)* $cf: if $cur.$name.is_empty() { ::std::option::Option::None } else { ::std::option::Option::Some($cur.$name.clone()) },],
             diffpre=[$($diffpre)* let $cf = $crate::gui_state_schema::diff_whole(&$old.$name, &$new.$name);],
             diffbody=[$($diffbody)* $cf,],

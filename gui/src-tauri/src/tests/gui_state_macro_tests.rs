@@ -119,7 +119,7 @@ gui_state! {
     state=MiniState2, delta=MiniDelta2, diff_fn=diff_mini2, events_fn=mini_events2;
     diffed keyed(key=id, item="item", update="item-update", remove="item-removed", changed=changed_items, removed=removed_item_ids)
     items: Vec<MiniItem>,
-    diffed whole(event="note-update", item_type="note-update", item_id="notes", changed=changed_notes)
+    diffed whole(event="note-update", item_type="note-update", item_id="notes", changed=changed_notes, doc="Some(vec) when the notes list changed; None when unchanged.")
     notes: Vec<String>,
     full_reload_only("test-only channel")
     blob: Option<String>,
