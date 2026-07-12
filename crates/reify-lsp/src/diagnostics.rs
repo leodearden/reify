@@ -2566,9 +2566,20 @@ structure S {
     /// from "no constraint" (neither the `violated_messages` skip-set nor
     /// the span-aware `Satisfaction::Violated` ERROR loop emit anything for
     /// `Indeterminate`). This locks that `compute_diagnostics_with_state`
-    /// emits one `Severity::Info` hint per Indeterminate constraint over the
-    /// FEA-only [`FEA_BEARING_SRC`] fixture, anchored to that constraint's
-    /// span, with the exact wording and source specified by the task.
+    /// emits at least one `Severity::Info` hint, and never more than the
+    /// fixture's `Indeterminate` count, over the FEA-only
+    /// [`FEA_BEARING_SRC`] fixture, anchored to a constraint span, with the
+    /// exact wording and source specified by the task.
+    ///
+    /// Deliberately does NOT assert `hints.len() == indeterminate_count`:
+    /// that equivalence only holds because this fixture happens to contain
+    /// exclusively FEA-derived constraints, and would spuriously fail if a
+    /// future edit added a non-FEA `Indeterminate` control (e.g. an `auto`
+    /// param) to it, even though the discriminator would still be behaving
+    /// correctly. The exact per-constraint count for THIS fixture (2) is
+    /// separately pinned by `fea_hint_two_fea_constraints_each_get_distinct_span_hint`,
+    /// and FEA-vs-non-FEA discrimination itself is pinned by
+    /// `fea_hint_excludes_auto_param_indeterminate_and_dedups_per_constraint`.
     #[test]
     fn fea_indeterminate_constraint_emits_info_hint() {
         let uri = test_uri();
@@ -2616,11 +2627,24 @@ structure S {
             check_result.constraint_results
         );
 
-        assert_eq!(
-            hints.len(),
-            indeterminate_count,
-            "expected one FEA-not-evaluated hint per Indeterminate constraint \
-             ({indeterminate_count}); got {} hints: {:#?}",
+        // Not `assert_eq!(hints.len(), indeterminate_count)`: that equates
+        // "hint count" with "raw Indeterminate count", which only holds
+        // because this fixture is FEA-only. Assert existence (not vacuous)
+        // and an upper bound (never more hints than Indeterminate entries,
+        // since every hint comes from one) instead — see this test's doc
+        // comment for why the exact per-fixture count lives elsewhere.
+        assert!(
+            !hints.is_empty(),
+            "expected at least one FEA-not-evaluated hint over the FEA-only \
+             fixture; got 0 (constraint_results: {:#?})",
+            check_result.constraint_results
+        );
+        assert!(
+            hints.len() <= indeterminate_count,
+            "got more FEA-not-evaluated hints ({}) than Indeterminate \
+             constraints ({indeterminate_count}) in the fixture — a hint \
+             must never fire for a non-Indeterminate constraint; got hints: \
+             {:#?}",
             hints.len(),
             hints
         );
