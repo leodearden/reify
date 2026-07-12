@@ -562,25 +562,17 @@ fn per_file_violations(
 /// Asserts every per-file duration < 10s via `per_file_violations`.
 ///
 /// On failure, prints a `(path, duration)` table sorted alphabetically by
-/// file name — sorted explicitly at print time, so the ordering does not
-/// depend on `discover_ri_files`'s internal discovery order — so the
-/// offending file can be located by name. Pinned by PRD acceptance
-/// criterion 12.
+/// file name at print time (independent of `discover_ri_files`'s internal
+/// order), so the offending file can be located by name. Pinned by PRD
+/// acceptance criterion 12.
 ///
 /// # Budget rationale
 ///
-/// The 10s per-file bound targets obvious quadratic regressions, not
-/// microbenchmark drift: a typical `.ri` example compiles in well under a
-/// second, leaving generous headroom against CI scheduling jitter. Full
+/// Per-file only, deliberately no aggregate/total wall-clock budget: a
+/// fixed total erodes as the corpus grows and flakes under concurrent-verify
+/// CPU oversubscription, while the 10s per-file bound has generous headroom
+/// against a sub-second baseline and no such failure mode. Full
 /// history/tradeoffs: task 5149.
-///
-/// Deliberately no aggregate/total wall-clock budget — task 5149 dropped it
-/// because a fixed total erodes as the corpus grows and flakes under
-/// concurrent-verify CPU oversubscription, independent of any real
-/// regression. Accepted tradeoff: this only catches per-file outliers, not
-/// corpus-wide linear drift (e.g. a uniform slowdown across every file);
-/// catching that would need a CPU-normalized aggregate check, out of scope
-/// here.
 #[test]
 fn v0_1_example_corpus_compile_and_check_time_is_bounded() {
     use std::collections::HashSet;
@@ -667,18 +659,14 @@ fn v0_1_example_corpus_compile_and_check_time_is_bounded() {
 // ─── step-11 unit guard: per_file_violations pure-helper contract ─────────
 
 /// `per_file_violations` must flag over-budget files but not sub-budget
-/// ones, including the exact boundary (`duration == budget` uses strict `>`,
-/// so equal-to-budget is NOT a violation). One fixture covers under-budget
-/// (500ms, 9s), on-boundary (10s), and two independent over-budget files
-/// (11s, 12s) — the non-vacuous guarantee that a genuinely quadratic file
-/// still goes RED, the `>` vs `>=` boundary is pinned, and the helper
-/// returns the full offending set rather than short-circuiting on the first
-/// match.
+/// ones, with the boundary strict (`duration == budget` is NOT a
+/// violation). Covers under-budget, on-boundary, and two independent
+/// over-budget files, pinning the `>` boundary and that the helper returns
+/// the full offending set rather than short-circuiting on the first match.
 ///
-/// No aggregate/total-budget case here — `per_file_violations` is a pure
-/// per-file filter with no place to hold that logic. See the corpus test's
-/// "# Budget rationale" section above for why the aggregate budget was
-/// dropped.
+/// No aggregate case: `per_file_violations` is a pure per-file filter with
+/// no place to hold that logic — see the corpus test's "# Budget rationale"
+/// above (task 5149).
 #[test]
 fn per_file_gate_violation_contract() {
     let measurements: Vec<(String, Duration)> = vec![
