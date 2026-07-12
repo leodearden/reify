@@ -424,7 +424,7 @@ pub fn compute_diagnostics_with_state(
                 range,
                 severity: Some(lsp_types::DiagnosticSeverity::INFORMATION),
                 source: Some("reify".to_string()),
-                message: "FEA constraint not evaluated in editor — run `reify test`".to_string(),
+                message: FEA_NOT_EVALUATED_HINT.to_string(),
                 ..Default::default()
             });
         }
@@ -531,6 +531,18 @@ fn constraint_violated_message(entry: &reify_eval::ConstraintCheckEntry) -> Stri
         None => format!("constraint {} violated", entry.id),
     }
 }
+
+/// Exact wording of task 5078's (PRD `compute-fea-hardening.md` C2) FEA
+/// "not evaluated in editor" `Severity::Info` hint, emitted in
+/// [`compute_diagnostics_with_state`] above.
+///
+/// Defined once here rather than re-declared as a local constant in each
+/// regression test, so the production message and every test that filters
+/// on it share one source of truth: a future wording change updates every
+/// consumer at once instead of requiring each test to be hand-edited to
+/// keep matching (a missed one would silently zero out its `hints` filter
+/// and fail in a confusing, non-localized way).
+const FEA_NOT_EVALUATED_HINT: &str = "FEA constraint not evaluated in editor — run `reify test`";
 
 /// Static discriminator for task 5078's FEA "not evaluated in editor" hint
 /// (PRD `compute-fea-hardening.md` C2).
@@ -2567,12 +2579,12 @@ structure S {
         let mut state = EvalState::new();
         let result = compute_diagnostics_with_state(&mut state, FEA_BEARING_SRC, &uri);
 
-        const HINT_MESSAGE: &str = "FEA constraint not evaluated in editor — run `reify test`";
         let hints: Vec<_> = result
             .diagnostics
             .iter()
             .filter(|d| {
-                d.severity == Some(DiagnosticSeverity::INFORMATION) && d.message == HINT_MESSAGE
+                d.severity == Some(DiagnosticSeverity::INFORMATION)
+                    && d.message == FEA_NOT_EVALUATED_HINT
             })
             .collect();
         for hint in &hints {
@@ -2687,12 +2699,12 @@ structure S {
         let mut state = EvalState::new();
         let result = compute_diagnostics_with_state(&mut state, SRC, &uri);
 
-        const HINT_MESSAGE: &str = "FEA constraint not evaluated in editor — run `reify test`";
         let hints: Vec<_> = result
             .diagnostics
             .iter()
             .filter(|d| {
-                d.severity == Some(DiagnosticSeverity::INFORMATION) && d.message == HINT_MESSAGE
+                d.severity == Some(DiagnosticSeverity::INFORMATION)
+                    && d.message == FEA_NOT_EVALUATED_HINT
             })
             .collect();
 
@@ -2773,12 +2785,12 @@ structure S {
         let mut state = EvalState::new();
         let result = compute_diagnostics_with_state(&mut state, FEA_BEARING_SRC, &uri);
 
-        const HINT_MESSAGE: &str = "FEA constraint not evaluated in editor — run `reify test`";
         let hints: Vec<_> = result
             .diagnostics
             .iter()
             .filter(|d| {
-                d.severity == Some(DiagnosticSeverity::INFORMATION) && d.message == HINT_MESSAGE
+                d.severity == Some(DiagnosticSeverity::INFORMATION)
+                    && d.message == FEA_NOT_EVALUATED_HINT
             })
             .collect();
         assert!(
@@ -2904,12 +2916,12 @@ structure S {
             check_result.constraint_results
         );
 
-        const HINT_MESSAGE: &str = "FEA constraint not evaluated in editor — run `reify test`";
         let hints: Vec<_> = result
             .diagnostics
             .iter()
             .filter(|d| {
-                d.severity == Some(DiagnosticSeverity::INFORMATION) && d.message == HINT_MESSAGE
+                d.severity == Some(DiagnosticSeverity::INFORMATION)
+                    && d.message == FEA_NOT_EVALUATED_HINT
             })
             .collect();
         assert!(
@@ -2971,12 +2983,12 @@ structure S {
              distinct spans"
         );
 
-        const HINT_MESSAGE: &str = "FEA constraint not evaluated in editor — run `reify test`";
         let hints: Vec<_> = result
             .diagnostics
             .iter()
             .filter(|d| {
-                d.severity == Some(DiagnosticSeverity::INFORMATION) && d.message == HINT_MESSAGE
+                d.severity == Some(DiagnosticSeverity::INFORMATION)
+                    && d.message == FEA_NOT_EVALUATED_HINT
             })
             .collect();
 
