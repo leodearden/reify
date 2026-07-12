@@ -51,9 +51,10 @@
 // are unused.
 #![allow(dead_code)]
 
-use reify_core::{DimensionVector, Type};
+use reify_core::{DiagnosticCode, DimensionVector, Severity, Type};
 use reify_expr::{eval_expr, EvalContext};
 use reify_ir::{BinOp, CompiledExpr, Value, ValueMap};
+use reify_test_support::compile_source;
 
 // ── Runtime driver (re-authored from β1, mul_div_runtime_truth_table.rs:49-55) ──
 
@@ -320,6 +321,119 @@ fn positive_parity_batch() {
     for row in positive_rows() {
         assert_accepts(row.op, row.lv, row.rv, row.lt, row.rt, row.label);
     }
+}
+
+// ── Rejection-parity assertion engine (step-5 RED / step-6 GREEN) ──────────
+
+/// Rejection-parity assertion (PRD §7.2, second clause): runtime
+/// structurally-Undef ⇒ static `None` (`infer_mul_div_result` rejects the
+/// same pairing). `label` names the row for panic attribution.
+///
+/// Stub for step-5 RED — step-6 implements the real body.
+fn assert_rejects(op: BinOp, lv: Value, rv: Value, lt: Type, rt: Type, label: &str) {
+    let _ = (op, lv, rv, lt, rt, label);
+    todo!("step-6: implement assert_rejects (runtime Undef + static None)")
+}
+
+// ── Rejection-parity batch (step-5 RED / step-6 GREEN) ──────────────────────
+//
+// Mirrors β1's STRUCTURAL-Undef set (mul_div_runtime_truth_table.rs) with
+// NON-degenerate operands (no zero divisor — DATA-DRIVEN-Undef div-by-zero
+// rows are a separate, EXCLUDED carve-out added in step-7/8, not here).
+// Excludes the `degenerate-NOT-intentional` Tensor×Vector row (PRD decision
+// 5) — that row is NOT Undef at runtime, so it is not a rejection-parity
+// candidate at all. Type-side shapes mirror type_compat.rs's own
+// `infer_mul_div_result_*_is_none` unit tests where one exists; the
+// ORDER-SENSITIVE Vector×Transform row is asserted here (Undef), with its
+// mirror Transform×Vector already covered as a POSITIVE row above (accepted)
+// — together the two rows check both orders independently, per PRD §7.2.
+
+struct RejectionRow {
+    label: &'static str,
+    op: BinOp,
+    lv: Value,
+    rv: Value,
+    lt: Type,
+    rt: Type,
+}
+
+#[rustfmt::skip]
+fn rejection_rows() -> Vec<RejectionRow> {
+    use BinOp::{Div, Mul};
+    use DimensionVector as D;
+
+    vec![
+        // ── Mul: aggregate × aggregate (kind-level, no scale arm) ─────────
+        RejectionRow { label: "Mul Vector[L]*Vector[L] undef", op: Mul, lv: vec3(D::LENGTH, 1.0, 2.0, 3.0), rv: vec3(D::LENGTH, 4.0, 5.0, 6.0), lt: Type::vec3(Type::length()), rt: Type::vec3(Type::length()) },
+        RejectionRow { label: "Mul Tensor*Tensor undef",        op: Mul, lv: tensor1(vec![Value::Int(1), Value::Int(2)]), rv: tensor1(vec![Value::Int(3), Value::Int(4)]), lt: Type::tensor(1, 3, Type::length()), rt: Type::tensor(1, 3, Type::length()) },
+        RejectionRow { label: "Mul Point[L]*Point[L] undef",    op: Mul, lv: pt3(D::LENGTH, 1.0, 2.0, 3.0), rv: pt3(D::LENGTH, 4.0, 5.0, 6.0), lt: Type::point3(Type::length()), rt: Type::point3(Type::length()) },
+
+        // ── Mul: Matrix in either position (PRD §10 Open-Question-2) ──────
+        RejectionRow { label: "Mul Matrix*Int undef",       op: Mul, lv: matrix2(vec![vec![Value::Int(1), Value::Int(2)], vec![Value::Int(3), Value::Int(4)]]), rv: Value::Int(2), lt: Type::matrix(2, 2, Type::length()), rt: Type::Int },
+        RejectionRow { label: "Mul Matrix*Scalar[L] undef", op: Mul, lv: matrix2(vec![vec![Value::Int(1), Value::Int(2)], vec![Value::Int(3), Value::Int(4)]]), rv: Value::length(2.0), lt: Type::matrix(2, 2, Type::length()), rt: Type::length() },
+        RejectionRow { label: "Mul Matrix*Real undef",      op: Mul, lv: matrix2(vec![vec![Value::Int(1), Value::Int(2)], vec![Value::Int(3), Value::Int(4)]]), rv: Value::Real(2.0), lt: Type::matrix(2, 2, Type::length()), rt: Type::dimensionless_scalar() },
+        RejectionRow { label: "Mul Int*Matrix undef",       op: Mul, lv: Value::Int(2), rv: matrix2(vec![vec![Value::Int(1), Value::Int(2)], vec![Value::Int(3), Value::Int(4)]]), lt: Type::Int, rt: Type::matrix(2, 2, Type::length()) },
+
+        // ── Mul: no runtime arm at all (List/String/Bool) ─────────────────
+        RejectionRow { label: "Mul List*Int undef",   op: Mul, lv: Value::List(vec![Value::Int(1), Value::Int(2)]), rv: Value::Int(2), lt: Type::List(Box::new(Type::Int)), rt: Type::Int },
+        RejectionRow { label: "Mul String*Int undef", op: Mul, lv: Value::String("abc".to_string()), rv: Value::Int(2), lt: Type::String, rt: Type::Int },
+        RejectionRow { label: "Mul Bool*Int undef",   op: Mul, lv: Value::Bool(true), rv: Value::Int(2), lt: Type::Bool, rt: Type::Int },
+
+        // ── Mul: ORDER-SENSITIVE Vector×Transform (reverse of the positive
+        //    "Transform*Vector[L]->Vector[L]" row above) ────────────────────
+        RejectionRow { label: "Mul Vector[L]*Transform undef (order-sensitive)", op: Mul, lv: vec3(D::LENGTH, 1.0, 0.0, 0.0), rv: xform(rotation_90z(), 100.0, 200.0, 300.0), lt: Type::vec3(Type::length()), rt: Type::transform(3) },
+
+        // ── Div: non-commutative reversals (Scalar/Real numerator over an
+        //    aggregate denominator — no reverse-scale arm exists) ──────────
+        RejectionRow { label: "Div Scalar[L]/Vector[L] undef (non-commutative)", op: Div, lv: Value::length(10.0), rv: vec3(D::LENGTH, 1.0, 2.0, 3.0), lt: Type::length(), rt: Type::vec3(Type::length()) },
+        RejectionRow { label: "Div Real/Vector[L] undef",                       op: Div, lv: Value::Real(10.0),   rv: vec3(D::LENGTH, 1.0, 2.0, 3.0), lt: Type::dimensionless_scalar(), rt: Type::vec3(Type::length()) },
+
+        // ── Div: no runtime arm at all (Matrix/List/String/Bool) ──────────
+        RejectionRow { label: "Div Matrix/Int undef", op: Div, lv: matrix2(vec![vec![Value::Int(1), Value::Int(2)], vec![Value::Int(3), Value::Int(4)]]), rv: Value::Int(2), lt: Type::matrix(2, 2, Type::length()), rt: Type::Int },
+        RejectionRow { label: "Div List/Int undef",   op: Div, lv: Value::List(vec![Value::Int(1), Value::Int(2)]), rv: Value::Int(2), lt: Type::List(Box::new(Type::Int)), rt: Type::Int },
+        RejectionRow { label: "Div String/Int undef", op: Div, lv: Value::String("abc".to_string()), rv: Value::Int(2), lt: Type::String, rt: Type::Int },
+        RejectionRow { label: "Div Bool/Int undef",   op: Div, lv: Value::Bool(true), rv: Value::Int(2), lt: Type::Bool, rt: Type::Int },
+    ]
+}
+
+/// Rejection-parity batch: every row above must AGREE (runtime
+/// structurally-Undef ⇒ static `None`). Panics via `todo!()` inside
+/// `assert_rejects` until step-6 implements it (RED).
+#[test]
+fn rejection_parity_batch() {
+    for row in rejection_rows() {
+        assert_rejects(row.op, row.lv, row.rv, row.lt, row.rt, row.label);
+    }
+}
+
+// ── None → ArithOperandKind anchor (step-5) ─────────────────────────────────
+
+/// Ties the abstract `None` reject-partition to the OBSERVABLE diagnostic
+/// named in the PRD contract (§7.2): a representative structural-Undef pair
+/// (`Vector3<Length> × Vector3<Length>`, the first row of the batch above)
+/// must actually surface `DiagnosticCode::ArithOperandKind` when compiled
+/// through the real pipeline — belt-and-suspenders coverage for the `None`
+/// partition without re-testing β2's full guard suite
+/// (`mul_div_operand_guard_tests.rs`, whose `compile_source` +
+/// filter-`Severity::Error` pattern this reuses; design decision 4).
+#[test]
+fn none_partition_anchors_to_arith_operand_kind_diagnostic() {
+    let source = r#"
+structure def P {
+    param a : Vector3<Length>
+    let v = a * a
+}
+"#;
+    let module = compile_source(source);
+    let flagged = module.diagnostics.iter().any(|d| {
+        d.severity == Severity::Error && d.code == Some(DiagnosticCode::ArithOperandKind)
+    });
+    assert!(
+        flagged,
+        "`a * a` (Vector3<Length> × Vector3<Length>) must yield \
+         DiagnosticCode::ArithOperandKind; got diagnostics: {:?}",
+        module.diagnostics
+    );
 }
 
 // ── Smoke test (step-1 RED / step-2 GREEN) ──────────────────────────────────
