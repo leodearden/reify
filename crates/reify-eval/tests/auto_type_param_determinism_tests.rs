@@ -307,7 +307,8 @@ fn run_pipeline(
 }
 
 /// Strip `EXAMPLES_DIR` prefix and return a portable forward-slash-separated
-/// relative path. Mirrors `relative_to_examples_dir` from `examples_smoke.rs`.
+/// relative path. Mirrors `relative_to_examples_dir` from `examples_smoke.rs`
+/// — update both when this changes.
 fn relative_to_examples_dir(path: &Path) -> String {
     let rel = path.strip_prefix(EXAMPLES_DIR).unwrap_or_else(|e| {
         panic!(
@@ -322,7 +323,8 @@ fn relative_to_examples_dir(path: &Path) -> String {
 }
 
 /// Return all `*.ri` files under `EXAMPLES_DIR` (recursively), sorted.
-/// Mirrors `discover_ri_files` from `examples_smoke.rs`.
+/// Mirrors `discover_ri_files` from `examples_smoke.rs` — update both when
+/// this changes.
 fn discover_ri_files() -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = Vec::new();
     collect_ri_files(Path::new(EXAMPLES_DIR), &mut paths);
@@ -331,7 +333,8 @@ fn discover_ri_files() -> Vec<PathBuf> {
 }
 
 /// Recursively collect `*.ri` files under `dir` into `out`.
-/// Mirrors `collect_ri_files` from `examples_smoke.rs`.
+/// Mirrors `collect_ri_files` from `examples_smoke.rs` — update both when
+/// this changes.
 fn collect_ri_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let entries = std::fs::read_dir(dir).unwrap_or_else(|e| {
         panic!(
@@ -597,6 +600,10 @@ fn v0_1_example_corpus_compile_and_check_time_is_bounded() {
     // in lockstep, so any floor derived from paths.len() — subtractive or
     // proportional — still passes and misses exactly the regression this
     // check exists to catch.
+    //
+    // Also not derived from examples_smoke.rs: that sibling has no analogous
+    // floor to share, and hoisting corpus discovery into a common crate is a
+    // cross-crate change outside this single-file task's scope.
     const EXPECTED_MIN_FILES: usize = 100;
 
     let skip: HashSet<&str> = SKIP_SET.iter().map(|(name, _)| *name).collect();
