@@ -11631,42 +11631,48 @@ mod tests {
         }
     }
 
-    /// Verdict-equivalence check shared by the `check_mesh_contract*`
-    /// equivalence tests: the private `check_contract` body backs both
-    /// [`Mesh::check_mesh_contract`] and [`Mesh::validate`], so for any mesh
-    /// the two must agree — same `Ok`/`Err`, and on `Err` the same
-    /// `invariant`/`counts`, with a witness naming the same offender.
-    ///
-    /// Witness fields are compared by bit pattern (via `to_bits`) rather
-    /// than `==` because several witnesses embed the mesh's own injected
-    /// `f32::NAN` coordinate (or a synthetic `[NAN, NAN, NAN]` marker), and
-    /// IEEE-754 NaN is never equal to itself under `PartialEq` — this is
-    /// exactly why `MeshWitness` derives `PartialEq` but not `Eq`.
-    fn assert_check_mesh_contract_matches_validate(mesh: &Mesh, tol: f64) {
-        let via_check = mesh.check_mesh_contract(tol);
-        let via_validate = mesh.validate(tol).map(|_| ());
-        match (via_check, via_validate) {
+    /// Verdict-equivalence comparison shared by every `check_mesh_contract*`
+    /// equivalence test: given two `Result<(), MeshContractViolation>`
+    /// verdicts that are expected to agree (because both call sites
+    /// ultimately wrap the same private `check_contract` body), assert they
+    /// do — same `Ok`/`Err`, and on `Err` the same `invariant`/`counts`,
+    /// with a witness naming the same offender (compared via
+    /// [`assert_witness_bits_eq`]). `ctx` names the two methods being
+    /// compared, for the panic messages.
+    fn assert_verdicts_equivalent(
+        a: Result<(), MeshContractViolation>,
+        b: Result<(), MeshContractViolation>,
+        ctx: &str,
+    ) {
+        match (a, b) {
             (Ok(()), Ok(())) => {}
             (Err(a), Err(b)) => {
                 assert_eq!(
                     a.invariant, b.invariant,
-                    "check_mesh_contract and validate must report the same invariant"
+                    "{ctx} must report the same invariant"
                 );
-                assert_eq!(
-                    a.counts, b.counts,
-                    "check_mesh_contract and validate must report the same counts"
-                );
+                assert_eq!(a.counts, b.counts, "{ctx} must report the same counts");
                 assert_witness_bits_eq(a.witness, b.witness);
             }
-            (a, b) => panic!(
-                "check_mesh_contract and validate must agree on verdict: {a:?} vs {b:?}"
-            ),
+            (a, b) => panic!("{ctx} must agree on verdict: {a:?} vs {b:?}"),
         }
     }
 
-    /// NaN-safe structural comparison of two [`MeshWitness`] values — see
-    /// [`assert_check_mesh_contract_matches_validate`] for why plain `==`
-    /// isn't used.
+    /// [`Mesh::check_mesh_contract`] must return the same verdict as
+    /// [`Mesh::validate`] (mapped to drop the witness) — see
+    /// [`assert_verdicts_equivalent`] for the comparison semantics.
+    fn assert_check_mesh_contract_matches_validate(mesh: &Mesh, tol: f64) {
+        let via_check = mesh.check_mesh_contract(tol);
+        let via_validate = mesh.validate(tol).map(|_| ());
+        assert_verdicts_equivalent(via_check, via_validate, "check_mesh_contract and validate");
+    }
+
+    /// NaN-safe structural comparison of two [`MeshWitness`] values — used
+    /// by [`assert_verdicts_equivalent`] because several witnesses embed
+    /// the mesh's own injected `f32::NAN` coordinate (or a synthetic
+    /// `[NAN, NAN, NAN]` marker), and IEEE-754 NaN is never equal to itself
+    /// under `PartialEq` — this is exactly why `MeshWitness` derives
+    /// `PartialEq` but not `Eq`.
     fn assert_witness_bits_eq(a: MeshWitness, b: MeshWitness) {
         match (a, b) {
             (
@@ -11819,26 +11825,11 @@ mod tests {
             let remap = mesh.weld_positions().1;
             let via_welded = mesh.check_mesh_contract_welded(tol, &remap);
             let via_unthreaded = mesh.check_mesh_contract(tol);
-            match (via_welded, via_unthreaded) {
-                (Ok(()), Ok(())) => {}
-                (Err(a), Err(b)) => {
-                    assert_eq!(
-                        a.invariant, b.invariant,
-                        "check_mesh_contract_welded and check_mesh_contract must \
-                         report the same invariant"
-                    );
-                    assert_eq!(
-                        a.counts, b.counts,
-                        "check_mesh_contract_welded and check_mesh_contract must \
-                         report the same counts"
-                    );
-                    assert_witness_bits_eq(a.witness, b.witness);
-                }
-                (a, b) => panic!(
-                    "check_mesh_contract_welded and check_mesh_contract must agree \
-                     on verdict: {a:?} vs {b:?}"
-                ),
-            }
+            assert_verdicts_equivalent(
+                via_welded,
+                via_unthreaded,
+                "check_mesh_contract_welded and check_mesh_contract",
+            );
         }
 
         // Already-welded valid tetra — both methods must accept.
