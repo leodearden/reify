@@ -680,6 +680,16 @@ fn solve_ranked_registry_propagates_k_candidates_ordered_best_first() {
             candidates,
             optimality,
         } => {
+            // NOTE (reviewer_comprehensive amend, task δ #5016 review pass 2):
+            // this `>= 2` assertion is load-bearing on the INTENTIONAL non-dedup
+            // contract documented at `DimensionalSolver::solve_ranked`'s
+            // "NOT deduplicated" comment (solver.rs) and the registry cross-merge
+            // comment above `objective_candidates` (registry.rs) -- for this
+            // single-basin fixture, most/all K candidates converge to the same
+            // optimum and are surfaced verbatim rather than fingerprint-deduped.
+            // A future change that deduplicates candidates by resolved-value
+            // fingerprint would need to update this assertion (e.g. to check for
+            // >= 2 DISTINCT designs) rather than raw candidate count.
             assert!(
                 candidates.len() >= 2,
                 "SolverRegistry::solve_ranked must propagate the objective \
