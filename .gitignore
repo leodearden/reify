@@ -35,6 +35,7 @@ test_bracket.reify
 .orchestrator/reconciliation/*.db*
 .orchestrator/queue/*.db*
 data/.orchestrator/queue/*.db*
+data/queue/*.db*
 *.kate-swp
 .jcodemunch.jsonc
 data/review-checkpoints/
