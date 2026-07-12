@@ -9194,4 +9194,229 @@ structure def Bearing<T: Seal> {
             err.code
         );
     }
+
+    // ── compiler-type-hygiene ε1 step-5 ─────────────────────────────────────
+    //
+    // CHARACTERIZATION of the exhaustive-match "everything else" (28-variant)
+    // tail arm, ahead of the step-6 conversion to `match &compiled_obj.result_type`.
+    // Step-1 already pinned the tail for a plain `Type::Int` receiver; step-3
+    // pinned the three special-arm fall-through residuals. These tests add one
+    // more representative receiver from each of the remaining tail-routed
+    // `Type` shapes (named-string, unit-with-Box-inner ×2, two-arg
+    // parameterized, and the Map-vs-List aggregation contrast) so the step-6
+    // grouped 28-variant match arm has a byte-identical target for the whole
+    // class, not just the single Int receiver step-1 covers.
+
+    /// `Type::Enum(String)` receiver: an unsupported member falls to the
+    /// poison tail with the byte-identical generic message; `.count` stays
+    /// the receiver-agnostic `Type::Int` arm.
+    #[test]
+    fn enum_receiver_routes_to_tail_poison_and_count_arm() {
+        use reify_test_support::{compile_source, get_let_expr};
+
+        let source = r#"
+enum Shape { Round, Square, Hex }
+
+structure S {
+    param s : Shape = Shape.Round
+    let y = s.foo
+    let z = s.count
+}
+"#;
+        let m = compile_source(source);
+        let err = the_one_error(&m.diagnostics);
+        assert_eq!(
+            err.message, "member access not yet supported: .foo",
+            "Enum receiver must fall through to the byte-identical generic \
+             poison message; got: {:?}",
+            err.message
+        );
+        assert_eq!(get_let_expr(&m, "y").result_type, Type::Error);
+        assert_eq!(
+            get_let_expr(&m, "z").result_type,
+            Type::Int,
+            "`.count` on an Enum receiver must type as Type::Int (receiver-agnostic)"
+        );
+    }
+
+    /// `Type::Range(Box<Type>)` receiver: an unsupported member falls to the
+    /// poison tail with the byte-identical generic message; `.count` stays
+    /// the receiver-agnostic `Type::Int` arm.
+    #[test]
+    fn range_receiver_routes_to_tail_poison_and_count_arm() {
+        use reify_test_support::{compile_source, get_let_expr};
+
+        let source = r#"
+structure S {
+    let r = 0mm .. 10mm
+    let y = r.foo
+    let z = r.count
+}
+"#;
+        let m = compile_source(source);
+        let err = the_one_error(&m.diagnostics);
+        assert_eq!(
+            err.message, "member access not yet supported: .foo",
+            "Range receiver must fall through to the byte-identical generic \
+             poison message; got: {:?}",
+            err.message
+        );
+        assert_eq!(get_let_expr(&m, "y").result_type, Type::Error);
+        assert_eq!(
+            get_let_expr(&m, "z").result_type,
+            Type::Int,
+            "`.count` on a Range receiver must type as Type::Int (receiver-agnostic)"
+        );
+    }
+
+    /// `Type::Transform(usize)` receiver (surfaced via the `Transform3` type
+    /// name, task 4577): an unsupported member falls to the poison tail with
+    /// the byte-identical generic message; `.count` stays the
+    /// receiver-agnostic `Type::Int` arm.
+    #[test]
+    fn transform_receiver_routes_to_tail_poison_and_count_arm() {
+        use reify_test_support::{compile_source, get_let_expr};
+
+        let source = r#"
+structure S {
+    param t : Transform3
+    let y = t.foo
+    let z = t.count
+}
+"#;
+        let m = compile_source(source);
+        let err = the_one_error(&m.diagnostics);
+        assert_eq!(
+            err.message, "member access not yet supported: .foo",
+            "Transform receiver must fall through to the byte-identical \
+             generic poison message; got: {:?}",
+            err.message
+        );
+        assert_eq!(get_let_expr(&m, "y").result_type, Type::Error);
+        assert_eq!(
+            get_let_expr(&m, "z").result_type,
+            Type::Int,
+            "`.count` on a Transform receiver must type as Type::Int (receiver-agnostic)"
+        );
+    }
+
+    /// `Type::Complex(Box<Type>)` receiver: an unsupported member falls to
+    /// the poison tail with the byte-identical generic message; `.count`
+    /// stays the receiver-agnostic `Type::Int` arm.
+    #[test]
+    fn complex_receiver_routes_to_tail_poison_and_count_arm() {
+        use reify_test_support::{compile_source, get_let_expr};
+
+        let source = r#"
+structure S {
+    let z = complex(1.0m, 2.0m)
+    let y = z.foo
+    let n = z.count
+}
+"#;
+        let m = compile_source(source);
+        let err = the_one_error(&m.diagnostics);
+        assert_eq!(
+            err.message, "member access not yet supported: .foo",
+            "Complex receiver must fall through to the byte-identical \
+             generic poison message; got: {:?}",
+            err.message
+        );
+        assert_eq!(get_let_expr(&m, "y").result_type, Type::Error);
+        assert_eq!(
+            get_let_expr(&m, "n").result_type,
+            Type::Int,
+            "`.count` on a Complex receiver must type as Type::Int (receiver-agnostic)"
+        );
+    }
+
+    /// `Type::Set(Box<Type>)` receiver: an unsupported member falls to the
+    /// poison tail with the byte-identical generic message; `.count` stays
+    /// the receiver-agnostic `Type::Int` arm.
+    #[test]
+    fn set_receiver_routes_to_tail_poison_and_count_arm() {
+        use reify_test_support::{compile_source, get_let_expr};
+
+        let source = r#"
+structure S {
+    param items : Set<Length>
+    let y = items.foo
+    let z = items.count
+}
+"#;
+        let m = compile_source(source);
+        let err = the_one_error(&m.diagnostics);
+        assert_eq!(
+            err.message, "member access not yet supported: .foo",
+            "Set receiver must fall through to the byte-identical generic \
+             poison message; got: {:?}",
+            err.message
+        );
+        assert_eq!(get_let_expr(&m, "y").result_type, Type::Error);
+        assert_eq!(
+            get_let_expr(&m, "z").result_type,
+            Type::Int,
+            "`.count` on a Set receiver must type as Type::Int (receiver-agnostic)"
+        );
+    }
+
+    /// `Type::Map(Box<Type>, Box<Type>)` receiver: `.sum` is a recognized
+    /// aggregation member but Map is not List, so it must emit
+    /// `DiagnosticCode::AggregationReceiverNotCollection` (anti-cascade
+    /// `Type::Error`); `.count` stays the receiver-agnostic `Type::Int` arm.
+    /// The Map-vs-List contrast to the happy-path List `.sum` test below.
+    #[test]
+    fn map_receiver_sum_is_aggregation_receiver_not_collection_count_is_int() {
+        use reify_test_support::{compile_source, get_let_expr};
+
+        let source = r#"
+structure S {
+    param coll : Map<String, Length>
+    let y = coll.sum
+    let z = coll.count
+}
+"#;
+        let m = compile_source(source);
+        let err = the_one_error(&m.diagnostics);
+        assert_eq!(
+            err.code,
+            Some(DiagnosticCode::AggregationReceiverNotCollection),
+            "Map.sum must emit AggregationReceiverNotCollection; got: {:?}",
+            err
+        );
+        assert_eq!(get_let_expr(&m, "y").result_type, Type::Error);
+        assert_eq!(
+            get_let_expr(&m, "z").result_type,
+            Type::Int,
+            "`.count` on a Map receiver must type as Type::Int (receiver-agnostic)"
+        );
+    }
+
+    /// Happy-path aggregation contrast: a `Type::List` receiver's `.sum`
+    /// resolves to the list's element type (not `Type::Error`) — pins that
+    /// the aggregation dispatch inside the tail is receiver-KIND-sensitive,
+    /// not just member-NAME-sensitive, from a non-Map/Map contrast.
+    #[test]
+    fn list_receiver_sum_resolves_to_element_type() {
+        use reify_test_support::{compile_source, get_let_expr};
+
+        let source = r#"
+structure S {
+    let items = [1, 2, 3]
+    let y = items.sum
+}
+"#;
+        let m = compile_source(source);
+        assert!(
+            m.diagnostics.is_empty(),
+            "expected zero diagnostics for `items.sum` on a List<Int> receiver, got: {:?}",
+            m.diagnostics
+        );
+        assert_eq!(
+            get_let_expr(&m, "y").result_type,
+            Type::Int,
+            "`[1, 2, 3].sum` must resolve to the List's element type (Int), got: {:?}",
+            get_let_expr(&m, "y").result_type
+        );
+    }
 }
