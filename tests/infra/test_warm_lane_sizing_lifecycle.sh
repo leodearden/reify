@@ -291,4 +291,22 @@ exit 0
 STUB_EOF
 chmod +x "$NULL_STATUS_CMD"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block A — integration-surface precondition
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block A: integration-surface precondition ---"
+
+# The three ACTIVELY-DRIVEN primitives (thin/audit/guard are invoked for real
+# in Blocks B-D below) must exist and be executable, or this integration gate
+# cannot compose what is absent. β/provision-warm-lane-fs.sh is integrated via
+# the audit's budget relation in Block C, not a grow op here, so it is kept
+# out of this minimal precondition set (see header comment).
+assert "A1: scripts/thin-warm-lane.sh exists" test -f "$THIN_SCRIPT"
+assert "A2: scripts/thin-warm-lane.sh is executable" test -x "$THIN_SCRIPT"
+assert "A3: scripts/warm-lane-audit.sh exists" test -f "$AUDIT_SCRIPT"
+assert "A4: scripts/warm-lane-audit.sh is executable" test -x "$AUDIT_SCRIPT"
+assert "A5: scripts/warm-lane-disk-guard.sh exists" test -f "$GUARD_SCRIPT"
+assert "A6: scripts/warm-lane-disk-guard.sh is executable" test -x "$GUARD_SCRIPT"
+
 test_summary
