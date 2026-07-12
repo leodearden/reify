@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_core::{ConstraintNodeId, ContentHash, Diagnostic, ModulePath, SourceSpan, VersionId};
+use reify_core::{
+    ConstraintNodeId, ContentHash, Diagnostic, ModulePath, SourceSpan, ValueCellId, VersionId,
+};
 use reify_ir::{Freshness, Satisfaction};
 use tower_lsp::lsp_types::{self, Url};
 
@@ -283,6 +285,154 @@ pub fn compute_diagnostics_with_state(
         }
     }
 
+    // Task 5078 (PRD `compute-fea-hardening.md` C2): hint diagnostic for
+    // FEA-dependent constraints that go unevaluated under this function's
+    // trampoline-free posture (see the doc comment above). A constraint
+    // reading an `@optimized` FEA result (e.g. `solve_elastic_static`'s
+    // `max_von_mises`) body-inlines to `Value::Undef` and therefore checks
+    // as `Satisfaction::Indeterminate` — neither the `violated_messages`
+    // skip-set above nor the span-aware `Satisfaction::Violated` loop emits
+    // anything for it, so today it surfaces NO diagnostic at all, silently
+    // indistinguishable from "no constraint". Surface a non-noisy
+    // `Severity::Info` hint instead, anchored to the constraint's span, so
+    // the user knows why the constraint shows nothing in the editor.
+    //
+    // Gated by `constraint_depends_on_unregistered_optimized_compute` so this
+    // does NOT fire on every `Indeterminate` constraint — e.g. a
+    // genuinely-unresolved `auto` param is also `Indeterminate` here (no
+    // solver attached), but is not FEA-dependent and must not get this hint.
+    //
+    // Deliberately additive and easily removable: a single emission branch
+    // plus one self-contained helper reading already-computed `check_result`
+    // / `compiled` data, no new `EvalState` fields, no keystroke-time solve.
+    //
+    // TODO(#5023): remove this stopgap when async-recalc Phase A lands
+    // per-constraint computing/not-evaluated states that supersede this hint.
+    //
+    // Perf guard: this whole block — including the lookup maps below — runs
+    // on the LSP keystroke hot path, so skip it entirely when there is no
+    // `Indeterminate` constraint in this document at all. Nothing in the
+    // loop below can fire without at least one such entry, so this still
+    // frees the common fully-resolved (no `auto` params, no FEA) document
+    // from all of the cost below.
+    //
+    // This guard is intentionally coarse — it is NOT "only FEA documents pay
+    // this cost". A genuinely-unresolved `auto` param is *also*
+    // `Indeterminate` with no solver attached, and `auto` params are routine
+    // in this parametric DSL (this file's own
+    // `fea_hint_excludes_auto_param_indeterminate_and_dedups_per_constraint`
+    // test uses `param gap : Length = auto` as its non-FEA control case), so
+    // plenty of non-FEA documents still build the maps below on every
+    // keystroke. A cheaper *and correct* pre-filter isn't available for
+    // free: `state.engine.prelude()` is the full stdlib, which always
+    // declares `@optimized` functions (`solve_elastic_static` and its
+    // siblings), so "does `compiled.functions` ∪ prelude declare any
+    // function with `optimized_target.is_some()`" is trivially true on every
+    // call and would filter nothing; narrowing that check to
+    // `compiled.functions` alone would filter too much, since a real FEA
+    // constraint reaches its solver call through a *prelude* function, not a
+    // module-local one, and would wrongly lose its hint. A correct tighter
+    // filter would have to either walk the same constraint/value-cell
+    // closure the block below already performs (no savings) or cache
+    // results across calls, which would need new persistent state — ruled
+    // out by this hint's "no new `EvalState` fields" design (see the block
+    // comment above this `if`).
+    if check_result
+        .constraint_results
+        .iter()
+        .any(|e| e.satisfaction == Satisfaction::Indeterminate)
+    {
+        let value_cell_exprs: HashMap<ValueCellId, _> = compiled
+            .templates
+            .iter()
+            .flat_map(|t| t.value_cells.iter())
+            .filter_map(|vc| vc.default_expr.as_ref().map(|e| (vc.id.clone(), e)))
+            .collect();
+        let compiled_constraints: HashMap<&ConstraintNodeId, _> = compiled
+            .templates
+            .iter()
+            .flat_map(|t| t.constraints.iter())
+            .map(|c| (&c.id, c))
+            .collect();
+        // Precompute name -> "names an unregistered @optimized compute
+        // target" once per document, instead of re-scanning all visible
+        // functions for every `UserFunctionCall` node encountered across
+        // every constraint's transitive value-cell closure — O(nodes *
+        // functions) before, O(functions) once to build plus O(1) lookups
+        // after.
+        //
+        // Iterate the union of the compiled module's own functions and the
+        // engine's prelude functions directly, with no intermediate `Vec` —
+        // stdlib solvers like `solve_elastic_static` are prelude functions,
+        // not user-module functions, so the prelude must be included or
+        // every FEA constraint would fail to match. Module-local functions
+        // are chained FIRST so that `.or_insert_with` (which keeps only the
+        // first-seen function per name) resolves a name shared between a
+        // module-local function and a prelude solver to the module's own
+        // definition — see the caller precedence note on
+        // `constraint_depends_on_unregistered_optimized_compute`.
+        let mut unregistered_optimized_fn_names: HashMap<&str, bool> = HashMap::new();
+        for f in compiled.functions.iter().chain(
+            state
+                .engine
+                .prelude()
+                .iter()
+                .flat_map(|m| m.functions.iter()),
+        ) {
+            unregistered_optimized_fn_names
+                .entry(f.name.as_str())
+                .or_insert_with(|| {
+                    f.optimized_target
+                        .as_deref()
+                        .is_some_and(|t| state.engine.compute_dispatch(t).is_none())
+                });
+        }
+
+        // No `(id, label)` dedup guard is needed here. `check_result.
+        // constraint_results` is built upstream (reify-eval) with at most
+        // one entry per constraint id: `forall` per-element constraints
+        // each get a fresh, unique `ConstraintNodeId` (`forall_elaborate.rs`
+        // increments `constraint_index` per element, so distinct elements
+        // never share an id), and the GD&T/Conforms path explicitly
+        // overrides any existing same-id entry in place rather than pushing
+        // a second one (`engine_constraints.rs`'s "OVERRIDE the matching
+        // entry ... push if absent" comment). So this single iteration
+        // already yields at most one hint per constraint without any extra
+        // bookkeeping. Pinned by
+        // `fea_hint_two_fea_constraints_each_get_distinct_span_hint` (below,
+        // in `mod tests`), which is the case most sensitive to a regression
+        // in this upstream invariant.
+        for entry in &check_result.constraint_results {
+            if entry.satisfaction != Satisfaction::Indeterminate {
+                continue;
+            }
+            let Some(constraint) = compiled_constraints.get(&entry.id) else {
+                continue;
+            };
+            if !constraint_depends_on_unregistered_optimized_compute(
+                &constraint.expr,
+                &value_cell_exprs,
+                &unregistered_optimized_fn_names,
+            ) {
+                continue;
+            }
+            let range = constraint_spans
+                .get(&entry.id)
+                .map(|span| convert::span_to_range(source, *span))
+                .unwrap_or_default();
+            diagnostics.push(lsp_types::Diagnostic {
+                range,
+                severity: Some(lsp_types::DiagnosticSeverity::INFORMATION),
+                code: Some(lsp_types::NumberOrString::String(
+                    FEA_NOT_EVALUATED_CODE.to_string(),
+                )),
+                source: Some("reify".to_string()),
+                message: FEA_NOT_EVALUATED_HINT.to_string(),
+                ..Default::default()
+            });
+        }
+    }
+
     // Emit freshness diagnostics for Pending and Failed cells (arch §7.1, §9.2).
     //
     // Iterate the compiled templates Vec directly (not a HashMap) so diagnostic
@@ -383,6 +533,160 @@ fn constraint_violated_message(entry: &reify_eval::ConstraintCheckEntry) -> Stri
         Some(label) => format!("constraint violated: {}", label),
         None => format!("constraint {} violated", entry.id),
     }
+}
+
+/// Exact wording of task 5078's (PRD `compute-fea-hardening.md` C2) FEA
+/// "not evaluated in editor" `Severity::Info` hint, emitted in
+/// [`compute_diagnostics_with_state`] above.
+///
+/// Defined once here rather than re-declared as a local constant in each
+/// regression test, so the production message and every test that asserts
+/// on it share one source of truth: a future wording change updates every
+/// consumer at once instead of requiring each test to be hand-edited to
+/// keep matching. Tests should NOT use this to *identify* the diagnostic
+/// (i.e. as a `filter` predicate) — use [`FEA_NOT_EVALUATED_CODE`] for
+/// that, and reserve this for asserting the human-readable wording once a
+/// diagnostic is already known to be the FEA hint.
+const FEA_NOT_EVALUATED_HINT: &str = "FEA constraint not evaluated in editor — run `reify test`";
+
+/// Stable `code` for task 5078's FEA "not evaluated in editor" hint (PRD
+/// `compute-fea-hardening.md` C2), set on the `lsp_types::Diagnostic`
+/// emitted in [`compute_diagnostics_with_state`] alongside
+/// [`FEA_NOT_EVALUATED_HINT`].
+///
+/// Unlike the message, which is free-text prose, this is the
+/// wording-independent handle consumers — including this file's own
+/// regression tests — should match on to identify the diagnostic,
+/// mirroring the `"computation-pending"` / `"computation-failed"` codes
+/// the freshness diagnostics carry (emitted just below in the same
+/// function). A future copy-edit to [`FEA_NOT_EVALUATED_HINT`] must never
+/// silently break identification for a consumer matching on this code.
+const FEA_NOT_EVALUATED_CODE: &str = "fea-not-evaluated";
+
+/// Static discriminator for task 5078's FEA "not evaluated in editor" hint
+/// (PRD `compute-fea-hardening.md` C2).
+///
+/// Returns `true` when `constraint_expr` — or the `default_expr` of any
+/// value cell it transitively depends on — calls a function whose
+/// `@optimized("target")` annotation names a compute target with no
+/// registered trampoline on `engine`. Under this crate's trampoline-free LSP
+/// posture (see [`compute_diagnostics_with_state`]'s doc comment) such a
+/// target always body-inlines to `Value::Undef`, so this predicate is
+/// exactly the "is this constraint's `Indeterminate` result caused by an
+/// unevaluated FEA/compute solve, as opposed to some other cause (e.g. a
+/// genuinely-unresolved `auto` param)" test.
+///
+/// `unregistered_optimized_fn_names` should map every visible function name
+/// (the union of the compiled module's own functions and the engine's
+/// prelude functions — stdlib solvers such as `solve_elastic_static` are
+/// prelude functions, not user-module functions) to whether that name's
+/// `@optimized("target")` annotation (if any) names a compute target with
+/// no registered trampoline on the engine. Building this map is the
+/// caller's responsibility (see `compute_diagnostics_with_state`) so it can
+/// be computed once per document rather than once per constraint.
+///
+/// Matching is by function NAME rather than full overload resolution: in
+/// this engine posture *every* `@optimized` target is unregistered, and the
+/// FEA solver overloads uniformly carry the same target string, so a name
+/// match cannot mis-resolve which target applies among same-named prelude
+/// overloads.
+///
+/// Caller precedence note: the caller builds this map from module-local
+/// functions chained *before* prelude functions and inserts with "first
+/// occurrence wins" — mirroring `find_matching_compiled_function`'s
+/// (`reify-expr/src/lib.rs`) first-match-wins precedent for "which function
+/// does this name resolve to". This means a module-local function that
+/// happens to share a prelude solver's name (e.g. a user helper also named
+/// `solve_elastic_static`) correctly shadows the prelude entry here,
+/// avoiding a false-positive hint attributed to the prelude solver when the
+/// resolved call is actually the user's own (non-FEA) function. Residual
+/// limitation: if a *module* itself declares more than one same-named
+/// overload with differing `@optimized` status, the map keeps whichever
+/// happens to iterate first — this mirrors the same overload-blindness
+/// already accepted for prelude solver overloads above, not a new gap.
+///
+/// **Accepted limitation — indirect FEA dependence through a wrapper
+/// function is not detected.** The traversal below follows the constraint
+/// expression and the transitive closure of value-cell `default_expr`s, but
+/// does not descend into the *body* of a called user function. A constraint
+/// that reaches an FEA solver only indirectly (e.g. `let s =
+/// my_wrapper(...)` where `my_wrapper`'s own body calls
+/// `solve_elastic_static`, but `my_wrapper` itself carries no `@optimized`
+/// annotation) still evaluates to `Value::Undef`/`Indeterminate` under the
+/// trampoline-free posture, but this predicate returns `false` for it — such
+/// a constraint falls back to the exact "silently indistinguishable from no
+/// constraint" state this hint exists to fix. Closing this gap would require
+/// also enqueueing called user-function bodies (guarded by a function-name
+/// `visited` set, alongside the existing value-cell one, for cycle-safety);
+/// deferred as a follow-up rather than widening this task's traversal. Not
+/// exercised by any current fixture — all of them call the solver directly.
+///
+/// Traversal is a work-queue over value-cell ids (seeded from
+/// `constraint_expr.collect_value_refs()`, expanded via each visited cell's
+/// own `default_expr.collect_value_refs()`) guarded by a `visited` set for
+/// cycle-safety, mirroring the leaf-walk shape of `classify_undef_origins`
+/// (`reify-eval/src/engine_eval.rs`) but over static `default_expr`s rather
+/// than runtime snapshot values — under this posture the runtime
+/// `ComputeNode` graph is empty (insertion is gated on
+/// `compute_dispatch(target).is_some()`), so the `@optimized` marker
+/// survives only statically on `CompiledFunction.optimized_target`.
+fn constraint_depends_on_unregistered_optimized_compute(
+    constraint_expr: &reify_ir::CompiledExpr,
+    value_cell_exprs: &HashMap<ValueCellId, &reify_ir::CompiledExpr>,
+    unregistered_optimized_fn_names: &HashMap<&str, bool>,
+) -> bool {
+    // `CompiledExpr::walk` (reify-ir/src/expr.rs) takes a plain
+    // `FnMut(&CompiledExpr)` with no `ControlFlow`/abort signal, so it
+    // cannot be short-circuited: the `if found { return; }` below only
+    // skips this closure's own per-node work once a match is found, not
+    // the remaining traversal, which `walk` still performs in full. This
+    // runs on the LSP keystroke hot path (per constraint, per visited
+    // value-cell expr), but is bounded by a single expression's node
+    // count; adding a real abort would require a new short-circuiting
+    // traversal primitive on `CompiledExpr`, out of this file's scope.
+    fn expr_calls_unregistered_optimized_fn(
+        expr: &reify_ir::CompiledExpr,
+        unregistered_optimized_fn_names: &HashMap<&str, bool>,
+    ) -> bool {
+        let mut found = false;
+        expr.walk(&mut |node| {
+            if found {
+                return;
+            }
+            if let reify_ir::CompiledExprKind::UserFunctionCall { function_name, .. } = &node.kind {
+                found = unregistered_optimized_fn_names
+                    .get(function_name.as_str())
+                    .copied()
+                    .unwrap_or(false);
+            }
+        });
+        found
+    }
+
+    if expr_calls_unregistered_optimized_fn(constraint_expr, unregistered_optimized_fn_names) {
+        return true;
+    }
+
+    let mut visited: std::collections::HashSet<ValueCellId> = std::collections::HashSet::new();
+    let mut queue: Vec<ValueCellId> = constraint_expr.collect_value_refs();
+    while let Some(cell_id) = queue.pop() {
+        if !visited.insert(cell_id.clone()) {
+            continue;
+        }
+        let Some(default_expr) = value_cell_exprs.get(&cell_id) else {
+            continue;
+        };
+        if expr_calls_unregistered_optimized_fn(default_expr, unregistered_optimized_fn_names) {
+            return true;
+        }
+        for referenced in default_expr.collect_value_refs() {
+            if !visited.contains(&referenced) {
+                queue.push(referenced);
+            }
+        }
+    }
+
+    false
 }
 
 /// Run the full parse → compile → check pipeline and return LSP diagnostics.
@@ -2279,6 +2583,514 @@ structure S {
              constraint may be silently Satisfied (false pass) or missing \
              entirely. constraint_results: {:#?}",
             check_result.constraint_results
+        );
+    }
+
+    /// RED→GREEN driver for task 5078 (PRD `compute-fea-hardening.md` task
+    /// C2). Under the trampoline-free posture (see
+    /// [`compute_diagnostics_with_state`]'s doc comment), an FEA-result
+    /// constraint checks as `Satisfaction::Indeterminate` and — absent this
+    /// hint — produces no diagnostic at all, silently indistinguishable
+    /// from "no constraint" (neither the `violated_messages` skip-set nor
+    /// the span-aware `Satisfaction::Violated` ERROR loop emit anything for
+    /// `Indeterminate`). This locks that `compute_diagnostics_with_state`
+    /// emits at least one `Severity::Info` hint, and never more than the
+    /// fixture's `Indeterminate` count, over the FEA-only
+    /// [`FEA_BEARING_SRC`] fixture, anchored to a constraint span, with the
+    /// exact wording and source specified by the task.
+    ///
+    /// Deliberately does NOT assert `hints.len() == indeterminate_count`:
+    /// that equivalence only holds because this fixture happens to contain
+    /// exclusively FEA-derived constraints, and would spuriously fail if a
+    /// future edit added a non-FEA `Indeterminate` control (e.g. an `auto`
+    /// param) to it, even though the discriminator would still be behaving
+    /// correctly. The exact per-constraint count for THIS fixture (2) is
+    /// separately pinned by `fea_hint_two_fea_constraints_each_get_distinct_span_hint`,
+    /// and FEA-vs-non-FEA discrimination itself is pinned by
+    /// `fea_hint_excludes_auto_param_indeterminate_and_dedups_per_constraint`.
+    #[test]
+    fn fea_indeterminate_constraint_emits_info_hint() {
+        let uri = test_uri();
+        let parsed =
+            reify_compiler::parse_with_stdlib(FEA_BEARING_SRC, ModulePath::single("test"));
+        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+
+        let mut state = EvalState::new();
+        let result = compute_diagnostics_with_state(&mut state, FEA_BEARING_SRC, &uri);
+
+        let hints: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Some(DiagnosticSeverity::INFORMATION)
+                    && d.code
+                        == Some(lsp_types::NumberOrString::String(
+                            FEA_NOT_EVALUATED_CODE.to_string(),
+                        ))
+            })
+            .collect();
+        for hint in &hints {
+            assert_eq!(
+                hint.source,
+                Some("reify".to_string()),
+                "FEA hint must carry source \"reify\"; got: {hint:#?}"
+            );
+            // The `hints` filter above identifies by `code` (a
+            // wording-independent handle — see `FEA_NOT_EVALUATED_CODE`'s
+            // doc comment), so it no longer pins the exact message text.
+            // Assert it here instead, once each diagnostic is already known
+            // to be the FEA hint, so the task's exact-wording requirement
+            // stays locked by a real test.
+            assert_eq!(
+                hint.message, FEA_NOT_EVALUATED_HINT,
+                "FEA hint must carry the exact task-specified wording; got: {hint:#?}"
+            );
+        }
+
+        // Compute the expected count dynamically (not a hardcoded magic
+        // number): read the persistent engine's snapshot for the content it
+        // just evaluated and count Indeterminate constraints (mirrors the
+        // stateful surface in
+        // `fea_bearing_constraint_produces_no_false_violation_or_false_pass`).
+        let check_result = state.engine.check_snapshot(&compiled).expect(
+            "state.engine should hold a snapshot for FEA_BEARING_SRC's content hash \
+             immediately after compute_diagnostics_with_state evaluated it",
+        );
+        let indeterminate_count = check_result
+            .constraint_results
+            .iter()
+            .filter(|e| e.satisfaction == Satisfaction::Indeterminate)
+            .count();
+        assert!(
+            indeterminate_count >= 1,
+            "fixture sanity: expected >= 1 Indeterminate constraint; got \
+             constraint_results: {:#?}",
+            check_result.constraint_results
+        );
+
+        // Not `assert_eq!(hints.len(), indeterminate_count)`: that equates
+        // "hint count" with "raw Indeterminate count", which only holds
+        // because this fixture is FEA-only. Assert existence (not vacuous)
+        // and an upper bound (never more hints than Indeterminate entries,
+        // since every hint comes from one) instead — see this test's doc
+        // comment for why the exact per-fixture count lives elsewhere.
+        assert!(
+            !hints.is_empty(),
+            "expected at least one FEA-not-evaluated hint over the FEA-only \
+             fixture; got 0 (constraint_results: {:#?})",
+            check_result.constraint_results
+        );
+        assert!(
+            hints.len() <= indeterminate_count,
+            "got more FEA-not-evaluated hints ({}) than Indeterminate \
+             constraints ({indeterminate_count}) in the fixture — a hint \
+             must never fire for a non-Indeterminate constraint; got hints: \
+             {:#?}",
+            hints.len(),
+            hints
+        );
+
+        for hint in &hints {
+            assert!(
+                hint.range.start != hint.range.end,
+                "hint range must be anchored to the constraint's span, not a \
+                 default/empty range; got: {hint:#?}"
+            );
+        }
+    }
+
+    /// RED→GREEN driver for task 5078 step-3/step-4 (PRD
+    /// `compute-fea-hardening.md` task C2): pins that the FEA "not
+    /// evaluated in editor" hint (i) collapses to exactly ONE hint per
+    /// constraint even when that constraint's expression references the
+    /// FEA-derived value more than once (per-constraint, not per-value-ref,
+    /// dedup), and (ii) does NOT fire on an `Indeterminate` constraint whose
+    /// value is not FEA-derived. A genuinely-unresolved `auto` param has no
+    /// solver attached in the LSP's engine (`EvalState::new` never calls
+    /// `with_solver`), so it is *also* `Indeterminate` — but for a
+    /// different reason than the trampoline-free posture documented on
+    /// [`compute_diagnostics_with_state`], and the hint must not confuse the
+    /// two causes.
+    ///
+    /// RED against step-2's naive impl: with no FEA-dependence
+    /// discrimination, step-2 emits one hint per `Indeterminate`
+    /// `constraint_results` entry, i.e. TWO hints here (one for the
+    /// compound FEA constraint, one for the unrelated `gap` auto-param
+    /// constraint) — this test requires exactly one.
+    #[test]
+    fn fea_hint_excludes_auto_param_indeterminate_and_dedups_per_constraint() {
+        let uri = test_uri();
+
+        // FEA portion copied verbatim from `FEA_BEARING_SRC`'s known-good
+        // body (material / tip_load / mount / solve_elastic_static /
+        // peak_stress) so it compiles, collapsed to ONE compound constraint
+        // that references `peak_stress` twice, plus an unrelated
+        // genuinely-unresolved `auto` param with its own constraint.
+        const SRC: &str = r#"structure FeaBearingMixed {
+    param length : Length = 1000mm
+    param width  : Length = 100mm
+    param height : Length = 100mm
+    param gap : Length = auto
+
+    let material = Steel_AISI_1045()
+    let tip_load = PointLoad(point: "tip", force: 1000.0)
+    let mount = FixedSupport(target: "root")
+
+    let result = solve_elastic_static(
+        material, length, width, height, [tip_load], [mount], ElasticOptions()
+    )
+
+    let peak_stress = result.max_von_mises
+
+    constraint peak_stress < 1MPa && peak_stress < 100MPa
+    constraint gap > 1mm
+}"#;
+
+        let parsed = reify_compiler::parse_with_stdlib(SRC, ModulePath::single("test"));
+        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+
+        // Guard fixture validity like C1's lock: a fixture typo must fail
+        // loudly here rather than making the assertions below vacuous.
+        let compile_errors: Vec<_> = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert!(
+            compile_errors.is_empty(),
+            "fixture sanity: SRC must compile without errors; got: {compile_errors:#?}"
+        );
+
+        let mut state = EvalState::new();
+        let result = compute_diagnostics_with_state(&mut state, SRC, &uri);
+
+        let hints: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Some(DiagnosticSeverity::INFORMATION)
+                    && d.code
+                        == Some(lsp_types::NumberOrString::String(
+                            FEA_NOT_EVALUATED_CODE.to_string(),
+                        ))
+            })
+            .collect();
+
+        // Fixture sanity: both constraints must actually be Indeterminate
+        // under the LSP's no-solver engine (2 total), so the assertion
+        // below on `hints.len() == 1` is a genuine discrimination check,
+        // not a vacuous pass because only one constraint was Indeterminate
+        // to begin with.
+        let check_result = state.engine.check_snapshot(&compiled).expect(
+            "state.engine should hold a snapshot for SRC's content hash \
+             immediately after compute_diagnostics_with_state evaluated it",
+        );
+        let indeterminate_count = check_result
+            .constraint_results
+            .iter()
+            .filter(|e| e.satisfaction == Satisfaction::Indeterminate)
+            .count();
+        assert_eq!(
+            indeterminate_count, 2,
+            "fixture sanity: expected 2 Indeterminate constraints (the \
+             compound FEA constraint + the gap auto-param constraint); got \
+             constraint_results: {:#?}",
+            check_result.constraint_results
+        );
+
+        assert_eq!(
+            hints.len(),
+            1,
+            "expected exactly one FEA hint: the compound FEA constraint's \
+             two `peak_stress` refs must dedup to one hint, and the \
+             unrelated `gap` auto-param constraint (Indeterminate for a \
+             non-FEA reason) must be excluded entirely; got {} hints: {:#?}",
+            hints.len(),
+            hints
+        );
+
+        // Belt-and-suspenders: directly confirm the surviving hint is not
+        // anchored to the `gap > 1mm` constraint's span (identify that
+        // constraint's span by slicing its source text out of SRC, rather
+        // than assuming declaration order).
+        let gap_constraint_span = compiled
+            .templates
+            .iter()
+            .flat_map(|t| t.constraints.iter())
+            .find(|c| SRC[c.span.start as usize..c.span.end as usize].contains("gap"))
+            .map(|c| c.span)
+            .expect("fixture sanity: expected a constraint referencing `gap`");
+        let gap_range = convert::span_to_range(SRC, gap_constraint_span);
+        assert!(
+            !hints.iter().any(|h| h.range == gap_range),
+            "no FEA hint should be anchored to the auto-param `gap` \
+             constraint's span ({gap_range:?}); got hints: {hints:#?}"
+        );
+    }
+
+    /// Amendment regression lock (task 5078, PRD `compute-fea-hardening.md`
+    /// C2): the FEA "not evaluated in editor" Info hint must not double up
+    /// with a freshness diagnostic (`computation-pending` /
+    /// `computation-failed`, arch §7.1/§9.2, emitted by the loop just below
+    /// this hint's emission block) for the same underlying unevaluated FEA
+    /// value cell over the [`FEA_BEARING_SRC`] fixture.
+    ///
+    /// Under the trampoline-free posture, an unregistered `@optimized`
+    /// target's handling in `engine_eval.rs` (the "no registered compute
+    /// trampoline (falling back to body-inlining)" branch) emits its own
+    /// `Severity::Error` diagnostic and falls through to ordinary
+    /// expression evaluation — it does NOT call `mark_failed` /
+    /// `mark_pending` the way a *registered*-but-failed trampoline dispatch
+    /// does. So the FEA-derived value cells (`result`, `peak_stress`)
+    /// resolve to `Freshness::Final`, not `Pending`/`Failed`, and the
+    /// freshness loop has nothing to say about them. This test locks that
+    /// observation so a future change to the unregistered-target fallback
+    /// path cannot silently reintroduce duplicated/noisy editor
+    /// diagnostics without failing a test.
+    #[test]
+    fn fea_hint_does_not_duplicate_as_freshness_diagnostic() {
+        let uri = test_uri();
+        let mut state = EvalState::new();
+        let result = compute_diagnostics_with_state(&mut state, FEA_BEARING_SRC, &uri);
+
+        let hints: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Some(DiagnosticSeverity::INFORMATION)
+                    && d.code
+                        == Some(lsp_types::NumberOrString::String(
+                            FEA_NOT_EVALUATED_CODE.to_string(),
+                        ))
+            })
+            .collect();
+        assert!(
+            !hints.is_empty(),
+            "fixture sanity: expected at least one FEA Info hint; got: {:#?}",
+            result.diagnostics
+        );
+
+        let freshness_codes = [
+            lsp_types::NumberOrString::String("computation-pending".to_string()),
+            lsp_types::NumberOrString::String("computation-failed".to_string()),
+        ];
+        let freshness_diags: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| d.code.as_ref().is_some_and(|c| freshness_codes.contains(c)))
+            .collect();
+        assert!(
+            freshness_diags.is_empty(),
+            "FEA-bearing fixture must not ALSO produce freshness diagnostics \
+             (computation-pending/computation-failed) alongside the Info \
+             hint — got: {freshness_diags:#?}"
+        );
+    }
+
+    /// Amendment regression lock (task 5078, PRD `compute-fea-hardening.md`
+    /// C2): pins the *other* half of
+    /// `constraint_depends_on_unregistered_optimized_compute`'s
+    /// discriminator — `engine.compute_dispatch(t).is_none()` — that every
+    /// other FEA-hint test leaves unexercised. Every other test builds its
+    /// `EvalState` via `EvalState::new()`, which never registers a compute
+    /// trampoline, so `compute_dispatch` returns `None` for every target in
+    /// every other test; the "registered target ⇒ not FEA-dependent ⇒ no
+    /// hint" branch of the discriminator has never actually run.
+    ///
+    /// Registers a trampoline for `"solver::elastic_static"` that itself
+    /// completes with `Value::Undef` — deliberately mirroring the *value*
+    /// the unregistered body-inline fallback would have produced, so the
+    /// constraint remains genuinely `Satisfaction::Indeterminate` (the fixture
+    /// sanity check below confirms this) and the emission loop actually
+    /// reaches the discriminator instead of short-circuiting earlier on
+    /// `entry.satisfaction != Indeterminate`. Only the *registration status*
+    /// differs from the unregistered-path tests above — isolating the
+    /// `compute_dispatch(..).is_none()` check as the thing this test can
+    /// catch a regression in.
+    ///
+    /// Registration happens *after* a priming first call, not before: a
+    /// freshly-constructed `EvalState` is not yet "initialized"
+    /// ([`EvalState::is_engine_initialized`]), so `compute_diagnostics_with_state`'s
+    /// cold-start branch would replace `state.engine` wholesale with a fresh
+    /// `Engine::new(..)` — silently discarding a trampoline registered
+    /// beforehand. Mirrors the priming pattern in
+    /// `incremental_path_uses_eval_cached_when_content_unchanged` (above):
+    /// call once to initialize the engine, register, then call again with
+    /// unchanged content so the `eval_cached` path is taken and `state.engine`
+    /// is reused rather than replaced.
+    #[test]
+    fn fea_hint_does_not_fire_when_compute_target_is_registered() {
+        fn undef_result_fn(
+            _value_inputs: &[reify_ir::Value],
+            _realization_inputs: &[reify_eval::RealizationReadHandle],
+            _options: &reify_ir::Value,
+            _prior_warm_state: Option<&reify_ir::OpaqueState>,
+            _cancellation: &reify_eval::CancellationHandle,
+        ) -> reify_eval::ComputeOutcome {
+            reify_eval::ComputeOutcome::Completed {
+                result: reify_ir::Value::Undef,
+                new_warm_state: None,
+                cost_per_byte: None,
+                diagnostics: vec![],
+                structured_detail: vec![],
+            }
+        }
+
+        let uri = test_uri();
+        let mut state = EvalState::new();
+
+        // Priming call: cold-starts and initializes `state.engine` (no
+        // trampoline registered yet, so this behaves like the ordinary
+        // unregistered/body-inline path — its result is discarded).
+        let _ = compute_diagnostics_with_state(&mut state, FEA_BEARING_SRC, &uri);
+
+        // Register on the now-initialized, surviving engine instance.
+        state.engine.register_compute_fn(
+            "solver::elastic_static",
+            undef_result_fn as reify_eval::ComputeFn,
+        );
+        assert!(
+            state
+                .engine
+                .compute_dispatch("solver::elastic_static")
+                .is_some(),
+            "test setup sanity: solver::elastic_static must be registered \
+             before the second compute_diagnostics_with_state call"
+        );
+
+        // Second call, same content: takes the `eval_cached` path (content
+        // unchanged + engine now initialized), which does NOT replace
+        // `state.engine` — the registered trampoline survives into it.
+        let result = compute_diagnostics_with_state(&mut state, FEA_BEARING_SRC, &uri);
+
+        let parsed =
+            reify_compiler::parse_with_stdlib(FEA_BEARING_SRC, ModulePath::single("test"));
+        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+        let check_result = state.engine.check_snapshot(&compiled).expect(
+            "state.engine should hold a snapshot for FEA_BEARING_SRC's content hash \
+             immediately after compute_diagnostics_with_state evaluated it",
+        );
+        let indeterminate_count = check_result
+            .constraint_results
+            .iter()
+            .filter(|e| e.satisfaction == Satisfaction::Indeterminate)
+            .count();
+        assert!(
+            indeterminate_count >= 1,
+            "fixture/test sanity: the registered trampoline returns Undef \
+             (mirroring the unregistered body-inline fallback's value) so \
+             the constraint(s) must still be Indeterminate here — otherwise \
+             this test would trivially pass via the `entry.satisfaction != \
+             Indeterminate` early-exit instead of exercising the \
+             discriminator's `compute_dispatch(..).is_none()` check; got \
+             constraint_results: {:#?}",
+            check_result.constraint_results
+        );
+
+        let hints: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Some(DiagnosticSeverity::INFORMATION)
+                    && d.code
+                        == Some(lsp_types::NumberOrString::String(
+                            FEA_NOT_EVALUATED_CODE.to_string(),
+                        ))
+            })
+            .collect();
+        assert!(
+            hints.is_empty(),
+            "no FEA \"not evaluated in editor\" hint should fire once \
+             solver::elastic_static has a registered compute trampoline \
+             (compute_dispatch(..).is_some()) — got: {hints:#?}"
+        );
+    }
+
+    /// Amendment (reviewer finding, task 5078): pins that TWO separate
+    /// FEA-dependent `Indeterminate` constraints each get their OWN hint,
+    /// anchored to their OWN distinct constraint span — not collapsed into
+    /// one, and not both anchored to the same span. [`FEA_BEARING_SRC`]
+    /// declares exactly two constraints over the same FEA-derived
+    /// `peak_stress` cell (`peak_stress < 1MPa` and `peak_stress <
+    /// 100MPa`), so this is the natural fixture for it.
+    ///
+    /// This is the scenario most sensitive to a regression in the upstream
+    /// "at most one `constraint_results` entry per constraint id" invariant
+    /// that the emission loop's dedup-elision rationale (in
+    /// `compute_diagnostics_with_state`, above) relies on instead of an
+    /// explicit `(id, label)` guard: a regression there could plausibly
+    /// collapse two constraints' entries into one, or misattribute one
+    /// hint's span — `fea_indeterminate_constraint_emits_info_hint`'s
+    /// count-only assertion would not by itself catch a same-span collapse.
+    #[test]
+    fn fea_hint_two_fea_constraints_each_get_distinct_span_hint() {
+        let uri = test_uri();
+        let parsed =
+            reify_compiler::parse_with_stdlib(FEA_BEARING_SRC, ModulePath::single("test"));
+        let compiled = reify_compiler::compile_with_stdlib(&parsed);
+
+        let mut state = EvalState::new();
+        let result = compute_diagnostics_with_state(&mut state, FEA_BEARING_SRC, &uri);
+
+        // Locate each of FEA_BEARING_SRC's two known constraints by slicing
+        // its own source span (not by assuming declaration order). "< 1MPa"
+        // is not a substring of "< 100MPa" (the digits between `<` and `M`
+        // differ), so these needles are unambiguous.
+        let find_span = |needle: &str| {
+            compiled
+                .templates
+                .iter()
+                .flat_map(|t| t.constraints.iter())
+                .find(|c| {
+                    FEA_BEARING_SRC[c.span.start as usize..c.span.end as usize].contains(needle)
+                })
+                .map(|c| c.span)
+                .unwrap_or_else(|| {
+                    panic!("fixture sanity: expected a constraint containing {needle:?}")
+                })
+        };
+        let range_1mpa = convert::span_to_range(FEA_BEARING_SRC, find_span("< 1MPa"));
+        let range_100mpa = convert::span_to_range(FEA_BEARING_SRC, find_span("< 100MPa"));
+        assert_ne!(
+            range_1mpa, range_100mpa,
+            "fixture sanity: FEA_BEARING_SRC's two constraints must have \
+             distinct spans"
+        );
+
+        let hints: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| {
+                d.severity == Some(DiagnosticSeverity::INFORMATION)
+                    && d.code
+                        == Some(lsp_types::NumberOrString::String(
+                            FEA_NOT_EVALUATED_CODE.to_string(),
+                        ))
+            })
+            .collect();
+
+        assert_eq!(
+            hints.len(),
+            2,
+            "expected exactly two FEA hints, one per FEA-dependent \
+             constraint; got {} hints: {:#?}",
+            hints.len(),
+            hints
+        );
+        assert!(
+            hints.iter().any(|h| h.range == range_1mpa),
+            "expected a hint anchored to the `peak_stress < 1MPa` \
+             constraint's own span ({range_1mpa:?}); got hints: {hints:#?}"
+        );
+        assert!(
+            hints.iter().any(|h| h.range == range_100mpa),
+            "expected a hint anchored to the `peak_stress < 100MPa` \
+             constraint's own span ({range_100mpa:?}); got hints: {hints:#?}"
+        );
+        assert_ne!(
+            hints[0].range, hints[1].range,
+            "the two hints must be anchored to two distinct spans, not both \
+             collapsed onto the same one; got hints: {hints:#?}"
         );
     }
 }
