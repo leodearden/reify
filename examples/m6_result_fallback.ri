@@ -1,0 +1,52 @@
+// Result-fallback worked example — exercises `fallback`/`or_else` propagation
+// over `Result<T, E>` (task result-fallback Layer-B δ #4038, PRD
+// docs/prds/v0_6/result-and-fallback.md §4.3/§5 D6/§8.B task B-δ).
+//
+// `fallback(r, dflt)` is the free-function alias of `unwrap_or` (PRD fork
+// F2-a, decision D6): it recovers to `dflt` on the `Err` tag, unwraps the
+// inner value on the `Ok` tag. `or_else(r, alt)` chains a second `Result`
+// before defaulting: it returns `alt` on `Err`, passes the subject through
+// unchanged on `Ok`. Postfix `?` propagation is OUT OF SCOPE (fork
+// F-Question default DEFERRED, PRD §10) — this example ships combinator
+// propagation only.
+//
+// User-observable signal: `reify eval` reports:
+//
+//   Valid (raw="12mm",    parses):  bore = 0.012 m, pin = 0.012 m
+//   Bad   (raw="garbage", fails):   bore = 0.006 m, pin = 0.004 m
+//
+// Mirrors `m6_fallback_recovery.ri`'s two-structure shape (task 3986's
+// Option-subject sibling), retargeted from `parse_length`/`unwrap_or`
+// (Option) to `parse_length_r`/`fallback` (Result).
+//
+// `fallback` / `or_else` are prelude-callable (std.result is in the
+// prelude) — no explicit import is needed. No new grammar.
+//
+// Covered by crates/reify-eval/tests/result_fallback_e2e.rs (numeric eval
+// signal), crates/reify-cli/tests/cli_eval_result_fallback.rs (rendered CLI
+// stdout signal), and the examples compile-clean smoke sweep
+// (crates/reify-compiler/tests/examples_smoke.rs).
+
+structure def Valid {
+    // A fallible stdlib op that yields Result<Length, String> today (a
+    // may-fail parse). Recover with a language-level default instead of an
+    // opaque graph-level Failed node.
+    param raw : String = "12mm"
+
+    // `fallback` : recovery to a concrete default when the Result is `Err`.
+    let bore : Length = fallback(parse_length_r(raw), 6mm)
+
+    // `or_else` : chain a second fallible attempt before defaulting.
+    let pin : Length = fallback(or_else(parse_length_r(raw), parse_length_r("4mm")), 6mm)
+}
+
+// Same recovery logic as Valid, but `raw` fails to parse: every
+// `fallback`/`or_else` falls through to its default (bore) or its
+// alternative (pin).
+structure def Bad {
+    param raw : String = "garbage"
+
+    let bore : Length = fallback(parse_length_r(raw), 6mm)
+
+    let pin : Length = fallback(or_else(parse_length_r(raw), parse_length_r("4mm")), 6mm)
+}

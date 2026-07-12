@@ -56,6 +56,24 @@ pub fn unwrap_or<T, E>(r: Result<T, E>, dflt: T) -> T { dflt }
 /// Both arguments must be `Result<T,E>` for the same T, E.
 pub fn or_else<T, E>(r: Result<T, E>, alt: Result<T, E>) -> Result<T, E> { r }
 
+/// Extract the inner value of `r`, or return `dflt` if `r` is `Err`.
+/// Free-function alias of `unwrap_or` (PRD fork F2-a, decision D6) — task
+/// result-fallback Layer-B δ #4038.
+///
+/// Emits E_FALLBACK_TYPE (DiagnosticCode::FallbackType) if `dflt`'s type does
+/// not unify with Result<T,E>'s Ok-payload type T.
+///
+/// Like every combinator in this module, the body is a TYPECHECK-ONLY
+/// placeholder: `result_type` is derived from generic-signature substitution
+/// at the call site (expr.rs resolve_function_overload → type_compat::unify
+/// → substitute_type_params), independent of the body. Real tag-driven
+/// recovery eval is delivered by the shared `eval_extract_or_default` arm in
+/// `reify-expr/src/option_recovery.rs` (already dispatches
+/// `Value::Enum{type_name:"Result",variant:"Ok"/"Err"}` and already lists
+/// `"fallback"` in `is_combinator` — extended to `Result` by task γ #4037 —
+/// so no reify-expr change is needed here).
+pub fn fallback<T, E>(r: Result<T, E>, dflt: T) -> T { dflt }
+
 /// Return true if `r` is `Ok`, false if it is `Err`.
 pub fn is_ok<T, E>(r: Result<T, E>) -> Bool { true }
 

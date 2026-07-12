@@ -736,13 +736,51 @@ pub(crate) fn unify(
 ) -> Result<(), TypeArgConflict> {
     match (declared, arg) {
         // Type-parameter leaf: bind if absent; re-bind to the same type is Ok;
-        // re-bind to a different type is the sole error case.
+        // re-bind to a different type conflicts — EXCEPT when exactly one side
+        // is itself a bare `TypeParam` (an ERASED/unknown type). An erased
+        // binding is provisional: a bare `TypeParam` arg carries no concrete
+        // information (it arises inside generic fn bodies, or leaks out of
+        // composing generics over a headless-`Enum` builtin — the
+        // `or_else(parse_length_r(x), parse_length_r(y))` chain in task #4038 δ,
+        // whose erased-arg result is `Applied{"Result", [T, E]}`). Binding a
+        // param to such an erased arg must not later HARD-conflict with the
+        // real concrete arg for the same param: concrete information wins, the
+        // erased side yields. Two differing CONCRETE bindings (a genuine
+        // type-arg conflict) and two differing ERASED bindings (e.g. `pair(a:A,
+        // b:B)` with distinct generic params) still conflict as before.
+        //
+        // Design precedent: this mirrors the existing generic-body-permissive
+        // posture (task 4232 γ D4, `fn_generic_body_permissive_tests.rs`) of
+        // treating a bare `TypeParam` as a resolution wildcard rather than a
+        // concrete value. The relaxation is deliberately scoped to that ONE
+        // leaf shape — a bare `TypeParam` on the rebind side — and does NOT
+        // extend to a HEADED type that merely carries a nested type-param
+        // (e.g. the leaky `Applied{"Result", [T, E]}` itself, which is not a
+        // `Type::TypeParam` at its own head): two differing CONCRETE bindings
+        // still hard-conflict even when one of them is such a headed type.
+        // `unify_concrete_vs_headed_concrete_still_conflicts` below pins that
+        // boundary with a negative-path proof.
         (Type::TypeParam(p), _) => match subst.get(p) {
             None => {
                 subst.insert(p.clone(), arg.clone());
                 Ok(())
             }
             Some(existing) if existing == arg => Ok(()),
+            // Erased existing yields to concrete incoming: upgrade the binding.
+            Some(existing)
+                if matches!(existing, Type::TypeParam(_))
+                    && !matches!(arg, Type::TypeParam(_)) =>
+            {
+                subst.insert(p.clone(), arg.clone());
+                Ok(())
+            }
+            // Concrete existing absorbs an erased incoming: keep the concrete.
+            Some(existing)
+                if !matches!(existing, Type::TypeParam(_))
+                    && matches!(arg, Type::TypeParam(_)) =>
+            {
+                Ok(())
+            }
             Some(existing) => Err(TypeArgConflict {
                 param: p.clone(),
                 existing: existing.clone(),
@@ -1187,7 +1225,37 @@ pub(crate) fn resolve_function_overload<'a>(
                         || (is_generic
                             && (heads_unifiable(param_ty, arg_ty)
                                 || type_carries_dim_param(param_ty)))
-                        || type_carries_type_param(arg_ty)
+                        // D4 (task-4232 γ) in the head-exact tier: a type-param
+                        // arg is a wildcard ONLY when it is a BARE `TypeParam`
+                        // (a generic fn body passing a `T`-typed value) — that
+                        // slot carries no constructor head to disagree on, so
+                        // `heads_unifiable` (above) can't discriminate it. A
+                        // HEADED arg carrying a NESTED type-param (e.g. an
+                        // `Applied{"Result", [T, E]}` produced by composing two
+                        // generic stdlib fns over a headless-`Enum` builtin —
+                        // task #4038 δ) must NOT wildcard-match every candidate:
+                        // it has a real head, so `heads_unifiable` discriminates
+                        // it (`Result` matches the `Result<T,E>` overload, not
+                        // the `Option<T>` one), turning a spurious `Ambiguous`
+                        // into a clean `Resolved`. This narrows head_matches
+                        // (⊆ matches) only; a resulting empty set still falls
+                        // through to `matches`, so bare-`TypeParam`-arg
+                        // resolution is bit-for-bit unchanged.
+                        //
+                        // NOTE (reviewer_comprehensive #2): this narrowing also
+                        // means a NON-generic candidate (`is_generic == false`)
+                        // is never eligible for head_matches against a headed
+                        // nested-type-param arg — it fails `is_generic`, the
+                        // bare-`TypeParam` wildcard, and plain equality. The
+                        // head-exact tier therefore deliberately assumes headed
+                        // nested-type-param args only ever need to disambiguate
+                        // GENERIC container overloads (e.g. Option<T> vs
+                        // Result<T,E>); a same-name non-generic candidate in the
+                        // same overload set is excluded from head_matches
+                        // rather than causing a spurious `Ambiguous`. See
+                        // `overload_leaky_headed_arg_excludes_non_generic_candidate`
+                        // for the precedent lock.
+                        || matches!(arg_ty, Type::TypeParam(_))
                         || param_ty == arg_ty
                 })
         })
@@ -3025,6 +3093,76 @@ mod tests {
     }
 
     #[test]
+    fn unify_erased_type_param_binding_yields_to_concrete() {
+        // Task #4038 δ (esc-4038-2): a param first bound to a bare `TypeParam`
+        // arg (erased/unknown — e.g. the leaked `Applied{"Result",[T,E]}` from a
+        // chained `or_else`) must UPGRADE to the concrete arg for the same param
+        // rather than hard-conflicting (the E_FALLBACK_TYPE `T vs Scalar[m]`
+        // regression).
+        let mut subst = HashMap::new();
+        // Erased first, then concrete → upgrade to concrete, no conflict.
+        assert!(unify(&tp("T"), &tp("U"), &mut subst).is_ok());
+        assert!(unify(&tp("T"), &Type::length(), &mut subst).is_ok());
+        assert_eq!(subst.get("T"), Some(&Type::length()));
+
+        // Concrete first, then erased → keep concrete, no conflict.
+        let mut subst2 = HashMap::new();
+        assert!(unify(&tp("T"), &Type::length(), &mut subst2).is_ok());
+        assert!(unify(&tp("T"), &tp("U"), &mut subst2).is_ok());
+        assert_eq!(subst2.get("T"), Some(&Type::length()));
+    }
+
+    #[test]
+    fn unify_two_distinct_erased_params_still_conflict() {
+        // Guard: two DIFFERING erased bindings (distinct generic params, e.g.
+        // `pair(a: A, b: B)`) must still conflict — the weak-binding relaxation
+        // only covers the erased-vs-concrete case, never erased-vs-erased.
+        let mut subst = HashMap::new();
+        assert!(unify(&tp("T"), &tp("A"), &mut subst).is_ok());
+        let err = unify(&tp("T"), &tp("B"), &mut subst)
+            .expect_err("two distinct erased params must still conflict");
+        assert_eq!(err.param, "T");
+    }
+
+    #[test]
+    fn unify_concrete_vs_headed_concrete_still_conflicts() {
+        // Boundary lock (reviewer_comprehensive #1, task #4038 δ amendment):
+        // the erased-vs-concrete relaxation above is scoped to a bare
+        // `TypeParam` leaf ONLY. A HEADED type that merely carries a nested
+        // type-param — e.g. the leaky `Applied{"Result",[A,B]}` produced by a
+        // chained `or_else(parse_length_r(x), parse_length_r(y))` — is NOT a
+        // bare `TypeParam` at its own head, so binding it against an existing
+        // CONCRETE binding for a different type must still hard-conflict.
+        // Without this guard a genuinely-wrong program (e.g. passing a
+        // `Result<..>`-shaped value where a `Length` was already bound to the
+        // same type parameter) would be silently accepted instead of raising
+        // `E_FN_TYPE_ARG_CONFLICT`.
+        let mut subst = HashMap::new();
+        assert!(unify(&tp("T"), &Type::length(), &mut subst).is_ok());
+        let leaky_result = Type::Applied {
+            name: "Result".to_string(),
+            args: vec![tp("A"), tp("B")],
+        };
+        let err = unify(&tp("T"), &leaky_result, &mut subst)
+            .expect_err("concrete Length binding vs a differently-headed concrete arg must still conflict");
+        assert_eq!(err.param, "T");
+        assert_eq!(err.existing, Type::length());
+        assert_eq!(err.incoming, leaky_result);
+
+        // Symmetric direction: headed-concrete bound first, then a different
+        // concrete type — also still conflicts.
+        let mut subst2 = HashMap::new();
+        let leaky_result2 = Type::Applied {
+            name: "Result".to_string(),
+            args: vec![tp("A"), tp("B")],
+        };
+        assert!(unify(&tp("T"), &leaky_result2, &mut subst2).is_ok());
+        let err2 = unify(&tp("T"), &Type::length(), &mut subst2)
+            .expect_err("headed concrete binding vs a differently-headed concrete arg must still conflict");
+        assert_eq!(err2.param, "T");
+    }
+
+    #[test]
     fn unify_consistent_rebind_ok() {
         // (e) unify T against Int twice → both Ok, no error, single binding.
         let mut subst = HashMap::new();
@@ -4053,6 +4191,151 @@ mod tests {
                 OverloadResolution::NoMatch(_)
             ),
             "concrete fn must NOT resolve for wrong dimension arg — exact match only"
+        );
+    }
+
+    /// Regression lock (task #4038 δ, esc-4038-2): the CHAINED
+    /// `fallback(or_else(parse_length_r(x), parse_length_r(y)), dflt)` case.
+    ///
+    /// `or_else<T,E>(Result<T,E>, Result<T,E>)` over two headless-`Enum("Result")`
+    /// subjects binds neither `T` nor `E`, so its result type leaks out as
+    /// `Applied{"Result", [TypeParam("T"), TypeParam("E")]}` (a HEADED type
+    /// carrying nested type-params). That leaky arg then flows into the outer
+    /// `fallback(...)` overload set — `fallback<T>(Option<T>, T)` and
+    /// `fallback<T,E>(Result<T,E>, T)`. Before the head-exact-tier narrowing,
+    /// the bare `type_carries_type_param(arg_ty)` disjunct wildcard-matched the
+    /// leaky arg against BOTH overloads → spurious `Ambiguous`. With the
+    /// narrowing (headed args are discriminated by `heads_unifiable`), only the
+    /// `Result<T,E>` overload survives → `Resolved`.
+    #[test]
+    fn overload_chained_result_leaky_arg_resolves_to_result_overload() {
+        let leaky_result = Type::Applied {
+            name: "Result".to_string(),
+            args: vec![tp("T"), tp("E")],
+        };
+        let option_overload = make_generic_fn(
+            "fallback",
+            vec![("o", Type::Option(Box::new(tp("T")))), ("dflt", tp("T"))],
+            &["T"],
+            tp("T"),
+        );
+        let result_overload = make_generic_fn(
+            "fallback",
+            vec![
+                (
+                    "r",
+                    Type::Applied {
+                        name: "Result".to_string(),
+                        args: vec![tp("T"), tp("E")],
+                    },
+                ),
+                ("dflt", tp("T")),
+            ],
+            &["T", "E"],
+            tp("T"),
+        );
+        let fns = vec![option_overload, result_overload];
+        match resolve_function_overload("fallback", &[leaky_result, Type::length()], &fns) {
+            OverloadResolution::Resolved(matched) => assert_eq!(
+                matched.type_params.len(),
+                2,
+                "leaky Result<T,E> arg must select the Result<T,E> overload, not Option<T>"
+            ),
+            OverloadResolution::Ambiguous(_) => {
+                panic!("expected Resolved(fallback<T,E> over Result), got Ambiguous")
+            }
+            OverloadResolution::NoMatch(_) => {
+                panic!("expected Resolved(fallback<T,E> over Result), got NoMatch")
+            }
+            OverloadResolution::NoUserFunctions => {
+                panic!("expected Resolved(fallback<T,E> over Result), got NoUserFunctions")
+            }
+        }
+    }
+
+    /// Precedent lock (reviewer_comprehensive #2, task #4038 δ amendment):
+    /// the head-exact tier's non-generic exclusion does not regress the
+    /// chained-leaky-arg resolution above when a same-name NON-generic
+    /// candidate is also present in the overload set.
+    ///
+    /// `non_generic_overload` (`fallback(r: Length, dflt: Length)`, no type
+    /// params) is structurally unrelated to the leaky `Applied{"Result",[T,E]}`
+    /// arg, but it IS admitted into the first (`matches`) tier — the
+    /// `type_carries_type_param(arg_ty)` disjunct there looks only at the arg,
+    /// not `param_ty`, so any candidate is provisionally eligible. Before the
+    /// head-exact-tier narrowing (this task), it would ALSO have been eligible
+    /// for `head_matches` via the same permissive arg-only check, joining
+    /// `result_overload` there and forcing a spurious `Ambiguous`. After the
+    /// narrowing, `non_generic_overload` fails `is_generic`, the bare-`TypeParam`
+    /// wildcard, and plain equality, so it is excluded from `head_matches` —
+    /// only the structurally-matching `result_overload` remains, and
+    /// resolution stays a clean `Resolved`, identical to
+    /// `overload_chained_result_leaky_arg_resolves_to_result_overload` above.
+    #[test]
+    fn overload_leaky_headed_arg_excludes_non_generic_candidate() {
+        let leaky_result = Type::Applied {
+            name: "Result".to_string(),
+            args: vec![tp("T"), tp("E")],
+        };
+        let option_overload = make_generic_fn(
+            "fallback",
+            vec![("o", Type::Option(Box::new(tp("T")))), ("dflt", tp("T"))],
+            &["T"],
+            tp("T"),
+        );
+        let result_overload = make_generic_fn(
+            "fallback",
+            vec![
+                (
+                    "r",
+                    Type::Applied {
+                        name: "Result".to_string(),
+                        args: vec![tp("T"), tp("E")],
+                    },
+                ),
+                ("dflt", tp("T")),
+            ],
+            &["T", "E"],
+            tp("T"),
+        );
+        let non_generic_overload =
+            make_fn("fallback", vec![("r", Type::length()), ("dflt", Type::length())]);
+        let fns = vec![option_overload, result_overload, non_generic_overload];
+        match resolve_function_overload("fallback", &[leaky_result, Type::length()], &fns) {
+            OverloadResolution::Resolved(matched) => assert_eq!(
+                matched.type_params.len(),
+                2,
+                "leaky Result<T,E> arg must still select the Result<T,E> overload with a \
+                 same-name non-generic candidate present, not go Ambiguous"
+            ),
+            OverloadResolution::Ambiguous(candidates) => panic!(
+                "expected Resolved(fallback<T,E> over Result), got Ambiguous({} candidates) — \
+                 the non-generic candidate leaked into head_matches",
+                candidates.len()
+            ),
+            OverloadResolution::NoMatch(_) => {
+                panic!("expected Resolved(fallback<T,E> over Result), got NoMatch")
+            }
+            OverloadResolution::NoUserFunctions => {
+                panic!("expected Resolved(fallback<T,E> over Result), got NoUserFunctions")
+            }
+        }
+    }
+
+    /// D4 preservation (task-4232 γ): a BARE `TypeParam` arg (a generic fn body
+    /// passing a `T`-typed value to a concrete-param overload) must STILL
+    /// resolve after the head-exact-tier narrowing — the narrowing only strips
+    /// the wildcard from HEADED nested-type-param args, never bare ones.
+    #[test]
+    fn overload_bare_type_param_arg_still_resolves() {
+        let concrete = make_fn("g", vec![("x", Type::dimensionless_scalar())]);
+        let fns = vec![concrete];
+        assert!(
+            matches!(
+                resolve_function_overload("g", &[tp("U")], &fns),
+                OverloadResolution::Resolved(_)
+            ),
+            "a bare TypeParam arg must still wildcard-resolve a single concrete overload"
         );
     }
 
