@@ -8776,4 +8776,53 @@ fn area<Q: Dimension>(x: Scalar<Q>) -> Scalar<Q> {
             area_fn.body.result_expr.result_type
         );
     }
+
+    // ── compiler-type-hygiene ε1 step-1 ─────────────────────────────────────
+
+    /// CHARACTERIZATION (compiler-type-hygiene ε1, step-1): `.count` on a
+    /// NON-collection receiver types to `Type::Int` with NO diagnostic.
+    ///
+    /// The collection-aggregation dispatch's `"count" => Type::Int` arm (the
+    /// shared fall-through tail, ~expr.rs:4694) is intentionally
+    /// receiver-agnostic: per its own doc comment, it returns `Type::Int` for
+    /// ANY receiver reaching this arm, not just List/Map/collection-sub
+    /// receivers — the forall-count synthesis path relies on this being
+    /// unconditional. Every existing `.count` test in the repo
+    /// (`collection_compile_tests.rs`, `collection_sub_tests.rs`,
+    /// `wrong_receiver_member_tests.rs`) exercises a List/collection-sub
+    /// receiver; a plain leaf receiver (e.g. `Type::Int`) has ZERO coverage
+    /// today. This is the one true coverage gap the ε1 reshape's grouped
+    /// 28-variant tail arm must reproduce byte-for-byte.
+    ///
+    /// `n : Int` is not one of the 11 "special" receiver classes
+    /// (StructureRef/TraitObject/TypeParam/datum/feature), so `n.count`
+    /// exercises the reshape's grouped tail arm directly (not a
+    /// fall-through residual from one of the special arms).
+    #[test]
+    fn count_on_non_collection_int_receiver_types_to_int_with_no_diagnostics() {
+        use reify_test_support::{compile_source, get_let_expr};
+
+        let source = r#"
+structure S {
+    param n : Int = 5
+    let y = n.count
+}
+"#;
+        let m = compile_source(source);
+
+        assert!(
+            m.diagnostics.is_empty(),
+            "expected zero diagnostics for `n.count` on a plain Int receiver, got: {:?}",
+            m.diagnostics
+        );
+
+        let expr = get_let_expr(&m, "y");
+        assert_eq!(
+            expr.result_type,
+            Type::Int,
+            "expected `n.count` on a Type::Int receiver to type as Type::Int \
+             (the receiver-agnostic count arm), got: {:?}",
+            expr.result_type
+        );
+    }
 }
