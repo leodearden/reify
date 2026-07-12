@@ -520,4 +520,142 @@ assert "C4: HEADROOM divergent_gib is a well-formed non-negative integer" \
 assert "C5: §9.2 ADVISORY relation holds: divergent_gib <= budget_gib" \
     test "$C_DIVERGENT_GIB" -le "$C_BUDGET_GIB"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block D (B6 + B6b) — soft floor fires before hard floor, end-to-end
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block D (B6+B6b): soft floor fires before hard floor, end-to-end ---"
+
+D_STUB_DIR="$(mktemp -d /tmp/test-warm-lane-sizing-d-stub-XXXXXX)"
+_TMPDIRS+=("$D_STUB_DIR")
+D_DF_STUB="$D_STUB_DIR/df_stub"
+_write_guard_df_stub "$D_DF_STUB"
+
+D_MOUNT="$(mktemp -d /tmp/test-warm-lane-sizing-d-XXXXXX)"
+_TMPDIRS+=("$D_MOUNT")
+
+# Guard floors: hard (H) < soft (S), on both the bytes and inodes axes.
+D_HARD_GIB=10
+D_SOFT_GIB=20
+D_HARD_INODES=100000
+D_SOFT_INODES=200000
+
+# Three DERIVED descending-avail regimes (no frozen RED GB constant -- G6/D8):
+#   healthy = soft + margin        (>= soft floor on both axes)
+#   soft    = midpoint(hard, soft) (H <= avail < S -- guaranteed between)
+#   hard    = hard - 1             (< H on both axes)
+D_HEALTHY_GIB=$(( D_SOFT_GIB + 5 ))
+D_SOFT_AVAIL_GIB=$(( (D_HARD_GIB + D_SOFT_GIB) / 2 ))
+D_HARD_AVAIL_GIB=$(( D_HARD_GIB - 1 ))
+
+D_HEALTHY_INODES=$(( D_SOFT_INODES + 50000 ))
+D_SOFT_AVAIL_INODES=$(( (D_HARD_INODES + D_SOFT_INODES) / 2 ))
+D_HARD_AVAIL_INODES=$(( D_HARD_INODES - 1 ))
+
+# Sanity on the derivation itself (regression guard for the arithmetic, not
+# the guard-under-test): the soft regime sits strictly between the two
+# floors, and the hard regime sits strictly below the hard floor -- i.e. the
+# soft-fires-before-hard ordering the B6 headline requires.
+assert "D0a: derived soft-avail regime sits within [hard, soft) (bytes)" \
+    bash -c '[ "$1" -ge "$2" ] && [ "$1" -lt "$3" ]' _ "$D_SOFT_AVAIL_GIB" "$D_HARD_GIB" "$D_SOFT_GIB"
+assert "D0b: derived hard-avail regime sits below the hard floor (bytes)" \
+    test "$D_HARD_AVAIL_GIB" -lt "$D_HARD_GIB"
+assert "D0c: soft-avail regime is strictly greater than hard-avail regime (soft fires first as free shrinks)" \
+    test "$D_SOFT_AVAIL_GIB" -gt "$D_HARD_AVAIL_GIB"
+
+D_GUARD_FLAGS=(--mount "$D_MOUNT" --min-free-gib "$D_HARD_GIB" --soft-free-gib "$D_SOFT_GIB" \
+    --min-free-inodes "$D_HARD_INODES" --soft-free-inodes "$D_SOFT_INODES")
+
+# run_guard_df <avail_gib> <avail_inodes> <guard args...>
+# Wires the 2-col df stub with the given avail figures (GiB bytes + raw
+# inodes) via REIFY_WARM_LANE_DISK_GUARD_DF, capturing
+# GUARD_OUT/GUARD_ERR_OUT/GUARD_RC.
+run_guard_df() {
+    local avail_gib="$1" avail_inodes="$2"; shift 2
+    local avail_bytes=$(( avail_gib * 1024 * 1024 * 1024 ))
+    local rc=0
+    > "$GUARD_ERR_FILE"
+    GUARD_OUT="$(
+        REIFY_WARM_LANE_DISK_GUARD_DF="$D_DF_STUB" \
+        REIFY_TEST_AVAIL_BYTES="$avail_bytes" \
+        REIFY_TEST_AVAIL_INODES="$avail_inodes" \
+            bash "$GUARD_SCRIPT" "$@" 2>"$GUARD_ERR_FILE"
+    )" || rc=$?
+    GUARD_ERR_OUT="$(cat "$GUARD_ERR_FILE")"
+    GUARD_RC=$rc
+}
+
+# run_guard_dffail / run_guard_dfgarbage <guard args...>
+# Drive the E3 fail-closed paths (df exits non-zero / emits unparseable
+# output); the stub short-circuits on these branches before ever reading the
+# avail env vars.
+run_guard_dffail() {
+    local rc=0
+    > "$GUARD_ERR_FILE"
+    GUARD_OUT="$(
+        REIFY_WARM_LANE_DISK_GUARD_DF="$D_DF_STUB" REIFY_TEST_DF_FAIL=1 \
+            bash "$GUARD_SCRIPT" "$@" 2>"$GUARD_ERR_FILE"
+    )" || rc=$?
+    GUARD_ERR_OUT="$(cat "$GUARD_ERR_FILE")"
+    GUARD_RC=$rc
+}
+run_guard_dfgarbage() {
+    local rc=0
+    > "$GUARD_ERR_FILE"
+    GUARD_OUT="$(
+        REIFY_WARM_LANE_DISK_GUARD_DF="$D_DF_STUB" REIFY_TEST_DF_GARBAGE=1 \
+            bash "$GUARD_SCRIPT" "$@" 2>"$GUARD_ERR_FILE"
+    )" || rc=$?
+    GUARD_ERR_OUT="$(cat "$GUARD_ERR_FILE")"
+    GUARD_RC=$rc
+}
+
+# healthy: avail >= soft on both axes -> `check --soft` exits 0, stdout empty.
+run_guard_df "$D_HEALTHY_GIB" "$D_HEALTHY_INODES" check --soft "${D_GUARD_FLAGS[@]}"
+assert "D1: healthy regime, check --soft exits 0" test "$GUARD_RC" -eq 0
+assert "D1: healthy regime stdout empty" bash -c '[ -z "$1" ]' _ "$GUARD_OUT"
+
+# soft: hard <= avail < soft -> hard `check` (no --soft) exits 0; `check
+# --soft` exits 3 with the throttle-not-requeue sentinel.
+run_guard_df "$D_SOFT_AVAIL_GIB" "$D_SOFT_AVAIL_INODES" check "${D_GUARD_FLAGS[@]}"
+assert "D2: soft regime, hard check (no --soft) exits 0" test "$GUARD_RC" -eq 0
+
+run_guard_df "$D_SOFT_AVAIL_GIB" "$D_SOFT_AVAIL_INODES" check --soft "${D_GUARD_FLAGS[@]}"
+assert "D3: soft regime, check --soft exits 3" test "$GUARD_RC" -eq 3
+assert "D3: stdout carries the soft-pressure sentinel" \
+    bash -c 'printf "%s\n" "$1" | grep -q "@@REIFY_WARM_LANE_SOFT_PRESSURE@@"' _ "$GUARD_OUT"
+assert "D3: sentinel carries free_gib=" \
+    bash -c 'printf "%s\n" "$1" | grep -q "free_gib="' _ "$GUARD_OUT"
+assert "D3: sentinel carries budget_gib=" \
+    bash -c 'printf "%s\n" "$1" | grep -q "budget_gib="' _ "$GUARD_OUT"
+
+# hard: avail < hard -> BOTH `check` and `check --soft` exit 75; sentinel
+# ABSENT (fail-closed/below-hard-floor never emits the soft-pressure line).
+run_guard_df "$D_HARD_AVAIL_GIB" "$D_HARD_AVAIL_INODES" check "${D_GUARD_FLAGS[@]}"
+assert "D4: hard regime, check (no --soft) exits 75" test "$GUARD_RC" -eq 75
+assert "D4: stdout empty (no sentinel), hard check" bash -c '[ -z "$1" ]' _ "$GUARD_OUT"
+
+run_guard_df "$D_HARD_AVAIL_GIB" "$D_HARD_AVAIL_INODES" check --soft "${D_GUARD_FLAGS[@]}"
+assert "D5: hard regime, check --soft exits 75" test "$GUARD_RC" -eq 75
+assert "D5: stdout empty (no sentinel), hard regime under --soft" bash -c '[ -z "$1" ]' _ "$GUARD_OUT"
+
+# B6b (E3 fail-closed): a df failure or garbage output -> BOTH check and
+# check --soft exit 75, sentinel absent -- never 0, never the sentinel, even
+# under --soft (E3 precedence over the soft gate).
+run_guard_dffail check "${D_GUARD_FLAGS[@]}"
+assert "D6: df failure, hard check exits 75" test "$GUARD_RC" -eq 75
+assert "D6: stdout empty on df failure" bash -c '[ -z "$1" ]' _ "$GUARD_OUT"
+
+run_guard_dffail check --soft "${D_GUARD_FLAGS[@]}"
+assert "D7: df failure under --soft exits 75 (never the sentinel)" test "$GUARD_RC" -eq 75
+assert "D7: stdout empty on df failure under --soft" bash -c '[ -z "$1" ]' _ "$GUARD_OUT"
+
+run_guard_dfgarbage check "${D_GUARD_FLAGS[@]}"
+assert "D8: garbage df output, hard check exits 75" test "$GUARD_RC" -eq 75
+assert "D8: stdout empty on garbage df output" bash -c '[ -z "$1" ]' _ "$GUARD_OUT"
+
+run_guard_dfgarbage check --soft "${D_GUARD_FLAGS[@]}"
+assert "D9: garbage df output under --soft exits 75 (never the sentinel)" test "$GUARD_RC" -eq 75
+assert "D9: stdout empty on garbage df output under --soft" bash -c '[ -z "$1" ]' _ "$GUARD_OUT"
+
 test_summary
