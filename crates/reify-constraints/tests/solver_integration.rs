@@ -2797,6 +2797,147 @@ fn solve_ranked_multistart_ties_broken_by_ascending_start_index() {
     }
 }
 
+/// (g) — escaping a genuine local trap (reviewer amendment, task δ #5016
+/// review pass): `solve_ranked_multistart_dominates_single_start_solve`
+/// above uses a SINGLE-BASIN convex quadratic, so its `<=` dominance claim
+/// holds vacuously by construction (start #0 IS the seed; min-over-superset
+/// <= any one element) regardless of whether starts #1..K-1 ever do
+/// anything useful. This test uses a genuine TWO-BASIN objective instead,
+/// so best-of-K must actually escape a worse local optimum to pass.
+///
+/// Objective (single Area-dimensioned term):
+///   x_term = if x < 50mm { (x - 20mm)^2 + 1000mm^2 }   // basin A, floor 1000mm^2
+///            else        { (x - 80mm)^2 +    0mm^2 }   // basin B, floor 0 (global)
+///   y_term = (y - 50mm)^2
+///   objective = minimize(x_term + y_term)
+///
+/// The seed (`current_values`, x=25mm) sits deep inside basin A (left of the
+/// x=50mm split, near its own floor at x=20mm) with box bounds [1mm, 100mm]
+/// — `solve()` (single start) has no way to discover basin B and converges
+/// to basin A's floor (score ~= 1000mm^2 = 1e-3 m^2). Of the six multistart
+/// points (seed, all-midpoint, and the four per-axis low/high corners), the
+/// all-midpoint point and both y-axis corners sit at x=50.5mm — on the
+/// basin-B side of the split — and converge to the true global optimum
+/// (score ~= 0). `solve_ranked`'s `candidates[0]` must therefore be
+/// STRICTLY below the single-start score by a large, unambiguous margin —
+/// not merely the `<=` dominance-by-construction bound proven above.
+#[test]
+fn solve_ranked_multistart_escapes_worse_local_optimum() {
+    use reify_ir::RankedSolveResult;
+
+    let solver = DimensionalSolver;
+
+    let x_id = vcid("Part", "x");
+    let y_id = vcid("Part", "y");
+    let x_ref = value_ref("Part", "x");
+    let y_ref = value_ref("Part", "y");
+
+    // Basin A (x < 50mm): (x - 20mm)^2 + 1000mm^2 -- the WORSE local optimum.
+    let dx_a = binop(BinOp::Sub, x_ref.clone(), literal(mm(20.0)));
+    let dx_a2 = binop(BinOp::Mul, dx_a.clone(), dx_a);
+    let basin_a = binop(BinOp::Add, dx_a2, literal(mm2(1000.0)));
+
+    // Basin B (x >= 50mm): (x - 80mm)^2 + 0mm^2 -- the GLOBAL optimum.
+    let dx_b = binop(BinOp::Sub, x_ref.clone(), literal(mm(80.0)));
+    let dx_b2 = binop(BinOp::Mul, dx_b.clone(), dx_b);
+    let basin_b = binop(BinOp::Add, dx_b2, literal(mm2(0.0)));
+
+    let split_cond = lt(x_ref.clone(), literal(mm(50.0)));
+    let x_term = conditional_expr(split_cond, basin_a, basin_b);
+
+    let dy = binop(BinOp::Sub, y_ref, literal(mm(50.0)));
+    let dy2 = binop(BinOp::Mul, dy.clone(), dy);
+
+    let obj_expr = binop(BinOp::Add, x_term, dy2);
+    let objective = ObjectiveSet::single(ObjectiveSense::Minimize, obj_expr);
+
+    let mut current = ValueMap::new();
+    current.insert(x_id.clone(), mm(25.0));
+    current.insert(y_id.clone(), mm(30.0));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+                free: true,
+            },
+            AutoParam {
+                id: y_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+                free: true,
+            },
+        ],
+        constraints: vec![],
+        current_values: current,
+        objective: Some(objective),
+        functions: vec![].into(),
+    };
+
+    // Independently re-derive the single-seed score from solve()'s own
+    // output (mirrors the piecewise x_term + y_term objective built above).
+    let single = solver.solve(&problem);
+    let single_score = match single {
+        SolveResult::Solved { values, .. } => {
+            let x = values.get(&x_id).unwrap().as_f64().unwrap();
+            let y = values.get(&y_id).unwrap().as_f64().unwrap();
+            let x_term = if x < 0.05 {
+                (x - 0.02).powi(2) + 0.001
+            } else {
+                (x - 0.08).powi(2)
+            };
+            x_term + (y - 0.05).powi(2)
+        }
+        other => panic!("expected Solved from solve(), got {:?}", other),
+    };
+    // Sanity check on the fixture itself: the seed must actually be trapped
+    // in basin A (score near its 1000mm^2 floor), or this test would not be
+    // exercising the intended local-optimum escape at all.
+    assert!(
+        single_score > 5e-4,
+        "fixture sanity: single-start solve() must converge to basin A's \
+         floor (~1e-3 m^2), got score {} -- the seed did not stay trapped",
+        single_score
+    );
+
+    let ranked = solver.solve_ranked(&problem);
+    match ranked {
+        RankedSolveResult::Ranked { candidates, .. } => {
+            assert_eq!(
+                candidates.len(),
+                6,
+                "expected K=2*(2+1)=6 candidates, got {}",
+                candidates.len()
+            );
+            let best = candidates[0].objective_score.unwrap();
+            // Best-of-K must discover basin B's floor (~0), not merely match
+            // (or barely improve on) basin A.
+            assert!(
+                best < 1e-6,
+                "best-of-K candidate[0] (score {}) must discover the global \
+                 basin-B optimum (score ~0 m^2), not stay trapped in basin A",
+                best
+            );
+            // The margin is checked against a threshold four orders of
+            // magnitude above NM's convergence tolerance (NM_SD_TOLERANCE =
+            // 1e-30) and the feasibility threshold (1e-12), so this can only
+            // be the fixture's designed 1000mm^2 basin-depth gap -- never
+            // floating-point noise.
+            assert!(
+                single_score - best > 1e-4,
+                "best-of-K (score {}) must be STRICTLY better than \
+                 single-start solve() (score {}) by a non-trivial margin -- \
+                 proving a non-seed start escaped the worse basin",
+                best,
+                single_score
+            );
+        }
+        other => panic!("expected Ranked, got {:?}", other),
+    }
+}
+
 // ---- gate + inheritance guards (step-5, task δ #5016) ----
 //
 // (a)-(c) pin the multistart gate's three exclusion conditions (dim<=1,
