@@ -5526,10 +5526,9 @@ impl Engine {
                 values: solver_values,
                 unique,
             } => {
-                let res_snapshot_id = self.next_snapshot_id;
-                self.next_snapshot_id += 1;
-                let res_version_id = self.next_version_id;
-                self.next_version_id += 1;
+                let (snap_id, ver_id) = self.allocate_snapshot_version();
+                let res_snapshot_id = snap_id.0;
+                let res_version_id = ver_id.0;
                 let parent_snap_id = snapshot.id;
 
                 // step-04: write back EVERY cluster member's cells in one
