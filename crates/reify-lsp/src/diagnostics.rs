@@ -423,6 +423,9 @@ pub fn compute_diagnostics_with_state(
             diagnostics.push(lsp_types::Diagnostic {
                 range,
                 severity: Some(lsp_types::DiagnosticSeverity::INFORMATION),
+                code: Some(lsp_types::NumberOrString::String(
+                    FEA_NOT_EVALUATED_CODE.to_string(),
+                )),
                 source: Some("reify".to_string()),
                 message: FEA_NOT_EVALUATED_HINT.to_string(),
                 ..Default::default()
@@ -537,12 +540,28 @@ fn constraint_violated_message(entry: &reify_eval::ConstraintCheckEntry) -> Stri
 /// [`compute_diagnostics_with_state`] above.
 ///
 /// Defined once here rather than re-declared as a local constant in each
-/// regression test, so the production message and every test that filters
+/// regression test, so the production message and every test that asserts
 /// on it share one source of truth: a future wording change updates every
 /// consumer at once instead of requiring each test to be hand-edited to
-/// keep matching (a missed one would silently zero out its `hints` filter
-/// and fail in a confusing, non-localized way).
+/// keep matching. Tests should NOT use this to *identify* the diagnostic
+/// (i.e. as a `filter` predicate) — use [`FEA_NOT_EVALUATED_CODE`] for
+/// that, and reserve this for asserting the human-readable wording once a
+/// diagnostic is already known to be the FEA hint.
 const FEA_NOT_EVALUATED_HINT: &str = "FEA constraint not evaluated in editor — run `reify test`";
+
+/// Stable `code` for task 5078's FEA "not evaluated in editor" hint (PRD
+/// `compute-fea-hardening.md` C2), set on the `lsp_types::Diagnostic`
+/// emitted in [`compute_diagnostics_with_state`] alongside
+/// [`FEA_NOT_EVALUATED_HINT`].
+///
+/// Unlike the message, which is free-text prose, this is the
+/// wording-independent handle consumers — including this file's own
+/// regression tests — should match on to identify the diagnostic,
+/// mirroring the `"computation-pending"` / `"computation-failed"` codes
+/// the freshness diagnostics carry (emitted just below in the same
+/// function). A future copy-edit to [`FEA_NOT_EVALUATED_HINT`] must never
+/// silently break identification for a consumer matching on this code.
+const FEA_NOT_EVALUATED_CODE: &str = "fea-not-evaluated";
 
 /// Static discriminator for task 5078's FEA "not evaluated in editor" hint
 /// (PRD `compute-fea-hardening.md` C2).
@@ -2604,7 +2623,10 @@ structure S {
             .iter()
             .filter(|d| {
                 d.severity == Some(DiagnosticSeverity::INFORMATION)
-                    && d.message == FEA_NOT_EVALUATED_HINT
+                    && d.code
+                        == Some(lsp_types::NumberOrString::String(
+                            FEA_NOT_EVALUATED_CODE.to_string(),
+                        ))
             })
             .collect();
         for hint in &hints {
@@ -2612,6 +2634,16 @@ structure S {
                 hint.source,
                 Some("reify".to_string()),
                 "FEA hint must carry source \"reify\"; got: {hint:#?}"
+            );
+            // The `hints` filter above identifies by `code` (a
+            // wording-independent handle — see `FEA_NOT_EVALUATED_CODE`'s
+            // doc comment), so it no longer pins the exact message text.
+            // Assert it here instead, once each diagnostic is already known
+            // to be the FEA hint, so the task's exact-wording requirement
+            // stays locked by a real test.
+            assert_eq!(
+                hint.message, FEA_NOT_EVALUATED_HINT,
+                "FEA hint must carry the exact task-specified wording; got: {hint:#?}"
             );
         }
 
@@ -2737,7 +2769,10 @@ structure S {
             .iter()
             .filter(|d| {
                 d.severity == Some(DiagnosticSeverity::INFORMATION)
-                    && d.message == FEA_NOT_EVALUATED_HINT
+                    && d.code
+                        == Some(lsp_types::NumberOrString::String(
+                            FEA_NOT_EVALUATED_CODE.to_string(),
+                        ))
             })
             .collect();
 
@@ -2823,7 +2858,10 @@ structure S {
             .iter()
             .filter(|d| {
                 d.severity == Some(DiagnosticSeverity::INFORMATION)
-                    && d.message == FEA_NOT_EVALUATED_HINT
+                    && d.code
+                        == Some(lsp_types::NumberOrString::String(
+                            FEA_NOT_EVALUATED_CODE.to_string(),
+                        ))
             })
             .collect();
         assert!(
@@ -2954,7 +2992,10 @@ structure S {
             .iter()
             .filter(|d| {
                 d.severity == Some(DiagnosticSeverity::INFORMATION)
-                    && d.message == FEA_NOT_EVALUATED_HINT
+                    && d.code
+                        == Some(lsp_types::NumberOrString::String(
+                            FEA_NOT_EVALUATED_CODE.to_string(),
+                        ))
             })
             .collect();
         assert!(
@@ -3021,7 +3062,10 @@ structure S {
             .iter()
             .filter(|d| {
                 d.severity == Some(DiagnosticSeverity::INFORMATION)
-                    && d.message == FEA_NOT_EVALUATED_HINT
+                    && d.code
+                        == Some(lsp_types::NumberOrString::String(
+                            FEA_NOT_EVALUATED_CODE.to_string(),
+                        ))
             })
             .collect();
 
