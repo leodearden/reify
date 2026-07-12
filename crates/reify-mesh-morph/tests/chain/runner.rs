@@ -45,6 +45,14 @@ pub struct TickRecord {
     /// the accepted morph on a `fell_back == false` tick, or the fresh
     /// remesh on a `fell_back == true` tick (equal to
     /// `from_scratch_min_scaled_j` in that case).
+    ///
+    /// On a tick whose in-use mesh has an inverted element (`quality_check`
+    /// would report `HardFail`), this is [`probe_min_scaled_j`]'s HardFail-arm
+    /// value: the (negative) scaled Jacobian of the *first* inverted element
+    /// only, not the true minimum over every element — mirrors
+    /// `calibration/sweep.rs`'s `SweepReport::morph_min_scaled_j` doc, which
+    /// documents the identical caveat. Still a reliable negative "inverted"
+    /// signal, just not a global minimum in that case.
     pub min_scaled_j: f64,
     /// Probe-extracted minimum scaled Jacobian of `fixture(param)` evaluated
     /// from scratch — always populated, independent of `fell_back`.
@@ -114,14 +122,28 @@ fn probe_min_scaled_j(mesh: &VolumeMesh, opts: &MorphOptions) -> f64 {
     };
     match quality_check(mesh, mesh, &probe) {
         QualityVerdict::SoftFail(d) => d.min_scaled_jacobian.unwrap_or(0.0),
-        // HardFail short-circuits after the first inverted element; its
-        // (negative) jacobian signals the inversion numerically — mirrors
-        // `calibration/sweep.rs::extract_metrics`.
+        // HardFail short-circuits at the FIRST inverted element (the
+        // quality_check loop `break`s immediately on the first sj < 0.0 —
+        // quality.rs), so `d.jacobian` — despite `InversionDetails.jacobian`
+        // being a genuinely *scaled* Jacobian (types.rs) — is that single
+        // element's (negative) value only, NOT necessarily the true minimum
+        // scaled Jacobian over the whole mesh (elements after the first
+        // inversion are never evaluated). It still reliably signals
+        // "inverted" via its sign for this probe's callers (see
+        // `TickRecord::min_scaled_j`'s doc for the identical caveat) —
+        // mirrors `calibration/sweep.rs::extract_metrics`'s and
+        // `SweepReport::morph_min_scaled_j`'s documented behavior.
         QualityVerdict::HardFail(d) => d.jacobian,
-        // Pass only happens for an empty mesh — defensive fallback (callers
-        // are not expected to pass empty meshes).
+        // Unreachable with these sentinel thresholds: `pct_below_025` is
+        // always `Some(_)` (`pct >= 0.0 > quality_floor_pct_below_025 ==
+        // -1.0` unconditionally, even for an empty mesh where `pct` defaults
+        // to 0.0 — quality.rs), so `quality_check` never returns `Pass`
+        // under this probe. Purely defensive fallback, not a reachable case.
         QualityVerdict::Pass => 0.0,
-        // The chain fixtures (plate-with-hole, bracket) are always tet.
+        // Unsupported requires hex/wedge connectivity (quality.rs); every
+        // chain fixture is tet-only by construction. See `run_chain`'s
+        // decision-match comment (below) for why this arm is intentionally
+        // untested at the `run_chain` level.
         QualityVerdict::Unsupported => {
             unreachable!("probe_min_scaled_j: chain fixtures are always tet, got Unsupported")
         }
@@ -181,6 +203,21 @@ where
         // Morph FROM THE PREVIOUS TICK'S MESH — the "from-most-recent-in-
         // memory" policy under test. A quality reject or solver Err falls
         // back to a fresh remesh, resetting the chain (see module docs).
+        //
+        // Test coverage of this decision tree (task 2951 amendment): this
+        // module's `mod tests` (below) directly exercises the `Err(_) =>
+        // None` arm
+        // (`run_chain_falls_back_to_fresh_remesh_when_elasticity_morph_returns_err`)
+        // and the `QualityVerdict::HardFail(_) => None` arm
+        // (`run_chain_falls_back_to_fresh_remesh_when_quality_check_hard_fails`),
+        // in addition to the pre-existing `SoftFail` coverage in
+        // `tests/chain_degradation.rs`. `QualityVerdict::Unsupported` is the
+        // one arm intentionally left uncovered here: reaching it requires a
+        // hex/wedge `mesh`, but `probe_min_scaled_j` — called on every
+        // tick's from-scratch fixture, including tick 0's root, before this
+        // match ever runs — `unreachable!()`s on `Unsupported` first, so a
+        // hex/wedge fixture regression is still caught, just by that panic
+        // rather than by an assertion on this specific arm.
         let accepted_candidate = match elasticity_morph(&prev_mesh, &prescribed, opts) {
             Ok(candidate) => match quality_check(&candidate, &prev_mesh, opts) {
                 QualityVerdict::Pass => Some(candidate),
@@ -211,4 +248,159 @@ where
     }
 
     ChainReport { ticks }
+}
+
+// ── amendment (task 2951, reviewer_comprehensive finding #1) ────────────────
+//
+// `chain_degradation.rs`'s tests only drive `run_chain`'s fallback through
+// the quality-reject `SoftFail` path. The two tests below directly exercise
+// the other two reachable fallback triggers — `elasticity_morph`'s `Err`
+// path and `quality_check`'s `HardFail` verdict — using small synthetic
+// fixtures (not the calibration plate/bracket geometries) purpose-built to
+// force each path deterministically. See the comment on `run_chain`'s
+// decision match (above) for why `QualityVerdict::Unsupported` is not
+// (and cannot be) covered here.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reify_ir::{ElementOrderTag, VolumeConnectivity, VolumeMesh};
+
+    /// Canonical right-handed unit tet — the same fixture `elasticity.rs`
+    /// and `quality.rs` use for their own smoke/inversion tests.
+    fn unit_tet_vertices() -> Vec<f32> {
+        vec![
+            0.0, 0.0, 0.0, // node 0
+            1.0, 0.0, 0.0, // node 1
+            0.0, 1.0, 0.0, // node 2
+            0.0, 0.0, 1.0, // node 3
+        ]
+    }
+
+    /// The same 4 nodes with corners 2 and 3 swapped — left-handed
+    /// (inverted). The exact fixture
+    /// `quality_check_with_single_inverted_tet_returns_hard_fail_with_element_index_and_negative_jacobian`
+    /// (quality.rs) uses to pin `QualityVerdict::HardFail`.
+    fn inverted_tet_vertices() -> Vec<f32> {
+        vec![
+            0.0, 0.0, 0.0, // node 0
+            1.0, 0.0, 0.0, // node 1
+            0.0, 0.0, 1.0, // node 2  (swapped)
+            0.0, 1.0, 0.0, // node 3  (swapped)
+        ]
+    }
+
+    /// Forces `elasticity_morph`'s `Err` path deterministically via a
+    /// P2-tagged fixture: `elasticity_morph_with_cg_opts` rejects any
+    /// `old_mesh.element_order() != Some(P1)` (elasticity.rs:237-247)
+    /// *before* it ever inspects `prescribed_positions` — the same
+    /// precedence
+    /// `elasticity_morph_rejects_p2_element_order_with_unsupported_element_order_failure`
+    /// (elasticity.rs) exercises directly. Tagging the fixture's `Tet`
+    /// connectivity as `P2` therefore forces
+    /// `Err(ElasticityFailure::UnsupportedElementOrder(P2))` on every morph
+    /// tick, independent of any solver behavior — no need to construct a
+    /// pathological FEA system.
+    ///
+    /// `quality_check`'s tet-only pipeline reads `tet_indices()` (populated
+    /// for `Tet` connectivity regardless of `order` — reify-ir
+    /// `geometry.rs`) and never reads `order`, so `probe_min_scaled_j`
+    /// evaluates this fixture exactly as it would a P1 mesh; only
+    /// `elasticity_morph`'s P1 gate rejects it.
+    #[test]
+    fn run_chain_falls_back_to_fresh_remesh_when_elasticity_morph_returns_err() {
+        let fixture = |_param: f64| {
+            let mesh = VolumeMesh {
+                vertices: unit_tet_vertices(),
+                connectivity: VolumeConnectivity::Tet {
+                    indices: vec![0, 1, 2, 3],
+                    order: ElementOrderTag::P2,
+                },
+                normals: None,
+                boundary: None,
+            };
+            (mesh, vec![0_u32, 1, 2, 3])
+        };
+
+        let opts = MorphOptions::default();
+        let report = run_chain(fixture, &[0.0, 1.0], &opts);
+
+        assert_eq!(report.ticks.len(), 2);
+        assert!(
+            !report.ticks[0].fell_back,
+            "tick 0 (chain root) must not be marked fell_back"
+        );
+        assert!(
+            report.ticks[1].fell_back,
+            "elasticity_morph must Err on a P2-tagged old_mesh (the \
+             element_order gate fires before prescribed_positions is even \
+             inspected), forcing run_chain's Err(_) => None fallback"
+        );
+        assert!(
+            (report.ticks[1].min_scaled_j - report.ticks[1].from_scratch_min_scaled_j).abs() < 1e-9,
+            "fallback tick's min_scaled_j ({}) must equal its \
+             from_scratch_min_scaled_j ({}) — the fallback mesh IS the fresh \
+             remesh",
+            report.ticks[1].min_scaled_j,
+            report.ticks[1].from_scratch_min_scaled_j
+        );
+    }
+
+    /// Forces `quality_check`'s `HardFail` verdict deterministically via a
+    /// fully-Dirichlet-pinned single tet whose target positions are the
+    /// inverted (corner-swapped) fixture: with all 4 of the tet's nodes
+    /// prescribed, `apply_dirichlet_row_elimination` pins all 12 DOFs
+    /// exactly (post-Dirichlet `K = diag(1.0)`, CG converges trivially — the
+    /// same all-pinned regime
+    /// `elasticity_morph_with_zero_displacement_bcs_on_single_tet_returns_input_positions_within_fp_tolerance`
+    /// (elasticity.rs) already exercises with a zero displacement), so
+    /// `elasticity_morph` returns `Ok` with `candidate.vertices` equal to
+    /// the prescribed (inverted) positions — deterministically producing an
+    /// inverted morphed element without depending on any particular
+    /// solver-convergence edge case.
+    #[test]
+    fn run_chain_falls_back_to_fresh_remesh_when_quality_check_hard_fails() {
+        let fixture = |param: f64| {
+            let vertices = if param == 0.0 {
+                unit_tet_vertices()
+            } else {
+                inverted_tet_vertices()
+            };
+            let mesh = VolumeMesh {
+                vertices,
+                connectivity: VolumeConnectivity::Tet {
+                    indices: vec![0, 1, 2, 3],
+                    order: ElementOrderTag::P1,
+                },
+                normals: None,
+                boundary: None,
+            };
+            // Every node is "surface" — all 4 are prescribed on the next tick.
+            (mesh, vec![0_u32, 1, 2, 3])
+        };
+
+        let opts = MorphOptions::default();
+        let report = run_chain(fixture, &[0.0, 1.0], &opts);
+
+        assert_eq!(report.ticks.len(), 2);
+        assert!(!report.ticks[0].fell_back);
+        assert!(
+            report.ticks[1].fell_back,
+            "a fully-pinned morph to an inverted target must be \
+             quality-rejected (HardFail) and fall back to a fresh remesh"
+        );
+        assert!(
+            (report.ticks[1].min_scaled_j - report.ticks[1].from_scratch_min_scaled_j).abs() < 1e-9,
+            "fallback tick's min_scaled_j must equal its \
+             from_scratch_min_scaled_j — the fallback mesh IS the fresh remesh"
+        );
+        // The probe's HardFail arm reports a NEGATIVE value (an inversion
+        // signal, not a global minimum — see probe_min_scaled_j's doc) for
+        // both the rejected candidate and the (also inverted, by fixture
+        // construction) fresh remesh.
+        assert!(
+            report.ticks[1].min_scaled_j < 0.0,
+            "expected a negative inversion signal, got {}",
+            report.ticks[1].min_scaled_j
+        );
+    }
 }
