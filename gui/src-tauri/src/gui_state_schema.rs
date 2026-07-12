@@ -116,6 +116,18 @@ pub fn diff_whole<T: Clone + PartialEq>(old: &[T], new: &[T]) -> Option<Vec<T>> 
 /// }
 /// ```
 ///
+/// # Crate-internal use only
+///
+/// This macro is `#[macro_export]`-ed — reachable as `reify_gui::gui_state!`
+/// from outside the crate — solely so the compile-fail doctests below can
+/// invoke it from a separate compilation unit and demonstrate the
+/// INV-GUI-1 guarantee holds even for a caller with no special access. That
+/// export is not an invitation to use it outside `reify-gui`: the expansion
+/// hard-codes calls to this crate's internal paths
+/// (`$crate::diff::push_serialized_event`, `$crate::gui_state_schema::diff_keyed`,
+/// `$crate::gui_state_schema::diff_whole`), none of which are a supported
+/// external API and all of which may change without notice.
+///
 /// # Examples
 ///
 /// A minimal, fully-classified field compiles:
