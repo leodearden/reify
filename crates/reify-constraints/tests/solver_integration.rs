@@ -2938,6 +2938,104 @@ fn solve_ranked_multistart_escapes_worse_local_optimum() {
     }
 }
 
+/// (h) — Maximize-sense correctness (reviewer amendment, task δ #5016 review
+/// pass 2): every multistart fixture above uses `ObjectiveSense::Minimize`.
+/// The winner-selection logic entirely depends on `eval_objective_set`
+/// normalizing `Maximize` into a lower-is-better score (`acc -= term.weight
+/// * v`, solver.rs) before `scored.sort_by` picks the ascending-score winner
+/// — a regression in that sign flip (or the sort direction) would silently
+/// make a `Maximize` problem select the WORST candidate, and no test above
+/// would catch it (they never exercise the `Maximize` arm).
+///
+/// This fixture reuses `two_param_interior_quadratic_problem`'s interior
+/// point (30mm, 70mm) and bounds, but maximizes the CONCAVE negation
+/// `-((x - 30mm)^2 + (y - 70mm)^2)` instead of minimizing the convex form —
+/// its user-facing maximum is the same interior point, not a bounds corner.
+/// Internally this is not a new numerical path: `eval_objective_set` folds
+/// `Maximize` as `acc -= v`, so `acc == -(-(dx^2+dy^2)) == dx^2+dy^2` — the
+/// exact convex landscape the Minimize fixture already optimizes, reached
+/// through the `Maximize` branch instead. A sign-normalization regression
+/// (e.g. an accidental `acc += v`) would leave Nelder-Mead minimizing the
+/// concave `-(dx^2+dy^2)` directly, which is unbounded below inside the box
+/// bounds and diverges to a bounds corner — `candidates[0]` would land far
+/// from (30mm, 70mm), failing this test.
+#[test]
+fn solve_ranked_multistart_maximize_sense_picks_maximizing_point() {
+    use reify_ir::RankedSolveResult;
+
+    let solver = DimensionalSolver;
+
+    let x_id = vcid("Part", "x");
+    let y_id = vcid("Part", "y");
+    let x_ref = value_ref("Part", "x");
+    let y_ref = value_ref("Part", "y");
+
+    let dx = binop(BinOp::Sub, x_ref, literal(mm(30.0)));
+    let dx2 = binop(BinOp::Mul, dx.clone(), dx);
+    let dy = binop(BinOp::Sub, y_ref, literal(mm(70.0)));
+    let dy2 = binop(BinOp::Mul, dy.clone(), dy);
+    let quad_expr = binop(BinOp::Add, dx2, dy2);
+    // Concave: -(dx^2 + dy^2) — maximized at the interior point (30mm, 70mm),
+    // never at a bounds corner.
+    let concave_expr = neg(quad_expr);
+
+    let objective = ObjectiveSet::single(ObjectiveSense::Maximize, concave_expr);
+
+    let mut current = ValueMap::new();
+    current.insert(x_id.clone(), mm(10.0));
+    current.insert(y_id.clone(), mm(90.0));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+                free: true,
+            },
+            AutoParam {
+                id: y_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+                free: true,
+            },
+        ],
+        constraints: vec![],
+        current_values: current,
+        objective: Some(objective),
+        functions: vec![].into(),
+    };
+
+    let ranked = solver.solve_ranked(&problem);
+    match ranked {
+        RankedSolveResult::Ranked { candidates, .. } => {
+            assert_eq!(
+                candidates.len(),
+                6,
+                "expected K=2*(2+1)=6 candidates, got {}",
+                candidates.len()
+            );
+            let x = candidates[0].values.get(&x_id).and_then(|v| v.as_f64()).unwrap();
+            let y = candidates[0].values.get(&y_id).and_then(|v| v.as_f64()).unwrap();
+            assert!(
+                (x - 0.03).abs() < 1e-4,
+                "Maximize winner's x should converge to the interior maximizer \
+                 30mm, got {} m -- a sense-normalization regression would \
+                 instead diverge toward a bounds corner (1mm or 100mm)",
+                x
+            );
+            assert!(
+                (y - 0.07).abs() < 1e-4,
+                "Maximize winner's y should converge to the interior maximizer \
+                 70mm, got {} m -- a sense-normalization regression would \
+                 instead diverge toward a bounds corner (1mm or 100mm)",
+                y
+            );
+        }
+        other => panic!("expected Ranked, got {:?}", other),
+    }
+}
+
 // ---- gate + inheritance guards (step-5, task δ #5016) ----
 //
 // (a)-(c) pin the multistart gate's three exclusion conditions (dim<=1,
