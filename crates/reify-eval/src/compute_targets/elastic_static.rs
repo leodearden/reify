@@ -7992,16 +7992,9 @@ mod tests {
         );
     }
 
-    /// Companion guard (task 5083): a `Value::List` whose element is NOT a
-    /// `Value::StructureInstance` is silently skipped by the inner `if let`
-    /// — it must NOT be treated as a shape error. This pins the boundary
-    /// disambiguating the task's parenthetical fixture: only `val` itself
-    /// failing to be a `Value::List` produces `Err`; a malformed *item*
-    /// inside an otherwise well-formed list remains a silent no-op
-    /// (pre-existing convention, preserved by this task).
-    ///
-    /// RED for the same reason as the sibling test above: `.unwrap()` on a
-    /// bare tuple fails to type-check until step-2.
+    /// Guard (task 5083, PRD compute-fea-hardening D8): a non-`StructureInstance`
+    /// list element is silently skipped, not treated as a shape error (see PRD
+    /// for the D8/D9 boundary rationale).
     #[test]
     fn extract_loads_non_structure_item_is_silently_skipped() {
         let (tip, pressures, body) =
@@ -8011,18 +8004,9 @@ mod tests {
         assert_eq!(body, [0.0, 0.0, 0.0]);
     }
 
-    /// amendment (task 5083 review): a `StructureInstance` whose `type_name`
-    /// doesn't match any of `"PointLoad"` / `"PressureLoad"` / `"Gravity"`
-    /// (e.g. a typo'd `"PointLaod"`) falls through the `if`/`else if`
-    /// dispatch chain with no trailing `else` — it must be silently skipped,
-    /// NOT treated as a shape error. This is the most likely real-world
-    /// malformation and pins the boundary the PRD's G2(a) top-level
-    /// diagnostic (D9) ultimately targets: D9 only surfaces `Err`s that
-    /// `extract_loads` already returns (its outer `Value::List` check, this
-    /// task/D8) — it does not change per-item dispatch, so an unrecognized
-    /// load `type_name` remains a silent no-op both before and after D9
-    /// lands. This is the pre-existing convention, preserved (not newly
-    /// introduced) by this task.
+    /// Guard (task 5083, PRD compute-fea-hardening D8): an unrecognized
+    /// `type_name` (e.g. typo'd `"PointLaod"`) is silently skipped, not
+    /// treated as a shape error (see PRD for the D8/D9 boundary rationale).
     #[test]
     fn extract_loads_unknown_type_name_is_silently_skipped() {
         use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
