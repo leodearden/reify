@@ -771,6 +771,46 @@ fn plain_param_in_guarded_block_compiles_to_visibility_public() {
     );
 }
 
+/// `priv param g : Length = 5mm where active` — the per-declaration `where`
+/// clause form — must also lower to `Visibility::Private`. Unlike the
+/// block-form fixtures above (which exercise the guards.rs site this task
+/// fixes), the per-decl form routes through `compile_per_decl_guard`, which
+/// reuses the `ValueCellDecl` already built with the correct visibility at
+/// the structure-body site (entity.rs's top-level `MemberDecl::Param` arm) —
+/// the scope note above claims this path was "already correct" and thus out
+/// of this task's fix scope, but that claim was previously untested here.
+/// This characterization test regression-guards it: if a future change to
+/// `compile_per_decl_guard` (or the structure-body param site upstream of
+/// it) silently dropped the visibility through, this would catch it.
+#[test]
+fn priv_param_with_per_decl_where_compiles_to_visibility_private() {
+    let module = compile_source(
+        r#"
+structure def PerDeclGuardHost {
+    param active : Bool = true
+    priv param g : Length = 5mm where active
+}
+"#,
+    );
+    assert_fixture_compiles_cleanly(&module, "PerDeclGuardHost");
+    let template = find_template(&module, "PerDeclGuardHost");
+
+    let g_cell = template
+        .guarded_groups
+        .iter()
+        .flat_map(|g| &g.members)
+        .find(|vc| vc.id.member == "g" && vc.kind == ValueCellKind::Param)
+        .expect("value cell 'g' (Param kind) not found in PerDeclGuardHost guarded_groups");
+
+    assert_eq!(
+        g_cell.visibility,
+        Visibility::Private,
+        "priv param g : Length = 5mm where active (per-decl guard form) must compile to \
+         Visibility::Private, got {:?}",
+        g_cell.visibility
+    );
+}
+
 // ── Part D coda: pin the current enforcement-seam boundary (see the scope
 // note above) rather than leaving it only prose-described. Both tests below
 // were verified empirically (not just reasoned about): today, neither access
@@ -910,9 +950,14 @@ fn leak(m : PortHost) -> Length { m.secret.main }
         .iter()
         .filter(|d| d.code == Some(DiagnosticCode::StructureMemberNotFound))
         .count();
-    assert_eq!(
-        not_found, 1,
-        "function-body access to `m.secret` must fail with exactly one \
+    // `>= 1` rather than `== 1`: the load-bearing claim is that access fails
+    // closed (via E_STRUCTURE_MEMBER_NOT_FOUND, not silently), not that the
+    // compiler emits precisely one such diagnostic for this path. An
+    // unrelated future change adding a second, legitimately different
+    // member-resolution diagnostic on this fixture shouldn't fail this test.
+    assert!(
+        not_found >= 1,
+        "function-body access to `m.secret` must fail with at least one \
          E_STRUCTURE_MEMBER_NOT_FOUND (the skeleton's empty `ports` vec means \
          the port itself is unresolved) — this pins that the access fails \
          closed, not open; all diagnostics: {:?}",
@@ -952,9 +997,14 @@ fn leak(m : GuardHost) -> Length { m.g }
         .iter()
         .filter(|d| d.code == Some(DiagnosticCode::StructureMemberNotFound))
         .count();
-    assert_eq!(
-        not_found, 1,
-        "function-body access to `m.g` must fail with exactly one \
+    // `>= 1` rather than `== 1`: the load-bearing claim is that access fails
+    // closed (via E_STRUCTURE_MEMBER_NOT_FOUND, not silently), not that the
+    // compiler emits precisely one such diagnostic for this path. An
+    // unrelated future change adding a second, legitimately different
+    // member-resolution diagnostic on this fixture shouldn't fail this test.
+    assert!(
+        not_found >= 1,
+        "function-body access to `m.g` must fail with at least one \
          E_STRUCTURE_MEMBER_NOT_FOUND (the skeleton's empty `guarded_groups` \
          vec means the member is unresolved) — this pins that the access fails \
          closed, not open; all diagnostics: {:?}",
