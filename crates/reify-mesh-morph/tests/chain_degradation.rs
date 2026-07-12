@@ -438,6 +438,19 @@ fn non_monotonic_plate_jumps_trigger_fallbacks_and_chain_self_recovers() {
 
     // Comparison baseline: the same monotonic sweep as step-6's test
     // (recomputed here so this test is self-contained and order-independent).
+    //
+    // Cost note (task 2951 amendment, reviewer_comprehensive finding #3):
+    // this recomputes the full 51-value/50-solve monotonic sweep, roughly
+    // doubling this file's total elasticity_morph solve count. Kept
+    // deliberately (rather than comparing against a hardcoded constant like
+    // `CHAIN_FALLBACK_RATE_MAX`) for robustness: the monotonic baseline is
+    // documented to be ~0 but is not itself a pinned contract, so a live
+    // recomputation keeps assertion (b) below honest against any future
+    // change to `elasticity_morph`/`quality_check` that shifts the true
+    // monotonic rate — a hardcoded constant would silently stop reflecting
+    // reality in that scenario. Both sweeps are fast (deterministic, no I/O,
+    // no real FEA-scale meshes), so the extra cost is a fixed, small
+    // constant, not a scaling concern.
     let monotonic_params = linspace(0.30, 0.50, 51);
     let monotonic_report = runner::run_chain(fixture, &monotonic_params, &opts);
 
