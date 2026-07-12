@@ -2644,6 +2644,13 @@ fn stl_triangle_count(data: &[u8]) -> usize {
 /// re-walk is not guaranteed to agree with what was actually exported (amend:
 /// reviewer_comprehensive correctness_consistency finding). See
 /// `triangle_count_tests` below for coverage.
+///
+/// This is a package-wide total, not a single-mesh count: if `data` ever
+/// contained more than one `<mesh>` part, this would sum `<triangle ` across
+/// all of them (and across any other archive section where the substring
+/// happened to appear). Every export this CLI drives today writes exactly one
+/// mesh part, so `Triangles: N` is the exported mesh's count in practice; this
+/// is an acceptable semantic for a diagnostic print, not a correctness bug.
 fn threemf_triangle_count(data: &[u8]) -> usize {
     const NEEDLE: &[u8] = b"<triangle ";
     data.windows(NEEDLE.len()).filter(|w| *w == NEEDLE).count()
@@ -3911,6 +3918,79 @@ structure def Milling : Subtracting {
 }
 
 #[cfg(test)]
+mod isosurface_gate_tests {
+    use super::module_has_isosurface;
+
+    /// Cfg-independent routing gate test (mirrors
+    /// `module_has_thickness_dfm_rule_detects_thickness_vs_draft_only_vs_plain`):
+    /// `module_has_isosurface` must return `true` for a module with an
+    /// `isosurface(...)` realization, and `false` for a module using the
+    /// distinct `nurbs_surface(...)` builtin (a different
+    /// `CompiledGeometryOp::Surface` variant — free-form NURBS construction,
+    /// not marching-cubes surfacing) and for a plain module with neither.
+    ///
+    /// Always-running (no has_openvdb / OCCT guard): the gate inspects only
+    /// compiled IR — it does not perform geometry operations.
+    #[test]
+    fn module_has_isosurface_detects_isosurface_vs_nurbs_surface_vs_plain() {
+        // (a) TRUE — `isosurface(solid)` realization: the gate must return
+        // `true` so that `cmd_build` calls `ensure_openvdb_kernel()`.
+        let isosurface_source = r#"
+structure IsoWire {
+    param size: Length = 20mm
+    let solid = box(size, size, size)
+    let shell = isosurface(solid)
+}
+"#;
+        let compiled_isosurface =
+            reify_test_support::parse_and_compile_with_stdlib(isosurface_source);
+        assert!(
+            module_has_isosurface(&compiled_isosurface),
+            "module with an isosurface(...) realization must be detected \
+             (routing gate must return true)"
+        );
+
+        // (b) FALSE — `nurbs_surface(...)` lowers to `CompiledGeometryOp::Surface
+        // { kind: SurfaceKind::Nurbs, .. }`, a DISTINCT variant from
+        // `Isosurface`: the gate must NOT match it, so a NURBS-only module
+        // keeps the single-pick OCCT engine (OpenVDB is never acquired).
+        let nurbs_surface_source = r#"
+structure def NurbsOnly {
+    let p = nurbs_surface(
+        [[point3(0mm,0mm,0mm),point3(0mm,10mm,0mm)],[point3(10mm,0mm,0mm),point3(10mm,10mm,5mm)]],
+        [[1.0,1.0],[1.0,1.0]],
+        [0,0,1,1],
+        [0,0,1,1],
+        1,
+        1
+    )
+}
+"#;
+        let compiled_nurbs_surface =
+            reify_test_support::parse_and_compile_with_stdlib(nurbs_surface_source);
+        assert!(
+            !module_has_isosurface(&compiled_nurbs_surface),
+            "module with only a nurbs_surface(...) (CompiledGeometryOp::Surface, \
+             distinct from Isosurface) must NOT be detected by this gate"
+        );
+
+        // (c) FALSE — plain module with no Surface-family op at all.
+        let plain_source = r#"
+structure def Plain {
+    param x : Length = 1mm
+    constraint x > 0mm
+}
+"#;
+        let compiled_plain = reify_test_support::parse_and_compile_with_stdlib(plain_source);
+        assert!(
+            !module_has_isosurface(&compiled_plain),
+            "plain module (no isosurface, no nurbs_surface) must return false \
+             (C2 path preserved — OpenVDB never acquired for non-surfacing builds)"
+        );
+    }
+}
+
+#[cfg(test)]
 mod build_is_success_tests {
     use super::{build_is_success, ConstraintOutcome};
 
@@ -3984,10 +4064,23 @@ mod triangle_count_tests {
     /// validate geometry (manifoldness, winding, area) — only buffer-length
     /// and index-bounds — so a degenerate repeated triangle is sufficient to
     /// drive both real writers.
+    ///
+    /// Each triangle's index triple is a distinct cyclic rotation of `0,1,2`
+    /// (`0,1,2` / `1,2,0` / `2,0,1`, repeating), rather than every triangle
+    /// sharing the literal triple `[0,1,2]`. The three vertices themselves
+    /// still repeat (still degenerate/zero-area — irrelevant to the byte-count
+    /// this test drives), but distinct index triples mean no two triangles are
+    /// byte-identical records, so a hypothetical future dedup pass in either
+    /// writer would visibly change the reported count instead of silently
+    /// collapsing both writers in lockstep — keeping the parity assertion
+    /// robust to writer-internals changes.
     fn repeated_triangle_mesh(triangle_count: usize) -> Mesh {
         let mut indices = Vec::with_capacity(triangle_count * 3);
-        for _ in 0..triangle_count {
-            indices.extend_from_slice(&[0, 1, 2]);
+        for i in 0..triangle_count {
+            let r = i % 3;
+            indices.push(r as u32);
+            indices.push(((r + 1) % 3) as u32);
+            indices.push(((r + 2) % 3) as u32);
         }
         Mesh { vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0], indices, normals: None }
     }
