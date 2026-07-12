@@ -355,3 +355,84 @@ fn monotonic_plate_sweep_50_ticks_keeps_chain_within_quality_envelope() {
         CHAIN_MIN_SCALED_J_FLOOR
     );
 }
+
+// ── Step-7/8: non-monotonic (not-nearest) recovery ────────────────────────────
+//
+// RED: references `lcg_jumps()`, which doesn't exist yet — fails to compile
+// until step-8 adds it (same discipline as step-1/step-2, step-5/step-6).
+
+/// PRD `docs/prds/v0_3/mesh-morphing.md` task #14, claim (c): a
+/// non-monotonic (not-nearest) chain is caught by the quality check and
+/// self-recovers via remesh-fallback.
+///
+/// Sweeps the same plate fixture over a deterministic fixed-seed LCG
+/// sequence ([`lcg_jumps`]) of 51 values in `[0.30, 0.60]`, interleaving
+/// small steps with full-range jumps — some of which land in the
+/// fixture's pct-saturation zone (`hole_diameter >= ~0.53`, see the
+/// step-3 test's doc) and trigger a fallback. Compares against the
+/// monotonic sweep (step-6) as a baseline.
+#[test]
+fn non_monotonic_plate_jumps_trigger_fallbacks_and_chain_self_recovers() {
+    let fixture = |hole_diameter: f64| fixtures::plate_with_hole(1.0, hole_diameter, 0.1, 4, 2);
+    let opts = chain_options();
+
+    // Comparison baseline: the same monotonic sweep as step-6's test
+    // (recomputed here so this test is self-contained and order-independent).
+    let monotonic_params = linspace(0.30, 0.50, 51);
+    let monotonic_report = runner::run_chain(fixture, &monotonic_params, &opts);
+
+    let params = lcg_jumps(8, 51, 0.30, 0.60);
+    let report = runner::run_chain(fixture, &params, &opts);
+
+    // eprintln! the observed non-monotonic fallback_rate for the CI perf log.
+    eprintln!(
+        "[chain-degradation non-monotonic-50] fallback_count={} fallback_rate={:.4} \
+         min_scaled_j_floor={:.6} (monotonic baseline fallback_rate={:.4})",
+        report.fallback_count(),
+        report.fallback_rate(),
+        report.min_scaled_j_floor(),
+        monotonic_report.fallback_rate()
+    );
+
+    // (a) Fallbacks DO happen — the quality check catches morphs where
+    // most-recent is not nearest.
+    assert!(
+        report.fallback_count() >= 1,
+        "non-monotonic plate sweep: expected >= 1 fallback, got {}",
+        report.fallback_count()
+    );
+
+    // (b) Bad jumps cause materially more fallbacks than the tiny
+    // monotonic steps.
+    assert!(
+        report.fallback_rate() > monotonic_report.fallback_rate(),
+        "non-monotonic fallback_rate={} must exceed the monotonic baseline={}",
+        report.fallback_rate(),
+        monotonic_report.fallback_rate()
+    );
+
+    // (c) The chain self-recovers: quality never collapses, because each
+    // fallback resets to a fresh remesh.
+    assert!(
+        report.min_scaled_j_floor() >= CHAIN_MIN_SCALED_J_FLOOR,
+        "non-monotonic plate sweep: min_scaled_j_floor={} must be >= {}",
+        report.min_scaled_j_floor(),
+        CHAIN_MIN_SCALED_J_FLOOR
+    );
+
+    // (d) At least one accepted morph (fell_back==false, i>=1) occurs AFTER
+    // the first fallback tick — the chain resumes morphing post-reset.
+    let first_fallback_idx = report
+        .ticks
+        .iter()
+        .position(|t| t.fell_back)
+        .expect("assertion (a) already confirmed at least one fallback exists");
+    assert!(
+        report.ticks[first_fallback_idx + 1..]
+            .iter()
+            .any(|t| !t.fell_back),
+        "expected at least one accepted morph (fell_back=false) after the first \
+         fallback tick (index {}) — the chain should resume morphing post-reset",
+        first_fallback_idx
+    );
+}
