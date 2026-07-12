@@ -25,7 +25,7 @@
 //!   non-finite quaternion — a runtime VALUE question, not a static TYPE
 //!   question) ⇒ `infer_mul_div_result` returns `None`.
 //! - Divergences are allowed ONLY via the commented `EXEMPTION_LEDGER`
-//!   (§3 decision 4, added in step-7/8); an unledgered divergence panics.
+//!   (§3 decision 4); an unledgered divergence panics.
 //!
 //! ## Access to the static table
 //!
@@ -46,10 +46,6 @@
 //! reuse-by-pattern (identical shape, not a shared import).
 
 #![cfg(feature = "test-support")]
-// Helper constructors below are added ahead of the rows that consume them
-// (TDD steps land the full row batches in step-3/step-5); until then some
-// are unused.
-#![allow(dead_code)]
 
 use reify_core::{DiagnosticCode, DimensionVector, Severity, Type};
 use reify_expr::{eval_expr, EvalContext};
@@ -163,7 +159,7 @@ fn area_ty() -> Type {
     }
 }
 
-// ── Kind(+dimension) mapping (step-3 RED stub / step-4 GREEN impl) ─────────
+// ── Kind(+dimension) mapping ────────────────────────────────────────────────
 
 /// Kind(+dimension) mapping between a runtime `Value` and a static `Type`
 /// (PRD §7.2 "dimension-correct for scalar algebra"; design decision 3).
@@ -201,39 +197,13 @@ fn value_kind_matches_type(runtime: &Value, static_ty: &Type) -> bool {
     }
 }
 
-// ── Positive-parity assertion engine (step-3 RED / step-8 GREEN ledger) ────
-
-/// Positive-parity assertion (PRD §7.2, first clause): runtime non-Undef ⇒
-/// static `Some(T)` whose kind matches the runtime result via
-/// `value_kind_matches_type`. `label` names the row for panic attribution.
-fn assert_accepts(op: BinOp, lv: Value, rv: Value, lt: Type, rt: Type, label: &str) {
-    let runtime = eval_binop(op, lv.clone(), rv.clone());
-    assert!(
-        !runtime.is_undef(),
-        "{label}: expected non-Undef runtime result for {op:?}({lv:?}, {rv:?}), got Undef"
-    );
-    let static_result = reify_compiler::__infer_mul_div_result_for_parity_test(op, &lt, &rt);
-    let static_ty = match static_result {
-        Some(t) => t,
-        None => panic!(
-            "{label}: expected static Some(T) for {op:?}({lt:?}, {rt:?}) \
-             (runtime={runtime:?}), got None"
-        ),
-    };
-    assert!(
-        value_kind_matches_type(&runtime, &static_ty),
-        "{label}: runtime result {runtime:?} does not match static type {static_ty:?} \
-         for {op:?}({lt:?}, {rt:?})"
-    );
-}
-
-// ── Positive-parity batch (step-3 RED / step-4 GREEN) ───────────────────────
+// ── Positive-parity batch ───────────────────────────────────────────────────
 //
 // Mirrors every INTENTIONAL row of β1's runtime truth table for BOTH Mul and
 // Div (mul_div_runtime_truth_table.rs), EXCLUDING the Int/Int non-divisible
 // Div row — that row is a genuine static/runtime DIVERGENCE (the runtime
 // widens to Real; the static table intentionally stays Int) and is handled
-// by the EXEMPTION_LEDGER in step-7/8, not here. The divisible Int/Int Div
+// by the EXEMPTION_LEDGER below, not here. The divisible Int/Int Div
 // row below (row 27) IS a clean-agreement row and stays in this batch.
 
 struct PositiveRow {
@@ -289,8 +259,8 @@ fn positive_rows() -> Vec<PositiveRow> {
 
         // ── Div: numeric + Scalar core ───────────────────────────────────
         // NOTE: Int/Int here is the DIVISIBLE case (clean agreement, both
-        // Int). The non-divisible case is the exemption-ledger row, added
-        // in step-7/8 (NOT here).
+        // Int). The non-divisible case is the exemption-ledger row, defined
+        // below (NOT here).
         PositiveRow { label: "Div Int/Int (divisible)",   op: Div, lv: Value::Int(6),   rv: Value::Int(3),   lt: Type::Int, rt: Type::Int },
         PositiveRow { label: "Div Real/Real",              op: Div, lv: Value::Real(10.0), rv: Value::Real(4.0), lt: Type::dimensionless_scalar(), rt: Type::dimensionless_scalar() },
         PositiveRow { label: "Div Int/Real",                op: Div, lv: Value::Int(9),   rv: Value::Real(2.0), lt: Type::Int, rt: Type::dimensionless_scalar() },
@@ -314,40 +284,23 @@ fn positive_rows() -> Vec<PositiveRow> {
 }
 
 /// Positive-parity batch: every row above must AGREE (runtime non-Undef ⇒
-/// static `Some(T)` whose kind/dimension matches). Panics via `todo!()`
-/// inside `value_kind_matches_type` until step-4 implements it (RED).
+/// static `Some(T)` whose kind/dimension matches, per
+/// `value_kind_matches_type`). Routed through the unified
+/// `assert_parity_or_ledgered_divergence` classifier (defined in the
+/// Exemption ledger section below) rather than a dedicated accept-only
+/// helper, so these rows also exercise its clean-parity-on-accept branch.
 #[test]
 fn positive_parity_batch() {
     for row in positive_rows() {
-        assert_accepts(row.op, row.lv, row.rv, row.lt, row.rt, row.label);
+        assert_parity_or_ledgered_divergence(row.op, row.lv, row.rv, row.lt, row.rt, row.label);
     }
 }
 
-// ── Rejection-parity assertion engine (step-5 RED / step-6 GREEN) ──────────
-
-/// Rejection-parity assertion (PRD §7.2, second clause): runtime
-/// structurally-Undef ⇒ static `None` (`infer_mul_div_result` rejects the
-/// same pairing). `label` names the row for panic attribution.
-fn assert_rejects(op: BinOp, lv: Value, rv: Value, lt: Type, rt: Type, label: &str) {
-    let runtime = eval_binop(op, lv.clone(), rv.clone());
-    assert!(
-        runtime.is_undef(),
-        "{label}: expected structurally-Undef runtime result for {op:?}({lv:?}, {rv:?}), \
-         got {runtime:?}"
-    );
-    let static_result = reify_compiler::__infer_mul_div_result_for_parity_test(op, &lt, &rt);
-    assert!(
-        static_result.is_none(),
-        "{label}: expected static None (reject) for {op:?}({lt:?}, {rt:?}) \
-         (runtime={runtime:?}), got {static_result:?}"
-    );
-}
-
-// ── Rejection-parity batch (step-5 RED / step-6 GREEN) ──────────────────────
+// ── Rejection-parity batch ──────────────────────────────────────────────────
 //
 // Mirrors β1's STRUCTURAL-Undef set (mul_div_runtime_truth_table.rs) with
 // NON-degenerate operands (no zero divisor — DATA-DRIVEN-Undef div-by-zero
-// rows are a separate, EXCLUDED carve-out added in step-7/8, not here).
+// rows are a separate, EXCLUDED carve-out documented below, not here).
 // Excludes the `degenerate-NOT-intentional` Tensor×Vector row (PRD decision
 // 5) — that row is NOT Undef at runtime, so it is not a rejection-parity
 // candidate at all. Type-side shapes mirror type_compat.rs's own
@@ -405,16 +358,19 @@ fn rejection_rows() -> Vec<RejectionRow> {
 }
 
 /// Rejection-parity batch: every row above must AGREE (runtime
-/// structurally-Undef ⇒ static `None`). Panics via `todo!()` inside
-/// `assert_rejects` until step-6 implements it (RED).
+/// structurally-Undef ⇒ static `None`). Routed through the same unified
+/// `assert_parity_or_ledgered_divergence` classifier as
+/// `positive_parity_batch`, so these rows exercise its
+/// clean-parity-on-reject (`true, None`) branch instead of leaving that
+/// branch covered only by construction.
 #[test]
 fn rejection_parity_batch() {
     for row in rejection_rows() {
-        assert_rejects(row.op, row.lv, row.rv, row.lt, row.rt, row.label);
+        assert_parity_or_ledgered_divergence(row.op, row.lv, row.rv, row.lt, row.rt, row.label);
     }
 }
 
-// ── None → ArithOperandKind anchor (step-5) ─────────────────────────────────
+// ── None → ArithOperandKind anchor ──────────────────────────────────────────
 
 /// Ties the abstract `None` reject-partition to the OBSERVABLE diagnostic
 /// named in the PRD contract (§7.2): a representative structural-Undef pair
@@ -444,7 +400,7 @@ structure def P {
     );
 }
 
-// ── Exemption ledger (step-7 RED / step-8 GREEN; PRD §3 decision 4) ────────
+// ── Exemption ledger (PRD §3 decision 4) ────────────────────────────────────
 
 /// Documented, intentional static/runtime divergences (PRD §3 decision 4):
 /// "every exemption row requires a comment; an uncommented divergence
@@ -473,13 +429,14 @@ fn is_ledgered_divergence(op: BinOp, lt: &Type, rt: &Type) -> bool {
         })
 }
 
-/// Top-level parity classification (PRD §7.2 + §3 decision 4): both sides
-/// "accept" (runtime non-Undef, static `Some`) and the runtime result's kind
-/// AGREES with the static type's kind ⇒ pass (clean parity, same contract as
-/// `assert_accepts`). If the kinds DIVERGE, the row passes ONLY when
-/// `(op, lt, rt)` is a documented `EXEMPTION_LEDGER` entry — otherwise it
-/// panics naming the row (the "uncommented divergence fails" guarantee, PRD
-/// §8).
+/// Top-level parity classification (PRD §7.2 + §3 decision 4) — the single
+/// shared assertion engine for `positive_parity_batch`,
+/// `rejection_parity_batch`, and the ledger test below. Both sides "accept"
+/// (runtime non-Undef, static `Some`) and the runtime result's kind AGREES
+/// with the static type's kind ⇒ pass (clean parity). If the kinds DIVERGE,
+/// the row passes ONLY when `(op, lt, rt)` is a documented
+/// `EXEMPTION_LEDGER` entry — otherwise it panics naming the row (the
+/// "uncommented divergence fails" guarantee, PRD §8).
 ///
 /// TEETH (PRD decision 4's "an uncommented divergence fails" — proven by
 /// temporary mutation, not a committed failing assertion; both recipes below
@@ -520,7 +477,7 @@ fn assert_parity_or_ledgered_divergence(
                 );
             }
         }
-        // Both sides "reject": clean parity (same contract as `assert_rejects`).
+        // Both sides "reject": clean parity.
         (true, None) => {}
         // Accept/reject disagreement — not part of this task's known
         // exemption inventory (β1/β2 were written against the same §2
@@ -575,7 +532,7 @@ fn int_int_nondivisible_division_is_a_ledgered_divergence() {
     );
 }
 
-// ── DATA-DRIVEN-Undef exclusion (step-7; PRD §7.2 carve-out) ────────────────
+// ── DATA-DRIVEN-Undef exclusion (PRD §7.2 carve-out) ────────────────────────
 
 /// (c) `Int/0` and `Scalar/0` are DATA-DRIVEN-Undef (β1's
 /// `div_int_by_zero_is_undef` / `div_scalar_by_zero_is_undef`): the
@@ -620,13 +577,12 @@ fn data_driven_undef_rows_are_excluded_from_structural_reject_rule() {
     );
 }
 
-// ── Smoke test (step-1 RED / step-2 GREEN) ──────────────────────────────────
+// ── Smoke test ────────────────────────────────────────────────────────────
 
 /// Smoke row proving the harness wiring end-to-end: `Int × Int` is the
 /// simplest INTENTIONAL row on both sides — runtime `Value::Int(42)`,
-/// static `Some(Type::Int)`. Fails to COMPILE until step-2 adds the
-/// `__infer_mul_div_result_for_parity_test` shim (unresolved
-/// import/function — the shim does not exist yet).
+/// static `Some(Type::Int)`, reached through the
+/// `__infer_mul_div_result_for_parity_test` shim.
 #[test]
 fn smoke_int_times_int_parity() {
     let runtime = eval_binop(BinOp::Mul, Value::Int(6), Value::Int(7));
