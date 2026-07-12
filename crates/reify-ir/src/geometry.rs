@@ -3085,12 +3085,16 @@ impl Mesh {
     ///
     /// `welded_indices` MUST equal `self.weld_positions().1` — the bit-exact
     /// position-weld remap, indexed by raw vertex index, with length
-    /// `self.vertices.len() / 3`. Debug builds assert the length invariant;
-    /// there is no `MeshContractViolation` shape for "caller passed a bogus
-    /// remap", so a mismatched-but-same-length remap is a silent caller bug
-    /// (garbage in, garbage out). Callers that cannot guarantee the
-    /// precondition must use [`Self::check_mesh_contract`] instead, which
-    /// recomputes the weld internally.
+    /// `self.vertices.len() / 3`. A length mismatch is defended in ALL
+    /// build modes: debug builds assert it (loudly, during development),
+    /// while release builds silently fall back to an internal reweld
+    /// instead of indexing out of bounds, so this method never panics.
+    /// There is no `MeshContractViolation` shape for "caller passed a
+    /// bogus remap", so a mismatched-but-SAME-length remap is still a
+    /// silent caller bug (garbage in, garbage out) — only the
+    /// panic-causing length case is guarded. Callers that cannot guarantee
+    /// the precondition must use [`Self::check_mesh_contract`] instead,
+    /// which recomputes the weld internally.
     pub fn check_mesh_contract_welded(
         &self,
         tol: f64,
