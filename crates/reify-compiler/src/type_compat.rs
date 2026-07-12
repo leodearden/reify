@@ -1871,6 +1871,17 @@ pub(crate) fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
         // TODO(#5163): add an Add/Sub operand-kind guard for this case
         // (covering BOTH operand orders), or document it as a
         // permanently-accepted static/runtime gap.
+        //
+        // SCOPE (code-review confirmation, task 5061 amendment pass): this
+        // dimensionless-Complex widening arm is intentionally folded into β2
+        // rather than split into a separate change — it is a direct
+        // prerequisite for β2's own Mul/Div guard, needed to avoid a spurious
+        // `E_ArithOperandKind` on the imaginary-literal-sugar path described
+        // above (`w = 3 + 4j` followed by e.g. `w / complex(1.0, 2.0)`), so
+        // it cannot be bisected away from the Mul/Div guard without
+        // reintroducing that false positive. Only the follow-up (closing the
+        // dimensioned-Complex gap/asymmetry documented above) is deferred,
+        // tracked by #5163.
         BinOp::Add | BinOp::Sub => {
             if is_dimensionless_complex(left) && is_dimensionless_numeric(right) {
                 left.clone()
