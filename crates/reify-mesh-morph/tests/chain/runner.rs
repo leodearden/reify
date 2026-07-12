@@ -62,6 +62,16 @@ pub struct TickRecord {
     /// accepted. Always `false` for tick 0 (the chain root is fresh by
     /// definition, not a morph decision).
     pub fell_back: bool,
+    /// `tet_indices().len()` of this tick's ACTUAL in-use mesh — the
+    /// accepted `elasticity_morph` candidate on a `fell_back == false` tick,
+    /// or the fresh remesh on a `fell_back == true` tick (added task 2951
+    /// amendment, reviewer_comprehensive finding #1). Recorded directly off
+    /// the mesh `run_chain` carries forward into the next tick, so callers
+    /// can assert connectivity preservation against the mesh that was
+    /// actually used, rather than re-deriving a fixture mesh out-of-band
+    /// (which would only prove the *fixture's* connectivity invariance,
+    /// never touching `elasticity_morph`'s real output).
+    pub tet_indices_len: usize,
 }
 
 /// Full chain report: one [`TickRecord`] per swept parameter.
@@ -172,12 +182,17 @@ where
 
     let (mut prev_mesh, mut prev_surface) = fixture(params[0]);
     let root_min_sj = probe_min_scaled_j(&prev_mesh, opts);
+    let root_tet_indices_len = prev_mesh
+        .tet_indices()
+        .expect("chain fixtures are always tet-connectivity")
+        .len();
     let mut ticks = Vec::with_capacity(params.len());
     ticks.push(TickRecord {
         param: params[0],
         min_scaled_j: root_min_sj,
         from_scratch_min_scaled_j: root_min_sj,
         fell_back: false,
+        tet_indices_len: root_tet_indices_len,
     });
 
     for &param in &params[1..] {
@@ -236,11 +251,20 @@ where
             None => (target_mesh, target_surface, true, from_scratch_min_sj),
         };
 
+        // Recorded off `mesh_i` itself — the tick's actual in-use mesh,
+        // whether an accepted `elasticity_morph` candidate or a fresh
+        // fallback remesh — BEFORE it is moved into `prev_mesh` below.
+        let tet_indices_len = mesh_i
+            .tet_indices()
+            .expect("chain fixtures are always tet-connectivity")
+            .len();
+
         ticks.push(TickRecord {
             param,
             min_scaled_j,
             from_scratch_min_scaled_j: from_scratch_min_sj,
             fell_back,
+            tet_indices_len,
         });
 
         prev_mesh = mesh_i;

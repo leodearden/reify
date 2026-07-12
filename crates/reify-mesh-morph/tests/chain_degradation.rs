@@ -62,25 +62,24 @@ fn chain_runner_smoke_on_short_monotonic_plate_chain_accepts_all_ticks() {
         params.len()
     );
 
-    // (b) Every tick's in-use mesh shares connectivity with the root ("morph
-    // preserves connectivity"). The runner's TickRecord does not carry the
-    // mesh itself, but `tick.param` lets us re-derive the fixture mesh at
-    // that param directly. Two structural facts together make this a valid
-    // proof that EVERY tick's actual in-use mesh (accepted or fallback) has
-    // the root's tet_indices length: (i) the fixture is connectivity-
-    // invariant across its swept parameter (fixtures.rs module docs), so a
-    // fresh fallback mesh at any param always matches the root's tet_indices
-    // length; and (ii) `elasticity_morph` deforms vertices in place and
-    // clones tet_indices unchanged, so an accepted tick's mesh has exactly
-    // its source's tet_indices length, which chains back to the root by
-    // induction.
-    let root_tet_len = fixture(params[0]).0.tet_indices().unwrap().len();
+    // (b) Every tick's ACTUAL in-use mesh shares connectivity with the root
+    // ("morph preserves connectivity"). `TickRecord::tet_indices_len` (task
+    // 2951 amendment, reviewer_comprehensive finding #1) is recorded by
+    // `run_chain` directly off the mesh it actually carries forward into the
+    // next tick — the accepted `elasticity_morph` candidate on a
+    // `fell_back == false` tick, or the fresh remesh on a `fell_back ==
+    // true` tick — so asserting on it is a direct check of the morphed mesh
+    // itself. Previously this re-derived `fixture(tick.param)` and checked
+    // THAT mesh's tet_indices length, which only proved the FIXTURE's own
+    // connectivity invariance and could not catch a regression where
+    // `elasticity_morph` altered tet_indices length while the fixture
+    // stayed connectivity-invariant.
+    let root_tet_len = report.ticks[0].tet_indices_len;
     for tick in &report.ticks {
-        let (mesh_at_param, _) = fixture(tick.param);
         assert_eq!(
-            mesh_at_param.tet_indices().unwrap().len(),
+            tick.tet_indices_len,
             root_tet_len,
-            "tick param={}: fixture tet_indices length must match the root's \
+            "tick param={}: in-use mesh's tet_indices length must match the root's \
              (connectivity must be preserved along the chain)",
             tick.param
         );
@@ -500,6 +499,24 @@ fn non_monotonic_plate_jumps_trigger_fallbacks_and_chain_self_recovers() {
         .iter()
         .position(|t| t.fell_back)
         .expect("assertion (a) already confirmed at least one fallback exists");
+    // Guard (task 2951 amendment, reviewer_comprehensive finding #2): the
+    // slice below needs at least one tick strictly after `first_fallback_idx`
+    // to inspect. That holds today (the documented seed-8 LCG sequence has 6
+    // fallbacks and the first one is not the final tick), but assert it
+    // explicitly rather than let a future fixture/solver tweak that shifted
+    // the sequence silently degrade to an empty
+    // `report.ticks[first_fallback_idx + 1..]` slice — whose `.any()` would
+    // return `false` and fail on the self-recovery message below, obscuring
+    // that the real cause is "no ticks remain to check", not a recovery
+    // failure.
+    assert!(
+        first_fallback_idx < report.ticks.len() - 1,
+        "first fallback landed at the last tick (index {} of {} total ticks) — \
+         no ticks remain after it to check post-reset recovery; adjust the LCG \
+         seed/cadence so at least one tick follows the first fallback",
+        first_fallback_idx,
+        report.ticks.len()
+    );
     assert!(
         report.ticks[first_fallback_idx + 1..]
             .iter()
