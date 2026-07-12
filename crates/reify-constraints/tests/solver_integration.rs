@@ -2469,3 +2469,330 @@ fn solve_ranked_override_no_objective_feasibility_only() {
         ),
     }
 }
+
+// ---- best-of-K multistart tests (step-3 RED / step-4 GREEN, task δ #5016) ----
+//
+// PRD docs/prds/v0_6/whole-model-objective-coupling.md §5.3, §11 Q4: a dim>=2
+// objective-bearing problem must best-of-K multistart over the K = 2*(dim+1)
+// deterministic seeds from `multistart_points` (solver.rs) and surface the
+// full ranked candidate set. Today `DimensionalSolver::solve_ranked` always
+// calls `solve_with_meta` once (the historical single seed) and returns
+// exactly 1 candidate regardless of dimension — RED until step-4 rewires the
+// override to gate on `objective.is_some() && auto_params.len() >= 2` and
+// best-of-K over `multistart_points`.
+
+/// Shared dim=2 interior-optimum fixture: minimize (x - 30mm)^2 + (y - 70mm)^2,
+/// x,y in [1mm, 100mm]. No comparison constraints — feasibility is governed
+/// entirely by the box bounds, so every one of the K = 2*(2+1) = 6 multistart
+/// points (the historical seed, the all-midpoint point, and the four
+/// per-axis low/high corner anchors) is trivially feasible, matching the
+/// design's "all K starts feasible" fixture requirement. The seed
+/// (`current_values`) is chosen off the bounds-midpoint (50.5mm) and every
+/// corner anchor (1mm / 100mm) so all 6 multistart points are pairwise
+/// distinct.
+fn two_param_interior_quadratic_problem()
+-> (ResolutionProblem, reify_core::ValueCellId, reify_core::ValueCellId) {
+    let x_id = vcid("Part", "x");
+    let y_id = vcid("Part", "y");
+    let x_ref = value_ref("Part", "x");
+    let y_ref = value_ref("Part", "y");
+
+    let dx = binop(BinOp::Sub, x_ref, literal(mm(30.0)));
+    let dx2 = binop(BinOp::Mul, dx.clone(), dx);
+    let dy = binop(BinOp::Sub, y_ref, literal(mm(70.0)));
+    let dy2 = binop(BinOp::Mul, dy.clone(), dy);
+    let quad_expr = binop(BinOp::Add, dx2, dy2);
+
+    let objective = ObjectiveSet::single(ObjectiveSense::Minimize, quad_expr);
+
+    let mut current = ValueMap::new();
+    current.insert(x_id.clone(), mm(10.0));
+    current.insert(y_id.clone(), mm(90.0));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+                free: true,
+            },
+            AutoParam {
+                id: y_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+                free: true,
+            },
+        ],
+        constraints: vec![],
+        current_values: current,
+        objective: Some(objective),
+        functions: vec![].into(),
+    };
+    (problem, x_id, y_id)
+}
+
+/// (a)/(b)/(c) — dim=2 objective problem: `solve_ranked` must return exactly
+/// K = 2*(dim+1) = 6 candidates, ordered ascending by `objective_score`
+/// (candidate[0] the smallest), with `optimality` always `BestFound` (never
+/// `ProvenOptimal` — Nelder-Mead is derivative-free, invariant I3).
+///
+/// RED today: the current override always returns exactly 1 candidate.
+#[test]
+fn solve_ranked_multistart_dim2_returns_k_ranked_candidates() {
+    use reify_ir::{OptimalityStatus, RankedSolveResult};
+
+    let solver = DimensionalSolver;
+    let (problem, _x_id, _y_id) = two_param_interior_quadratic_problem();
+
+    let ranked = solver.solve_ranked(&problem);
+    match &ranked {
+        RankedSolveResult::Ranked { candidates, optimality } => {
+            // K = 2*(dim+1) = 2*(2+1) = 6
+            assert_eq!(
+                candidates.len(),
+                6,
+                "dim=2 objective problem must multistart K=2*(2+1)=6 candidates, got {}",
+                candidates.len()
+            );
+            for (i, c) in candidates.iter().enumerate() {
+                assert!(
+                    c.objective_score.is_some(),
+                    "candidate[{}]: every candidate in an objective-bearing multistart \
+                     must carry a score",
+                    i
+                );
+            }
+            // Ascending order: index 0 is the optimum (I2), each score <= the next.
+            for pair in candidates.windows(2) {
+                let a = pair[0].objective_score.unwrap();
+                let b = pair[1].objective_score.unwrap();
+                assert!(
+                    a <= b,
+                    "candidates must be ordered ascending by objective_score; {} > {}",
+                    a,
+                    b
+                );
+            }
+            assert!(
+                matches!(optimality, OptimalityStatus::BestFound { .. }),
+                "Nelder-Mead is derivative-free -> always BestFound, never ProvenOptimal \
+                 (I3); got {:?}",
+                optimality
+            );
+        }
+        _ => panic!(
+            "expected Ranked (interior-optimum dim=2 problem should reliably Solve), got {:?}",
+            ranked
+        ),
+    }
+}
+
+/// (d) — determinism (BT5, §3.2): two `solve_ranked` calls on the same
+/// problem return the identical candidate count, identical ordering, and
+/// `to_bits()`-identical values — `multistart_points` is a pure function of
+/// the problem (no RNG, clock, or seed).
+#[test]
+fn solve_ranked_multistart_is_deterministic_across_calls() {
+    use reify_ir::RankedSolveResult;
+
+    let solver = DimensionalSolver;
+    let (problem, x_id, y_id) = two_param_interior_quadratic_problem();
+
+    let first = solver.solve_ranked(&problem);
+    let second = solver.solve_ranked(&problem);
+
+    let (
+        RankedSolveResult::Ranked { candidates: c1, .. },
+        RankedSolveResult::Ranked { candidates: c2, .. },
+    ) = (&first, &second)
+    else {
+        panic!("expected Ranked on both calls, got {:?} / {:?}", first, second);
+    };
+
+    // Pin the expected K=6 shape too — otherwise this test would pass
+    // vacuously against today's single-candidate override (which is also
+    // trivially deterministic at K=1), and would not RED ahead of step-4.
+    assert_eq!(c1.len(), 6, "expected K=2*(2+1)=6 candidates, got {}", c1.len());
+    assert_eq!(c1.len(), c2.len(), "candidate count must be deterministic");
+    for (i, (a, b)) in c1.iter().zip(c2.iter()).enumerate() {
+        assert_eq!(
+            a.objective_score.map(f64::to_bits),
+            b.objective_score.map(f64::to_bits),
+            "candidate[{}] objective_score must be to_bits()-identical across calls",
+            i
+        );
+        for (id, label) in [(&x_id, "x"), (&y_id, "y")] {
+            let av = a.values.get(id).and_then(|v| v.as_f64()).unwrap();
+            let bv = b.values.get(id).and_then(|v| v.as_f64()).unwrap();
+            assert_eq!(
+                av.to_bits(),
+                bv.to_bits(),
+                "candidate[{}] {} value must be to_bits()-identical across calls",
+                i,
+                label
+            );
+        }
+    }
+}
+
+/// (e) — dominance: best-of-K never worse than the single-seed `solve()`
+/// result. The seed (`extract_initial_point`) is one of the K multistart
+/// points, so `candidates[0].objective_score` must be <= the score derived
+/// from the plain single-start `solve()` path (min-over-superset <= any one
+/// element, by construction).
+#[test]
+fn solve_ranked_multistart_dominates_single_start_solve() {
+    use reify_ir::RankedSolveResult;
+
+    let solver = DimensionalSolver;
+    let (problem, x_id, y_id) = two_param_interior_quadratic_problem();
+
+    // Independently re-derive the single-seed score from solve()'s own output
+    // (mirrors the (x - 30mm)^2 + (y - 70mm)^2 objective built above).
+    let single = solver.solve(&problem);
+    let single_score = match single {
+        SolveResult::Solved { values, .. } => {
+            let x = values.get(&x_id).unwrap().as_f64().unwrap();
+            let y = values.get(&y_id).unwrap().as_f64().unwrap();
+            (x - 0.03).powi(2) + (y - 0.07).powi(2)
+        }
+        other => panic!("expected Solved from solve(), got {:?}", other),
+    };
+
+    let ranked = solver.solve_ranked(&problem);
+    match ranked {
+        RankedSolveResult::Ranked { candidates, .. } => {
+            // Pin the expected K=6 shape too — otherwise this test would pass
+            // vacuously against today's single-candidate override (whose lone
+            // candidate trivially dominates itself), and would not RED ahead
+            // of step-4.
+            assert_eq!(
+                candidates.len(),
+                6,
+                "expected K=2*(2+1)=6 candidates, got {}",
+                candidates.len()
+            );
+            let best = candidates[0].objective_score.unwrap();
+            // Small epsilon absorbs any ULP-level arithmetic-order noise between
+            // this test's manual re-derivation and the solver's internal
+            // expression-evaluator fold — dominance is a `<=` claim, not exact
+            // equality.
+            assert!(
+                best <= single_score + 1e-9,
+                "best-of-K candidate[0] (score {}) must never be worse than the \
+                 single-seed solve() score ({}) — dominance",
+                best,
+                single_score
+            );
+        }
+        other => panic!("expected Ranked, got {:?}", other),
+    }
+}
+
+/// (f) — tie-break: ties are broken by ASCENDING start index (start #0, the
+/// historical seed, wins exact ties). Uses a CONSTANT objective (independent
+/// of x and y) so every K=6 candidate ties EXACTLY: `eval_objective_set`
+/// never reads the solved value map for a pure literal, and — because the
+/// cost landscape is then perfectly flat everywhere inside the
+/// (unconstrained) box bounds — Nelder-Mead's simplex-standard-deviation
+/// termination check fires before the executor's first `next_iter()` call
+/// (verified against `argmin::core::Executor::run`, which checks
+/// `terminate()` before every iteration, including the first), so each
+/// candidate's solved values are byte-identical to its own multistart seed,
+/// UNCHANGED. This makes the expected per-candidate values fully predictable
+/// without relying on partial Nelder-Mead convergence agreement across
+/// distinct starts.
+#[test]
+fn solve_ranked_multistart_ties_broken_by_ascending_start_index() {
+    use reify_ir::RankedSolveResult;
+
+    let solver = DimensionalSolver;
+
+    let x_id = vcid("Part", "x");
+    let y_id = vcid("Part", "y");
+    let (lo, hi) = (0.001_f64, 0.1_f64);
+    let mid = (lo + hi) / 2.0;
+    // Seed expressed via the same `mm()` formula (v * 0.001) used to build
+    // `current_values` below, so the "expected" tuple is bit-identical
+    // (to_bits()) to what `extract_initial_point` will read back — not just
+    // decimal-literal-close.
+    let (seed_x_mm, seed_y_mm) = (20.0_f64, 30.0_f64); // distinct from mid (50.5mm) and lo/hi
+    let seed = (seed_x_mm * 0.001, seed_y_mm * 0.001);
+
+    // Constant objective — a bare literal that does not reference x or y at all.
+    let objective = ObjectiveSet::single(ObjectiveSense::Minimize, literal(mm(1.0)));
+
+    let mut current = ValueMap::new();
+    current.insert(x_id.clone(), mm(seed_x_mm));
+    current.insert(y_id.clone(), mm(seed_y_mm));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((lo, hi)),
+                free: true,
+            },
+            AutoParam {
+                id: y_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((lo, hi)),
+                free: true,
+            },
+        ],
+        constraints: vec![],
+        current_values: current,
+        objective: Some(objective),
+        functions: vec![].into(),
+    };
+
+    // Expected multistart order (solver.rs::multistart_points): the seed,
+    // then the all-midpoint point, then per-axis (low, high) with the other
+    // axis held at midpoint.
+    let expected: [(f64, f64); 6] =
+        [seed, (mid, mid), (lo, mid), (hi, mid), (mid, lo), (mid, hi)];
+
+    let ranked = solver.solve_ranked(&problem);
+    match ranked {
+        RankedSolveResult::Ranked { candidates, .. } => {
+            assert_eq!(candidates.len(), 6, "expected K=6 candidates, got {}", candidates.len());
+
+            let first_score = candidates[0].objective_score.unwrap().to_bits();
+            for (i, c) in candidates.iter().enumerate() {
+                assert_eq!(
+                    c.objective_score.unwrap().to_bits(),
+                    first_score,
+                    "candidate[{}]: a constant objective must tie EXACTLY across all \
+                     K candidates",
+                    i
+                );
+            }
+
+            // With every score tied, order must be ascending start index —
+            // i.e. exactly the multistart generation order.
+            for (i, (ex, ey)) in expected.iter().enumerate() {
+                let cx = candidates[i].values.get(&x_id).and_then(|v| v.as_f64()).unwrap();
+                let cy = candidates[i].values.get(&y_id).and_then(|v| v.as_f64()).unwrap();
+                assert_eq!(
+                    cx.to_bits(),
+                    ex.to_bits(),
+                    "candidate[{}].x must equal multistart seed #{} exactly under a \
+                     flat objective (tie-break by ascending start index)",
+                    i,
+                    i
+                );
+                assert_eq!(
+                    cy.to_bits(),
+                    ey.to_bits(),
+                    "candidate[{}].y must equal multistart seed #{} exactly under a \
+                     flat objective (tie-break by ascending start index)",
+                    i,
+                    i
+                );
+            }
+        }
+        other => panic!("expected Ranked, got {:?}", other),
+    }
+}
