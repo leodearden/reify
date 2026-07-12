@@ -4,6 +4,13 @@
 //! deterministic across parameter values, so a morph from `param_0` to
 //! `param_1` is a strict node-position update.
 
+// Not every test binary that includes this module (via `#[path = …] mod
+// fixtures;`) uses every fixture — e.g. `chain_degradation.rs` (task #2951)
+// only exercises `plate_with_hole`, not `bracket`. Suppress the resulting
+// dead-code warnings for the entire module (same convention as
+// `reify-syntax/tests/common/mod.rs`).
+#![allow(dead_code)]
+
 use reify_ir::{ElementOrderTag, VolumeConnectivity, VolumeMesh};
 use std::collections::HashMap;
 use std::f64::consts::TAU;
