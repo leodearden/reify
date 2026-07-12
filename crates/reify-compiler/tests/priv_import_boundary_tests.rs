@@ -13,8 +13,8 @@
 
 use std::fs;
 
-use reify_compiler::module_dag::{compile_project, ModuleResolver};
 use reify_compiler::CompiledModule;
+use reify_compiler::module_dag::{ModuleResolver, compile_project};
 use reify_core::{Diagnostic, DiagnosticCode};
 
 /// Flatten every diagnostic from a `compile_project` result — the priv-access

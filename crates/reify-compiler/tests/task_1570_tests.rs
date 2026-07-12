@@ -10,9 +10,9 @@
 //!     `scope.resolve(member)` should return `CompiledExpr::literal(Value::Undef, Type::dimensionless_scalar())`
 //!     rather than fabricating a `ValueCellId`.
 
-use reify_test_support::{compile_source, errors_only, warnings_only};
 use reify_core::{Severity, Type};
 use reify_ir::{CompiledExprKind, Value};
+use reify_test_support::{compile_source, errors_only, warnings_only};
 
 // ── step-1: characterization test for entity.rs dedup refactor ───────────────
 

@@ -280,8 +280,7 @@ fn annotation_schema_registry_parity() {
         );
         assert_eq!(diags[0].labels[0].message, "duplicate @optimized");
         assert_eq!(
-            diags[0].labels[0].span,
-            a2.span,
+            diags[0].labels[0].span, a2.span,
             "duplicate warning must be on second annotation's span"
         );
     }
@@ -352,7 +351,9 @@ fn annotation_schema_registry_parity() {
             diags
         );
         assert!(
-            diags[0].message.contains("requires a string literal target"),
+            diags[0]
+                .message
+                .contains("requires a string literal target"),
             "unexpected message: {}",
             diags[0].message
         );

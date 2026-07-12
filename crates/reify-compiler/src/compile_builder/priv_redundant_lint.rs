@@ -115,8 +115,7 @@ mod tests {
 
     /// Parse `source` as a module and extract the first structure's member list.
     fn parse_first_structure_members(source: &str) -> Vec<reify_ast::MemberDecl> {
-        let parsed =
-            reify_syntax::parse(source, ModulePath::single("test"));
+        let parsed = reify_syntax::parse(source, ModulePath::single("test"));
         match &parsed.declarations[0] {
             reify_ast::Declaration::Structure(s) => s.members.clone(),
             other => panic!("expected Structure declaration, got {:?}", other),

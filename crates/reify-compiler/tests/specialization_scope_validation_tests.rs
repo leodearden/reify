@@ -25,8 +25,8 @@
 //! diagnostics from stub types like `"Foo"`).
 
 use reify_ast::{Expr, ExprKind, MatchArmDeclArmDecl, MatchArmDeclGroupDecl, MemberDecl};
-use reify_test_support::specialization_fixtures::*;
 use reify_core::{DiagnosticCode, Severity, SourceSpan};
+use reify_test_support::specialization_fixtures::*;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

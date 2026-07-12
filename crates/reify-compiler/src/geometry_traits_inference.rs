@@ -72,7 +72,9 @@
 //! Bounded — adding a new Unbounded primitive without an explicit arm
 //! defeats the Bounded check.
 
-use crate::types::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind, ProfileKind, SurfaceKind};
+use crate::types::{
+    BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind, ProfileKind, SurfaceKind,
+};
 use reify_core::ValueCellId;
 use reify_ir::{CompiledExpr, CompiledExprKind};
 
@@ -771,7 +773,8 @@ pub fn try_infer_traits_for_function_call_in_env(
 ) -> Option<InferredTraits> {
     match name {
         // ─── Primitive constructors → all() ─────────────────────────────
-        "box" | "box_centered" | "cylinder" | "cylinder_centered" | "sphere" | "tube" | "cone" | "wedge" => Some(InferredTraits::all()),
+        "box" | "box_centered" | "cylinder" | "cylinder_centered" | "sphere" | "tube" | "cone"
+        | "wedge" => Some(InferredTraits::all()),
 
         // ─── Torus → bounded + connected, NON-convex ────────────────────
         // The first non-convex primitive: a ring has a hole, so it cannot
@@ -1022,8 +1025,7 @@ mod tests {
              (combine_transform identity passthrough, defensive default)"
         );
         assert_eq!(
-            apply,
-            translate,
+            apply, translate,
             "apply_transform dispatch result must equal translate dispatch result \
              (both are combine_transform passthroughs in the same match arm)"
         );

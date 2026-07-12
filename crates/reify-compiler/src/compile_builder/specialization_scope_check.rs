@@ -10,7 +10,10 @@
 //! `shadow_lint::lint_module` (both in this directory) so the call site
 //! in `compile_with_prelude_context` is uniform.
 
-use reify_ast::{Declaration, MAX_MEMBER_NESTING_DEPTH, MemberDecl, ParsedModule, walk_specialization_scope_members};
+use reify_ast::{
+    Declaration, MAX_MEMBER_NESTING_DEPTH, MemberDecl, ParsedModule,
+    walk_specialization_scope_members,
+};
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
 
 /// Pre-pass entry point: walk every specialization scope in `parsed`.
@@ -169,8 +172,8 @@ where
 mod tests {
     use super::*;
     use reify_ast::{GuardedGroupDecl, MemberDecl};
-    use reify_test_support::specialization_fixtures::*;
     use reify_core::{Diagnostic, DiagnosticCode, ModulePath, Severity};
+    use reify_test_support::specialization_fixtures::*;
 
     fn parse_module(source: &str) -> ParsedModule {
         reify_syntax::parse(source, ModulePath::single("test"))

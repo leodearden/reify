@@ -95,10 +95,12 @@ fn profile_required_count(source: &str) -> usize {
 /// rejected.
 #[test]
 fn extrude_of_box_is_rejected() {
-    let n = profile_required_count(
-        "structure def S { let r = extrude(box(10mm, 10mm, 10mm), 5mm) }",
+    let n =
+        profile_required_count("structure def S { let r = extrude(box(10mm, 10mm, 10mm), 5mm) }");
+    assert!(
+        n >= 1,
+        "expected GeometryProfileRequired for extrude(box(...)), got {n}"
     );
-    assert!(n >= 1, "expected GeometryProfileRequired for extrude(box(...)), got {n}");
 }
 
 /// `revolve(box(...))` — Solid profile rejected.
@@ -107,7 +109,10 @@ fn revolve_of_box_is_rejected() {
     let n = profile_required_count(
         "structure def S { let r = revolve(box(10mm, 10mm, 10mm), 0mm, 0mm, 0mm, 0.0, 1.0, 0.0, 3.14) }",
     );
-    assert!(n >= 1, "expected GeometryProfileRequired for revolve(box(...)), got {n}");
+    assert!(
+        n >= 1,
+        "expected GeometryProfileRequired for revolve(box(...)), got {n}"
+    );
 }
 
 /// `extrude_symmetric(box(...))` — Solid profile rejected.
@@ -116,7 +121,10 @@ fn extrude_symmetric_of_box_is_rejected() {
     let n = profile_required_count(
         "structure def S { let r = extrude_symmetric(box(10mm, 10mm, 10mm), 5mm) }",
     );
-    assert!(n >= 1, "expected GeometryProfileRequired for extrude_symmetric(box(...)), got {n}");
+    assert!(
+        n >= 1,
+        "expected GeometryProfileRequired for extrude_symmetric(box(...)), got {n}"
+    );
 }
 
 /// `extrude(line_segment(...))` — a statically-Curve operand at a Surface-profile
@@ -126,16 +134,20 @@ fn extrude_of_curve_is_rejected() {
     let n = profile_required_count(
         "structure def S { let r = extrude(line_segment(0mm, 0mm, 0mm, 10mm, 0mm, 0mm), 5mm) }",
     );
-    assert!(n >= 1, "expected GeometryProfileRequired for extrude(line_segment(...)), got {n}");
+    assert!(
+        n >= 1,
+        "expected GeometryProfileRequired for extrude(line_segment(...)), got {n}"
+    );
 }
 
 /// `pipe(box(...))` — a Solid operand at a Curve-path slot is rejected.
 #[test]
 fn pipe_of_box_is_rejected() {
-    let n = profile_required_count(
-        "structure def S { let r = pipe(box(10mm, 10mm, 10mm), 5mm) }",
+    let n = profile_required_count("structure def S { let r = pipe(box(10mm, 10mm, 10mm), 5mm) }");
+    assert!(
+        n >= 1,
+        "expected GeometryProfileRequired for pipe(box(...)), got {n}"
     );
-    assert!(n >= 1, "expected GeometryProfileRequired for pipe(box(...)), got {n}");
 }
 
 /// `sweep(box(...), box(...))` — Solid path (and Solid profile) rejected.
@@ -144,17 +156,21 @@ fn sweep_with_solid_path_is_rejected() {
     let n = profile_required_count(
         "structure def S { let r = sweep(box(10mm, 10mm, 10mm), box(10mm, 10mm, 10mm)) }",
     );
-    assert!(n >= 1, "expected GeometryProfileRequired for sweep(box(...), box(...)), got {n}");
+    assert!(
+        n >= 1,
+        "expected GeometryProfileRequired for sweep(box(...), box(...)), got {n}"
+    );
 }
 
 /// PERMISSIVE: `extrude(p, ...)` for `param p : Solid` — `p` is a ValueRef, not a
 /// FunctionCall, so the check is skipped (the load-bearing back-compat pin).
 #[test]
 fn extrude_of_solid_param_is_accepted() {
-    let n = profile_required_count(
-        "structure def S { param p : Solid  let r = extrude(p, 5mm) }",
+    let n = profile_required_count("structure def S { param p : Solid  let r = extrude(p, 5mm) }");
+    assert_eq!(
+        n, 0,
+        "param operand must be permissive, got {n} GeometryProfileRequired"
     );
-    assert_eq!(n, 0, "param operand must be permissive, got {n} GeometryProfileRequired");
 }
 
 /// PERMISSIVE: `pipe(line_segment(...))` — a statically-Curve operand at a
@@ -164,7 +180,10 @@ fn pipe_of_curve_is_accepted() {
     let n = profile_required_count(
         "structure def S { let r = pipe(line_segment(0mm, 0mm, 0mm, 10mm, 0mm, 0mm), 5mm) }",
     );
-    assert_eq!(n, 0, "Curve path must be accepted, got {n} GeometryProfileRequired");
+    assert_eq!(
+        n, 0,
+        "Curve path must be accepted, got {n} GeometryProfileRequired"
+    );
 }
 
 /// PERMISSIVE (sweep_degenerate-style): `loft` over let-bound extrudes of params.
@@ -178,7 +197,10 @@ fn loft_over_let_bound_params_is_accepted() {
             let r = loft(s1, s2, s3) \
         }",
     );
-    assert_eq!(n, 0, "let-bound profile operands must be permissive, got {n} GeometryProfileRequired");
+    assert_eq!(
+        n, 0,
+        "let-bound profile operands must be permissive, got {n} GeometryProfileRequired"
+    );
 }
 
 // ─── task-4160: rectangle + circle profile acceptance/rejection ──────────────
@@ -195,10 +217,12 @@ fn loft_over_let_bound_params_is_accepted() {
 /// RED until step-6 wires rectangle as a geometry function.
 #[test]
 fn extrude_of_rectangle_is_accepted() {
-    let n = profile_required_count(
-        "structure def S { let r = extrude(rectangle(20mm, 10mm), 3mm) }",
+    let n =
+        profile_required_count("structure def S { let r = extrude(rectangle(20mm, 10mm), 3mm) }");
+    assert_eq!(
+        n, 0,
+        "extrude(rectangle(...)) must be accepted (Surface profile), got {n}"
     );
-    assert_eq!(n, 0, "extrude(rectangle(...)) must be accepted (Surface profile), got {n}");
 }
 
 /// `extrude(circle(...), dist)` — Surface profile is accepted.
@@ -206,10 +230,11 @@ fn extrude_of_rectangle_is_accepted() {
 /// RED until step-6 wires circle as a geometry function.
 #[test]
 fn extrude_of_circle_is_accepted() {
-    let n = profile_required_count(
-        "structure def S { let r = extrude(circle(8mm), 2mm) }",
+    let n = profile_required_count("structure def S { let r = extrude(circle(8mm), 2mm) }");
+    assert_eq!(
+        n, 0,
+        "extrude(circle(...)) must be accepted (Surface profile), got {n}"
     );
-    assert_eq!(n, 0, "extrude(circle(...)) must be accepted (Surface profile), got {n}");
 }
 
 /// `revolve(rectangle(...), ...)` — Surface profile is accepted.
@@ -220,7 +245,10 @@ fn revolve_of_rectangle_is_accepted() {
     let n = profile_required_count(
         "structure def S { let r = revolve(rectangle(20mm, 10mm), 0mm, 0mm, 0mm, 0.0, 1.0, 0.0, 3.14) }",
     );
-    assert_eq!(n, 0, "revolve(rectangle(...)) must be accepted (Surface profile), got {n}");
+    assert_eq!(
+        n, 0,
+        "revolve(rectangle(...)) must be accepted (Surface profile), got {n}"
+    );
 }
 
 /// `pipe(rectangle(...), radius)` — Surface operand at the Curve path slot
@@ -229,10 +257,11 @@ fn revolve_of_rectangle_is_accepted() {
 /// RED until step-6 wires rectangle as a geometry function.
 #[test]
 fn pipe_of_rectangle_is_rejected() {
-    let n = profile_required_count(
-        "structure def S { let r = pipe(rectangle(20mm, 10mm), 2mm) }",
+    let n = profile_required_count("structure def S { let r = pipe(rectangle(20mm, 10mm), 2mm) }");
+    assert!(
+        n >= 1,
+        "pipe(rectangle(...)) must be rejected (Surface≠Curve path), got {n}"
     );
-    assert!(n >= 1, "pipe(rectangle(...)) must be rejected (Surface≠Curve path), got {n}");
 }
 
 // ─── task-4161: polygon + ellipse profile acceptance/rejection ───────────────
@@ -253,7 +282,10 @@ fn extrude_of_polygon_is_accepted() {
     let n = profile_required_count(
         "structure def S { let r = extrude(polygon(0mm,0mm, 10mm,0mm, 10mm,10mm), 3mm) }",
     );
-    assert_eq!(n, 0, "extrude(polygon(...)) must be accepted (Surface profile), got {n}");
+    assert_eq!(
+        n, 0,
+        "extrude(polygon(...)) must be accepted (Surface profile), got {n}"
+    );
 }
 
 /// `extrude(ellipse(10mm, 5mm), dist)` — Surface profile is accepted with no
@@ -262,10 +294,11 @@ fn extrude_of_polygon_is_accepted() {
 /// RED until step-6 wires ellipse as a geometry function.
 #[test]
 fn extrude_of_ellipse_is_accepted() {
-    let n = profile_required_count(
-        "structure def S { let r = extrude(ellipse(10mm, 5mm), 3mm) }",
+    let n = profile_required_count("structure def S { let r = extrude(ellipse(10mm, 5mm), 3mm) }");
+    assert_eq!(
+        n, 0,
+        "extrude(ellipse(...)) must be accepted (Surface profile), got {n}"
     );
-    assert_eq!(n, 0, "extrude(ellipse(...)) must be accepted (Surface profile), got {n}");
 }
 
 /// `pipe(polygon(...), radius)` — Surface operand at the Curve path slot must
@@ -277,7 +310,10 @@ fn pipe_of_polygon_is_rejected() {
     let n = profile_required_count(
         "structure def S { let r = pipe(polygon(0mm,0mm, 10mm,0mm, 10mm,10mm), 2mm) }",
     );
-    assert!(n >= 1, "pipe(polygon(...)) must be rejected (Surface≠Curve path), got {n}");
+    assert!(
+        n >= 1,
+        "pipe(polygon(...)) must be rejected (Surface≠Curve path), got {n}"
+    );
 }
 
 /// `pipe(ellipse(...), radius)` — Surface operand at the Curve path slot must
@@ -286,8 +322,9 @@ fn pipe_of_polygon_is_rejected() {
 /// RED until step-6 wires ellipse as a geometry function.
 #[test]
 fn pipe_of_ellipse_is_rejected() {
-    let n = profile_required_count(
-        "structure def S { let r = pipe(ellipse(10mm, 5mm), 2mm) }",
+    let n = profile_required_count("structure def S { let r = pipe(ellipse(10mm, 5mm), 2mm) }");
+    assert!(
+        n >= 1,
+        "pipe(ellipse(...)) must be rejected (Surface≠Curve path), got {n}"
     );
-    assert!(n >= 1, "pipe(ellipse(...)) must be rejected (Surface≠Curve path), got {n}");
 }

@@ -5,8 +5,8 @@
 //! and integration with existing type resolution paths.
 
 use reify_compiler::CompiledTypeAlias;
-use reify_test_support::{compile_source, errors_only};
 use reify_core::{ContentHash, SourceSpan, Type};
+use reify_test_support::{compile_source, errors_only};
 
 // ─── step-1: CompiledTypeAlias data structures ──────────────────────────────
 
@@ -191,8 +191,7 @@ fn chained_dimensional_alias_acceleration() {
         .find(|c| c.id.member == "a")
         .expect("a not found");
     // LENGTH / TIME = Velocity, then Velocity / TIME = LENGTH / TIME^2
-    let velocity_dim =
-        reify_core::DimensionVector::LENGTH.div(&reify_core::DimensionVector::TIME);
+    let velocity_dim = reify_core::DimensionVector::LENGTH.div(&reify_core::DimensionVector::TIME);
     let expected_dim = velocity_dim.div(&reify_core::DimensionVector::TIME);
     assert_eq!(
         a_cell.cell_type,
@@ -939,7 +938,10 @@ fn alias_dependency_map_via_type_args_reverse_order() {
         .expect("identity function not found");
     assert_eq!(
         func.params[0].1,
-        Type::Map(Box::new(Type::dimensionless_scalar()), Box::new(Type::String)),
+        Type::Map(
+            Box::new(Type::dimensionless_scalar()),
+            Box::new(Type::String)
+        ),
         "Outer should resolve to Map<Real, String>"
     );
 }

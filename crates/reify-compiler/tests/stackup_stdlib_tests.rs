@@ -179,7 +179,12 @@ fn stackup_result_trait_declares_required_members() {
         "StackupResult should have 4 required members, got: {:?}",
         member_names
     );
-    for name in &["nominal_gap", "worst_case_min", "worst_case_max", "rss_sigma"] {
+    for name in &[
+        "nominal_gap",
+        "worst_case_min",
+        "worst_case_max",
+        "rss_sigma",
+    ] {
         assert!(
             member_names.contains(name),
             "StackupResult missing required member '{}', members: {:?}",

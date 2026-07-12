@@ -203,11 +203,8 @@ pub(super) fn check_phase_resolve_structure_members(
                     // TypeExprKind::QualifiedAssoc → None early return above.
                     if let reify_ast::TypeExprKind::Named { name, type_args } = &te.kind
                         && type_args.is_empty()
-                        && let Some(ty) = resolve_assoc_type_name(
-                            name,
-                            assoc_type_scope,
-                            declared_assoc_names,
-                        )
+                        && let Some(ty) =
+                            resolve_assoc_type_name(name, assoc_type_scope, declared_assoc_names)
                     {
                         ty
                     } else {
@@ -684,7 +681,9 @@ pub(super) fn check_phase_pre_register_default_types(
     for default in &ctx.defaults {
         if let Some(name) = &default.name
             && structure_members.contains_key(name.as_str())
-            && let DefaultKind::Let { cell_type: None, .. } = &default.kind
+            && let DefaultKind::Let {
+                cell_type: None, ..
+            } = &default.kind
         {
             pass2_skipped.insert(name.to_string());
         }
@@ -942,10 +941,7 @@ pub(super) fn collect_structure_assoc_type_bindings(
                         type_expr
                     ))
                     .with_code(DiagnosticCode::UnresolvedType)
-                    .with_label(DiagnosticLabel::new(
-                        type_expr.span,
-                        "unknown type name",
-                    )),
+                    .with_label(DiagnosticLabel::new(type_expr.span, "unknown type name")),
                 );
                 Type::Error
             };
@@ -1080,7 +1076,12 @@ fn render_assoc_fn_sig(sig: &CompiledAssocFnSig) -> String {
     for p in &sig.params {
         parts.push(p.to_string());
     }
-    format!("fn {}({}) -> {}", sig.name, parts.join(", "), sig.return_type)
+    format!(
+        "fn {}({}) -> {}",
+        sig.name,
+        parts.join(", "),
+        sig.return_type
+    )
 }
 
 /// True when a derived [`CompiledAssocFnSig`] carries a `Type::Error` in its
@@ -1316,7 +1317,9 @@ pub(super) fn check_phase_resolve_assoc_fns(
 /// correct state, but avoids a panic in error paths). Extracted to remove the
 /// repeated five-line lookup pattern at each of the three call sites. (task 3972)
 fn declaring_trait(map: &HashMap<String, String>, name: &str) -> String {
-    map.get(name).cloned().unwrap_or_else(|| "<trait>".to_string())
+    map.get(name)
+        .cloned()
+        .unwrap_or_else(|| "<trait>".to_string())
 }
 
 /// Phase (task 3972): resolve the conformer's associated-type table.
@@ -1355,11 +1358,10 @@ pub(super) fn check_phase_resolve_assoc_types(
             continue;
         }
         let trait_name = declaring_trait(&ctx.seen_assoc_type_default_traits, type_name);
-        let (resolved, is_override) =
-            match structure_assoc_type_bindings.get(type_name) {
-                Some(binding_ty) => (binding_ty.clone(), true),
-                None => (default_ty.clone(), false),
-            };
+        let (resolved, is_override) = match structure_assoc_type_bindings.get(type_name) {
+            Some(binding_ty) => (binding_ty.clone(), true),
+            None => (default_ty.clone(), false),
+        };
         assoc_types_out.push(CompiledAssocType {
             trait_name,
             type_name: type_name.to_string(),
@@ -1735,19 +1737,25 @@ pub(super) fn check_phase_check_members_against_requirements(
         }
         let trait_declared_type = match &default.kind {
             DefaultKind::Param { cell_type, .. } => cell_type,
-            DefaultKind::Let { cell_type: Some(ty), .. } => ty,
+            DefaultKind::Let {
+                cell_type: Some(ty),
+                ..
+            } => ty,
             // Unannotated let: declared type is the inferred expr type, NOT computed for names
             // colliding with a structure member (pre-register Pass 2 skips structure_members
             // names, checker.rs:596) — mirrors structure_let_members holding only annotated
             // conformer lets (:257). Closing this gap would require compiling the trait-let
             // expression against the conformer scope — deferred.
-            DefaultKind::Let { cell_type: None, .. }
+            DefaultKind::Let {
+                cell_type: None, ..
+            }
             | DefaultKind::Constraint(_)
             | DefaultKind::Fn(_)
             | DefaultKind::AssocType(_) => continue,
         };
-        let Some(conformer_type) =
-            structure_param_members.get(name).or_else(|| structure_let_members.get(name))
+        let Some(conformer_type) = structure_param_members
+            .get(name)
+            .or_else(|| structure_let_members.get(name))
         else {
             continue;
         };

@@ -14,9 +14,9 @@
 //! exercises the same embedded + sequential-prelude compilation path as
 //! production. This mirrors the helper trio in `materials_fea_tests.rs`.
 
-use reify_ir::*;
 use reify_compiler::*;
 use reify_core::*;
+use reify_ir::*;
 use reify_test_support::collect_value_ref_members;
 
 /// Look up a structure template by name within the `std/solver/elastic` module.
@@ -213,7 +213,8 @@ fn budget_reason_enum_has_four_unit_variants_in_canonical_order() {
             v.payload,
             VariantPayload::Unit,
             "BudgetReason.{} should be a Unit (bare) variant, got: {:?}",
-            v.name, v.payload
+            v.name,
+            v.payload
         );
     }
 }
@@ -464,7 +465,9 @@ fn elastic_options_param_defaults_match_spec() {
     // element_order = ElementOrder.P1
     let element_order_default = require_default(template, "element_order");
     match &element_order_default.kind {
-        CompiledExprKind::Literal(Value::Enum { type_name, variant, .. }) => {
+        CompiledExprKind::Literal(Value::Enum {
+            type_name, variant, ..
+        }) => {
             assert_eq!(
                 type_name, "ElementOrder",
                 "element_order default should be ElementOrder.P1, got type_name {:?}",
@@ -670,7 +673,9 @@ fn elastic_options_shell_param_defaults_match_spec() {
     // shell_force = ShellForce.Auto
     let shell_force_default = require_default(template, "shell_force");
     match &shell_force_default.kind {
-        CompiledExprKind::Literal(Value::Enum { type_name, variant, .. }) => {
+        CompiledExprKind::Literal(Value::Enum {
+            type_name, variant, ..
+        }) => {
             assert_eq!(
                 type_name, "ShellForce",
                 "shell_force default should be ShellForce.Auto, got type_name {:?}",
@@ -852,7 +857,11 @@ fn elastic_options_constrains_positivity_invariants() {
             // emit `Real(0.0)` here.
             match &c.expr.kind {
                 CompiledExprKind::BinOp { op, left, right } => {
-                    if *op != BinOp::Gt || !collect_value_ref_members(left).iter().any(|m| m.as_str() == *required) {
+                    if *op != BinOp::Gt
+                        || !collect_value_ref_members(left)
+                            .iter()
+                            .any(|m| m.as_str() == *required)
+                    {
                         return false;
                     }
                     match &right.kind {
@@ -914,7 +923,11 @@ fn elastic_options_caps_cg_tolerance_below_one() {
         // but the name + op check still passes.
         match &c.expr.kind {
             CompiledExprKind::BinOp { op, left, right } => {
-                if *op != BinOp::Lt || !collect_value_ref_members(left).iter().any(|m| m.as_str() == "cg_tolerance") {
+                if *op != BinOp::Lt
+                    || !collect_value_ref_members(left)
+                        .iter()
+                        .any(|m| m.as_str() == "cg_tolerance")
+                {
                     return false;
                 }
                 match &right.kind {
@@ -957,7 +970,10 @@ fn elastic_options_constrains_shell_threshold_below_one() {
         // future numeric-promotion change could legitimately emit Real(1.0).
         match &c.expr.kind {
             CompiledExprKind::BinOp { op, left, right } => {
-                if *op != BinOp::Lt || !collect_value_ref_members(left).iter().any(|m| m.as_str() == "shell_threshold")
+                if *op != BinOp::Lt
+                    || !collect_value_ref_members(left)
+                        .iter()
+                        .any(|m| m.as_str() == "shell_threshold")
                 {
                     return false;
                 }
@@ -1097,26 +1113,24 @@ fn elastic_options_constrains_aposteriori_budget_invariants() {
     ];
 
     for (member, want_op, rhs) in required {
-        let matched = template.constraints.iter().any(|c| {
-            match &c.expr.kind {
-                CompiledExprKind::BinOp { op, left, right } => {
-                    if *op != *want_op
-                        || !collect_value_ref_members(left)
-                            .iter()
-                            .any(|m| m.as_str() == *member)
-                    {
-                        return false;
-                    }
-                    match &right.kind {
-                        CompiledExprKind::Literal(Value::Int(v)) => *v == *rhs,
-                        CompiledExprKind::Literal(Value::Real(v)) => {
-                            v.to_bits() == (*rhs as f64).to_bits()
-                        }
-                        _ => false,
-                    }
+        let matched = template.constraints.iter().any(|c| match &c.expr.kind {
+            CompiledExprKind::BinOp { op, left, right } => {
+                if *op != *want_op
+                    || !collect_value_ref_members(left)
+                        .iter()
+                        .any(|m| m.as_str() == *member)
+                {
+                    return false;
                 }
-                _ => false,
+                match &right.kind {
+                    CompiledExprKind::Literal(Value::Int(v)) => *v == *rhs,
+                    CompiledExprKind::Literal(Value::Real(v)) => {
+                        v.to_bits() == (*rhs as f64).to_bits()
+                    }
+                    _ => false,
+                }
             }
+            _ => false,
         });
         let op_str = match want_op {
             BinOp::Gt => ">",
@@ -1182,13 +1196,21 @@ fn elastic_result_constrains_iterations_and_max_von_mises_nonneg() {
             // compile time (esc-3115-112 resolved).
             match &c.expr.kind {
                 CompiledExprKind::BinOp { op, left, right } => {
-                    if *op != BinOp::Ge || !collect_value_ref_members(left).iter().any(|m| m.as_str() == *required) {
+                    if *op != BinOp::Ge
+                        || !collect_value_ref_members(left)
+                            .iter()
+                            .any(|m| m.as_str() == *required)
+                    {
                         return false;
                     }
                     match &right.kind {
                         CompiledExprKind::Literal(Value::Int(0)) => true,
                         CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
-                        CompiledExprKind::Literal(Value::Scalar { si_value, .. }) if *si_value == 0.0 => true,
+                        CompiledExprKind::Literal(Value::Scalar { si_value, .. })
+                            if *si_value == 0.0 =>
+                        {
+                            true
+                        }
                         _ => false,
                     }
                 }
@@ -1342,7 +1364,10 @@ fn elastic_result_struct_has_correct_param_shape() {
         // task #4067 step-2: `param shell_channels : ShellStress` added here.
         // Type resolves to StructureRef("ShellStress") — the same pattern used by
         // `param material : Material` → StructureRef("Material") in material_struct_tests.rs.
-        ("shell_channels", Type::StructureRef("ShellStress".to_string())),
+        (
+            "shell_channels",
+            Type::StructureRef("ShellStress".to_string()),
+        ),
         (
             "max_von_mises",
             Type::Scalar {

@@ -84,7 +84,16 @@ fn parse_fns_do_not_collide_with_math_family_in_the_same_module() {
             let c = sqrt(4.0)
         }
     "#;
-    assert_eq!(find_cell_type(source, "Widget", "a"), Type::Option(Box::new(Type::length())));
-    assert_eq!(find_cell_type(source, "Widget", "b"), Type::Enum("Result".to_string()));
-    assert_eq!(find_cell_type(source, "Widget", "c"), Type::dimensionless_scalar());
+    assert_eq!(
+        find_cell_type(source, "Widget", "a"),
+        Type::Option(Box::new(Type::length()))
+    );
+    assert_eq!(
+        find_cell_type(source, "Widget", "b"),
+        Type::Enum("Result".to_string())
+    );
+    assert_eq!(
+        find_cell_type(source, "Widget", "c"),
+        Type::dimensionless_scalar()
+    );
 }

@@ -125,11 +125,7 @@ fn std_process_loads_with_no_errors_and_dfmseverity_enum() {
     let enum_def = find_enum("DFMSeverity");
     assert_eq!(
         enum_def.variants,
-        vec![
-            "Info".into(),
-            "Warning".into(),
-            "Error".into(),
-        ],
+        vec!["Info".into(), "Warning".into(), "Error".into(),],
         "DFMSeverity variants must be [Info, Warning, Error] in order; got: {:?}",
         enum_def.variants
     );
@@ -301,7 +297,9 @@ fn process_category_traits_each_refine_process() {
                 param_type(name, member_name),
                 *expected_type,
                 "trait '{}' member '{}' should have type {:?}",
-                name, member_name, expected_type
+                name,
+                member_name,
+                expected_type
             );
         }
     }
@@ -517,11 +515,7 @@ fn std_process_module_cardinality_locked() {
     );
 
     // Exactly 9 traits: Process + 7 categories + DFMRule.
-    let trait_names: Vec<&str> = module
-        .trait_defs
-        .iter()
-        .map(|t| t.name.as_str())
-        .collect();
+    let trait_names: Vec<&str> = module.trait_defs.iter().map(|t| t.name.as_str()).collect();
     assert_eq!(
         module.trait_defs.len(),
         9,

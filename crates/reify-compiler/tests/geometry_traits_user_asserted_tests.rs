@@ -13,10 +13,10 @@
 //! - Mixed bounds: only geometry marker bounds trip the lint.
 //! - Parametric: every stdlib geometry marker name triggers exactly one warning.
 
+use reify_core::{DiagnosticCode, Severity};
 use reify_test_support::{
     EXPECTED_GEOMETRY_TRAITS, compile_source_with_stdlib, errors_only, warnings_only,
 };
-use reify_core::{DiagnosticCode, Severity};
 
 /// A structure with a single Watertight bound must emit exactly one
 /// `W_TRAIT_USER_ASSERTED` warning with the correct code, severity, message

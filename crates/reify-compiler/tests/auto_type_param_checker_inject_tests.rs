@@ -29,7 +29,9 @@ use std::fs;
 use reify_compiler::cfg::CfgSet;
 use reify_compiler::module_dag::ModuleResolver;
 use reify_core::{ModulePath, Severity};
-use reify_ir::{ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Satisfaction};
+use reify_ir::{
+    ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Satisfaction,
+};
 
 /// Common fixture for the four parity tests.
 ///
@@ -104,13 +106,16 @@ struct CountingIndeterminate {
 
 impl CountingIndeterminate {
     fn new() -> Self {
-        Self { calls: std::sync::atomic::AtomicU32::new(0) }
+        Self {
+            calls: std::sync::atomic::AtomicU32::new(0),
+        }
     }
 }
 
 impl ConstraintChecker for CountingIndeterminate {
     fn check(&self, input: &ConstraintInput) -> Vec<ConstraintResult> {
-        self.calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         input
             .constraints
             .iter()
@@ -147,8 +152,7 @@ fn assert_parity(
     ctx: &str,
 ) {
     assert_eq!(
-        checked.auto_type_substitution,
-        stub.auto_type_substitution,
+        checked.auto_type_substitution, stub.auto_type_substitution,
         "{ctx}: auto_type_substitution must match stub path"
     );
     assert_eq!(
@@ -199,12 +203,10 @@ fn compile_with_prelude_context_checked_parity() {
     let parsed = parse_auto_source(CELL_DEP_SEAL_SOURCE, "test_checker_inject_ctx");
     // Build a prelude context from an empty prelude (consistent with above).
     let prelude: Vec<reify_compiler::CompiledModule> = vec![];
-    let ctx =
-        reify_compiler::PreludeContext::new(&prelude.iter().collect::<Vec<_>>());
+    let ctx = reify_compiler::PreludeContext::new(&prelude.iter().collect::<Vec<_>>());
     let stub = reify_compiler::compile_with_prelude_context(&parsed, &ctx);
     let counter = CountingIndeterminate::new();
-    let checked =
-        reify_compiler::compile_with_prelude_context_checked(&parsed, &ctx, &counter);
+    let checked = reify_compiler::compile_with_prelude_context_checked(&parsed, &ctx, &counter);
     assert_parity(&stub, &checked, "compile_with_prelude_context_checked");
     assert!(
         counter.calls.load(std::sync::atomic::Ordering::Relaxed) > 0,
@@ -228,8 +230,7 @@ fn compile_entry_with_stdlib_cfg_checked_parity() {
     let dir = tempfile::TempDir::new().expect("tempdir");
     let resolver = ModuleResolver::new(dir.path(), dir.path().join("stdlib"));
     let cfg = CfgSet::default();
-    let stub =
-        reify_compiler::module_dag::compile_entry_with_stdlib_cfg(&parsed, &resolver, &cfg);
+    let stub = reify_compiler::module_dag::compile_entry_with_stdlib_cfg(&parsed, &resolver, &cfg);
     let checked = reify_compiler::module_dag::compile_entry_with_stdlib_cfg_checked(
         &parsed,
         &resolver,

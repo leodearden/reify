@@ -4,8 +4,8 @@
 //! [`DiagnosticCode::Shadowing`] when a child-scope declaration uses the same
 //! name as a name visible from an enclosing parent scope.
 
-use reify_test_support::{compile_source, compile_source_with_stdlib, warnings_only};
 use reify_core::{DiagnosticCode, Severity};
+use reify_test_support::{compile_source, compile_source_with_stdlib, warnings_only};
 
 /// Basic lambda-shadows-entity-param case: a lambda parameter `x` declared
 /// inside a structure that already declares `param x` MUST emit exactly one
@@ -1439,11 +1439,9 @@ structure S {
     // so the assertion is robust to any whitespace between `forall` and `x`.
     let off = source.find("x in").unwrap();
     assert_eq!(
-        l0.span.start,
-        off as u32,
+        l0.span.start, off as u32,
         "child-site label must start at the narrow binder `x` (byte {}), got {:?}",
-        off,
-        l0.span
+        off, l0.span
     );
     assert_eq!(
         l0.span.end,

@@ -91,9 +91,9 @@ structure Valid {
     let errors = errors_only(&module);
 
     // No error should carry both "declared" and "initializer" in its message.
-    let false_positive = errors.iter().find(|d| {
-        d.message.contains("declared") && d.message.contains("initializer")
-    });
+    let false_positive = errors
+        .iter()
+        .find(|d| d.message.contains("declared") && d.message.contains("initializer"));
     assert!(
         false_positive.is_none(),
         "unexpected 'declared/initializer' error on valid param annotations: {:?}",
@@ -126,7 +126,10 @@ structure S {
     assert!(
         mismatch_diag.is_some(),
         "expected a ParamDefaultTypeMismatch error for port-member param 'd'; got: {:?}",
-        errors.iter().map(|d| (&d.message, &d.code)).collect::<Vec<_>>()
+        errors
+            .iter()
+            .map(|d| (&d.message, &d.code))
+            .collect::<Vec<_>>()
     );
 
     let diag = mismatch_diag.unwrap();
@@ -240,7 +243,10 @@ structure S {
         mismatch.is_some(),
         "expected ParamDefaultTypeMismatch for 'param bad_mass : Length = 5kg' \
          (Scalar[m] ≠ Scalar[kg]); got: {:?}",
-        errors.iter().map(|d| (&d.message, &d.code)).collect::<Vec<_>>()
+        errors
+            .iter()
+            .map(|d| (&d.message, &d.code))
+            .collect::<Vec<_>>()
     );
 
     let diag = mismatch.unwrap();
@@ -415,7 +421,10 @@ structure S {
          (ratio*2.0 infers dimensionless Scalar but is a BinOp, not a literal; \
          the literal-only guard does NOT fire; falls through to \
          type_compatible(Scalar[m], dimensionless) = false); got: {:?}",
-        errors.iter().map(|d| (&d.message, &d.code)).collect::<Vec<_>>()
+        errors
+            .iter()
+            .map(|d| (&d.message, &d.code))
+            .collect::<Vec<_>>()
     );
 }
 
@@ -442,7 +451,10 @@ structure S {
         mismatch.is_some(),
         "expected ParamDefaultTypeMismatch for 'param x : Int = 5kg' \
          (Int ≠ Scalar[kg]); got: {:?}",
-        errors.iter().map(|d| (&d.message, &d.code)).collect::<Vec<_>>()
+        errors
+            .iter()
+            .map(|d| (&d.message, &d.code))
+            .collect::<Vec<_>>()
     );
 }
 
@@ -467,7 +479,10 @@ structure S {
         mismatch.is_some(),
         "expected ParamDefaultTypeMismatch for 'param x : Int = 0.5' \
          (Int ≠ Real/dimensionless-scalar); got: {:?}",
-        errors.iter().map(|d| (&d.message, &d.code)).collect::<Vec<_>>()
+        errors
+            .iter()
+            .map(|d| (&d.message, &d.code))
+            .collect::<Vec<_>>()
     );
 }
 
@@ -505,7 +520,10 @@ structure S {
         "expected ParamDefaultTypeMismatch for 'param bad_dim : Real = 1.0/1m' \
          (Real/dimensionless ≠ Scalar[1/m]; 1.0/1m correctly infers as reciprocal dimension); \
          got: {:?}",
-        errors.iter().map(|d| (&d.message, &d.code)).collect::<Vec<_>>()
+        errors
+            .iter()
+            .map(|d| (&d.message, &d.code))
+            .collect::<Vec<_>>()
     );
 }
 
@@ -531,9 +549,14 @@ structure S {
 
     // There must be at least one error (the root-cause unresolved type `Bogus`).
     assert!(
-        errors.iter().any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
+        errors
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
         "expected an UnresolvedType error for unresolved type 'Bogus'; got: {:?}",
-        errors.iter().map(|d| (&d.message, &d.code)).collect::<Vec<_>>()
+        errors
+            .iter()
+            .map(|d| (&d.message, &d.code))
+            .collect::<Vec<_>>()
     );
 
     // NO secondary ParamDefaultTypeMismatch: the declared type is poisoned
@@ -546,6 +569,9 @@ structure S {
         "expected NO ParamDefaultTypeMismatch for 'param p : Bogus = 5kg' \
          (anti-cascade: unknown-name -> Type::Error -> guard fires -> mismatch suppressed); \
          got unexpected secondary mismatch: {:?}",
-        errors.iter().map(|d| (&d.message, &d.code)).collect::<Vec<_>>()
+        errors
+            .iter()
+            .map(|d| (&d.message, &d.code))
+            .collect::<Vec<_>>()
     );
 }

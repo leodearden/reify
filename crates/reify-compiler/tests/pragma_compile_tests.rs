@@ -2,10 +2,10 @@
 //!
 //! Tests for compiling `#name` and `#name(args)` pragmas at module and block level.
 
+use reify_core::Severity;
 use reify_test_support::{
     compile_source, compile_source_with_stdlib, errors_only, steel_elastic_source, warnings_only,
 };
-use reify_core::Severity;
 
 /// Helper: filter warnings whose message contains the given substring.
 fn pragma_warnings<'a>(
@@ -374,10 +374,7 @@ fn structure_pragma_propagated_to_topology_template() {
     match &solver.args[0] {
         reify_ast::PragmaArg::KeyValue { key, value } => {
             assert_eq!(key, "backend");
-            assert_eq!(
-                value,
-                &reify_ast::PragmaValue::String("ipopt".to_string())
-            );
+            assert_eq!(value, &reify_ast::PragmaValue::String("ipopt".to_string()));
         }
         other => panic!("expected KeyValue arg on #solver, got: {:?}", other),
     }
@@ -723,10 +720,7 @@ fn occurrence_pragma_propagated_to_topology_template() {
     match &solver.args[0] {
         reify_ast::PragmaArg::KeyValue { key, value } => {
             assert_eq!(key, "backend");
-            assert_eq!(
-                value,
-                &reify_ast::PragmaValue::String("ipopt".to_string())
-            );
+            assert_eq!(value, &reify_ast::PragmaValue::String("ipopt".to_string()));
         }
         other => panic!("expected KeyValue arg on #solver, got: {:?}", other),
     }
@@ -2931,9 +2925,7 @@ structure S { param x : Real }"#,
         // Exactly one error whose message contains "E_CFG_MALFORMED" and "#cfg".
         let cfg_errors: Vec<_> = errors_only(&module)
             .into_iter()
-            .filter(|d| {
-                d.message.contains("E_CFG_MALFORMED") && d.message.contains("#cfg")
-            })
+            .filter(|d| d.message.contains("E_CFG_MALFORMED") && d.message.contains("#cfg"))
             .collect();
         assert_eq!(
             cfg_errors.len(),
@@ -2964,9 +2956,7 @@ fn cfg_pragma_block_level_warns_module_only() {
     // Exactly one warning containing "only valid at module level" and "#cfg".
     let module_only_warns: Vec<_> = warnings_only(&module)
         .into_iter()
-        .filter(|d| {
-            d.message.contains("only valid at module level") && d.message.contains("#cfg")
-        })
+        .filter(|d| d.message.contains("only valid at module level") && d.message.contains("#cfg"))
         .collect();
     assert_eq!(
         module_only_warns.len(),

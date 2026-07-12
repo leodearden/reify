@@ -38,8 +38,8 @@
 //! See the module-header doc block in `crates/reify-compiler/src/expr.rs` for the full
 //! poison-policy documentation, including intentional Category-B non-Error fallbacks.
 
-use reify_test_support::{assert_no_type_cascade, compile_source, get_let_expr, get_let_expr_in};
 use reify_core::Type;
+use reify_test_support::{assert_no_type_cascade, compile_source, get_let_expr, get_let_expr_in};
 
 // ── steps 1/2: baseline contract (pre-existing unknown-member producer) ──────
 

@@ -62,9 +62,10 @@ fn example_ports_prelude_ri_compiles_without_import() {
     );
 
     assert!(
-        compiled.templates.iter().any(|t| {
-            t.name == "PreludeCoupling" && t.entity_kind == EntityKind::Structure
-        }),
+        compiled
+            .templates
+            .iter()
+            .any(|t| { t.name == "PreludeCoupling" && t.entity_kind == EntityKind::Structure }),
         "examples/stdlib/ports_prelude.ri should declare \
          'structure def PreludeCoupling<D: RotaryPort, N: Port>'; \
          found templates: {:?}",

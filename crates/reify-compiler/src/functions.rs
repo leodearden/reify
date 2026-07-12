@@ -326,13 +326,7 @@ pub(crate) fn compile_function(
     }
 
     // Compile result expression
-    let result_expr = compile_expr(
-        &body.result_expr,
-        &scope,
-        enum_defs,
-        functions,
-        diagnostics,
-    );
+    let result_expr = compile_expr(&body.result_expr, &scope, enum_defs, functions, diagnostics);
 
     // Compute content hash — fold in default hashes so fn f(x:Real=1) ≠ fn f(x:Real=2).
     //
@@ -1158,35 +1152,29 @@ pub(crate) fn compile_field(
             // Validate required keys: path, format, grid.
             if path.is_none() {
                 diagnostics.push(
-                    Diagnostic::error(
-                        "imported field source is missing required key: 'path'",
-                    )
-                    .with_label(DiagnosticLabel::new(
-                        field_def.span,
-                        "missing required imported config key",
-                    )),
+                    Diagnostic::error("imported field source is missing required key: 'path'")
+                        .with_label(DiagnosticLabel::new(
+                            field_def.span,
+                            "missing required imported config key",
+                        )),
                 );
             }
             if format.is_none() {
                 diagnostics.push(
-                    Diagnostic::error(
-                        "imported field source is missing required key: 'format'",
-                    )
-                    .with_label(DiagnosticLabel::new(
-                        field_def.span,
-                        "missing required imported config key",
-                    )),
+                    Diagnostic::error("imported field source is missing required key: 'format'")
+                        .with_label(DiagnosticLabel::new(
+                            field_def.span,
+                            "missing required imported config key",
+                        )),
                 );
             }
             if grid.is_none() {
                 diagnostics.push(
-                    Diagnostic::error(
-                        "imported field source is missing required key: 'grid'",
-                    )
-                    .with_label(DiagnosticLabel::new(
-                        field_def.span,
-                        "missing required imported config key",
-                    )),
+                    Diagnostic::error("imported field source is missing required key: 'grid'")
+                        .with_label(DiagnosticLabel::new(
+                            field_def.span,
+                            "missing required imported config key",
+                        )),
                 );
             }
             // Validate format value: only "OpenVDB" is supported in v0.2.
@@ -1235,9 +1223,18 @@ pub(crate) fn compile_field(
             }
             CompiledFieldSource::Composed { expr } => expr.content_hash,
             CompiledFieldSource::Imported { path, format, grid } => {
-                let ph = path.as_deref().map(ContentHash::of_str).unwrap_or(ContentHash(0));
-                let fh = format.as_deref().map(ContentHash::of_str).unwrap_or(ContentHash(0));
-                let gh = grid.as_deref().map(ContentHash::of_str).unwrap_or(ContentHash(0));
+                let ph = path
+                    .as_deref()
+                    .map(ContentHash::of_str)
+                    .unwrap_or(ContentHash(0));
+                let fh = format
+                    .as_deref()
+                    .map(ContentHash::of_str)
+                    .unwrap_or(ContentHash(0));
+                let gh = grid
+                    .as_deref()
+                    .map(ContentHash::of_str)
+                    .unwrap_or(ContentHash(0));
                 ContentHash::combine_all([ph, fh, gh])
             }
         };
@@ -1349,7 +1346,11 @@ mod tests {
             is_pub: false,
             domain_type,
             codomain_type,
-            source: CompiledFieldSource::Imported { path: None, format: None, grid: None },
+            source: CompiledFieldSource::Imported {
+                path: None,
+                format: None,
+                grid: None,
+            },
             content_hash: ContentHash(0),
             annotations: vec![],
         }
@@ -1395,8 +1396,16 @@ mod tests {
     /// outer.domain as TO.
     #[test]
     fn field_composition_allows_vector_to_tensor1() {
-        let inner = make_field("inner", Type::dimensionless_scalar(), Type::vec3(Type::dimensionless_scalar()));
-        let outer = make_field("outer", Type::tensor(1, 3, Type::dimensionless_scalar()), Type::dimensionless_scalar());
+        let inner = make_field(
+            "inner",
+            Type::dimensionless_scalar(),
+            Type::vec3(Type::dimensionless_scalar()),
+        );
+        let outer = make_field(
+            "outer",
+            Type::tensor(1, 3, Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
+        );
         let expr = make_composition_expr("outer", "inner");
         let mut registry = HashMap::new();
         registry.insert("inner", &inner);
@@ -1413,8 +1422,16 @@ mod tests {
     /// Rule 3 is one-way (Tensor<2>→Matrix, NOT Matrix→Tensor<2>): one diagnostic.
     #[test]
     fn field_composition_rejects_matrix_to_tensor2() {
-        let inner = make_field("inner", Type::dimensionless_scalar(), Type::matrix(3, 3, Type::dimensionless_scalar()));
-        let outer = make_field("outer", Type::tensor(2, 3, Type::dimensionless_scalar()), Type::dimensionless_scalar());
+        let inner = make_field(
+            "inner",
+            Type::dimensionless_scalar(),
+            Type::matrix(3, 3, Type::dimensionless_scalar()),
+        );
+        let outer = make_field(
+            "outer",
+            Type::tensor(2, 3, Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
+        );
         let expr = make_composition_expr("outer", "inner");
         let mut registry = HashMap::new();
         registry.insert("inner", &inner);
@@ -1442,8 +1459,16 @@ mod tests {
     /// Rule 3 applies (Tensor<2,N,Q> → Matrix<N,N,Q>): zero diagnostics.
     #[test]
     fn field_composition_allows_tensor2_to_matrix() {
-        let inner = make_field("inner", Type::dimensionless_scalar(), Type::tensor(2, 3, Type::dimensionless_scalar()));
-        let outer = make_field("outer", Type::matrix(3, 3, Type::dimensionless_scalar()), Type::dimensionless_scalar());
+        let inner = make_field(
+            "inner",
+            Type::dimensionless_scalar(),
+            Type::tensor(2, 3, Type::dimensionless_scalar()),
+        );
+        let outer = make_field(
+            "outer",
+            Type::matrix(3, 3, Type::dimensionless_scalar()),
+            Type::dimensionless_scalar(),
+        );
         let expr = make_composition_expr("outer", "inner");
         let mut registry = HashMap::new();
         registry.insert("inner", &inner);
@@ -1470,8 +1495,16 @@ mod tests {
     /// their `__field.<name>` cell IDs (deduplicated, order-independent).
     #[test]
     fn collect_composed_field_dependencies_finds_both_field_refs() {
-        let inner = make_field("inner", Type::dimensionless_scalar(), Type::dimensionless_scalar());
-        let outer = make_field("outer", Type::dimensionless_scalar(), Type::dimensionless_scalar());
+        let inner = make_field(
+            "inner",
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+        let outer = make_field(
+            "outer",
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
         let expr = make_composition_expr("outer", "inner");
         let mut registry: HashMap<&str, &CompiledField> = HashMap::new();
         registry.insert("inner", &inner);
@@ -1506,7 +1539,11 @@ mod tests {
         // Build `outer(outer(dummy))` — a self-nested call with the same
         // outer name appearing twice. Even when the inner call resolves to
         // the same field, the helper emits a single dep entry.
-        let outer = make_field("outer", Type::dimensionless_scalar(), Type::dimensionless_scalar());
+        let outer = make_field(
+            "outer",
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
         let expr = make_composition_expr("outer", "outer");
         let mut registry: HashMap<&str, &CompiledField> = HashMap::new();
         registry.insert("outer", &outer);
@@ -1550,8 +1587,16 @@ mod tests {
     /// (only the integration test in `field_compile_tests.rs` would fail).
     #[test]
     fn collect_composed_field_dependencies_walks_lambda_body() {
-        let inner = make_field("inner", Type::dimensionless_scalar(), Type::dimensionless_scalar());
-        let outer = make_field("outer", Type::dimensionless_scalar(), Type::dimensionless_scalar());
+        let inner = make_field(
+            "inner",
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
+        let outer = make_field(
+            "outer",
+            Type::dimensionless_scalar(),
+            Type::dimensionless_scalar(),
+        );
         let body = make_composition_expr("outer", "inner");
         let lambda_expr = CompiledExpr {
             kind: CompiledExprKind::Lambda {

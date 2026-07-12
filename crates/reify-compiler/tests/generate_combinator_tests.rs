@@ -13,7 +13,11 @@ use reify_core::{DiagnosticCode, Severity, Type};
 use reify_test_support::compile_source;
 
 /// Helper: fetch a structure template's let-cell `default_expr.result_type`.
-fn cell_result_type(compiled: &reify_compiler::CompiledModule, structure: &str, cell: &str) -> Type {
+fn cell_result_type(
+    compiled: &reify_compiler::CompiledModule,
+    structure: &str,
+    cell: &str,
+) -> Type {
     let template = compiled
         .templates
         .iter()

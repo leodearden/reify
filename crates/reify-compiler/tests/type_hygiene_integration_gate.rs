@@ -146,8 +146,7 @@ structure def Row4a {
         .diagnostics
         .iter()
         .filter(|d| {
-            d.severity == Severity::Error
-                && d.code == Some(DiagnosticCode::LogicalOperandNotBool)
+            d.severity == Severity::Error && d.code == Some(DiagnosticCode::LogicalOperandNotBool)
         })
         .collect();
     assert!(

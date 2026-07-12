@@ -158,8 +158,7 @@ pub(crate) fn phase_traits(
                 }
                 // Clone and rename to the namespaced symbol.
                 let mut namespaced_fn = fn_def.clone();
-                namespaced_fn.name =
-                    trait_static_fn_symbol(&compiled_trait.name, &fn_def.name);
+                namespaced_fn.name = trait_static_fn_symbol(&compiled_trait.name, &fn_def.name);
                 // Compile the body. Borrows of ctx fields are disjoint here:
                 // - resolution_enums, functions, alias_registry, resolution_structure_names
                 //   are immutable borrows released when compile_function returns.

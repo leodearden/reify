@@ -178,15 +178,17 @@ pub(crate) fn is_selector_kind_mismatch_nomatch(
             return false;
         }
         let mut saw_kind_mismatch = false;
-        let all_match = f.params.iter().zip(arg_types.iter()).all(
-            |((_, param_ty), arg_ty)| match (param_ty, arg_ty) {
-                (Type::Selector(pk), Type::Selector(ak)) if pk != ak => {
-                    saw_kind_mismatch = true;
-                    true
-                }
-                _ => param_ty == arg_ty,
-            },
-        );
+        let all_match =
+            f.params
+                .iter()
+                .zip(arg_types.iter())
+                .all(|((_, param_ty), arg_ty)| match (param_ty, arg_ty) {
+                    (Type::Selector(pk), Type::Selector(ak)) if pk != ak => {
+                        saw_kind_mismatch = true;
+                        true
+                    }
+                    _ => param_ty == arg_ty,
+                });
         all_match && saw_kind_mismatch
     })
 }

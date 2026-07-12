@@ -61,12 +61,19 @@ fn unresolved_return_type_carries_code() {
 fn f(x : Int) -> Bogus { 0 }
 "#;
     let parsed = reify_syntax::parse(source, ModulePath::single("audit_return_type"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
 
     assert!(
-        compiled.diagnostics.iter().any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
+        compiled
+            .diagnostics
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
         "expected UnresolvedType diagnostic, got: {:#?}",
         compiled.diagnostics
     );
@@ -90,14 +97,20 @@ structure S {
     }
 }
 "#;
-    let parsed =
-        reify_syntax::parse(source, ModulePath::single("audit_purpose_guard_param"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let parsed = reify_syntax::parse(source, ModulePath::single("audit_purpose_guard_param"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
 
     assert!(
-        compiled.diagnostics.iter().any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
+        compiled
+            .diagnostics
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
         "expected UnresolvedType diagnostic, got: {:#?}",
         compiled.diagnostics
     );
@@ -115,14 +128,20 @@ structure S {
     param x : Bogus
 }
 "#;
-    let parsed =
-        reify_syntax::parse(source, ModulePath::single("audit_entity_member_param"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let parsed = reify_syntax::parse(source, ModulePath::single("audit_entity_member_param"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
 
     assert!(
-        compiled.diagnostics.iter().any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
+        compiled
+            .diagnostics
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
         "expected UnresolvedType diagnostic, got: {:#?}",
         compiled.diagnostics
     );
@@ -142,14 +161,20 @@ structure S {
     }
 }
 "#;
-    let parsed =
-        reify_syntax::parse(source, ModulePath::single("audit_port_parameter_type"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let parsed = reify_syntax::parse(source, ModulePath::single("audit_port_parameter_type"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
 
     assert!(
-        compiled.diagnostics.iter().any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
+        compiled
+            .diagnostics
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
         "expected UnresolvedType diagnostic, got: {:#?}",
         compiled.diagnostics
     );
@@ -167,14 +192,20 @@ structure S {
     let v = |x : Bogus| x
 }
 "#;
-    let parsed =
-        reify_syntax::parse(source, ModulePath::single("audit_lambda_param_type"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let parsed = reify_syntax::parse(source, ModulePath::single("audit_lambda_param_type"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
 
     assert!(
-        compiled.diagnostics.iter().any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
+        compiled
+            .diagnostics
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
         "expected UnresolvedType diagnostic, got: {:#?}",
         compiled.diagnostics
     );
@@ -192,14 +223,20 @@ trait T {
     param m : Bogus
 }
 "#;
-    let parsed =
-        reify_syntax::parse(source, ModulePath::single("audit_trait_member_type"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let parsed = reify_syntax::parse(source, ModulePath::single("audit_trait_member_type"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
 
     assert!(
-        compiled.diagnostics.iter().any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
+        compiled
+            .diagnostics
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
         "expected UnresolvedType diagnostic, got: {:#?}",
         compiled.diagnostics
     );
@@ -222,14 +259,20 @@ structure Bolt : HasLength {
     param size : Bogus = 5mm
 }
 "#;
-    let parsed =
-        reify_syntax::parse(source, ModulePath::single("audit_conformance_check_type"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let parsed = reify_syntax::parse(source, ModulePath::single("audit_conformance_check_type"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
 
     assert!(
-        compiled.diagnostics.iter().any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
+        compiled
+            .diagnostics
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
         "expected UnresolvedType diagnostic, got: {:#?}",
         compiled.diagnostics
     );
@@ -248,14 +291,20 @@ structure S {
     param x : V<Bogus>
 }
 "#;
-    let parsed =
-        reify_syntax::parse(source, ModulePath::single("audit_type_alias_argument"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let parsed = reify_syntax::parse(source, ModulePath::single("audit_type_alias_argument"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
 
     assert!(
-        compiled.diagnostics.iter().any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
+        compiled
+            .diagnostics
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
         "expected UnresolvedType diagnostic, got: {:#?}",
         compiled.diagnostics
     );
@@ -278,14 +327,20 @@ structure S {
     param x : Real = auto
 }
 "#;
-    let parsed =
-        reify_syntax::parse(source, ModulePath::single("audit_solver_hint_name"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    let parsed = reify_syntax::parse(source, ModulePath::single("audit_solver_hint_name"));
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
 
     assert!(
-        compiled.diagnostics.iter().any(|d| d.code == Some(DiagnosticCode::UnresolvedName)),
+        compiled
+            .diagnostics
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::UnresolvedName)),
         "expected UnresolvedName diagnostic, got: {:#?}",
         compiled.diagnostics
     );

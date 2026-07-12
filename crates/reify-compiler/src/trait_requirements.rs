@@ -258,13 +258,17 @@ pub(crate) fn collect_all_requirements(
                             .with_code(DiagnosticCode::TraitFnSignatureMismatch)
                             .with_label(DiagnosticLabel::new(
                                 span,
-                                format!("conflict between '{}' and '{}'", existing_trait, trait_name),
+                                format!(
+                                    "conflict between '{}' and '{}'",
+                                    existing_trait, trait_name
+                                ),
                             )),
                         );
                     }
                     continue; // conflict or dedup — don't push again
                 }
-                ctx.seen_fn_sigs.insert(sig_key, (sig.clone(), trait_name.to_string()));
+                ctx.seen_fn_sigs
+                    .insert(sig_key, (sig.clone(), trait_name.to_string()));
                 ctx.requirements.push(req.clone());
             }
         }
@@ -353,7 +357,8 @@ pub(crate) fn collect_all_requirements(
                 if !ctx.seen_fn_default_keys.insert(dedup_key) {
                     continue; // diamond dedup: same (trait, fn, body) already collected
                 }
-                ctx.fn_default_trait_by_idx.insert(ctx.defaults.len(), trait_name.to_string());
+                ctx.fn_default_trait_by_idx
+                    .insert(ctx.defaults.len(), trait_name.to_string());
                 ctx.defaults.push(default.clone());
                 continue;
             }
@@ -369,7 +374,10 @@ pub(crate) fn collect_all_requirements(
             if let DefaultKind::AssocType(ty) = &default.kind {
                 if structure_members.contains_key(name.as_str()) {
                     // Structure overrides — suppress conflict, first-seen wins.
-                    if ctx.seen_assoc_type_default_traits.contains_key(name.as_str()) {
+                    if ctx
+                        .seen_assoc_type_default_traits
+                        .contains_key(name.as_str())
+                    {
                         continue;
                     }
                     ctx.seen_assoc_type_default_traits
@@ -424,13 +432,17 @@ pub(crate) fn collect_all_requirements(
                 // `if let DefaultKind::Fn(_)` block above, which always exits via
                 // `continue` (task 3939 δ, lossless re-key ε #3943).
                 DefaultKind::Fn(_) => {
-                    unreachable!("Fn defaults must be handled by the seen_fn_default_keys block above")
+                    unreachable!(
+                        "Fn defaults must be handled by the seen_fn_default_keys block above"
+                    )
                 }
                 // Unreachable: all AssocType defaults are handled by the early
                 // `if let DefaultKind::AssocType(_)` block (step-4), which always
                 // exits via `continue`.
                 DefaultKind::AssocType(_) => {
-                    unreachable!("AssocType defaults must be handled by the seen_assoc_type_default_traits block")
+                    unreachable!(
+                        "AssocType defaults must be handled by the seen_assoc_type_default_traits block"
+                    )
                 }
             };
 
@@ -657,7 +669,11 @@ mod tests {
     /// arm records first-seen and pushes BOTH copies, emitting zero diagnostics).
     #[test]
     fn refining_trait_changing_inherited_assoc_fn_signature_conflicts() {
-        let base = make_compiled_trait("Base", vec![], vec![assoc_fn_req("f", Type::dimensionless_scalar())]);
+        let base = make_compiled_trait(
+            "Base",
+            vec![],
+            vec![assoc_fn_req("f", Type::dimensionless_scalar())],
+        );
         let derived = make_compiled_trait(
             "Derived",
             vec!["Base".to_string()],
@@ -711,7 +727,11 @@ mod tests {
     /// pushed → two 'f' entries).
     #[test]
     fn refining_trait_with_identical_assoc_fn_signature_dedups() {
-        let base = make_compiled_trait("Base", vec![], vec![assoc_fn_req("f", Type::dimensionless_scalar())]);
+        let base = make_compiled_trait(
+            "Base",
+            vec![],
+            vec![assoc_fn_req("f", Type::dimensionless_scalar())],
+        );
         let derived = make_compiled_trait(
             "Derived",
             vec!["Base".to_string()],
@@ -1287,11 +1307,7 @@ mod tests {
         );
         let mid1 = make_compiled_trait("Mid1", vec!["Base".to_string()], vec![]);
         let mid2 = make_compiled_trait("Mid2", vec!["Base".to_string()], vec![]);
-        let top = make_compiled_trait(
-            "Top",
-            vec!["Mid1".to_string(), "Mid2".to_string()],
-            vec![],
-        );
+        let top = make_compiled_trait("Top", vec!["Mid1".to_string(), "Mid2".to_string()], vec![]);
 
         let mut trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
         trait_registry.insert("Base".to_string(), &base);

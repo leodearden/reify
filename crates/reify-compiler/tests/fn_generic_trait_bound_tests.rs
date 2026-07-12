@@ -325,7 +325,9 @@ fn fn_bound_nested_list_constructor_violation() {
         !errors.is_empty(),
         "expected a bound error for List<Widget> passed to wrap<T: Rigid>, got none"
     );
-    let has_widget_error = errors.iter().any(|e| e.message.contains("Widget") && e.message.contains("Rigid"));
+    let has_widget_error = errors
+        .iter()
+        .any(|e| e.message.contains("Widget") && e.message.contains("Rigid"));
     assert!(
         has_widget_error,
         "expected error mentioning Widget and Rigid, got: {:?}",

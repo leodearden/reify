@@ -24,7 +24,9 @@
 //! the RED state (the warning is absent, which is what they assert).
 
 use reify_core::{DiagnosticCode, ModulePath, Severity};
-use reify_ir::{ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Satisfaction};
+use reify_ir::{
+    ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Satisfaction,
+};
 
 // ── Local non-stub checker ────────────────────────────────────────────────────
 
@@ -121,8 +123,7 @@ fn parse(src: &str, module_name: &str) -> reify_ast::ParsedModule {
 #[test]
 fn computed_default_non_stub_checker_emits_unevaluated_warning() {
     let parsed = parse(COMPUTED_DEFAULT_SOURCE, "test_gap_c_nonstub");
-    let compiled =
-        reify_compiler::compile_with_stdlib_checked(&parsed, &AlwaysIndeterminate);
+    let compiled = reify_compiler::compile_with_stdlib_checked(&parsed, &AlwaysIndeterminate);
 
     let unevaluated: Vec<_> = compiled
         .diagnostics

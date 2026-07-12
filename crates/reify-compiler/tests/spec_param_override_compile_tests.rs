@@ -38,9 +38,7 @@ const BEARING_PREAMBLE: &str = "structure Bearing { param bore : Length = 5mm }"
 /// wiring that makes the override take runtime effect.
 #[test]
 fn non_auto_override_present_in_sub_component_args() {
-    let source = format!(
-        "{BEARING_PREAMBLE}  structure A {{ sub b : Bearing {{ bore = 3mm }} }}"
-    );
+    let source = format!("{BEARING_PREAMBLE}  structure A {{ sub b : Bearing {{ bore = 3mm }} }}");
     let module = compile_source_with_stdlib(&source);
 
     // AC4 no-error: valid override must compile cleanly.
@@ -60,7 +58,11 @@ fn non_auto_override_present_in_sub_component_args() {
         .unwrap_or_else(|| {
             panic!(
                 "expected a SubComponentDecl named 'b' in template A; got: {:?}",
-                template.sub_components.iter().map(|s| &s.name).collect::<Vec<_>>()
+                template
+                    .sub_components
+                    .iter()
+                    .map(|s| &s.name)
+                    .collect::<Vec<_>>()
             )
         });
 
@@ -86,9 +88,7 @@ fn non_auto_override_present_in_sub_component_args() {
 #[test]
 fn non_auto_override_absent_member_emits_error() {
     // Child (Bearing) before parent (A) → inline validation path.
-    let source = format!(
-        "{BEARING_PREAMBLE}  structure A {{ sub b : Bearing {{ nope = 3mm }} }}"
-    );
+    let source = format!("{BEARING_PREAMBLE}  structure A {{ sub b : Bearing {{ nope = 3mm }} }}");
     let module = compile_source_with_stdlib(&source);
 
     let errors = errors_only(&module);

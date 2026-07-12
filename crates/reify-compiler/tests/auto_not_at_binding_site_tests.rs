@@ -59,8 +59,7 @@ const BOLT_STRUCTURE: &str = "structure Bolt { param length : Length = 10mm }";
 
 /// Trait with a one-param static function used in TraitStaticCall tests.
 /// Distinct from the zero-param `make_default()` in trait_assoc_fn_static_tests.rs.
-const DEFAULTABLE_TRAIT: &str =
-    "trait Defaultable { fn make_default(x: Real) -> Real { x } }";
+const DEFAULTABLE_TRAIT: &str = "trait Defaultable { fn make_default(x: Real) -> Real { x } }";
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
@@ -163,9 +162,7 @@ fn function_call_free_auto_emits_auto_not_at_binding_site() {
 /// staying robust to unrelated ε-deferred diagnostics on unresolved determinacy.
 #[test]
 fn structure_construction_auto_is_not_rejected() {
-    let source = format!(
-        "{BOLT_STRUCTURE}  structure S {{ let y = Bolt(length: auto) }}"
-    );
+    let source = format!("{BOLT_STRUCTURE}  structure S {{ let y = Bolt(length: auto) }}");
     let module = compile_source_with_stdlib(&source);
 
     let gate_errors: Vec<_> = module
@@ -238,8 +235,10 @@ fn function_call_multi_auto_reports_only_first_arg() {
     );
 
     // Verify the diagnostic label points at the FIRST `auto` arg (before `b: auto`).
-    let second_auto_offset =
-        source.rfind("b: auto").expect("source must contain 'b: auto'") + "b: ".len();
+    let second_auto_offset = source
+        .rfind("b: auto")
+        .expect("source must contain 'b: auto'")
+        + "b: ".len();
     let label_start = gate_errors[0]
         .labels
         .first()
@@ -363,9 +362,8 @@ fn trait_static_call_free_auto_emits_auto_not_at_binding_site() {
 /// Must not emit any `AutoNotAtBindingSite` diagnostic.
 #[test]
 fn non_auto_trait_static_call_produces_no_gate_error() {
-    let source = format!(
-        "{DEFAULTABLE_TRAIT}  structure S {{ let y = Defaultable::make_default(x: 1.0) }}"
-    );
+    let source =
+        format!("{DEFAULTABLE_TRAIT}  structure S {{ let y = Defaultable::make_default(x: 1.0) }}");
     let module = compile_source_with_stdlib(&source);
 
     let gate_errors: Vec<_> = module
@@ -398,8 +396,7 @@ fn non_auto_trait_static_call_produces_no_gate_error() {
 /// catch-all `ExprKind::Auto` arm — zero gate errors produced.
 #[test]
 fn ad_hoc_selector_strict_auto_emits_auto_not_at_binding_site() {
-    let source =
-        "structure S { let p = 5mm  let y = p @ face(x: auto) }".to_string();
+    let source = "structure S { let p = 5mm  let y = p @ face(x: auto) }".to_string();
     let module = compile_source_with_stdlib(&source);
 
     let errors = errors_only(&module);
@@ -447,8 +444,7 @@ fn ad_hoc_selector_strict_auto_emits_auto_not_at_binding_site() {
 /// RED until step 6: same silent-accept defect as (i).
 #[test]
 fn ad_hoc_selector_free_auto_emits_auto_not_at_binding_site() {
-    let source =
-        "structure S { let p = 5mm  let y = p @ face(x: auto(free)) }".to_string();
+    let source = "structure S { let p = 5mm  let y = p @ face(x: auto(free)) }".to_string();
     let module = compile_source_with_stdlib(&source);
 
     let errors = errors_only(&module);
@@ -491,8 +487,7 @@ fn ad_hoc_selector_free_auto_emits_auto_not_at_binding_site() {
 /// Must not emit any `AutoNotAtBindingSite` diagnostic.
 #[test]
 fn non_auto_ad_hoc_selector_produces_no_gate_error() {
-    let source =
-        "structure S { let p = 5mm  let y = p @ face(\"top\") }".to_string();
+    let source = "structure S { let p = 5mm  let y = p @ face(\"top\") }".to_string();
     let module = compile_source_with_stdlib(&source);
 
     let gate_errors: Vec<_> = module

@@ -57,7 +57,7 @@
 //! regression guard: a future reintroduction of a `dimensionless_scalar()` fallback
 //! at any surface-reachable producer site will flip the corresponding cell RED.
 
-use reify_compiler::{find_template, CompiledModule};
+use reify_compiler::{CompiledModule, find_template};
 use reify_core::{DiagnosticCode, Severity, Type};
 use reify_test_support::{
     assert_no_type_cascade, collect_errors, compile_source, errors_only, get_let_expr,
@@ -190,8 +190,7 @@ fn fn_return_unknown_name_headline_no_cascade() {
     );
 
     // End-to-end anti-cascade: use site must not spawn a dimension-mismatch.
-    let module2 =
-        compile_source("fn f() -> Bogus { 0 }\nstructure S { let broken = f() + 5mm }");
+    let module2 = compile_source("fn f() -> Bogus { 0 }\nstructure S { let broken = f() + 5mm }");
     let broken = get_let_expr_in(&module2, "S", "broken");
     assert_eq!(
         broken.result_type,

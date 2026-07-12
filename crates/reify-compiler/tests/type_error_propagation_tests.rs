@@ -6,10 +6,10 @@
 //! stub at `expr.rs:997` is the designated `Type::Error` producer that these
 //! tests exercise (see step-12).
 
-use reify_test_support::{compile_source, get_let_expr};
 use reify_ast::QuantifierKind;
 use reify_core::{Severity, Type, ValueCellId};
 use reify_ir::{CompiledExpr, CompiledExprKind, CompiledMatchArm, SelectorKind, Value};
+use reify_test_support::{compile_source, get_let_expr};
 
 /// Walk a `CompiledExpr` tree and return the first node whose `result_type`
 /// satisfies the predicate, if any. Used to search for a `Type::Error`-typed

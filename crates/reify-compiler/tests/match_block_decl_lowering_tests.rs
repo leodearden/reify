@@ -223,8 +223,10 @@ structure Bolt {
     match head_type { Hex => sub head : HexHead }
 }
 "#;
-    let parsed =
-        reify_syntax::parse(source, ModulePath::single("test_non_exhaustive_single_arm_source"));
+    let parsed = reify_syntax::parse(
+        source,
+        ModulePath::single("test_non_exhaustive_single_arm_source"),
+    );
     assert!(
         parsed.errors.is_empty(),
         "expected no parse errors, got: {:?}",

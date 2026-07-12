@@ -71,10 +71,7 @@ fn load_trajectory() -> &'static CompiledModule {
         })
 }
 
-fn find_structure_in<'a>(
-    module: &'a CompiledModule,
-    name: &str,
-) -> &'a TopologyTemplate {
+fn find_structure_in<'a>(module: &'a CompiledModule, name: &str) -> &'a TopologyTemplate {
     module
         .templates
         .iter()
@@ -228,8 +225,7 @@ fn end_effector_track_vibration_offset_is_list_list_vec3_length() {
 
     let expected = Type::List(Box::new(Type::List(Box::new(vec3_length()))));
     assert_eq!(
-        cell.cell_type,
-        expected,
+        cell.cell_type, expected,
         "EndEffectorTrack.vibration_offset should be List<List<Vector3<Length>>> \
          (Vec3 tightened by task #4575); got: {:?}",
         cell.cell_type

@@ -36,10 +36,7 @@ fn dump_diags(module: &reify_compiler::CompiledModule) -> Vec<String> {
 #[test]
 fn scalar_sub_unknown_structure_name_emits_error() {
     let source = "structure def P { sub x = Garbage() }";
-    let parsed = reify_compiler::parse_with_stdlib(
-        source,
-        reify_core::ModulePath::single("test"),
-    );
+    let parsed = reify_compiler::parse_with_stdlib(source, reify_core::ModulePath::single("test"));
     let compiled = reify_compiler::compile_with_stdlib(&parsed);
 
     assert!(
@@ -64,10 +61,7 @@ fn scalar_sub_unknown_structure_name_emits_error() {
 #[test]
 fn collection_sub_unknown_element_structure_name_emits_error() {
     let source = "structure def P { sub ribs : List<Garbage> }";
-    let parsed = reify_compiler::parse_with_stdlib(
-        source,
-        reify_core::ModulePath::single("test"),
-    );
+    let parsed = reify_compiler::parse_with_stdlib(source, reify_core::ModulePath::single("test"));
     let compiled = reify_compiler::compile_with_stdlib(&parsed);
 
     assert!(
@@ -88,10 +82,7 @@ fn collection_sub_unknown_element_structure_name_emits_error() {
 #[test]
 fn stdlib_occurrence_sub_no_error_with_prelude() {
     let source = "structure def P { sub o = STLOutput() }";
-    let parsed = reify_compiler::parse_with_stdlib(
-        source,
-        reify_core::ModulePath::single("test"),
-    );
+    let parsed = reify_compiler::parse_with_stdlib(source, reify_core::ModulePath::single("test"));
     let compiled = reify_compiler::compile_with_stdlib(&parsed);
 
     assert!(
@@ -111,10 +102,7 @@ fn stdlib_occurrence_sub_no_error_with_prelude() {
 #[test]
 fn local_structure_sub_no_error() {
     let source = "structure def Child {}\nstructure def P { sub c = Child() }";
-    let parsed = reify_compiler::parse_with_stdlib(
-        source,
-        reify_core::ModulePath::single("test"),
-    );
+    let parsed = reify_compiler::parse_with_stdlib(source, reify_core::ModulePath::single("test"));
     let compiled = reify_compiler::compile_with_stdlib(&parsed);
 
     assert!(
@@ -138,10 +126,7 @@ fn stdlib_occurrence_sub_errors_with_empty_prelude() {
     // parse_with_stdlib seeds the stdlib enum names so EnumAccess references
     // lower correctly; the prelude is passed separately at compile time.
     let source = "structure def P { sub o = STLOutput() }";
-    let parsed = reify_compiler::parse_with_stdlib(
-        source,
-        reify_core::ModulePath::single("test"),
-    );
+    let parsed = reify_compiler::parse_with_stdlib(source, reify_core::ModulePath::single("test"));
     // compile() = compile_with_prelude(parsed, &[]) — empty prelude.
     let compiled = reify_compiler::compile(&parsed);
 

@@ -266,10 +266,7 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
         // `load_stdlib`'s panic-on-Error permanently enforces "all self-checks
         // pass" at prelude build: if any joint body mismatches its declared DOF
         // (E_JOINT_DOF_MISMATCH), the stdlib load panics. γ task 4397.
-        (
-            "std.joints",
-            include_str!("../stdlib/joints.ri").to_owned(),
-        ),
+        ("std.joints", include_str!("../stdlib/joints.ri").to_owned()),
         // `std.ports` declares the Directionality enum, the Port base trait,
         // and the `Frame3` structure (origin + x/y/z axes, all Vector3<Length>).
         // No inter-module dependencies beyond built-in types.
@@ -281,10 +278,7 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
         // stdlib-module deps so moving it earlier is safe; the `std.ports.*`
         // submodules below only require std.ports to precede them, which still
         // holds.
-        (
-            "std.ports",
-            include_str!("../stdlib/ports.ri").to_owned(),
-        ),
+        ("std.ports", include_str!("../stdlib/ports.ri").to_owned()),
         // `std.dynamics` depends on `std.units` (Mass / Length / Time),
         // `std.trajectory` (for the `JointValue` alias used in TrajectorySample),
         // `std.kinematic` (Mechanism / Snapshot nominal types used in
@@ -373,10 +367,7 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
         // this module further). It references no other stdlib module →
         // zero ordering constraints; tail-append is safe.
         // Reconstruction per PRD §Slice C.
-        (
-            "std.fields",
-            include_str!("../stdlib/fields.ri").to_owned(),
-        ),
+        ("std.fields", include_str!("../stdlib/fields.ri").to_owned()),
         // `std.option_recovery` declares the 7 generic Option/Map recovery
         // combinators (unwrap_or / or_else / or_default / fallback /
         // is_some / is_none / get_or) as `pub fn` with typecheck-only
@@ -410,10 +401,7 @@ pub(crate) fn stdlib_sources() -> Vec<(&'static str, String)> {
         // Placed adjacent to std.option_recovery (same PRD cluster) and MUST
         // remain BEFORE std.determinacy.purposes (which must remain LAST; see
         // its comment below).
-        (
-            "std.result",
-            include_str!("../stdlib/result.ri").to_owned(),
-        ),
+        ("std.result", include_str!("../stdlib/result.ri").to_owned()),
         // `std.surface_finish` declares the functional surface finish/coating/
         // treatment vocabulary as spec-bearing part properties.  Deps:
         //   - Color (from std.materials.appearance, earlier in sequence) via

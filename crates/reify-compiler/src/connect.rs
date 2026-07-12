@@ -29,10 +29,9 @@ pub(crate) fn resolve_port_name(expr: &reify_ast::Expr) -> Option<String> {
                 // byte-identical to MemberKey::path_segment's output dotted
                 // with the port member name — the connection's right_port must
                 // match the scoped-entity NodeId that from_templates stamps.
-                (
-                    reify_ast::ExprKind::Ident(obj_name),
-                    reify_ast::ExprKind::StringLiteral(key),
-                ) => Some(format!("{}[{:?}].{}", obj_name, key, member)),
+                (reify_ast::ExprKind::Ident(obj_name), reify_ast::ExprKind::StringLiteral(key)) => {
+                    Some(format!("{}[{:?}].{}", obj_name, key, member))
+                }
                 _ => None,
             },
             _ => None,
@@ -52,10 +51,9 @@ pub(crate) fn resolve_port_name(expr: &reify_ast::Expr) -> Option<String> {
                 // Bare keyed sub-component ref (task 3932 δ): `vents["intake"]`.
                 // Format the key with {:?} (Debug) so the emitted segment is
                 // byte-identical to MemberKey::path_segment: `vents["intake"]`.
-                (
-                    reify_ast::ExprKind::Ident(obj_name),
-                    reify_ast::ExprKind::StringLiteral(key),
-                ) => Some(format!("{}[{:?}]", obj_name, key)),
+                (reify_ast::ExprKind::Ident(obj_name), reify_ast::ExprKind::StringLiteral(key)) => {
+                    Some(format!("{}[{:?}]", obj_name, key))
+                }
                 _ => None,
             }
         }
@@ -477,14 +475,15 @@ pub(crate) fn compile_connection(
             match ctx.scope.template_registry.and_then(|r| r.get(conn_type)) {
                 None => {
                     // Case 1: forward-declared connector type — defer.
-                    acc.pending_connect_auto_params.push(PendingConnectAutoParam {
-                        parent_entity_name: ctx.entity_name.to_string(),
-                        connector_name: connector_name.clone(),
-                        connector_type: conn_type.to_string(),
-                        param_name: param_name.clone(),
-                        free,
-                        span: param_expr.span,
-                    });
+                    acc.pending_connect_auto_params
+                        .push(PendingConnectAutoParam {
+                            parent_entity_name: ctx.entity_name.to_string(),
+                            connector_name: connector_name.clone(),
+                            connector_type: conn_type.to_string(),
+                            param_name: param_name.clone(),
+                            free,
+                            span: param_expr.span,
+                        });
                 }
                 Some(tmpl) => {
                     let cell_type = tmpl

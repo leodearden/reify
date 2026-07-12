@@ -300,13 +300,17 @@ fn dim_param_scale_q_resolves_at_two_dimensions() {
     let b_expr = cell_expr(&module, "b");
     assert_eq!(
         a_expr.result_type,
-        Type::Scalar { dimension: DimensionVector::LENGTH },
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH
+        },
         "a = scale_q(10mm, 3.0): result_type should be Scalar{{LENGTH}}, got {:?}",
         a_expr.result_type
     );
     assert_eq!(
         b_expr.result_type,
-        Type::Scalar { dimension: DimensionVector::MASS },
+        Type::Scalar {
+            dimension: DimensionVector::MASS
+        },
         "b = scale_q(5kg, 2.0): result_type should be Scalar{{MASS}}, got {:?}",
         b_expr.result_type
     );
@@ -318,12 +322,18 @@ fn dim_param_scale_q_resolves_at_two_dimensions() {
     let b_val = reify_expr::eval_expr(b_expr, &ctx);
     assert_eq!(
         a_val,
-        reify_ir::Value::Scalar { si_value: 0.03, dimension: DimensionVector::LENGTH },
+        reify_ir::Value::Scalar {
+            si_value: 0.03,
+            dimension: DimensionVector::LENGTH
+        },
         "scale_q(10mm, 3.0) should eval to 0.03 m, got {a_val:?}"
     );
     assert_eq!(
         b_val,
-        reify_ir::Value::Scalar { si_value: 10.0, dimension: DimensionVector::MASS },
+        reify_ir::Value::Scalar {
+            si_value: 10.0,
+            dimension: DimensionVector::MASS
+        },
         "scale_q(5kg, 2.0) should eval to 10.0 kg, got {b_val:?}"
     );
 }

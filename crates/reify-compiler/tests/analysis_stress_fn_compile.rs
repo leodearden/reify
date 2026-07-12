@@ -140,7 +140,9 @@ fn max_shear_cell_type_is_scalar_pressure() {
     let ty = cell_type(&module, "ms");
     assert_eq!(
         ty,
-        Type::Scalar { dimension: DimensionVector::PRESSURE },
+        Type::Scalar {
+            dimension: DimensionVector::PRESSURE
+        },
         "max_shear(Tensor<Pressure>) must compile as Scalar<PRESSURE>, got {ty:?}"
     );
 }

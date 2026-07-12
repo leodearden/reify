@@ -579,14 +579,9 @@ fn emit_projection_ambiguous(
 /// Emit the curation redirect for a `distance` call with a `Plane` operand:
 /// there is no bare plane-to-plane distance, so point the author to `offset`,
 /// which bundles its own parallelism precondition (design §3.2(c)).
-fn emit_curation_use_offset(
-    name: &str,
-    call_span: SourceSpan,
-    diagnostics: &mut Vec<Diagnostic>,
-) {
-    let msg = format!(
-        "{name}: no plane-to-plane distance; use offset(a, b, δ) for plane separation"
-    );
+fn emit_curation_use_offset(name: &str, call_span: SourceSpan, diagnostics: &mut Vec<Diagnostic>) {
+    let msg =
+        format!("{name}: no plane-to-plane distance; use offset(a, b, δ) for plane separation");
     diagnostics.push(
         Diagnostic::error(msg)
             .with_code(DiagnosticCode::DatumProjectionUnavailable)
@@ -644,26 +639,50 @@ mod tests {
     #[test]
     fn is_relation_typed_fn_rejects_other_family_and_unknown_names() {
         // Geometry-query family.
-        assert!(!is_relation_typed_fn("volume"), "must reject geometry-query 'volume'");
+        assert!(
+            !is_relation_typed_fn("volume"),
+            "must reject geometry-query 'volume'"
+        );
         // Math-linalg family.
-        assert!(!is_relation_typed_fn("vec"), "must reject math-linalg 'vec'");
+        assert!(
+            !is_relation_typed_fn("vec"),
+            "must reject math-linalg 'vec'"
+        );
         // Joint-constructor family.
-        assert!(!is_relation_typed_fn("prismatic"), "must reject joint 'prismatic'");
+        assert!(
+            !is_relation_typed_fn("prismatic"),
+            "must reject joint 'prismatic'"
+        );
         // Shared-verb names are NOT pure relation names.
-        assert!(!is_relation_typed_fn("angle"), "must reject shared-verb 'angle'");
-        assert!(!is_relation_typed_fn("distance"), "must reject shared-verb 'distance'");
+        assert!(
+            !is_relation_typed_fn("angle"),
+            "must reject shared-verb 'angle'"
+        );
+        assert!(
+            !is_relation_typed_fn("distance"),
+            "must reject shared-verb 'distance'"
+        );
         // Empty / unknown.
         assert!(!is_relation_typed_fn(""), "must reject empty name");
-        assert!(!is_relation_typed_fn("does_not_exist"), "must reject unrelated name");
+        assert!(
+            !is_relation_typed_fn("does_not_exist"),
+            "must reject unrelated name"
+        );
     }
 
     /// Case-sensitivity invariant: Reify function names are snake_case, so the
     /// PascalCase forms must not match.
     #[test]
     fn is_relation_typed_fn_is_case_sensitive() {
-        assert!(!is_relation_typed_fn("Coincident"), "PascalCase must not match");
+        assert!(
+            !is_relation_typed_fn("Coincident"),
+            "PascalCase must not match"
+        );
         assert!(!is_relation_typed_fn("Offset"), "PascalCase must not match");
-        assert!(!is_relation_typed_fn("Concentric"), "PascalCase must not match");
+        assert!(
+            !is_relation_typed_fn("Concentric"),
+            "PascalCase must not match"
+        );
     }
 
     /// `is_relation_shared_verb` recognises exactly the two arity-gated shared
@@ -673,7 +692,10 @@ mod tests {
     #[test]
     fn is_relation_shared_verb_is_exactly_angle_and_distance() {
         assert!(is_relation_shared_verb("angle"), "angle is a shared verb");
-        assert!(is_relation_shared_verb("distance"), "distance is a shared verb");
+        assert!(
+            is_relation_shared_verb("distance"),
+            "distance is a shared verb"
+        );
         // Disjoint from the pure relation family.
         for name in EXPECTED_NAMES {
             assert!(
@@ -682,8 +704,14 @@ mod tests {
             );
         }
         // Unknown / empty / case-variant.
-        assert!(!is_relation_shared_verb("volume"), "must reject unrelated name");
-        assert!(!is_relation_shared_verb("Angle"), "case-sensitive: PascalCase must not match");
+        assert!(
+            !is_relation_shared_verb("volume"),
+            "must reject unrelated name"
+        );
+        assert!(
+            !is_relation_shared_verb("Angle"),
+            "case-sensitive: PascalCase must not match"
+        );
         assert!(!is_relation_shared_verb(""), "must reject empty name");
     }
 
@@ -880,7 +908,10 @@ mod tests {
         assert_eq!(
             relation_delta_dof(
                 "coincident",
-                &[arg(Type::point3(Type::length())), arg(Type::point3(Type::length()))]
+                &[
+                    arg(Type::point3(Type::length())),
+                    arg(Type::point3(Type::length()))
+                ]
             ),
             Some(3)
         );
@@ -924,9 +955,15 @@ mod tests {
         assert_eq!(relation_delta_dof("distance", &pp_delta), Some(1));
         // Named compounds (nominal).
         assert_eq!(relation_delta_dof("concentric", &aa), Some(4));
-        assert_eq!(relation_delta_dof("flush", &[arg(Type::Plane), arg(Type::Plane)]), Some(3));
         assert_eq!(
-            relation_delta_dof("offset", &[arg(Type::Plane), arg(Type::Plane), arg(Type::length())]),
+            relation_delta_dof("flush", &[arg(Type::Plane), arg(Type::Plane)]),
+            Some(3)
+        );
+        assert_eq!(
+            relation_delta_dof(
+                "offset",
+                &[arg(Type::Plane), arg(Type::Plane), arg(Type::length())]
+            ),
             Some(3)
         );
         assert_eq!(relation_delta_dof("tangent", &aa), Some(2));
@@ -952,7 +989,10 @@ mod tests {
             relation_delta_dof_kinds("coincident", &[arg(Type::Direction), arg(Type::Direction)]),
             Some((2, 0))
         );
-        assert_eq!(relation_delta_dof_kinds("coincident", &[pt(), pt()]), Some((0, 3)));
+        assert_eq!(
+            relation_delta_dof_kinds("coincident", &[pt(), pt()]),
+            Some((0, 3))
+        );
         assert_eq!(
             relation_delta_dof_kinds("coincident", &[arg(Type::Plane), arg(Type::Plane)]),
             Some((2, 1))
@@ -973,8 +1013,14 @@ mod tests {
     #[test]
     fn relation_delta_dof_kinds_on_is_all_translational() {
         let pt = || arg(Type::point3(Type::length()));
-        assert_eq!(relation_delta_dof_kinds("on", &[pt(), arg(Type::Plane)]), Some((0, 1)));
-        assert_eq!(relation_delta_dof_kinds("on", &[pt(), arg(Type::Axis)]), Some((0, 2)));
+        assert_eq!(
+            relation_delta_dof_kinds("on", &[pt(), arg(Type::Plane)]),
+            Some((0, 1))
+        );
+        assert_eq!(
+            relation_delta_dof_kinds("on", &[pt(), arg(Type::Axis)]),
+            Some((0, 2))
+        );
         assert_eq!(relation_delta_dof_kinds("on", &[pt(), pt()]), Some((0, 3)));
     }
 
@@ -994,7 +1040,10 @@ mod tests {
         assert_eq!(relation_delta_dof_kinds("antiparallel", &dd), Some((2, 0)));
         assert_eq!(relation_delta_dof_kinds("perpendicular", &dd), Some((1, 0)));
         assert_eq!(relation_delta_dof_kinds("angle", &aa_theta), Some((1, 0)));
-        assert_eq!(relation_delta_dof_kinds("distance", &pp_delta), Some((0, 1)));
+        assert_eq!(
+            relation_delta_dof_kinds("distance", &pp_delta),
+            Some((0, 1))
+        );
     }
 
     /// Named compounds publish their summed-body kind split: `concentric` =
@@ -1040,7 +1089,10 @@ mod tests {
     fn relation_delta_dof_kinds_sum_equals_delta_dof() {
         let pt = || arg(Type::point3(Type::length()));
         let curated: Vec<(&str, Vec<CompiledExpr>)> = vec![
-            ("coincident", vec![arg(Type::Direction), arg(Type::Direction)]),
+            (
+                "coincident",
+                vec![arg(Type::Direction), arg(Type::Direction)],
+            ),
             ("coincident", vec![pt(), pt()]),
             ("coincident", vec![arg(Type::Plane), arg(Type::Plane)]),
             ("coincident", vec![arg(Type::Axis), arg(Type::Axis)]),
@@ -1049,13 +1101,25 @@ mod tests {
             ("on", vec![pt(), arg(Type::Axis)]),
             ("on", vec![pt(), pt()]),
             ("parallel", vec![arg(Type::Direction), arg(Type::Direction)]),
-            ("antiparallel", vec![arg(Type::Direction), arg(Type::Direction)]),
-            ("perpendicular", vec![arg(Type::Direction), arg(Type::Direction)]),
-            ("angle", vec![arg(Type::Axis), arg(Type::Axis), arg(Type::angle())]),
+            (
+                "antiparallel",
+                vec![arg(Type::Direction), arg(Type::Direction)],
+            ),
+            (
+                "perpendicular",
+                vec![arg(Type::Direction), arg(Type::Direction)],
+            ),
+            (
+                "angle",
+                vec![arg(Type::Axis), arg(Type::Axis), arg(Type::angle())],
+            ),
             ("distance", vec![pt(), pt(), arg(Type::length())]),
             ("concentric", vec![arg(Type::Axis), arg(Type::Axis)]),
             ("flush", vec![arg(Type::Plane), arg(Type::Plane)]),
-            ("offset", vec![arg(Type::Plane), arg(Type::Plane), arg(Type::length())]),
+            (
+                "offset",
+                vec![arg(Type::Plane), arg(Type::Plane), arg(Type::length())],
+            ),
             ("fasten", vec![arg(Type::Frame(3)), arg(Type::Frame(3))]),
         ];
         for (name, args) in &curated {
@@ -1151,7 +1215,11 @@ mod tests {
         let args = [arg(Type::Axis), arg(Type::Axis), arg(Type::length())];
         let mut diags = Vec::new();
         check_relation_arg_types("angle", &args, span(), &mut diags);
-        assert_eq!(diags.len(), 1, "expected exactly 1 diagnostic, got: {diags:?}");
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly 1 diagnostic, got: {diags:?}"
+        );
         assert_eq!(diags[0].code, Some(DiagnosticCode::ArgTypeMismatch));
         assert!(
             diags[0].message.contains("Angle"),
@@ -1169,7 +1237,11 @@ mod tests {
         let args = [pt(), pt(), arg(Type::angle())];
         let mut diags = Vec::new();
         check_relation_arg_types("distance", &args, span(), &mut diags);
-        assert_eq!(diags.len(), 1, "expected exactly 1 diagnostic, got: {diags:?}");
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly 1 diagnostic, got: {diags:?}"
+        );
         assert_eq!(diags[0].code, Some(DiagnosticCode::ArgTypeMismatch));
         assert!(
             diags[0].message.contains("Length"),
@@ -1185,7 +1257,10 @@ mod tests {
         let args = [arg(Type::Axis), arg(Type::Axis), arg(Type::angle())];
         let mut diags = Vec::new();
         check_relation_arg_types("angle", &args, span(), &mut diags);
-        assert!(diags.is_empty(), "correct angle call must be clean, got: {diags:?}");
+        assert!(
+            diags.is_empty(),
+            "correct angle call must be clean, got: {diags:?}"
+        );
     }
 
     // (b) KIND/PROJECTION layer — operands must project to the named datum,
@@ -1200,8 +1275,15 @@ mod tests {
         let args = [pt(), pt(), arg(Type::angle())];
         let mut diags = Vec::new();
         check_relation_arg_types("angle", &args, span(), &mut diags);
-        assert_eq!(diags.len(), 1, "expected exactly 1 diagnostic, got: {diags:?}");
-        assert_eq!(diags[0].code, Some(DiagnosticCode::DatumProjectionUnavailable));
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly 1 diagnostic, got: {diags:?}"
+        );
+        assert_eq!(
+            diags[0].code,
+            Some(DiagnosticCode::DatumProjectionUnavailable)
+        );
     }
 
     /// `parallel(Frame, Frame)` — a bare directional projection on a `Frame` is
@@ -1212,8 +1294,15 @@ mod tests {
         let args = [arg(Type::Frame(3)), arg(Type::Frame(3))];
         let mut diags = Vec::new();
         check_relation_arg_types("parallel", &args, span(), &mut diags);
-        assert_eq!(diags.len(), 1, "expected exactly 1 diagnostic, got: {diags:?}");
-        assert_eq!(diags[0].code, Some(DiagnosticCode::DatumProjectionAmbiguous));
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly 1 diagnostic, got: {diags:?}"
+        );
+        assert_eq!(
+            diags[0].code,
+            Some(DiagnosticCode::DatumProjectionAmbiguous)
+        );
     }
 
     /// Operands that already are (or lift uniquely to) the named datum are clean:
@@ -1228,12 +1317,23 @@ mod tests {
             span(),
             &mut d1,
         );
-        assert!(d1.is_empty(), "angle(Axis,Axis,Angle) must be clean, got: {d1:?}");
+        assert!(
+            d1.is_empty(),
+            "angle(Axis,Axis,Angle) must be clean, got: {d1:?}"
+        );
 
         // flush: Plane same-kind
         let mut d2 = Vec::new();
-        check_relation_arg_types("flush", &[arg(Type::Plane), arg(Type::Plane)], span(), &mut d2);
-        assert!(d2.is_empty(), "flush(Plane,Plane) must be clean, got: {d2:?}");
+        check_relation_arg_types(
+            "flush",
+            &[arg(Type::Plane), arg(Type::Plane)],
+            span(),
+            &mut d2,
+        );
+        assert!(
+            d2.is_empty(),
+            "flush(Plane,Plane) must be clean, got: {d2:?}"
+        );
 
         // concentric: Axis same-kind
         let mut d3 = Vec::new();
@@ -1243,7 +1343,10 @@ mod tests {
             span(),
             &mut d3,
         );
-        assert!(d3.is_empty(), "concentric(Axis,Axis) must be clean, got: {d3:?}");
+        assert!(
+            d3.is_empty(),
+            "concentric(Axis,Axis) must be clean, got: {d3:?}"
+        );
     }
 
     // (c) CURATION layer — only unconditionally-well-defined signatures ship
@@ -1258,7 +1361,11 @@ mod tests {
         let args = [arg(Type::Plane), arg(Type::Plane), arg(Type::length())];
         let mut diags = Vec::new();
         check_relation_arg_types("distance", &args, span(), &mut diags);
-        assert_eq!(diags.len(), 1, "expected exactly 1 diagnostic, got: {diags:?}");
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly 1 diagnostic, got: {diags:?}"
+        );
         assert!(
             diags[0].message.contains("offset"),
             "curation diagnostic must hint 'use offset': {}",
@@ -1272,7 +1379,10 @@ mod tests {
         let args = [arg(Type::Plane), arg(Type::Plane), arg(Type::length())];
         let mut diags = Vec::new();
         check_relation_arg_types("offset", &args, span(), &mut diags);
-        assert!(diags.is_empty(), "offset(Plane,Plane,Length) must be clean, got: {diags:?}");
+        assert!(
+            diags.is_empty(),
+            "offset(Plane,Plane,Length) must be clean, got: {diags:?}"
+        );
     }
 
     // GRADUALISM (PRD decision-6) — poison/unresolved args pass silently.
@@ -1317,14 +1427,23 @@ mod tests {
     /// draw a spurious projection diagnostic. (Pure relation names have no arity gate.)
     #[test]
     fn check_arity2_shared_verbs_are_noop() {
-        let pts = [arg(Type::point3(Type::length())), arg(Type::point3(Type::length()))];
+        let pts = [
+            arg(Type::point3(Type::length())),
+            arg(Type::point3(Type::length())),
+        ];
         let mut d1 = Vec::new();
         check_relation_arg_types("angle", &pts, span(), &mut d1);
-        assert!(d1.is_empty(), "arity-2 angle must not be policed as a relation, got: {d1:?}");
+        assert!(
+            d1.is_empty(),
+            "arity-2 angle must not be policed as a relation, got: {d1:?}"
+        );
 
         let mut d2 = Vec::new();
         check_relation_arg_types("distance", &pts, span(), &mut d2);
-        assert!(d2.is_empty(), "arity-2 distance must not be policed as a relation, got: {d2:?}");
+        assert!(
+            d2.is_empty(),
+            "arity-2 distance must not be policed as a relation, got: {d2:?}"
+        );
     }
 
     /// An unrecognized / sibling-family name draws no relation diagnostics.
@@ -1332,7 +1451,10 @@ mod tests {
     fn check_unrecognized_name_is_noop() {
         let mut diags = Vec::new();
         check_relation_arg_types("volume", &[arg(Type::Geometry)], span(), &mut diags);
-        assert!(diags.is_empty(), "unrecognized name must be a no-op, got: {diags:?}");
+        assert!(
+            diags.is_empty(),
+            "unrecognized name must be a no-op, got: {diags:?}"
+        );
     }
 
     // ── relation_contract_for_call: the LSP-facing traversal ─────────────────

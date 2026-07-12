@@ -29,22 +29,19 @@
 //! scoped `ValueCellDecl` (member found) or emits the genuine "no such param"
 //! error (member absent).  Makes Tests A and C GREEN; Test B stays GREEN.
 
+use reify_compiler::{ValueCellKind, find_template};
 use reify_core::{Type, ValueCellId};
 use reify_test_support::{compile_source_with_stdlib, errors_only, warnings_only};
-use reify_compiler::{find_template, ValueCellKind};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /// Source shared by both tests — Bearing supplies a `bore : Length` param;
 /// structure A instantiates it with an override.
-const BEARING_PREAMBLE: &str =
-    "structure Bearing { param bore : Length = 10mm }";
+const BEARING_PREAMBLE: &str = "structure Bearing { param bore : Length = 10mm }";
 
 /// Build the full test source for a given override expression.
 fn source_with_override(override_expr: &str) -> String {
-    format!(
-        "{BEARING_PREAMBLE}  structure A {{ sub b : Bearing {{ bore = {override_expr} }} }}",
-    )
+    format!("{BEARING_PREAMBLE}  structure A {{ sub b : Bearing {{ bore = {override_expr} }} }}",)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -77,7 +74,11 @@ fn sub_override_auto_strict_emits_scoped_auto_cell() {
             panic!(
                 "expected a value cell with id {:?} in template A; got cells: {:?}",
                 target_id,
-                template.value_cells.iter().map(|c| &c.id).collect::<Vec<_>>()
+                template
+                    .value_cells
+                    .iter()
+                    .map(|c| &c.id)
+                    .collect::<Vec<_>>()
             )
         });
 
@@ -125,7 +126,11 @@ fn sub_override_auto_free_emits_scoped_auto_free_cell() {
             panic!(
                 "expected a value cell with id {:?} in template A; got cells: {:?}",
                 target_id,
-                template.value_cells.iter().map(|c| &c.id).collect::<Vec<_>>()
+                template
+                    .value_cells
+                    .iter()
+                    .map(|c| &c.id)
+                    .collect::<Vec<_>>()
             )
         });
 
@@ -191,7 +196,11 @@ fn sub_override_auto_strict_forward_declared_child_emits_scoped_cell() {
             panic!(
                 "forward-declared child: expected scoped cell {:?} in A; got cells: {:?}",
                 target_id,
-                template.value_cells.iter().map(|c| &c.id).collect::<Vec<_>>()
+                template
+                    .value_cells
+                    .iter()
+                    .map(|c| &c.id)
+                    .collect::<Vec<_>>()
             )
         });
 
@@ -236,7 +245,11 @@ fn sub_override_auto_free_forward_declared_child_emits_scoped_cell() {
             panic!(
                 "forward-declared child (free): expected scoped cell {:?} in A; got cells: {:?}",
                 target_id,
-                template.value_cells.iter().map(|c| &c.id).collect::<Vec<_>>()
+                template
+                    .value_cells
+                    .iter()
+                    .map(|c| &c.id)
+                    .collect::<Vec<_>>()
             )
         });
 
@@ -274,8 +287,7 @@ fn sub_override_auto_free_forward_declared_child_emits_scoped_cell() {
 fn sub_override_auto_duplicate_inline_path_emits_exactly_one_cell() {
     // Child (Bearing) before parent (A) → compiler sees Bearing first, so
     // when A is compiled the child template is already present → inline Case 3.
-    let source =
-        "structure Bearing { param bore : Length = 10mm }  \
+    let source = "structure Bearing { param bore : Length = 10mm }  \
          structure A { sub b : Bearing {\n    bore = auto\n    bore = auto\n} }";
     let module = compile_source_with_stdlib(source);
 
@@ -296,11 +308,16 @@ fn sub_override_auto_duplicate_inline_path_emits_exactly_one_cell() {
         .count();
 
     assert_eq!(
-        count, 1,
+        count,
+        1,
         "duplicate override (inline path): expected exactly 1 cell for {:?}, got {count}; \
          cells: {:?}",
         target_id,
-        template.value_cells.iter().map(|c| &c.id).collect::<Vec<_>>()
+        template
+            .value_cells
+            .iter()
+            .map(|c| &c.id)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -313,8 +330,7 @@ fn sub_override_auto_duplicate_inline_path_emits_exactly_one_cell() {
 fn sub_override_auto_duplicate_deferred_path_emits_exactly_one_cell() {
     // Parent (A) before child (Bearing) → compiler processes A first, child is
     // forward-declared → post-pass `phase_sub_override_autos` path.
-    let source =
-        "structure A { sub b : Bearing {\n    bore = auto\n    bore = auto\n} }  \
+    let source = "structure A { sub b : Bearing {\n    bore = auto\n    bore = auto\n} }  \
          structure Bearing { param bore : Length = 10mm }";
     let module = compile_source_with_stdlib(source);
 
@@ -335,11 +351,16 @@ fn sub_override_auto_duplicate_deferred_path_emits_exactly_one_cell() {
         .count();
 
     assert_eq!(
-        count, 1,
+        count,
+        1,
         "duplicate override (deferred path): expected exactly 1 cell for {:?}, got {count}; \
          cells: {:?}",
         target_id,
-        template.value_cells.iter().map(|c| &c.id).collect::<Vec<_>>()
+        template
+            .value_cells
+            .iter()
+            .map(|c| &c.id)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -397,8 +418,7 @@ fn sub_override_auto_forward_declared_child_genuinely_missing_member_errors() {
 fn sub_override_auto_duplicate_inline_path_emits_warning() {
     // Child (Bearing) declared before parent (A) → compiler sees Bearing first,
     // so when A is compiled the child template is already present → inline Case 3.
-    let source =
-        "structure Bearing { param bore : Length = 10mm }  \
+    let source = "structure Bearing { param bore : Length = 10mm }  \
          structure A { sub b : Bearing {\n    bore = auto\n    bore = auto\n} }";
     let module = compile_source_with_stdlib(source);
 
@@ -430,8 +450,7 @@ fn sub_override_auto_duplicate_inline_path_emits_warning() {
 #[test]
 fn sub_override_auto_duplicate_deferred_path_emits_warning() {
     // Parent (A) declared before child (Bearing) → deferred post-pass resolves.
-    let source =
-        "structure A { sub b : Bearing {\n    bore = auto\n    bore = auto\n} }  \
+    let source = "structure A { sub b : Bearing {\n    bore = auto\n    bore = auto\n} }  \
          structure Bearing { param bore : Length = 10mm }";
     let module = compile_source_with_stdlib(source);
 
@@ -469,8 +488,7 @@ fn sub_override_auto_duplicate_deferred_path_emits_warning() {
 #[test]
 fn sub_override_auto_duplicate_absent_member_inline_path_emits_single_error() {
     // Child (Bearing) declared before parent (A) → inline Case 2 fires for `nope`.
-    let source =
-        "structure Bearing { param bore : Length = 10mm }  \
+    let source = "structure Bearing { param bore : Length = 10mm }  \
          structure A { sub b : Bearing {\n    nope = auto\n    nope = auto\n} }";
     let module = compile_source_with_stdlib(source);
 
@@ -494,8 +512,7 @@ fn sub_override_auto_duplicate_absent_member_inline_path_emits_single_error() {
 #[test]
 fn sub_override_auto_duplicate_absent_member_deferred_path_emits_single_error() {
     // Parent (A) declared before child (Bearing) → deferred post-pass fires for `nope`.
-    let source =
-        "structure A { sub b : Bearing {\n    nope = auto\n    nope = auto\n} }  \
+    let source = "structure A { sub b : Bearing {\n    nope = auto\n    nope = auto\n} }  \
          structure Bearing { param bore : Length = 10mm }";
     let module = compile_source_with_stdlib(source);
 

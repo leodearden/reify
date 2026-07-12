@@ -244,7 +244,10 @@ mod tests {
     #[test]
     fn is_joint_typed_fn_rejects_other_family_and_unknown_names() {
         // Geometry-query family.
-        assert!(!is_joint_typed_fn("volume"), "must reject geometry-query 'volume'");
+        assert!(
+            !is_joint_typed_fn("volume"),
+            "must reject geometry-query 'volume'"
+        );
         // Dynamics-query family.
         assert!(
             !is_joint_typed_fn("body_mass_props"),
@@ -254,10 +257,16 @@ mod tests {
         assert!(!is_joint_typed_fn("vec"), "must reject math-linalg 'vec'");
         assert!(!is_joint_typed_fn("sqrt"), "must reject math-linalg 'sqrt'");
         // `sweep` is deliberately EXCLUDED from the family — it has a geometry overload.
-        assert!(!is_joint_typed_fn("sweep"), "must reject 'sweep' (geometry overload, excluded)");
+        assert!(
+            !is_joint_typed_fn("sweep"),
+            "must reject 'sweep' (geometry overload, excluded)"
+        );
         // Empty / unknown.
         assert!(!is_joint_typed_fn(""), "must reject empty name");
-        assert!(!is_joint_typed_fn("does_not_exist"), "must reject unrelated name");
+        assert!(
+            !is_joint_typed_fn("does_not_exist"),
+            "must reject unrelated name"
+        );
     }
 
     /// Case-sensitivity invariant: Reify function names are snake_case, so the
@@ -404,8 +413,7 @@ mod tests {
     fn joint_ctor_result_type_is_args_agnostic() {
         use reify_ir::Value;
         // A dummy non-empty arg slice.
-        let dummy_arg =
-            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
+        let dummy_arg = CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
         let args_slice = &[dummy_arg];
 
         assert_eq!(
@@ -447,7 +455,10 @@ mod tests {
         for name in &["couple", "gear", "screw", "rack_and_pinion"] {
             assert_eq!(
                 joint_ctor_result_type(name, args),
-                Type::applied("Coupling", vec![Type::StructureRef("Prismatic".to_string())]),
+                Type::applied(
+                    "Coupling",
+                    vec![Type::StructureRef("Prismatic".to_string())]
+                ),
                 "{name}(Prismatic) must return Type::applied(\"Coupling\",[StructureRef(Prismatic)]); \
                  got: {:?}",
                 joint_ctor_result_type(name, args)

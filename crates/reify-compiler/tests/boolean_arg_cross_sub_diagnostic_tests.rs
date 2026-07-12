@@ -31,8 +31,8 @@
 //! atomic and discoverable by name when a boolean-op regression occurs.
 
 use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef};
-use reify_test_support::compile_source;
 use reify_core::Severity;
+use reify_test_support::compile_source;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -127,8 +127,7 @@ fn assert_generic_fallback_no_cross_sub(source: &str, arg_n: usize, sub: &str, m
 
     // (b) The cross-sub deferred diagnostic must NOT fire for this shape.
     let has_spurious_deferred_diagnostic = errors.iter().any(|d| {
-        has_deferred_keyword(&d.message)
-            && (d.message.contains(sub) || d.message.contains(member))
+        has_deferred_keyword(&d.message) && (d.message.contains(sub) || d.message.contains(member))
     });
     assert!(
         !has_spurious_deferred_diagnostic,

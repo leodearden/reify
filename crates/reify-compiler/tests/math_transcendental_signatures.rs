@@ -193,7 +193,10 @@ fn asin_two_way_is_angle() {
     let (ty, val) = two_way("as_");
     assert_eq!(ty, Type::angle(), "asin(0.5) forward type must be Angle");
     match val {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert_eq!(dimension, DimensionVector::ANGLE, "asin eval dimension");
             assert!(
                 (si_value - f64::asin(0.5)).abs() < EPS,
@@ -210,7 +213,10 @@ fn acos_two_way_is_angle() {
     let (ty, val) = two_way("ac");
     assert_eq!(ty, Type::angle(), "acos(0.5) forward type must be Angle");
     match val {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert_eq!(dimension, DimensionVector::ANGLE, "acos eval dimension");
             assert!(
                 (si_value - f64::acos(0.5)).abs() < EPS,
@@ -227,7 +233,10 @@ fn atan_two_way_is_angle() {
     let (ty, val) = two_way("at");
     assert_eq!(ty, Type::angle(), "atan(1.0) forward type must be Angle");
     match val {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert_eq!(dimension, DimensionVector::ANGLE, "atan eval dimension");
             assert!(
                 (si_value - f64::atan(1.0)).abs() < EPS,
@@ -242,9 +251,16 @@ fn atan_two_way_is_angle() {
 #[test]
 fn atan2_two_way_is_angle() {
     let (ty, val) = two_way("at2");
-    assert_eq!(ty, Type::angle(), "atan2(1.0,1.0) forward type must be Angle");
+    assert_eq!(
+        ty,
+        Type::angle(),
+        "atan2(1.0,1.0) forward type must be Angle"
+    );
     match val {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert_eq!(dimension, DimensionVector::ANGLE, "atan2 eval dimension");
             assert!(
                 (si_value - f64::atan2(1.0, 1.0)).abs() < EPS,
@@ -287,7 +303,10 @@ fn log_two_way_is_dimensionless() {
     );
     match val {
         Value::Real(x) => {
-            assert!((x - 1.0).abs() < EPS, "log(e) eval value should be 1.0, got {x}")
+            assert!(
+                (x - 1.0).abs() < EPS,
+                "log(e) eval value should be 1.0, got {x}"
+            )
         }
         other => panic!("log(e) eval should be Value::Real, got {other:?}"),
     }
@@ -305,11 +324,16 @@ fn sin_times_mm_cascade_is_length() {
     let (ty, val) = two_way("xcas");
     assert_eq!(
         ty,
-        Type::Scalar { dimension: DimensionVector::LENGTH },
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH
+        },
         "sin(0.5rad) * 5mm forward type must be Scalar<LENGTH>"
     );
     match val {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert_eq!(dimension, DimensionVector::LENGTH, "cascade eval dimension");
             let expected = f64::sin(0.5) * 0.005;
             assert!(

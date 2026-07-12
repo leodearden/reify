@@ -73,7 +73,8 @@ fn pushdown_list_arg_resolves_empty_literal_to_param_element_type() {
         .iter()
         .filter(|d| {
             d.severity == Severity::Warning
-                && d.message.contains("cannot infer element type of empty list")
+                && d.message
+                    .contains("cannot infer element type of empty list")
         })
         .collect();
     assert!(
@@ -98,9 +99,7 @@ fn pushdown_list_arg_resolves_empty_literal_to_param_element_type() {
                 "§7#5 List: expected UserFunctionCall for firstlen, got name={function_name:?}"
             );
         }
-        other => panic!(
-            "§7#5 List: expected UserFunctionCall for firstlen([]), got {other:?}"
-        ),
+        other => panic!("§7#5 List: expected UserFunctionCall for firstlen([]), got {other:?}"),
     }
 }
 
@@ -150,7 +149,10 @@ fn pushdown_set_arg_resolves_empty_literal_to_param_element_type() {
 
     match &n_expr.kind {
         reify_ir::CompiledExprKind::UserFunctionCall { function_name, .. } => {
-            assert_eq!(function_name, "f", "§7#5 Set: expected UserFunctionCall for f");
+            assert_eq!(
+                function_name, "f",
+                "§7#5 Set: expected UserFunctionCall for f"
+            );
         }
         other => panic!("§7#5 Set: expected UserFunctionCall for f(set {{}}), got {other:?}"),
     }
@@ -203,7 +205,10 @@ fn pushdown_map_arg_resolves_empty_literal_to_param_key_value_types() {
 
     match &n_expr.kind {
         reify_ir::CompiledExprKind::UserFunctionCall { function_name, .. } => {
-            assert_eq!(function_name, "g", "§7#5 Map: expected UserFunctionCall for g");
+            assert_eq!(
+                function_name, "g",
+                "§7#5 Map: expected UserFunctionCall for g"
+            );
         }
         other => panic!("§7#5 Map: expected UserFunctionCall for g(map {{}}), got {other:?}"),
     }
@@ -242,9 +247,14 @@ fn pushdown_non_regression_nonempty_list_arg_unchanged() {
 
     match &n_expr.kind {
         reify_ir::CompiledExprKind::UserFunctionCall { function_name, .. } => {
-            assert_eq!(function_name, "firstlen", "expected UserFunctionCall for firstlen");
+            assert_eq!(
+                function_name, "firstlen",
+                "expected UserFunctionCall for firstlen"
+            );
         }
-        other => panic!("non-regression: expected UserFunctionCall for firstlen([1mm]), got {other:?}"),
+        other => {
+            panic!("non-regression: expected UserFunctionCall for firstlen([1mm]), got {other:?}")
+        }
     }
 }
 
@@ -270,8 +280,7 @@ fn pushdown_unbound_type_param_emits_type_undetermined_error() {
         .diagnostics
         .iter()
         .filter(|d| {
-            d.severity == Severity::Error
-                && d.code == Some(DiagnosticCode::TypeUndetermined)
+            d.severity == Severity::Error && d.code == Some(DiagnosticCode::TypeUndetermined)
         })
         .collect();
     assert!(
@@ -356,8 +365,7 @@ fn pushdown_unbound_type_param_set_emits_type_undetermined_error() {
         .diagnostics
         .iter()
         .filter(|d| {
-            d.severity == Severity::Error
-                && d.code == Some(DiagnosticCode::TypeUndetermined)
+            d.severity == Severity::Error && d.code == Some(DiagnosticCode::TypeUndetermined)
         })
         .collect();
     assert!(
@@ -386,8 +394,7 @@ fn pushdown_unbound_type_param_map_emits_type_undetermined_error() {
         .diagnostics
         .iter()
         .filter(|d| {
-            d.severity == Severity::Error
-                && d.code == Some(DiagnosticCode::TypeUndetermined)
+            d.severity == Severity::Error && d.code == Some(DiagnosticCode::TypeUndetermined)
         })
         .collect();
     assert!(
@@ -436,7 +443,8 @@ fn pushdown_ambiguous_overloads_fallback_no_type_undetermined() {
         .iter()
         .filter(|d| {
             d.severity == Severity::Warning
-                && d.message.contains("cannot infer element type of empty list")
+                && d.message
+                    .contains("cannot infer element type of empty list")
         })
         .collect();
     assert!(

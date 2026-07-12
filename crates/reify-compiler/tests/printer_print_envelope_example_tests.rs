@@ -84,10 +84,12 @@ fn printer_print_envelope_example_compiles_under_stdlib_with_zero_errors() {
     // This assertion distinguishes the test from the bulk examples_smoke gate.
 
     assert!(
-        module.templates.iter().any(|t| t.name == "PrinterPrintEnvelope"),
+        module
+            .templates
+            .iter()
+            .any(|t| t.name == "PrinterPrintEnvelope"),
         "expected a 'PrinterPrintEnvelope' structure template in compiled \
          printer_print_envelope.ri; found templates: {:?}",
         module.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
     );
-
 }

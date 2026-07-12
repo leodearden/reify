@@ -4,9 +4,9 @@ use reify_compiler::{
     BooleanOp, CompiledGeometryOp, CurveKind, GeomRef, ModifyKind, PatternKind, PrimitiveKind,
     RealizationDecl, SweepKind, TopologyTemplate, TransformKind, ValueCellKind,
 };
-use reify_test_support::{compile_source, parse_and_compile};
 use reify_core::{Severity, Type};
 use reify_ir::CompiledExprKind;
+use reify_test_support::{compile_source, parse_and_compile};
 
 // ─── Source-string constants (shared between existing and op-level tests) ─────
 
@@ -155,14 +155,12 @@ fn op_matches(actual: &CompiledGeometryOp, expected: &ExpectedOp) -> bool {
             },
             ExpectedOp::BoolIntersect(el, er),
         ) => l == el && r == er,
-        (
-            CompiledGeometryOp::Transform { kind, target, .. },
-            ExpectedOp::Transform(ek, et),
-        ) => kind == ek && tgt_matches(target, et),
-        (
-            CompiledGeometryOp::Pattern { kind, target, .. },
-            ExpectedOp::Pattern(ek, et),
-        ) => kind == ek && tgt_matches(target, et),
+        (CompiledGeometryOp::Transform { kind, target, .. }, ExpectedOp::Transform(ek, et)) => {
+            kind == ek && tgt_matches(target, et)
+        }
+        (CompiledGeometryOp::Pattern { kind, target, .. }, ExpectedOp::Pattern(ek, et)) => {
+            kind == ek && tgt_matches(target, et)
+        }
         (CompiledGeometryOp::Sweep { kind, profiles, .. }, ExpectedOp::Sweep(ek, ep)) => {
             kind == ek
                 && profiles.len() == ep.len()
@@ -171,10 +169,9 @@ fn op_matches(actual: &CompiledGeometryOp, expected: &ExpectedOp) -> bool {
                     .zip(ep.iter())
                     .all(|(p, et)| tgt_matches(p, et))
         }
-        (
-            CompiledGeometryOp::Modify { kind, target, .. },
-            ExpectedOp::Modify(ek, et),
-        ) => kind == ek && tgt_matches(target, et),
+        (CompiledGeometryOp::Modify { kind, target, .. }, ExpectedOp::Modify(ek, et)) => {
+            kind == ek && tgt_matches(target, et)
+        }
         (CompiledGeometryOp::Curve { kind, .. }, ExpectedOp::Curve(ek)) => kind == ek,
         _ => false,
     }
@@ -752,9 +749,10 @@ fn translate_let_bound_target_ops() {
     let realization = realization_named(template, &["hole", "result"], "result");
     assert_op_sequence(
         &realization.operations,
-        &[
-            ExpectedOp::Transform(TransformKind::Translate, Tgt::Sub("hole")),
-        ],
+        &[ExpectedOp::Transform(
+            TransformKind::Translate,
+            Tgt::Sub("hole"),
+        )],
     );
 }
 
@@ -773,9 +771,10 @@ fn rotate_let_bound_target_ops() {
     let realization = realization_named(template, &["hole", "result"], "result");
     assert_op_sequence(
         &realization.operations,
-        &[
-            ExpectedOp::Transform(TransformKind::Rotate, Tgt::Sub("hole")),
-        ],
+        &[ExpectedOp::Transform(
+            TransformKind::Rotate,
+            Tgt::Sub("hole"),
+        )],
     );
 }
 
@@ -792,9 +791,10 @@ fn scale_let_bound_target_ops() {
     let realization = realization_named(template, &["hole", "result"], "result");
     assert_op_sequence(
         &realization.operations,
-        &[
-            ExpectedOp::Transform(TransformKind::Scale, Tgt::Sub("hole")),
-        ],
+        &[ExpectedOp::Transform(
+            TransformKind::Scale,
+            Tgt::Sub("hole"),
+        )],
     );
 }
 
@@ -811,9 +811,10 @@ fn rotate_around_let_bound_target_ops() {
     let realization = realization_named(template, &["hole", "result"], "result");
     assert_op_sequence(
         &realization.operations,
-        &[
-            ExpectedOp::Transform(TransformKind::RotateAround, Tgt::Sub("hole")),
-        ],
+        &[ExpectedOp::Transform(
+            TransformKind::RotateAround,
+            Tgt::Sub("hole"),
+        )],
     );
 }
 
@@ -832,9 +833,7 @@ fn circular_pattern_let_bound_ops() {
     let realization = realization_named(template, &["hole", "result"], "result");
     assert_op_sequence(
         &realization.operations,
-        &[
-            ExpectedOp::Pattern(PatternKind::Circular, Tgt::Sub("hole")),
-        ],
+        &[ExpectedOp::Pattern(PatternKind::Circular, Tgt::Sub("hole"))],
     );
 }
 
@@ -851,9 +850,7 @@ fn linear_pattern_let_bound_ops() {
     let realization = realization_named(template, &["hole", "result"], "result");
     assert_op_sequence(
         &realization.operations,
-        &[
-            ExpectedOp::Pattern(PatternKind::Linear, Tgt::Sub("hole")),
-        ],
+        &[ExpectedOp::Pattern(PatternKind::Linear, Tgt::Sub("hole"))],
     );
 }
 
@@ -870,9 +867,7 @@ fn mirror_let_bound_ops() {
     let realization = realization_named(template, &["hole", "result"], "result");
     assert_op_sequence(
         &realization.operations,
-        &[
-            ExpectedOp::Pattern(PatternKind::Mirror, Tgt::Sub("hole")),
-        ],
+        &[ExpectedOp::Pattern(PatternKind::Mirror, Tgt::Sub("hole"))],
     );
 }
 
@@ -891,9 +886,10 @@ fn extrude_let_bound_profile_ops() {
     let realization = realization_named(template, &["profile", "result"], "result");
     assert_op_sequence(
         &realization.operations,
-        &[
-            ExpectedOp::Sweep(SweepKind::Extrude, vec![Tgt::Sub("profile")]),
-        ],
+        &[ExpectedOp::Sweep(
+            SweepKind::Extrude,
+            vec![Tgt::Sub("profile")],
+        )],
     );
 }
 
@@ -910,9 +906,10 @@ fn revolve_let_bound_profile_ops() {
     let realization = realization_named(template, &["profile", "result"], "result");
     assert_op_sequence(
         &realization.operations,
-        &[
-            ExpectedOp::Sweep(SweepKind::Revolve, vec![Tgt::Sub("profile")]),
-        ],
+        &[ExpectedOp::Sweep(
+            SweepKind::Revolve,
+            vec![Tgt::Sub("profile")],
+        )],
     );
 }
 
@@ -929,9 +926,10 @@ fn revolve_full_let_bound_profile_ops() {
     let realization = realization_named(template, &["profile", "result"], "result");
     assert_op_sequence(
         &realization.operations,
-        &[
-            ExpectedOp::Sweep(SweepKind::Revolve, vec![Tgt::Sub("profile")]),
-        ],
+        &[ExpectedOp::Sweep(
+            SweepKind::Revolve,
+            vec![Tgt::Sub("profile")],
+        )],
     );
 }
 
@@ -950,9 +948,7 @@ fn shell_let_bound_target_ops() {
     let realization = realization_named(template, &["body", "result"], "result");
     assert_op_sequence(
         &realization.operations,
-        &[
-            ExpectedOp::Modify(ModifyKind::Shell, Tgt::Sub("body")),
-        ],
+        &[ExpectedOp::Modify(ModifyKind::Shell, Tgt::Sub("body"))],
     );
 }
 
@@ -969,9 +965,7 @@ fn thicken_let_bound_target_ops() {
     let realization = realization_named(template, &["body", "result"], "result");
     assert_op_sequence(
         &realization.operations,
-        &[
-            ExpectedOp::Modify(ModifyKind::Thicken, Tgt::Sub("body")),
-        ],
+        &[ExpectedOp::Modify(ModifyKind::Thicken, Tgt::Sub("body"))],
     );
 }
 
@@ -988,9 +982,7 @@ fn draft_let_bound_target_ops() {
     let realization = realization_named(template, &["body", "result"], "result");
     assert_op_sequence(
         &realization.operations,
-        &[
-            ExpectedOp::Modify(ModifyKind::Draft, Tgt::Sub("body")),
-        ],
+        &[ExpectedOp::Modify(ModifyKind::Draft, Tgt::Sub("body"))],
     );
 }
 
@@ -1011,9 +1003,7 @@ fn chamfer_let_bound_target_ops() {
     let realization = realization_named(template, &["body", "result"], "result");
     assert_op_sequence(
         &realization.operations,
-        &[
-            ExpectedOp::Modify(ModifyKind::Chamfer, Tgt::Sub("body")),
-        ],
+        &[ExpectedOp::Modify(ModifyKind::Chamfer, Tgt::Sub("body"))],
     );
 }
 
@@ -1032,9 +1022,7 @@ fn fillet_let_bound_target_ops() {
     let realization = realization_named(template, &["body", "result"], "result");
     assert_op_sequence(
         &realization.operations,
-        &[
-            ExpectedOp::Modify(ModifyKind::Fillet, Tgt::Sub("body")),
-        ],
+        &[ExpectedOp::Modify(ModifyKind::Fillet, Tgt::Sub("body"))],
     );
 }
 
@@ -1170,9 +1158,10 @@ fn sweep_two_let_bound_geometry_args() {
     let realization = realization_named(template, &["profile", "path", "result"], "result");
     assert_op_sequence(
         &realization.operations,
-        &[
-            ExpectedOp::Sweep(SweepKind::Sweep, vec![Tgt::Sub("profile"), Tgt::Sub("path")]),
-        ],
+        &[ExpectedOp::Sweep(
+            SweepKind::Sweep,
+            vec![Tgt::Sub("profile"), Tgt::Sub("path")],
+        )],
     );
 }
 
@@ -1193,9 +1182,10 @@ fn loft_let_bound_profiles_ops() {
     let realization = realization_named(template, &["p1", "p2", "result"], "result");
     assert_op_sequence(
         &realization.operations,
-        &[
-            ExpectedOp::Sweep(SweepKind::Loft, vec![Tgt::Sub("p1"), Tgt::Sub("p2")]),
-        ],
+        &[ExpectedOp::Sweep(
+            SweepKind::Loft,
+            vec![Tgt::Sub("p1"), Tgt::Sub("p2")],
+        )],
     );
 }
 
@@ -1256,7 +1246,10 @@ fn cyclic_refs_through_transforms_resolve_to_sub() {
     let a_real = realization_named(template, &["a", "b"], "a");
     assert_op_sequence(
         &a_real.operations,
-        &[ExpectedOp::Transform(TransformKind::Translate, Tgt::Sub("b"))],
+        &[ExpectedOp::Transform(
+            TransformKind::Translate,
+            Tgt::Sub("b"),
+        )],
     );
     let b_real = realization_named(template, &["a", "b"], "b");
     assert_op_sequence(
@@ -1309,9 +1302,7 @@ fn chained_transforms_step_indices() {
     let realization = realization_named(template, &["a", "b", "c"], "c");
     assert_op_sequence(
         &realization.operations,
-        &[
-            ExpectedOp::Transform(TransformKind::Rotate, Tgt::Sub("b")),
-        ],
+        &[ExpectedOp::Transform(TransformKind::Rotate, Tgt::Sub("b"))],
     );
 }
 
@@ -1499,9 +1490,10 @@ fn ident_alias_with_transform() {
     let result_real = realization_named(template, &["body", "alias", "result"], "result");
     assert_op_sequence(
         &result_real.operations,
-        &[
-            ExpectedOp::Transform(TransformKind::Translate, Tgt::Sub("alias")),
-        ],
+        &[ExpectedOp::Transform(
+            TransformKind::Translate,
+            Tgt::Sub("alias"),
+        )],
     );
 }
 
@@ -1681,9 +1673,10 @@ fn loft_three_profiles_ops() {
     let realization = realization_named(template, &["p1", "p2", "p3", "result"], "result");
     assert_op_sequence(
         &realization.operations,
-        &[
-            ExpectedOp::Sweep(SweepKind::Loft, vec![Tgt::Sub("p1"), Tgt::Sub("p2"), Tgt::Sub("p3")]),
-        ],
+        &[ExpectedOp::Sweep(
+            SweepKind::Loft,
+            vec![Tgt::Sub("p1"), Tgt::Sub("p2"), Tgt::Sub("p3")],
+        )],
     );
 }
 
@@ -1753,7 +1746,10 @@ fn translate_non_geometry_target_uses_fallback() {
     assert_eq!(template.realizations.len(), 1);
     assert_op_sequence(
         &template.realizations[0].operations,
-        &[ExpectedOp::Transform(TransformKind::Translate, Tgt::Step(0))],
+        &[ExpectedOp::Transform(
+            TransformKind::Translate,
+            Tgt::Step(0),
+        )],
     );
 }
 
@@ -1777,7 +1773,10 @@ fn loft_non_geometry_profiles_uses_fallback() {
     assert_eq!(template.realizations.len(), 1);
     assert_op_sequence(
         &template.realizations[0].operations,
-        &[ExpectedOp::Sweep(SweepKind::Loft, vec![Tgt::Step(0), Tgt::Step(1)])],
+        &[ExpectedOp::Sweep(
+            SweepKind::Loft,
+            vec![Tgt::Step(0), Tgt::Step(1)],
+        )],
     );
 }
 

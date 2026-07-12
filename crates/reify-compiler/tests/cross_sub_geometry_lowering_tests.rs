@@ -6,9 +6,9 @@
 //! See task 3441: implementing cross-sub geometry composition.
 
 use reify_compiler::{CompiledGeometryOp, GeomRef, TransformKind};
-use reify_test_support::compile_source;
 use reify_core::Severity;
 use reify_ir::{CompiledExprKind, Value};
+use reify_test_support::compile_source;
 
 /// Compile `Outer` whose `placed` realization translates `self.inner.body`.
 /// Assert (a) no Error diagnostics and (b) the lowered translate op targets

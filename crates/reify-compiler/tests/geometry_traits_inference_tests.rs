@@ -27,9 +27,9 @@ use reify_compiler::{
     BooleanOp, CompiledGeometryOp, CurveKind, GeomRef, ModifyKind, PatternKind, PrimitiveKind,
     SweepKind, TransformKind,
 };
-use reify_test_support::{compile_source_with_stdlib, errors_only};
 use reify_core::{ContentHash, DiagnosticCode, Type, ValueCellId};
 use reify_ir::{CompiledExpr, CompiledExprKind, ResolvedFunction, Value};
+use reify_test_support::{compile_source_with_stdlib, errors_only};
 
 // ─── InferredTraits value type — flag math + has() accessor ─────────────────
 
@@ -122,7 +122,10 @@ fn named_constructors_carry_solid_dimension_non_planar_non_closed() {
     assert_eq!(InferredTraits::all().dimension, GeomDim::Solid);
     assert_eq!(InferredTraits::none().dimension, GeomDim::Solid);
     assert_eq!(InferredTraits::bounded_only().dimension, GeomDim::Solid);
-    assert_eq!(InferredTraits::bounded_connected().dimension, GeomDim::Solid);
+    assert_eq!(
+        InferredTraits::bounded_connected().dimension,
+        GeomDim::Solid
+    );
 
     assert!(!InferredTraits::all().planar, "all() must be planar=false");
     assert!(!InferredTraits::all().closed, "all() must be closed=false");
@@ -166,11 +169,24 @@ fn name_dispatch_assigns_solid_to_primitives_and_combinators() {
         let t = try_infer_traits_for_function_call(name, &[g(), g(), g()]).unwrap();
         assert_eq!(t.dimension, GeomDim::Solid, "{name} must infer Solid");
     }
-    for name in ["union", "difference", "intersection", "union_all", "intersection_all"] {
+    for name in [
+        "union",
+        "difference",
+        "intersection",
+        "union_all",
+        "intersection_all",
+    ] {
         let t = try_infer_traits_for_function_call(name, &[box_g(), box_g()]).unwrap();
         assert_eq!(t.dimension, GeomDim::Solid, "{name} must infer Solid");
     }
-    for name in ["fillet", "shell", "chamfer", "draft", "thicken", "offset_solid"] {
+    for name in [
+        "fillet",
+        "shell",
+        "chamfer",
+        "draft",
+        "thicken",
+        "offset_solid",
+    ] {
         let t = try_infer_traits_for_function_call(name, &[box_g()]).unwrap();
         assert_eq!(t.dimension, GeomDim::Solid, "{name} must infer Solid");
     }
@@ -400,7 +416,11 @@ fn torus_infers_bounded_connected_nonconvex() {
     assert!(by_kind.bounded, "infer_primitive(Torus) is bounded");
     assert!(by_kind.connected, "infer_primitive(Torus) is connected");
     assert!(!by_kind.convex, "infer_primitive(Torus) is NOT convex");
-    assert_eq!(by_kind.dimension, GeomDim::Solid, "infer_primitive(Torus) is a Solid");
+    assert_eq!(
+        by_kind.dimension,
+        GeomDim::Solid,
+        "infer_primitive(Torus) is a Solid"
+    );
 
     // The two entry points must produce the identical flag set.
     assert_eq!(
@@ -1675,7 +1695,10 @@ fn half_space_infer_primitive_returns_unbounded_convex() {
 
     let by_kind = infer_primitive(PrimitiveKind::HalfSpace);
     assert!(!by_kind.bounded, "half_space is NOT bounded");
-    assert!(by_kind.connected, "half_space is connected (single component)");
+    assert!(
+        by_kind.connected,
+        "half_space is connected (single component)"
+    );
     assert!(by_kind.convex, "half_space is convex");
     assert_eq!(by_kind.dimension, GeomDim::Solid, "half_space is a Solid");
     assert!(!by_kind.planar, "half_space is not planar");
@@ -1691,7 +1714,10 @@ fn half_space_infer_primitive_returns_unbounded_convex() {
 
     // Verify it is identical to InferredTraits::unbounded_convex().
     let expected = InferredTraits::unbounded_convex();
-    assert_eq!(by_kind, expected, "half_space must == InferredTraits::unbounded_convex()");
+    assert_eq!(
+        by_kind, expected,
+        "half_space must == InferredTraits::unbounded_convex()"
+    );
 }
 
 /// End-to-end negative conformance test: a structure declares `param g : Bounded`

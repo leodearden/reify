@@ -186,8 +186,7 @@ fn elastic_poissons_ratio_high_is_violated() {
         .diagnostics
         .iter()
         .filter(|d| {
-            d.severity == Severity::Error
-                && d.code == Some(DiagnosticCode::ConstraintViolated)
+            d.severity == Severity::Error && d.code == Some(DiagnosticCode::ConstraintViolated)
         })
         .collect();
     assert!(
@@ -228,8 +227,7 @@ fn elastic_poissons_ratio_negative_is_violated() {
         .diagnostics
         .iter()
         .filter(|d| {
-            d.severity == Severity::Error
-                && d.code == Some(DiagnosticCode::ConstraintViolated)
+            d.severity == Severity::Error && d.code == Some(DiagnosticCode::ConstraintViolated)
         })
         .collect();
     assert!(
@@ -448,8 +446,7 @@ fn strong_ultimate_tensile_strength_below_yield_is_violated() {
         .diagnostics
         .iter()
         .filter(|d| {
-            d.severity == Severity::Error
-                && d.code == Some(DiagnosticCode::ConstraintViolated)
+            d.severity == Severity::Error && d.code == Some(DiagnosticCode::ConstraintViolated)
         })
         .collect();
     assert!(
@@ -569,7 +566,10 @@ fn fatigue_rated_optional_params_in_defaults() {
     // None of the three new params should be required.
     for param_name in &["fatigue_limit", "fatigue_strength_at", "fatigue_cycles"] {
         assert!(
-            !fatigue.required_members.iter().any(|r| r.name == *param_name),
+            !fatigue
+                .required_members
+                .iter()
+                .any(|r| r.name == *param_name),
             "'{}' should be optional (= undef), not a required member",
             param_name
         );
@@ -590,7 +590,10 @@ fn fatigue_rated_optional_params_in_defaults() {
             "fatigue_limit should have Pressure type, got {:?}",
             cell_type
         ),
-        other => panic!("expected DefaultKind::Param for fatigue_limit, got {:?}", other),
+        other => panic!(
+            "expected DefaultKind::Param for fatigue_limit, got {:?}",
+            other
+        ),
     }
 
     // fatigue_strength_at must be in defaults with Pressure type (task #3111).
@@ -627,7 +630,10 @@ fn fatigue_rated_optional_params_in_defaults() {
             "fatigue_cycles should have type Int, got {:?}",
             cell_type
         ),
-        other => panic!("expected DefaultKind::Param for fatigue_cycles, got {:?}", other),
+        other => panic!(
+            "expected DefaultKind::Param for fatigue_cycles, got {:?}",
+            other
+        ),
     }
 }
 
@@ -702,7 +708,10 @@ fn impact_resistant_optional_params_in_defaults() {
 
     for param_name in &["charpy_impact", "izod_impact"] {
         assert!(
-            !impact.required_members.iter().any(|r| r.name == *param_name),
+            !impact
+                .required_members
+                .iter()
+                .any(|r| r.name == *param_name),
             "'{}' must NOT be a required member of ImpactResistant (optional = undef)",
             param_name
         );
@@ -723,7 +732,10 @@ fn impact_resistant_optional_params_in_defaults() {
             "charpy_impact should have Energy type, got {:?}",
             cell_type
         ),
-        other => panic!("expected DefaultKind::Param for charpy_impact, got {:?}", other),
+        other => panic!(
+            "expected DefaultKind::Param for charpy_impact, got {:?}",
+            other
+        ),
     }
 
     // izod_impact must be in defaults with Energy type (task #3111).
@@ -741,7 +753,10 @@ fn impact_resistant_optional_params_in_defaults() {
             "izod_impact should have Energy type, got {:?}",
             cell_type
         ),
-        other => panic!("expected DefaultKind::Param for izod_impact, got {:?}", other),
+        other => panic!(
+            "expected DefaultKind::Param for izod_impact, got {:?}",
+            other
+        ),
     }
 }
 

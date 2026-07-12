@@ -583,7 +583,11 @@ fn map_or_third_param_resolves_to_type_function() {
     );
 
     let (f_name, f_ty) = &map_or.params[2];
-    assert_eq!(f_name, "f", "third param should be named f, got: {:?}", f_name);
+    assert_eq!(
+        f_name, "f",
+        "third param should be named f, got: {:?}",
+        f_name
+    );
     assert_eq!(
         *f_ty,
         Type::Function {

@@ -12,8 +12,8 @@
 //!   4. User unit in quantity literal → SI   (test 1, multi-unit)
 //!   5. Unit with compound dimension         (tests 2)
 
-use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only};
 use reify_core::DimensionVector;
+use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only};
 
 // ─── category 1: basic unit declaration ───────────────────────────────────────
 
@@ -94,9 +94,8 @@ fn offset_unit_degc_compiles_with_factor_and_offset() {
         .find(|c| c.id.member == "t")
         .expect("value cell 't' not found");
     if let Some(expr) = &t_cell.default_expr {
-        if let reify_ir::CompiledExprKind::Literal(reify_ir::Value::Scalar {
-            si_value, ..
-        }) = &expr.kind
+        if let reify_ir::CompiledExprKind::Literal(reify_ir::Value::Scalar { si_value, .. }) =
+            &expr.kind
         {
             assert!(
                 (si_value - 278.15).abs() < 1e-9,
@@ -177,9 +176,8 @@ fn user_unit_in_quantity_literal_evaluates_to_si_value_multiple_units() {
         .find(|c| c.id.member == "d")
         .expect("value cell 'd' not found");
     if let Some(expr) = &d_cell.default_expr {
-        if let reify_ir::CompiledExprKind::Literal(reify_ir::Value::Scalar {
-            si_value, ..
-        }) = &expr.kind
+        if let reify_ir::CompiledExprKind::Literal(reify_ir::Value::Scalar { si_value, .. }) =
+            &expr.kind
         {
             assert!(
                 (si_value - 2000.0).abs() < 1e-9,
@@ -199,9 +197,8 @@ fn user_unit_in_quantity_literal_evaluates_to_si_value_multiple_units() {
         .find(|c| c.id.member == "t")
         .expect("value cell 't' not found");
     if let Some(expr) = &t_cell.default_expr {
-        if let reify_ir::CompiledExprKind::Literal(reify_ir::Value::Scalar {
-            si_value, ..
-        }) = &expr.kind
+        if let reify_ir::CompiledExprKind::Literal(reify_ir::Value::Scalar { si_value, .. }) =
+            &expr.kind
         {
             assert!(
                 (si_value - 0.5).abs() < 1e-9,

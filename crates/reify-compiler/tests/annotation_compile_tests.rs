@@ -62,7 +62,9 @@ fn annotation_with_args_on_function_propagates() {
     assert_eq!(func.annotations[0].args.len(), 1);
     assert_eq!(
         func.annotations[0].args[0],
-        reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::String("use new_calc".into()))
+        reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::String(
+            "use new_calc".into()
+        ))
     );
 }
 
@@ -269,13 +271,27 @@ fn annotation_arg_types_lowered() {
     assert_eq!(template.annotations.len(), 1);
     let args = &template.annotations[0].args;
     assert_eq!(args.len(), 5, "expected 5 args, got {:?}", args);
-    assert_eq!(args[0], reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::String("name".into())));
-    assert_eq!(args[1], reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::Int(42)));
-    assert_eq!(args[2], reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::Real(1.5)));
-    assert_eq!(args[3], reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::Bool(true)));
+    assert_eq!(
+        args[0],
+        reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::String("name".into()))
+    );
+    assert_eq!(
+        args[1],
+        reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::Int(42))
+    );
+    assert_eq!(
+        args[2],
+        reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::Real(1.5))
+    );
+    assert_eq!(
+        args[3],
+        reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::Bool(true))
+    );
     assert_eq!(
         args[4],
-        reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::Ident("mechanical".into()))
+        reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::Ident(
+            "mechanical".into()
+        ))
     );
 }
 

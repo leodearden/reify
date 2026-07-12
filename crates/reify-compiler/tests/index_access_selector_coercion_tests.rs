@@ -48,10 +48,7 @@ fn cell_default_expr<'a>(
 /// Assert the named cell is an `IndexAccess` whose `object` is wrapped in
 /// `ResolveSelector` (result_type `List<Geometry>`, inner still `Selector(k)`)
 /// and whose own result_type is `Geometry`.
-fn assert_indexed_selector_coerced(
-    compiled: &reify_compiler::CompiledModule,
-    member: &str,
-) {
+fn assert_indexed_selector_coerced(compiled: &reify_compiler::CompiledModule, member: &str) {
     let expr = cell_default_expr(compiled, member);
     let CompiledExprKind::IndexAccess { object, .. } = &expr.kind else {
         panic!(

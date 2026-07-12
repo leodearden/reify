@@ -43,8 +43,11 @@ fn generic_enum_type_params_lowered_to_enum_def() {
         .expect("Result enum should be present in module.enum_defs");
 
     // (a) β signal: type_params carries the declared head ["T", "E"].
-    let type_param_names: Vec<String> =
-        result_def.type_params.iter().map(|p| p.name.clone()).collect();
+    let type_param_names: Vec<String> = result_def
+        .type_params
+        .iter()
+        .map(|p| p.name.clone())
+        .collect();
     assert_eq!(
         type_param_names,
         vec!["T".to_string(), "E".to_string()],
@@ -99,14 +102,20 @@ fn generic_enum_variant_payloads_carry_type_param_types() {
     // Ok { value: T } -> Named([("value", Type::TypeParam("T"))])
     assert_eq!(
         ok_var.payload,
-        VariantPayload::Named(vec![("value".to_string(), Type::TypeParam("T".to_string()))]),
+        VariantPayload::Named(vec![(
+            "value".to_string(),
+            Type::TypeParam("T".to_string())
+        )]),
         "Ok variant must carry Named([value: TypeParam(T)])"
     );
 
     // Err { error: E } -> Named([("error", Type::TypeParam("E"))])
     assert_eq!(
         err_var.payload,
-        VariantPayload::Named(vec![("error".to_string(), Type::TypeParam("E".to_string()))]),
+        VariantPayload::Named(vec![(
+            "error".to_string(),
+            Type::TypeParam("E".to_string())
+        )]),
         "Err variant must carry Named([error: TypeParam(E)])"
     );
 }
@@ -129,8 +138,11 @@ fn inv1_type_param_names_coincide_with_payload_type_param_names() {
         .expect("Result enum should be present in module.enum_defs");
 
     // Collect declared type-param names from the head.
-    let declared_names: Vec<&str> =
-        result_def.type_params.iter().map(|p| p.name.as_str()).collect();
+    let declared_names: Vec<&str> = result_def
+        .type_params
+        .iter()
+        .map(|p| p.name.as_str())
+        .collect();
 
     // Collect all Type::TypeParam names that appear in variant payloads.
     let mut payload_tp_names: Vec<String> = vec![];

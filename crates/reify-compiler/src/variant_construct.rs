@@ -41,8 +41,8 @@ use reify_ir::{CompiledExpr, CompiledExprKind, EnumDef, Value, VariantPayload};
 
 use crate::expr::make_poison_literal;
 use crate::type_compat::{
-    enum_payload_compatible, type_carries_type_param, type_compatible, type_mentions_conflicted_param,
-    unify,
+    enum_payload_compatible, type_carries_type_param, type_compatible,
+    type_mentions_conflicted_param, unify,
 };
 use crate::type_resolution::substitute_type_params;
 
@@ -154,8 +154,7 @@ pub(crate) fn compile_variant_construct(
     // variant has an empty declared set, so any supplied field is unknown
     // (handles `Point { x: 1mm }`). Missing + unknown can co-occur (e.g.
     // `Circle { diameter: 5mm }` is missing `radius` AND has unknown `diameter`).
-    let declared_names: HashSet<&str> =
-        declared_fields.iter().map(|(n, _)| n.as_str()).collect();
+    let declared_names: HashSet<&str> = declared_fields.iter().map(|(n, _)| n.as_str()).collect();
     for (field_name, _value) in compiled_fields {
         if !declared_names.contains(field_name.as_str()) {
             diagnostics.push(
@@ -203,7 +202,9 @@ pub(crate) fn compile_variant_construct(
     // (e.g. `Type::Error` from an upstream diagnostic), for a different enum,
     // or arity-mismatched.
     let pin_subst: Option<HashMap<String, Type>> = expected_type.and_then(|ty| match ty {
-        Type::Applied { name, args } if name == enum_name && args.len() == enum_def.type_params.len() => {
+        Type::Applied { name, args }
+            if name == enum_name && args.len() == enum_def.type_params.len() =>
+        {
             Some(
                 enum_def
                     .type_params

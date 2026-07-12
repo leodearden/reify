@@ -23,8 +23,7 @@ use reify_test_support::{compile_source_with_stdlib, errors_only};
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
-const COUPLING_MOTIONVALUE_OK: &str =
-    include_str!("fixtures/coupling_motionvalue_ok.ri");
+const COUPLING_MOTIONVALUE_OK: &str = include_str!("fixtures/coupling_motionvalue_ok.ri");
 const COUPLING_MOTIONVALUE_MISMATCH: &str =
     include_str!("fixtures/coupling_motionvalue_mismatch.ri");
 
@@ -154,7 +153,10 @@ fn consumer_mismatch_coupling_revolute_angle_in_length_slot() {
         "no value cell should have cell_type == Type::Error (anti-cascade — \
          projection resolves cleanly to Type::angle() before the dimensional \
          check fires); error-typed cells: {:?}",
-        error_typed_cells.iter().map(|vc| &vc.id.member).collect::<Vec<_>>()
+        error_typed_cells
+            .iter()
+            .map(|vc| &vc.id.member)
+            .collect::<Vec<_>>()
     );
 
     // Anti-cascade: no noise codes.

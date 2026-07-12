@@ -13,8 +13,11 @@
 //! inline, not factored into shared common/mod.rs) to keep typing-side and
 //! producer-side tests symmetric.
 
+use reify_ast::{
+    Declaration, EnumDecl, Expr, ExprKind, LetDecl, MatchArmDeclArmDecl, MatchArmDeclGroupDecl,
+    MemberDecl, ParamDecl, ParsedModule, StructureDef, SubDecl, TypeExpr, TypeExprKind,
+};
 use reify_compiler::ValueCellDecl;
-use reify_ast::{Declaration, EnumDecl, Expr, ExprKind, LetDecl, MatchArmDeclArmDecl, MatchArmDeclGroupDecl, MemberDecl, ParamDecl, ParsedModule, StructureDef, SubDecl, TypeExpr, TypeExprKind};
 use reify_core::{ContentHash, ModulePath, Severity, SourceSpan, Type};
 
 // ─── AST construction helpers ────────────────────────────────────────────────
@@ -303,11 +306,7 @@ fn self_dot_match_cluster_pipe_arm_collapses_to_one_union_member() {
                 doc: None,
                 is_pub: false,
                 type_params: vec![],
-                variants: vec![
-                    "Hex".into(),
-                    "Socket".into(),
-                    "Button".into(),
-                ],
+                variants: vec!["Hex".into(), "Socket".into(), "Button".into()],
                 span: zero_span(),
                 content_hash: ContentHash(0),
                 annotations: vec![],

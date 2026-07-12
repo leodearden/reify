@@ -12,7 +12,11 @@ use reify_ir::{ObjectiveCombination, ObjectiveSense};
 
 fn compile_ok(src: &str, module_name: &str) -> reify_compiler::CompiledModule {
     let parsed = reify_syntax::parse(src, ModulePath::single(module_name));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     let compiled = reify_compiler::compile(&parsed);
     assert!(
         compiled.diagnostics.is_empty(),
@@ -54,10 +58,19 @@ fn single_minimize_lowers_to_one_term_weighted_sum() {
     );
 
     // exactly 1 term
-    assert_eq!(obj.terms.len(), 1, "expected 1 term, got {}", obj.terms.len());
+    assert_eq!(
+        obj.terms.len(),
+        1,
+        "expected 1 term, got {}",
+        obj.terms.len()
+    );
 
     let term = &obj.terms[0];
-    assert_eq!(term.sense, ObjectiveSense::Minimize, "term.sense must be Minimize");
+    assert_eq!(
+        term.sense,
+        ObjectiveSense::Minimize,
+        "term.sense must be Minimize"
+    );
     assert_eq!(term.weight, 1.0, "term.weight must default to 1.0");
     assert_eq!(term.priority, 0, "term.priority must default to 0");
 
@@ -97,7 +110,11 @@ fn single_maximize_lowers_to_one_term_weighted_sum() {
     assert_eq!(obj.terms.len(), 1, "expected 1 term");
 
     let term = &obj.terms[0];
-    assert_eq!(term.sense, ObjectiveSense::Maximize, "term.sense must be Maximize");
+    assert_eq!(
+        term.sense,
+        ObjectiveSense::Maximize,
+        "term.sense must be Maximize"
+    );
     assert_eq!(term.weight, 1.0);
     assert_eq!(term.priority, 0);
 

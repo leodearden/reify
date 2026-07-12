@@ -161,7 +161,11 @@ fn cell_result_type(
         .unwrap_or_else(|| {
             panic!(
                 "template {template_name:?} not found; found: {:?}",
-                compiled.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
+                compiled
+                    .templates
+                    .iter()
+                    .map(|t| &t.name)
+                    .collect::<Vec<_>>()
             )
         });
     let cell = tmpl

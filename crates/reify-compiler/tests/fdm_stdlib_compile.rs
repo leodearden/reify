@@ -17,10 +17,10 @@
 //! exercises the same embedded + sequential-prelude compilation path as
 //! production. This mirrors the helper trio in `trajectory_stdlib_compile.rs`.
 
-use reify_ir::*;
 use reify_compiler::*;
-use reify_test_support::compile_source_with_stdlib;
 use reify_core::*;
+use reify_ir::*;
+use reify_test_support::compile_source_with_stdlib;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -76,11 +76,7 @@ fn find_enum(name: &str) -> &'static EnumDef {
             panic!(
                 "expected `enum {}` in std/fdm, got enum_defs: {:?}",
                 name,
-                module
-                    .enum_defs
-                    .iter()
-                    .map(|e| &e.name)
-                    .collect::<Vec<_>>()
+                module.enum_defs.iter().map(|e| &e.name).collect::<Vec<_>>()
             )
         })
 }
@@ -207,10 +203,7 @@ fn fdm_process_structure_has_seven_params_plus_seven_provenance_slots() {
         ("top_bottom_layers", Type::Int),
         ("infill_density", Type::dimensionless_scalar()),
         ("infill_pattern", Type::Enum("InfillPattern".to_string())),
-        (
-            "material",
-            Type::TraitObject("ElasticMaterial".to_string()),
-        ),
+        ("material", Type::TraitObject("ElasticMaterial".to_string())),
         ("build_direction_provenance", provenance_ty.clone()),
         ("layer_height_provenance", provenance_ty.clone()),
         ("walls_provenance", provenance_ty.clone()),
@@ -270,12 +263,7 @@ fn fdm_process_defaults_have_expected_si_values_and_provenance_constructors() {
     let template = find_structure("FDMProcess");
 
     // layer_height = 0.2mm → 0.0002 m SI
-    assert_scalar_default(
-        template,
-        "layer_height",
-        DimensionVector::LENGTH,
-        0.2e-3,
-    );
+    assert_scalar_default(template, "layer_height", DimensionVector::LENGTH, 0.2e-3);
 
     // infill_density = 0.2 (dimensionless Real)
     assert_real_default(template, "infill_density", 0.2);
@@ -298,8 +286,13 @@ fn fdm_process_defaults_have_expected_si_values_and_provenance_constructors() {
             .as_ref()
             .expect("FDMProcess.infill_pattern missing default_expr");
         match &expr.kind {
-            CompiledExprKind::Literal(Value::Enum { type_name, variant, .. }) => {
-                assert_eq!(type_name, "InfillPattern", "infill_pattern default enum type_name");
+            CompiledExprKind::Literal(Value::Enum {
+                type_name, variant, ..
+            }) => {
+                assert_eq!(
+                    type_name, "InfillPattern",
+                    "infill_pattern default enum type_name"
+                );
                 assert_eq!(variant, "Gyroid", "infill_pattern default enum variant");
             }
             other => panic!(

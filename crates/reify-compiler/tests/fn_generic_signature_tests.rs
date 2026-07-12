@@ -15,8 +15,8 @@
 //! that reference a param. `compile_function` does NOT type-check the body against the
 //! declared return type, so trivial bodies produce no diagnostics and need no stdlib symbol.
 
-use reify_test_support::compile_source;
 use reify_core::{DiagnosticCode, DimensionVector, Severity, Type};
+use reify_test_support::compile_source;
 
 // ────────────────────────────────────────────────────────────────────────────
 // Step-1 / Step-2: CompiledFunction.type_params lowering
@@ -344,8 +344,7 @@ fn dim_kinded_param_scalar_q_resolves_to_scalar_param() {
         "Q should have 1 bound (Dimension)"
     );
     assert_eq!(
-        gf.type_params[0].bounds[0].trait_ref.name,
-        "Dimension",
+        gf.type_params[0].bounds[0].trait_ref.name, "Dimension",
         "Q's bound should be 'Dimension'"
     );
 
@@ -357,12 +356,16 @@ fn dim_kinded_param_scalar_q_resolves_to_scalar_param() {
         .expect("function 'area' should be compiled");
     assert_eq!(
         area.params[0].1,
-        Type::Scalar { dimension: DimensionVector::LENGTH },
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH
+        },
         "area param 'w' should still resolve to concrete Scalar[LENGTH]"
     );
     assert_eq!(
         area.return_type,
-        Type::Scalar { dimension: DimensionVector::LENGTH },
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH
+        },
         "area return type should still resolve to concrete Scalar[LENGTH]"
     );
 }

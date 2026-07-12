@@ -39,8 +39,12 @@ use reify_core::{Diagnostic, DiagnosticLabel};
 
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::compile_builder::traits_phase::build_trait_registry;
-use crate::type_resolution::{TypeAliasEntry, resolve_alias_dfs, validate_pub_parametric_alias_def_site};
-use crate::types::{CompiledModule, CompiledTrait, CompiledTypeAlias, EntityKind, TopologyTemplate};
+use crate::type_resolution::{
+    TypeAliasEntry, resolve_alias_dfs, validate_pub_parametric_alias_def_site,
+};
+use crate::types::{
+    CompiledModule, CompiledTrait, CompiledTypeAlias, EntityKind, TopologyTemplate,
+};
 
 /// Run phase-5 (type aliases).
 ///
@@ -160,8 +164,7 @@ pub(crate) fn phase_validate_pub_parametric_alias_defs(
     // ctx.resolution_trait_names is empty here — phase_traits moves it out
     // via std::mem::take to avoid a clone (see traits_phase.rs).  The
     // trait_registry already contains the same complete prelude + local set.
-    let trait_names_for_guard: HashSet<String> =
-        trait_registry.keys().cloned().collect();
+    let trait_names_for_guard: HashSet<String> = trait_registry.keys().cloned().collect();
 
     // Collect the entries to validate before mutably borrowing `ctx.diagnostics`.
     let entries_to_validate: Vec<_> = ctx

@@ -1061,9 +1061,7 @@ pub(crate) enum CtorSynthesisResult {
 ///
 /// Used by `auto_type_param_phase.rs` in the monomorph-build pass to fill the
 /// `default_expr` of type-param cells in the monomorphized clone.
-pub(crate) fn check_candidate_constructible(
-    candidate: &TopologyTemplate,
-) -> CtorSynthesisResult {
+pub(crate) fn check_candidate_constructible(candidate: &TopologyTemplate) -> CtorSynthesisResult {
     use reify_core::Type;
     use reify_ir::{CompiledExpr, StructureTypeId};
 
@@ -1580,8 +1578,7 @@ fn emit_fallback_warning_and_delegate_to_bfs(
         let mut full_value_map = reify_ir::ValueMap::new();
         for (param_name, candidate_name) in &outcome.substitution {
             if let Some(param_member) = param_type_member(parameterized_template, param_name)
-                && let Some(&candidate_template) =
-                    template_registry.get(candidate_name.as_str())
+                && let Some(&candidate_template) = template_registry.get(candidate_name.as_str())
             {
                 let seed = seed_candidate_value_map(candidate_template, param_member);
                 for (k, v) in seed.iter() {
@@ -2522,8 +2519,12 @@ fn emit_unevaluated_constraint_warnings(
     // Sort for deterministic emission order (HashSet iteration is unordered).
     let mut sorted_pairs: Vec<_> = pairs.into_iter().collect();
     sorted_pairs.sort_by(|a, b| {
-        (&a.0.entity, a.0.index, &a.1.entity, &a.1.member)
-            .cmp(&(&b.0.entity, b.0.index, &b.1.entity, &b.1.member))
+        (&a.0.entity, a.0.index, &a.1.entity, &a.1.member).cmp(&(
+            &b.0.entity,
+            b.0.index,
+            &b.1.entity,
+            &b.1.member,
+        ))
     });
 
     for (constraint_id, cell_id) in sorted_pairs {
@@ -2988,9 +2989,9 @@ mod helper_tests {
         check_constraints_leaf, collect_unevaluated_constraint_cell_pairs, dfs_search,
     };
     use crate::TopologyTemplate;
-    use reify_test_support::MockConstraintChecker;
     use reify_core::{ConstraintNodeId, Type};
     use reify_ir::{CompiledFunction, Satisfaction, Value};
+    use reify_test_support::MockConstraintChecker;
 
     fn literal_expr() -> reify_ir::CompiledExpr {
         reify_ir::CompiledExpr::literal(Value::Bool(true), Type::Bool)
@@ -3545,10 +3546,7 @@ mod helper_tests {
         let clearance_default = reify_ir::CompiledExpr::binop(
             BinOp::Sub,
             reify_ir::CompiledExpr::value_ref(bore_radius_id.clone(), Type::length()),
-            reify_ir::CompiledExpr::literal(
-                reify_ir::Value::length(0.0005),
-                Type::length(),
-            ),
+            reify_ir::CompiledExpr::literal(reify_ir::Value::length(0.0005), Type::length()),
             Type::length(),
         );
         // bore_radius = 10mm: literal default
@@ -3557,13 +3555,11 @@ mod helper_tests {
 
         // c0: constraint referencing clearance (non-literal cell)
         let c0_id = ConstraintNodeId::new("Bearing", 0);
-        let expr_c0 =
-            reify_ir::CompiledExpr::value_ref(clearance_id.clone(), Type::length());
+        let expr_c0 = reify_ir::CompiledExpr::value_ref(clearance_id.clone(), Type::length());
 
         // c1: constraint referencing bore_radius (literal cell)
         let c1_id = ConstraintNodeId::new("Bearing", 1);
-        let expr_c1 =
-            reify_ir::CompiledExpr::value_ref(bore_radius_id.clone(), Type::length());
+        let expr_c1 = reify_ir::CompiledExpr::value_ref(bore_radius_id.clone(), Type::length());
 
         let template = make_topology_template(
             "Bearing",

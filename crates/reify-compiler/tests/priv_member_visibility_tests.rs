@@ -150,7 +150,10 @@ fn priv_port_compiles_to_is_priv_true() {
         .find(|p| p.name == "pt")
         .expect("port 'pt' not found in Motor template");
 
-    assert!(port_pt.is_priv, "priv port pt must compile to is_priv == true");
+    assert!(
+        port_pt.is_priv,
+        "priv port pt must compile to is_priv == true"
+    );
 }
 
 /// Plain `port pu` must stay `is_priv == false` (no regression).
@@ -205,7 +208,11 @@ structure def Parent {
         1,
         "external access to `m.p` (priv param) must emit exactly one E_PRIV_MEMBER_ACCESS; \
          all diagnostics: {:?}",
-        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        module
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
     assert!(priv_errs[0].message.contains("E_PRIV_MEMBER_ACCESS"));
     assert!(
@@ -237,7 +244,11 @@ structure def Parent {
         0,
         "external access to `m.q` (default-visible param) must NOT emit E_PRIV_MEMBER_ACCESS; \
          all diagnostics: {:?}",
-        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        module
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -266,7 +277,11 @@ structure def Parent {
         1,
         "external access to `h.a` (priv sub) must emit exactly one E_PRIV_MEMBER_ACCESS; \
          all diagnostics: {:?}",
-        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        module
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
     assert!(priv_errs[0].message.contains("E_PRIV_MEMBER_ACCESS"));
 }
@@ -295,7 +310,11 @@ structure def Parent {
         0,
         "external access to `h.b` (default-visible sub) must NOT emit E_PRIV_MEMBER_ACCESS; \
          all diagnostics: {:?}",
-        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        module
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -324,7 +343,11 @@ structure def Parent {
         1,
         "external access to `ph.pt` (priv port) must emit exactly one E_PRIV_MEMBER_ACCESS; \
          all diagnostics: {:?}",
-        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        module
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
     assert!(priv_errs[0].message.contains("E_PRIV_MEMBER_ACCESS"));
 }
@@ -350,7 +373,11 @@ structure def Motor {
         0,
         "internal references to a priv param (bare `p` and `self.p`) must NOT emit \
          E_PRIV_MEMBER_ACCESS; all diagnostics: {:?}",
-        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        module
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -381,7 +408,11 @@ fn leak(m : Motor) -> Real { m.p }
         1,
         "function-body access to `m.p` (priv param) must emit exactly one E_PRIV_MEMBER_ACCESS; \
          all diagnostics: {:?}",
-        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        module
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
     assert!(priv_errs[0].message.contains("E_PRIV_MEMBER_ACCESS"));
 }
@@ -405,7 +436,11 @@ fn ok(m : Motor) -> Real { m.q }
         0,
         "function-body access to `m.q` (default-visible param) must NOT emit \
          E_PRIV_MEMBER_ACCESS; all diagnostics: {:?}",
-        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        module
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -431,7 +466,11 @@ purpose checkit(subject : Motor) {
         1,
         "purpose-subject access to `subject.p` (priv param) must emit exactly one \
          E_PRIV_MEMBER_ACCESS; all diagnostics: {:?}",
-        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        module
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
     assert!(priv_errs[0].message.contains("E_PRIV_MEMBER_ACCESS"));
 }
@@ -457,6 +496,10 @@ purpose okp(subject : Motor) {
         0,
         "purpose-subject access to `subject.q` (default-visible param) must NOT emit \
          E_PRIV_MEMBER_ACCESS; all diagnostics: {:?}",
-        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        module
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }

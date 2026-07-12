@@ -15,7 +15,9 @@
 use reify_compiler::*;
 use reify_core::*;
 use reify_ir::{Satisfaction, Value};
-use reify_test_support::{check_source_with_stdlib, make_simple_engine, parse_and_compile_with_stdlib};
+use reify_test_support::{
+    check_source_with_stdlib, make_simple_engine, parse_and_compile_with_stdlib,
+};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -245,11 +247,8 @@ fn geometric_tolerance_trait_and_subtrait_hierarchy() {
     );
     // material_condition has a trait-level default (= MaterialCondition.RFS) so it
     // lives in `defaults`, not `required_members`. Verify the default is present.
-    let gt_default_names: Vec<Option<&str>> = gt
-        .defaults
-        .iter()
-        .map(|d| d.name.as_deref())
-        .collect();
+    let gt_default_names: Vec<Option<&str>> =
+        gt.defaults.iter().map(|d| d.name.as_deref()).collect();
     assert!(
         gt_default_names.contains(&Some("material_condition")),
         "GeometricTolerance should have 'material_condition' in defaults (has RFS default), got: {:?}",
@@ -409,7 +408,9 @@ fn straightness_of_axis_is_fos_form_variant() {
 
     // Axis zone is inherently Ø → no zone_shape discriminator.
     assert!(
-        !soa.value_cells.iter().any(|vc| vc.id.member == "zone_shape"),
+        !soa.value_cells
+            .iter()
+            .any(|vc| vc.id.member == "zone_shape"),
         "StraightnessOfAxis must NOT have a 'zone_shape' cell (axis zone is inherently Ø), \
          got cells: {:?}",
         soa.value_cells
@@ -1710,19 +1711,30 @@ structure def HolderInst {
                 )
             });
             match value {
-                Value::Scalar { si_value, dimension } => {
+                Value::Scalar {
+                    si_value,
+                    dimension,
+                } => {
                     assert_eq!(
                         *dimension,
                         DimensionVector::LENGTH,
                         "task-4342 {} path: {}.{} expected LENGTH dimension, got {:?}",
-                        $path_name, $entity, $member, dimension
+                        $path_name,
+                        $entity,
+                        $member,
+                        dimension
                     );
                     let rel_err = (si_value - $expected).abs() / $expected;
                     assert!(
                         rel_err < 1e-9,
                         "task-4342 {} path: {}.{} expected {:.8e} m, \
                          got {:.8e} m (rel_err {:.2e})",
-                        $path_name, $entity, $member, $expected, si_value, rel_err
+                        $path_name,
+                        $entity,
+                        $member,
+                        $expected,
+                        si_value,
+                        rel_err
                     );
                 }
                 other => panic!(
@@ -1755,7 +1767,10 @@ structure def HolderInst {
         )
     });
     match mc_value {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert_eq!(
                 *dimension,
                 DimensionVector::LENGTH,
@@ -1768,7 +1783,8 @@ structure def HolderInst {
                 rel_err < 1e-9,
                 "Scenario.mc expected 0.002 m (10mm - 8mm), \
                  got {:.8e} m (rel_err {:.2e})",
-                si_value, rel_err
+                si_value,
+                rel_err
             );
         }
         other => panic!(
@@ -1856,18 +1872,29 @@ structure def Probe {
                 )
             });
             match value {
-                Value::Scalar { si_value, dimension } => {
+                Value::Scalar {
+                    si_value,
+                    dimension,
+                } => {
                     assert_eq!(
                         *dimension,
                         DimensionVector::LENGTH,
                         "γ {}: {}.{} expected LENGTH dimension, got {:?}",
-                        $label, $entity, $member, dimension
+                        $label,
+                        $entity,
+                        $member,
+                        dimension
                     );
                     let rel_err = (si_value - $expected).abs() / $expected;
                     assert!(
                         rel_err < 1e-9,
                         "γ {}: {}.{} expected {:.8e} m, got {:.8e} m (rel_err {:.2e})",
-                        $label, $entity, $member, $expected, si_value, rel_err
+                        $label,
+                        $entity,
+                        $member,
+                        $expected,
+                        si_value,
+                        rel_err
                     );
                 }
                 other => panic!(
@@ -1880,11 +1907,26 @@ structure def Probe {
 
     // symmetric_tolerance(10mm, 0.1mm):
     //   upper_limit  = 10mm + 0.1mm    = 10.1mm = 0.0101 m
-    assert_length!("Probe", "upper", 0.0101_f64, "symmetric_tolerance.upper_limit");
+    assert_length!(
+        "Probe",
+        "upper",
+        0.0101_f64,
+        "symmetric_tolerance.upper_limit"
+    );
     //   lower_limit  = 10mm + (−0.1mm) =  9.9mm = 0.0099 m
-    assert_length!("Probe", "lower", 0.0099_f64, "symmetric_tolerance.lower_limit");
+    assert_length!(
+        "Probe",
+        "lower",
+        0.0099_f64,
+        "symmetric_tolerance.lower_limit"
+    );
     //   tolerance_band = 0.1mm − (−0.1mm) = 0.2mm = 0.0002 m
-    assert_length!("Probe", "band",  0.0002_f64, "symmetric_tolerance.tolerance_band");
+    assert_length!(
+        "Probe",
+        "band",
+        0.0002_f64,
+        "symmetric_tolerance.tolerance_band"
+    );
 }
 
 // ─── γ-3: limit_tolerance returns DimensionalTolerance ───────────────────────
@@ -1965,18 +2007,29 @@ structure def Probe {
                 )
             });
             match value {
-                Value::Scalar { si_value, dimension } => {
+                Value::Scalar {
+                    si_value,
+                    dimension,
+                } => {
                     assert_eq!(
                         *dimension,
                         DimensionVector::LENGTH,
                         "γ {}: {}.{} expected LENGTH dimension, got {:?}",
-                        $label, $entity, $member, dimension
+                        $label,
+                        $entity,
+                        $member,
+                        dimension
                     );
                     let rel_err = (si_value - $expected).abs() / $expected;
                     assert!(
                         rel_err < 1e-9,
                         "γ {}: {}.{} expected {:.8e} m, got {:.8e} m (rel_err {:.2e})",
-                        $label, $entity, $member, $expected, si_value, rel_err
+                        $label,
+                        $entity,
+                        $member,
+                        $expected,
+                        si_value,
+                        rel_err
                     );
                 }
                 other => panic!(
@@ -1994,7 +2047,12 @@ structure def Probe {
     //   lower_limit  = 9.9mm + 0mm = 9.9mm = 0.0099 m  (== lower arg)
     assert_length!("Probe", "lower", 0.0099_f64, "limit_tolerance.lower_limit");
     //   tolerance_band = 0.1mm − 0mm = 0.1mm = 0.0001 m  (== upper − lower)
-    assert_length!("Probe", "band",  0.0001_f64, "limit_tolerance.tolerance_band");
+    assert_length!(
+        "Probe",
+        "band",
+        0.0001_f64,
+        "limit_tolerance.tolerance_band"
+    );
 }
 
 // ─── γ-5: Fit exposes nested DimensionalTolerance members ────────────────────
@@ -2114,18 +2172,29 @@ structure def Probe {
                 )
             });
             match value {
-                Value::Scalar { si_value, dimension } => {
+                Value::Scalar {
+                    si_value,
+                    dimension,
+                } => {
                     assert_eq!(
                         *dimension,
                         DimensionVector::LENGTH,
                         "γ {}: {}.{} expected LENGTH, got {:?}",
-                        $label, $entity, $member, dimension
+                        $label,
+                        $entity,
+                        $member,
+                        dimension
                     );
                     let rel_err = (si_value - $expected).abs() / ($expected as f64).abs();
                     assert!(
                         rel_err < 1e-9,
                         "γ {}: {}.{} expected {:.8e} m, got {:.8e} m (rel_err {:.2e})",
-                        $label, $entity, $member, $expected, si_value, rel_err
+                        $label,
+                        $entity,
+                        $member,
+                        $expected,
+                        si_value,
+                        rel_err
                     );
                 }
                 other => panic!(
@@ -2146,17 +2215,28 @@ structure def Probe {
                 )
             });
             match value {
-                Value::Scalar { si_value, dimension } => {
+                Value::Scalar {
+                    si_value,
+                    dimension,
+                } => {
                     assert_eq!(
                         *dimension,
                         DimensionVector::LENGTH,
                         "γ {}: {}.{} expected LENGTH, got {:?}",
-                        $label, $entity, $member, dimension
+                        $label,
+                        $entity,
+                        $member,
+                        dimension
                     );
                     assert!(
                         (si_value - $expected).abs() < 1e-9,
                         "γ {}: {}.{} expected {:.8e} m, got {:.8e} m (abs_err {:.2e})",
-                        $label, $entity, $member, $expected, si_value, (si_value - $expected).abs()
+                        $label,
+                        $entity,
+                        $member,
+                        $expected,
+                        si_value,
+                        (si_value - $expected).abs()
                     );
                 }
                 other => panic!(
@@ -2168,11 +2248,11 @@ structure def Probe {
     }
 
     // hu = f.hole_tolerance.upper_limit = 10mm + 0.1mm = 10.1mm = 0.0101 m
-    assert_length_rel!("Probe", "hu",   0.0101_f64,  "Fit.hole_tolerance.upper_limit");
+    assert_length_rel!("Probe", "hu", 0.0101_f64, "Fit.hole_tolerance.upper_limit");
     // maxc = hole.upper(10.1mm) − shaft.lower(9.85mm) = 0.25mm = 2.5e-4 m
     assert_length_rel!("Probe", "maxc", 0.00025_f64, "Fit.max_clearance");
     // minc = hole.lower(9.9mm) − shaft.upper(9.95mm) = −0.05mm = −5e-5 m (interference)
-    assert_length_abs!("Probe", "minc", -5e-5_f64,   "Fit.min_clearance");
+    assert_length_abs!("Probe", "minc", -5e-5_f64, "Fit.min_clearance");
 }
 
 // ─── γ-amend: inverted tolerance band violates user-declared constraint ────────
@@ -2474,7 +2554,10 @@ structure def GeomProbe {
 /// Names of the explicit call-site argument bindings captured on a compiled
 /// constraint (the `(param_name, _)` keys of `arg_bindings`).
 fn binding_names(cc: &CompiledConstraint) -> Vec<&str> {
-    cc.arg_bindings.iter().map(|(name, _)| name.as_str()).collect()
+    cc.arg_bindings
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect()
 }
 
 #[test]
@@ -2642,13 +2725,17 @@ fn virtual_condition_and_resultant_condition_exact_scalars() {
     // Both must return Length.
     assert_eq!(
         vc_fn.unwrap().return_type,
-        Type::Scalar { dimension: DimensionVector::LENGTH },
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH
+        },
         "virtual_condition return_type should be Length (Scalar[m]), got {:?}",
         vc_fn.unwrap().return_type
     );
     assert_eq!(
         rc_fn.unwrap().return_type,
-        Type::Scalar { dimension: DimensionVector::LENGTH },
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH
+        },
         "resultant_condition return_type should be Length (Scalar[m]), got {:?}",
         rc_fn.unwrap().return_type
     );
@@ -2704,18 +2791,29 @@ structure def Probe {
                 )
             });
             match value {
-                Value::Scalar { si_value, dimension } => {
+                Value::Scalar {
+                    si_value,
+                    dimension,
+                } => {
                     assert_eq!(
                         *dimension,
                         DimensionVector::LENGTH,
                         "ε {}: {}.{} expected LENGTH dimension, got {:?}",
-                        $label, $entity, $member, dimension
+                        $label,
+                        $entity,
+                        $member,
+                        dimension
                     );
                     let rel_err = (si_value - $expected).abs() / $expected;
                     assert!(
                         rel_err < 1e-9,
                         "ε {}: {}.{} expected {:.8e} m, got {:.8e} m (rel_err {:.2e})",
-                        $label, $entity, $member, $expected, si_value, rel_err
+                        $label,
+                        $entity,
+                        $member,
+                        $expected,
+                        si_value,
+                        rel_err
                     );
                 }
                 other => panic!(
@@ -2728,10 +2826,25 @@ structure def Probe {
 
     // virtual_condition(symmetric_tolerance(10mm,0.05mm), 0.1mm):
     //   = upper_limit + 0.1mm = 10.05mm + 0.1mm = 10.15mm = 0.01015 m
-    assert_length!("Probe", "vc",     0.01015_f64, "virtual_condition(sz, pos.tolerance_value)");
+    assert_length!(
+        "Probe",
+        "vc",
+        0.01015_f64,
+        "virtual_condition(sz, pos.tolerance_value)"
+    );
     // Literal tol: same result as callout-sourced tol
-    assert_length!("Probe", "vc_lit", 0.01015_f64, "virtual_condition(sz, 0.1mm)");
+    assert_length!(
+        "Probe",
+        "vc_lit",
+        0.01015_f64,
+        "virtual_condition(sz, 0.1mm)"
+    );
     // resultant_condition(symmetric_tolerance(10mm,0.05mm), 0.1mm):
     //   = lower_limit - 0.1mm = 9.95mm - 0.1mm = 9.85mm = 0.00985 m
-    assert_length!("Probe", "rc",     0.00985_f64, "resultant_condition(sz, pos.tolerance_value)");
+    assert_length!(
+        "Probe",
+        "rc",
+        0.00985_f64,
+        "resultant_condition(sz, pos.tolerance_value)"
+    );
 }

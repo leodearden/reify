@@ -152,9 +152,15 @@ fn sqrt_area_two_way_is_length() {
     let (ty, val) = two_way("sq");
     assert_eq!(ty, sca(DimensionVector::LENGTH), "sqrt(4m²) forward type");
     match val {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert_eq!(dimension, DimensionVector::LENGTH, "sqrt eval dimension");
-            assert!((si_value - 2.0).abs() < EPS, "sqrt eval value, got {si_value}");
+            assert!(
+                (si_value - 2.0).abs() < EPS,
+                "sqrt eval value, got {si_value}"
+            );
         }
         other => panic!("sqrt(4m²) eval should be Value::Scalar, got {other:?}"),
     }
@@ -165,7 +171,11 @@ fn sqrt_area_two_way_is_length() {
 #[test]
 fn sqrt_real_two_way_is_real() {
     let (ty, val) = two_way("sq_real");
-    assert_eq!(ty, Type::dimensionless_scalar(), "sqrt(4.0) forward type must be Real");
+    assert_eq!(
+        ty,
+        Type::dimensionless_scalar(),
+        "sqrt(4.0) forward type must be Real"
+    );
     match val {
         Value::Real(x) => assert!((x - 2.0).abs() < EPS, "sqrt(4.0) eval value, got {x}"),
         other => panic!("sqrt(4.0) eval should be Value::Real, got {other:?}"),
@@ -181,9 +191,15 @@ fn dot_two_way_is_area() {
     let (ty, val) = two_way("dotp");
     assert_eq!(ty, sca(DimensionVector::AREA), "dot forward type");
     match val {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert_eq!(dimension, DimensionVector::AREA, "dot eval dimension");
-            assert!((si_value - 11.0).abs() < EPS, "dot eval value, got {si_value}");
+            assert!(
+                (si_value - 11.0).abs() < EPS,
+                "dot eval value, got {si_value}"
+            );
         }
         other => panic!("dot eval should be Value::Scalar, got {other:?}"),
     }
@@ -195,9 +211,19 @@ fn magnitude_two_way_is_length() {
     let (ty, val) = two_way("mag");
     assert_eq!(ty, sca(DimensionVector::LENGTH), "magnitude forward type");
     match val {
-        Value::Scalar { si_value, dimension } => {
-            assert_eq!(dimension, DimensionVector::LENGTH, "magnitude eval dimension");
-            assert!((si_value - 5.0).abs() < EPS, "magnitude eval value, got {si_value}");
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(
+                dimension,
+                DimensionVector::LENGTH,
+                "magnitude eval dimension"
+            );
+            assert!(
+                (si_value - 5.0).abs() < EPS,
+                "magnitude eval value, got {si_value}"
+            );
         }
         other => panic!("magnitude eval should be Value::Scalar, got {other:?}"),
     }
@@ -268,9 +294,15 @@ fn determinant_two_way_is_length_pow4() {
     let l4 = DimensionVector::LENGTH.pow(4);
     assert_eq!(ty, sca(l4), "determinant forward type");
     match val {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert_eq!(dimension, l4, "determinant eval dimension (Length⁴)");
-            assert!((si_value - 120.0).abs() < EPS, "determinant eval value, got {si_value}");
+            assert!(
+                (si_value - 120.0).abs() < EPS,
+                "determinant eval value, got {si_value}"
+            );
         }
         other => panic!("determinant eval should be Value::Scalar, got {other:?}"),
     }
@@ -392,7 +424,10 @@ fn trace_two_way_is_length_scalar() {
     let (ty, val) = two_way("trc");
     assert_eq!(ty, sca(DimensionVector::LENGTH), "trace forward type");
     match val {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert_eq!(dimension, DimensionVector::LENGTH, "trace eval dimension");
             assert!(
                 (si_value - 14.0).abs() < EPS,
@@ -441,7 +476,9 @@ fn complex_eigenvalues_two_way_is_list_of_complex() {
     let (ty, val) = two_way("ceigs");
     assert_eq!(
         ty,
-        Type::List(Box::new(Type::Complex(Box::new(Type::dimensionless_scalar())))),
+        Type::List(Box::new(Type::Complex(Box::new(
+            Type::dimensionless_scalar()
+        )))),
         "complex_eigenvalues forward type"
     );
     match val {
@@ -478,7 +515,10 @@ fn complex_two_way_is_complex_length() {
     match val {
         Value::Complex { re, im, dimension } => {
             assert_eq!(dimension, DimensionVector::LENGTH, "complex eval dimension");
-            assert!((re - 3.0).abs() < EPS && (im - 4.0).abs() < EPS, "complex eval re/im");
+            assert!(
+                (re - 3.0).abs() < EPS && (im - 4.0).abs() < EPS,
+                "complex eval re/im"
+            );
         }
         other => panic!("complex eval should be Value::Complex, got {other:?}"),
     }
@@ -490,9 +530,15 @@ fn real_two_way_strips_to_length_scalar() {
     let (ty, val) = two_way("zr");
     assert_eq!(ty, sca(DimensionVector::LENGTH), "real forward type");
     match val {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert_eq!(dimension, DimensionVector::LENGTH, "real eval dimension");
-            assert!((si_value - 3.0).abs() < EPS, "real eval value, got {si_value}");
+            assert!(
+                (si_value - 3.0).abs() < EPS,
+                "real eval value, got {si_value}"
+            );
         }
         other => panic!("real eval should be Value::Scalar, got {other:?}"),
     }
@@ -504,9 +550,15 @@ fn imag_two_way_strips_to_length_scalar() {
     let (ty, val) = two_way("zi");
     assert_eq!(ty, sca(DimensionVector::LENGTH), "imag forward type");
     match val {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert_eq!(dimension, DimensionVector::LENGTH, "imag eval dimension");
-            assert!((si_value - 4.0).abs() < EPS, "imag eval value, got {si_value}");
+            assert!(
+                (si_value - 4.0).abs() < EPS,
+                "imag eval value, got {si_value}"
+            );
         }
         other => panic!("imag eval should be Value::Scalar, got {other:?}"),
     }
@@ -524,8 +576,15 @@ fn conjugate_two_way_is_complex_length() {
     );
     match val {
         Value::Complex { re, im, dimension } => {
-            assert_eq!(dimension, DimensionVector::LENGTH, "conjugate eval dimension");
-            assert!((re - 3.0).abs() < EPS && (im + 4.0).abs() < EPS, "conjugate eval re/im");
+            assert_eq!(
+                dimension,
+                DimensionVector::LENGTH,
+                "conjugate eval dimension"
+            );
+            assert!(
+                (re - 3.0).abs() < EPS && (im + 4.0).abs() < EPS,
+                "conjugate eval re/im"
+            );
         }
         other => panic!("conjugate eval should be Value::Complex, got {other:?}"),
     }
@@ -536,11 +595,25 @@ fn conjugate_two_way_is_complex_length() {
 #[test]
 fn complex_magnitude_two_way_is_length() {
     let (ty, val) = two_way("zmag");
-    assert_eq!(ty, sca(DimensionVector::LENGTH), "complex_magnitude forward type");
+    assert_eq!(
+        ty,
+        sca(DimensionVector::LENGTH),
+        "complex_magnitude forward type"
+    );
     match val {
-        Value::Scalar { si_value, dimension } => {
-            assert_eq!(dimension, DimensionVector::LENGTH, "complex_magnitude eval dimension");
-            assert!((si_value - 5.0).abs() < EPS, "complex_magnitude eval value, got {si_value}");
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
+            assert_eq!(
+                dimension,
+                DimensionVector::LENGTH,
+                "complex_magnitude eval dimension"
+            );
+            assert!(
+                (si_value - 5.0).abs() < EPS,
+                "complex_magnitude eval value, got {si_value}"
+            );
         }
         other => panic!("complex_magnitude eval should be Value::Scalar, got {other:?}"),
     }
@@ -551,9 +624,16 @@ fn complex_magnitude_two_way_is_length() {
 #[test]
 fn phase_two_way_is_angle() {
     let (ty, val) = two_way("zph");
-    assert_eq!(ty, Type::angle(), "phase forward type must be Angle (Scalar<ANGLE>)");
+    assert_eq!(
+        ty,
+        Type::angle(),
+        "phase forward type must be Angle (Scalar<ANGLE>)"
+    );
     match val {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert_eq!(dimension, DimensionVector::ANGLE, "phase eval dimension");
             assert!(
                 (si_value - std::f64::consts::FRAC_PI_4).abs() < EPS,
@@ -568,8 +648,7 @@ fn phase_two_way_is_angle() {
 
 /// A dimensioned non-singular diagonal 4×4 `Length` matrix literal, shared by
 /// the enforcement snippets. `determinant` of it propagates `Scalar<Length⁴>`.
-const M4_LITERAL: &str =
-    "matrix([[2.0m, 0.0m, 0.0m, 0.0m], [0.0m, 3.0m, 0.0m, 0.0m], [0.0m, 0.0m, 4.0m, 0.0m], [0.0m, 0.0m, 0.0m, 5.0m]])";
+const M4_LITERAL: &str = "matrix([[2.0m, 0.0m, 0.0m, 0.0m], [0.0m, 3.0m, 0.0m, 0.0m], [0.0m, 0.0m, 4.0m, 0.0m], [0.0m, 0.0m, 0.0m, 5.0m]])";
 
 /// A typed `let bad : Length = determinant(m4)` now mismatches its annotation
 /// (`Length`) against the propagated `Scalar<Length⁴>`. The diagnostic that

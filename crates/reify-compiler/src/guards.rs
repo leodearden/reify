@@ -191,7 +191,9 @@ pub(crate) fn register_guarded_names<'a>(
                     && param
                         .default
                         .as_ref()
-                        .map(|e| is_geometry_let(e, functions, known_geometry_lets, known_selector_lets))
+                        .map(|e| {
+                            is_geometry_let(e, functions, known_geometry_lets, known_selector_lets)
+                        })
                         .unwrap_or(false)
                 {
                     scope.has_geometry = true;
@@ -200,7 +202,12 @@ pub(crate) fn register_guarded_names<'a>(
                 scope.register(&param.name, ty);
             }
             reify_ast::MemberDecl::Let(let_decl) => {
-                if is_geometry_let(&let_decl.value, functions, known_geometry_lets, known_selector_lets) {
+                if is_geometry_let(
+                    &let_decl.value,
+                    functions,
+                    known_geometry_lets,
+                    known_selector_lets,
+                ) {
                     scope.register(&let_decl.name, Type::Geometry);
                     known_geometry_lets.insert(let_decl.name.as_str());
                 } else {

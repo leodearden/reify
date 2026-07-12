@@ -85,10 +85,7 @@ fn assert_robustness_example_compiles(
 
     // ── Positive source-text leaf-signal pins ───────────────────────────────────
     for construct in required_constructs {
-        assert!(
-            src.contains(construct),
-            "{path} must reference {construct}"
-        );
+        assert!(src.contains(construct), "{path} must reference {construct}");
     }
 }
 

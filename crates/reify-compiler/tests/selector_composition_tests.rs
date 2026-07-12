@@ -13,8 +13,8 @@
 //!       selectors compile with no errors and the binding's inferred type is
 //!       `Type::Selector(Face)`.
 
-use reify_core::{DiagnosticCode, Severity, ty::SelectorKind};
 use reify_core::Type;
+use reify_core::{DiagnosticCode, Severity, ty::SelectorKind};
 use reify_test_support::{compile_source_with_stdlib, errors_only};
 
 // ── Test sources ─────────────────────────────────────────────────────────────
@@ -356,7 +356,11 @@ fn union_mixed_kind_sel_still_types_as_selector_after_mismatch() {
         .iter()
         .filter(|d| d.code == Some(DiagnosticCode::SelectorKindMismatch))
         .collect();
-    assert_eq!(mismatches.len(), 1, "prerequisite: expected 1 mismatch diagnostic");
+    assert_eq!(
+        mismatches.len(),
+        1,
+        "prerequisite: expected 1 mismatch diagnostic"
+    );
     // The cell must still have type Selector(Face) — the first-kind anti-cascade.
     let sel_expr = cell_default_expr(&compiled, "sel");
     assert_eq!(
@@ -494,7 +498,11 @@ fn difference_three_args_emits_compile_time_arity_error() {
         mismatches
     );
     let d = mismatches[0];
-    assert_eq!(d.severity, Severity::Error, "arity error must be Error severity");
+    assert_eq!(
+        d.severity,
+        Severity::Error,
+        "arity error must be Error severity"
+    );
     // Message must mention the count / arity constraint.
     let msg = d.message.to_lowercase();
     assert!(
@@ -502,7 +510,10 @@ fn difference_three_args_emits_compile_time_arity_error() {
         "arity error message must reference the expected count (2) or 'exactly'; got: {:?}",
         d.message
     );
-    assert!(!d.labels.is_empty(), "arity error must carry a call-site label");
+    assert!(
+        !d.labels.is_empty(),
+        "arity error must carry a call-site label"
+    );
 
     // Anti-cascade: the binding must still infer Selector(Face).
     let sel_expr = cell_default_expr(&compiled, "sel");
@@ -704,7 +715,10 @@ fn guarded_block_union_all_ident_compiles_clean_with_face_selector_type() {
     );
 
     // `u` is a let inside the `where cond { ... }` block → lives in guarded_groups[0].members.
-    let template = compiled.templates.first().expect("expected at least one template");
+    let template = compiled
+        .templates
+        .first()
+        .expect("expected at least one template");
     let group = template
         .guarded_groups
         .first()

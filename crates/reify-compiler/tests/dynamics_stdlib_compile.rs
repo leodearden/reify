@@ -218,8 +218,16 @@ fn joint_force_value_is_empty_marker_trait() {
         "JointForceValue trait should be an empty marker (body intentionally \
          empty; payload-carrying dispatch uses the SIR-α nominal type-tag), \
          got requirements: {:?}, defaults: {:?}",
-        trait_def.required_members.iter().map(|r| &r.name).collect::<Vec<_>>(),
-        trait_def.defaults.iter().map(|d| &d.name).collect::<Vec<_>>(),
+        trait_def
+            .required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>(),
+        trait_def
+            .defaults
+            .iter()
+            .map(|d| &d.name)
+            .collect::<Vec<_>>(),
     );
 }
 
@@ -234,10 +242,18 @@ fn scalar_force_has_one_real_param_and_refines_joint_force_value() {
         "ScalarForce should conform to JointForceValue"
     );
     let params = param_cells(template);
-    assert_eq!(params.len(), 1, "ScalarForce should have exactly 1 param (magnitude)");
+    assert_eq!(
+        params.len(),
+        1,
+        "ScalarForce should have exactly 1 param (magnitude)"
+    );
     let mag = params[0];
     assert_eq!(mag.id.member, "magnitude");
-    assert_eq!(mag.cell_type, Type::dimensionless_scalar(), "ScalarForce.magnitude should be Type::dimensionless_scalar()");
+    assert_eq!(
+        mag.cell_type,
+        Type::dimensionless_scalar(),
+        "ScalarForce.magnitude should be Type::dimensionless_scalar()"
+    );
 }
 
 #[test]
@@ -249,10 +265,18 @@ fn scalar_torque_has_one_real_param_and_refines_joint_force_value() {
         "ScalarTorque should conform to JointForceValue"
     );
     let params = param_cells(template);
-    assert_eq!(params.len(), 1, "ScalarTorque should have exactly 1 param (magnitude)");
+    assert_eq!(
+        params.len(),
+        1,
+        "ScalarTorque should have exactly 1 param (magnitude)"
+    );
     let mag = params[0];
     assert_eq!(mag.id.member, "magnitude");
-    assert_eq!(mag.cell_type, Type::dimensionless_scalar(), "ScalarTorque.magnitude should be Type::dimensionless_scalar()");
+    assert_eq!(
+        mag.cell_type,
+        Type::dimensionless_scalar(),
+        "ScalarTorque.magnitude should be Type::dimensionless_scalar()"
+    );
 }
 
 #[test]
@@ -264,7 +288,11 @@ fn cyl_force_has_list_real_param_and_refines_joint_force_value() {
         "CylForce should conform to JointForceValue"
     );
     let params = param_cells(template);
-    assert_eq!(params.len(), 1, "CylForce should have exactly 1 param (components)");
+    assert_eq!(
+        params.len(),
+        1,
+        "CylForce should have exactly 1 param (components)"
+    );
     let comp = params[0];
     assert_eq!(comp.id.member, "components");
     assert_eq!(
@@ -283,7 +311,11 @@ fn planar_force_has_list_real_param_and_refines_joint_force_value() {
         "PlanarForce should conform to JointForceValue"
     );
     let params = param_cells(template);
-    assert_eq!(params.len(), 1, "PlanarForce should have exactly 1 param (components)");
+    assert_eq!(
+        params.len(),
+        1,
+        "PlanarForce should have exactly 1 param (components)"
+    );
     assert_eq!(params[0].id.member, "components");
     assert_eq!(
         params[0].cell_type,
@@ -301,7 +333,11 @@ fn sphere_force_has_list_real_param_and_refines_joint_force_value() {
         "SphereForce should conform to JointForceValue"
     );
     let params = param_cells(template);
-    assert_eq!(params.len(), 1, "SphereForce should have exactly 1 param (components)");
+    assert_eq!(
+        params.len(),
+        1,
+        "SphereForce should have exactly 1 param (components)"
+    );
     assert_eq!(params[0].id.member, "components");
     assert_eq!(
         params[0].cell_type,
@@ -337,14 +373,18 @@ fn joint_force_has_joint_id_and_value_params() {
         "JointForce should have exactly 2 params (joint_id, value), got: {:?}",
         params.iter().map(|p| &p.id.member).collect::<Vec<_>>()
     );
-    let joint_id = params.iter().find(|p| p.id.member == "joint_id")
+    let joint_id = params
+        .iter()
+        .find(|p| p.id.member == "joint_id")
         .expect("JointForce missing param 'joint_id'");
     assert_eq!(
         joint_id.cell_type,
         Type::dimensionless_scalar(),
         "JointForce.joint_id should be Type::dimensionless_scalar() (BodyId placeholder)"
     );
-    let value = params.iter().find(|p| p.id.member == "value")
+    let value = params
+        .iter()
+        .find(|p| p.id.member == "value")
         .expect("JointForce missing param 'value'");
     assert_eq!(
         value.cell_type,
@@ -406,7 +446,9 @@ fn motion_trajectory_has_mechanism_and_samples_params() {
         "MotionTrajectory should have exactly (mechanism, samples) in that order"
     );
 
-    let mechanism = params.iter().find(|p| p.id.member == "mechanism")
+    let mechanism = params
+        .iter()
+        .find(|p| p.id.member == "mechanism")
         .expect("MotionTrajectory missing param 'mechanism'");
     assert_eq!(
         mechanism.cell_type,
@@ -414,7 +456,9 @@ fn motion_trajectory_has_mechanism_and_samples_params() {
         "MotionTrajectory.mechanism should be Type::dimensionless_scalar() (Mechanism placeholder)"
     );
 
-    let samples = params.iter().find(|p| p.id.member == "samples")
+    let samples = params
+        .iter()
+        .find(|p| p.id.member == "samples")
         .expect("MotionTrajectory missing param 'samples'");
     assert_eq!(
         samples.cell_type,

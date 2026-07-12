@@ -34,10 +34,7 @@ fn mm(n: f64) -> Value {
 
 fn non_literal_expr() -> CompiledExpr {
     // Any non-Literal kind is fine; ValueRef is the simplest to construct.
-    CompiledExpr::value_ref(
-        ValueCellId::new("Bearing", "bore_radius"),
-        Type::length(),
-    )
+    CompiledExpr::value_ref(ValueCellId::new("Bearing", "bore_radius"), Type::length())
 }
 
 // ─── synthetic parameterized template ────────────────────────────────────────
@@ -63,12 +60,7 @@ fn bearing_template() -> reify_compiler::TopologyTemplate {
             Type::Bool,
             Some(CompiledExpr::literal(Value::Bool(true), Type::Bool)),
         )
-        .param(
-            "Bearing",
-            "seal",
-            Type::TypeParam("T1".to_string()),
-            None,
-        )
+        .param("Bearing", "seal", Type::TypeParam("T1".to_string()), None)
         .param("Bearing", "color", Type::dimensionless_scalar(), None)
         .param(
             "Bearing",

@@ -27,9 +27,9 @@ use reify_compiler::auto_type_param::{
     resolve_auto_type_params,
 };
 use reify_compiler::{CompiledModule, CompiledTrait, TopologyTemplate};
-use reify_test_support::{MockConstraintChecker, TopologyTemplateBuilder, parse_and_compile};
 use reify_core::{ConstraintNodeId, DiagnosticCode, Severity, SourceSpan};
 use reify_ir::{CompiledExpr, CompiledFunction, Satisfaction, Value};
+use reify_test_support::{MockConstraintChecker, TopologyTemplateBuilder, parse_and_compile};
 
 /// Build a Reify source with `trait Seal {}` and `count` structures
 /// `S00`..`S{count-1}` each declaring `: Seal`. Zero-padded to two digits

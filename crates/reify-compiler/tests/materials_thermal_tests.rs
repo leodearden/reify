@@ -13,9 +13,9 @@ mod common;
 
 use common::assert_trait_constraint_binop;
 use reify_compiler::*;
-use reify_test_support::{check_source_with_stdlib, compile_source_with_stdlib};
 use reify_core::*;
 use reify_ir::Satisfaction;
+use reify_test_support::{check_source_with_stdlib, compile_source_with_stdlib};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -157,7 +157,11 @@ fn thermally_characterized_has_three_required_and_three_optional_members() {
     let expected_optional_type = Type::Scalar {
         dimension: DimensionVector::TEMPERATURE,
     };
-    let optional_params = ["melting_point", "max_service_temperature", "glass_transition"];
+    let optional_params = [
+        "melting_point",
+        "max_service_temperature",
+        "glass_transition",
+    ];
     for param_name in &optional_params {
         let default = tc
             .defaults
@@ -167,10 +171,7 @@ fn thermally_characterized_has_three_required_and_three_optional_members() {
                 panic!(
                     "ThermallyCharacterized missing optional default for '{}', defaults: {:?}",
                     param_name,
-                    tc.defaults
-                        .iter()
-                        .map(|d| &d.name)
-                        .collect::<Vec<_>>()
+                    tc.defaults.iter().map(|d| &d.name).collect::<Vec<_>>()
                 )
             });
         match &default.kind {

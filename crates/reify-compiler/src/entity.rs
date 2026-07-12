@@ -128,7 +128,11 @@ pub(crate) fn substitute_expr(
             op: op.clone(),
             operand: Box::new(substitute_expr(operand, bindings)),
         },
-        ExprKind::FunctionCall { name, args, arg_names } => ExprKind::FunctionCall {
+        ExprKind::FunctionCall {
+            name,
+            args,
+            arg_names,
+        } => ExprKind::FunctionCall {
             name: name.clone(),
             args: args.iter().map(|a| substitute_expr(a, bindings)).collect(),
             arg_names: arg_names.clone(),
@@ -386,8 +390,14 @@ fn emit_outside_match_collision(
 fn is_numeric_literal_expr(expr: &CompiledExpr) -> bool {
     match &expr.kind {
         CompiledExprKind::Literal(Value::Int(_) | Value::Real(_)) => true,
-        CompiledExprKind::UnOp { op: UnOp::Neg, operand } => {
-            matches!(operand.kind, CompiledExprKind::Literal(Value::Int(_) | Value::Real(_)))
+        CompiledExprKind::UnOp {
+            op: UnOp::Neg,
+            operand,
+        } => {
+            matches!(
+                operand.kind,
+                CompiledExprKind::Literal(Value::Int(_) | Value::Real(_))
+            )
         }
         _ => false,
     }
@@ -669,8 +679,14 @@ fn check_objective_conflict(
     // Fast-path early-out: if there is no Minimize or no Maximize term at all,
     // there can be no conflicting pair.  The subsequent pair search also catches
     // this, but skipping the O(n²) scan when one sense is absent is cheap.
-    let has_minimize = obj.terms.iter().any(|t| t.sense == ObjectiveSense::Minimize);
-    let has_maximize = obj.terms.iter().any(|t| t.sense == ObjectiveSense::Maximize);
+    let has_minimize = obj
+        .terms
+        .iter()
+        .any(|t| t.sense == ObjectiveSense::Minimize);
+    let has_maximize = obj
+        .terms
+        .iter()
+        .any(|t| t.sense == ObjectiveSense::Maximize);
     if !has_minimize || !has_maximize {
         return None;
     }
@@ -727,7 +743,10 @@ fn check_objective_conflict(
     if diag.labels.is_empty()
         && let Some(&span) = spans.first()
     {
-        diag = diag.with_label(DiagnosticLabel::new(span, "conflicting objective declared here"));
+        diag = diag.with_label(DiagnosticLabel::new(
+            span,
+            "conflicting objective declared here",
+        ));
     }
 
     Some(diag)
@@ -1280,117 +1299,118 @@ pub(crate) fn compile_entity(
     for member in structure.members {
         match member {
             reify_ast::MemberDecl::Param(param) => {
-                let ty = if let Some(type_expr) = &param.type_expr {
-                    match resolve_type_expr_with_aliases(
-                        type_expr,
-                        &type_param_names,
-                        alias_registry,
-                        diagnostics,
-                        structure_names,
-                        trait_names,
-                    ) {
-                        Some(t) => t,
-                        None => {
-                            // Check if it's an enum type defined in the same module or prelude.
-                            // Generic enums (non-empty type_params) given args → Type::Applied;
-                            // non-generic enums given args → existing rejection diagnostic.
-                            if let reify_ast::TypeExprKind::Named { name, type_args } =
-                                &type_expr.kind
-                                && let Some(t) = resolve_enum_type_with_args(
-                                    name,
-                                    type_args,
-                                    enum_defs,
-                                    &type_param_names,
-                                    alias_registry,
-                                    diagnostics,
-                                    structure_names,
-                                    trait_names,
-                                    type_expr.span,
-                                )
-                            {
-                                t
-                            } else {
-                                // Assoc-type name fallback (task 3973 ιγ): for a
-                                // bare Named type that didn't resolve as a builtin /
-                                // alias / structure / trait, check the pre-built
-                                // assoc-type scope before emitting UnresolvedType.
-                                // QualifiedAssoc (`Beam::Material`) stays None here —
-                                // that is task ιₑ, not this gate.
+                let ty =
+                    if let Some(type_expr) = &param.type_expr {
+                        match resolve_type_expr_with_aliases(
+                            type_expr,
+                            &type_param_names,
+                            alias_registry,
+                            diagnostics,
+                            structure_names,
+                            trait_names,
+                        ) {
+                            Some(t) => t,
+                            None => {
+                                // Check if it's an enum type defined in the same module or prelude.
+                                // Generic enums (non-empty type_params) given args → Type::Applied;
+                                // non-generic enums given args → existing rejection diagnostic.
                                 if let reify_ast::TypeExprKind::Named { name, type_args } =
                                     &type_expr.kind
-                                    && type_args.is_empty()
-                                    && let Some(ty) = resolve_assoc_type_name(
+                                    && let Some(t) = resolve_enum_type_with_args(
                                         name,
-                                        &assoc_type_scope,
-                                        &declared_assoc_names,
+                                        type_args,
+                                        enum_defs,
+                                        &type_param_names,
+                                        alias_registry,
+                                        diagnostics,
+                                        structure_names,
+                                        trait_names,
+                                        type_expr.span,
                                     )
                                 {
-                                    ty
-                                } else if let reify_ast::TypeExprKind::QualifiedAssoc {
-                                    base,
-                                    trait_name,
-                                    member,
-                                } = &type_expr.kind
-                                {
-                                    // Qualified associated-type access (`Beam::Material` /
-                                    // `Beam::(Trait::Material)`), task 3974 ιₑ. The generic
-                                    // resolver lacks the cross-structure registries, so
-                                    // resolve here where `entity_template_registry` +
-                                    // `trait_registry` are in scope. The helper owns its own
-                                    // diagnostics (anti-cascade — no second UnresolvedType).
-                                    //
-                                    // Poison policy mirrors the bare-name fallback above:
-                                    // `Some(Type::Error)` is the declared-but-unbound poison
-                                    // sentinel (root cause already reported at the producer)
-                                    // and flows through `Some(t) => t` unchanged to suppress a
-                                    // type-mismatch cascade; `None` is a genuine error the
-                                    // helper already diagnosed, poisoned to `Type::Error` to
-                                    // engage the anti-cascade guards (task #4645).
-                                    //
-                                    // SCOPE (task 3974 ιₑ): qualified-assoc resolution is wired
-                                    // into `param` type-annotation position ONLY. Other type-expr
-                                    // positions (field types, fn/return annotations, `let`
-                                    // bindings) still fall through to the generic resolver's
-                                    // `UnresolvedType`. Extending them is a trivial follow-up
-                                    // that reuses this same `resolve_qualified_assoc_type` helper
-                                    // (see plan.json "Scope": let/field/conformance-checker sites).
-                                    match resolve_qualified_assoc_type(
-                                        base,
-                                        trait_name.as_deref(),
-                                        member,
-                                        type_expr.span,
-                                        &entity_template_registry,
-                                        trait_registry,
-                                        &type_param_names,
-                                        diagnostics,
-                                    ) {
-                                        Some(t) => t,
-                                        None => Type::Error,
-                                    }
+                                    t
                                 } else {
-                                    diagnostics.push(
-                                        Diagnostic::error(format!(
-                                            "unresolved type: {}",
-                                            type_expr
-                                        ))
-                                        .with_code(DiagnosticCode::UnresolvedType)
-                                        .with_label(DiagnosticLabel::new(
+                                    // Assoc-type name fallback (task 3973 ιγ): for a
+                                    // bare Named type that didn't resolve as a builtin /
+                                    // alias / structure / trait, check the pre-built
+                                    // assoc-type scope before emitting UnresolvedType.
+                                    // QualifiedAssoc (`Beam::Material`) stays None here —
+                                    // that is task ιₑ, not this gate.
+                                    if let reify_ast::TypeExprKind::Named { name, type_args } =
+                                        &type_expr.kind
+                                        && type_args.is_empty()
+                                        && let Some(ty) = resolve_assoc_type_name(
+                                            name,
+                                            &assoc_type_scope,
+                                            &declared_assoc_names,
+                                        )
+                                    {
+                                        ty
+                                    } else if let reify_ast::TypeExprKind::QualifiedAssoc {
+                                        base,
+                                        trait_name,
+                                        member,
+                                    } = &type_expr.kind
+                                    {
+                                        // Qualified associated-type access (`Beam::Material` /
+                                        // `Beam::(Trait::Material)`), task 3974 ιₑ. The generic
+                                        // resolver lacks the cross-structure registries, so
+                                        // resolve here where `entity_template_registry` +
+                                        // `trait_registry` are in scope. The helper owns its own
+                                        // diagnostics (anti-cascade — no second UnresolvedType).
+                                        //
+                                        // Poison policy mirrors the bare-name fallback above:
+                                        // `Some(Type::Error)` is the declared-but-unbound poison
+                                        // sentinel (root cause already reported at the producer)
+                                        // and flows through `Some(t) => t` unchanged to suppress a
+                                        // type-mismatch cascade; `None` is a genuine error the
+                                        // helper already diagnosed, poisoned to `Type::Error` to
+                                        // engage the anti-cascade guards (task #4645).
+                                        //
+                                        // SCOPE (task 3974 ιₑ): qualified-assoc resolution is wired
+                                        // into `param` type-annotation position ONLY. Other type-expr
+                                        // positions (field types, fn/return annotations, `let`
+                                        // bindings) still fall through to the generic resolver's
+                                        // `UnresolvedType`. Extending them is a trivial follow-up
+                                        // that reuses this same `resolve_qualified_assoc_type` helper
+                                        // (see plan.json "Scope": let/field/conformance-checker sites).
+                                        match resolve_qualified_assoc_type(
+                                            base,
+                                            trait_name.as_deref(),
+                                            member,
                                             type_expr.span,
-                                            "unknown type name",
-                                        )),
-                                    );
-                                    Type::Error // unknown name: poison sentinel (task #4645)
+                                            &entity_template_registry,
+                                            trait_registry,
+                                            &type_param_names,
+                                            diagnostics,
+                                        ) {
+                                            Some(t) => t,
+                                            None => Type::Error,
+                                        }
+                                    } else {
+                                        diagnostics.push(
+                                            Diagnostic::error(format!(
+                                                "unresolved type: {}",
+                                                type_expr
+                                            ))
+                                            .with_code(DiagnosticCode::UnresolvedType)
+                                            .with_label(DiagnosticLabel::new(
+                                                type_expr.span,
+                                                "unknown type name",
+                                            )),
+                                        );
+                                        Type::Error // unknown name: poison sentinel (task #4645)
+                                    }
                                 }
                             }
                         }
-                    }
-                } else {
-                    // Infer type from default expression if available.
-                    // ds-sentinel:allow: language default — this else-branch has no preceding
-                    // error push; the param has no explicit type annotation and is
-                    // inferred from its default expression, so dimensionless is correct.
-                    Type::dimensionless_scalar()
-                };
+                    } else {
+                        // Infer type from default expression if available.
+                        // ds-sentinel:allow: language default — this else-branch has no preceding
+                        // error push; the param has no explicit type annotation and is
+                        // inferred from its default expression, so dimensionless is correct.
+                        Type::dimensionless_scalar()
+                    };
                 // Solid-typed params with a geometry-call default are treated
                 // symmetrically to geometry lets: register as Type::Geometry,
                 // mark scope as having geometry, and track in known_geometry_lets
@@ -1400,7 +1420,14 @@ pub(crate) fn compile_entity(
                     && param
                         .default
                         .as_ref()
-                        .map(|e| is_geometry_let(e, functions, &known_geometry_lets, &known_selector_lets))
+                        .map(|e| {
+                            is_geometry_let(
+                                e,
+                                functions,
+                                &known_geometry_lets,
+                                &known_selector_lets,
+                            )
+                        })
                         .unwrap_or(false)
                 {
                     scope.has_geometry = true;
@@ -1427,7 +1454,12 @@ pub(crate) fn compile_entity(
                 // For lets, we need to infer the type from the expression.
                 // Geometry lets produce realizations (not value cells) but still
                 // need to be registered in scope so subsequent lets can reference them.
-                if is_geometry_let(&let_decl.value, functions, &known_geometry_lets, &known_selector_lets) {
+                if is_geometry_let(
+                    &let_decl.value,
+                    functions,
+                    &known_geometry_lets,
+                    &known_selector_lets,
+                ) {
                     scope.has_geometry = true;
                     scope.register(&let_decl.name, Type::Geometry);
                     known_geometry_lets.insert(let_decl.name.as_str());
@@ -1668,7 +1700,9 @@ pub(crate) fn compile_entity(
                         reify_ast::MemberDecl::Let(let_decl) => {
                             let composite_name = format!("{}.{}", port_decl.name, let_decl.name);
                             let id = ValueCellId::new(entity_name, &composite_name);
-                            scope.names.insert(composite_name, (id, Type::dimensionless_scalar(), None));
+                            scope
+                                .names
+                                .insert(composite_name, (id, Type::dimensionless_scalar(), None));
                         }
                         _ => {}
                     }
@@ -1714,9 +1748,10 @@ pub(crate) fn compile_entity(
                             diagnostics,
                         );
                     }
-                    scope
-                        .sub_structure_traits
-                        .insert(effective_structure_name.clone(), child_tmpl.trait_bounds.clone());
+                    scope.sub_structure_traits.insert(
+                        effective_structure_name.clone(),
+                        child_tmpl.trait_bounds.clone(),
+                    );
                     // Populate sub_assoc_fn_keys so the TraitMethodCall dispatch arm
                     // (task 3941 ζ) can verify this conformer actually provides the
                     // called instance assoc fn before lowering to its per-conformer
@@ -2123,7 +2158,12 @@ pub(crate) fn compile_entity(
                 // geometry lets from its own guarded-member compilation, unchanged by
                 // this task — a guarded geometry let has no backing realization to
                 // mint against).
-                if is_geometry_let(&let_decl.value, functions, &known_geometry_lets, &known_selector_lets) {
+                if is_geometry_let(
+                    &let_decl.value,
+                    functions,
+                    &known_geometry_lets,
+                    &known_selector_lets,
+                ) {
                     let id = ValueCellId::new(entity_name, &let_decl.name);
 
                     let lowered_annotations = lower_annotations(&let_decl.annotations, diagnostics);
@@ -2460,15 +2500,14 @@ pub(crate) fn compile_entity(
                     .iter()
                     .enumerate()
                     .map(|(position, ta)| match &ta.kind {
-                        reify_ast::TypeExprKind::Named { name, .. } => {
-                            resolve_type_name(name).unwrap_or_else(|| {
+                        reify_ast::TypeExprKind::Named { name, .. } => resolve_type_name(name)
+                            .unwrap_or_else(|| {
                                 if type_param_names.contains(name) {
                                     Type::TypeParam(name.clone())
                                 } else {
                                     Type::StructureRef(name.clone())
                                 }
-                            })
-                        }
+                            }),
                         reify_ast::TypeExprKind::Auto { free, bound } => {
                             auto_clauses.push(AutoClause {
                                 position,
@@ -2612,12 +2651,22 @@ pub(crate) fn compile_entity(
                                     (
                                         name.clone(),
                                         compile_expr(
-                                            value, &scope, enum_defs, functions, diagnostics,
+                                            value,
+                                            &scope,
+                                            enum_defs,
+                                            functions,
+                                            diagnostics,
                                         ),
                                     )
                                 })
                                 .collect();
-                            (None, Some(AutoPoseSpec { free: *free, params: compiled_params }))
+                            (
+                                None,
+                                Some(AutoPoseSpec {
+                                    free: *free,
+                                    params: compiled_params,
+                                }),
+                            )
                         }
                         Some((e, _)) => (
                             Some(compile_expr(e, &scope, enum_defs, functions, diagnostics)),
@@ -2849,10 +2898,12 @@ pub(crate) fn compile_entity(
                                         "sub `{}`: override for `{}` — no such param in `{}`",
                                         sub.name, override_name, sub.structure_name
                                     ))
-                                    .with_label(DiagnosticLabel::new(
-                                        override_expr.span,
-                                        "this member does not exist in the child structure",
-                                    )),
+                                    .with_label(
+                                        DiagnosticLabel::new(
+                                            override_expr.span,
+                                            "this member does not exist in the child structure",
+                                        ),
+                                    ),
                                 );
                             }
                         }
@@ -2863,7 +2914,11 @@ pub(crate) fn compile_entity(
                     name: sub.name.clone(),
                     structure_name: sub.structure_name.clone(),
                     // `priv sub` → hidden from external dot-access (task #3978 δ).
-                    visibility: if sub.is_priv { Visibility::Private } else { Visibility::Public },
+                    visibility: if sub.is_priv {
+                        Visibility::Private
+                    } else {
+                        Visibility::Public
+                    },
                     args: compiled_args,
                     type_args: resolved_type_args,
                     is_collection: sub.is_collection,
@@ -2888,7 +2943,9 @@ pub(crate) fn compile_entity(
                 // push a scoped ValueCellDecl using the same three-case lookup as the
                 // body-form (spec_param_overrides) loop below.
                 for (arg_name, arg_expr) in &sub.args {
-                    let Some(free) = extract_auto_free(arg_expr) else { continue; };
+                    let Some(free) = extract_auto_free(arg_expr) else {
+                        continue;
+                    };
                     match scope.sub_member_types.get(&sub.name) {
                         None => {
                             // Case 1: forward-declared child — defer to post-pass.
@@ -2999,13 +3056,14 @@ pub(crate) fn compile_entity(
                                 span: override_expr.span,
                             });
                         }
-                        Some(member_map) => match member_map.get(override_name) {
-                            None => {
-                                // Case 2: child compiled but member genuinely absent.
-                                // First occurrence only — suppress duplicates from a body
-                                // like `{ nope = auto\n nope = auto }` (task 4123 amendment).
-                                if reported_absent.insert(override_name.as_str()) {
-                                    diagnostics.push(
+                        Some(member_map) => {
+                            match member_map.get(override_name) {
+                                None => {
+                                    // Case 2: child compiled but member genuinely absent.
+                                    // First occurrence only — suppress duplicates from a body
+                                    // like `{ nope = auto\n nope = auto }` (task 4123 amendment).
+                                    if reported_absent.insert(override_name.as_str()) {
+                                        diagnostics.push(
                                         Diagnostic::error(format!(
                                             "sub `{}`: override for `{}` — no such param in `{}`",
                                             sub.name, override_name, sub.structure_name
@@ -3015,22 +3073,22 @@ pub(crate) fn compile_entity(
                                             "this member does not exist in the child structure",
                                         )),
                                     );
+                                    }
                                 }
-                            }
-                            Some(ty) => {
-                                // Case 3: child compiled, member found — push inline.
-                                let scoped_entity = format!("{}.{}", entity_name, sub.name);
-                                let scoped_id =
-                                    ValueCellId::new(&scoped_entity, override_name.as_str());
-                                // Dedup guard (task 4123 S6 + amendment suggestion 1): Cases 1
-                                // and 3 are mutually exclusive by declaration order (Case 1
-                                // defers, Case 3 pushes inline), so a duplicate scoped id can
-                                // only arise when the specialization body contains two
-                                // param_assignment nodes for the same member (e.g.
-                                // `{ bore = auto\n    bore = auto }`).
-                                // First-assignment-wins; warn and skip if already present.
-                                if value_cells.iter().any(|c| c.id == scoped_id) {
-                                    diagnostics.push(
+                                Some(ty) => {
+                                    // Case 3: child compiled, member found — push inline.
+                                    let scoped_entity = format!("{}.{}", entity_name, sub.name);
+                                    let scoped_id =
+                                        ValueCellId::new(&scoped_entity, override_name.as_str());
+                                    // Dedup guard (task 4123 S6 + amendment suggestion 1): Cases 1
+                                    // and 3 are mutually exclusive by declaration order (Case 1
+                                    // defers, Case 3 pushes inline), so a duplicate scoped id can
+                                    // only arise when the specialization body contains two
+                                    // param_assignment nodes for the same member (e.g.
+                                    // `{ bore = auto\n    bore = auto }`).
+                                    // First-assignment-wins; warn and skip if already present.
+                                    if value_cells.iter().any(|c| c.id == scoped_id) {
+                                        diagnostics.push(
                                         Diagnostic::warning(format!(
                                             "sub `{}`: duplicate override for member `{}`; first assignment wins",
                                             sub.name, override_name,
@@ -3040,21 +3098,22 @@ pub(crate) fn compile_entity(
                                             "this override is a duplicate; it will be ignored",
                                         )),
                                     );
-                                } else {
-                                    value_cells.push(ValueCellDecl {
-                                        id: scoped_id,
-                                        kind: ValueCellKind::Auto { free },
-                                        visibility: Visibility::Public,
-                                        cell_type: ty.clone(),
-                                        default_expr: None,
-                                        solver_hints: vec![],
-                                        span: sub.span,
-                                        // Auto sub-override cells are never aux declarations.
-                                        is_aux: false,
-                                    });
+                                    } else {
+                                        value_cells.push(ValueCellDecl {
+                                            id: scoped_id,
+                                            kind: ValueCellKind::Auto { free },
+                                            visibility: Visibility::Public,
+                                            cell_type: ty.clone(),
+                                            default_expr: None,
+                                            solver_hints: vec![],
+                                            span: sub.span,
+                                            // Auto sub-override cells are never aux declarations.
+                                            is_aux: false,
+                                        });
+                                    }
                                 }
                             }
-                        },
+                        }
                     }
                 }
 
@@ -3151,10 +3210,9 @@ pub(crate) fn compile_entity(
                                         value
                                     ))
                                     .with_code(DiagnosticCode::CostTradeoffInvalidLambda)
-                                    .with_label(DiagnosticLabel::new(
-                                        args[1].span,
-                                        "λ out of range [0, 1]",
-                                    )),
+                                    .with_label(
+                                        DiagnosticLabel::new(args[1].span, "λ out of range [0, 1]"),
+                                    ),
                                 );
                                 Some(value.clamp(0.0, 1.0))
                             }
@@ -3167,10 +3225,12 @@ pub(crate) fn compile_entity(
                                             .to_string(),
                                     )
                                     .with_code(DiagnosticCode::CostTradeoffInvalidLambda)
-                                    .with_label(DiagnosticLabel::new(
-                                        args[1].span,
-                                        "λ must be a numeric literal",
-                                    )),
+                                    .with_label(
+                                        DiagnosticLabel::new(
+                                            args[1].span,
+                                            "λ must be a numeric literal",
+                                        ),
+                                    ),
                                 );
                                 None
                             }
@@ -3690,7 +3750,14 @@ pub(crate) fn compile_entity(
     // so geometry params at any nesting depth are captured.
     let geometry_lets: HashMap<&str, &reify_ast::Expr> = {
         let mut map = HashMap::new();
-        collect_geometry_exprs(structure.members, &known_geometry_lets, &known_selector_lets, functions, &scope, &mut map);
+        collect_geometry_exprs(
+            structure.members,
+            &known_geometry_lets,
+            &known_selector_lets,
+            functions,
+            &scope,
+            &mut map,
+        );
         map
     };
 
@@ -3756,8 +3823,12 @@ pub(crate) fn compile_entity(
     for member in structure.members {
         match member {
             reify_ast::MemberDecl::Let(let_decl)
-                if is_geometry_let(&let_decl.value, functions, &known_geometry_lets, &known_selector_lets)
-                    || is_bare_cross_sub_geometry_alias(&let_decl.value, &scope) =>
+                if is_geometry_let(
+                    &let_decl.value,
+                    functions,
+                    &known_geometry_lets,
+                    &known_selector_lets,
+                ) || is_bare_cross_sub_geometry_alias(&let_decl.value, &scope) =>
             {
                 if let Some(ops) = compile_geometry_call(
                     &let_decl.value,
@@ -4631,15 +4702,14 @@ fn compile_match_arm_decl_group(
                 .iter()
                 .enumerate()
                 .map(|(position, ta)| match &ta.kind {
-                    reify_ast::TypeExprKind::Named { name, .. } => {
-                        resolve_type_name(name).unwrap_or_else(|| {
+                    reify_ast::TypeExprKind::Named { name, .. } => resolve_type_name(name)
+                        .unwrap_or_else(|| {
                             if type_param_names.contains(name) {
                                 Type::TypeParam(name.clone())
                             } else {
                                 Type::StructureRef(name.clone())
                             }
-                        })
-                    }
+                        }),
                     reify_ast::TypeExprKind::Auto { free, bound } => {
                         auto_clauses.push(AutoClause {
                             position,
@@ -4647,10 +4717,7 @@ fn compile_match_arm_decl_group(
                             bound: bound.clone(),
                             span: ta.span,
                         });
-                        Type::TypeParam(format!(
-                            "{}{}",
-                            AUTO_TYPE_PARAM_PLACEHOLDER_PREFIX, bound
-                        ))
+                        Type::TypeParam(format!("{}{}", AUTO_TYPE_PARAM_PLACEHOLDER_PREFIX, bound))
                     }
                     _ => {
                         diagnostics.push(
@@ -4737,7 +4804,11 @@ fn compile_match_arm_decl_group(
                 name: sub.name.clone(),
                 structure_name: sub.structure_name.clone(),
                 // `priv sub` → hidden from external dot-access (task #3978 δ).
-                visibility: if sub.is_priv { Visibility::Private } else { Visibility::Public },
+                visibility: if sub.is_priv {
+                    Visibility::Private
+                } else {
+                    Visibility::Public
+                },
                 args: compiled_args,
                 type_args: resolved_type_args,
                 is_collection: false,
@@ -5173,8 +5244,22 @@ fn collect_geometry_exprs<'a>(
                 }
             }
             reify_ast::MemberDecl::GuardedGroup(g) => {
-                collect_geometry_exprs(&g.members, known, known_selector_lets, functions, scope, out);
-                collect_geometry_exprs(&g.else_members, known, known_selector_lets, functions, scope, out);
+                collect_geometry_exprs(
+                    &g.members,
+                    known,
+                    known_selector_lets,
+                    functions,
+                    scope,
+                    out,
+                );
+                collect_geometry_exprs(
+                    &g.else_members,
+                    known,
+                    known_selector_lets,
+                    functions,
+                    scope,
+                    out,
+                );
             }
             _ => {}
         }
@@ -5731,26 +5816,17 @@ pub(crate) fn expand_constraint_inst(
                 continue;
             };
             if !constraint_arg_type_conforms(param_ty, &compiled_arg.result_type) {
-                let arg_span = arg_spans
-                    .get(arg_name.as_str())
-                    .copied()
-                    .unwrap_or(ci.span);
+                let arg_span = arg_spans.get(arg_name.as_str()).copied().unwrap_or(ci.span);
                 diagnostics.push(
                     Diagnostic::error(format!(
                         "type mismatch: argument '{}' for constraint '{}' \
                          has type {} but parameter expects {}",
-                        arg_name,
-                        ci.name,
-                        compiled_arg.result_type,
-                        param_ty,
+                        arg_name, ci.name, compiled_arg.result_type, param_ty,
                     ))
                     .with_code(DiagnosticCode::ConstraintArgTypeMismatch)
                     .with_label(DiagnosticLabel::new(
                         arg_span,
-                        format!(
-                            "expected {}, got {}",
-                            param_ty, compiled_arg.result_type
-                        ),
+                        format!("expected {}, got {}", param_ty, compiled_arg.result_type),
                     )),
                 );
             }
@@ -5979,7 +6055,9 @@ pub(crate) fn build_structure_def_skeleton(
                 && param
                     .default
                     .as_ref()
-                    .map(|e| is_geometry_let(e, functions, &known_geometry_lets, &known_selector_lets))
+                    .map(|e| {
+                        is_geometry_let(e, functions, &known_geometry_lets, &known_selector_lets)
+                    })
                     .unwrap_or(false)
             {
                 known_geometry_lets.insert(param.name.as_str());
@@ -5994,7 +6072,11 @@ pub(crate) fn build_structure_def_skeleton(
                 // access (functions_phase merged_registry), so this site MUST mirror
                 // the authoritative compile_entity param sites or a `priv` member
                 // leaks through a function body.
-                visibility: if param.is_priv { Visibility::Private } else { Visibility::Public },
+                visibility: if param.is_priv {
+                    Visibility::Private
+                } else {
+                    Visibility::Public
+                },
                 is_aux: false,
                 cell_type,
                 default_expr,
@@ -6036,7 +6118,12 @@ pub(crate) fn build_structure_def_skeleton(
     //     identical metadata on both paths.
     for member in &structure.members {
         if let reify_ast::MemberDecl::Let(let_decl) = member {
-            if is_geometry_let(&let_decl.value, functions, &known_geometry_lets, &known_selector_lets) {
+            if is_geometry_let(
+                &let_decl.value,
+                functions,
+                &known_geometry_lets,
+                &known_selector_lets,
+            ) {
                 // Accumulate this geometry let's name so subsequent lets that
                 // alias it (Ident/branch references) are also classified as
                 // geometry — matching the authoritative path (entity.rs:853-856).
@@ -6072,8 +6159,13 @@ pub(crate) fn build_structure_def_skeleton(
             if let_decl.where_clause.is_some() {
                 continue;
             }
-            let mut compiled_expr =
-                compile_expr(&let_decl.value, &scope, enum_defs, functions, &mut throwaway_diags);
+            let mut compiled_expr = compile_expr(
+                &let_decl.value,
+                &scope,
+                enum_defs,
+                functions,
+                &mut throwaway_diags,
+            );
             // Mirror the authoritative path's fixup so `Option<T>` typed lets get the
             // correct none type, not the parser's `Option<Real>` fallback.
             fixup_option_none_for_let(
@@ -6562,7 +6654,11 @@ structure def Manifold {
                         ct, &cell_type,
                         "compile_default must receive cell_type by reference"
                     );
-                    if yields_default { Some(synthetic) } else { None }
+                    if yields_default {
+                        Some(synthetic)
+                    } else {
+                        None
+                    }
                 },
             );
 
@@ -6578,7 +6674,11 @@ structure def Manifold {
             );
             assert_eq!(
                 decl.default_expr.map(|e| e.content_hash),
-                if yields_default { Some(expected_hash) } else { None },
+                if yields_default {
+                    Some(expected_hash)
+                } else {
+                    None
+                },
                 "default_expr must equal whatever compile_default returned (yields_default={yields_default})"
             );
         }

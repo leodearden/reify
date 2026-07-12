@@ -8,8 +8,8 @@
 //! so the name `Material` could be reused for the canonical struct.)
 
 use reify_compiler::RequirementKind;
-use reify_test_support::{compile_source, compile_source_with_stdlib};
 use reify_core::{DiagnosticCode, Severity, Type};
+use reify_test_support::{compile_source, compile_source_with_stdlib};
 
 /// Structure member: `param m : MaterialSpec` should resolve to `Type::TraitObject("MaterialSpec")`.
 #[test]

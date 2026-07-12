@@ -1,6 +1,9 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use reify_core::{ConstraintNodeId, ContentHash, DimensionVector, RealizationNodeId, SourceSpan, Type, ValueCellId};
+use reify_core::{
+    ConstraintNodeId, ContentHash, DimensionVector, RealizationNodeId, SourceSpan, Type,
+    ValueCellId,
+};
 use reify_ir::{CompiledExpr, ConstraintDomain, ObjectiveSet};
 
 pub use reify_ir::{CompiledFnBody, CompiledFunction};
@@ -48,14 +51,16 @@ impl CompiledTrait {
     /// so the `Type::TypeParam` member-access branch in `expr.rs` (task 4596)
     /// can resolve the member's declared type from the bound trait's contract.
     pub(crate) fn value_bearing_members(&self) -> impl Iterator<Item = (&str, &Type)> {
-        self.required_members.iter().filter_map(|req| match &req.kind {
-            RequirementKind::Param(ty) | RequirementKind::Let(ty) => {
-                Some((req.name.as_str(), ty))
-            }
-            RequirementKind::Sub(_)
-            | RequirementKind::Fn(_)
-            | RequirementKind::AssocType(_) => None,
-        })
+        self.required_members
+            .iter()
+            .filter_map(|req| match &req.kind {
+                RequirementKind::Param(ty) | RequirementKind::Let(ty) => {
+                    Some((req.name.as_str(), ty))
+                }
+                RequirementKind::Sub(_)
+                | RequirementKind::Fn(_)
+                | RequirementKind::AssocType(_) => None,
+            })
     }
 }
 
@@ -1913,7 +1918,7 @@ mod reflective_param_type_predicate_tests {
     //! boundary, independent of the parse/compile pipeline. They are the
     //! ground-truth complement to the integration tests in
     //! `purpose_compile_tests.rs` and `purpose_activation.rs`.
-    use super::{is_geometric_param_type, is_material_param_type, MATERIAL_TYPE_NAME};
+    use super::{MATERIAL_TYPE_NAME, is_geometric_param_type, is_material_param_type};
     use reify_core::{DimensionVector, Type};
 
     // ── is_geometric_param_type ───────────────────────────────────────────────
@@ -1922,14 +1927,24 @@ mod reflective_param_type_predicate_tests {
     /// powers of Length and/or Angle — they must be included.
     #[test]
     fn geometric_includes_pure_length_angle_area_volume() {
-        assert!(is_geometric_param_type(&Type::length()), "Length must be included");
-        assert!(is_geometric_param_type(&Type::angle()), "Angle must be included");
         assert!(
-            is_geometric_param_type(&Type::Scalar { dimension: DimensionVector::AREA }),
+            is_geometric_param_type(&Type::length()),
+            "Length must be included"
+        );
+        assert!(
+            is_geometric_param_type(&Type::angle()),
+            "Angle must be included"
+        );
+        assert!(
+            is_geometric_param_type(&Type::Scalar {
+                dimension: DimensionVector::AREA
+            }),
             "Area (L²) must be included"
         );
         assert!(
-            is_geometric_param_type(&Type::Scalar { dimension: DimensionVector::VOLUME }),
+            is_geometric_param_type(&Type::Scalar {
+                dimension: DimensionVector::VOLUME
+            }),
             "Volume (L³) must be included"
         );
     }
@@ -1940,15 +1955,21 @@ mod reflective_param_type_predicate_tests {
     #[test]
     fn geometric_excludes_compound_dimensional_types() {
         assert!(
-            !is_geometric_param_type(&Type::Scalar { dimension: DimensionVector::FORCE }),
+            !is_geometric_param_type(&Type::Scalar {
+                dimension: DimensionVector::FORCE
+            }),
             "Force (L·M·T⁻²) must be excluded (nonzero Mass and Time slots)"
         );
         assert!(
-            !is_geometric_param_type(&Type::Scalar { dimension: DimensionVector::PRESSURE }),
+            !is_geometric_param_type(&Type::Scalar {
+                dimension: DimensionVector::PRESSURE
+            }),
             "Pressure (L⁻¹·M·T⁻²) must be excluded (nonzero Mass and Time slots)"
         );
         assert!(
-            !is_geometric_param_type(&Type::Scalar { dimension: DimensionVector::ANGULAR_VELOCITY }),
+            !is_geometric_param_type(&Type::Scalar {
+                dimension: DimensionVector::ANGULAR_VELOCITY
+            }),
             "Angular Velocity (A·T⁻¹) must be excluded (nonzero Time slot)"
         );
     }
@@ -1956,9 +1977,14 @@ mod reflective_param_type_predicate_tests {
     /// `Type::dimensionless_scalar()` and a dimensionless `Type::Scalar` must be excluded.
     #[test]
     fn geometric_excludes_dimensionless_and_real() {
-        assert!(!is_geometric_param_type(&Type::dimensionless_scalar()), "Type::dimensionless_scalar() must be excluded");
         assert!(
-            !is_geometric_param_type(&Type::Scalar { dimension: DimensionVector::DIMENSIONLESS }),
+            !is_geometric_param_type(&Type::dimensionless_scalar()),
+            "Type::dimensionless_scalar() must be excluded"
+        );
+        assert!(
+            !is_geometric_param_type(&Type::Scalar {
+                dimension: DimensionVector::DIMENSIONLESS
+            }),
             "Dimensionless Scalar must be excluded"
         );
     }
@@ -2004,7 +2030,10 @@ mod reflective_param_type_predicate_tests {
             !is_material_param_type(&Type::TraitObject("Rigid".to_string())),
             "TraitObject(\"Rigid\") must be excluded"
         );
-        assert!(!is_material_param_type(&Type::dimensionless_scalar()), "Type::dimensionless_scalar() must be excluded");
+        assert!(
+            !is_material_param_type(&Type::dimensionless_scalar()),
+            "Type::dimensionless_scalar() must be excluded"
+        );
         assert!(
             !is_material_param_type(&Type::length()),
             "Length must be excluded"

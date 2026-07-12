@@ -1,14 +1,14 @@
 //! Tests for stdlib_loader — embedded .ri stdlib loading, compilation, and caching.
 
-use reify_compiler::stdlib_loader;
 use reify_ast::Pragma;
-use reify_test_support::{
-    CompiledModuleBuilder, EXPECTED_GEOMETRY_SUPERTRAITS, EXPECTED_GEOMETRY_TRAITS,
-    EXPECTED_MATERIAL_TRAITS, collect_errors,
-    collect_value_ref_members, steel_elastic_source, steel_strong_source,
-};
+use reify_compiler::stdlib_loader;
 use reify_core::{ContentHash, ModulePath, SourceSpan, Type};
 use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction};
+use reify_test_support::{
+    CompiledModuleBuilder, EXPECTED_GEOMETRY_SUPERTRAITS, EXPECTED_GEOMETRY_TRAITS,
+    EXPECTED_MATERIAL_TRAITS, collect_errors, collect_value_ref_members, steel_elastic_source,
+    steel_strong_source,
+};
 
 // ─── step-1: basic loading ──────────────────────────────────────────────
 
@@ -66,7 +66,8 @@ fn std_determinacy_purposes_is_last_stdlib_module() {
     let last = modules.last().unwrap();
     let path_str = format!("{}", last.path);
     assert_eq!(
-        path_str, "std/determinacy/purposes",
+        path_str,
+        "std/determinacy/purposes",
         "std.determinacy.purposes must be the LAST stdlib module compiled \
          (invariant: no later stdlib module may inherit its pub purposes \
          via the sequential merge). \
@@ -621,7 +622,8 @@ fn compile_with_prelude_injects_trait_constraints() {
     let ge_expr = &ge_constraint.unwrap().expr;
     let refs = collect_value_ref_members(ge_expr);
     assert!(
-        refs.iter().any(|m| m.as_str() == "ultimate_tensile_strength"),
+        refs.iter()
+            .any(|m| m.as_str() == "ultimate_tensile_strength"),
         "expected 'ultimate_tensile_strength' ValueRef in >= constraint, got refs: {:?}",
         refs
     );

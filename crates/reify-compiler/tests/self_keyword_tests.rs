@@ -14,8 +14,8 @@
 //! There is no gap between step-8 and step-11 in this file — the apparent gap
 //! is a cross-file artifact of the original task-153 plan.
 
-use reify_test_support::{compile_source, parse_and_compile};
 use reify_core::{Severity, ValueCellId};
+use reify_test_support::{compile_source, parse_and_compile};
 
 /// Returns `true` if any string in `messages` contains `word` as a whole token.
 ///

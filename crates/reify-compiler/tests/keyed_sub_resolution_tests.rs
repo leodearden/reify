@@ -395,7 +395,10 @@ structure def Manifold {
         1,
         "only the valid `area` override survives, got {overrides:?}",
     );
-    assert_eq!(overrides[0].0, "area", "the surviving override must be `area`");
+    assert_eq!(
+        overrides[0].0, "area",
+        "the surviving override must be `area`"
+    );
 }
 
 // ── amend (suggestion 2): computed (non-literal) keyed index → unsupported ────

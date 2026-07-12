@@ -265,9 +265,16 @@ fn where_guard_before_body_preserves_both_fields() {
 
     // spec_param_overrides must carry the `depth` override.
     assert!(
-        sub_decl.spec_param_overrides.iter().any(|(name, _)| name == "depth"),
+        sub_decl
+            .spec_param_overrides
+            .iter()
+            .any(|(name, _)| name == "depth"),
         "spec_param_overrides should contain an entry for 'depth'; got: {:?}",
-        sub_decl.spec_param_overrides.iter().map(|(n, _)| n).collect::<Vec<_>>()
+        sub_decl
+            .spec_param_overrides
+            .iter()
+            .map(|(n, _)| n)
+            .collect::<Vec<_>>()
     );
 }
 

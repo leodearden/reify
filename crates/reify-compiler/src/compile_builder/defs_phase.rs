@@ -90,17 +90,16 @@ fn compile_constraint_def(
         .map(|param| {
             // Hoist the resolve call: bind the result so we can (a) check it for
             // the typo diagnostic and (b) store it on CompiledConstraintParam.ty.
-            let resolved_ty: Option<Type> =
-                param.type_expr.as_ref().and_then(|te| {
-                    resolve_type_expr_with_aliases(
-                        te,
-                        &type_param_names,
-                        alias_registry,
-                        diagnostics,
-                        structure_names,
-                        trait_names,
-                    )
-                });
+            let resolved_ty: Option<Type> = param.type_expr.as_ref().and_then(|te| {
+                resolve_type_expr_with_aliases(
+                    te,
+                    &type_param_names,
+                    alias_registry,
+                    diagnostics,
+                    structure_names,
+                    trait_names,
+                )
+            });
 
             // Resolve the param type: if resolution returns None for a Named type that is
             // neither a builtin nor a declared type parameter, the name is unknown — emit

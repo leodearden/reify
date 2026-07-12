@@ -38,9 +38,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use reify_compiler::auto_type_param::{
-    AutoTypeParam, resolve_auto_type_params_with_backtracking,
-};
+use reify_compiler::auto_type_param::{AutoTypeParam, resolve_auto_type_params_with_backtracking};
 use reify_compiler::{CompiledModule, CompiledTrait, TopologyTemplate};
 use reify_core::{Diagnostic, DiagnosticCode, Severity, SourceSpan, Type, ValueCellId};
 use reify_ir::{
@@ -58,8 +56,16 @@ fn build_registries(
     HashMap<String, &TopologyTemplate>,
     HashMap<String, &CompiledTrait>,
 ) {
-    let template_registry = module.templates.iter().map(|t| (t.name.clone(), t)).collect();
-    let trait_registry = module.trait_defs.iter().map(|t| (t.name.clone(), t)).collect();
+    let template_registry = module
+        .templates
+        .iter()
+        .map(|t| (t.name.clone(), t))
+        .collect();
+    let trait_registry = module
+        .trait_defs
+        .iter()
+        .map(|t| (t.name.clone(), t))
+        .collect();
     (template_registry, trait_registry)
 }
 
@@ -137,17 +143,17 @@ fn depth_bound_infeasible_joint_check_emits_bounded_infeasible_error_generated_f
         let module = parse_and_compile(&source);
         let (template_registry, trait_registry) = build_registries(&module);
 
-        let parameterized_template =
-            build_parameterized_template_with_one_constraint("Stack");
+        let parameterized_template = build_parameterized_template_with_one_constraint("Stack");
 
         // Queue layout:
         //   - `param_count` × Indeterminate: the per-param BFS calls in
         //     `filter_feasible_candidates` (1 candidate per param → 1 call per param).
         //   - 1 × Violated: the single joint-recheck call in γ's
         //     `emit_fallback_warning_and_delegate_to_bfs`.
-        let queue: Vec<Satisfaction> = std::iter::repeat_n(Satisfaction::Indeterminate, param_count)
-            .chain(std::iter::once(Satisfaction::Violated))
-            .collect();
+        let queue: Vec<Satisfaction> =
+            std::iter::repeat_n(Satisfaction::Indeterminate, param_count)
+                .chain(std::iter::once(Satisfaction::Violated))
+                .collect();
         let checker = MockConstraintChecker::new().with_call_queue(queue);
 
         let params: Vec<AutoTypeParam> = (1..=param_count)
@@ -223,8 +229,7 @@ structure def S2B : T2 { param x : Real = 4.0 }
     let module = parse_and_compile(source);
     let (template_registry, trait_registry) = build_registries(&module);
 
-    let parameterized_template =
-        build_parameterized_template_with_one_constraint("Coupled");
+    let parameterized_template = build_parameterized_template_with_one_constraint("Coupled");
     let functions: &[CompiledFunction] = &[];
 
     // BFS queue: 2 params × 2 candidates = 4 per-param Indeterminate checks.
@@ -305,8 +310,7 @@ fn depth_bound_feasible_joint_check_falls_through_to_warning_with_full_substitut
     let module = parse_and_compile(&source);
     let (template_registry, trait_registry) = build_registries(&module);
 
-    let parameterized_template =
-        build_parameterized_template_with_one_constraint("Stack");
+    let parameterized_template = build_parameterized_template_with_one_constraint("Stack");
     let functions: &[CompiledFunction] = &[];
 
     // All-Indeterminate default: no Violated on any check → γ falls through to Warning.
@@ -344,8 +348,15 @@ fn depth_bound_feasible_joint_check_falls_through_to_warning_with_full_substitut
     );
 
     // (a) no Errors
-    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
-    assert!(errors.is_empty(), "expected no Errors on all-Indeterminate path; got:\n{:#?}", errors);
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Errors on all-Indeterminate path; got:\n{:#?}",
+        errors
+    );
 
     // (b) exactly one DepthBoundExceeded Warning
     let depth_warnings: Vec<_> = diagnostics
@@ -353,7 +364,8 @@ fn depth_bound_feasible_joint_check_falls_through_to_warning_with_full_substitut
         .filter(|d| d.code == Some(DiagnosticCode::AutoTypeParamDepthBoundExceeded))
         .collect();
     assert_eq!(
-        depth_warnings.len(), 1,
+        depth_warnings.len(),
+        1,
         "expected exactly one AutoTypeParamDepthBoundExceeded Warning; got:\n{:#?}",
         diagnostics
     );
@@ -384,8 +396,7 @@ structure def S2B : T2 { param x : Real = 4.0 }
     let module = parse_and_compile(source);
     let (template_registry, trait_registry) = build_registries(&module);
 
-    let parameterized_template =
-        build_parameterized_template_with_one_constraint("Coupled");
+    let parameterized_template = build_parameterized_template_with_one_constraint("Coupled");
     let functions: &[CompiledFunction] = &[];
 
     // All-Indeterminate: no Violated → cap Warning path.
@@ -428,8 +439,15 @@ structure def S2B : T2 { param x : Real = 4.0 }
     );
 
     // (a) no Errors
-    let errors: Vec<_> = diagnostics.iter().filter(|d| d.severity == Severity::Error).collect();
-    assert!(errors.is_empty(), "expected no Errors on all-Indeterminate cap path; got:\n{:#?}", errors);
+    let errors: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no Errors on all-Indeterminate cap path; got:\n{:#?}",
+        errors
+    );
 
     // (b) exactly one CrossProductSizeExceeded Warning
     let cap_warnings: Vec<_> = diagnostics
@@ -470,7 +488,12 @@ impl ValueMapSpyChecker {
     /// read captured snapshots after the resolver returns.
     fn new() -> (Self, Arc<Mutex<Vec<ValueMap>>>) {
         let captured = Arc::new(Mutex::new(Vec::new()));
-        (Self { captured: Arc::clone(&captured) }, captured)
+        (
+            Self {
+                captured: Arc::clone(&captured),
+            },
+            captured,
+        )
     }
 }
 
@@ -527,12 +550,7 @@ structure def S1 : T1 { param x : Real = 1.0 }
     // Parameterized template: one value cell "p1 : TypeParam(T1)" + one
     // trivial constraint so check() is always invoked.
     let parameterized_template = TopologyTemplateBuilder::new("Stack")
-        .param(
-            "Stack",
-            "p1",
-            Type::TypeParam("T1".to_string()),
-            None,
-        )
+        .param("Stack", "p1", Type::TypeParam("T1".to_string()), None)
         .constraint(
             "Stack",
             0,
@@ -594,7 +612,10 @@ structure def S1 : T1 { param x : Real = 1.0 }
         "expected at least one check() call to receive a ValueMap containing \
          the seeded key {key:?} (from S1's literal default x=1.0); \
          actual captured maps: {:?}",
-        captured.iter().map(|m| m.iter().collect::<Vec<_>>()).collect::<Vec<_>>()
+        captured
+            .iter()
+            .map(|m| m.iter().collect::<Vec<_>>())
+            .collect::<Vec<_>>()
     );
 }
 
@@ -631,18 +652,8 @@ structure def S2 : T2 { param y : Real = 2.0 }
 
     // Parameterized template with two TypeParam cells and one trivial constraint.
     let parameterized_template = TopologyTemplateBuilder::new("Assembly")
-        .param(
-            "Assembly",
-            "p1",
-            Type::TypeParam("T1".to_string()),
-            None,
-        )
-        .param(
-            "Assembly",
-            "p2",
-            Type::TypeParam("T2".to_string()),
-            None,
-        )
+        .param("Assembly", "p1", Type::TypeParam("T1".to_string()), None)
+        .param("Assembly", "p2", Type::TypeParam("T2".to_string()), None)
         .constraint(
             "Assembly",
             0,
@@ -716,7 +727,10 @@ structure def S2 : T2 { param y : Real = 2.0 }
         "expected at least one check() call to receive a ValueMap seeded with \
          both {key_p1_x:?} (from S1) and {key_p2_y:?} (from S2); \
          actual captured maps: {:?}",
-        captured.iter().map(|m| m.iter().collect::<Vec<_>>()).collect::<Vec<_>>()
+        captured
+            .iter()
+            .map(|m| m.iter().collect::<Vec<_>>())
+            .collect::<Vec<_>>()
     );
 }
 
@@ -979,7 +993,7 @@ structure def S2 : T2 { param y : Real = 2.0 }
         &parameterized_template,
         &spy,
         functions,
-        6,          // max_depth; 2 params ≤ 6 → multi-param DFS → site 2
+        6, // max_depth; 2 params ≤ 6 → multi-param DFS → site 2
         usize::MAX,
         &mut diagnostics,
     );
@@ -1078,7 +1092,7 @@ structure def S2 : T2 { param y : Real = 2.0 }
         &parameterized_template,
         &spy,
         functions,
-        1,          // max_depth=1; 2 params > 1 → depth-bound fallback → site 3
+        1, // max_depth=1; 2 params > 1 → depth-bound fallback → site 3
         usize::MAX,
         &mut diagnostics,
     );

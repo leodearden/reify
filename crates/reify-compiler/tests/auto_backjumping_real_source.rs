@@ -61,9 +61,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use reify_compiler::auto_type_param::{
-    AutoTypeParam, resolve_auto_type_params_with_backtracking,
-};
+use reify_compiler::auto_type_param::{AutoTypeParam, resolve_auto_type_params_with_backtracking};
 use reify_compiler::{CompiledModule, CompiledTrait, TopologyTemplate};
 use reify_core::{SourceSpan, Type, ValueCellId};
 use reify_ir::{
@@ -265,8 +263,7 @@ fn real_source_backjump_blame_t_prunes_oringen_subtree() {
     //   ORingSeal:   { ValueCellId::new("field_t", "diameter") → Real(10.0) }
     //   RubberSeal:  { ValueCellId::new("field_t", "diameter") → Real(2.0)  }
     let field_t = ValueCellId::new("Coupling", "field_t");
-    let constraint_expr_a =
-        CompiledExpr::value_ref(field_t, Type::TypeParam("T".into()));
+    let constraint_expr_a = CompiledExpr::value_ref(field_t, Type::TypeParam("T".into()));
     let template_a = TopologyTemplateBuilder::new("Coupling")
         .param("Coupling", "field_t", Type::TypeParam("T".into()), None)
         .constraint("Coupling", 0, None, constraint_expr_a)
@@ -285,7 +282,7 @@ fn real_source_backjump_blame_t_prunes_oringen_subtree() {
         &template_a,
         &checker,
         functions,
-        6,         // max_depth: 3 params ≤ 6, runs DFS (not BFS fallback)
+        6,          // max_depth: 3 params ≤ 6, runs DFS (not BFS fallback)
         usize::MAX, // max_cross_product_size: no cap
         &mut diagnostics,
     );
@@ -375,11 +372,15 @@ fn no_blame_with_violations_visits_full_cross_product() {
     // `build_constraint_blame_map` returns {} because the constraint refs only the
     // Real cell → no BackjumpTo fires even though ORingSeal leaves are Violated.
     let field_control = ValueCellId::new("Coupling", "field_control");
-    let constraint_expr_b =
-        CompiledExpr::value_ref(field_control, Type::dimensionless_scalar());
+    let constraint_expr_b = CompiledExpr::value_ref(field_control, Type::dimensionless_scalar());
     let template_b = TopologyTemplateBuilder::new("Coupling")
         .param("Coupling", "field_t", Type::TypeParam("T".into()), None)
-        .param("Coupling", "field_control", Type::dimensionless_scalar(), None)
+        .param(
+            "Coupling",
+            "field_control",
+            Type::dimensionless_scalar(),
+            None,
+        )
         .constraint("Coupling", 0, None, constraint_expr_b)
         .build();
 

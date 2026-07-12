@@ -9,8 +9,8 @@
 //! production (not a standalone `.ri` file re-read).
 
 use reify_compiler::*;
-use reify_test_support::compile_source_with_stdlib;
 use reify_core::*;
+use reify_test_support::compile_source_with_stdlib;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -145,10 +145,7 @@ fn optically_characterized_has_one_required_and_three_optional_members() {
                 panic!(
                     "OpticallyCharacterized missing optional default for '{}', defaults: {:?}",
                     param_name,
-                    oc.defaults
-                        .iter()
-                        .map(|d| &d.name)
-                        .collect::<Vec<_>>()
+                    oc.defaults.iter().map(|d| &d.name).collect::<Vec<_>>()
                 )
             });
         match &default.kind {

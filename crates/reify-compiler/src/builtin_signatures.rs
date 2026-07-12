@@ -33,9 +33,7 @@
 //! - Range slots (`edges_by_length` / `faces_by_area`)
 //! - Names without dimensioned-scalar args (`split`, `face`, `edge`, `solid_body`, …)
 
-use reify_core::{
-    Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector, SourceSpan, Type,
-};
+use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector, SourceSpan, Type};
 use reify_ir::CompiledExpr;
 
 /// A single checkable argument slot: the zero-based index, human-readable
@@ -277,7 +275,7 @@ fn emit_mismatch(
 mod tests {
     use super::*;
     use crate::units::GEOMETRY_TOPOLOGY_SELECTOR_NAMES;
-    use reify_core::{identity::ValueCellId, DimensionVector, Severity, SourceSpan, Type};
+    use reify_core::{DimensionVector, Severity, SourceSpan, Type, identity::ValueCellId};
     use reify_ir::CompiledExpr;
 
     // ── builtin_arg_slots table contract (step-1) ────────────────────────────
@@ -319,7 +317,12 @@ mod tests {
     #[test]
     fn moment_of_inertia_has_density_slot() {
         let slots = builtin_arg_slots("moment_of_inertia");
-        assert_eq!(slots.len(), 1, "moment_of_inertia should have 1 slot, got: {:?}", slots);
+        assert_eq!(
+            slots.len(),
+            1,
+            "moment_of_inertia should have 1 slot, got: {:?}",
+            slots
+        );
         assert_eq!(slots[0], mass_density_slot(1, "density"));
     }
 
@@ -327,7 +330,12 @@ mod tests {
     #[test]
     fn center_of_mass_has_density_slot() {
         let slots = builtin_arg_slots("center_of_mass");
-        assert_eq!(slots.len(), 1, "center_of_mass should have 1 slot, got: {:?}", slots);
+        assert_eq!(
+            slots.len(),
+            1,
+            "center_of_mass should have 1 slot, got: {:?}",
+            slots
+        );
         assert_eq!(slots[0], mass_density_slot(1, "density"));
     }
 
@@ -335,7 +343,12 @@ mod tests {
     #[test]
     fn faces_by_normal_has_angle_slot() {
         let slots = builtin_arg_slots("faces_by_normal");
-        assert_eq!(slots.len(), 1, "faces_by_normal should have 1 slot, got: {:?}", slots);
+        assert_eq!(
+            slots.len(),
+            1,
+            "faces_by_normal should have 1 slot, got: {:?}",
+            slots
+        );
         assert_eq!(slots[0], angle_slot(2, "tol"));
     }
 
@@ -343,7 +356,12 @@ mod tests {
     #[test]
     fn edges_parallel_to_has_angle_slot() {
         let slots = builtin_arg_slots("edges_parallel_to");
-        assert_eq!(slots.len(), 1, "edges_parallel_to should have 1 slot, got: {:?}", slots);
+        assert_eq!(
+            slots.len(),
+            1,
+            "edges_parallel_to should have 1 slot, got: {:?}",
+            slots
+        );
         assert_eq!(slots[0], angle_slot(2, "tol"));
     }
 
@@ -356,8 +374,17 @@ mod tests {
     fn perpendicular_selectors_have_angle_slot() {
         for name in ["faces_perpendicular_to", "edges_perpendicular_to"] {
             let slots = builtin_arg_slots(name);
-            assert_eq!(slots.len(), 1, "{name} should have 1 slot, got: {:?}", slots);
-            assert_eq!(slots[0], angle_slot(2, "tol"), "{name} arg2 tol must be ANGLE");
+            assert_eq!(
+                slots.len(),
+                1,
+                "{name} should have 1 slot, got: {:?}",
+                slots
+            );
+            assert_eq!(
+                slots[0],
+                angle_slot(2, "tol"),
+                "{name} arg2 tol must be ANGLE"
+            );
         }
     }
 
@@ -365,7 +392,12 @@ mod tests {
     #[test]
     fn edges_at_height_has_h_and_tol_slots() {
         let slots = builtin_arg_slots("edges_at_height");
-        assert_eq!(slots.len(), 2, "edges_at_height should have 2 slots, got: {:?}", slots);
+        assert_eq!(
+            slots.len(),
+            2,
+            "edges_at_height should have 2 slots, got: {:?}",
+            slots
+        );
         assert_eq!(slots[0], length_slot(1, "h"));
         assert_eq!(slots[1], length_slot(2, "tol"));
     }
@@ -379,8 +411,17 @@ mod tests {
     fn extremal_selectors_have_length_tol_slot() {
         for name in ["extremal_by_bbox", "extremal_by_centroid"] {
             let slots = builtin_arg_slots(name);
-            assert_eq!(slots.len(), 1, "{name} should have 1 slot, got: {:?}", slots);
-            assert_eq!(slots[0], length_slot(3, "tol"), "{name} arg3 tol must be LENGTH");
+            assert_eq!(
+                slots.len(),
+                1,
+                "{name} should have 1 slot, got: {:?}",
+                slots
+            );
+            assert_eq!(
+                slots[0],
+                length_slot(3, "tol"),
+                "{name} arg3 tol must be LENGTH"
+            );
         }
     }
 
@@ -523,7 +564,12 @@ mod tests {
         ];
         let mut diags = Vec::new();
         check_builtin_arg_types("moment_of_inertia", &args, dummy_span(), &mut diags);
-        assert_eq!(diags.len(), 1, "expected exactly 1 diagnostic, got: {:?}", diags);
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly 1 diagnostic, got: {:?}",
+            diags
+        );
         let d = &diags[0];
         assert_eq!(d.severity, Severity::Error);
         assert_eq!(d.code, Some(DiagnosticCode::ArgTypeMismatch));
@@ -532,9 +578,21 @@ mod tests {
             "message missing builtin name: {}",
             d.message
         );
-        assert!(d.message.contains("density"), "message missing arg name: {}", d.message);
-        assert!(d.message.contains("Density"), "message missing type name: {}", d.message);
-        assert!(d.message.contains("expects"), "message missing 'expects': {}", d.message);
+        assert!(
+            d.message.contains("density"),
+            "message missing arg name: {}",
+            d.message
+        );
+        assert!(
+            d.message.contains("Density"),
+            "message missing type name: {}",
+            d.message
+        );
+        assert!(
+            d.message.contains("expects"),
+            "message missing 'expects': {}",
+            d.message
+        );
         // Pin {actual} rendering: Type::dimensionless_scalar() Display = "Real"
         // (ty.rs — dimensionless scalars write "Real", not "Scalar[dimensionless]").
         // This ensures compile-time and runtime wordings stay in sync (PRD §7.3).
@@ -551,11 +609,17 @@ mod tests {
     fn moment_of_inertia_correct_density_gives_no_error() {
         let args = vec![
             arg_expr(Type::Geometry),
-            arg_expr(Type::Scalar { dimension: DimensionVector::MASS_DENSITY }),
+            arg_expr(Type::Scalar {
+                dimension: DimensionVector::MASS_DENSITY,
+            }),
         ];
         let mut diags = Vec::new();
         check_builtin_arg_types("moment_of_inertia", &args, dummy_span(), &mut diags);
-        assert!(diags.is_empty(), "expected no diagnostics, got: {:?}", diags);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics, got: {:?}",
+            diags
+        );
     }
 
     /// (c) GRADUALISM: arg1 = Type::Error → 0 diagnostics (poison sentinel skipped).
@@ -621,7 +685,9 @@ mod tests {
         let args = vec![
             arg_expr(Type::Geometry),
             arg_expr(dir_type),
-            arg_expr(Type::Scalar { dimension: DimensionVector::LENGTH }),
+            arg_expr(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            }),
         ];
         let mut diags = Vec::new();
         check_builtin_arg_types("faces_by_normal", &args, dummy_span(), &mut diags);
@@ -639,7 +705,9 @@ mod tests {
         let args = vec![
             arg_expr(Type::Geometry),
             arg_expr(dir_type),
-            arg_expr(Type::Scalar { dimension: DimensionVector::ANGLE }),
+            arg_expr(Type::Scalar {
+                dimension: DimensionVector::ANGLE,
+            }),
         ];
         let mut diags = Vec::new();
         check_builtin_arg_types("faces_by_normal", &args, dummy_span(), &mut diags);
@@ -673,11 +741,18 @@ mod tests {
             let mut diags = Vec::new();
             check_builtin_arg_types(
                 name,
-                &with_tol(Type::Scalar { dimension: DimensionVector::ANGLE }),
+                &with_tol(Type::Scalar {
+                    dimension: DimensionVector::ANGLE,
+                }),
                 dummy_span(),
                 &mut diags,
             );
-            assert_eq!(diags.len(), 1, "{name}: expected 1 diagnostic, got: {:?}", diags);
+            assert_eq!(
+                diags.len(),
+                1,
+                "{name}: expected 1 diagnostic, got: {:?}",
+                diags
+            );
             assert_eq!(diags[0].code, Some(DiagnosticCode::ArgTypeMismatch));
             assert!(
                 diags[0].message.contains("Length"),
@@ -694,7 +769,9 @@ mod tests {
             let mut diags = Vec::new();
             check_builtin_arg_types(
                 name,
-                &with_tol(Type::Scalar { dimension: DimensionVector::LENGTH }),
+                &with_tol(Type::Scalar {
+                    dimension: DimensionVector::LENGTH,
+                }),
                 dummy_span(),
                 &mut diags,
             );
@@ -713,7 +790,7 @@ mod tests {
         let args = vec![
             arg_expr(Type::Geometry),
             arg_expr(Type::length()), // arg1 h — correct LENGTH
-            // arg2 tol absent
+                                      // arg2 tol absent
         ];
         let mut diags = Vec::new();
         check_builtin_arg_types("edges_at_height", &args, dummy_span(), &mut diags);
@@ -732,7 +809,11 @@ mod tests {
         let args = vec![arg_expr(Type::dimensionless_scalar())];
         let mut diags = Vec::new();
         check_builtin_arg_types("moment_of_inertia", &args, dummy_span(), &mut diags);
-        assert!(diags.is_empty(), "arg0 should never be checked, got: {:?}", diags);
+        assert!(
+            diags.is_empty(),
+            "arg0 should never be checked, got: {:?}",
+            diags
+        );
     }
 
     /// (i) Unrecognized name (e.g., "volume") → 0 diagnostics.
@@ -762,7 +843,12 @@ mod tests {
     #[test]
     fn generate_has_int_count_slot() {
         let slots = builtin_arg_slots("generate");
-        assert_eq!(slots.len(), 1, "generate should have 1 slot, got: {:?}", slots);
+        assert_eq!(
+            slots.len(),
+            1,
+            "generate should have 1 slot, got: {:?}",
+            slots
+        );
         assert_eq!(slots[0], int_slot(0, "n"));
     }
 

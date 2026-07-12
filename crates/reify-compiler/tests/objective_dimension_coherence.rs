@@ -35,7 +35,11 @@ use reify_core::{DiagnosticCode, ModulePath, Severity};
 /// Panics if parsing produces errors.
 fn compile_module(src: &str, module_name: &str) -> reify_compiler::CompiledModule {
     let parsed = reify_syntax::parse(src, ModulePath::single(module_name));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     reify_compiler::compile(&parsed)
 }
 

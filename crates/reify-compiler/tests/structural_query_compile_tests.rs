@@ -78,11 +78,8 @@ fn self_structural_accessors_resolve_to_list_of_entity_ref() {
         .find(|t| t.name == "Asm")
         .expect("Asm template");
 
-    let accessor_cases: &[(&str, &str)] = &[
-        ("cs", "children"),
-        ("ms", "members"),
-        ("ds", "descendants"),
-    ];
+    let accessor_cases: &[(&str, &str)] =
+        &[("cs", "children"), ("ms", "members"), ("ds", "descendants")];
 
     for (cell_name, expected_method) in accessor_cases {
         let cell = asm_template

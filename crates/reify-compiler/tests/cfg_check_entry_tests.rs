@@ -17,7 +17,7 @@ use std::fs;
 use std::path::Path;
 
 use reify_compiler::cfg::CfgSet;
-use reify_compiler::module_dag::{compile_entry_with_stdlib_cfg, ModuleResolver};
+use reify_compiler::module_dag::{ModuleResolver, compile_entry_with_stdlib_cfg};
 use reify_core::Severity;
 
 /// A `CfgSet` with only `target` set (no flags / kv).
@@ -87,10 +87,8 @@ fn write_entry_fixtures(dir: &Path) {
 /// free of parse errors, and return the `ParsedModule`.
 fn parse_entry(dir: &Path) -> reify_ast::ParsedModule {
     let entry_src = fs::read_to_string(dir.join("main.ri")).unwrap();
-    let parsed = reify_compiler::parse_with_stdlib(
-        &entry_src,
-        reify_core::ModulePath::single("main"),
-    );
+    let parsed =
+        reify_compiler::parse_with_stdlib(&entry_src, reify_core::ModulePath::single("main"));
     assert!(
         parsed.errors.is_empty(),
         "fixture entry should parse cleanly, got parse errors: {:?}",
@@ -178,7 +176,11 @@ fn entry_merges_pub_templates_from_cfg_satisfied_import() {
         entry_has_template(&compiled_linux, "LinuxOnly"),
         "under target=linux the pub structure 'LinuxOnly' from the followed \
          platform_linux import must be merged into entry.templates; templates: {:?}",
-        compiled_linux.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
+        compiled_linux
+            .templates
+            .iter()
+            .map(|t| &t.name)
+            .collect::<Vec<_>>()
     );
 
     let compiled_wasm = compile_entry_with_stdlib_cfg(&parsed, &resolver, &target_cfg("wasm"));
@@ -186,7 +188,11 @@ fn entry_merges_pub_templates_from_cfg_satisfied_import() {
         !entry_has_template(&compiled_wasm, "LinuxOnly"),
         "under target=wasm the platform_linux import is gated out, so 'LinuxOnly' \
          must NOT be in entry.templates; templates: {:?}",
-        compiled_wasm.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
+        compiled_wasm
+            .templates
+            .iter()
+            .map(|t| &t.name)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -230,11 +236,20 @@ fn entry_collision_between_two_cfg_satisfied_imports_emits_first_wins_warning() 
     let compiled = compile_entry_with_stdlib_cfg(&parsed, &resolver, &target_cfg("linux"));
 
     // First-wins: 'Widget' is merged exactly once despite two declarers.
-    let widget_count = compiled.templates.iter().filter(|t| t.name == "Widget").count();
+    let widget_count = compiled
+        .templates
+        .iter()
+        .filter(|t| t.name == "Widget")
+        .count();
     assert_eq!(
-        widget_count, 1,
+        widget_count,
+        1,
         "first-wins: 'Widget' must be merged exactly once; templates: {:?}",
-        compiled.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
+        compiled
+            .templates
+            .iter()
+            .map(|t| &t.name)
+            .collect::<Vec<_>>()
     );
 
     // A kind-neutral first-wins Warning names both colliding module origins.
@@ -307,6 +322,10 @@ fn entry_followed_import_missing_module_surfaces_error_diagnostic() {
         entry_has_template(&compiled, "Entry"),
         "the entry must still compile despite the broken import (diagnostics \
          embedded, not an early Err); templates: {:?}",
-        compiled.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
+        compiled
+            .templates
+            .iter()
+            .map(|t| &t.name)
+            .collect::<Vec<_>>()
     );
 }

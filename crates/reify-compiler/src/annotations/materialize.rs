@@ -14,7 +14,7 @@
 
 use crate::scope::CompilationScope;
 use crate::types::TopologyTemplate;
-use crate::{compile_expr, CompiledFunction};
+use crate::{CompiledFunction, compile_expr};
 use reify_ir::{AnnotationArgValue, CompiledExpr, EnumDef};
 
 use super::schema::{self, ArgType, EvalTime};
