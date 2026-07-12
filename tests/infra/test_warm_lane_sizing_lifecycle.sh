@@ -469,4 +469,55 @@ kill "$B_PID_C" 2>/dev/null || true
 wait "$B_PID_C" 2>/dev/null || true
 _BGPIDS=()
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Block C — β ADVISORY budget relation (§9.2: "meant to be asserted by ζ")
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block C: β ADVISORY budget relation (audit HEADROOM divergent_gib <= budget_gib) ---"
+
+C_MOUNT="$(mktemp -d /tmp/test-warm-lane-sizing-c-XXXXXX)"
+_TMPDIRS+=("$C_MOUNT")
+
+# A small, independent fixture (Block C does not depend on Block B's state):
+# one lane with a target/ (nonzero divergent contribution) plus one bare
+# lane, exercising the audit's per-lane divergent accumulation.
+make_lane "$C_MOUNT/_lane-x"
+mkdir -p "$C_MOUNT/_lane-x/target"
+dd if=/dev/zero of="$C_MOUNT/_lane-x/target/blob.bin" bs=1024 count=1024 2>/dev/null
+make_lane "$C_MOUNT/_lane-y"
+
+# Stub df: emits a KNOWN, deliberately non-round avail byte count (mirrors
+# test_warm_lane_audit.sh Block G) so the audit's floor-to-GiB truncation is
+# exercised for real, not a coincidental passthrough.
+C_DF_STUB_DIR="$(mktemp -d /tmp/test-warm-lane-sizing-c-dfstub-XXXXXX)"
+_TMPDIRS+=("$C_DF_STUB_DIR")
+C_AVAIL_BYTES=$(( 40 * 1024 * 1024 * 1024 + 987654321 ))
+C_DF_STUB="$C_DF_STUB_DIR/df-fake.sh"
+_write_audit_df_stub "$C_DF_STUB" "$C_AVAIL_BYTES"
+
+# The test COMPUTES the expected free_gib/budget_gib from the SAME stub
+# input + the SAME --safety knob passed to the script -- a derived relation,
+# never a hardcoded literal (G6/D8 no-frozen-constant rule).
+C_SAFETY=5
+C_EXPECTED_FREE_GIB=$(( C_AVAIL_BYTES / 1073741824 ))
+C_EXPECTED_BUDGET_GIB=$(( C_EXPECTED_FREE_GIB / C_SAFETY ))
+assert "C0: chosen avail/safety yield a non-vacuous budget (budget_gib > 0)" \
+    test "$C_EXPECTED_BUDGET_GIB" -gt 0
+
+REIFY_WARM_LANE_AUDIT_DF="$C_DF_STUB" run_audit --mount "$C_MOUNT" --safety "$C_SAFETY" --status-cmd "$NULL_STATUS_CMD"
+assert "C1: audit exit 0" test "$AUDIT_RC" -eq 0
+
+C_FREE_GIB="$(_headroom_field "$AUDIT_OUT" free_gib)"
+C_BUDGET_GIB="$(_headroom_field "$AUDIT_OUT" budget_gib)"
+C_DIVERGENT_GIB="$(_headroom_field "$AUDIT_OUT" divergent_gib)"
+
+assert "C2: HEADROOM free_gib == floor(stub_avail_bytes / 2^30) (derived, not frozen)" \
+    test "$C_FREE_GIB" -eq "$C_EXPECTED_FREE_GIB"
+assert "C3: HEADROOM budget_gib == floor(free_gib / safety) (β formula, derived from the stub + --safety knob)" \
+    test "$C_BUDGET_GIB" -eq "$C_EXPECTED_BUDGET_GIB"
+assert "C4: HEADROOM divergent_gib is a well-formed non-negative integer" \
+    bash -c '[[ "$1" =~ ^[0-9]+$ ]]' _ "$C_DIVERGENT_GIB"
+assert "C5: §9.2 ADVISORY relation holds: divergent_gib <= budget_gib" \
+    test "$C_DIVERGENT_GIB" -le "$C_BUDGET_GIB"
+
 test_summary
