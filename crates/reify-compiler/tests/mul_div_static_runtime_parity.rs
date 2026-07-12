@@ -482,17 +482,21 @@ fn is_ledgered_divergence(op: BinOp, lt: &Type, rt: &Type) -> bool {
 /// §8).
 ///
 /// TEETH (PRD decision 4's "an uncommented divergence fails" — proven by
-/// temporary mutation, not a committed failing assertion): comment out the
-/// `(BinOp::Div, Type::Int, Type::Int)` row in `EXEMPTION_LEDGER` above (or
-/// call this fn on the same non-divisible-Int/Int row with an empty ledger)
-/// and re-run `cargo test -p reify-compiler --test mul_div_static_runtime_parity`
-/// — `int_int_nondivisible_division_is_a_ledgered_divergence` goes RED,
-/// panicking with "UNLEDGERED divergence" naming the row. Equivalently,
-/// perturbing `__infer_mul_div_result_for_parity_test`'s `Div(Int, Int)` arm
-/// to return a kind that no longer matches the ledgered exemption's runtime
-/// kind also goes RED via the same panic.
+/// temporary mutation, not a committed failing assertion; both recipes below
+/// were manually verified while authoring this fn, then reverted):
+/// - Comment out the `(BinOp::Div, Type::Int, Type::Int)` row in
+///   `EXEMPTION_LEDGER` above and re-run
+///   `cargo test -p reify-compiler --test mul_div_static_runtime_parity` —
+///   `int_int_nondivisible_division_is_a_ledgered_divergence` goes RED at
+///   its own `is_ledgered_divergence` assertion ("Div(Int, Int) must be
+///   present in EXEMPTION_LEDGER"), proving the ledger lookup is
+///   load-bearing rather than vacuously true.
+/// - To see THIS fn's own panic fire (rather than that earlier test-side
+///   check), call it directly on the same row with the ledger emptied:
+///   panics "UNLEDGERED divergence — runtime Real(3.5) (kind mismatch) vs
+///   static Int for Div(Int, Int); add a commented EXEMPTION_LEDGER row
+///   ... or fix the mismatch", prefixed with the row's `label`.
 ///
-/// Stub for step-7 RED — step-8 implements the real classification.
 fn assert_parity_or_ledgered_divergence(
     op: BinOp,
     lv: Value,
@@ -501,8 +505,32 @@ fn assert_parity_or_ledgered_divergence(
     rt: Type,
     label: &str,
 ) {
-    let _ = (op, lv, rv, lt, rt, label);
-    todo!("step-8: implement the AGREE / DIVERGE-but-ledgered / panic classification")
+    let runtime = eval_binop(op, lv.clone(), rv.clone());
+    let static_result = reify_compiler::__infer_mul_div_result_for_parity_test(op, &lt, &rt);
+    match (runtime.is_undef(), &static_result) {
+        // Both sides "accept": clean parity if kinds agree, else the
+        // divergence must be a documented exemption.
+        (false, Some(static_ty)) => {
+            if !value_kind_matches_type(&runtime, static_ty) {
+                assert!(
+                    is_ledgered_divergence(op, &lt, &rt),
+                    "{label}: UNLEDGERED divergence — runtime {runtime:?} (kind mismatch) \
+                     vs static {static_ty:?} for {op:?}({lt:?}, {rt:?}); add a commented \
+                     EXEMPTION_LEDGER row (PRD §3 decision 4) or fix the mismatch"
+                );
+            }
+        }
+        // Both sides "reject": clean parity (same contract as `assert_rejects`).
+        (true, None) => {}
+        // Accept/reject disagreement — not part of this task's known
+        // exemption inventory (β1/β2 were written against the same §2
+        // inventory, so no such row is expected to reach this engine).
+        (runtime_is_undef, _) => panic!(
+            "{label}: unclassified accept/reject divergence (runtime Undef={runtime_is_undef}, \
+             static accepted={}) for {op:?}({lt:?}, {rt:?}) — not a documented exemption",
+            static_result.is_some()
+        ),
+    }
 }
 
 /// (a) The seeded exemption (PRD §3 decision 4): `Int(7) / Int(2)`
