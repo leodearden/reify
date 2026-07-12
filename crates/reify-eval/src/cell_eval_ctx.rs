@@ -44,6 +44,15 @@ use reify_ir::{CompiledFunction, DeterminacyState, PersistentMap, Value, ValueMa
 // golden unit test below; the production callers land when γ/δ/ε migrate
 // `engine_eval.rs` / `engine_edit.rs` / `unfold.rs` onto this constructor.
 // See docs/prds/v0_6/eval-cell-commit-substrate.md §2.5, §8.
+//
+// Residual risk of landing without a real adopter: the tests below exercise
+// this constructor in isolation (a local `NoContainment` / `AlwaysInside`
+// stub, not `Engine`), so a green `cargo test -p reify-eval cell_eval_ctx`
+// proves the signature is internally consistent but does NOT prove the
+// single-lifetime `'a` borrow shape fits any real call site's actual borrow
+// structure. Each of γ/δ/ε (PRD §8) MUST re-validate this signature against
+// its own call site's borrows during adoption — do not assume it compiles
+// in situ unmodified merely because it compiles here.
 #[allow(dead_code)]
 pub(crate) fn cell_eval_ctx<'a>(
     values: &'a ValueMap,
