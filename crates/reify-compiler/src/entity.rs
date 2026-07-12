@@ -6070,10 +6070,13 @@ pub(crate) fn build_structure_def_skeleton(
                 id,
                 kind: ValueCellKind::Param,
                 // The skeleton template is the one consulted during function-body
-                // member access (functions_phase merged_registry), so this site MUST
-                // mirror the authoritative compile_entity param sites (via
-                // priv_flag_to_visibility) or a `priv` member leaks through a
-                // function body.
+                // member access (functions_phase merged_registry), so this
+                // TOP-LEVEL param site MUST mirror the authoritative compile_entity
+                // param site (via priv_flag_to_visibility) or a `priv` member leaks
+                // through a function body. Port-members and guarded-block members
+                // are a separate case: the skeleton omits them entirely rather than
+                // lowering them Public — see the `ports`/`guarded_groups` fields
+                // below, where that omission is confirmed harmless.
                 visibility: priv_flag_to_visibility(param.is_priv),
                 is_aux: false,
                 cell_type,
@@ -6212,6 +6215,22 @@ pub(crate) fn build_structure_def_skeleton(
         realizations: vec![],
         sub_components: vec![],
         relations: vec![],
+        // Unconditionally empty — the member loop above only lowers top-level
+        // `MemberDecl::Param`/`Let`; it has no arm for `MemberDecl::Port` or
+        // `MemberDecl::GuardedGroup`, so port-members and guarded-block members
+        // never reach this skeleton, priv or not (task #5161 review:
+        // architecture_coherence). Confirmed harmless, not just assumed: an
+        // empty `ports`/`guarded_groups` means the port (or guarded member)
+        // itself is unresolved during function-body member access, so lookup
+        // fails closed with E_STRUCTURE_MEMBER_NOT_FOUND before any visibility
+        // check runs — it does not fall open to a Public-like default. See
+        // `function_body_priv_port_member_access_not_yet_priv_gated` /
+        // `function_body_priv_guarded_member_access_not_yet_priv_gated` in
+        // priv_member_visibility_tests.rs (Part D coda, function-body variant),
+        // which pin this empirically. Same gap, same root cause, and same
+        // follow-up (#5171) as the external-access enforcement seam documented
+        // there — extending the skeleton to carry these members is out of this
+        // task's scope.
         ports: vec![],
         connections: vec![],
         guarded_groups: vec![],

@@ -849,3 +849,115 @@ structure def Parent {
         module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
+
+// ── Part D coda, function-body variant — skeleton Public-by-omission ──────────
+//
+// `build_structure_def_skeleton` (entity.rs) is the template consulted while
+// type-checking FUNCTION bodies (`functions_phase`'s `merged_registry`, built
+// before the authoritative per-structure templates exist). Its comment at the
+// top-level param site (entity.rs ~5994-5998) warns this pass "MUST mirror
+// the authoritative compile_entity param sites... or a priv member leaks
+// through a function body" — true for top-level params (mirrored via
+// `priv_flag_to_visibility`, asserted by Part C's
+// `function_body_priv_member_access_emits_error` above), but the skeleton
+// does NOT iterate port-members or guarded-block members at all: it
+// unconditionally returns `ports: vec![]` and `guarded_groups: vec![]`
+// (entity.rs, `build_structure_def_skeleton`'s `TopologyTemplate` literal),
+// regardless of what the structure actually declares.
+//
+// That is "Public-by-omission" in the sense that the priv-aware lowering
+// added by task #5161 (port-member / guarded-block arms in entity.rs /
+// guards.rs) never runs for the skeleton at all — but empirically (verified
+// below, not just reasoned about) this is harmless: an empty `ports` /
+// `guarded_groups` vec means the *port itself* (or the guarded member) is not
+// found on the skeleton, so function-body access fails at
+// E_STRUCTURE_MEMBER_NOT_FOUND before any visibility check is reached — same
+// failure mode, and same root cause (member-resolution paths not yet wired
+// for these two member kinds), as the external-access coda tests above. There
+// is no silent success and no new leak; the gap is consistent with, and
+// tracked by, the same follow-up #5171.
+
+/// A function body cannot reach a `priv` param nested inside a `port { }`
+/// block via the skeleton registry — the skeleton's `ports` vec is always
+/// empty, so the port itself is unresolved (E_STRUCTURE_MEMBER_NOT_FOUND),
+/// not silently granted access.
+#[test]
+fn function_body_priv_port_member_access_not_yet_priv_gated() {
+    let module = compile_source(
+        r#"
+trait Iface {}
+
+structure def PortHost {
+    port secret : Iface {
+        priv param main : Length = 5mm
+    }
+}
+
+fn leak(m : PortHost) -> Length { m.secret.main }
+"#,
+    );
+
+    assert_eq!(
+        priv_access_errors(&module).len(),
+        0,
+        "function-body access to a priv port-member must not emit \
+         E_PRIV_MEMBER_ACCESS today — the skeleton template never carries port \
+         members (tracked by #5171); all diagnostics: {:?}",
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    let not_found = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::StructureMemberNotFound))
+        .count();
+    assert_eq!(
+        not_found, 1,
+        "function-body access to `m.secret` must fail with exactly one \
+         E_STRUCTURE_MEMBER_NOT_FOUND (the skeleton's empty `ports` vec means \
+         the port itself is unresolved) — this pins that the access fails \
+         closed, not open; all diagnostics: {:?}",
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// A function body cannot reach a `priv` param nested inside a block-form
+/// `where cond { }` guarded group via the skeleton registry — the skeleton's
+/// `guarded_groups` vec is always empty, so the member is unresolved
+/// (E_STRUCTURE_MEMBER_NOT_FOUND), not silently granted access.
+#[test]
+fn function_body_priv_guarded_member_access_not_yet_priv_gated() {
+    let module = compile_source(
+        r#"
+structure def GuardHost {
+    param active : Bool = true
+    where active {
+        priv param g : Length = 5mm
+    }
+}
+
+fn leak(m : GuardHost) -> Length { m.g }
+"#,
+    );
+
+    assert_eq!(
+        priv_access_errors(&module).len(),
+        0,
+        "function-body access to a priv guarded-block member must not emit \
+         E_PRIV_MEMBER_ACCESS today — the skeleton template never carries \
+         guarded-group members (tracked by #5171); all diagnostics: {:?}",
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    let not_found = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::StructureMemberNotFound))
+        .count();
+    assert_eq!(
+        not_found, 1,
+        "function-body access to `m.g` must fail with exactly one \
+         E_STRUCTURE_MEMBER_NOT_FOUND (the skeleton's empty `guarded_groups` \
+         vec means the member is unresolved) — this pins that the access fails \
+         closed, not open; all diagnostics: {:?}",
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
