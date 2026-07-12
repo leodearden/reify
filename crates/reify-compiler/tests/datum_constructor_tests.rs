@@ -164,8 +164,7 @@ fn offset_arity3_still_types_as_relation() {
 #[test]
 fn wrong_arity_constructor_still_types_as_codomain() {
     // axis_through expects 2 Points; one Point still types as Axis.
-    let module =
-        compile_structure("    param o : Point3<Length>\n    let ax = axis_through(o)\n");
+    let module = compile_structure("    param o : Point3<Length>\n    let ax = axis_through(o)\n");
     assert_eq!(
         get_let_expr(&module, "ax").result_type,
         Type::Axis,

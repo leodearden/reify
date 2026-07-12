@@ -13,10 +13,10 @@ mod common;
 
 use common::assert_trait_constraint_binop;
 use reify_ast::{ExprKind, UnitExpr};
-use reify_ir::*;
 use reify_compiler::*;
-use reify_test_support::compile_source_with_stdlib;
 use reify_core::*;
+use reify_ir::*;
+use reify_test_support::compile_source_with_stdlib;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -146,18 +146,14 @@ fn electrically_characterized_one_required_three_optional_params() {
             .defaults
             .iter()
             .find(|d| {
-                matches!(&d.kind, DefaultKind::Param { .. })
-                    && d.name.as_deref() == Some(*name)
+                matches!(&d.kind, DefaultKind::Param { .. }) && d.name.as_deref() == Some(*name)
             })
             .unwrap_or_else(|| {
                 panic!(
                     "ElectricallyCharacterized must have optional param '{}' in defaults, \
                      got defaults: {:?}",
                     name,
-                    ec.defaults
-                        .iter()
-                        .map(|d| &d.name)
-                        .collect::<Vec<_>>()
+                    ec.defaults.iter().map(|d| &d.name).collect::<Vec<_>>()
                 )
             });
         match &default.kind {
@@ -326,7 +322,12 @@ structure def Copper : Conductive {
     // *some* BinOp referenced resistivity, leaving op and RHS-dimension
     // unverified — the same blind spot closed in the Glass test below.)
     let resistivity_constraint = template.constraints.iter().find(|cc| {
-        if let CompiledExprKind::BinOp { op: BinOp::Lt, left, right } = &cc.expr.kind {
+        if let CompiledExprKind::BinOp {
+            op: BinOp::Lt,
+            left,
+            right,
+        } = &cc.expr.kind
+        {
             let left_match = matches!(
                 &left.kind,
                 CompiledExprKind::ValueRef(id) if id.member == "resistivity"
@@ -341,8 +342,10 @@ structure def Copper : Conductive {
             // chain — accept either shape.
             let shape_match = matches!(
                 &right.kind,
-                CompiledExprKind::BinOp { op: BinOp::Mul | BinOp::Div, .. }
-                    | CompiledExprKind::Literal(Value::Scalar { .. })
+                CompiledExprKind::BinOp {
+                    op: BinOp::Mul | BinOp::Div,
+                    ..
+                } | CompiledExprKind::Literal(Value::Scalar { .. })
             );
             let dim_match = right.result_type
                 == Type::Scalar {
@@ -457,9 +460,13 @@ structure def Glass : Insulating {
                 // Migrated compound literal (`1000000ohm*m`, task ζ) folds to a
                 // single Scalar whose si_value is the coefficient.
                 CompiledExprKind::Literal(Value::Scalar { si_value, .. }) => {
-                    return Some(*si_value)
+                    return Some(*si_value);
                 }
-                CompiledExprKind::BinOp { op: BinOp::Mul | BinOp::Div, left, .. } => {
+                CompiledExprKind::BinOp {
+                    op: BinOp::Mul | BinOp::Div,
+                    left,
+                    ..
+                } => {
                     cursor = left;
                 }
                 _ => return None,
@@ -469,8 +476,14 @@ structure def Glass : Insulating {
     let assert_gt_constraint =
         |member: &str, rhs_real: f64, epsilon: f64, expected_dim: DimensionVector| {
             let found = template.constraints.iter().find(|cc| {
-                if let CompiledExprKind::BinOp { op: BinOp::Gt, left, right } = &cc.expr.kind {
-                    let left_match = matches!(&left.kind, CompiledExprKind::ValueRef(id) if id.member == member);
+                if let CompiledExprKind::BinOp {
+                    op: BinOp::Gt,
+                    left,
+                    right,
+                } = &cc.expr.kind
+                {
+                    let left_match =
+                        matches!(&left.kind, CompiledExprKind::ValueRef(id) if id.member == member);
                     let coeff_match = rhs_coefficient(right)
                         .map(|v| (v - rhs_real).abs() <= epsilon)
                         .unwrap_or(false);
@@ -484,11 +497,15 @@ structure def Glass : Insulating {
                     // `0.0 * 1V / 1m` is still a Mul/Div chain — accept either.
                     let shape_match = matches!(
                         &right.kind,
-                        CompiledExprKind::BinOp { op: BinOp::Mul | BinOp::Div, .. }
-                            | CompiledExprKind::Literal(Value::Scalar { .. })
+                        CompiledExprKind::BinOp {
+                            op: BinOp::Mul | BinOp::Div,
+                            ..
+                        } | CompiledExprKind::Literal(Value::Scalar { .. })
                     );
-                    let dim_match =
-                        right.result_type == Type::Scalar { dimension: expected_dim };
+                    let dim_match = right.result_type
+                        == Type::Scalar {
+                            dimension: expected_dim,
+                        };
                     left_match && coeff_match && shape_match && dim_match
                 } else {
                     false
@@ -597,9 +614,7 @@ fn insulating_dielectric_strength_constraint_rhs_is_compound_literal() {
         .expect("Insulating must have a dielectric_strength constraint default");
 
     let DefaultKind::Constraint(decl) = &constraint_default.kind else {
-        unreachable!(
-            "dielectric_strength constraint default must be DefaultKind::Constraint"
-        )
+        unreachable!("dielectric_strength constraint default must be DefaultKind::Constraint")
     };
     let ExprKind::BinOp { right, .. } = &decl.expr.kind else {
         unreachable!(

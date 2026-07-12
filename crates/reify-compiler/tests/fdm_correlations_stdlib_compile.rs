@@ -290,12 +290,24 @@ fn fdm_correlation_defaults_pattern_factors_and_low_confidence_flags() {
     assert_bool_default(template, "build_z_modulus_ratio_low_confidence", false);
     assert_bool_default(template, "build_z_strength_ratio_low_confidence", false);
     assert_bool_default(template, "gibson_ashby_c_low_confidence", false);
-    assert_bool_default(template, "pattern_near_isotropic_factor_low_confidence", false);
+    assert_bool_default(
+        template,
+        "pattern_near_isotropic_factor_low_confidence",
+        false,
+    );
 
     // … true for the FDM-specific exponent and directional pattern factors.
     assert_bool_default(template, "gibson_ashby_n_low_confidence", true);
-    assert_bool_default(template, "pattern_directional_strong_factor_low_confidence", true);
-    assert_bool_default(template, "pattern_directional_weak_factor_low_confidence", true);
+    assert_bool_default(
+        template,
+        "pattern_directional_strong_factor_low_confidence",
+        true,
+    );
+    assert_bool_default(
+        template,
+        "pattern_directional_weak_factor_low_confidence",
+        true,
+    );
 }
 
 // ─── step-5: FDMCouponOverride shape + subset-override compile probe ──────────

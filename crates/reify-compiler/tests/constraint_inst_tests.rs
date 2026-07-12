@@ -5,9 +5,9 @@
 //! substitutes param references in predicate expressions, and injects resulting
 //! constraints into the parent entity's constraint list.
 
+use reify_core::*;
 use reify_ir::*;
 use reify_test_support::{compile_source, compile_template};
-use reify_core::*;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -758,7 +758,10 @@ structure S {
 /// Collect the parameter names captured in a constraint's `arg_bindings` — the
 /// explicit call-site argument bindings recorded on the compiled instance.
 fn binding_names(cc: &reify_compiler::CompiledConstraint) -> Vec<&str> {
-    cc.arg_bindings.iter().map(|(name, _)| name.as_str()).collect()
+    cc.arg_bindings
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect()
 }
 
 #[test]

@@ -193,7 +193,11 @@ fn compiled_let_spans_match_parsed_spans() {
         .iter()
         .filter(|vc| vc.kind == reify_compiler::ValueCellKind::Let)
         .collect();
-    assert_eq!(compiled_lets.len(), 2, "expected 2 let cells (volume, body)");
+    assert_eq!(
+        compiled_lets.len(),
+        2,
+        "expected 2 let cells (volume, body)"
+    );
     let volume_cell = compiled_lets
         .iter()
         .find(|vc| vc.id.member == "volume")

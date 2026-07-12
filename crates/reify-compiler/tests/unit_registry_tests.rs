@@ -9,11 +9,11 @@ use reify_compiler::{
     AutoTypeSubstitution, UnitEntry, UnitRegistry, compile, compile_with_prelude,
     compile_with_stdlib,
 };
+use reify_core::{DimensionVector, ModulePath, SourceSpan};
 use reify_test_support::{
     compile_source, compile_source_allow_parse_errors, compile_source_with_stdlib,
     compile_source_with_stdlib_allow_parse_errors, errors_only,
 };
-use reify_core::{DimensionVector, ModulePath, SourceSpan};
 
 // ─── step-1: UnitEntry and UnitRegistry data structures ───────────────────────
 
@@ -1386,8 +1386,11 @@ fn all_nine_hardcoded_units_resolve_via_stdlib() {
 
     for (unit, expected_factor, dim_type) in cases {
         // Each unit is tested with value 1.0, so si_value == factor
-        let source =
-            format!("structure def T_{u} {{ param v : {ty} = 1{u} }}", u = unit, ty = dim_type);
+        let source = format!(
+            "structure def T_{u} {{ param v : {ty} = 1{u} }}",
+            u = unit,
+            ty = dim_type
+        );
         let parsed = reify_syntax::parse(&source, ModulePath::single("test"));
         assert!(
             parsed.errors.is_empty(),
@@ -2021,8 +2024,7 @@ fn intra_module_duplicate_prelude_units_suppresses_nonsense_collision_warning() 
         .diagnostics
         .iter()
         .filter(|d| {
-            d.severity == reify_core::Severity::Warning
-                && d.message.contains("'mod_a' and 'mod_a'")
+            d.severity == reify_core::Severity::Warning && d.message.contains("'mod_a' and 'mod_a'")
         })
         .collect();
     assert!(

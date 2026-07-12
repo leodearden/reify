@@ -19,7 +19,7 @@
 //! RED before step-2 lands the module: `load_stdlib_module()` panics when
 //! `std/surface_finish` is absent from the production stdlib.
 
-use reify_compiler::{stdlib_loader, EntityKind};
+use reify_compiler::{EntityKind, stdlib_loader};
 use reify_core::Severity;
 use reify_test_support::compile_source_with_stdlib;
 
@@ -69,7 +69,11 @@ fn find_trait(name: &str) -> &'static reify_compiler::CompiledTrait {
             panic!(
                 "std/surface_finish should contain trait '{}'; found: {:?}",
                 name,
-                module.trait_defs.iter().map(|t| &t.name).collect::<Vec<_>>()
+                module
+                    .trait_defs
+                    .iter()
+                    .map(|t| &t.name)
+                    .collect::<Vec<_>>()
             )
         })
 }
@@ -269,7 +273,9 @@ fn surface_treated_trait_is_additive() {
     // name is Option<String>; check via as_deref().
     for expected in &["coating", "finish_process", "treatment"] {
         assert!(
-            t.defaults.iter().any(|d| d.name.as_deref() == Some(expected)),
+            t.defaults
+                .iter()
+                .any(|d| d.name.as_deref() == Some(expected)),
             "SurfaceTreated defaults must include '{}'; got: {:?}",
             expected,
             t.defaults.iter().map(|d| &d.name).collect::<Vec<_>>()

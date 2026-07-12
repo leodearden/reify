@@ -11,9 +11,9 @@
 //! produced a false type-mismatch before this fix.
 
 use reify_compiler::DefaultKind;
-use reify_test_support::{compile_source, errors_only};
 use reify_core::{Diagnostic, DimensionVector, Type};
 use reify_ir::{CompiledExprKind, Value};
+use reify_test_support::{compile_source, errors_only};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 

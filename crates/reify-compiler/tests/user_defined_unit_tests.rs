@@ -10,8 +10,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use reify_compiler::{CompiledModule, compile_with_prelude};
-use reify_test_support::{compile_source, compile_source_named, errors_only};
 use reify_core::ModulePath;
+use reify_test_support::{compile_source, compile_source_named, errors_only};
 
 // ─── helpers ───────────────────────────────────────────────────────────────────
 

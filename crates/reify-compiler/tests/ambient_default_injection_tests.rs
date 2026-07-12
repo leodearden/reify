@@ -16,8 +16,7 @@ use reify_test_support::compile_source_with_stdlib;
 /// A fully-valid `Material(...)` constructor expression (all three required
 /// params provided), usable as an ambient-default value without itself
 /// producing a missing-member error.
-const STEEL_CTOR: &str =
-    r#"Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)"#;
+const STEEL_CTOR: &str = r#"Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)"#;
 
 /// A distinct, fully-valid `Material(...)` constructor, used by the
 /// explicit-member-wins test to distinguish the explicitly-provided value from

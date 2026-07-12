@@ -43,10 +43,7 @@ fn mm(n: f64) -> Value {
 
 fn non_literal_expr() -> CompiledExpr {
     // Any non-Literal kind is fine; ValueRef is the simplest to construct.
-    CompiledExpr::value_ref(
-        ValueCellId::new("GasketSeal", "thickness"),
-        Type::length(),
-    )
+    CompiledExpr::value_ref(ValueCellId::new("GasketSeal", "thickness"), Type::length())
 }
 
 // ─── synthetic candidate template ────────────────────────────────────────────
@@ -226,8 +223,7 @@ fn bearing_constraint_select_is_ambiguous_under_stub() {
     let compiled = compile_with_stdlib(&parsed);
 
     let has_ambiguous = compiled.diagnostics.iter().any(|d| {
-        d.severity == Severity::Error
-            && d.code == Some(DiagnosticCode::AutoTypeParamAmbiguous)
+        d.severity == Severity::Error && d.code == Some(DiagnosticCode::AutoTypeParamAmbiguous)
     });
     assert!(
         has_ambiguous,

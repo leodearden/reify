@@ -4,8 +4,8 @@
 //! default merging, and composition conflict detection.
 
 use reify_compiler::*;
-use reify_test_support::{compile_first_template, compile_source};
 use reify_core::*;
+use reify_test_support::{compile_first_template, compile_source};
 
 /// Assert that `template.value_cells` contains exactly one cell whose member name equals
 /// `member`. Prints `context` in the failure message for easy diagnosis.

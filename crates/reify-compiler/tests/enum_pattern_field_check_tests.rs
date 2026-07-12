@@ -101,9 +101,8 @@ fn has_error_containing(source: &str, substring: &str) -> bool {
 /// RED today: no pattern field-set check exists; VariantBind binders were dropped.
 #[test]
 fn pattern_unknown_field_emits_diagnostic() {
-    let source = shape_match_source(
-        "        Circle { diameter: d } => 0.0mm,\n        _ => 0.0mm,",
-    );
+    let source =
+        shape_match_source("        Circle { diameter: d } => 0.0mm,\n        _ => 0.0mm,");
     assert!(
         has_error_code(&source, DiagnosticCode::PatternUnknownField),
         "expected PatternUnknownField for 'Circle {{ diameter: d }}' (Circle has no 'diameter'); \
@@ -120,9 +119,7 @@ fn pattern_unknown_field_emits_diagnostic() {
 /// RED today: no field-set completeness check exists.
 #[test]
 fn pattern_missing_field_emits_diagnostic() {
-    let source = shape_match_source(
-        "        Rect { width: w } => w,\n        _ => 0.0mm,",
-    );
+    let source = shape_match_source("        Rect { width: w } => w,\n        _ => 0.0mm,");
     assert!(
         has_error_code(&source, DiagnosticCode::PatternMissingField),
         "expected PatternMissingField for 'Rect {{ width: w }}' (Rect also declares 'height'); \
@@ -181,9 +178,8 @@ fn bare_variant_arm_against_named_variant_is_legal() {
 /// (c) A wildcard arm is legal — no Pattern* diagnostic.
 #[test]
 fn wildcard_arm_is_legal() {
-    let source = shape_match_source_untyped(
-        "        Circle { radius: r } => r,\n        _ => 0.0mm,",
-    );
+    let source =
+        shape_match_source_untyped("        Circle { radius: r } => r,\n        _ => 0.0mm,");
     assert!(
         !has_error_code(&source, DiagnosticCode::PatternUnknownField),
         "wildcard arm must NOT emit PatternUnknownField",
@@ -201,9 +197,8 @@ fn wildcard_arm_is_legal() {
 /// pinning exact English prose or whitespace.
 #[test]
 fn pattern_unknown_field_message_contains_tokens() {
-    let source = shape_match_source(
-        "        Circle { diameter: d } => 0.0mm,\n        _ => 0.0mm,",
-    );
+    let source =
+        shape_match_source("        Circle { diameter: d } => 0.0mm,\n        _ => 0.0mm,");
     assert!(
         has_error_containing(&source, "'Circle'") && has_error_containing(&source, "'diameter'"),
         "PatternUnknownField message must mention variant 'Circle' and field 'diameter'",
@@ -215,9 +210,7 @@ fn pattern_unknown_field_message_contains_tokens() {
 /// pinning exact English prose or whitespace.
 #[test]
 fn pattern_missing_field_message_contains_tokens() {
-    let source = shape_match_source(
-        "        Rect { width: w } => w,\n        _ => 0.0mm,",
-    );
+    let source = shape_match_source("        Rect { width: w } => w,\n        _ => 0.0mm,");
     assert!(
         has_error_containing(&source, "'Rect'") && has_error_containing(&source, "'height'"),
         "PatternMissingField message must mention variant 'Rect' and missing field 'height'",
@@ -282,12 +275,10 @@ fn unknown_field_binder_body_reference_no_cascade() {
     // Referencing `d` in the body must not add extra errors beyond
     // PatternUnknownField — the binder is inserted with Type::Error so the
     // body resolves `d` as a ValueRef, not an unresolved name.
-    let source_with_ref = shape_match_source_untyped(
-        "        Circle { diameter: d } => d,\n        _ => 0.0mm,",
-    );
-    let source_no_ref = shape_match_source_untyped(
-        "        Circle { diameter: d } => 0.0mm,\n        _ => 0.0mm,",
-    );
+    let source_with_ref =
+        shape_match_source_untyped("        Circle { diameter: d } => d,\n        _ => 0.0mm,");
+    let source_no_ref =
+        shape_match_source_untyped("        Circle { diameter: d } => 0.0mm,\n        _ => 0.0mm,");
     // Baseline: PatternUnknownField fires for the unknown 'diameter' field.
     assert!(
         has_error_code(&source_no_ref, DiagnosticCode::PatternUnknownField),
@@ -305,8 +296,7 @@ fn unknown_field_binder_body_reference_no_cascade() {
         .filter(|d| d.severity == Severity::Error)
         .count();
     assert_eq!(
-        errs_with_ref,
-        errs_no_ref,
+        errs_with_ref, errs_no_ref,
         "referencing unknown-field binder 'd' in arm body must not cascade into \
          extra errors (binder is bound with Type::Error so body resolves 'd' as a ValueRef)",
     );

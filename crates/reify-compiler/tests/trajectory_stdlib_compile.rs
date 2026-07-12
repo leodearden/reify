@@ -19,9 +19,9 @@
 //! exercises the same embedded + sequential-prelude compilation path as
 //! production. This mirrors the helper trio in `buckling_stdlib_compile.rs`.
 
-use reify_ir::*;
 use reify_compiler::*;
 use reify_core::*;
+use reify_ir::*;
 use reify_test_support::{collect_value_ref_members, compile_source_with_stdlib, errors_only};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -100,11 +100,7 @@ fn find_enum(name: &str) -> &'static EnumDef {
             panic!(
                 "expected `enum {}` in std/trajectory, got enum_defs: {:?}",
                 name,
-                module
-                    .enum_defs
-                    .iter()
-                    .map(|e| &e.name)
-                    .collect::<Vec<_>>()
+                module.enum_defs.iter().map(|e| &e.name).collect::<Vec<_>>()
             )
         })
 }
@@ -545,8 +541,14 @@ fn clamped_spline_refines_boundary_condition_with_velocity_tangents() {
     );
 
     let expected: &[(&str, Type)] = &[
-        ("start_velocity", Type::List(Box::new(Type::dimensionless_scalar()))),
-        ("end_velocity", Type::List(Box::new(Type::dimensionless_scalar()))),
+        (
+            "start_velocity",
+            Type::List(Box::new(Type::dimensionless_scalar())),
+        ),
+        (
+            "end_velocity",
+            Type::List(Box::new(Type::dimensionless_scalar())),
+        ),
     ];
 
     // Param declaration order is part of the contract — pin it explicitly
@@ -1073,7 +1075,10 @@ fn joint_limit_struct_has_correct_param_shape() {
             .iter()
             .find(|vc| vc.id.member == *member)
             .unwrap_or_else(|| {
-                panic!("JointLimit missing required param '{}'; got: {:?}", member, names)
+                panic!(
+                    "JointLimit missing required param '{}'; got: {:?}",
+                    member, names
+                )
             });
         assert_eq!(
             cell.cell_type, *expected_ty,
@@ -1144,10 +1149,7 @@ fn joint_limit_constrains_max_force_positive() {
     // Constraint must be BinOp::Gt.
     let (left, right, op) = match &constraint.expr.kind {
         CompiledExprKind::BinOp { op, left, right } => (left.as_ref(), right.as_ref(), op),
-        other => panic!(
-            "JointLimit constraint should be a BinOp; got: {:?}",
-            other
-        ),
+        other => panic!("JointLimit constraint should be a BinOp; got: {:?}", other),
     };
     assert_eq!(
         *op,
@@ -1427,21 +1429,19 @@ fn tots_shaper_constrains_design_param_invariants() {
     // Dimension-pin: check that the coerced literal carries VELOCITY so a
     // wrong-dimension regression (e.g. accidentally adopting ACCELERATION)
     // is still caught here.
-    let velocity_matched = template.constraints.iter().any(|c| {
-        match &c.expr.kind {
-            CompiledExprKind::BinOp { op, left, right } => {
-                *op == BinOp::Gt
-                    && collect_value_ref_members(left)
-                        .iter()
-                        .any(|m| m.as_str() == "velocity_limit")
-                    && matches!(
-                        &right.kind,
-                        CompiledExprKind::Literal(Value::Scalar { si_value, dimension })
-                            if *si_value == 0.0 && *dimension == DimensionVector::VELOCITY
-                    )
-            }
-            _ => false,
+    let velocity_matched = template.constraints.iter().any(|c| match &c.expr.kind {
+        CompiledExprKind::BinOp { op, left, right } => {
+            *op == BinOp::Gt
+                && collect_value_ref_members(left)
+                    .iter()
+                    .any(|m| m.as_str() == "velocity_limit")
+                && matches!(
+                    &right.kind,
+                    CompiledExprKind::Literal(Value::Scalar { si_value, dimension })
+                        if *si_value == 0.0 && *dimension == DimensionVector::VELOCITY
+                )
         }
+        _ => false,
     });
     assert!(
         velocity_matched,
@@ -1457,21 +1457,19 @@ fn tots_shaper_constrains_design_param_invariants() {
 
     // acceleration_limit: same pattern as velocity_limit above.
     // task-4485/β coerces `> 0` to Literal(Scalar{0.0, ACCELERATION}).
-    let accel_matched = template.constraints.iter().any(|c| {
-        match &c.expr.kind {
-            CompiledExprKind::BinOp { op, left, right } => {
-                *op == BinOp::Gt
-                    && collect_value_ref_members(left)
-                        .iter()
-                        .any(|m| m.as_str() == "acceleration_limit")
-                    && matches!(
-                        &right.kind,
-                        CompiledExprKind::Literal(Value::Scalar { si_value, dimension })
-                            if *si_value == 0.0 && *dimension == DimensionVector::ACCELERATION
-                    )
-            }
-            _ => false,
+    let accel_matched = template.constraints.iter().any(|c| match &c.expr.kind {
+        CompiledExprKind::BinOp { op, left, right } => {
+            *op == BinOp::Gt
+                && collect_value_ref_members(left)
+                    .iter()
+                    .any(|m| m.as_str() == "acceleration_limit")
+                && matches!(
+                    &right.kind,
+                    CompiledExprKind::Literal(Value::Scalar { si_value, dimension })
+                        if *si_value == 0.0 && *dimension == DimensionVector::ACCELERATION
+                )
         }
+        _ => false,
     });
     assert!(
         accel_matched,
@@ -1488,22 +1486,22 @@ fn tots_shaper_constrains_design_param_invariants() {
     // vibration_tolerance, max_iters, tol: plain positivity constraints (> 0),
     // dimensionless params — plain `Literal(Int(0))` RHS.
     for required in &["vibration_tolerance", "max_iters", "tol"] {
-        let matched = template.constraints.iter().any(|c| {
-            match &c.expr.kind {
-                CompiledExprKind::BinOp { op, left, right } => {
-                    if *op != BinOp::Gt
-                        || !collect_value_ref_members(left).iter().any(|m| m.as_str() == *required)
-                    {
-                        return false;
-                    }
-                    match &right.kind {
-                        CompiledExprKind::Literal(Value::Int(0)) => true,
-                        CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
-                        _ => false,
-                    }
+        let matched = template.constraints.iter().any(|c| match &c.expr.kind {
+            CompiledExprKind::BinOp { op, left, right } => {
+                if *op != BinOp::Gt
+                    || !collect_value_ref_members(left)
+                        .iter()
+                        .any(|m| m.as_str() == *required)
+                {
+                    return false;
                 }
-                _ => false,
+                match &right.kind {
+                    CompiledExprKind::Literal(Value::Int(0)) => true,
+                    CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
+                    _ => false,
+                }
             }
+            _ => false,
         });
         assert!(
             matched,
@@ -1520,22 +1518,22 @@ fn tots_shaper_constrains_design_param_invariants() {
 
     // Upper-bound constraint: vibration_tolerance <= 1 (completing the (0,1]
     // interval per PRD §11 Phase 2 ε spec). Accept Int(1) or Real(1.0) RHS.
-    let le_matched = template.constraints.iter().any(|c| {
-        match &c.expr.kind {
-            CompiledExprKind::BinOp { op, left, right } => {
-                if *op != BinOp::Le
-                    || !collect_value_ref_members(left).iter().any(|m| m.as_str() == "vibration_tolerance")
-                {
-                    return false;
-                }
-                match &right.kind {
-                    CompiledExprKind::Literal(Value::Int(1)) => true,
-                    CompiledExprKind::Literal(Value::Real(v)) if *v == 1.0 => true,
-                    _ => false,
-                }
+    let le_matched = template.constraints.iter().any(|c| match &c.expr.kind {
+        CompiledExprKind::BinOp { op, left, right } => {
+            if *op != BinOp::Le
+                || !collect_value_ref_members(left)
+                    .iter()
+                    .any(|m| m.as_str() == "vibration_tolerance")
+            {
+                return false;
             }
-            _ => false,
+            match &right.kind {
+                CompiledExprKind::Literal(Value::Int(1)) => true,
+                CompiledExprKind::Literal(Value::Real(v)) if *v == 1.0 => true,
+                _ => false,
+            }
         }
+        _ => false,
     });
     assert!(
         le_matched,
@@ -1673,7 +1671,9 @@ fn zv_shaper_struct_has_correct_param_shape_and_constraint() {
     let matched = match &constraint.expr.kind {
         CompiledExprKind::BinOp { op, left, right } => {
             if *op != BinOp::Gt
-                || !collect_value_ref_members(left).iter().any(|m| m.as_str() == "target_frequency")
+                || !collect_value_ref_members(left)
+                    .iter()
+                    .any(|m| m.as_str() == "target_frequency")
             {
                 false
             } else {
@@ -1807,7 +1807,9 @@ fn zvd_shaper_struct_has_correct_param_shape_and_constraint() {
     let matched = match &constraint.expr.kind {
         CompiledExprKind::BinOp { op, left, right } => {
             if *op != BinOp::Gt
-                || !collect_value_ref_members(left).iter().any(|m| m.as_str() == "target_frequency")
+                || !collect_value_ref_members(left)
+                    .iter()
+                    .any(|m| m.as_str() == "target_frequency")
             {
                 false
             } else {
@@ -1939,22 +1941,22 @@ fn ei_shaper_struct_has_correct_param_shape_and_constraints() {
     );
 
     // (g) target_frequency > 0Hz (dimensioned literal — esc-3115 rule).
-    let tf_matched = template.constraints.iter().any(|c| {
-        match &c.expr.kind {
-            CompiledExprKind::BinOp { op, left, right } => {
-                if *op != BinOp::Gt
-                    || !collect_value_ref_members(left).iter().any(|m| m.as_str() == "target_frequency")
-                {
-                    return false;
-                }
-                matches!(
-                    &right.kind,
-                    CompiledExprKind::Literal(Value::Scalar { si_value, dimension })
-                        if *si_value == 0.0 && *dimension == DimensionVector::FREQUENCY
-                )
+    let tf_matched = template.constraints.iter().any(|c| match &c.expr.kind {
+        CompiledExprKind::BinOp { op, left, right } => {
+            if *op != BinOp::Gt
+                || !collect_value_ref_members(left)
+                    .iter()
+                    .any(|m| m.as_str() == "target_frequency")
+            {
+                return false;
             }
-            _ => false,
+            matches!(
+                &right.kind,
+                CompiledExprKind::Literal(Value::Scalar { si_value, dimension })
+                    if *si_value == 0.0 && *dimension == DimensionVector::FREQUENCY
+            )
         }
+        _ => false,
     });
     assert!(
         tf_matched,
@@ -1968,22 +1970,22 @@ fn ei_shaper_struct_has_correct_param_shape_and_constraints() {
     );
 
     // (h) vibration_tolerance > 0 (lower bound of (0,1] interval).
-    let vt_gt_matched = template.constraints.iter().any(|c| {
-        match &c.expr.kind {
-            CompiledExprKind::BinOp { op, left, right } => {
-                if *op != BinOp::Gt
-                    || !collect_value_ref_members(left).iter().any(|m| m.as_str() == "vibration_tolerance")
-                {
-                    return false;
-                }
-                match &right.kind {
-                    CompiledExprKind::Literal(Value::Int(0)) => true,
-                    CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
-                    _ => false,
-                }
+    let vt_gt_matched = template.constraints.iter().any(|c| match &c.expr.kind {
+        CompiledExprKind::BinOp { op, left, right } => {
+            if *op != BinOp::Gt
+                || !collect_value_ref_members(left)
+                    .iter()
+                    .any(|m| m.as_str() == "vibration_tolerance")
+            {
+                return false;
             }
-            _ => false,
+            match &right.kind {
+                CompiledExprKind::Literal(Value::Int(0)) => true,
+                CompiledExprKind::Literal(Value::Real(v)) if *v == 0.0 => true,
+                _ => false,
+            }
         }
+        _ => false,
     });
     assert!(
         vt_gt_matched,
@@ -1997,22 +1999,22 @@ fn ei_shaper_struct_has_correct_param_shape_and_constraints() {
     );
 
     // (i) vibration_tolerance <= 1 (upper bound of (0,1] interval).
-    let vt_le_matched = template.constraints.iter().any(|c| {
-        match &c.expr.kind {
-            CompiledExprKind::BinOp { op, left, right } => {
-                if *op != BinOp::Le
-                    || !collect_value_ref_members(left).iter().any(|m| m.as_str() == "vibration_tolerance")
-                {
-                    return false;
-                }
-                match &right.kind {
-                    CompiledExprKind::Literal(Value::Int(1)) => true,
-                    CompiledExprKind::Literal(Value::Real(v)) if *v == 1.0 => true,
-                    _ => false,
-                }
+    let vt_le_matched = template.constraints.iter().any(|c| match &c.expr.kind {
+        CompiledExprKind::BinOp { op, left, right } => {
+            if *op != BinOp::Le
+                || !collect_value_ref_members(left)
+                    .iter()
+                    .any(|m| m.as_str() == "vibration_tolerance")
+            {
+                return false;
             }
-            _ => false,
+            match &right.kind {
+                CompiledExprKind::Literal(Value::Int(1)) => true,
+                CompiledExprKind::Literal(Value::Real(v)) if *v == 1.0 => true,
+                _ => false,
+            }
         }
+        _ => false,
     });
     assert!(
         vt_le_matched,
@@ -2212,7 +2214,10 @@ fn end_effector_track_struct_has_correct_param_shape() {
 
     let expected: &[(&str, Type)] = &[
         ("mechanism", Type::dimensionless_scalar()),
-        ("modal_result", Type::StructureRef("ModalResult".to_string())),
+        (
+            "modal_result",
+            Type::StructureRef("ModalResult".to_string()),
+        ),
         (
             "t_samples",
             Type::List(Box::new(Type::Scalar {

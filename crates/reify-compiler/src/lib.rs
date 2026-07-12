@@ -24,6 +24,7 @@ pub(crate) mod containment_graph;
 /// Re-export the shared forward-adjacency helper at the crate root so `reify-eval`
 /// can call it without knowing the private module layout.
 pub use containment_graph::sub_component_forward_adjacency;
+mod builtin_signatures;
 mod datum_projection;
 mod diagnostics;
 mod entity;
@@ -39,22 +40,21 @@ pub mod geometry_traits_inference;
 mod geometry_transform;
 mod guards;
 mod ice;
-mod list_helpers;
-mod joint_signatures;
 mod joint_self_check;
-mod builtin_signatures;
+mod joint_signatures;
+mod list_helpers;
 mod math_signatures;
 mod parse_signatures;
 // `pub` so reify-lsp can reach `is_relation_typed_fn` / `relation_contract_for_call`
 // to surface the relation ΔDOF contract on hover (geometric-relations γ, task 4383).
-pub mod relation_signatures;
-mod signatures_common;
 pub mod module_dag;
 mod module_pragmas;
 pub mod prelude_context;
+pub mod relation_signatures;
 mod scc;
 mod scope;
 pub mod si_units;
+mod signatures_common;
 pub mod stdlib_loader;
 pub(crate) mod stdlib_topo;
 mod termination;
@@ -67,8 +67,7 @@ mod units;
 mod variant_construct;
 
 pub use annotations::materialize::{
-    compile_materialization_annotation_args, MaterializationAnnotationArg,
-    MaterializationArgType,
+    MaterializationAnnotationArg, MaterializationArgType, compile_materialization_annotation_args,
 };
 pub use compile_builder::pre_pass::check_module_path_decl;
 pub use entity::satisfies_trait_bound;
@@ -77,6 +76,7 @@ pub use type_compat::{implicitly_converts_to, type_compatible};
 pub use types::*;
 
 // Re-export submodule items for internal cross-module access via `use super::*;`
+pub(crate) use analysis_signatures::*;
 pub(crate) use annotations::*;
 pub(crate) use arg_check::*;
 pub(crate) use conformance::*;
@@ -94,9 +94,8 @@ pub(crate) use geometry_modify::*;
 pub(crate) use geometry_transform::*;
 pub(crate) use guards::*;
 pub(crate) use ice::*;
-pub(crate) use list_helpers::*;
-pub(crate) use analysis_signatures::*;
 pub(crate) use joint_signatures::*;
+pub(crate) use list_helpers::*;
 pub(crate) use math_signatures::*;
 pub(crate) use parse_signatures::*;
 pub(crate) use scope::*;
@@ -109,13 +108,23 @@ pub(crate) use traits::*;
 pub(crate) use type_compat::*;
 pub(crate) use type_resolution::*;
 pub(crate) use units::*;
-pub use units::{GEOMETRY_FUNCTION_NAMES, UnitEntry, UnitRegistry, UnitResolveError, resolve_unit_expr};
+pub use units::{
+    GEOMETRY_FUNCTION_NAMES, UnitEntry, UnitRegistry, UnitResolveError, resolve_unit_expr,
+};
 
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
-use reify_core::{ConstraintNodeId, ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector, FIELD_ENTITY_PREFIX, RealizationNodeId, Severity, SourceSpan, Type, ValueCellId};
-use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, ConstraintChecker, DeterminacyPredicateKind, ObjectiveCombination, ObjectiveSet, ObjectiveSense, ObjectiveTerm, ResolvedFunction, SelectorKind, TAG_CONDITIONAL, TAG_FUNCTION_CALL, TAG_MATCH, TAG_USER_FUNCTION_CALL, UnOp, Value};
+use reify_core::{
+    ConstraintNodeId, ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, DimensionVector,
+    FIELD_ENTITY_PREFIX, RealizationNodeId, Severity, SourceSpan, Type, ValueCellId,
+};
+use reify_ir::{
+    BinOp, CompiledExpr, CompiledExprKind, ConstraintChecker, DeterminacyPredicateKind,
+    ObjectiveCombination, ObjectiveSense, ObjectiveSet, ObjectiveTerm, ResolvedFunction,
+    SelectorKind, TAG_CONDITIONAL, TAG_FUNCTION_CALL, TAG_MATCH, TAG_USER_FUNCTION_CALL, UnOp,
+    Value,
+};
 
 /// Expose `validate_annotations` to integration tests without plumbing a full
 /// compilation context.
@@ -550,7 +559,10 @@ pub fn compile_with_prelude_context_checked_with_config(
 
     // Seed `ctx.resolution_enums` from the same prelude set (skips re-flattening
     // the prelude modules on every call).
-    compile_builder::enums_phase::build_resolution_enums_from_cache(&mut compile_ctx, prelude_enums);
+    compile_builder::enums_phase::build_resolution_enums_from_cache(
+        &mut compile_ctx,
+        prelude_enums,
+    );
 
     compile_builder::functions_phase::phase_functions(
         &mut compile_ctx,

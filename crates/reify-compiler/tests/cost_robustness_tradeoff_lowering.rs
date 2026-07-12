@@ -14,7 +14,11 @@ use reify_ir::{ObjectiveCombination, ObjectiveSense};
 
 fn compile_ok(src: &str, module_name: &str) -> reify_compiler::CompiledModule {
     let parsed = reify_syntax::parse(src, ModulePath::single(module_name));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     let compiled = reify_compiler::compile(&parsed);
     assert!(
         compiled.diagnostics.is_empty(),
@@ -31,7 +35,11 @@ fn compile_ok(src: &str, module_name: &str) -> reify_compiler::CompiledModule {
 /// arg-diagnostic behaviour under test).
 fn compile_with_diagnostics(src: &str, module_name: &str) -> reify_compiler::CompiledModule {
     let parsed = reify_syntax::parse(src, ModulePath::single(module_name));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     reify_compiler::compile(&parsed)
 }
 
@@ -71,10 +79,19 @@ structure S {
         "combination must be WeightedSum, got {:?}",
         obj.combination
     );
-    assert_eq!(obj.terms.len(), 1, "expected exactly 1 term, got {}", obj.terms.len());
+    assert_eq!(
+        obj.terms.len(),
+        1,
+        "expected exactly 1 term, got {}",
+        obj.terms.len()
+    );
 
     let term = &obj.terms[0];
-    assert_eq!(term.sense, ObjectiveSense::Minimize, "term.sense must be Minimize");
+    assert_eq!(
+        term.sense,
+        ObjectiveSense::Minimize,
+        "term.sense must be Minimize"
+    );
     assert!(
         matches!(
             &term.expr.result_type,

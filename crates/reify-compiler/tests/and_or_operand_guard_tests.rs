@@ -83,9 +83,7 @@ fn and_non_bool_left_emits_logical_operand_not_bool() {
         errors
     );
     // message must mention the operator so callers can distinguish and/or/implies
-    let has_and_msg = errors
-        .iter()
-        .any(|d| d.message.contains("and"));
+    let has_and_msg = errors.iter().any(|d| d.message.contains("and"));
     assert!(
         has_and_msg,
         "`5 and flag` error message must mention \"and\"; got errors: {:?}",
@@ -109,9 +107,7 @@ fn and_non_bool_right_emits_logical_operand_not_bool() {
         "`flag and 3` must produce DiagnosticCode::LogicalOperandNotBool; got errors: {:?}",
         errors
     );
-    let has_and_msg = errors
-        .iter()
-        .any(|d| d.message.contains("and"));
+    let has_and_msg = errors.iter().any(|d| d.message.contains("and"));
     assert!(
         has_and_msg,
         "`flag and 3` error message must mention \"and\"; got errors: {:?}",
@@ -135,9 +131,7 @@ fn or_non_bool_left_emits_logical_operand_not_bool() {
         "`5 or flag` must produce DiagnosticCode::LogicalOperandNotBool; got errors: {:?}",
         errors
     );
-    let has_or_msg = errors
-        .iter()
-        .any(|d| d.message.contains("or"));
+    let has_or_msg = errors.iter().any(|d| d.message.contains("or"));
     assert!(
         has_or_msg,
         "`5 or flag` error message must mention \"or\"; got errors: {:?}",
@@ -161,9 +155,7 @@ fn or_non_bool_right_emits_logical_operand_not_bool() {
         "`flag or 3` must produce DiagnosticCode::LogicalOperandNotBool; got errors: {:?}",
         errors
     );
-    let has_or_msg = errors
-        .iter()
-        .any(|d| d.message.contains("or"));
+    let has_or_msg = errors.iter().any(|d| d.message.contains("or"));
     assert!(
         has_or_msg,
         "`flag or 3` error message must mention \"or\"; got errors: {:?}",

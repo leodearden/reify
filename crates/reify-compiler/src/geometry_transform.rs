@@ -34,47 +34,45 @@ pub(crate) fn compile_transform_op(
             Some(sub_ops)
         }
         // rotate(target, ax, ay, az, angle)  OR  rotate(target, orientation)
-        "rotate" => {
-            match compiled_args.len() {
-                5 => {
-                    let mut it = compiled_args.into_iter();
-                    let op = CompiledGeometryOp::Transform {
-                        kind: TransformKind::Rotate,
-                        target,
-                        args: vec![
-                            ("target".to_string(), it.next().unwrap()),
-                            ("ax".to_string(), it.next().unwrap()),
-                            ("ay".to_string(), it.next().unwrap()),
-                            ("az".to_string(), it.next().unwrap()),
-                            ("angle".to_string(), it.next().unwrap()),
-                        ],
-                    };
-                    sub_ops.push(op);
-                    Some(sub_ops)
-                }
-                2 => {
-                    let mut it = compiled_args.into_iter();
-                    let op = CompiledGeometryOp::Transform {
-                        kind: TransformKind::Rotate,
-                        target,
-                        args: vec![
-                            ("target".to_string(), it.next().unwrap()),
-                            ("orientation".to_string(), it.next().unwrap()),
-                        ],
-                    };
-                    sub_ops.push(op);
-                    Some(sub_ops)
-                }
-                n => {
-                    push_labeled_arg_count_error(
-                        format!("rotate() expects 2 or 5 arguments, got {n}"),
-                        expr_span,
-                        diagnostics,
-                    );
-                    None
-                }
+        "rotate" => match compiled_args.len() {
+            5 => {
+                let mut it = compiled_args.into_iter();
+                let op = CompiledGeometryOp::Transform {
+                    kind: TransformKind::Rotate,
+                    target,
+                    args: vec![
+                        ("target".to_string(), it.next().unwrap()),
+                        ("ax".to_string(), it.next().unwrap()),
+                        ("ay".to_string(), it.next().unwrap()),
+                        ("az".to_string(), it.next().unwrap()),
+                        ("angle".to_string(), it.next().unwrap()),
+                    ],
+                };
+                sub_ops.push(op);
+                Some(sub_ops)
             }
-        }
+            2 => {
+                let mut it = compiled_args.into_iter();
+                let op = CompiledGeometryOp::Transform {
+                    kind: TransformKind::Rotate,
+                    target,
+                    args: vec![
+                        ("target".to_string(), it.next().unwrap()),
+                        ("orientation".to_string(), it.next().unwrap()),
+                    ],
+                };
+                sub_ops.push(op);
+                Some(sub_ops)
+            }
+            n => {
+                push_labeled_arg_count_error(
+                    format!("rotate() expects 2 or 5 arguments, got {n}"),
+                    expr_span,
+                    diagnostics,
+                );
+                None
+            }
+        },
         // scale(target, factor: Real)  OR  scale(target, factors: Vector3<Real>)
         //
         // Dispatch on the second arg's STATIC type (task 4167): `vec3(..)` is
@@ -142,7 +140,13 @@ pub(crate) fn compile_transform_op(
         }
         // apply_transform(target, transform)
         "apply_transform" => {
-            if !check_arg_count_exact("apply_transform", compiled_args.len(), 2, expr_span, diagnostics) {
+            if !check_arg_count_exact(
+                "apply_transform",
+                compiled_args.len(),
+                2,
+                expr_span,
+                diagnostics,
+            ) {
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -159,7 +163,13 @@ pub(crate) fn compile_transform_op(
         }
         // affine_apply(target, map)
         "affine_apply" => {
-            if !check_arg_count_exact("affine_apply", compiled_args.len(), 2, expr_span, diagnostics) {
+            if !check_arg_count_exact(
+                "affine_apply",
+                compiled_args.len(),
+                2,
+                expr_span,
+                diagnostics,
+            ) {
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -203,7 +213,11 @@ mod tests {
             &mut diagnostics,
             vec![],
         );
-        assert!(diagnostics.is_empty(), "unexpected diagnostics: {:?}", diagnostics);
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            diagnostics
+        );
         let ops = result.expect("2-arg apply_transform should return Some");
         assert_eq!(ops.len(), 1);
         match &ops[0] {
@@ -235,8 +249,14 @@ mod tests {
         );
         assert!(result.is_none(), "expected None for 1-arg apply_transform");
         assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
-        assert!(!diagnostics[0].labels.is_empty(), "expected label on diagnostic");
-        assert_eq!(diagnostics[0].labels[0].span, span, "label span must match expr_span");
+        assert!(
+            !diagnostics[0].labels.is_empty(),
+            "expected label on diagnostic"
+        );
+        assert_eq!(
+            diagnostics[0].labels[0].span, span,
+            "label span must match expr_span"
+        );
     }
 
     #[test]
@@ -254,8 +274,14 @@ mod tests {
         );
         assert!(result.is_none(), "expected None for 3-arg apply_transform");
         assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
-        assert!(!diagnostics[0].labels.is_empty(), "expected label on diagnostic");
-        assert_eq!(diagnostics[0].labels[0].span, span, "label span must match expr_span");
+        assert!(
+            !diagnostics[0].labels.is_empty(),
+            "expected label on diagnostic"
+        );
+        assert_eq!(
+            diagnostics[0].labels[0].span, span,
+            "label span must match expr_span"
+        );
     }
 
     // ── affine_apply tests (task 3963 step-3) ────────────────────────────────
@@ -274,7 +300,11 @@ mod tests {
             &mut diagnostics,
             vec![],
         );
-        assert!(diagnostics.is_empty(), "unexpected diagnostics: {:?}", diagnostics);
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            diagnostics
+        );
         let ops = result.expect("2-arg affine_apply should return Some");
         assert_eq!(ops.len(), 1);
         match &ops[0] {
@@ -306,8 +336,14 @@ mod tests {
         );
         assert!(result.is_none(), "expected None for 1-arg affine_apply");
         assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
-        assert!(!diagnostics[0].labels.is_empty(), "expected label on diagnostic");
-        assert_eq!(diagnostics[0].labels[0].span, span, "label span must match expr_span");
+        assert!(
+            !diagnostics[0].labels.is_empty(),
+            "expected label on diagnostic"
+        );
+        assert_eq!(
+            diagnostics[0].labels[0].span, span,
+            "label span must match expr_span"
+        );
     }
 
     #[test]
@@ -325,8 +361,14 @@ mod tests {
         );
         assert!(result.is_none(), "expected None for 3-arg affine_apply");
         assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
-        assert!(!diagnostics[0].labels.is_empty(), "expected label on diagnostic");
-        assert_eq!(diagnostics[0].labels[0].span, span, "label span must match expr_span");
+        assert!(
+            !diagnostics[0].labels.is_empty(),
+            "expected label on diagnostic"
+        );
+        assert_eq!(
+            diagnostics[0].labels[0].span, span,
+            "label span must match expr_span"
+        );
     }
 
     #[test]
@@ -428,7 +470,11 @@ mod tests {
             &mut diagnostics,
             vec![],
         );
-        assert!(diagnostics.is_empty(), "unexpected diagnostics: {:?}", diagnostics);
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            diagnostics
+        );
         let ops = result.expect("2-arg rotate should return Some");
         assert_eq!(ops.len(), 1);
         match &ops[0] {
@@ -463,12 +509,20 @@ mod tests {
         assert!(result.is_none(), "expected None for 3-arg rotate");
         assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
         assert!(
-            diagnostics[0].message.contains("rotate() expects 2 or 5 arguments, got 3"),
+            diagnostics[0]
+                .message
+                .contains("rotate() expects 2 or 5 arguments, got 3"),
             "diagnostic message should mention 'rotate() expects 2 or 5 arguments, got 3', got: {}",
             diagnostics[0].message,
         );
-        assert!(!diagnostics[0].labels.is_empty(), "expected label on diagnostic");
-        assert_eq!(diagnostics[0].labels[0].span, span, "label span must match expr_span");
+        assert!(
+            !diagnostics[0].labels.is_empty(),
+            "expected label on diagnostic"
+        );
+        assert_eq!(
+            diagnostics[0].labels[0].span, span,
+            "label span must match expr_span"
+        );
     }
 
     /// Regression: 5-arg rotate(target, ax, ay, az, angle) still works after the
@@ -488,7 +542,11 @@ mod tests {
             &mut diagnostics,
             vec![],
         );
-        assert!(diagnostics.is_empty(), "unexpected diagnostics: {:?}", diagnostics);
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            diagnostics
+        );
         let ops = result.expect("5-arg rotate should return Some");
         assert_eq!(ops.len(), 1);
         match &ops[0] {
@@ -531,7 +589,11 @@ mod tests {
             &mut diagnostics,
             vec![],
         );
-        assert!(diagnostics.is_empty(), "unexpected diagnostics: {:?}", diagnostics);
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            diagnostics
+        );
         let ops = result.expect("2-arg scale(vec3) should return Some");
         assert_eq!(ops.len(), 1);
         match &ops[0] {
@@ -565,7 +627,11 @@ mod tests {
             &mut diagnostics,
             vec![],
         );
-        assert!(diagnostics.is_empty(), "unexpected diagnostics: {:?}", diagnostics);
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            diagnostics
+        );
         let ops = result.expect("2-arg scale(scalar) should return Some");
         assert_eq!(ops.len(), 1);
         match &ops[0] {

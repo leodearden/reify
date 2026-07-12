@@ -35,8 +35,9 @@
 
 use reify_core::{DiagnosticCode, DimensionVector, Severity, Type, ValueCellId};
 use reify_ir::{CompiledExprKind, Value};
-use reify_test_support::{compile_source, errors_only, make_simple_engine,
-    parse_and_compile_with_stdlib};
+use reify_test_support::{
+    compile_source, errors_only, make_simple_engine, parse_and_compile_with_stdlib,
+};
 
 // ── (a) Intra-trait overload survival ────────────────────────────────────────
 
@@ -104,8 +105,7 @@ structure def C : T {
         .map(|e| e.function.params.get(1).map(|p| format!("{:?}", p.1)))
         .collect();
     assert_ne!(
-        param1_types[0],
-        param1_types[1],
+        param1_types[0], param1_types[1],
         "the two T::f overload entries must differ in their non-self param type; \
          got: {:?}",
         param1_types

@@ -1,8 +1,8 @@
 //! Collection compilation tests (step-29 through step-36).
 
-use reify_test_support::parse_and_compile;
 use reify_core::Type;
 use reify_ir::{CompiledExprKind, Value, ValueMap};
+use reify_test_support::parse_and_compile;
 
 /// Helper: get the default_expr for a value cell by member name.
 fn get_cell_expr<'a>(

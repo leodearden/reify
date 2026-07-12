@@ -69,14 +69,22 @@ structure def App {
         .unwrap_or_else(|| {
             panic!(
                 "expected fn `run` in compiled module; found functions: {:?}",
-                module.functions.iter().map(|f| f.name.as_str()).collect::<Vec<_>>()
+                module
+                    .functions
+                    .iter()
+                    .map(|f| f.name.as_str())
+                    .collect::<Vec<_>>()
             )
         });
     assert_eq!(
         run_fn.params.len(),
         1,
         "run must have exactly 1 param (o); got {:?}",
-        run_fn.params.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()
+        run_fn
+            .params
+            .iter()
+            .map(|(n, _)| n.as_str())
+            .collect::<Vec<_>>()
     );
     assert_eq!(
         run_fn.param_defaults.len(),
@@ -108,7 +116,11 @@ structure def App {
         .unwrap_or_else(|| {
             panic!(
                 "expected template `App` in compiled module; found templates: {:?}",
-                module.templates.iter().map(|t| t.name.as_str()).collect::<Vec<_>>()
+                module
+                    .templates
+                    .iter()
+                    .map(|t| t.name.as_str())
+                    .collect::<Vec<_>>()
             )
         });
     let v_cell = app_template
@@ -121,7 +133,10 @@ structure def App {
         .as_ref()
         .expect("App's `v` cell must have a compiled expression");
     match &v_expr.kind {
-        CompiledExprKind::UserFunctionCall { function_name, args } => {
+        CompiledExprKind::UserFunctionCall {
+            function_name,
+            args,
+        } => {
             assert_eq!(
                 function_name, "run",
                 "App's `v` must call `run`; got function_name: {}",
@@ -184,14 +199,16 @@ fn solve_elastic_static_options_defaults_and_omittable() {
         solve_fn.params.len(),
         7,
         "solve_elastic_static must have 7 params; got: {:?}",
-        solve_fn.params.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()
+        solve_fn
+            .params
+            .iter()
+            .map(|(n, _)| n.as_str())
+            .collect::<Vec<_>>()
     );
-    let options_default = solve_fn.param_defaults[6]
-        .as_ref()
-        .expect(
-            "solve_elastic_static's `options` param must carry a compiled default \
+    let options_default = solve_fn.param_defaults[6].as_ref().expect(
+        "solve_elastic_static's `options` param must carry a compiled default \
              (= ElasticOptions()); currently None — add the default in step-4",
-        );
+    );
     match &options_default.kind {
         CompiledExprKind::StructureInstanceCtor { type_name, .. } => {
             assert_eq!(
@@ -277,15 +294,17 @@ fn solve_buckling_options_defaults_and_omittable() {
         solve_fn.params.len(),
         7,
         "solve_buckling must have 7 params; got: {:?}",
-        solve_fn.params.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()
+        solve_fn
+            .params
+            .iter()
+            .map(|(n, _)| n.as_str())
+            .collect::<Vec<_>>()
     );
-    let options_default = solve_fn.param_defaults[6]
-        .as_ref()
-        .expect(
-            "solve_buckling's `options` param must carry a compiled default \
+    let options_default = solve_fn.param_defaults[6].as_ref().expect(
+        "solve_buckling's `options` param must carry a compiled default \
              (= BucklingOptions()); None means the default is missing from \
              solver_buckling_fns.ri",
-        );
+    );
     match &options_default.kind {
         CompiledExprKind::StructureInstanceCtor { type_name, .. } => {
             assert_eq!(
@@ -371,15 +390,17 @@ fn modal_analysis_options_defaults_and_omittable() {
         modal_fn.params.len(),
         5,
         "modal_analysis must have 5 params; got: {:?}",
-        modal_fn.params.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()
+        modal_fn
+            .params
+            .iter()
+            .map(|(n, _)| n.as_str())
+            .collect::<Vec<_>>()
     );
-    let options_default = modal_fn.param_defaults[4]
-        .as_ref()
-        .expect(
-            "modal_analysis's `options` param must carry a compiled default \
+    let options_default = modal_fn.param_defaults[4].as_ref().expect(
+        "modal_analysis's `options` param must carry a compiled default \
              (= ModalOptions()); None means the default is missing from \
              modal_analysis_fns.ri",
-        );
+    );
     match &options_default.kind {
         CompiledExprKind::StructureInstanceCtor { type_name, .. } => {
             assert_eq!(

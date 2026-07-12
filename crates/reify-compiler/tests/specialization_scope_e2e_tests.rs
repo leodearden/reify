@@ -38,7 +38,8 @@ fn forbidden_decl_diagnostics(
 #[test]
 fn forbidden_spec_scope_fixture_emits_three_forbidden_decl_diagnostics() {
     let source = include_str!("fixtures/specialization_scope_forbidden.ri");
-    let parsed = reify_compiler::parse_with_stdlib(source, ModulePath::single("spec_e2e_forbidden"));
+    let parsed =
+        reify_compiler::parse_with_stdlib(source, ModulePath::single("spec_e2e_forbidden"));
 
     assert!(
         parsed.errors.is_empty(),

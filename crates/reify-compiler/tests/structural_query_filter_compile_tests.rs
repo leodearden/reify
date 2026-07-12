@@ -76,10 +76,7 @@ fn filter_known_trait_compiles_clean_and_types_list_of_entity_ref() {
                 inner
             );
         }
-        other => panic!(
-            "bolts: expected Type::List, got: {:?}",
-            other
-        ),
+        other => panic!("bolts: expected Type::List, got: {:?}", other),
     }
 }
 
@@ -127,7 +124,10 @@ fn filter_unknown_trait_emits_unresolved_trait_diagnostic() {
         has_unresolved_trait_diag,
         "expected a diagnostic with DiagnosticCode::UnresolvedTrait or message \
          mentioning 'NotATrait'/'unresolved trait'; got: {:?}",
-        errors.iter().map(|d| (&d.code, &d.message)).collect::<Vec<_>>()
+        errors
+            .iter()
+            .map(|d| (&d.code, &d.message))
+            .collect::<Vec<_>>()
     );
 }
 

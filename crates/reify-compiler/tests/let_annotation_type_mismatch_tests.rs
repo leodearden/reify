@@ -213,7 +213,10 @@ structure S {
     assert!(
         mismatch.is_some(),
         "expected LetAnnotationTypeMismatch error for 'let a : Length = 5kg'; got: {:?}",
-        errors.iter().map(|d| (&d.message, &d.code)).collect::<Vec<_>>()
+        errors
+            .iter()
+            .map(|d| (&d.message, &d.code))
+            .collect::<Vec<_>>()
     );
 
     let diag = mismatch.unwrap();
@@ -243,7 +246,10 @@ structure S {
     assert!(
         mismatch.is_some(),
         "expected LetAnnotationTypeMismatch for 'let i : Int = 0.5' (Int ≠ Real); got: {:?}",
-        errors.iter().map(|d| (&d.message, &d.code)).collect::<Vec<_>>()
+        errors
+            .iter()
+            .map(|d| (&d.message, &d.code))
+            .collect::<Vec<_>>()
     );
 }
 
@@ -266,7 +272,10 @@ structure S {
         mismatch.is_some(),
         "expected LetAnnotationTypeMismatch for 'let j : Int = 5kg' (Int ≠ Scalar[kg]); \
          got: {:?}",
-        errors.iter().map(|d| (&d.message, &d.code)).collect::<Vec<_>>()
+        errors
+            .iter()
+            .map(|d| (&d.message, &d.code))
+            .collect::<Vec<_>>()
     );
 }
 
@@ -290,7 +299,10 @@ structure S {
         mismatch.is_some(),
         "expected LetAnnotationTypeMismatch for 'let a : Length = true' \
          (scalar declared, Bool RHS); got: {:?}",
-        errors.iter().map(|d| (&d.message, &d.code)).collect::<Vec<_>>()
+        errors
+            .iter()
+            .map(|d| (&d.message, &d.code))
+            .collect::<Vec<_>>()
     );
 }
 
@@ -314,7 +326,10 @@ structure S {
     assert!(
         errors.len() == 1,
         "expected exactly one error for 'let a : Length = []'; got: {:?}",
-        errors.iter().map(|d| (&d.message, &d.code)).collect::<Vec<_>>()
+        errors
+            .iter()
+            .map(|d| (&d.message, &d.code))
+            .collect::<Vec<_>>()
     );
 
     // That error must be CollectionLiteralKindMismatch (β's code), NOT LetAnnotationTypeMismatch.
@@ -420,7 +435,10 @@ structure S {
         mismatch_diag.is_some(),
         "expected a LetAnnotationTypeMismatch error for port-member 'let d : Length = 5kg'; \
          got: {:?}",
-        errors.iter().map(|d| (&d.message, &d.code)).collect::<Vec<_>>()
+        errors
+            .iter()
+            .map(|d| (&d.message, &d.code))
+            .collect::<Vec<_>>()
     );
 
     let diag = mismatch_diag.unwrap();

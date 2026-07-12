@@ -72,7 +72,11 @@ fn find_trait(name: &str) -> &'static reify_compiler::CompiledTrait {
             panic!(
                 "expected `trait {}` in std/kinematic, got: {:?}",
                 name,
-                module.trait_defs.iter().map(|t| &t.name).collect::<Vec<_>>()
+                module
+                    .trait_defs
+                    .iter()
+                    .map(|t| &t.name)
+                    .collect::<Vec<_>>()
             )
         })
 }
@@ -109,8 +113,16 @@ fn driving_joint_is_empty_marker_trait() {
         "DrivingJoint trait should be an empty marker (body intentionally \
          empty; joints stay Value::Map per PRD §7.1 — esc-3845-91), \
          got requirements: {:?}, defaults: {:?}",
-        trait_def.required_members.iter().map(|r| &r.name).collect::<Vec<_>>(),
-        trait_def.defaults.iter().map(|d| &d.name).collect::<Vec<_>>(),
+        trait_def
+            .required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>(),
+        trait_def
+            .defaults
+            .iter()
+            .map(|d| &d.name)
+            .collect::<Vec<_>>(),
     );
 }
 
@@ -125,8 +137,16 @@ fn joint_is_empty_marker_trait() {
         trait_def.required_members.is_empty() && trait_def.defaults.is_empty(),
         "Joint trait should be an empty marker (root joint hierarchy tag; no \
          members required), got requirements: {:?}, defaults: {:?}",
-        trait_def.required_members.iter().map(|r| &r.name).collect::<Vec<_>>(),
-        trait_def.defaults.iter().map(|d| &d.name).collect::<Vec<_>>(),
+        trait_def
+            .required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>(),
+        trait_def
+            .defaults
+            .iter()
+            .map(|d| &d.name)
+            .collect::<Vec<_>>(),
     );
 }
 
@@ -210,7 +230,9 @@ fn cylindrical_has_one_vec3_axis_param() {
     );
     assert_eq!(
         params[0].cell_type,
-        Type::vec3(Type::Scalar { dimension: DimensionVector::LENGTH }),
+        Type::vec3(Type::Scalar {
+            dimension: DimensionVector::LENGTH
+        }),
         "Cylindrical.axis should be Type::vec3(Length) (Vec3 = Vector3<Length>, task #4575)"
     );
 }
@@ -234,7 +256,9 @@ fn revolute_has_four_params_with_correct_types() {
     // axis: Vec3 = Vector3<Length> (tightened by task #4575)
     assert_eq!(
         params[0].cell_type,
-        Type::vec3(Type::Scalar { dimension: DimensionVector::LENGTH }),
+        Type::vec3(Type::Scalar {
+            dimension: DimensionVector::LENGTH
+        }),
         "Revolute.axis should be Type::vec3(Length) (Vec3 = Vector3<Length>, task #4575)"
     );
 
@@ -296,7 +320,9 @@ fn prismatic_has_four_params_with_correct_types() {
     // axis: Vec3 = Vector3<Length> (tightened by task #4575)
     assert_eq!(
         params[0].cell_type,
-        Type::vec3(Type::Scalar { dimension: DimensionVector::LENGTH }),
+        Type::vec3(Type::Scalar {
+            dimension: DimensionVector::LENGTH
+        }),
         "Prismatic.axis should be Type::vec3(Length) (Vec3 = Vector3<Length>, task #4575)"
     );
 
@@ -354,7 +380,9 @@ fn planar_has_two_vec3_axis_params() {
     for p in &params {
         assert_eq!(
             p.cell_type,
-            Type::vec3(Type::Scalar { dimension: DimensionVector::LENGTH }),
+            Type::vec3(Type::Scalar {
+                dimension: DimensionVector::LENGTH
+            }),
             "Planar.{} should be Type::vec3(Length) (Vec3 = Vector3<Length>, task #4575)",
             p.id.member
         );
@@ -413,7 +441,10 @@ fn mechanism_has_three_params_with_tightened_collection_types() {
     );
 
     // joint_parents: tightened to Map<BodyId, JointParent> by task 4579 (M).
-    let jp = params.iter().find(|p| p.id.member == "joint_parents").unwrap();
+    let jp = params
+        .iter()
+        .find(|p| p.id.member == "joint_parents")
+        .unwrap();
     assert_eq!(
         jp.cell_type,
         Type::Map(
@@ -426,7 +457,10 @@ fn mechanism_has_three_params_with_tightened_collection_types() {
     );
 
     // loop_closures: tightened to List<LoopClosure> by task 4579 (M).
-    let lc = params.iter().find(|p| p.id.member == "loop_closures").unwrap();
+    let lc = params
+        .iter()
+        .find(|p| p.id.member == "loop_closures")
+        .unwrap();
     assert_eq!(
         lc.cell_type,
         Type::List(Box::new(Type::StructureRef("LoopClosure".to_string()))),
@@ -608,7 +642,10 @@ fn snapshot_has_correct_params() {
         "Snapshot should have exactly (free_values, is_singular) in that order"
     );
 
-    let fv = params.iter().find(|p| p.id.member == "free_values").unwrap();
+    let fv = params
+        .iter()
+        .find(|p| p.id.member == "free_values")
+        .unwrap();
     assert_eq!(
         fv.cell_type,
         Type::List(Box::new(Type::dimensionless_scalar())),
@@ -616,7 +653,10 @@ fn snapshot_has_correct_params() {
          (JointValue = Real alias, trajectory.ri:76)"
     );
 
-    let is_sing = params.iter().find(|p| p.id.member == "is_singular").unwrap();
+    let is_sing = params
+        .iter()
+        .find(|p| p.id.member == "is_singular")
+        .unwrap();
     assert_eq!(
         is_sing.cell_type,
         Type::Bool,
@@ -796,7 +836,11 @@ fn has_motion_trait_declares_required_assoc_type_motion_value() {
         trait_def.required_members.len(),
         1,
         "HasMotion must declare exactly 1 required member; got: {:?}",
-        trait_def.required_members.iter().map(|r| &r.name).collect::<Vec<_>>()
+        trait_def
+            .required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>()
     );
 
     let req = &trait_def.required_members[0];
@@ -816,7 +860,11 @@ fn has_motion_trait_declares_required_assoc_type_motion_value() {
     assert!(
         trait_def.defaults.is_empty(),
         "HasMotion must have no defaults; got: {:?}",
-        trait_def.defaults.iter().map(|d| &d.name).collect::<Vec<_>>()
+        trait_def
+            .defaults
+            .iter()
+            .map(|d| &d.name)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -910,7 +958,11 @@ fn coupling_is_generic_with_driving_joint_and_has_motion_bound() {
         template.type_params.len(),
         1,
         "Coupling must have exactly 1 type parameter; got: {:?}",
-        template.type_params.iter().map(|tp| &tp.name).collect::<Vec<_>>()
+        template
+            .type_params
+            .iter()
+            .map(|tp| &tp.name)
+            .collect::<Vec<_>>()
     );
     let p_param = &template.type_params[0];
     assert_eq!(

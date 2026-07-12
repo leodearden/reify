@@ -364,17 +364,14 @@ fn widget_value_cell<'a>(module: &'a CompiledModule, member: &str) -> &'a Compil
 /// Find the arm of a compiled `Match` expression whose pattern tag name is
 /// `tag` (e.g. `"Ok"` / `"Err"`) and return it. Panics if `expr` is not a
 /// `CompiledExprKind::Match` or no arm carries that tag.
-fn find_arm_by_tag<'a>(
-    expr: &'a CompiledExpr,
-    tag: &str,
-) -> &'a reify_ir::CompiledMatchArm {
+fn find_arm_by_tag<'a>(expr: &'a CompiledExpr, tag: &str) -> &'a reify_ir::CompiledMatchArm {
     match &expr.kind {
         CompiledExprKind::Match { arms, .. } => arms
             .iter()
             .find(|arm| {
-                arm.patterns
-                    .iter()
-                    .any(|p| p.tag_name() == Some(tag) && matches!(p, CompiledPattern::VariantBind { .. }))
+                arm.patterns.iter().any(|p| {
+                    p.tag_name() == Some(tag) && matches!(p, CompiledPattern::VariantBind { .. })
+                })
             })
             .unwrap_or_else(|| {
                 panic!(

@@ -77,9 +77,14 @@ trait MockPort {
     let errors = errors_only(&module);
 
     assert!(
-        errors.iter().any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
+        errors
+            .iter()
+            .any(|d| d.code == Some(DiagnosticCode::UnresolvedType)),
         "expected an UnresolvedType error for unresolved port-param type 'Bogus'; got: {:?}",
-        errors.iter().map(|d| (&d.message, &d.code)).collect::<Vec<_>>()
+        errors
+            .iter()
+            .map(|d| (&d.message, &d.code))
+            .collect::<Vec<_>>()
     );
 
     let mismatch = errors
@@ -90,7 +95,10 @@ trait MockPort {
         "expected NO ParamDefaultTypeMismatch for port-param 'x : Bogus = 5kg' \
          (anti-cascade: unknown-name -> Type::Error -> guard fires -> mismatch suppressed); \
          got unexpected secondary mismatch: {:?}",
-        errors.iter().map(|d| (&d.message, &d.code)).collect::<Vec<_>>()
+        errors
+            .iter()
+            .map(|d| (&d.message, &d.code))
+            .collect::<Vec<_>>()
     );
 }
 

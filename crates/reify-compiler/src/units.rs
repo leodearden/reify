@@ -1,5 +1,5 @@
-use reify_core::field_calculus::{DifferentialOp, differential_codomain};
 use super::*;
+use reify_core::field_calculus::{DifferentialOp, differential_codomain};
 
 /// The complete set of stdlib geometry constructor names recognised by the
 /// compiler. This is the **source of truth** for both [`is_geometry_function`]
@@ -707,9 +707,9 @@ pub(crate) fn affine_map_algebra_result_type(
 ) -> Option<reify_core::Type> {
     match name {
         "affine_compose" => Some(reify_core::Type::AffineMap(3)),
-        "affine_inverse" => {
-            Some(reify_core::Type::Option(Box::new(reify_core::Type::AffineMap(3))))
-        }
+        "affine_inverse" => Some(reify_core::Type::Option(Box::new(
+            reify_core::Type::AffineMap(3),
+        ))),
         "determinant" => {
             // Only override when the first arg is an AffineMap; otherwise fall
             // through to the existing matrix-determinant first-arg fallback.
@@ -1079,7 +1079,11 @@ pub(crate) fn field_op_result_type(
     match name {
         // fn_field(f: Function{params, return_type}) → Field<params[0], return_type>
         "fn_field" => {
-            if let Some(Type::Function { params, return_type }) = arg_types.first() {
+            if let Some(Type::Function {
+                params,
+                return_type,
+            }) = arg_types.first()
+            {
                 let domain = params.first()?.clone();
                 Some(Type::Field {
                     domain: Box::new(domain),
@@ -1134,8 +1138,14 @@ pub(crate) fn field_op_result_type(
                 return None;
             }
             if let (
-                Type::Field { domain: b0, codomain: c },
-                Type::Field { domain: a, codomain: b1 },
+                Type::Field {
+                    domain: b0,
+                    codomain: c,
+                },
+                Type::Field {
+                    domain: a,
+                    codomain: b1,
+                },
             ) = (&arg_types[0], &arg_types[1])
             {
                 // Middle type B must be consistent: arg[0].domain == arg[1].codomain.
@@ -1165,11 +1175,12 @@ pub(crate) fn field_op_result_type(
         // nD (Point{n, scalar} D): result_codomain = Vector{n, gradient_quantity}
         "gradient" => {
             if let Some(Type::Field { domain, codomain }) = arg_types.first() {
-                differential_codomain(DifferentialOp::Gradient, domain, codomain)
-                    .map(|cod| Type::Field {
+                differential_codomain(DifferentialOp::Gradient, domain, codomain).map(|cod| {
+                    Type::Field {
                         domain: domain.clone(),
                         codomain: Box::new(cod),
-                    })
+                    }
+                })
             } else {
                 None
             }
@@ -1178,11 +1189,12 @@ pub(crate) fn field_op_result_type(
         // divergence(Field<Point{n,scalar}, Vector{n,scalar}>) → Field<D, scalar_codomain>
         "divergence" => {
             if let Some(Type::Field { domain, codomain }) = arg_types.first() {
-                differential_codomain(DifferentialOp::Divergence, domain, codomain)
-                    .map(|cod| Type::Field {
+                differential_codomain(DifferentialOp::Divergence, domain, codomain).map(|cod| {
+                    Type::Field {
                         domain: domain.clone(),
                         codomain: Box::new(cod),
-                    })
+                    }
+                })
             } else {
                 None
             }
@@ -1191,11 +1203,12 @@ pub(crate) fn field_op_result_type(
         // curl(Field<Point{3,scalar}, Vector{3,scalar}>) → Field<D, Vector{3,result}>
         "curl" => {
             if let Some(Type::Field { domain, codomain }) = arg_types.first() {
-                differential_codomain(DifferentialOp::Curl, domain, codomain)
-                    .map(|cod| Type::Field {
+                differential_codomain(DifferentialOp::Curl, domain, codomain).map(|cod| {
+                    Type::Field {
                         domain: domain.clone(),
                         codomain: Box::new(cod),
-                    })
+                    }
+                })
             } else {
                 None
             }
@@ -1204,11 +1217,12 @@ pub(crate) fn field_op_result_type(
         // laplacian(Field<D, scalar_codomain>) → Field<D, scalar_codomain/domain²>
         "laplacian" => {
             if let Some(Type::Field { domain, codomain }) = arg_types.first() {
-                differential_codomain(DifferentialOp::Laplacian, domain, codomain)
-                    .map(|cod| Type::Field {
+                differential_codomain(DifferentialOp::Laplacian, domain, codomain).map(|cod| {
+                    Type::Field {
                         domain: domain.clone(),
                         codomain: Box::new(cod),
-                    })
+                    }
+                })
             } else {
                 None
             }
@@ -1313,8 +1327,12 @@ pub(crate) fn geometry_query_result_type(name: &str) -> Option<reify_core::Type>
 /// selectors are legitimately absent). Structurally enforced by the
 /// `face_producing_selector_names_is_subset_of_geometry_topology_selector_names`
 /// test.
-const FACE_PRODUCING_SELECTOR_NAMES: &[&str] =
-    &["faces", "faces_by_area", "faces_by_normal", "adjacent_faces"];
+const FACE_PRODUCING_SELECTOR_NAMES: &[&str] = &[
+    "faces",
+    "faces_by_area",
+    "faces_by_normal",
+    "adjacent_faces",
+];
 
 /// Returns `true` iff `arg.kind` is an `IndexAccess` whose `object` resolves to
 /// a `FunctionCall` whose `function.name` is in [`FACE_PRODUCING_SELECTOR_NAMES`].
@@ -1546,11 +1564,10 @@ pub enum UnitResolveError {
 /// the call site, which covers the entire quantity literal source region.
 pub(crate) fn unit_resolve_error_to_diagnostic(err: &UnitResolveError) -> Diagnostic {
     match err {
-        UnitResolveError::UnknownUnit { name, span } => Diagnostic::error(format!(
-            "unknown unit: {}",
-            name
-        ))
-        .with_label(DiagnosticLabel::new(*span, "unrecognized unit")),
+        UnitResolveError::UnknownUnit { name, span } => {
+            Diagnostic::error(format!("unknown unit: {}", name))
+                .with_label(DiagnosticLabel::new(*span, "unrecognized unit"))
+        }
 
         UnitResolveError::AffineUnitInCompound { name, span } => Diagnostic::error(format!(
             "affine (offset) unit '{}' cannot be used in a compound unit expression",
@@ -1558,11 +1575,10 @@ pub(crate) fn unit_resolve_error_to_diagnostic(err: &UnitResolveError) -> Diagno
         ))
         .with_label(DiagnosticLabel::new(*span, "affine unit in compound")),
 
-        UnitResolveError::ExponentOutOfRange { exponent, span } => Diagnostic::error(format!(
-            "unit exponent {} out of range",
-            exponent
-        ))
-        .with_label(DiagnosticLabel::new(*span, "exponent out of range")),
+        UnitResolveError::ExponentOutOfRange { exponent, span } => {
+            Diagnostic::error(format!("unit exponent {} out of range", exponent))
+                .with_label(DiagnosticLabel::new(*span, "exponent out of range"))
+        }
     }
 }
 
@@ -2814,13 +2830,12 @@ mod tests {
         use reify_core::{DimensionVector, SourceSpan};
         let reg = make_resolver_registry();
         let use_span = SourceSpan::new(10, 11);
-        let result = resolve_unit_expr(
-            &reify_ast::UnitExpr::Unit("m".to_string()),
-            &reg,
-            use_span,
-        );
+        let result = resolve_unit_expr(&reify_ast::UnitExpr::Unit("m".to_string()), &reg, use_span);
         let (factor, dim) = result.expect("m must resolve successfully");
-        assert!((factor - 1.0).abs() < 1e-9, "m: factor must ≈ 1.0, got {factor}");
+        assert!(
+            (factor - 1.0).abs() < 1e-9,
+            "m: factor must ≈ 1.0, got {factor}"
+        );
         assert_eq!(dim, DimensionVector::LENGTH, "m: dimension must be LENGTH");
     }
 
@@ -2829,13 +2844,13 @@ mod tests {
         use reify_core::{DimensionVector, SourceSpan};
         let reg = make_resolver_registry();
         let use_span = SourceSpan::new(10, 12);
-        let result = resolve_unit_expr(
-            &reify_ast::UnitExpr::Unit("kN".to_string()),
-            &reg,
-            use_span,
-        );
+        let result =
+            resolve_unit_expr(&reify_ast::UnitExpr::Unit("kN".to_string()), &reg, use_span);
         let (factor, dim) = result.expect("kN must resolve successfully");
-        assert!((factor - 1000.0).abs() < 1e-9, "kN: factor must ≈ 1000.0, got {factor}");
+        assert!(
+            (factor - 1000.0).abs() < 1e-9,
+            "kN: factor must ≈ 1000.0, got {factor}"
+        );
         assert_eq!(dim, DimensionVector::FORCE, "kN: dimension must be FORCE");
     }
 
@@ -2872,8 +2887,8 @@ mod tests {
             Box::new(reify_ast::UnitExpr::Unit("kN".to_string())),
             Box::new(reify_ast::UnitExpr::Unit("m".to_string())),
         );
-        let (factor, dim) = resolve_unit_expr(&expr, &reg, use_span)
-            .expect("kN*m must resolve successfully");
+        let (factor, dim) =
+            resolve_unit_expr(&expr, &reg, use_span).expect("kN*m must resolve successfully");
         assert!(
             (factor - 1000.0).abs() < 1e-9,
             "kN*m: factor must ≈ 1000.0 (1000.0 * 1.0), got {factor}"
@@ -2898,8 +2913,8 @@ mod tests {
             )),
             Box::new(reify_ast::UnitExpr::Unit("s".to_string())),
         );
-        let (factor, dim) = resolve_unit_expr(&expr, &reg, use_span)
-            .expect("kg/m/s must resolve successfully");
+        let (factor, dim) =
+            resolve_unit_expr(&expr, &reg, use_span).expect("kg/m/s must resolve successfully");
         // All SI base units → factor = 1.0/1.0/1.0 = 1.0
         assert!(
             (factor - 1.0).abs() < 1e-9,
@@ -2922,8 +2937,8 @@ mod tests {
             Box::new(reify_ast::UnitExpr::Unit("kN".to_string())),
             Box::new(reify_ast::UnitExpr::Unit("m".to_string())),
         );
-        let (factor, dim) = resolve_unit_expr(&expr, &reg, use_span)
-            .expect("kN/m must resolve successfully");
+        let (factor, dim) =
+            resolve_unit_expr(&expr, &reg, use_span).expect("kN/m must resolve successfully");
         // 1000.0 / 1.0 = 1000.0
         assert!(
             (factor - 1000.0).abs() < 1e-9,
@@ -2941,12 +2956,10 @@ mod tests {
         let reg = make_resolver_registry();
         let use_span = SourceSpan::new(60, 64);
         // mm^2 = Pow(Unit("mm"), 2)
-        let expr = reify_ast::UnitExpr::Pow(
-            Box::new(reify_ast::UnitExpr::Unit("mm".to_string())),
-            2,
-        );
-        let (factor, dim) = resolve_unit_expr(&expr, &reg, use_span)
-            .expect("mm^2 must resolve successfully");
+        let expr =
+            reify_ast::UnitExpr::Pow(Box::new(reify_ast::UnitExpr::Unit("mm".to_string())), 2);
+        let (factor, dim) =
+            resolve_unit_expr(&expr, &reg, use_span).expect("mm^2 must resolve successfully");
         // 0.001.powi(2) = 1e-6
         assert!(
             (factor - 1e-6).abs() < 1e-15,
@@ -2961,12 +2974,10 @@ mod tests {
         let reg = make_resolver_registry();
         let use_span = SourceSpan::new(70, 74);
         // s^-2 = Pow(Unit("s"), -2)
-        let expr = reify_ast::UnitExpr::Pow(
-            Box::new(reify_ast::UnitExpr::Unit("s".to_string())),
-            -2,
-        );
-        let (factor, dim) = resolve_unit_expr(&expr, &reg, use_span)
-            .expect("s^-2 must resolve successfully");
+        let expr =
+            reify_ast::UnitExpr::Pow(Box::new(reify_ast::UnitExpr::Unit("s".to_string())), -2);
+        let (factor, dim) =
+            resolve_unit_expr(&expr, &reg, use_span).expect("s^-2 must resolve successfully");
         assert!(
             (factor - 1.0).abs() < 1e-9,
             "s^-2: factor must ≈ 1.0 (1.0^-2), got {factor}"
@@ -2981,12 +2992,10 @@ mod tests {
         let reg = make_resolver_registry();
         let use_span = SourceSpan::new(80, 83);
         // m^0 = Pow(Unit("m"), 0)
-        let expr = reify_ast::UnitExpr::Pow(
-            Box::new(reify_ast::UnitExpr::Unit("m".to_string())),
-            0,
-        );
-        let (factor, dim) = resolve_unit_expr(&expr, &reg, use_span)
-            .expect("m^0 must resolve successfully");
+        let expr =
+            reify_ast::UnitExpr::Pow(Box::new(reify_ast::UnitExpr::Unit("m".to_string())), 0);
+        let (factor, dim) =
+            resolve_unit_expr(&expr, &reg, use_span).expect("m^0 must resolve successfully");
         assert!(
             (factor - 1.0).abs() < 1e-9,
             "m^0: factor must ≈ 1.0 (1.0^0), got {factor}"
@@ -3011,8 +3020,8 @@ mod tests {
                 3,
             )),
         );
-        let (factor, dim) = resolve_unit_expr(&expr, &reg, use_span)
-            .expect("kg/m^3 must resolve successfully");
+        let (factor, dim) =
+            resolve_unit_expr(&expr, &reg, use_span).expect("kg/m^3 must resolve successfully");
         // factor = 1.0 / 1.0^3 = 1.0
         assert!(
             (factor - 1.0).abs() < 1e-9,
@@ -3055,8 +3064,7 @@ mod tests {
             Box::new(reify_ast::UnitExpr::Unit("degC".to_string())),
             Box::new(reify_ast::UnitExpr::Unit("m".to_string())),
         );
-        let err = resolve_unit_expr(&expr, &reg, use_span)
-            .expect_err("degC/m must be rejected");
+        let err = resolve_unit_expr(&expr, &reg, use_span).expect_err("degC/m must be rejected");
         assert_eq!(
             err,
             UnitResolveError::AffineUnitInCompound {
@@ -3123,7 +3131,10 @@ mod tests {
                 .unwrap_or_else(|| panic!("bare SI base unit {unit} must resolve"));
             assert_eq!(dim, expected, "{unit}: returned DimensionVector mismatch");
             match val {
-                Value::Scalar { si_value, dimension } => {
+                Value::Scalar {
+                    si_value,
+                    dimension,
+                } => {
                     assert!(
                         (si_value - 2.0).abs() < 1e-12,
                         "{unit}: si_value must ≈ 2.0 (factor 1.0), got {si_value}"
@@ -3224,7 +3235,10 @@ mod tests {
     #[test]
     fn tolerancing_marker_names_are_disjoint_from_other_families() {
         for &name in TOLERANCING_MARKER_NAMES {
-            assert!(!is_geometry_function(name), "{name} in GEOMETRY_FUNCTION_NAMES");
+            assert!(
+                !is_geometry_function(name),
+                "{name} in GEOMETRY_FUNCTION_NAMES"
+            );
             assert!(!is_geometry_query(name), "{name} in GEOMETRY_QUERY_NAMES");
             assert!(
                 !is_geometry_query_helper(name),
@@ -3264,10 +3278,7 @@ mod tests {
         );
         // First arg type does not change the result for affine_compose.
         assert_eq!(
-            affine_map_algebra_result_type(
-                "affine_compose",
-                Some(&reify_core::Type::AffineMap(3))
-            ),
+            affine_map_algebra_result_type("affine_compose", Some(&reify_core::Type::AffineMap(3))),
             Some(reify_core::Type::AffineMap(3))
         );
     }
@@ -3276,24 +3287,22 @@ mod tests {
     fn algebra_affine_inverse_returns_option_affine_map_3() {
         assert_eq!(
             affine_map_algebra_result_type("affine_inverse", None),
-            Some(reify_core::Type::Option(Box::new(reify_core::Type::AffineMap(3))))
+            Some(reify_core::Type::Option(Box::new(
+                reify_core::Type::AffineMap(3)
+            )))
         );
         assert_eq!(
-            affine_map_algebra_result_type(
-                "affine_inverse",
-                Some(&reify_core::Type::AffineMap(3))
-            ),
-            Some(reify_core::Type::Option(Box::new(reify_core::Type::AffineMap(3))))
+            affine_map_algebra_result_type("affine_inverse", Some(&reify_core::Type::AffineMap(3))),
+            Some(reify_core::Type::Option(Box::new(
+                reify_core::Type::AffineMap(3)
+            )))
         );
     }
 
     #[test]
     fn algebra_determinant_with_affine_map_arg_returns_real() {
         assert_eq!(
-            affine_map_algebra_result_type(
-                "determinant",
-                Some(&reify_core::Type::AffineMap(3))
-            ),
+            affine_map_algebra_result_type("determinant", Some(&reify_core::Type::AffineMap(3))),
             Some(reify_core::Type::dimensionless_scalar())
         );
     }
@@ -3302,12 +3311,12 @@ mod tests {
     fn algebra_determinant_with_non_affine_arg_returns_none() {
         // When first arg is not AffineMap, fall through to the existing
         // matrix-determinant first-arg behaviour (return None here).
+        assert_eq!(affine_map_algebra_result_type("determinant", None), None);
         assert_eq!(
-            affine_map_algebra_result_type("determinant", None),
-            None
-        );
-        assert_eq!(
-            affine_map_algebra_result_type("determinant", Some(&reify_core::Type::dimensionless_scalar())),
+            affine_map_algebra_result_type(
+                "determinant",
+                Some(&reify_core::Type::dimensionless_scalar())
+            ),
             None
         );
     }
@@ -3443,8 +3452,8 @@ mod tests {
     /// RED until step-10 adds the arm.
     #[test]
     fn topology_selector_result_type_vertices_is_vertex_selector() {
-        use reify_core::ty::SelectorKind;
         use reify_core::Type;
+        use reify_core::ty::SelectorKind;
         assert_eq!(
             topology_selector_result_type("vertices"),
             Some(Type::Selector(SelectorKind::Vertex)),
@@ -3458,15 +3467,14 @@ mod tests {
     /// RED until step-10 adds the arm.
     #[test]
     fn topology_selector_result_type_vertex_is_vertex_selector() {
-        use reify_core::ty::SelectorKind;
         use reify_core::Type;
+        use reify_core::ty::SelectorKind;
         assert_eq!(
             topology_selector_result_type("vertex"),
             Some(Type::Selector(SelectorKind::Vertex)),
             "topology_selector_result_type(\"vertex\") must be Some(Selector(Vertex))"
         );
     }
-
 
     // --- Named-leaf constructors (task 4119 δ, step-8 GREEN) -----------------
     //
@@ -3485,15 +3493,21 @@ mod tests {
     fn topology_selector_result_type_named_ctors() {
         assert_eq!(
             topology_selector_result_type("face"),
-            Some(reify_core::Type::Selector(reify_core::ty::SelectorKind::Face))
+            Some(reify_core::Type::Selector(
+                reify_core::ty::SelectorKind::Face
+            ))
         );
         assert_eq!(
             topology_selector_result_type("edge"),
-            Some(reify_core::Type::Selector(reify_core::ty::SelectorKind::Edge))
+            Some(reify_core::Type::Selector(
+                reify_core::ty::SelectorKind::Edge
+            ))
         );
         assert_eq!(
             topology_selector_result_type("solid_body"),
-            Some(reify_core::Type::Selector(reify_core::ty::SelectorKind::Body))
+            Some(reify_core::Type::Selector(
+                reify_core::ty::SelectorKind::Body
+            ))
         );
     }
 
@@ -3513,7 +3527,9 @@ mod tests {
         assert!(is_geometry_topology_selector("mid_surface"));
         assert_eq!(
             topology_selector_result_type("mid_surface"),
-            Some(reify_core::Type::Selector(reify_core::ty::SelectorKind::Face))
+            Some(reify_core::Type::Selector(
+                reify_core::ty::SelectorKind::Face
+            ))
         );
     }
 
@@ -3561,8 +3577,8 @@ mod tests {
 
     #[test]
     fn topology_selector_result_type_v2_face_leaf_ctors_are_face_selector() {
-        use reify_core::ty::SelectorKind;
         use reify_core::Type;
+        use reify_core::ty::SelectorKind;
         for name in [
             "faces_perpendicular_to",
             "faces_by_surface_kind",
@@ -3579,8 +3595,8 @@ mod tests {
 
     #[test]
     fn topology_selector_result_type_v2_edge_leaf_ctors_are_edge_selector() {
-        use reify_core::ty::SelectorKind;
         use reify_core::Type;
+        use reify_core::ty::SelectorKind;
         for name in ["edges_perpendicular_to", "edges_by_curve_kind"] {
             assert_eq!(
                 topology_selector_result_type(name),
@@ -3894,9 +3910,7 @@ mod tests {
     /// NEW shape produced after task 4118 step-12 inserts the coercion node
     /// between the `IndexAccess` object and the selector `FunctionCall`:
     /// `IndexAccess{ object: ResolveSelector{ FunctionCall }, .. }`.
-    fn index_0_resolve_selector(
-        selector_call: reify_ir::CompiledExpr,
-    ) -> reify_ir::CompiledExpr {
+    fn index_0_resolve_selector(selector_call: reify_ir::CompiledExpr) -> reify_ir::CompiledExpr {
         index_0(reify_ir::CompiledExpr::resolve_selector(selector_call))
     }
 
@@ -4090,11 +4104,23 @@ mod tests {
             );
         }
         // Unrelated names must not be recognised.
-        assert!(!is_fea_envelope_query("von_mises"), "must not claim analysis-reduction von_mises");
-        assert!(!is_fea_envelope_query("envelope"), "must not claim unregistered bare 'envelope'");
-        assert!(!is_fea_envelope_query("sample"), "must not claim field-op 'sample'");
+        assert!(
+            !is_fea_envelope_query("von_mises"),
+            "must not claim analysis-reduction von_mises"
+        );
+        assert!(
+            !is_fea_envelope_query("envelope"),
+            "must not claim unregistered bare 'envelope'"
+        );
+        assert!(
+            !is_fea_envelope_query("sample"),
+            "must not claim field-op 'sample'"
+        );
         assert!(!is_fea_envelope_query(""), "must reject empty name");
-        assert!(!is_fea_envelope_query("Envelope_von_mises"), "must be case-sensitive");
+        assert!(
+            !is_fea_envelope_query("Envelope_von_mises"),
+            "must be case-sensitive"
+        );
     }
 
     /// `fea_envelope_result_type` returns the correct `Field<Point3<Length>, …>` type
@@ -4105,7 +4131,9 @@ mod tests {
 
         let point3_length = Type::Point {
             n: 3,
-            quantity: Box::new(Type::Scalar { dimension: DimensionVector::LENGTH }),
+            quantity: Box::new(Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            }),
         };
 
         // envelope_von_mises → Field<Point3<Length>, Scalar<PRESSURE>>
@@ -4113,7 +4141,9 @@ mod tests {
             fea_envelope_result_type("envelope_von_mises"),
             Some(Type::Field {
                 domain: Box::new(point3_length.clone()),
-                codomain: Box::new(Type::Scalar { dimension: DimensionVector::PRESSURE }),
+                codomain: Box::new(Type::Scalar {
+                    dimension: DimensionVector::PRESSURE
+                }),
             }),
             "envelope_von_mises must type as Field<Point3<Length>, Scalar<PRESSURE>>"
         );
@@ -4123,7 +4153,9 @@ mod tests {
             fea_envelope_result_type("envelope_max_principal"),
             Some(Type::Field {
                 domain: Box::new(point3_length.clone()),
-                codomain: Box::new(Type::Scalar { dimension: DimensionVector::PRESSURE }),
+                codomain: Box::new(Type::Scalar {
+                    dimension: DimensionVector::PRESSURE
+                }),
             }),
             "envelope_max_principal must type as Field<Point3<Length>, Scalar<PRESSURE>>"
         );
@@ -4133,7 +4165,9 @@ mod tests {
             fea_envelope_result_type("envelope_displacement_magnitude"),
             Some(Type::Field {
                 domain: Box::new(point3_length),
-                codomain: Box::new(Type::Scalar { dimension: DimensionVector::LENGTH }),
+                codomain: Box::new(Type::Scalar {
+                    dimension: DimensionVector::LENGTH
+                }),
             }),
             "envelope_displacement_magnitude must type as Field<Point3<Length>, Scalar<LENGTH>>"
         );
@@ -4239,8 +4273,14 @@ mod tests {
             );
         }
         // Unrelated names must not be recognised.
-        assert!(!is_field_op("box"), "must reject geometry constructor 'box'");
-        assert!(!is_field_op("volume"), "must reject geometry query 'volume'");
+        assert!(
+            !is_field_op("box"),
+            "must reject geometry constructor 'box'"
+        );
+        assert!(
+            !is_field_op("volume"),
+            "must reject geometry query 'volume'"
+        );
         assert!(!is_field_op("vec"), "must reject math-linalg 'vec'");
         assert!(!is_field_op(""), "must reject empty name");
         assert!(!is_field_op("SAMPLE"), "must be case-sensitive");
@@ -4494,11 +4534,11 @@ mod tests {
         // compose(Field<B=Real, C=Scalar<Temp>>, Field<A=Point3<Length>, B=Real>)
         //   → Field<A=Point3<Length>, C=Scalar<Temp>>
         let field_b_c = Type::Field {
-            domain: Box::new(Type::dimensionless_scalar()),       // B
-            codomain: Box::new(s_temp.clone()), // C
+            domain: Box::new(Type::dimensionless_scalar()), // B
+            codomain: Box::new(s_temp.clone()),             // C
         };
         let field_a_b = Type::Field {
-            domain: Box::new(p3l.clone()), // A
+            domain: Box::new(p3l.clone()),                    // A
             codomain: Box::new(Type::dimensionless_scalar()), // B
         };
         assert_eq!(
@@ -4592,8 +4632,7 @@ mod tests {
         //   → Field<Point3<Length>, Scalar<Temperature/Length²>>
         // (domain_exponent=2 is asserted; laplacian-specific path)
         let lap_result_scalar = Type::Scalar {
-            dimension: DimensionVector::TEMPERATURE
-                .div(&DimensionVector::LENGTH.pow(2)),
+            dimension: DimensionVector::TEMPERATURE.div(&DimensionVector::LENGTH.pow(2)),
         };
         assert_eq!(
             field_op_result_type(
@@ -4737,7 +4776,10 @@ mod tests {
 
         // sample: arg[0] must be Field
         assert_eq!(
-            field_op_result_type("sample", &[Type::dimensionless_scalar(), Type::dimensionless_scalar()]),
+            field_op_result_type(
+                "sample",
+                &[Type::dimensionless_scalar(), Type::dimensionless_scalar()]
+            ),
             None,
             "sample with non-Field arg[0] must return None (falls through to first-arg fallback)"
         );
@@ -4751,14 +4793,20 @@ mod tests {
 
         // restrict: arg[0] must be Field
         assert_eq!(
-            field_op_result_type("restrict", &[Type::dimensionless_scalar(), Type::dimensionless_scalar()]),
+            field_op_result_type(
+                "restrict",
+                &[Type::dimensionless_scalar(), Type::dimensionless_scalar()]
+            ),
             None,
             "restrict with non-Field arg[0] must return None"
         );
 
         // compose: arg[0] must be Field
         assert_eq!(
-            field_op_result_type("compose", &[Type::dimensionless_scalar(), Type::dimensionless_scalar()]),
+            field_op_result_type(
+                "compose",
+                &[Type::dimensionless_scalar(), Type::dimensionless_scalar()]
+            ),
             None,
             "compose with non-Field args must return None"
         );
@@ -4785,7 +4833,7 @@ mod tests {
             };
             // arg[1]: Field<A=Point3<Length>, B_actual=Bool> — codomain Bool ≠ Real
             let arg1 = Type::Field {
-                domain: Box::new(p3l),   // A (Point3<Length>)
+                domain: Box::new(p3l),          // A (Point3<Length>)
                 codomain: Box::new(Type::Bool), // B_actual (Bool ≠ Real → mismatch)
             };
             assert_eq!(
@@ -4927,7 +4975,7 @@ mod tests {
     /// and the parallel arms to `topology_selector_result_type`.
     #[test]
     fn created_by_feature_and_split_by_feature_register_as_topology_selectors_with_face_result_type()
-    {
+     {
         use reify_core::Type;
         for name in ["created_by_feature", "split_by_feature"] {
             assert!(

@@ -3,8 +3,8 @@
 //! Tests for compiling occurrence definitions into TopologyTemplates with EntityKind::Occurrence.
 
 use reify_compiler::*;
-use reify_test_support::{compile_first_template, compile_source};
 use reify_core::*;
+use reify_test_support::{compile_first_template, compile_source};
 
 // ── step-9: compile basic occurrence ─────────────────────────────────
 

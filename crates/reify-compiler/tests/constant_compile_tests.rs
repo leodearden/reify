@@ -1,8 +1,8 @@
 //! Compiler tests for built-in mathematical constants (pi, tau, e).
 
-use reify_test_support::{compile_source, errors_only, parse_and_compile};
 use reify_core::Type;
 use reify_ir::{BinOp, CompiledExprKind, Value};
+use reify_test_support::{compile_source, errors_only, parse_and_compile};
 
 /// Helper: get the default_expr for a value cell by member name.
 fn get_cell_expr<'a>(

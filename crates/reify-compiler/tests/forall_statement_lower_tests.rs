@@ -20,9 +20,9 @@
 //!   * Chain body shape (pairwise per element).
 //!   * Non-iterable collection diagnostic.
 
-use reify_test_support::{compile_source, errors_only};
 use reify_core::ModulePath;
 use reify_ir::{BinOp, CompiledExprKind, Value};
+use reify_test_support::{compile_source, errors_only};
 
 /// Parse `source`, walk declarations to find the structure named
 /// `structure_name`, locate the first `MemberDecl::ForallConnect`, and invoke
@@ -1009,8 +1009,8 @@ structure S {
 ///     is GONE.
 #[test]
 fn forall_connect_over_undef_count_collection_sub_captures_runtime_template() {
-    use reify_compiler::CompiledForallBody;
     use reify_ast::ConnectOp;
+    use reify_compiler::CompiledForallBody;
     use reify_core::{Severity, ValueCellId};
 
     let source = r#"

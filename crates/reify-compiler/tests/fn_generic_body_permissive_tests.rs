@@ -141,6 +141,9 @@ fn generic_body_type_param_arg_multi_overload_no_spurious_conformance_error() {
         conformance_errors.is_empty(),
         "expected no conformance/bound errors for TypeParam arg with multi-overload sink, \
          got: {:?}",
-        conformance_errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+        conformance_errors
+            .iter()
+            .map(|e| &e.message)
+            .collect::<Vec<_>>()
     );
 }

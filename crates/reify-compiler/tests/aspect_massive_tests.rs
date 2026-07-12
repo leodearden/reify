@@ -118,9 +118,8 @@ fn aspect_massive_example_compiles_under_stdlib_with_zero_errors() {
         env!("CARGO_MANIFEST_DIR"),
         "/../../examples/aspect_massive.ri"
     );
-    let src = std::fs::read_to_string(EXAMPLE_PATH).expect(
-        "failed to read examples/aspect_massive.ri — check CARGO_MANIFEST_DIR resolution",
-    );
+    let src = std::fs::read_to_string(EXAMPLE_PATH)
+        .expect("failed to read examples/aspect_massive.ri — check CARGO_MANIFEST_DIR resolution");
 
     let parsed = reify_syntax::parse(&src, ModulePath::single("aspect_massive"));
     assert!(

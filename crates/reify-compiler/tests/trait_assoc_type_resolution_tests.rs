@@ -27,11 +27,7 @@ structure def Beam : HasMaterial {
 "#;
     let module = compile_source(source);
     let errors = errors_only(&module);
-    assert!(
-        errors.is_empty(),
-        "expected no errors; got: {:?}",
-        errors
-    );
+    assert!(errors.is_empty(), "expected no errors; got: {:?}", errors);
 
     let template = module
         .templates

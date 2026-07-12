@@ -2,9 +2,9 @@
 //! sheet thickness collections.
 
 use reify_compiler::stdlib_loader;
-use reify_test_support::collect_errors;
 use reify_core::{DimensionVector, ModulePath, Type};
 use reify_ir::{Value, ValueMap};
+use reify_test_support::collect_errors;
 
 /// Helper: load the stdlib and find the std.stock CompiledModule.
 fn stock_module() -> &'static reify_compiler::CompiledModule {

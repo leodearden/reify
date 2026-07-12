@@ -165,13 +165,11 @@ structure def GlassLike : Insulating {
         .filter(|r| r.satisfaction == Satisfaction::Indeterminate)
         .count();
     assert_eq!(
-        indeterminate_count,
-        1,
+        indeterminate_count, 1,
         "expected exactly 1 Indeterminate constraint (dielectric_strength > 0.0V/m) \
          for GlassLike : Insulating omitting dielectric_strength, got {}; \
          constraint_results: {:?}",
-        indeterminate_count,
-        result.constraint_results
+        indeterminate_count, result.constraint_results
     );
 
     // (d) Exactly one constraint_results entry is Satisfied (resistivity > 1e6 Ω·m).
@@ -183,13 +181,11 @@ structure def GlassLike : Insulating {
         .filter(|r| r.satisfaction == Satisfaction::Satisfied)
         .count();
     assert_eq!(
-        satisfied_count,
-        1,
+        satisfied_count, 1,
         "expected exactly 1 Satisfied constraint (resistivity > 1000000ohm*m) \
          for GlassLike : Insulating omitting dielectric_strength, got {}; \
          constraint_results: {:?}",
-        satisfied_count,
-        result.constraint_results
+        satisfied_count, result.constraint_results
     );
 }
 
@@ -226,8 +222,7 @@ structure def GlassLike : Insulating {
         .diagnostics
         .iter()
         .filter(|d| {
-            d.severity == Severity::Error
-                && d.code == Some(DiagnosticCode::ConstraintViolated)
+            d.severity == Severity::Error && d.code == Some(DiagnosticCode::ConstraintViolated)
         })
         .collect();
     assert!(

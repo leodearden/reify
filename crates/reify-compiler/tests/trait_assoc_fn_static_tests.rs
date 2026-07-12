@@ -55,7 +55,11 @@ trait Defaultable {
         found,
         "expected 'Defaultable::make_default' (0 params) in module functions; \
          functions present: {:?}",
-        compiled.functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+        compiled
+            .functions
+            .iter()
+            .map(|f| &f.name)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -82,14 +86,17 @@ trait Bad {
         compiled.diagnostics
     );
 
-    let unresolved_naming_diameter = errors.iter().any(|d| {
-        d.code == Some(DiagnosticCode::UnresolvedName) && d.message.contains("diameter")
-    });
+    let unresolved_naming_diameter = errors
+        .iter()
+        .any(|d| d.code == Some(DiagnosticCode::UnresolvedName) && d.message.contains("diameter"));
     assert!(
         unresolved_naming_diameter,
         "expected an UnresolvedName diagnostic mentioning 'diameter'; \
          errors: {:?}",
-        errors.iter().map(|d| (&d.code, &d.message)).collect::<Vec<_>>()
+        errors
+            .iter()
+            .map(|d| (&d.code, &d.message))
+            .collect::<Vec<_>>()
     );
 }
 
@@ -141,10 +148,7 @@ pub structure def Spacer {
                 "expected 'Defaultable::make_default', got '{function_name}'"
             );
         }
-        other => panic!(
-            "expected UserFunctionCall for gap, got: {:?}",
-            other
-        ),
+        other => panic!("expected UserFunctionCall for gap, got: {:?}", other),
     }
 }
 
@@ -418,9 +422,6 @@ trait LegacyApi {
         dep_warns.is_empty(),
         "expected no deprecation warnings for unused @deprecated fn signature (no call site); \
          got: {:?}",
-        dep_warns
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        dep_warns.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }

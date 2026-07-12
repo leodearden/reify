@@ -79,8 +79,7 @@ fn single_auto_use_site_produces_monomorph() {
         .find(|s| s.name == "b")
         .expect("expected sub 'b' in 'Assembly'");
     assert_eq!(
-        sub_b.structure_name,
-        "Bearing$GasketSeal",
+        sub_b.structure_name, "Bearing$GasketSeal",
         "sub 'b' must reference the monomorph 'Bearing$GasketSeal', got: {:?}",
         sub_b.structure_name
     );
@@ -123,7 +122,12 @@ fn identical_instantiations_dedupe_distinct_do_not() {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert_eq!(errors.len(), 0, "expected no error diagnostics, got: {:?}", errors);
+    assert_eq!(
+        errors.len(),
+        0,
+        "expected no error diagnostics, got: {:?}",
+        errors
+    );
 
     // EXACTLY ONE Bearing$GasketSeal template (g1, g2 deduplicate).
     let gasket_monomorphs: Vec<&str> = compiled
@@ -193,12 +197,33 @@ fn identical_instantiations_dedupe_distinct_do_not() {
         .iter()
         .find(|t| t.name == "Assembly")
         .expect("expected 'Assembly' template");
-    let sub_g1 = assembly.sub_components.iter().find(|s| s.name == "g1").expect("sub g1");
-    let sub_g2 = assembly.sub_components.iter().find(|s| s.name == "g2").expect("sub g2");
-    let sub_o  = assembly.sub_components.iter().find(|s| s.name == "o").expect("sub o");
-    assert_eq!(sub_g1.structure_name, "Bearing$GasketSeal", "g1 must reference Bearing$GasketSeal");
-    assert_eq!(sub_g2.structure_name, "Bearing$GasketSeal", "g2 must reference Bearing$GasketSeal");
-    assert_eq!(sub_o.structure_name,  "Bearing$ORingSeal",  "o must reference Bearing$ORingSeal");
+    let sub_g1 = assembly
+        .sub_components
+        .iter()
+        .find(|s| s.name == "g1")
+        .expect("sub g1");
+    let sub_g2 = assembly
+        .sub_components
+        .iter()
+        .find(|s| s.name == "g2")
+        .expect("sub g2");
+    let sub_o = assembly
+        .sub_components
+        .iter()
+        .find(|s| s.name == "o")
+        .expect("sub o");
+    assert_eq!(
+        sub_g1.structure_name, "Bearing$GasketSeal",
+        "g1 must reference Bearing$GasketSeal"
+    );
+    assert_eq!(
+        sub_g2.structure_name, "Bearing$GasketSeal",
+        "g2 must reference Bearing$GasketSeal"
+    );
+    assert_eq!(
+        sub_o.structure_name, "Bearing$ORingSeal",
+        "o must reference Bearing$ORingSeal"
+    );
 }
 
 /// Invariant 3: the mono name is a pure function of (generic, ordered candidates).
@@ -263,12 +288,24 @@ fn multi_param_monomorph_uses_position_order() {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert_eq!(errors.len(), 0, "expected no error diagnostics, got: {:?}", errors);
+    assert_eq!(
+        errors.len(),
+        0,
+        "expected no error diagnostics, got: {:?}",
+        errors
+    );
 
     assert!(
-        compiled.templates.iter().any(|t| t.name == "Pair$FooA$BarB"),
+        compiled
+            .templates
+            .iter()
+            .any(|t| t.name == "Pair$FooA$BarB"),
         "expected monomorph 'Pair$FooA$BarB' in templates, got: {:?}",
-        compiled.templates.iter().map(|t| &t.name).collect::<Vec<_>>()
+        compiled
+            .templates
+            .iter()
+            .map(|t| &t.name)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -302,7 +339,12 @@ fn monomorph_body_exprs_have_no_typeparam_result_type() {
         .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert_eq!(errors.len(), 0, "expected no error diagnostics, got: {:?}", errors);
+    assert_eq!(
+        errors.len(),
+        0,
+        "expected no error diagnostics, got: {:?}",
+        errors
+    );
 
     let monomorph = compiled
         .templates
@@ -414,7 +456,10 @@ fn resolved_subcomponent_has_no_typeparam_cell() {
 
     // The monomorph must exist.
     assert!(
-        compiled.templates.iter().any(|t| t.name == "Bearing$GasketSeal"),
+        compiled
+            .templates
+            .iter()
+            .any(|t| t.name == "Bearing$GasketSeal"),
         "expected 'Bearing$GasketSeal' in templates"
     );
 
@@ -484,7 +529,10 @@ fn resolved_subcomponent_has_no_typeparam_cell() {
     let mut non_representable: Vec<String> = Vec::new();
     for cell in &monomorph.value_cells {
         if !reify_eval::is_representable_cell_type(&cell.cell_type) {
-            non_representable.push(format!("value_cells '{}': {:?}", cell.id.member, cell.cell_type));
+            non_representable.push(format!(
+                "value_cells '{}': {:?}",
+                cell.id.member, cell.cell_type
+            ));
         }
     }
     for (gi, group) in monomorph.guarded_groups.iter().enumerate() {
@@ -539,7 +587,12 @@ fn monomorph_sub_component_type_args_are_substituted() {
         .iter()
         .filter(|d| d.severity == reify_core::Severity::Error)
         .collect();
-    assert_eq!(errors.len(), 0, "expected no error diagnostics, got: {:?}", errors);
+    assert_eq!(
+        errors.len(),
+        0,
+        "expected no error diagnostics, got: {:?}",
+        errors
+    );
 
     let outer_mono = compiled
         .templates

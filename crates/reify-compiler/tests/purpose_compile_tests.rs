@@ -2,10 +2,10 @@
 //!
 //! Tests for compiling purpose declarations into CompiledPurpose entries.
 
-use reify_ir::*;
 use reify_compiler::*;
-use reify_test_support::parse_and_compile;
 use reify_core::*;
+use reify_ir::*;
+use reify_test_support::parse_and_compile;
 
 // ── Step 9: basic purpose compilation ───────────────────────────
 
@@ -260,9 +260,7 @@ fn purpose_let_expr_contains_value_ref(expr: &CompiledExpr, id: &ValueCellId) ->
             purpose_let_expr_contains_value_ref(left, id)
                 || purpose_let_expr_contains_value_ref(right, id)
         }
-        CompiledExprKind::UnOp { operand, .. } => {
-            purpose_let_expr_contains_value_ref(operand, id)
-        }
+        CompiledExprKind::UnOp { operand, .. } => purpose_let_expr_contains_value_ref(operand, id),
         CompiledExprKind::Conditional {
             condition,
             then_branch,
@@ -320,7 +318,6 @@ fn extract_binop_scalar_sides(expr: &CompiledExpr) -> (f64, f64) {
         panic!("expected BinOp constraint expression, got {:?}", expr.kind)
     }
 }
-
 
 #[test]
 fn compile_purpose_no_false_positives_from_explicit_arms() {
@@ -1695,7 +1692,11 @@ purpose marg(subject : Structure) {
         let constraint = &purpose.constraints[0];
         match &constraint.expr.kind {
             CompiledExprKind::BinOp { op, .. } => {
-                assert_eq!(*op, BinOp::Implies, "where-arm must lower to BinOp::Implies");
+                assert_eq!(
+                    *op,
+                    BinOp::Implies,
+                    "where-arm must lower to BinOp::Implies"
+                );
             }
             other => panic!("expected BinOp::Implies, got {:?}", other),
         }
@@ -2197,7 +2198,9 @@ structure Foo {
 
     // The scope diagnostic message must contain "E_DETERMINACY_INTRINSIC_SCOPE"
     assert!(
-        scope_diags[0].message.contains("E_DETERMINACY_INTRINSIC_SCOPE"),
+        scope_diags[0]
+            .message
+            .contains("E_DETERMINACY_INTRINSIC_SCOPE"),
         "DeterminacyIntrinsicScope diagnostic must contain 'E_DETERMINACY_INTRINSIC_SCOPE' in message. \
          Got: {:?}",
         scope_diags[0].message
@@ -2209,8 +2212,7 @@ structure Foo {
         .diagnostics
         .iter()
         .filter(|d| {
-            d.message.contains("no matching overload")
-                && d.message.contains("AllParamsDetermined")
+            d.message.contains("no matching overload") && d.message.contains("AllParamsDetermined")
         })
         .collect();
     assert!(
@@ -2246,7 +2248,9 @@ structure Bar {
     );
 
     assert!(
-        scope_diags[0].message.contains("E_DETERMINACY_INTRINSIC_SCOPE"),
+        scope_diags[0]
+            .message
+            .contains("E_DETERMINACY_INTRINSIC_SCOPE"),
         "DeterminacyIntrinsicScope diagnostic must contain 'E_DETERMINACY_INTRINSIC_SCOPE'. \
          Got: {:?}",
         scope_diags[0].message

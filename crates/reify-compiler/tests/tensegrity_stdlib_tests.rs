@@ -102,8 +102,14 @@ fn std_tensegrity_module_has_eight_structures() {
         .collect();
 
     let expected = [
-        "Strut", "Cable", "Membrane", "Tensegrity", "TensegrityWire",
-        "TensegritySurface", "FormFindResult", "MembraneLoadResult",
+        "Strut",
+        "Cable",
+        "Membrane",
+        "Tensegrity",
+        "TensegrityWire",
+        "TensegritySurface",
+        "FormFindResult",
+        "MembraneLoadResult",
     ];
     assert_eq!(
         structures.len(),
@@ -150,7 +156,9 @@ fn membrane_structure_has_thickness_material_and_prestress_default() {
         .unwrap_or_else(|| panic!("Membrane missing 'thickness' param; got: {:?}", names));
     assert_eq!(
         thickness.cell_type,
-        Type::Scalar { dimension: DimensionVector::LENGTH },
+        Type::Scalar {
+            dimension: DimensionVector::LENGTH
+        },
         "Membrane.thickness should be Length (Scalar[m]), got {:?}",
         thickness.cell_type
     );
@@ -182,7 +190,9 @@ fn membrane_structure_has_thickness_material_and_prestress_default() {
         .unwrap_or_else(|| panic!("Membrane missing 'prestress' param; got: {:?}", names));
     assert_eq!(
         prestress.cell_type,
-        Type::Scalar { dimension: DimensionVector::PRESSURE },
+        Type::Scalar {
+            dimension: DimensionVector::PRESSURE
+        },
         "Membrane.prestress should be Pressure (Scalar[Pa]), got {:?}",
         prestress.cell_type
     );
@@ -216,7 +226,9 @@ fn strut_structure_has_required_section_area_and_material() {
         .unwrap_or_else(|| panic!("Strut missing 'section_area' param; got: {:?}", names));
     assert_eq!(
         section_area.cell_type,
-        Type::Scalar { dimension: DimensionVector::AREA },
+        Type::Scalar {
+            dimension: DimensionVector::AREA
+        },
         "Strut.section_area should be Area (Scalar[m²]), got {:?}",
         section_area.cell_type
     );
@@ -265,7 +277,9 @@ fn cable_structure_has_required_fields_and_pretension_default() {
         .unwrap_or_else(|| panic!("Cable missing 'section_area' param; got: {:?}", names));
     assert_eq!(
         section_area.cell_type,
-        Type::Scalar { dimension: DimensionVector::AREA },
+        Type::Scalar {
+            dimension: DimensionVector::AREA
+        },
         "Cable.section_area should be Area (Scalar[m²]), got {:?}",
         section_area.cell_type
     );
@@ -295,7 +309,9 @@ fn cable_structure_has_required_fields_and_pretension_default() {
         .unwrap_or_else(|| panic!("Cable missing 'pretension' param; got: {:?}", names));
     assert_eq!(
         pretension.cell_type,
-        Type::Scalar { dimension: DimensionVector::FORCE },
+        Type::Scalar {
+            dimension: DimensionVector::FORCE
+        },
         "Cable.pretension should be Force (Scalar[kg·m·s⁻²]), got {:?}",
         pretension.cell_type
     );
@@ -327,8 +343,13 @@ fn tensegrity_structure_has_nodes_struts_cables_surfaces_params() {
         names
     );
 
-    let length_type = Type::Scalar { dimension: DimensionVector::LENGTH };
-    let point3_length = Type::Point { n: 3, quantity: Box::new(length_type) };
+    let length_type = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let point3_length = Type::Point {
+        n: 3,
+        quantity: Box::new(length_type),
+    };
     let nodes = params
         .iter()
         .find(|vc| vc.id.member == "nodes")
@@ -383,8 +404,7 @@ fn tensegrity_structure_has_nodes_struts_cables_surfaces_params() {
         .find(|vc| vc.id.member == "surfaces")
         .unwrap_or_else(|| panic!("Tensegrity missing 'surfaces' param; got: {:?}", names));
     assert_eq!(
-        surfaces.cell_type,
-        list_list_int,
+        surfaces.cell_type, list_list_int,
         "Tensegrity.surfaces should be List<List<Int>>, got {:?}",
         surfaces.cell_type
     );
@@ -450,7 +470,10 @@ fn form_find_free_has_five_params() {
         f.params.len(),
         5,
         "expected 5 params (structure, group_ids, seed_ratios, reference_group, surface_stresses), got {:?}",
-        f.params.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>()
+        f.params
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>()
     );
 }
 
@@ -462,9 +485,15 @@ fn form_find_free_param_types_match_contract() {
     let expected: &[(&str, Type)] = &[
         ("structure", Type::StructureRef("Tensegrity".to_string())),
         ("group_ids", Type::List(Box::new(Type::Int))),
-        ("seed_ratios", Type::List(Box::new(Type::dimensionless_scalar()))),
+        (
+            "seed_ratios",
+            Type::List(Box::new(Type::dimensionless_scalar())),
+        ),
         ("reference_group", Type::Int),
-        ("surface_stresses", Type::List(Box::new(Type::dimensionless_scalar()))),
+        (
+            "surface_stresses",
+            Type::List(Box::new(Type::dimensionless_scalar())),
+        ),
     ];
 
     assert_eq!(
@@ -472,7 +501,10 @@ fn form_find_free_param_types_match_contract() {
         expected.len(),
         "form_find_free arity changed: expected {} params, got {:?}",
         expected.len(),
-        f.params.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>()
+        f.params
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>()
     );
 
     for (i, (exp_name, exp_type)) in expected.iter().enumerate() {
@@ -556,7 +588,10 @@ fn form_find_has_four_params() {
         f.params.len(),
         4,
         "expected 4 params (structure, force_densities, anchors, surface_stresses), got {:?}",
-        f.params.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>()
+        f.params
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>()
     );
 }
 
@@ -569,9 +604,15 @@ fn form_find_param_types_match_contract() {
 
     let expected: &[(&str, Type)] = &[
         ("structure", Type::StructureRef("Tensegrity".to_string())),
-        ("force_densities", Type::List(Box::new(Type::dimensionless_scalar()))),
+        (
+            "force_densities",
+            Type::List(Box::new(Type::dimensionless_scalar())),
+        ),
         ("anchors", Type::List(Box::new(Type::Int))),
-        ("surface_stresses", Type::List(Box::new(Type::dimensionless_scalar()))),
+        (
+            "surface_stresses",
+            Type::List(Box::new(Type::dimensionless_scalar())),
+        ),
     ];
 
     assert_eq!(
@@ -579,7 +620,10 @@ fn form_find_param_types_match_contract() {
         expected.len(),
         "form_find arity changed: expected {} params, got {:?}",
         expected.len(),
-        f.params.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>()
+        f.params
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>()
     );
 
     for (i, (exp_name, exp_type)) in expected.iter().enumerate() {
@@ -617,7 +661,10 @@ fn form_find_surface_stresses_param_has_default() {
         f.params.len(),
         4,
         "expected 4 params before checking defaults; got {:?}",
-        f.params.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>()
+        f.params
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>()
     );
 
     // First three params are required — no default expression.
@@ -674,7 +721,8 @@ fn form_find_result_structure_has_surface_stresses_field() {
         assert!(
             names.contains(&field),
             "FormFindResult missing pre-existing field '{}'; got: {:?}",
-            field, names
+            field,
+            names
         );
     }
 
@@ -720,7 +768,9 @@ fn tensegrity_wire_structure_has_nine_params() {
         names
     );
 
-    let length = Type::Scalar { dimension: DimensionVector::LENGTH };
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
 
     let expected: &[(&str, Type)] = &[
         ("kind", Type::String),
@@ -779,22 +829,24 @@ fn tensegrity_surface_structure_has_thirteen_params() {
         names
     );
 
-    let length = Type::Scalar { dimension: DimensionVector::LENGTH };
+    let length = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
 
     let expected: &[(&str, Type)] = &[
         ("kind", Type::String),
-        ("i0",   Type::Int),
-        ("i1",   Type::Int),
-        ("i2",   Type::Int),
-        ("x0",   length.clone()),
-        ("y0",   length.clone()),
-        ("z0",   length.clone()),
-        ("x1",   length.clone()),
-        ("y1",   length.clone()),
-        ("z1",   length.clone()),
-        ("x2",   length.clone()),
-        ("y2",   length.clone()),
-        ("z2",   length.clone()),
+        ("i0", Type::Int),
+        ("i1", Type::Int),
+        ("i2", Type::Int),
+        ("x0", length.clone()),
+        ("y0", length.clone()),
+        ("z0", length.clone()),
+        ("x1", length.clone()),
+        ("y1", length.clone()),
+        ("z1", length.clone()),
+        ("x2", length.clone()),
+        ("y2", length.clone()),
+        ("z2", length.clone()),
     ];
 
     for (member, expected_ty) in expected {

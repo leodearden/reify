@@ -4,10 +4,10 @@
 //! trait is correctly represented in the compiled module, and that trait
 //! conformance and constraint injection work as expected.
 
-use reify_ir::*;
 use reify_compiler::*;
-use reify_test_support::{compile_source_with_stdlib, errors_only};
 use reify_core::*;
+use reify_ir::*;
+use reify_test_support::{compile_source_with_stdlib, errors_only};
 
 mod common;
 
@@ -49,7 +49,9 @@ fn assert_member_dimension(trait_name: &str, member: &str, expected_dim: Dimensi
     match &req.kind {
         RequirementKind::Param(ty) => assert_eq!(
             *ty,
-            Type::Scalar { dimension: expected_dim },
+            Type::Scalar {
+                dimension: expected_dim
+            },
             "{member} should be Scalar{{{expected_dim:?}}}, got {ty:?}"
         ),
         other => panic!("{member} should be Param, got {other:?}"),
@@ -131,9 +133,10 @@ fn assert_density_positive_constraint_present(template: &TopologyTemplate) {
             // a regression where the RHS reverts to bare `0` (Indeterminate at
             // runtime per esc-3115-112), defeating the test's stated purpose.
             match &right.kind {
-                CompiledExprKind::Literal(Value::Scalar { si_value, dimension }) => {
-                    si_value.abs() < 1e-9 && *dimension == DimensionVector::MASS_DENSITY
-                }
+                CompiledExprKind::Literal(Value::Scalar {
+                    si_value,
+                    dimension,
+                }) => si_value.abs() < 1e-9 && *dimension == DimensionVector::MASS_DENSITY,
                 _ => false,
             }
         })
@@ -458,11 +461,7 @@ fn rigid_refines_physical_with_moment_of_inertia() {
             "task-4229: Rigid should have a `Let` default named '{}' (auto-derive from \
              geometry); got defaults: {:?}",
             expected_let,
-            rigid
-                .defaults
-                .iter()
-                .map(|d| &d.name)
-                .collect::<Vec<_>>()
+            rigid.defaults.iter().map(|d| &d.name).collect::<Vec<_>>()
         );
     }
 
@@ -1390,7 +1389,13 @@ structure def AutoRigid : Rigid {
 
     assert_eq!(
         moi_cell.cell_type,
-        Type::tensor(2, 3, Type::Scalar { dimension: DimensionVector::MOMENT_OF_INERTIA }),
+        Type::tensor(
+            2,
+            3,
+            Type::Scalar {
+                dimension: DimensionVector::MOMENT_OF_INERTIA
+            }
+        ),
         "task-4229: Rigid.moment_of_inertia cell_type should be \
          Tensor{{rank:2,n:3,Scalar{{MOMENT_OF_INERTIA}}}}, got {:?}",
         moi_cell.cell_type
@@ -1487,7 +1492,11 @@ fn plastic_hardening_modulus_member_is_pressure_dimension() {
 
 #[test]
 fn thermally_conductive_max_service_temp_member_is_temperature_dimension() {
-    assert_member_dimension("ThermallyConductive", "max_service_temp", DimensionVector::TEMPERATURE);
+    assert_member_dimension(
+        "ThermallyConductive",
+        "max_service_temp",
+        DimensionVector::TEMPERATURE,
+    );
 }
 
 #[test]
@@ -1513,8 +1522,12 @@ fn structural_traits_dimensioned_example_conforms_clean() {
         env!("CARGO_MANIFEST_DIR"),
         "/../../examples/structural_traits_dimensioned.ri"
     );
-    let source = std::fs::read_to_string(EXAMPLE_PATH)
-        .unwrap_or_else(|e| panic!("examples/structural_traits_dimensioned.ri should exist: {}", e));
+    let source = std::fs::read_to_string(EXAMPLE_PATH).unwrap_or_else(|e| {
+        panic!(
+            "examples/structural_traits_dimensioned.ri should exist: {}",
+            e
+        )
+    });
     let compiled = compile_source_with_stdlib(&source);
     let errors = errors_only(&compiled);
     assert!(

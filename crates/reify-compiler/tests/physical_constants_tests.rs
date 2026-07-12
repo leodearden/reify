@@ -28,7 +28,12 @@ use reify_ir::{CompiledExpr, Value, ValueMap};
 ///
 /// Deriving `expected_dim` once here (rather than twice per old test pair)
 /// makes copy-paste drift between the sig and eval assertions impossible.
-fn check_constant(fn_name: &str, expected_dim: DimensionVector, expected_si_value: f64, rel_tol: f64) {
+fn check_constant(
+    fn_name: &str,
+    expected_dim: DimensionVector,
+    expected_si_value: f64,
+    rel_tol: f64,
+) {
     let module = common::units_module();
 
     // ── 1. Signature ──────────────────────────────────────────────────────────
@@ -52,7 +57,9 @@ fn check_constant(fn_name: &str, expected_dim: DimensionVector, expected_si_valu
     );
     assert_eq!(
         func.return_type,
-        Type::Scalar { dimension: expected_dim },
+        Type::Scalar {
+            dimension: expected_dim
+        },
         "{} return type wrong, got {:?}",
         fn_name,
         func.return_type
@@ -62,18 +69,21 @@ fn check_constant(fn_name: &str, expected_dim: DimensionVector, expected_si_valu
     let call_expr = CompiledExpr::user_function_call(
         fn_name.to_string(),
         vec![],
-        Type::Scalar { dimension: expected_dim },
+        Type::Scalar {
+            dimension: expected_dim,
+        },
     );
     let values = ValueMap::new();
     let ctx = reify_expr::EvalContext::new(&values, &module.functions);
     match reify_expr::eval_expr(&call_expr, &ctx) {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert_eq!(
-                dimension,
-                expected_dim,
+                dimension, expected_dim,
                 "{}() body dimension wrong, got {:?}",
-                fn_name,
-                dimension
+                fn_name, dimension
             );
             common::assert_eq_rel(
                 si_value,
@@ -432,13 +442,18 @@ fn elementary_charge_equals_ev_unit_factor() {
     let call_expr = CompiledExpr::user_function_call(
         "ELEMENTARY_CHARGE".to_string(),
         vec![],
-        Type::Scalar { dimension: DimensionVector::CHARGE },
+        Type::Scalar {
+            dimension: DimensionVector::CHARGE,
+        },
     );
     let values = ValueMap::new();
     let ctx = reify_expr::EvalContext::new(&values, &std_units.functions);
     let e_si = match reify_expr::eval_expr(&call_expr, &ctx) {
         Value::Scalar { si_value, .. } => si_value,
-        other => panic!("ELEMENTARY_CHARGE() should return Value::Scalar, got {:?}", other),
+        other => panic!(
+            "ELEMENTARY_CHARGE() should return Value::Scalar, got {:?}",
+            other
+        ),
     };
 
     common::assert_eq_rel(
@@ -477,7 +492,9 @@ fn avogadro_times_boltzmann_equals_molar_gas_constant() {
         .div(&DimensionVector::TEMPERATURE);
 
     let na_expr = CompiledExpr::user_function_call(
-        "AVOGADRO_CONSTANT".to_string(), vec![], Type::Scalar { dimension: na_dim },
+        "AVOGADRO_CONSTANT".to_string(),
+        vec![],
+        Type::Scalar { dimension: na_dim },
     );
     let na = match reify_expr::eval_expr(&na_expr, &ctx) {
         Value::Scalar { si_value, .. } => si_value,
@@ -485,7 +502,9 @@ fn avogadro_times_boltzmann_equals_molar_gas_constant() {
     };
 
     let kb_expr = CompiledExpr::user_function_call(
-        "BOLTZMANN_CONSTANT".to_string(), vec![], Type::Scalar { dimension: kb_dim },
+        "BOLTZMANN_CONSTANT".to_string(),
+        vec![],
+        Type::Scalar { dimension: kb_dim },
     );
     let kb = match reify_expr::eval_expr(&kb_expr, &ctx) {
         Value::Scalar { si_value, .. } => si_value,
@@ -493,7 +512,9 @@ fn avogadro_times_boltzmann_equals_molar_gas_constant() {
     };
 
     let r_expr = CompiledExpr::user_function_call(
-        "MOLAR_GAS_CONSTANT".to_string(), vec![], Type::Scalar { dimension: r_dim },
+        "MOLAR_GAS_CONSTANT".to_string(),
+        vec![],
+        Type::Scalar { dimension: r_dim },
     );
     let r = match reify_expr::eval_expr(&r_expr, &ctx) {
         Value::Scalar { si_value, .. } => si_value,
@@ -550,10 +571,9 @@ structure def EvalProbe {
         .iter()
         .find(|c| c.id.member == "e")
         .expect("param 'e' cell not found in EvalProbe");
-    let e_expr = e_cell
-        .default_expr
-        .as_ref()
-        .expect("param 'e' has no default_expr (compiler did not emit one for this function-call default)");
+    let e_expr = e_cell.default_expr.as_ref().expect(
+        "param 'e' has no default_expr (compiler did not emit one for this function-call default)",
+    );
 
     // Evaluate through the stdlib EvalContext — resolves ELEMENTARY_CHARGE() if
     // the expr is a UserFunctionCall, or trivially returns the value if it was
@@ -562,7 +582,10 @@ structure def EvalProbe {
     let values = ValueMap::new();
     let ctx = reify_expr::EvalContext::new(&values, &std_units.functions);
     match reify_expr::eval_expr(e_expr, &ctx) {
-        Value::Scalar { si_value, dimension } => {
+        Value::Scalar {
+            si_value,
+            dimension,
+        } => {
             assert_eq!(
                 dimension,
                 DimensionVector::CHARGE,
@@ -610,7 +633,9 @@ fn units_ri_velocity_alias_shadowed_by_builtin_zero_errors() {
         .expect("SPEED_OF_LIGHT must be present in std/units");
     assert_eq!(
         func.return_type,
-        Type::Scalar { dimension: DimensionVector::VELOCITY },
+        Type::Scalar {
+            dimension: DimensionVector::VELOCITY
+        },
         "SPEED_OF_LIGHT return type must equal Scalar{{VELOCITY}} — builtin shadows \
          alias, both are m·s⁻¹; got {:?}",
         func.return_type

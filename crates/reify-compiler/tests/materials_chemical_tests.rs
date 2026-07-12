@@ -13,8 +13,8 @@
 //! production (not a standalone `.ri` file re-read).
 
 use reify_compiler::*;
-use reify_test_support::compile_source_with_stdlib;
 use reify_core::*;
+use reify_test_support::compile_source_with_stdlib;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 

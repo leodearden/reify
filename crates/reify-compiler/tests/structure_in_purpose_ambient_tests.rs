@@ -13,8 +13,7 @@ use reify_core::{DiagnosticCode, Severity};
 use reify_test_support::{compile_source_with_stdlib, parse_and_compile_with_stdlib};
 
 /// A fully-valid `Material(...)` constructor for steel.
-const STEEL_CTOR: &str =
-    r#"Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)"#;
+const STEEL_CTOR: &str = r#"Material(name: "steel", density: 7850kg/m^3, youngs_modulus: 200GPa)"#;
 
 /// A fully-valid `Material(...)` constructor for aluminum.
 const ALUMINUM_CTOR: &str =
@@ -68,7 +67,11 @@ fn purpose_nested_structure_compiles_and_conforms() {
         has_in_purpose,
         "expected an `InPurpose` template in the compiled module; \
          got templates: {:?}; diagnostics: {:?}",
-        compiled.templates.iter().map(|t| &t.name).collect::<Vec<_>>(),
+        compiled
+            .templates
+            .iter()
+            .map(|t| &t.name)
+            .collect::<Vec<_>>(),
         compiled.diagnostics
     );
 
@@ -78,8 +81,7 @@ fn purpose_nested_structure_compiles_and_conforms() {
         .diagnostics
         .iter()
         .filter(|d| {
-            d.severity == Severity::Error
-                && d.code == Some(DiagnosticCode::MissingRequiredMember)
+            d.severity == Severity::Error && d.code == Some(DiagnosticCode::MissingRequiredMember)
         })
         .collect();
 
@@ -124,8 +126,7 @@ purpose Exploration() {
         .diagnostics
         .iter()
         .filter(|d| {
-            d.severity == Severity::Error
-                && d.code == Some(DiagnosticCode::MissingRequiredMember)
+            d.severity == Severity::Error && d.code == Some(DiagnosticCode::MissingRequiredMember)
         })
         .collect();
 
@@ -185,10 +186,13 @@ purpose Exploration() {
     );
 
     // Only the first (top-level) InPurpose must be compiled.
-    let in_purpose_count = compiled.templates.iter().filter(|t| t.name == "InPurpose").count();
+    let in_purpose_count = compiled
+        .templates
+        .iter()
+        .filter(|t| t.name == "InPurpose")
+        .count();
     assert_eq!(
-        in_purpose_count,
-        1,
+        in_purpose_count, 1,
         "only the first InPurpose definition should appear in templates; \
          got {} templates named InPurpose",
         in_purpose_count
@@ -239,10 +243,13 @@ purpose Beta() {
     );
 
     // Only one Widget template (the first definition wins).
-    let widget_count = compiled.templates.iter().filter(|t| t.name == "Widget").count();
+    let widget_count = compiled
+        .templates
+        .iter()
+        .filter(|t| t.name == "Widget")
+        .count();
     assert_eq!(
-        widget_count,
-        1,
+        widget_count, 1,
         "only the first Widget definition should appear in templates; \
          got {} templates named Widget",
         widget_count

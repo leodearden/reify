@@ -111,10 +111,10 @@ fn no_zero_arg_warning_for_determinant_with_affine_map_arg() {
         }
     "#;
     let compiled = compile_source(source);
-    let zero_arg_warning = compiled
-        .diagnostics
-        .iter()
-        .find(|d| d.message.contains("cannot infer return type of zero-arg function"));
+    let zero_arg_warning = compiled.diagnostics.iter().find(|d| {
+        d.message
+            .contains("cannot infer return type of zero-arg function")
+    });
     assert!(
         zero_arg_warning.is_none(),
         "determinant(AffineMap) must not emit the zero-arg fallback warning, got: {:?}",

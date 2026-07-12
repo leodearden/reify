@@ -5,8 +5,8 @@
 //! trait conformance and constraint injection work as expected.
 
 use reify_compiler::*;
-use reify_test_support::{compile_first_template, compile_source_with_stdlib};
 use reify_core::*;
+use reify_test_support::{compile_first_template, compile_source_with_stdlib};
 use std::path::PathBuf;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -34,8 +34,10 @@ fn load_stdlib_module() -> CompiledModule {
     .collect();
     let appearance_source = std::fs::read_to_string(&appearance_path)
         .unwrap_or_else(|e| panic!("failed to read {}: {}", appearance_path.display(), e));
-    let parsed_appearance =
-        reify_syntax::parse(&appearance_source, ModulePath::single("std.materials.appearance"));
+    let parsed_appearance = reify_syntax::parse(
+        &appearance_source,
+        ModulePath::single("std.materials.appearance"),
+    );
     assert!(
         parsed_appearance.errors.is_empty(),
         "parse errors in materials_appearance.ri: {:?}",
@@ -247,10 +249,7 @@ fn strong_trait_has_members_and_constraint_default() {
                 name,
                 ty
             ),
-            other => panic!(
-                "Strong member '{}' should be Param, got {:?}",
-                name, other
-            ),
+            other => panic!("Strong member '{}' should be Param, got {:?}", name, other),
         }
     }
 }
@@ -787,7 +786,10 @@ fn four_refining_traits_without_material_members_is_conformance_error() {
 fn four_refining_traits_with_all_material_members_conform_cleanly() {
     // (trait_name, trait-specific params to include alongside inherited density/name)
     let cases: &[(&str, &str)] = &[
-        ("FatigueRated", "    param fatigue_limit : Pressure = 500MPa"),
+        (
+            "FatigueRated",
+            "    param fatigue_limit : Pressure = 500MPa",
+        ),
         (
             "FractureTough",
             "    param fracture_toughness : FractureToughness = 50.0 * 1Pa * sqrt(1m)",

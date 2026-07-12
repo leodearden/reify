@@ -36,7 +36,11 @@ fn assert_approx(actual: f64, expected: f64, label: &str) {
 fn compound_kn_mul_m_is_energy_5000_j() {
     let (si, dim) = common::stdlib_param_si_value("Energy", "5kN*m");
     assert_approx(si, 5000.0, "5kN*m SI value");
-    assert_eq!(dim, DimensionVector::ENERGY, "5kN*m dimension should be ENERGY");
+    assert_eq!(
+        dim,
+        DimensionVector::ENERGY,
+        "5kN*m dimension should be ENERGY"
+    );
 }
 
 /// `25mm^2` → Area, si_value = 2.5e-5 m²
@@ -44,7 +48,11 @@ fn compound_kn_mul_m_is_energy_5000_j() {
 fn compound_mm_pow2_is_area_25e_minus6_m2() {
     let (si, dim) = common::stdlib_param_si_value("Area", "25mm^2");
     assert_approx(si, 2.5e-5, "25mm^2 SI value");
-    assert_eq!(dim, DimensionVector::AREA, "25mm^2 dimension should be AREA");
+    assert_eq!(
+        dim,
+        DimensionVector::AREA,
+        "25mm^2 dimension should be AREA"
+    );
 }
 
 /// `9.81m/s^2` → Acceleration, si_value = 9.81 m/s²
@@ -165,9 +173,7 @@ fn compound_unknown_unit_kgg_emits_error_naming_kgg() {
         !errors.is_empty(),
         "expected an Error diagnostic for unknown unit 'kgg', got none"
     );
-    let names_kgg = errors
-        .iter()
-        .any(|d| d.message.contains("kgg"));
+    let names_kgg = errors.iter().any(|d| d.message.contains("kgg"));
     assert!(
         names_kgg,
         "expected an Error naming 'kgg'; got: {:?}",
@@ -189,9 +195,7 @@ fn compound_affine_unit_degc_emits_error_naming_degc() {
         !errors.is_empty(),
         "expected an Error diagnostic for affine unit 'degC' in compound, got none"
     );
-    let names_degc = errors
-        .iter()
-        .any(|d| d.message.contains("degC"));
+    let names_degc = errors.iter().any(|d| d.message.contains("degC"));
     assert!(
         names_degc,
         "expected an Error naming 'degC'; got: {:?}",
@@ -211,12 +215,8 @@ fn compound_affine_unit_degc_emits_error_naming_degc() {
 fn compound_overflow_emits_error_and_discards_value() {
     // 309 nines → f64::INFINITY when parsed (exceeds f64::MAX ≈ 1.8e308)
     let big_num = "9".repeat(309);
-    let src = format!(
-        "structure def S {{ param x : Energy = {}kN*m }}",
-        big_num
-    );
-    let parsed =
-        reify_compiler::parse_with_stdlib(&src, reify_core::ModulePath::single("test"));
+    let src = format!("structure def S {{ param x : Energy = {}kN*m }}", big_num);
+    let parsed = reify_compiler::parse_with_stdlib(&src, reify_core::ModulePath::single("test"));
     assert!(
         parsed
             .errors
@@ -252,7 +252,10 @@ fn regression_bare_degc_applies_offset_to_kelvin() {
         .iter()
         .find(|c| c.id.member == "temp")
         .expect("temp cell not found");
-    let expr = cell.default_expr.as_ref().expect("temp has no default_expr");
+    let expr = cell
+        .default_expr
+        .as_ref()
+        .expect("temp has no default_expr");
     let (si, _dim) = common::expect_scalar(expr);
     assert_approx(si, 293.15, "bare 20degC SI (kelvin)");
 }
@@ -264,5 +267,9 @@ fn regression_bare_degc_applies_offset_to_kelvin() {
 fn regression_bare_mm_resolves_to_0_005_m() {
     let (si, dim) = common::stdlib_param_si_value("Length", "5mm");
     assert_approx(si, 0.005, "bare 5mm SI value");
-    assert_eq!(dim, DimensionVector::LENGTH, "bare 5mm dimension should be LENGTH");
+    assert_eq!(
+        dim,
+        DimensionVector::LENGTH,
+        "bare 5mm dimension should be LENGTH"
+    );
 }

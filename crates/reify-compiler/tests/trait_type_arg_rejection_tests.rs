@@ -31,7 +31,7 @@
 //! (`SpecLike` / `Foo` / `Holder`), plus the 4603 `Coupling<P: HasMotion>` /
 //! `Prismatic` scaffold for the structure-with-args guard.
 
-use reify_core::{diagnostics::DiagnosticCode, Severity, Type};
+use reify_core::{Severity, Type, diagnostics::DiagnosticCode};
 use reify_test_support::compile_source;
 
 // ─── Shared fixture source ───────────────────────────────────────────────────

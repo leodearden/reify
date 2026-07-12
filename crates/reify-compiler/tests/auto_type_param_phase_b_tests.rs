@@ -35,9 +35,12 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use reify_compiler::auto_type_param::*;
-use reify_test_support::{MockConstraintChecker, TopologyTemplateBuilder};
 use reify_core::ConstraintNodeId;
-use reify_ir::{CompiledExpr, CompiledFunction, ConstraintChecker, ConstraintDiagnostics, ConstraintInput, ConstraintResult, Satisfaction, Value};
+use reify_ir::{
+    CompiledExpr, CompiledFunction, ConstraintChecker, ConstraintDiagnostics, ConstraintInput,
+    ConstraintResult, Satisfaction, Value,
+};
+use reify_test_support::{MockConstraintChecker, TopologyTemplateBuilder};
 
 /// Stateful mock whose verdict is keyed by *call number*, not by
 /// `ConstraintNodeId`. Used to detect single-broadcast regressions in

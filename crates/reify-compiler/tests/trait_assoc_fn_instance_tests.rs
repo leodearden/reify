@@ -236,9 +236,7 @@ fn assoc_fn_body_bare_member_desugars_to_self_index_access() {
     let unresolved_members: Vec<_> = module
         .diagnostics
         .iter()
-        .filter(|d| {
-            d.severity == Severity::Error && d.code == Some(DiagnosticCode::UnresolvedName)
-        })
+        .filter(|d| d.severity == Severity::Error && d.code == Some(DiagnosticCode::UnresolvedName))
         .filter(|d| d.message.contains("diameter") || d.message.contains("length"))
         .collect();
     assert!(
@@ -462,9 +460,7 @@ structure def Assembly {
     let rejected: Vec<_> = module
         .diagnostics
         .iter()
-        .filter(|d| {
-            d.severity == Severity::Error && d.message.contains("trait-object receiver")
-        })
+        .filter(|d| d.severity == Severity::Error && d.message.contains("trait-object receiver"))
         .collect();
     assert_eq!(
         rejected.len(),

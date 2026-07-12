@@ -2,8 +2,8 @@
 //!
 //! Tests for compiling `field def` declarations into CompiledField entries.
 
-use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only};
 use reify_core::{DiagnosticCode, FIELD_ENTITY_PREFIX, ValueCellId};
+use reify_test_support::{compile_source, compile_source_with_stdlib, errors_only};
 
 // ── Step 13: compile analytical field ──────────────────────────────────
 
@@ -682,14 +682,22 @@ fn compile_field_imported_well_formed_no_error() {
     // (a) No FieldImportedV02 deferral; no Severity::Error diagnostics.
     let errors = errors_only(&module);
     assert!(
-        errors.iter().all(|d| d.code != Some(DiagnosticCode::FieldImportedV02)),
+        errors
+            .iter()
+            .all(|d| d.code != Some(DiagnosticCode::FieldImportedV02)),
         "expected no FieldImportedV02 diagnostic, got: {:?}",
-        errors.iter().map(|d| (d.code, &d.message)).collect::<Vec<_>>()
+        errors
+            .iter()
+            .map(|d| (d.code, &d.message))
+            .collect::<Vec<_>>()
     );
     assert!(
         errors.is_empty(),
         "expected no Severity::Error diagnostics, got: {:?}",
-        errors.iter().map(|d| (d.code, &d.message)).collect::<Vec<_>>()
+        errors
+            .iter()
+            .map(|d| (d.code, &d.message))
+            .collect::<Vec<_>>()
     );
 
     // (b) The compiled field carries the path/format/grid in the Imported variant.
@@ -697,8 +705,16 @@ fn compile_field_imported_well_formed_no_error() {
     match &module.fields[0].source {
         reify_compiler::CompiledFieldSource::Imported { path, format, grid } => {
             assert_eq!(path.as_deref(), Some("x.vdb"), "expected path == \"x.vdb\"");
-            assert_eq!(format.as_deref(), Some("OpenVDB"), "expected format == \"OpenVDB\"");
-            assert_eq!(grid.as_deref(), Some("density"), "expected grid == \"density\"");
+            assert_eq!(
+                format.as_deref(),
+                Some("OpenVDB"),
+                "expected format == \"OpenVDB\""
+            );
+            assert_eq!(
+                grid.as_deref(),
+                Some("density"),
+                "expected grid == \"density\""
+            );
         }
         other => panic!("expected CompiledFieldSource::Imported, got: {:?}", other),
     }
@@ -776,4 +792,3 @@ fn compile_field_imported_unsupported_format_emits_error() {
         errors.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
-

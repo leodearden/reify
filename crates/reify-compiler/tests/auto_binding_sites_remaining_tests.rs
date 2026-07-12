@@ -10,9 +10,9 @@
 //!   cell with the correct `id`, `kind`, and `cell_type`.
 //! - They fail until the corresponding `entity.rs` / `connect.rs` producer is wired.
 
+use reify_compiler::{ValueCellKind, find_template};
 use reify_core::{Type, ValueCellId};
 use reify_test_support::{compile_source_with_stdlib, errors_only};
-use reify_compiler::{find_template, ValueCellKind};
 
 // ── LET site (steps 1–2) ──────────────────────────────────────────────────────
 
@@ -42,7 +42,11 @@ fn let_auto_strict_emits_auto_value_cell() {
             panic!(
                 "expected a value cell with id {:?} in template E; got cells: {:?}",
                 target_id,
-                template.value_cells.iter().map(|c| &c.id).collect::<Vec<_>>()
+                template
+                    .value_cells
+                    .iter()
+                    .map(|c| &c.id)
+                    .collect::<Vec<_>>()
             )
         });
 
@@ -87,7 +91,11 @@ fn let_auto_free_emits_auto_free_cell() {
             panic!(
                 "expected a value cell with id {:?} in template E; got cells: {:?}",
                 target_id,
-                template.value_cells.iter().map(|c| &c.id).collect::<Vec<_>>()
+                template
+                    .value_cells
+                    .iter()
+                    .map(|c| &c.id)
+                    .collect::<Vec<_>>()
             )
         });
 
@@ -141,8 +149,7 @@ fn let_auto_without_type_emits_diagnostic() {
 /// RED until step-4 wires the sub.args auto loop in entity.rs.
 #[test]
 fn construction_named_arg_auto_emits_scoped_auto_cell() {
-    let source =
-        "structure Bolt { param length : Length = 5mm }  \
+    let source = "structure Bolt { param length : Length = 5mm }  \
          structure E { sub bolt = Bolt(length: auto) }";
     let module = compile_source_with_stdlib(source);
 
@@ -164,7 +171,11 @@ fn construction_named_arg_auto_emits_scoped_auto_cell() {
             panic!(
                 "expected a value cell with id {:?} in template E; got cells: {:?}",
                 target_id,
-                template.value_cells.iter().map(|c| &c.id).collect::<Vec<_>>()
+                template
+                    .value_cells
+                    .iter()
+                    .map(|c| &c.id)
+                    .collect::<Vec<_>>()
             )
         });
 
@@ -188,8 +199,7 @@ fn construction_named_arg_auto_emits_scoped_auto_cell() {
 /// RED until step-4.
 #[test]
 fn construction_named_arg_auto_free_emits_scoped_auto_free_cell() {
-    let source =
-        "structure Bolt { param length : Length = 5mm }  \
+    let source = "structure Bolt { param length : Length = 5mm }  \
          structure E { sub bolt = Bolt(length: auto(free)) }";
     let module = compile_source_with_stdlib(source);
 
@@ -211,7 +221,11 @@ fn construction_named_arg_auto_free_emits_scoped_auto_free_cell() {
             panic!(
                 "expected a value cell with id {:?} in template E; got cells: {:?}",
                 target_id,
-                template.value_cells.iter().map(|c| &c.id).collect::<Vec<_>>()
+                template
+                    .value_cells
+                    .iter()
+                    .map(|c| &c.id)
+                    .collect::<Vec<_>>()
             )
         });
 
@@ -236,8 +250,7 @@ fn construction_named_arg_auto_free_emits_scoped_auto_free_cell() {
 /// no "no such param" check for paren-form autos).
 #[test]
 fn construction_named_arg_auto_unknown_member_emits_error() {
-    let source =
-        "structure Bolt { param length : Length = 5mm }  \
+    let source = "structure Bolt { param length : Length = 5mm }  \
          structure E { sub bolt = Bolt(nope: auto) }";
     let module = compile_source_with_stdlib(source);
 
@@ -249,7 +262,9 @@ fn construction_named_arg_auto_unknown_member_emits_error() {
         module.diagnostics
     );
     assert!(
-        errors.iter().any(|e| e.message.contains("nope") || e.message.contains("Bolt")),
+        errors
+            .iter()
+            .any(|e| e.message.contains("nope") || e.message.contains("Bolt")),
         "error should name the absent member or the structure; got: {:?}",
         errors.iter().map(|e| &e.message).collect::<Vec<_>>()
     );
@@ -298,7 +313,11 @@ structure E {
             panic!(
                 "expected a value cell with id {:?} in template E; got cells: {:?}",
                 target_id,
-                template.value_cells.iter().map(|c| &c.id).collect::<Vec<_>>()
+                template
+                    .value_cells
+                    .iter()
+                    .map(|c| &c.id)
+                    .collect::<Vec<_>>()
             )
         });
 
@@ -354,7 +373,11 @@ structure E {
             panic!(
                 "expected a value cell with id {:?} in template E; got cells: {:?}",
                 target_id,
-                template.value_cells.iter().map(|c| &c.id).collect::<Vec<_>>()
+                template
+                    .value_cells
+                    .iter()
+                    .map(|c| &c.id)
+                    .collect::<Vec<_>>()
             )
         });
 
@@ -417,7 +440,11 @@ structure Conn7 {
             panic!(
                 "expected a value cell with id {:?} in template E; got cells: {:?}",
                 target_id,
-                template.value_cells.iter().map(|c| &c.id).collect::<Vec<_>>()
+                template
+                    .value_cells
+                    .iter()
+                    .map(|c| &c.id)
+                    .collect::<Vec<_>>()
             )
         });
 
@@ -466,7 +493,9 @@ structure Conn7 {
         module.diagnostics
     );
     assert!(
-        errors.iter().any(|e| e.message.contains("bogus") || e.message.contains("Conn7")),
+        errors
+            .iter()
+            .any(|e| e.message.contains("bogus") || e.message.contains("Conn7")),
         "error should name the absent param or the connector type; got: {:?}",
         errors.iter().map(|e| &e.message).collect::<Vec<_>>()
     );

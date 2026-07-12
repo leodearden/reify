@@ -13,9 +13,9 @@
 use reify_compiler::{
     CompiledTypeAlias, compile_with_prelude, compile_with_stdlib, parse_with_stdlib,
 };
-use reify_test_support::CompiledModuleBuilder;
 use reify_core::{ContentHash, DimensionVector, ModulePath, Severity, SourceSpan, Type};
 use reify_ir::TypeParam;
+use reify_test_support::CompiledModuleBuilder;
 
 fn make_pub_alias(name: &str, resolved_type: Type) -> CompiledTypeAlias {
     CompiledTypeAlias {

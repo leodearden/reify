@@ -12,8 +12,8 @@
 //! Mirrors the `fdm_stdlib_compile.rs` helper trio and discipline.
 
 use reify_compiler::*;
-use reify_test_support::compile_source_with_stdlib;
 use reify_core::*;
+use reify_test_support::compile_source_with_stdlib;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -72,9 +72,17 @@ fn frame_has_origin_and_three_axes() {
         "MaterialFrame should have exactly (origin, x_axis, y_axis, z_axis) in that order"
     );
 
-    let length_scalar = Type::Scalar { dimension: DimensionVector::LENGTH };
-    let point3_length = Type::Point { n: 3, quantity: Box::new(length_scalar.clone()) };
-    let vec3_length = Type::Vector { n: 3, quantity: Box::new(length_scalar) };
+    let length_scalar = Type::Scalar {
+        dimension: DimensionVector::LENGTH,
+    };
+    let point3_length = Type::Point {
+        n: 3,
+        quantity: Box::new(length_scalar.clone()),
+    };
+    let vec3_length = Type::Vector {
+        n: 3,
+        quantity: Box::new(length_scalar),
+    };
 
     let expected: &[(&str, Type)] = &[
         ("origin", point3_length),
@@ -134,8 +142,16 @@ fn constitutive_law_trait_is_empty_marker() {
         "ConstitutiveLaw trait should be an empty marker (body intentionally \
          empty; producer-side dispatch lives in reify-solver-elastic), \
          got requirements: {:?}, defaults: {:?}",
-        trait_def.required_members.iter().map(|r| &r.name).collect::<Vec<_>>(),
-        trait_def.defaults.iter().map(|d| &d.name).collect::<Vec<_>>(),
+        trait_def
+            .required_members
+            .iter()
+            .map(|r| &r.name)
+            .collect::<Vec<_>>(),
+        trait_def
+            .defaults
+            .iter()
+            .map(|d| &d.name)
+            .collect::<Vec<_>>(),
     );
 }
 
@@ -144,8 +160,7 @@ fn constitutive_law_trait_is_empty_marker() {
 #[test]
 fn orthotropic_material_has_nine_elastic_constants_plus_density_plus_provenance() {
     let template = find_structure("OrthotropicMaterial");
-    let trait_bound_names: Vec<&str> =
-        template.trait_bounds.iter().map(|s| s.as_str()).collect();
+    let trait_bound_names: Vec<&str> = template.trait_bounds.iter().map(|s| s.as_str()).collect();
     assert_eq!(
         trait_bound_names,
         vec!["ConstitutiveLaw"],
@@ -231,8 +246,7 @@ fn orthotropic_material_has_nine_elastic_constants_plus_density_plus_provenance(
 #[test]
 fn transverse_isotropic_material_has_five_elastic_constants_plus_density_plus_provenance() {
     let template = find_structure("TransverseIsotropicMaterial");
-    let trait_bound_names: Vec<&str> =
-        template.trait_bounds.iter().map(|s| s.as_str()).collect();
+    let trait_bound_names: Vec<&str> = template.trait_bounds.iter().map(|s| s.as_str()).collect();
     assert_eq!(
         trait_bound_names,
         vec!["ConstitutiveLaw"],

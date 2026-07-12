@@ -19,9 +19,9 @@
 //! exercises the same embedded + sequential-prelude compilation path as
 //! production. This mirrors the helper trio in `solver_elastic_tests.rs`.
 
-use reify_ir::*;
 use reify_compiler::*;
 use reify_core::*;
+use reify_ir::*;
 use reify_test_support::collect_value_ref_members;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -284,7 +284,9 @@ fn buckling_options_param_defaults_match_spec() {
     // and solver_elastic_tests.rs:281-296.
     let element_order_default = require_default(template, "element_order");
     match &element_order_default.kind {
-        CompiledExprKind::Literal(Value::Enum { type_name, variant, .. }) => {
+        CompiledExprKind::Literal(Value::Enum {
+            type_name, variant, ..
+        }) => {
             assert_eq!(
                 type_name, "ElementOrder",
                 "element_order default type_name should be \"ElementOrder\", got: {:?}",
@@ -367,7 +369,11 @@ fn buckling_options_constrains_positivity_invariants() {
             // future-proofing rationale).
             match &c.expr.kind {
                 CompiledExprKind::BinOp { op, left, right } => {
-                    if *op != BinOp::Gt || !collect_value_ref_members(left).iter().any(|m| m.as_str() == *required) {
+                    if *op != BinOp::Gt
+                        || !collect_value_ref_members(left)
+                            .iter()
+                            .any(|m| m.as_str() == *required)
+                    {
                         return false;
                     }
                     match &right.kind {
@@ -592,7 +598,11 @@ fn buckling_result_constrains_iterations_nonneg() {
         // negative value but the name + op check still passes.
         match &c.expr.kind {
             CompiledExprKind::BinOp { op, left, right } => {
-                if *op != BinOp::Ge || !collect_value_ref_members(left).iter().any(|m| m.as_str() == "iterations") {
+                if *op != BinOp::Ge
+                    || !collect_value_ref_members(left)
+                        .iter()
+                        .any(|m| m.as_str() == "iterations")
+                {
                     return false;
                 }
                 match &right.kind {

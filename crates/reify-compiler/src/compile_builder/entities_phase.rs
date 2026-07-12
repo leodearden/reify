@@ -34,28 +34,31 @@ use crate::ambient_defaults::{AmbientDefaults, ResolvedAmbientDefault};
 use crate::compile_builder::ctx::CompilationCtx;
 use crate::compile_builder::defs_phase::build_constraint_def_registry;
 use crate::compile_builder::traits_phase::build_trait_registry;
-use crate::conformance::{check_expr_mechanism_joint_bound, check_fn_arg_conformance, check_param_default_conformance, check_trait_arg_conformance};
-use crate::connect::PendingConnectAutoParam;
-use crate::type_compat::{
-    type_carries_trait_object, type_carries_type_param, unify,
-    resolve_function_overload, OverloadResolution,
+use crate::conformance::{
+    check_expr_mechanism_joint_bound, check_fn_arg_conformance, check_param_default_conformance,
+    check_trait_arg_conformance,
 };
+use crate::connect::PendingConnectAutoParam;
 use crate::entity::{
     AutoResolutionRequest, EntityDefRef, PendingBoundCheck, PendingSubOverrideAuto,
     check_type_param_bounds, compile_entity,
 };
 use crate::expr::compile_expr;
 use crate::scope::CompilationScope;
-use crate::type_resolution::{
-    check_applied_type_arg_bounds, resolve_type_expr_with_aliases, walk_type_for_applied,
-    TypeAliasRegistry,
+use crate::type_compat::{
+    OverloadResolution, resolve_function_overload, type_carries_trait_object,
+    type_carries_type_param, unify,
 };
-use reify_core::ValueCellId;
+use crate::type_resolution::{
+    TypeAliasRegistry, check_applied_type_arg_bounds, resolve_type_expr_with_aliases,
+    walk_type_for_applied,
+};
 use crate::types::{
     CompiledConstraintDef, CompiledField, CompiledForallBody, CompiledGeometryOp, CompiledImport,
     CompiledTrait, EntityKind, TopologyTemplate, ValueCellDecl, ValueCellKind, Visibility,
 };
 use crate::units::UnitRegistry;
+use reify_core::ValueCellId;
 
 /// Run phase-11 (entity compile) over `parsed.declarations`.
 ///
@@ -509,8 +512,14 @@ fn resolve_ambient_default(
     //     so the pre-pass is their sole report site; non-error diagnostics
     //     re-surface at the injection site where the value is actually used.
     let mut value_diagnostics = Vec::new();
-    let value_type =
-        compile_expr(&decl.value, scope, enum_defs, functions, &mut value_diagnostics).result_type;
+    let value_type = compile_expr(
+        &decl.value,
+        scope,
+        enum_defs,
+        functions,
+        &mut value_diagnostics,
+    )
+    .result_type;
     diagnostics.extend(
         value_diagnostics
             .into_iter()
@@ -643,7 +652,9 @@ fn compile_joint_self_check(
         // match the DOF. A non-`Range<Scalar>` (e.g. Type::Error from an
         // already-diagnosed range) is skipped — anti-cascade.
         if let Type::Range(inner) = &compiled_range.result_type
-            && let Type::Scalar { dimension: range_dim } = inner.as_ref()
+            && let Type::Scalar {
+                dimension: range_dim,
+            } = inner.as_ref()
             && range_dim != dof_dim
         {
             diagnostics.push(
@@ -939,7 +950,13 @@ pub(crate) fn phase_sub_override_autos(ctx: &mut CompilationCtx, prelude: &[&Com
 
     // Collect (parent_entity_name, scoped_id, cell_type, free, span) for push;
     // collect diagnostics separately so we can mutably borrow ctx.templates below.
-    let mut cells_to_push: Vec<(String, ValueCellId, reify_core::Type, bool, reify_core::SourceSpan)> = Vec::new();
+    let mut cells_to_push: Vec<(
+        String,
+        ValueCellId,
+        reify_core::Type,
+        bool,
+        reify_core::SourceSpan,
+    )> = Vec::new();
 
     // Track (sub_name, override_member) pairs already diagnosed for absent-member
     // errors, so that a duplicate body like `{ nope = auto\n nope = auto }` (which
@@ -991,7 +1008,13 @@ pub(crate) fn phase_sub_override_autos(ctx: &mut CompilationCtx, prelude: &[&Com
 
         let scoped_entity = format!("{}.{}", req.parent_entity_name, req.sub_name);
         let scoped_id = ValueCellId::new(&scoped_entity, req.override_member.as_str());
-        cells_to_push.push((req.parent_entity_name.clone(), scoped_id, cell_type, req.free, req.span));
+        cells_to_push.push((
+            req.parent_entity_name.clone(),
+            scoped_id,
+            cell_type,
+            req.free,
+            req.span,
+        ));
     }
 
     // Apply the collected cell pushes.  We look up the parent template by name
@@ -1009,7 +1032,11 @@ pub(crate) fn phase_sub_override_autos(ctx: &mut CompilationCtx, prelude: &[&Com
             // the scoped id is already present in the parent's value_cells.
             if parent_tmpl.value_cells.iter().any(|c| c.id == scoped_id) {
                 let member = &scoped_id.member;
-                let sub_name = scoped_id.entity.rsplit('.').next().unwrap_or(&scoped_id.entity);
+                let sub_name = scoped_id
+                    .entity
+                    .rsplit('.')
+                    .next()
+                    .unwrap_or(&scoped_id.entity);
                 dup_warnings.push(
                     Diagnostic::warning(format!(
                         "sub `{sub_name}`: duplicate override for member `{member}`; first assignment wins",
@@ -1073,7 +1100,13 @@ pub(crate) fn phase_connect_auto_params(ctx: &mut CompilationCtx, prelude: &[&Co
 
     // Collect (parent_entity_name, scoped_id, cell_type, free, span) for push;
     // collect diagnostics separately so we can mutably borrow ctx.templates below.
-    let mut cells_to_push: Vec<(String, ValueCellId, reify_core::Type, bool, reify_core::SourceSpan)> = Vec::new();
+    let mut cells_to_push: Vec<(
+        String,
+        ValueCellId,
+        reify_core::Type,
+        bool,
+        reify_core::SourceSpan,
+    )> = Vec::new();
 
     // Track (scoped_entity, param_name) pairs already diagnosed for absent-param
     // errors, so a duplicate `{ p = auto\n p = auto }` block (which produces two
@@ -1276,9 +1309,9 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
     // source compiled without user-defined generic functions), skip the per-root
     // expression walk entirely.  This is O(|fns|) once vs O(|exprs| × |fns|)
     // per invocation and returns the check overhead to zero for non-generic sources.
-    let has_bounded_generic_fns = resolution_functions.iter().any(|f| {
-        !f.type_params.is_empty() && f.type_params.iter().any(|tp| !tp.bounds.is_empty())
-    });
+    let has_bounded_generic_fns = resolution_functions
+        .iter()
+        .any(|f| !f.type_params.is_empty() && f.type_params.iter().any(|tp| !tp.bounds.is_empty()));
 
     // Collect diagnostics into a local vec to avoid borrow-checker conflicts
     // (we hold shared borrows on ctx.templates and ctx.resolution_functions via
@@ -1302,25 +1335,13 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
         );
         // task 4310 (mechanism γ): L2 compile-time DrivingJoint-bound check.
         // Rejects bind(couple(...), v) etc. with MechanismNonDrivingJoint.
-        check_expr_mechanism_joint_bound(
-            expr,
-            &template_registry,
-            &trait_registry,
-            span,
-            diags,
-        );
+        check_expr_mechanism_joint_bound(expr, &template_registry, &trait_registry, span, diags);
         // task 4444 ζ: StructureInstanceCtor trait-arg conformance for value-cell
         // let bindings.  phase_pending_bound_checks covers sub-component ctor args
         // (queued in entity.rs at sub-lowering time); value-cell `let c = Foo(...)`
         // bindings lower to StructureInstanceCtor expressions and were NOT checked.
         // Walking every StructureInstanceCtor here closes that gap.
-        check_expr_struct_ctor_args(
-            expr,
-            &template_registry,
-            &trait_registry,
-            span,
-            diags,
-        );
+        check_expr_struct_ctor_args(expr, &template_registry, &trait_registry, span, diags);
     };
 
     // Walk EVERY CompiledExpr-bearing root field of each entity template via the
@@ -1352,7 +1373,11 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
         for (_, expr) in &f.body.let_bindings {
             walk(expr, SourceSpan::empty(0), &mut new_diagnostics);
         }
-        walk(&f.body.result_expr, SourceSpan::empty(0), &mut new_diagnostics);
+        walk(
+            &f.body.result_expr,
+            SourceSpan::empty(0),
+            &mut new_diagnostics,
+        );
     }
 
     // Walk associated-function bodies on every LOCAL template (step-14).
@@ -1384,7 +1409,11 @@ pub(crate) fn phase_fn_arg_conformance(ctx: &mut CompilationCtx, prelude: &[&Com
             for (_, expr) in &f.body.let_bindings {
                 walk(expr, SourceSpan::empty(0), &mut new_diagnostics);
             }
-            walk(&f.body.result_expr, SourceSpan::empty(0), &mut new_diagnostics);
+            walk(
+                &f.body.result_expr,
+                SourceSpan::empty(0),
+                &mut new_diagnostics,
+            );
         }
     }
 
@@ -1423,15 +1452,18 @@ fn check_expr_fn_calls(
     diagnostics: &mut Vec<reify_core::Diagnostic>,
 ) {
     expr.walk(&mut |node: &CompiledExpr| {
-        let CompiledExprKind::UserFunctionCall { function_name, args } = &node.kind else {
+        let CompiledExprKind::UserFunctionCall {
+            function_name,
+            args,
+        } = &node.kind
+        else {
             return;
         };
 
         // Re-resolve the overload once using the args' result_types.
         // This disambiguates same-name overloads and skips eval-builtins
         // (NoUserFunctions) and already-diagnosed failures (NoMatch / Ambiguous).
-        let arg_result_types: Vec<Type> =
-            args.iter().map(|a| a.result_type.clone()).collect();
+        let arg_result_types: Vec<Type> = args.iter().map(|a| a.result_type.clone()).collect();
         let f = match resolve_function_overload(function_name, &arg_result_types, functions) {
             OverloadResolution::Resolved(f) => f,
             _ => return,
@@ -1548,7 +1580,11 @@ fn check_expr_struct_ctor_args(
     diagnostics: &mut Vec<reify_core::Diagnostic>,
 ) {
     expr.walk(&mut |node: &CompiledExpr| {
-        let CompiledExprKind::StructureInstanceCtor { type_name, ordered_args, .. } = &node.kind
+        let CompiledExprKind::StructureInstanceCtor {
+            type_name,
+            ordered_args,
+            ..
+        } = &node.kind
         else {
             return;
         };
@@ -1566,9 +1602,9 @@ fn check_expr_struct_ctor_args(
                 .is_some_and(|vc| {
                     matches!(&vc.cell_type,
                         Type::List(inner) if matches!(inner.as_ref(), Type::TraitObject(_)))
-                    || matches!(&vc.cell_type, Type::StructureRef(_))
-                    || matches!(&vc.cell_type, Type::Vector { .. })
-                    || matches!(&vc.cell_type, Type::Selector(_) | Type::AnySelector)
+                        || matches!(&vc.cell_type, Type::StructureRef(_))
+                        || matches!(&vc.cell_type, Type::Vector { .. })
+                        || matches!(&vc.cell_type, Type::Selector(_) | Type::AnySelector)
                 });
             if !should_check {
                 continue;

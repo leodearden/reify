@@ -11,8 +11,11 @@
 //! (added in step-10 under `#[cfg(test)]`) and the entity-compilation hook that
 //! populates it.
 
+use reify_ast::{
+    Declaration, EnumDecl, Expr, ExprKind, LetDecl, MatchArmDeclArmDecl, MatchArmDeclGroupDecl,
+    MemberDecl, ParamDecl, ParsedModule, StructureDef, SubDecl, TypeExpr, TypeExprKind,
+};
 use reify_compiler::GuardedDeclGroup;
-use reify_ast::{Declaration, EnumDecl, Expr, ExprKind, LetDecl, MatchArmDeclArmDecl, MatchArmDeclGroupDecl, MemberDecl, ParamDecl, ParsedModule, StructureDef, SubDecl, TypeExpr, TypeExprKind};
 use reify_core::{ContentHash, ModulePath, SourceSpan, Type};
 
 // ─── AST construction helpers ────────────────────────────────────────────────
@@ -298,11 +301,7 @@ fn match_arm_decl_group_pipe_patterns_produce_two_arm_cluster() {
                 doc: None,
                 is_pub: false,
                 type_params: vec![],
-                variants: vec![
-                    "Hex".into(),
-                    "Socket".into(),
-                    "Button".into(),
-                ],
+                variants: vec!["Hex".into(), "Socket".into(), "Button".into()],
                 span: zero_span(),
                 content_hash: ContentHash(0),
                 annotations: vec![],
@@ -1162,11 +1161,7 @@ fn match_arm_decl_group_non_exhaustive_arms_emits_diagnostic_and_skips_cluster()
                 is_pub: false,
                 type_params: vec![],
                 // THREE variants; only two arms declared above — Button is missing.
-                variants: vec![
-                    "Hex".into(),
-                    "Socket".into(),
-                    "Button".into(),
-                ],
+                variants: vec!["Hex".into(), "Socket".into(), "Button".into()],
                 span: zero_span(),
                 content_hash: ContentHash(0),
                 annotations: vec![],
@@ -1263,11 +1258,7 @@ fn match_arm_decl_group_non_exhaustive_pipe_arm_emits_diagnostic() {
                 doc: None,
                 is_pub: false,
                 type_params: vec![],
-                variants: vec![
-                    "Hex".into(),
-                    "Socket".into(),
-                    "Button".into(),
-                ],
+                variants: vec!["Hex".into(), "Socket".into(), "Button".into()],
                 span: zero_span(),
                 content_hash: ContentHash(0),
                 annotations: vec![],

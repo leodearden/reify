@@ -52,7 +52,11 @@ fn solid_param_has_no_value_cell() {
         .expect("Widget template not found");
 
     // After GHR-γ: exactly one ValueCellDecl for 'g' with Type::Geometry.
-    let g_cells: Vec<_> = template.value_cells.iter().filter(|c| c.id.member == "g").collect();
+    let g_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|c| c.id.member == "g")
+        .collect();
     assert_eq!(
         g_cells.len(),
         1,
@@ -144,7 +148,11 @@ fn solid_param_compiles_as_realization() {
         .expect("Widget template not found");
 
     // (b) After GHR-γ: exactly one ValueCellDecl named "g" with Type::Geometry.
-    let g_cells: Vec<_> = template.value_cells.iter().filter(|c| c.id.member == "g").collect();
+    let g_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|c| c.id.member == "g")
+        .collect();
     assert_eq!(
         g_cells.len(),
         1,
@@ -196,7 +204,11 @@ fn solid_param_referenced_by_downstream_boolean_op() {
         .expect("W1 template not found");
 
     // (a) `g` (Solid param) has exactly 1 ValueCellDecl with Type::Geometry.
-    let g_cells: Vec<_> = template.value_cells.iter().filter(|c| c.id.member == "g").collect();
+    let g_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|c| c.id.member == "g")
+        .collect();
     assert_eq!(
         g_cells.len(),
         1,
@@ -212,7 +224,11 @@ fn solid_param_referenced_by_downstream_boolean_op() {
     // they ALSO each produce a Type::Geometry Let ValueCellDecl
     // (graph-completion lowering) alongside `g`'s Param cell — 3 total, not 1.
     for name in ["other", "out"] {
-        let cells: Vec<_> = template.value_cells.iter().filter(|c| c.id.member == name).collect();
+        let cells: Vec<_> = template
+            .value_cells
+            .iter()
+            .filter(|c| c.id.member == name)
+            .collect();
         assert_eq!(
             cells.len(),
             1,
@@ -331,7 +347,11 @@ fn solid_param_default_aliasing_geometry_let_is_realization() {
         .expect("W2 template not found");
 
     // (a) `g` (Solid param with geometry-ident default) has exactly 1 ValueCellDecl.
-    let g_cells: Vec<_> = template.value_cells.iter().filter(|c| c.id.member == "g").collect();
+    let g_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|c| c.id.member == "g")
+        .collect();
     assert_eq!(
         g_cells.len(),
         1,
@@ -346,7 +366,11 @@ fn solid_param_default_aliasing_geometry_let_is_realization() {
     // γ (task #4954): `a` is a TOP-LEVEL geometry let, so since γ it ALSO
     // produces a Type::Geometry Let ValueCellDecl (graph-completion lowering)
     // — 2 total, not 1.
-    let a_cells: Vec<_> = template.value_cells.iter().filter(|c| c.id.member == "a").collect();
+    let a_cells: Vec<_> = template
+        .value_cells
+        .iter()
+        .filter(|c| c.id.member == "a")
+        .collect();
     assert_eq!(
         a_cells.len(),
         1,

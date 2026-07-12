@@ -157,7 +157,10 @@ fn prelude_ok_construction_infers_cleanly_and_builds_enum_value() {
             );
             assert_eq!(payload[0].0, "value", "payload field name");
             match &payload[0].1 {
-                Value::Scalar { si_value, dimension } => {
+                Value::Scalar {
+                    si_value,
+                    dimension,
+                } => {
                     assert!(
                         (*si_value - 0.005).abs() < 1e-9,
                         "5mm should carry si_value 0.005 (meters), got {si_value}"

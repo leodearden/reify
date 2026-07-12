@@ -1152,10 +1152,7 @@ structure Bracket {
 structure Base {
     param width: Length = 1mm
 }"#;
-    let parsed = reify_syntax::parse(
-        source,
-        reify_core::ModulePath::single("test_comprehensive"),
-    );
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_comprehensive"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -1407,10 +1404,17 @@ fn compile_minimize_objective() {
         .as_ref()
         .expect("template should have an objective");
 
-    assert_eq!(objective.combination, reify_ir::ObjectiveCombination::WeightedSum);
+    assert_eq!(
+        objective.combination,
+        reify_ir::ObjectiveCombination::WeightedSum
+    );
     assert_eq!(objective.terms.len(), 1, "expected 1 term");
     let term = &objective.terms[0];
-    assert_eq!(term.sense, reify_ir::ObjectiveSense::Minimize, "expected Minimize");
+    assert_eq!(
+        term.sense,
+        reify_ir::ObjectiveSense::Minimize,
+        "expected Minimize"
+    );
     // The expression should reference ValueCellId("S", "x")
     match &term.expr.kind {
         reify_ir::CompiledExprKind::ValueRef(id) => {
@@ -1450,10 +1454,17 @@ fn compile_maximize_objective() {
         .as_ref()
         .expect("template should have an objective");
 
-    assert_eq!(objective.combination, reify_ir::ObjectiveCombination::WeightedSum);
+    assert_eq!(
+        objective.combination,
+        reify_ir::ObjectiveCombination::WeightedSum
+    );
     assert_eq!(objective.terms.len(), 1, "expected 1 term");
     let term = &objective.terms[0];
-    assert_eq!(term.sense, reify_ir::ObjectiveSense::Maximize, "expected Maximize");
+    assert_eq!(
+        term.sense,
+        reify_ir::ObjectiveSense::Maximize,
+        "expected Maximize"
+    );
     // The expression should reference ValueCellId("S", "volume")
     match &term.expr.kind {
         reify_ir::CompiledExprKind::ValueRef(id) => {
@@ -1528,10 +1539,17 @@ fn e2e_minimize_round_trip() {
         .objective
         .as_ref()
         .expect("template should have an objective");
-    assert_eq!(objective.combination, reify_ir::ObjectiveCombination::WeightedSum);
+    assert_eq!(
+        objective.combination,
+        reify_ir::ObjectiveCombination::WeightedSum
+    );
     assert_eq!(objective.terms.len(), 1, "expected 1 term");
     let term = &objective.terms[0];
-    assert_eq!(term.sense, reify_ir::ObjectiveSense::Minimize, "expected Minimize");
+    assert_eq!(
+        term.sense,
+        reify_ir::ObjectiveSense::Minimize,
+        "expected Minimize"
+    );
     // (e) compiled expression references ValueCellId for thickness
     match &term.expr.kind {
         reify_ir::CompiledExprKind::ValueRef(id) => {
@@ -1587,7 +1605,10 @@ structure S { param x: Length = 5mm }"#;
         compiled.enum_defs.len()
     );
     assert_eq!(compiled.enum_defs[0].name, "Direction");
-    assert_eq!(compiled.enum_defs[0].variants, vec!["In".into(), "Out".into(), "Bidi".into()]);
+    assert_eq!(
+        compiled.enum_defs[0].variants,
+        vec!["In".into(), "Out".into(), "Bidi".into()]
+    );
 }
 
 /// Enum access expression should compile to a literal Value::Enum.
@@ -1626,7 +1647,9 @@ structure S { let d = Direction.In }"#;
     let d_expr = d_cell.default_expr.as_ref().expect("let should have expr");
 
     match &d_expr.kind {
-        reify_ir::CompiledExprKind::Literal(reify_ir::Value::Enum { type_name, variant, .. }) => {
+        reify_ir::CompiledExprKind::Literal(reify_ir::Value::Enum {
+            type_name, variant, ..
+        }) => {
             assert_eq!(type_name, "Direction");
             assert_eq!(variant, "In");
         }
@@ -1715,10 +1738,16 @@ fn compile_simple_function() {
     let f = &compiled.functions[0];
     assert_eq!(f.name, "double");
     assert!(!f.is_pub);
-    assert_eq!(f.params, vec![("x".to_string(), reify_core::Type::dimensionless_scalar())]);
+    assert_eq!(
+        f.params,
+        vec![("x".to_string(), reify_core::Type::dimensionless_scalar())]
+    );
     assert_eq!(f.return_type, reify_core::Type::dimensionless_scalar());
     assert!(f.body.let_bindings.is_empty());
-    assert_eq!(f.body.result_expr.result_type, reify_core::Type::dimensionless_scalar());
+    assert_eq!(
+        f.body.result_expr.result_type,
+        reify_core::Type::dimensionless_scalar()
+    );
 }
 
 /// Compile a function with let bindings in body.
@@ -1744,7 +1773,10 @@ fn compile_function_with_let_bindings() {
     assert_eq!(f.body.let_bindings[0].0, "y");
     assert_eq!(f.body.let_bindings[1].0, "z");
     // result_expr should compile without unresolved name errors
-    assert_eq!(f.body.result_expr.result_type, reify_core::Type::dimensionless_scalar());
+    assert_eq!(
+        f.body.result_expr.result_type,
+        reify_core::Type::dimensionless_scalar()
+    );
 }
 
 /// Two overloaded functions with the same name but different param types.
@@ -1826,10 +1858,7 @@ fn compiled_constraint_domain_field() {
     let manual = reify_compiler::CompiledConstraint {
         id: ConstraintNodeId::new("Test", 0),
         label: Some("test".to_string()),
-        expr: reify_ir::CompiledExpr::literal(
-            reify_ir::Value::Bool(true),
-            reify_core::Type::Bool,
-        ),
+        expr: reify_ir::CompiledExpr::literal(reify_ir::Value::Bool(true), reify_core::Type::Bool),
         span: SourceSpan::new(0, 0),
         domain: Some(ConstraintDomain::Dimensional),
         optimized_target: None,
@@ -1841,10 +1870,7 @@ fn compiled_constraint_domain_field() {
     let compat = reify_compiler::CompiledConstraint {
         id: ConstraintNodeId::new("Test", 1),
         label: None,
-        expr: reify_ir::CompiledExpr::literal(
-            reify_ir::Value::Bool(true),
-            reify_core::Type::Bool,
-        ),
+        expr: reify_ir::CompiledExpr::literal(reify_ir::Value::Bool(true), reify_core::Type::Bool),
         span: SourceSpan::new(0, 0),
         domain: None,
         optimized_target: None,
@@ -1985,7 +2011,9 @@ enum Direction { In, Out, Bidi }"#;
     let d_expr = d_cell.default_expr.as_ref().expect("let should have expr");
 
     match &d_expr.kind {
-        reify_ir::CompiledExprKind::Literal(reify_ir::Value::Enum { type_name, variant, .. }) => {
+        reify_ir::CompiledExprKind::Literal(reify_ir::Value::Enum {
+            type_name, variant, ..
+        }) => {
             assert_eq!(type_name, "Direction");
             assert_eq!(variant, "In");
         }
@@ -2042,7 +2070,9 @@ enum Color { Red, Green, Blue }"#;
         .expect("should have 'x' value cell");
     let x_expr = x_cell.default_expr.as_ref().expect("let should have expr");
     match &x_expr.kind {
-        reify_ir::CompiledExprKind::Literal(reify_ir::Value::Enum { type_name, variant, .. }) => {
+        reify_ir::CompiledExprKind::Literal(reify_ir::Value::Enum {
+            type_name, variant, ..
+        }) => {
             assert_eq!(type_name, "Color");
             assert_eq!(variant, "Red");
         }
@@ -2058,7 +2088,9 @@ enum Color { Red, Green, Blue }"#;
         .expect("should have 'y' value cell");
     let y_expr = y_cell.default_expr.as_ref().expect("let should have expr");
     match &y_expr.kind {
-        reify_ir::CompiledExprKind::Literal(reify_ir::Value::Enum { type_name, variant, .. }) => {
+        reify_ir::CompiledExprKind::Literal(reify_ir::Value::Enum {
+            type_name, variant, ..
+        }) => {
             assert_eq!(type_name, "Direction");
             assert_eq!(variant, "In");
         }
@@ -2075,7 +2107,9 @@ enum Color { Red, Green, Blue }"#;
         .expect("should have 'z' value cell");
     let z_expr = z_cell.default_expr.as_ref().expect("let should have expr");
     match &z_expr.kind {
-        reify_ir::CompiledExprKind::Literal(reify_ir::Value::Enum { type_name, variant, .. }) => {
+        reify_ir::CompiledExprKind::Literal(reify_ir::Value::Enum {
+            type_name, variant, ..
+        }) => {
             assert_eq!(type_name, "Color");
             assert_eq!(variant, "Red");
         }
@@ -2225,7 +2259,10 @@ fn compile_fn_body_calls_other_user_fn() {
         } => {
             assert_eq!(function_name, "double", "outer call should be double");
             assert_eq!(args.len(), 1);
-            assert_eq!(q_body.result_expr.result_type, reify_core::Type::dimensionless_scalar());
+            assert_eq!(
+                q_body.result_expr.result_type,
+                reify_core::Type::dimensionless_scalar()
+            );
 
             // Inner call: double(x)
             match &args[0].kind {
@@ -2235,7 +2272,10 @@ fn compile_fn_body_calls_other_user_fn() {
                 } => {
                     assert_eq!(inner_name, "double", "inner call should be double");
                     assert_eq!(inner_args.len(), 1);
-                    assert_eq!(args[0].result_type, reify_core::Type::dimensionless_scalar());
+                    assert_eq!(
+                        args[0].result_type,
+                        reify_core::Type::dimensionless_scalar()
+                    );
                 }
                 other => panic!("expected inner UserFunctionCall, got {:?}", other),
             }
@@ -2279,7 +2319,10 @@ fn compile_fn_body_calls_user_fn_in_let_binding() {
     }
 
     // result expr: y + 1 — should be BinOp with result_type Real
-    assert_eq!(calc_body.result_expr.result_type, reify_core::Type::dimensionless_scalar());
+    assert_eq!(
+        calc_body.result_expr.result_type,
+        reify_core::Type::dimensionless_scalar()
+    );
     match &calc_body.result_expr.kind {
         reify_ir::CompiledExprKind::BinOp { op, .. } => {
             assert_eq!(*op, reify_ir::BinOp::Add);

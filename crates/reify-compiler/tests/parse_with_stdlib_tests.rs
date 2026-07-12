@@ -9,9 +9,9 @@
 //! task's lock list and the new entry points have a single, named home.
 
 use reify_compiler::PreludeContext;
-use reify_test_support::CompiledModuleBuilder;
 use reify_core::ModulePath;
 use reify_ir::EnumDef;
+use reify_test_support::CompiledModuleBuilder;
 
 // ─── step-3: PreludeContext::enum_names() iterator parity ──────────────────
 

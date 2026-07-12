@@ -13,11 +13,9 @@ use reify_core::{ModulePath, Severity, SourceSpan};
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
-const REJECT_FIXTURE: &str =
-    include_str!("fixtures/parametric_alias_def_site_reject.ri");
+const REJECT_FIXTURE: &str = include_str!("fixtures/parametric_alias_def_site_reject.ri");
 
-const OK_FIXTURE: &str =
-    include_str!("fixtures/parametric_alias_def_site_ok.ri");
+const OK_FIXTURE: &str = include_str!("fixtures/parametric_alias_def_site_ok.ri");
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -96,8 +94,7 @@ fn pub_parametric_alias_unknown_body_name_rejected_at_def_site() {
         has_def_site_label,
         "at least one Error diagnostic must have a label span within the LeakName \
          alias declaration (offset range {:?}); errors: {:?}",
-        decl_span,
-        errors
+        decl_span, errors
     );
 }
 
@@ -148,8 +145,7 @@ fn pub_parametric_alias_param_bound_violation_rejected_at_def_site() {
         has_def_site_label,
         "at least one Error diagnostic must have a label span within the BadBound \
          alias declaration (offset range {:?}); errors: {:?}",
-        decl_span,
-        errors
+        decl_span, errors
     );
 }
 
@@ -194,8 +190,7 @@ fn committed_reject_fixture_fails_with_def_site_diagnostics() {
         has_leak_error,
         "reject fixture: no Error diagnostic at the LeakName alias def site \
          (offset range {:?}); errors: {:?}",
-        leak_span,
-        errors
+        leak_span, errors
     );
 
     let has_bad_bound_error = errors.iter().any(|e| {
@@ -207,8 +202,7 @@ fn committed_reject_fixture_fails_with_def_site_diagnostics() {
         has_bad_bound_error,
         "reject fixture: no Error diagnostic at the BadBound alias def site \
          (offset range {:?}); errors: {:?}",
-        bad_bound_span,
-        errors
+        bad_bound_span, errors
     );
 }
 

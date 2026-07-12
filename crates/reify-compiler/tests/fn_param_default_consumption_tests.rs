@@ -46,10 +46,16 @@ structure S {
         .iter()
         .find(|vc| vc.id.member == "v")
         .expect("should have 'v' value cell");
-    let v_expr = v_cell.default_expr.as_ref().expect("let 'v' should have an expression");
+    let v_expr = v_cell
+        .default_expr
+        .as_ref()
+        .expect("let 'v' should have an expression");
 
     match &v_expr.kind {
-        CompiledExprKind::UserFunctionCall { function_name, args } => {
+        CompiledExprKind::UserFunctionCall {
+            function_name,
+            args,
+        } => {
             assert_eq!(function_name, "f");
             assert_eq!(
                 args.len(),
@@ -310,7 +316,9 @@ structure S {
         "expected an error for ambiguous default-padding"
     );
     assert!(
-        errors.iter().any(|e| e.message.contains("no matching overload")),
+        errors
+            .iter()
+            .any(|e| e.message.contains("no matching overload")),
         "expected 'no matching overload' (ambiguous default-padding pins current behavior), got: {:?}",
         errors
     );
@@ -331,7 +339,11 @@ fn fn_param_default_unresolved_param_type_no_cascade() {
 fn f(x : Bogus = "hi") -> Int { 0 }
 "#;
     let parsed = reify_syntax::parse(source, ModulePath::single("test_consume_l"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
 
@@ -383,7 +395,11 @@ fn fn_param_default_undefined_default_expr_no_cascade() {
 fn f(x : Int = undefined_name) -> Int { x }
 "#;
     let parsed = reify_syntax::parse(source, ModulePath::single("test_consume_m"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
 
     let compiled = reify_compiler::compile(&parsed);
 

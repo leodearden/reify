@@ -68,8 +68,7 @@ fn enum_decl_doc_propagates_to_enum_def() {
 
 #[test]
 fn occurrence_def_doc_propagates_to_topology_template() {
-    let compiled =
-        compile_source("/// A joint\noccurrence Weld { let duration = 5.0 }");
+    let compiled = compile_source("/// A joint\noccurrence Weld { let duration = 5.0 }");
     let template = compiled
         .templates
         .iter()
@@ -86,8 +85,7 @@ fn occurrence_def_doc_propagates_to_topology_template() {
 
 #[test]
 fn trait_decl_doc_propagates_to_compiled_trait() {
-    let compiled =
-        compile_source("/// Rigid things\ntrait Rigid { param mass: Real }");
+    let compiled = compile_source("/// Rigid things\ntrait Rigid { param mass: Real }");
     let trait_def = compiled
         .trait_defs
         .iter()

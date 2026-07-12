@@ -4,8 +4,8 @@
 mod common;
 
 use common::{UNIT_EPSILON, stdlib_param_si_value};
-use reify_test_support::{compile_source, errors_only};
 use reify_core::{DimensionVector, Rational, Type};
+use reify_test_support::{compile_source, errors_only};
 
 // ─── USD literal through stdlib path ─────────────────────────────────────────
 

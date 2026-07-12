@@ -439,7 +439,13 @@ fn compile_arbitrary_pattern_list_form_produces_realization() {
         ops
     );
     assert!(
-        matches!(ops[0], CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, .. }),
+        matches!(
+            ops[0],
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                ..
+            }
+        ),
         "expected Primitive(Box) at ops[0], got {:?}",
         ops[0]
     );
@@ -586,8 +592,7 @@ fn compile_offset_solid_produces_realization() {
     param w: Length = 10mm
     let grown = offset_solid(w, 2mm)
 }"#;
-    let parsed =
-        reify_syntax::parse(source, reify_core::ModulePath::single("test_offset_solid"));
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_offset_solid"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -891,10 +896,7 @@ fn compile_union_non_geometry_arg_emits_diagnostic() {
     param w: Length = 10mm
     let r = union(w, box(10mm, 10mm, 10mm))
 }"#;
-    let parsed = reify_syntax::parse(
-        source,
-        reify_core::ModulePath::single("test_union_nongeom"),
-    );
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_union_nongeom"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -1561,10 +1563,7 @@ fn compile_translate_wrong_arg_count() {
     param p: Length = 5mm
     let result = translate(p, p)
 }"#;
-    let parsed = reify_syntax::parse(
-        source,
-        reify_core::ModulePath::single("test_translate_bad"),
-    );
+    let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_translate_bad"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",

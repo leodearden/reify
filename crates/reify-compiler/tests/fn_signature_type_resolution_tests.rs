@@ -10,8 +10,8 @@
 //! structures) or `compile_source_with_stdlib` (stdlib in scope, for names
 //! like `MaterialSpec`, `ElasticOptions`, `ElasticResult`).
 
-use reify_test_support::{compile_source, compile_source_with_stdlib};
 use reify_core::{Severity, Type};
+use reify_test_support::{compile_source, compile_source_with_stdlib};
 
 /// Module-local structure name in a fn parameter resolves to
 /// `Type::StructureRef("MyS")` with zero Error diagnostics.

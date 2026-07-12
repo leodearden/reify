@@ -247,7 +247,10 @@ pub(crate) fn phase_auto_type_param_resolution(
                         position,
                         template_name.clone(),
                     ));
-                    sigma.insert(param_name.clone(), Type::StructureRef(template_name.clone()));
+                    sigma.insert(
+                        param_name.clone(),
+                        Type::StructureRef(template_name.clone()),
+                    );
                     candidates_by_position.push((position, template_name.clone()));
                 }
                 subst_pairs.push((param_name.clone(), template_name.clone()));
@@ -260,8 +263,7 @@ pub(crate) fn phase_auto_type_param_resolution(
                 candidates_by_position.sort_by_key(|(pos, _)| *pos);
                 let ordered_candidates: Vec<String> =
                     candidates_by_position.into_iter().map(|(_, c)| c).collect();
-                let mono_name =
-                    mangle_monomorph_name(&req.target_name, &ordered_candidates);
+                let mono_name = mangle_monomorph_name(&req.target_name, &ordered_candidates);
 
                 // Defensive collision guard: a pre-existing template named
                 // `mono_name` that was NOT created by α in this pass would be
@@ -271,11 +273,7 @@ pub(crate) fn phase_auto_type_param_resolution(
                 //
                 // Skip both the clone AND the structure_name rewrite for this
                 // use-site — there is no safe target to point the sub at.
-                if monomorph_name_would_collide(
-                    &ctx.templates,
-                    &created_monomorphs,
-                    &mono_name,
-                ) {
+                if monomorph_name_would_collide(&ctx.templates, &created_monomorphs, &mono_name) {
                     diagnostics.push(Diagnostic::error(format!(
                         "internal: synthesized monomorph name `{mono_name}` collides with \
                          a pre-existing template (impossible from source; this is a compiler bug)"
@@ -346,17 +344,19 @@ pub(crate) fn phase_auto_type_param_resolution(
                         // resolved in sigma (i.e., an auto-resolved type parameter).
                         // Keep `tp_name` in scope so the NotConstructible arm can look
                         // up the use-site span from `params`.
-                        let tp_name =
-                            if let Type::TypeParam(n) = &orig_cell.cell_type { n } else { continue };
+                        let tp_name = if let Type::TypeParam(n) = &orig_cell.cell_type {
+                            n
+                        } else {
+                            continue;
+                        };
                         let candidate_name = match sigma.get(tp_name.as_str()) {
                             Some(Type::StructureRef(cname)) => cname.clone(),
                             _ => continue,
                         };
-                        let candidate =
-                            match template_registry.get(candidate_name.as_str()) {
-                                Some(c) => *c,
-                                None => continue,
-                            };
+                        let candidate = match template_registry.get(candidate_name.as_str()) {
+                            Some(c) => *c,
+                            None => continue,
+                        };
                         // Constructible → set synthesized default on the monomorph cell.
                         // NotConstructible → emit E_AUTO_TYPE_PARAM_CANDIDATE_NOT_CONSTRUCTIBLE
                         //   and leave default_expr = None (no partial-Undef instance).
@@ -388,13 +388,15 @@ pub(crate) fn phase_auto_type_param_resolution(
                                     .with_code(
                                         DiagnosticCode::AutoTypeParamCandidateNotConstructible,
                                     )
-                                    .with_label(DiagnosticLabel::new(
-                                        span,
-                                        format!(
-                                            "resolved to '{}', which has required param '{}'",
-                                            candidate_name, required_param
+                                    .with_label(
+                                        DiagnosticLabel::new(
+                                            span,
+                                            format!(
+                                                "resolved to '{}', which has required param '{}'",
+                                                candidate_name, required_param
+                                            ),
                                         ),
-                                    )),
+                                    ),
                                 );
                                 // Leave default_expr = None — no partial-Undef instance.
                             }
@@ -412,8 +414,7 @@ pub(crate) fn phase_auto_type_param_resolution(
                     // Mix the mono name into the content_hash so two distinct
                     // monomorphs that clone the same source hash (e.g. Bearing$A
                     // vs Bearing$B) produce different cache keys.
-                    mono.content_hash =
-                        mono.content_hash.combine(ContentHash::of_str(&mono_name));
+                    mono.content_hash = mono.content_hash.combine(ContentHash::of_str(&mono_name));
                     new_mono_templates.push(mono);
                 }
                 // Record the structure_name rewrite for this use-site regardless
@@ -427,7 +428,12 @@ pub(crate) fn phase_auto_type_param_resolution(
             }
         }
 
-        (rewrites, subst_pairs, new_mono_templates, structure_name_rewrites)
+        (
+            rewrites,
+            subst_pairs,
+            new_mono_templates,
+            structure_name_rewrites,
+        )
     };
 
     // Pass 2 — push monomorph clones, apply structure_name and type_args rewrites.

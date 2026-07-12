@@ -8,7 +8,7 @@
 //! (c) `DiagnosticCode::TypeArgBound` on bound-violating type arg
 //!     (phase_pending_bound_checks walk, step-8).
 
-use reify_core::{diagnostics::DiagnosticCode, Severity, Type};
+use reify_core::{Severity, Type, diagnostics::DiagnosticCode};
 use reify_test_support::compile_source;
 
 // ─── Shared fixture source ───────────────────────────────────────────────────
@@ -145,8 +145,16 @@ fn applied_types_with_different_args_are_distinct() {
         .find(|t| t.name == "UseR")
         .expect("UseR must exist");
 
-    let p_cell = template_p.value_cells.iter().find(|vc| vc.id.member == "c").unwrap();
-    let r_cell = template_r.value_cells.iter().find(|vc| vc.id.member == "c").unwrap();
+    let p_cell = template_p
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "c")
+        .unwrap();
+    let r_cell = template_r
+        .value_cells
+        .iter()
+        .find(|vc| vc.id.member == "c")
+        .unwrap();
 
     assert_ne!(
         p_cell.cell_type, r_cell.cell_type,

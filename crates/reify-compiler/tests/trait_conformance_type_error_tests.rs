@@ -41,8 +41,8 @@
 //! no "type mismatch for trait let" cascade.  This scenario directly exercises
 //! the wildcard call-site that task-1936 targets.
 
-use reify_test_support::{compile_source, errors_only};
 use reify_core::Diagnostic;
+use reify_test_support::{compile_source, errors_only};
 
 // ── Shared assertion helper ───────────────────────────────────────────────────
 

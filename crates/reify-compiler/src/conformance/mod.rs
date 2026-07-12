@@ -52,8 +52,13 @@ pub(crate) fn check_trait_conformance(
     //   (c) declared_assoc_names for the anti-cascade poison sentinel.
     // This also moves the collect_structure_assoc_type_bindings call early so it
     // is not called twice (the result is reused below for phase 5).
-    let structure_assoc_type_bindings =
-        collect_structure_assoc_type_bindings(structure, alias_registry, structure_names, trait_names, diagnostics);
+    let structure_assoc_type_bindings = collect_structure_assoc_type_bindings(
+        structure,
+        alias_registry,
+        structure_names,
+        trait_names,
+        diagnostics,
+    );
     // Build assoc_type_scope = own bindings + trait defaults (own wins).
     let mut assoc_type_scope: HashMap<String, Type> = structure_assoc_type_bindings.clone();
     let mut declared_assoc_names: HashSet<String> = HashSet::new();
@@ -69,7 +74,9 @@ pub(crate) fn check_trait_conformance(
                     && let Some(n) = &def.name
                 {
                     declared_assoc_names.insert(n.clone());
-                    assoc_type_scope.entry(n.clone()).or_insert_with(|| ty.clone());
+                    assoc_type_scope
+                        .entry(n.clone())
+                        .or_insert_with(|| ty.clone());
                 }
             }
         }
@@ -163,13 +170,18 @@ pub(crate) fn check_trait_conformance(
     let mut conformer_member_names: HashSet<String> =
         structure_all_members.keys().cloned().collect();
     for req in &ctx.requirements {
-        if matches!(req.kind, RequirementKind::Param(_) | RequirementKind::Let(_)) {
+        if matches!(
+            req.kind,
+            RequirementKind::Param(_) | RequirementKind::Let(_)
+        ) {
             conformer_member_names.insert(req.name.clone());
         }
     }
     for def in &ctx.defaults {
-        if matches!(def.kind, DefaultKind::Param { .. } | DefaultKind::Let { .. })
-            && let Some(name) = &def.name
+        if matches!(
+            def.kind,
+            DefaultKind::Param { .. } | DefaultKind::Let { .. }
+        ) && let Some(name) = &def.name
         {
             conformer_member_names.insert(name.clone());
         }
@@ -375,8 +387,7 @@ pub(crate) fn check_param_default_conformance(
                 // Get the effective type, accounting for FunctionCall→StructureRef promotion
                 // (e.g. `Steel_AISI_1045()` may carry a numeric fallback result_type but
                 // its callee IS a known structure template → promote to StructureRef).
-                let promoted =
-                    promote_function_call_to_structure_ref(default, template_registry);
+                let promoted = promote_function_call_to_structure_ref(default, template_registry);
                 let effective_ty = promoted.as_ref().unwrap_or(&default.result_type);
                 // Conservatively skip when the effective type is plausibly structure-
                 // compatible at the eval level:
@@ -734,11 +745,7 @@ fn emit_leaf_conformance_for_arg_type(
 ///
 /// Modelled on [`emit_leaf_conformance_for_arg_type`]: one diagnostic, one label
 /// at `ctx.span`, message names the required structure and the offending type.
-fn emit_structure_ref_mismatch(
-    param_type: &Type,
-    arg_type: &Type,
-    ctx: &mut WalkCtx<'_>,
-) {
+fn emit_structure_ref_mismatch(param_type: &Type, arg_type: &Type, ctx: &mut WalkCtx<'_>) {
     ctx.diagnostics.push(
         Diagnostic::error(format!(
             "argument '{}' has type '{}' but param '{}' requires structure type '{}'",
@@ -817,12 +824,8 @@ fn emit_selector_mismatch(param_type: &Type, arg_type: &Type, ctx: &mut WalkCtx<
 /// body prevents the anti-cascade skip list from drifting between the two arms.
 ///
 /// Vector's bespoke arity logic (`emit_vector_mismatch`) is intentionally separate.
-fn reject_if_incompatible<F>(
-    param_type: &Type,
-    arg_ty: &Type,
-    ctx: &mut WalkCtx<'_>,
-    emit: F,
-) where
+fn reject_if_incompatible<F>(param_type: &Type, arg_ty: &Type, ctx: &mut WalkCtx<'_>, emit: F)
+where
     F: FnOnce(&Type, &Type, &mut WalkCtx<'_>),
 {
     if !matches!(
@@ -1844,7 +1847,12 @@ mod tests {
             required_members: vec![],
             defaults: vec![TraitDefault {
                 name: Some(fn_name.to_string()),
-                kind: DefaultKind::Fn(assoc_fn_def(fn_name, vec![assoc_self_param()], "Real", value)),
+                kind: DefaultKind::Fn(assoc_fn_def(
+                    fn_name,
+                    vec![assoc_self_param()],
+                    "Real",
+                    value,
+                )),
                 span: SourceSpan::empty(0),
             }],
             content_hash: ContentHash(0),
@@ -1932,8 +1940,14 @@ mod tests {
             assoc_fns
         );
         let entry = &assoc_fns[0];
-        assert_eq!(entry.trait_name, "Shape", "entry should be keyed by the declaring trait");
-        assert_eq!(entry.fn_name, "area", "entry should be keyed by the fn name");
+        assert_eq!(
+            entry.trait_name, "Shape",
+            "entry should be keyed by the declaring trait"
+        );
+        assert_eq!(
+            entry.fn_name, "area",
+            "entry should be keyed by the fn name"
+        );
         assert!(
             !entry.is_override,
             "a non-overridden default must have is_override == false; got: {:?}",
@@ -1958,7 +1972,11 @@ mod tests {
         let s_default = structure_s_conforming_shape(vec![]);
         let (_d0, assoc_default) =
             run_conformance_with_assoc_fns(&[shape_with_default_fn("area", 1.0)], &s_default, &[]);
-        assert_eq!(assoc_default.len(), 1, "default run should populate one entry");
+        assert_eq!(
+            assoc_default.len(),
+            1,
+            "default run should populate one entry"
+        );
         assert!(!assoc_default[0].is_override);
 
         // Override run: structure provides `fn area(self) -> Real { 2.0 }`.
@@ -1967,7 +1985,11 @@ mod tests {
         )]);
         let (_d1, assoc_override) =
             run_conformance_with_assoc_fns(&[shape_with_default_fn("area", 1.0)], &s_override, &[]);
-        assert_eq!(assoc_override.len(), 1, "override run should populate one entry");
+        assert_eq!(
+            assoc_override.len(),
+            1,
+            "override run should populate one entry"
+        );
         let entry = &assoc_override[0];
         assert_eq!(entry.trait_name, "Shape");
         assert_eq!(entry.fn_name, "area");
@@ -5386,7 +5408,10 @@ mod tests {
             visibility: Visibility::Private,
             is_aux: false,
             cell_type: Type::dimensionless_scalar(),
-            default_expr: Some(CompiledExpr::value_ref(ref_id, Type::dimensionless_scalar())),
+            default_expr: Some(CompiledExpr::value_ref(
+                ref_id,
+                Type::dimensionless_scalar(),
+            )),
             solver_hints: vec![],
             span: SourceSpan::empty(0),
         }
@@ -5750,11 +5775,10 @@ mod tests {
         .collect();
 
         let dj = marker_trait("DrivingJoint");
-        let trait_registry: HashMap<String, &CompiledTrait> =
-            [("DrivingJoint", &dj)]
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), v))
-                .collect();
+        let trait_registry: HashMap<String, &CompiledTrait> = [("DrivingJoint", &dj)]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect();
 
         let compiled_arg = CompiledExpr::value_ref(
             ValueCellId::new("Test", "x"),
@@ -5795,17 +5819,15 @@ mod tests {
     #[test]
     fn fn_arg_conformance_conforming_emits_no_diagnostic() {
         let conforming = template_with_bounds("Conforming", vec!["DrivingJoint"]);
-        let template_registry: HashMap<String, &TopologyTemplate> =
-            [("Conforming", &conforming)]
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), v))
-                .collect();
+        let template_registry: HashMap<String, &TopologyTemplate> = [("Conforming", &conforming)]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect();
         let dj = marker_trait("DrivingJoint");
-        let trait_registry: HashMap<String, &CompiledTrait> =
-            [("DrivingJoint", &dj)]
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), v))
-                .collect();
+        let trait_registry: HashMap<String, &CompiledTrait> = [("DrivingJoint", &dj)]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect();
 
         let compiled_arg = CompiledExpr::value_ref(
             ValueCellId::new("Test", "x"),
@@ -6017,10 +6039,7 @@ mod tests {
     fn structureref_param_rejects_string_arg() {
         let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
         let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
-        let compiled_arg = CompiledExpr::value_ref(
-            ValueCellId::new("Test", "x"),
-            Type::String,
-        );
+        let compiled_arg = CompiledExpr::value_ref(ValueCellId::new("Test", "x"), Type::String);
         let mut diagnostics: Vec<Diagnostic> = vec![];
         check_fn_arg_conformance(
             &Type::StructureRef("Part".to_string()),
@@ -6149,10 +6168,7 @@ mod tests {
         );
 
         // Type::Error — anti-cascade, check_fn_arg_conformance returns early.
-        let error_arg = CompiledExpr::value_ref(
-            ValueCellId::new("Test", "y"),
-            Type::Error,
-        );
+        let error_arg = CompiledExpr::value_ref(ValueCellId::new("Test", "y"), Type::Error);
         let mut diagnostics2: Vec<Diagnostic> = vec![];
         check_fn_arg_conformance(
             &Type::StructureRef("Part".to_string()),
@@ -6241,11 +6257,11 @@ mod tests {
         let template_registry: HashMap<String, &TopologyTemplate> = HashMap::new();
         let trait_registry: HashMap<String, &CompiledTrait> = HashMap::new();
         // Bare Real scalar: `1.0`
-        let compiled_arg = CompiledExpr::literal(
-            reify_ir::Value::Real(1.0),
-            Type::dimensionless_scalar(),
-        );
-        let param_type = Type::vec3(Type::Scalar { dimension: DimensionVector::LENGTH });
+        let compiled_arg =
+            CompiledExpr::literal(reify_ir::Value::Real(1.0), Type::dimensionless_scalar());
+        let param_type = Type::vec3(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        });
         let mut diagnostics: Vec<Diagnostic> = vec![];
         check_fn_arg_conformance(
             &param_type,
@@ -6294,7 +6310,9 @@ mod tests {
                 quantity: Box::new(Type::dimensionless_scalar()),
             },
         );
-        let param_type = Type::vec3(Type::Scalar { dimension: DimensionVector::LENGTH });
+        let param_type = Type::vec3(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        });
         let mut diagnostics: Vec<Diagnostic> = vec![];
         check_fn_arg_conformance(
             &param_type,
@@ -6333,7 +6351,9 @@ mod tests {
                 quantity: Box::new(Type::dimensionless_scalar()),
             },
         );
-        let param_type = Type::vec3(Type::Scalar { dimension: DimensionVector::LENGTH });
+        let param_type = Type::vec3(Type::Scalar {
+            dimension: DimensionVector::LENGTH,
+        });
         let mut diagnostics: Vec<Diagnostic> = vec![];
         check_fn_arg_conformance(
             &param_type,

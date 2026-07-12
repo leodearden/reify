@@ -336,8 +336,12 @@ fn vector3_two_type_args_resolves_applied_and_emits_arity_when_user_structure_ex
     let expected = Type::Applied {
         name: "Vector3".into(),
         args: vec![
-            Type::Scalar { dimension: DimensionVector::FORCE },
-            Type::Scalar { dimension: DimensionVector::LENGTH },
+            Type::Scalar {
+                dimension: DimensionVector::FORCE,
+            },
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
         ],
     };
     assert_eq!(cell_type, expected, "UseArity::v — expected {:?}", expected);
@@ -382,8 +386,12 @@ fn point3_two_type_args_resolves_applied_and_emits_arity_when_user_structure_exi
     let expected = Type::Applied {
         name: "Point3".into(),
         args: vec![
-            Type::Scalar { dimension: DimensionVector::FORCE },
-            Type::Scalar { dimension: DimensionVector::LENGTH },
+            Type::Scalar {
+                dimension: DimensionVector::FORCE,
+            },
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
         ],
     };
     assert_eq!(cell_type, expected, "UseArity::p — expected {:?}", expected);

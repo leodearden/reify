@@ -88,7 +88,10 @@ fn solve_elastic_static_has_seven_params() {
         7,
         "expected 7 params (material, length, width, height, loads, supports, options), \
          got {:?}",
-        f.params.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>()
+        f.params
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>()
     );
 }
 
@@ -328,7 +331,10 @@ fn constitutive_law_input_struct_is_retired() {
     // PRD §5) proves that structs DO land in `module.templates`, so the negative
     // probe is meaningful rather than vacuous.
     assert!(
-        module.templates.iter().any(|t| t.name == "FEAMaterialInput"),
+        module
+            .templates
+            .iter()
+            .any(|t| t.name == "FEAMaterialInput"),
         "FEAMaterialInput should be present in std/solver/elastic templates \
          (retained per PRD §5); absence would make the ConstitutiveLawInput \
          negative probe above untrustworthy"

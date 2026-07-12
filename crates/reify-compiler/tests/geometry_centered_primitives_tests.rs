@@ -10,8 +10,10 @@
 //!   arg count emits error.
 //! - Both: `try_infer_traits_for_function_call` returns `Some(InferredTraits::all())`.
 
+use reify_compiler::geometry_traits_inference::{
+    InferredTraits, try_infer_traits_for_function_call,
+};
 use reify_compiler::{CompiledGeometryOp, GeomRef, PrimitiveKind, TransformKind};
-use reify_compiler::geometry_traits_inference::{InferredTraits, try_infer_traits_for_function_call};
 use reify_core::{Severity, Type};
 use reify_ir::{BinOp, CompiledExprKind, Value};
 
@@ -19,7 +21,11 @@ use reify_ir::{BinOp, CompiledExprKind, Value};
 
 fn do_compile(source: &str) -> reify_compiler::CompiledModule {
     let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_centered"));
-    assert!(parsed.errors.is_empty(), "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
     reify_compiler::compile(&parsed)
 }
 
@@ -39,7 +45,10 @@ fn compile_no_errors(source: &str) -> reify_compiler::CompiledModule {
 }
 
 fn has_any_error(module: &reify_compiler::CompiledModule) -> bool {
-    module.diagnostics.iter().any(|d| d.severity == Severity::Error)
+    module
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -100,15 +109,19 @@ fn box_centered_lowering_matches_box() {
     // Both must be Primitive(Box) with identical arg-key ordering
     match (&ops_box[0], &ops_centered[0]) {
         (
-            CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, args: args_box },
-            CompiledGeometryOp::Primitive { kind: PrimitiveKind::Box, args: args_centered },
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: args_box,
+            },
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: args_centered,
+            },
         ) => {
             let keys_box: Vec<&str> = args_box.iter().map(|(k, _)| k.as_str()).collect();
-            let keys_centered: Vec<&str> =
-                args_centered.iter().map(|(k, _)| k.as_str()).collect();
+            let keys_centered: Vec<&str> = args_centered.iter().map(|(k, _)| k.as_str()).collect();
             assert_eq!(
-                keys_box,
-                keys_centered,
+                keys_box, keys_centered,
                 "arg keys differ between box and box_centered: box={keys_box:?}, centered={keys_centered:?}"
             );
             // Keys must be width / height / depth in that order
@@ -192,7 +205,10 @@ fn cylinder_centered_lowers_to_cylinder_plus_translate() {
 
     // op[0]: Primitive(Cylinder) with radius, height
     match &ops[0] {
-        CompiledGeometryOp::Primitive { kind: PrimitiveKind::Cylinder, args } => {
+        CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Cylinder,
+            args,
+        } => {
             let keys: Vec<&str> = args.iter().map(|(k, _)| k.as_str()).collect();
             assert_eq!(
                 keys,
@@ -266,20 +282,20 @@ fn cylinder_centered_lowers_to_cylinder_plus_translate() {
             );
 
             match &dz_expr.kind {
-                CompiledExprKind::BinOp { op: BinOp::Mul, right, .. } => {
-                    match &right.kind {
-                        CompiledExprKind::Literal(Value::Real(factor)) => {
-                            assert!(
-                                *factor < 0.0,
-                                "dz Mul factor must be negative (shift cylinder down by height/2), \
+                CompiledExprKind::BinOp {
+                    op: BinOp::Mul,
+                    right,
+                    ..
+                } => match &right.kind {
+                    CompiledExprKind::Literal(Value::Real(factor)) => {
+                        assert!(
+                            *factor < 0.0,
+                            "dz Mul factor must be negative (shift cylinder down by height/2), \
                                  got factor={factor}"
-                            );
-                        }
-                        other => panic!(
-                            "dz Mul right operand must be a Real literal, got: {other:?}"
-                        ),
+                        );
                     }
-                }
+                    other => panic!("dz Mul right operand must be a Real literal, got: {other:?}"),
+                },
                 other => panic!(
                     "dz expression must be Mul(height, -0.5) — \
                      alternative forms (UnOp::Neg / BinOp::Div) are not currently \
@@ -344,7 +360,10 @@ fn cylinder_centered_realization_root_is_translate() {
     assert!(
         matches!(
             ops.last().unwrap(),
-            CompiledGeometryOp::Transform { kind: TransformKind::Translate, .. }
+            CompiledGeometryOp::Transform {
+                kind: TransformKind::Translate,
+                ..
+            }
         ),
         "last op (realization root) must be Transform(Translate), got: {:#?}",
         ops.last()

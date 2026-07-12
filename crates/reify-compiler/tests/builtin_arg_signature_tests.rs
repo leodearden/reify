@@ -17,9 +17,7 @@ use reify_test_support::compile_source_with_stdlib;
 /// compile with the full stdlib prelude.  The caller provides the interior
 /// let-bindings; `b` (a `box(50mm,30mm,10mm)`) is always in scope.
 fn compile_struct_body(body: &str) -> reify_compiler::CompiledModule {
-    let source = format!(
-        "structure def Test {{\n    let b = box(50mm, 30mm, 10mm)\n{body}\n}}"
-    );
+    let source = format!("structure def Test {{\n    let b = box(50mm, 30mm, 10mm)\n{body}\n}}");
     compile_source_with_stdlib(&source)
 }
 
@@ -37,7 +35,9 @@ fn moment_of_inertia_bare_real_density_gives_arg_type_mismatch() {
     let arg_type_mismatches: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch) && d.severity == Severity::Error)
+        .filter(|d| {
+            d.code == Some(DiagnosticCode::ArgTypeMismatch) && d.severity == Severity::Error
+        })
         .collect();
     assert!(
         !arg_type_mismatches.is_empty(),
@@ -66,9 +66,8 @@ fn moment_of_inertia_bare_real_density_gives_arg_type_mismatch() {
 /// `ArgTypeMismatch` diagnostic (both before and after wiring).
 #[test]
 fn moment_of_inertia_dimensioned_density_gives_no_arg_type_mismatch() {
-    let compiled = compile_struct_body(
-        "    let d = 7850kg/m^3\n    let i = moment_of_inertia(b, d)\n",
-    );
+    let compiled =
+        compile_struct_body("    let d = 7850kg/m^3\n    let i = moment_of_inertia(b, d)\n");
     let arg_type_mismatches: Vec<_> = compiled
         .diagnostics
         .iter()
@@ -97,7 +96,9 @@ fn faces_by_normal_length_tol_gives_arg_type_mismatch() {
     let arg_type_mismatches: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch) && d.severity == Severity::Error)
+        .filter(|d| {
+            d.code == Some(DiagnosticCode::ArgTypeMismatch) && d.severity == Severity::Error
+        })
         .collect();
     assert!(
         !arg_type_mismatches.is_empty(),
@@ -141,13 +142,13 @@ fn faces_by_normal_angle_tol_gives_no_arg_type_mismatch() {
 /// the compiler must emit an `ArgTypeMismatch` Error naming "Length".
 #[test]
 fn edges_at_height_bare_real_h_gives_arg_type_mismatch() {
-    let compiled = compile_struct_body(
-        "    let sel = edges_at_height(b, 5.0, 0.01mm)\n",
-    );
+    let compiled = compile_struct_body("    let sel = edges_at_height(b, 5.0, 0.01mm)\n");
     let arg_type_mismatches: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.code == Some(DiagnosticCode::ArgTypeMismatch) && d.severity == Severity::Error)
+        .filter(|d| {
+            d.code == Some(DiagnosticCode::ArgTypeMismatch) && d.severity == Severity::Error
+        })
         .collect();
     assert!(
         !arg_type_mismatches.is_empty(),
@@ -169,9 +170,7 @@ fn edges_at_height_bare_real_h_gives_arg_type_mismatch() {
 /// correct forms.  Must compile with NO `ArgTypeMismatch` diagnostic.
 #[test]
 fn edges_at_height_length_args_give_no_arg_type_mismatch() {
-    let compiled = compile_struct_body(
-        "    let sel = edges_at_height(b, 5mm, 0.01mm)\n",
-    );
+    let compiled = compile_struct_body("    let sel = edges_at_height(b, 5mm, 0.01mm)\n");
     let arg_type_mismatches: Vec<_> = compiled
         .diagnostics
         .iter()

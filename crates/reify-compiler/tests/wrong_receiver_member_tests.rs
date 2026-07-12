@@ -401,9 +401,10 @@ structure Holder {
     let m = compile_source(source);
 
     // No "has no member" error — valid member must not be poisoned
-    let has_no_member_err = m.diagnostics.iter().any(|d| {
-        d.severity == Severity::Error && d.message.contains("has no member")
-    });
+    let has_no_member_err = m
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error && d.message.contains("has no member"));
     assert!(
         !has_no_member_err,
         "unexpected 'has no member' error on valid member w.mass; diagnostics = {:#?}",

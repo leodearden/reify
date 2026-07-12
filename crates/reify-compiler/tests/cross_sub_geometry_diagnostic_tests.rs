@@ -53,8 +53,8 @@
 //! generic-fallback regression guard.
 
 use reify_compiler::{CompiledGeometryOp, GeomRef, TransformKind};
-use reify_test_support::compile_source;
 use reify_core::Severity;
+use reify_test_support::compile_source;
 
 // ─── helper ───────────────────────────────────────────────────────────────────
 

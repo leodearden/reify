@@ -784,9 +784,15 @@ fn type_compatible_error_wildcard_mirror_all_variants() {
         ("String", Type::String),
         ("Scalar[m]", Type::length()),
         ("List<Int>", Type::List(Box::new(Type::Int))),
-        ("Option<Real>", Type::Option(Box::new(Type::dimensionless_scalar()))),
+        (
+            "Option<Real>",
+            Type::Option(Box::new(Type::dimensionless_scalar())),
+        ),
         ("Vector<3,Real>", Type::vec3(Type::dimensionless_scalar())),
-        ("Matrix<3,3,Real>", Type::matrix(3, 3, Type::dimensionless_scalar())),
+        (
+            "Matrix<3,3,Real>",
+            Type::matrix(3, 3, Type::dimensionless_scalar()),
+        ),
     ];
     for (label, param_ty) in &cases {
         assert!(

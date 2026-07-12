@@ -396,11 +396,9 @@ fn try_desugar_determinacy_intrinsic(
     // would cascade into the scope guard — a different, less informative error).
     let mut arg_error = |msg: String| -> Option<Result<reify_ast::Expr, ()>> {
         diagnostics.push(
-            Diagnostic::error(format!(
-                "E_DETERMINACY_INTRINSIC_ARG: {msg}"
-            ))
-            .with_label(DiagnosticLabel::new(expr.span, "intrinsic call here"))
-            .with_code(DiagnosticCode::DeterminacyIntrinsicArg),
+            Diagnostic::error(format!("E_DETERMINACY_INTRINSIC_ARG: {msg}"))
+                .with_label(DiagnosticLabel::new(expr.span, "intrinsic call here"))
+                .with_code(DiagnosticCode::DeterminacyIntrinsicArg),
         );
         Some(Err(()))
     };
@@ -484,7 +482,9 @@ fn compile_constraint_expr_desugared(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> CompiledExpr {
     match try_desugar_determinacy_intrinsic(expr, scope, diagnostics) {
-        Some(Ok(ref rewritten)) => compile_expr(rewritten, scope, enum_defs, functions, diagnostics),
+        Some(Ok(ref rewritten)) => {
+            compile_expr(rewritten, scope, enum_defs, functions, diagnostics)
+        }
         Some(Err(())) => {
             // Arg error — diagnostic already pushed; emit poison to keep
             // constraint indices stable and suppress cascading errors.
@@ -611,37 +611,30 @@ pub(crate) fn compile_purpose(
                 // The condition is compiled once; cloned for each where-arm implication
                 // and negated+cloned for each else-arm implication, ensuring per-param β
                 // stamping is applied identically across all arms.
-                let cond = compile_expr(
-                    &g.condition,
-                    &scope,
-                    enum_defs,
-                    functions,
-                    diagnostics,
-                );
+                let cond = compile_expr(&g.condition, &scope, enum_defs, functions, diagnostics);
 
                 // Helper closure: emit an implication constraint from an already-compiled
                 // body expression.
-                let emit_implies =
-                    |antecedent: CompiledExpr,
-                     body: CompiledExpr,
-                     label: Option<String>,
-                     span: SourceSpan,
-                     constraints: &mut Vec<CompiledConstraint>,
-                     idx: &mut u32| {
-                        let implied_expr =
-                            CompiledExpr::binop(BinOp::Implies, antecedent, body, Type::Bool);
-                        let id = ConstraintNodeId::new(purpose_name, *idx);
-                        constraints.push(CompiledConstraint {
-                            id,
-                            label,
-                            expr: implied_expr,
-                            span,
-                            domain: None,
-                            optimized_target: None,
-                            arg_bindings: Vec::new(),
-                        });
-                        *idx += 1;
-                    };
+                let emit_implies = |antecedent: CompiledExpr,
+                                    body: CompiledExpr,
+                                    label: Option<String>,
+                                    span: SourceSpan,
+                                    constraints: &mut Vec<CompiledConstraint>,
+                                    idx: &mut u32| {
+                    let implied_expr =
+                        CompiledExpr::binop(BinOp::Implies, antecedent, body, Type::Bool);
+                    let id = ConstraintNodeId::new(purpose_name, *idx);
+                    constraints.push(CompiledConstraint {
+                        id,
+                        label,
+                        expr: implied_expr,
+                        span,
+                        domain: None,
+                        optimized_target: None,
+                        arg_bindings: Vec::new(),
+                    });
+                    *idx += 1;
+                };
 
                 // Process both where-arm (g.members) and else-arm (g.else_members) through
                 // the same per-member logic.  The only difference between the two arms is
@@ -652,7 +645,7 @@ pub(crate) fn compile_purpose(
                 // the Let and unsupported arms across the two loops.
                 let arms: [(&[reify_ast::MemberDecl], bool); 2] = [
                     (g.members.as_slice(), false),     // ── where-arm ──
-                    (g.else_members.as_slice(), true),  // ── else-arm  ──
+                    (g.else_members.as_slice(), true), // ── else-arm  ──
                 ];
                 for (members, negate) in &arms {
                     for m in *members {
@@ -716,10 +709,8 @@ pub(crate) fn compile_purpose(
                                     functions,
                                     diagnostics,
                                 );
-                                let cell_id = ValueCellId::new(
-                                    purpose_name.as_str(),
-                                    let_decl.name.as_str(),
-                                );
+                                let cell_id =
+                                    ValueCellId::new(purpose_name.as_str(), let_decl.name.as_str());
                                 lets.push(CompiledPurposeLet {
                                     name: let_decl.name.clone(),
                                     cell_id,
@@ -733,13 +724,12 @@ pub(crate) fn compile_purpose(
                                 // inside a purpose guarded block; emit the same pattern used by
                                 // the sibling top-level reject arms.
                                 let (msg, span) = unsupported_purpose_member_info(unsupported);
-                                diagnostics.push(
-                                    Diagnostic::error(msg)
-                                        .with_label(DiagnosticLabel::new(
-                                            span,
-                                            "unsupported in purpose".to_string(),
-                                        )),
-                                );
+                                diagnostics.push(Diagnostic::error(msg).with_label(
+                                    DiagnosticLabel::new(
+                                        span,
+                                        "unsupported in purpose".to_string(),
+                                    ),
+                                ));
                             }
                         }
                     }
@@ -901,10 +891,8 @@ pub(crate) fn compile_purpose(
 
             // Resolve "params" query: all Param and Auto value cells (pushed first,
             // preserving [0]-positional readers that pre-date task-4137).
-            let param_ids: Vec<ValueCellId> = param_auto_cells
-                .iter()
-                .map(|vc| vc.id.clone())
-                .collect();
+            let param_ids: Vec<ValueCellId> =
+                param_auto_cells.iter().map(|vc| vc.id.clone()).collect();
             if !param_ids.is_empty() {
                 resolved_queries.push(ResolvedSchemaQuery {
                     param_name: param.name.clone(),
@@ -1322,7 +1310,10 @@ mod tests {
 
         // `type Material` must NOT appear as a default.
         assert!(
-            !compiled.defaults.iter().any(|d| d.name.as_deref() == Some("Material")),
+            !compiled
+                .defaults
+                .iter()
+                .any(|d| d.name.as_deref() == Some("Material")),
             "a bodyless AssociatedType must not produce a default"
         );
 

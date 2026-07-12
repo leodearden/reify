@@ -81,10 +81,7 @@ structure Parent {
         plate.pose.is_none(),
         "expected plate.pose = None for plain sub"
     );
-    assert!(
-        !plate.is_aux,
-        "expected plate.is_aux = false for plain sub"
-    );
+    assert!(!plate.is_aux, "expected plate.is_aux = false for plain sub");
 }
 
 // ── Step 3: ValueCellDecl.is_aux and pub⊥aux orthogonality ──────────────────

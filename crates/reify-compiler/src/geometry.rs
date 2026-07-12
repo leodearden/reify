@@ -174,16 +174,20 @@ pub(crate) fn is_selector_expr(
                 // explicitly here; without this, `let s = faces_perpendicular_to(b,..)`
                 // would route to the CSG geometry-let path and never mint a
                 // Value::Selector.
-                "faces_perpendicular_to" | "edges_perpendicular_to" | "faces_by_surface_kind"
-                | "edges_by_curve_kind" | "extremal_by_bbox" | "extremal_by_centroid" => true,
+                "faces_perpendicular_to"
+                | "edges_perpendicular_to"
+                | "faces_by_surface_kind"
+                | "edges_by_curve_kind"
+                | "extremal_by_bbox"
+                | "extremal_by_centroid" => true,
                 // ── Selector composition (recursive) ────────────────────────────────
                 // "union" and "difference" are also CSG names, so we recurse to check
                 // that at least one operand is itself a selector expr before committing.
                 // "intersect" is not a geometry function (never reached CSG path), but
                 // we still validate that its operands look like selectors for clarity.
-                "union" | "intersect" | "difference" => {
-                    args.iter().any(|arg| is_selector_expr(arg, functions, known_selector_lets))
-                }
+                "union" | "intersect" | "difference" => args
+                    .iter()
+                    .any(|arg| is_selector_expr(arg, functions, known_selector_lets)),
                 _ => false,
             }
         }
@@ -229,7 +233,9 @@ pub(crate) fn is_geometry_let(
             // a silent Undef via the selector path.
             let is_selector_composition =
                 matches!(name.as_str(), "union" | "intersect" | "difference")
-                    && args.iter().any(|a| is_selector_expr(a, functions, known_selector_lets));
+                    && args
+                        .iter()
+                        .any(|a| is_selector_expr(a, functions, known_selector_lets));
             is_geometry_function(name)
                 && !functions.iter().any(|f| f.name == *name)
                 && !is_kinematic_sweep
@@ -246,13 +252,27 @@ pub(crate) fn is_geometry_let(
             else_branch,
             ..
         } => {
-            is_geometry_let(then_branch, functions, known_geometry_lets, known_selector_lets)
-                || is_geometry_let(else_branch, functions, known_geometry_lets, known_selector_lets)
+            is_geometry_let(
+                then_branch,
+                functions,
+                known_geometry_lets,
+                known_selector_lets,
+            ) || is_geometry_let(
+                else_branch,
+                functions,
+                known_geometry_lets,
+                known_selector_lets,
+            )
         }
         // Match — see rustdoc above for rationale (task 3418).
-        reify_ast::ExprKind::Match { arms, .. } => arms
-            .iter()
-            .any(|arm| is_geometry_let(&arm.body, functions, known_geometry_lets, known_selector_lets)),
+        reify_ast::ExprKind::Match { arms, .. } => arms.iter().any(|arm| {
+            is_geometry_let(
+                &arm.body,
+                functions,
+                known_geometry_lets,
+                known_selector_lets,
+            )
+        }),
         // Future branching/wrapping ExprKinds (e.g. pipe expressions,
         // try/else-style fallbacks) extend here with the same
         // any-sub-yields-geometry pattern.  Note: ExprKind has no Block variant
@@ -403,9 +423,7 @@ fn resolve_loft_like_args(
 /// AST shape.  Callers apply their own domain-specific filters on top (e.g. the
 /// `collection_sub_names` check in `try_resolve_cross_sub_geom_ref`, or the
 /// `try_emit_cross_sub_geometry` call in `geometry_boolean.rs`).
-pub(crate) fn match_self_sub_member(
-    expr: &reify_ast::Expr,
-) -> Option<(&str, &str)> {
+pub(crate) fn match_self_sub_member(expr: &reify_ast::Expr) -> Option<(&str, &str)> {
     if let reify_ast::ExprKind::MemberAccess { object, member } = &expr.kind
         && let reify_ast::ExprKind::MemberAccess {
             object: inner_obj,
@@ -519,9 +537,7 @@ fn are_scalar_equal(a: &reify_ast::Expr, b: &reify_ast::Expr) -> bool {
                 is_real: rb,
             },
         ) => va == vb && ra == rb,
-        (reify_ast::ExprKind::BoolLiteral(va), reify_ast::ExprKind::BoolLiteral(vb)) => {
-            va == vb
-        }
+        (reify_ast::ExprKind::BoolLiteral(va), reify_ast::ExprKind::BoolLiteral(vb)) => va == vb,
         (reify_ast::ExprKind::Ident(na), reify_ast::ExprKind::Ident(nb)) => na == nb,
         _ => false,
     }
@@ -596,32 +612,30 @@ fn merge_branches(
     // to a (potentially geometry-typed) expression so the outer match can
     // compare geometry constructors.
     let a_owned;
-    let a_eff: &reify_ast::Expr =
-        if let reify_ast::ExprKind::Conditional {
-            condition: c2,
-            then_branch: t2,
-            else_branch: e2,
-        } = &a.kind
-        {
-            a_owned = merge_branches(c2, t2, e2, functions, a.span);
-            &a_owned
-        } else {
-            a
-        };
+    let a_eff: &reify_ast::Expr = if let reify_ast::ExprKind::Conditional {
+        condition: c2,
+        then_branch: t2,
+        else_branch: e2,
+    } = &a.kind
+    {
+        a_owned = merge_branches(c2, t2, e2, functions, a.span);
+        &a_owned
+    } else {
+        a
+    };
 
     let b_owned;
-    let b_eff: &reify_ast::Expr =
-        if let reify_ast::ExprKind::Conditional {
-            condition: c2,
-            then_branch: t2,
-            else_branch: e2,
-        } = &b.kind
-        {
-            b_owned = merge_branches(c2, t2, e2, functions, b.span);
-            &b_owned
-        } else {
-            b
-        };
+    let b_eff: &reify_ast::Expr = if let reify_ast::ExprKind::Conditional {
+        condition: c2,
+        then_branch: t2,
+        else_branch: e2,
+    } = &b.kind
+    {
+        b_owned = merge_branches(c2, t2, e2, functions, b.span);
+        &b_owned
+    } else {
+        b
+    };
 
     if let (
         reify_ast::ExprKind::FunctionCall {
@@ -1234,7 +1248,8 @@ pub(crate) fn compile_geometry_call(
                 CompiledExpr::literal(Value::Real(-0.5), reify_core::Type::dimensionless_scalar()),
                 height.result_type.clone(),
             );
-            let zero = CompiledExpr::literal(Value::Real(0.0), reify_core::Type::dimensionless_scalar());
+            let zero =
+                CompiledExpr::literal(Value::Real(0.0), reify_core::Type::dimensionless_scalar());
 
             // Cylinder lands at step_offset (sub_ops was empty entering this arm).
             let cylinder_step = step_offset;
@@ -1335,9 +1350,10 @@ pub(crate) fn compile_geometry_call(
             }
             Some(vec![CompiledGeometryOp::Profile {
                 kind: ProfileKind::Circle,
-                args: vec![
-                    ("radius".to_string(), compiled_args.into_iter().next().unwrap()),
-                ],
+                args: vec![(
+                    "radius".to_string(),
+                    compiled_args.into_iter().next().unwrap(),
+                )],
             }])
         }
         // polygon(x1,y1, x2,y2, ...) → CompiledGeometryOp::Profile(Polygon)
@@ -1397,7 +1413,8 @@ pub(crate) fn compile_geometry_call(
         // Point on the boundary plane (px,py,pz) + outward normal (nx,ny,nz) toward
         // the retained material side. Unbounded (Bounded=false) — first Bounded=false producer.
         "half_space" => {
-            if !check_arg_count_exact("half_space", compiled_args.len(), 6, expr.span, diagnostics) {
+            if !check_arg_count_exact("half_space", compiled_args.len(), 6, expr.span, diagnostics)
+            {
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -1485,7 +1502,9 @@ pub(crate) fn compile_geometry_call(
                 Some(sub_ops)
             } else {
                 push_labeled_arg_count_error(
-                    format!("circular_pattern() expects 9 arguments (scalar) or 4 (axis-value), got {n}"),
+                    format!(
+                        "circular_pattern() expects 9 arguments (scalar) or 4 (axis-value), got {n}"
+                    ),
                     expr.span,
                     diagnostics,
                 );
@@ -1791,8 +1810,10 @@ pub(crate) fn compile_geometry_call(
             let ay = it.next().unwrap();
             let az = it.next().unwrap();
             // Inject literal 2π for the angle
-            let tau_expr =
-                CompiledExpr::literal(Value::Real(std::f64::consts::TAU), reify_core::Type::dimensionless_scalar());
+            let tau_expr = CompiledExpr::literal(
+                Value::Real(std::f64::consts::TAU),
+                reify_core::Type::dimensionless_scalar(),
+            );
             let profile = geom_ref(0);
             let op = CompiledGeometryOp::Sweep {
                 kind: SweepKind::Revolve,
@@ -1970,10 +1991,7 @@ pub(crate) fn compile_geometry_call(
             let radius = CompiledExpr::binop(
                 BinOp::Mul,
                 width.clone(),
-                CompiledExpr::literal(
-                    Value::Real(0.5),
-                    reify_core::Type::dimensionless_scalar(),
-                ),
+                CompiledExpr::literal(Value::Real(0.5), reify_core::Type::dimensionless_scalar()),
                 width.result_type.clone(),
             );
             let op = CompiledGeometryOp::Sweep {
@@ -2017,9 +2035,9 @@ pub(crate) fn compile_geometry_call(
             );
             let mut iter = compiled_args.into_iter();
             let _axis = iter.next().unwrap(); // arg0: axis (geometry; path_ref handles geometry side)
-            let r = iter.next().unwrap();     // arg1: nominal_radius (Length)
-            let w = iter.next().unwrap();     // arg2: zone width (Length)
-            let _l = iter.next().unwrap();    // arg3: zone length (validated; axis wire supplies extent)
+            let r = iter.next().unwrap(); // arg1: nominal_radius (Length)
+            let w = iter.next().unwrap(); // arg2: zone width (Length)
+            let _l = iter.next().unwrap(); // arg3: zone length (validated; axis wire supplies extent)
 
             // half_w = w * 0.5  (same Length dimension)
             let half_w = CompiledExpr::binop(
@@ -2029,18 +2047,9 @@ pub(crate) fn compile_geometry_call(
                 w.result_type.clone(),
             );
             // outer_r = R + w/2, inner_r = R - w/2
-            let outer_r = CompiledExpr::binop(
-                BinOp::Add,
-                r.clone(),
-                half_w.clone(),
-                r.result_type.clone(),
-            );
-            let inner_r = CompiledExpr::binop(
-                BinOp::Sub,
-                r.clone(),
-                half_w,
-                r.result_type.clone(),
-            );
+            let outer_r =
+                CompiledExpr::binop(BinOp::Add, r.clone(), half_w.clone(), r.result_type.clone());
+            let inner_r = CompiledExpr::binop(BinOp::Sub, r.clone(), half_w, r.result_type.clone());
 
             // Track absolute step indices for the Boolean Difference.
             let outer_step = step_offset + sub_ops.len(); // step after axis wire
@@ -2084,7 +2093,7 @@ pub(crate) fn compile_geometry_call(
             }
             let mut iter = compiled_args.into_iter();
             let solid_expr = iter.next().unwrap(); // arg0: solid (geometry; also compiled as scalar)
-            let w = iter.next().unwrap();           // arg1: zone width (Length)
+            let w = iter.next().unwrap(); // arg1: zone width (Length)
 
             let solid_target = geom_ref(0); // the input solid
 
@@ -2130,14 +2139,16 @@ pub(crate) fn compile_geometry_call(
             Some(sub_ops)
         }
         // --- Transforms ---
-        "translate" | "rotate" | "scale" | "rotate_around" | "apply_transform" | "affine_apply" => compile_transform_op(
-            name,
-            compiled_args,
-            geom_ref(0),
-            expr.span,
-            diagnostics,
-            sub_ops,
-        ),
+        "translate" | "rotate" | "scale" | "rotate_around" | "apply_transform" | "affine_apply" => {
+            compile_transform_op(
+                name,
+                compiled_args,
+                geom_ref(0),
+                expr.span,
+                diagnostics,
+                sub_ops,
+            )
+        }
         // --- Modify extensions ---
         // These modifiers take a geometry target as their first argument (correctly
         // resolved from geom_refs via geom_ref(0)) and are registered in geometry_arg_indices().
@@ -2159,7 +2170,13 @@ pub(crate) fn compile_geometry_call(
         // nurbs_surface(control_points, weights, u_knots, v_knots, u_degree, v_degree)
         // → CompiledGeometryOp::Surface { kind: SurfaceKind::Nurbs, args }
         "nurbs_surface" => {
-            if !check_arg_count_exact("nurbs_surface", compiled_args.len(), 6, expr.span, diagnostics) {
+            if !check_arg_count_exact(
+                "nurbs_surface",
+                compiled_args.len(),
+                6,
+                expr.span,
+                diagnostics,
+            ) {
                 return None;
             }
             let mut it = compiled_args.into_iter();
@@ -2184,7 +2201,13 @@ pub(crate) fn compile_geometry_call(
         // eval-lowering defaults (iso_level=0.0, adaptive=false) rather than
         // being defaulted here.
         "isosurface" => {
-            if !check_arg_count_at_least("isosurface", compiled_args.len(), 1, expr.span, diagnostics) {
+            if !check_arg_count_at_least(
+                "isosurface",
+                compiled_args.len(),
+                1,
+                expr.span,
+                diagnostics,
+            ) {
                 return None;
             }
             if compiled_args.len() > 3 {
@@ -2341,23 +2364,19 @@ mod tests {
         use reify_ir::geometry::ParentRole;
         for d in reify_ir::geometry::GEOMETRY_OP_DESCRIPTORS {
             match d.parent_role {
-                ParentRole::Pair
-                | ParentRole::VariadicProfiles
-                | ParentRole::TopologySelector => continue,
+                ParentRole::Pair | ParentRole::VariadicProfiles | ParentRole::TopologySelector => {
+                    continue;
+                }
                 _ => {}
             }
             for &name in d.names {
                 let expect = expects_geom_arg(name, d.parent_role);
                 let got_empty = geometry_arg_indices(name).is_empty();
                 assert_eq!(
-                    got_empty,
-                    !expect,
+                    got_empty, !expect,
                     "geometry_arg_indices({:?}) emptiness={} but expects_geom_arg={} \
                      (parent_role={:?}) — update geometry_arg_indices or expects_geom_arg",
-                    name,
-                    got_empty,
-                    expect,
-                    d.parent_role
+                    name, got_empty, expect, d.parent_role
                 );
             }
         }
@@ -2613,7 +2632,10 @@ mod tests {
         use reify_ir::geometry::ParentRole;
         match name {
             "pipe" => true,
-            _ => matches!(parent_role, ParentRole::SingleTarget | ParentRole::SingleProfile),
+            _ => matches!(
+                parent_role,
+                ParentRole::SingleTarget | ParentRole::SingleProfile
+            ),
         }
     }
 
@@ -2630,9 +2652,15 @@ mod tests {
         // Override: pipe is ParentRole::None but takes a geom arg.
         assert!(expects_geom_arg("pipe", ParentRole::None));
         // arbitrary_pattern (task 4168) now follows the default SingleTarget rule.
-        assert!(expects_geom_arg("arbitrary_pattern", ParentRole::SingleTarget));
+        assert!(expects_geom_arg(
+            "arbitrary_pattern",
+            ParentRole::SingleTarget
+        ));
         // linear_pattern_2d (task 5009) now also follows the default SingleTarget rule.
-        assert!(expects_geom_arg("linear_pattern_2d", ParentRole::SingleTarget));
+        assert!(expects_geom_arg(
+            "linear_pattern_2d",
+            ParentRole::SingleTarget
+        ));
     }
 
     // ─── first_duplicate primitive (step-3, task-4672) ──────────────────────
@@ -3057,8 +3085,7 @@ mod tests {
     param c: Length = 1mm
     let result = loft_guided(a, b, c)
 }"#;
-        let parsed =
-            reify_syntax::parse(source, reify_core::ModulePath::single("test_lg_nongeom"));
+        let parsed = reify_syntax::parse(source, reify_core::ModulePath::single("test_lg_nongeom"));
         let compiled = crate::compile(&parsed);
         let template = &compiled.templates[0];
         // An op should still be produced with fallback GeomRef::Step refs
@@ -3113,7 +3140,12 @@ mod tests {
         // below.  Using identical 1.0 markers for every slot would hide such regressions.
         fn make_args(n: usize) -> Vec<CompiledExpr> {
             (0..n)
-                .map(|i| CompiledExpr::literal(Value::Real(i as f64), reify_core::Type::dimensionless_scalar()))
+                .map(|i| {
+                    CompiledExpr::literal(
+                        Value::Real(i as f64),
+                        reify_core::Type::dimensionless_scalar(),
+                    )
+                })
                 .collect()
         }
 
@@ -4192,10 +4224,7 @@ mod tests {
 
     /// Helper: build a `Match` Expr from a discriminant Expr and a slice of arm body Exprs.
     /// Each arm gets a single string pattern ("X", "Y", "Z", ...) assigned in order.
-    fn make_match(
-        discriminant: reify_ast::Expr,
-        bodies: Vec<reify_ast::Expr>,
-    ) -> reify_ast::Expr {
+    fn make_match(discriminant: reify_ast::Expr, bodies: Vec<reify_ast::Expr>) -> reify_ast::Expr {
         let pattern_names = ["X", "Y", "Z", "W", "V"];
         let arms = bodies
             .into_iter()
@@ -4574,7 +4603,10 @@ mod tests {
                     assert_eq!(name, "box", "sub-arg {} should be box", i);
                     args
                 }
-                other => panic!("sub-arg {}: expected FunctionCall{{box}}, got {:?}", i, other),
+                other => panic!(
+                    "sub-arg {}: expected FunctionCall{{box}}, got {:?}",
+                    i, other
+                ),
             };
             assert_eq!(sub_args.len(), 3);
             for sub_arg in sub_args {
@@ -4933,7 +4965,10 @@ mod tests {
             }
             other => panic!("expected Primitive(Cone), got {:?}", other),
         }
-        assert!(diagnostics.is_empty(), "cone(_, _, _) must emit no diagnostics");
+        assert!(
+            diagnostics.is_empty(),
+            "cone(_, _, _) must emit no diagnostics"
+        );
     }
 
     /// `cone(10mm, 5mm)` (2 args) must emit an arity diagnostic and return `None`.
@@ -5014,7 +5049,10 @@ mod tests {
             }
             other => panic!("expected Primitive(Wedge), got {:?}", other),
         }
-        assert!(diagnostics.is_empty(), "wedge(_, _, _, _) must emit no diagnostics");
+        assert!(
+            diagnostics.is_empty(),
+            "wedge(_, _, _, _) must emit no diagnostics"
+        );
     }
 
     /// `wedge(10mm, 5mm, 20mm)` (3 args) must emit an arity diagnostic and return `None`.
@@ -5096,7 +5134,10 @@ mod tests {
             }
             other => panic!("expected Profile(Rectangle), got {:?}", other),
         }
-        assert!(diagnostics.is_empty(), "rectangle(_, _) must emit no diagnostics");
+        assert!(
+            diagnostics.is_empty(),
+            "rectangle(_, _) must emit no diagnostics"
+        );
     }
 
     /// `rectangle(10mm)` (1 arg) must emit an arity diagnostic and return `None`.
@@ -5256,7 +5297,10 @@ mod tests {
             }
             other => panic!("expected Profile(Polygon), got {:?}", other),
         }
-        assert!(diagnostics.is_empty(), "polygon with 6 args must emit no diagnostics");
+        assert!(
+            diagnostics.is_empty(),
+            "polygon with 6 args must emit no diagnostics"
+        );
     }
 
     /// `polygon(0mm,0mm, 10mm,0mm, 10mm)` (5 args — odd, not multiple of 2) must
@@ -5373,7 +5417,10 @@ mod tests {
             }
             other => panic!("expected Profile(Ellipse), got {:?}", other),
         }
-        assert!(diagnostics.is_empty(), "ellipse(_, _) must emit no diagnostics");
+        assert!(
+            diagnostics.is_empty(),
+            "ellipse(_, _) must emit no diagnostics"
+        );
     }
 
     /// `ellipse(10mm)` (1 arg) must emit an arity diagnostic and return `None`.
@@ -5450,13 +5497,23 @@ mod tests {
                 let names: Vec<&str> = args.iter().map(|(n, _)| n.as_str()).collect();
                 assert_eq!(
                     names,
-                    vec!["control_points", "weights", "u_knots", "v_knots", "u_degree", "v_degree"],
+                    vec![
+                        "control_points",
+                        "weights",
+                        "u_knots",
+                        "v_knots",
+                        "u_degree",
+                        "v_degree"
+                    ],
                     "nurbs_surface arg names must be control_points / weights / u_knots / v_knots / u_degree / v_degree"
                 );
             }
             other => panic!("expected Surface(Nurbs), got {:?}", other),
         }
-        assert!(diagnostics.is_empty(), "nurbs_surface(6 args) must emit no diagnostics");
+        assert!(
+            diagnostics.is_empty(),
+            "nurbs_surface(6 args) must emit no diagnostics"
+        );
     }
 
     /// `nurbs_surface(cp, w, uk, vk, ud)` (5 args, wrong arity) must emit an
@@ -5550,7 +5607,10 @@ mod tests {
             }
             other => panic!("expected Isosurface, got {:?}", other),
         }
-        assert!(diagnostics.is_empty(), "isosurface(g) must emit no diagnostics");
+        assert!(
+            diagnostics.is_empty(),
+            "isosurface(g) must emit no diagnostics"
+        );
     }
 
     /// Named `isosurface(g, iso: 5mm, adaptive: true)` (3 args) must carry both
@@ -5591,7 +5651,10 @@ mod tests {
             }
             other => panic!("expected Isosurface, got {:?}", other),
         }
-        assert!(diagnostics.is_empty(), "isosurface(g, iso, adaptive) must emit no diagnostics");
+        assert!(
+            diagnostics.is_empty(),
+            "isosurface(g, iso, adaptive) must emit no diagnostics"
+        );
     }
 
     /// `isosurface()` (0 args, missing the required grid operand) must emit an

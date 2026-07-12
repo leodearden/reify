@@ -47,13 +47,10 @@ fn affine_constructors_type_as_affine_map_3() {
 
     // affine_identity() is zero-arg, but registration means it must NOT trip the
     // first-arg/zero-arg fallback warning.
-    let zero_arg_warning = compiled
-        .diagnostics
-        .iter()
-        .find(|d| {
-            d.message
-                .contains("cannot infer return type of zero-arg function")
-        });
+    let zero_arg_warning = compiled.diagnostics.iter().find(|d| {
+        d.message
+            .contains("cannot infer return type of zero-arg function")
+    });
     assert!(
         zero_arg_warning.is_none(),
         "affine_identity() must not emit the zero-arg fallback warning, got: {:?}",

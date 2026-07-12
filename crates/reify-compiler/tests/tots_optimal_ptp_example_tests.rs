@@ -50,10 +50,8 @@ fn tots_optimal_ptp_example_compiles_under_stdlib_with_zero_errors() {
     // Use the prelude-aware parser so stdlib enum names (e.g. SplineKind) are
     // injected into the EnumAccess disambiguation set before parsing.
 
-    let parsed = reify_compiler::parse_with_stdlib(
-        &src,
-        reify_core::ModulePath::single("tots_optimal_ptp"),
-    );
+    let parsed =
+        reify_compiler::parse_with_stdlib(&src, reify_core::ModulePath::single("tots_optimal_ptp"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors in examples/trajectory/tots_optimal_ptp.ri: {:#?}",

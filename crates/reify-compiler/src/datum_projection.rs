@@ -55,8 +55,8 @@ pub(crate) enum DatumProjectionResolution {
 /// principal planes extend both the `self` (`Type::StructureRef`) anchor and the
 /// `Frame(_)` arm (additive to the β `xy_plane`).
 pub(crate) const DATUM_PROJECTION_MEMBERS: &[&str] = &[
-    "dir", "normal", "origin", "x", "y", "z", "frame", "xy_plane", "yz_plane", "zx_plane",
-    "axis", "plane", "point",
+    "dir", "normal", "origin", "x", "y", "z", "frame", "xy_plane", "yz_plane", "zx_plane", "axis",
+    "plane", "point",
 ];
 
 /// Resolve the result type of a datum-projection member access `receiver.member`.

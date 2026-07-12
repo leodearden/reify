@@ -75,9 +75,7 @@ pub(crate) fn analysis_fn_result_type(name: &str, args: &[CompiledExpr]) -> Type
         // principal_stresses: eigenvalues of the stress tensor.
         // Returns a List whose element type carries the tensor's quantity.
         // Mirrors the `eigenvalues` arm in math_fn_result_type.
-        "principal_stresses" => {
-            Type::List(Box::new(scalar_or_real(tensor_quantity(args, 0))))
-        }
+        "principal_stresses" => Type::List(Box::new(scalar_or_real(tensor_quantity(args, 0)))),
 
         // safety_factor: yield / von_mises → dimensionless Real regardless of
         // input dimensions (pressure cancels).
@@ -145,14 +143,26 @@ mod tests {
     /// name, and unknown names.
     #[test]
     fn is_analysis_typed_fn_rejects_other_family_and_unknown_names() {
-        assert!(!is_analysis_typed_fn("volume"), "must reject geometry-query 'volume'");
+        assert!(
+            !is_analysis_typed_fn("volume"),
+            "must reject geometry-query 'volume'"
+        );
         assert!(
             !is_analysis_typed_fn("body_mass_props"),
             "must reject dynamics-query 'body_mass_props'"
         );
-        assert!(!is_analysis_typed_fn("vec"), "must reject math-linalg 'vec'");
-        assert!(!is_analysis_typed_fn("eigenvalues"), "must reject math-linalg 'eigenvalues'");
-        assert!(!is_analysis_typed_fn("prismatic"), "must reject joint 'prismatic'");
+        assert!(
+            !is_analysis_typed_fn("vec"),
+            "must reject math-linalg 'vec'"
+        );
+        assert!(
+            !is_analysis_typed_fn("eigenvalues"),
+            "must reject math-linalg 'eigenvalues'"
+        );
+        assert!(
+            !is_analysis_typed_fn("prismatic"),
+            "must reject joint 'prismatic'"
+        );
         assert!(!is_analysis_typed_fn(""), "must reject empty name");
         assert!(
             !is_analysis_typed_fn("does_not_exist"),
@@ -164,10 +174,22 @@ mod tests {
     /// PascalCase forms must not match.
     #[test]
     fn is_analysis_typed_fn_is_case_sensitive() {
-        assert!(!is_analysis_typed_fn("Von_mises"), "PascalCase must not match");
-        assert!(!is_analysis_typed_fn("Von_Mises"), "PascalCase must not match");
-        assert!(!is_analysis_typed_fn("Principal_stresses"), "PascalCase must not match");
-        assert!(!is_analysis_typed_fn("Stress_invariants"), "PascalCase must not match");
+        assert!(
+            !is_analysis_typed_fn("Von_mises"),
+            "PascalCase must not match"
+        );
+        assert!(
+            !is_analysis_typed_fn("Von_Mises"),
+            "PascalCase must not match"
+        );
+        assert!(
+            !is_analysis_typed_fn("Principal_stresses"),
+            "PascalCase must not match"
+        );
+        assert!(
+            !is_analysis_typed_fn("Stress_invariants"),
+            "PascalCase must not match"
+        );
     }
 
     /// `ANALYSIS_FN_NAMES` is exactly the 5 expected names: correct count,

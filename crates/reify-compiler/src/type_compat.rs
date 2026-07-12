@@ -326,7 +326,9 @@ pub(crate) fn enum_payload_compatible(
 ) -> bool {
     let declared_enum_name = match declared {
         Type::Enum(name) => Some(name.as_str()),
-        Type::Applied { name, .. } if enum_defs.iter().any(|e| e.name == *name) => Some(name.as_str()),
+        Type::Applied { name, .. } if enum_defs.iter().any(|e| e.name == *name) => {
+            Some(name.as_str())
+        }
         _ => None,
     };
     match (declared_enum_name, supplied) {
@@ -1035,21 +1037,30 @@ fn heads_unifiable(param: &Type, arg: &Type) -> bool {
                 return_type: ar,
             },
         ) if dp.len() == ap.len() => {
-            dp.iter().zip(ap.iter()).all(|(d, a)| heads_unifiable(d, a))
-                && heads_unifiable(dr, ar)
+            dp.iter().zip(ap.iter()).all(|(d, a)| heads_unifiable(d, a)) && heads_unifiable(dr, ar)
         }
 
         // Quantity-bearing aggregates: same shape → recurse on the quantity slot.
-        (Type::Point { n: dn, quantity: dq }, Type::Point { n: an, quantity: aq })
-            if dn == an =>
-        {
-            heads_unifiable(dq, aq)
-        }
-        (Type::Vector { n: dn, quantity: dq }, Type::Vector { n: an, quantity: aq })
-            if dn == an =>
-        {
-            heads_unifiable(dq, aq)
-        }
+        (
+            Type::Point {
+                n: dn,
+                quantity: dq,
+            },
+            Type::Point {
+                n: an,
+                quantity: aq,
+            },
+        ) if dn == an => heads_unifiable(dq, aq),
+        (
+            Type::Vector {
+                n: dn,
+                quantity: dq,
+            },
+            Type::Vector {
+                n: an,
+                quantity: aq,
+            },
+        ) if dn == an => heads_unifiable(dq, aq),
         (
             Type::Tensor {
                 rank: drk,
@@ -1618,7 +1629,8 @@ fn is_mul_div_scalar_like(ty: &Type) -> bool {
 /// promote `Value::Real`/`Value::Int`, never `Value::Scalar`, against
 /// `Value::Complex`; see `is_dimensionless_complex`'s doc).
 fn is_dimensionless_numeric(ty: &Type) -> bool {
-    matches!(ty, Type::Int) || matches!(ty, Type::Scalar { dimension } if dimension.is_dimensionless())
+    matches!(ty, Type::Int)
+        || matches!(ty, Type::Scalar { dimension } if dimension.is_dimensionless())
 }
 
 /// Dimensionless `Complex` for `+`/`-` widening (see `is_dimensionless_numeric`).
@@ -1685,7 +1697,9 @@ pub(crate) fn infer_mul_div_result(op: BinOp, left: &Type, right: &Type) -> Opti
 
         // Scalar ⊗ Int: Int carries no dimension, so both Mul and Div preserve
         // the Scalar's dimension unchanged.
-        (Type::Scalar { dimension }, Type::Int) => Some(Type::Scalar { dimension: *dimension }),
+        (Type::Scalar { dimension }, Type::Int) => Some(Type::Scalar {
+            dimension: *dimension,
+        }),
         // Int ⊗ Scalar: Mul is commutative with the above (preserve); Div is
         // the non-commutative reciprocal-dimension arm (`Int / Scalar<Time>`).
         (Type::Int, Type::Scalar { dimension }) => Some(Type::Scalar {
@@ -1758,34 +1772,48 @@ pub(crate) fn infer_mul_div_result(op: BinOp, left: &Type, right: &Type) -> Opti
         // order (`scalar-like * Aggregate`) is Mul-only — Div has no
         // reverse-scale arm (non-commutative).
         (Type::Vector { n, quantity }, other) if is_mul_div_scalar_like(other) => {
-            infer_mul_div_result(op, quantity, other)
-                .map(|q| Type::Vector { n: *n, quantity: Box::new(q) })
+            infer_mul_div_result(op, quantity, other).map(|q| Type::Vector {
+                n: *n,
+                quantity: Box::new(q),
+            })
         }
         (other, Type::Vector { n, quantity })
             if op == BinOp::Mul && is_mul_div_scalar_like(other) =>
         {
-            infer_mul_div_result(op, quantity, other)
-                .map(|q| Type::Vector { n: *n, quantity: Box::new(q) })
+            infer_mul_div_result(op, quantity, other).map(|q| Type::Vector {
+                n: *n,
+                quantity: Box::new(q),
+            })
         }
         (Type::Point { n, quantity }, other) if is_mul_div_scalar_like(other) => {
-            infer_mul_div_result(op, quantity, other)
-                .map(|q| Type::Point { n: *n, quantity: Box::new(q) })
+            infer_mul_div_result(op, quantity, other).map(|q| Type::Point {
+                n: *n,
+                quantity: Box::new(q),
+            })
         }
         (other, Type::Point { n, quantity })
             if op == BinOp::Mul && is_mul_div_scalar_like(other) =>
         {
-            infer_mul_div_result(op, quantity, other)
-                .map(|q| Type::Point { n: *n, quantity: Box::new(q) })
+            infer_mul_div_result(op, quantity, other).map(|q| Type::Point {
+                n: *n,
+                quantity: Box::new(q),
+            })
         }
         (Type::Tensor { rank, n, quantity }, other) if is_mul_div_scalar_like(other) => {
-            infer_mul_div_result(op, quantity, other)
-                .map(|q| Type::Tensor { rank: *rank, n: *n, quantity: Box::new(q) })
+            infer_mul_div_result(op, quantity, other).map(|q| Type::Tensor {
+                rank: *rank,
+                n: *n,
+                quantity: Box::new(q),
+            })
         }
         (other, Type::Tensor { rank, n, quantity })
             if op == BinOp::Mul && is_mul_div_scalar_like(other) =>
         {
-            infer_mul_div_result(op, quantity, other)
-                .map(|q| Type::Tensor { rank: *rank, n: *n, quantity: Box::new(q) })
+            infer_mul_div_result(op, quantity, other).map(|q| Type::Tensor {
+                rank: *rank,
+                n: *n,
+                quantity: Box::new(q),
+            })
         }
 
         // ── Complex(q) ────────────────────────────────────────────────────────
@@ -1818,9 +1846,9 @@ pub(crate) fn infer_mul_div_result(op: BinOp, left: &Type, right: &Type) -> Opti
         },
         (Type::Scalar { dimension: sd }, Type::Complex(cq)) if op == BinOp::Mul => {
             match cq.as_ref() {
-                Type::Scalar { dimension: cd } => {
-                    Some(Type::complex(Type::Scalar { dimension: cd.mul(sd) }))
-                }
+                Type::Scalar { dimension: cd } => Some(Type::complex(Type::Scalar {
+                    dimension: cd.mul(sd),
+                })),
                 _ => None,
             }
         }
@@ -1835,10 +1863,16 @@ pub(crate) fn infer_mul_div_result(op: BinOp, left: &Type, right: &Type) -> Opti
         // there is no reverse (`Vector/Point/Transform × Transform`) arm —
         // Div is entirely unsupported for Transform (no runtime arm at all).
         (Type::Transform(n1), Type::Vector { n: n2, quantity }) if op == BinOp::Mul && n1 == n2 => {
-            Some(Type::Vector { n: *n2, quantity: quantity.clone() })
+            Some(Type::Vector {
+                n: *n2,
+                quantity: quantity.clone(),
+            })
         }
         (Type::Transform(n1), Type::Point { n: n2, quantity }) if op == BinOp::Mul && n1 == n2 => {
-            Some(Type::Point { n: *n2, quantity: quantity.clone() })
+            Some(Type::Point {
+                n: *n2,
+                quantity: quantity.clone(),
+            })
         }
         (Type::Transform(n1), Type::Transform(n2)) if op == BinOp::Mul && n1 == n2 => {
             Some(Type::Transform(*n1))
@@ -2139,8 +2173,7 @@ pub(crate) fn try_default_padding<'a>(
             .all(|((_, param_ty), arg_ty)| {
                 type_carries_trait_object(param_ty)
                     || (is_generic
-                        && (type_carries_type_param(param_ty)
-                            || type_carries_dim_param(param_ty)))
+                        && (type_carries_type_param(param_ty) || type_carries_dim_param(param_ty)))
                     || type_carries_type_param(arg_ty)
                     || param_ty == arg_ty
             });
@@ -2148,10 +2181,8 @@ pub(crate) fn try_default_padding<'a>(
             continue;
         }
         // All trailing params must carry Some compiled default.
-        let defaults: Option<Vec<CompiledExpr>> = cand.param_defaults[provided..]
-            .iter()
-            .cloned()
-            .collect();
+        let defaults: Option<Vec<CompiledExpr>> =
+            cand.param_defaults[provided..].iter().cloned().collect();
         if let Some(defaults) = defaults {
             satisfiable.push((cand, defaults));
         }
@@ -2256,7 +2287,10 @@ mod tests {
     /// RED until step-2: current exact-match makes this NoMatch.
     #[test]
     fn overload_trait_param_matches_any_structure_ref_arg() {
-        let fns = vec![make_fn("f", vec![("j", Type::TraitObject("DrivingJoint".to_string()))])];
+        let fns = vec![make_fn(
+            "f",
+            vec![("j", Type::TraitObject("DrivingJoint".to_string()))],
+        )];
         let result = resolve_function_overload("f", &[Type::StructureRef("X".to_string())], &fns);
         assert!(
             matches!(result, OverloadResolution::Resolved(_)),
@@ -2268,7 +2302,10 @@ mod tests {
     /// RED until step-2.
     #[test]
     fn overload_trait_param_matches_any_trait_object_arg() {
-        let fns = vec![make_fn("f", vec![("j", Type::TraitObject("DrivingJoint".to_string()))])];
+        let fns = vec![make_fn(
+            "f",
+            vec![("j", Type::TraitObject("DrivingJoint".to_string()))],
+        )];
         let result =
             resolve_function_overload("f", &[Type::TraitObject("Other".to_string())], &fns);
         assert!(
@@ -2291,11 +2328,8 @@ mod tests {
             ],
         )];
         // arg k is Int, not Real → no match
-        let result = resolve_function_overload(
-            "g",
-            &[Type::StructureRef("X".to_string()), Type::Int],
-            &fns,
-        );
+        let result =
+            resolve_function_overload("g", &[Type::StructureRef("X".to_string()), Type::Int], &fns);
         assert!(
             matches!(result, OverloadResolution::NoMatch(_)),
             "concrete Real param must not accept Int; expected NoMatch"
@@ -2436,20 +2470,32 @@ mod tests {
     #[test]
     fn fmt_dim_mismatch_non_scalar_does_not_panic() {
         // Left non-Scalar, right Scalar
-        let d =
-            format_dimension_mismatch_diagnostic("addition", &Type::dimensionless_scalar(), &force_ty(), test_span());
+        let d = format_dimension_mismatch_diagnostic(
+            "addition",
+            &Type::dimensionless_scalar(),
+            &force_ty(),
+            test_span(),
+        );
         assert_eq!(d.severity, Severity::Error);
         assert_eq!(d.code, Some(DiagnosticCode::DimensionMismatch));
 
         // Left Scalar, right non-Scalar
-        let d =
-            format_dimension_mismatch_diagnostic("addition", &money_ty(), &Type::dimensionless_scalar(), test_span());
+        let d = format_dimension_mismatch_diagnostic(
+            "addition",
+            &money_ty(),
+            &Type::dimensionless_scalar(),
+            test_span(),
+        );
         assert_eq!(d.severity, Severity::Error);
         assert_eq!(d.code, Some(DiagnosticCode::DimensionMismatch));
 
         // Both non-Scalar
-        let d =
-            format_dimension_mismatch_diagnostic("addition", &Type::dimensionless_scalar(), &Type::dimensionless_scalar(), test_span());
+        let d = format_dimension_mismatch_diagnostic(
+            "addition",
+            &Type::dimensionless_scalar(),
+            &Type::dimensionless_scalar(),
+            test_span(),
+        );
         assert_eq!(d.severity, Severity::Error);
         assert_eq!(d.code, Some(DiagnosticCode::DimensionMismatch));
     }
@@ -2755,19 +2801,28 @@ mod tests {
     /// `(Real, Int)` is rejected (left is Real) → `false`.
     #[test]
     fn modulo_operands_real_int_is_false() {
-        assert!(!modulo_operands_are_int(&Type::dimensionless_scalar(), &Type::Int));
+        assert!(!modulo_operands_are_int(
+            &Type::dimensionless_scalar(),
+            &Type::Int
+        ));
     }
 
     /// `(Int, Real)` is rejected (right is Real) → `false`.
     #[test]
     fn modulo_operands_int_real_is_false() {
-        assert!(!modulo_operands_are_int(&Type::Int, &Type::dimensionless_scalar()));
+        assert!(!modulo_operands_are_int(
+            &Type::Int,
+            &Type::dimensionless_scalar()
+        ));
     }
 
     /// `(Real, Real)` — both wrong → `false`.
     #[test]
     fn modulo_operands_real_real_is_false() {
-        assert!(!modulo_operands_are_int(&Type::dimensionless_scalar(), &Type::dimensionless_scalar()));
+        assert!(!modulo_operands_are_int(
+            &Type::dimensionless_scalar(),
+            &Type::dimensionless_scalar()
+        ));
     }
 
     /// `(Scalar{LENGTH}, Scalar{LENGTH})` — dimensioned types are not Int → `false`.
@@ -2964,10 +3019,7 @@ mod tests {
     fn type_compatible_face_selector_param_any_selector_arg_is_false() {
         use reify_core::ty::SelectorKind;
         assert!(
-            !type_compatible(
-                &Type::Selector(SelectorKind::Face),
-                &Type::AnySelector
-            ),
+            !type_compatible(&Type::Selector(SelectorKind::Face), &Type::AnySelector),
             "Selector(Face) param with AnySelector arg must be incompatible (one-directional)"
         );
     }
@@ -3277,7 +3329,10 @@ mod tests {
             params: vec![Type::dimensionless_scalar(), tp("T")],
             return_type: Box::new(Type::dimensionless_scalar()),
         }));
-        assert!(type_carries_type_param(&Type::Union(vec![Type::Int, tp("T")])));
+        assert!(type_carries_type_param(&Type::Union(vec![
+            Type::Int,
+            tp("T")
+        ])));
         assert!(type_carries_type_param(&Type::Tensor {
             rank: 2,
             n: 3,
@@ -3411,8 +3466,7 @@ mod tests {
     /// `TraitObject("DrivingJoint") != StructureRef("X")` → returns None.
     #[test]
     fn try_default_padding_resolves_when_leading_param_is_trait_carrying() {
-        let default_expr =
-            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
+        let default_expr = CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
         let cand = CompiledFunction {
             name: "f".to_string(),
             doc: None,
@@ -3436,13 +3490,9 @@ mod tests {
         // Provide ONE arg of type StructureRef("X") — the TraitObject param is
         // a wildcard (concrete type conforms at runtime), so the trailing
         // Real default must be returned.
-        let result = try_default_padding(
-            &[&cand],
-            &[Type::StructureRef("X".to_string())],
-        );
-        let (matched_fn, defaults) = result.expect(
-            "trait-carrying leading param must act as a wildcard: expected Some, got None",
-        );
+        let result = try_default_padding(&[&cand], &[Type::StructureRef("X".to_string())]);
+        let (matched_fn, defaults) = result
+            .expect("trait-carrying leading param must act as a wildcard: expected Some, got None");
         assert!(
             std::ptr::eq(matched_fn, &cand),
             "returned candidate must be the same object"
@@ -3468,10 +3518,8 @@ mod tests {
     /// (only B), returning candidate B with default `Real(2.0)`.
     #[test]
     fn try_default_padding_exact_match_wins_over_wildcard() {
-        let default_a =
-            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
-        let default_b =
-            CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar());
+        let default_a = CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
+        let default_b = CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar());
         let cand_a = CompiledFunction {
             name: "f".to_string(),
             doc: None,
@@ -3505,13 +3553,10 @@ mod tests {
             type_params: vec![],
         };
 
-        let result = try_default_padding(
-            &[&cand_a, &cand_b],
-            &[Type::StructureRef("X".to_string())],
-        );
-        let (matched_fn, defaults) = result.expect(
-            "exact-match tie-break must resolve to candidate B; expected Some, got None",
-        );
+        let result =
+            try_default_padding(&[&cand_a, &cand_b], &[Type::StructureRef("X".to_string())]);
+        let (matched_fn, defaults) = result
+            .expect("exact-match tie-break must resolve to candidate B; expected Some, got None");
         assert!(
             std::ptr::eq(matched_fn, &cand_b),
             "tie-break must prefer the exact-match candidate (cand_b)"
@@ -3533,8 +3578,7 @@ mod tests {
     /// Expected: `None` (both before and after step-2).
     #[test]
     fn try_default_padding_concrete_mismatch_still_returns_none() {
-        let default_expr =
-            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
+        let default_expr = CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
         let cand = CompiledFunction {
             name: "g".to_string(),
             doc: None,
@@ -3553,10 +3597,7 @@ mod tests {
         };
 
         // Provide Real where Int is expected — concrete mismatch, must stay None.
-        let result = try_default_padding(
-            &[&cand],
-            &[Type::dimensionless_scalar()],
-        );
+        let result = try_default_padding(&[&cand], &[Type::dimensionless_scalar()]);
         assert!(
             result.is_none(),
             "concrete leading-param mismatch (Int vs Real) must return None even after loosening"
@@ -3579,10 +3620,8 @@ mod tests {
     /// multi-candidate arm comment in `try_default_padding` for rationale.
     #[test]
     fn try_default_padding_all_wildcard_ambiguity_returns_none() {
-        let default_a =
-            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
-        let default_b =
-            CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar());
+        let default_a = CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
+        let default_b = CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar());
         let cand_a = CompiledFunction {
             name: "f".to_string(),
             doc: None,
@@ -3619,10 +3658,8 @@ mod tests {
         // Both candidates match via wildcard; neither matches by exact equality
         // → exact subset is empty → None (ambiguous padding falls through to
         // NoMatch, not Ambiguous).
-        let result = try_default_padding(
-            &[&cand_a, &cand_b],
-            &[Type::StructureRef("X".to_string())],
-        );
+        let result =
+            try_default_padding(&[&cand_a, &cand_b], &[Type::StructureRef("X".to_string())]);
         assert!(
             result.is_none(),
             "two wildcard-only candidates must return None (ambiguous padding \
@@ -3678,18 +3715,24 @@ mod tests {
             doc: None,
             is_pub: false,
             params: vec![
-                ("law".to_string(), Type::TraitObject("ConstitutiveLaw".to_string())),
+                (
+                    "law".to_string(),
+                    Type::TraitObject("ConstitutiveLaw".to_string()),
+                ),
                 ("nx".to_string(), Type::length()),
                 ("ny".to_string(), Type::length()),
                 ("nz".to_string(), Type::length()),
-                ("loads".to_string(), Type::List(Box::new(Type::TraitObject("Load".to_string())))),
-                ("supports".to_string(), Type::List(Box::new(Type::TraitObject("Support".to_string())))),
+                (
+                    "loads".to_string(),
+                    Type::List(Box::new(Type::TraitObject("Load".to_string()))),
+                ),
+                (
+                    "supports".to_string(),
+                    Type::List(Box::new(Type::TraitObject("Support".to_string()))),
+                ),
                 ("options".to_string(), Type::dimensionless_scalar()),
             ],
-            param_defaults: vec![
-                None, None, None, None, None, None,
-                Some(default_options_a),
-            ],
+            param_defaults: vec![None, None, None, None, None, None, Some(default_options_a)],
             return_type: Type::dimensionless_scalar(),
             body: stub_body_real(),
             content_hash: ContentHash::of_str("solve_elastic_a_4788"),
@@ -3708,12 +3751,23 @@ mod tests {
                 ("nx".to_string(), Type::length()),
                 ("ny".to_string(), Type::length()),
                 ("nz".to_string(), Type::length()),
-                ("loads".to_string(), Type::List(Box::new(Type::TraitObject("Load".to_string())))),
-                ("supports".to_string(), Type::List(Box::new(Type::TraitObject("Support".to_string())))),
+                (
+                    "loads".to_string(),
+                    Type::List(Box::new(Type::TraitObject("Load".to_string()))),
+                ),
+                (
+                    "supports".to_string(),
+                    Type::List(Box::new(Type::TraitObject("Support".to_string()))),
+                ),
                 ("options".to_string(), Type::dimensionless_scalar()),
             ],
             param_defaults: vec![
-                None, None, None, None, None, None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
                 Some(default_options_b.clone()),
             ],
             return_type: Type::dimensionless_scalar(),
@@ -3740,7 +3794,7 @@ mod tests {
         let result = try_default_padding(&[&cand_a, &cand_b], &args);
         let (matched_fn, defaults) = result.expect(
             "specificity scoring must resolve to cand_b (score 4 > 3); \
-             expected Some, got None — RED: current all-exact filter returns None"
+             expected Some, got None — RED: current all-exact filter returns None",
         );
         assert!(
             std::ptr::eq(matched_fn, &cand_b),
@@ -3794,10 +3848,8 @@ mod tests {
     /// task-4788
     #[test]
     fn try_default_padding_equal_exact_count_returns_none() {
-        let default_p =
-            CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
-        let default_q =
-            CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar());
+        let default_p = CompiledExpr::literal(Value::Real(1.0), Type::dimensionless_scalar());
+        let default_q = CompiledExpr::literal(Value::Real(2.0), Type::dimensionless_scalar());
 
         let cand_p = CompiledFunction {
             name: "h".to_string(),
@@ -3855,8 +3907,7 @@ mod tests {
         // from the 0-candidate arm rather than the equal-count tie arm, and this
         // sub-case would surface the regression by returning None instead of
         // Some(cand_r).
-        let default_r =
-            CompiledExpr::literal(Value::Real(3.0), Type::dimensionless_scalar());
+        let default_r = CompiledExpr::literal(Value::Real(3.0), Type::dimensionless_scalar());
         let cand_r = CompiledFunction {
             name: "h".to_string(),
             doc: None,
@@ -3879,16 +3930,19 @@ mod tests {
         let result_three = try_default_padding(&[&cand_p, &cand_q, &cand_r], &args);
         let (matched_fn, matched_defaults) = result_three.expect(
             "cand_r (score 2) must win over tied pair (score 1 each) — \
-             proves cand_p/cand_q are satisfiable and reach the scoring arm (task-4788)"
+             proves cand_p/cand_q are satisfiable and reach the scoring arm (task-4788)",
         );
         assert!(
             std::ptr::eq(matched_fn, &cand_r),
             "unique-max candidate (cand_r, score 2) must win over cand_p/cand_q (score 1 each)"
         );
-        assert_eq!(matched_defaults.len(), 1, "one trailing default (opt) expected");
         assert_eq!(
-            matched_defaults[0].content_hash,
-            default_r.content_hash,
+            matched_defaults.len(),
+            1,
+            "one trailing default (opt) expected"
+        );
+        assert_eq!(
+            matched_defaults[0].content_hash, default_r.content_hash,
             "returned default must be cand_r's opt literal (Real(3.0))"
         );
     }
@@ -3897,14 +3951,20 @@ mod tests {
 
     /// Helper: build a bare AST `Expr` with a dummy span for unit-testing predicates.
     fn make_ast_expr(kind: reify_ast::ExprKind) -> reify_ast::Expr {
-        reify_ast::Expr { kind, span: SourceSpan::new(0, 1) }
+        reify_ast::Expr {
+            kind,
+            span: SourceSpan::new(0, 1),
+        }
     }
 
     /// `NumberLiteral{value:0.0, is_real:false}` — the bare `0` integer form — must
     /// return `true`.
     #[test]
     fn syntactic_zero_int_literal_zero_is_true() {
-        let expr = make_ast_expr(reify_ast::ExprKind::NumberLiteral { value: 0.0, is_real: false });
+        let expr = make_ast_expr(reify_ast::ExprKind::NumberLiteral {
+            value: 0.0,
+            is_real: false,
+        });
         assert!(is_syntactic_zero_literal(&expr));
     }
 
@@ -3912,7 +3972,10 @@ mod tests {
     /// return `true`.
     #[test]
     fn syntactic_zero_real_literal_zero_is_true() {
-        let expr = make_ast_expr(reify_ast::ExprKind::NumberLiteral { value: 0.0, is_real: true });
+        let expr = make_ast_expr(reify_ast::ExprKind::NumberLiteral {
+            value: 0.0,
+            is_real: true,
+        });
         assert!(is_syntactic_zero_literal(&expr));
     }
 
@@ -3920,7 +3983,10 @@ mod tests {
     /// return `true` (unary-neg recursion).
     #[test]
     fn syntactic_zero_neg_zero_is_true() {
-        let inner = make_ast_expr(reify_ast::ExprKind::NumberLiteral { value: 0.0, is_real: false });
+        let inner = make_ast_expr(reify_ast::ExprKind::NumberLiteral {
+            value: 0.0,
+            is_real: false,
+        });
         let expr = make_ast_expr(reify_ast::ExprKind::UnOp {
             op: "-".to_string(),
             operand: Box::new(inner),
@@ -3932,7 +3998,10 @@ mod tests {
     /// (recursive unary-neg chain).
     #[test]
     fn syntactic_zero_double_neg_zero_is_true() {
-        let inner = make_ast_expr(reify_ast::ExprKind::NumberLiteral { value: 0.0, is_real: true });
+        let inner = make_ast_expr(reify_ast::ExprKind::NumberLiteral {
+            value: 0.0,
+            is_real: true,
+        });
         let neg_inner = make_ast_expr(reify_ast::ExprKind::UnOp {
             op: "-".to_string(),
             operand: Box::new(inner),
@@ -3947,8 +4016,10 @@ mod tests {
     /// `NumberLiteral{value:1.0, is_real:false}` — non-zero literal — must return `false`.
     #[test]
     fn syntactic_zero_nonzero_literal_is_false() {
-        let expr =
-            make_ast_expr(reify_ast::ExprKind::NumberLiteral { value: 1.0, is_real: false });
+        let expr = make_ast_expr(reify_ast::ExprKind::NumberLiteral {
+            value: 1.0,
+            is_real: false,
+        });
         assert!(!is_syntactic_zero_literal(&expr));
     }
 
@@ -3974,10 +4045,14 @@ mod tests {
     /// `1 - 1` — must return `false` (syntactic-only contract, §7.2 HARD BOUND).
     #[test]
     fn syntactic_zero_binop_one_minus_one_is_false() {
-        let one_a =
-            make_ast_expr(reify_ast::ExprKind::NumberLiteral { value: 1.0, is_real: false });
-        let one_b =
-            make_ast_expr(reify_ast::ExprKind::NumberLiteral { value: 1.0, is_real: false });
+        let one_a = make_ast_expr(reify_ast::ExprKind::NumberLiteral {
+            value: 1.0,
+            is_real: false,
+        });
+        let one_b = make_ast_expr(reify_ast::ExprKind::NumberLiteral {
+            value: 1.0,
+            is_real: false,
+        });
         let expr = make_ast_expr(reify_ast::ExprKind::BinOp {
             op: "-".to_string(),
             left: Box::new(one_a),
@@ -3997,13 +4072,20 @@ mod tests {
         let mut subst = HashMap::new();
         let result = unify(
             &Type::ScalarParam("Q".to_string()),
-            &Type::Scalar { dimension: DimensionVector::LENGTH },
+            &Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
             &mut subst,
         );
-        assert!(result.is_ok(), "expected Ok for ScalarParam(Q) vs Scalar{{LENGTH}}, got {result:?}");
+        assert!(
+            result.is_ok(),
+            "expected Ok for ScalarParam(Q) vs Scalar{{LENGTH}}, got {result:?}"
+        );
         assert_eq!(
             subst.get("Q"),
-            Some(&Type::Scalar { dimension: DimensionVector::LENGTH }),
+            Some(&Type::Scalar {
+                dimension: DimensionVector::LENGTH
+            }),
             "subst[\"Q\"] should be Scalar{{LENGTH}} after binding, got {:?}",
             subst.get("Q")
         );
@@ -4020,11 +4102,15 @@ mod tests {
         let mut subst = HashMap::new();
         subst.insert(
             "Q".to_string(),
-            Type::Scalar { dimension: DimensionVector::LENGTH },
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
         );
         let result = unify(
             &Type::ScalarParam("Q".to_string()),
-            &Type::Scalar { dimension: DimensionVector::LENGTH },
+            &Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
             &mut subst,
         );
         assert!(
@@ -4042,30 +4128,40 @@ mod tests {
         let mut subst = HashMap::new();
         subst.insert(
             "Q".to_string(),
-            Type::Scalar { dimension: DimensionVector::LENGTH },
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH,
+            },
         );
         let result = unify(
             &Type::ScalarParam("Q".to_string()),
-            &Type::Scalar { dimension: DimensionVector::MASS },
+            &Type::Scalar {
+                dimension: DimensionVector::MASS,
+            },
             &mut subst,
         );
         match result {
-            Err(TypeArgConflict { param, existing, incoming }) => {
+            Err(TypeArgConflict {
+                param,
+                existing,
+                incoming,
+            }) => {
                 assert_eq!(param, "Q", "conflict param should be Q");
                 assert_eq!(
                     existing,
-                    Type::Scalar { dimension: DimensionVector::LENGTH },
+                    Type::Scalar {
+                        dimension: DimensionVector::LENGTH
+                    },
                     "existing should be Scalar{{LENGTH}}"
                 );
                 assert_eq!(
                     incoming,
-                    Type::Scalar { dimension: DimensionVector::MASS },
+                    Type::Scalar {
+                        dimension: DimensionVector::MASS
+                    },
                     "incoming should be Scalar{{MASS}}"
                 );
             }
-            Ok(()) => panic!(
-                "expected TypeArgConflict for Q (LENGTH) vs Scalar{{MASS}}, got Ok"
-            ),
+            Ok(()) => panic!("expected TypeArgConflict for Q (LENGTH) vs Scalar{{MASS}}, got Ok"),
         }
     }
 
@@ -4076,12 +4172,11 @@ mod tests {
     #[test]
     fn unify_scalar_param_non_scalar_arg_binds_nothing() {
         let mut subst = HashMap::new();
-        let result = unify(
-            &Type::ScalarParam("Q".to_string()),
-            &Type::Bool,
-            &mut subst,
+        let result = unify(&Type::ScalarParam("Q".to_string()), &Type::Bool, &mut subst);
+        assert!(
+            result.is_ok(),
+            "non-scalar arg against ScalarParam should be Ok, got {result:?}"
         );
-        assert!(result.is_ok(), "non-scalar arg against ScalarParam should be Ok, got {result:?}");
         assert!(
             subst.is_empty(),
             "subst should remain empty for non-scalar arg against ScalarParam, got {subst:?}"
@@ -4112,7 +4207,10 @@ mod tests {
     /// RED until step-6.
     #[test]
     fn type_carries_dim_param_vector3_quantity_is_true() {
-        let vec3_q = Type::Vector { n: 3, quantity: Box::new(sp("Q")) };
+        let vec3_q = Type::Vector {
+            n: 3,
+            quantity: Box::new(sp("Q")),
+        };
         assert!(
             type_carries_dim_param(&vec3_q),
             "Vector3<ScalarParam(\"Q\")> should carry a dim-param"
@@ -4125,7 +4223,9 @@ mod tests {
     #[test]
     fn type_carries_dim_param_concrete_scalar_is_false() {
         assert!(
-            !type_carries_dim_param(&Type::Scalar { dimension: DimensionVector::LENGTH }),
+            !type_carries_dim_param(&Type::Scalar {
+                dimension: DimensionVector::LENGTH
+            }),
             "concrete Scalar{{LENGTH}} should NOT carry a dim-param"
         );
     }
@@ -4160,7 +4260,12 @@ mod tests {
             matches!(
                 resolve_function_overload(
                     "scale_q",
-                    &[Type::Scalar { dimension: DimensionVector::LENGTH }, Type::dimensionless_scalar()],
+                    &[
+                        Type::Scalar {
+                            dimension: DimensionVector::LENGTH
+                        },
+                        Type::dimensionless_scalar()
+                    ],
                     &fns,
                 ),
                 OverloadResolution::Resolved(_)
@@ -4177,7 +4282,15 @@ mod tests {
     fn overload_non_generic_concrete_fn_still_requires_exact_match() {
         let concrete = make_fn(
             "scale_concrete",
-            vec![("x", Type::Scalar { dimension: DimensionVector::LENGTH }), ("k", Type::dimensionless_scalar())],
+            vec![
+                (
+                    "x",
+                    Type::Scalar {
+                        dimension: DimensionVector::LENGTH,
+                    },
+                ),
+                ("k", Type::dimensionless_scalar()),
+            ],
         );
         let fns = vec![concrete];
         // Calling with (MASS, Real) must NOT resolve — only (LENGTH, Real) is exact.
@@ -4185,7 +4298,12 @@ mod tests {
             matches!(
                 resolve_function_overload(
                     "scale_concrete",
-                    &[Type::Scalar { dimension: DimensionVector::MASS }, Type::dimensionless_scalar()],
+                    &[
+                        Type::Scalar {
+                            dimension: DimensionVector::MASS
+                        },
+                        Type::dimensionless_scalar()
+                    ],
                     &fns,
                 ),
                 OverloadResolution::NoMatch(_)

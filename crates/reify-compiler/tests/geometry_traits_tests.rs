@@ -11,9 +11,9 @@
 //! the prelude integration tests below in semantically meaningful ways.
 
 use reify_compiler::*;
-use reify_test_support::{compile_source_with_stdlib, errors_only};
 use reify_core::Type;
 use reify_core::ty::SelectorKind;
+use reify_test_support::{compile_source_with_stdlib, errors_only};
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -307,8 +307,16 @@ fn task_2699_topology_selector_cells_typed_per_registry() {
         // `Type::Selector(kind)` (not `List<Geometry>`). These bare cells are
         // not consumed in a List context here, so no coercion is inserted —
         // the cell's own result_type is the typed selector.
-        ("all_edges", "edges(body)", Type::Selector(SelectorKind::Edge)),
-        ("all_faces", "faces(body)", Type::Selector(SelectorKind::Face)),
+        (
+            "all_edges",
+            "edges(body)",
+            Type::Selector(SelectorKind::Edge),
+        ),
+        (
+            "all_faces",
+            "faces(body)",
+            Type::Selector(SelectorKind::Face),
+        ),
         (
             "short_edges",
             "edges_by_length(body, 0mm..50mm)",

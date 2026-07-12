@@ -8,8 +8,8 @@
 //! Tests will fail until `expr.rs` delegates to `format_dimension_mismatch_diagnostic`
 //! (step-8 for binary-op, step-10 for range).
 
-use reify_test_support::{compile_source_with_stdlib, errors_only};
 use reify_core::DiagnosticCode;
+use reify_test_support::{compile_source_with_stdlib, errors_only};
 
 /// Helper: assert exactly one error diagnostic carries `code == DimensionMismatch`.
 ///

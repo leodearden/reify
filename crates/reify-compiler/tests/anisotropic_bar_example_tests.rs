@@ -35,10 +35,8 @@ fn compile_example() -> (String, CompiledModule) {
 
     // Use the prelude-aware parser so stdlib enum names are injected before
     // parsing — mirrors examples_smoke.rs::smoke_one.
-    let parsed = reify_compiler::parse_with_stdlib(
-        &src,
-        reify_core::ModulePath::single("anisotropic_bar"),
-    );
+    let parsed =
+        reify_compiler::parse_with_stdlib(&src, reify_core::ModulePath::single("anisotropic_bar"));
     assert!(
         parsed.errors.is_empty(),
         "parse errors in examples/anisotropic_bar.ri: {:#?}",

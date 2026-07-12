@@ -51,7 +51,9 @@ mod tests {
     fn pressure_routes_to_scalar_pressure() {
         assert_eq!(
             scalar_or_real(DimensionVector::PRESSURE),
-            Type::Scalar { dimension: DimensionVector::PRESSURE },
+            Type::Scalar {
+                dimension: DimensionVector::PRESSURE
+            },
             "scalar_or_real(PRESSURE) must be Type::Scalar<PRESSURE>"
         );
     }

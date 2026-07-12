@@ -286,7 +286,10 @@ fn integration_arg_list_push_down_resolves_empty_literal() {
     );
     // Expression kind is UserFunctionCall with correct name and arg type.
     match &n_expr.kind {
-        reify_ir::CompiledExprKind::UserFunctionCall { function_name, args } => {
+        reify_ir::CompiledExprKind::UserFunctionCall {
+            function_name,
+            args,
+        } => {
             assert_eq!(
                 function_name, "firstlen",
                 "§7#5: expected UserFunctionCall for firstlen, got name={function_name:?}"
