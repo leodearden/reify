@@ -3117,6 +3117,109 @@ mod tests {
         );
     }
 
+    /// Characterization lock on the OBSERVABLE snapshot/version numbering
+    /// produced by the SOLVER-DRIVEN resolution phase (site 2 — the
+    /// `SolveResult::Solved` arm in `engine_eval.rs`'s per-template
+    /// resolution loop), complementing
+    /// `eval_snapshot_numbering_is_stable_across_repeated_calls` above,
+    /// which only exercises the no-solver cold path (site 1) and leaves
+    /// this site dormant. Without this test, a mis-migration at site 2
+    /// (extra/missing bump, swapped order) would not be caught.
+    ///
+    /// A single template with one `auto` param and plain (non-objective)
+    /// constraints takes the ordinary per-template resolution branch, NOT
+    /// `dispatch_merged_cluster_solve` (site 3), which requires >= 2
+    /// cross-scope-coupled templates (see `resolve_order::compute_clusters`).
+    /// So exactly TWO pairs are minted in this one `eval()` call: the
+    /// cold-path pair at site 1 (`SnapshotId(0)`, `VersionId(0)`), then the
+    /// resolution-phase pair at site 2 (`SnapshotId(1)`, `VersionId(1)`),
+    /// which overwrites `snapshot.id`/`.version` before `eval()` returns.
+    /// Uses `MockConstraintSolver::new_solved` (not the real
+    /// `DimensionalSolver`) so the resolution outcome — and therefore
+    /// whether site 2 fires at all — is deterministic, mirroring
+    /// `resolve_single_auto_param` in `tests/resolution.rs`.
+    #[test]
+    fn resolution_phase_snapshot_numbering_is_stable() {
+        use std::collections::HashMap;
+
+        use reify_core::{ModulePath, SnapshotId, Type, ValueCellId, VersionId};
+        use reify_ir::Value;
+        use reify_test_support::{
+            CompiledModuleBuilder, MockConstraintChecker, MockConstraintSolver,
+            TopologyTemplateBuilder, gt, literal, lt, mm, value_ref,
+        };
+
+        let thickness_id = ValueCellId::new("S", "thickness");
+        let mut solved_values = HashMap::new();
+        solved_values.insert(thickness_id.clone(), mm(5.0));
+        let solver = MockConstraintSolver::new_solved(solved_values);
+
+        let template = TopologyTemplateBuilder::new("S")
+            .auto_param("S", "thickness", Type::length())
+            // constraint: thickness > 2mm
+            .constraint(
+                "S",
+                0,
+                None,
+                gt(value_ref("S", "thickness"), literal(mm(2.0))),
+            )
+            // constraint: thickness < 20mm
+            .constraint(
+                "S",
+                1,
+                None,
+                lt(value_ref("S", "thickness"), literal(mm(20.0))),
+            )
+            .build();
+
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(template)
+            .build();
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+            .with_solver(Box::new(solver));
+
+        let result = engine.eval(&module);
+
+        // Sanity: confirm the solver's Solved arm actually fired (not
+        // Infeasible/NoProgress) — thickness resolved to mm(5.0), not left
+        // Undef — so the assertions below are exercising site 2, not a
+        // dormant no-op resolution pass.
+        let thickness_val = result
+            .values
+            .get(&thickness_id)
+            .expect("thickness should be in values after resolution");
+        assert!(
+            matches!(thickness_val, Value::Scalar { si_value, .. } if (*si_value - 0.005).abs() < 1e-10),
+            "expected mm(5.0) = 0.005 SI, got {:?}",
+            thickness_val
+        );
+
+        let snapshot = engine
+            .snapshot()
+            .expect("eval() must populate a current snapshot");
+        assert_eq!(
+            snapshot.id, SnapshotId(1),
+            "resolution-phase pair (site 2) must be the SECOND allocation \
+             after the site-1 cold-path pair — expected SnapshotId(1)",
+        );
+        assert_eq!(
+            snapshot.version, VersionId(1),
+            "resolution-phase pair (site 2) must be the SECOND allocation \
+             after the site-1 cold-path pair — expected VersionId(1)",
+        );
+        assert_eq!(
+            engine.next_snapshot_id, 2,
+            "exactly two snapshot ids must be minted: cold path (site 1) + \
+             resolution phase (site 2)",
+        );
+        assert_eq!(
+            engine.next_version_id, 2,
+            "exactly two version ids must be minted: cold path (site 1) + \
+             resolution phase (site 2)",
+        );
+    }
+
     // ── kernel_pin_diagnostics unit tests (task π / #3444 S1/S2) ──────────
 
     /// (a) registered {"occt"} + pins [kernels]\nmanifold="1.0.0"
