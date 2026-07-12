@@ -230,3 +230,65 @@ fn chain_runner_large_jump_triggers_fallback_and_chain_self_recovers() {
         report.min_scaled_j_floor()
     );
 }
+
+// ── Step-5/6: monotonic 50+ tick bounded-degradation ──────────────────────────
+//
+// The core verification of PRD claim (c): for elasticity morphing, chain
+// degradation is BOUNDED — each morph is a fresh BVP, not an iterative
+// perturbation — so a long monotonic auto-resolve chain stays within the
+// quality envelope without periodic remeshes.
+//
+// RED: references `chain_options()`, `linspace()`, `CHAIN_FALLBACK_RATE_MAX`,
+// and `CHAIN_MIN_SCALED_J_FLOOR`, none of which exist yet — fails to compile
+// until step-6 adds them (same discipline as step-1/step-2).
+
+/// PRD `docs/prds/v0_3/mesh-morphing.md` task #14, claim (c): a long
+/// monotonic auto-resolve chain stays within the quality envelope without
+/// periodic remeshes.
+///
+/// Sweeps `plate_with_hole`'s `hole_diameter` over 51 evenly-spaced values
+/// in `[0.30, 0.50]` (50 morph ticks after the fresh chain root) — a range
+/// chosen (see [`CHAIN_MIN_SCALED_J_FLOOR`] / [`chain_options`] docs) so
+/// the fixture's intrinsic from-scratch quality stays comfortably inside
+/// the chain-options quality envelope at every tick, isolating the
+/// bounded-degradation property of `elasticity_morph` itself (PRD claim
+/// (c)) from the fixture's own pct-saturation edge (step-3's test doc).
+#[test]
+fn monotonic_plate_sweep_50_ticks_keeps_chain_within_quality_envelope() {
+    let fixture = |hole_diameter: f64| fixtures::plate_with_hole(1.0, hole_diameter, 0.1, 4, 2);
+    let params = linspace(0.30, 0.50, 51);
+    let opts = chain_options();
+
+    let report = runner::run_chain(fixture, &params, &opts);
+
+    // eprintln! summary so the perf-tracked CI log surfaces the trend
+    // (task instruction: "so the perf-tracked CI log surfaces the trend").
+    eprintln!(
+        "[chain-degradation monotonic-50] ticks={} fallback_count={} fallback_rate={:.4} \
+         min_scaled_j_floor={:.6}",
+        report.ticks.len(),
+        report.fallback_count(),
+        report.fallback_rate(),
+        report.min_scaled_j_floor()
+    );
+
+    // (a) The chain rarely needs a remesh reset — degradation is bounded.
+    assert!(
+        report.fallback_rate() < CHAIN_FALLBACK_RATE_MAX,
+        "monotonic 50-tick plate sweep: fallback_rate={} must be < {} \
+         (bounded degradation — a long monotonic chain should not need \
+         frequent remesh resets)",
+        report.fallback_rate(),
+        CHAIN_FALLBACK_RATE_MAX
+    );
+
+    // (b) The chain never drifts below the quality-gate floor at any tick.
+    assert!(
+        report.min_scaled_j_floor() >= CHAIN_MIN_SCALED_J_FLOOR,
+        "monotonic 50-tick plate sweep: min_scaled_j_floor={} must be >= {} \
+         (see CHAIN_MIN_SCALED_J_FLOOR doc for why 0.01 not the task \
+         description's illustrative 0.10)",
+        report.min_scaled_j_floor(),
+        CHAIN_MIN_SCALED_J_FLOOR
+    );
+}
