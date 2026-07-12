@@ -3368,3 +3368,170 @@ fn solve_ranked_multistart_k_scales_linearly_with_dim_high_dim_regression() {
         ),
     }
 }
+
+// ---- multistart branch-coverage gaps (reviewer_comprehensive amend, task δ #5016
+// review pass 2) ----
+//
+// Two distinct sub-paths inside solve_ranked's best-of-K branch had no dedicated
+// coverage: the winner-non-unique demotion (finalise_uniqueness applied to the
+// multistart winner, not via solve_with_meta) and the all-starts-infeasible
+// fallback (scored.is_empty() re-running the single-seed path). Both are
+// exercised below.
+
+/// Multistart winner-non-unique demotion: `strict_auto_non_unique_returns_infeasible`
+/// only exercises `finalise_uniqueness` via `solve_with_meta` (its fixture uses
+/// `objective: None`, so `solve_ranked` never enters the best-of-K branch at all).
+/// This is the multistart-branch analogue -- same underdetermined `x>10mm AND
+/// y>10mm`, `free: false`, `bounds (0.001, 0.1)` system, but with a CONSTANT
+/// objective (independent of x/y, like
+/// `solve_ranked_multistart_ties_broken_by_ascending_start_index`) added so the
+/// problem is `multistart_eligible` (dim=2, `objective.is_some()`) without
+/// pinning x/y to a single optimum -- the non-uniqueness of the underlying
+/// constraint system is preserved through the multistart winner.
+///
+/// With `current_values` empty, the seed (start #0, `extract_initial_point`) and
+/// the all-midpoint point (start #1) are both exactly the bounds midpoint
+/// (50.5mm), which is already feasible; per the ties-broken-by-index test's
+/// documented finding, a flat feasible cost landscape makes Nelder-Mead
+/// terminate immediately at each feasible start's own coordinates. The constant
+/// objective ties every feasible candidate's score exactly, so start #0 (the
+/// seed) wins the tie-break and becomes the winner passed to
+/// `finalise_uniqueness`. Its perturbed re-solve (anchored at 10.9mm, per
+/// `build_perturbation_anchors`'s midpoint-tie branch) lands at a materially
+/// different feasible point (10.9mm != 50.5mm) under the same flat-landscape
+/// dynamics, so `verify_uniqueness` reports non-agreement and the winner is
+/// demoted to `Infeasible`/`ConstraintNonUnique` -- discarding the K-1 feasible
+/// alternatives rather than silently reporting them as `BestFound`.
+#[test]
+fn solve_ranked_multistart_winner_non_unique_demotes_to_infeasible() {
+    use reify_ir::RankedSolveResult;
+
+    let solver = DimensionalSolver;
+
+    let x_id = vcid("Part", "width");
+    let y_id = vcid("Part", "height");
+    let x_ref = value_ref("Part", "width");
+    let y_ref = value_ref("Part", "height");
+
+    let gt_x = gt(x_ref, literal(mm(10.0)));
+    let gt_y = gt(y_ref, literal(mm(10.0)));
+
+    // Constant objective, independent of x/y -- makes multistart_eligible true
+    // (dim=2, objective.is_some()) without disambiguating x/y via the objective
+    // itself, so the constraint system's own non-uniqueness survives.
+    let objective = ObjectiveSet::single(ObjectiveSense::Minimize, literal(mm(1.0)));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam {
+                id: x_id,
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)), // 1mm to 100mm
+                free: false,
+            },
+            AutoParam {
+                id: y_id,
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+                free: false,
+            },
+        ],
+        constraints: vec![(cnid("Part", 0), gt_x), (cnid("Part", 1), gt_y)],
+        current_values: ValueMap::new(),
+        objective: Some(objective),
+        functions: vec![].into(),
+    };
+
+    let ranked = solver.solve_ranked(&problem);
+    match ranked {
+        RankedSolveResult::Infeasible { diagnostics } => {
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.code == Some(DiagnosticCode::ConstraintNonUnique)),
+                "multistart winner-demotion must carry ConstraintNonUnique; got: {:?}",
+                diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+            );
+        }
+        other => panic!(
+            "expected Infeasible (multistart winner demoted for non-uniqueness), got {:?}",
+            other
+        ),
+    }
+}
+
+/// All-starts-infeasible multistart fallback: `solve_ranked`'s `scored.is_empty()`
+/// branch -- every one of the K=2*(dim+1) multistart starts fails to reach a
+/// feasible, scoreable point -- re-runs the single-seed path via
+/// `solve_with_meta`/`rank_single` instead of returning a spurious empty
+/// `Ranked`. No prior test exercised this multistart-specific fallback: the
+/// existing infeasible fixtures either call `solve()` directly (e.g.
+/// `infeasible_with_objective_still_detected`, which this fixture's x-setup is
+/// modeled on) or use `objective: None` (not `multistart_eligible`, so
+/// `solve_ranked` never enters the best-of-K branch).
+///
+/// Fixture: dim=2 (`auto_params.len()==2`) with an objective (so
+/// `multistart_eligible`), but x's constraint (`x > 15mm`) is unreachable
+/// within x's own bounds `[0, 10mm]` -- infeasible identically at the seed, the
+/// all-midpoint point, and every per-axis corner anchor, since
+/// `multistart_points` only samples within `effective_bounds` and `solve_core`
+/// always clamps the final solution back into those bounds before the
+/// feasibility check. `y` is a second, unconstrained auto param solely to reach
+/// dim=2; it never affects x's infeasibility.
+#[test]
+fn solve_ranked_multistart_all_starts_infeasible_falls_back_to_infeasible() {
+    use reify_ir::RankedSolveResult;
+
+    let solver = DimensionalSolver;
+
+    let x_id = vcid("Part", "x");
+    let x_ref = value_ref("Part", "x");
+    let y_id = vcid("Part", "y");
+
+    // constraint: x > 15mm -- impossible with bounds [0, 10mm] (mirrors
+    // infeasible_with_objective_still_detected).
+    let constraint = gt(x_ref.clone(), literal(mm(15.0)));
+
+    // Maximize x -- the objective shouldn't mask the infeasibility, and makes
+    // the problem multistart_eligible (objective.is_some()).
+    let objective = ObjectiveSet::single(ObjectiveSense::Maximize, x_ref);
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam {
+                id: x_id,
+                param_type: Type::length(),
+                bounds: Some((0.0, 0.010)), // max 10mm
+                free: false,
+            },
+            AutoParam {
+                id: y_id,
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+                free: true,
+            },
+        ],
+        constraints: vec![(cnid("Part", 0), constraint)],
+        current_values: ValueMap::new(),
+        objective: Some(objective),
+        functions: vec![].into(),
+    };
+
+    let ranked = solver.solve_ranked(&problem);
+    match ranked {
+        RankedSolveResult::Infeasible { diagnostics } => {
+            assert!(!diagnostics.is_empty(), "should have diagnostic messages");
+            let msg = &diagnostics[0].message;
+            assert!(
+                msg.contains("residual"),
+                "diagnostic should mention residual, got: {}",
+                msg
+            );
+        }
+        other => panic!(
+            "expected Infeasible when every multistart start is infeasible \
+             (scored.is_empty() fallback), got {:?}",
+            other
+        ),
+    }
+}
