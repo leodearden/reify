@@ -21,11 +21,9 @@
 //! signal that distinguishes this task from Option/Layer A, which carries
 //! only presence/absence, not a MESSAGE.
 //!
-//! RED before step-2: `examples/m6_result_recovery.ri` does not exist yet, so
-//! the fixture read fails (panic) — the missing-example RED signal.
-//!
-//! RED before step-4 (pair 2 only): the example has no `diag` cell yet, so
-//! `cell_value(&result, "MountBad", "diag")` panics.
+//! Failure modes: if `examples/m6_result_recovery.ri` is missing, the
+//! fixture read panics; if either structure lacks a `diag` cell,
+//! `cell_value` panics naming the cells that were actually available.
 
 use reify_core::{Severity, ValueCellId};
 use reify_ir::Value;

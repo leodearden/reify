@@ -18,8 +18,9 @@
 //! value cells as a formatter-agnostic numeric/String assertion; this one
 //! pins the rendered string form as it appears in the binary's stdout.
 //!
-//! RED before step-4: `examples/m6_result_recovery.ri` has no `diag` cell
-//! yet, so the diag stdout lines are absent.
+//! Failure mode: if `examples/m6_result_recovery.ri` lacks a `diag` cell,
+//! the diag stdout assertions below fail with the actual stdout printed in
+//! the panic message.
 
 mod common;
 
