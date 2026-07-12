@@ -3144,6 +3144,13 @@ mod tests {
         let snapshot = engine
             .snapshot()
             .expect("eval() must populate a current snapshot");
+        // Deliberate characterization lock: these exact ids are tied to the
+        // number/ordering of allocation sites that fire during eval(). If
+        // this goes red after intentionally adding/removing an allocation
+        // site (e.g. migrating another engine_edit.rs site onto
+        // allocate_snapshot_version), re-baseline the expected values —
+        // don't read the red as a numbering regression without checking
+        // site count first.
         assert_eq!(
             snapshot.id, SnapshotId(0),
             "first eval() call must mint SnapshotId(0)",
@@ -3248,6 +3255,13 @@ mod tests {
         let snapshot = engine
             .snapshot()
             .expect("eval() must populate a current snapshot");
+        // Deliberate characterization lock (same caveat as
+        // eval_snapshot_numbering_is_stable_across_repeated_calls above):
+        // these exact counts/ids are tied to precisely two allocation sites
+        // firing (site 1 then site 2). A legitimate future change that
+        // adds/removes an allocation site during eval() must re-baseline
+        // these values on purpose, not treat a red here as an automatic
+        // regression.
         assert_eq!(
             snapshot.id, SnapshotId(1),
             "resolution-phase pair (site 2) must be the SECOND allocation \
