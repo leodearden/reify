@@ -65,8 +65,11 @@ mod tests {
     use std::collections::HashMap;
 
     use reify_core::{Diagnostic, ValueCellId};
-    use reify_expr::{ContainmentQuery, EvalContext};
-    use reify_ir::{CompiledFunction, DeterminacyState, PersistentMap, Value, ValueMap};
+    use reify_expr::{ContainmentQuery, EvalContext, eval_expr};
+    use reify_ir::{
+        CompiledExpr, CompiledFunction, DeterminacyPredicateKind, DeterminacyState,
+        PersistentMap, Value, ValueMap,
+    };
 
     use super::cell_eval_ctx;
 
@@ -145,5 +148,53 @@ mod tests {
         // threads an undef-cause sink through this constructor should fail
         // this assertion rather than pass unnoticed.
         assert!(ctx.undef_causes.is_none());
+    }
+
+    /// Behavioral complement to the wiring test above: proves the
+    /// `determinacy` capability threaded through `cell_eval_ctx` is actually
+    /// *effective* during evaluation, not just present as a `Some` field.
+    ///
+    /// Evaluates a real `DeterminacyPredicate` expression through the
+    /// returned context. Per the `DeterminacyPredicate` arm in
+    /// `reify_expr::eval_expr`, this resolves via the wired snapshot map
+    /// when `ctx.determinacy` is `Some` (as here) and would instead
+    /// silently degrade to `Value::Undef` if `ctx.determinacy` were `None`
+    /// — e.g. if a future edit dropped the `.with_determinacy(..)` link
+    /// from `cell_eval_ctx`'s body. The pointer-identity assertions above
+    /// would not catch that class of regression; this test does.
+    #[test]
+    fn cell_eval_ctx_determinacy_resolves_via_wired_map() {
+        let cell_id = ValueCellId::new("S", "a");
+
+        let values = ValueMap::new();
+        let functions: &[CompiledFunction] = &[];
+        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let mut determinacy: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::new();
+        determinacy.insert(
+            cell_id.clone(),
+            (Value::Real(2.5), DeterminacyState::Determined),
+        );
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let containment = NoContainment;
+
+        let ctx = cell_eval_ctx(
+            &values,
+            functions,
+            &meta_map,
+            &determinacy,
+            &sink,
+            &containment,
+        );
+
+        let det_expr =
+            CompiledExpr::determinacy_predicate(DeterminacyPredicateKind::Determined, cell_id);
+
+        assert_eq!(
+            eval_expr(&det_expr, &ctx),
+            Value::Bool(true),
+            "determined(a) should resolve true via the determinacy map threaded through cell_eval_ctx, \
+             not silently degrade to Value::Undef"
+        );
     }
 }
