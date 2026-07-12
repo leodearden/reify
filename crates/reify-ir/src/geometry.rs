@@ -2909,16 +2909,31 @@ impl Mesh {
         // this exact mesh — see `check_mesh_contract_welded`'s precondition),
         // else recompute via `weld_positions()` as before. The owned
         // `Vec<u32>` is declared here (outside the match) so a borrow of it
-        // can outlive the match and unify with the `Some` arm's `&[u32]`.
+        // can outlive the match and unify with the `Some`/fallback arms'
+        // `&[u32]`.
+        //
+        // A length mismatch (as opposed to a same-length-but-wrong-content
+        // remap, which stays an undetectable "garbage in, garbage out"
+        // caller bug per `check_mesh_contract_welded`'s precondition) would
+        // otherwise panic on out-of-bounds indexing below in release
+        // builds, where `debug_assert_eq!` alone doesn't fire — so it is
+        // checked in ALL build modes and defended by falling back to an
+        // internal reweld, keeping this public API panic-free even if a
+        // future caller violates the precondition. The `debug_assert_eq!`
+        // still fires first in debug/test builds, so a mismatch is caught
+        // loudly during development rather than silently repaired.
         let recomputed_weld: Vec<u32>;
         let welded_indices: &[u32] = match welded {
+            Some(w) if w.len() == self.vertices.len() / 3 => w,
             Some(w) => {
                 debug_assert_eq!(
                     w.len(),
                     self.vertices.len() / 3,
-                    "check_contract: threaded weld remap length must equal vertex count"
+                    "check_contract: threaded weld remap length must equal vertex count \
+                     — falling back to an internal reweld in release builds"
                 );
-                w
+                recomputed_weld = self.weld_positions().1;
+                &recomputed_weld
             }
             None => {
                 recomputed_weld = self.weld_positions().1;
