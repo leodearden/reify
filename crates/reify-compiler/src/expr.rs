@@ -1585,11 +1585,37 @@ pub(crate) fn compile_expr_guarded_with_expected(
                             coerce_zero_operand(left, compiled_left, right, compiled_right);
                     }
 
-                    let mut result_type = infer_binop_type(
-                        bin_op,
-                        &compiled_left.result_type,
-                        &compiled_right.result_type,
-                    );
+                    // Mul/Div (task compiler-type-hygiene β2 amendment round 3): compute
+                    // `infer_mul_div_result` exactly ONCE here and reuse the `Option` both
+                    // for `result_type` (via `type_compat::mul_div_result_or_placeholder`,
+                    // the same fallback `infer_binop_type`'s own Mul/Div arm delegates to)
+                    // and for the operand-kind guard's poison decision further below.
+                    // Previously each site called `infer_mul_div_result` independently, so
+                    // the guard's `is_none()` check and this placeholder fallback had to be
+                    // kept in lockstep only by convention. `mul_div_inferred` is `Some(_)`
+                    // (outer) exactly when `bin_op` is `Mul`/`Div`; the guard's `if let
+                    // Some(None) = &mul_div_inferred` below relies on that to stay a no-op
+                    // for every other operator.
+                    let mul_div_inferred = matches!(bin_op, BinOp::Mul | BinOp::Div).then(|| {
+                        type_compat::infer_mul_div_result(
+                            bin_op,
+                            &compiled_left.result_type,
+                            &compiled_right.result_type,
+                        )
+                    });
+
+                    let mut result_type = match &mul_div_inferred {
+                        Some(inferred) => type_compat::mul_div_result_or_placeholder(
+                            inferred.clone(),
+                            &compiled_left.result_type,
+                            &compiled_right.result_type,
+                        ),
+                        None => infer_binop_type(
+                            bin_op,
+                            &compiled_left.result_type,
+                            &compiled_right.result_type,
+                        ),
+                    };
 
                     // Dimension-scaling for `Scalar<Q> ^ n → Scalar<Q^n>` (task-3805 / PRD §4.3).
                     //
@@ -1836,6 +1862,50 @@ pub(crate) fn compile_expr_guarded_with_expected(
                                 )),
                             );
                         }
+                    }
+
+                    // Operand-kind guard for `*`/`/` (task compiler-type-hygiene β2,
+                    // INV-COMP-3, `E_ArithOperandKind`).
+                    //
+                    // `infer_binop_type`'s `Mul`/`Div` arm delegates to
+                    // `infer_mul_div_result`, which returns `None` for any operand-kind
+                    // pairing the runtime evaluator (`eval_mul`/`eval_div`) has no
+                    // intentional arm for — a structural, kind-level `Value::Undef`. See
+                    // `infer_mul_div_result`'s doc for the full supported/unsupported
+                    // partition, pinned against the β1 runtime truth table. The `None`
+                    // itself was already computed once, above, into `mul_div_inferred` —
+                    // reused here instead of calling `infer_mul_div_result` a second time.
+                    //
+                    // Gradualism: skip (no poison, no diagnostic) when either operand
+                    // matches `type_compat::is_mul_div_gradualism_skip` — mirrors the
+                    // Cmp/logical guards' Error/TypeParam skip (PRD decision 3 / §8 row 8),
+                    // extended to also defer on `Projection`/`ScalarParam` operands. See
+                    // that predicate's doc for the full per-variant rationale, including
+                    // why `Type::Applied`/`Type::StructureRef`/`Type::Union` are
+                    // deliberately NOT deferred (hard-erroring on those, rather than
+                    // silently mistyping to `Int` as before this guard existed, is this
+                    // task's entire purpose).
+                    //
+                    // Unlike the Cmp/logical guards (which keep their unconditional `Bool`
+                    // result), this guard POISONS `result_type` to `Type::Error` — `*`/`/`
+                    // produce a value type, so a mistyped product must stop follow-on
+                    // cascades on that value (mirrors the Pow/Mod poison precedent).
+                    if let Some(None) = &mul_div_inferred
+                        && !type_compat::is_mul_div_gradualism_skip(&compiled_left.result_type)
+                        && !type_compat::is_mul_div_gradualism_skip(&compiled_right.result_type)
+                    {
+                        result_type = make_poison_type(
+                            diagnostics,
+                            Diagnostic::error(format!(
+                                "operator `{op}` is undefined for operand kinds `{}` and `{}`",
+                                compiled_left.result_type, compiled_right.result_type,
+                            ))
+                            .with_code(DiagnosticCode::ArithOperandKind)
+                            .with_label(DiagnosticLabel::new(
+                                expr.span,
+                                "unsupported operand kinds",
+                            )),
+                        );
                     }
 
                     CompiledExpr::binop(bin_op, compiled_left, compiled_right, result_type)
@@ -8538,4 +8608,172 @@ pub structure Rack {
         );
     }
     // ── end task-4702 step-1 ─────────────────────────────────────────────────
+
+    /// End-to-end compile-pipeline test for the Mul/Div operand-kind guard
+    /// (task compiler-type-hygiene β2, `E_ArithOperandKind`): a concrete,
+    /// runtime-unsupported operand pairing — a struct instance × a struct
+    /// instance, one of the `Type::StructureRef`/`Type::Applied`/`Type::Union`
+    /// kinds the guard above deliberately does NOT skip (see its doc comment:
+    /// "correctly hard-erroring on them is this task's entire purpose, not a
+    /// regression") — must actually reach the guard through the full
+    /// `compile_source` pipeline (parse → resolve → `compile_binop`), not
+    /// just the unit-level `infer_mul_div_result` partition exercised in
+    /// `type_compat.rs`'s test module. Mirrors
+    /// `undef_literal_compile_tests.rs`'s `get_let_expr`-based pattern for
+    /// inspecting a compiled `let` binding's `result_type` directly, via
+    /// `get_let_expr_in` (this module declares two structure defs, so the
+    /// template is looked up by name rather than relying on "first template").
+    #[test]
+    fn struct_times_struct_emits_arith_operand_kind_and_poisons_result() {
+        use reify_test_support::{compile_source, get_let_expr_in};
+
+        let source = r#"
+structure def Widget {
+    param width : Real = 3.5
+}
+structure S {
+    param w1 : Widget
+    param w2 : Widget
+    let a = w1 * w2
+}
+"#;
+        let compiled = compile_source(source);
+
+        // Exactly one ArithOperandKind — the guard's poison-and-emit contract,
+        // not just an absence/presence check.
+        let arith_count = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::ArithOperandKind))
+            .count();
+        assert_eq!(
+            arith_count, 1,
+            "expected exactly ONE ArithOperandKind for `w1 * w2` (struct × \
+             struct, a concrete runtime-unsupported operand kind); got \
+             {arith_count}: {:?}",
+            compiled.diagnostics
+        );
+
+        // The guard must also poison `a`'s static result type to Type::Error
+        // (not merely emit a diagnostic beside an unpoisoned type) — this is
+        // the anti-cascade half of the contract, unverified by a diagnostics-
+        // only assertion.
+        let expr = get_let_expr_in(&compiled, "S", "a");
+        assert_eq!(
+            expr.result_type,
+            Type::Error,
+            "`w1 * w2` (struct × struct) must poison `a`'s result_type to \
+             Type::Error, got: {:?}",
+            expr.result_type
+        );
+    }
+
+    /// End-to-end no-false-positive test for the Mul/Div operand-kind guard,
+    /// complementing the hard-error test above: a concrete, runtime-SUPPORTED
+    /// operand pairing — two dimensioned `Scalar` params of DIFFERENT
+    /// dimensions (`Length` and `Time`) — must reach the guard through the
+    /// full `compile_source` pipeline and emit ZERO `ArithOperandKind`, while
+    /// the COMBINED dimension `infer_mul_div_result`'s Scalar⊗Scalar arm
+    /// computes (pinned at the unit level by
+    /// `infer_mul_div_result_scalar_times_scalar_multiplies_dimensions` in
+    /// `type_compat.rs`) actually reaches `result_type` unchanged. The
+    /// supported partition was previously exercised only at the
+    /// `infer_mul_div_result` unit level (never through the real guard's `if
+    /// let Some(None)` branch in `compile_binop`) — a diagnostics-only
+    /// no-error assertion alone would not catch the guard misfiring on a
+    /// `Some` result and falling back to the `Type::Int` placeholder instead
+    /// of the correctly-dimensioned type.
+    #[test]
+    fn scalar_times_scalar_of_different_dimensions_emits_no_arith_operand_kind_and_combines_dimension()
+     {
+        use reify_test_support::{compile_source, get_let_expr_in};
+
+        let source = r#"
+structure S {
+    param len : Length
+    param t : Time
+    let v = len * t
+}
+"#;
+        let compiled = compile_source(source);
+
+        let arith_count = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::ArithOperandKind))
+            .count();
+        assert_eq!(
+            arith_count, 0,
+            "`len * t` (Scalar<Length> * Scalar<Time>, runtime-supported \
+             dimension algebra) must NOT emit ArithOperandKind; got \
+             {arith_count}: {:?}",
+            compiled.diagnostics
+        );
+
+        let expr = get_let_expr_in(&compiled, "S", "v");
+        assert_eq!(
+            expr.result_type,
+            Type::Scalar {
+                dimension: DimensionVector::LENGTH.mul(&DimensionVector::TIME),
+            },
+            "`len * t` must produce the correctly-COMBINED Length\u{d7}Time \
+             dimension (not a placeholder or poisoned type); got: {:?}",
+            expr.result_type
+        );
+    }
+
+    /// End-to-end anti-cascade SKIP regression for the Mul/Div operand-kind
+    /// guard's gradualism, complementing the HARD-ERROR test above:
+    /// `Scalar<Q> * Scalar<Q>` inside a dimension-kinded generic fn body —
+    /// `Type::ScalarParam("Q")` on both sides, before any call site
+    /// substitutes a concrete dimension for `Q` — must NOT emit
+    /// `ArithOperandKind` through the real `compile_source` pipeline. Mirrors
+    /// `comparison_operand_guard_tests.rs`'s
+    /// `scalar_param_order_comparison_in_generic_fn_is_accepted` (the Cmp
+    /// guard's sibling regression for the same `std.fields::threshold<D, Q:
+    /// Dimension>`-shaped body), but for the Mul/Div guard's own
+    /// `is_mul_div_gradualism_skip` check, which was previously exercised only
+    /// at the `infer_mul_div_result`/`mul_div_result_or_placeholder` unit
+    /// level, never through the actual guard in `compile_binop`.
+    #[test]
+    fn scalar_param_times_scalar_param_in_generic_fn_emits_no_arith_operand_kind() {
+        use reify_test_support::compile_source;
+
+        let source = r#"
+fn area<Q: Dimension>(x: Scalar<Q>) -> Scalar<Q> {
+    x * x
+}
+"#;
+        let compiled = compile_source(source);
+
+        let arith_count = compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == Some(DiagnosticCode::ArithOperandKind))
+            .count();
+        assert_eq!(
+            arith_count, 0,
+            "`Scalar<Q> * Scalar<Q>` inside a generic fn body must NOT emit \
+             ArithOperandKind (gradualism skip on ScalarParam operands); got \
+             {arith_count}: {:?}",
+            compiled.diagnostics
+        );
+
+        // Half two of the contract: the guard must not just stay silent, but
+        // also must NOT poison — `x * x`'s result_type should propagate the
+        // ScalarParam itself (`mul_div_result_or_placeholder`'s skip-set
+        // fallback), not collapse to Type::Error nor leak Type::Int.
+        let area_fn = compiled
+            .functions
+            .iter()
+            .find(|f| f.name == "area")
+            .expect("area function should be compiled");
+        assert_eq!(
+            area_fn.body.result_expr.result_type,
+            Type::ScalarParam("Q".to_string()),
+            "`x * x` must propagate ScalarParam(\"Q\"), not poison to \
+             Type::Error nor collapse to Type::Int; got: {:?}",
+            area_fn.body.result_expr.result_type
+        );
+    }
 }
