@@ -8853,4 +8853,191 @@ structure S {
             expr.result_type
         );
     }
+
+    // ── compiler-type-hygiene ε1 step-3 ─────────────────────────────────────
+    //
+    // Characterize the fall-through routing into `member_access_aggregation_
+    // or_unsupported` (step-2) plus the exact poison wording, ahead of the
+    // exhaustive-match conversion (step-6). These are the paths a naive match
+    // most easily breaks: the tail's message string, and the three arms whose
+    // *residual* (not their happy path) reaches the tail.
+
+    /// True iff `diagnostics` has exactly one `Severity::Error` entry; returns
+    /// it. Local equivalent of `wrong_receiver_member_tests.rs`'s
+    /// `has_error_code`/`error_count` pair, shaped for these single-diagnostic
+    /// pinning tests (reused across all four step-3 tests below).
+    ///
+    /// Deliberately typed over `&[Diagnostic]` (from `reify_core`, which has
+    /// no dependency back onto this crate) rather than `&CompiledModule`:
+    /// `reify_test_support` is a dev-dependency that itself depends on
+    /// `reify-compiler`, so this crate's OWN `--lib` unit-test binary and the
+    /// ordinary rlib `reify_test_support` links against are two separate
+    /// compilations — a locally-declared `&CompiledModule` parameter would be
+    /// a nominally different (if structurally identical) type from the
+    /// `CompiledModule` returned by `reify_test_support::compile_source`, and
+    /// the two would not type-check against each other. Passing
+    /// `&m.diagnostics` sidesteps this entirely.
+    #[track_caller]
+    fn the_one_error(diagnostics: &[Diagnostic]) -> &Diagnostic {
+        let errors: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect();
+        assert_eq!(
+            errors.len(),
+            1,
+            "expected exactly one Severity::Error diagnostic, got: {:?}",
+            diagnostics
+        );
+        errors[0]
+    }
+
+    /// (a) EXACT poison-message pin: an unsupported, non-aggregation member on
+    /// a plain (non-special) receiver must emit `member access not yet
+    /// supported: .foo` verbatim, with no `DiagnosticCode`. No existing test
+    /// pins the exact per-member string — byte-identity (PRD §8 row 12)
+    /// requires it, since a naive match conversion could easily reword or
+    /// drop the `.{member}` suffix.
+    #[test]
+    fn unsupported_member_on_plain_receiver_pins_exact_poison_message() {
+        use reify_test_support::{compile_source, get_let_expr};
+
+        let source = r#"
+structure S {
+    param n : Int = 5
+    let y = n.foo
+}
+"#;
+        let m = compile_source(source);
+        let err = the_one_error(&m.diagnostics);
+        assert_eq!(
+            err.message, "member access not yet supported: .foo",
+            "poison message must be byte-identical; got: {:?}",
+            err.message
+        );
+        assert_eq!(
+            err.code, None,
+            "generic poison-tail diagnostic must carry no DiagnosticCode; got: {:?}",
+            err.code
+        );
+
+        let expr = get_let_expr(&m, "y");
+        assert_eq!(expr.result_type, Type::Error);
+    }
+
+    /// (b) `.sum` on a non-List/non-Map receiver must emit
+    /// `DiagnosticCode::AggregationReceiverNotCollection` and type as
+    /// `Type::Error` (anti-cascade). Mirrors
+    /// `wrong_receiver_member_tests.rs::sum_on_non_list_receiver_emits_error`
+    /// (a different receiver shape) as an in-file regression net local to the
+    /// file being reshaped.
+    #[test]
+    fn sum_on_non_collection_receiver_emits_aggregation_receiver_not_collection() {
+        use reify_test_support::{compile_source, get_let_expr};
+
+        let source = r#"
+structure S {
+    param n : Int = 5
+    let y = n.sum
+}
+"#;
+        let m = compile_source(source);
+        let err = the_one_error(&m.diagnostics);
+        assert_eq!(
+            err.code,
+            Some(DiagnosticCode::AggregationReceiverNotCollection),
+            "expected AggregationReceiverNotCollection; got: {:?}",
+            err
+        );
+
+        let expr = get_let_expr(&m, "y");
+        assert_eq!(expr.result_type, Type::Error);
+    }
+
+    /// (c) A datum receiver (`Axis`) accessed with a member that is neither a
+    /// recognized datum-projection member (`DATUM_PROJECTION_MEMBERS`) nor a
+    /// collection-aggregation member must fall through PAST the datum-
+    /// projection arm entirely — that arm only fires for a RECOGNIZED member
+    /// (guard: `receiver_is_datum && DATUM_PROJECTION_MEMBERS.contains(...)`)
+    /// — to the generic poison tail, NOT `DatumProjectionUnavailable` (that
+    /// code is reserved for a recognized-but-inapplicable projection, e.g.
+    /// `point.dir`). Proves the datum fall-through residual routes to the
+    /// shared tail.
+    #[test]
+    fn unsupported_member_on_datum_receiver_falls_through_to_poison_tail() {
+        use reify_test_support::compile_source;
+
+        let source = r#"
+structure S {
+    param a : Axis
+    let y = a.foo
+}
+"#;
+        let m = compile_source(source);
+        let err = the_one_error(&m.diagnostics);
+        assert_eq!(
+            err.message, "member access not yet supported: .foo",
+            "datum fall-through must reach the byte-identical generic poison \
+             message; got: {:?}",
+            err.message
+        );
+        assert_eq!(
+            err.code, None,
+            "must NOT be DatumProjectionUnavailable/Ambiguous (reserved for a \
+             recognized member on the wrong datum) nor any other named code; \
+             got: {:?}",
+            err.code
+        );
+    }
+
+    /// (d) A `Type::TypeParam`-typed receiver whose compiled object is NOT a
+    /// `ValueRef` must fall through the `TypeParam` branch's `if let
+    /// CompiledExprKind::ValueRef(..)` guard to the generic poison tail — NOT
+    /// `TypeParamMemberNotInBound` (that code requires the ValueRef path to
+    /// even run the bound-trait lookup). Proves the TypeParam non-ValueRef
+    /// fall-through residual documented at this file's "If the receiver is
+    /// not a ValueRef (e.g. a nested expr)" comment.
+    ///
+    /// Receiver shape: `seals[0]` where `seals : List<T>` is a plain param
+    /// (NOT a registered `collection_sub`, so Part A's `<col>[i].member`
+    /// pre-check does not intercept it). The general `IndexAccess` arm always
+    /// builds a fresh `CompiledExpr::index_access(...)` node — it never
+    /// collapses to a flat `ValueRef` — so `seals[0]` carries
+    /// `result_type == Type::TypeParam("T")` with `kind = IndexAccess`,
+    /// exactly the "nested expr" the fall-through comment anticipates.
+    #[test]
+    fn typeparam_receiver_via_non_valueref_expr_falls_through_to_poison_tail() {
+        use reify_test_support::compile_source;
+
+        let source = r#"
+trait Seal {
+    param thickness : Length
+}
+
+structure def Bearing<T: Seal> {
+    param seals : List<T>
+    let y = seals[0].thickness
+}
+"#;
+        let m = compile_source(source);
+        let err = the_one_error(&m.diagnostics);
+        assert_eq!(
+            err.message, "member access not yet supported: .thickness",
+            "TypeParam-non-ValueRef fall-through must reach the byte-identical \
+             generic poison message; got: {:?}",
+            err.message
+        );
+        assert_ne!(
+            err.code,
+            Some(DiagnosticCode::TypeParamMemberNotInBound),
+            "must NOT be classified as TypeParamMemberNotInBound (that requires \
+             the ValueRef path); got: {:?}",
+            err.code
+        );
+        assert_eq!(
+            err.code, None,
+            "generic poison-tail diagnostic must carry no DiagnosticCode; got: {:?}",
+            err.code
+        );
+    }
 }
