@@ -63,12 +63,13 @@ pub(crate) fn cell_eval_ctx<'a>(
 mod tests {
     use std::cell::RefCell;
     use std::collections::HashMap;
+    use std::sync::Arc;
 
-    use reify_core::{Diagnostic, ValueCellId};
+    use reify_core::{ContentHash, Diagnostic, DiagnosticCode, Type, ValueCellId};
     use reify_expr::{ContainmentQuery, EvalContext, eval_expr};
     use reify_ir::{
-        CompiledExpr, CompiledFunction, DeterminacyPredicateKind, DeterminacyState, PersistentMap,
-        Value, ValueMap,
+        CompiledExpr, CompiledExprKind, CompiledFunction, DeterminacyPredicateKind,
+        DeterminacyState, FieldSourceKind, PersistentMap, ResolvedFunction, Value, ValueMap,
     };
 
     use super::cell_eval_ctx;
@@ -80,6 +81,19 @@ mod tests {
     impl ContainmentQuery for NoContainment {
         fn contains(&self, _region: &Value, _point: &Value) -> Option<bool> {
             None
+        }
+    }
+
+    /// A `ContainmentQuery` that reports every point as inside the region —
+    /// the complement of `NoContainment` above, used to drive the
+    /// `sample(restrict(field, region), point)` dispatch arm down its
+    /// "inside" branch so a behavioral test can observe the wired
+    /// `containment` capability actually taking effect.
+    struct AlwaysInside;
+
+    impl ContainmentQuery for AlwaysInside {
+        fn contains(&self, _region: &Value, _point: &Value) -> Option<bool> {
+            Some(true)
         }
     }
 
@@ -193,5 +207,164 @@ mod tests {
             "determined(a) should resolve true via the determinacy map threaded through cell_eval_ctx, \
              not silently degrade to Value::Undef"
         );
+    }
+
+    /// Behavioral complement to the wiring test above: proves the
+    /// `containment` capability threaded through `cell_eval_ctx` is
+    /// actually *effective* during evaluation, not just present as a
+    /// `Some` field.
+    ///
+    /// Evaluates `sample(restrict(inner, region), point)` through the
+    /// returned context. Per the `Restricted` arm in
+    /// `reify_expr`'s field-sample dispatch, this resolves to the inner
+    /// field's value only when `ctx.containment.and_then(|c| c.contains(..))`
+    /// is `Some(true)` (as here, via `AlwaysInside`) and would instead
+    /// silently degrade to `Value::Undef` if `ctx.containment` were `None`
+    /// — e.g. if a future edit dropped the `.with_containment(..)` link
+    /// from `cell_eval_ctx`'s body. Mirrors the mock-resolver construction
+    /// in `reify-expr/tests/field_op_dispatch_tests.rs`, but exercised
+    /// through `cell_eval_ctx` itself rather than
+    /// `EvalContext::simple(..).with_containment(..)`.
+    #[test]
+    fn cell_eval_ctx_containment_resolves_via_wired_query() {
+        let x_id = ValueCellId::new("$lambda_inner.S", "x");
+        let inner_field = Value::Field {
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
+            source: FieldSourceKind::Analytical,
+            lambda: Arc::new(Value::Lambda {
+                params: vec![("x".to_string(), x_id)],
+                body: Box::new(CompiledExpr::literal(
+                    Value::Real(42.0),
+                    Type::dimensionless_scalar(),
+                )),
+                captures: ValueMap::new(),
+            }),
+        };
+        // Sentinel — NOT Undef (eval_expr's strict-Undef short-circuit would
+        // otherwise fire before the Restricted dispatch arm runs).
+        // AlwaysInside ignores the actual region value.
+        let region = Value::Bool(false);
+        let restricted = Value::Field {
+            domain_type: Type::dimensionless_scalar(),
+            codomain_type: Type::dimensionless_scalar(),
+            source: FieldSourceKind::Restricted,
+            lambda: Arc::new(Value::List(vec![inner_field, region])),
+        };
+        let field_type = Type::Field {
+            domain: Box::new(Type::dimensionless_scalar()),
+            codomain: Box::new(Type::dimensionless_scalar()),
+        };
+
+        let values = ValueMap::new();
+        let functions: &[CompiledFunction] = &[];
+        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let determinacy: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::new();
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let containment = AlwaysInside;
+
+        let ctx = cell_eval_ctx(
+            &values,
+            functions,
+            &meta_map,
+            &determinacy,
+            &sink,
+            &containment,
+        );
+
+        let sample_expr = CompiledExpr {
+            kind: CompiledExprKind::FunctionCall {
+                function: ResolvedFunction {
+                    name: "sample".to_string(),
+                    qualified_name: "std::sample".to_string(),
+                },
+                args: vec![
+                    CompiledExpr::literal(restricted, field_type),
+                    CompiledExpr::literal(Value::Real(0.0), Type::dimensionless_scalar()),
+                ],
+            },
+            result_type: Type::dimensionless_scalar(),
+            content_hash: ContentHash::of(b"cell_eval_ctx_containment_test"),
+        };
+
+        assert_eq!(
+            eval_expr(&sample_expr, &ctx),
+            Value::Real(42.0),
+            "sample(restrict(inner, region), pt) should resolve to the inner field's value \
+             via the containment query threaded through cell_eval_ctx, not silently degrade \
+             to Value::Undef"
+        );
+    }
+
+    /// Behavioral complement to the wiring test above: proves the
+    /// `runtime_sink` capability threaded through `cell_eval_ctx` is
+    /// actually *effective* during evaluation, not just present as a
+    /// `Some` field.
+    ///
+    /// Evaluates `from_samples(points, values, method)` with a non-`List`
+    /// `points` argument through the returned context. `from_samples`'s
+    /// `FunctionCall` dispatch gate is arity-only (3 args); the `List`-shape
+    /// check — and the diagnostic push — happens inside `eval_from_samples`
+    /// itself, so a malformed `points` arg pushes a
+    /// `DiagnosticCode::FieldSamplesNotGrid` diagnostic into `ctx.diagnostics`
+    /// (when a sink is attached, as here) and would instead silently drop
+    /// the warning if `ctx.diagnostics` were `None` — e.g. if a future edit
+    /// dropped the `.with_runtime_diagnostics(..)` link from
+    /// `cell_eval_ctx`'s body. The pointer-identity assertion above would
+    /// not catch that class of regression; this test does.
+    #[test]
+    fn cell_eval_ctx_runtime_sink_receives_diagnostics_during_eval() {
+        let values = ValueMap::new();
+        let functions: &[CompiledFunction] = &[];
+        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let determinacy: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::new();
+        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
+        let containment = NoContainment;
+
+        let ctx = cell_eval_ctx(
+            &values,
+            functions,
+            &meta_map,
+            &determinacy,
+            &sink,
+            &containment,
+        );
+
+        // Sentinel non-List, non-Undef args: the malformed-shape check (and
+        // the diagnostic push) is on `points` specifically, so `values` /
+        // `method` just need to avoid tripping the top-level strict-Undef
+        // short-circuit.
+        let malformed_points = Value::Bool(true);
+        let placeholder = Value::Bool(true);
+        let from_samples_expr = CompiledExpr {
+            kind: CompiledExprKind::FunctionCall {
+                function: ResolvedFunction {
+                    name: "from_samples".to_string(),
+                    qualified_name: "std::from_samples".to_string(),
+                },
+                args: vec![
+                    CompiledExpr::literal(malformed_points, Type::dimensionless_scalar()),
+                    CompiledExpr::literal(placeholder.clone(), Type::dimensionless_scalar()),
+                    CompiledExpr::literal(placeholder, Type::dimensionless_scalar()),
+                ],
+            },
+            result_type: Type::dimensionless_scalar(),
+            content_hash: ContentHash::of(b"cell_eval_ctx_runtime_sink_test"),
+        };
+
+        let result = eval_expr(&from_samples_expr, &ctx);
+        assert_eq!(result, Value::Undef);
+
+        let recorded = sink.borrow();
+        assert_eq!(
+            recorded.len(),
+            1,
+            "from_samples with a non-List points argument should push exactly one diagnostic \
+             into the sink threaded through cell_eval_ctx, got {:?}",
+            *recorded
+        );
+        assert_eq!(recorded[0].code, Some(DiagnosticCode::FieldSamplesNotGrid));
     }
 }
