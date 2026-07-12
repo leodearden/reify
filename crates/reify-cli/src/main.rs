@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use reify_compiler::cfg::CfgSet;
 use reify_constraints::SimpleConstraintChecker;
-use reify_eval::{MeshSurface, TestStatus};
+use reify_eval::TestStatus;
 
 // Ensure reify_kernel_occt's object files are included in the link so its
 // cfg(has_occt)-gated `inventory::submit!` fires and populates the global
@@ -1066,48 +1066,27 @@ fn cmd_build(args: &[String]) -> ExitCode {
                         return ExitCode::FAILURE;
                     }
                     println!("Wrote {} ({} bytes)", path, data.len());
-                    // Task δ/5002 (amended): print the exported triangle count
-                    // for mesh formats only — STEP/BRep builds are unchanged.
-                    // `ExportFormat::Obj` is deliberately excluded: the format
-                    // matcher above (this Mode-A `-o` arm) has no `.obj` case,
-                    // so `format` can never be `Obj` here (an `.obj` path
-                    // falls through to the `_ =>` STEP default) — including it
-                    // in this gate implied OBJ support that does not exist on
-                    // this code path (amend: reviewer_comprehensive dead-code
-                    // finding).
+                    // Task δ/5002: print the exported triangle count for mesh
+                    // formats (Stl/ThreeMF); STEP/BRep builds are unchanged.
+                    // `ExportFormat::Obj` cannot reach this match: the format
+                    // matcher above (this Mode-A `-o` arm) has no `.obj`
+                    // case, so an `.obj` path falls through to the `_ =>`
+                    // STEP default before `format` is ever `Obj` here. Both
+                    // arms read the count from `data` — the bytes actually
+                    // written to `path` — rather than re-deriving it by
+                    // tessellating again, so the printed count can never
+                    // disagree with the file on disk; see
+                    // `stl_triangle_count` / `threemf_triangle_count` for the
+                    // per-format byte layout and `triangle_count_tests` for
+                    // coverage.
                     //
-                    // Scope note (amend: reviewer_comprehensive completeness
-                    // finding): this `Triangles: N` line is intentionally
-                    // Mode-A-only. Task δ/5002's deliverable is the imperative
-                    // `-o` CLI path (exactly what `cli_build_voxel_to_mesh.rs`
-                    // exercises); Mode-B's declarative `: Output`-occurrence
-                    // path (the `None =>` arm below) does not print a
-                    // per-artifact count — see the note there.
+                    // Mode-A (`-o`) only: Mode-B's declarative `: Output`
+                    // loop below prints no per-artifact count — see the note
+                    // there for the scope rationale.
                     match format {
-                        ExportFormat::Stl => {
-                            // Binary STL header count. See
-                            // `stl_triangle_count` for the byte layout and
-                            // the perf/correctness rationale for reading the
-                            // header instead of re-tessellating (amend:
-                            // reviewer_comprehensive robustness/performance/
-                            // correctness findings), and
-                            // `triangle_count_tests` below for unit coverage
-                            // (amend: reviewer_comprehensive test-coverage
-                            // finding).
-                            println!("Triangles: {}", stl_triangle_count(&data));
-                        }
+                        ExportFormat::Stl => println!("Triangles: {}", stl_triangle_count(&data)),
                         ExportFormat::ThreeMF => {
-                            // Tessellation-based count, filtered to exported
-                            // bodies. See `visible_mesh_triangle_count` — 3MF
-                            // (zipped XML) has no fixed-width byte framing to
-                            // read a count from directly, unlike `Stl` above
-                            // (amend: reviewer_comprehensive correctness
-                            // finding), and `triangle_count_tests` below for
-                            // unit coverage of the `default_visible` filter
-                            // (amend: reviewer_comprehensive test-coverage
-                            // finding).
-                            let tess = engine.tessellate_realizations(&compiled);
-                            println!("Triangles: {}", visible_mesh_triangle_count(&tess.meshes));
+                            println!("Triangles: {}", threemf_triangle_count(&data))
                         }
                         _ => {}
                     }
@@ -1210,19 +1189,14 @@ fn cmd_build(args: &[String]) -> ExitCode {
             // format): a DisplayOutput-deferred or failed-occurrence artifact
             // carries empty bytes and must write no file.
             //
-            // Scope note (amend: reviewer_comprehensive completeness finding,
-            // task δ/5002): unlike Mode-A above, this declarative per-artifact
-            // loop does NOT print a `Triangles: N` count for mesh-format
-            // artifacts (e.g. an `STLOutput`/`ThreeMFOutput` occurrence).
-            // Task 5002's PRD scope is the imperative `-o` CLI path only
-            // (proven by `cli_build_voxel_to_mesh.rs`); it deliberately does
-            // not extend the isosurface honest-signal observability to the
-            // declarative `: Output`-occurrence path. Each `artifact` here
-            // does carry `format` + `bytes`, so a future task could reuse
-            // `stl_triangle_count`/`visible_mesh_triangle_count` (factored
-            // out of Mode-A's inline logic by the reviewer_comprehensive
-            // test-coverage amendment) keyed on `artifact.format` if
-            // Mode-B triangle-count observability is ever wanted.
+            // Unlike Mode-A above, this declarative per-artifact loop does
+            // NOT print a `Triangles: N` count — task δ/5002's PRD scope is
+            // the imperative `-o` CLI path only (proven by
+            // `cli_build_voxel_to_mesh.rs`); see the Mode-A `-o` arm's
+            // comment above for the full scope rationale. Each `artifact`
+            // here does carry `format` + `bytes`, so `stl_triangle_count` /
+            // `threemf_triangle_count` are reusable directly, keyed on
+            // `artifact.format`, if Mode-B observability is ever wanted.
             let mut files_written = 0usize;
             for artifact in artifacts {
                 if artifact.bytes.is_empty() {
@@ -2642,13 +2616,8 @@ fn module_has_isosurface(module: &reify_compiler::CompiledModule) -> bool {
 /// field is authoritative for any bytes produced by
 /// `engine.build(_, ExportFormat::Stl)`. Returns `0` if `data` is shorter
 /// than 84 bytes (defensive; a real binary-STL export always has the full
-/// header).
-///
-/// Task δ/5002 (amend: reviewer_comprehensive test-coverage finding — this
-/// logic was previously inlined at the `cmd_build` call site with no direct
-/// unit coverage of its own). See [`visible_mesh_triangle_count`] for the
-/// `ExportFormat::ThreeMF` counterpart, and `triangle_count_tests` below for
-/// the coverage this gained.
+/// header). See [`threemf_triangle_count`] for the `ExportFormat::ThreeMF`
+/// counterpart and `triangle_count_tests` below for coverage.
 fn stl_triangle_count(data: &[u8]) -> usize {
     match data.get(80..84) {
         Some(count_bytes) => {
@@ -2658,24 +2627,26 @@ fn stl_triangle_count(data: &[u8]) -> usize {
     }
 }
 
-/// Sums the triangle count across every `default_visible` mesh in a
-/// `tessellate_realizations` snapshot — the same product-body predicate
-/// `engine.build()`'s own export walk applies, so the result matches what
-/// was actually exported instead of also counting non-exported
-/// aux/intermediate realizations.
+/// Parses the exported triangle count directly from `ThreeMF` bytes by
+/// counting `<triangle ` element occurrences in the raw archive. `write_3mf`
+/// (reify-ir/src/geometry.rs) pins every ZIP part to
+/// `CompressionMethod::Stored`, specifically so the `3D/3dmodel.model` XML
+/// appears literally in `data` — its doc comment sanctions substring-counting
+/// `<triangle ` on raw bytes "without a zip reader", and
+/// `write_3mf_box_produces_valid_3mf_package` pins the identical
+/// `.matches("<triangle ").count()` technique against the unzipped XML.
 ///
-/// Used for `ExportFormat::ThreeMF`, which (unlike `Stl`) has no fixed-width
-/// byte framing to read a count from directly, so it pays a
-/// `tessellate_realizations` re-walk instead of reading a header like
-/// [`stl_triangle_count`] does — see the `ExportFormat::ThreeMF` call site in
-/// `cmd_build` for the perf/correctness trade-off this implies.
-///
-/// Task δ/5002 (amend: reviewer_comprehensive test-coverage finding — the
-/// `default_visible` filter and `indices.len() / 3` computation previously
-/// had no direct unit coverage; only [`stl_triangle_count`]'s STL header
-/// path was exercised, by `cli_build_voxel_to_mesh.rs`'s subprocess test).
-fn visible_mesh_triangle_count(meshes: &[MeshSurface]) -> usize {
-    meshes.iter().filter(|m| m.default_visible).map(|m| m.mesh.indices.len() / 3).sum()
+/// Reading straight from `data` (rather than a fresh `tessellate_realizations`
+/// walk) keeps this authoritative for whatever was actually written: the OCCT
+/// kernel's `ThreeMF` export re-tessellates at its own hardcoded
+/// `DEFAULT_STL_TESSELLATION_TOLERANCE` (0.1), not
+/// `Engine::DEFAULT_TESSELLATION_TOLERANCE` (0.0001), so a tessellation
+/// re-walk is not guaranteed to agree with what was actually exported (amend:
+/// reviewer_comprehensive correctness_consistency finding). See
+/// `triangle_count_tests` below for coverage.
+fn threemf_triangle_count(data: &[u8]) -> usize {
+    const NEEDLE: &[u8] = b"<triangle ";
+    data.windows(NEEDLE.len()).filter(|w| *w == NEEDLE).count()
 }
 
 /// Returns `true` when `module` carries a *geometric* `Conforms` instance — one
@@ -3985,19 +3956,18 @@ mod build_is_success_tests {
 // ── Triangles: N helper unit tests (task δ/5002 amend: reviewer_comprehensive
 // test-coverage + consistency findings) ─────────────────────────────────────
 //
-// `stl_triangle_count`'s STL-header path was already exercised indirectly by
-// `cli_build_voxel_to_mesh.rs` (a subprocess CLI test building `.stl`), but
-// `visible_mesh_triangle_count`'s `ExportFormat::ThreeMF` path — the
-// `default_visible` filter and the `indices.len() / 3` computation — had no
-// coverage at all. These tests exercise both pure functions directly, and
-// pin that the two independent derivations agree for equivalent input (a
-// full dual-format CLI/engine integration test belongs in
+// `stl_triangle_count` and `threemf_triangle_count` are exercised directly,
+// including a same-mesh cross-writer parity check driven through the REAL
+// `reify_ir::write_stl_binary` / `write_3mf` producers — not two hand-built
+// byte buffers each independently pre-loaded with the same literal count,
+// which would only prove each reader parses back what it was handed. A full
+// dual-format CLI/engine integration test still belongs in
 // `cli_build_voxel_to_mesh.rs` / `voxel_to_mesh_e2e.rs`, both outside this
-// amendment's locked scope — `main.rs` and the `.ri` fixture only).
+// amendment's locked scope (`main.rs` and the `.ri` fixture only).
 #[cfg(test)]
 mod triangle_count_tests {
-    use super::{stl_triangle_count, visible_mesh_triangle_count, MeshSurface};
-    use reify_ir::Mesh;
+    use super::{stl_triangle_count, threemf_triangle_count};
+    use reify_ir::{Mesh, ThreeMfOptions, write_3mf, write_stl_binary};
 
     /// A well-formed binary-STL byte buffer with `count` baked into bytes
     /// 80..84 (little-endian `u32`), per the layout `stl_triangle_count`
@@ -4009,16 +3979,17 @@ mod triangle_count_tests {
         bytes
     }
 
-    /// A `MeshSurface` fixture with `triangle_count` triangles' worth of
-    /// `indices` (vertex content is irrelevant to
-    /// `visible_mesh_triangle_count`, which reads only `indices.len()` and
-    /// `default_visible`).
-    fn mesh_surface(triangle_count: usize, default_visible: bool) -> MeshSurface {
-        MeshSurface {
-            entity_path: "Fixture#realization[0]".to_string(),
-            mesh: Mesh { vertices: vec![], indices: vec![0u32; triangle_count * 3], normals: None },
-            default_visible,
+    /// A minimal valid `Mesh` with `triangle_count` triangles, all reusing
+    /// the same 3 vertices. Neither `write_stl_binary` nor `write_3mf`
+    /// validate geometry (manifoldness, winding, area) — only buffer-length
+    /// and index-bounds — so a degenerate repeated triangle is sufficient to
+    /// drive both real writers.
+    fn repeated_triangle_mesh(triangle_count: usize) -> Mesh {
+        let mut indices = Vec::with_capacity(triangle_count * 3);
+        for _ in 0..triangle_count {
+            indices.extend_from_slice(&[0, 1, 2]);
         }
+        Mesh { vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0], indices, normals: None }
     }
 
     /// Normal case: reads the count straight out of the header field.
@@ -4036,46 +4007,50 @@ mod triangle_count_tests {
         assert_eq!(stl_triangle_count(&[0u8; 10]), 0);
     }
 
-    /// The `default_visible` filter must exclude hidden aux-body meshes from
-    /// the sum — this is the ThreeMF-branch gap reviewer_comprehensive
-    /// flagged (previously covered by no test: `cli_build_voxel_to_mesh.rs`
-    /// only ever builds the `.stl` output, which never reaches this
-    /// function).
+    /// Normal case: counts `<triangle ` elements in a real `write_3mf` output.
     #[test]
-    fn visible_mesh_triangle_count_filters_hidden_meshes() {
-        let meshes = vec![
-            mesh_surface(3, true),
-            mesh_surface(5, false), // hidden aux body — must be excluded
-            mesh_surface(2, true),
-        ];
-        assert_eq!(visible_mesh_triangle_count(&meshes), 5); // 3 + 2, NOT +5
+    fn threemf_triangle_count_reads_real_archive() {
+        let mesh = repeated_triangle_mesh(7);
+        let mut buf = Vec::new();
+        write_3mf(&mesh, ThreeMfOptions::default(), &mut buf).expect("write_3mf should succeed");
+        assert_eq!(threemf_triangle_count(&buf), 7);
     }
 
-    /// No default-visible meshes (e.g. every body is an aux/hidden
-    /// descendant) reports `0`, not a panic on an empty sum.
+    /// An empty buffer (no `<triangle ` element at all) reports `0`, not a
+    /// panic.
     #[test]
-    fn visible_mesh_triangle_count_empty_is_zero() {
-        assert_eq!(visible_mesh_triangle_count(&[]), 0);
+    fn threemf_triangle_count_empty_is_zero() {
+        assert_eq!(threemf_triangle_count(&[]), 0);
     }
 
-    /// Cross-derivation parity (reviewer_comprehensive consistency finding):
-    /// `stl_triangle_count` (STL header field) and
-    /// `visible_mesh_triangle_count` (tessellation walk filtered by
-    /// `default_visible`) are two independent derivations of the same
-    /// conceptual quantity for a mesh-terminal build. For equivalent
-    /// underlying geometry they must agree — this pins that contract
-    /// directly on the pure functions, without needing a real dual-format
-    /// engine build.
+    /// Cross-writer parity (reviewer_comprehensive correctness_consistency
+    /// finding): `stl_triangle_count` and `threemf_triangle_count` must
+    /// report the same count when reading the REAL bytes
+    /// `reify_ir::write_stl_binary` / `reify_ir::write_3mf` emit for the SAME
+    /// mesh. Deriving both from one shared `Mesh` via the actual production
+    /// writers — rather than two independently hand-built buffers — is what
+    /// makes this a genuine dual-source check instead of a tautology.
     #[test]
-    fn triangle_count_derivations_agree_for_equivalent_input() {
+    fn triangle_count_derivations_agree_for_same_mesh_via_real_writers() {
         let triangle_count = 11;
-        let stl = stl_triangle_count(&stl_bytes_with_count(triangle_count as u32));
-        let mesh = visible_mesh_triangle_count(&[mesh_surface(triangle_count, true)]);
+        let mesh = repeated_triangle_mesh(triangle_count);
+
+        let mut stl_bytes = Vec::new();
+        write_stl_binary(&mesh, &mut stl_bytes).expect("write_stl_binary should succeed");
+
+        let mut mf_bytes = Vec::new();
+        write_3mf(&mesh, ThreeMfOptions::default(), &mut mf_bytes)
+            .expect("write_3mf should succeed");
+
+        let stl = stl_triangle_count(&stl_bytes);
+        let mf = threemf_triangle_count(&mf_bytes);
+        assert_eq!(stl, triangle_count);
+        assert_eq!(mf, triangle_count);
         assert_eq!(
-            stl, mesh,
-            "stl_triangle_count and visible_mesh_triangle_count must report \
-             the same count for equivalent geometry, even though they read \
-             from two different sources (STL header vs. tessellation walk)"
+            stl, mf,
+            "stl_triangle_count and threemf_triangle_count must report the \
+             same count when reading the real write_stl_binary/write_3mf \
+             output for the same mesh"
         );
     }
 }
