@@ -2796,3 +2796,337 @@ fn solve_ranked_multistart_ties_broken_by_ascending_start_index() {
         other => panic!("expected Ranked, got {:?}", other),
     }
 }
+
+// ---- gate + inheritance guards (step-5, task δ #5016) ----
+//
+// (a)-(c) pin the multistart gate's three exclusion conditions (dim<=1,
+// objective:None, cost_robustness_lambda.is_some()) so each keeps the
+// historical single-candidate `solve_ranked` path verbatim -- they are
+// companion/guard assertions over behaviour step-4 already establishes, not
+// fresh RED. (d) is the substantive guard: it pins that the Money-dimension
+// robustness floor (task #4789 alpha) flows through the best-of-K multistart
+// loop UNCHANGED because that loop reuses `solve_core` (the same function
+// `solve_with_meta` calls) rather than re-implementing the floor.
+
+/// `5 USD × (x_id / 1mm)` — Money-dimensioned, monotonically increasing in
+/// `x_id`'s SI value. Mirrors `tests/robustness_floor.rs::money_expr_x_per_mm`
+/// (task #4789 alpha's canonical Money-objective fixture shape) so guard (d)
+/// below exercises the SAME activation predicate (`objective_is_money`) as
+/// the solve()-level floor tests, per the plan's "reuse the
+/// robustness_floor.rs money-expr pattern" instruction.
+fn money_cost_expr(x_id: &reify_core::ValueCellId) -> CompiledExpr {
+    let money_dim = DimensionVector::MONEY;
+    let length_dim = DimensionVector::LENGTH;
+    let dimensionless = DimensionVector::DIMENSIONLESS;
+
+    let five_usd = CompiledExpr::literal(
+        Value::Scalar {
+            si_value: 5.0,
+            dimension: money_dim,
+        },
+        Type::Scalar { dimension: money_dim },
+    );
+    let x_ref = CompiledExpr::value_ref(x_id.clone(), Type::Scalar { dimension: length_dim });
+    let one_mm = CompiledExpr::literal(
+        Value::Scalar {
+            si_value: 0.001,
+            dimension: length_dim,
+        },
+        Type::Scalar { dimension: length_dim },
+    );
+    let x_per_mm = CompiledExpr::binop(
+        BinOp::Div,
+        x_ref,
+        one_mm,
+        Type::Scalar { dimension: dimensionless },
+    );
+    CompiledExpr::binop(
+        BinOp::Mul,
+        five_usd,
+        x_per_mm,
+        Type::Scalar { dimension: money_dim },
+    )
+}
+
+/// (a) — gate guard: a dim=1 objective problem must stay on the
+/// single-candidate path (multistart requires `auto_params.len() >= 2`).
+/// Mirrors B1's fixture shape so B1
+/// (`solve_ranked_override_objective_score_is_some`) is pinned to keep
+/// passing under the same gate.
+#[test]
+fn solve_ranked_gate_dim1_objective_single_candidate() {
+    use reify_ir::RankedSolveResult;
+
+    let solver = DimensionalSolver;
+    let thickness_id = vcid("Bracket", "thickness");
+    let thickness_ref = value_ref("Bracket", "thickness");
+
+    let sub_expr = binop(BinOp::Sub, thickness_ref.clone(), literal(mm(10.0)));
+    let quad_expr = binop(BinOp::Mul, sub_expr.clone(), sub_expr);
+    let gt_expr = gt(thickness_ref.clone(), literal(mm(2.0)));
+    let lt_expr = lt(thickness_ref, literal(mm(20.0)));
+    let objective = ObjectiveSet::single(ObjectiveSense::Minimize, quad_expr);
+
+    let problem = ResolutionProblem {
+        auto_params: vec![AutoParam {
+            id: thickness_id,
+            param_type: Type::length(),
+            bounds: Some((0.001, 0.025)),
+            free: true,
+        }],
+        constraints: vec![(cnid("Bracket", 0), gt_expr), (cnid("Bracket", 1), lt_expr)],
+        current_values: ValueMap::new(),
+        objective: Some(objective),
+        functions: vec![].into(),
+    };
+
+    let ranked = solver.solve_ranked(&problem);
+    match ranked {
+        RankedSolveResult::Ranked { candidates, .. } => {
+            assert_eq!(
+                candidates.len(),
+                1,
+                "dim=1 objective problem must stay on the single-candidate path \
+                 (multistart gate requires auto_params.len() >= 2); got {} candidates",
+                candidates.len()
+            );
+        }
+        other => panic!(
+            "expected Ranked (interior-optimum dim=1 problem should reliably Solve), got {:?}",
+            other
+        ),
+    }
+}
+
+/// (b) — gate guard: dim>=2 with `objective: None` stays on the
+/// feasibility-only single-candidate path (multistart requires
+/// `objective.is_some()`). Extends B2's shape to 2 auto params.
+#[test]
+fn solve_ranked_gate_dim2_no_objective_feasibility_only() {
+    use reify_ir::{OptimalityStatus, RankedSolveResult};
+
+    let solver = DimensionalSolver;
+    let x_id = vcid("GateNoObjective", "x");
+    let y_id = vcid("GateNoObjective", "y");
+
+    let gt_x = gt(value_ref("GateNoObjective", "x"), literal(mm(2.0)));
+    let lt_y = lt(value_ref("GateNoObjective", "y"), literal(mm(50.0)));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam {
+                id: x_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.02)),
+                free: true,
+            },
+            AutoParam {
+                id: y_id.clone(),
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+                free: true,
+            },
+        ],
+        constraints: vec![(cnid("GateNoObjective", 0), gt_x), (cnid("GateNoObjective", 1), lt_y)],
+        current_values: ValueMap::new(),
+        objective: None,
+        functions: vec![].into(),
+    };
+
+    let ranked = solver.solve_ranked(&problem);
+    match ranked {
+        RankedSolveResult::Ranked { candidates, optimality } => {
+            assert_eq!(
+                candidates.len(),
+                1,
+                "dim>=2 with objective:None must stay on the single-candidate path \
+                 (multistart gate requires objective.is_some()); got {} candidates",
+                candidates.len()
+            );
+            assert!(
+                matches!(optimality, OptimalityStatus::FeasibilityOnly),
+                "no objective -> FeasibilityOnly; got {:?}",
+                optimality
+            );
+            let x_si = candidates[0]
+                .values
+                .get(&x_id)
+                .and_then(|v| v.as_f64())
+                .expect("x must be present in candidate values");
+            let y_si = candidates[0]
+                .values
+                .get(&y_id)
+                .and_then(|v| v.as_f64())
+                .expect("y must be present in candidate values");
+            assert!(x_si > 0.002, "x must satisfy x > 2mm, got {} m", x_si);
+            assert!(y_si < 0.050, "y must satisfy y < 50mm, got {} m", y_si);
+        }
+        other => panic!(
+            "expected Ranked (feasibility problem should Solve), got {:?}",
+            other
+        ),
+    }
+}
+
+/// (c) — gate guard: dim>=2 with a `cost_robustness_tradeoff` objective
+/// (`cost_robustness_lambda: Some(lambda)`) excludes the multistart branch —
+/// the tradeoff form is its own single-start two-anchor blend (task γ
+/// #4791), not a plain objective fold. Still reports `BestFound` (never
+/// `FeasibilityOnly`): the tradeoff dispatch always populates a score.
+/// The second auto param (`y`) is otherwise uninvolved — present only to
+/// push `auto_params.len()` to 2 so this guard actually exercises the
+/// dim>=2 arm of the gate's AND, not just the lambda arm.
+#[test]
+fn solve_ranked_gate_dim2_cost_robustness_tradeoff_single_candidate() {
+    use reify_ir::{OptimalityStatus, RankedSolveResult};
+
+    let solver = DimensionalSolver;
+    let t_id = vcid("CostTradeoffGate", "t");
+    let y_id = vcid("CostTradeoffGate", "y");
+    let t_ref = value_ref("CostTradeoffGate", "t");
+
+    // Money-dimensioned cost expr: 5 USD * (t / 1mm) -- monotone increasing in t.
+    let cost_expr = money_cost_expr(&t_id);
+    let gt_t = gt(t_ref.clone(), literal(mm(1.0)));
+    let lt_t = lt(t_ref, literal(mm(4.0)));
+    let objective = ObjectiveSet::cost_robustness_tradeoff(cost_expr, 0.5);
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam {
+                id: t_id,
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.005)),
+                free: true,
+            },
+            AutoParam {
+                id: y_id,
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+                free: true,
+            },
+        ],
+        constraints: vec![
+            (cnid("CostTradeoffGate", 0), gt_t),
+            (cnid("CostTradeoffGate", 1), lt_t),
+        ],
+        current_values: ValueMap::new(),
+        objective: Some(objective),
+        functions: vec![].into(),
+    };
+
+    let ranked = solver.solve_ranked(&problem);
+    match ranked {
+        RankedSolveResult::Ranked { candidates, optimality } => {
+            assert_eq!(
+                candidates.len(),
+                1,
+                "dim>=2 cost_robustness_tradeoff objective must stay on the single-\
+                 candidate path (excluded from multistart by \
+                 cost_robustness_lambda.is_some()); got {} candidates",
+                candidates.len()
+            );
+            assert!(
+                matches!(optimality, OptimalityStatus::BestFound { .. }),
+                "cost_robustness_tradeoff dispatch always scores -> BestFound; got {:?}",
+                optimality
+            );
+        }
+        other => panic!(
+            "expected Ranked (well-posed 1-D-cost-monotonic problem), got {:?}",
+            other
+        ),
+    }
+}
+
+/// (d) — Money-dimension robustness floor inheritance: a dim>=2
+/// Money-dimensioned `minimize cost` fixture whose un-floored optimum sits
+/// on an inequality boundary. Reuses `tests/robustness_floor.rs`'s
+/// `money_objective_floor_holds_value_off_boundary` bounds/margin shape
+/// (task #4789 alpha), asserted through `solve_ranked` instead of `solve()`.
+///
+/// Every `Solved` multistart candidate necessarily satisfies the floor:
+/// `solve_core` (called once per start by the best-of-K loop) either
+/// converges to a floor-feasible point directly, or -- when the optimizer
+/// drifts infeasible while chasing the money objective -- falls back to
+/// that SAME start's own initial point, which only happens when that start
+/// was itself floor-feasible. So `candidates[0]` (the winner) must be
+/// parked strictly off the 1mm boundary by (approximately) the floor
+/// margin, exactly as the solve()-level test asserts. This pins that the
+/// floor is INHERITED from the reused `solve_core`, not re-implemented (and
+/// not accidentally bypassed) by the multistart loop.
+#[test]
+fn solve_ranked_multistart_inherits_money_robustness_floor() {
+    use reify_ir::RankedSolveResult;
+
+    let solver = DimensionalSolver;
+    let x_id = vcid("MultistartFloor", "x");
+    let y_id = vcid("MultistartFloor", "y");
+
+    // x > 1mm (only constraint; the floor synthesises a 20 micron margin on it)
+    let gt_x = gt(value_ref("MultistartFloor", "x"), literal(mm(1.0)));
+
+    // Money objective: minimize 5 USD * (x / 1mm), monotone increasing in x --
+    // so an un-floored optimum parks AT the x=1mm boundary.
+    let objective = ObjectiveSet::single(ObjectiveSense::Minimize, money_cost_expr(&x_id));
+
+    let problem = ResolutionProblem {
+        auto_params: vec![
+            AutoParam {
+                id: x_id.clone(),
+                // Bounds [1mm, 1.5mm]: seed = midpoint = 1.25mm (initially
+                // feasible under the floor), mirrors robustness_floor.rs.
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.0015)),
+                free: true,
+            },
+            AutoParam {
+                id: y_id,
+                param_type: Type::length(),
+                bounds: Some((0.001, 0.1)),
+                free: true,
+            },
+        ],
+        constraints: vec![(cnid("MultistartFloor", 0), gt_x)],
+        current_values: ValueMap::new(),
+        objective: Some(objective),
+        functions: vec![].into(),
+    };
+
+    let ranked = solver.solve_ranked(&problem);
+    match ranked {
+        RankedSolveResult::Ranked { candidates, .. } => {
+            assert!(
+                !candidates.is_empty(),
+                "expected at least 1 feasible multistart candidate"
+            );
+            let x_si = candidates[0]
+                .values
+                .get(&x_id)
+                .and_then(|v| v.as_f64())
+                .expect("x must be present in the winning candidate");
+            // Must be strictly OFF the 1mm boundary (floor inherited through
+            // solve_ranked's multistart loop, not just solve()).
+            assert!(
+                x_si > 0.001,
+                "expected x off the 1mm boundary (floor inherited through \
+                 solve_ranked's multistart loop), got x = {:.6e} m",
+                x_si
+            );
+            // Must be near the floor region (< 1.3mm), not an arbitrary
+            // far-from-boundary value -- mirrors robustness_floor.rs's
+            // upper-bound choice exactly (see that file's doc comment).
+            assert!(
+                x_si < 0.00130,
+                "expected x near floor region (< 1.3mm, mirrors \
+                 robustness_floor.rs's money_objective_floor_holds_value_off_boundary), \
+                 got x = {:.6e} m",
+                x_si
+            );
+        }
+        other => panic!(
+            "expected Ranked (floor-feasible seed should Solve), got {:?}",
+            other
+        ),
+    }
+}
