@@ -264,6 +264,13 @@ Greek labels; task IDs assigned at decompose. All disk/footprint signals are *me
 
 1. **Soft-floor threshold value** (`soft_free_gib`). Start generous (e.g. a few × the mean divergent footprint above the 50 GiB hard floor) so throttling engages with room to reclaim; tune post-deploy from audit headroom history. Decide during ε.
 2. **Grow target size** for β's insurance bump (→ ~7–8 TB?). Validate against the heavy-tail (768 GB) lanes + the 2-generation base-flip reserve; size conservatively from live `du`. Decide during β / with the operator.
-3. **Audit timer cadence** — run `warm-lane-audit.sh` on a systemd timer (like `reify-warm-base-health`) and/or emit its headroom line into the GC sweep log for trend history. Decide during α/ι.
+3. **Audit timer cadence — RESOLVED (task 5177, documentation-only).** Recommended cadence:
+   on-demand operator/agent runs (the audit is read-only and safe at any time) as the primary use,
+   plus an optional systemd timer — the `reify-warm-base-health` precedent named above is itself a
+   boot-time oneshot, so the closer periodic-timer structural template already in the repo is
+   `reify-warm-lane-gc.timer` (`OnBootSec=5min`, `OnUnitActiveSec=15min`, `Persistent=true`) — and/or
+   teeing the audit's HEADROOM line into the GC sweep log for trend history. Full operational detail:
+   `docs/notes/warm-lane-audit-runbook.md` (added same task). This resolution is a documentation
+   recommendation only — no timer unit is wired here; a follow-up may implement one.
 4. **`--reseed` default for δ** — leave targets empty after release-thin (acquire re-seeds) vs eagerly re-seed a thin base clone so a re-acquire is instant. Default empty (§9.3); revisit if re-acquire latency measurably bites. Decide during η.
 5. **Does θ's throttle need a fleet-load coupling** — should soft-floor disk pressure compose with `fleet-load-detector.sh`'s CPU/PSI admission into one dispatch-admission decision, or stay an independent axis? Decide during θ (dark-factory).

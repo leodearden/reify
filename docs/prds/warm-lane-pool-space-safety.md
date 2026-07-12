@@ -142,6 +142,12 @@ contract (D8/D10) — this PRD *completes* its always-re-seed invariant and adds
 control. Capacity/provisioning of the physical partition is an **operator action**, explicitly out
 of scope here (§12).
 
+**Completed/amended 2026-07-12 (task 5177):** `docs/prds/warm-lane-pool-sizing-lifecycle.md`
+completes this PRD's deferred capacity/sizing pillar (β: a live-recomputed disk-budget formula +
+`provision-warm-lane-fs.sh --grow` online-grow), resolves the §12 "thin at release vs acquire" open
+question (D3: thin at release), and extends this PRD's §8.3/γ hard-floor admission guard with a
+proactive soft floor (ε). See the amendment notes in §8.3, §11, and §12 below.
+
 ## 8. Contract — seam signatures + invariants (B+H §)
 
 ### 8.1 Reset primitive — `seed-warm-lane.sh --fresh-checkout` (α)
@@ -172,6 +178,17 @@ of scope here (§12).
 - `check` → exit 0 if `free_bytes ≥ min_free_gib` **and** `free_inodes ≥ min_free_inodes`; else a
   backpressure exit code. PSI/df source overridable for testability. Knobs documented for
   `orchestrator.yaml warm_lane_pool` (`min_free_gib`, `min_free_inodes`).
+
+  > **Extended 2026-07-12 (task 5177):** the hard-floor guard above is now complemented by a
+  > proactive **soft floor** — `warm-lane-disk-guard.sh check --soft` (`warm-lane-pool-sizing-lifecycle.md`
+  > ε) emits a distinct exit-3 throttle sentinel (`@@REIFY_WARM_LANE_SOFT_PRESSURE@@`) when free
+  > bytes/inodes drop below `soft_free_gib`/`soft_free_inodes` but are still above this section's
+  > hard floor (exit 75). Soft-floor pressure is *backpressure only* — dark-factory θ prefers
+  > reclaiming/reusing a FREE lane, or defers dispatch — it never requeues or escalates; this
+  > section's hard-floor `check → reclaim → requeue exit-75` contract is unchanged and remains the
+  > last-ditch backstop. `soft_free_gib`/`soft_free_inodes` are declared alongside `min_free_gib`/
+  > `min_free_inodes` in `orchestrator.yaml warm_lane_pool` (soft > hard on both axes is a hard
+  > invariant, enforced by `check --soft` itself).
 
 ### 8.4 GC — `warm-lane-gc.sh` (δ)
 - `reclaim` resets divergent FREE lanes to thin (via the α primitive) and `git worktree remove`s
@@ -259,10 +276,18 @@ DAG: α→β; α→δ; {β,γ,δ}→ε; {α,β,γ,δ,ε,ζ}→η.
 
 ## 11. Out of scope
 
-- **Capacity / provisioning of the physical partition** — image size (the sizing analysis suggests
-  ~3 TiB for N=24), host-volume choice (nvme vs HDD-backed data volume), physical loop creation,
-  base migration, and reclaim of the old pre-relocation base. These are **operator actions** done
-  out of band; ζ only makes the provisioning *script* inode-correct.
+- **Capacity / provisioning of the physical partition** — image size (the sizing analysis suggested
+  ~3 TiB for N=24, since corrected — see the amendment note below), host-volume choice (nvme vs
+  HDD-backed data volume), physical loop creation, base migration, and reclaim of the old
+  pre-relocation base. These are **operator actions** done out of band; ζ only makes the
+  provisioning *script* inode-correct.
+
+  > **Amended 2026-07-12 (task 5177):** capacity/sizing — out of scope *here* — is brought IN-SCOPE
+  > by `docs/prds/warm-lane-pool-sizing-lifecycle.md`'s β pillar (a live-recomputed disk-budget
+  > formula + `provision-warm-lane-fs.sh --grow` online-grow; never a frozen GiB/lane-count
+  > constant, D8/G6). The "~3 TiB for N=24" figure above is corrected: effective N = 56
+  > (`max_concurrent_tasks` 48 + `spare_warm_lanes` 8 — see `warm-lane-pool-cow-seeding.md` D9,
+  > corrected the same task).
 - Lowering `max_concurrent_tasks` (a capacity/throughput knob, operator's call).
 - The merge-side disk guard and `_merge-*` prune (already exist; this PRD adds the task-side analogue).
 - The in-engine warm-state compute-node eviction pool (`warm-state-eviction.md`) — a different pool.
@@ -276,4 +301,9 @@ DAG: α→β; α→δ; {β,γ,δ}→ε; {α,β,γ,δ,ε,ζ}→η.
   when `--mount` is critically low regardless of whether the ε disk-pressure path also fired.
 - ε threshold defaults (`min_free_gib`, `min_free_inodes`) — set conservative defaults; tune post-deploy.
 - Whether to also reset FREE lanes to thin at **release** (cheaper FREE-lane footprint) vs only at
-  acquire (D10) — deferred; acquire-reset + GC reclaim covers it.
+  acquire (D10) — deferred; acquire-reset + GC reclaim covers it. **Resolved (task 5177,
+  `warm-lane-pool-sizing-lifecycle.md` D3):** thin at release. `release_lane` now eagerly
+  free-first thins the divergent `target/` via `scripts/thin-warm-lane.sh` (reify δ, wired by
+  dark-factory η) immediately on release, rather than waiting for a next acquire that may never
+  come. Always safe: acquire ALWAYS re-seeds from base regardless (D10); only `target/` is
+  removed, never the source tree. See `warm-lane-pool-cow-seeding.md` §9.5 inv.10 (added same task).

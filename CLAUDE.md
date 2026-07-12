@@ -22,6 +22,9 @@ This file holds **invariants and pointers only**. Mechanism detail lives in the 
 
 ### Warm lanes
 - One consumer per lane at a time; `acquire_lane` always re-seeds from the base; only the `_merge-verify` lane's clean landed-commit `target/` may advance the base (`refresh-warm-base.sh --landed-commit <sha>`) — task-lane WIP must **never** advance it. Full lifecycle, invariants, and pool sizing: `docs/prds/warm-lane-pool-cow-seeding.md` §9.3/§9.5.
+- `scripts/warm-lane-audit.sh` reports each lane's assigned/free state, backing-task recoverability, and a RECLAIMABLE/LEAKED/PRESERVED-OK classification plus a pool-wide HEADROOM line — read-only, never mutates a lane, never gates dispatch/reclaim/merge. Runbook: `docs/notes/warm-lane-audit-runbook.md`.
+- `warm-lane-disk-guard.sh check --soft` emits an exit-3 throttle sentinel above the existing exit-75 hard floor when free space/inodes drop below `soft_free_gib`/`soft_free_inodes`, so dispatch prefers reclaiming/reusing a FREE lane (or defers) before ENOSPC — backpressure only, never a requeue/escalation.
+- `release_lane` free-first thins a released lane's divergent `target/` via `scripts/thin-warm-lane.sh` immediately on release (not just at the next acquire), so a FREE lane holds no divergent target — safe because `acquire_lane` always re-seeds from base regardless. Pool sizing/audit/admission design: `docs/prds/warm-lane-pool-sizing-lifecycle.md`.
 
 ### Per-worktree debug ports
 - `scripts/setup-worktree-debug-port.sh` resolves the `reify-debug` MCP port once and writes it to BOTH `.mcp.json` and stdout (bare integer; diagnostics on stderr) — the two consumers must agree or esc-4202-61 recurs. It also `git update-index --skip-worktree`s `.mcp.json` so the ephemeral port never lands in a commit. Contract details: script header.
@@ -49,7 +52,8 @@ Every `TODO`/`FIXME`/`HACK` comment, `todo!()`/`unimplemented!()` stub, and bloc
 | Topic | Canonical source |
 |---|---|
 | Verify-pipeline admission gates, knobs, clock-stop markers, agent-spawn CPU axis | `docs/notes/verify-pipeline-knobs.md` (operational digest); PRDs `verify-admission-wait-clock-stop.md` (authoritative), `cpu-load-admission-control.md` |
-| Warm-lane CoW pool lifecycle & invariants | `docs/prds/warm-lane-pool-cow-seeding.md` §9.3/§9.5 |
+| Warm-lane CoW pool lifecycle & invariants | `docs/prds/warm-lane-pool-cow-seeding.md` §9.3/§9.5; sizing, audit & admission: `docs/prds/warm-lane-pool-sizing-lifecycle.md` |
+| Warm-lane audit CLI, output fields & run cadence | `docs/notes/warm-lane-audit-runbook.md` (operational digest); `scripts/warm-lane-audit.sh` header |
 | Orphaned test-binary reaper (two layers + `REIFY_REAPER_*` knobs) | `docs/notes/orphaned-test-binary-reaper.md`; `scripts/lib_proc_reaper.sh` |
 | Orchestrator safe-restart modes & knobs | `scripts/orchestrator-redeploy-restart.sh` header |
 | Debug-port provisioning contract | `scripts/setup-worktree-debug-port.sh` header |
