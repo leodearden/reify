@@ -748,6 +748,18 @@ pub(crate) fn unify(
         // erased side yields. Two differing CONCRETE bindings (a genuine
         // type-arg conflict) and two differing ERASED bindings (e.g. `pair(a:A,
         // b:B)` with distinct generic params) still conflict as before.
+        //
+        // Design precedent: this mirrors the existing generic-body-permissive
+        // posture (task 4232 γ D4, `fn_generic_body_permissive_tests.rs`) of
+        // treating a bare `TypeParam` as a resolution wildcard rather than a
+        // concrete value. The relaxation is deliberately scoped to that ONE
+        // leaf shape — a bare `TypeParam` on the rebind side — and does NOT
+        // extend to a HEADED type that merely carries a nested type-param
+        // (e.g. the leaky `Applied{"Result", [T, E]}` itself, which is not a
+        // `Type::TypeParam` at its own head): two differing CONCRETE bindings
+        // still hard-conflict even when one of them is such a headed type.
+        // `unify_concrete_vs_headed_concrete_still_conflicts` below pins that
+        // boundary with a negative-path proof.
         (Type::TypeParam(p), _) => match subst.get(p) {
             None => {
                 subst.insert(p.clone(), arg.clone());
@@ -1229,6 +1241,20 @@ pub(crate) fn resolve_function_overload<'a>(
                         // (⊆ matches) only; a resulting empty set still falls
                         // through to `matches`, so bare-`TypeParam`-arg
                         // resolution is bit-for-bit unchanged.
+                        //
+                        // NOTE (reviewer_comprehensive #2): this narrowing also
+                        // means a NON-generic candidate (`is_generic == false`)
+                        // is never eligible for head_matches against a headed
+                        // nested-type-param arg — it fails `is_generic`, the
+                        // bare-`TypeParam` wildcard, and plain equality. The
+                        // head-exact tier therefore deliberately assumes headed
+                        // nested-type-param args only ever need to disambiguate
+                        // GENERIC container overloads (e.g. Option<T> vs
+                        // Result<T,E>); a same-name non-generic candidate in the
+                        // same overload set is excluded from head_matches
+                        // rather than causing a spurious `Ambiguous`. See
+                        // `overload_leaky_headed_arg_excludes_non_generic_candidate`
+                        // for the precedent lock.
                         || matches!(arg_ty, Type::TypeParam(_))
                         || param_ty == arg_ty
                 })
@@ -3099,6 +3125,44 @@ mod tests {
     }
 
     #[test]
+    fn unify_concrete_vs_headed_concrete_still_conflicts() {
+        // Boundary lock (reviewer_comprehensive #1, task #4038 δ amendment):
+        // the erased-vs-concrete relaxation above is scoped to a bare
+        // `TypeParam` leaf ONLY. A HEADED type that merely carries a nested
+        // type-param — e.g. the leaky `Applied{"Result",[A,B]}` produced by a
+        // chained `or_else(parse_length_r(x), parse_length_r(y))` — is NOT a
+        // bare `TypeParam` at its own head, so binding it against an existing
+        // CONCRETE binding for a different type must still hard-conflict.
+        // Without this guard a genuinely-wrong program (e.g. passing a
+        // `Result<..>`-shaped value where a `Length` was already bound to the
+        // same type parameter) would be silently accepted instead of raising
+        // `E_FN_TYPE_ARG_CONFLICT`.
+        let mut subst = HashMap::new();
+        assert!(unify(&tp("T"), &Type::length(), &mut subst).is_ok());
+        let leaky_result = Type::Applied {
+            name: "Result".to_string(),
+            args: vec![tp("A"), tp("B")],
+        };
+        let err = unify(&tp("T"), &leaky_result, &mut subst)
+            .expect_err("concrete Length binding vs a differently-headed concrete arg must still conflict");
+        assert_eq!(err.param, "T");
+        assert_eq!(err.existing, Type::length());
+        assert_eq!(err.incoming, leaky_result);
+
+        // Symmetric direction: headed-concrete bound first, then a different
+        // concrete type — also still conflicts.
+        let mut subst2 = HashMap::new();
+        let leaky_result2 = Type::Applied {
+            name: "Result".to_string(),
+            args: vec![tp("A"), tp("B")],
+        };
+        assert!(unify(&tp("T"), &leaky_result2, &mut subst2).is_ok());
+        let err2 = unify(&tp("T"), &Type::length(), &mut subst2)
+            .expect_err("headed concrete binding vs a differently-headed concrete arg must still conflict");
+        assert_eq!(err2.param, "T");
+    }
+
+    #[test]
     fn unify_consistent_rebind_ok() {
         // (e) unify T against Int twice → both Ok, no error, single binding.
         let mut subst = HashMap::new();
@@ -4180,6 +4244,75 @@ mod tests {
             OverloadResolution::Ambiguous(_) => {
                 panic!("expected Resolved(fallback<T,E> over Result), got Ambiguous")
             }
+            OverloadResolution::NoMatch(_) => {
+                panic!("expected Resolved(fallback<T,E> over Result), got NoMatch")
+            }
+            OverloadResolution::NoUserFunctions => {
+                panic!("expected Resolved(fallback<T,E> over Result), got NoUserFunctions")
+            }
+        }
+    }
+
+    /// Precedent lock (reviewer_comprehensive #2, task #4038 δ amendment):
+    /// the head-exact tier's non-generic exclusion does not regress the
+    /// chained-leaky-arg resolution above when a same-name NON-generic
+    /// candidate is also present in the overload set.
+    ///
+    /// `non_generic_overload` (`fallback(r: Length, dflt: Length)`, no type
+    /// params) is structurally unrelated to the leaky `Applied{"Result",[T,E]}`
+    /// arg, but it IS admitted into the first (`matches`) tier — the
+    /// `type_carries_type_param(arg_ty)` disjunct there looks only at the arg,
+    /// not `param_ty`, so any candidate is provisionally eligible. Before the
+    /// head-exact-tier narrowing (this task), it would ALSO have been eligible
+    /// for `head_matches` via the same permissive arg-only check, joining
+    /// `result_overload` there and forcing a spurious `Ambiguous`. After the
+    /// narrowing, `non_generic_overload` fails `is_generic`, the bare-`TypeParam`
+    /// wildcard, and plain equality, so it is excluded from `head_matches` —
+    /// only the structurally-matching `result_overload` remains, and
+    /// resolution stays a clean `Resolved`, identical to
+    /// `overload_chained_result_leaky_arg_resolves_to_result_overload` above.
+    #[test]
+    fn overload_leaky_headed_arg_excludes_non_generic_candidate() {
+        let leaky_result = Type::Applied {
+            name: "Result".to_string(),
+            args: vec![tp("T"), tp("E")],
+        };
+        let option_overload = make_generic_fn(
+            "fallback",
+            vec![("o", Type::Option(Box::new(tp("T")))), ("dflt", tp("T"))],
+            &["T"],
+            tp("T"),
+        );
+        let result_overload = make_generic_fn(
+            "fallback",
+            vec![
+                (
+                    "r",
+                    Type::Applied {
+                        name: "Result".to_string(),
+                        args: vec![tp("T"), tp("E")],
+                    },
+                ),
+                ("dflt", tp("T")),
+            ],
+            &["T", "E"],
+            tp("T"),
+        );
+        let non_generic_overload =
+            make_fn("fallback", vec![("r", Type::length()), ("dflt", Type::length())]);
+        let fns = vec![option_overload, result_overload, non_generic_overload];
+        match resolve_function_overload("fallback", &[leaky_result, Type::length()], &fns) {
+            OverloadResolution::Resolved(matched) => assert_eq!(
+                matched.type_params.len(),
+                2,
+                "leaky Result<T,E> arg must still select the Result<T,E> overload with a \
+                 same-name non-generic candidate present, not go Ambiguous"
+            ),
+            OverloadResolution::Ambiguous(candidates) => panic!(
+                "expected Resolved(fallback<T,E> over Result), got Ambiguous({} candidates) — \
+                 the non-generic candidate leaked into head_matches",
+                candidates.len()
+            ),
             OverloadResolution::NoMatch(_) => {
                 panic!("expected Resolved(fallback<T,E> over Result), got NoMatch")
             }
