@@ -13,8 +13,12 @@
 //!   fn parse_len(s : String) -> Result<Length, String> { parse_length_r(s) }
 //!
 //! `reify eval` should report:
-//!   MountValid (raw="12mm",    parses):  bore = 0.012 m, bore_fb = 0.012 m
-//!   MountBad   (raw="garbage", fails):    bore = 0.006 m, bore_fb = 0.006 m
+//!   MountValid (raw="12mm",    parses):  bore = 0.012 m, bore_fb = 0.012 m, diag = "ok"
+//!   MountBad   (raw="garbage", fails):    bore = 0.006 m, bore_fb = 0.006 m, diag = "could not parse 'garbage' as a length"
+//!
+//! `diag` is the distinguishing Layer-B signal: the Err arm's bound `msg` is
+//! an observable error MESSAGE, where Option (Layer A) carries only
+//! presence/absence.
 //!
 //! Covered by crates/reify-eval/tests/result_recovery_e2e.rs (numeric eval
 //! signal), crates/reify-cli/tests/cli_eval_result_recovery.rs (rendered CLI
@@ -40,10 +44,19 @@ structure def MountValid {
 
     // `fallback` : recovery to a concrete default when the Result is `Err`.
     let bore_fb : Length = fallback(parse_len(raw), 6mm)
+
+    // The distinguishing Layer-B signal: the Err arm's bound `msg` is an
+    // observable error MESSAGE — a capability Option (Layer A) lacks, since
+    // it carries only presence/absence, never a reason.
+    let diag : String = match parse_len(raw) {
+        Ok { value: v } => "ok",
+        Err { error: msg } => msg,
+    }
 }
 
 // Same recovery logic as MountValid, but `raw` fails to parse: both `bore`
-// and `bore_fb` fall through to their 6mm default.
+// and `bore_fb` fall through to their 6mm default, and `diag` surfaces the
+// real parse-failure reason instead of "ok".
 structure def MountBad {
     param raw : String = "garbage"
 
@@ -53,4 +66,9 @@ structure def MountBad {
     }
 
     let bore_fb : Length = fallback(parse_len(raw), 6mm)
+
+    let diag : String = match parse_len(raw) {
+        Ok { value: v } => "ok",
+        Err { error: msg } => msg,
+    }
 }
