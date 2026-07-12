@@ -382,11 +382,17 @@ impl Engine {
         }
     }
 
-    /// Allocate a fresh, lockstep `(SnapshotId, VersionId)` pair for the
-    /// "paired allocate-and-bump" pattern: `next_snapshot_id` and
-    /// `next_version_id` are each read and advanced by exactly one, snapshot
-    /// first then version, so the two returned ids share the same numeric
-    /// value on every call.
+    /// Allocate a fresh `(SnapshotId, VersionId)` pair for the "paired
+    /// allocate-and-bump" pattern: `next_snapshot_id` and `next_version_id`
+    /// are each read and advanced by exactly one, snapshot first then
+    /// version. That is the method's actual contract. The two returned ids
+    /// are numerically lockstep (equal `.0` values) ONLY as a consequence of
+    /// the two counters already being equal on entry — i.e. as long as every
+    /// allocation site bumps both together. This method reads two
+    /// independent counters and does not itself enforce that equality; see
+    /// the `eval_cached()` note below for the concrete case (a snapshot-only
+    /// bump) that desyncs them, after which this method still advances each
+    /// counter by exactly one but the returned pair's numeric values differ.
     ///
     /// This is the allocate half of INV-BUILD-2 (docs/invariants.md):
     /// "Version/snapshot IDs are allocated and read through exactly one API
