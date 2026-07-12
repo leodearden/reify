@@ -23076,6 +23076,68 @@
         );
     }
 
+    /// Arity guard (review amendment, task #5120 R2c): `difference` is gated
+    /// to EXACTLY 2 operands via the `_ => args.len() != helper.expected_arity()`
+    /// branch — a distinct rejection path from union/intersect's `< 2`
+    /// variadic gate above. Both a 1-arg and a 3-arg `difference(...)` must
+    /// yield `None` before ever reaching `selector_value_difference_pair`
+    /// (whose `debug_assert_eq!` assumes exactly 2 children); pinning this
+    /// guards against a future refactor accidentally routing `difference`
+    /// through the variadic `>= 2` gate instead of the exact-arity one.
+    #[test]
+    fn try_eval_symbolic_topology_selector_difference_arity_not_two_returns_none() {
+        use reify_core::identity::{RealizationNodeId, ValueCellId};
+
+        let entity = "R2cDifferenceArity";
+        let mut values = reify_ir::ValueMap::new();
+        values.insert(
+            ValueCellId::new(entity, "body"),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: RealizationNodeId::new(entity, 0),
+                upstream_values_hash: [0x05u8; 32],
+                kernel_handle: None,
+            },
+        );
+        let faces_expr = topology_selector_call_one_value_ref(
+            "faces",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            reify_core::Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+
+        // 1 operand — below expected_arity() == 2.
+        let difference_expr_one = mk_symbolic_call_3523("difference", vec![faces_expr.clone()]);
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_symbolic_topology_selector(
+            &difference_expr_one,
+            &values,
+            &mut diagnostics,
+        );
+        assert!(
+            result.is_none(),
+            "difference with 1 arg must yield None (arity gate); got {:?}",
+            result
+        );
+
+        // 3 operands — above expected_arity() == 2.
+        let difference_expr_three = mk_symbolic_call_3523(
+            "difference",
+            vec![faces_expr.clone(), faces_expr.clone(), faces_expr],
+        );
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_symbolic_topology_selector(
+            &difference_expr_three,
+            &values,
+            &mut diagnostics,
+        );
+        assert!(
+            result.is_none(),
+            "difference with 3 args must yield None (arity gate); got {:?}",
+            result
+        );
+    }
+
     // ── Task #5120 R2c amendment: kind-closure-violation (`Err`) coverage for
     // ALL THREE composition operators ─────────────────────────────────────────
     //
