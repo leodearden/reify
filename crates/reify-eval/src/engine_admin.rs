@@ -390,14 +390,26 @@ impl Engine {
     ///
     /// This is the allocate half of INV-BUILD-2 (docs/invariants.md):
     /// "Version/snapshot IDs are allocated and read through exactly one API
-    /// each." Call sites that need a fresh snapshot id AND a fresh version
-    /// id together (e.g. `eval()`'s cold-path snapshot construction, the
-    /// resolution phase, and `dispatch_merged_cluster_solve`) MUST go
-    /// through this method rather than bumping `next_snapshot_id`/
-    /// `next_version_id` directly. This does not (yet) cover every raw
-    /// counter write in the crate: `eval_cached()`'s snapshot-only cold-path
-    /// bump has no matching version bump and is a distinct, non-paired
-    /// concern outside this helper's scope.
+    /// each." New call sites that need a fresh snapshot id AND a fresh
+    /// version id together MUST go through this method rather than bumping
+    /// `next_snapshot_id`/`next_version_id` directly.
+    ///
+    /// Migration status (task 5040, engine-build hardening α): only the 3
+    /// paired sites in `engine_eval.rs` go through this method so far —
+    /// `eval()`'s cold-path snapshot construction, the resolution phase, and
+    /// `dispatch_merged_cluster_solve`. The following paired
+    /// allocate-and-bump sites are NOT yet migrated and still read+bump
+    /// `next_snapshot_id`/`next_version_id` directly; this is tracked,
+    /// scoped-out follow-up work (sibling tasks β/γ), not an oversight:
+    ///   - `concurrent.rs:170-173`
+    ///   - `engine_edit.rs:961-964`
+    ///   - `engine_edit.rs:2592-2595`
+    ///
+    /// Until those land, treat the "exactly one API" invariant as fully
+    /// enforced only for `engine_eval.rs`. Separately, `eval_cached()`'s
+    /// snapshot-only cold-path bump has no matching version bump and is a
+    /// distinct, non-paired concern outside this helper's scope regardless
+    /// of that migration.
     ///
     /// `pub(crate)`, not private: `engine_admin` and `engine_eval` are
     /// separate sibling `mod`s (see lib.rs), so a bare-private fn here is
