@@ -4131,457 +4131,43 @@ pub(crate) fn compile_expr_guarded_with_expected(
                 lambda_counter,
             );
 
-            // ── Purpose-subject member access (task-2181) ──────────────────────
+            // ── compiler-type-hygiene ε1 step-4: named per-kind handlers ────────
             //
-            // Trigger: compiled_obj is a ValueRef whose entity stamp equals the
-            // current scope's entity name (= the purpose name) AND its type is
-            // StructureRef(_) AND we are NOT in entity scope.
-            //
-            // The `!scope.is_entity_scope` guard prevents misfiring in entity
-            // bodies: `param material : Material` in a structure registers
-            // `material` as Type::StructureRef("Material") when Material is a
-            // known structure name.  Without the guard, `material.density` in a
-            // structure constraint would silently emit
-            // `ValueRef(entity_name, "density")` — a cell that doesn't exist —
-            // rather than the correct "member access not yet supported" error.
-            // Purpose scopes have is_entity_scope=false (traits.rs:228 uses
-            // CompilationScope::new); entity scopes set is_entity_scope=true
-            // (entity.rs:247).
-            //
-            // Combining the outer type-check with the inner ValueRef pattern into
-            // a single `if let` removes a statically infallible inner match and
-            // makes the control flow unambiguous — no implicit fall-through.
-            //
-            // Anti-cascade: this branch is placed AFTER the compile_obj call so
-            // the existing `is_error()` poison short-circuit below still fires
-            // for already-poisoned subjects.
-            //
-            // Per-param stamp invariant (task-2181 β, PRD §4.1 contract C1):
-            // When a purpose param identifier (e.g. `subject`) is accessed as
-            // `subject.mass`, the member-ref compiles to a ValueCellId whose
-            // entity stamp is `format!("{}::{}", purpose_name, param_name)` —
-            // e.g. `"lightweight::subject"`. This makes each param's refs
-            // disjoint even in multi-param purposes. `activate_purpose` (task β)
-            // remaps each per-param stamp to the bound entity_ref via a per-param
-            // `remap_entity(format!("{}::{}", purpose_name, param.name), entity_ref)`
-            // loop; task γ adds `activate_purpose_with_bindings` for independent
-            // per-param entity bindings.
-            //
-            // The `let Some(param_root) = scope.purpose_param_root(&id.member)` conjunct
-            // guards forward-compatibility for task δ (let-bindings in purpose bodies):
-            // future lets will register via `scope.register` with the same
-            // entity_name, but NOT via `register_purpose_param`, so they will
-            // NOT trigger this branch and will instead fall through to the
-            // normal member-access path. Binding `param_root` directly in the guard
-            // eliminates the duplicate lookup that was previously needed inside the
-            // `else` branch below (reviewer suggestion code_reuse_efficiency).
-            if let CompiledExprKind::ValueRef(ref id) = compiled_obj.kind
-                && matches!(&compiled_obj.result_type, Type::StructureRef(_))
-                && id.entity == scope.entity_name
-                && !scope.is_entity_scope
-                && let Some(param_root) = scope.purpose_param_root(&id.member)
-            {
-                if PURPOSE_REFLECTIVE_AGGREGATION_MEMBERS.contains(&member.as_str()) {
-                    // Reflective-aggregation placeholder (task-2289).
-                    //
-                    // Emits the marker variant `PurposeReflectiveAggregation`,
-                    // which `Engine::activate_purpose` (in
-                    // `crates/reify-eval/src/engine_purposes.rs`) walks and
-                    // replaces with a populated `ListLiteral` of `ValueRef`s
-                    // built from `CompiledPurpose.resolved_queries`. For the
-                    // currently-resolved `params` query that yields the bound
-                    // entity's param cells, flipping `forall p in
-                    // subject.params: determined(p)` from a vacuous-true
-                    // result to a real check. For `geometric_params`/
-                    // `material_params` the activation walk currently emits an
-                    // empty list (no resolved query — task-1904 follow-up
-                    // territory), preserving today's vacuous-true behaviour.
-                    //
-                    // The compile-time placeholder element type stays
-                    // `List<Real>`; activation refines each element's
-                    // `result_type` from the looked-up `ValueCellNode.cell_type`.
-                    //
-                    // See `docs/notes/purpose-reflective-aggregation.md` for the
-                    // full rationale and the §8 acceptance test in
-                    // `crates/reify-eval/tests/purpose_activation.rs`.
-                    return CompiledExpr::purpose_reflective_aggregation(
-                        id.member.clone(),
-                        member.clone(),
-                        Type::List(Box::new(Type::dimensionless_scalar())),
-                    );
-                } else {
-                    // Regular member access (e.g., `subject.mass`):
-                    //   - Emit a ValueRef whose entity stamp equals the purpose
-                    //     name (= scope.entity_name).  At activation time,
-                    //     `activate_purpose` calls `remap_entity(purpose_name,
-                    //     entity_ref)` which rewrites this ref to
-                    //     `ValueCellId(entity_ref, member)` — exactly the bound
-                    //     entity's member cell.
-                    //   - Concrete-subject validation (task-2200): when the subject
-                    //     type is a named structure (not the generic "Structure"
-                    //     wildcard) and template_registry is available, verify that
-                    //     `member` is declared in the template (value_cells, ports,
-                    //     or sub_components).  If not found in any, emit
-                    //     "has no member" and return a Type::Error poison so
-                    //     downstream checks (e.g., `subject.bogus > 0`) do not
-                    //     cascade.  Port/sub members fall through to the existing
-                    //     CompiledExpr::value_ref emit — their type resolution is a
-                    //     separate follow-up task.
-                    //   - Wildcard path: when entity_kind == "Structure" or registry
-                    //     lookup fails (no template by that name), fall through
-                    //     silently — the generic form binds at activation time and
-                    //     has no static template to validate against.
-                    //   - Belt-and-braces: `struct_name != WILDCARD_STRUCTURE_KIND` makes
-                    //     the wildcard-skip intent explicit even though a registry miss
-                    //     (no template named "Structure") would also fall through.
-                    //     Both guards are intentional: the name guard protects
-                    //     against a hypothetical future stdlib "Structure" template;
-                    //     the registry-miss guard covers other unregistered wildcard
-                    //     kinds (e.g., "Occurrence").
-                    //   - Type::dimensionless_scalar() is a compile-time fallback; member-type
-                    //     resolution (e.g., Length vs. Mass) is a separate
-                    //     follow-up task and is NOT addressed here.
-                    let struct_name = match &compiled_obj.result_type {
-                        Type::StructureRef(name) => name.clone(),
-                        _ => unreachable!("outer guard ensures StructureRef"),
-                    };
-                    if struct_name != WILDCARD_STRUCTURE_KIND
-                        && let Some(registry) = scope.template_registry
-                        && let Some(template) = registry.get(struct_name.as_str())
-                    {
-                        // Accept members from value_cells, ports, or sub_components.
-                        // Port/sub members are valid member kinds even if their type
-                        // resolution is not yet implemented — only truly undeclared
-                        // names get a "has no member" diagnostic.
-                        let member_known = template_has_member(template, member.as_str());
-                        if !member_known {
-                            return make_poison_literal(
-                                diagnostics,
-                                Diagnostic::error(format!(
-                                    "structure '{}' has no member '{}'",
-                                    struct_name, member
-                                ))
-                                .with_label(DiagnosticLabel::new(expr.span, "unknown member"))
-                                .with_code(DiagnosticCode::StructureMemberNotFound),
-                            );
-                        }
-                        // E_PRIV_MEMBER_ACCESS (task #3978 δ): a purpose subject is an
-                        // external view of the bound structure, so accessing a priv
-                        // member through it is gated exactly like an external
-                        // `obj.member` dot-access (sibling check at the StructureRef
-                        // branch). The wildcard "Structure" subject is already excluded
-                        // by the enclosing `struct_name != WILDCARD_STRUCTURE_KIND` guard.
-                        if template_member_is_priv(template, member.as_str()) {
-                            return make_poison_literal(
-                                diagnostics,
-                                Diagnostic::error(format!(
-                                    "E_PRIV_MEMBER_ACCESS: member '{member}' of structure '{struct_name}' is private"
-                                ))
-                                .with_label(DiagnosticLabel::new(
-                                    expr.span,
-                                    "private member accessed here",
-                                ))
-                                .with_code(DiagnosticCode::PrivMemberAccess),
-                            );
-                        }
-                    }
-                    // Per-param stamp: encode `purpose_name::param_name` as the entity
-                    // so each param's refs are disjoint (task-2181 β, PRD §4.1 C1).
-                    // `param_root` is already bound by the outer `if let` guard's
-                    // `let Some(param_root) = scope.purpose_param_root(&id.member)`
-                    // conjunct — no second lookup or `.expect()` needed.
-                    let stamp_entity = format!("{}::{}", id.entity, param_root);
-                    let member_id = ValueCellId::new(&stamp_entity, member);
-                    // W5 (task #4629): both wildcard "Structure" subjects AND concrete
-                    // named purpose params use TypeParam("StructureMember").  Per-member type
-                    // resolution is a separate task for both cases — concrete params cannot
-                    // resolve their member types at compile time either.  TypeParam triggers
-                    // the comparison guard's TypeParam early-return
-                    // (emit_comparison_operand_diagnostics lines 353-357), silencing spurious
-                    // dimension mismatches like `subject.a - subject.b > 0mm` where the member
-                    // is actually a Length (valid) but types as Real under the dimensionless
-                    // fallback.  Using dimensionless_scalar() for concrete params (the previous
-                    // approach) caused false-positive DimensionMismatch errors after the B2
-                    // suppression was removed.
-                    return CompiledExpr::value_ref(
-                        member_id,
-                        Type::TypeParam("StructureMember".to_string()),
-                    );
-                }
-            }
-            // ── End purpose-subject member access ──────────────────────────────
-
-            // ── task 3540 (SIR-α): StructureInstance field projection ──────────
-            //
-            // Handler esc-3540-182 (A): when the object resolves to a
-            // structure/trait-typed value, `.member` projects the field out of
-            // the runtime `Value::StructureInstance`. This is the entity-scope
-            // member-access path for chains like
-            // `self.primary.material.youngs_modulus` — `self.primary.material`
-            // already resolves (via the `self.sub.member` branch above) to a
-            // value-ref whose runtime value is a `Value::StructureInstance`
-            // (the structure-def param/let default lowered by the
-            // StructureInstanceCtor path). Reuse `IndexAccess` with a
-            // string-literal key (handler (A)(1) — no new CompiledExprKind);
-            // the eval-side IndexAccess arm reads `fields[member]`.
-            //
-            // (A)(2) member-Type resolution: for a concrete `StructureRef`,
-            // resolve the declared field type from the structure-def template
-            // in `scope.template_registry` (esc-3540-177-threaded). For a
-            // `TraitObject` the concrete runtime type is not statically known
-            // (traits are not in `template_registry`); fall back to `Type::dimensionless_scalar()`
-            // — a permissive, non-poison type so the chain neither cascades nor
-            // is rejected. The runtime `Value` is whatever the field actually
-            // holds (e.g. a `Value::Scalar`), independent of this static type.
-            //
-            // The poison short-circuit must run first so an already-errored
-            // object propagates rather than being treated as a structure.
+            // Each type-directed branch below has been extracted into a named
+            // handler fn — still invoked from this if-chain exactly as before
+            // (step-6 converts the chain itself into an exhaustive
+            // `match &compiled_obj.result_type`; the handlers do not change
+            // shape again). See each handler's own doc comment (defined below
+            // `member_access_aggregation_or_unsupported`) for the precedence
+            // and behavior it preserves verbatim from the pre-extraction
+            // if-chain.
             if !compiled_obj.result_type.is_error()
-                && let Type::StructureRef(struct_name) | Type::TraitObject(struct_name) =
-                    &compiled_obj.result_type
+                && matches!(
+                    &compiled_obj.result_type,
+                    Type::StructureRef(_) | Type::TraitObject(_)
+                )
             {
-                // Split the lookup so we can distinguish "member present", "struct unknown",
-                // and "struct known but member absent" (ds-sentinel L4, task #4649).
-                let template = scope
-                    .template_registry
-                    .and_then(|r| r.get(struct_name.as_str()));
-                let resolved = template.and_then(|t| {
-                    t.value_cells
-                        .iter()
-                        .find(|vc| vc.id.member == *member)
-                        .map(|vc| vc.cell_type.clone())
-                });
-
-                // Poison only when: (1) receiver is concrete StructureRef, (2) struct IS
-                // in the registry, (3) struct_name is not the wildcard sentinel, AND
-                // (4) member is absent from value_cells, ports, AND sub_components.
-                //
-                // `template_has_member` is the single source of truth for membership
-                // across all three categories, shared with the purpose-subject sibling at
-                // :3374-3394 (via `template_has_member`) so a future member-kind addition
-                // updates both paths atomically (ds-sentinel L4, task #4649).
-                //
-                // NOTE: even for a "known" port/sub name, `resolved` (value_cells only)
-                // will be None and `member_type` falls back to `dimensionless_scalar()` via
-                // the `unwrap_or` below — a permissive non-poison type, preserving the
-                // existing runtime behaviour (StructureInstanceData.fields excludes
-                // ports/subs, so the access returns `Value::Undef` at runtime regardless).
-                //
-                // TraitObject (struct not in registry) and registry-miss keep the
-                // permissive dimensionless fallback byte-for-byte to preserve TraitObject
-                // behaviour and avoid false positives (ds-sentinel L4, task #4649).
-                //
-                // The `struct_name != WILDCARD_STRUCTURE_KIND` guard mirrors the explicit
-                // skip in the purpose-subject sibling at :3370 — belt-and-braces against a
-                // hypothetical future stdlib "Structure" template entering the registry.
-                let member_known =
-                    template.is_some_and(|t| template_has_member(t, member.as_str()));
-                // ── geometric-relations η: intrinsic self-datum on a sub ref ──
-                //
-                // An intrinsic self-datum projection on a sub-instance ref
-                // (`a.frame`, `a.origin`, `a.xy_plane`, …): origin/frame/x/y/z/
-                // *_plane are NOT declared members of the sub's structure, but
-                // every `StructureRef` carries the intrinsic identity-frame datums
-                // (the datum_projection `StructureRef` arm, η step-6). Resolve the
-                // codomain via that table and lower to the SAME cross-sub datum-
-                // access shape a declared member uses below (`IndexAccess { ValueRef
-                // (sub), Literal(String(member)) }`) — the node `reify-eval`'s
-                // `decode_operand` decodes as a sub datum and the relate-solve
-                // grounds/places against (e.g. `ground(a)` → `fasten(a.frame,
-                // self.frame)`). Placed BEFORE the "no member" poison so an
-                // intrinsic datum is accepted; a user-declared member of the same
-                // name still shadows (`member_known` is true → this is skipped and
-                // the declared-member path runs). TraitObject receivers do not
-                // match the `StructureRef` arm → `Unavailable` → unchanged.
-                if !member_known
-                    && let DatumProjectionResolution::Resolved(datum_type) =
-                        datum_projection_result_type(&compiled_obj.result_type, member)
-                {
-                    let key =
-                        CompiledExpr::literal(Value::String(member.clone()), Type::String);
-                    return CompiledExpr::index_access(compiled_obj, key, datum_type);
-                }
-                if !member_known
-                    && matches!(&compiled_obj.result_type, Type::StructureRef(_))
-                    && struct_name.as_str() != WILDCARD_STRUCTURE_KIND
-                    && template.is_some()
-                {
-                    return make_poison_literal(
-                        diagnostics,
-                        Diagnostic::error(format!(
-                            "structure '{struct_name}' has no member '{member}'"
-                        ))
-                        .with_label(DiagnosticLabel::new(expr.span, "unknown member"))
-                        .with_code(DiagnosticCode::StructureMemberNotFound),
-                    );
-                }
-
-                // E_PRIV_MEMBER_ACCESS (task #3978 δ): a `priv` member (priv param /
-                // priv sub / priv port) is hidden from external dot-access. Only a
-                // concrete `StructureRef` reaches a known template here; `self.member`
-                // and bare-name internal references are resolved by the earlier
-                // self/entity-scope branch (~:3106) and never reach this point, so this
-                // gates exactly the external `obj.member` access. Mirrors the
-                // StructureMemberNotFound poison above and fires before the permissive
-                // dimensionless fallback so the priv access does not silently resolve.
-                if matches!(&compiled_obj.result_type, Type::StructureRef(_))
-                    && struct_name.as_str() != WILDCARD_STRUCTURE_KIND
-                    && template.is_some_and(|t| template_member_is_priv(t, member.as_str()))
-                {
-                    return make_poison_literal(
-                        diagnostics,
-                        Diagnostic::error(format!(
-                            "E_PRIV_MEMBER_ACCESS: member '{member}' of structure '{struct_name}' is private"
-                        ))
-                        .with_label(DiagnosticLabel::new(
-                            expr.span,
-                            "private member accessed here",
-                        ))
-                        .with_code(DiagnosticCode::PrivMemberAccess),
-                    );
-                }
-
-                let member_type = resolved.unwrap_or(Type::dimensionless_scalar());
-                let key = CompiledExpr::literal(Value::String(member.clone()), Type::String);
-                return CompiledExpr::index_access(compiled_obj, key, member_type);
+                return member_access_on_structure_like(
+                    compiled_obj,
+                    member,
+                    scope,
+                    expr.span,
+                    diagnostics,
+                );
             }
 
-            // ── Type::TypeParam member access (task 4596) ───────────────────────
-            //
-            // `<param>.<member>` where the receiver is a still-unresolved
-            // `Type::TypeParam(param_name)` (the un-monomorphized L2 path).
-            //
-            // α's monomorphization rewrite handles the post-resolve StructureRef
-            // path via the branch above; this branch handles the pre-resolve path
-            // inside the auto-type-param search loop.
-            //
-            // NODE SHAPE (critical — deviates from a naïve index_access):
-            // `eval_index_access` (reify-expr/src/lib.rs) only projects a field
-            // when the object evaluates to `Value::StructureInstance`.  Inside the
-            // search loop the `seal` cell has no StructureInstance (still TypeParam)
-            // and β seeds the FLAT key `ValueCellId::new(param_member, field)` —
-            // NOT a StructureInstance at `ValueCellId(entity, param)`.
-            // So `index_access(value_ref(seal), "thickness")` would evaluate to
-            // `Undef` and the constraint would stay `Indeterminate`, failing to
-            // unblock ζ.  The correct node is a FLAT
-            // `value_ref(ValueCellId::new(receiver_member, member), trait_member_type)`
-            // which `eval_expr ValueRef` resolves via direct `get_or_undef`, matching
-            // β's per-candidate seed key exactly
-            // (param_member == receiver's ValueCellId.member, per `param_type_member`
-            // in auto_type_param.rs).
-            //
-            // SOUNDNESS CONTRACT: this branch NEVER returns a node whose
-            // `result_type` is `Type::TypeParam(_)` and NEVER synthesizes a
-            // permissive placeholder type.  When no bound trait declares `member`,
-            // the impl-step-4 negative path below emits `TypeParamMemberNotInBound`
-            // and returns a poison literal.
             if !compiled_obj.result_type.is_error()
-                && let Type::TypeParam(param_name) = &compiled_obj.result_type
+                && matches!(&compiled_obj.result_type, Type::TypeParam(_))
             {
-                // Resolve the receiver's param-member name from the compiled_obj.
-                // The receiver must be a ValueRef (e.g. `ValueCellId(entity,"seal")`);
-                // its `.member` is the flat-key entity component β seeds under.
-                if let CompiledExprKind::ValueRef(ref receiver_id) = compiled_obj.kind {
-                    let receiver_member = receiver_id.member.clone();
-                    let bound_traits = scope
-                        .type_param_bounds
-                        .get(param_name.as_str())
-                        .cloned()
-                        .unwrap_or_default();
-
-                    // Walk bound traits to find the first one declaring `member`.
-                    let found_type: Option<Type> = bound_traits.iter().find_map(|trait_name| {
-                        scope
-                            .trait_member_types
-                            .get(trait_name.as_str())
-                            .and_then(|members| members.get(member.as_str()))
-                            .cloned()
-                    });
-
-                    if let Some(member_type) = found_type {
-                        // Positive path: emit the flat ValueRef that β's per-candidate
-                        // ValueMap can resolve.
-                        return CompiledExpr::value_ref(
-                            ValueCellId::new(receiver_member, member.clone()),
-                            member_type,
-                        );
-                    } else {
-                        // Negative path (step-4): no bound trait declares `member`.
-                        // Emit a targeted diagnostic and return a poison literal.
-                        // Anti-cascade: one Error + one poison (never a TypeParam
-                        // result_type, never a permissive placeholder).
-                        let bound_names = if bound_traits.is_empty() {
-                            format!("(no bounds on type parameter '{param_name}')")
-                        } else {
-                            bound_traits.join(", ")
-                        };
-                        return make_poison_literal(
-                            diagnostics,
-                            Diagnostic::error(format!(
-                                "type parameter '{param_name}' (bound: {bound_names}) \
-                                 has no member '{member}': the bound trait does not declare '{member}'"
-                            ))
-                            .with_label(DiagnosticLabel::new(
-                                expr.span,
-                                format!("'{member}' not declared by bound trait"),
-                            ))
-                            .with_code(DiagnosticCode::TypeParamMemberNotInBound),
-                        );
-                    }
-                }
-                // If the receiver is not a ValueRef (e.g. a nested expr), fall
-                // through to the generic poison below — we cannot construct the
-                // flat key without the receiver's member name.
+                return member_access_on_type_param(
+                    compiled_obj,
+                    member,
+                    scope,
+                    expr.span,
+                    diagnostics,
+                );
             }
 
-            // ── Datum-projection member access (geometric-relations β) ─────────
-            //
-            // `<datum>.<member>` where the receiver is a datum type
-            // (Axis/Plane/Frame/Direction) — or a `Point`, which has no datum
-            // projections — and `<member>` is a recognized datum-projection
-            // member name (`DATUM_PROJECTION_MEMBERS`). Consults the projection
-            // table (`datum_projection.rs`, the single source of truth) to
-            // type-check and lower the projection per the "implicit projection
-            // iff unique" rule.
-            //
-            // Placement: AFTER the StructureRef/TraitObject field-projection
-            // branch above (a datum is neither) and BEFORE the collection-
-            // aggregation / generic "member access not yet supported" fallthrough
-            // below, so datum projections are resolved rather than rejected as
-            // unsupported.  The receiver-type guard excludes `Type::Error`, so an
-            // already-poisoned object falls through to the poison short-circuits
-            // in the branches below (no double diagnostic).
-            //
-            // Lowering mirrors the collection-aggregation arm: a valid projection
-            // becomes a `MethodCall` (method = projection name, no args); eval
-            // dispatches the datum-projection method names on datum Values
-            // (the projection member names are disjoint from count/sum/keys/values).
-            //
-            // ── geometric-relations ε: feature→datum projections ───────────
-            //
-            // The same projection block also handles *feature* receivers —
-            // `Type::Geometry` (a realized solid) and `Type::Selector(_)` /
-            // `Type::AnySelector` (a topology selection) — projecting them to the
-            // datum their trait bundle carries (`feature.axis : Axis`,
-            // `.plane : Plane`, `.point : Point3<Length>`, `.dir : Direction`;
-            // design §2.2). Whereas a β *datum* receiver only enters here for a
-            // recognized projection member (`DATUM_PROJECTION_MEMBERS`), a feature
-            // receiver enters for *any* non-aggregation member: a geometry/selector
-            // has no other member-access semantics, so every such `.member` is a
-            // feature→datum projection attempt and an unrecognized one
-            // (`feature.foo`) is a typed rejection (`Unavailable` →
-            // `DatumProjectionUnavailable`), not a generic "unsupported" fallthrough.
-            // Collection-aggregation members (`count`/`sum`/`keys`/`values`) are
-            // excluded so a selector's aggregation still routes to the arm below.
-            //
-            // Lowering is a `MethodCall` (method = projection name, no args), the
-            // same NODE shape β uses — but the *eval* is kernel-backed: a feature
-            // receiver evaluates to a `Value::GeometryHandle`/`Value::Selector`, for
-            // which the pure `eval_datum_projection` returns `None` (→ `Undef`), and
-            // the `reify-eval` geometry_ops post-process patches the cell with the
-            // resolved feature-datum bundle projection. This is distinct from β's
-            // pure datum→datum `eval_datum_projection` (which fires only for an
-            // `Axis`/`Plane`/`Frame`/`Direction` runtime receiver).
             let receiver_is_datum = matches!(
                 &compiled_obj.result_type,
                 Type::Axis | Type::Plane | Type::Frame(_) | Type::Direction | Type::Point { .. }
@@ -4590,76 +4176,11 @@ pub(crate) fn compile_expr_guarded_with_expected(
                 &compiled_obj.result_type,
                 Type::Geometry | Type::Selector(_) | Type::AnySelector
             );
-            if (receiver_is_datum && DATUM_PROJECTION_MEMBERS.contains(&member.as_str()))
-                || (receiver_is_feature
-                    && !COLLECTION_AGGREGATION_MEMBERS.contains(&member.as_str()))
-            {
-                match datum_projection_result_type(&compiled_obj.result_type, member) {
-                    DatumProjectionResolution::Resolved(result_type) => {
-                        return CompiledExpr::method_call(
-                            compiled_obj,
-                            member.clone(),
-                            vec![],
-                            result_type,
-                        );
-                    }
-                    DatumProjectionResolution::Unavailable => {
-                        // Typed rejection of a nonsense projection (e.g. `point.dir`,
-                        // `plane.dir`). make_poison_literal enforces the anti-cascade
-                        // contract (one Severity::Error diagnostic + poison literal).
-                        // Where an obvious redirect exists (plane.dir → .normal),
-                        // append it as a "; use .normal" hint so the message matches
-                        // the documented canonical form.
-                        let mut message = format!(
-                            "{} has no projection '.{}'",
-                            compiled_obj.result_type, member
-                        );
-                        if let Some(hint) = datum_projection_unavailable_hint(
-                            &compiled_obj.result_type,
-                            member,
-                        ) {
-                            message.push_str(&format!("; use {hint}"));
-                        }
-                        return make_poison_literal(
-                            diagnostics,
-                            Diagnostic::error(message)
-                                .with_label(DiagnosticLabel::new(
-                                    expr.span,
-                                    "no such datum projection",
-                                ))
-                                .with_code(DiagnosticCode::DatumProjectionUnavailable),
-                        );
-                    }
-                    DatumProjectionResolution::Ambiguous { suggestions } => {
-                        // A bare directional projection that could mean several
-                        // members (e.g. `frame.dir`): suggest the disambiguating
-                        // members to write instead ("write frame.z").
-                        let suggested = suggestions
-                            .iter()
-                            .map(|s| format!(".{s}"))
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        return make_poison_literal(
-                            diagnostics,
-                            Diagnostic::error(format!(
-                                "ambiguous datum projection '.{}' on {}: it could be any of \
-                                 {} — write one of those instead (e.g. write {})",
-                                member,
-                                compiled_obj.result_type,
-                                suggested,
-                                suggestions
-                                    .last()
-                                    .map(|s| format!(".{s}"))
-                                    .unwrap_or_default(),
-                            ))
-                            .with_label(DiagnosticLabel::new(
-                                expr.span,
-                                "ambiguous datum projection",
-                            ))
-                            .with_code(DiagnosticCode::DatumProjectionAmbiguous),
-                        );
-                    }
-                }
+            if receiver_is_datum {
+                return member_access_on_datum(compiled_obj, member, expr.span, diagnostics);
+            }
+            if receiver_is_feature {
+                return member_access_on_feature(compiled_obj, member, expr.span, diagnostics);
             }
 
             member_access_aggregation_or_unsupported(compiled_obj, member, expr.span, diagnostics)
@@ -6560,6 +6081,639 @@ fn member_access_aggregation_or_unsupported(
                 .with_label(DiagnosticLabel::new(span, "unsupported")),
         )
     }
+}
+// ── compiler-type-hygiene ε1 step-4: named per-kind handlers ───────────────
+
+/// `<receiver>.<member>` where the receiver's static type is
+/// `Type::StructureRef` or `Type::TraitObject`.
+///
+/// Runs purpose-subject reflection (task-2181) FIRST — its inner guard
+/// requires `Type::StructureRef(_)` specifically, so for a `TraitObject`
+/// receiver it is a no-op and control falls straight through to task 3540
+/// (SIR-α) `StructureInstance` field projection, which handles both
+/// `StructureRef` and `TraitObject` receivers uniformly. Every path through
+/// this function returns; the trailing `unreachable!` only guards the
+/// impossible case where a caller invokes this fn for a non-matching
+/// receiver type.
+fn member_access_on_structure_like(
+    compiled_obj: CompiledExpr,
+    member: &str,
+    scope: &CompilationScope,
+    span: reify_core::SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CompiledExpr {
+    // ── Purpose-subject member access (task-2181) ──────────────────────
+    //
+    // Trigger: compiled_obj is a ValueRef whose entity stamp equals the
+    // current scope's entity name (= the purpose name) AND its type is
+    // StructureRef(_) AND we are NOT in entity scope.
+    //
+    // The `!scope.is_entity_scope` guard prevents misfiring in entity
+    // bodies: `param material : Material` in a structure registers
+    // `material` as Type::StructureRef("Material") when Material is a
+    // known structure name.  Without the guard, `material.density` in a
+    // structure constraint would silently emit
+    // `ValueRef(entity_name, "density")` — a cell that doesn't exist —
+    // rather than the correct "member access not yet supported" error.
+    // Purpose scopes have is_entity_scope=false (traits.rs:228 uses
+    // CompilationScope::new); entity scopes set is_entity_scope=true
+    // (entity.rs:247).
+    //
+    // Combining the outer type-check with the inner ValueRef pattern into
+    // a single `if let` removes a statically infallible inner match and
+    // makes the control flow unambiguous — no implicit fall-through.
+    //
+    // Anti-cascade: this branch is placed AFTER the compile_obj call so
+    // the existing `is_error()` poison short-circuit below still fires
+    // for already-poisoned subjects.
+    //
+    // Per-param stamp invariant (task-2181 β, PRD §4.1 contract C1):
+    // When a purpose param identifier (e.g. `subject`) is accessed as
+    // `subject.mass`, the member-ref compiles to a ValueCellId whose
+    // entity stamp is `format!("{}::{}", purpose_name, param_name)` —
+    // e.g. `"lightweight::subject"`. This makes each param's refs
+    // disjoint even in multi-param purposes. `activate_purpose` (task β)
+    // remaps each per-param stamp to the bound entity_ref via a per-param
+    // `remap_entity(format!("{}::{}", purpose_name, param.name), entity_ref)`
+    // loop; task γ adds `activate_purpose_with_bindings` for independent
+    // per-param entity bindings.
+    //
+    // The `let Some(param_root) = scope.purpose_param_root(&id.member)` conjunct
+    // guards forward-compatibility for task δ (let-bindings in purpose bodies):
+    // future lets will register via `scope.register` with the same
+    // entity_name, but NOT via `register_purpose_param`, so they will
+    // NOT trigger this branch and will instead fall through to the
+    // normal member-access path. Binding `param_root` directly in the guard
+    // eliminates the duplicate lookup that was previously needed inside the
+    // `else` branch below (reviewer suggestion code_reuse_efficiency).
+    if let CompiledExprKind::ValueRef(ref id) = compiled_obj.kind
+        && matches!(&compiled_obj.result_type, Type::StructureRef(_))
+        && id.entity == scope.entity_name
+        && !scope.is_entity_scope
+        && let Some(param_root) = scope.purpose_param_root(&id.member)
+    {
+        if PURPOSE_REFLECTIVE_AGGREGATION_MEMBERS.contains(&member) {
+            // Reflective-aggregation placeholder (task-2289).
+            //
+            // Emits the marker variant `PurposeReflectiveAggregation`,
+            // which `Engine::activate_purpose` (in
+            // `crates/reify-eval/src/engine_purposes.rs`) walks and
+            // replaces with a populated `ListLiteral` of `ValueRef`s
+            // built from `CompiledPurpose.resolved_queries`. For the
+            // currently-resolved `params` query that yields the bound
+            // entity's param cells, flipping `forall p in
+            // subject.params: determined(p)` from a vacuous-true
+            // result to a real check. For `geometric_params`/
+            // `material_params` the activation walk currently emits an
+            // empty list (no resolved query — task-1904 follow-up
+            // territory), preserving today's vacuous-true behaviour.
+            //
+            // The compile-time placeholder element type stays
+            // `List<Real>`; activation refines each element's
+            // `result_type` from the looked-up `ValueCellNode.cell_type`.
+            //
+            // See `docs/notes/purpose-reflective-aggregation.md` for the
+            // full rationale and the §8 acceptance test in
+            // `crates/reify-eval/tests/purpose_activation.rs`.
+            return CompiledExpr::purpose_reflective_aggregation(
+                id.member.clone(),
+                member.to_string(),
+                Type::List(Box::new(Type::dimensionless_scalar())),
+            );
+        } else {
+            // Regular member access (e.g., `subject.mass`):
+            //   - Emit a ValueRef whose entity stamp equals the purpose
+            //     name (= scope.entity_name).  At activation time,
+            //     `activate_purpose` calls `remap_entity(purpose_name,
+            //     entity_ref)` which rewrites this ref to
+            //     `ValueCellId(entity_ref, member)` — exactly the bound
+            //     entity's member cell.
+            //   - Concrete-subject validation (task-2200): when the subject
+            //     type is a named structure (not the generic "Structure"
+            //     wildcard) and template_registry is available, verify that
+            //     `member` is declared in the template (value_cells, ports,
+            //     or sub_components).  If not found in any, emit
+            //     "has no member" and return a Type::Error poison so
+            //     downstream checks (e.g., `subject.bogus > 0`) do not
+            //     cascade.  Port/sub members fall through to the existing
+            //     CompiledExpr::value_ref emit — their type resolution is a
+            //     separate follow-up task.
+            //   - Wildcard path: when entity_kind == "Structure" or registry
+            //     lookup fails (no template by that name), fall through
+            //     silently — the generic form binds at activation time and
+            //     has no static template to validate against.
+            //   - Belt-and-braces: `struct_name != WILDCARD_STRUCTURE_KIND` makes
+            //     the wildcard-skip intent explicit even though a registry miss
+            //     (no template named "Structure") would also fall through.
+            //     Both guards are intentional: the name guard protects
+            //     against a hypothetical future stdlib "Structure" template;
+            //     the registry-miss guard covers other unregistered wildcard
+            //     kinds (e.g., "Occurrence").
+            //   - Type::dimensionless_scalar() is a compile-time fallback; member-type
+            //     resolution (e.g., Length vs. Mass) is a separate
+            //     follow-up task and is NOT addressed here.
+            let struct_name = match &compiled_obj.result_type {
+                Type::StructureRef(name) => name.clone(),
+                _ => unreachable!("outer guard ensures StructureRef"),
+            };
+            if struct_name != WILDCARD_STRUCTURE_KIND
+                && let Some(registry) = scope.template_registry
+                && let Some(template) = registry.get(struct_name.as_str())
+            {
+                // Accept members from value_cells, ports, or sub_components.
+                // Port/sub members are valid member kinds even if their type
+                // resolution is not yet implemented — only truly undeclared
+                // names get a "has no member" diagnostic.
+                let member_known = template_has_member(template, member);
+                if !member_known {
+                    return make_poison_literal(
+                        diagnostics,
+                        Diagnostic::error(format!(
+                            "structure '{}' has no member '{}'",
+                            struct_name, member
+                        ))
+                        .with_label(DiagnosticLabel::new(span, "unknown member"))
+                        .with_code(DiagnosticCode::StructureMemberNotFound),
+                    );
+                }
+                // E_PRIV_MEMBER_ACCESS (task #3978 δ): a purpose subject is an
+                // external view of the bound structure, so accessing a priv
+                // member through it is gated exactly like an external
+                // `obj.member` dot-access (sibling check at the StructureRef
+                // branch). The wildcard "Structure" subject is already excluded
+                // by the enclosing `struct_name != WILDCARD_STRUCTURE_KIND` guard.
+                if template_member_is_priv(template, member) {
+                    return make_poison_literal(
+                        diagnostics,
+                        Diagnostic::error(format!(
+                            "E_PRIV_MEMBER_ACCESS: member '{member}' of structure '{struct_name}' is private"
+                        ))
+                        .with_label(DiagnosticLabel::new(
+                            span,
+                            "private member accessed here",
+                        ))
+                        .with_code(DiagnosticCode::PrivMemberAccess),
+                    );
+                }
+            }
+            // Per-param stamp: encode `purpose_name::param_name` as the entity
+            // so each param's refs are disjoint (task-2181 β, PRD §4.1 C1).
+            // `param_root` is already bound by the outer `if let` guard's
+            // `let Some(param_root) = scope.purpose_param_root(&id.member)`
+            // conjunct — no second lookup or `.expect()` needed.
+            let stamp_entity = format!("{}::{}", id.entity, param_root);
+            let member_id = ValueCellId::new(&stamp_entity, member);
+            // W5 (task #4629): both wildcard "Structure" subjects AND concrete
+            // named purpose params use TypeParam("StructureMember").  Per-member type
+            // resolution is a separate task for both cases — concrete params cannot
+            // resolve their member types at compile time either.  TypeParam triggers
+            // the comparison guard's TypeParam early-return
+            // (emit_comparison_operand_diagnostics lines 353-357), silencing spurious
+            // dimension mismatches like `subject.a - subject.b > 0mm` where the member
+            // is actually a Length (valid) but types as Real under the dimensionless
+            // fallback.  Using dimensionless_scalar() for concrete params (the previous
+            // approach) caused false-positive DimensionMismatch errors after the B2
+            // suppression was removed.
+            return CompiledExpr::value_ref(
+                member_id,
+                Type::TypeParam("StructureMember".to_string()),
+            );
+        }
+    }
+    // ── End purpose-subject member access ──────────────────────────────
+
+    // ── task 3540 (SIR-α): StructureInstance field projection ──────────
+    //
+    // Handler esc-3540-182 (A): when the object resolves to a
+    // structure/trait-typed value, `.member` projects the field out of
+    // the runtime `Value::StructureInstance`. This is the entity-scope
+    // member-access path for chains like
+    // `self.primary.material.youngs_modulus` — `self.primary.material`
+    // already resolves (via the `self.sub.member` branch above) to a
+    // value-ref whose runtime value is a `Value::StructureInstance`
+    // (the structure-def param/let default lowered by the
+    // StructureInstanceCtor path). Reuse `IndexAccess` with a
+    // string-literal key (handler (A)(1) — no new CompiledExprKind);
+    // the eval-side IndexAccess arm reads `fields[member]`.
+    //
+    // (A)(2) member-Type resolution: for a concrete `StructureRef`,
+    // resolve the declared field type from the structure-def template
+    // in `scope.template_registry` (esc-3540-177-threaded). For a
+    // `TraitObject` the concrete runtime type is not statically known
+    // (traits are not in `template_registry`); fall back to `Type::dimensionless_scalar()`
+    // — a permissive, non-poison type so the chain neither cascades nor
+    // is rejected. The runtime `Value` is whatever the field actually
+    // holds (e.g. a `Value::Scalar`), independent of this static type.
+    //
+    // The poison short-circuit must run first so an already-errored
+    // object propagates rather than being treated as a structure.
+    if !compiled_obj.result_type.is_error()
+        && let Type::StructureRef(struct_name) | Type::TraitObject(struct_name) =
+            &compiled_obj.result_type
+    {
+        // Split the lookup so we can distinguish "member present", "struct unknown",
+        // and "struct known but member absent" (ds-sentinel L4, task #4649).
+        let template = scope
+            .template_registry
+            .and_then(|r| r.get(struct_name.as_str()));
+        let resolved = template.and_then(|t| {
+            t.value_cells
+                .iter()
+                .find(|vc| vc.id.member == *member)
+                .map(|vc| vc.cell_type.clone())
+        });
+
+        // Poison only when: (1) receiver is concrete StructureRef, (2) struct IS
+        // in the registry, (3) struct_name is not the wildcard sentinel, AND
+        // (4) member is absent from value_cells, ports, AND sub_components.
+        //
+        // `template_has_member` is the single source of truth for membership
+        // across all three categories, shared with the purpose-subject sibling at
+        // :3374-3394 (via `template_has_member`) so a future member-kind addition
+        // updates both paths atomically (ds-sentinel L4, task #4649).
+        //
+        // NOTE: even for a "known" port/sub name, `resolved` (value_cells only)
+        // will be None and `member_type` falls back to `dimensionless_scalar()` via
+        // the `unwrap_or` below — a permissive non-poison type, preserving the
+        // existing runtime behaviour (StructureInstanceData.fields excludes
+        // ports/subs, so the access returns `Value::Undef` at runtime regardless).
+        //
+        // TraitObject (struct not in registry) and registry-miss keep the
+        // permissive dimensionless fallback byte-for-byte to preserve TraitObject
+        // behaviour and avoid false positives (ds-sentinel L4, task #4649).
+        //
+        // The `struct_name != WILDCARD_STRUCTURE_KIND` guard mirrors the explicit
+        // skip in the purpose-subject sibling at :3370 — belt-and-braces against a
+        // hypothetical future stdlib "Structure" template entering the registry.
+        let member_known = template.is_some_and(|t| template_has_member(t, member));
+        // ── geometric-relations η: intrinsic self-datum on a sub ref ──
+        //
+        // An intrinsic self-datum projection on a sub-instance ref
+        // (`a.frame`, `a.origin`, `a.xy_plane`, …): origin/frame/x/y/z/
+        // *_plane are NOT declared members of the sub's structure, but
+        // every `StructureRef` carries the intrinsic identity-frame datums
+        // (the datum_projection `StructureRef` arm, η step-6). Resolve the
+        // codomain via that table and lower to the SAME cross-sub datum-
+        // access shape a declared member uses below (`IndexAccess { ValueRef
+        // (sub), Literal(String(member)) }`) — the node `reify-eval`'s
+        // `decode_operand` decodes as a sub datum and the relate-solve
+        // grounds/places against (e.g. `ground(a)` → `fasten(a.frame,
+        // self.frame)`). Placed BEFORE the "no member" poison so an
+        // intrinsic datum is accepted; a user-declared member of the same
+        // name still shadows (`member_known` is true → this is skipped and
+        // the declared-member path runs). TraitObject receivers do not
+        // match the `StructureRef` arm → `Unavailable` → unchanged.
+        if !member_known
+            && let DatumProjectionResolution::Resolved(datum_type) =
+                datum_projection_result_type(&compiled_obj.result_type, member)
+        {
+            let key = CompiledExpr::literal(Value::String(member.to_string()), Type::String);
+            return CompiledExpr::index_access(compiled_obj, key, datum_type);
+        }
+        if !member_known
+            && matches!(&compiled_obj.result_type, Type::StructureRef(_))
+            && struct_name.as_str() != WILDCARD_STRUCTURE_KIND
+            && template.is_some()
+        {
+            return make_poison_literal(
+                diagnostics,
+                Diagnostic::error(format!(
+                    "structure '{struct_name}' has no member '{member}'"
+                ))
+                .with_label(DiagnosticLabel::new(span, "unknown member"))
+                .with_code(DiagnosticCode::StructureMemberNotFound),
+            );
+        }
+
+        // E_PRIV_MEMBER_ACCESS (task #3978 δ): a `priv` member (priv param /
+        // priv sub / priv port) is hidden from external dot-access. Only a
+        // concrete `StructureRef` reaches a known template here; `self.member`
+        // and bare-name internal references are resolved by the earlier
+        // self/entity-scope branch (~:3106) and never reach this point, so this
+        // gates exactly the external `obj.member` access. Mirrors the
+        // StructureMemberNotFound poison above and fires before the permissive
+        // dimensionless fallback so the priv access does not silently resolve.
+        if matches!(&compiled_obj.result_type, Type::StructureRef(_))
+            && struct_name.as_str() != WILDCARD_STRUCTURE_KIND
+            && template.is_some_and(|t| template_member_is_priv(t, member))
+        {
+            return make_poison_literal(
+                diagnostics,
+                Diagnostic::error(format!(
+                    "E_PRIV_MEMBER_ACCESS: member '{member}' of structure '{struct_name}' is private"
+                ))
+                .with_label(DiagnosticLabel::new(
+                    span,
+                    "private member accessed here",
+                ))
+                .with_code(DiagnosticCode::PrivMemberAccess),
+            );
+        }
+
+        let member_type = resolved.unwrap_or(Type::dimensionless_scalar());
+        let key = CompiledExpr::literal(Value::String(member.to_string()), Type::String);
+        return CompiledExpr::index_access(compiled_obj, key, member_type);
+    }
+
+    unreachable!(
+        "member_access_on_structure_like called with a receiver that is neither \
+         StructureRef nor TraitObject: {:?}",
+        compiled_obj.result_type
+    )
+}
+
+/// `<param>.<member>` where the receiver's static type is a still-unresolved
+/// `Type::TypeParam` (the pre-monomorphization L2 path, task 4596).
+///
+/// Returns `TypeParamMemberNotInBound` or a flat `ValueRef` when the receiver
+/// is itself a `ValueRef`; otherwise (a nested, non-`ValueRef` expression)
+/// falls through to the shared aggregation/poison tail — we cannot
+/// construct the flat key without the receiver's own member name.
+fn member_access_on_type_param(
+    compiled_obj: CompiledExpr,
+    member: &str,
+    scope: &CompilationScope,
+    span: reify_core::SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CompiledExpr {
+    // ── Type::TypeParam member access (task 4596) ───────────────────────
+    //
+    // `<param>.<member>` where the receiver is a still-unresolved
+    // `Type::TypeParam(param_name)` (the un-monomorphized L2 path).
+    //
+    // α's monomorphization rewrite handles the post-resolve StructureRef
+    // path via the branch above; this branch handles the pre-resolve path
+    // inside the auto-type-param search loop.
+    //
+    // NODE SHAPE (critical — deviates from a naïve index_access):
+    // `eval_index_access` (reify-expr/src/lib.rs) only projects a field
+    // when the object evaluates to `Value::StructureInstance`.  Inside the
+    // search loop the `seal` cell has no StructureInstance (still TypeParam)
+    // and β seeds the FLAT key `ValueCellId::new(param_member, field)` —
+    // NOT a StructureInstance at `ValueCellId(entity, param)`.
+    // So `index_access(value_ref(seal), "thickness")` would evaluate to
+    // `Undef` and the constraint would stay `Indeterminate`, failing to
+    // unblock ζ.  The correct node is a FLAT
+    // `value_ref(ValueCellId::new(receiver_member, member), trait_member_type)`
+    // which `eval_expr ValueRef` resolves via direct `get_or_undef`, matching
+    // β's per-candidate seed key exactly
+    // (param_member == receiver's ValueCellId.member, per `param_type_member`
+    // in auto_type_param.rs).
+    //
+    // SOUNDNESS CONTRACT: this branch NEVER returns a node whose
+    // `result_type` is `Type::TypeParam(_)` and NEVER synthesizes a
+    // permissive placeholder type.  When no bound trait declares `member`,
+    // the impl-step-4 negative path below emits `TypeParamMemberNotInBound`
+    // and returns a poison literal.
+    let Type::TypeParam(param_name) = &compiled_obj.result_type else {
+        unreachable!("member_access_on_type_param called with a non-TypeParam receiver")
+    };
+    // Resolve the receiver's param-member name from the compiled_obj.
+    // The receiver must be a ValueRef (e.g. `ValueCellId(entity,"seal")`);
+    // its `.member` is the flat-key entity component β seeds under.
+    if let CompiledExprKind::ValueRef(ref receiver_id) = compiled_obj.kind {
+        let receiver_member = receiver_id.member.clone();
+        let bound_traits = scope
+            .type_param_bounds
+            .get(param_name.as_str())
+            .cloned()
+            .unwrap_or_default();
+
+        // Walk bound traits to find the first one declaring `member`.
+        let found_type: Option<Type> = bound_traits.iter().find_map(|trait_name| {
+            scope
+                .trait_member_types
+                .get(trait_name.as_str())
+                .and_then(|members| members.get(member))
+                .cloned()
+        });
+
+        if let Some(member_type) = found_type {
+            // Positive path: emit the flat ValueRef that β's per-candidate
+            // ValueMap can resolve.
+            return CompiledExpr::value_ref(
+                ValueCellId::new(receiver_member, member.to_string()),
+                member_type,
+            );
+        } else {
+            // Negative path (step-4): no bound trait declares `member`.
+            // Emit a targeted diagnostic and return a poison literal.
+            // Anti-cascade: one Error + one poison (never a TypeParam
+            // result_type, never a permissive placeholder).
+            let bound_names = if bound_traits.is_empty() {
+                format!("(no bounds on type parameter '{param_name}')")
+            } else {
+                bound_traits.join(", ")
+            };
+            return make_poison_literal(
+                diagnostics,
+                Diagnostic::error(format!(
+                    "type parameter '{param_name}' (bound: {bound_names}) \
+                     has no member '{member}': the bound trait does not declare '{member}'"
+                ))
+                .with_label(DiagnosticLabel::new(
+                    span,
+                    format!("'{member}' not declared by bound trait"),
+                ))
+                .with_code(DiagnosticCode::TypeParamMemberNotInBound),
+            );
+        }
+    }
+    // If the receiver is not a ValueRef (e.g. a nested expr), fall
+    // through to the generic poison below — we cannot construct the
+    // flat key without the receiver's member name.
+    member_access_aggregation_or_unsupported(compiled_obj, member, span, diagnostics)
+}
+
+/// `<datum>.<member>` where the receiver's static type is a datum type
+/// (`Axis`/`Plane`/`Frame`/`Direction`/`Point`) — geometric-relations β.
+fn member_access_on_datum(
+    compiled_obj: CompiledExpr,
+    member: &str,
+    span: reify_core::SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CompiledExpr {
+    // ── Datum-projection member access (geometric-relations β) ─────────
+    //
+    // `<datum>.<member>` where the receiver is a datum type
+    // (Axis/Plane/Frame/Direction) — or a `Point`, which has no datum
+    // projections — and `<member>` is a recognized datum-projection
+    // member name (`DATUM_PROJECTION_MEMBERS`). Consults the projection
+    // table (`datum_projection.rs`, the single source of truth) to
+    // type-check and lower the projection per the "implicit projection
+    // iff unique" rule.
+    //
+    // Placement: AFTER the StructureRef/TraitObject field-projection
+    // branch above (a datum is neither) and BEFORE the collection-
+    // aggregation / generic "member access not yet supported" fallthrough
+    // below, so datum projections are resolved rather than rejected as
+    // unsupported.  The receiver-type guard excludes `Type::Error`, so an
+    // already-poisoned object falls through to the poison short-circuits
+    // in the branches below (no double diagnostic).
+    //
+    // Lowering mirrors the collection-aggregation arm: a valid projection
+    // becomes a `MethodCall` (method = projection name, no args); eval
+    // dispatches the datum-projection method names on datum Values
+    // (the projection member names are disjoint from count/sum/keys/values).
+    if DATUM_PROJECTION_MEMBERS.contains(&member) {
+        match datum_projection_result_type(&compiled_obj.result_type, member) {
+            DatumProjectionResolution::Resolved(result_type) => {
+                return CompiledExpr::method_call(
+                    compiled_obj,
+                    member.to_string(),
+                    vec![],
+                    result_type,
+                );
+            }
+            DatumProjectionResolution::Unavailable => {
+                // Typed rejection of a nonsense projection (e.g. `point.dir`,
+                // `plane.dir`). make_poison_literal enforces the anti-cascade
+                // contract (one Severity::Error diagnostic + poison literal).
+                // Where an obvious redirect exists (plane.dir → .normal),
+                // append it as a "; use .normal" hint so the message matches
+                // the documented canonical form.
+                let mut message = format!(
+                    "{} has no projection '.{}'",
+                    compiled_obj.result_type, member
+                );
+                if let Some(hint) =
+                    datum_projection_unavailable_hint(&compiled_obj.result_type, member)
+                {
+                    message.push_str(&format!("; use {hint}"));
+                }
+                return make_poison_literal(
+                    diagnostics,
+                    Diagnostic::error(message)
+                        .with_label(DiagnosticLabel::new(span, "no such datum projection"))
+                        .with_code(DiagnosticCode::DatumProjectionUnavailable),
+                );
+            }
+            DatumProjectionResolution::Ambiguous { suggestions } => {
+                // A bare directional projection that could mean several
+                // members (e.g. `frame.dir`): suggest the disambiguating
+                // members to write instead ("write frame.z").
+                let suggested = suggestions
+                    .iter()
+                    .map(|s| format!(".{s}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return make_poison_literal(
+                    diagnostics,
+                    Diagnostic::error(format!(
+                        "ambiguous datum projection '.{}' on {}: it could be any of \
+                         {} — write one of those instead (e.g. write {})",
+                        member,
+                        compiled_obj.result_type,
+                        suggested,
+                        suggestions
+                            .last()
+                            .map(|s| format!(".{s}"))
+                            .unwrap_or_default(),
+                    ))
+                    .with_label(DiagnosticLabel::new(span, "ambiguous datum projection"))
+                    .with_code(DiagnosticCode::DatumProjectionAmbiguous),
+                );
+            }
+        }
+    }
+    member_access_aggregation_or_unsupported(compiled_obj, member, span, diagnostics)
+}
+
+/// `<feature>.<member>` where the receiver's static type is a feature type
+/// (`Geometry`/`Selector`/`AnySelector`) — geometric-relations ε.
+fn member_access_on_feature(
+    compiled_obj: CompiledExpr,
+    member: &str,
+    span: reify_core::SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CompiledExpr {
+    // ── geometric-relations ε: feature→datum projections ───────────
+    //
+    // The same projection block also handles *feature* receivers —
+    // `Type::Geometry` (a realized solid) and `Type::Selector(_)` /
+    // `Type::AnySelector` (a topology selection) — projecting them to the
+    // datum their trait bundle carries (`feature.axis : Axis`,
+    // `.plane : Plane`, `.point : Point3<Length>`, `.dir : Direction`;
+    // design §2.2). Whereas a β *datum* receiver only enters here for a
+    // recognized projection member (`DATUM_PROJECTION_MEMBERS`), a feature
+    // receiver enters for *any* non-aggregation member: a geometry/selector
+    // has no other member-access semantics, so every such `.member` is a
+    // feature→datum projection attempt and an unrecognized one
+    // (`feature.foo`) is a typed rejection (`Unavailable` →
+    // `DatumProjectionUnavailable`), not a generic "unsupported" fallthrough.
+    // Collection-aggregation members (`count`/`sum`/`keys`/`values`) are
+    // excluded so a selector's aggregation still routes to the arm below.
+    //
+    // Lowering is a `MethodCall` (method = projection name, no args), the
+    // same NODE shape β uses — but the *eval* is kernel-backed: a feature
+    // receiver evaluates to a `Value::GeometryHandle`/`Value::Selector`, for
+    // which the pure `eval_datum_projection` returns `None` (→ `Undef`), and
+    // the `reify-eval` geometry_ops post-process patches the cell with the
+    // resolved feature-datum bundle projection. This is distinct from β's
+    // pure datum→datum `eval_datum_projection` (which fires only for an
+    // `Axis`/`Plane`/`Frame`/`Direction` runtime receiver).
+    if !COLLECTION_AGGREGATION_MEMBERS.contains(&member) {
+        match datum_projection_result_type(&compiled_obj.result_type, member) {
+            DatumProjectionResolution::Resolved(result_type) => {
+                return CompiledExpr::method_call(
+                    compiled_obj,
+                    member.to_string(),
+                    vec![],
+                    result_type,
+                );
+            }
+            DatumProjectionResolution::Unavailable => {
+                // Typed rejection of a nonsense projection (e.g. `point.dir`,
+                // `plane.dir`). make_poison_literal enforces the anti-cascade
+                // contract (one Severity::Error diagnostic + poison literal).
+                // Where an obvious redirect exists (plane.dir → .normal),
+                // append it as a "; use .normal" hint so the message matches
+                // the documented canonical form.
+                let mut message = format!(
+                    "{} has no projection '.{}'",
+                    compiled_obj.result_type, member
+                );
+                if let Some(hint) =
+                    datum_projection_unavailable_hint(&compiled_obj.result_type, member)
+                {
+                    message.push_str(&format!("; use {hint}"));
+                }
+                return make_poison_literal(
+                    diagnostics,
+                    Diagnostic::error(message)
+                        .with_label(DiagnosticLabel::new(span, "no such datum projection"))
+                        .with_code(DiagnosticCode::DatumProjectionUnavailable),
+                );
+            }
+            DatumProjectionResolution::Ambiguous { suggestions } => {
+                // A bare directional projection that could mean several
+                // members (e.g. `frame.dir`): suggest the disambiguating
+                // members to write instead ("write frame.z").
+                let suggested = suggestions
+                    .iter()
+                    .map(|s| format!(".{s}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return make_poison_literal(
+                    diagnostics,
+                    Diagnostic::error(format!(
+                        "ambiguous datum projection '.{}' on {}: it could be any of \
+                         {} — write one of those instead (e.g. write {})",
+                        member,
+                        compiled_obj.result_type,
+                        suggested,
+                        suggestions
+                            .last()
+                            .map(|s| format!(".{s}"))
+                            .unwrap_or_default(),
+                    ))
+                    .with_label(DiagnosticLabel::new(span, "ambiguous datum projection"))
+                    .with_code(DiagnosticCode::DatumProjectionAmbiguous),
+                );
+            }
+        }
+    }
+    member_access_aggregation_or_unsupported(compiled_obj, member, span, diagnostics)
 }
 
 // ── task-4701: Expected-type pushdown α — engagement classifier (PRD §6) ─────
