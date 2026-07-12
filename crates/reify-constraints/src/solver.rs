@@ -1981,6 +1981,29 @@ impl ConstraintSolver for DimensionalSolver {
         // whole ranked result reflects that via the shared pass-through, so
         // a non-unique winner can never be silently reported as BestFound.
         //
+        // Authoritative verdict, may differ from solve() (reviewer amendment,
+        // task δ #5016 review pass 2): the winner is not necessarily start #0
+        // (the seed `solve()` anchors on). For a strict-auto multi-basin
+        // problem, `solve()` can land in one basin and pass its own
+        // perturbation re-solve (Solved), while the multistart winner is a
+        // DIFFERENT, better-scoring basin whose perturbation re-solve lands
+        // somewhere else and gets demoted (Infeasible) — so `solve()` and
+        // `solve_ranked()` can disagree on Solved-vs-Infeasible for the SAME
+        // `problem`. This is intentional, not a bug: the winner's
+        // `finalise_uniqueness` verdict is authoritative for `solve_ranked`
+        // (I2 — candidate[0] must be the best-scoring FEASIBLE-AND-UNIQUE
+        // point, never a stale verdict borrowed from a different start), and
+        // it is low-risk in practice because strict-auto non-uniqueness is a
+        // property of the shared constraint system rather than the objective,
+        // while multistart's value chiefly targets free-auto exploration
+        // (§5.3). `solve_ranked_multistart_winner_non_unique_demotes_to_infeasible`
+        // (solver_integration.rs) pins the demotion mechanism itself (a
+        // fixture where the winner happens to coincide with the seed); no
+        // fixture pins the cross-basin verdict-FLIP specifically, since a
+        // strict-auto system with two distinct feasible basins where exactly
+        // one passes uniqueness is high-effort to construct for a documented,
+        // low-risk edge case.
+        //
         // NOT deduplicated (reviewer amendment, task δ #5016 review pass):
         // `scored` (the non-winning candidates folded in below) carries
         // every feasible start verbatim. For a single-basin objective — the
