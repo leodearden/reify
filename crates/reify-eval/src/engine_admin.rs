@@ -3052,6 +3052,53 @@ mod tests {
         );
     }
 
+    /// Characterization lock on the OBSERVABLE snapshot/version numbering
+    /// produced by `eval()`'s cold-path snapshot construction (site 1),
+    /// guarding the "byte-identical numbering" claim across its migration
+    /// onto `allocate_snapshot_version` (task 5040 steps 4-6). Passes
+    /// before AND after the migration; would go RED if a migration
+    /// perturbed numbering (extra/missing allocation, reordering, etc).
+    ///
+    /// `structure S { param width: Length = 100mm }` has no solver
+    /// interaction, so only the eval() site-1 pair fires — the
+    /// resolution-phase and merged-cluster-solve sites stay dormant.
+    #[test]
+    fn eval_snapshot_numbering_is_stable_across_repeated_calls() {
+        use reify_core::{SnapshotId, VersionId};
+        use reify_test_support::mocks::MockConstraintChecker;
+        use reify_test_support::parse_and_compile_with_stdlib;
+
+        let compiled =
+            parse_and_compile_with_stdlib("structure S { param width: Length = 100mm }");
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+
+        let _ = engine.eval(&compiled);
+        let snapshot = engine
+            .snapshot()
+            .expect("eval() must populate a current snapshot");
+        assert_eq!(
+            snapshot.id, SnapshotId(0),
+            "first eval() call must mint SnapshotId(0)",
+        );
+        assert_eq!(
+            snapshot.version, VersionId(0),
+            "first eval() call must mint VersionId(0)",
+        );
+
+        let _ = engine.eval(&compiled);
+        let snapshot = engine
+            .snapshot()
+            .expect("second eval() must populate a current snapshot");
+        assert_eq!(
+            snapshot.id, SnapshotId(1),
+            "second eval() call must mint SnapshotId(1)",
+        );
+        assert_eq!(
+            snapshot.version, VersionId(1),
+            "second eval() call must mint VersionId(1)",
+        );
+    }
+
     // ── kernel_pin_diagnostics unit tests (task π / #3444 S1/S2) ──────────
 
     /// (a) registered {"occt"} + pins [kernels]\nmanifold="1.0.0"
