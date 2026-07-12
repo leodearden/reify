@@ -2912,19 +2912,37 @@ impl Mesh {
         // can outlive the match and unify with the `Some`/fallback arms'
         // `&[u32]`.
         //
-        // A length mismatch (as opposed to a same-length-but-wrong-content
-        // remap, which stays an undetectable "garbage in, garbage out"
-        // caller bug per `check_mesh_contract_welded`'s precondition) would
-        // otherwise panic on out-of-bounds indexing below in release
-        // builds, where `debug_assert_eq!` alone doesn't fire — so it is
-        // checked in ALL build modes and defended by falling back to an
-        // internal reweld, keeping this public API panic-free even if a
-        // future caller violates the precondition. The `debug_assert_eq!`
-        // still fires first in debug/test builds, so a mismatch is caught
-        // loudly during development rather than silently repaired.
+        // A length mismatch would otherwise panic on out-of-bounds indexing
+        // below in release builds, where `debug_assert_eq!` alone doesn't
+        // fire — so it is checked in ALL build modes and defended by
+        // falling back to an internal reweld, keeping this public API
+        // panic-free even if a future caller violates the precondition.
+        // The `debug_assert_eq!` still fires first in debug/test builds, so
+        // a length mismatch is caught loudly during development rather
+        // than silently repaired.
+        //
+        // A same-length-but-wrong-content remap can't be defended the same
+        // way — there is no `MeshContractViolation` shape for "caller
+        // passed a bogus remap", so it remains an undetected "garbage in,
+        // garbage out" caller bug in release builds, per
+        // `check_mesh_contract_welded`'s precondition. The matching-length
+        // arm below does `debug_assert_eq!` the supplied remap's CONTENT
+        // against a freshly recomputed `weld_positions().1`, so a
+        // divergence is still caught loudly in debug/test builds even
+        // though release builds pay no cost for it.
         let recomputed_weld: Vec<u32>;
         let welded_indices: &[u32] = match welded {
-            Some(w) if w.len() == self.vertices.len() / 3 => w,
+            Some(w) if w.len() == self.vertices.len() / 3 => {
+                debug_assert_eq!(
+                    w,
+                    self.weld_positions().1.as_slice(),
+                    "check_contract: threaded weld remap content must match \
+                     self.weld_positions().1 — a same-length-but-wrong-content \
+                     remap is an undetected caller bug (GIGO) in release builds, \
+                     per check_mesh_contract_welded's precondition"
+                );
+                w
+            }
             Some(w) => {
                 debug_assert_eq!(
                     w.len(),
@@ -3090,11 +3108,14 @@ impl Mesh {
     /// while release builds silently fall back to an internal reweld
     /// instead of indexing out of bounds, so this method never panics.
     /// There is no `MeshContractViolation` shape for "caller passed a
-    /// bogus remap", so a mismatched-but-SAME-length remap is still a
-    /// silent caller bug (garbage in, garbage out) — only the
-    /// panic-causing length case is guarded. Callers that cannot guarantee
-    /// the precondition must use [`Self::check_mesh_contract`] instead,
-    /// which recomputes the weld internally.
+    /// bogus remap": a mismatched-but-SAME-length remap is checked by
+    /// content against a freshly recomputed `weld_positions().1` via
+    /// `debug_assert_eq!` (loud in debug/test builds), but in release
+    /// builds it is still a silent caller bug (garbage in, garbage out) —
+    /// only the panic-causing length case is defended in release. Callers
+    /// that cannot guarantee the precondition must use
+    /// [`Self::check_mesh_contract`] instead, which recomputes the weld
+    /// internally.
     pub fn check_mesh_contract_welded(
         &self,
         tol: f64,
@@ -11813,13 +11834,17 @@ mod tests {
 
     /// [`Mesh::check_mesh_contract_welded`] must return the same verdict as
     /// [`Mesh::check_mesh_contract`] when handed the mesh's own
-    /// `weld_positions().1` remap — proving the threaded remap is actually
-    /// consumed by the Closed/ConsistentWinding obligation (not silently
-    /// ignored), and that a real (non-identity) remap yields the correct
-    /// welded-quotient verdict. `per_face_block_tetra_mesh()` is the key
-    /// case: its raw index buffer is open, and only welding makes it
-    /// closed, so a broken/identity remap would fail this test on that
-    /// fixture.
+    /// `weld_positions().1` remap — verifying verdict-equivalence between
+    /// the threaded and recompute-internally paths. Note this does NOT by
+    /// itself prove the threaded remap is *consumed* rather than silently
+    /// ignored-and-recomputed: because the remap passed here is exactly
+    /// what the unthreaded path would compute internally, an
+    /// implementation that dropped the parameter and always recomputed
+    /// would produce byte-identical verdicts and still pass this test.
+    /// `per_face_block_tetra_mesh()` is still the most meaningful case:
+    /// its raw index buffer is open, and only the welded quotient is
+    /// closed, so it exercises a real (non-identity) remap rather than a
+    /// no-op one.
     ///
     /// RED: fails to compile until `check_mesh_contract_welded` is added to
     /// `Mesh`.
@@ -11840,8 +11865,10 @@ mod tests {
         assert_welded_matches_unthreaded(&welded_tetra_mesh(), 0.0);
 
         // Unwelded per-face-block tetra: the raw buffer is open; only the
-        // welded quotient is closed. This is the load-bearing case — it
-        // proves the threaded remap is actually used.
+        // welded quotient is closed. This is the most meaningful case — it
+        // exercises a real (non-identity) remap, though (per the docstring
+        // above) it still can't distinguish "consumed" from "ignored and
+        // recomputed".
         assert_welded_matches_unthreaded(&per_face_block_tetra_mesh(), 0.0);
 
         // Open boundary — mirrors `validate_rejects_open_boundary`.
