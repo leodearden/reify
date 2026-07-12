@@ -566,51 +566,37 @@ fn per_file_violations(
 ///
 /// # Budget rationale
 ///
-/// The per-file bound (10s) is intentionally generous: a tight per-machine
-/// baseline flakes on slow CI and requires continual recalibration. The PRD
-/// §"Phase A" cap-of-10 rationale targets obvious quadratic regressions, not
-/// microbenchmark drift. As a rough baseline on a modern developer machine,
-/// each `.ri` example file compiles in under 500ms, so the 10s/file limit
-/// provides >10× headroom against a p99 outlier without risking false
-/// positives from CI scheduling jitter. If a regression pushes a file past
-/// the budget, the violation table will identify it by name.
+/// The 10s per-file bound targets obvious quadratic regressions, not
+/// microbenchmark drift: a typical `.ri` example compiles in well under a
+/// second, leaving generous headroom against CI scheduling jitter. Full
+/// history/tradeoffs: task 5149.
 ///
-/// There is deliberately no aggregate/total wall-clock budget: task 5149
-/// dropped it because a fixed total erodes as the corpus grows and is
-/// multiplied by concurrent-verify CPU oversubscription, which flaked under
-/// load independent of any real regression. The per-file bound has no such
-/// failure mode and remains the load-tolerant quadratic-regression detector.
-///
-/// Accepted coverage tradeoff: this gate only catches per-file quadratic
-/// outliers, not corpus-wide linear drift (e.g. a uniform ~2x slowdown
-/// across every file, or gradual growth as the corpus doubles) — every file
-/// can individually stay under the 10s budget while aggregate compile time
-/// regresses badly. Catching that would need a CPU-normalized or
-/// relative-to-median aggregate check rather than a fixed wall-clock total,
-/// which is exactly what flaked under load and is out of scope here.
+/// Deliberately no aggregate/total wall-clock budget — task 5149 dropped it
+/// because a fixed total erodes as the corpus grows and flakes under
+/// concurrent-verify CPU oversubscription, independent of any real
+/// regression. Accepted tradeoff: this only catches per-file outliers, not
+/// corpus-wide linear drift (e.g. a uniform slowdown across every file);
+/// catching that would need a CPU-normalized aggregate check, out of scope
+/// here.
 #[test]
 fn v0_1_example_corpus_compile_and_check_time_is_bounded() {
     use std::collections::HashSet;
 
     const PER_FILE_BUDGET: Duration = Duration::from_secs(10);
 
-    // Conservative floor for corpus discovery: as of task 5149 the corpus
-    // yields ~232 measured files (243 under `examples/` minus 11 SKIP_SET
-    // entries). Set well below that so healthy corpus growth/shrinkage
-    // doesn't flake this guard, while still catching a partial-discovery
-    // regression (e.g. most files silently skipped) that a bare non-empty
-    // check would miss. This floor couples the guard to corpus size: if the
-    // corpus is ever intentionally trimmed below 100 files, lower this
-    // constant to match — the assertion below has no way to distinguish an
-    // intended shrink from a discovery regression.
+    // Conservative absolute floor, set well below current corpus size so
+    // healthy growth/shrinkage doesn't flake this guard while still catching
+    // a partial-discovery regression (e.g. most files silently skipped) that
+    // a bare non-empty check would miss. If the corpus is ever intentionally
+    // trimmed below this floor, lower the constant to match — the assertion
+    // has no way to distinguish an intended shrink from a regression.
     //
-    // Why not a relative check (`candidates.len() >= paths.len() -
-    // skip.len()`) instead: it only bounds skip-matching removals, so a
-    // discover_ri_files() regression (e.g. finding only 50 of 243 files)
-    // shrinks paths.len() and candidates.len() together and still passes —
-    // missing the exact regression this floor exists to catch. It's also
-    // near-tautological, since relative paths are unique per file and
-    // skip-matching can't remove more than skip.len() files regardless.
+    // Deliberately NOT relative to paths.len() (e.g. `paths.len() -
+    // skip.len()`, or a fraction like `paths.len() / 2`): a
+    // discover_ri_files() regression shrinks paths.len() and candidates.len()
+    // in lockstep, so any floor derived from paths.len() — subtractive or
+    // proportional — still passes and misses exactly the regression this
+    // check exists to catch.
     const EXPECTED_MIN_FILES: usize = 100;
 
     let skip: HashSet<&str> = SKIP_SET.iter().map(|(name, _)| *name).collect();
@@ -673,16 +659,14 @@ fn v0_1_example_corpus_compile_and_check_time_is_bounded() {
 
 // ─── step-11 unit guard: per_file_violations pure-helper contract ─────────
 
-/// `per_file_violations` must flag a genuinely over-budget file and must NOT
-/// flag sub-budget files, including a file landing exactly on the budget
-/// boundary (`duration == budget` uses strict `>`, so it is NOT a
-/// violation). Covers under-budget (500ms, 9s), exactly-at-budget (10s), and
-/// two independent over-budget files (11s, 12s) in one fixture — the
-/// non-vacuous guarantee that the per-file gate exists to provide: a
-/// genuinely quadratic file still goes RED, the off-by-one-prone `>` vs `>=`
-/// boundary is pinned in the other direction, and the two-violation case
-/// confirms the helper returns the full offending set rather than
-/// short-circuiting on the first match.
+/// `per_file_violations` must flag over-budget files but not sub-budget
+/// ones, including the exact boundary (`duration == budget` uses strict `>`,
+/// so equal-to-budget is NOT a violation). One fixture covers under-budget
+/// (500ms, 9s), on-boundary (10s), and two independent over-budget files
+/// (11s, 12s) — the non-vacuous guarantee that a genuinely quadratic file
+/// still goes RED, the `>` vs `>=` boundary is pinned, and the helper
+/// returns the full offending set rather than short-circuiting on the first
+/// match.
 ///
 /// No aggregate/total-budget case here — `per_file_violations` is a pure
 /// per-file filter with no place to hold that logic. See the corpus test's
