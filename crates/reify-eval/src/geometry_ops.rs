@@ -5527,17 +5527,17 @@ fn selector_value_difference_pair(
 /// (the 4583 chained-first-arg form, e.g. `face(mid_surface(body),"r")`),
 /// rooting the Named leaf at the input selector's parent-geometry target.
 ///
-/// Diagnostic-buffering asymmetry (review note, task #5120 R2c): the
-/// fallback writes straight into the caller's `diagnostics` — no local
-/// `scratch` buffer like [`eval_variadic_composition_symbolic`] — even
-/// though the `?` on the next line can still turn this into a `None`
-/// return. That's fine TODAY only because `face`/`edge`/`solid_body`/
-/// `vertex` carry no non-selector overload (unlike `union`/`intersect`/
-/// `difference`, which are name-shared with the solid-CSG booleans), so a
-/// `None` here is never "fall through past an unrelated overload" — there's
-/// no sibling meaning for these names to protect from a spurious warning.
-/// If a named-leaf name ever gains a non-selector overload, adopt the same
-/// scratch-then-merge-on-success pattern used there.
+/// Mirrors [`eval_variadic_composition_symbolic`]'s scratch-buffer-then-merge
+/// pattern (review amendment, task #5120 R2c): the fallback reconstruction is
+/// buffered into a local `scratch` and only appended to the caller's
+/// `diagnostics` once a target is actually resolved. Previously the fallback
+/// wrote straight into the caller's `diagnostics`, so a `None` return (the
+/// `first_leaf_target` lookup coming up empty after a successful
+/// reconstruction) could leak a diagnostic while the cell stayed `Undef`.
+/// Kept symmetric with the composition path even though today
+/// `face`/`edge`/`solid_body`/`vertex` carry no non-selector overload for a
+/// leaked diagnostic to spuriously ride alongside — this removes that
+/// latent asymmetry rather than merely documenting it.
 fn resolve_named_leaf_target_symbolic(
     arg: &reify_ir::CompiledExpr,
     values: &reify_ir::ValueMap,
@@ -5546,18 +5546,20 @@ fn resolve_named_leaf_target_symbolic(
     if let Some(ghr) = resolve_symbolic_selector_target(arg, values) {
         return Some(ghr);
     }
-    let sv = reconstruct_selector_value_symbolic(arg, values, diagnostics)?;
-    first_leaf_target(&sv).cloned()
+    let mut scratch = Vec::new();
+    let sv = reconstruct_selector_value_symbolic(arg, values, &mut scratch)?;
+    let target = first_leaf_target(&sv).cloned();
+    if target.is_some() {
+        diagnostics.append(&mut scratch);
+    }
+    target
 }
 
 /// Kernel-FREE sibling of [`eval_named_leaf_selector_ctor`] for the symbolic
 /// eval-path (task #5120 R2c). Same two-arg shape (target, name) but resolves
-/// the target via [`resolve_named_leaf_target_symbolic`] (symbolic-accepting)
-/// and threads no kernel/named_steps.
-///
-/// No diagnostic scratch-buffering here (contrast
-/// [`eval_variadic_composition_symbolic`]'s local `scratch`): see the note on
-/// [`resolve_named_leaf_target_symbolic`] for why that's safe today.
+/// the target via [`resolve_named_leaf_target_symbolic`] (symbolic-accepting,
+/// itself scratch-buffered on its fallback path — see its doc comment) and
+/// threads no kernel/named_steps.
 fn eval_named_leaf_selector_ctor_symbolic(
     kind: reify_core::ty::SelectorKind,
     args: &[reify_ir::CompiledExpr],
