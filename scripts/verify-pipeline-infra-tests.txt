@@ -51,6 +51,15 @@ scripts/warm-lane-gc.sh              tests/infra/test_warm_lane_gc.sh
 scripts/warm-lane-gc-sweep.sh        tests/infra/test_warm_lane_gc_sweep.sh
 scripts/install-warm-lane-units.sh   tests/infra/test_warm_lane_boot_persistence.sh
 scripts/warm-lane-audit.sh           tests/infra/test_warm_lane_audit.sh
+# Task 5176 (ζ): the sizing-lifecycle end-to-end integration gate composes
+# these four primitives (B8 release-thin-bounds-resident-divergent, the β
+# budget ADVISORY relation, B6/B6b soft-vs-hard floor ordering) -- a 2nd row
+# per artifact, same one-artifact-multiple-rows pattern as
+# scripts/seed-warm-lane.sh / scripts/warm-lane-preflight.sh above.
+scripts/thin-warm-lane.sh            tests/infra/test_warm_lane_sizing_lifecycle.sh
+scripts/warm-lane-audit.sh           tests/infra/test_warm_lane_sizing_lifecycle.sh
+scripts/warm-lane-disk-guard.sh      tests/infra/test_warm_lane_sizing_lifecycle.sh
+scripts/provision-warm-lane-fs.sh    tests/infra/test_warm_lane_sizing_lifecycle.sh
 
 # H1 (#4921) run_all.sh classification drift-guard — declares every
 # tests/infra/test_*.sh into pool / intra-run-serial / host-exclusive; the
