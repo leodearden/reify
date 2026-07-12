@@ -88,7 +88,7 @@ fn result_recovery_example_evals_end_to_end() {
     assert_eq!(
         cell_value(&result, "MountValid", "bore"),
         mm(12.0),
-        "MountValid.bore = match parse_len(\"12mm\") { Ok{value:v}=>v, .. } must unwrap the parsed 12mm"
+        "MountValid.bore = match parse_len(\"12mm\") {{ Ok{{value:v}}=>v, .. }} must unwrap the parsed 12mm"
     );
     assert_eq!(
         cell_value(&result, "MountValid", "bore_fb"),
@@ -100,7 +100,7 @@ fn result_recovery_example_evals_end_to_end() {
     assert_eq!(
         cell_value(&result, "MountBad", "bore"),
         mm(6.0),
-        "MountBad.bore = match parse_len(\"garbage\") { .., Err{error:msg}=>6mm } must fall through to the Err arm's literal 6mm"
+        "MountBad.bore = match parse_len(\"garbage\") {{ .., Err{{error:msg}}=>6mm }} must fall through to the Err arm's literal 6mm"
     );
     assert_eq!(
         cell_value(&result, "MountBad", "bore_fb"),
