@@ -1090,9 +1090,18 @@ fn cmd_build(args: &[String]) -> ExitCode {
                             // writer in every kernel (occt/manifold), and a
                             // multi-body compound export still serializes
                             // through that same writer. Layout: 80-byte
-                            // header + u32 triangle count + 50 bytes/triangle,
-                            // so the count is derivable directly from the
-                            // bytes just written. This is both cheaper than
+                            // header + u32 triangle count (bytes 80..84,
+                            // little-endian) + 50 bytes/triangle. Read the
+                            // count straight out of that header field rather
+                            // than deriving it from `data.len()`: the two
+                            // agree only while the writer emits an exact
+                            // fixed-width binary STL with no trailing bytes,
+                            // and a future writer change (padding, or an
+                            // ASCII-STL path) would silently skew a
+                            // length-derived count while the header field
+                            // stays correct by construction (amend:
+                            // reviewer_comprehensive robustness finding).
+                            // Reading the header is also cheaper than
                             // (avoids a second full `tessellate_realizations`
                             // pass that re-drives kernel dispatch on the build
                             // hot path — amend: reviewer_comprehensive
@@ -1101,7 +1110,13 @@ fn cmd_build(args: &[String]) -> ExitCode {
                             // also count non-exported/aux realizations —
                             // amend: reviewer_comprehensive correctness
                             // finding) a re-tessellation-based count.
-                            let triangles = data.len().saturating_sub(84) / 50;
+                            let triangles = match data.get(80..84) {
+                                Some(count_bytes) => u32::from_le_bytes(
+                                    count_bytes.try_into().expect("slice is exactly 4 bytes"),
+                                )
+                                    as usize,
+                                None => 0,
+                            };
                             println!("Triangles: {triangles}");
                         }
                         ExportFormat::ThreeMF => {
