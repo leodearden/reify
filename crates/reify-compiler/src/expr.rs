@@ -4662,126 +4662,7 @@ pub(crate) fn compile_expr_guarded_with_expected(
                 }
             }
 
-            if COLLECTION_AGGREGATION_MEMBERS.contains(&member.as_str()) {
-                // Anti-cascade consumer (task-448 / task-1921 S4): if the object
-                // is already poisoned, propagate via propagate_poison() (a
-                // Literal node) rather than emitting a dead MethodCall that
-                // downstream passes could try to evaluate.  This is a consumer
-                // propagating an existing poison — NOT a new producer — so
-                // make_poison_literal does not apply (no new diagnostic is
-                // pushed).  Cross-reference: module-header policy.
-                if compiled_obj.result_type.is_error() {
-                    return propagate_poison();
-                }
-                // Infer result type from method and object type.
-                //
-                // Wrong-receiver arms (ds-sentinel L4, task #4649): when the receiver
-                // is not the correct collection type for the aggregation member, emit a
-                // Severity::Error diagnostic and return Type::Error (anti-cascade poison).
-                // The incoming-poison short-circuit at :3674 guarantees this fires at
-                // most once per site (never double-fires on an already-poisoned receiver).
-                let result_type = match member.as_str() {
-                    // `count` is intentionally receiver-agnostic: it returns Type::Int for
-                    // any collection receiver (List, Map, or sub-instance list) and is
-                    // polymorphic by design. The forall-count synthesis path (which builds
-                    // collection sizes over structure subs) relies on this arm being
-                    // unconditional. Wrong-receiver poisoning is not applied here — task
-                    // #4649's guard covers sum/keys/values only. If a genuinely non-collection
-                    // receiver reaches this arm, the incoming-poison short-circuit at the top
-                    // of this block has already filtered Type::Error objects, so any concrete
-                    // type here is either a real collection or a type that may become one at
-                    // runtime (e.g. a TraitObject whose concrete kind is unknown statically).
-                    "count" => Type::Int,
-                    "sum" => match &compiled_obj.result_type {
-                        Type::List(inner) => (**inner).clone(),
-                        _ => make_poison_type(
-                            diagnostics,
-                            Diagnostic::error(format!(
-                                "'.sum' requires a List receiver, but got {}",
-                                compiled_obj.result_type
-                            ))
-                            .with_label(DiagnosticLabel::new(
-                                expr.span,
-                                "wrong receiver type for aggregation",
-                            ))
-                            .with_code(DiagnosticCode::AggregationReceiverNotCollection),
-                        ),
-                    },
-                    "keys" => match &compiled_obj.result_type {
-                        Type::Map(k, _) => Type::List(k.clone()),
-                        _ => make_poison_type(
-                            diagnostics,
-                            Diagnostic::error(format!(
-                                "'.keys' requires a Map receiver, but got {}",
-                                compiled_obj.result_type
-                            ))
-                            .with_label(DiagnosticLabel::new(
-                                expr.span,
-                                "wrong receiver type for aggregation",
-                            ))
-                            .with_code(DiagnosticCode::AggregationReceiverNotCollection),
-                        ),
-                    },
-                    "values" => match &compiled_obj.result_type {
-                        Type::Map(_, v) => Type::List(v.clone()),
-                        _ => make_poison_type(
-                            diagnostics,
-                            Diagnostic::error(format!(
-                                "'.values' requires a Map receiver, but got {}",
-                                compiled_obj.result_type
-                            ))
-                            .with_label(DiagnosticLabel::new(
-                                expr.span,
-                                "wrong receiver type for aggregation",
-                            ))
-                            .with_code(DiagnosticCode::AggregationReceiverNotCollection),
-                        ),
-                    },
-                    // task-2066 amend: this arm is structurally unreachable today — the outer
-                    // `if COLLECTION_AGGREGATION_MEMBERS.contains(...)` guard constrains `member`
-                    // to one of count/sum/keys/values, each of which has an explicit arm above.
-                    // `debug_assert!(false, ...)` panics in debug/test builds to detect drift
-                    // between the const and this match early; in release builds we fall back to an
-                    // error diagnostic + Type::Error (anti-cascade policy) rather than an ICE.
-                    // If you extend COLLECTION_AGGREGATION_MEMBERS, add a matching arm here.
-                    _ => {
-                        debug_assert!(
-                            false,
-                            "COLLECTION_AGGREGATION_MEMBERS restricts member to \
-                             count/sum/keys/values; extend the inner match when you extend the const"
-                        );
-                        make_poison_type(
-                            diagnostics,
-                            Diagnostic::error(format!(
-                                "internal: unknown aggregation member '{}'; \
-                                 expected one of count/sum/keys/values",
-                                member
-                            ))
-                            .with_label(DiagnosticLabel::new(
-                                expr.span,
-                                "unknown aggregation member",
-                            )),
-                        )
-                    }
-                };
-                CompiledExpr::method_call(compiled_obj, member.clone(), vec![], result_type)
-            } else {
-                // Already-poisoned short-circuit: root-cause error was reported
-                // at the producer site, so we do not push a new diagnostic here.
-                // Use propagate_poison() — the no-assert consumer helper — per
-                // the policy described in the module header.
-                if compiled_obj.result_type.is_error() {
-                    return propagate_poison();
-                }
-                // Anti-cascade (task-448/task-1921/task-1969): by-construction
-                // invariant — make_poison_literal pushes the diagnostic and
-                // returns the poison literal in one call.
-                make_poison_literal(
-                    diagnostics,
-                    Diagnostic::error(format!("member access not yet supported: .{}", member))
-                        .with_label(DiagnosticLabel::new(expr.span, "unsupported")),
-                )
-            }
+            member_access_aggregation_or_unsupported(compiled_obj, member, expr.span, diagnostics)
         }
         reify_ast::ExprKind::ListLiteral(elements) => {
             // Classify engagement once: derive child_expected (pushed into each child)
@@ -6531,6 +6412,153 @@ pub(crate) fn compile_expr_guarded_with_expected(
                 }),
             }
         }
+    }
+}
+
+// ── compiler-type-hygiene ε1 step-2: extracted shared fall-through tail ────
+
+/// Collection-aggregation dispatch (`count`/`sum`/`keys`/`values`) or the
+/// generic "member access not yet supported" poison — the residual tail
+/// reached by every `MemberAccess` receiver-type arm once its own
+/// special-cased handling has been exhausted.
+///
+/// Extracted verbatim (compiler-type-hygiene ε1 step-2, PRD
+/// docs/prds/v0_6/compiler-type-hygiene.md §7.4) from the former if-chain's
+/// final branch so the upcoming exhaustive `match &compiled_obj.result_type`
+/// (step-6) can point every plain `Type` variant — and the residual
+/// fall-through from the `TypeParam`/datum/feature handlers — at ONE named
+/// function. NO control-flow or message change from the pre-extraction
+/// behaviour.
+///
+/// Deliberately NOT hoisted ahead of the type-directed dispatch: the
+/// collection-aggregation check is name-directed but NOT order-independent
+/// — `structRef.count` / `traitObj.count` / a non-`ValueRef` `typeParam.count`
+/// must keep resolving via their own arms (StructureMemberNotFound /
+/// projection / poison), not the receiver-agnostic `Type::Int` arm below.
+/// Every caller reaches this function only as its OWN residual, preserving
+/// that precedence.
+fn member_access_aggregation_or_unsupported(
+    compiled_obj: CompiledExpr,
+    member: &str,
+    span: reify_core::SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CompiledExpr {
+    if COLLECTION_AGGREGATION_MEMBERS.contains(&member) {
+        // Anti-cascade consumer (task-448 / task-1921 S4): if the object
+        // is already poisoned, propagate via propagate_poison() (a
+        // Literal node) rather than emitting a dead MethodCall that
+        // downstream passes could try to evaluate.  This is a consumer
+        // propagating an existing poison — NOT a new producer — so
+        // make_poison_literal does not apply (no new diagnostic is
+        // pushed).  Cross-reference: module-header policy.
+        if compiled_obj.result_type.is_error() {
+            return propagate_poison();
+        }
+        // Infer result type from method and object type.
+        //
+        // Wrong-receiver arms (ds-sentinel L4, task #4649): when the receiver
+        // is not the correct collection type for the aggregation member, emit a
+        // Severity::Error diagnostic and return Type::Error (anti-cascade poison).
+        // The incoming-poison short-circuit at :3674 guarantees this fires at
+        // most once per site (never double-fires on an already-poisoned receiver).
+        let result_type = match member {
+            // `count` is intentionally receiver-agnostic: it returns Type::Int for
+            // any collection receiver (List, Map, or sub-instance list) and is
+            // polymorphic by design. The forall-count synthesis path (which builds
+            // collection sizes over structure subs) relies on this arm being
+            // unconditional. Wrong-receiver poisoning is not applied here — task
+            // #4649's guard covers sum/keys/values only. If a genuinely non-collection
+            // receiver reaches this arm, the incoming-poison short-circuit at the top
+            // of this block has already filtered Type::Error objects, so any concrete
+            // type here is either a real collection or a type that may become one at
+            // runtime (e.g. a TraitObject whose concrete kind is unknown statically).
+            "count" => Type::Int,
+            "sum" => match &compiled_obj.result_type {
+                Type::List(inner) => (**inner).clone(),
+                _ => make_poison_type(
+                    diagnostics,
+                    Diagnostic::error(format!(
+                        "'.sum' requires a List receiver, but got {}",
+                        compiled_obj.result_type
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        span,
+                        "wrong receiver type for aggregation",
+                    ))
+                    .with_code(DiagnosticCode::AggregationReceiverNotCollection),
+                ),
+            },
+            "keys" => match &compiled_obj.result_type {
+                Type::Map(k, _) => Type::List(k.clone()),
+                _ => make_poison_type(
+                    diagnostics,
+                    Diagnostic::error(format!(
+                        "'.keys' requires a Map receiver, but got {}",
+                        compiled_obj.result_type
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        span,
+                        "wrong receiver type for aggregation",
+                    ))
+                    .with_code(DiagnosticCode::AggregationReceiverNotCollection),
+                ),
+            },
+            "values" => match &compiled_obj.result_type {
+                Type::Map(_, v) => Type::List(v.clone()),
+                _ => make_poison_type(
+                    diagnostics,
+                    Diagnostic::error(format!(
+                        "'.values' requires a Map receiver, but got {}",
+                        compiled_obj.result_type
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        span,
+                        "wrong receiver type for aggregation",
+                    ))
+                    .with_code(DiagnosticCode::AggregationReceiverNotCollection),
+                ),
+            },
+            // task-2066 amend: this arm is structurally unreachable today — the outer
+            // `if COLLECTION_AGGREGATION_MEMBERS.contains(...)` guard constrains `member`
+            // to one of count/sum/keys/values, each of which has an explicit arm above.
+            // `debug_assert!(false, ...)` panics in debug/test builds to detect drift
+            // between the const and this match early; in release builds we fall back to an
+            // error diagnostic + Type::Error (anti-cascade policy) rather than an ICE.
+            // If you extend COLLECTION_AGGREGATION_MEMBERS, add a matching arm here.
+            _ => {
+                debug_assert!(
+                    false,
+                    "COLLECTION_AGGREGATION_MEMBERS restricts member to \
+                     count/sum/keys/values; extend the inner match when you extend the const"
+                );
+                make_poison_type(
+                    diagnostics,
+                    Diagnostic::error(format!(
+                        "internal: unknown aggregation member '{}'; \
+                         expected one of count/sum/keys/values",
+                        member
+                    ))
+                    .with_label(DiagnosticLabel::new(span, "unknown aggregation member")),
+                )
+            }
+        };
+        CompiledExpr::method_call(compiled_obj, member.to_string(), vec![], result_type)
+    } else {
+        // Already-poisoned short-circuit: root-cause error was reported
+        // at the producer site, so we do not push a new diagnostic here.
+        // Use propagate_poison() — the no-assert consumer helper — per
+        // the policy described in the module header.
+        if compiled_obj.result_type.is_error() {
+            return propagate_poison();
+        }
+        // Anti-cascade (task-448/task-1921/task-1969): by-construction
+        // invariant — make_poison_literal pushes the diagnostic and
+        // returns the poison literal in one call.
+        make_poison_literal(
+            diagnostics,
+            Diagnostic::error(format!("member access not yet supported: .{}", member))
+                .with_label(DiagnosticLabel::new(span, "unsupported")),
+        )
     }
 }
 
