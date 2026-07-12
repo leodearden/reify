@@ -6374,7 +6374,7 @@ impl Engine {
     ///
     /// 1. **Probes ONLY when `is_terminal_realization && demanded_tol.is_some()
     ///    && realization_name.is_some()`.** A guard-fail (or a plain cache
-    ///    miss) returns `None` with zero side effects on `outputs` — no
+    ///    miss) returns `false` with zero side effects on `outputs` — no
     ///    push/insert on any output view, no `topology_attribute_table`
     ///    eviction. Pinned by
     ///    `probe_realization_cache_guard_requires_terminal_named_and_tol`.
