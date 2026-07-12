@@ -97,6 +97,33 @@ mod tests {
         }
     }
 
+    /// Return type of [`empty_inputs`] — named so the tuple's shape doesn't
+    /// trip `clippy::type_complexity`; unlike the fn-pointer guard below,
+    /// nothing here depends on the type staying spelled out literally.
+    type EmptyCtxInputs = (
+        ValueMap,
+        HashMap<String, HashMap<String, String>>,
+        PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+        RefCell<Vec<Diagnostic>>,
+    );
+
+    /// Shared empty fixtures for the tests below: an empty `ValueMap`, meta
+    /// map, determinacy map, and diagnostics sink. Only two axes actually
+    /// vary between tests — determinacy-map contents and the `containment`
+    /// impl — so callers destructure this tuple and then override just the
+    /// field they exercise (e.g. `.insert(..)` into the returned
+    /// `determinacy`, or construct `AlwaysInside` instead of
+    /// `NoContainment`) rather than each re-declaring all four empty
+    /// fixtures inline.
+    fn empty_inputs() -> EmptyCtxInputs {
+        (
+            ValueMap::new(),
+            HashMap::new(),
+            PersistentMap::new(),
+            RefCell::new(Vec::new()),
+        )
+    }
+
     /// Type-level regression guard for INV-EVAL-2: pins `cell_eval_ctx`'s
     /// all-required signature (`determinacy`/`runtime_sink`/`containment` as
     /// plain `&'a T`, never `Option`), so an edit that Option-ifies any of
@@ -121,12 +148,8 @@ mod tests {
 
     #[test]
     fn cell_eval_ctx_wires_all_required_capabilities() {
-        let values = ValueMap::new();
+        let (values, meta_map, determinacy, sink) = empty_inputs();
         let functions: &[CompiledFunction] = &[];
-        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
-        let determinacy: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
-            PersistentMap::new();
-        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
         let containment = NoContainment;
         let containment_ref: &dyn ContainmentQuery = &containment;
 
@@ -177,16 +200,12 @@ mod tests {
     fn cell_eval_ctx_determinacy_resolves_via_wired_map() {
         let cell_id = ValueCellId::new("S", "a");
 
-        let values = ValueMap::new();
+        let (values, meta_map, mut determinacy, sink) = empty_inputs();
         let functions: &[CompiledFunction] = &[];
-        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
-        let mut determinacy: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
-            PersistentMap::new();
         determinacy.insert(
             cell_id.clone(),
             (Value::Real(2.5), DeterminacyState::Determined),
         );
-        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
         let containment = NoContainment;
 
         let ctx = cell_eval_ctx(
@@ -256,12 +275,8 @@ mod tests {
             codomain: Box::new(Type::dimensionless_scalar()),
         };
 
-        let values = ValueMap::new();
+        let (values, meta_map, determinacy, sink) = empty_inputs();
         let functions: &[CompiledFunction] = &[];
-        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
-        let determinacy: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
-            PersistentMap::new();
-        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
         let containment = AlwaysInside;
 
         let ctx = cell_eval_ctx(
@@ -315,12 +330,8 @@ mod tests {
     /// not catch that class of regression; this test does.
     #[test]
     fn cell_eval_ctx_runtime_sink_receives_diagnostics_during_eval() {
-        let values = ValueMap::new();
+        let (values, meta_map, determinacy, sink) = empty_inputs();
         let functions: &[CompiledFunction] = &[];
-        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
-        let determinacy: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
-            PersistentMap::new();
-        let sink: RefCell<Vec<Diagnostic>> = RefCell::new(Vec::new());
         let containment = NoContainment;
 
         let ctx = cell_eval_ctx(
