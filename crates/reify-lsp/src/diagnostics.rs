@@ -616,6 +616,15 @@ fn constraint_depends_on_unregistered_optimized_compute(
     value_cell_exprs: &HashMap<ValueCellId, &reify_ir::CompiledExpr>,
     unregistered_optimized_fn_names: &HashMap<&str, bool>,
 ) -> bool {
+    // `CompiledExpr::walk` (reify-ir/src/expr.rs) takes a plain
+    // `FnMut(&CompiledExpr)` with no `ControlFlow`/abort signal, so it
+    // cannot be short-circuited: the `if found { return; }` below only
+    // skips this closure's own per-node work once a match is found, not
+    // the remaining traversal, which `walk` still performs in full. This
+    // runs on the LSP keystroke hot path (per constraint, per visited
+    // value-cell expr), but is bounded by a single expression's node
+    // count; adding a real abort would require a new short-circuiting
+    // traversal primitive on `CompiledExpr`, out of this file's scope.
     fn expr_calls_unregistered_optimized_fn(
         expr: &reify_ir::CompiledExpr,
         unregistered_optimized_fn_names: &HashMap<&str, bool>,
