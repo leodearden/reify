@@ -67,8 +67,8 @@ mod tests {
     use reify_core::{Diagnostic, ValueCellId};
     use reify_expr::{ContainmentQuery, EvalContext, eval_expr};
     use reify_ir::{
-        CompiledExpr, CompiledFunction, DeterminacyPredicateKind, DeterminacyState,
-        PersistentMap, Value, ValueMap,
+        CompiledExpr, CompiledFunction, DeterminacyPredicateKind, DeterminacyState, PersistentMap,
+        Value, ValueMap,
     };
 
     use super::cell_eval_ctx;
