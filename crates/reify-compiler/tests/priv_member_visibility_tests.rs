@@ -23,6 +23,8 @@
 //! `E_PRIV_MEMBER_ACCESS`, while internal (self-body) access and non-priv member
 //! access stay clean. RED until step-6 wires the `expr.rs` enforcement.
 
+use std::sync::OnceLock;
+
 use reify_compiler::{ValueCellKind, Visibility};
 use reify_core::{Diagnostic, DiagnosticCode, Severity};
 use reify_test_support::compile_source;
@@ -519,19 +521,28 @@ purpose okp(subject : Motor) {
 // `template.value_cells`, `template.sub_components`, and whole-port
 // `ports[].is_priv` — it does not inspect `ports[].members[].visibility` or
 // `guarded_groups[].members[].visibility`. So the field this task corrects is
-// not yet consulted for these two member kinds, and external dot-access to a
-// `priv param` inside a port or guarded block is not actually blocked yet.
-// That enforcement gap is out of this task's scope (task #5161 is scoped to
-// the lowering sites, mirroring the sibling top-level structure-param site).
-// Tracked as follow-up task #5171 ("Enforce lowered priv visibility in
+// not yet consulted for these two member kinds: E_PRIV_MEMBER_ACCESS itself
+// cannot fire for a priv port-member or guarded-block member today. (This is
+// narrower than "external access is allowed" — empirically, `h.secret.main`
+// and `h.g`-style external access already fail today, but on unrelated,
+// pre-existing member-resolution gaps — composite port/guarded member paths
+// are not yet wired into the generic external `obj.member` resolver at all —
+// so the priv gate is never even reached; see the two
+// `..._not_yet_priv_gated` tests at the end of this file, which pin exactly
+// that: zero E_PRIV_MEMBER_ACCESS, for the wrong reason.) That enforcement
+// gap is out of this task's scope (task #5161 is scoped to the lowering
+// sites, mirroring the sibling top-level structure-param site). Tracked as
+// follow-up task #5171 ("Enforce lowered priv visibility in
 // E_PRIV_MEMBER_ACCESS (port-member / guarded-block params)", depends on
 // #5161 — filed from risk_identified esc-5161-4 per operator decision):
 // extend `template_member_is_priv` to also scan `ports[].members[].visibility`
 // and `guarded_groups[].members[].visibility`, then add a RED-until-fixed
-// enforcement test mirroring Part B's priv-param/sub/port cases. Part D below
-// deliberately asserts only the lowered `visibility` field, not dot-access
-// enforcement — so it stays green regardless of whether that follow-up has
-// landed yet.
+// enforcement test mirroring Part B's priv-param/sub/port cases — note that
+// wiring the member-resolution paths themselves (so these accesses reach the
+// priv gate at all) may be a further prerequisite beyond #5171's current
+// scan-the-collections framing. Part D below deliberately asserts only the
+// lowered `visibility` field, not dot-access enforcement — so it stays green
+// regardless of whether that follow-up has landed yet.
 
 /// Locate a template by name in the compiled module (generalizes `motor_template`
 /// for the Part D fixtures below, which use distinct structure names).
@@ -584,13 +595,28 @@ structure def PortHost {
 "#
 }
 
+/// Cached compile of [`port_host_source`], shared by the three `PortHost`
+/// tests below. The fixture is deterministic, so compiling it once (mirroring
+/// the `OnceLock`-backed caching idiom in
+/// `stdlib_loader::load_stdlib`/`units_module`) avoids three redundant full
+/// compiles for no isolation benefit. A broken fixture panics here (via
+/// `assert_fixture_compiles_cleanly`) rather than being cached silently
+/// broken.
+fn port_host_module() -> &'static reify_compiler::CompiledModule {
+    static CACHE: OnceLock<reify_compiler::CompiledModule> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        let module = compile_source(port_host_source());
+        assert_fixture_compiles_cleanly(&module, "PortHost");
+        module
+    })
+}
+
 /// `priv param main` inside `port secret { }` (Param-kind value cell) must
 /// lower to `Visibility::Private`.
 #[test]
 fn priv_param_in_port_compiles_to_visibility_private() {
-    let module = compile_source(port_host_source());
-    assert_fixture_compiles_cleanly(&module, "PortHost");
-    let template = find_template(&module, "PortHost");
+    let module = port_host_module();
+    let template = find_template(module, "PortHost");
     let members: Vec<_> = template.ports.iter().flat_map(|p| &p.members).collect();
 
     let main_cell = members
@@ -610,9 +636,8 @@ fn priv_param_in_port_compiles_to_visibility_private() {
 /// cell) must lower to `Visibility::Private`.
 #[test]
 fn priv_auto_param_in_port_compiles_to_visibility_private() {
-    let module = compile_source(port_host_source());
-    assert_fixture_compiles_cleanly(&module, "PortHost");
-    let template = find_template(&module, "PortHost");
+    let module = port_host_module();
+    let template = find_template(module, "PortHost");
     let members: Vec<_> = template.ports.iter().flat_map(|p| &p.members).collect();
 
     let aux_cell = members
@@ -632,9 +657,8 @@ fn priv_auto_param_in_port_compiles_to_visibility_private() {
 /// (no regression / guards against a naive Visibility::Private hardcode).
 #[test]
 fn plain_param_in_port_compiles_to_visibility_public() {
-    let module = compile_source(port_host_source());
-    assert_fixture_compiles_cleanly(&module, "PortHost");
-    let template = find_template(&module, "PortHost");
+    let module = port_host_module();
+    let template = find_template(module, "PortHost");
     let members: Vec<_> = template.ports.iter().flat_map(|p| &p.members).collect();
 
     let vis_cell = members
@@ -669,13 +693,26 @@ structure def GuardHost {
 "#
 }
 
+/// Cached compile of [`guard_host_source`], shared by the three `GuardHost`
+/// tests below. Same rationale as [`port_host_module`]: the fixture is
+/// deterministic, so one compile (via `OnceLock`) replaces three redundant
+/// ones. A broken fixture panics here (via `assert_fixture_compiles_cleanly`)
+/// rather than being cached silently broken.
+fn guard_host_module() -> &'static reify_compiler::CompiledModule {
+    static CACHE: OnceLock<reify_compiler::CompiledModule> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        let module = compile_source(guard_host_source());
+        assert_fixture_compiles_cleanly(&module, "GuardHost");
+        module
+    })
+}
+
 /// `priv param g` inside a block-form `where active { }` (Param-kind value
 /// cell) must lower to `Visibility::Private`.
 #[test]
 fn priv_param_in_guarded_block_compiles_to_visibility_private() {
-    let module = compile_source(guard_host_source());
-    assert_fixture_compiles_cleanly(&module, "GuardHost");
-    let template = find_template(&module, "GuardHost");
+    let module = guard_host_module();
+    let template = find_template(module, "GuardHost");
 
     let g_cell = template.guarded_groups[0]
         .members
@@ -695,9 +732,8 @@ fn priv_param_in_guarded_block_compiles_to_visibility_private() {
 /// value cell) must lower to `Visibility::Private`.
 #[test]
 fn priv_auto_param_in_guarded_block_compiles_to_visibility_private() {
-    let module = compile_source(guard_host_source());
-    assert_fixture_compiles_cleanly(&module, "GuardHost");
-    let template = find_template(&module, "GuardHost");
+    let module = guard_host_module();
+    let template = find_template(module, "GuardHost");
 
     let h_cell = template.guarded_groups[0]
         .members
@@ -718,9 +754,8 @@ fn priv_auto_param_in_guarded_block_compiles_to_visibility_private() {
 /// Visibility::Private hardcode).
 #[test]
 fn plain_param_in_guarded_block_compiles_to_visibility_public() {
-    let module = compile_source(guard_host_source());
-    assert_fixture_compiles_cleanly(&module, "GuardHost");
-    let template = find_template(&module, "GuardHost");
+    let module = guard_host_module();
+    let template = find_template(module, "GuardHost");
 
     let vis_cell = template.guarded_groups[0]
         .members
@@ -733,5 +768,84 @@ fn plain_param_in_guarded_block_compiles_to_visibility_public() {
         Visibility::Public,
         "plain param vis inside where-block must compile to Visibility::Public, got {:?}",
         vis_cell.visibility
+    );
+}
+
+// ── Part D coda: pin the current enforcement-seam boundary (see the scope
+// note above) rather than leaving it only prose-described. Both tests below
+// were verified empirically (not just reasoned about): today, neither access
+// path resolves at all — `h.secret.main` fails with a generic "member access
+// not yet supported" diagnostic (no DiagnosticCode), and `h.g` fails with
+// E_STRUCTURE_MEMBER_NOT_FOUND, since `template_has_member` doesn't scan
+// `guarded_groups[].members` either. So this is deliberately NOT a
+// "still-accessible-today" test (that framing would be false — external
+// access to these members is already rejected, just not by the priv gate).
+// It pins the narrower, accurate claim: E_PRIV_MEMBER_ACCESS specifically
+// never fires for these paths, because the priv gate is never reached. If a
+// future change makes these paths reachable AND consults the now-correct
+// `visibility` field, E_PRIV_MEMBER_ACCESS will start appearing here and
+// these assertions will need to flip — that flip is the intended trip-wire.
+
+/// External access into a `priv param` nested inside a port does not emit
+/// E_PRIV_MEMBER_ACCESS today — not because it is silently allowed (it
+/// isn't), but because the priv gate is never reached.
+#[test]
+fn external_priv_port_member_access_not_yet_priv_gated() {
+    let module = compile_source(
+        r#"
+trait Iface {}
+
+structure def PortHost {
+    port secret : Iface {
+        priv param main : Length = 5mm
+    }
+}
+
+structure def Parent {
+    sub h = PortHost()
+    let touch = h.secret.main
+}
+"#,
+    );
+
+    assert_eq!(
+        priv_access_errors(&module).len(),
+        0,
+        "external access to a priv port-member must not emit E_PRIV_MEMBER_ACCESS \
+         today — the lowered visibility field is not yet consulted by any \
+         enforcement path (tracked by #5171); all diagnostics: {:?}",
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// External access into a `priv param` nested inside a block-form guarded
+/// group does not emit E_PRIV_MEMBER_ACCESS today — not because it is
+/// silently allowed (it isn't), but because the priv gate is never reached.
+#[test]
+fn external_priv_guarded_member_access_not_yet_priv_gated() {
+    let module = compile_source(
+        r#"
+structure def GuardHost {
+    param active : Bool = true
+    where active {
+        priv param g : Length = 5mm
+    }
+}
+
+structure def Parent {
+    sub h = GuardHost()
+    let touch = h.g
+}
+"#,
+    );
+
+    assert_eq!(
+        priv_access_errors(&module).len(),
+        0,
+        "external access to a priv guarded-block member must not emit \
+         E_PRIV_MEMBER_ACCESS today — the lowered visibility field is not yet \
+         consulted by any enforcement path (tracked by #5171); all \
+         diagnostics: {:?}",
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
