@@ -2975,6 +2975,59 @@ mod tests {
         );
     }
 
+    // ── allocate_snapshot_version pair-allocator (task 5040, INV-BUILD-2 α) ──
+
+    /// `allocate_snapshot_version` mints a fresh `(SnapshotId, VersionId)`
+    /// pair and advances both underlying counters by exactly one per call,
+    /// in lockstep. A fresh engine starts both counters at 0 (no allocation
+    /// happens during construction — see the field initializers above), so
+    /// the first call must return `(SnapshotId(0), VersionId(0))` and the
+    /// second `(SnapshotId(1), VersionId(1))`, with `next_snapshot_id` and
+    /// `next_version_id` each having advanced by exactly 1 after each call.
+    ///
+    /// RED until `allocate_snapshot_version` exists — this fails to compile.
+    #[test]
+    fn allocate_snapshot_version_allocates_pair_and_bumps_both_counters() {
+        use reify_core::{SnapshotId, VersionId};
+        use reify_test_support::mocks::MockConstraintChecker;
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+
+        assert_eq!(
+            engine.next_snapshot_id, 0,
+            "fresh engine must start next_snapshot_id at 0",
+        );
+        assert_eq!(
+            engine.next_version_id, 0,
+            "fresh engine must start next_version_id at 0",
+        );
+
+        let (snap0, ver0) = engine.allocate_snapshot_version();
+        assert_eq!(snap0, SnapshotId(0), "first allocation must mint SnapshotId(0)");
+        assert_eq!(ver0, VersionId(0), "first allocation must mint VersionId(0)");
+        assert_eq!(snap0.0, ver0.0, "pair must be numerically lockstep");
+        assert_eq!(
+            engine.next_snapshot_id, 1,
+            "next_snapshot_id must advance by exactly 1 after one call",
+        );
+        assert_eq!(
+            engine.next_version_id, 1,
+            "next_version_id must advance by exactly 1 after one call",
+        );
+
+        let (snap1, ver1) = engine.allocate_snapshot_version();
+        assert_eq!(snap1, SnapshotId(1), "second allocation must mint SnapshotId(1)");
+        assert_eq!(ver1, VersionId(1), "second allocation must mint VersionId(1)");
+        assert_eq!(snap1.0, ver1.0, "pair must be numerically lockstep");
+        assert_eq!(
+            engine.next_snapshot_id, 2,
+            "next_snapshot_id must advance by exactly 1 again",
+        );
+        assert_eq!(
+            engine.next_version_id, 2,
+            "next_version_id must advance by exactly 1 again",
+        );
+    }
+
     // ── kernel_pin_diagnostics unit tests (task π / #3444 S1/S2) ──────────
 
     /// (a) registered {"occt"} + pins [kernels]\nmanifold="1.0.0"
