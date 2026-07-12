@@ -6477,11 +6477,28 @@ fn member_access_on_structure_like(
         return CompiledExpr::index_access(compiled_obj, key, member_type);
     }
 
-    unreachable!(
+    // Defensive fallback (reviewer amendment, robustness): every path above
+    // returns, so this is unreachable today — but reachability depends on
+    // the SIR-α block's guard above (`!is_error() && StructureRef |
+    // TraitObject`) staying unconditionally true whenever the caller invokes
+    // this fn, which holds only because the caller (the exhaustive
+    // `match &compiled_obj.result_type` in `compile_expr_guarded`) never
+    // dispatches here for anything else. That invariant is implicit rather
+    // than enforced by the type system, so a future edit narrowing the
+    // guard above could silently make this reachable. `debug_assert!`
+    // surfaces that drift loudly in debug/test builds (mirroring the
+    // analogous drift-guard in `member_access_aggregation_or_unsupported`,
+    // step-2); the release fallback degrades to the shared poison tail
+    // rather than panicking (ICE), consistent with the module's
+    // anti-cascade policy of poisoning instead of crashing on an
+    // unexpected receiver.
+    debug_assert!(
+        false,
         "member_access_on_structure_like called with a receiver that is neither \
          StructureRef nor TraitObject: {:?}",
         compiled_obj.result_type
-    )
+    );
+    member_access_aggregation_or_unsupported(compiled_obj, member, span, diagnostics)
 }
 
 /// `<param>.<member>` where the receiver's static type is a still-unresolved
@@ -6587,6 +6604,82 @@ fn member_access_on_type_param(
     member_access_aggregation_or_unsupported(compiled_obj, member, span, diagnostics)
 }
 
+/// Shared `Resolved`/`Unavailable`/`Ambiguous` handling for a resolved datum-
+/// projection member lookup, lowering to a `MethodCall` or the matching
+/// typed-rejection poison.
+///
+/// Factored out of `member_access_on_datum` and `member_access_on_feature`
+/// (reviewer amendment, code_reuse_duplication): both callers guard entry
+/// with their own distinct receiver-kind condition
+/// (`DATUM_PROJECTION_MEMBERS.contains` for a datum receiver;
+/// `!COLLECTION_AGGREGATION_MEMBERS.contains` for a feature receiver) but,
+/// once inside, resolved the projection via a byte-identical
+/// `match datum_projection_result_type(...)` — the pre-ε1-step-4 code shared
+/// this block once via a combined `if` guard. Keeping the resolution in ONE
+/// place means a future diagnostic-message or lowering change is made once
+/// instead of drifting between two copies.
+fn resolve_datum_projection_or_poison(
+    compiled_obj: CompiledExpr,
+    member: &str,
+    span: reify_core::SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> CompiledExpr {
+    match datum_projection_result_type(&compiled_obj.result_type, member) {
+        DatumProjectionResolution::Resolved(result_type) => {
+            CompiledExpr::method_call(compiled_obj, member.to_string(), vec![], result_type)
+        }
+        DatumProjectionResolution::Unavailable => {
+            // Typed rejection of a nonsense projection (e.g. `point.dir`,
+            // `plane.dir`). make_poison_literal enforces the anti-cascade
+            // contract (one Severity::Error diagnostic + poison literal).
+            // Where an obvious redirect exists (plane.dir → .normal),
+            // append it as a "; use .normal" hint so the message matches
+            // the documented canonical form.
+            let mut message = format!(
+                "{} has no projection '.{}'",
+                compiled_obj.result_type, member
+            );
+            if let Some(hint) =
+                datum_projection_unavailable_hint(&compiled_obj.result_type, member)
+            {
+                message.push_str(&format!("; use {hint}"));
+            }
+            make_poison_literal(
+                diagnostics,
+                Diagnostic::error(message)
+                    .with_label(DiagnosticLabel::new(span, "no such datum projection"))
+                    .with_code(DiagnosticCode::DatumProjectionUnavailable),
+            )
+        }
+        DatumProjectionResolution::Ambiguous { suggestions } => {
+            // A bare directional projection that could mean several
+            // members (e.g. `frame.dir`): suggest the disambiguating
+            // members to write instead ("write frame.z").
+            let suggested = suggestions
+                .iter()
+                .map(|s| format!(".{s}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            make_poison_literal(
+                diagnostics,
+                Diagnostic::error(format!(
+                    "ambiguous datum projection '.{}' on {}: it could be any of \
+                     {} — write one of those instead (e.g. write {})",
+                    member,
+                    compiled_obj.result_type,
+                    suggested,
+                    suggestions
+                        .last()
+                        .map(|s| format!(".{s}"))
+                        .unwrap_or_default(),
+                ))
+                .with_label(DiagnosticLabel::new(span, "ambiguous datum projection"))
+                .with_code(DiagnosticCode::DatumProjectionAmbiguous),
+            )
+        }
+    }
+}
+
 /// `<datum>.<member>` where the receiver's static type is a datum type
 /// (`Axis`/`Plane`/`Frame`/`Direction`/`Point`) — geometric-relations β.
 fn member_access_on_datum(
@@ -6618,65 +6711,7 @@ fn member_access_on_datum(
     // dispatches the datum-projection method names on datum Values
     // (the projection member names are disjoint from count/sum/keys/values).
     if DATUM_PROJECTION_MEMBERS.contains(&member) {
-        match datum_projection_result_type(&compiled_obj.result_type, member) {
-            DatumProjectionResolution::Resolved(result_type) => {
-                return CompiledExpr::method_call(
-                    compiled_obj,
-                    member.to_string(),
-                    vec![],
-                    result_type,
-                );
-            }
-            DatumProjectionResolution::Unavailable => {
-                // Typed rejection of a nonsense projection (e.g. `point.dir`,
-                // `plane.dir`). make_poison_literal enforces the anti-cascade
-                // contract (one Severity::Error diagnostic + poison literal).
-                // Where an obvious redirect exists (plane.dir → .normal),
-                // append it as a "; use .normal" hint so the message matches
-                // the documented canonical form.
-                let mut message = format!(
-                    "{} has no projection '.{}'",
-                    compiled_obj.result_type, member
-                );
-                if let Some(hint) =
-                    datum_projection_unavailable_hint(&compiled_obj.result_type, member)
-                {
-                    message.push_str(&format!("; use {hint}"));
-                }
-                return make_poison_literal(
-                    diagnostics,
-                    Diagnostic::error(message)
-                        .with_label(DiagnosticLabel::new(span, "no such datum projection"))
-                        .with_code(DiagnosticCode::DatumProjectionUnavailable),
-                );
-            }
-            DatumProjectionResolution::Ambiguous { suggestions } => {
-                // A bare directional projection that could mean several
-                // members (e.g. `frame.dir`): suggest the disambiguating
-                // members to write instead ("write frame.z").
-                let suggested = suggestions
-                    .iter()
-                    .map(|s| format!(".{s}"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                return make_poison_literal(
-                    diagnostics,
-                    Diagnostic::error(format!(
-                        "ambiguous datum projection '.{}' on {}: it could be any of \
-                         {} — write one of those instead (e.g. write {})",
-                        member,
-                        compiled_obj.result_type,
-                        suggested,
-                        suggestions
-                            .last()
-                            .map(|s| format!(".{s}"))
-                            .unwrap_or_default(),
-                    ))
-                    .with_label(DiagnosticLabel::new(span, "ambiguous datum projection"))
-                    .with_code(DiagnosticCode::DatumProjectionAmbiguous),
-                );
-            }
-        }
+        return resolve_datum_projection_or_poison(compiled_obj, member, span, diagnostics);
     }
     member_access_aggregation_or_unsupported(compiled_obj, member, span, diagnostics)
 }
@@ -6715,65 +6750,7 @@ fn member_access_on_feature(
     // pure datum→datum `eval_datum_projection` (which fires only for an
     // `Axis`/`Plane`/`Frame`/`Direction` runtime receiver).
     if !COLLECTION_AGGREGATION_MEMBERS.contains(&member) {
-        match datum_projection_result_type(&compiled_obj.result_type, member) {
-            DatumProjectionResolution::Resolved(result_type) => {
-                return CompiledExpr::method_call(
-                    compiled_obj,
-                    member.to_string(),
-                    vec![],
-                    result_type,
-                );
-            }
-            DatumProjectionResolution::Unavailable => {
-                // Typed rejection of a nonsense projection (e.g. `point.dir`,
-                // `plane.dir`). make_poison_literal enforces the anti-cascade
-                // contract (one Severity::Error diagnostic + poison literal).
-                // Where an obvious redirect exists (plane.dir → .normal),
-                // append it as a "; use .normal" hint so the message matches
-                // the documented canonical form.
-                let mut message = format!(
-                    "{} has no projection '.{}'",
-                    compiled_obj.result_type, member
-                );
-                if let Some(hint) =
-                    datum_projection_unavailable_hint(&compiled_obj.result_type, member)
-                {
-                    message.push_str(&format!("; use {hint}"));
-                }
-                return make_poison_literal(
-                    diagnostics,
-                    Diagnostic::error(message)
-                        .with_label(DiagnosticLabel::new(span, "no such datum projection"))
-                        .with_code(DiagnosticCode::DatumProjectionUnavailable),
-                );
-            }
-            DatumProjectionResolution::Ambiguous { suggestions } => {
-                // A bare directional projection that could mean several
-                // members (e.g. `frame.dir`): suggest the disambiguating
-                // members to write instead ("write frame.z").
-                let suggested = suggestions
-                    .iter()
-                    .map(|s| format!(".{s}"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                return make_poison_literal(
-                    diagnostics,
-                    Diagnostic::error(format!(
-                        "ambiguous datum projection '.{}' on {}: it could be any of \
-                         {} — write one of those instead (e.g. write {})",
-                        member,
-                        compiled_obj.result_type,
-                        suggested,
-                        suggestions
-                            .last()
-                            .map(|s| format!(".{s}"))
-                            .unwrap_or_default(),
-                    ))
-                    .with_label(DiagnosticLabel::new(span, "ambiguous datum projection"))
-                    .with_code(DiagnosticCode::DatumProjectionAmbiguous),
-                );
-            }
-        }
+        return resolve_datum_projection_or_poison(compiled_obj, member, span, diagnostics);
     }
     member_access_aggregation_or_unsupported(compiled_obj, member, span, diagnostics)
 }
