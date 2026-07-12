@@ -12501,7 +12501,7 @@ mod tests {
     // The `stub;` arm (`not(has_occt)`) is deliberately not instantiated
     // here: the stub OCCT adapter's all-error taxonomy is already covered
     // by bespoke hand-written tests in stubs.rs, and migrating it onto
-    // this shared suite is tracked as a separate follow-up (task iota) —
+    // this shared suite is tracked as a separate follow-up (#5110) —
     // out of scope for this real-arm-only wiring.
     reify_test_support::assert_kernel_contract!(
         real;
