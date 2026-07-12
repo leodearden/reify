@@ -3271,14 +3271,18 @@ impl Engine {
 
         // Build Snapshot from CompiledModule (creates EvaluationGraph internally)
         let (snap_id, ver_id) = self.allocate_snapshot_version();
-        let snapshot_id = snap_id.0;
+        // `version_id` (raw u64) is genuinely needed below by several
+        // downstream consumers in this function; `snapshot_id` is not — its
+        // only prior use was to rebuild `SnapshotId(snapshot_id)`, which is
+        // just `snap_id` again, so we use `snap_id`/`ver_id` directly instead
+        // of round-tripping through their `.0` scalars where possible.
         let version_id = ver_id.0;
-        let version = VersionId(version_id);
+        let version = ver_id;
 
         let mut snapshot = Snapshot::from_compiled_module(module);
         #[cfg(debug_assertions)]
         assert_value_cell_types_representable(&snapshot.graph);
-        snapshot.id = SnapshotId(snapshot_id);
+        snapshot.id = snap_id;
         snapshot.version = version;
         snapshot.provenance = SnapshotProvenance::Initial;
 
