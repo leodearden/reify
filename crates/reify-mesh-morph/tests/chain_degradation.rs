@@ -237,10 +237,73 @@ fn chain_runner_large_jump_triggers_fallback_and_chain_self_recovers() {
 // degradation is BOUNDED — each morph is a fresh BVP, not an iterative
 // perturbation — so a long monotonic auto-resolve chain stays within the
 // quality envelope without periodic remeshes.
-//
-// RED: references `chain_options()`, `linspace()`, `CHAIN_FALLBACK_RATE_MAX`,
-// and `CHAIN_MIN_SCALED_J_FLOOR`, none of which exist yet — fails to compile
-// until step-6 adds them (same discipline as step-1/step-2).
+
+/// Maximum acceptable [`runner::ChainReport::fallback_rate`] for the
+/// monotonic chain sweep.
+///
+/// This is the LOAD-BEARING bound for PRD claim (c): a long monotonic
+/// auto-resolve chain should rarely need a remesh reset. Empirically, tiny
+/// consecutive steps within this fixture's safe quality regime (see
+/// [`CHAIN_MIN_SCALED_J_FLOOR`]'s doc and the step-3 test's doc for the
+/// ~0.53 pct-saturation boundary the [0.30, 0.50] sweep range stays clear
+/// of) are accepted essentially every tick, so 0.05 (at most ~2 resets in
+/// 50+ ticks) leaves comfortable margin while still being a meaningful
+/// regression guard — a future change that made elasticity_morph or
+/// quality_check materially stricter would show up here as a rate
+/// exceeding this bound.
+const CHAIN_FALLBACK_RATE_MAX: f64 = 0.05;
+
+/// Documented minimum-scaled-Jacobian floor for the chain sweep tests.
+///
+/// This is **0.01** (the production `quality_floor_min_scaled_jacobian`
+/// default), **not** the task description's illustrative "e.g. > 0.10":
+/// the calibration fixtures' intrinsic from-scratch min scaled-J is
+/// ≈0.014–0.024 across the plate's swept range (task #3451 empirical
+/// pins in `calibration.rs`) — even a **fresh remesh** sits far below
+/// 0.10, so 0.10 would be an un-GREENable bound for this fixture, not a
+/// signal of morph degradation. 0.01 is achievable and gate-enforced:
+/// `quality_check`'s `Pass` verdict requires
+/// `global_min_scaled_j >= options.quality_floor_min_scaled_jacobian`
+/// (0.01, kept at production default by [`chain_options`] — only the pct
+/// floor is relaxed), so every ACCEPTED morph clears 0.01 by construction,
+/// and every fresh fallback mesh clears its own from-scratch baseline
+/// (>= ~0.017 across this sweep's [0.30, 0.50] range). The load-bearing
+/// bounded-degradation signal is the LOW fallback rate sustained over 50+
+/// ticks ([`CHAIN_FALLBACK_RATE_MAX`]), not the absolute min-scaled-J
+/// value pinned here.
+const CHAIN_MIN_SCALED_J_FLOOR: f64 = 0.01;
+
+/// Chain-options profile shared by the monotonic/non-monotonic sweep tests:
+/// relaxes `quality_floor_pct_below_025` to 0.99; `quality_floor_min_scaled_jacobian`
+/// (0.01) and `quality_aspect_ratio_factor_max` (2.0) stay at production
+/// defaults.
+///
+/// Mirrors `calibration.rs::calibration_sweep_options` — the procedural
+/// hex-to-6-tet plate/bracket fixtures have an intrinsic from-scratch
+/// `pct_below_025` that rises with the swept parameter (empirically 0.875
+/// at plate hole_diameter=0.30 up to a hard saturation at exactly 1.0 for
+/// hole_diameter >= ~0.53 — see the step-3 test's doc), so the production
+/// 0.01 pct floor would SoftFail on every tick regardless of morph
+/// quality, destroying the bounded-degradation signal this harness exists
+/// to measure. This is a fixture-specific calibration shim, not a general
+/// relaxation — see `calibration_sweep_options`'s doc for the "when NOT to
+/// reuse" caveat, which applies identically here.
+fn chain_options() -> reify_mesh_morph::MorphOptions {
+    reify_mesh_morph::MorphOptions {
+        quality_floor_pct_below_025: 0.99,
+        ..reify_mesh_morph::MorphOptions::default()
+    }
+}
+
+/// `n` evenly spaced values from `lo` to `hi` inclusive (`n >= 2`).
+///
+/// `linspace(0.30, 0.50, 51)` yields `0.30, 0.304, 0.308, ..., 0.50`
+/// (Δ ≈ 0.004, 51 values ⇒ 50 morph ticks after the fresh chain root).
+fn linspace(lo: f64, hi: f64, n: usize) -> Vec<f64> {
+    assert!(n >= 2, "linspace requires n >= 2, got {n}");
+    let step = (hi - lo) / (n - 1) as f64;
+    (0..n).map(|i| lo + step * i as f64).collect()
+}
 
 /// PRD `docs/prds/v0_3/mesh-morphing.md` task #14, claim (c): a long
 /// monotonic auto-resolve chain stays within the quality envelope without
