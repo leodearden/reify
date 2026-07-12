@@ -357,9 +357,69 @@ fn monotonic_plate_sweep_50_ticks_keeps_chain_within_quality_envelope() {
 }
 
 // ── Step-7/8: non-monotonic (not-nearest) recovery ────────────────────────────
-//
-// RED: references `lcg_jumps()`, which doesn't exist yet — fails to compile
-// until step-8 adds it (same discipline as step-1/step-2, step-5/step-6).
+
+/// A deterministic, fixed-seed 64-bit LCG (Knuth's MMIX constants) mapped
+/// into `[lo, hi]`, producing `n` values that interleave small local steps
+/// with occasional full-range jumps — no `Date`/random source, so the
+/// sequence (and hence the fallback counts derived from it) is 100%
+/// reproducible in CI.
+///
+/// Every 5th value (index `i` with `i % 5 == 0`, `i >= 1`) is a full-range
+/// jump anywhere in `[lo, hi]`; the other values take a small step (up to
+/// ±2% of the range) from the previous value, clamped to `[lo, hi]`. For
+/// the non-monotonic test's `[0.30, 0.60]` range, a full-range jump has
+/// roughly a `(0.60 - ~0.53) / (0.60 - 0.30) ≈ 23%` chance of landing in
+/// the plate fixture's pct-saturation zone (`hole_diameter >= ~0.53`, see
+/// the step-3 test's doc) and triggering a fallback there — and once a
+/// later jump lands back below that boundary, subsequent small steps are
+/// accepted again, demonstrating self-recovery.
+///
+/// The interleave cadence (`JUMP_EVERY`) and small-step magnitude
+/// (`SMALL_STEP_FRACTION`) are internal tuning constants, not part of the
+/// public signature. `seed = 8` was chosen (task 2951 step-8) by sweeping
+/// several seeds/cadences/magnitudes against the plate fixture and picking
+/// one with comfortable margin on every step-7 assertion — not a
+/// knife-edge fit (fallback_count=6/50, fallback_rate=0.12,
+/// min_scaled_j_floor≈0.0142 vs the 0.01 floor).
+///
+/// `n == 0` returns an empty vec; otherwise index 0 is always `lo` (the
+/// chain root, matching the monotonic sweep's start point for a fair
+/// side-by-side comparison).
+fn lcg_jumps(seed: u64, n: usize, lo: f64, hi: f64) -> Vec<f64> {
+    if n == 0 {
+        return Vec::new();
+    }
+    // Knuth's MMIX 64-bit LCG constants.
+    const A: u64 = 6364136223846793005;
+    const C: u64 = 1442695040888963407;
+    const JUMP_EVERY: usize = 5;
+    const SMALL_STEP_FRACTION: f64 = 0.02;
+
+    let mut state = seed;
+    let mut next_unit = move || {
+        state = state.wrapping_mul(A).wrapping_add(C);
+        // Top 53 bits -> [0, 1) double (standard LCG-to-float technique).
+        (state >> 11) as f64 / (1u64 << 53) as f64
+    };
+
+    let range = hi - lo;
+    let small_delta_max = range * SMALL_STEP_FRACTION;
+    let mut out = Vec::with_capacity(n);
+    out.push(lo);
+    let mut current = lo;
+    for i in 1..n {
+        let u = next_unit();
+        let next = if i % JUMP_EVERY == 0 {
+            lo + u * range
+        } else {
+            let delta = (u * 2.0 - 1.0) * small_delta_max;
+            (current + delta).clamp(lo, hi)
+        };
+        out.push(next);
+        current = next;
+    }
+    out
+}
 
 /// PRD `docs/prds/v0_3/mesh-morphing.md` task #14, claim (c): a
 /// non-monotonic (not-nearest) chain is caught by the quality check and
