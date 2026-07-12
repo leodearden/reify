@@ -3938,7 +3938,7 @@ fn extract_loads(val: &Value, density: f64) -> Result<ExtractedLoads, FeaValueSh
         other => {
             return Err(FeaValueShapeError::ExpectedList {
                 context: "extract_loads",
-                got: format!("{:?}", other),
+                got: format!("{other:?}"),
             });
         }
     };
