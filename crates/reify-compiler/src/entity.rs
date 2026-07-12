@@ -6685,14 +6685,15 @@ structure def Manifold {
 
 // ---------------------------------------------------------------------------
 // Port-member priv-visibility characterization (task ζ #5058 amendment
-// review). Site 2 (port-member `MemberDecl::Param`, above) hardcodes
-// `Visibility::Public` regardless of `param.is_priv` — see the TODO(#5161)
-// comment at that call site. This pins the CURRENT (pre-existing, deliberately
-// preserved) behaviour end-to-end, symmetric to
-// `compile_priv_auto_free_param_is_private_and_auto` in boundary2_producer.rs,
-// which pins the analogous priv/auto intersection at Site 1. Without this, a
-// future accidental fix of #5161 could silently change port-member visibility
-// semantics with no test forcing a conscious update.
+// review; updated by task #5161). Site 2 (port-member `MemberDecl::Param`,
+// above) used to hardcode `Visibility::Public` regardless of `param.is_priv`.
+// Task #5161 threaded `param.is_priv` through via `priv_flag_to_visibility`
+// at that call site, so this now pins the CORRECTED behaviour end-to-end,
+// symmetric to `compile_priv_auto_free_param_is_private_and_auto` in
+// boundary2_producer.rs, which pins the analogous priv/auto intersection at
+// Site 1. Kept (rather than deleted) as a regression guard so a future change
+// can't silently reintroduce the old Public hardcode with no test forcing a
+// conscious update.
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -6718,16 +6719,15 @@ mod port_param_priv_visibility_tests {
         super::compile(&parsed)
     }
 
-    /// `priv param` on a port member currently compiles to `Visibility::Public`
-    /// — not `Private` — unlike the priv-aware top-level structure-param site
-    /// (Site 1, pinned by `compile_priv_auto_free_param_is_private_and_auto`
-    /// in boundary2_producer.rs). This is the pre-existing asymmetry tracked
-    /// by TODO(#5161) at the port-member call site; characterized here so
-    /// #5058's decl-construction dedup is proven not to have introduced or
-    /// hidden it, and so #5161's eventual fix must consciously update this
-    /// assertion rather than silently flip behaviour underneath it.
+    /// `priv param` on a port member now compiles to `Visibility::Private`,
+    /// matching the priv-aware top-level structure-param site (Site 1, pinned
+    /// by `compile_priv_auto_free_param_is_private_and_auto` in
+    /// boundary2_producer.rs). Fixed by task #5161, which threads
+    /// `param.is_priv` through the port-member `ValueCellDecl` construction
+    /// instead of hardcoding `Visibility::Public`. Kept as a regression guard
+    /// so a future change can't silently reintroduce the old Public hardcode.
     #[test]
-    fn priv_param_on_port_member_compiles_to_public_not_private() {
+    fn priv_param_on_port_member_compiles_to_private() {
         let source = r#"
 trait MyPort {
     param foo : Length
@@ -6759,11 +6759,10 @@ structure def S {
         let foo = &port.members[0];
         assert_eq!(
             foo.visibility,
-            Visibility::Public,
-            "known gap (TODO #5161): `priv param` on a port member is currently \
-             silently dropped to Visibility::Public rather than Private, unlike \
-             Site 1's priv-aware top-level param. This test pins the CURRENT \
-             behaviour — update it as part of #5161, not incidentally."
+            Visibility::Private,
+            "priv param on a port member must compile to Visibility::Private \
+             (task #5161 fixed the hardcoded Visibility::Public); got {:?}",
+            foo.visibility
         );
     }
 }
