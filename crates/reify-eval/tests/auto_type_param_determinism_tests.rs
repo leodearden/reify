@@ -580,6 +580,14 @@ fn per_file_violations(
 /// multiplied by concurrent-verify CPU oversubscription, which flaked under
 /// load independent of any real regression. The per-file bound has no such
 /// failure mode and remains the load-tolerant quadratic-regression detector.
+///
+/// Accepted coverage tradeoff: this gate only catches per-file quadratic
+/// outliers, not corpus-wide linear drift (e.g. a uniform ~2x slowdown
+/// across every file, or gradual growth as the corpus doubles) — every file
+/// can individually stay under the 10s budget while aggregate compile time
+/// regresses badly. Catching that would need a CPU-normalized or
+/// relative-to-median aggregate check rather than a fixed wall-clock total,
+/// which is exactly what flaked under load and is out of scope here.
 #[test]
 fn v0_1_example_corpus_compile_and_check_time_is_bounded() {
     use std::collections::HashSet;
@@ -684,7 +692,13 @@ fn per_file_gate_violation_contract() {
 
     let violations = per_file_violations(&measurements, Duration::from_secs(10));
 
-    let names: Vec<&str> = violations.iter().map(|(name, _)| name.as_str()).collect();
+    // Sort before comparing: `per_file_violations` is documented as a filter
+    // (see its doc comment above) with no order-preservation guarantee, so
+    // pin the offending *set* rather than incidental iteration order — the
+    // corpus test itself sorts violations right after calling this helper,
+    // so a future reordering refactor here must not fail this contract test.
+    let mut names: Vec<&str> = violations.iter().map(|(name, _)| name.as_str()).collect();
+    names.sort_unstable();
     assert_eq!(
         names,
         vec!["slow.ri", "slow2.ri"],
