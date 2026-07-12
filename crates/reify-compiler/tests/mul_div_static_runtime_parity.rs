@@ -444,6 +444,154 @@ structure def P {
     );
 }
 
+// ── Exemption ledger (step-7 RED / step-8 GREEN; PRD §3 decision 4) ────────
+
+/// Documented, intentional static/runtime divergences (PRD §3 decision 4):
+/// "every exemption row requires a comment; an uncommented divergence
+/// fails." Keyed by `(op, left static Type, right static Type)` — exact
+/// `Type` equality, not just discriminant, so a future DIMENSIONED exemption
+/// would need its own row.
+///
+/// Seeded with exactly the one known exemption:
+///
+/// - `Div(Int, Int)`: the RUNTIME widens `Int|Real` by divisibility
+///   (`reify-expr/src/lib.rs:4640-4648` — non-divisible `7 % 2 != 0` ⇒
+///   `Value::Real(3.5)`, pinned by β1's `div_int_int_nondivisible_yields_real`),
+///   but the STATIC table intentionally stays `Some(Type::Int)` (pinned by
+///   β2's `infer_mul_div_result_int_div_int_yields_int_exemption`,
+///   type_compat.rs:4524-4531) — changing integer-division statics is a
+///   language-semantics decision, out of scope for this task (PRD §4
+///   "Integer-division static-type change").
+const EXEMPTION_LEDGER: &[(BinOp, Type, Type)] = &[(BinOp::Div, Type::Int, Type::Int)];
+
+/// Ledger membership check: is `(op, lt, rt)` a documented exemption?
+fn is_ledgered_divergence(op: BinOp, lt: &Type, rt: &Type) -> bool {
+    EXEMPTION_LEDGER
+        .iter()
+        .any(|(ledgered_op, ledgered_lt, ledgered_rt)| {
+            *ledgered_op == op && ledgered_lt == lt && ledgered_rt == rt
+        })
+}
+
+/// Top-level parity classification (PRD §7.2 + §3 decision 4): both sides
+/// "accept" (runtime non-Undef, static `Some`) and the runtime result's kind
+/// AGREES with the static type's kind ⇒ pass (clean parity, same contract as
+/// `assert_accepts`). If the kinds DIVERGE, the row passes ONLY when
+/// `(op, lt, rt)` is a documented `EXEMPTION_LEDGER` entry — otherwise it
+/// panics naming the row (the "uncommented divergence fails" guarantee, PRD
+/// §8).
+///
+/// TEETH (PRD decision 4's "an uncommented divergence fails" — proven by
+/// temporary mutation, not a committed failing assertion): comment out the
+/// `(BinOp::Div, Type::Int, Type::Int)` row in `EXEMPTION_LEDGER` above (or
+/// call this fn on the same non-divisible-Int/Int row with an empty ledger)
+/// and re-run `cargo test -p reify-compiler --test mul_div_static_runtime_parity`
+/// — `int_int_nondivisible_division_is_a_ledgered_divergence` goes RED,
+/// panicking with "UNLEDGERED divergence" naming the row. Equivalently,
+/// perturbing `__infer_mul_div_result_for_parity_test`'s `Div(Int, Int)` arm
+/// to return a kind that no longer matches the ledgered exemption's runtime
+/// kind also goes RED via the same panic.
+///
+/// Stub for step-7 RED — step-8 implements the real classification.
+fn assert_parity_or_ledgered_divergence(
+    op: BinOp,
+    lv: Value,
+    rv: Value,
+    lt: Type,
+    rt: Type,
+    label: &str,
+) {
+    let _ = (op, lv, rv, lt, rt, label);
+    todo!("step-8: implement the AGREE / DIVERGE-but-ledgered / panic classification")
+}
+
+/// (a) The seeded exemption (PRD §3 decision 4): `Int(7) / Int(2)`
+/// (non-divisible) — runtime widens to `Value::Real(3.5)`, static stays
+/// `Some(Type::Int)`. First confirms this IS a genuine kind divergence
+/// (guards against the ledger accidentally "covering" a row that was never
+/// divergent — if `value_kind_matches_type` ever starts agreeing here, this
+/// assertion catches the ledger going stale), and that `(Div, Int, Int)` is
+/// ledgered; then confirms the unified engine classifies the row
+/// `diverges AND ledgered ⇒ OK` (does not panic).
+#[test]
+fn int_int_nondivisible_division_is_a_ledgered_divergence() {
+    let runtime = eval_binop(BinOp::Div, Value::Int(7), Value::Int(2));
+    assert!(
+        !runtime.is_undef(),
+        "expected non-Undef runtime result for Div(Int(7), Int(2)), got Undef"
+    );
+    let static_result = reify_compiler::__infer_mul_div_result_for_parity_test(
+        BinOp::Div,
+        &Type::Int,
+        &Type::Int,
+    );
+    let static_ty = static_result.expect("expected static Some(Type::Int) for Div(Int, Int)");
+    assert!(
+        !value_kind_matches_type(&runtime, &static_ty),
+        "expected a GENUINE kind divergence (runtime {runtime:?} vs static {static_ty:?}) — \
+         if this now agrees, the EXEMPTION_LEDGER row is stale and should be removed"
+    );
+    assert!(
+        is_ledgered_divergence(BinOp::Div, &Type::Int, &Type::Int),
+        "Div(Int, Int) must be present in EXEMPTION_LEDGER"
+    );
+
+    // The unified engine must classify this row as OK (no panic).
+    assert_parity_or_ledgered_divergence(
+        BinOp::Div,
+        Value::Int(7),
+        Value::Int(2),
+        Type::Int,
+        Type::Int,
+        "Div Int(7)/Int(2) non-divisible — ledgered exemption",
+    );
+}
+
+// ── DATA-DRIVEN-Undef exclusion (step-7; PRD §7.2 carve-out) ────────────────
+
+/// (c) `Int/0` and `Scalar/0` are DATA-DRIVEN-Undef (β1's
+/// `div_int_by_zero_is_undef` / `div_scalar_by_zero_is_undef`): the
+/// DIVISOR'S VALUE is zero, not the operand KINDS — `Int/Int` and
+/// `Scalar[L]/Int` are otherwise intentional, dimension-preserving arms
+/// (pinned in the positive batch above). PRD §7.2 excludes value-dependent
+/// Undef from the structural-reject rule, so these rows are deliberately
+/// ABSENT from `rejection_rows()` — this test documents why: the static
+/// side does NOT reject `(Int, Int)`/`(Scalar[L], Int)` (it accepts, same as
+/// the positive-batch rows), so asserting `infer_mul_div_result == None` for
+/// them would be WRONG, not merely redundant.
+#[test]
+fn data_driven_undef_rows_are_excluded_from_structural_reject_rule() {
+    // Int / 0 — value-dependent Undef.
+    let int_by_zero = eval_binop(BinOp::Div, Value::Int(5), Value::Int(0));
+    assert!(
+        int_by_zero.is_undef(),
+        "expected Int(5)/Int(0) to be runtime Undef (data-driven)"
+    );
+    assert_eq!(
+        reify_compiler::__infer_mul_div_result_for_parity_test(BinOp::Div, &Type::Int, &Type::Int),
+        Some(Type::Int),
+        "Int/Int stays statically Some(Type::Int) regardless of the runtime divisor's value — \
+         Int/0's Undef-ness is data-driven, not a static-typing rejection"
+    );
+
+    // Scalar[L] / 0 — same shape, dimensioned Scalar numerator.
+    let scalar_by_zero = eval_binop(BinOp::Div, Value::length(5.0), Value::Int(0));
+    assert!(
+        scalar_by_zero.is_undef(),
+        "expected Scalar[L](5.0)/Int(0) to be runtime Undef (data-driven)"
+    );
+    assert_eq!(
+        reify_compiler::__infer_mul_div_result_for_parity_test(
+            BinOp::Div,
+            &Type::length(),
+            &Type::Int
+        ),
+        Some(Type::length()),
+        "Scalar[L]/Int stays statically Some(Scalar[L]) regardless of the runtime divisor's \
+         value — Scalar/0's Undef-ness is data-driven, not a static-typing rejection"
+    );
+}
+
 // ── Smoke test (step-1 RED / step-2 GREEN) ──────────────────────────────────
 
 /// Smoke row proving the harness wiring end-to-end: `Int × Int` is the
