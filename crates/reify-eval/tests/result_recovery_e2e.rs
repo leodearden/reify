@@ -16,13 +16,16 @@
 //!   - `bore    = match parse_len(raw) { Ok { value: v } => v, Err { error: msg } => 6mm }`
 //!   - `bore_fb = fallback(parse_len(raw), 6mm)`
 //!
-//! This test (pair 1) pins the numeric bore/bore_fb recovery signal only;
-//! the Err-payload-message `diag` cell (pair 2, the signal that
-//! distinguishes this task from Option/Layer A) is added in a later
-//! iteration of this same file.
+//! This test pins both signal pairs: pair 1 is the numeric bore/bore_fb
+//! recovery signal; pair 2 is the Err-payload-message `diag` cell — the
+//! signal that distinguishes this task from Option/Layer A, which carries
+//! only presence/absence, not a MESSAGE.
 //!
 //! RED before step-2: `examples/m6_result_recovery.ri` does not exist yet, so
 //! the fixture read fails (panic) — the missing-example RED signal.
+//!
+//! RED before step-4 (pair 2 only): the example has no `diag` cell yet, so
+//! `cell_value(&result, "MountBad", "diag")` panics.
 
 use reify_core::{Severity, ValueCellId};
 use reify_ir::Value;
@@ -106,5 +109,19 @@ fn result_recovery_example_evals_end_to_end() {
         cell_value(&result, "MountBad", "bore_fb"),
         mm(6.0),
         "MountBad.bore_fb = fallback(parse_len(\"garbage\"), 6mm) must fall back to 6mm"
+    );
+
+    // Pair 2 — the distinguishing Layer-B signal: the Err arm's bound `msg`
+    // is an observable error MESSAGE (Option/Layer A carries only
+    // presence/absence, never a message).
+    assert_eq!(
+        cell_value(&result, "MountValid", "diag"),
+        Value::String("ok".to_string()),
+        "MountValid.diag = match parse_len(\"12mm\") {{ Ok{{value:v}}=>\"ok\", .. }} must report \"ok\""
+    );
+    assert_eq!(
+        cell_value(&result, "MountBad", "diag"),
+        Value::String("could not parse 'garbage' as a length".to_string()),
+        "MountBad.diag = match parse_len(\"garbage\") {{ .., Err{{error:msg}}=>msg }} must surface the real parse-failure reason"
     );
 }
