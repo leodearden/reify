@@ -5348,14 +5348,14 @@ mod tests {
             .unwrap();
 
         let mut counts = Vec::new();
+        let mut repr_counts = Vec::new();
         for _ in 0..4 {
             let state = kernel.warm_state().expect("kernel should have warm state");
-            let persisted = state
+            let warm = state
                 .downcast_ref::<OcctWarmState>()
-                .expect("warm state should downcast_ref to OcctWarmState")
-                .shapes
-                .len();
-            counts.push(persisted);
+                .expect("warm state should downcast_ref to OcctWarmState");
+            counts.push(warm.shapes.len());
+            repr_counts.push(warm.reprs.len());
 
             let mut next = OcctKernel::new();
             next.with_warm_state(state);
@@ -5380,6 +5380,19 @@ mod tests {
         assert!(
             counts.iter().all(|&c| c == counts[0]),
             "persisted shape count must stay constant at the root count across cycles: {counts:?}"
+        );
+        // shapes/reprs are filtered in lock-step (see warm_state()'s "Bounded
+        // payload" note), so reprs must stay just as bounded — guards against
+        // a future change that filters shapes but forgets reprs, which the
+        // consumer-side debug_assert in with_warm_state only catches in debug
+        // builds.
+        assert!(
+            repr_counts.windows(2).all(|w| w[1] <= w[0]),
+            "persisted repr count must not grow cycle-over-cycle: {repr_counts:?}"
+        );
+        assert!(
+            repr_counts.iter().all(|&c| c == repr_counts[0]),
+            "persisted repr count must stay constant at the root count across cycles: {repr_counts:?}"
         );
     }
 
