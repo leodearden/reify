@@ -511,38 +511,23 @@ purpose okp(subject : Motor) {
 // Task #5161: `priv param x` inside a `port { }` block or a block-form
 // `where cond { }` guarded block was silently lowered to `Visibility::Public`
 // at four hardcoded ValueCellDecl construction sites — entity.rs's port-member
-// arm (both the `Auto { free }` and `Param` branches) and guards.rs's
-// `compile_guarded_members` (same two branches) — even though `param.is_priv`
-// was available at every site. This fixes the lowered `ValueCellDecl.visibility`
+// arm and guards.rs's `compile_guarded_members` (each has an `Auto { free }`
+// and a `Param` branch). This fixes the lowered `ValueCellDecl.visibility`
 // field to match `param.is_priv` at all four sites.
 //
-// Scope note: `template_member_is_priv` (expr.rs), the sole predicate behind
-// E_PRIV_MEMBER_ACCESS enforcement on external dot-access, only scans
-// `template.value_cells`, `template.sub_components`, and whole-port
-// `ports[].is_priv` — it does not inspect `ports[].members[].visibility` or
-// `guarded_groups[].members[].visibility`. So the field this task corrects is
-// not yet consulted for these two member kinds: E_PRIV_MEMBER_ACCESS itself
-// cannot fire for a priv port-member or guarded-block member today. (This is
-// narrower than "external access is allowed" — empirically, `h.secret.main`
-// and `h.g`-style external access already fail today, but on unrelated,
-// pre-existing member-resolution gaps — composite port/guarded member paths
-// are not yet wired into the generic external `obj.member` resolver at all —
-// so the priv gate is never even reached; see the two
-// `..._not_yet_priv_gated` tests at the end of this file, which pin exactly
-// that: zero E_PRIV_MEMBER_ACCESS, for the wrong reason.) That enforcement
-// gap is out of this task's scope (task #5161 is scoped to the lowering
-// sites, mirroring the sibling top-level structure-param site). Tracked as
-// follow-up task #5171 ("Enforce lowered priv visibility in
-// E_PRIV_MEMBER_ACCESS (port-member / guarded-block params)", depends on
-// #5161 — filed from risk_identified esc-5161-4 per operator decision):
-// extend `template_member_is_priv` to also scan `ports[].members[].visibility`
-// and `guarded_groups[].members[].visibility`, then add a RED-until-fixed
-// enforcement test mirroring Part B's priv-param/sub/port cases — note that
-// wiring the member-resolution paths themselves (so these accesses reach the
-// priv gate at all) may be a further prerequisite beyond #5171's current
-// scan-the-collections framing. Part D below deliberately asserts only the
-// lowered `visibility` field, not dot-access enforcement — so it stays green
-// regardless of whether that follow-up has landed yet.
+// Scope note: `template_member_is_priv` (expr.rs) — the sole predicate behind
+// E_PRIV_MEMBER_ACCESS enforcement — doesn't scan `ports[].members[].visibility`
+// or `guarded_groups[].members[].visibility`, so the field fixed here isn't yet
+// consulted for these two member kinds; the priv gate can't fire for them today.
+// External access to these members already fails (see the
+// `..._not_yet_priv_gated` tests below), but only because the composite
+// port/guarded member paths aren't wired into the external `obj.member`
+// resolver yet — a separate, pre-existing gap. Enforcing the now-correct
+// visibility field is out of scope for #5161 and tracked as follow-up
+// #5171 ("Enforce lowered priv visibility in E_PRIV_MEMBER_ACCESS
+// (port-member / guarded-block params)"). Part D asserts only the lowered
+// `visibility` field, not dot-access enforcement, so it stays green
+// regardless of whether #5171 has landed.
 
 /// Locate a template by name in the compiled module (generalizes `motor_template`
 /// for the Part D fixtures below, which use distinct structure names).
@@ -811,29 +796,21 @@ structure def PerDeclGuardHost {
     );
 }
 
-// ── Part D coda: pin the current enforcement-seam boundary (see the scope
-// note above) rather than leaving it only prose-described. Both tests below
-// were verified empirically (not just reasoned about): today, neither access
-// path resolves at all — `h.secret.main` fails with a generic "member access
-// not yet supported" diagnostic (no DiagnosticCode), and `h.g` fails with
-// E_STRUCTURE_MEMBER_NOT_FOUND, since `template_has_member` doesn't scan
-// `guarded_groups[].members` either. So this is deliberately NOT a
-// "still-accessible-today" test (that framing would be false — external
-// access to these members is already rejected, just not by the priv gate).
-// It pins the narrower, accurate claim: E_PRIV_MEMBER_ACCESS specifically
-// never fires for these paths, because the priv gate is never reached. If a
-// future change makes these paths reachable AND consults the now-correct
-// `visibility` field, E_PRIV_MEMBER_ACCESS will start appearing here and
-// these assertions will need to flip — that flip is the intended trip-wire.
+// ── Part D coda: pins the enforcement-seam boundary from the scope note
+// above with real (empirically verified) diagnostics, not just prose. Today
+// neither access path resolves at all — `h.secret.main` fails with a
+// generic "member access not yet supported" diagnostic, `h.g` fails with
+// E_STRUCTURE_MEMBER_NOT_FOUND — so these pin the narrow, accurate claim
+// that E_PRIV_MEMBER_ACCESS never fires here because the priv gate is never
+// reached, NOT that access is silently allowed. If a future change makes
+// these paths reachable and consults the now-correct `visibility` field,
+// these assertions must flip — that's the intended trip-wire.
 
-/// Follow-up task tracking the priv-gate enforcement gap pinned by the four
-/// `..._not_yet_priv_gated` tests below (2 external-access + 2 function-body
-/// variants, one pair per member kind). When this task lands and wires
-/// `template_member_is_priv` to scan `ports[].members[].visibility` and
-/// `guarded_groups[].members[].visibility` (and the underlying member paths
-/// become resolvable), grep this file for `NOT_YET_PRIV_GATED_FOLLOWUP` to
-/// find every assertion that must flip from "expect 0 E_PRIV_MEMBER_ACCESS
-/// / a not-yet-resolved diagnostic" to "expect exactly 1 E_PRIV_MEMBER_ACCESS".
+/// Follow-up task tracking the priv-gate enforcement gap pinned by the
+/// `..._not_yet_priv_gated` tests below. When #5171 lands (wiring
+/// `template_member_is_priv` to scan port/guarded-block member visibility),
+/// grep this file for `NOT_YET_PRIV_GATED_FOLLOWUP` to find every assertion
+/// that must flip from "expect 0 E_PRIV_MEMBER_ACCESS" to "expect exactly 1".
 const NOT_YET_PRIV_GATED_FOLLOWUP: &str = "#5171";
 
 /// External access into a `priv param` nested inside a port does not emit
@@ -939,30 +916,15 @@ structure def Parent {
 
 // ── Part D coda, function-body variant — skeleton Public-by-omission ──────────
 //
-// `build_structure_def_skeleton` (entity.rs) is the template consulted while
-// type-checking FUNCTION bodies (`functions_phase`'s `merged_registry`, built
-// before the authoritative per-structure templates exist). Its comment at the
-// top-level param site (entity.rs ~5994-5998) warns this pass "MUST mirror
-// the authoritative compile_entity param sites... or a priv member leaks
-// through a function body" — true for top-level params (mirrored via
-// `priv_flag_to_visibility`, asserted by Part C's
-// `function_body_priv_member_access_emits_error` above), but the skeleton
-// does NOT iterate port-members or guarded-block members at all: it
-// unconditionally returns `ports: vec![]` and `guarded_groups: vec![]`
-// (entity.rs, `build_structure_def_skeleton`'s `TopologyTemplate` literal),
-// regardless of what the structure actually declares.
-//
-// That is "Public-by-omission" in the sense that the priv-aware lowering
-// added by task #5161 (port-member / guarded-block arms in entity.rs /
-// guards.rs) never runs for the skeleton at all — but empirically (verified
-// below, not just reasoned about) this is harmless: an empty `ports` /
-// `guarded_groups` vec means the *port itself* (or the guarded member) is not
-// found on the skeleton, so function-body access fails at
-// E_STRUCTURE_MEMBER_NOT_FOUND before any visibility check is reached — same
-// failure mode, and same root cause (member-resolution paths not yet wired
-// for these two member kinds), as the external-access coda tests above. There
-// is no silent success and no new leak; the gap is consistent with, and
-// tracked by, the same follow-up #5171.
+// `build_structure_def_skeleton` (entity.rs) — the template used while
+// type-checking function bodies, before per-structure templates exist —
+// unconditionally returns `ports: vec![]` and `guarded_groups: vec![]`, so
+// task #5161's priv-aware lowering never runs for it. This is harmless
+// today (verified below): an empty `ports`/`guarded_groups` vec means the
+// port or guarded member isn't found on the skeleton, so function-body
+// access fails at E_STRUCTURE_MEMBER_NOT_FOUND before any visibility check
+// — same failure mode and root cause as the external-access coda above, and
+// the same follow-up (#5171). No silent success, no new leak.
 
 /// A function body cannot reach a `priv` param nested inside a `port { }`
 /// block via the skeleton registry — the skeleton's `ports` vec is always
