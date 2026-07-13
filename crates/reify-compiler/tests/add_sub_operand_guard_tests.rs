@@ -21,6 +21,7 @@
 //!   order-dependent asymmetry — previously this direction silently
 //!   collapsed to bare `Int` with no diagnostic at all)
 //! - `z - 1` (Sub direction) → `ArithOperandKind`
+//! - `1 - z` (Sub, order-reversed) → `ArithOperandKind`
 //! - `z + 1.5` (bare `Real` operand) → `ArithOperandKind`
 //!
 //! **No-false-positive / regression (must stay GREEN throughout):**
@@ -145,6 +146,21 @@ fn dimensioned_complex_minus_int_emits_arith_operand_kind() {
         flagged[0].message.contains('-'),
         "`z - 1` error message must mention `-`; got: {:?}",
         flagged[0].message
+    );
+}
+
+/// Order-reversed counterpart of the sibling pin above: `1 - z` must ALSO
+/// produce `ArithOperandKind` — mirrors
+/// `int_plus_dimensioned_complex_order_reversed_emits_arith_operand_kind`
+/// for the `Sub` direction, closing the same order-dependent asymmetry.
+#[test]
+fn int_minus_dimensioned_complex_order_reversed_emits_arith_operand_kind() {
+    let errors = compile_complex_expr_errors("let w = 1 - z");
+    assert_eq!(
+        arith_operand_kind_count(&errors),
+        1,
+        "`1 - z` (order-reversed) must produce exactly ONE ArithOperandKind; \
+         got errors: {errors:?}"
     );
 }
 
