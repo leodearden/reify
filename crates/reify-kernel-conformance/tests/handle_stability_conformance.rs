@@ -23,7 +23,7 @@
 
 mod common;
 
-use reify_ir::{GeometryHandleId, GeometryKernel};
+use reify_ir::{GeometryHandleId, GeometryKernel, QueryError};
 use reify_kernel_manifold::ManifoldKernel;
 
 /// Assert the handle-stability contract (INV-GEO-2) this file's arms pin:
@@ -65,6 +65,24 @@ fn assert_stable_ids(label: &str, runs: &[Vec<GeometryHandleId>]) {
     }
 }
 
+/// Invoke `extractor` three times in a row, `.expect`-ing each call with an
+/// ordinal-labeled panic message, and return the three runs in order.
+/// Shared by all three arms below to collapse the repeated "call the
+/// extractor three times, then hand the runs to `assert_stable_ids`"
+/// boilerplate.
+fn run_thrice(
+    label: &str,
+    mut extractor: impl FnMut() -> Result<Vec<GeometryHandleId>, QueryError>,
+) -> Vec<Vec<GeometryHandleId>> {
+    ["first", "second", "third"]
+        .into_iter()
+        .map(|ordinal| {
+            extractor()
+                .unwrap_or_else(|e| panic!("[{label}] {ordinal} call should succeed: {e:?}"))
+        })
+        .collect()
+}
+
 /// `extract_faces` on a real OCCT BRep box SOLID handle returns identical
 /// ids, in identical order, across repeated calls within a session.
 ///
@@ -76,24 +94,16 @@ fn assert_stable_ids(label: &str, runs: &[Vec<GeometryHandleId>]) {
 fn occt_extract_faces_returns_stable_ids() {
     let (mut kernel, box_id) = common::occt_box_solid();
 
-    let first = kernel
-        .extract_faces(box_id)
-        .expect("first extract_faces call should succeed");
-    let second = kernel
-        .extract_faces(box_id)
-        .expect("second extract_faces call should succeed");
-    let third = kernel
-        .extract_faces(box_id)
-        .expect("third extract_faces call should succeed");
+    let runs = run_thrice("occt extract_faces", || kernel.extract_faces(box_id));
 
     assert_eq!(
-        first.len(),
+        runs[0].len(),
         6,
         "a 10x20x30 mm box has exactly 6 unique faces, got {}",
-        first.len()
+        runs[0].len()
     );
 
-    assert_stable_ids("occt extract_faces", &[first, second, third]);
+    assert_stable_ids("occt extract_faces", &runs);
 }
 
 /// `extract_edges` on a real OCCT BRep box SOLID handle returns identical
@@ -107,24 +117,16 @@ fn occt_extract_faces_returns_stable_ids() {
 fn occt_extract_edges_returns_stable_ids() {
     let (mut kernel, box_id) = common::occt_box_solid();
 
-    let first = kernel
-        .extract_edges(box_id)
-        .expect("first extract_edges call should succeed");
-    let second = kernel
-        .extract_edges(box_id)
-        .expect("second extract_edges call should succeed");
-    let third = kernel
-        .extract_edges(box_id)
-        .expect("third extract_edges call should succeed");
+    let runs = run_thrice("occt extract_edges", || kernel.extract_edges(box_id));
 
     assert_eq!(
-        first.len(),
+        runs[0].len(),
         12,
         "a 10x20x30 mm box has exactly 12 unique edges, got {}",
-        first.len()
+        runs[0].len()
     );
 
-    assert_stable_ids("occt extract_edges", &[first, second, third]);
+    assert_stable_ids("occt extract_edges", &runs);
 }
 
 /// `extract_faces` on a real Manifold handle — a genuine OCCT box mesh
@@ -148,15 +150,9 @@ fn manifold_extract_faces_returns_stable_ids() {
         .ingest_mesh(&mesh)
         .expect("ingest_mesh should accept a validated real OCCT box mesh");
 
-    let first = manifold
-        .extract_faces(handle.id)
-        .expect("first extract_faces call should succeed");
-    let second = manifold
-        .extract_faces(handle.id)
-        .expect("second extract_faces call should succeed");
-    let third = manifold
-        .extract_faces(handle.id)
-        .expect("third extract_faces call should succeed");
+    let runs = run_thrice("manifold extract_faces", || {
+        manifold.extract_faces(handle.id)
+    });
 
-    assert_stable_ids("manifold extract_faces", &[first, second, third]);
+    assert_stable_ids("manifold extract_faces", &runs);
 }
