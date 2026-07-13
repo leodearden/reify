@@ -307,7 +307,8 @@ fn run_pipeline(
 }
 
 /// Strip `EXAMPLES_DIR` prefix and return a portable forward-slash-separated
-/// relative path. Mirrors `relative_to_examples_dir` from `examples_smoke.rs`.
+/// relative path. Mirrors `relative_to_examples_dir` from `examples_smoke.rs`
+/// — update both when this changes.
 fn relative_to_examples_dir(path: &Path) -> String {
     let rel = path.strip_prefix(EXAMPLES_DIR).unwrap_or_else(|e| {
         panic!(
@@ -322,7 +323,8 @@ fn relative_to_examples_dir(path: &Path) -> String {
 }
 
 /// Return all `*.ri` files under `EXAMPLES_DIR` (recursively), sorted.
-/// Mirrors `discover_ri_files` from `examples_smoke.rs`.
+/// Mirrors `discover_ri_files` from `examples_smoke.rs` — update both when
+/// this changes.
 fn discover_ri_files() -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = Vec::new();
     collect_ri_files(Path::new(EXAMPLES_DIR), &mut paths);
@@ -331,7 +333,8 @@ fn discover_ri_files() -> Vec<PathBuf> {
 }
 
 /// Recursively collect `*.ri` files under `dir` into `out`.
-/// Mirrors `collect_ri_files` from `examples_smoke.rs`.
+/// Mirrors `collect_ri_files` from `examples_smoke.rs` — update both when
+/// this changes.
 fn collect_ri_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let entries = std::fs::read_dir(dir).unwrap_or_else(|e| {
         panic!(
@@ -536,44 +539,99 @@ fn pipeline_output_is_stable_under_no_candidate_arm() {
 
 // ─── step-11: v0.1 corpus compile+check time is bounded ─────────────────────
 
+/// Return the subset of `measurements` whose duration exceeds `per_file_budget`.
+///
+/// Pure and deterministic (no aggregate/total-wall-clock concept) — the
+/// single source of truth for the per-file perf gate, unit-tested directly by
+/// `per_file_gate_violation_contract` below.
+fn per_file_violations(
+    measurements: &[(String, Duration)],
+    per_file_budget: Duration,
+) -> Vec<(String, Duration)> {
+    measurements
+        .iter()
+        .filter(|(_, dur)| *dur > per_file_budget)
+        .cloned()
+        .collect()
+}
+
 /// Walk `examples/*.ri` recursively, skipping SKIP_SET entries, and for each
 /// file time `check_source_with_stdlib` (which internally calls
 /// `parse_and_compile_with_stdlib`, so the measurement covers the full
 /// parse+compile+check pipeline exactly once per file).
-/// Asserts every per-file duration < 10s AND total elapsed < 120s.
+/// Asserts every per-file duration <= 10s (strict `>` boundary) via
+/// `per_file_violations`.
 ///
-/// On failure, prints a sorted `(path, duration)` table so the slow file is
-/// immediately visible. Pinned by PRD acceptance criterion 12.
+/// On failure, prints a `(path, duration)` table sorted alphabetically by
+/// file name at print time (independent of `discover_ri_files`'s internal
+/// order), so the offending file can be located by name. Pinned by PRD
+/// acceptance criterion 12.
 ///
 /// # Budget rationale
 ///
-/// The generous bounds (10s/file, 120s total) are intentional: tight
-/// per-machine baselines flake on slow CI and require continual recalibration.
-/// The PRD §"Phase A" cap-of-10 rationale targets obvious quadratic regressions,
-/// not microbenchmark drift. As a rough baseline on a modern developer machine,
-/// each `.ri` example file compiles in under 500ms; the 10s/file and 120s
-/// total limits provide >10× headroom against a p99 outlier without risking
-/// false positives from CI scheduling jitter. If a regression pushes a file
-/// past the budget, the sorted violation table will identify it.
+/// Per-file only, deliberately no aggregate/total wall-clock budget: a
+/// fixed total erodes as the corpus grows and flakes under concurrent-verify
+/// CPU oversubscription, while the 10s per-file bound has generous headroom
+/// against a sub-second baseline and no such failure mode. Full
+/// history/tradeoffs: task 5149.
 #[test]
 fn v0_1_example_corpus_compile_and_check_time_is_bounded() {
     use std::collections::HashSet;
 
     const PER_FILE_BUDGET: Duration = Duration::from_secs(10);
-    const TOTAL_BUDGET: Duration = Duration::from_secs(120);
+
+    // Conservative absolute floor, set well below current corpus size so
+    // healthy growth/shrinkage doesn't flake this guard while still catching
+    // a partial-discovery regression (e.g. most files silently skipped) that
+    // a bare non-empty check would miss. If the corpus is ever intentionally
+    // trimmed below this floor, lower the constant to match — the assertion
+    // has no way to distinguish an intended shrink from a regression.
+    //
+    // Deliberately NOT relative to paths.len() (e.g. `paths.len() -
+    // skip.len()`, or a fraction like `paths.len() / 2`): a
+    // discover_ri_files() regression shrinks paths.len() and candidates.len()
+    // in lockstep, so any floor derived from paths.len() — subtractive or
+    // proportional — still passes and misses exactly the regression this
+    // check exists to catch.
+    //
+    // Also not derived from examples_smoke.rs: that sibling has no analogous
+    // floor to share, and hoisting corpus discovery into a common crate is a
+    // cross-crate change outside this single-file task's scope.
+    const EXPECTED_MIN_FILES: usize = 100;
 
     let skip: HashSet<&str> = SKIP_SET.iter().map(|(name, _)| *name).collect();
     let paths = discover_ri_files();
 
-    let mut violations: Vec<(String, Duration)> = Vec::new();
-    let total_start = Instant::now();
+    // Resolve the skip-filtered candidate list — and fail fast on the
+    // discovery-floor check below — before paying for the per-file
+    // compile+check loop. Otherwise a misconfigured discover_ri_files()/
+    // SKIP_SET would still burn time compiling whatever few files it found
+    // before reporting the regression.
+    let candidates: Vec<(&PathBuf, String)> = paths
+        .iter()
+        .map(|path| (path, relative_to_examples_dir(path)))
+        .filter(|(_, rel)| !skip.contains(rel.as_str()))
+        .collect();
 
-    for path in &paths {
-        let rel = relative_to_examples_dir(path);
-        if skip.contains(rel.as_str()) {
-            continue;
-        }
+    assert!(
+        candidates.len() >= EXPECTED_MIN_FILES,
+        "corpus discovery found only {} .ri file(s) (expected >= {}) — \
+         raw discover_ri_files() count: {}, SKIP_SET size: {} — \
+         discover_ri_files()/SKIP_SET may be misconfigured (e.g. examples dir \
+         moved or most entries skipped), which would silently narrow this \
+         perf gate's coverage. If this is instead an intentional corpus \
+         reduction, lower EXPECTED_MIN_FILES to match. The raw/SKIP_SET counts \
+         above distinguish a discovery regression (raw count also low) from an \
+         intentional corpus shrink (raw count normal, candidates below floor).",
+        candidates.len(),
+        EXPECTED_MIN_FILES,
+        paths.len(),
+        skip.len()
+    );
 
+    let mut measurements: Vec<(String, Duration)> = Vec::new();
+
+    for (path, rel) in &candidates {
         let src = std::fs::read_to_string(path)
             .unwrap_or_else(|e| panic!("cannot read {}: {}", path.display(), e));
 
@@ -581,30 +639,62 @@ fn v0_1_example_corpus_compile_and_check_time_is_bounded() {
         let _ = check_source_with_stdlib(&src);
         let elapsed = t.elapsed();
 
-        if elapsed > PER_FILE_BUDGET {
-            violations.push((rel, elapsed));
-        }
+        measurements.push((rel.clone(), elapsed));
     }
 
-    let total_elapsed = total_start.elapsed();
+    let mut violations = per_file_violations(&measurements, PER_FILE_BUDGET);
+    violations.sort_by(|a, b| a.0.cmp(&b.0));
 
-    let mut report_parts: Vec<String> = violations
+    let report_parts: Vec<String> = violations
         .iter()
         .map(|(name, dur)| format!("  {name}: {:.2}s", dur.as_secs_f64()))
         .collect();
 
-    if total_elapsed > TOTAL_BUDGET {
-        report_parts.push(format!(
-            "  TOTAL: {:.2}s (budget {}s)",
-            total_elapsed.as_secs_f64(),
-            TOTAL_BUDGET.as_secs()
-        ));
-    }
-
     assert!(
-        violations.is_empty() && total_elapsed <= TOTAL_BUDGET,
-        "v0.1 corpus perf regression detected:\n{}",
+        violations.is_empty(),
+        "v0.1 corpus per-file perf regression detected:\n{}",
         report_parts.join("\n")
+    );
+}
+
+// ─── step-11 unit guard: per_file_violations pure-helper contract ─────────
+
+/// `per_file_violations` must flag over-budget files but not sub-budget
+/// ones, with the boundary strict (`duration == budget` is NOT a
+/// violation). Covers under-budget, on-boundary, and two independent
+/// over-budget files, pinning the `>` boundary and that the helper returns
+/// the full offending set rather than short-circuiting on the first match.
+///
+/// No aggregate case: `per_file_violations` is a pure per-file filter with
+/// no place to hold that logic — see the corpus test's "# Budget rationale"
+/// above (task 5149).
+#[test]
+fn per_file_gate_violation_contract() {
+    let measurements: Vec<(String, Duration)> = vec![
+        ("fast.ri".to_string(), Duration::from_millis(500)),
+        ("slow.ri".to_string(), Duration::from_secs(11)),
+        ("edge.ri".to_string(), Duration::from_secs(9)),
+        ("boundary.ri".to_string(), Duration::from_secs(10)),
+        ("slow2.ri".to_string(), Duration::from_secs(12)),
+    ];
+
+    let violations = per_file_violations(&measurements, Duration::from_secs(10));
+
+    // Sort before comparing: `per_file_violations` is documented as a filter
+    // (see its doc comment above) with no order-preservation guarantee, so
+    // pin the offending *set* rather than incidental iteration order — the
+    // corpus test itself sorts violations right after calling this helper,
+    // so a future reordering refactor here must not fail this contract test.
+    let mut names: Vec<&str> = violations.iter().map(|(name, _)| name.as_str()).collect();
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        vec!["slow.ri", "slow2.ri"],
+        "expected both over-budget files (11s and 12s, > 10s budget) to be flagged as \
+         violations — confirming the helper returns the full offending set rather than \
+         short-circuiting on the first match; sub-budget files (500ms, 9s) and the \
+         exact-boundary file (10s — strict `>` means duration == budget is NOT a \
+         violation) must not be flagged, got: {names:?}"
     );
 }
 
