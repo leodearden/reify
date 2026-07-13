@@ -11908,6 +11908,113 @@ mod tests {
         assert_welded_matches_unthreaded(&reversed_winding_mesh, 0.0);
     }
 
+    /// [`Mesh::check_mesh_contract_welded`] must actually CONSUME the
+    /// threaded remap rather than silently ignoring it and recomputing its
+    /// own weld. `check_mesh_contract_welded_matches_unthreaded` above
+    /// cannot prove this on its own — as its docstring candidly notes,
+    /// every remap it passes is exactly what the unthreaded path would
+    /// recompute anyway, so an implementation that dropped the parameter
+    /// entirely would still pass it.
+    ///
+    /// Here the remap is deliberately WRONG: `per_face_block_tetra_mesh()`
+    /// is unwelded (12 vertices, a private corner triple per triangle; only
+    /// the welded quotient — 4 canonical corners — is closed), and the
+    /// identity remap `[0, 1, .., 11]` falsely claims no two vertices are
+    /// shared. If `check_mesh_contract_welded` threads this remap through
+    /// (as it must), the Closed obligation sees 4 pairwise-disjoint
+    /// triangles sharing no edges at all and must reject with `Closed`
+    /// (every one of the 12 directed edges lacks a reverse). If it instead
+    /// ignored the parameter and recomputed the TRUE weld internally, it
+    /// would collapse to the 4-corner tetrahedron and report `Ok(())`
+    /// instead — the verdict already pinned for the *correct* remap by
+    /// `check_mesh_contract_welded_matches_unthreaded` above. Asserting
+    /// `Err(Closed)` here therefore distinguishes "consumed" from
+    /// "ignored-and-recomputed".
+    ///
+    /// `#[cfg(not(debug_assertions))]`: a same-length-but-wrong-content
+    /// remap trips the matching-length arm's `debug_assert_eq!` (inside
+    /// `check_contract`) against a freshly recomputed `weld_positions().1`
+    /// — that assert exists precisely to catch this kind of bogus remap in
+    /// debug/test builds, so this test observes the release-mode behavior
+    /// where the assert is elided (per `check_mesh_contract_welded`'s
+    /// documented release-mode contract for a same-length-but-wrong-content
+    /// remap).
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn check_mesh_contract_welded_consumes_threaded_remap() {
+        let mesh = per_face_block_tetra_mesh();
+        let identity_remap: Vec<u32> = (0..(mesh.vertices.len() / 3) as u32).collect();
+
+        let err = mesh
+            .check_mesh_contract_welded(0.0, &identity_remap)
+            .expect_err(
+                "a bogus identity remap on an unwelded mesh must be reported as \
+                 an open mesh if actually consumed — Ok(()) here would mean the \
+                 true weld was recomputed internally and the parameter ignored",
+            );
+        assert_eq!(
+            err.invariant,
+            MeshInvariant::Closed,
+            "an identity remap over 12 pairwise-disjoint per-face vertices leaves \
+             every edge without a reverse; got {err:?}"
+        );
+        assert_eq!(
+            err.counts.open_edges, 12,
+            "all 4 triangles' 3 edges each lack a reverse under the identity \
+             remap; got {:?}",
+            err.counts
+        );
+        assert_eq!(
+            err.counts.reversed_edges, 0,
+            "an identity remap introduces no duplicate-direction edges, only \
+             missing reverses; got {:?}",
+            err.counts
+        );
+    }
+
+    /// Release-mode characterization of `check_mesh_contract_welded`'s
+    /// defensive length-mismatch fallback: a caller-supplied remap whose
+    /// length differs from `self.vertices.len() / 3` must not panic, and
+    /// must fall back to the exact verdict an internal reweld
+    /// (`check_mesh_contract`) would produce — the release-build guarantee
+    /// documented on `check_mesh_contract_welded`.
+    ///
+    /// Exercises both an `Ok` fixture (`per_face_block_tetra_mesh` — closed
+    /// only on the welded quotient, so the fallback must actually recompute
+    /// the weld rather than e.g. defaulting to `Ok`) and an `Err` fixture
+    /// (a single open triangle, `MeshInvariant::Closed`), each with both a
+    /// too-short and a too-long bogus remap.
+    ///
+    /// `#[cfg(not(debug_assertions))]`: in debug/test builds the length
+    /// `debug_assert_eq!` inside `check_contract` fires first — loudly, as
+    /// intended, to catch this same caller bug during development — before
+    /// the fallback branch's own logic ever runs, so the fallback path is
+    /// only observable (and only needs to be exercised) in release builds.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn check_mesh_contract_welded_falls_back_on_length_mismatch() {
+        fn assert_fallback_matches(mesh: &Mesh, bogus_remap: &[u32]) {
+            assert_verdicts_equivalent(
+                mesh.check_mesh_contract_welded(0.0, bogus_remap),
+                mesh.check_mesh_contract(0.0),
+                "check_mesh_contract_welded with a length-mismatched remap \
+                 (release fallback) and check_mesh_contract",
+            );
+        }
+
+        let closed_mesh = per_face_block_tetra_mesh();
+        assert_fallback_matches(&closed_mesh, &[0_u32; 1]); // too short
+        assert_fallback_matches(&closed_mesh, &[0_u32; 100]); // too long
+
+        let open_mesh = Mesh {
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            indices: vec![0, 1, 2],
+            normals: None,
+        };
+        assert_fallback_matches(&open_mesh, &[0_u32; 1]); // too short
+        assert_fallback_matches(&open_mesh, &[0_u32; 100]); // too long
+    }
+
     #[test]
     fn geometry_error_mesh_contract_violation_display_and_bridge() {
         let counts = MeshViolationCounts {
