@@ -387,4 +387,49 @@ mod tests {
         );
         assert_eq!(recorded[0].code, Some(DiagnosticCode::FieldSamplesNotGrid));
     }
+
+    /// Behavioral complement to the wiring test above: proves the `meta`
+    /// capability threaded through `cell_eval_ctx` is actually *effective*
+    /// during evaluation, not just present as a `Some` field. `meta` is the
+    /// one capability the wiring test only checks by pointer identity (it's
+    /// threaded via `eval_ctx_with_meta`, already covered elsewhere), so
+    /// this closes that asymmetry with the other three capabilities.
+    ///
+    /// Evaluates a real `MetaAccess` expression through the returned
+    /// context. Per the `MetaAccess` arm in `reify_expr::eval_expr`, this
+    /// resolves via the wired meta map when `ctx.meta` is `Some` (as here)
+    /// and would instead *panic* ("MetaAccess evaluation requires meta
+    /// context in EvalContext") if `ctx.meta` were `None` — e.g. if a
+    /// future edit dropped the `.with_meta(..)` link from
+    /// `cell_eval_ctx`'s body (via `eval_ctx_with_meta`). The
+    /// pointer-identity assertion above would not catch that class of
+    /// regression; this test does.
+    #[test]
+    fn cell_eval_ctx_meta_resolves_via_wired_map() {
+        let (values, mut meta_map, determinacy, sink) = empty_inputs();
+        let functions: &[CompiledFunction] = &[];
+        meta_map.insert(
+            "widget".to_string(),
+            HashMap::from([("material".to_string(), "aluminum".to_string())]),
+        );
+        let containment = NoContainment;
+
+        let ctx = cell_eval_ctx(
+            &values,
+            functions,
+            &meta_map,
+            &determinacy,
+            &sink,
+            &containment,
+        );
+
+        let meta_expr = CompiledExpr::meta_access("widget".to_string(), "material".to_string());
+
+        assert_eq!(
+            eval_expr(&meta_expr, &ctx),
+            Value::String("aluminum".to_string()),
+            "meta_access(widget, material) should resolve via the meta map threaded through \
+             cell_eval_ctx, not panic with 'MetaAccess evaluation requires meta context'"
+        );
+    }
 }
