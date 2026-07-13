@@ -1,0 +1,74 @@
+//! Result-recovery worked example — `match`-unwrap + `fallback` recovery
+//! over `Result<Length, String>` (task result-fallback Layer-B ε #4039, PRD
+//! docs/prds/v0_6/result-and-fallback.md §1/§8.B task B-ε), the PRIMARY
+//! Layer-B user-observable leaf and B+H integration gate.
+//!
+//! `parse_length_r`'s return type is the ERASED prelude `Result<T, E>`
+//! (`Type::Enum("Result")`, no `<Length, String>` type args) — matching or
+//! folding it directly leaves payload binders typed as the unsubstituted
+//! param `T`. Wrapping it in a user fn with a CONCRETE return annotation
+//! re-concretizes the binders (`v : Length`) — and mirrors the PRD §1
+//! surface, which shows exactly this wrapper:
+//!
+//!   fn parse_len(s : String) -> Result<Length, String> { parse_length_r(s) }
+//!
+//! `reify eval` should report:
+//!   MountValid (raw="12mm",    parses):  bore = 0.012 m, bore_fb = 0.012 m, diag = "ok"
+//!   MountBad   (raw="garbage", fails):    bore = 0.006 m, bore_fb = 0.006 m, diag = "could not parse 'garbage' as a length"
+//!
+//! `diag` is the distinguishing Layer-B signal: the Err arm's bound `msg` is
+//! an observable error MESSAGE, where Option (Layer A) carries only
+//! presence/absence.
+//!
+//! Covered by crates/reify-eval/tests/result_recovery_e2e.rs (numeric eval
+//! signal), crates/reify-cli/tests/cli_eval_result_recovery.rs (rendered CLI
+//! stdout signal), and the examples compile-clean smoke sweep
+//! (crates/reify-compiler/tests/examples_smoke.rs).
+
+module m6_result_recovery
+
+fn parse_len(s : String) -> Result<Length, String> { parse_length_r(s) }
+
+structure def MountValid {
+    // A fallible stdlib op that yields Result<Length, String> today (a
+    // may-fail parse), routed through `parse_len` so its payload binders
+    // concretize (see header comment).
+    param raw : String = "12mm"
+
+    // `match`-unwrap: binds the Ok arm's payload `v`, falls through to a
+    // literal default on the Err arm.
+    let bore : Length = match parse_len(raw) {
+        Ok { value: v } => v,
+        Err { error: msg } => 6mm,
+    }
+
+    // `fallback` : recovery to a concrete default when the Result is `Err`.
+    let bore_fb : Length = fallback(parse_len(raw), 6mm)
+
+    // The distinguishing Layer-B signal: the Err arm's bound `msg` is an
+    // observable error MESSAGE — a capability Option (Layer A) lacks, since
+    // it carries only presence/absence, never a reason.
+    let diag : String = match parse_len(raw) {
+        Ok { value: v } => "ok",
+        Err { error: msg } => msg,
+    }
+}
+
+// Same recovery logic as MountValid, but `raw` fails to parse: both `bore`
+// and `bore_fb` fall through to their 6mm default, and `diag` surfaces the
+// real parse-failure reason instead of "ok".
+structure def MountBad {
+    param raw : String = "garbage"
+
+    let bore : Length = match parse_len(raw) {
+        Ok { value: v } => v,
+        Err { error: msg } => 6mm,
+    }
+
+    let bore_fb : Length = fallback(parse_len(raw), 6mm)
+
+    let diag : String = match parse_len(raw) {
+        Ok { value: v } => "ok",
+        Err { error: msg } => msg,
+    }
+}
