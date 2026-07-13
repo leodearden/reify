@@ -2930,6 +2930,14 @@ impl Mesh {
         // against a freshly recomputed `weld_positions().1`, so a
         // divergence is still caught loudly in debug/test builds even
         // though release builds pay no cost for it.
+        //
+        // NOTE: that content check re-runs the full O(n) `weld_positions()`
+        // on EVERY threaded call whenever `debug_assertions` are on — which
+        // includes plain `cargo test` / dev-profile builds — fully negating
+        // this method's hot-path saving in that profile. This is intentional
+        // (see above), but it means dev-profile timing of
+        // `check_mesh_contract_welded` does not reflect its release-mode
+        // cost; benchmark or profile this path with `--release`.
         let recomputed_weld: Vec<u32>;
         let welded_indices: &[u32] = match welded {
             Some(w) if w.len() == self.vertices.len() / 3 => {
@@ -3086,6 +3094,13 @@ impl Mesh {
     /// [`ValidatedMesh`] witness. Prefer this over `validate` on hot paths
     /// (e.g. kernel ingest paths) that only need the `Err` side and don't
     /// need the witness back.
+    ///
+    /// This is the precondition-free general entry point: unlike
+    /// [`Self::check_mesh_contract_welded`], it always (re)computes its own
+    /// weld internally, so it is safe to call on any `Mesh` regardless of
+    /// whether the caller has already welded it — the right choice for
+    /// external/cross-crate callers, and for any caller that hasn't already
+    /// computed a bit-exact position weld of this exact mesh.
     ///
     /// `tol` has the same [`MeshInvariant::NonDegenerate`] semantics as
     /// `validate`'s `tol`.
