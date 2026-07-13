@@ -4118,33 +4118,30 @@ impl WarmStartable for OcctKernel {
         // persist/clear/runtime classification here instead of being
         // silently omitted from warm-start state.
         //   PERSIST (serialized into OcctWarmState): shapes, reprs, next_id
+        //     — excluding ids that are keys in parent_handle (see below)
         //   CLEAR-on-restore (derived provenance, rebuilt by extract_*;
         //     see with_warm_state): extracted_edges, extracted_faces,
         //     extracted_vertices, parent_handle
         //   RUNTIME-only (not part of warm-start state): last_warm_start_failures
         //
-        // Accepted bloat: `shapes` is persisted wholesale below, which
-        // includes sub-shape blobs previously minted by extract_edges/
-        // extract_faces/extract_vertices (ids that appear as values in
-        // extracted_* / keys in parent_handle). Since parent_handle and the
-        // extracted_* caches are CLEAR-on-restore, those blobs round-trip as
-        // ordinary shapes/reprs entries but come out orphaned on the
+        // Bounded payload: `shapes` is persisted below, but ids that are
+        // keys in `parent_handle` are skipped. Those ids name sub-shape
+        // blobs previously minted by extract_edges/extract_faces/
+        // extract_vertices; since parent_handle and the extracted_* caches
+        // are CLEAR-on-restore, a serialized sub-shape would round-trip as
+        // an ordinary shapes/reprs entry but come out orphaned on the
         // consumer side: still queryable by id (repr_of, Volume, ...) but
         // unreachable via OwnerBody and never reused by a later extract_*
-        // call, which mints fresh ids against the cleared cache. Across
-        // repeated warm-start cycles this is unbounded, not just
-        // single-cycle bloat: each cycle serializes prior orphans, restores
-        // them, and the next extract_* mints yet more fresh ids on top of
-        // the cleared cache, so the shape table monotonically grows with
-        // phantom, unreachable entries. Pre-existing behavior, not
-        // introduced by the parent_handle clear above; left as-is here
-        // because filtering sub-shape ids out needs parent_handle's key set
-        // threaded into the loop below, which is out of scope for this
-        // task.
-        // TODO(#5162): filter sub-shape ids (parent_handle key set) out of
-        // the serialization loop below so warm-state payload size stays
-        // bounded across repeated warm-start cycles instead of
-        // accumulating orphaned sub-shape entries.
+        // call, which mints fresh ids against the cleared cache. Left
+        // unfiltered, this would be unbounded across repeated warm-start
+        // cycles, not just single-cycle bloat: each cycle would serialize
+        // prior orphans, restore them, and the next extract_* would mint
+        // yet more fresh ids on top of the cleared cache, so the shape
+        // table would monotonically grow with phantom, unreachable
+        // entries. `parent_handle`'s key set is exactly the derived,
+        // rebuildable sub-shape ids — roots created by `execute` (Box,
+        // Cylinder, Union, Sphere, ...) are never keys, so only
+        // root/persistent shapes round-trip.
         let Self {
             shapes,
             reprs,
@@ -4152,7 +4149,7 @@ impl WarmStartable for OcctKernel {
             extracted_edges: _,
             extracted_faces: _,
             extracted_vertices: _,
-            parent_handle: _,
+            parent_handle,
             last_warm_start_failures: _,
         } = self;
         if shapes.is_empty() {
@@ -4162,6 +4159,12 @@ impl WarmStartable for OcctKernel {
         let mut warm_reprs: HashMap<u64, BRepKind> = HashMap::new();
         let mut total_bytes: usize = 0;
         for (&id, shape) in shapes {
+            if parent_handle.contains_key(&id) {
+                // Derived sub-shape id (rebuildable via extract_*); skip so
+                // it doesn't round-trip as an orphaned entry. See the
+                // "Bounded payload" note above.
+                continue;
+            }
             let Some(shape_ref) = shape.as_ref() else {
                 continue; // Skip null shapes (best-effort, like serialization failures)
             };
