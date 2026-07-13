@@ -28,10 +28,10 @@ use reify_kernel_manifold::ManifoldKernel;
 
 /// Assert the handle-stability contract (INV-GEO-2) this file's arms pin:
 /// the first run must be non-vacuous (non-empty, pairwise-distinct,
-/// non-INVALID ids — mirrors the distinctness guard in
-/// `topology_extract_integration.rs:44-60`), and every subsequent run must
-/// be *exactly* equal to the first (same ids, same order).
-fn assert_stable_ids(label: &str, runs: &[Vec<GeometryHandleId>]) {
+/// non-INVALID, and distinct from `parent` — mirrors the distinctness guard
+/// in `topology_extract_integration.rs:44-60`), and every subsequent run
+/// must be *exactly* equal to the first (same ids, same order).
+fn assert_stable_ids(label: &str, parent: GeometryHandleId, runs: &[Vec<GeometryHandleId>]) {
     let first = runs
         .first()
         .unwrap_or_else(|| panic!("[{label}] assert_stable_ids called with no runs"));
@@ -43,6 +43,10 @@ fn assert_stable_ids(label: &str, runs: &[Vec<GeometryHandleId>]) {
 
     let mut seen = std::collections::HashSet::new();
     for id in first {
+        assert_ne!(
+            *id, parent,
+            "[{label}] extracted handle must differ from the parent handle"
+        );
         assert_ne!(
             *id,
             GeometryHandleId::INVALID,
@@ -103,7 +107,7 @@ fn occt_extract_faces_returns_stable_ids() {
         runs[0].len()
     );
 
-    assert_stable_ids("occt extract_faces", &runs);
+    assert_stable_ids("occt extract_faces", box_id, &runs);
 }
 
 /// `extract_edges` on a real OCCT BRep box SOLID handle returns identical
@@ -126,7 +130,7 @@ fn occt_extract_edges_returns_stable_ids() {
         runs[0].len()
     );
 
-    assert_stable_ids("occt extract_edges", &runs);
+    assert_stable_ids("occt extract_edges", box_id, &runs);
 }
 
 /// `extract_faces` on a real Manifold handle — a genuine OCCT box mesh
@@ -154,5 +158,5 @@ fn manifold_extract_faces_returns_stable_ids() {
         manifold.extract_faces(handle.id)
     });
 
-    assert_stable_ids("manifold extract_faces", &runs);
+    assert_stable_ids("manifold extract_faces", handle.id, &runs);
 }
