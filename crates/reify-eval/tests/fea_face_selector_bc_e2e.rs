@@ -206,6 +206,15 @@ fn boundary_demand_realization_edge_produces_attributed_boundary_on_occt_surface
     // "gmsh" together uniquely identify this branch's Warning messages.
     // engine_build.rs is outside this task's locked scope, so factoring the
     // text into a shared const both sites reference isn't available here.
+    //
+    // BEST-EFFORT, NOT AUTHORITATIVE: this is a substring filter over
+    // free-text diagnostic messages, so a reworded warning could evade it and
+    // leave `degradation_warnings` empty even if degradation actually
+    // occurred. The authoritative proof that no degradation happened is the
+    // `boundary().expect(Some)` + non-empty assertion ABOVE — the plain
+    // (degraded) producer never sets `boundary`, so that check alone already
+    // rules out degradation. This filter is kept only as a secondary,
+    // best-effort corroborating signal, not a substitute for it.
     let degradation_warnings: Vec<_> = result
         .diagnostics
         .iter()
@@ -220,7 +229,9 @@ fn boundary_demand_realization_edge_produces_attributed_boundary_on_occt_surface
         degradation_warnings.is_empty(),
         "the attributed producer must succeed on the real OCCT surface with no \
          honest-degradation warning (matched loosely on 'attributed' + 'gmsh' + \
-         'plain producer' tokens); got diagnostics: {:?}",
+         'plain producer' tokens; this is a best-effort secondary check — the \
+         boundary Some+non-empty assertion above is the authoritative one); got \
+         diagnostics: {:?}",
         result.diagnostics
     );
 
