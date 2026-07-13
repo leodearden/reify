@@ -5382,10 +5382,22 @@ pub(crate) fn is_symbolic_eval_wired_selector_ctor(expr: &reify_ir::CompiledExpr
 /// resolve against a realized kernel on the `build()`/`tessellate()` path.
 /// Keyed on argument *types* (which the compiler has already resolved), it
 /// CLOSES the open-ended geometry-consumer class the former clause-8 name
-/// lists kept missing — the `face`/`edge`/`solid_body`/`vertex` named-leaf
-/// ctors, composition `union`/`intersect`/`difference`, GD&T `max_deviation`,
-/// `split`, `feature`, the conformance queries, and any future geometry-arg
-/// consumer — with no per-name upkeep.
+/// lists kept missing — GD&T `max_deviation`, `split`, `feature`, the
+/// conformance queries, and any future geometry-arg consumer — with no
+/// per-name upkeep.
+///
+/// The `face`/`edge`/`solid_body`/`vertex` named-leaf ctors and composition
+/// `union`/`intersect`/`difference` also satisfy this predicate — they
+/// consume geometry/selector-typed args too — but since task #5120 R2c they
+/// are ALSO [`is_symbolic_eval_wired_selector_ctor`], so clause 8's AND-rule
+/// no longer classifies them as build-only (review amendment: this list
+/// used to place them here as build-only examples, which R2c's wiring made
+/// self-contradictory). The exception is the overloaded solid-CSG
+/// `union`/`intersect`/`difference` booleans: their operands are
+/// `Value::GeometryHandle`, not `Value::Selector`, so the symbolic
+/// reconstruct returns `None` and those specific calls still stay `Undef`
+/// until `build()` — exempted by clause 7's `Type::Geometry` cell-type
+/// carve-out, not clause 8, as the R2c tests assert.
 ///
 /// It does NOT cover build-only queries that consume ABSTRACTED handles
 /// rather than a geometry-typed arg — the kernel geometry-query family's
