@@ -406,10 +406,12 @@ impl Engine {
     /// `dispatch_merged_cluster_solve`. The following paired
     /// allocate-and-bump sites are NOT yet migrated and still read+bump
     /// `next_snapshot_id`/`next_version_id` directly; this is tracked,
-    /// scoped-out follow-up work (sibling tasks β/γ), not an oversight:
-    ///   - `concurrent.rs:170-173`
-    ///   - `engine_edit.rs:961-964`
-    ///   - `engine_edit.rs:2592-2595`
+    /// scoped-out follow-up work, not an oversight (named by owning
+    /// function rather than line number, since those drift — see the
+    /// tracking task for the current call site):
+    ///   - `concurrent.rs`: `Engine::prepare_concurrent_edit` (sibling task γ)
+    ///   - `engine_edit.rs`: `Engine::edit_param` (sibling task β)
+    ///   - `engine_edit.rs`: `Engine::edit_source` (sibling task β)
     ///
     /// Until those land, treat the "exactly one API" invariant as fully
     /// enforced only for `engine_eval.rs`. Separately, `eval_cached()`'s
@@ -3056,7 +3058,9 @@ mod tests {
         // at 0, not a guarantee the method enforces — see
         // `allocate_snapshot_version_does_not_enforce_lockstep_when_counters_are_desynced`
         // below, which pre-desyncs the counters and shows the pair diverges.
-        assert_eq!(snap0.0, ver0.0, "pair is lockstep while counters start equal");
+        // (Not asserted here: the exact-id asserts above already pin both
+        // `.0` values, so a `snap0.0 == ver0.0` check could never fail
+        // independently of them.)
         assert_eq!(
             engine.next_snapshot_id, 1,
             "next_snapshot_id must advance by exactly 1 after one call",
@@ -3071,7 +3075,8 @@ mod tests {
         assert_eq!(ver1, VersionId(1), "second allocation must mint VersionId(1)");
         // Same caveat as above: lockstep here falls out of both counters
         // having advanced in lockstep so far, not an enforced invariant.
-        assert_eq!(snap1.0, ver1.0, "pair is lockstep while counters stay equal");
+        // (Not asserted here, for the same reason: already pinned by the
+        // exact-id asserts above.)
         assert_eq!(
             engine.next_snapshot_id, 2,
             "next_snapshot_id must advance by exactly 1 again",
