@@ -9646,20 +9646,34 @@ mod tests {
     /// because the frame is parsed before the law inside
     /// `anisotropic_material_from_value`, so a malformed frame would surface
     /// a frame error instead of exercising the `?`-threaded law extractors
-    /// this test targets. Only `e1` is set on the law (wrong-typed); the
-    /// other fields are left absent, relying on the struct literal's
-    /// left-to-right field evaluation (mirrors
-    /// `scalar_si_field_rejects_non_scalar_field`'s convention) to reach the
-    /// `e1` error before any missing-field error on a later field.
+    /// this test targets. Only `e1` is wrong-typed; every other law field
+    /// (`e2`/`e3`/`g12`/`g13`/`g23`/`nu12`/`nu13`/`nu23`) is set to a
+    /// well-formed value (amendment, task #5084 review round 2, suggestion
+    /// 2), so the `Err(ExpectedScalar)` assertion isolates the `e1`
+    /// rejection and cannot be satisfied by an incidental `MissingField` on
+    /// a later field — it no longer depends on the `OrthotropicMaterial
+    /// { .. }` construction's struct-literal field evaluation order.
     ///
     /// RED: see module-section comment above.
     #[test]
     fn anisotropic_material_from_value_rejects_malformed_orthotropic_law() {
         use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
 
-        let law_fields: PersistentMap<String, Value> = [("e1".to_string(), Value::Real(1.0))]
-            .into_iter()
-            .collect();
+        let pressure_scalar =
+            |si_value: f64| Value::Scalar { si_value, dimension: DimensionVector::PRESSURE };
+        let law_fields: PersistentMap<String, Value> = [
+            ("e1".to_string(), Value::Real(1.0)), // wrong-typed: the field under test
+            ("e2".to_string(), pressure_scalar(1.0e9)),
+            ("e3".to_string(), pressure_scalar(1.0e9)),
+            ("g12".to_string(), pressure_scalar(1.0e9)),
+            ("g13".to_string(), pressure_scalar(1.0e9)),
+            ("g23".to_string(), pressure_scalar(1.0e9)),
+            ("nu12".to_string(), Value::Real(0.3)),
+            ("nu13".to_string(), Value::Real(0.3)),
+            ("nu23".to_string(), Value::Real(0.3)),
+        ]
+        .into_iter()
+        .collect();
         let law = Value::StructureInstance(Box::new(StructureInstanceData {
             type_id: StructureTypeId(u32::MAX),
             type_name: "OrthotropicMaterial".to_string(),
@@ -9676,14 +9690,11 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        let val = Value::StructureInstance(Box::new(StructureInstanceData {
-            type_id: StructureTypeId(u32::MAX),
-            type_name: "AnisotropicMaterial".to_string(),
-            version: 1,
-            fields: aniso_fields,
-        }));
 
-        let res = anisotropic_material_from_value(&val);
+        // Amendment (task #5084 review round 2, suggestion 1): reuse the
+        // `anisotropic_material` helper instead of hand-building the outer
+        // `AnisotropicMaterial` StructureInstance inline.
+        let res = anisotropic_material_from_value(&anisotropic_material(aniso_fields));
         assert!(
             matches!(res, Err(FeaValueShapeError::ExpectedScalar { .. })),
             "expected Err(ExpectedScalar) for a present-but-wrong-type e1 field, got: {:?}",
@@ -9725,14 +9736,11 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        let val = Value::StructureInstance(Box::new(StructureInstanceData {
-            type_id: StructureTypeId(u32::MAX),
-            type_name: "AnisotropicMaterial".to_string(),
-            version: 1,
-            fields: aniso_fields,
-        }));
 
-        let res = anisotropic_material_from_value(&val);
+        // Amendment (task #5084 review round 2, suggestion 1): reuse the
+        // `anisotropic_material` helper instead of hand-building the outer
+        // `AnisotropicMaterial` StructureInstance inline.
+        let res = anisotropic_material_from_value(&anisotropic_material(aniso_fields));
         assert!(
             matches!(res, Err(FeaValueShapeError::ExpectedScalar { .. })),
             "expected Err(ExpectedScalar) for a present-but-wrong-type e_in_plane field, got: {:?}",
@@ -9758,6 +9766,9 @@ mod tests {
     /// StructureInstance` builder for the structural-error tests below,
     /// mirroring `isotropic_material`'s precedent (task #5081 review round 3,
     /// suggestion 1) of factoring out repeated struct-literal boilerplate.
+    /// Also reused by the two malformed-law tests above (task #5084 review
+    /// round 2, suggestion 1), which previously duplicated this construction
+    /// inline.
     fn anisotropic_material(fields: PersistentMap<String, Value>) -> Value {
         Value::StructureInstance(Box::new(StructureInstanceData {
             type_name: "AnisotropicMaterial".to_string(),
