@@ -3167,19 +3167,13 @@ pub enum DiagnosticCode {
     /// `Scalar / Vector` / `Real / Vector` (no reverse-scale arm exists for
     /// division, unlike `Mul`'s commutative aggregate-scale arms).
     ///
-    /// **Add/Sub reuse** (task compiler-type-hygiene follow-up 5163): also emitted
-    /// when `+`/`-` pairs a DIMENSIONED `Complex` (e.g. `Complex<Length>`) with a
-    /// bare dimensionless numeric (`Int` or `Scalar{DIMENSIONLESS}`, i.e. a `Real`
-    /// literal), in EITHER operand order — `Complex<Length> + 1` and
-    /// `1 + Complex<Length>` both reject. This mirrors the Mul/Div rationale
-    /// exactly: the runtime `guard_dimensionless_complex`
-    /// (`crates/reify-expr/src/lib.rs`) evaluates `Value::Undef` for this pairing —
-    /// only a DIMENSIONLESS `Complex` widens against a bare numeric (D3 policy;
-    /// `eval_add`/`eval_sub`) — so the static side must reject it too instead of
-    /// silently claiming a (previously order-dependent) result type. The reject
-    /// predicate is `type_compat::add_sub_dimensioned_complex_reject`; `Complex<Q1>
-    /// ± Complex<Q2>` dimension mismatches are a separate, still-unguarded gap
-    /// outside task 5163's scope.
+    /// **Add/Sub reuse** (task compiler-type-hygiene follow-up 5163): also
+    /// emitted for `+`/`-` pairing a DIMENSIONED `Complex` with a bare
+    /// dimensionless numeric, in either operand order. Implemented by
+    /// `type_compat::add_sub_dimensioned_complex_reject` — see that
+    /// predicate's doc for the full rationale. `Complex<Q1> ± Complex<Q2>`
+    /// dimension mismatches are a separate, still-unguarded gap outside this
+    /// task's scope.
     ///
     /// Canonical message form (naming the operator and BOTH operand types):
     ///   `"operator \`*\` is undefined for operand kinds \`Vector3<Length>\` and \

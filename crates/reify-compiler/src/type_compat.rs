@@ -1649,30 +1649,24 @@ fn is_dimensioned_complex(ty: &Type) -> bool {
     matches!(ty, Type::Complex(q) if matches!(q.as_ref(), Type::Scalar { dimension } if !dimension.is_dimensionless()))
 }
 
-/// Symmetric reject predicate for `+`/`-` (task 5163): `true` when one
-/// operand is a DIMENSIONED `Complex` and the other is a bare dimensionless
-/// numeric (`Int`/`Scalar{DIMENSIONLESS}`) — the exact pairing the runtime
-/// `guard_dimensionless_complex` (reify-expr) evaluates to `Value::Undef`
-/// (D3 policy; see `is_dimensionless_complex`'s doc above). Covers BOTH
-/// operand orders in one check, closing the order-dependent asymmetry
-/// documented on `infer_binop_type`'s `Add`/`Sub` arm below
-/// (`Complex<Length> + 1` vs `1 + Complex<Length>`).
+/// Canonical rationale for the `+`/`-` dimensioned-Complex-vs-bare-numeric
+/// reject (task 5163) — `expr.rs`'s operand-kind guard and
+/// `DiagnosticCode::ArithOperandKind`'s doc cross-reference here rather
+/// than restate it.
 ///
-/// `Type::Error`/`Type::TypeParam` (and every other non-matching kind)
-/// operands satisfy neither `is_dimensioned_complex` nor
-/// `is_dimensionless_numeric`, so gradualism is preserved structurally —
-/// no explicit skip-set is needed here (unlike the broader Mul/Div
-/// `is_mul_div_gradualism_skip`, whose `None`-partition is wider).
+/// `true` when one operand is a DIMENSIONED `Complex` and the other is a
+/// bare dimensionless numeric (`Int`/`Scalar{DIMENSIONLESS}`), in EITHER
+/// order — the exact pairing the runtime `guard_dimensionless_complex`
+/// (reify-expr) evaluates to `Value::Undef` (D3 policy; see
+/// `is_dimensionless_complex`'s doc above). `Type::Error`/`Type::TypeParam`
+/// operands match neither half, so gradualism holds structurally with no
+/// separate skip-set (contrast the broader Mul/Div
+/// `is_mul_div_gradualism_skip`).
 ///
-/// Reuses `is_dimensionless_numeric` unchanged for the bare-numeric side
-/// (covers `Int` and `Real`, i.e. `Scalar{DIMENSIONLESS}`).
-///
-/// Pure and unit-tested independently of the pipeline (see the
-/// `add_sub_dimensioned_complex_reject_*`/`is_dimensioned_complex_*` tests
-/// below). Consumed by `expr.rs`'s `compile_binop` operand-kind guard
-/// (mirrors the β2 Mul/Div `ArithOperandKind` guard) to poison
-/// `result_type` to `Type::Error` and emit a diagnostic — this predicate
-/// itself does not diagnose or poison.
+/// Pure and unit-tested below (see the
+/// `add_sub_dimensioned_complex_reject_*`/`is_dimensioned_complex_*` tests);
+/// poisoning `result_type` and emitting the diagnostic happen at the
+/// `expr.rs` call site.
 pub(crate) fn add_sub_dimensioned_complex_reject(left: &Type, right: &Type) -> bool {
     (is_dimensioned_complex(left) && is_dimensionless_numeric(right))
         || (is_dimensionless_numeric(left) && is_dimensioned_complex(right))

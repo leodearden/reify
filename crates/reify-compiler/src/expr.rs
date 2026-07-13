@@ -1796,23 +1796,15 @@ pub(crate) fn compile_expr_guarded_with_expected(
                     // paired with a bare dimensionless numeric (task
                     // compiler-type-hygiene follow-up 5163, reusing
                     // `E_ArithOperandKind` — mirrors the β2 Mul/Div guard
-                    // further below).
+                    // further below). See
+                    // `type_compat::add_sub_dimensioned_complex_reject`'s doc
+                    // for the full rationale (runtime Undef pairing, both
+                    // operand orders, structural gradualism).
                     //
-                    // `infer_binop_type`'s `Add`/`Sub` arm keeps returning its
-                    // pre-existing placeholder (`left.clone()`/`right.clone()`)
-                    // for this pairing UNCHANGED (see that arm's doc in
-                    // type_compat.rs) — this guard overrides `result_type`
-                    // exactly like the Mul/Div guard overrides its own `Int`
-                    // placeholder below, so the compiled AST never observes
-                    // the placeholder's (previously order-dependent, silently
-                    // wrong) static type.
-                    //
-                    // Gradualism is preserved STRUCTURALLY by
-                    // `add_sub_dimensioned_complex_reject` itself — it matches
-                    // only a (dimensioned Complex, dimensionless numeric) pair,
-                    // so `Type::Error`/`Type::TypeParam` operands never trigger
-                    // it and no separate skip check is needed here (unlike the
-                    // broader Mul/Div `is_mul_div_gradualism_skip`).
+                    // `infer_binop_type`'s `Add`/`Sub` arm keeps its
+                    // pre-existing placeholder UNCHANGED for this pairing;
+                    // this guard overrides `result_type` exactly like the
+                    // Mul/Div guard overrides its own placeholder below.
                     if matches!(bin_op, BinOp::Add | BinOp::Sub)
                         && type_compat::add_sub_dimensioned_complex_reject(
                             &compiled_left.result_type,
