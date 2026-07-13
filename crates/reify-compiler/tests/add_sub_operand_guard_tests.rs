@@ -33,6 +33,14 @@
 //!   `ArithOperandKind`
 //! - `unknown_var + z` (unresolved-name `Type::Error` operand, gradualism) →
 //!   zero `ArithOperandKind`
+//!
+//! **Documented unguarded gap (out of this task's scope, NOT fixed here):**
+//! - `z + len` (`Complex<Length> + Length` — dimensioned Complex vs a
+//!   dimensioned, non-Int/Real `Scalar`) → zero `ArithOperandKind`. This pins
+//!   CURRENT behavior, not a correctness claim: task 5163 only guards the
+//!   dimensioned-Complex-vs-bare-dimensionless-numeric row (see
+//!   `add_sub_dimensioned_complex_reject`'s doc in `type_compat.rs`); this
+//!   pairing is analogous to the `z + z` Complex-vs-Complex gap above.
 
 use reify_core::{DiagnosticCode, Severity, Type};
 use reify_test_support::{compile_source, get_let_expr_in};
@@ -98,9 +106,14 @@ fn dimensioned_complex_plus_int_emits_arith_operand_kind_and_poisons_result() {
         "`z + 1` error message must mention `+`; got: {:?}",
         flagged[0].message
     );
+    // Derive the expected operand-kind substring from `Type`'s own Display
+    // impl (rather than a hardcoded `"Complex<"` literal) so this assertion
+    // tracks the compiler's actual formatting instead of restating it.
+    let expected_operand_kind = Type::complex(Type::length()).to_string();
     assert!(
-        flagged[0].message.contains("Complex<"),
-        "`z + 1` error message must name the Complex<..> operand kind; got: {:?}",
+        flagged[0].message.contains(&expected_operand_kind),
+        "`z + 1` error message must name the {expected_operand_kind} operand \
+         kind; got: {:?}",
         flagged[0].message
     );
 
@@ -244,5 +257,28 @@ fn unresolved_name_operand_no_spurious_arith_operand_kind() {
         0,
         "`unknown_var + z` must NOT produce a spurious ArithOperandKind — \
          left operand is Type::Error (anti-cascade). got errors: {errors:?}"
+    );
+}
+
+// ── Documented unguarded gap (out of this task's scope) ─────────────────────
+
+/// `z + len` (`Complex<Length> + Length`: dimensioned Complex vs a
+/// dimensioned, non-Int/Real `Scalar`) matches neither
+/// `add_sub_dimensioned_complex_reject` (the right operand isn't a bare
+/// dimensionless numeric) nor the pre-existing Scalar/Scalar dimension-compat
+/// block in `expr.rs` (the left operand is `Complex`, not `Scalar`). This
+/// pins CURRENT behavior — zero `ArithOperandKind` — as a documented,
+/// out-of-scope gap alongside `z + z` above, NOT a correctness claim: task
+/// 5163 only guards the dimensioned-Complex-vs-bare-dimensionless-numeric
+/// row (see `add_sub_dimensioned_complex_reject`'s doc in `type_compat.rs`).
+#[test]
+fn dimensioned_complex_plus_dimensioned_scalar_is_documented_unguarded_gap() {
+    let errors = compile_complex_expr_errors("let w = z + len");
+    assert_eq!(
+        arith_operand_kind_count(&errors),
+        0,
+        "`z + len` (Complex<Length> + Length) is a documented out-of-scope \
+         gap (dimensioned Complex vs dimensioned Scalar) — task 5163 only \
+         guards the bare-dimensionless-numeric row; got errors: {errors:?}"
     );
 }

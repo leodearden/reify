@@ -2672,6 +2672,23 @@ mod tests {
         ));
     }
 
+    /// `Complex<Length> + Length` (dimensioned Complex + dimensioned, non-Int
+    /// `Scalar`) matches neither this predicate (the `Scalar` side isn't a
+    /// bare dimensionless numeric) nor the `expr.rs` Scalar/Scalar
+    /// dimension-compat block (the `Complex` side isn't a bare `Scalar`) — a
+    /// separate, unguarded gap analogous to the Complex-vs-Complex case
+    /// above, also out of scope for task 5163. Pins CURRENT (unguarded)
+    /// behavior, not a correctness claim.
+    #[test]
+    fn add_sub_dimensioned_complex_reject_false_for_dimensioned_complex_plus_dimensioned_scalar_out_of_scope()
+     {
+        let dimensioned_complex = Type::complex(Type::length());
+        assert!(!add_sub_dimensioned_complex_reject(
+            &dimensioned_complex,
+            &Type::length()
+        ));
+    }
+
     #[test]
     fn add_sub_dimensioned_complex_reject_false_for_error_left_gradualism() {
         let dimensioned = Type::complex(Type::length());
