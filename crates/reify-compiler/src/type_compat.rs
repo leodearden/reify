@@ -1643,6 +1643,41 @@ fn is_dimensionless_complex(ty: &Type) -> bool {
     matches!(ty, Type::Complex(q) if matches!(q.as_ref(), Type::Scalar { dimension } if dimension.is_dimensionless()))
 }
 
+/// Exact complement of `is_dimensionless_complex`: a `Complex` wrapping a
+/// non-dimensionless `Scalar` (e.g. `Complex<Length>`, `Complex<Resistance>`).
+fn is_dimensioned_complex(ty: &Type) -> bool {
+    matches!(ty, Type::Complex(q) if matches!(q.as_ref(), Type::Scalar { dimension } if !dimension.is_dimensionless()))
+}
+
+/// Symmetric reject predicate for `+`/`-` (task 5163): `true` when one
+/// operand is a DIMENSIONED `Complex` and the other is a bare dimensionless
+/// numeric (`Int`/`Scalar{DIMENSIONLESS}`) — the exact pairing the runtime
+/// `guard_dimensionless_complex` (reify-expr) evaluates to `Value::Undef`
+/// (D3 policy; see `is_dimensionless_complex`'s doc above). Covers BOTH
+/// operand orders in one check, closing the order-dependent asymmetry
+/// documented on `infer_binop_type`'s `Add`/`Sub` arm below
+/// (`Complex<Length> + 1` vs `1 + Complex<Length>`).
+///
+/// `Type::Error`/`Type::TypeParam` (and every other non-matching kind)
+/// operands satisfy neither `is_dimensioned_complex` nor
+/// `is_dimensionless_numeric`, so gradualism is preserved structurally —
+/// no explicit skip-set is needed here (unlike the broader Mul/Div
+/// `is_mul_div_gradualism_skip`, whose `None`-partition is wider).
+///
+/// Reuses `is_dimensionless_numeric` unchanged for the bare-numeric side
+/// (covers `Int` and `Real`, i.e. `Scalar{DIMENSIONLESS}`).
+///
+/// Pure and unit-tested independently of the pipeline (see the
+/// `add_sub_dimensioned_complex_reject_*`/`is_dimensioned_complex_*` tests
+/// below). Consumed by `expr.rs`'s `compile_binop` operand-kind guard
+/// (mirrors the β2 Mul/Div `ArithOperandKind` guard) to poison
+/// `result_type` to `Type::Error` and emit a diagnostic — this predicate
+/// itself does not diagnose or poison.
+pub(crate) fn add_sub_dimensioned_complex_reject(left: &Type, right: &Type) -> bool {
+    (is_dimensioned_complex(left) && is_dimensionless_numeric(right))
+        || (is_dimensionless_numeric(left) && is_dimensioned_complex(right))
+}
+
 /// Single source of truth for BOTH the correct static result type of `*`/`/`
 /// AND the runtime-supported/unsupported partition (task compiler-type-hygiene
 /// β2, INV-COMP-3).
