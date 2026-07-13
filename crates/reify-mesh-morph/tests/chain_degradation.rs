@@ -460,6 +460,34 @@ fn lcg_jumps(seed: u64, n: usize, lo: f64, hi: f64) -> Vec<f64> {
     out
 }
 
+/// Minimum absolute margin — in fallback **count**, not rate — that the
+/// non-monotonic sweep's [`runner::ChainReport::fallback_count`] must clear
+/// above the monotonic sweep's, for assertion (b) in
+/// [`non_monotonic_plate_jumps_trigger_fallbacks_and_chain_self_recovers`].
+///
+/// (reviewer_comprehensive test-robustness finding, amendment round 3 —
+/// round 2's `71f1b5897b` only documented this finding as "no action
+/// required"; this constant is the actual code fix.) Both sweeps have the
+/// same 50 morph ticks, so a count margin is equivalent in direction to a
+/// rate margin but avoids the previous bare
+/// `report.fallback_rate() > monotonic_report.fallback_rate()`, which
+/// directly coupled two independently-computed *live* quantities: a future
+/// morph/quality-check tuning change could nudge the monotonic sweep up
+/// towards its own permitted ceiling (`CHAIN_FALLBACK_RATE_MAX` allows up
+/// to ~2 of 50) while also nudging the non-monotonic seed-8 sequence's
+/// count down (documented at 6, see [`lcg_jumps`]'s doc), flipping a bare
+/// `>` on a gap of only one tick — nowhere near the "materially more"
+/// property this assertion exists to check. Requiring the non-monotonic
+/// count to clear the *live* monotonic count by at least this margin keeps
+/// the comparison honest against any future shift in the true monotonic
+/// baseline (a hardcoded pin against either sweep's absolute count would
+/// not — see `monotonic_sweep_report`'s doc for the identical staleness
+/// concern), while no longer flipping on a one-tick nudge: today's actual
+/// gap (6 vs 0) clears this margin with comfortable room to spare, and even
+/// in the worst *legitimate* monotonic case (2, at `CHAIN_FALLBACK_RATE_MAX`'s
+/// own ceiling) the non-monotonic sweep would still need to clear 4.
+const CHAIN_NON_MONOTONIC_FALLBACK_MARGIN: usize = 2;
+
 /// PRD `docs/prds/v0_3/mesh-morphing.md` task #14, claim (c): a
 /// non-monotonic (not-nearest) chain is caught by the quality check and
 /// self-recovers via remesh-fallback.
@@ -508,11 +536,20 @@ fn non_monotonic_plate_jumps_trigger_fallbacks_and_chain_self_recovers() {
         report.fallback_count()
     );
 
-    // (b) Bad jumps cause materially more fallbacks than the tiny
-    // monotonic steps.
+    // (b) Bad jumps cause MATERIALLY more fallbacks than the tiny monotonic
+    // steps — an absolute-count margin against the live monotonic baseline,
+    // not a bare `>` between two independently-drifting rates
+    // (reviewer_comprehensive test-robustness finding, amendment round 3:
+    // see CHAIN_NON_MONOTONIC_FALLBACK_MARGIN's doc).
     assert!(
-        report.fallback_rate() > monotonic_report.fallback_rate(),
-        "non-monotonic fallback_rate={} must exceed the monotonic baseline={}",
+        report.fallback_count()
+            >= monotonic_report.fallback_count() + CHAIN_NON_MONOTONIC_FALLBACK_MARGIN,
+        "non-monotonic fallback_count={} must exceed the monotonic baseline={} \
+         by at least {} (materially more, not just numerically more) — \
+         non-monotonic fallback_rate={:.4}, monotonic fallback_rate={:.4}",
+        report.fallback_count(),
+        monotonic_report.fallback_count(),
+        CHAIN_NON_MONOTONIC_FALLBACK_MARGIN,
         report.fallback_rate(),
         monotonic_report.fallback_rate()
     );
