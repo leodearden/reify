@@ -681,6 +681,56 @@ fn pair_keyed_mixed_add_remove_change() -> (&'static str, GuiState, GuiState) {
     ("keyed_mixed_add_remove_change", old, new)
 }
 
+/// Two pre-existing items per keyed collection are simultaneously changed
+/// (no adds/removes), with `new`'s vector order reversed relative to
+/// `old`'s ("B" before "A", vs. "A" before "B" in `old`). This pins that
+/// `changed_*` events follow `new`'s vector iteration order specifically —
+/// not `old`'s, and not e.g. a key-sorted order a future HashMap-driven
+/// refactor of `diff_keyed` might introduce. A corpus with at most one
+/// changed item per collection (as `pair_keyed_change` and
+/// `pair_keyed_mixed_add_remove_change` have) can't catch an
+/// intra-collection reorder, since a single-element list has no order to
+/// get wrong.
+fn pair_keyed_multiple_changed_reordered() -> (&'static str, GuiState, GuiState) {
+    let old = GuiState {
+        meshes: vec![
+            sample_mesh("A.body", vec![1.0, 1.0, 1.0]),
+            sample_mesh("B.body", vec![2.0, 2.0, 2.0]),
+            sample_mesh("Keep.body", vec![9.0, 9.0, 9.0]),
+        ],
+        values: vec![
+            sample_value("A.w", "1"),
+            sample_value("B.w", "2"),
+            sample_value("Keep.x", "5"),
+        ],
+        constraints: vec![
+            sample_constraint("A.0", "Satisfied"),
+            sample_constraint("B.0", "Satisfied"),
+            sample_constraint("Keep.0", "Satisfied"),
+        ],
+        ..empty_gui_state()
+    };
+    let new = GuiState {
+        meshes: vec![
+            sample_mesh("B.body", vec![22.0, 22.0, 22.0]),
+            sample_mesh("A.body", vec![11.0, 11.0, 11.0]),
+            sample_mesh("Keep.body", vec![9.0, 9.0, 9.0]),
+        ],
+        values: vec![
+            sample_value("B.w", "22"),
+            sample_value("A.w", "11"),
+            sample_value("Keep.x", "5"),
+        ],
+        constraints: vec![
+            sample_constraint("B.0", "Violated"),
+            sample_constraint("A.0", "Violated"),
+            sample_constraint("Keep.0", "Satisfied"),
+        ],
+        ..empty_gui_state()
+    };
+    ("keyed_multiple_changed_reordered", old, new)
+}
+
 /// All six whole-value list fields change (keyed collections held identical
 /// and empty, isolating the whole-field diff behavior).
 fn pair_whole_change() -> (&'static str, GuiState, GuiState) {
@@ -799,6 +849,7 @@ fn corpus() -> Vec<(&'static str, GuiState, GuiState)> {
         pair_keyed_add(),
         pair_keyed_remove(),
         pair_keyed_mixed_add_remove_change(),
+        pair_keyed_multiple_changed_reordered(),
         pair_whole_change(),
         pair_whole_clear(),
         pair_full_reload_only_fields_vary_only(),
