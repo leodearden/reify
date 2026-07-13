@@ -126,3 +126,37 @@ fn occt_extract_edges_returns_stable_ids() {
 
     assert_stable_ids("occt extract_edges", &[first, second, third]);
 }
+
+/// `extract_faces` on a real Manifold handle — a genuine OCCT box mesh
+/// ingested via `ManifoldKernel::ingest_mesh` — returns identical ids, in
+/// identical order, across repeated calls within a session.
+///
+/// The coalesced-face COUNT is deliberately not pinned here (only
+/// non-empty + pairwise-distinct + 3-way exact identity): stability, not
+/// face count, is this arm's contract. GREEN on main (Manifold
+/// `extracted_faces` cache,
+/// `crates/reify-kernel-manifold/src/kernel.rs:835-867`); red-on-revert if
+/// that cache is removed.
+///
+/// The Manifold `extract_edges` arm is intentionally NOT added here — see
+/// the module doc comment.
+#[test]
+fn manifold_extract_faces_returns_stable_ids() {
+    let mesh = common::occt_box();
+    let mut manifold = ManifoldKernel::new();
+    let handle = manifold
+        .ingest_mesh(&mesh)
+        .expect("ingest_mesh should accept a validated real OCCT box mesh");
+
+    let first = manifold
+        .extract_faces(handle.id)
+        .expect("first extract_faces call should succeed");
+    let second = manifold
+        .extract_faces(handle.id)
+        .expect("second extract_faces call should succeed");
+    let third = manifold
+        .extract_faces(handle.id)
+        .expect("third extract_faces call should succeed");
+
+    assert_stable_ids("manifold extract_faces", &[first, second, third]);
+}
