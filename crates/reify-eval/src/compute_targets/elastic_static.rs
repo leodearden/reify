@@ -3477,9 +3477,9 @@ fn classify_material_as_printed_zones(lambda: &Value) -> MaterialModel {
             other
         ),
     };
-    let mat_wall   = anisotropic_material_from_value(&list[4]);
-    let mat_skin   = anisotropic_material_from_value(&list[5]);
-    let mat_infill = anisotropic_material_from_value(&list[6]);
+    let mat_wall   = anisotropic_material_from_value(&list[4]).fea_shim();
+    let mat_skin   = anisotropic_material_from_value(&list[5]).fea_shim();
+    let mat_infill = anisotropic_material_from_value(&list[6]).fea_shim();
 
     let aabb = AxisAlignedBox { min: aabb_min, max: aabb_max };
 
@@ -3700,52 +3700,74 @@ fn extract_zone_process_params(val: &Value) -> Result<ZoneProcessParams, FeaValu
 /// frame: MaterialFrame }` Value to a Rust `AnisotropicMaterial`, honouring the
 /// frame's x/y/z axes as the local → global rotation (columns = local basis in global).
 ///
+/// PRD compute-fea-hardening D5: Result-ified leaf extractor. Returns
+/// `Err(FeaValueShapeError)` instead of panicking on a malformed `Value`,
+/// with one deliberate, permanent exception: an unsupported law `type_name`
+/// (neither `OrthotropicMaterial` nor `TransverseIsotropicMaterial`) still
+/// panics. The fixed C3 taxonomy (`FeaValueShapeError`'s 5 variants, reused
+/// here — not redefined) has no shape for "type_name is neither known law";
+/// it describes `Value`-variant mismatches and missing fields, not unknown
+/// symbolic dispatch tags. That branch is also unreachable-by-construction
+/// (the DSL only ever emits `Orthotropic`/`TransverseIsotropic` laws into
+/// `AnisotropicMaterial.law`), mirroring `classify_material`'s own
+/// type_name dispatch, which likewise sits outside the shape-error
+/// taxonomy. This is not deferred to a later D-task — see the design
+/// decision on this task's plan.
+///
+/// Its 3 call sites (`classify_material_as_printed_zones`'s mat_wall/
+/// mat_skin/mat_infill) bridge the `Result` arms with `FeaShimExt::fea_shim`
+/// so external behavior is unchanged until D6 Result-ifies
+/// `classify_material_as_printed_zones` and removes the shim.
+///
 /// Used by `classify_material_as_printed_zones` to parse the three zone-material
 /// Values packed in the AsPrintedZones lambda.
-fn anisotropic_material_from_value(val: &Value) -> AnisotropicMaterial {
+fn anisotropic_material_from_value(val: &Value) -> Result<AnisotropicMaterial, FeaValueShapeError> {
     let data = match val {
         Value::StructureInstance(d) => d,
-        other => panic!(
-            "solve_elastic_static_trampoline: zone material must be \
-             AnisotropicMaterial StructureInstance, got: {:?}",
-            other
-        ),
+        other => {
+            return Err(FeaValueShapeError::ExpectedStructureInstance {
+                context: "anisotropic_material_from_value",
+                got: format!("{other:?}"),
+            })
+        }
     };
 
-    let law_val = data.fields.get("law").unwrap_or_else(|| {
-        panic!(
-            "solve_elastic_static_trampoline: AnisotropicMaterial missing 'law' field"
-        )
-    });
-    let frame_val = data.fields.get("frame").unwrap_or_else(|| {
-        panic!(
-            "solve_elastic_static_trampoline: AnisotropicMaterial missing 'frame' field"
-        )
-    });
+    let law_val = data.fields.get("law").ok_or(FeaValueShapeError::MissingField {
+        context: "anisotropic_material_from_value",
+        field: "law",
+    })?;
+    let frame_val = data.fields.get("frame").ok_or(FeaValueShapeError::MissingField {
+        context: "anisotropic_material_from_value",
+        field: "frame",
+    })?;
 
     // Parse the MaterialFrame: extract x/y/z axes, build the local→global matrix
     // (columns = local basis vectors in global coordinates, i.e. frame[row][col]).
     let frame = {
         let frame_data = match frame_val {
             Value::StructureInstance(d) => d,
-            other => panic!(
-                "solve_elastic_static_trampoline: MaterialFrame must be \
-                 StructureInstance, got: {:?}",
-                other
-            ),
+            other => {
+                return Err(FeaValueShapeError::ExpectedStructureInstance {
+                    context: "anisotropic_material_from_value (frame)",
+                    got: format!("{other:?}"),
+                })
+            }
         };
-        let x = extract_vec3_si(frame_data.fields.get("x_axis").unwrap_or_else(|| {
-            panic!("solve_elastic_static_trampoline: MaterialFrame missing 'x_axis'")
-        }))
-        .fea_shim();
-        let y = extract_vec3_si(frame_data.fields.get("y_axis").unwrap_or_else(|| {
-            panic!("solve_elastic_static_trampoline: MaterialFrame missing 'y_axis'")
-        }))
-        .fea_shim();
-        let z = extract_vec3_si(frame_data.fields.get("z_axis").unwrap_or_else(|| {
-            panic!("solve_elastic_static_trampoline: MaterialFrame missing 'z_axis'")
-        }))
-        .fea_shim();
+        let x_axis = frame_data.fields.get("x_axis").ok_or(FeaValueShapeError::MissingField {
+            context: "anisotropic_material_from_value (frame)",
+            field: "x_axis",
+        })?;
+        let y_axis = frame_data.fields.get("y_axis").ok_or(FeaValueShapeError::MissingField {
+            context: "anisotropic_material_from_value (frame)",
+            field: "y_axis",
+        })?;
+        let z_axis = frame_data.fields.get("z_axis").ok_or(FeaValueShapeError::MissingField {
+            context: "anisotropic_material_from_value (frame)",
+            field: "z_axis",
+        })?;
+        let x = extract_vec3_si(x_axis)?;
+        let y = extract_vec3_si(y_axis)?;
+        let z = extract_vec3_si(z_axis)?;
         // Columns = local basis vectors in global: frame[row][col] = global-row-component
         // of local-col-axis.  rotate_voigt reads rows as direction cosines of global
         // axes in local coords (R[i] = global-i in local), which is the TRANSPOSE of
@@ -3763,38 +3785,42 @@ fn anisotropic_material_from_value(val: &Value) -> AnisotropicMaterial {
     // Parse the law: OrthotropicMaterial or TransverseIsotropicMaterial.
     let law_data = match law_val {
         Value::StructureInstance(d) => d,
-        other => panic!(
-            "solve_elastic_static_trampoline: AnisotropicMaterial.law must be \
-             StructureInstance, got: {:?}",
-            other
-        ),
+        other => {
+            return Err(FeaValueShapeError::ExpectedStructureInstance {
+                context: "anisotropic_material_from_value (law)",
+                got: format!("{other:?}"),
+            })
+        }
     };
 
     match law_data.type_name.as_str() {
         "OrthotropicMaterial" => {
             let law = OrthotropicMaterial {
-                e1:   scalar_si_field(law_data, "e1").fea_shim(),
-                e2:   scalar_si_field(law_data, "e2").fea_shim(),
-                e3:   scalar_si_field(law_data, "e3").fea_shim(),
-                g12:  scalar_si_field(law_data, "g12").fea_shim(),
-                g13:  scalar_si_field(law_data, "g13").fea_shim(),
-                g23:  scalar_si_field(law_data, "g23").fea_shim(),
-                nu12: real_field(law_data, "nu12").fea_shim(),
-                nu13: real_field(law_data, "nu13").fea_shim(),
-                nu23: real_field(law_data, "nu23").fea_shim(),
+                e1:   scalar_si_field(law_data, "e1")?,
+                e2:   scalar_si_field(law_data, "e2")?,
+                e3:   scalar_si_field(law_data, "e3")?,
+                g12:  scalar_si_field(law_data, "g12")?,
+                g13:  scalar_si_field(law_data, "g13")?,
+                g23:  scalar_si_field(law_data, "g23")?,
+                nu12: real_field(law_data, "nu12")?,
+                nu13: real_field(law_data, "nu13")?,
+                nu23: real_field(law_data, "nu23")?,
             };
-            AnisotropicMaterial::from_law(&law, frame)
+            Ok(AnisotropicMaterial::from_law(&law, frame))
         }
         "TransverseIsotropicMaterial" => {
             let law = TransverseIsotropicMaterial {
-                e_in_plane:  scalar_si_field(law_data, "e_in_plane").fea_shim(),
-                e_axial:     scalar_si_field(law_data, "e_axial").fea_shim(),
-                nu_in_plane: real_field(law_data, "nu_in_plane").fea_shim(),
-                nu_axial:    real_field(law_data, "nu_axial").fea_shim(),
-                g_axial:     scalar_si_field(law_data, "g_axial").fea_shim(),
+                e_in_plane:  scalar_si_field(law_data, "e_in_plane")?,
+                e_axial:     scalar_si_field(law_data, "e_axial")?,
+                nu_in_plane: real_field(law_data, "nu_in_plane")?,
+                nu_axial:    real_field(law_data, "nu_axial")?,
+                g_axial:     scalar_si_field(law_data, "g_axial")?,
             };
-            AnisotropicMaterial::from_law(&law, frame)
+            Ok(AnisotropicMaterial::from_law(&law, frame))
         }
+        // Intentionally still a panic (not deferred): unreachable-by-construction
+        // (the DSL only emits Orthotropic/TransverseIsotropic laws) and outside
+        // FeaValueShapeError's fixed C3 taxonomy — see the function doc comment.
         other => panic!(
             "solve_elastic_static_trampoline: unsupported law type for \
              AsPrintedZones AnisotropicMaterial: {:?}",
@@ -9601,5 +9627,340 @@ mod tests {
                 poisson_ratio: 0.3,
             })
         );
+    }
+
+    // ── task #5084 (PRD compute-fea-hardening D5): anisotropic_material_from_value
+    // Result-ify ──────────────────────────────────────────────────────────────
+    //
+    // RED: `anisotropic_material_from_value` currently returns a bare
+    // `AnisotropicMaterial`, so matching `Err(..)` below fails to type-check
+    // until step-2 converts its signature to
+    // `Result<AnisotropicMaterial, FeaValueShapeError>`, mirroring D2's
+    // compile-RED convention.
+
+    /// `anisotropic_material_from_value` must reject a present-but-wrong-typed
+    /// `e1` field on an `OrthotropicMaterial` law with
+    /// `Err(FeaValueShapeError::ExpectedScalar { .. })` instead of panicking.
+    ///
+    /// The wrapping `frame` field is a well-formed `het_material_frame`
+    /// because the frame is parsed before the law inside
+    /// `anisotropic_material_from_value`, so a malformed frame would surface
+    /// a frame error instead of exercising the `?`-threaded law extractors
+    /// this test targets. Only `e1` is wrong-typed; every other law field
+    /// (`e2`/`e3`/`g12`/`g13`/`g23`/`nu12`/`nu13`/`nu23`) is set to a
+    /// well-formed value (amendment, task #5084 review round 2, suggestion
+    /// 2), so the `Err(ExpectedScalar)` assertion isolates the `e1`
+    /// rejection and cannot be satisfied by an incidental `MissingField` on
+    /// a later field — it no longer depends on the `OrthotropicMaterial
+    /// { .. }` construction's struct-literal field evaluation order.
+    ///
+    /// RED: see module-section comment above.
+    #[test]
+    fn anisotropic_material_from_value_rejects_malformed_orthotropic_law() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        let pressure_scalar =
+            |si_value: f64| Value::Scalar { si_value, dimension: DimensionVector::PRESSURE };
+        let law_fields: PersistentMap<String, Value> = [
+            ("e1".to_string(), Value::Real(1.0)), // wrong-typed: the field under test
+            ("e2".to_string(), pressure_scalar(1.0e9)),
+            ("e3".to_string(), pressure_scalar(1.0e9)),
+            ("g12".to_string(), pressure_scalar(1.0e9)),
+            ("g13".to_string(), pressure_scalar(1.0e9)),
+            ("g23".to_string(), pressure_scalar(1.0e9)),
+            ("nu12".to_string(), Value::Real(0.3)),
+            ("nu13".to_string(), Value::Real(0.3)),
+            ("nu23".to_string(), Value::Real(0.3)),
+        ]
+        .into_iter()
+        .collect();
+        let law = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "OrthotropicMaterial".to_string(),
+            version: 1,
+            fields: law_fields,
+        }));
+
+        let aniso_fields: PersistentMap<String, Value> = [
+            ("law".to_string(), law),
+            (
+                "frame".to_string(),
+                as_printed_zones_test_fixtures::het_material_frame([0.0, 0.0, 1.0]),
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        // Amendment (task #5084 review round 2, suggestion 1): reuse the
+        // `anisotropic_material` helper instead of hand-building the outer
+        // `AnisotropicMaterial` StructureInstance inline.
+        let res = anisotropic_material_from_value(&anisotropic_material(aniso_fields));
+        assert!(
+            matches!(res, Err(FeaValueShapeError::ExpectedScalar { .. })),
+            "expected Err(ExpectedScalar) for a present-but-wrong-type e1 field, got: {:?}",
+            res
+        );
+    }
+
+    /// `anisotropic_material_from_value` must reject a present-but-wrong-typed
+    /// `e_in_plane` field on a `TransverseIsotropicMaterial` law with
+    /// `Err(FeaValueShapeError::ExpectedScalar { .. })` instead of panicking.
+    ///
+    /// Mirrors `anisotropic_material_from_value_rejects_malformed_orthotropic_law`
+    /// for the sibling law arm — an independent code path in the same
+    /// `match law_data.type_name.as_str()` — guarding against a partial
+    /// implementation that only threads one arm.
+    ///
+    /// RED: see module-section comment above.
+    #[test]
+    fn anisotropic_material_from_value_rejects_malformed_transverse_isotropic_law() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        let law_fields: PersistentMap<String, Value> =
+            [("e_in_plane".to_string(), Value::Real(1.0))]
+                .into_iter()
+                .collect();
+        let law = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "TransverseIsotropicMaterial".to_string(),
+            version: 1,
+            fields: law_fields,
+        }));
+
+        let aniso_fields: PersistentMap<String, Value> = [
+            ("law".to_string(), law),
+            (
+                "frame".to_string(),
+                as_printed_zones_test_fixtures::het_material_frame([0.0, 0.0, 1.0]),
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        // Amendment (task #5084 review round 2, suggestion 1): reuse the
+        // `anisotropic_material` helper instead of hand-building the outer
+        // `AnisotropicMaterial` StructureInstance inline.
+        let res = anisotropic_material_from_value(&anisotropic_material(aniso_fields));
+        assert!(
+            matches!(res, Err(FeaValueShapeError::ExpectedScalar { .. })),
+            "expected Err(ExpectedScalar) for a present-but-wrong-type e_in_plane field, got: {:?}",
+            res
+        );
+    }
+
+    // ── task #5084 amendment (reviewer_comprehensive, suggestion 2) ───────────
+    //
+    // The two tests above only exercise `anisotropic_material_from_value`'s
+    // delegation to `scalar_si_field` (the `ExpectedScalar` path). The
+    // structural `Err` branches this function constructs directly — a
+    // non-`StructureInstance` `val`/`frame`/`law`, a missing `law`/`frame`
+    // field, and a missing frame-axis field — were previously only covered
+    // transitively (via the leaf helpers' own tests), so a partial or
+    // transposed error-construction here (wrong `context`/`field` label, or
+    // a swapped axis `MissingField`) would have gone uncaught. The tests
+    // below assert on the exact `context`/`field` label (not just the
+    // variant), mirroring `extract_material_rejects_non_structure_instance`'s
+    // precedent, to directly guard against that.
+
+    /// Amendment (task #5084 review, suggestion 2): shared `Value::
+    /// StructureInstance` builder for the structural-error tests below,
+    /// mirroring `isotropic_material`'s precedent (task #5081 review round 3,
+    /// suggestion 1) of factoring out repeated struct-literal boilerplate.
+    /// Also reused by the two malformed-law tests above (task #5084 review
+    /// round 2, suggestion 1), which previously duplicated this construction
+    /// inline.
+    fn anisotropic_material(fields: PersistentMap<String, Value>) -> Value {
+        Value::StructureInstance(Box::new(StructureInstanceData {
+            type_name: "AnisotropicMaterial".to_string(),
+            type_id: StructureTypeId(u32::MAX),
+            version: 1,
+            fields,
+        }))
+    }
+
+    /// `anisotropic_material_from_value` must reject a non-`StructureInstance`
+    /// top-level `Value` with `Err(FeaValueShapeError::ExpectedStructureInstance
+    /// { context: "anisotropic_material_from_value", .. })` rather than
+    /// panicking.
+    #[test]
+    fn anisotropic_material_from_value_rejects_non_structure_instance_val() {
+        let res = anisotropic_material_from_value(&Value::Real(1.0));
+        match res {
+            Err(FeaValueShapeError::ExpectedStructureInstance { context, .. }) => {
+                assert_eq!(context, "anisotropic_material_from_value");
+            }
+            other => panic!(
+                "expected Err(ExpectedStructureInstance) for a non-StructureInstance \
+                 Value, got: {:?}",
+                other
+            ),
+        }
+    }
+
+    /// `anisotropic_material_from_value` must reject a `val` whose `law`
+    /// field is absent with `Err(FeaValueShapeError::MissingField { field:
+    /// "law", .. })`. `law` is read before `frame`, so an empty fields map
+    /// surfaces this error first.
+    #[test]
+    fn anisotropic_material_from_value_rejects_missing_law_field() {
+        let res = anisotropic_material_from_value(&anisotropic_material(PersistentMap::new()));
+        match res {
+            Err(FeaValueShapeError::MissingField { field, .. }) => {
+                assert_eq!(field, "law");
+            }
+            other => panic!(
+                "expected Err(MissingField {{ field: \"law\" }}) for an absent law \
+                 field, got: {:?}",
+                other
+            ),
+        }
+    }
+
+    /// `anisotropic_material_from_value` must reject a `val` whose `frame`
+    /// field is absent with `Err(FeaValueShapeError::MissingField { field:
+    /// "frame", .. })`. `law` is present (its value is irrelevant here — the
+    /// `law` field is only presence-checked, not parsed, before `frame` is
+    /// read) so control reaches the `frame` check.
+    #[test]
+    fn anisotropic_material_from_value_rejects_missing_frame_field() {
+        let fields: PersistentMap<String, Value> = [("law".to_string(), Value::Real(1.0))]
+            .into_iter()
+            .collect();
+
+        let res = anisotropic_material_from_value(&anisotropic_material(fields));
+        match res {
+            Err(FeaValueShapeError::MissingField { field, .. }) => {
+                assert_eq!(field, "frame");
+            }
+            other => panic!(
+                "expected Err(MissingField {{ field: \"frame\" }}) for an absent frame \
+                 field, got: {:?}",
+                other
+            ),
+        }
+    }
+
+    /// `anisotropic_material_from_value` must reject a `frame` field that is
+    /// not a `Value::StructureInstance` with `Err(FeaValueShapeError::
+    /// ExpectedStructureInstance { context: "anisotropic_material_from_value
+    /// (frame)", .. })` — a distinct `context` label from the top-level
+    /// `val`/`law` shape checks.
+    #[test]
+    fn anisotropic_material_from_value_rejects_non_structure_instance_frame() {
+        let fields: PersistentMap<String, Value> = [
+            ("law".to_string(), Value::Real(1.0)),
+            ("frame".to_string(), Value::Real(1.0)),
+        ]
+        .into_iter()
+        .collect();
+
+        let res = anisotropic_material_from_value(&anisotropic_material(fields));
+        match res {
+            Err(FeaValueShapeError::ExpectedStructureInstance { context, .. }) => {
+                assert_eq!(context, "anisotropic_material_from_value (frame)");
+            }
+            other => panic!(
+                "expected Err(ExpectedStructureInstance) for a non-StructureInstance \
+                 frame, got: {:?}",
+                other
+            ),
+        }
+    }
+
+    /// `anisotropic_material_from_value` must reject a `law` field that is
+    /// not a `Value::StructureInstance` with `Err(FeaValueShapeError::
+    /// ExpectedStructureInstance { context: "anisotropic_material_from_value
+    /// (law)", .. })`. The `frame` field is a well-formed `het_material_frame`
+    /// so control reaches the law-shape check (mirrors the two malformed-law
+    /// tests above, which exercise the law arms' leaf fields once law_data is
+    /// already known to be a StructureInstance).
+    #[test]
+    fn anisotropic_material_from_value_rejects_non_structure_instance_law() {
+        let fields: PersistentMap<String, Value> = [
+            ("law".to_string(), Value::Real(1.0)),
+            (
+                "frame".to_string(),
+                as_printed_zones_test_fixtures::het_material_frame([0.0, 0.0, 1.0]),
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        let res = anisotropic_material_from_value(&anisotropic_material(fields));
+        match res {
+            Err(FeaValueShapeError::ExpectedStructureInstance { context, .. }) => {
+                assert_eq!(context, "anisotropic_material_from_value (law)");
+            }
+            other => panic!(
+                "expected Err(ExpectedStructureInstance) for a non-StructureInstance \
+                 law, got: {:?}",
+                other
+            ),
+        }
+    }
+
+    /// `anisotropic_material_from_value` must reject a `frame` StructureInstance
+    /// whose `x_axis` field is absent with `Err(FeaValueShapeError::
+    /// MissingField { field: "x_axis", .. })`. `x_axis` is read before
+    /// `y_axis`/`z_axis`, so an empty frame fields map deterministically
+    /// surfaces this specific axis label — guarding against a swapped axis
+    /// label, the review's stated concern.
+    #[test]
+    fn anisotropic_material_from_value_rejects_missing_frame_axis_field() {
+        let frame = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "MaterialFrame".to_string(),
+            version: 1,
+            fields: PersistentMap::new(),
+        }));
+        let fields: PersistentMap<String, Value> = [
+            ("law".to_string(), Value::Real(1.0)),
+            ("frame".to_string(), frame),
+        ]
+        .into_iter()
+        .collect();
+
+        let res = anisotropic_material_from_value(&anisotropic_material(fields));
+        match res {
+            Err(FeaValueShapeError::MissingField { field, .. }) => {
+                assert_eq!(field, "x_axis");
+            }
+            other => panic!(
+                "expected Err(MissingField {{ field: \"x_axis\" }}) for an absent \
+                 x_axis field, got: {:?}",
+                other
+            ),
+        }
+    }
+
+    /// Amendment (task #5084 review, suggestion 1): `anisotropic_material_from_value`
+    /// must still `panic!` — not return `Err` — when the law `StructureInstance`'s
+    /// `type_name` is neither `OrthotropicMaterial` nor `TransverseIsotropicMaterial`.
+    /// This is the one deliberate, permanent exception documented on the function
+    /// (see doc comment and this task's design decision): the fixed
+    /// `FeaValueShapeError` taxonomy has no variant for "type_name is neither known
+    /// law", and the branch is unreachable-by-construction since the DSL only ever
+    /// emits the two known laws. Pinning this as `#[should_panic]` guards against a
+    /// future refactor (e.g. D6/D9) silently swallowing or downgrading this panic.
+    #[test]
+    #[should_panic(expected = "unsupported law type")]
+    fn anisotropic_material_from_value_panics_on_unsupported_law_type() {
+        let law = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "BogusMaterial".to_string(),
+            version: 1,
+            fields: PersistentMap::new(),
+        }));
+        let fields: PersistentMap<String, Value> = [
+            ("law".to_string(), law),
+            (
+                "frame".to_string(),
+                as_printed_zones_test_fixtures::het_material_frame([0.0, 0.0, 1.0]),
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        let _ = anisotropic_material_from_value(&anisotropic_material(fields));
     }
 }
