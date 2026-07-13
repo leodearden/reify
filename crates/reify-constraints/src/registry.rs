@@ -107,14 +107,12 @@ impl SolverRegistry {
     /// # δ best-of-K propagation (task #5016)
     ///
     /// The merged resolved values are NOT guaranteed identical on both paths
-    /// in general (superseding an earlier claim here that `solve_ranked` was
-    /// a read-only projection of `solve()`): when the objective component is
-    /// multistart-eligible (see `DimensionalSolver::solve_ranked`'s dim>=2
-    /// gate), `solve_ranked` can find a STRICTLY BETTER point than the
-    /// single-seed `solve()` path (best-of-K dominance, not identity — see
-    /// `SolverRegistry::solve_ranked`'s doc comment). What IS still true:
-    /// `solve()` itself (`want_optimality = false`) is completely unaffected
-    /// by this — the guard on the ranked-dispatch arm below is
+    /// in general: when the objective component is multistart-eligible (see
+    /// `DimensionalSolver::solve_ranked`'s dim>=2 gate), `solve_ranked` can
+    /// find a STRICTLY BETTER point than the single-seed `solve()` path
+    /// (best-of-K dominance, not identity — see `SolverRegistry::solve_ranked`'s
+    /// doc comment). `solve()` itself (`want_optimality = false`) is
+    /// completely unaffected: the guard on the ranked-dispatch arm below is
     /// `want_optimality && is_objective_component`, so with
     /// `want_optimality = false` every component, including the would-be
     /// objective one, always takes the plain `solver.solve()` arm exactly as
@@ -356,14 +354,14 @@ impl SolverRegistry {
         // `other_unique && candidates[0].unique == all_unique`, since
         // `merged_values`/`all_unique` above were folded from the SAME
         // `other_values`/`other_unique` plus the SAME winner.
-        // Perf (reviewer_comprehensive amend, task #5016): when there is no
-        // independent non-objective component, `other_values` is empty and
-        // `other_values.clone().extend(c.values)` is exactly `c.values` —
-        // skip the clone-and-rehash for every one of the K captured
-        // candidates in that (common, single-component merged-cluster) case
-        // instead of paying an unconditional allocation+rehash K times over.
-        // When `other_values` IS non-empty (a real independent component to
-        // cross-merge, e.g. the (c) test fixture), behaviour is unchanged.
+        // Perf: when there is no independent non-objective component,
+        // `other_values` is empty and `other_values.clone().extend(c.values)`
+        // is exactly `c.values` — skip the clone-and-rehash for every one of
+        // the K captured candidates in that (common, single-component
+        // merged-cluster) case instead of paying an unconditional
+        // allocation+rehash K times over. When `other_values` IS non-empty (a
+        // real independent component to cross-merge, e.g. the (c) test
+        // fixture), behaviour is unchanged.
         let objective_candidates = captured_candidates.map(|candidates| {
             candidates
                 .into_iter()
@@ -421,14 +419,14 @@ impl ConstraintSolver for SolverRegistry {
     /// fixture (F-result I1 byte-identical test, B1/B2, BT6) stays on this
     /// unchanged fallback path.
     ///
-    /// `candidates[1..]` are NOT deduplicated (reviewer amendment, task δ
-    /// #5016 review pass): they are `DimensionalSolver::solve_ranked`'s
-    /// non-winning starts cross-merged verbatim, so for a single-basin
-    /// objective (most merged clusters) they may be near-/byte-identical
-    /// repeats of the SAME resolved point rather than distinct alternative
-    /// designs — best-of-K runner-ups, not a guaranteed-distinct alternative
-    /// set. Callers that need genuinely distinct alternatives must dedupe by
-    /// resolved-value fingerprint themselves.
+    /// `candidates[1..]` are NOT deduplicated: they are
+    /// `DimensionalSolver::solve_ranked`'s non-winning starts cross-merged
+    /// verbatim, so for a single-basin objective (most merged clusters) they
+    /// may be near-/byte-identical repeats of the SAME resolved point rather
+    /// than distinct alternative designs — best-of-K runner-ups, not a
+    /// guaranteed-distinct alternative set. Callers that need genuinely
+    /// distinct alternatives must dedupe by resolved-value fingerprint
+    /// themselves.
     fn solve_ranked(&self, problem: &ResolutionProblem) -> RankedSolveResult {
         let (result, optimality, objective_score, objective_candidates) =
             self.solve_inner(problem, true);

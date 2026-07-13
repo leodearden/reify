@@ -1879,20 +1879,18 @@ impl ConstraintSolver for DimensionalSolver {
         // two-anchor blend, task γ #4791) keep today's single-candidate path
         // VERBATIM — this is REQUIRED to preserve the dim=1 invariants
         // (F-result I1 byte-identical test, B1/B2, BT6).
+        //
+        // Deliberately NOT gated on auto-param free/strict shape: multistart's
+        // value chiefly targets free-auto exploration (§5.3), but strict-auto
+        // clusters are left eligible too rather than adding a second gate
+        // predicate for what is a benign edge case — see the winner/`solve()`
+        // divergence note below for the resulting, low-risk
+        // Solved-vs-Infeasible corner case and why it's accepted as-is.
         let multistart_eligible = match &problem.objective {
             Some(obj) => problem.auto_params.len() >= 2 && obj.cost_robustness_lambda.is_none(),
             None => false,
         };
 
-        // step-6 (task δ #5016) confirmation: all three exclusion arms of the
-        // predicate above are pinned by dedicated guard tests in
-        // solver_integration.rs — `solve_ranked_gate_dim1_objective_single_candidate`
-        // (dim<=1), `solve_ranked_gate_dim2_no_objective_feasibility_only`
-        // (`objective: None`), and
-        // `solve_ranked_gate_dim2_cost_robustness_tradeoff_single_candidate`
-        // (`cost_robustness_lambda.is_some()`) — each verified green against
-        // this predicate as written; no gap was found, so the predicate is
-        // unchanged from step-4.
         if !multistart_eligible {
             let (result, meta) = self.solve_with_meta(problem);
             return rank_single(problem, result, meta);
@@ -1901,29 +1899,19 @@ impl ConstraintSolver for DimensionalSolver {
         // ---- best-of-K multistart (dim>=2 + objective, §5.3/§11 Q4) ----
         //
         // Run the EXISTING solve_core (Money robustness floor + centrality
-        // synth + drift fallback all inherited unchanged) once per
+        // synth + drift fallback all inherited unchanged, since this loop
+        // calls the SAME function `solve_with_meta` uses for the
+        // single-start path — task #4789 α's `apply_robustness_floor = true`
+        // is therefore inherited per start, not re-implemented here) once per
         // deterministic seed from `multistart_points`; score each Solved
         // candidate against the USER objective (I3/I4), exactly as the
         // single-candidate path above already does.
         //
-        // step-6 (task δ #5016) confirmation: because this loop calls
-        // `solve_core` directly — the SAME function `solve_with_meta` calls
-        // for the single-start path — the Money-dimension robustness floor
-        // (task #4789 α, `apply_robustness_floor = true` inside `solve_core`)
-        // is INHERITED per start, not re-implemented here. Pinned by
-        // `solve_ranked_multistart_inherits_money_robustness_floor` in
-        // solver_integration.rs (step-5 guard (d)), which passes unchanged
-        // against this loop.
-        //
-        // Cost (reviewer amendment, task δ #5016 review pass): this runs
-        // K = 2*(dim+1) full `solve_core` solves — linear in `dim`, with no
-        // cap. §11 Q4 resolved this growth rate deliberately (a seeded
-        // per-cluster global solver for larger clusters is out of scope,
-        // §10), on the expectation that real merged clusters stay in the
-        // single-digit-to-low-tens dimension range.
-        // `solve_ranked_multistart_k_scales_linearly_with_dim_high_dim_regression`
-        // (solver_integration.rs) exercises this at dim=6 (K=14) so the cost
-        // growth is observable, not merely asserted in this comment.
+        // Cost: K = 2*(dim+1) full `solve_core` solves — linear in `dim`,
+        // with no cap. §11 Q4 resolved this growth rate deliberately (a
+        // seeded per-cluster global solver for larger clusters is out of
+        // scope, §10), on the expectation that real merged clusters stay in
+        // the single-digit-to-low-tens dimension range.
         let starts = multistart_points(problem);
         let mut scored: Vec<(usize, HashMap<ValueCellId, Value>, f64, bool)> = Vec::new();
 
@@ -1975,48 +1963,40 @@ impl ConstraintSolver for DimensionalSolver {
 
         // Only the winner is uniqueness-finalised — alternative optima are
         // by definition not *the* unique solution, so non-winners carry
-        // `unique: false` directly (no re-solve). If the winner turns out to
-        // be non-unique (strict auto params only), `finalise_uniqueness`
-        // demotes it to Infeasible exactly as `solve_with_meta` would — the
-        // whole ranked result reflects that via the shared pass-through, so
-        // a non-unique winner can never be silently reported as BestFound.
+        // `unique: false` directly (no re-solve). A non-unique winner
+        // (strict auto params only) is demoted to Infeasible by
+        // `finalise_uniqueness`, exactly as `solve_with_meta` would — so a
+        // non-unique winner can never be silently reported as BestFound.
         //
-        // Authoritative verdict, may differ from solve() (reviewer amendment,
-        // task δ #5016 review pass 2): the winner is not necessarily start #0
-        // (the seed `solve()` anchors on). For a strict-auto multi-basin
-        // problem, `solve()` can land in one basin and pass its own
-        // perturbation re-solve (Solved), while the multistart winner is a
-        // DIFFERENT, better-scoring basin whose perturbation re-solve lands
-        // somewhere else and gets demoted (Infeasible) — so `solve()` and
-        // `solve_ranked()` can disagree on Solved-vs-Infeasible for the SAME
-        // `problem`. This is intentional, not a bug: the winner's
-        // `finalise_uniqueness` verdict is authoritative for `solve_ranked`
-        // (I2 — candidate[0] must be the best-scoring FEASIBLE-AND-UNIQUE
-        // point, never a stale verdict borrowed from a different start), and
-        // it is low-risk in practice because strict-auto non-uniqueness is a
-        // property of the shared constraint system rather than the objective,
-        // while multistart's value chiefly targets free-auto exploration
-        // (§5.3). `solve_ranked_multistart_winner_non_unique_demotes_to_infeasible`
-        // (solver_integration.rs) pins the demotion mechanism itself (a
-        // fixture where the winner happens to coincide with the seed); no
-        // fixture pins the cross-basin verdict-FLIP specifically, since a
-        // strict-auto system with two distinct feasible basins where exactly
-        // one passes uniqueness is high-effort to construct for a documented,
-        // low-risk edge case.
+        // Authoritative verdict, may differ from solve(): the winner is not
+        // necessarily start #0 (the seed `solve()` anchors on). For a
+        // strict-auto multi-basin problem, `solve()` can land in one basin
+        // and pass its own perturbation re-solve (Solved), while the
+        // multistart winner is a different, better-scoring basin whose
+        // perturbation re-solve lands elsewhere and gets demoted
+        // (Infeasible) — so `solve()` and `solve_ranked()` can disagree on
+        // Solved-vs-Infeasible for the SAME `problem`. This is intentional:
+        // the winner's `finalise_uniqueness` verdict is authoritative for
+        // `solve_ranked` (I2 — candidate[0] must be the best-scoring
+        // FEASIBLE-AND-UNIQUE point, never a stale verdict borrowed from a
+        // different start). Low-risk in practice: strict-auto non-uniqueness
+        // is a property of the shared constraint system rather than the
+        // objective, and multistart's value chiefly targets free-auto
+        // exploration (§5.3). See
+        // `solve_ranked_multistart_winner_non_unique_demotes_to_infeasible`
+        // for the demotion mechanism itself.
         //
-        // NOT deduplicated (reviewer amendment, task δ #5016 review pass):
-        // `scored` (the non-winning candidates folded in below) carries
-        // every feasible start verbatim. For a single-basin objective — the
-        // common case, since most merged clusters have one attracting
-        // optimum, e.g. every fixture in this module except the dedicated
-        // two-basin test — most or all of the K starts converge to the SAME
-        // point, so `candidates[1..]` are near-/byte-identical convergences
-        // of that ONE optimum, not K distinct alternative designs. Today's
-        // only consumers (`SolverRegistry::solve_ranked`, engine_eval.rs)
-        // read `candidates[0]` alone, so this is currently harmless; a
-        // future consumer that iterates `candidates[1..]` expecting
-        // genuinely different solutions must dedupe by resolved-value
-        // fingerprint (e.g. within `UNIQUENESS_REL_TOL`) itself first.
+        // NOT deduplicated: `scored` (the non-winning candidates folded in
+        // below) carries every feasible start verbatim. For a single-basin
+        // objective — the common case — most or all of the K starts
+        // converge to the SAME point, so `candidates[1..]` are
+        // near-/byte-identical convergences of that ONE optimum, not K
+        // distinct alternative designs. Today's only consumers
+        // (`SolverRegistry::solve_ranked`, engine_eval.rs) read
+        // `candidates[0]` alone, so this is currently harmless; a future
+        // consumer that iterates `candidates[1..]` expecting genuinely
+        // different solutions must dedupe by resolved-value fingerprint
+        // (e.g. within `UNIQUENESS_REL_TOL`) itself first.
         match finalise_uniqueness(problem, winner_values) {
             SolveResult::Solved { values, unique } => {
                 let mut candidates = Vec::with_capacity(scored.len() + 1);
