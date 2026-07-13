@@ -11939,6 +11939,17 @@ mod tests {
     /// where the assert is elided (per `check_mesh_contract_welded`'s
     /// documented release-mode contract for a same-length-but-wrong-content
     /// remap).
+    ///
+    /// Release-only here is not a silent coverage gap: a task's own
+    /// fast-feedback verify runs `DF_VERIFY_ROLE=task`, which
+    /// `scripts/verify.sh` defaults to `profile=debug`, so this test is
+    /// legitimately skipped there — but landing on `main` always goes
+    /// through `scripts/land.sh` (or the orchestrator merge queue), both of
+    /// which stamp `DF_VERIFY_ROLE=merge`; `verify.sh` then defaults
+    /// unstamped profile to `both` and force-widens scope to `all` (its
+    /// merge-gate contract C2), so this test still runs — and gates the
+    /// merge — before this "consumed, not ignored" guarantee ever reaches
+    /// `main`.
     #[cfg(not(debug_assertions))]
     #[test]
     fn check_mesh_contract_welded_consumes_threaded_remap() {
@@ -11990,6 +12001,14 @@ mod tests {
     /// intended, to catch this same caller bug during development — before
     /// the fallback branch's own logic ever runs, so the fallback path is
     /// only observable (and only needs to be exercised) in release builds.
+    ///
+    /// Same release-gate coverage note as
+    /// `check_mesh_contract_welded_consumes_threaded_remap` above: skipped
+    /// under a task's own `DF_VERIFY_ROLE=task` (`profile=debug`)
+    /// fast-feedback verify, but exercised — and gating — at
+    /// `DF_VERIFY_ROLE=merge` (`scripts/land.sh` / the orchestrator merge
+    /// queue), which `scripts/verify.sh` defaults to `profile=both`, before
+    /// landing on `main`.
     #[cfg(not(debug_assertions))]
     #[test]
     fn check_mesh_contract_welded_falls_back_on_length_mismatch() {
