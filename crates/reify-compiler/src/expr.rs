@@ -9459,3 +9459,164 @@ structure S {
         );
     }
 }
+
+/// compiler-type-hygiene ε2: `Type`-variant MemberAccess completeness canary
+/// (INV-COMP-1; PRD `docs/prds/v0_6/compiler-type-hygiene.md` §7.4, §3
+/// decision 9, §8 row 11).
+///
+/// ε1 (decision 8) reshaped MemberAccess dispatch into one exhaustive
+/// `match &compiled_obj.result_type` over all 39 `Type` variants, routing each
+/// to a named `fn member_access_on_<kind>` handler or the named poison tail
+/// `member_access_aggregation_or_unsupported` (the dispatch earlier in this
+/// file). This canary pins that partition: `classify` below is an exhaustive
+/// `match` over `TypeDiscriminants` with NO `_` arm, so adding a `Type` variant
+/// fails to *compile* here until its author assigns it a MemberAccess handler
+/// class — the row-11 signal (variant addition is now loud, where it used to
+/// fall silently to the poison tail). The runtime assertions then pin each
+/// class to the exact set of variants ε1's dispatch routes to it, so the canary
+/// table cannot silently drift from the dispatch.
+///
+/// Landing this enforcing test flips INV-COMP-1's Status column
+/// (`docs/invariants.md`) `proposed` → `enforced(type+test)` in the same commit
+/// (INV-META-1): ε1 landed the `type` half (exhaustive named-tail match), ε2
+/// lands the `test` half (this completeness canary).
+#[cfg(test)]
+mod member_access_completeness_canary {
+    use reify_core::ty::TypeDiscriminants;
+    use std::collections::HashSet;
+    use strum::{EnumCount, IntoEnumIterator};
+
+    /// The named MemberAccess receiver-type handler classes from the ε1 dispatch
+    /// reshape. Each maps one-to-one onto a handler in this file's MemberAccess
+    /// `match &compiled_obj.result_type`.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum HandlerClass {
+        /// `member_access_on_structure_like`
+        StructureLike,
+        /// `member_access_on_type_param`
+        TypeParam,
+        /// `member_access_on_datum`
+        Datum,
+        /// `member_access_on_feature`
+        Feature,
+        /// `member_access_aggregation_or_unsupported` — the named poison tail.
+        AggregationOrUnsupportedTail,
+    }
+
+    /// Assign every `Type` discriminant to the handler class that claims it in
+    /// the ε1 MemberAccess dispatch. EXHAUSTIVE, with NO `_` arm: a new `Type`
+    /// variant will not compile here until it is explicitly classified — the
+    /// INV-COMP-1 completeness canary (PRD §8 row 11). Keep this in lockstep
+    /// with the `match &compiled_obj.result_type` dispatch in this file.
+    fn classify(d: TypeDiscriminants) -> HandlerClass {
+        use HandlerClass as H;
+        use TypeDiscriminants as D;
+        match d {
+            // → member_access_on_structure_like
+            D::StructureRef | D::TraitObject => H::StructureLike,
+            // → member_access_on_type_param
+            D::TypeParam => H::TypeParam,
+            // → member_access_on_datum
+            D::Axis | D::Plane | D::Frame | D::Direction | D::Point => H::Datum,
+            // → member_access_on_feature
+            D::Geometry | D::Selector | D::AnySelector => H::Feature,
+            // → member_access_aggregation_or_unsupported (named poison tail)
+            D::Bool
+            | D::Int
+            | D::String
+            | D::Scalar
+            | D::Enum
+            | D::List
+            | D::Set
+            | D::Map
+            | D::Keyed
+            | D::Option
+            | D::Function
+            | D::Field
+            | D::Feature
+            | D::Vector
+            | D::Tensor
+            | D::Complex
+            | D::Orientation
+            | D::Transform
+            | D::AffineMap
+            | D::Range
+            | D::BoundingBox
+            | D::ScalarParam
+            | D::Matrix
+            | D::Error
+            | D::Union
+            | D::Relation
+            | D::Applied
+            | D::Projection => H::AggregationOrUnsupportedTail,
+        }
+    }
+
+    /// The discriminants classified into `class`, as an order-independent set.
+    fn members(class: HandlerClass) -> HashSet<TypeDiscriminants> {
+        TypeDiscriminants::iter().filter(|d| classify(*d) == class).collect()
+    }
+
+    #[test]
+    fn every_type_variant_is_claimed_by_exactly_one_member_access_handler_class() {
+        // (a) Iteration yields every discriminant exactly once.
+        let all: Vec<TypeDiscriminants> = TypeDiscriminants::iter().collect();
+        assert_eq!(
+            all.len(),
+            TypeDiscriminants::COUNT,
+            "TypeDiscriminants::iter() must yield COUNT variants",
+        );
+
+        // (b) The named special classes claim exactly the variants ε1's dispatch
+        //     routes to them (set equality, order-independent). If the dispatch
+        //     moves a variant between classes, update the expected set here in
+        //     the same change — that is the point of the canary.
+        assert_eq!(
+            members(HandlerClass::StructureLike),
+            HashSet::from([TypeDiscriminants::StructureRef, TypeDiscriminants::TraitObject]),
+            "member_access_on_structure_like claims exactly StructureRef, TraitObject",
+        );
+        assert_eq!(
+            members(HandlerClass::TypeParam),
+            HashSet::from([TypeDiscriminants::TypeParam]),
+            "member_access_on_type_param claims exactly TypeParam",
+        );
+        assert_eq!(
+            members(HandlerClass::Datum),
+            HashSet::from([
+                TypeDiscriminants::Axis,
+                TypeDiscriminants::Plane,
+                TypeDiscriminants::Frame,
+                TypeDiscriminants::Direction,
+                TypeDiscriminants::Point,
+            ]),
+            "member_access_on_datum claims exactly Axis, Plane, Frame, Direction, Point",
+        );
+        assert_eq!(
+            members(HandlerClass::Feature),
+            HashSet::from([
+                TypeDiscriminants::Geometry,
+                TypeDiscriminants::Selector,
+                TypeDiscriminants::AnySelector,
+            ]),
+            "member_access_on_feature claims exactly Geometry, Selector, AnySelector",
+        );
+
+        // (c) The named poison tail claims all remaining variants; the four
+        //     special classes + the tail partition the 39 variants disjointly.
+        let special = members(HandlerClass::StructureLike).len()
+            + members(HandlerClass::TypeParam).len()
+            + members(HandlerClass::Datum).len()
+            + members(HandlerClass::Feature).len();
+        let tail = members(HandlerClass::AggregationOrUnsupportedTail).len();
+        assert_eq!(
+            special, 11,
+            "the four named special handler classes claim 11 variants",
+        );
+        assert_eq!(
+            special + tail,
+            TypeDiscriminants::COUNT,
+            "the special classes + named poison tail must partition every Type discriminant",
+        );
+    }
+}
