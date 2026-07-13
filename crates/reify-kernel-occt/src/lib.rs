@@ -4963,8 +4963,20 @@ mod tests {
     #[test]
     fn repr_of_survives_warm_start_round_trip() {
         // Pins the invariant that `repr_of` returns the correct BRepKind after a
-        // warm_state()/with_warm_state() round-trip. Prior to the fix, OcctWarmState
-        // did not persist the `reprs` map, so every restored handle returned None.
+        // warm_state()/with_warm_state() round-trip. Prior to the original fix,
+        // OcctWarmState did not persist the `reprs` map, so every restored handle
+        // returned None.
+        //
+        // Scope note (#5162): repr survival is scoped to root/persistent handles
+        // (those minted by `execute`: Box, Cylinder, Union, ...). Derived
+        // sub-shape handles minted by extract_* are `parent_handle` keys on the
+        // producer and are deliberately filtered out of warm_state() to bound
+        // multi-cycle payload growth (they round-trip as orphaned, unreachable
+        // entries otherwise — see the "Bounded payload" note in warm_state()).
+        // So a previously-extracted face id correctly returns None post-restore;
+        // its repr is no longer persisted. The regression this test guards —
+        // reprs are persisted at all, for persistent handles — is asserted via
+        // the root box handle below.
 
         // 1. Build kernel A with a box → BRepKind::Solid (id 1).
         let mut kernel_a = OcctKernel::new();
@@ -4999,14 +5011,20 @@ mod tests {
         // 4. Round-trip.
         let kernel_b = warm_restore(&kernel_a, OcctKernel::new());
 
-        // 5. Post-warm: face handle must still report BRepKind::Face (the regression).
+        // 5. Post-warm: the extracted-face handle is a derived sub-shape id and is
+        //    deliberately filtered out of warm_state() (#5162), so its repr is not
+        //    persisted and repr_of correctly returns None post-restore. This is the
+        //    same orphaned-but-queryable state #5162 eliminates: pre-#5162 it would
+        //    round-trip as Some(Face) but remain unreachable via OwnerBody and never
+        //    be reused by a later extract_* call.
         assert_eq!(
             kernel_b.repr_of(face_id),
-            Some(BRepKind::Face),
-            "post-warm: face handle should have BRepKind::Face, not None"
+            None,
+            "post-warm: derived sub-shape (face) repr is filtered out of warm-start (#5162)"
         );
 
-        // 6. Post-warm: box handle must still report BRepKind::Solid.
+        // 6. Post-warm: box handle (a persistent root shape) must still report
+        //    BRepKind::Solid — this is the actual regression this test guards.
         assert_eq!(
             kernel_b.repr_of(box_id),
             Some(BRepKind::Solid),
