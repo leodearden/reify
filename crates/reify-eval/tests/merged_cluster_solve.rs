@@ -1471,24 +1471,20 @@ fn merged_cluster_skips_solver_when_every_auto_is_excluded() {
 }
 
 // ---------------------------------------------------------------------------
-// Accepted cold/warm divergence (TODO(#5118)) -- documented, not fixed here.
+// task #5118: warm eval_cached() co-solves within-cap MergedSolve clusters,
+// closing the cold/warm fidelity divergence (esc-5014-10 Option A).
 // ---------------------------------------------------------------------------
 
-/// `eval_cached()` (the warm LSP/GUI incremental path) calls
-/// `resolve_order_ordering_only`, which returns NO clusters (α, task #5013)
-/// -- so the SAME within-cap {A, B} `MergedSolve` cluster that the cold
-/// `eval()` driver merges into ONE solve
+/// `eval_cached()` (the warm LSP/GUI incremental path) must now merge the
+/// SAME within-cap {A, B} `MergedSolve` cluster that the cold `eval()`
+/// driver merges into ONE solve
 /// (`merged_cluster_dispatches_single_solve_with_union_auto_params` above)
-/// is instead solved PER-TEMPLATE (2 calls) on the warm path. This is a
-/// KNOWN, accepted cold/warm fidelity divergence, not a regression
-/// introduced by this task -- `eval_cached` already skipped cluster work
-/// before β existed -- tracked by the live follow-up `TODO(#5118)` (β's
-/// plan.json design_decisions: "Scope the merged solve to the cold eval()
-/// driver loop; leave warm eval_cached on the per-template path"). This test
-/// pins the accepted behavior so a future change to either path can't
-/// silently alter it without a test failure calling it out.
+/// -- NOT solve it per-template (2 calls). Both paths call the SAME
+/// `build_merged_solver_problem`, so warm and cold now feed byte-identical
+/// inputs to the solver (task #5118, closing the divergence the earlier
+/// `eval_cached_does_not_merge_within_cap_cluster_unlike_cold_eval` pinned).
 #[test]
-fn eval_cached_does_not_merge_within_cap_cluster_unlike_cold_eval() {
+fn eval_cached_merges_within_cap_cluster_like_cold_eval() {
     let module = two_cycle_cluster_module();
 
     let a_k = ValueCellId::new("A", "k");
@@ -1506,16 +1502,27 @@ fn eval_cached_does_not_merge_within_cap_cluster_unlike_cold_eval() {
 
     let mut engine =
         Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
-    let _result = engine.eval_cached(&module, VersionId(1));
+    let result = engine.eval_cached(&module, VersionId(1));
 
     assert_eq!(
         captured.lock().unwrap().len(),
-        2,
-        "eval_cached must NOT merge the {{A,B}} cluster -- it solves \
-         per-template (2 calls) even though the SAME module forms a single \
-         MergedSolve cluster on the cold eval() path (accepted divergence, \
-         TODO(#5118)); got {} call(s)",
+        1,
+        "eval_cached must merge the {{A,B}} cluster into exactly ONE solve, \
+         just like the cold eval() path -- got {} call(s)",
         captured.lock().unwrap().len(),
+    );
+
+    assert_eq!(
+        result.eval_result.values.get(&a_k),
+        Some(&mm(3.0)),
+        "A.k must reflect the merged solve's co-solved value written back \
+         to every cluster member, not a frozen/per-template value",
+    );
+    assert_eq!(
+        result.eval_result.values.get(&b_m),
+        Some(&mm(7.0)),
+        "B.m must reflect the merged solve's co-solved value written back \
+         to every cluster member, not a frozen/per-template value",
     );
 }
 

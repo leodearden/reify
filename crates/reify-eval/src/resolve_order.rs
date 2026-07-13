@@ -303,24 +303,11 @@ pub(crate) fn resolve_order(templates: &[TopologyTemplate]) -> ResolveOrder {
     resolve_order_impl(templates, true)
 }
 
-/// Ordering-only variant for the warm `eval_cached` path.
-///
-/// Computes `order` (and `coupling_diagnostics`) identically to
-/// [`resolve_order`] but SKIPS the M-WHOLE α pre-solve cluster set: `eval_cached`
-/// consumes only `order` and never reads `clusters` (cluster-driven
-/// `W_COUPLING_APPROXIMATED` is emitted solely from the cold `eval()` path), so
-/// recomputing the union-find + objective clustering on every cached evaluation
-/// would be wasted work (task #5013).  Returns an empty `clusters` vec.
-pub(crate) fn resolve_order_ordering_only(templates: &[TopologyTemplate]) -> ResolveOrder {
-    resolve_order_impl(templates, false)
-}
-
 /// Ordering-AND-clusters variant for the warm `eval_cached` path (M-WHOLE
 /// whole-model co-solve, task #5118).
 ///
-/// Computes `order` identically to [`resolve_order`] / [`resolve_order_ordering_only`]
-/// (the `compute_cluster_set` gate never perturbs `order`) and — unlike
-/// `resolve_order_ordering_only` — ALSO computes the M-WHOLE α pre-solve
+/// Computes `order` identically to [`resolve_order`] (the `compute_cluster_set`
+/// gate never perturbs `order`) and ALSO computes the M-WHOLE α pre-solve
 /// `clusters` set, so `eval_cached` can co-solve within-cap `MergedSolve`
 /// clusters exactly as the cold `eval()` path does (closing the cold/warm
 /// fidelity divergence, esc-5014-10 Option A).
@@ -336,12 +323,17 @@ pub(crate) fn resolve_order_ordering_and_clusters(templates: &[TopologyTemplate]
     ro
 }
 
-/// Shared implementation of [`resolve_order`] / [`resolve_order_ordering_only`].
+/// Shared implementation of [`resolve_order`] / [`resolve_order_ordering_and_clusters`].
 ///
-/// `compute_cluster_set` gates the pre-solve clustering pass: `true` for the cold
-/// `eval()` path (which emits `W_COUPLING_APPROXIMATED` from the clusters),
-/// `false` for the warm `eval_cached` path (which discards them).  `order` is
-/// computed identically either way, so the gate never perturbs resolution.
+/// `compute_cluster_set` gates the pre-solve clustering pass; both current
+/// callers pass `true` (clusters are always computed) and differ only in
+/// whether `coupling_diagnostics` is kept (`resolve_order`, for the cold
+/// `eval()` path's `W_COUPLING_APPROXIMATED` emission) or cleared
+/// (`resolve_order_ordering_and_clusters`, for the warm `eval_cached` path,
+/// which must never emit coupling diagnostics). `order` is computed
+/// identically regardless of this gate, so it never perturbs resolution. The
+/// gate itself is preserved as the shared entry point's general contract
+/// rather than inlined away.
 fn resolve_order_impl(templates: &[TopologyTemplate], compute_cluster_set: bool) -> ResolveOrder {
     let n = templates.len();
     if n == 0 {
@@ -449,10 +441,9 @@ fn resolve_order_impl(templates: &[TopologyTemplate], compute_cluster_set: bool)
     // condensation (step-4) and, in step-6, cross-scope objective reads. Never
     // touches `order`. Empty for uncoupled modules (INV-2).
     //
-    // Gated on `compute_cluster_set`: the warm `eval_cached` path
-    // (resolve_order_ordering_only) discards `clusters`, so it skips this work and
-    // gets an empty set — `order` above is already fully computed and is all that
-    // path consumes (task #5013).
+    // Gated on `compute_cluster_set`: `false` skips this work and returns an
+    // empty `clusters` set — `order` above is already fully computed and is
+    // all that a `false`-gated caller would consume (task #5013).
     let clusters = if compute_cluster_set {
         compute_clusters(templates, &auto_owner, &sccs_topo, &objective_reads)
     } else {
@@ -698,7 +689,7 @@ mod tests {
 
     use super::{
         ClusterDisposition, WHOLE_MODEL_CLUSTER_DIM_CAP, resolve_order,
-        resolve_order_ordering_and_clusters, resolve_order_ordering_only,
+        resolve_order_ordering_and_clusters,
     };
 
     // -------------------------------------------------------------------------
@@ -1209,17 +1200,19 @@ mod tests {
 
     // -------------------------------------------------------------------------
     // task #5118: `resolve_order_ordering_and_clusters` — the warm `eval_cached`
-    // variant. Unlike `resolve_order_ordering_only`, it DOES compute the
-    // M-WHOLE α cluster set (so warm can co-solve within-cap MergedSolve
-    // clusters), but — like `resolve_order_ordering_only` — must NOT emit
-    // coupling diagnostics: `eval()` alone owns W_SCOPE_COUPLING /
-    // W_COUPLING_APPROXIMATED emission (engine_eval.rs comment near :6459).
+    // variant. It DOES compute the M-WHOLE α cluster set (so warm can co-solve
+    // within-cap MergedSolve clusters), but — like the cold `resolve_order` —
+    // must NOT let that leak into a diagnostic contract change: it clears
+    // `coupling_diagnostics` unconditionally, since `eval()` alone owns
+    // W_SCOPE_COUPLING / W_COUPLING_APPROXIMATED emission (engine_eval.rs
+    // comment near :6459).
     // -------------------------------------------------------------------------
 
     /// A within-cap irreducible 2-cycle {A, B} (same fixture as
     /// `irreducible_two_cycle_forms_single_merged_cluster`) must, under the new
-    /// warm variant: (a) resolve to the SAME `order` as
-    /// `resolve_order_ordering_only`; (b) form exactly one `MergedSolve` cluster
+    /// warm variant: (a) resolve to the SAME `order` as the cold
+    /// `resolve_order` (order is computed identically regardless of the
+    /// `compute_cluster_set` gate); (b) form exactly one `MergedSolve` cluster
     /// spanning both scopes; (c) emit ZERO coupling diagnostics.
     #[test]
     fn resolve_order_ordering_and_clusters_returns_within_cap_cluster_and_no_coupling_diags() {
@@ -1236,14 +1229,14 @@ mod tests {
 
         let templates = vec![a, b];
 
-        let ordering_only = resolve_order_ordering_only(&templates);
+        let cold = resolve_order(&templates);
         let ordering_and_clusters = resolve_order_ordering_and_clusters(&templates);
 
-        // (a) `order` must be byte-identical to the ordering-only variant.
+        // (a) `order` must be identical to the cold `resolve_order`'s order.
         assert_eq!(
-            ordering_and_clusters.order, ordering_only.order,
-            "order must be identical to resolve_order_ordering_only; got: {:?} vs {:?}",
-            ordering_and_clusters.order, ordering_only.order
+            ordering_and_clusters.order, cold.order,
+            "order must be identical to resolve_order's order (gate-independent); got: {:?} vs {:?}",
+            ordering_and_clusters.order, cold.order
         );
 
         // (b) exactly one MergedSolve cluster spanning both scopes.

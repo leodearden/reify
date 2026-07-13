@@ -4485,17 +4485,15 @@ impl Engine {
             // to the unchanged per-template branch below (§5.2 "scopes outside
             // the cluster remain frozen constants exactly as today").
             //
-            // Scope decision — cold path only: this dispatch loop lives in the
-            // cold `eval()` driver (ε's `reify eval` gate). `eval_cached` calls
-            // `resolve_order_ordering_only`, which returns NO clusters (see that
-            // call site's comment below), so the warm/incremental path never
-            // reaches a `MergedSolve` membership to dispatch and keeps solving
-            // per-template, unchanged. Wiring clusters into the warm path is a
-            // deferred follow-up, not a gap introduced here — no regression,
-            // since `eval_cached` already skipped cluster work before β existed.
-            // TODO(#5118): wire MergedSolve cluster co-solve into warm
-            // eval_cached() to close this cold/warm divergence (filed from the
-            // esc-5014-10 deferral recorded in this task's plan.json).
+            // Scope note (task #5118): this is the COLD `eval()` driver's
+            // dispatch, via `dispatch_merged_cluster_solve`. The WARM
+            // `eval_cached` driver mirrors this exact precompute + dispatch
+            // shape via its own `dispatch_merged_cluster_solve_cached` (see
+            // that call site, in the warm solver sub-pass below), closing the
+            // cold/warm fidelity divergence recorded at esc-5014-10 — the two
+            // sites dispatch identically but write back in their respective
+            // cold/warm leg shapes (see `dispatch_merged_cluster_solve_cached`'s
+            // doc for how the warm shape differs).
             //
             // Scope decision — W_SCOPE_COUPLING left as-is: the generic cycle
             // warning extended into `diagnostics` below (from
@@ -6357,20 +6355,16 @@ impl Engine {
         // analysis, requires no solved values.  eval_cached does NOT emit
         // W_SCOPE_COUPLING (unchanged).
         //
-        // M-WHOLE α (#5013): the warm path consumes only `order` and never reads
-        // `ro.clusters` (W_COUPLING_APPROXIMATED is emitted only from the cold
-        // eval() path), so use the ordering-only entry point to skip the pre-solve
-        // cluster computation that would otherwise be recomputed and discarded here.
-        //
-        // M-WHOLE β (#5014): consequently, the merged cross-scope solve (cold
-        // `eval()` only — see `dispatch_merged_cluster_solve` and its call site's
-        // "Scope decision — cold path only" note) never engages here either: with
-        // no `ro.clusters` there is no `MergedSolve` membership to dispatch, so
-        // every scope keeps solving per-template on this path, unchanged. Wiring
-        // clusters into the warm incremental-recompute path is a deferred
-        // follow-up, not a regression — eval_cached already skipped cluster work
-        // before β existed. TODO(#5118) tracks closing this cold/warm divergence.
-        let ro = crate::resolve_order::resolve_order_ordering_only(&module.templates);
+        // M-WHOLE (#5118): warm now ALSO computes the M-WHOLE α pre-solve
+        // `clusters` set via `resolve_order_ordering_and_clusters`, so the
+        // solver sub-pass below can co-solve within-cap `MergedSolve` clusters
+        // via `dispatch_merged_cluster_solve_cached` — exactly as the cold
+        // `eval()` driver does via `dispatch_merged_cluster_solve` — closing
+        // the cold/warm fidelity divergence recorded at esc-5014-10.
+        // `resolve_order_ordering_and_clusters` clears `coupling_diagnostics`
+        // unconditionally, so this still never emits W_SCOPE_COUPLING /
+        // W_COUPLING_APPROXIMATED (eval() alone owns that emission).
+        let ro = crate::resolve_order::resolve_order_ordering_and_clusters(&module.templates);
 
         for template in &module.templates {
             // Pre-seed Auto cells (unchanged; processed separately before the
@@ -7051,7 +7045,49 @@ impl Engine {
                     .chain(module.trait_defs.iter()),
             );
 
+            // M-WHOLE (#5118): precompute which templates belong to a within-cap
+            // `MergedSolve` cluster, and track which clusters have already been
+            // dispatched as we walk `ro.order` — mirrors the cold `eval()`
+            // driver's identical precompute (see the comment atop that dispatch
+            // loop, above `dispatch_merged_cluster_solve`). `cluster_of_scope`
+            // maps a MergedSolve member's template index to its cluster's
+            // position in `ro.clusters`; `ApproximatedFallback` clusters and
+            // uncoupled scopes are absent from this map, so they fall through
+            // to the unchanged per-template branch below.
+            let cluster_of_scope: HashMap<usize, usize> = ro
+                .clusters
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| {
+                    c.disposition == crate::resolve_order::ClusterDisposition::MergedSolve
+                })
+                .flat_map(|(ci, c)| c.scopes.iter().map(move |&s| (s, ci)))
+                .collect();
+            let mut cluster_dispatched = vec![false; ro.clusters.len()];
+
             for &idx in &ro.order {
+                if let Some(&cluster_idx) = cluster_of_scope.get(&idx) {
+                    if cluster_dispatched[cluster_idx] {
+                        // Already co-solved and written back when we reached
+                        // this cluster's first member in ro.order — nothing
+                        // left to do for this member.
+                        continue;
+                    }
+                    cluster_dispatched[cluster_idx] = true;
+                    self.dispatch_merged_cluster_solve_cached(
+                        &ro.clusters[cluster_idx],
+                        idx,
+                        module,
+                        &governance,
+                        &mut values,
+                        &mut snapshot_values,
+                        &mut diagnostics,
+                        version,
+                        &runtime_sink,
+                    );
+                    continue;
+                }
+
                 let template = &module.templates[idx];
                 // Build the ResolutionProblem; returns None when there are no auto cells.
                 // `build_solver_problem` centralises construction so both eval() and
@@ -7095,6 +7131,10 @@ impl Engine {
                             // let cells, mirroring cold eval() (:2728) and edit_param
                             // (engine_edit.rs:1360). The four warm-resolution sites
                             // (eval_cached, eval, edit_param, concurrent) must stay in sync.
+                            // (task #5118: `dispatch_merged_cluster_solve_cached`,
+                            // dispatched once per within-cap MergedSolve cluster
+                            // ABOVE this per-template loop, mirrors this exact
+                            // values/snapshot_values/cache write-back shape.)
                             //
                             // The pinned-connector-auto write below (task #4710) is one such
                             // site: see `write_solved_pinned_connector_autos`'s doc (task
