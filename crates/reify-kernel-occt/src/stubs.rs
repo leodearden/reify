@@ -38,6 +38,18 @@ impl OcctKernel {
         Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
     }
 
+    /// Always fails with [`ExportError::FormatError`], not `IoError`,
+    /// because the shared STUB-arm taxonomy (`assert_all_error_taxonomy` in
+    /// `reify-test-support`) pins `export` to `FormatError` for every
+    /// all-error kernel. The real `OcctKernelHandle::export` (handle.rs)
+    /// reports its infra/availability failures (kernel-thread death, writer
+    /// errors) via `ExportError::IoError` instead — an intentional
+    /// stub-vs-real divergence in the export error taxonomy that the shared
+    /// suite does not assert (its real-arm contract,
+    /// `assert_dangling_reference_taxonomy`, deliberately excludes the
+    /// `export`/`tessellate` variants; see its doc comment). Code branching
+    /// on the `ExportError` variant for "kernel unavailable" will observe
+    /// `FormatError` under `not(has_occt)` and `IoError` under `has_occt`.
     pub fn export(
         &self,
         _handle: GeometryHandleId,
@@ -320,13 +332,18 @@ impl OcctKernelHandle {
         Err(QueryError::QueryFailed(NOT_AVAILABLE.into()))
     }
 
+    /// Always fails with `ExportError::FormatError`, not `IoError` — see
+    /// `OcctKernel::export`'s doc comment for why (forced by the shared
+    /// STUB-arm taxonomy; intentionally diverges from the real
+    /// `OcctKernelHandle::export`'s `IoError` for the same "unavailable"
+    /// condition).
     pub fn export(
         &self,
         _handle: GeometryHandleId,
         _format: ExportFormat,
         _writer: &mut dyn std::io::Write,
     ) -> Result<(), ExportError> {
-        Err(ExportError::IoError(NOT_AVAILABLE.into()))
+        Err(ExportError::FormatError(NOT_AVAILABLE.into()))
     }
 
     pub fn tessellate(
@@ -550,80 +567,19 @@ impl Drop for OcctKernelHandle {
 #[cfg(all(test, not(has_occt)))]
 mod tests {
     use super::*;
-    use reify_ir::{ExportFormat, GeometryError, GeometryHandleId, GeometryKernel, GeometryOp, Value, WarmStartable};
 
-    #[test]
-    fn stub_kernel_new_succeeds() {
-        let _kernel = OcctKernel::new();
-    }
+    // `OcctKernel` (bare) has no `GeometryKernel` impl — only
+    // `OcctKernelHandle` does — and is never boxed as `Box<dyn
+    // GeometryKernel>` in production; the sole factory
+    // (`register::occt_factory`) boxes `OcctKernelHandle::spawn()`. A second
+    // `assert_kernel_contract!` instantiation for `OcctKernel` isn't possible
+    // (no trait impl to exercise) and isn't needed (task 5110 review): its
+    // inherent-method coverage lives in the bundled tests below.
+    reify_test_support::assert_kernel_contract!(stub; OcctKernelHandle::spawn, "OCCT");
 
-    #[test]
-    fn stub_kernel_execute_returns_error() {
-        let mut kernel = OcctKernel::new();
-        let result = kernel.execute(&GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(10.0),
-            depth: Value::Real(10.0),
-        });
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(
-            format!("{err:?}").contains("OCCT"),
-            "error should mention OCCT: {err:?}"
-        );
-    }
-
-    #[test]
-    fn stub_kernel_query_returns_error() {
-        let kernel = OcctKernel::new();
-        let result = kernel.query(&reify_ir::GeometryQuery::Volume(GeometryHandleId(1)));
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn stub_kernel_export_returns_error() {
-        let kernel = OcctKernel::new();
-        let mut buf = Vec::new();
-        let result = kernel.export(GeometryHandleId(1), ExportFormat::Step, &mut buf);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn stub_kernel_tessellate_returns_error() {
-        let kernel = OcctKernel::new();
-        let result = kernel.tessellate(GeometryHandleId(1), 0.1);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn stub_kernel_warm_state_returns_none() {
-        let kernel = OcctKernel::new();
-        assert!(kernel.warm_state().is_none());
-    }
-
-    #[test]
-    fn stub_handle_spawn_succeeds() {
-        let _handle = OcctKernelHandle::spawn();
-    }
-
-    #[test]
-    fn stub_handle_execute_returns_error() {
-        let handle = OcctKernelHandle::spawn();
-        let result = handle.execute(&GeometryOp::Box {
-            width: Value::Real(10.0),
-            height: Value::Real(10.0),
-            depth: Value::Real(10.0),
-        });
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn stub_handle_is_geometry_kernel() {
-        let handle = OcctKernelHandle::spawn();
-        // Verify it can be used as Box<dyn GeometryKernel>
-        let _boxed: Box<dyn GeometryKernel> = Box::new(handle);
-    }
-
+    /// Inherent `OcctKernel::topology_cache_build_counts` cross-cfg contract
+    /// (task 2405): not expressible via the shared `GeometryKernel` suite
+    /// above because this method isn't on the trait.
     #[test]
     fn stub_kernel_topology_cache_build_counts_returns_invalid_reference() {
         let kernel = OcctKernel::new();
@@ -646,146 +602,404 @@ mod tests {
         }
     }
 
-    /// Helper: assert a string mentions "OCCT" or "not available", matching
-    /// the stub crate's `NOT_AVAILABLE` constant verbatim.
-    fn assert_stub_message(msg: &str) {
+    /// Generates a `check_*_failed` helper for one error taxonomy: `Ok(())`
+    /// when `result` is `Err($variant(msg))` and `msg` contains "OCCT",
+    /// else a descriptive `Err(String)` (never a panic, so bundled
+    /// `#[test]`s can collect every failed probe via
+    /// [`assert_no_check_failures`] instead of stopping at the first).
+    /// Collapses what were four hand-copied match blocks —
+    /// `QueryError`/`GeometryError`/`ExportError`/`TessError` — differing
+    /// only in the enum/variant matched (task 5110 review).
+    macro_rules! check_failed {
+        ($name:ident, $err_ty:ty, $variant:path, $variant_str:literal) => {
+            fn $name<T: std::fmt::Debug>(
+                result: Result<T, $err_ty>,
+                method: &str,
+            ) -> Result<(), String> {
+                match result {
+                    Err($variant(msg)) if msg.contains("OCCT") => Ok(()),
+                    Err($variant(msg)) => {
+                        Err(format!("{method} error should mention OCCT, got: {msg}"))
+                    }
+                    other => Err(format!(
+                        "expected Err({variant}(_)) from {method}, got {other:?}",
+                        variant = $variant_str,
+                    )),
+                }
+            }
+        };
+    }
+
+    // `QueryError` — mirrors `assert_all_error_taxonomy`'s matching for the
+    // inherent probe surface the shared macro can't see.
+    check_failed!(
+        check_query_failed,
+        QueryError,
+        QueryError::QueryFailed,
+        "QueryError::QueryFailed"
+    );
+    check_failed!(
+        check_operation_failed,
+        GeometryError,
+        GeometryError::OperationFailed,
+        "GeometryError::OperationFailed"
+    );
+    check_failed!(
+        check_format_failed,
+        ExportError,
+        ExportError::FormatError,
+        "ExportError::FormatError"
+    );
+    check_failed!(
+        check_tess_failed,
+        TessError,
+        TessError::TessellationFailed,
+        "TessError::TessellationFailed"
+    );
+
+    /// `Ok(())` when `state` is `None`, else a descriptive `Err(String)` —
+    /// mirrors the `check_*_failed` collect pattern above for the one probe
+    /// (`WarmStartable::warm_state`) that signals "not available" via
+    /// `Option::None` rather than a `Result::Err` taxonomy (task 5110 review).
+    fn check_warm_state_none(state: Option<OpaqueState>) -> Result<(), String> {
+        match state {
+            None => Ok(()),
+            Some(_) => Err("stub warm_state should always be None".to_string()),
+        }
+    }
+
+    /// Panics naming every failed check, so bundled probes report all
+    /// violations from one run instead of stopping at the first (task 5110).
+    fn assert_no_check_failures(failures: Vec<String>) {
         assert!(
-            msg.contains("OCCT") || msg.contains("not available"),
-            "stub error message should mention OCCT or 'not available', got: {msg}"
+            failures.is_empty(),
+            "{} check(s) failed:\n{}",
+            failures.len(),
+            failures.join("\n")
         );
     }
 
+    // Coverage below closes gaps the shared `assert_kernel_contract!` suite
+    // above structurally cannot reach: `OcctKernel`'s inherent methods (a
+    // separate type, never wired to the trait), either type's non-trait
+    // methods (probes, with-history variants), and `OcctKernelHandle`'s
+    // inherent `extract_vertices` (shadows its trait override). Deliberately
+    // not a restoration of the deleted trait-surface suite, which stays
+    // deleted per this task's `design_decisions` (task 5110). Each bundled
+    // `#[test]` collects failures into a `Vec<String>` via
+    // `assert_no_check_failures` so one run surfaces every regression
+    // instead of short-circuiting on the first.
+
+    /// `OcctKernel`'s core trait-shaped inherent methods: a separate type
+    /// from `OcctKernelHandle`, so the shared suite provides no coverage.
+    /// Named `_all_error_or_none` (not `_returns_error`) because it bundles
+    /// one non-`Result` probe — `warm_state()`, which signals unavailability
+    /// via `Option::None` — alongside the `Result`-returning methods (task
+    /// 5110 review).
     #[test]
-    fn stub_kernel_extract_edges_returns_error() {
+    fn stub_kernel_core_methods_all_error_or_none() {
         let mut kernel = OcctKernel::new();
-        let result = kernel.extract_edges(GeometryHandleId(1));
-        let err = result.expect_err("stub extract_edges should error");
-        assert_stub_message(&format!("{err:?}"));
+        let mut failures = Vec::new();
+
+        if let Err(e) = check_operation_failed(
+            kernel.execute(&GeometryOp::Union {
+                left: GeometryHandleId(1),
+                right: GeometryHandleId(2),
+            }),
+            "execute",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_query_failed(
+            kernel.query(&GeometryQuery::Volume(GeometryHandleId(1))),
+            "query",
+        ) {
+            failures.push(e);
+        }
+
+        let mut buf = Vec::new();
+        if let Err(e) = check_format_failed(
+            kernel.export(GeometryHandleId(1), ExportFormat::Step, &mut buf),
+            "export",
+        ) {
+            failures.push(e);
+        }
+
+        if let Err(e) =
+            check_tess_failed(kernel.tessellate(GeometryHandleId(1), 0.1), "tessellate")
+        {
+            failures.push(e);
+        }
+
+        if let Err(e) =
+            check_query_failed(kernel.extract_edges(GeometryHandleId(1)), "extract_edges")
+        {
+            failures.push(e);
+        }
+        if let Err(e) =
+            check_query_failed(kernel.extract_faces(GeometryHandleId(1)), "extract_faces")
+        {
+            failures.push(e);
+        }
+        if let Err(e) = check_query_failed(
+            kernel.extract_vertices(GeometryHandleId(1)),
+            "extract_vertices",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_warm_state_none(kernel.warm_state()) {
+            failures.push(e);
+        }
+
+        assert_no_check_failures(failures);
     }
 
+    /// Full set of `OcctKernel`'s geometric-probe inherent methods (none are
+    /// on `GeometryKernel`, so `assert_kernel_contract!` cannot see any of
+    /// them), plus `apply_transform_to_handle` for the `GeometryError`-family
+    /// case. Each probe's return value is checked at runtime via
+    /// `check_query_failed`/`check_operation_failed` rather than trusted to
+    /// compilation-only signature parity, so a probe that regresses to
+    /// `Ok(_)` or a different error family fails here (task 5110 review).
     #[test]
-    fn stub_kernel_extract_faces_returns_error() {
+    fn stub_kernel_probe_methods_return_not_available_error() {
         let mut kernel = OcctKernel::new();
-        let result = kernel.extract_faces(GeometryHandleId(1));
-        let err = result.expect_err("stub extract_faces should error");
-        assert_stub_message(&format!("{err:?}"));
+        let mut failures = Vec::new();
+        let identity = crate::Transform3 {
+            qw: 1.0,
+            qx: 0.0,
+            qy: 0.0,
+            qz: 0.0,
+            tx: 0.0,
+            ty: 0.0,
+            tz: 0.0,
+        };
+
+        if let Err(e) = check_query_failed(
+            kernel.closest_point_on_shape(GeometryHandleId(1), 0.0, 0.0, 0.0),
+            "closest_point_on_shape",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_query_failed(
+            kernel.surface_angle(GeometryHandleId(1), GeometryHandleId(2)),
+            "surface_angle",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_query_failed(
+            kernel.surface_normal_at(GeometryHandleId(1), 0.0, 0.0),
+            "surface_normal_at",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_query_failed(
+            kernel.curvature_at(GeometryHandleId(1), 0.0, 0.0),
+            "curvature_at",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_query_failed(
+            kernel.point_on_shape(
+                GeometryHandleId(1),
+                0.0,
+                0.0,
+                0.0,
+                reify_ir::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
+            ),
+            "point_on_shape",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_query_failed(
+            kernel.contains(
+                GeometryHandleId(1),
+                0.0,
+                0.0,
+                0.0,
+                reify_ir::DEFAULT_CONTAINS_TOLERANCE_M,
+            ),
+            "contains",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_query_failed(
+            kernel.shapes_intersect(GeometryHandleId(1), GeometryHandleId(2)),
+            "shapes_intersect",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_query_failed(
+            kernel.interferes_with_transform(GeometryHandleId(1), GeometryHandleId(2), &identity),
+            "interferes_with_transform",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_query_failed(
+            kernel.min_clearance(GeometryHandleId(1), GeometryHandleId(2)),
+            "min_clearance",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_query_failed(
+            kernel.distance_with_transform(GeometryHandleId(1), GeometryHandleId(2), &identity),
+            "distance_with_transform",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) =
+            check_query_failed(kernel.vertex_point(GeometryHandleId(1)), "vertex_point")
+        {
+            failures.push(e);
+        }
+        if let Err(e) = check_query_failed(
+            kernel.surface_normal_at_point(GeometryHandleId(1), 0.0, 0.0, 0.0),
+            "surface_normal_at_point",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_query_failed(
+            kernel.curve_curvature_at(GeometryHandleId(1), 0.0, 0.0, 0.0),
+            "curve_curvature_at",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_operation_failed(
+            kernel.apply_transform_to_handle(GeometryHandleId(1), &identity),
+            "apply_transform_to_handle",
+        ) {
+            failures.push(e);
+        }
+
+        assert_no_check_failures(failures);
     }
 
+    /// `OcctKernel::query` for non-`Volume` variants (shared suite only
+    /// probes `Volume`); guards a future per-variant `match` that forgets one.
     #[test]
-    fn stub_kernel_extract_vertices_returns_error() {
-        let mut kernel = OcctKernel::new();
-        let result = kernel.extract_vertices(GeometryHandleId(1));
-        let err = result.expect_err("stub extract_vertices should error");
-        assert_stub_message(&format!("{err:?}"));
+    fn stub_kernel_query_variants_return_not_available_error() {
+        let kernel = OcctKernel::new();
+        let mut failures = Vec::new();
+
+        if let Err(e) = check_query_failed(
+            kernel.query(&GeometryQuery::EdgeLength(GeometryHandleId(1))),
+            "query(EdgeLength)",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_query_failed(
+            kernel.query(&GeometryQuery::FaceNormal(GeometryHandleId(1))),
+            "query(FaceNormal)",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_query_failed(
+            kernel.query(&GeometryQuery::EdgeTangent(GeometryHandleId(1))),
+            "query(EdgeTangent)",
+        ) {
+            failures.push(e);
+        }
+
+        assert_no_check_failures(failures);
     }
 
+    /// `OcctKernelHandle`'s full `*_with_history` inherent surface: the
+    /// booleans (task 2590/2656), `execute_with_history` (task 5a / #2573,
+    /// step-8), the sweep-family ops (task 5a/5b, #2573/#2619), and
+    /// fillet/chamfer (task 2655/2821). None are on `GeometryKernel`, so
+    /// the shared suite provides no coverage for any of them — previously
+    /// only fillet/chamfer were exercised here, leaving the other eight
+    /// variants untested by both the macro and the bespoke tests (task
+    /// 5110 review).
+    #[test]
+    fn stub_handle_with_history_methods_return_not_available_error() {
+        let handle = OcctKernelHandle::spawn();
+        let mut failures = Vec::new();
+
+        if let Err(e) = check_operation_failed(
+            handle.boolean_fuse_with_history(GeometryHandleId(1), GeometryHandleId(2)),
+            "boolean_fuse_with_history",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_operation_failed(
+            handle.boolean_cut_with_history(GeometryHandleId(1), GeometryHandleId(2)),
+            "boolean_cut_with_history",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_operation_failed(
+            handle.boolean_common_with_history(GeometryHandleId(1), GeometryHandleId(2)),
+            "boolean_common_with_history",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_operation_failed(
+            handle.execute_with_history(&GeometryOp::Union {
+                left: GeometryHandleId(1),
+                right: GeometryHandleId(2),
+            }),
+            "execute_with_history",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_operation_failed(
+            handle.extrude_with_history(GeometryHandleId(1), 1.0),
+            "extrude_with_history",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_operation_failed(
+            handle.revolve_with_history(GeometryHandleId(1), [0.0, 0.0, 0.0], [0.0, 0.0, 1.0], 1.0),
+            "revolve_with_history",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_operation_failed(
+            handle.sweep_with_history(GeometryHandleId(1), GeometryHandleId(2)),
+            "sweep_with_history",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_operation_failed(
+            handle.loft_with_history(&[GeometryHandleId(1), GeometryHandleId(2)]),
+            "loft_with_history",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_operation_failed(
+            handle.fillet_with_history(GeometryHandleId(1), 1.0e-3),
+            "fillet_with_history",
+        ) {
+            failures.push(e);
+        }
+        if let Err(e) = check_operation_failed(
+            handle.chamfer_with_history(GeometryHandleId(1), 1.0e-3),
+            "chamfer_with_history",
+        ) {
+            failures.push(e);
+        }
+
+        assert_no_check_failures(failures);
+    }
+
+    /// `OcctKernelHandle`'s *inherent* `extract_vertices`: method
+    /// resolution prefers it over the `GeometryKernel` trait override, so
+    /// the shared suite's trait-dispatch coverage can't reach it. Handle has
+    /// no inherent `extract_edges`/`extract_faces` (only trait overrides,
+    /// already covered), so there's no analogous gap for those (task 5110).
     #[test]
     fn stub_handle_extract_vertices_returns_error() {
         let mut handle = OcctKernelHandle::spawn();
-        let result = handle.extract_vertices(GeometryHandleId(1));
-        let err = result.expect_err("stub handle extract_vertices should error");
-        assert_stub_message(&format!("{err:?}"));
-    }
+        let mut failures = Vec::new();
 
-    #[test]
-    fn stub_kernel_query_edge_length_returns_error() {
-        let kernel = OcctKernel::new();
-        let result = kernel.query(&reify_ir::GeometryQuery::EdgeLength(GeometryHandleId(1)));
-        let err = result.expect_err("stub query EdgeLength should error");
-        assert_stub_message(&format!("{err:?}"));
-    }
+        if let Err(e) = check_query_failed(
+            handle.extract_vertices(GeometryHandleId(1)),
+            "extract_vertices",
+        ) {
+            failures.push(e);
+        }
 
-    #[test]
-    fn stub_kernel_query_face_normal_returns_error() {
-        let kernel = OcctKernel::new();
-        let result = kernel.query(&reify_ir::GeometryQuery::FaceNormal(GeometryHandleId(1)));
-        let err = result.expect_err("stub query FaceNormal should error");
-        assert_stub_message(&format!("{err:?}"));
-    }
-
-    #[test]
-    fn stub_kernel_query_edge_tangent_returns_error() {
-        let kernel = OcctKernel::new();
-        let result = kernel.query(&reify_ir::GeometryQuery::EdgeTangent(GeometryHandleId(
-            1,
-        )));
-        let err = result.expect_err("stub query EdgeTangent should error");
-        assert_stub_message(&format!("{err:?}"));
-    }
-
-    #[test]
-    fn stub_kernel_closest_point_on_shape_returns_error() {
-        let kernel = OcctKernel::new();
-        let result = kernel.closest_point_on_shape(GeometryHandleId(1), 0.0, 0.0, 0.0);
-        let err = result.expect_err("stub closest_point_on_shape should error");
-        assert_stub_message(&format!("{err:?}"));
-    }
-
-    #[test]
-    fn stub_kernel_surface_angle_returns_error() {
-        let kernel = OcctKernel::new();
-        let result = kernel.surface_angle(GeometryHandleId(1), GeometryHandleId(2));
-        let err = result.expect_err("stub surface_angle should error");
-        assert_stub_message(&format!("{err:?}"));
-    }
-
-    #[test]
-    fn stub_handle_fillet_with_history_returns_error() {
-        let handle = OcctKernelHandle::spawn();
-        let result = handle.fillet_with_history(GeometryHandleId(1), 1.0e-3);
-        let err = result.expect_err("stub fillet_with_history should error");
-        assert_stub_message(&format!("{err:?}"));
-    }
-
-    #[test]
-    fn stub_handle_chamfer_with_history_returns_error() {
-        let handle = OcctKernelHandle::spawn();
-        let result = handle.chamfer_with_history(GeometryHandleId(1), 1.0e-3);
-        let err = result.expect_err("stub chamfer_with_history should error");
-        assert_stub_message(&format!("{err:?}"));
-    }
-
-    #[test]
-    fn stub_kernel_surface_normal_at_returns_error() {
-        let kernel = OcctKernel::new();
-        let result = kernel.surface_normal_at(GeometryHandleId(1), 0.0, 0.0);
-        let err = result.expect_err("stub surface_normal_at should error");
-        assert_stub_message(&format!("{err:?}"));
-    }
-
-    #[test]
-    fn stub_kernel_curvature_at_returns_error() {
-        let kernel = OcctKernel::new();
-        let result = kernel.curvature_at(GeometryHandleId(1), 0.0, 0.0);
-        let err = result.expect_err("stub curvature_at should error");
-        assert_stub_message(&format!("{err:?}"));
-    }
-
-    #[test]
-    fn stub_kernel_point_on_shape_returns_error() {
-        let kernel = OcctKernel::new();
-        let result = kernel.point_on_shape(
-            GeometryHandleId(1),
-            0.0,
-            0.0,
-            0.0,
-            reify_ir::DEFAULT_POINT_ON_SHAPE_TOLERANCE_M,
-        );
-        let err = result.expect_err("stub point_on_shape should error");
-        assert_stub_message(&format!("{err:?}"));
-    }
-
-    #[test]
-    fn stub_kernel_contains_returns_error() {
-        let kernel = OcctKernel::new();
-        let result = kernel.contains(
-            GeometryHandleId(1),
-            0.0,
-            0.0,
-            0.0,
-            reify_ir::DEFAULT_CONTAINS_TOLERANCE_M,
-        );
-        let err = result.expect_err("stub contains should error");
-        assert_stub_message(&format!("{err:?}"));
+        assert_no_check_failures(failures);
     }
 }
