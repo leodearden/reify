@@ -1978,26 +1978,16 @@ pub(crate) fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
         // `left.clone()` fallback, same as before this arm existed.
         //
         // CLOSED (task compiler-type-hygiene follow-up 5163): a DIMENSIONED
-        // `Complex` + Int/Real (e.g. `Complex<Length> + 1`, either operand
-        // order) still statically claims a placeholder type here via the
-        // `left.clone()` fallback below — this arm is intentionally
-        // UNCHANGED, mirroring the β2 Mul/Div arm's own `Int` placeholder —
-        // but the `expr.rs` `compile_binop` operand-kind guard
-        // (`type_compat::add_sub_dimensioned_complex_reject`) now overrides
-        // `result_type` to `Type::Error` and emits `E_ArithOperandKind`
-        // whenever this placeholder would otherwise leak downstream, for
-        // BOTH operand orders (closing the order-dependent asymmetry: previously
-        // `Complex<Length> + Int` preserved `Complex<Length>` while the
-        // reversed `Int + Complex<Length>` silently collapsed to bare `Int`
-        // with no diagnostic at all). The placeholder value itself is still
-        // pinned by
-        // `binop_add_dimensioned_complex_plus_int_returns_placeholder_poisoned_by_guard`
-        // and
-        // `binop_add_int_plus_dimensioned_complex_returns_placeholder_poisoned_by_guard`
-        // below
-        // (the pure-fn placeholder the guard overrides, same pattern as the
-        // Mul/Div placeholder pins); the observable end-to-end behavior is
-        // covered by `crates/reify-compiler/tests/add_sub_operand_guard_tests.rs`.
+        // `Complex` + Int/Real still claims a placeholder type here via the
+        // `left.clone()` fallback below (this arm is intentionally UNCHANGED,
+        // mirroring the β2 Mul/Div arm's own `Int` placeholder). The
+        // `expr.rs` `compile_binop` operand-kind guard
+        // (`add_sub_dimensioned_complex_reject`) overrides `result_type` to
+        // `Type::Error` and emits `E_ArithOperandKind` for BOTH operand
+        // orders, closing the order-dependent asymmetry. This module's
+        // placeholder-pinning tests below cover the pure-fn value; the
+        // sibling `add_sub_operand_guard_tests.rs` integration module covers
+        // the observable end-to-end (poisoned-to-Error) behavior.
         //
         // SCOPE (code-review confirmation, task 5061 amendment pass): the
         // dimensionless-Complex widening arm above is intentionally folded
@@ -2581,19 +2571,13 @@ mod tests {
 
     #[test]
     fn binop_add_dimensioned_complex_plus_int_returns_placeholder_poisoned_by_guard() {
-        // D3 policy (reify-expr `guard_dimensionless_complex`): a DIMENSIONED
-        // Complex does not promote against a bare Int/Real at runtime (evals
-        // Undef). `infer_binop_type`'s `Add`/`Sub` arm is intentionally
+        // D3 policy: a DIMENSIONED Complex does not promote against a bare
+        // Int/Real at runtime (evals Undef). This pure fn is intentionally
         // UNCHANGED (mirrors the β2 Mul/Div arm's own `Int` placeholder) and
-        // still returns this pure-fn placeholder (`left.clone()`) here — this
-        // test pins ONLY that placeholder value, not the observable
-        // end-to-end static type. CLOSED end-to-end (task
-        // compiler-type-hygiene follow-up 5163): the `expr.rs` `compile_binop`
-        // operand-kind guard (`add_sub_dimensioned_complex_reject`) overrides
-        // `result_type` to `Type::Error` and emits `ArithOperandKind`
-        // whenever this placeholder would otherwise leak downstream. See
-        // `crates/reify-compiler/tests/add_sub_operand_guard_tests.rs` for
-        // the observable (poisoned-to-Error) behavior.
+        // still returns this placeholder; the `expr.rs` operand-kind guard
+        // (`add_sub_dimensioned_complex_reject`) overrides `result_type` to
+        // `Type::Error` downstream. See `add_sub_operand_guard_tests.rs` for
+        // the observable end-to-end behavior.
         let dimensioned = Type::complex(Type::length());
         assert_eq!(
             infer_binop_type(BinOp::Add, &dimensioned, &Type::Int),
@@ -2601,21 +2585,14 @@ mod tests {
         );
     }
 
-    /// Order-reversed counterpart of
-    /// `binop_add_dimensioned_complex_plus_int_returns_placeholder_poisoned_by_guard`
-    /// above: with the DIMENSIONED Complex on the RIGHT, neither widening
-    /// branch fires (`is_dimensionless_complex(right)` is false — the Complex
-    /// is dimensioned, not dimensionless), so the `else` fallthrough returns
-    /// `left.clone()` = the bare `Int`, NOT the Complex — the pure fn's
-    /// placeholder is order-dependent (`Complex<Length>` vs `Int`).
-    /// `infer_binop_type` is intentionally UNCHANGED (see the sibling test
-    /// above); this test pins only that placeholder value. CLOSED end-to-end
-    /// (task compiler-type-hygiene follow-up 5163): the `expr.rs`
-    /// `compile_binop` operand-kind guard overrides `result_type` to
-    /// `Type::Error` for BOTH operand orders, closing the order-dependent
-    /// asymmetry (`Complex<Length> + Int` and `Int + Complex<Length>` now
-    /// both reject identically post-guard). See
-    /// `add_sub_operand_guard_tests.rs` for the observable behavior.
+    /// Order-reversed counterpart of the sibling pin above: with the
+    /// DIMENSIONED Complex on the RIGHT, neither widening branch fires, so
+    /// the `else` fallthrough returns `left.clone()` = the bare `Int`, not
+    /// the Complex — the pure fn's placeholder is order-dependent. This fn
+    /// is intentionally UNCHANGED; the `expr.rs` operand-kind guard now
+    /// overrides `result_type` to `Type::Error` for BOTH operand orders,
+    /// closing the asymmetry. See `add_sub_operand_guard_tests.rs` for the
+    /// observable behavior.
     #[test]
     fn binop_add_int_plus_dimensioned_complex_returns_placeholder_poisoned_by_guard() {
         let dimensioned = Type::complex(Type::length());
