@@ -8690,6 +8690,27 @@ mod tests {
         );
     }
 
+    /// step-1 RED (task #5085, D6): `classify_material_as_printed_zones`
+    /// must propagate a leaf extractor's `Err` via `?` instead of
+    /// panicking, when the AsPrintedZones lambda is malformed.
+    ///
+    /// RED: `classify_material_as_printed_zones` currently returns a bare
+    /// `MaterialModel`, so matching `Err(..)` fails to type-check until
+    /// step-2 converts it to `Result<MaterialModel, FeaValueShapeError>`.
+    #[test]
+    fn classify_material_as_printed_zones_rejects_malformed_lambda() {
+        // 7-element list; element 0 (aabb_min) is a non-Point Value::Real,
+        // so extract_point3_si's Err propagates via `?` before any other
+        // element is parsed — elements 1..7 are unchecked placeholders.
+        let malformed = Value::List(vec![Value::Real(0.0); 7]);
+        let res = classify_material_as_printed_zones(&malformed);
+        assert!(
+            matches!(res, Err(FeaValueShapeError::ExpectedList { .. })),
+            "expected Err(ExpectedList) for a malformed AsPrintedZones lambda \
+             (non-Point aabb_min element)"
+        );
+    }
+
     // ── warm_start_beneficial unit tests (task #4869) ─────────────────────────
     //
     // Fixture: 2×2 SPD matrix K = [[4,1],[1,3]], f = [1,2].
