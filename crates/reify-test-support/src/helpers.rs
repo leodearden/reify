@@ -783,6 +783,42 @@ mod tests {
         assert_eq!(max, [1.0, 2.0, 3.0], "unexpected max; got {max:?}");
     }
 
+    /// cell_value: returns the `Value` for a present `(structure, member)` cell.
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn cell_value_returns_value_for_present_cell() {
+        use reify_ir::ValueMap;
+        use std::collections::HashMap;
+        let mut values = ValueMap::new();
+        values.insert(reify_core::ValueCellId::new("S", "x"), reify_ir::Value::Bool(true));
+        let result = reify_eval::EvalResult {
+            values,
+            diagnostics: vec![],
+            resolved_params: HashMap::new(),
+            objective_provenance: HashMap::new(),
+            structured_detail: vec![],
+        };
+        assert_eq!(super::cell_value(&result, "S", "x"), reify_ir::Value::Bool(true));
+    }
+
+    /// cell_value: panics (message naming the missing cell) when no cell named
+    /// `{structure}.{member}` is present in the result's `ValueMap`.
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    #[should_panic(expected = "not found in eval result")]
+    fn cell_value_panics_on_absent_cell() {
+        use reify_ir::ValueMap;
+        use std::collections::HashMap;
+        let result = reify_eval::EvalResult {
+            values: ValueMap::new(),
+            diagnostics: vec![],
+            resolved_params: HashMap::new(),
+            objective_provenance: HashMap::new(),
+            structured_detail: vec![],
+        };
+        let _ = super::cell_value(&result, "Nope", "missing");
+    }
+
     /// assert_no_eval_errors should not panic when the result has no diagnostics.
     #[cfg(feature = "eval-helpers")]
     #[test]
