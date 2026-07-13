@@ -14,7 +14,10 @@
 //! `Cargo.toml` activates `mesh-morph` for all integration test binaries.
 #![cfg(all(has_gmsh, feature = "mesh-morph"))]
 
-use reify_ir::{ElementOrderTag, GeometryHandleId, GeometryKernel, Mesh, NodeAttachment};
+use reify_ir::{
+    ElementOrderTag, GeometryError, GeometryHandleId, GeometryKernel, Mesh, NodeAttachment,
+};
+use reify_ir::geometry::MeshInvariant;
 use reify_kernel_gmsh::GmshKernel;
 
 fn h(n: u64) -> GeometryHandleId {
@@ -140,6 +143,89 @@ fn mesh_surface_to_volume_attributed_welds_unwelded_surface_and_attributes() {
         !boundary.is_empty(),
         "BoundaryAssociation must be non-empty for a welded unit-cube input"
     );
+}
+
+/// [`subdivided_unit_cube_surface`] with the entire TOP (z=+0.5) face's 8
+/// triangles dropped, then per-face-exploded exactly like
+/// [`unwelded_subdivided_unit_cube_surface`]. The result has a GENUINE open
+/// boundary around the top perimeter: welding merges near-coincident
+/// vertex *positions*, but it cannot fabricate the missing triangles that
+/// would close the hole, so this fixture stays non-watertight even after
+/// the producer's weld pre-stage.
+///
+/// `subdivided_unit_cube_surface`'s index buffer is emitted as six
+/// contiguous 24-index (8-triangle) blocks in `Bottom, Top, Front, Back,
+/// Left, Right` order (see that function's `#[rustfmt::skip]` comment
+/// blocks); Top is the second block, i.e. `indices[24..48]`.
+fn unwelded_subdivided_unit_cube_surface_missing_top_face() -> Mesh {
+    let welded = subdivided_unit_cube_surface();
+    let mut kept_indices: Vec<u32> = welded.indices[0..24].to_vec();
+    kept_indices.extend_from_slice(&welded.indices[48..]);
+
+    let mut vertices: Vec<f32> = Vec::with_capacity(kept_indices.len() * 3);
+    for &raw_idx in &kept_indices {
+        let base = raw_idx as usize * 3;
+        vertices.extend_from_slice(&welded.vertices[base..base + 3]);
+    }
+    let indices: Vec<u32> = (0..kept_indices.len() as u32).collect();
+    Mesh { vertices, indices, normals: None }
+}
+
+/// Negative control / fail-closed regression guard for the acceptance test
+/// above: a surface with a REAL open boundary (the unit cube missing its
+/// entire top face) must still be rejected by the #4876 watertightness
+/// preflight even after the task-ξ weld pre-stage, because welding only
+/// merges near-coincident vertex positions — it cannot synthesize the
+/// missing triangles that would close the hole. Pins the fail-closed
+/// invariant the old (pre-ξ) `mesh_surface_to_volume_attributed_rejects_unwelded_surface`
+/// test used to cover, which the rework above (necessarily) no longer
+/// exercises since it now asserts the opposite outcome on a *different*
+/// (closed-on-quotient) input. Without this guard, a regression that let a
+/// genuinely open surface reach gmsh's FFI (the original #4876 SIGSEGV)
+/// would pass CI.
+#[test]
+fn mesh_surface_to_volume_attributed_rejects_surface_with_genuine_hole() {
+    let kernel = GmshKernel::new();
+    let holey = unwelded_subdivided_unit_cube_surface_missing_top_face();
+
+    // Anchors are irrelevant here — the preflight rejects before any
+    // entity-attribution matching runs — but reuse the sibling tests'
+    // 6-anchor list for consistency.
+    let face_anchors: Vec<(GeometryHandleId, [f64; 3])> = vec![
+        (h(101), [0.0, 0.0, -0.5]),
+        (h(102), [0.0, 0.0, 0.5]),
+        (h(103), [0.0, -0.5, 0.0]),
+        (h(104), [0.0, 0.5, 0.0]),
+        (h(105), [-0.5, 0.0, 0.0]),
+        (h(106), [0.5, 0.0, 0.0]),
+    ];
+
+    let err = kernel
+        .mesh_surface_to_volume_attributed(&holey, ElementOrderTag::P1, &face_anchors, 0.3)
+        .expect_err(
+            "a surface missing an entire face has a genuine open boundary that welding \
+             cannot close, so the #4876 watertightness preflight must still reject it \
+             (fail-closed, before any gmsh FFI call — no SIGSEGV)",
+        );
+
+    match err {
+        GeometryError::MeshContractViolation {
+            kernel: kernel_name,
+            invariant,
+            ..
+        } => {
+            assert_eq!(kernel_name, "gmsh", "violation must name the gmsh kernel");
+            assert_eq!(
+                invariant,
+                MeshInvariant::Closed,
+                "expected a Closed violation naming the missing-face open boundary"
+            );
+        }
+        other => panic!(
+            "expected Err(GeometryError::MeshContractViolation {{ invariant: Closed, .. }}), \
+             got {other:?}"
+        ),
+    }
 }
 
 /// RED (task 4092 step-5): the gmsh `mesh_surface_to_volume_attributed` trait
