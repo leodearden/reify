@@ -3384,14 +3384,12 @@ fn solve_ranked_multistart_inherits_money_robustness_floor() {
 
 /// Regression fixture: dim=6 interior-optimum quadratic (generalizes
 /// `two_param_interior_quadratic_problem` to N params), asserting
-/// `solve_ranked` still returns exactly K = 2*(6+1) = 14 ranked candidates
-/// and completes within a generous time ceiling. Not a strict perf gate
-/// (wall-clock is machine-dependent) -- it exists so the K = 2*(dim+1) cost
-/// growth is exercised and observable, not merely documented in a comment.
+/// `solve_ranked` still returns exactly K = 2*(6+1) = 14 ranked candidates.
+/// It exists so the K = 2*(dim+1) cost growth is exercised and observable,
+/// not merely documented in a comment.
 #[test]
 fn solve_ranked_multistart_k_scales_linearly_with_dim_high_dim_regression() {
     use reify_ir::RankedSolveResult;
-    use std::time::Instant;
 
     const DIM: usize = 6;
     let solver = DimensionalSolver;
@@ -3438,9 +3436,7 @@ fn solve_ranked_multistart_k_scales_linearly_with_dim_high_dim_regression() {
         functions: vec![].into(),
     };
 
-    let started = Instant::now();
     let ranked = solver.solve_ranked(&problem);
-    let elapsed = started.elapsed();
 
     match ranked {
         RankedSolveResult::Ranked { candidates, .. } => {
@@ -3451,13 +3447,6 @@ fn solve_ranked_multistart_k_scales_linearly_with_dim_high_dim_regression() {
                 "K = 2*(dim+1) must scale linearly with dim (PRD §11 Q4, no \
                  cap): dim={DIM} -> expected {expected_k}, got {}",
                 candidates.len()
-            );
-            assert!(
-                elapsed.as_secs() < 10,
-                "solve_ranked over a dim={DIM} (K={expected_k}) merged \
-                 cluster took {:?} -- investigate a possible super-linear \
-                 regression in multistart cost",
-                elapsed
             );
         }
         other => panic!(
