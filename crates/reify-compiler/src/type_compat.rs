@@ -1977,48 +1977,33 @@ pub(crate) fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
         // Complex operand does not widen — falls through to the unchanged
         // `left.clone()` fallback, same as before this arm existed.
         //
-        // KNOWN GAP (out of scope for β2, which is Mul/Div-only per PRD
-        // decision 2): a DIMENSIONED `Complex` + Int/Real (e.g.
-        // `Complex<Length> + 1`) still statically claims `left`'s dimensioned
-        // Complex type via the `left.clone()` fallback below, even though
-        // `guard_dimensionless_complex` evaluates `Value::Undef` for it at
-        // runtime — the same static/runtime disagreement class β2 closes for
-        // Mul/Div (this fn's `Mul`/`Div` arm below), but Add/Sub has no
-        // operand-kind guard to surface it as a diagnostic. Pinned (as
-        // current, not desired, behavior) by
-        // `binop_add_dimensioned_complex_plus_int_does_not_widen` below.
+        // CLOSED (task compiler-type-hygiene follow-up 5163): a DIMENSIONED
+        // `Complex` + Int/Real (e.g. `Complex<Length> + 1`, either operand
+        // order) still statically claims a placeholder type here via the
+        // `left.clone()` fallback below — this arm is intentionally
+        // UNCHANGED, mirroring the β2 Mul/Div arm's own `Int` placeholder —
+        // but the `expr.rs` `compile_binop` operand-kind guard
+        // (`type_compat::add_sub_dimensioned_complex_reject`) now overrides
+        // `result_type` to `Type::Error` and emits `E_ArithOperandKind`
+        // whenever this placeholder would otherwise leak downstream, for
+        // BOTH operand orders (closing the order-dependent asymmetry: previously
+        // `Complex<Length> + Int` preserved `Complex<Length>` while the
+        // reversed `Int + Complex<Length>` silently collapsed to bare `Int`
+        // with no diagnostic at all). The placeholder value itself is still
+        // pinned by `binop_add_dimensioned_complex_plus_int_does_not_widen`
+        // and `binop_add_int_plus_dimensioned_complex_does_not_widen` below
+        // (the pure-fn placeholder the guard overrides, same pattern as the
+        // Mul/Div placeholder pins); the observable end-to-end behavior is
+        // covered by `crates/reify-compiler/tests/add_sub_operand_guard_tests.rs`.
         //
-        // ORDER-DEPENDENT ASYMMETRY: the gap is not even consistent across
-        // operand order. `Complex<Length> + Int` hits the `else` fallthrough
-        // below with `left` = the dimensioned Complex, so `left.clone()`
-        // preserves `Complex<Length>`. The REVERSE `Int + Complex<Length>`
-        // hits neither widening branch either (the dimensioned Complex is on
-        // `right`, and `is_dimensionless_complex(right)` is false — it's
-        // dimensioned, not dimensionless), but `left.clone()` there means
-        // `left` = the bare `Int` — so the result collapses to plain `Int`,
-        // silently discarding the Complex-ness entirely. The same
-        // runtime-Undef expression class therefore yields TWO DIFFERENT
-        // static types depending purely on operand order, and the bare-`Int`
-        // collapse can trigger a spurious downstream `E_ArithOperandKind` on
-        // a follow-on `/ Complex` — the exact widening-gap failure class β2
-        // fixed for the dimensionless case (see the imaginary-literal-sugar
-        // note above this match arm). Pinned (as current, not desired,
-        // behavior) by `binop_add_int_plus_dimensioned_complex_does_not_widen`
-        // below.
-        // TODO(#5163): add an Add/Sub operand-kind guard for this case
-        // (covering BOTH operand orders), or document it as a
-        // permanently-accepted static/runtime gap.
-        //
-        // SCOPE (code-review confirmation, task 5061 amendment pass): this
-        // dimensionless-Complex widening arm is intentionally folded into β2
-        // rather than split into a separate change — it is a direct
+        // SCOPE (code-review confirmation, task 5061 amendment pass): the
+        // dimensionless-Complex widening arm above is intentionally folded
+        // into β2 rather than split into a separate change — it is a direct
         // prerequisite for β2's own Mul/Div guard, needed to avoid a spurious
         // `E_ArithOperandKind` on the imaginary-literal-sugar path described
         // above (`w = 3 + 4j` followed by e.g. `w / complex(1.0, 2.0)`), so
         // it cannot be bisected away from the Mul/Div guard without
-        // reintroducing that false positive. Only the follow-up (closing the
-        // dimensioned-Complex gap/asymmetry documented above) is deferred,
-        // tracked by #5163.
+        // reintroducing that false positive.
         BinOp::Add | BinOp::Sub => {
             if is_dimensionless_complex(left) && is_dimensionless_numeric(right) {
                 left.clone()

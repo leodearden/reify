@@ -1792,6 +1792,47 @@ pub(crate) fn compile_expr_guarded_with_expected(
                         }
                     }
 
+                    // Operand-kind guard for `+`/`-` on a DIMENSIONED `Complex`
+                    // paired with a bare dimensionless numeric (task
+                    // compiler-type-hygiene follow-up 5163, reusing
+                    // `E_ArithOperandKind` — mirrors the β2 Mul/Div guard
+                    // further below).
+                    //
+                    // `infer_binop_type`'s `Add`/`Sub` arm keeps returning its
+                    // pre-existing placeholder (`left.clone()`/`right.clone()`)
+                    // for this pairing UNCHANGED (see that arm's doc in
+                    // type_compat.rs) — this guard overrides `result_type`
+                    // exactly like the Mul/Div guard overrides its own `Int`
+                    // placeholder below, so the compiled AST never observes
+                    // the placeholder's (previously order-dependent, silently
+                    // wrong) static type.
+                    //
+                    // Gradualism is preserved STRUCTURALLY by
+                    // `add_sub_dimensioned_complex_reject` itself — it matches
+                    // only a (dimensioned Complex, dimensionless numeric) pair,
+                    // so `Type::Error`/`Type::TypeParam` operands never trigger
+                    // it and no separate skip check is needed here (unlike the
+                    // broader Mul/Div `is_mul_div_gradualism_skip`).
+                    if matches!(bin_op, BinOp::Add | BinOp::Sub)
+                        && type_compat::add_sub_dimensioned_complex_reject(
+                            &compiled_left.result_type,
+                            &compiled_right.result_type,
+                        )
+                    {
+                        result_type = make_poison_type(
+                            diagnostics,
+                            Diagnostic::error(format!(
+                                "operator `{op}` is undefined for operand kinds `{}` and `{}`",
+                                compiled_left.result_type, compiled_right.result_type,
+                            ))
+                            .with_code(DiagnosticCode::ArithOperandKind)
+                            .with_label(DiagnosticLabel::new(
+                                expr.span,
+                                "unsupported operand kinds",
+                            )),
+                        );
+                    }
+
                     // Operand-kind (and later dimension) guard for comparison ops
                     // (task-4490 / PRD §7.1 / `E_CmpOperandKind`).
                     //
