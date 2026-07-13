@@ -826,6 +826,16 @@ structure def PerDeclGuardHost {
 // `visibility` field, E_PRIV_MEMBER_ACCESS will start appearing here and
 // these assertions will need to flip — that flip is the intended trip-wire.
 
+/// Follow-up task tracking the priv-gate enforcement gap pinned by the four
+/// `..._not_yet_priv_gated` tests below (2 external-access + 2 function-body
+/// variants, one pair per member kind). When this task lands and wires
+/// `template_member_is_priv` to scan `ports[].members[].visibility` and
+/// `guarded_groups[].members[].visibility` (and the underlying member paths
+/// become resolvable), grep this file for `NOT_YET_PRIV_GATED_FOLLOWUP` to
+/// find every assertion that must flip from "expect 0 E_PRIV_MEMBER_ACCESS
+/// / a not-yet-resolved diagnostic" to "expect exactly 1 E_PRIV_MEMBER_ACCESS".
+const NOT_YET_PRIV_GATED_FOLLOWUP: &str = "#5171";
+
 /// External access into a `priv param` nested inside a port does not emit
 /// E_PRIV_MEMBER_ACCESS today — not because it is silently allowed (it
 /// isn't), but because the priv gate is never reached.
@@ -853,7 +863,27 @@ structure def Parent {
         0,
         "external access to a priv port-member must not emit E_PRIV_MEMBER_ACCESS \
          today — the lowered visibility field is not yet consulted by any \
-         enforcement path (tracked by #5171); all diagnostics: {:?}",
+         enforcement path (tracked by {NOT_YET_PRIV_GATED_FOLLOWUP}); all \
+         diagnostics: {:?}",
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    let not_yet_supported = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("member access not yet supported"))
+        .count();
+    // Load-bearing: without this, a future regression that made `h.secret.main`
+    // resolve cleanly with NO diagnostic at all (fail *open*, not closed) would
+    // leave this test green, defeating its purpose as a trip-wire. `.main`'s
+    // nested port-member path currently falls through to the generic catch-all
+    // (code:None) rather than E_STRUCTURE_MEMBER_NOT_FOUND, so this pins that
+    // exact failure mode.
+    assert!(
+        not_yet_supported >= 1,
+        "external access to `h.secret.main` must fail with at least one generic \
+         'member access not yet supported' diagnostic (the composite port-member \
+         path is not yet wired into the external `obj.member` resolver) — this \
+         pins that the access fails closed, not open; all diagnostics: {:?}",
         module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
@@ -884,8 +914,25 @@ structure def Parent {
         0,
         "external access to a priv guarded-block member must not emit \
          E_PRIV_MEMBER_ACCESS today — the lowered visibility field is not yet \
-         consulted by any enforcement path (tracked by #5171); all \
-         diagnostics: {:?}",
+         consulted by any enforcement path (tracked by \
+         {NOT_YET_PRIV_GATED_FOLLOWUP}); all diagnostics: {:?}",
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    let not_found = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::StructureMemberNotFound))
+        .count();
+    // Load-bearing, mirroring the function-body variant below: without this, a
+    // future regression that made `h.g` resolve cleanly with NO diagnostic at
+    // all (fail *open*, not closed) would leave this test green, defeating its
+    // purpose as a trip-wire.
+    assert!(
+        not_found >= 1,
+        "external access to `h.g` must fail with at least one \
+         E_STRUCTURE_MEMBER_NOT_FOUND (`template_has_member` doesn't scan \
+         `guarded_groups[].members`) — this pins that the access fails closed, \
+         not open; all diagnostics: {:?}",
         module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
@@ -942,7 +989,8 @@ fn leak(m : PortHost) -> Length { m.secret.main }
         0,
         "function-body access to a priv port-member must not emit \
          E_PRIV_MEMBER_ACCESS today — the skeleton template never carries port \
-         members (tracked by #5171); all diagnostics: {:?}",
+         members (tracked by {NOT_YET_PRIV_GATED_FOLLOWUP}); all \
+         diagnostics: {:?}",
         module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
     let not_found = module
@@ -989,7 +1037,8 @@ fn leak(m : GuardHost) -> Length { m.g }
         0,
         "function-body access to a priv guarded-block member must not emit \
          E_PRIV_MEMBER_ACCESS today — the skeleton template never carries \
-         guarded-group members (tracked by #5171); all diagnostics: {:?}",
+         guarded-group members (tracked by {NOT_YET_PRIV_GATED_FOLLOWUP}); all \
+         diagnostics: {:?}",
         module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
     let not_found = module
