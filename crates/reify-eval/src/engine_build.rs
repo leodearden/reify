@@ -6342,210 +6342,118 @@ impl Engine {
         meshes
     }
 
-    /// Execute the per-realization geometry operation loop and perform rollback
-    /// on partial failure.
+    /// Probe the per-engine [`RealizationCache`] for a cached terminal handle
+    /// and — on a hit — apply the realization's cold-path success side
+    /// effects, short-circuiting the kernel op loop.
     ///
-    /// Captures `handle_start = step_handles.len()` on entry.  For each op in
-    /// `operations`, evaluates it via `compile_geometry_op` and dispatches to
-    /// the kernel:
+    /// Extracted (task 5059 η, zero behavior change) from the inline
+    /// cache-hit short-circuit that used to open [`Self::execute_realization_ops`]
+    /// (task 2874 step-8); see that method's doc for the surrounding op-loop
+    /// contract this probe short-circuits.
     ///
-    /// - `Ok(geom_op)` — dispatches to the kernel; on success pushes
-    ///   `handle.id` to `step_handles`; on kernel error emits a geometry-error
-    ///   diagnostic and breaks the loop.  Kernel errors break immediately: a
-    ///   geometry engine failure is often unrecoverable (e.g. corrupt state),
-    ///   and subsequent ops that depend on the failed handle would fail too.
-    /// - `Err(reason)` — pushes `GeometryHandleId::INVALID` sentinel, emits a
-    ///   compile-error diagnostic, sets `had_failure = true`, and continues.
-    ///   Compile errors are cheaper to continue past because the sentinel lets
-    ///   independent ops proceed.
+    /// Returns `true` after writing the full side-effect set below; returns
+    /// `false` — with ZERO side effects on `outputs` — when the guard
+    /// (`is_terminal_realization && demanded_tol.is_some() &&
+    /// realization_name.is_some()`) is unmet or the cache probe misses.
     ///
-    /// After the op loop, if `had_failure` or fewer handles were produced than
-    /// there are `operations`, truncates `step_handles` to `handle_start` (discards
-    /// all partial handles from this realization).
+    /// The hit/miss bit is all the sole production caller
+    /// ([`Self::execute_realization_ops`]) needs — it only branches on
+    /// whether to short-circuit, never on the cached handle or repr (both
+    /// already landed in `outputs` as part of the side-effect set above). A
+    /// prior revision returned `Option<CacheHit { handle, resolved_repr }>`
+    /// so the unit tests below could assert the resolved handle/repr
+    /// directly; that duplicated what the `outputs`-view assertions already
+    /// cover, so the tests now assert this `bool` plus those views instead.
     ///
-    /// **Duplicate `realization_name` within a template:** last-write-wins —
-    /// a later realization with the same name shadows the earlier one in
-    /// `named_steps`.  Pinned by
-    /// `execute_realization_ops_duplicate_name_shadows_previous`.
+    /// # Invariants
     ///
-    /// **`kernel_error_out`** (arch §9.1 lines 868–877): when
-    /// `kernel.execute(...)` returns `Err(...)`, the helper additionally writes
-    /// `Some(ErrorRef::new("geometry error: …"))` to `*kernel_error_out` so the
-    /// caller can mark the realization NodeId as `Freshness::Failed { error }`
-    /// in the eval cache and emit a single `EventKind::Failed` event.  When
-    /// the loop completes without a kernel error (success or compile-only
-    /// failure), `*kernel_error_out` is left untouched (typically `None`).  The
-    /// caller is responsible for the cache + journal writes because the
-    /// realization NodeId, cache, and journal are not threaded into this
-    /// helper — see `Engine::mark_realization_failed` for the wire site.
+    /// This method IS the enforcement mechanism for INV-BUILD-3 ("a
+    /// cache-hit short-circuit produces the same observable side-effect set
+    /// as the path it short-circuits" — `docs/invariants.md`, PRD §5.1).
+    /// Four contract pins, each with its own unit test:
     ///
-    /// **`demanded_tol` + `realization_cache`** (task 2874, step-6 wiring): the
-    /// caller pre-computes the demanded tolerance for the realization via
-    /// [`Engine::demanded_tolerance_for_output`] (with fallback to
-    /// [`Engine::active_tolerance_for`]) and threads it in alongside a mutable
-    /// borrow of [`Engine::realization_cache`]. After a fully-successful
-    /// realization (the `step_handles[handle_start..].last()` branch that
-    /// records `named_steps`), if `demanded_tol` is `Some(t)` the helper
-    /// inserts `(realization_id.entity, ReprKind::BRep, t, last_handle)` into
-    /// the cache. When `demanded_tol` is `None` (no demand contributor exists
-    /// for this realization) no cache entry is written — preserving the
-    /// historical "no tolerance contract → no caching" semantics.
-    ///
-    /// **Cache-hit short-circuit** (task 2874, step-8 wiring): at the very
-    /// start of the helper — BEFORE the `for (op_idx, op) in
-    /// operations.iter().enumerate()` op loop — when both `demanded_tol`
-    /// and `realization_name` are `Some(_)` AND
-    /// `realization_cache.lookup(realization_id.entity, ReprKind::BRep, t, NO_OPTIONS)`
-    /// returns `Some(&handle)`, the helper:
-    ///   - pushes the cached handle onto `step_handles` (mirrors the
-    ///     successful-realization handle-stack post-condition),
-    ///   - inserts `(name, cached_handle)` into `named_steps` (mirrors the
-    ///     post-rollback `named_steps` write so downstream
-    ///     `GeomRef::Sub("body")` lookups continue to resolve),
-    ///   - returns early — skipping the kernel op loop, the
-    ///     `compile_geometry_op` evaluations, the per-op
-    ///     `topology_attribute_table` population, the
-    ///     rollback-truncation gate, and the post-loop cache-insert
-    ///     (idempotent: the entry already exists, and re-inserting at the
-    ///     same `(entity, repr, tol, NO_OPTIONS)` key would be a no-op under
-    ///     the partial-order semantics).
-    ///
-    ///   `NO_OPTIONS` = `ContentHash(0)` is the PRD §4 "no options" sentinel;
-    ///   tasks δ (3435) and ξ (3442) will thread real per-op option hashes
-    ///   here when wiring `TessellateOptions` / `VolumeMeshOptions`.
-    ///
-    /// `realization_name = None` paths (anonymous realizations) bypass the
-    /// short-circuit so the named_steps write is never skipped where it
-    /// otherwise would not happen — anonymous realizations are not part of
-    /// the cache contract today. The post-condition the cache-hit branch
-    /// preserves is "after this helper returns successfully, the terminal
-    /// handle is the last entry in `step_handles[handle_start..]` AND
-    /// `named_steps[name] = terminal_handle`" — exactly the contract the
-    /// op-loop success path establishes (see the post-rollback
-    /// `step_handles[handle_start..].last()` block below).
-    ///
-    /// **Known limitation** (recorded as a design decision): a cache-hit
-    /// short-circuit skips per-op `topology_attribute_table` population,
-    /// including the kernel-attribute hook propagation added in task 2875.
-    /// The table is reset to `default()` at the start of every `build()`
-    /// (see callers around engine_build.rs
-    /// `topology_attribute_table = TopologyAttributeTable::default()`), so a
-    /// cache-served handle has no entries in the table on the second
-    /// build. v0.2 callers do not combine `activate_purpose` with attribute
-    /// queries today, so this is documented (not regressed) in scope; a
-    /// follow-up task can either cache the table entries alongside the
-    /// handle or skip the table reset for engines with non-empty cache.
-    ///
-    /// **Cross-kernel collision guard** (task 4349): on cache-hit the helper
-    /// calls `topology_attribute_table.remove(cached_handle.id)` to evict any
-    /// entry that a cross-kernel sibling op may have recorded at the same
-    /// bare `GeometryHandleId`. The table is keyed by `GeometryHandleId` only
-    /// (not the full `KernelHandle`), and each kernel's counter starts at 1 —
-    /// so OCCT and Manifold independently produce `GeometryHandleId(1)`. A
-    /// Manifold op earlier in the same build may have written
-    /// `topology_attribute_table.record(GeometryHandleId(1), attr)` before
-    /// this cache-hit returns `{Occt, GeometryHandleId(1)}` from a prior build,
-    /// collapsing two distinct `KernelHandle`s onto one key. The `remove` is a
-    /// no-op in the common single-kernel case (the per-build reset already cleared
-    /// the table) and enforces the #3226 spec ("cache-served handle has no entries
-    /// in those tables") in the cross-kernel case. The principled re-key of the
-    /// table to `KernelHandle` is deferred to follow-up task #4351.
-    fn execute_realization_ops(
-        input: RealizationOpsInput<'_>,
-        outputs: RealizationOutputs<'_>,
-        // Task 4744 β step-20: returns the source-bundle stash for this
-        // realization (the freshly-produced VolumeMesh + a snapshot of the BRep
-        // it was meshed from) when a morph producer is active, so the caller can
-        // store it for the NEXT tick's morph. `None` whenever no producer is
-        // registered or no VolumeMesh was produced (every off-build call site).
-    ) -> Option<crate::morph_producer::MorphSource> {
-        let RealizationOpsInput {
-            kernels,
-            registry,
-            default_kernel_name,
-            operations,
-            values,
-            functions,
-            meta_map,
-            diagnostics,
-            realization_id,
-            realization_name,
-            realization_span,
-            kernel_error_out,
-            realization_cache,
-            demanded_tol,
-            demanded_repr,
-            demanded_boundary,
-            dispatch_count,
-            dispatch_count_by_realization,
-            prefer_kernel,
-            is_terminal_realization,
-            morph_io,
-            long_chain_threshold,
-        } = input;
-        let RealizationOutputs {
-            step_handles,
-            named_steps,
-            named_step_reprs,
-            topology_attribute_table,
-            swept_kind_table,
-            produced_repr_out,
-        } = outputs;
-        let handle_start = step_handles.len();
-        // Task 4744 β (step-20): source-bundle stash returned to the caller
-        // (`build` / `build_snapshot`), which writes it into the per-realization
-        // `Engine::morph_source` side-table AFTER this call returns (the engine
-        // method needs `&mut self`, unavailable here). Stays `None` unless a
-        // morph producer is active AND this realization produced a VolumeMesh —
-        // so every `disabled()` call site (no producer) returns `None` and is
-        // byte-identical. Populated in the success branch's VolumeMesh dispatch.
-        let mut morph_source_stash: Option<crate::morph_producer::MorphSource> = None;
-        // Task 4050 step-8: the per-op `available` set is no longer a hoisted
-        // loop-invariant `{BRep}` constant — it is derived per op from the
-        // reprs of that op's resolved input handles (`realization_step_reprs`,
-        // tracked in lockstep with `realization_step_ids` below), defaulting to
-        // `{BRep}` for primitives / unresolved refs (design_decision 6). This
-        // lets a conversion stage that materialises a Mesh handle propagate the
-        // Mesh repr to downstream ops while staying `{BRep}` for the v0.2 path.
-
-        // Task 2874, step-8: cache-hit short-circuit. When the caller has
-        // threaded a demanded tolerance AND the realization is named (the
-        // `named_steps` contract requires a name to write into the map),
-        // probe the per-engine `RealizationCache` at
-        // `(entity_id, cache_repr, demanded_tol)`. On hit we push the
-        // cached terminal handle, write `named_steps[name] = cached_handle`,
-        // and return — preserving the post-condition the success path
-        // establishes below. On miss (or when either guard is `None`) we
-        // fall through to the kernel op loop, and step-6's post-success
-        // insert at the bottom of the helper populates the cache for the
-        // NEXT call. The lookup uses `RealizationCache`'s partial-order
-        // "tighter satisfies looser" rule (`cached_tol ≤ requested_tol`),
-        // so a tighter request automatically misses a looser cached entry
-        // (see step-13's pin).
+    /// 1. **Probes ONLY when `is_terminal_realization && demanded_tol.is_some()
+    ///    && realization_name.is_some()`.** A guard-fail (or a plain cache
+    ///    miss) returns `false` with zero side effects on `outputs` — no
+    ///    push/insert on any output view, no `topology_attribute_table`
+    ///    eviction. Pinned by
+    ///    `probe_realization_cache_guard_requires_terminal_named_and_tol`.
+    /// 2. **Primary lookup at `demanded_repr`; `BRep` fallback on a
+    ///    non-`BRep` miss.** A `demanded_repr == BRep` demand never falls
+    ///    back (the `or_else` short-circuits); both lookups honor the
+    ///    cache's tol partial order (`cached_tol ≤ requested_tol`
+    ///    satisfies). Pinned by
+    ///    `probe_realization_cache_falls_back_to_brep_and_honors_tol_partial_order`.
+    /// 3. **On a hit, the FULL cold-path side-effect set — and nothing
+    ///    else.** `step_handles` push, `named_steps` + `named_step_reprs`
+    ///    insert, `produced_repr_out` write, the `debug_assert_eq!`
+    ///    consistency guard; dispatch counters are left at their entry
+    ///    values, and the function returns before the op loop ever runs.
+    ///    Pinned by
+    ///    `probe_realization_cache_primary_hit_applies_full_side_effect_set`
+    ///    (single hit) and, cold-vs-warm,
+    ///    `probe_realization_cache_cold_warm_side_effect_set_parity`.
+    /// 4. **The 4349 cross-kernel eviction is a documented interim
+    ///    trade-off, not a fix** — see the `Cross-kernel collision guard
+    ///    (task 4349)` comment at the `topology_attribute_table.remove(...)`
+    ///    call site below for the mechanism and trade-off. Retiring it is
+    ///    follow-up task θ's job, gated on #4351 — this task lands the
+    ///    mechanism only, so INV-BUILD-3 stays `proposed`. Pinned by
+    ///    `cache_hit_short_circuit_tolerates_cross_kernel_topology_attribute_id_collision`.
+    #[allow(clippy::too_many_arguments)]
+    fn probe_realization_cache(
+        realization_cache: &RealizationCache<KernelHandle>,
+        realization_id: &RealizationNodeId,
+        realization_name: Option<&str>,
+        demanded_repr: ReprKind,
+        demanded_tol: Option<f64>,
+        is_terminal_realization: bool,
+        outputs: &mut RealizationOutputs<'_>,
+    ) -> bool {
+        // Task 2874, step-8: cache-hit short-circuit (extracted into this
+        // helper by task 5059 η — see this function's rustdoc `# Invariants`
+        // for the full contract). When the caller has threaded a demanded
+        // tolerance AND the realization is named (the `named_steps` contract
+        // requires a name to write into the map), probe the per-engine
+        // `RealizationCache` at `(entity_id, cache_repr, demanded_tol)`. On
+        // hit we push the cached terminal handle, write
+        // `named_steps[name] = cached_handle`, and return `true` —
+        // preserving the post-condition the success path establishes in the
+        // caller, [`Self::execute_realization_ops`]. On miss (or when either
+        // guard is `None`) we return `false`; the caller then falls through
+        // to the kernel op loop, and step-6's post-success insert at the
+        // bottom of that caller populates the cache for the NEXT call. The
+        // lookup uses `RealizationCache`'s partial-order "tighter satisfies
+        // looser" rule (`cached_tol ≤ requested_tol`), so a tighter request
+        // automatically misses a looser cached entry (see step-13's pin).
         //
-        // **Amendment (suggestion #3)**: the cache repr is bound to a local
-        // `cache_repr` so the lookup-key repr and the `produced_repr_out`
-        // write below are sourced from the same value. If a future change
-        // shifts the cache key to a non-`BRep` `ReprKind` (the cache's
-        // `(entity, repr, tol, options)` shape already supports it; see
-        // `RealizationCache::lookup`), the `produced_repr_out` write follows
-        // without a separate edit.
+        // `cache_repr` is bound to a local so the lookup-key repr and the
+        // `produced_repr_out` write below are sourced from the same value.
+        // If a future change shifts the cache key to a non-`BRep` `ReprKind`
+        // (the cache's `(entity, repr, tol, options)` shape already
+        // supports it; see `RealizationCache::lookup`), the
+        // `produced_repr_out` write follows without a separate edit.
+        // `execute_realization_ops`'s post-loop insert-key fallback binds
+        // the identical `demanded_repr` value independently below (not
+        // through this function) — see its own comment for why.
         //
-        // **Task 4050 step-10 (gap 4)**: `cache_repr` is unpinned from `BRep` to
+        // Task 4050 step-10 (gap 4): `cache_repr` is unpinned from `BRep` to
         // the realization's `demanded_repr` (the υ-derived requested terminal
-        // repr, known before the op loop). The cache-hit LOOKUP keys on it, so a
-        // second identical Mesh build short-circuits at `(entity, Mesh, tol)`.
-        // The post-loop INSERT keys on the RESOLVED repr instead (see below), so
-        // a fallback realization that demanded Mesh but resolved BRep is stored
-        // at BRep: a later Mesh lookup correctly MISSES at the Mesh key (never
-        // returning a BRep handle as if it were Mesh), and the BRep fallback
-        // probe added below then recovers the hit at the resolved BRep key.
+        // repr, known before the caller's op loop). The cache-hit LOOKUP keys on
+        // it, so a second identical Mesh build short-circuits at
+        // `(entity, Mesh, tol)`. The caller's post-loop INSERT keys on the
+        // RESOLVED repr instead, so a fallback realization that demanded Mesh
+        // but resolved BRep is stored at BRep: a later Mesh lookup correctly
+        // MISSES at the Mesh key (never returning a BRep handle as if it were
+        // Mesh), and the BRep fallback probe added below then recovers the hit
+        // at the resolved BRep key.
         let cache_repr = demanded_repr;
-        // **Amendment (reviewer_comprehensive #1, perf regression)**: probe the
-        // terminal cache at the demanded repr first, then — for a non-BRep
-        // demand that missed — RETRY at `BRep`. This mirrors the per-op dispatch
-        // BRep fallback (design_decision 3) at the cache layer, and is the fix
-        // for the realization-cache regression flagged in review.
+        // Probe the terminal cache at the demanded repr first, then — for a
+        // non-BRep demand that missed — retry at `BRep`. This mirrors the
+        // per-op dispatch BRep fallback (design_decision 3) at the cache
+        // layer, and is the fix for a realization-cache perf regression
+        // (reviewer_comprehensive #1) where a Mesh demand always missed; see
+        // below for why.
         //
         // WHY THE FALLBACK PROBE IS LOAD-BEARING. With υ wired, an Stl/Obj export
         // marks its terminal realization `Mesh`, so the primary probe keys on
@@ -6614,15 +6522,15 @@ impl Engine {
                 // only follow-up task #4351's `KernelHandle` re-key will
                 // preserve both entries independently and eliminate the
                 // regression.
-                topology_attribute_table.remove(cached_handle.id);
-                step_handles.push(cached_handle);
-                named_steps.insert(name.to_string(), cached_handle);
+                outputs.topology_attribute_table.remove(cached_handle.id);
+                outputs.step_handles.push(cached_handle);
+                outputs.named_steps.insert(name.to_string(), cached_handle);
                 // Task 5033 Gap #2 Gap A: by-name repr sibling write. Mirrors
                 // the `named_steps` insert above — see
                 // `RealizationOutputs::named_step_reprs` doc for why a LATER
                 // realization's cross-realization `GeomRef::Sub` parent must
                 // be resolved by name rather than by bare handle-id.
-                named_step_reprs.insert(name.to_string(), resolved_repr);
+                outputs.named_step_reprs.insert(name.to_string(), resolved_repr);
                 // Step-10 (task ε / 3436): the [`RealizationCache`] key includes
                 // the repr (see the post-success `realization_cache.insert` call
                 // at the bottom of this function), so the cached terminal handle
@@ -6631,22 +6539,192 @@ impl Engine {
                 // Surface that SAME repr through `produced_repr_out` so the
                 // caller writes into the realization graph node exactly what a
                 // cold-path build of this realization would have written.
-                *produced_repr_out = Some(resolved_repr);
+                *outputs.produced_repr_out = Some(resolved_repr);
                 // **Task 4050 step-10**: consistency guard, reordered AFTER the
-                // `produced_repr_out` write. The surfaced produced_repr always
-                // equals the cache key's repr on the cache-hit branch (the line
-                // above just wrote `Some(resolved_repr)`); kept as a documented
-                // invariant guarding future edits to the probe/surface pair.
+                // `produced_repr_out` write. As positioned, this is
+                // tautological today — `produced_repr_out` was just set to
+                // `Some(resolved_repr)` on the line above, so the
+                // `unwrap_or` side can never disagree with `resolved_repr`
+                // and the assert can never fire against the current code.
+                // It is kept anyway as executable documentation of the
+                // invariant it names (the surfaced `produced_repr` always
+                // equals the cache key's repr on the cache-hit branch): if a
+                // future edit reorders this write or lets the two values be
+                // derived independently, the assert starts actually
+                // exercising the check and will trip in any debug-assertions
+                // build (including `cargo test`) the moment that invariant
+                // breaks, rather than staying silently wrong.
+                //
+                // A regression test that made this genuinely non-tautological
+                // would need a PRIMARY cache hit resolving to a non-`BRep`
+                // repr from a real kernel dispatch — but reify-eval links no
+                // Mesh-capable boolean kernel (see "WHY THE FALLBACK PROBE IS
+                // LOAD-BEARING" above), so every resolved repr the cache can
+                // actually contain today is `BRep`. Deferred until one does.
                 debug_assert_eq!(
                     resolved_repr,
-                    produced_repr_out.unwrap_or(ReprKind::BRep),
+                    outputs.produced_repr_out.unwrap_or(ReprKind::BRep),
                     "cache-hit produced_repr must equal the cache key's repr",
                 );
                 // Task 4744 β step-20: a cache-served terminal produced no fresh
                 // VolumeMesh this call, so there is nothing to stash.
-                return None;
+                return true;
             }
         } // end is_terminal_realization cache-probe guard
+        false
+    }
+
+    /// Execute the per-realization geometry operation loop and perform rollback
+    /// on partial failure.
+    ///
+    /// Captures `handle_start = step_handles.len()` on entry.  For each op in
+    /// `operations`, evaluates it via `compile_geometry_op` and dispatches to
+    /// the kernel:
+    ///
+    /// - `Ok(geom_op)` — dispatches to the kernel; on success pushes
+    ///   `handle.id` to `step_handles`; on kernel error emits a geometry-error
+    ///   diagnostic and breaks the loop.  Kernel errors break immediately: a
+    ///   geometry engine failure is often unrecoverable (e.g. corrupt state),
+    ///   and subsequent ops that depend on the failed handle would fail too.
+    /// - `Err(reason)` — pushes `GeometryHandleId::INVALID` sentinel, emits a
+    ///   compile-error diagnostic, sets `had_failure = true`, and continues.
+    ///   Compile errors are cheaper to continue past because the sentinel lets
+    ///   independent ops proceed.
+    ///
+    /// After the op loop, if `had_failure` or fewer handles were produced than
+    /// there are `operations`, truncates `step_handles` to `handle_start` (discards
+    /// all partial handles from this realization).
+    ///
+    /// **Duplicate `realization_name` within a template:** last-write-wins —
+    /// a later realization with the same name shadows the earlier one in
+    /// `named_steps`.  Pinned by
+    /// `execute_realization_ops_duplicate_name_shadows_previous`.
+    ///
+    /// **`kernel_error_out`** (arch §9.1 lines 868–877): when
+    /// `kernel.execute(...)` returns `Err(...)`, the helper additionally writes
+    /// `Some(ErrorRef::new("geometry error: …"))` to `*kernel_error_out` so the
+    /// caller can mark the realization NodeId as `Freshness::Failed { error }`
+    /// in the eval cache and emit a single `EventKind::Failed` event.  When
+    /// the loop completes without a kernel error (success or compile-only
+    /// failure), `*kernel_error_out` is left untouched (typically `None`).  The
+    /// caller is responsible for the cache + journal writes because the
+    /// realization NodeId, cache, and journal are not threaded into this
+    /// helper — see `Engine::mark_realization_failed` for the wire site.
+    ///
+    /// **`demanded_tol` + `realization_cache`** (task 2874, step-6 wiring): the
+    /// caller pre-computes the demanded tolerance for the realization via
+    /// [`Engine::demanded_tolerance_for_output`] (with fallback to
+    /// [`Engine::active_tolerance_for`]) and threads it in alongside a mutable
+    /// borrow of [`Engine::realization_cache`]. After a fully-successful
+    /// realization (the `step_handles[handle_start..].last()` branch that
+    /// records `named_steps`), if `demanded_tol` is `Some(t)` the helper
+    /// inserts `(realization_id.entity, ReprKind::BRep, t, last_handle)` into
+    /// the cache. When `demanded_tol` is `None` (no demand contributor exists
+    /// for this realization) no cache entry is written — preserving the
+    /// historical "no tolerance contract → no caching" semantics.
+    ///
+    /// **Cache-hit short-circuit**: before the op loop even starts, this
+    /// helper delegates to [`Self::probe_realization_cache`], which — on a
+    /// hit — applies the realization's cold-path success side effects
+    /// (`step_handles` push, `named_steps` + `named_step_reprs` insert,
+    /// `produced_repr_out` write, and the task-4349 cross-kernel
+    /// `topology_attribute_table` eviction) and returns early, before this
+    /// helper's `RealizationOutputs` destructure ever runs. See that
+    /// method's `# Invariants` doc (INV-BUILD-3) for the full
+    /// guard/fallback/side-effect/eviction contract and its pinning tests.
+    ///
+    /// **Known limitation** (recorded as a design decision): a cache-hit
+    /// short-circuit skips per-op `topology_attribute_table` population,
+    /// including the kernel-attribute hook propagation added in task 2875.
+    /// The table is reset to `default()` at the start of every `build()`
+    /// (see callers around engine_build.rs
+    /// `topology_attribute_table = TopologyAttributeTable::default()`), so a
+    /// cache-served handle has no entries in the table on the second
+    /// build. v0.2 callers do not combine `activate_purpose` with attribute
+    /// queries today, so this is documented (not regressed) in scope; a
+    /// follow-up task can either cache the table entries alongside the
+    /// handle or skip the table reset for engines with non-empty cache.
+    /// (The task-4349 cross-kernel `GeometryHandleId` collision guard that
+    /// partially compensates for this on a cache-hit now lives on
+    /// [`Self::probe_realization_cache`] — see that method's doc.)
+    fn execute_realization_ops(
+        input: RealizationOpsInput<'_>,
+        mut outputs: RealizationOutputs<'_>,
+        // Task 4744 β step-20: returns the source-bundle stash for this
+        // realization (the freshly-produced VolumeMesh + a snapshot of the BRep
+        // it was meshed from) when a morph producer is active, so the caller can
+        // store it for the NEXT tick's morph. `None` whenever no producer is
+        // registered or no VolumeMesh was produced (every off-build call site).
+    ) -> Option<crate::morph_producer::MorphSource> {
+        let RealizationOpsInput {
+            kernels,
+            registry,
+            default_kernel_name,
+            operations,
+            values,
+            functions,
+            meta_map,
+            diagnostics,
+            realization_id,
+            realization_name,
+            realization_span,
+            kernel_error_out,
+            realization_cache,
+            demanded_tol,
+            demanded_repr,
+            demanded_boundary,
+            dispatch_count,
+            dispatch_count_by_realization,
+            prefer_kernel,
+            is_terminal_realization,
+            morph_io,
+            long_chain_threshold,
+        } = input;
+        if Self::probe_realization_cache(
+            realization_cache,
+            realization_id,
+            realization_name,
+            demanded_repr,
+            demanded_tol,
+            is_terminal_realization,
+            &mut outputs,
+        ) {
+            return None;
+        }
+        let RealizationOutputs {
+            step_handles,
+            named_steps,
+            named_step_reprs,
+            topology_attribute_table,
+            swept_kind_table,
+            produced_repr_out,
+        } = outputs;
+        let handle_start = step_handles.len();
+        // Task 4744 β (step-20): source-bundle stash returned to the caller
+        // (`build` / `build_snapshot`), which writes it into the per-realization
+        // `Engine::morph_source` side-table AFTER this call returns (the engine
+        // method needs `&mut self`, unavailable here). Stays `None` unless a
+        // morph producer is active AND this realization produced a VolumeMesh —
+        // so every `disabled()` call site (no producer) returns `None` and is
+        // byte-identical. Populated in the success branch's VolumeMesh dispatch.
+        let mut morph_source_stash: Option<crate::morph_producer::MorphSource> = None;
+        // Task 4050 step-8: the per-op `available` set is no longer a hoisted
+        // loop-invariant `{BRep}` constant — it is derived per op from the
+        // reprs of that op's resolved input handles (`realization_step_reprs`,
+        // tracked in lockstep with `realization_step_ids` below), defaulting to
+        // `{BRep}` for primitives / unresolved refs (design_decision 6). This
+        // lets a conversion stage that materialises a Mesh handle propagate the
+        // Mesh repr to downstream ops while staying `{BRep}` for the v0.2 path.
+        // Task 5059 η: `cache_repr` is also read by the post-loop cache-insert
+        // below (`named_step_reprs`'s and `realization_cache.insert`'s
+        // `last_produced_repr.unwrap_or(cache_repr)` fallback) — code that is
+        // NOT part of the extracted `Self::probe_realization_cache`
+        // short-circuit above. Bound independently here to the same
+        // `demanded_repr` value that helper's own `cache_repr` binds (see
+        // its comment) — a plain alias with no anticipated transform, so a
+        // second identical binding is simpler than threading a shared
+        // function through both call sites.
+        let cache_repr = demanded_repr;
 
         // GR-034 (task #3445): measure realization wall-time from this point
         // so cache hits (which returned above) never contribute to elapsed.

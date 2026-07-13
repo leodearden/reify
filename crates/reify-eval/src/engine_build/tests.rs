@@ -8035,6 +8035,446 @@ structure Assembly {
         );
     }
 
+    // ── probe_realization_cache direct unit tests (task 5059 η / INV-BUILD-3) ──
+    //
+    // `Engine::probe_realization_cache` is the extracted cache-hit
+    // short-circuit that used to live inline in `execute_realization_ops`
+    // (task 2874 step-8; extracted task 5059 η, zero behavior change). These
+    // tests drive the helper directly — bypassing the op loop entirely — to
+    // pin its contract (PRD §5.1 / INV-BUILD-3) as a reviewable unit.
+
+    /// step-1 (RED): a primary cache hit must apply the FULL side-effect set
+    /// documented on `probe_realization_cache` — not just push a handle.
+    ///
+    /// Pre-seeds a `RealizationCache` at `(entity, BRep, tol)` with a known
+    /// handle, then probes at the SAME repr/tol with the terminal+named+tol
+    /// guard satisfied. Asserts every write the cold path's success branch
+    /// would have made: `step_handles`, `named_steps`, `named_step_reprs`,
+    /// and `produced_repr_out` — plus the `true` return itself.
+    #[test]
+    fn probe_realization_cache_primary_hit_applies_full_side_effect_set() {
+        let realization_id = RealizationNodeId::new("PrimaryHit", 0);
+        let tol = 1e-4_f64;
+        let seeded = KernelHandle {
+            kernel: KernelId::Occt,
+            id: GeometryHandleId(7),
+        };
+
+        let mut cache = RealizationCache::<KernelHandle>::new();
+        cache.insert(
+            &realization_id.entity,
+            ReprKind::BRep,
+            tol,
+            NO_OPTIONS,
+            seeded,
+        );
+
+        let mut step_handles: Vec<KernelHandle> = Vec::new();
+        let mut named_steps: HashMap<String, KernelHandle> = HashMap::new();
+        let mut named_step_reprs: HashMap<String, ReprKind> = HashMap::new();
+        let mut topology_attribute_table = TopologyAttributeTable::default();
+        let mut swept_kind_table = SweptKindTable::default();
+        let mut produced_repr_out: Option<ReprKind> = None;
+
+        let mut outputs = RealizationOutputs::new(
+            &mut step_handles,
+            &mut named_steps,
+            &mut named_step_reprs,
+            &mut topology_attribute_table,
+            &mut swept_kind_table,
+            &mut produced_repr_out,
+        );
+
+        let hit = Engine::probe_realization_cache(
+            &cache,
+            &realization_id,
+            Some("part"),
+            ReprKind::BRep,
+            Some(tol),
+            true,
+            &mut outputs,
+        );
+
+        assert!(
+            hit,
+            "primary hit must return true (the seeded handle/repr are \
+             verified below via the outputs views)"
+        );
+        assert_eq!(
+            step_handles,
+            vec![seeded],
+            "cached handle must be pushed onto step_handles"
+        );
+        assert_eq!(
+            named_steps.get("part"),
+            Some(&seeded),
+            "named_steps[name] must resolve to the cached handle"
+        );
+        assert_eq!(
+            named_step_reprs.get("part"),
+            Some(&ReprKind::BRep),
+            "named_step_reprs[name] must record the resolved repr"
+        );
+        assert_eq!(
+            produced_repr_out,
+            Some(ReprKind::BRep),
+            "produced_repr_out must surface the resolved repr"
+        );
+    }
+
+    /// step-3: pin invariant #1 (probes ONLY when `is_terminal_realization &&
+    /// demanded_tol.is_some() && realization_name.is_some()`).
+    ///
+    /// Pre-seeds the cache at `(entity, BRep, tol)` — the exact key a real hit
+    /// would probe — and pre-seeds `topology_attribute_table` at the cached
+    /// handle's id (so an accidental unconditional eviction would also be
+    /// caught). Exercises the three ways to leave exactly one guard term
+    /// unmet; each must miss with `None` AND perform ZERO side effects — the
+    /// guard wraps the ENTIRE hit body, so a failed guard must not push/insert
+    /// into any output view or evict the attribute table.
+    #[test]
+    fn probe_realization_cache_guard_requires_terminal_named_and_tol() {
+        use reify_ir::{FeatureId, Role};
+
+        let realization_id = RealizationNodeId::new("GuardEntity", 0);
+        let tol = 1e-4_f64;
+        let seeded = KernelHandle {
+            kernel: KernelId::Occt,
+            id: GeometryHandleId(9),
+        };
+
+        // Each case leaves exactly one of the three guard terms unmet.
+        let cases: [(bool, Option<&str>, Option<f64>, &str); 3] = [
+            (false, Some("part"), Some(tol), "is_terminal_realization = false"),
+            (true, None, Some(tol), "realization_name = None"),
+            (true, Some("part"), None, "demanded_tol = None"),
+        ];
+
+        for (is_terminal, name, tol_arg, label) in cases {
+            let mut cache = RealizationCache::<KernelHandle>::new();
+            cache.insert(
+                &realization_id.entity,
+                ReprKind::BRep,
+                tol,
+                NO_OPTIONS,
+                seeded,
+            );
+
+            let mut step_handles: Vec<KernelHandle> = Vec::new();
+            let mut named_steps: HashMap<String, KernelHandle> = HashMap::new();
+            let mut named_step_reprs: HashMap<String, ReprKind> = HashMap::new();
+            let mut topology_attribute_table = TopologyAttributeTable::default();
+            topology_attribute_table.record(
+                seeded.id,
+                TopologyAttribute {
+                    feature_id: FeatureId::from(&realization_id),
+                    role: Role::Side,
+                    local_index: 0,
+                    user_label: None,
+                    mod_history: Vec::new(),
+                },
+            );
+            let mut swept_kind_table = SweptKindTable::default();
+            let mut produced_repr_out: Option<ReprKind> = None;
+
+            let mut outputs = RealizationOutputs::new(
+                &mut step_handles,
+                &mut named_steps,
+                &mut named_step_reprs,
+                &mut topology_attribute_table,
+                &mut swept_kind_table,
+                &mut produced_repr_out,
+            );
+
+            let hit = Engine::probe_realization_cache(
+                &cache,
+                &realization_id,
+                name,
+                ReprKind::BRep,
+                tol_arg,
+                is_terminal,
+                &mut outputs,
+            );
+
+            assert!(!hit, "guard case [{label}] must miss (return false)");
+            assert!(
+                step_handles.is_empty(),
+                "guard case [{label}] must not push step_handles"
+            );
+            assert!(
+                named_steps.is_empty(),
+                "guard case [{label}] must not insert named_steps"
+            );
+            assert!(
+                named_step_reprs.is_empty(),
+                "guard case [{label}] must not insert named_step_reprs"
+            );
+            assert_eq!(
+                produced_repr_out, None,
+                "guard case [{label}] must not write produced_repr_out"
+            );
+            assert!(
+                topology_attribute_table.lookup(seeded.id).is_some(),
+                "guard case [{label}] must NOT evict the pre-seeded \
+                 topology_attribute_table entry (eviction only runs on a hit)"
+            );
+        }
+    }
+
+    /// step-4: pin invariant #2 (BRep fallback on a non-BRep miss, and the
+    /// underlying cache's tol partial-order "tighter satisfies looser" rule),
+    /// exercised through the probe.
+    ///
+    /// (a) Fallback: only a `(entity, BRep, tol)` entry exists; a `Mesh`
+    /// demand's primary lookup at `(entity, Mesh, tol)` misses, the `BRep`
+    /// fallback probe hits, and `resolved_repr`/`produced_repr_out` surface
+    /// `BRep` — the true cold-path value for a realization that demanded Mesh
+    /// but resolved BRep (see the helper's "WHY THE FALLBACK PROBE IS
+    /// LOAD-BEARING" doc).
+    ///
+    /// (b) No fallback for a `BRep` demand: only a `Mesh`-keyed entry exists;
+    /// `cache_repr == BRep` short-circuits the `or_else`, so the fallback is
+    /// never consulted and the probe misses.
+    ///
+    /// (c) tol partial-order: a tighter cached entry (`tol=0.01`) satisfies a
+    /// looser request (`tol=0.1`); a looser cached entry (`tol=0.1`) misses a
+    /// tighter request (`tol=0.001`).
+    #[test]
+    fn probe_realization_cache_falls_back_to_brep_and_honors_tol_partial_order() {
+        // Builds fresh output views, probes, and returns (hit, produced_repr_out)
+        // — every case in this test needs its own untouched output set.
+        let probe = |cache: &RealizationCache<KernelHandle>,
+                     realization_id: &RealizationNodeId,
+                     demanded_repr: ReprKind,
+                     demanded_tol: f64|
+         -> (bool, Option<ReprKind>) {
+            let mut step_handles: Vec<KernelHandle> = Vec::new();
+            let mut named_steps: HashMap<String, KernelHandle> = HashMap::new();
+            let mut named_step_reprs: HashMap<String, ReprKind> = HashMap::new();
+            let mut topology_attribute_table = TopologyAttributeTable::default();
+            let mut swept_kind_table = SweptKindTable::default();
+            let mut produced_repr_out: Option<ReprKind> = None;
+
+            let mut outputs = RealizationOutputs::new(
+                &mut step_handles,
+                &mut named_steps,
+                &mut named_step_reprs,
+                &mut topology_attribute_table,
+                &mut swept_kind_table,
+                &mut produced_repr_out,
+            );
+
+            let hit = Engine::probe_realization_cache(
+                cache,
+                realization_id,
+                Some("part"),
+                demanded_repr,
+                Some(demanded_tol),
+                true,
+                &mut outputs,
+            );
+            (hit, produced_repr_out)
+        };
+
+        // (a) Fallback: only a BRep entry present; a Mesh demand falls back to it.
+        {
+            let realization_id = RealizationNodeId::new("FallbackEntity", 0);
+            let tol = 1e-4_f64;
+            let seeded = KernelHandle {
+                kernel: KernelId::Occt,
+                id: GeometryHandleId(11),
+            };
+            let mut cache = RealizationCache::<KernelHandle>::new();
+            cache.insert(&realization_id.entity, ReprKind::BRep, tol, NO_OPTIONS, seeded);
+
+            let (hit, produced_repr_out) = probe(&cache, &realization_id, ReprKind::Mesh, tol);
+
+            assert!(
+                hit,
+                "a Mesh demand must fall back to the BRep-keyed entry when the \
+                 primary Mesh-keyed lookup misses"
+            );
+            assert_eq!(
+                produced_repr_out,
+                Some(ReprKind::BRep),
+                "produced_repr_out must surface the resolved (fallback) BRep \
+                 repr, not the demanded Mesh repr"
+            );
+        }
+
+        // (b) No fallback for a BRep demand: only a Mesh-keyed entry present.
+        {
+            let realization_id = RealizationNodeId::new("NoFallbackEntity", 0);
+            let tol = 1e-4_f64;
+            let seeded = KernelHandle {
+                kernel: KernelId::Occt,
+                id: GeometryHandleId(12),
+            };
+            let mut cache = RealizationCache::<KernelHandle>::new();
+            cache.insert(&realization_id.entity, ReprKind::Mesh, tol, NO_OPTIONS, seeded);
+
+            let (hit, produced_repr_out) = probe(&cache, &realization_id, ReprKind::BRep, tol);
+
+            assert!(
+                !hit,
+                "a BRep demand must NOT fall back to a Mesh-keyed entry \
+                 (demanded_repr == BRep short-circuits the or_else)"
+            );
+            assert_eq!(produced_repr_out, None);
+        }
+
+        // (c-i) tol partial-order: a tighter cached entry satisfies a looser request.
+        {
+            let realization_id = RealizationNodeId::new("TolOrderTighterCached", 0);
+            let seeded = KernelHandle {
+                kernel: KernelId::Occt,
+                id: GeometryHandleId(13),
+            };
+            let mut cache = RealizationCache::<KernelHandle>::new();
+            cache.insert(&realization_id.entity, ReprKind::BRep, 0.01, NO_OPTIONS, seeded);
+
+            let (hit, _) = probe(&cache, &realization_id, ReprKind::BRep, 0.1);
+
+            assert!(
+                hit,
+                "a tighter cached entry (tol=0.01) must satisfy a looser \
+                 request (tol=0.1)"
+            );
+        }
+
+        // (c-ii) tol partial-order: a looser cached entry misses a tighter request.
+        {
+            let realization_id = RealizationNodeId::new("TolOrderLooserCached", 0);
+            let seeded = KernelHandle {
+                kernel: KernelId::Occt,
+                id: GeometryHandleId(14),
+            };
+            let mut cache = RealizationCache::<KernelHandle>::new();
+            cache.insert(&realization_id.entity, ReprKind::BRep, 0.1, NO_OPTIONS, seeded);
+
+            let (hit, _) = probe(&cache, &realization_id, ReprKind::BRep, 0.001);
+
+            assert!(
+                !hit,
+                "a looser cached entry (tol=0.1) must miss a tighter request (tol=0.001)"
+            );
+        }
+    }
+
+    /// step-6: pin INV-BUILD-3 — cold/warm side-effect-set parity.
+    ///
+    /// Drives ONE `DispatchTestState` through a COLD pass (a real primitive
+    /// `Box` op dispatches through the op loop, populating
+    /// `realization_cache` and writing the full output side-effect set) and,
+    /// after resetting only the per-build OUTPUT state (mirroring the
+    /// production per-build reset) while KEEPING the shared
+    /// `realization_cache`, a WARM pass with the identical demand. Asserts
+    /// the warm pass's observable side-effect set — `step_handles`,
+    /// `named_steps`, `named_step_reprs`, `produced_repr_out` — is IDENTICAL
+    /// to the cold snapshot, and that `dispatch_count` does not increase
+    /// across the warm pass (the cache-hit short-circuit returns before the
+    /// op loop). This is INV-BUILD-3's contract directly: the short-circuit
+    /// produces "the same observable side-effect set as the path it
+    /// short-circuits."
+    #[test]
+    fn probe_realization_cache_cold_warm_side_effect_set_parity() {
+        use reify_compiler::{CompiledGeometryOp, PrimitiveKind};
+        use reify_core::Type;
+        use reify_ir::CompiledExpr;
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+        let ops = vec![CompiledGeometryOp::Primitive {
+            kind: PrimitiveKind::Box,
+            args: vec![
+                ("width".into(), mm_lit(10.0)),
+                ("height".into(), mm_lit(20.0)),
+                ("depth".into(), mm_lit(5.0)),
+            ],
+        }];
+
+        let desc = dispatch_test_descriptor_all_brep();
+        let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
+        let registry = dispatch_test_single_default_registry(&desc);
+
+        let realization_id = RealizationNodeId::new("ColdWarmParity", 0);
+        let tol = 1e-3;
+        let mut state = DispatchTestState::default();
+
+        // COLD pass: the op loop dispatches the primitive Box op, producing a
+        // terminal handle and populating realization_cache + the output views.
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "default",
+            &ops,
+            &realization_id,
+            Some("part"),
+            SourceSpan::new(0, 0),
+            ReprKind::BRep,
+            Some(tol),
+            None,
+        );
+        assert!(
+            state.dispatch_count > 0,
+            "cold pass must dispatch through the op loop"
+        );
+
+        // Snapshot the cold side-effect set and the post-cold dispatch count.
+        let cold_step_handles = state.step_handles.clone();
+        let cold_named_steps = state.named_steps.clone();
+        let cold_named_step_reprs = state.named_step_reprs.clone();
+        let cold_produced_repr_out = state.produced_repr_out;
+        let dispatch_count_after_cold = state.dispatch_count;
+
+        // Reset only the per-build OUTPUT state (mirroring the per-build reset
+        // in production: `build`/`build_snapshot` reset step_handles,
+        // named_steps, named_step_reprs, produced_repr_out, and the attribute
+        // tables before each build) — the shared `realization_cache` is left
+        // untouched, exactly like a real second build against a warm engine.
+        state.step_handles.clear();
+        state.named_steps.clear();
+        state.named_step_reprs.clear();
+        state.produced_repr_out = None;
+        state.reset_attribute_tables();
+
+        // WARM pass: identical demand — the cache-hit short-circuit must fire.
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "default",
+            &ops,
+            &realization_id,
+            Some("part"),
+            SourceSpan::new(0, 0),
+            ReprKind::BRep,
+            Some(tol),
+            None,
+        );
+
+        assert_eq!(
+            state.step_handles, cold_step_handles,
+            "warm step_handles must be IDENTICAL to the cold snapshot"
+        );
+        assert_eq!(
+            state.named_steps, cold_named_steps,
+            "warm named_steps must be IDENTICAL to the cold snapshot"
+        );
+        assert_eq!(
+            state.named_step_reprs, cold_named_step_reprs,
+            "warm named_step_reprs must be IDENTICAL to the cold snapshot"
+        );
+        assert_eq!(
+            state.produced_repr_out, cold_produced_repr_out,
+            "warm produced_repr_out must be IDENTICAL to the cold snapshot"
+        );
+        assert_eq!(
+            state.dispatch_count, dispatch_count_after_cold,
+            "dispatch_count must not increase across the warm pass — the \
+             cache-hit short-circuit returns before the op loop"
+        );
+    }
+
     // ── Task 4349: cross-kernel GeometryHandleId collision regression tests ─────
 
     /// Shared scaffolding for the two cross-kernel `GeometryHandleId` collision
@@ -8043,21 +8483,18 @@ structure Assembly {
     /// Builds `DispatchTestState`, pre-seeds the realization cache with
     /// `{Occt, GeometryHandleId(1)}`, calls the `pre_seed` closure (so each
     /// test can populate its own table at `GeometryHandleId(1)` to simulate the
-    /// colliding sibling op), then drives the cache-hit short-circuit via
-    /// `state.run_demand` with `operations=&[]`. Returns the state after the
+    /// colliding sibling op), then drives the cache-hit short-circuit by
+    /// calling [`Engine::probe_realization_cache`] directly (task 5059 η —
+    /// re-pointed from `state.run_demand(..., ops=&[], ...)` now that the
+    /// short-circuit is its own unit; no op-loop / kernel / registry
+    /// scaffolding is needed to exercise it). Returns the state after the
     /// call for post-condition assertions.
     fn run_cross_kernel_cache_hit_short_circuit(
         entity_name: &str,
         pre_seed: impl FnOnce(&mut DispatchTestState, &RealizationNodeId),
     ) -> DispatchTestState {
-        use reify_test_support::mocks::MockGeometryKernel;
-
         let realization_id = RealizationNodeId::new(entity_name, 0);
         let tol = 1e-4_f64;
-
-        let desc = dispatch_test_descriptor_all_brep();
-        let mut kernels = dispatch_test_kernels(Box::new(MockGeometryKernel::new()));
-        let registry = dispatch_test_single_default_registry(&desc);
 
         let mut state = DispatchTestState::default();
 
@@ -8077,20 +8514,26 @@ structure Assembly {
         // Allow each test to pre-seed its specific table before the run.
         pre_seed(&mut state, &realization_id);
 
-        // Drive the cache-hit short-circuit: operations=&[] ensures the function
-        // returns BEFORE the op loop. demanded_tol=Some(tol) and
-        // realization_name=Some("part") together enable the cache probe path.
-        state.run_demand(
-            &mut kernels,
-            &registry,
-            "default",
-            &[], // empty ops — cache-hit fires before the op loop
+        // Drive the cache-hit short-circuit directly: is_terminal_realization=true,
+        // realization_name=Some("part"), and demanded_tol=Some(tol) together
+        // satisfy the probe's guard, and ReprKind::BRep matches the pre-seeded
+        // cache key so the primary lookup hits.
+        let mut outputs = RealizationOutputs::new(
+            &mut state.step_handles,
+            &mut state.named_steps,
+            &mut state.named_step_reprs,
+            &mut state.topology_attribute_table,
+            &mut state.swept_kind_table,
+            &mut state.produced_repr_out,
+        );
+        Engine::probe_realization_cache(
+            &state.realization_cache,
             &realization_id,
             Some("part"),
-            SourceSpan::new(0, 0),
             ReprKind::BRep,
             Some(tol),
-            None,
+            true,
+            &mut outputs,
         );
 
         state
