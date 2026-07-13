@@ -196,7 +196,7 @@ fn fully_populated_gui_state() -> GuiState {
 
 /// Only the four `full_reload_only` fields vary (files, fea_diagnostics,
 /// fea_convergence, demand_prune_measurement); every diffed (keyed + whole)
-/// field is identical. Must yield zero delta events on both real and legacy.
+/// field is identical. Must yield zero delta events.
 fn pair_full_reload_only_fields_vary_only() -> (&'static str, GuiState, GuiState) {
     let old = GuiState {
         files: vec![FileData {
@@ -253,9 +253,10 @@ fn pair_full_reload_only_fields_vary_only() -> (&'static str, GuiState, GuiState
 // Assertions
 // ---------------------------------------------------------------------------
 
-/// Stronger than parity alone: proves the four `full_reload_only` fields
-/// never reach the diff channel at all (parity would still hold if both
-/// real and legacy accidentally carried them, as long as they agreed).
+/// Proves the four `full_reload_only` fields never reach the diff channel at
+/// all: `pair_full_reload_only_fields_vary_only` varies exactly those fields
+/// and nothing else, so any event produced here would mean a
+/// full_reload_only field had leaked into the delta/event path.
 #[test]
 fn full_reload_only_fields_never_produce_delta_events() {
     let (_, old, new) = pair_full_reload_only_fields_vary_only();
