@@ -427,4 +427,60 @@ mod tests {
             report.ticks[1].min_scaled_j
         );
     }
+
+    /// `run_chain` on a single-element `params` slice: the `for &param in
+    /// &params[1..]` loop never executes (`params[1..]` is empty), so the
+    /// chain is root-only — zero morph ticks. Regression guard (task 2951
+    /// amendment, reviewer_comprehensive finding #2) for
+    /// `ChainReport::fallback_rate()`'s `morph_ticks == 0` divide-by-zero
+    /// guard and `min_scaled_j_floor()`'s tick-0-only fold: every other test
+    /// in this module and in `chain_degradation.rs` uses chains of two or
+    /// more params, so this path was previously unexercised — a regression
+    /// that made `fallback_rate()` panic or return NaN, or
+    /// `min_scaled_j_floor()` skip the lone tick, would not have been
+    /// caught.
+    #[test]
+    fn run_chain_with_single_param_is_root_only_with_zero_fallback_rate() {
+        let fixture = |_param: f64| {
+            let mesh = VolumeMesh {
+                vertices: unit_tet_vertices(),
+                connectivity: VolumeConnectivity::Tet {
+                    indices: vec![0, 1, 2, 3],
+                    order: ElementOrderTag::P1,
+                },
+                normals: None,
+                boundary: None,
+            };
+            (mesh, vec![0_u32, 1, 2, 3])
+        };
+
+        let opts = MorphOptions::default();
+        let report = run_chain(fixture, &[0.0], &opts);
+
+        assert_eq!(
+            report.ticks.len(),
+            1,
+            "a single-param chain must produce exactly one (root) tick"
+        );
+        assert!(
+            !report.ticks[0].fell_back,
+            "the root tick must never be marked fell_back"
+        );
+        assert_eq!(
+            report.fallback_count(),
+            0,
+            "a single-tick chain has zero morph ticks, so fallback_count must be 0"
+        );
+        assert_eq!(
+            report.fallback_rate(),
+            0.0,
+            "fallback_rate must be 0.0 (not NaN or a panic) when morph_ticks == 0"
+        );
+        assert_eq!(
+            report.min_scaled_j_floor(),
+            report.ticks[0].min_scaled_j,
+            "with only the root tick present, min_scaled_j_floor must equal \
+             the root tick's own min_scaled_j"
+        );
+    }
 }

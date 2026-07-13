@@ -36,8 +36,6 @@ mod runner;
 
 #[test]
 fn chain_runner_smoke_on_short_monotonic_plate_chain_accepts_all_ticks() {
-    use reify_mesh_morph::MorphOptions;
-
     // Same plate fixture + relaxed-pct options profile as the task #13
     // calibration sweeps: outer=1.0, thickness=0.1, n_radial=4, n_through=2,
     // hole_diameter is the swept parameter.
@@ -45,11 +43,11 @@ fn chain_runner_smoke_on_short_monotonic_plate_chain_accepts_all_ticks() {
     let params = [0.30_f64, 0.304, 0.308, 0.312];
     // Relaxed pct floor only — mirrors `calibration_sweep_options()` in
     // tests/calibration.rs (see that fn's doc for the fixture-specific
-    // rationale). min_sj/AR stay at production defaults.
-    let opts = MorphOptions {
-        quality_floor_pct_below_025: 0.99,
-        ..MorphOptions::default()
-    };
+    // rationale). min_sj/AR stay at production defaults. Reuses the shared
+    // `chain_options()` helper (task 2951 amendment, reviewer_comprehensive
+    // finding #1) instead of a hand-rolled literal, so this profile can't
+    // silently drift from the other chain tests.
+    let opts = chain_options();
 
     let report = runner::run_chain(fixture, &params, &opts);
 
@@ -115,8 +113,6 @@ fn chain_runner_smoke_on_short_monotonic_plate_chain_accepts_all_ticks() {
 
 #[test]
 fn chain_runner_large_jump_triggers_fallback_and_chain_self_recovers() {
-    use reify_mesh_morph::MorphOptions;
-
     // Same plate fixture as the step-1 smoke test, but with a deliberate
     // large jump sandwiched between two other steps, so this short 4-tick
     // chain is fully hand-enumerable ("known"):
@@ -147,11 +143,10 @@ fn chain_runner_large_jump_triggers_fallback_and_chain_self_recovers() {
     let fixture = |hole_diameter: f64| fixtures::plate_with_hole(1.0, hole_diameter, 0.1, 4, 2);
     let params = [0.30_f64, 0.302, 0.60, 0.50];
     // Relaxed pct floor only — same profile as the step-1 smoke test (see
-    // that test's comment for the fixture-specific rationale).
-    let opts = MorphOptions {
-        quality_floor_pct_below_025: 0.99,
-        ..MorphOptions::default()
-    };
+    // that test's comment for the fixture-specific rationale). Reuses the
+    // shared `chain_options()` helper (task 2951 amendment,
+    // reviewer_comprehensive finding #1) instead of a hand-rolled literal.
+    let opts = chain_options();
 
     let report = runner::run_chain(fixture, &params, &opts);
     assert_eq!(report.ticks.len(), params.len());
