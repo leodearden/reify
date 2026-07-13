@@ -5482,6 +5482,15 @@ fn reconstruct_selector_value_symbolic(
 /// kind-closure warning) before ultimately failing to resolve; buffering
 /// first (review amendment) keeps that diagnostic from leaking into
 /// `diagnostics` on the `None` path.
+///
+/// The unconditional `scratch = Vec::new()` per call (mirrored in
+/// [`resolve_named_leaf_target_symbolic`]) was flagged as a minor per-mint
+/// allocation on the symbolic-eval hot path — an empty `Vec` is allocated
+/// and dropped on every clean/overload-fallthrough call, including nested
+/// composition recursion (review amendment, task #5120 R2c). Deliberately
+/// left as-is: an empty-`Vec` allocation is cheap, and lazily allocating
+/// only once the inner reconstruct pushes would complicate the
+/// buffer-then-merge correctness contract above for no measurable gain.
 fn eval_variadic_composition_symbolic(
     op_name: &str,
     args: &[reify_ir::CompiledExpr],
