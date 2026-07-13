@@ -22488,6 +22488,21 @@
     // `symbolic_eval_helper_for_name` + `try_eval_symbolic_topology_selector`
     // (via the new kernel-free `eval_variadic_composition_symbolic` /
     // `reconstruct_selector_value_symbolic` siblings).
+    //
+    // NOTE (amendment review, round 2): the None-overload, arity-gate, and
+    // kind-mismatch cases below are triplicated per-operator on purpose, not
+    // an oversight — a table-driven `for op in ["union","intersect",
+    // "difference"]` helper was considered and declined. Each operator gets
+    // its own independently-named `#[test]` so a regression in exactly one
+    // operator's guard fails with an unambiguous test name instead of a
+    // shared-helper assertion that requires reading output to learn which
+    // operator broke; per-test doc-comments above each case already record
+    // why that operator's coverage can't be inferred from its siblings
+    // (union/intersect share the `< 2` variadic gate, difference has a
+    // distinct exact-arity-2 gate; solid-CSG overload examples differ per
+    // op — `manifold_boolean` vs `m5_geometry_flange`). Keep new operators
+    // added to this trio symmetric with the existing three rather than
+    // collapsing them.
 
     /// `union(faces_by_normal(b,up,tol), faces_by_normal(b,down,tol))` over a
     /// SYMBOLIC body handle (`kernel_handle == None`) must yield
