@@ -16,7 +16,10 @@
 //! (`crates/reify-kernel-openvdb/src/kernel_real.rs:340-344` — never
 //! panics). A BINARY `assert_ne!` on triangle counts is the proof: equal
 //! counts would mean `iso:` was ignored (D4 options-threading collapsed to
-//! default).
+//! default). `surface_shell_triangle_count` additionally asserts each build
+//! has no `Severity::Error` diagnostics, so the `iso: 100mm` zero count is
+//! provably the documented `Ok(empty)` no-crossing path rather than a
+//! silently degraded/errored build masquerading as an empty mesh.
 //!
 //! ## Reuse
 //!
@@ -47,6 +50,13 @@ extern crate reify_kernel_openvdb as _;
 /// triangle count for `entity` — 0 if the terminal `MeshSurface` is absent
 /// or empty.
 ///
+/// Asserts the build has no `Severity::Error` diagnostics before returning,
+/// mirroring `voxel_to_mesh_e2e.rs`'s error-diagnostics guard (lines
+/// 112-122): this rules out a silently degraded build (e.g. an OpenVDB
+/// dispatch/registration failure) masquerading as a 0-triangle `Ok(empty)`
+/// result, and surfaces the underlying diagnostics in the panic message
+/// instead of an opaque count.
+///
 /// Mirrors the engine-construction and terminal-extraction sequence in
 /// `voxel_to_mesh_e2e.rs::voxel_to_mesh_builds_honest_voxel_operand_and_mesh_terminal`:
 /// a FRESH `Engine` per call eliminates cross-build snapshot/cache state
@@ -54,6 +64,7 @@ extern crate reify_kernel_openvdb as _;
 /// independently honest.
 #[cfg(has_openvdb)]
 fn surface_shell_triangle_count(source: &str, entity: &str) -> usize {
+    use reify_core::Severity;
     use reify_ir::ExportFormat;
     use reify_test_support::parse_and_compile_with_stdlib;
 
@@ -72,7 +83,20 @@ fn surface_shell_triangle_count(source: &str, entity: &str) -> usize {
     );
 
     let _eval = engine.eval(&compiled);
-    let _build = engine.build(&compiled, ExportFormat::Stl);
+    let build = engine.build(&compiled, ExportFormat::Stl);
+
+    let errors: Vec<_> = build
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.severity, Severity::Error))
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "build of entity {entity} must have no error-severity diagnostics \
+         (an OpenVDB-registration or dispatch failure would silently \
+         degrade the isosurface build and masquerade as an Ok(empty) \
+         0-triangle result); got: {errors:?}"
+    );
 
     let snap = engine
         .snapshot()
@@ -88,8 +112,7 @@ fn surface_shell_triangle_count(source: &str, entity: &str) -> usize {
         "expected at least 1 realization node for entity {entity}; got none"
     );
     nodes.sort_by_key(|(id, _)| id.index);
-    let (terminal_id, _terminal_node) =
-        *nodes.last().expect("nodes is non-empty (asserted above)");
+    let (terminal_id, _terminal_node) = *nodes.last().expect("nodes is non-empty (asserted above)");
     let terminal_path = terminal_id.to_string();
 
     let tess = engine.tessellate_realizations(&compiled);
