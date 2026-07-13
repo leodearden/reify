@@ -137,8 +137,9 @@ fn occt_extract_edges_returns_stable_ids() {
 /// ingested via `ManifoldKernel::ingest_mesh` — returns identical ids, in
 /// identical order, across repeated calls within a session.
 ///
-/// The coalesced-face COUNT is deliberately not pinned here (only
-/// non-empty + pairwise-distinct + 3-way exact identity): stability, not
+/// The exact coalesced-face COUNT is deliberately not pinned here — only a
+/// loose lower bound (a box cannot coalesce below its 6 axis-aligned faces),
+/// plus pairwise-distinct + 3-way exact identity: stability, not an exact
 /// face count, is this arm's contract. GREEN on main (Manifold
 /// `extracted_faces` cache,
 /// `crates/reify-kernel-manifold/src/kernel.rs:835-867`); red-on-revert if
@@ -157,6 +158,13 @@ fn manifold_extract_faces_returns_stable_ids() {
     let runs = run_thrice("manifold extract_faces", || {
         manifold.extract_faces(handle.id)
     });
+
+    assert!(
+        runs[0].len() >= 6,
+        "a box mesh cannot coalesce below its 6 axis-aligned faces \
+         (a lower value suggests a degenerate single-face regression), got {}",
+        runs[0].len()
+    );
 
     assert_stable_ids("manifold extract_faces", handle.id, &runs);
 }
