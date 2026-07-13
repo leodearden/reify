@@ -51,6 +51,9 @@ reify-eval
 reify-eval-fea-tests
 reify-expr
 reify-gui
+# hosts release-only check_mesh_contract_welded tests exercising the elided
+# debug_assert length/remap fallbacks (task 5166, kernel-seam γ by-ref contract API)
+reify-ir
 reify-mesh-morph
 reify-runtime
 reify-solver-elastic
