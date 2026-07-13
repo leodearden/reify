@@ -14,8 +14,7 @@
 //! `Cargo.toml` activates `mesh-morph` for all integration test binaries.
 #![cfg(all(has_gmsh, feature = "mesh-morph"))]
 
-use reify_ir::{ElementOrderTag, GeometryError, GeometryHandleId, GeometryKernel, Mesh, NodeAttachment};
-use reify_ir::geometry::MeshInvariant;
+use reify_ir::{ElementOrderTag, GeometryHandleId, GeometryKernel, Mesh, NodeAttachment};
 use reify_kernel_gmsh::GmshKernel;
 
 fn h(n: u64) -> GeometryHandleId {
@@ -96,26 +95,23 @@ fn unwelded_subdivided_unit_cube_surface() -> Mesh {
     Mesh { vertices, indices, normals: None }
 }
 
-/// RED (task #4876): the attributed producer must reject a non-watertight
-/// (unwelded) surface via the watertightness preflight
-/// (`preflight_watertight_surface`, mesh_boundary.rs) BEFORE any gmsh FFI
-/// call, returning `Err(GeometryError::MeshContractViolation{Closed})`
-/// rather than crashing. Pins that the preflight is actually WIRED into
-/// `mesh_surface_to_volume_attributed` (the trait override wraps
-/// `mesh_surface_to_volume_with_attribution`).
+/// GREEN (task ξ / #5116): the attributed producer now WELDS an unwelded
+/// (per-face-exploded) surface — via
+/// `repair_surface_mesh_with_correspondence` — before handing it to gmsh,
+/// rather than rejecting it outright (the pre-ξ #4876 stopgap). Welding
+/// merges the per-face-exploded cube's duplicate corners back into the
+/// identical watertight cube the sibling test below builds directly, so the
+/// watertightness preflight (`preflight_watertight_surface`, mesh_boundary.rs)
+/// now runs on the WELDED surface and accepts it, and the producer proceeds
+/// to attribute nodes as usual.
 ///
 /// The watertight-cube sibling test below
 /// (`gmsh_mesh_surface_to_volume_attributed_threads_boundary_onto_volume_mesh`)
-/// is the `Ok` negative control and must remain GREEN once the preflight is
-/// wired (it accepts welded input unchanged).
-///
-/// RED now: with no preflight wired, the producer enters gmsh on the
-/// unwelded surface (a crash under nextest process isolation, or a
-/// non-`MeshContractViolation` error), so the
-/// `Err(MeshContractViolation{Closed})` assertion fails. GREENed by the
-/// mesh_boundary.rs wiring step.
+/// remains the `Ok` positive control on already-welded input; this test pins
+/// that UNWELDED (but position-quotient-closed) input is now equally
+/// accepted, not merely tolerated.
 #[test]
-fn mesh_surface_to_volume_attributed_rejects_unwelded_surface() {
+fn mesh_surface_to_volume_attributed_welds_unwelded_surface_and_attributes() {
     let kernel = GmshKernel::new();
     let unwelded = unwelded_subdivided_unit_cube_surface();
 
@@ -129,23 +125,21 @@ fn mesh_surface_to_volume_attributed_rejects_unwelded_surface() {
         (h(106), [0.5, 0.0, 0.0]),
     ];
 
-    let err = kernel
+    let vm = kernel
         .mesh_surface_to_volume_attributed(&unwelded, ElementOrderTag::P1, &face_anchors, 0.3)
-        .expect_err(
-            "an unwelded (per-face-exploded) cube surface must be rejected by the \
-             watertightness preflight before any gmsh FFI call — it must NOT crash",
+        .expect(
+            "an unwelded (per-face-exploded) cube surface must be welded and accepted by \
+             the attributed producer (task ξ / #5116), not rejected",
         );
 
-    match err {
-        GeometryError::MeshContractViolation { invariant, .. } => {
-            assert_eq!(
-                invariant,
-                MeshInvariant::Closed,
-                "the preflight's synthesized violation must name the Closed obligation"
-            );
-        }
-        other => panic!("expected GeometryError::MeshContractViolation, got {other:?}"),
-    }
+    let boundary = vm
+        .boundary
+        .as_ref()
+        .expect("attributed producer must set VolumeMesh.boundary = Some on welded input");
+    assert!(
+        !boundary.is_empty(),
+        "BoundaryAssociation must be non-empty for a welded unit-cube input"
+    );
 }
 
 /// RED (task 4092 step-5): the gmsh `mesh_surface_to_volume_attributed` trait

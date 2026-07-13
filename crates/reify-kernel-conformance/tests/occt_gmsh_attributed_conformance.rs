@@ -20,15 +20,17 @@ use reify_ir::{ElementOrderTag, GeometryKernel, GeometryOp, Value};
 use reify_kernel_gmsh::GmshKernel;
 use reify_kernel_occt::OcctKernel;
 
-/// Ignored today: the attributed producer rejects vertex-merge repair on
-/// unwelded OCCT input (the #4876 SIGSEGV) — running this would crash, not
-/// fail cleanly, so it must stay `#[ignore]`d rather than merely
-/// `#[should_panic]`. ξ (#5116) threads a vertex-merge correspondence map
-/// through `repair_surface_mesh` so per-node attribution survives welding;
-/// once that lands, un-ignore this test and it must pass unchanged (#5116's
-/// DoD).
+/// ξ (#5116) threads a vertex-merge correspondence map through
+/// `repair_surface_mesh` so per-node attribution survives welding: the
+/// attributed producer now WELDS unwelded OCCT input (merging near-coincident
+/// vertices via `repair_surface_mesh_with_correspondence`) before handing it
+/// to gmsh, rather than rejecting vertex-merge repair outright (the pre-ξ
+/// #4876 stopgap that made this test crash rather than fail cleanly, so it
+/// had to stay `#[ignore]`d). This test exercises exactly that path against a
+/// REAL OCCT box tessellation (unwelded by design, per-face vertex blocks)
+/// and must now pass unchanged (#5116's DoD) — this task's id is what this
+/// test's now-removed `#[ignore]` cited.
 #[test]
-#[ignore = "blocked on #5116 — attribution-aware repair"]
 fn occt_box_attributed_volume_preserves_face_attribution() {
     let mut kernel = OcctKernel::new();
     let solid = kernel

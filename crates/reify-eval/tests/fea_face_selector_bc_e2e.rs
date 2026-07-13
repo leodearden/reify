@@ -12,15 +12,17 @@
 //! hand-built watertight surface in
 //! `crates/reify-kernel-gmsh/tests/mesh_surface_to_volume_attributed.rs`. On
 //! a REAL OCCT-tessellated surface the raw index buffer is unwelded
-//! (per-face vertex blocks, `occt_wrapper.cpp:5847`) and the #4876
+//! (per-face vertex blocks, `occt_wrapper.cpp:5847`); since task ξ (#5116)
+//! the attributed producer WELDS that raw surface
+//! (`repair_surface_mesh_with_correspondence`) before the #4876
 //! watertightness preflight (`preflight_watertight_surface`,
-//! `reify-kernel-gmsh/src/mesh_boundary.rs`) refuses it, so the edge
-//! gracefully degrades to the plain producer instead — see
-//! [`boundary_demand_realization_edge_degrades_gracefully_on_occt_surface`].
-//! Producing a non-empty boundary from a REAL OCCT surface requires the
-//! attribution-preserving repair tracked by #5116. A realization that is NOT
-//! boundary-demanding stays on the plain producer (boundary `None`) — existing
-//! VolumeMesh consumers (task 4743) are unperturbed.
+//! `reify-kernel-gmsh/src/mesh_boundary.rs`) runs, so the preflight accepts
+//! the welded surface and the edge produces a non-empty boundary directly on
+//! real OCCT input — see
+//! [`boundary_demand_realization_edge_produces_attributed_boundary_on_occt_surface`].
+//! A realization that is NOT boundary-demanding stays on the plain producer
+//! (boundary `None`) — existing VolumeMesh consumers (task 4743) are
+//! unperturbed.
 //!
 //! The kernel-less map half ([`boundary_node_set`]) is exercised here against a
 //! REAL gmsh-attributed boundary; the kernel-bearing selector half
@@ -103,37 +105,42 @@ fn bc_probe_capture_fn(
 }
 
 /// `cfg(has_gmsh)`: on a REAL OCCT-tessellated surface, a *boundary*-demanding
-/// consumer drives the realization edge through the gmsh attributed producer
-/// — which the #4876 watertightness preflight (`preflight_watertight_surface`,
-/// mesh_boundary.rs) refuses, because the raw OCCT surface is unwelded (see
-/// [`characterizes_4876_occt_tessellation_unwelded_witness`] below) — so the
-/// edge's EXISTING honest-degradation falls back to the plain producer.
+/// consumer drives the realization edge through the gmsh attributed producer,
+/// which now (task ξ / #5116) WELDS the raw unwelded OCCT surface
+/// (`repair_surface_mesh_with_correspondence`) before the #4876
+/// watertightness preflight (`preflight_watertight_surface`, mesh_boundary.rs)
+/// runs — see [`characterizes_4876_occt_tessellation_unwelded_witness`] below
+/// for the raw (pre-weld) unwelded-surface witness — so the preflight accepts
+/// the welded surface and the attributed producer succeeds, with NO
+/// degradation to the plain producer.
 ///
 /// Registers `bc_probe_capture_fn` for `"test::vm-demand-probe"`, marks that
 /// target **boundary-demanding** (`register_volume_mesh_boundary_demand`),
 /// acquires gmsh, and builds the `fea_bc_box.ri` fixture (a 1 m box). Boundary
-/// demand implies VolumeMesh demand, so `body` still realizes to a tet
-/// VolumeMesh via the plain producer; the attributed producer is attempted
-/// first, refused by the preflight (`Err(GeometryError::MeshContractViolation)`),
-/// and the refusal is surfaced as a visible `Severity::Warning` diagnostic —
-/// NOT a SIGSEGV.
+/// demand implies VolumeMesh demand: `body` realizes to a tet VolumeMesh via
+/// the ATTRIBUTED producer (not the plain-producer fallback), with a
+/// non-empty `BoundaryAssociation` threaded onto the realized mesh and no
+/// honest-degradation `Severity::Warning` diagnostic emitted.
 ///
 /// Before #4876, this real-OCCT path SIGSEGVs inside gmsh — a crash the
-/// edge's `Result`-based honest degradation cannot catch. The non-empty
-/// `BoundaryAssociation` observable this test asserted pre-#4876 requires the
-/// attribution-preserving repair tracked by #5116 and is deliberately NOT
-/// re-asserted here (it is exercised on a hand-built watertight surface in
-/// `crates/reify-kernel-gmsh/tests/mesh_surface_to_volume_attributed.rs`
-/// instead).
+/// edge's `Result`-based honest degradation could not have caught. Before
+/// #5116, the attributed producer rejected vertex-merge repair outright and
+/// the #4876 preflight refused the raw unwelded surface, so this scenario
+/// degraded to the plain producer (boundary `None`) — the non-empty
+/// `BoundaryAssociation` observable was previously exercised only on a
+/// hand-built watertight surface in
+/// `crates/reify-kernel-gmsh/tests/mesh_surface_to_volume_attributed.rs`.
+/// ξ's weld makes the attributed producer succeed on real OCCT input, so this
+/// test now asserts that non-empty `BoundaryAssociation` outcome directly.
 #[cfg(has_gmsh)]
 #[test]
-fn boundary_demand_realization_edge_degrades_gracefully_on_occt_surface() {
+fn boundary_demand_realization_edge_produces_attributed_boundary_on_occt_surface() {
     use reify_core::Severity;
     use reify_ir::ExportFormat;
 
     if !reify_kernel_occt::OCCT_AVAILABLE {
         eprintln!(
-            "skipping boundary_demand_realization_edge_degrades_gracefully_on_occt_surface: \
+            "skipping boundary_demand_realization_edge_produces_attributed_boundary_on_occt_surface: \
              OCCT not available (no BRep kernel to build the box body)"
         );
         return;
@@ -178,28 +185,25 @@ fn boundary_demand_realization_edge_degrades_gracefully_on_occt_surface() {
         "the volume mesh must contain at least one tetrahedron"
     );
 
-    // Graceful degradation: the #4876 preflight refused the attributed
-    // producer's raw (unwelded) OCCT surface, so NO boundary is threaded onto
-    // the realized mesh — an honest degradation, not a crash.
+    // ξ (#5116): the attributed producer now welds the raw OCCT surface and
+    // succeeds, so a non-empty boundary is threaded onto the realized mesh —
+    // no degradation.
+    let boundary = captured[0].boundary().expect(
+        "on a real OCCT surface the attributed producer must now succeed (task ξ / \
+         #5116 welds the raw unwelded surface before the #4876 preflight runs), so \
+         the realized VolumeMesh's boundary must be Some",
+    );
     assert!(
-        captured[0].boundary().is_none(),
-        "on a real OCCT surface the #4876 watertightness preflight must refuse the \
-         attributed producer, so the realized VolumeMesh's boundary must be None \
-         (graceful degradation to the plain producer — a non-empty boundary \
-         requires the attribution-preserving repair tracked by #5116)"
+        !boundary.is_empty(),
+        "BoundaryAssociation must be non-empty for the real OCCT box surface"
     );
 
-    // The degradation must be VISIBLE: a Severity::Warning diagnostic naming
-    // both the attributed-producer failure and the plain-producer fallback
-    // (the existing engine_build.rs honest-degradation arm). Matched on the
-    // stable keyword tokens "attributed" + "gmsh" + "plain producer" rather
-    // than the full sentence as one contiguous phrase: scanning
-    // engine_build.rs's other realization Warning messages around this arm
-    // shows "attributed" + "gmsh" together uniquely identify this branch
-    // (the sibling "attributed store_volume_mesh failed" message shares
-    // "attributed" and "plain producer" but never says "gmsh"; the
-    // plain-producer "gmsh ... failed" messages never say "attributed"), so
-    // this survives a benign reword of the message's phrasing/word-order.
+    // No honest-degradation warning: matched on the same stable keyword
+    // tokens ("attributed" + "gmsh" + "plain producer") the pre-ξ stopgap
+    // asserted WERE present — see the engine_build.rs honest-degradation arm
+    // this now pins the ABSENCE of. Matched loosely rather than as one
+    // contiguous phrase for the same reasons as before: "attributed" +
+    // "gmsh" together uniquely identify this branch's Warning messages.
     // engine_build.rs is outside this task's locked scope, so factoring the
     // text into a shared const both sites reference isn't available here.
     let degradation_warnings: Vec<_> = result
@@ -213,11 +217,10 @@ fn boundary_demand_realization_edge_degrades_gracefully_on_occt_surface() {
         })
         .collect();
     assert!(
-        !degradation_warnings.is_empty(),
-        "the attributed-producer refusal must surface a visible honest-degradation \
-         warning diagnostic naming both the failure and the plain-producer fallback \
-         (matched loosely on 'attributed' + 'gmsh' + 'plain producer' tokens); \
-         got diagnostics: {:?}",
+        degradation_warnings.is_empty(),
+        "the attributed producer must succeed on the real OCCT surface with no \
+         honest-degradation warning (matched loosely on 'attributed' + 'gmsh' + \
+         'plain producer' tokens); got diagnostics: {:?}",
         result.diagnostics
     );
 
@@ -282,8 +285,8 @@ fn non_boundary_demanded_realization_yields_no_boundary() {
 /// `cfg(has_gmsh)`: characterizes the REAL OCCT tessellation of the #4876
 /// fixture (`fea_bc_box.ri`, a 1 m box) against the α `MeshContract`
 /// validator (`Mesh::validate`, INV-GEO-1) and the `weldedness()` axis,
-/// pinning the concrete witness the gmsh attributed producer's SIGSEGV
-/// (#4876) trips on.
+/// pinning the concrete raw-surface witness the pre-#5116 gmsh attributed
+/// producer's SIGSEGV (#4876) tripped on.
 ///
 /// `tessellate_realizations` drives the SAME `kernel.tessellate(handle,
 /// tol)` OCCT path the realization edge (engine_build.rs:7655) feeds to
@@ -291,9 +294,12 @@ fn non_boundary_demanded_realization_yields_no_boundary() {
 /// faithful to the crash input (G6 discipline). OCCT tessellates per-face
 /// vertex blocks (occt_wrapper.cpp:5847) — unwelded by design — so the
 /// surface is a valid closed 2-manifold ONLY on the position-welded
-/// quotient; on the RAW indices it is non-watertight (the gmsh attributed
-/// producer forbids vertex-merge repair, mesh_boundary.rs:219-227, and
-/// consumes exactly that raw non-watertight surface).
+/// quotient; on the RAW indices it is non-watertight. Since task ξ (#5116)
+/// the gmsh attributed producer WELDS exactly this raw non-watertight
+/// surface (`repair_surface_mesh_with_correspondence`, mesh_boundary.rs)
+/// before consuming it, rather than forbidding vertex-merge repair outright;
+/// this test still characterizes the RAW pre-weld tessellation OCCT hands
+/// the producer, independent of what the producer now does with it.
 ///
 /// This is a CHARACTERIZATION (pinning) test documenting EXISTING behavior
 /// — green on arrival by design. It would go RED under a regression: OCCT
@@ -354,9 +360,9 @@ fn characterizes_4876_occt_tessellation_unwelded_witness() {
     // α's `validate` welds internally, so its `open_edges` count is on the
     // welded quotient, which is 0 for a box; this is a deliberately
     // distinct, unwelded directed-edge tally recording exactly what the
-    // gmsh attributed producer (which forbids vertex-merge repair,
-    // mesh_boundary.rs:219-227) sees and SIGSEGVs on. Calls the SAME
-    // `raw_open_edge_census` the #4876 preflight itself gates on (`pub` in
+    // gmsh attributed producer receives as input BEFORE its ξ (#5116) weld
+    // step runs (pre-ξ, this raw surface is what it SIGSEGVs on). Calls the
+    // SAME `raw_open_edge_census` the #4876 preflight itself gates on (`pub` in
     // `reify_kernel_gmsh::mesh_boundary`, reachable here because this
     // crate's dev-dependency enables the `mesh-morph` feature that module
     // is gated on) instead of maintaining an independent copy of the
