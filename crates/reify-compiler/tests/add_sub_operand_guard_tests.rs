@@ -26,6 +26,8 @@
 //! **No-false-positive / regression (must stay GREEN throughout):**
 //! - `complex(1.0, 1.0) + 1` (dimensionless Complex widening, D3 policy) →
 //!   zero `ArithOperandKind`
+//! - `z + z` (same dimensioned Complex on both sides) → zero
+//!   `ArithOperandKind` (Complex-vs-Complex is out of this guard's scope)
 //! - `let w = z + 1` then `let x = w + 1` (anti-cascade) → exactly ONE
 //!   `ArithOperandKind`
 //! - `unknown_var + z` (unresolved-name `Type::Error` operand, gradualism) →
@@ -175,6 +177,23 @@ fn dimensionless_complex_plus_int_no_spurious_arith_operand_kind() {
         0,
         "`complex(1.0, 1.0) + 1` (dimensionless Complex widening) must NOT \
          produce ArithOperandKind; got errors: {errors:?}"
+    );
+}
+
+/// Two operands of the SAME dimensioned `Complex` type (`z + z`, both
+/// `Complex<Length>`) is legitimate Complex arithmetic, out of this guard's
+/// scope (`Complex<Q1> ± Complex<Q2>` is a separate, unguarded gap — see the
+/// task analysis). Guards against a future regression that broadens
+/// `add_sub_dimensioned_complex_reject` to also match dimensioned
+/// Complex-vs-Complex pairs.
+#[test]
+fn dimensioned_complex_plus_same_dimensioned_complex_no_spurious_arith_operand_kind() {
+    let errors = compile_complex_expr_errors("let w = z + z");
+    assert_eq!(
+        arith_operand_kind_count(&errors),
+        0,
+        "`z + z` (Complex<Length> + Complex<Length>) must NOT produce \
+         ArithOperandKind; got errors: {errors:?}"
     );
 }
 
