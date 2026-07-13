@@ -8721,6 +8721,65 @@ mod tests {
         );
     }
 
+    /// Amendment (task #5085 review, suggestion 1): the arity guard
+    /// (`list.len() < 7`) is a second branch this function owns directly
+    /// (not delegated to a leaf extractor), so it needs its own case
+    /// distinct from the leaf-propagation test above. Mirrors
+    /// `extract_zone_process_params_rejects_wrong_arity`'s policy of
+    /// asserting the `ExpectedList` variant only, not the `got` prose.
+    #[test]
+    fn classify_material_as_printed_zones_rejects_wrong_arity() {
+        let short_list = Value::List(vec![Value::Real(1.0)]);
+        let res = classify_material_as_printed_zones(&short_list);
+        // Note: unlike the leaf-extractor sibling tests, `res` cannot be
+        // interpolated with `{:?}` here — `MaterialModel` (the `Ok` side)
+        // does not derive `Debug` (its `Heterogeneous` variant holds a
+        // boxed closure), so the assert message stays descriptive-only.
+        assert!(
+            matches!(res, Err(FeaValueShapeError::ExpectedList { .. })),
+            "expected Err(ExpectedList) for a List with < 7 elements"
+        );
+    }
+
+    /// Amendment (task #5085 review, suggestion 1): the `cos_threshold`
+    /// non-`Real` branch is the third local guard this function owns
+    /// directly. Elements 0..2 must be well-formed (a valid `Point3` pair
+    /// plus a valid 7-element `params` list) so the leaf extractors ahead
+    /// of `cos_threshold` succeed via `?` and the error is proven to come
+    /// from THIS check, not an earlier one; elements 4..6 are unchecked
+    /// placeholders since the function returns before reaching
+    /// `mat_wall`/`mat_skin`/`mat_infill`.
+    #[test]
+    fn classify_material_as_printed_zones_rejects_non_real_cos_threshold() {
+        let scalar = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::DIMENSIONLESS };
+        let point = Value::Point(vec![scalar(1.0), scalar(2.0), scalar(3.0)]);
+        let params = Value::List(vec![
+            Value::Real(2.0),
+            Value::Real(3.0),
+            Value::Real(0.25),
+            Value::Real(0.5),
+            Value::Real(0.0),
+            Value::Real(0.0),
+            Value::Real(1.0),
+        ]);
+        let malformed = Value::List(vec![
+            point.clone(),
+            point,
+            params,
+            Value::Point(vec![]), // cos_threshold: wrong shape, not Value::Real
+            Value::Real(0.0),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
+        let res = classify_material_as_printed_zones(&malformed);
+        // Note: `res` cannot be interpolated with `{:?}` here — see the
+        // arity test above for why (`MaterialModel` isn't `Debug`).
+        assert!(
+            matches!(res, Err(FeaValueShapeError::ExpectedReal { .. })),
+            "expected Err(ExpectedReal) for a non-Real cos_threshold element"
+        );
+    }
+
     // ── warm_start_beneficial unit tests (task #4869) ─────────────────────────
     //
     // Fixture: 2×2 SPD matrix K = [[4,1],[1,3]], f = [1,2].
