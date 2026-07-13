@@ -29,6 +29,11 @@ reify-test-support = { workspace = true, features = ["eval-helpers"] }
 reify-eval.workspace = true
 reify-expr.workspace = true
 tempfile.workspace = true
+# Test-only: the ε2 MemberAccess completeness canary in `src/expr.rs` iterates
+# `reify_core::ty::TypeDiscriminants` via strum's `EnumIter`/`EnumCount` runtime
+# traits. strum 0.26 is already a workspace dep (root Cargo.toml) — no new
+# third-party dependency, only a dev-dep wiring line.
+strum.workspace = true
 # Self-pull with the test-support feature so the integration test in
 # tests/annotation_schema_registry_parity.rs can call
 # `__validate_annotations_for_parity_test`. Standard Rust pattern for

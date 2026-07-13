@@ -107,7 +107,16 @@ impl std::fmt::Display for SelectorKind {
 }
 
 /// Types in the Reify type system (M1 subset).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+///
+/// `strum::EnumDiscriminants` generates a fieldless `TypeDiscriminants` enum
+/// (one unit variant per `Type` variant, iterable via `EnumIter`, countable via
+/// `EnumCount`) — the only way to enumerate these field-carrying variants for
+/// completeness checking. Precedent: `GeometryOp` at
+/// `crates/reify-ir/src/geometry.rs:567`. Consumed by the compiler-type-hygiene
+/// ε2 MemberAccess completeness canary (INV-COMP-1) in
+/// `crates/reify-compiler/src/expr.rs`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, strum::EnumDiscriminants)]
+#[strum_discriminants(name(TypeDiscriminants), derive(strum::EnumIter, strum::EnumCount, Hash))]
 pub enum Type {
     /// Boolean value.
     Bool,
