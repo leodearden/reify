@@ -8780,6 +8780,57 @@ mod tests {
         );
     }
 
+    /// Amendment (task #5085 review round 2, suggestion 1): the Ok/success
+    /// path — a well-formed 7-element AsPrintedZones lambda threading all
+    /// six extractor calls through to a successful `Heterogeneous` field —
+    /// is otherwise only exercised indirectly, via
+    /// `classify_material_as_printed_zones_returns_heterogeneous` above
+    /// calling the OUTER `classify_material`, which bridges through
+    /// `.fea_shim()` and would itself panic on `Err` rather than surface
+    /// it. This test calls the Result-ified function directly and asserts
+    /// `Ok(Heterogeneous(_))`, then re-probes the same wall-vs-infill
+    /// dispatch as test A above: a bare `matches!(res, Ok(Heterogeneous(_)))`
+    /// alone would NOT catch a regression that swaps `list[4]`/`list[5]`
+    /// (mat_wall/mat_skin) — both are well-formed `AnisotropicMaterial`
+    /// StructureInstances either way, so only sampling the assembled field
+    /// distinguishes them.
+    #[test]
+    fn classify_material_as_printed_zones_accepts_wellformed_lambda() {
+        // Same fixture shape as `classify_material_as_printed_zones_returns_heterogeneous`
+        // above: point [0.05, 0.5, 0.5] falls in the wall zone (stiff),
+        // point [0.5, 0.5, 0.5] falls in the infill zone (soft).
+        let field = het_as_printed_field(
+            [0.0, 0.0, 0.0], [1.0, 1.0, 1.0],
+            [0.0, 0.0, 1.0],  // build_z
+            1.0, 0.1,         // walls, line_width (wall_thickness=0.1m)
+            1.0, 0.1,         // top_bottom_layers, layer_height (skin_thickness=0.1m)
+            200e9, 40e9,      // e_stiff, e_soft
+        );
+        let lambda = match &field {
+            Value::Field { lambda, .. } => lambda,
+            other => panic!("expected Value::Field, got {other:?}"),
+        };
+
+        let res = classify_material_as_printed_zones(lambda);
+        let cell_field = match res {
+            Ok(MaterialModel::Heterogeneous(cell_field)) => cell_field,
+            Ok(_) => panic!(
+                "expected Ok(Heterogeneous) for a well-formed AsPrintedZones lambda"
+            ),
+            Err(e) => panic!(
+                "expected Ok(Heterogeneous) for a well-formed AsPrintedZones lambda, got Err({e})"
+            ),
+        };
+
+        let d_wall = cell_field.material_at([0.05, 0.5, 0.5]).d_matrix_global();
+        let d_infill = cell_field.material_at([0.5, 0.5, 0.5]).d_matrix_global();
+        assert!(
+            d_wall[0][0] > d_infill[0][0],
+            "wall material D[0][0]={} should exceed infill D[0][0]={}",
+            d_wall[0][0], d_infill[0][0],
+        );
+    }
+
     // ── warm_start_beneficial unit tests (task #4869) ─────────────────────────
     //
     // Fixture: 2×2 SPD matrix K = [[4,1],[1,3]], f = [1,2].
