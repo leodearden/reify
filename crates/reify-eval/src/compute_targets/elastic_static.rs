@@ -7975,14 +7975,9 @@ mod tests {
         );
     }
 
-    /// step-1 RED (task 5083 / PRD compute-fea-hardening D8): `extract_loads`
-    /// must reject a non-`Value::List` argument with
+    /// Guard (task 5083, PRD compute-fea-hardening D8): `extract_loads`
+    /// rejects a non-`Value::List` argument with
     /// `Err(FeaValueShapeError::ExpectedList { .. })` instead of panicking.
-    ///
-    /// RED: `extract_loads` currently returns a bare
-    /// `([f64; 3], Vec<PressureSpec>, [f64; 3])` tuple, so matching `Err(..)`
-    /// fails to type-check until step-2 converts it to
-    /// `Result<([f64; 3], Vec<PressureSpec>, [f64; 3]), FeaValueShapeError>`.
     #[test]
     fn extract_loads_non_list_value_returns_err() {
         let res = extract_loads(&Value::Real(1.0), 0.0);
