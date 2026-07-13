@@ -188,8 +188,28 @@ pub struct BoundaryAttributedReport {
 // NEAR-TERM preflight leaf; INV-GEO-1)
 // ---------------------------------------------------------------------------
 
-/// Preflight the RAW watertightness of `surface` before it is handed to the
+/// Preflight the watertightness of `surface` before it is handed to the
 /// gmsh attributed producer ([`mesh_surface_to_volume_with_attribution`]).
+///
+/// This is a generic, pure watertightness check with no opinion on whether
+/// `surface` has been welded — the unit tests below exercise it directly on
+/// both an unwelded per-face-block fixture and a welded fixture. Its sole
+/// production caller, [`mesh_surface_to_volume_with_attribution`], WELDS the
+/// surface first (task ξ, #5116, via `repair_surface_mesh_with_correspondence`)
+/// and runs this preflight on the WELDED result (see that function's
+/// `# Stage order`), so in practice this now fails closed in two distinct
+/// scenarios rather than one:
+///
+/// - The [`Mesh::validate`] check below still catches a GENUINE hole (e.g. a
+///   face missing from the B-rep) that welding cannot fix — welding only
+///   merges near-coincident vertex positions, it cannot fabricate a missing
+///   triangle.
+/// - The [`Mesh::weldedness`] check below is a fail-safe for a weld that did
+///   not fully collapse near-duplicate positions (e.g. a caller-supplied
+///   `repair_cfg` with a merge epsilon too tight for the input's duplicate
+///   spacing). The default `RepairConfig` collapses OCCT's bit-identical
+///   per-face duplicates, so this branch should not fire for a correctly
+///   configured weld, but it remains load-bearing defense-in-depth.
 ///
 /// # Why weldedness, not just `validate`
 ///
@@ -197,14 +217,13 @@ pub struct BoundaryAttributedReport {
 /// `occt_wrapper.cpp:5847`): every corner shared by several faces is
 /// duplicated once per incident face. Such a surface is a fully valid,
 /// closed, consistently-wound 2-manifold on its POSITION-WELDED QUOTIENT
-/// topology, so [`Mesh::validate`] alone happily returns `Ok`. But
-/// `mesh_surface_to_volume_with_attribution` forbids vertex-merging repair
-/// (it would invalidate per-vertex attribution, see its repair guard) and so
-/// consumes the RAW, unwelded index buffer directly — which is genuinely
-/// non-watertight (an open edge at every shared face-perimeter edge).
-/// Feeding that raw surface into gmsh SIGSEGVs inside the FFI, a failure
-/// mode the caller's `Result`-based honest-degradation fallback cannot
-/// catch.
+/// topology, so [`Mesh::validate`] alone happily returns `Ok` on the RAW,
+/// unwelded index buffer — which is genuinely non-watertight (an open edge
+/// at every shared face-perimeter edge) and SIGSEGVs inside gmsh's FFI if
+/// handed in directly, a failure mode the caller's `Result`-based
+/// honest-degradation fallback cannot catch. `validate` alone cannot tell a
+/// truly closed surface apart from one that is only closed on its welded
+/// quotient, which is exactly why this preflight adds the weldedness check.
 ///
 /// This is the `docs/prds/kernel-seam-contracts.md` §4 site-3 fail-closed
 /// exception: rather than let an uncatchable crash happen, this preflight
