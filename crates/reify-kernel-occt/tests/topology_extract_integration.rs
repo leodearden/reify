@@ -460,13 +460,33 @@ fn extract_edges_after_fillet_count_differs_from_box() {
 }
 
 #[test]
-fn centroid_of_face_handle_survives_warm_start_round_trip() {
+fn centroid_query_on_extracted_face_fails_after_warm_start_round_trip() {
     // Regression test for: face-handle centroid dispatch silently wrong after warm-start.
     //
-    // Pre-fix: `reprs` was not persisted in OcctWarmState, so after a warm-start round-trip
-    // every restored handle reported repr_of == None, falling back to the volume-based
-    // query_centroid which returns (0,0,0) for a sub-face. The top face of a 10mm box
-    // should have centroid (0, 0, +5e-3), not the origin.
+    // Historical bug (predates #5111/#5162): `reprs` was not persisted in
+    // OcctWarmState at all, so after a warm-start round-trip every restored
+    // handle reported repr_of == None, falling back to the volume-based
+    // query_centroid which returns (0,0,0) for a sub-face. The top face of a
+    // 10mm box should have centroid (0, 0, +5e-3), not the origin. That bug
+    // was fixed by persisting `reprs` for every handle.
+    //
+    // Scope note (#5162): `warm_state()` now deliberately filters derived
+    // sub-shape ids — extract_faces/edges/vertices results, which are keyed
+    // in `parent_handle` — out of both `shapes` and `reprs`, to bound
+    // payload growth across repeated warm-start cycles (left unfiltered,
+    // they'd round-trip as orphaned entries: unreachable via OwnerBody and
+    // never reused by a later extract_* call). So an extracted face handle
+    // no longer round-trips at all: querying it post-restore now correctly
+    // fails loudly with `QueryError::InvalidHandle`, instead of either (a)
+    // silently returning the wrong volume-based centroid — the historical
+    // bug this test originally pinned — or (b) returning the correct
+    // face-based centroid — the pre-#5162 behavior. A loud, explicit
+    // failure is strictly safer than the silent-wrongness bug this test
+    // guards against, so this is intentional, not a regression. Repr/shape
+    // survival for root/persistent handles (created via `execute`, never a
+    // `parent_handle` key) is unaffected and covered by
+    // `repr_of_survives_warm_start_round_trip` and
+    // `warm_start_roundtrip_single_shape` / `_multi_shape`.
 
     // 1. Build kernel A with a 10×10×10 mm box centered at origin.
     let (mut kernel_a, box_id) = box_kernel(10.0, 10.0, 10.0);
@@ -480,22 +500,23 @@ fn centroid_of_face_handle_survives_warm_start_round_trip() {
     let target_z = 5e-3_f64;
     let pos_tol = 1e-9_f64;
 
-    let (top_face_id, pre_cx, pre_cy, pre_cz) = faces
+    let (top_face_id, pre_cz) = faces
         .iter()
         .find_map(|id| {
             let c = kernel_a
                 .query(&GeometryQuery::Centroid(*id))
                 .expect("Centroid query on face handle should succeed");
-            let (x, y, z) = parse_xyz(&c);
+            let (_, _, z) = parse_xyz(&c);
             if (z - target_z).abs() < pos_tol {
-                Some((*id, x, y, z))
+                Some((*id, z))
             } else {
                 None
             }
         })
         .expect("a 10×10×10 box centered at origin must have a top face at z=+5e-3");
 
-    // 3. Sanity-assert pre-warm centroid.
+    // 3. Sanity-assert pre-warm centroid: dispatch is correct (face-based,
+    //    not volume-based) while the handle is still known to kernel_a.
     assert!(
         (pre_cz - target_z).abs() < pos_tol,
         "pre-warm top-face centroid z should be ≈5e-3, got {pre_cz}"
@@ -508,32 +529,14 @@ fn centroid_of_face_handle_survives_warm_start_round_trip() {
     let mut kernel_b = OcctKernel::new();
     kernel_b.with_warm_state(state);
 
-    // 5. Re-query centroid via kernel_b using the same face handle id.
-    let post_c = kernel_b
-        .query(&GeometryQuery::Centroid(top_face_id))
-        .expect("Centroid query on restored face handle should succeed");
-    let (post_x, post_y, post_z) = parse_xyz(&post_c);
-
-    // 6. Post-warm centroid must match pre-warm centroid within tolerance.
+    // 5. Post-warm: the extracted-face handle is a derived sub-shape id
+    //    (#5162) and is no longer present in kernel_b at all, so the query
+    //    must fail with InvalidHandle rather than silently returning a
+    //    wrong — or even a stale-but-correct — centroid.
+    let post = kernel_b.query(&GeometryQuery::Centroid(top_face_id));
     assert!(
-        (post_x - pre_cx).abs() < pos_tol,
-        "post-warm centroid x should be ≈{pre_cx}, got {post_x}"
-    );
-    assert!(
-        (post_y - pre_cy).abs() < pos_tol,
-        "post-warm centroid y should be ≈{pre_cy}, got {post_y}"
-    );
-    assert!(
-        (post_z - pre_cz).abs() < pos_tol,
-        "post-warm centroid z should be ≈{pre_cz}, got {post_z}"
-    );
-
-    // 7. Specifically assert the face centroid is NOT the origin (z ≠ 0).
-    // Before the fix, the face handle loses its BRepKind::Face classification
-    // after warm-start, causing dispatch to the volume-based query_centroid
-    // which returns (0,0,0) for sub-faces. This assertion catches that regression.
-    assert!(
-        (post_z - target_z).abs() < pos_tol,
-        "post-warm top-face centroid z must be ≈+5e-3, not origin: got z={post_z}"
+        matches!(post, Err(QueryError::InvalidHandle(id)) if id == top_face_id),
+        "post-warm: extracted face handle should be gone (InvalidHandle) per \
+         #5162's derived-sub-shape filter, got: {post:?}"
     );
 }
