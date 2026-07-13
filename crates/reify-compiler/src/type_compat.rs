@@ -2591,6 +2591,124 @@ mod tests {
         );
     }
 
+    // ── task-5163: is_dimensioned_complex / add_sub_dimensioned_complex_reject ──
+
+    #[test]
+    fn is_dimensioned_complex_true_for_dimensioned_quantity() {
+        assert!(is_dimensioned_complex(&Type::complex(Type::length())));
+    }
+
+    #[test]
+    fn is_dimensioned_complex_false_for_dimensionless_quantity() {
+        assert!(!is_dimensioned_complex(&Type::complex(
+            Type::dimensionless_scalar()
+        )));
+    }
+
+    #[test]
+    fn is_dimensioned_complex_false_for_non_complex() {
+        assert!(!is_dimensioned_complex(&Type::length()));
+        assert!(!is_dimensioned_complex(&Type::Int));
+    }
+
+    #[test]
+    fn add_sub_dimensioned_complex_reject_true_for_dimensioned_complex_plus_int() {
+        let dimensioned = Type::complex(Type::length());
+        assert!(add_sub_dimensioned_complex_reject(&dimensioned, &Type::Int));
+    }
+
+    /// Order-reversed counterpart: closes the documented asymmetry — both
+    /// operand orders must reject.
+    #[test]
+    fn add_sub_dimensioned_complex_reject_true_for_int_plus_dimensioned_complex_order_reversed() {
+        let dimensioned = Type::complex(Type::length());
+        assert!(add_sub_dimensioned_complex_reject(&Type::Int, &dimensioned));
+    }
+
+    #[test]
+    fn add_sub_dimensioned_complex_reject_true_for_dimensioned_complex_plus_dimensionless_scalar()
+    {
+        let dimensioned = Type::complex(Type::length());
+        assert!(add_sub_dimensioned_complex_reject(
+            &dimensioned,
+            &Type::dimensionless_scalar()
+        ));
+    }
+
+    #[test]
+    fn add_sub_dimensioned_complex_reject_true_for_dimensionless_scalar_plus_dimensioned_complex()
+    {
+        let dimensioned = Type::complex(Type::length());
+        assert!(add_sub_dimensioned_complex_reject(
+            &Type::dimensionless_scalar(),
+            &dimensioned
+        ));
+    }
+
+    /// Must NOT reject — this is the pre-existing D3 widening case (`3 + 4j`).
+    #[test]
+    fn add_sub_dimensioned_complex_reject_false_for_dimensionless_complex_plus_int_widening_case()
+    {
+        let dimensionless = Type::complex(Type::dimensionless_scalar());
+        assert!(!add_sub_dimensioned_complex_reject(
+            &dimensionless,
+            &Type::Int
+        ));
+    }
+
+    /// `Complex<Q1> ± Complex<Q2>` dimension-mismatch is a separate, unguarded
+    /// gap (out of scope for task 5163) — this predicate must not touch it.
+    #[test]
+    fn add_sub_dimensioned_complex_reject_false_for_complex_plus_complex_out_of_scope() {
+        let dimensioned = Type::complex(Type::length());
+        assert!(!add_sub_dimensioned_complex_reject(
+            &dimensioned,
+            &dimensioned
+        ));
+    }
+
+    #[test]
+    fn add_sub_dimensioned_complex_reject_false_for_error_left_gradualism() {
+        let dimensioned = Type::complex(Type::length());
+        assert!(!add_sub_dimensioned_complex_reject(
+            &Type::Error,
+            &dimensioned
+        ));
+    }
+
+    #[test]
+    fn add_sub_dimensioned_complex_reject_false_for_error_right_gradualism() {
+        let dimensioned = Type::complex(Type::length());
+        assert!(!add_sub_dimensioned_complex_reject(
+            &dimensioned,
+            &Type::Error
+        ));
+    }
+
+    #[test]
+    fn add_sub_dimensioned_complex_reject_false_for_type_param_gradualism() {
+        let dimensioned = Type::complex(Type::length());
+        assert!(!add_sub_dimensioned_complex_reject(
+            &Type::TypeParam("T".into()),
+            &dimensioned
+        ));
+    }
+
+    /// Plain dimensioned `Scalar` (not `Complex`) + `Int` is handled by the
+    /// pre-existing dimension-compat block in `expr.rs`, not this predicate.
+    #[test]
+    fn add_sub_dimensioned_complex_reject_false_for_dimensioned_scalar_plus_int() {
+        assert!(!add_sub_dimensioned_complex_reject(
+            &Type::length(),
+            &Type::Int
+        ));
+    }
+
+    #[test]
+    fn add_sub_dimensioned_complex_reject_false_for_int_plus_int() {
+        assert!(!add_sub_dimensioned_complex_reject(&Type::Int, &Type::Int));
+    }
+
     #[test]
     fn binop_mul_right_error_yields_error() {
         assert_eq!(
