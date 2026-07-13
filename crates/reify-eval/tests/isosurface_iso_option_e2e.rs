@@ -167,11 +167,10 @@ fn iso_option_changes_surfaced_mesh() {
 /// (`iso: 3mm`, in-band for a 20mm box) must build and surface a non-empty
 /// terminal mesh.
 ///
-/// RED (before step-2 creates the example fixture): the runtime
-/// `std::fs::read_to_string` of `examples/multi_kernel/voxel_to_mesh_iso.ri`
-/// fails with a clean test panic (not a compile error, since the source is
-/// read at runtime via `concat!(env!("CARGO_MANIFEST_DIR"), ...)`, not
-/// `include_str!`).
+/// Reads the fixture at runtime via `std::fs::read_to_string`
+/// (`concat!(env!("CARGO_MANIFEST_DIR"), ...)`), NOT `include_str!`, so that
+/// if the fixture is ever missing or unreadable the test fails cleanly
+/// instead of the whole test binary failing to compile.
 #[cfg(has_openvdb)]
 #[test]
 fn iso_example_fixture_surfaces_nonempty() {
@@ -183,9 +182,9 @@ fn iso_example_fixture_surfaces_nonempty() {
         return;
     }
 
-    // Runtime read (NOT include_str!): a clean test-failure RED when the
-    // example fixture does not exist yet (step-2 creates it), rather than a
-    // compile error that would break the whole test binary.
+    // Runtime read (NOT include_str!): keeps a missing/unreadable fixture a
+    // clean test failure rather than a compile error that would break the
+    // whole test binary.
     let source = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../examples/multi_kernel/voxel_to_mesh_iso.ri"
