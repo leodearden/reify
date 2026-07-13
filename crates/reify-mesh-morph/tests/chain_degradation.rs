@@ -32,6 +32,8 @@ mod fixtures;
 #[path = "chain/runner.rs"]
 mod runner;
 
+use std::sync::OnceLock;
+
 // ── Step-1: chain-runner smoke on a short monotonic plate chain ──────────────
 
 #[test]
@@ -245,6 +247,17 @@ fn chain_runner_large_jump_triggers_fallback_and_chain_self_recovers() {
 /// regression guard — a future change that made elasticity_morph or
 /// quality_check materially stricter would show up here as a rate
 /// exceeding this bound.
+///
+/// Brittleness note (reviewer_comprehensive test-robustness finding,
+/// amendment round 2): this bound and the [`lcg_jumps`] seed-8 sequence's
+/// documented fallback count (see that fn's doc) are empirical pins against
+/// the CURRENT `elasticity_morph`/`quality_check` behavior, not a
+/// mathematical guarantee. A future morph/quality-check tuning change could
+/// flip a monotonic tick to a fallback (breaking this bound) or shift the
+/// LCG sequence so its first fallback lands on the final tick (an explicit
+/// guard below turns that into a clear failure message rather than a
+/// misleading one). Re-run and re-pin both if you change morph-kernel or
+/// quality-check internals.
 const CHAIN_FALLBACK_RATE_MAX: f64 = 0.05;
 
 /// Documented minimum-scaled-Jacobian floor for the chain sweep tests.
@@ -299,6 +312,39 @@ fn linspace(lo: f64, hi: f64, n: usize) -> Vec<f64> {
     (0..n).map(|i| lo + step * i as f64).collect()
 }
 
+/// Shared 51-value monotonic-sweep [`runner::ChainReport`] (params
+/// `linspace(0.30, 0.50, 51)`, [`chain_options`]) — memoized so it is
+/// computed exactly once regardless of which test asks for it first.
+///
+/// Both the monotonic test (step-6) and the non-monotonic test's comparison
+/// baseline (step-8) want the identical sweep. The monotonic sweep is ~50
+/// `elasticity_morph` FEA solves — the single largest compute cost in this
+/// file (reviewer_comprehensive efficiency finding, amendment round 2) — so
+/// computing it once per test (as the non-monotonic test previously did
+/// inline) roughly doubled the file's total solve count for no benefit.
+/// `OnceLock::get_or_init` is synchronized, so this is safe even though
+/// `cargo test` runs `#[test]` fns concurrently on separate threads within
+/// this one test binary: whichever test calls this first performs the
+/// sweep, the other blocks briefly then reuses the cached result.
+/// `run_chain` is a pure function of `(fixture, params, opts)`, so the
+/// shared result is identical to what each test would have computed on its
+/// own. Deliberately still a real computed `ChainReport` (not a hardcoded
+/// constant) so the non-monotonic test's assertion (b) stays honest against
+/// any future change to `elasticity_morph`/`quality_check` that shifts the
+/// true monotonic rate.
+static MONOTONIC_SWEEP_REPORT: OnceLock<runner::ChainReport> = OnceLock::new();
+
+/// Returns the shared monotonic-sweep report, computing it on first call.
+/// See [`MONOTONIC_SWEEP_REPORT`]'s doc.
+fn monotonic_sweep_report() -> &'static runner::ChainReport {
+    MONOTONIC_SWEEP_REPORT.get_or_init(|| {
+        let fixture = |hole_diameter: f64| fixtures::plate_with_hole(1.0, hole_diameter, 0.1, 4, 2);
+        let params = linspace(0.30, 0.50, 51);
+        let opts = chain_options();
+        runner::run_chain(fixture, &params, &opts)
+    })
+}
+
 /// PRD `docs/prds/v0_3/mesh-morphing.md` task #14, claim (c): a long
 /// monotonic auto-resolve chain stays within the quality envelope without
 /// periodic remeshes.
@@ -312,11 +358,10 @@ fn linspace(lo: f64, hi: f64, n: usize) -> Vec<f64> {
 /// (c)) from the fixture's own pct-saturation edge (step-3's test doc).
 #[test]
 fn monotonic_plate_sweep_50_ticks_keeps_chain_within_quality_envelope() {
-    let fixture = |hole_diameter: f64| fixtures::plate_with_hole(1.0, hole_diameter, 0.1, 4, 2);
-    let params = linspace(0.30, 0.50, 51);
-    let opts = chain_options();
-
-    let report = runner::run_chain(fixture, &params, &opts);
+    // Shared with the non-monotonic test's comparison baseline (step-8) via
+    // `monotonic_sweep_report()`'s `OnceLock` memoization — see that fn's
+    // doc for why sharing the computed sweep across both tests is safe.
+    let report = monotonic_sweep_report();
 
     // eprintln! summary so the perf-tracked CI log surfaces the trend
     // (task instruction: "so the perf-tracked CI log surfaces the trend").
@@ -430,23 +475,17 @@ fn non_monotonic_plate_jumps_trigger_fallbacks_and_chain_self_recovers() {
     let fixture = |hole_diameter: f64| fixtures::plate_with_hole(1.0, hole_diameter, 0.1, 4, 2);
     let opts = chain_options();
 
-    // Comparison baseline: the same monotonic sweep as step-6's test
-    // (recomputed here so this test is self-contained and order-independent).
-    //
-    // Cost note (task 2951 amendment, reviewer_comprehensive finding #3):
-    // this recomputes the full 51-value/50-solve monotonic sweep, roughly
-    // doubling this file's total elasticity_morph solve count. Kept
-    // deliberately (rather than comparing against a hardcoded constant like
-    // `CHAIN_FALLBACK_RATE_MAX`) for robustness: the monotonic baseline is
-    // documented to be ~0 but is not itself a pinned contract, so a live
-    // recomputation keeps assertion (b) below honest against any future
-    // change to `elasticity_morph`/`quality_check` that shifts the true
-    // monotonic rate — a hardcoded constant would silently stop reflecting
-    // reality in that scenario. Both sweeps are fast (deterministic, no I/O,
-    // no real FEA-scale meshes), so the extra cost is a fixed, small
-    // constant, not a scaling concern.
-    let monotonic_params = linspace(0.30, 0.50, 51);
-    let monotonic_report = runner::run_chain(fixture, &monotonic_params, &opts);
+    // Comparison baseline: the same monotonic sweep as step-6's test, via
+    // the shared `monotonic_sweep_report()` `OnceLock` (reviewer_comprehensive
+    // efficiency finding, amendment round 2 — this previously recomputed the
+    // full 51-value/50-solve monotonic sweep inline here too, roughly
+    // doubling this file's total elasticity_morph solve count). Still a
+    // live, actually-computed `ChainReport` (not a hardcoded constant), so
+    // assertion (b) below stays honest against any future change to
+    // `elasticity_morph`/`quality_check` that shifts the true monotonic
+    // rate — see `monotonic_sweep_report`'s doc for why sharing it here is
+    // safe and order-independent.
+    let monotonic_report = monotonic_sweep_report();
 
     let params = lcg_jumps(8, 51, 0.30, 0.60);
     let report = runner::run_chain(fixture, &params, &opts);
