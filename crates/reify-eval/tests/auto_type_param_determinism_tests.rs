@@ -559,7 +559,8 @@ fn per_file_violations(
 /// file time `check_source_with_stdlib` (which internally calls
 /// `parse_and_compile_with_stdlib`, so the measurement covers the full
 /// parse+compile+check pipeline exactly once per file).
-/// Asserts every per-file duration < 10s via `per_file_violations`.
+/// Asserts every per-file duration <= 10s (strict `>` boundary) via
+/// `per_file_violations`.
 ///
 /// On failure, prints a `(path, duration)` table sorted alphabetically by
 /// file name at print time (independent of `discover_ri_files`'s internal
