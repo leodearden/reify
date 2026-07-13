@@ -6,7 +6,7 @@
 #![allow(dead_code)]
 
 #[cfg(has_occt)]
-use reify_ir::{GeometryOp, Value};
+use reify_ir::{GeometryHandleId, GeometryOp, Value};
 #[cfg(has_occt)]
 use reify_kernel_occt::OcctKernel;
 
@@ -169,6 +169,28 @@ pub fn fixtures() -> Vec<(&'static str, FixtureFn)> {
         ("boolean", occt_boolean_reversed as FixtureFn),
         ("fillet", occt_fillet as FixtureFn),
     ]
+}
+
+// ── OCCT solid-handle builder (kernel-seam ζ) ───────────────────────────────
+
+/// 10×20×30 mm OCCT BRep box, returned as the owning kernel plus the solid's
+/// handle id — NOT a tessellated `Mesh` like `occt_box()` above. This is the
+/// shared PARENT-handle source for the handle-stability arms in
+/// `handle_stability_conformance.rs`: `extract_faces`/`extract_edges` act on
+/// a BRep solid handle, which none of the `fixtures()` builders expose (they
+/// return only the tessellated `Mesh`). Mirrors `box_kernel` in
+/// `reify-kernel-occt/tests/topology_extract_integration.rs:17-27`.
+#[cfg(has_occt)]
+pub fn occt_box_solid() -> (OcctKernel, GeometryHandleId) {
+    let mut kernel = OcctKernel::new();
+    let h = kernel
+        .execute(&GeometryOp::Box {
+            width: Value::Real(10.0e-3),
+            height: Value::Real(20.0e-3),
+            depth: Value::Real(30.0e-3),
+        })
+        .expect("box creation should succeed");
+    (kernel, h.id)
 }
 
 // ── gmsh volume-leg re-validate helper ──────────────────────────────────────
