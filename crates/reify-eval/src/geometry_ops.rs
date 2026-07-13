@@ -5483,6 +5483,29 @@ fn reconstruct_selector_value_symbolic(
 /// first (review amendment) keeps that diagnostic from leaking into
 /// `diagnostics` on the `None` path.
 ///
+/// Two distinct scenarios reach that `None` path, and the buffer only
+/// swallows a REAL diagnostic in one of them (review amendment, task #5120
+/// R2c — spelled out here because the two are easy to conflate): (1) a
+/// solid-CSG-boolean operand's `reconstruct_selector_value_symbolic` call
+/// never pushes into `scratch` at all — it fails the `Value::Selector` match
+/// with no diagnostic — so there is nothing to lose; (2) a NESTED selector
+/// composition that is ITSELF genuinely broken (e.g. `union(union(faces(b),
+/// edges(b)), faces(b))`, where the inner `union` mixes Face/Edge kinds)
+/// DOES push its own "kind-closure violation" warning into `scratch` before
+/// resolving to `Value::Undef` — and since `reconstruct_selector_value_symbolic`
+/// maps that `Undef` to `None`, the outer `collect::<Option<Vec<_>>>()`
+/// short-circuits before `diagnostics.append(&mut scratch)` runs, so the
+/// inner warning is dropped on THIS eval pass too. That is intentional, not a
+/// silent PERMANENT loss, and it is NOT a hole in the no-stale-Undef net: the
+/// outer cell simply stays `Value::Undef` with its (inline, not separately
+/// tracked) nested operand never resolving, so `invariants.rs`'s checker
+/// still correctly reports it as a genuine violation — only the SPECIFIC
+/// "kind-closure violation" wording is missing from that report, not the
+/// fact that something is wrong. `build()`'s kernel-bearing
+/// `eval_variadic_composition` re-runs the same reconstruction UNBUFFERED
+/// and re-emits that specific diagnostic — so the detailed warning surfaces
+/// on `build()`, just not on this intermediate `eval()` pass.
+///
 /// The unconditional `scratch = Vec::new()` per call (mirrored in
 /// [`resolve_named_leaf_target_symbolic`]) was flagged as a minor per-mint
 /// allocation on the symbolic-eval hot path — an empty `Vec` is allocated
