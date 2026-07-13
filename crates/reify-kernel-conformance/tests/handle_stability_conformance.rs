@@ -95,3 +95,34 @@ fn occt_extract_faces_returns_stable_ids() {
 
     assert_stable_ids("occt extract_faces", &[first, second, third]);
 }
+
+/// `extract_edges` on a real OCCT BRep box SOLID handle returns identical
+/// ids, in identical order, across repeated calls within a session.
+///
+/// GREEN on main (`extracted_edges` cache,
+/// `crates/reify-kernel-occt/src/lib.rs:640-676`); red-on-revert if that
+/// cache is removed (a fresh id set would be minted per call, so the second
+/// call would diverge from the first — the #4262 defect).
+#[test]
+fn occt_extract_edges_returns_stable_ids() {
+    let (mut kernel, box_id) = common::occt_box_solid();
+
+    let first = kernel
+        .extract_edges(box_id)
+        .expect("first extract_edges call should succeed");
+    let second = kernel
+        .extract_edges(box_id)
+        .expect("second extract_edges call should succeed");
+    let third = kernel
+        .extract_edges(box_id)
+        .expect("third extract_edges call should succeed");
+
+    assert_eq!(
+        first.len(),
+        12,
+        "a 10x20x30 mm box has exactly 12 unique edges, got {}",
+        first.len()
+    );
+
+    assert_stable_ids("occt extract_edges", &[first, second, third]);
+}
