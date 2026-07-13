@@ -675,7 +675,10 @@ mod tests {
     use reify_ir::{BinOp, ObjectiveSense, ObjectiveSet};
     use reify_test_support::{TopologyTemplateBuilder, binop, gt, literal, mm, value_ref};
 
-    use super::{ClusterDisposition, WHOLE_MODEL_CLUSTER_DIM_CAP, resolve_order};
+    use super::{
+        ClusterDisposition, WHOLE_MODEL_CLUSTER_DIM_CAP, resolve_order,
+        resolve_order_ordering_and_clusters, resolve_order_ordering_only,
+    };
 
     // -------------------------------------------------------------------------
     // step-1 cases: acyclic read-DAG reorder + back-compat identity (INV-2)
@@ -1180,6 +1183,75 @@ mod tests {
             ClusterDisposition::ApproximatedFallback,
             "dim {} > cap {} ⇒ ApproximatedFallback; got: {:?}",
             cluster.dim, cap, cluster.disposition
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // task #5118: `resolve_order_ordering_and_clusters` — the warm `eval_cached`
+    // variant. Unlike `resolve_order_ordering_only`, it DOES compute the
+    // M-WHOLE α cluster set (so warm can co-solve within-cap MergedSolve
+    // clusters), but — like `resolve_order_ordering_only` — must NOT emit
+    // coupling diagnostics: `eval()` alone owns W_SCOPE_COUPLING /
+    // W_COUPLING_APPROXIMATED emission (engine_eval.rs comment near :6459).
+    // -------------------------------------------------------------------------
+
+    /// A within-cap irreducible 2-cycle {A, B} (same fixture as
+    /// `irreducible_two_cycle_forms_single_merged_cluster`) must, under the new
+    /// warm variant: (a) resolve to the SAME `order` as
+    /// `resolve_order_ordering_only`; (b) form exactly one `MergedSolve` cluster
+    /// spanning both scopes; (c) emit ZERO coupling diagnostics.
+    #[test]
+    fn resolve_order_ordering_and_clusters_returns_within_cap_cluster_and_no_coupling_diags() {
+        // A reads B.m, B reads A.k → irreducible 2-cycle (SCC of size 2), within-cap.
+        let a = TopologyTemplateBuilder::new("A")
+            .auto_param("A", "k", Type::length())
+            .constraint("A", 0, None, gt(value_ref("B", "m"), literal(mm(0.0))))
+            .build();
+
+        let b = TopologyTemplateBuilder::new("B")
+            .auto_param("B", "m", Type::length())
+            .constraint("B", 0, None, gt(value_ref("A", "k"), literal(mm(0.0))))
+            .build();
+
+        let templates = vec![a, b];
+
+        let ordering_only = resolve_order_ordering_only(&templates);
+        let ordering_and_clusters = resolve_order_ordering_and_clusters(&templates);
+
+        // (a) `order` must be byte-identical to the ordering-only variant.
+        assert_eq!(
+            ordering_and_clusters.order, ordering_only.order,
+            "order must be identical to resolve_order_ordering_only; got: {:?} vs {:?}",
+            ordering_and_clusters.order, ordering_only.order
+        );
+
+        // (b) exactly one MergedSolve cluster spanning both scopes.
+        assert_eq!(
+            ordering_and_clusters.clusters.len(),
+            1,
+            "within-cap 2-cycle must form exactly one cluster; got: {:?}",
+            ordering_and_clusters.clusters
+        );
+        let cluster = &ordering_and_clusters.clusters[0];
+        assert_eq!(
+            cluster.scopes,
+            vec![0, 1],
+            "cluster must span both scopes (sorted indices); got: {:?}",
+            cluster.scopes
+        );
+        assert_eq!(
+            cluster.disposition,
+            ClusterDisposition::MergedSolve,
+            "dim 2 is within cap ⇒ MergedSolve; got: {:?}",
+            cluster.disposition
+        );
+
+        // (c) warm must NOT emit coupling diagnostics (eval() alone owns
+        // W_SCOPE_COUPLING / W_COUPLING_APPROXIMATED).
+        assert!(
+            ordering_and_clusters.coupling_diagnostics.is_empty(),
+            "resolve_order_ordering_and_clusters must not emit coupling diagnostics; got: {:?}",
+            ordering_and_clusters.coupling_diagnostics
         );
     }
 }
