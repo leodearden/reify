@@ -102,20 +102,51 @@ impl SolverRegistry {
     /// component through `solver.solve_ranked()` so the domain solver's real
     /// [`OptimalityStatus`] (and objective score) is recovered and returned to the
     /// caller — this is what lets `reify eval` surface `W_SOLVER_OPTIMALITY_UNPROVEN`
-    /// (task #4804 γ) instead of the generic default-lift reason.  The merged
-    /// resolved values are identical on both paths: the domain solver's
-    /// `solve_ranked` is a read-only projection of `solve()` (invariant I1), so
-    /// swapping the call cannot change which solution is returned.
+    /// (task #4804 γ) instead of the generic default-lift reason.
+    ///
+    /// # δ best-of-K propagation (task #5016)
+    ///
+    /// The merged resolved values are NOT guaranteed identical on both paths
+    /// in general: when the objective component is multistart-eligible (see
+    /// `DimensionalSolver::solve_ranked`'s dim>=2 gate), `solve_ranked` can
+    /// find a STRICTLY BETTER point than the single-seed `solve()` path
+    /// (best-of-K dominance, not identity — see `SolverRegistry::solve_ranked`'s
+    /// doc comment). `solve()` itself (`want_optimality = false`) is
+    /// completely unaffected: the guard on the ranked-dispatch arm below is
+    /// `want_optimality && is_objective_component`, so with
+    /// `want_optimality = false` every component, including the would-be
+    /// objective one, always takes the plain `solver.solve()` arm exactly as
+    /// before (I1 for `solve()` itself is preserved byte-for-byte).
+    ///
+    /// The 4th return slot carries the objective component's FULL
+    /// [`RankedCandidate`] vector (already cross-merged with every other
+    /// component's shared values — see the cross-merge step at the end of
+    /// this function), captured only when that component was actually
+    /// dispatched via the `solver.solve_ranked` arm below (i.e. always `None`
+    /// when `want_optimality = false`, or when the objective is absent,
+    /// lexicographic, or the solve produced no feasible component at all).
+    /// The 1st slot's `SolveResult` always reflects the WINNER (best
+    /// candidate) merged with every other component — i.e. slot 1 and
+    /// `objective_candidates[0]` (slot 4, post cross-merge) describe the same
+    /// solution whenever slot 4 is `Some`.
     fn solve_inner(
         &self,
         problem: &ResolutionProblem,
         want_optimality: bool,
-    ) -> (SolveResult, Option<OptimalityStatus>, Option<f64>) {
+    ) -> (
+        SolveResult,
+        Option<OptimalityStatus>,
+        Option<f64>,
+        Option<Vec<RankedCandidate>>,
+    ) {
         // Optimality/score recovered from the objective component (None on the
         // `want_optimality = false` path or when the objective component is solved
         // via a route that does not surface optimality, e.g. lexicographic staging).
         let mut captured_optimality: Option<OptimalityStatus> = None;
         let mut captured_score: Option<f64> = None;
+        // δ (task #5016): the objective component's full best-of-K candidate
+        // vector — see the "δ best-of-K propagation" doc section above.
+        let mut captured_candidates: Option<Vec<RankedCandidate>> = None;
 
         // Early exit: no auto params → already solved
         if problem.auto_params.is_empty() {
@@ -124,6 +155,7 @@ impl SolverRegistry {
                     values: HashMap::new(),
                     unique: true,
                 },
+                None,
                 None,
                 None,
             );
@@ -155,6 +187,7 @@ impl SolverRegistry {
                 },
                 None,
                 None,
+                None,
             );
         }
 
@@ -179,6 +212,12 @@ impl SolverRegistry {
 
         let mut merged_values: HashMap<ValueCellId, Value> = HashMap::new();
         let mut all_unique = true;
+        // δ (task #5016): values/unique accumulated over every component
+        // EXCEPT the one whose candidates got captured (i.e. the shared,
+        // non-objective-multistart portion of the merged result) — unioned
+        // into EVERY cross-merged candidate below, not just the winner.
+        let mut other_values: HashMap<ValueCellId, Value> = HashMap::new();
+        let mut other_unique = true;
 
         for (ci, component) in components.iter().enumerate() {
             // Build sub-ResolutionProblem for this component
@@ -223,7 +262,15 @@ impl SolverRegistry {
             // component on the `solve()` path, every non-objective component, and
             // the lexicographic staged path — keeps `solver.solve()` exactly as
             // before (so `solve()` stays byte-for-byte unchanged, I1).
+            //
+            // δ (task #5016): this branch now RETAINS the full candidate vector
+            // (instead of `swap_remove(0)`-and-discard) in `component_candidates`,
+            // so `solve_ranked` can cross-merge the whole best-of-K set instead of
+            // collapsing to 1 (registry.rs pre-δ). The winner (candidates[0]) is
+            // still what feeds `merged_values`/`captured_score` below, so `solve()`
+            // and the single-candidate fallback are unaffected.
             let is_objective_component = objective_component == Some(ci);
+            let mut component_candidates: Option<Vec<RankedCandidate>> = None;
             let result = match &sub_problem.objective {
                 Some(obj) if obj.combination == ObjectiveCombination::Lexicographic => {
                     solve_lexicographic(solver, &sub_problem)
@@ -231,7 +278,7 @@ impl SolverRegistry {
                 Some(_) if want_optimality && is_objective_component => {
                     match solver.solve_ranked(&sub_problem) {
                         RankedSolveResult::Ranked {
-                            mut candidates,
+                            candidates,
                             optimality,
                         } => {
                             // I2: candidates is non-empty; index 0 is the optimum.
@@ -243,13 +290,17 @@ impl SolverRegistry {
                                 !candidates.is_empty(),
                                 "RankedSolveResult::Ranked must carry >=1 candidate (I2) (registry seam)"
                             );
-                            let candidate = candidates.swap_remove(0);
                             captured_optimality = Some(optimality);
-                            captured_score = candidate.objective_score;
-                            SolveResult::Solved {
-                                values: candidate.values,
-                                unique: candidate.unique,
-                            }
+                            captured_score = candidates[0].objective_score;
+                            let winner = SolveResult::Solved {
+                                values: candidates[0].values.clone(),
+                                unique: candidates[0].unique,
+                            };
+                            // Stash the FULL vector (δ) for the cross-merge step
+                            // below; `winner` above already captured candidate 0's
+                            // values/unique for the pre-δ merged-result shape.
+                            component_candidates = Some(candidates);
+                            winner
                         }
                         RankedSolveResult::Infeasible { diagnostics } => {
                             SolveResult::Infeasible { diagnostics }
@@ -264,17 +315,72 @@ impl SolverRegistry {
 
             match result {
                 SolveResult::Solved { values, unique } => {
-                    merged_values.extend(values);
                     all_unique &= unique;
+                    match component_candidates {
+                        Some(candidates) => {
+                            // The objective component: its winner's values are
+                            // already folded into `merged_values`; the full
+                            // candidate set is deferred to the cross-merge step
+                            // below (needs `other_values`/`other_unique` from
+                            // every OTHER component first).
+                            merged_values.extend(values);
+                            captured_candidates = Some(candidates);
+                        }
+                        None => {
+                            // Every other component: folds into both the merged
+                            // result AND the shared "other" accumulator that gets
+                            // unioned into each cross-merged candidate.
+                            merged_values.extend(values.clone());
+                            other_values.extend(values);
+                            other_unique &= unique;
+                        }
+                    }
                 }
                 SolveResult::Infeasible { diagnostics } => {
-                    return (SolveResult::Infeasible { diagnostics }, None, None);
+                    return (SolveResult::Infeasible { diagnostics }, None, None, None);
                 }
                 SolveResult::NoProgress { reason } => {
-                    return (SolveResult::NoProgress { reason }, None, None);
+                    return (SolveResult::NoProgress { reason }, None, None, None);
                 }
             }
         }
+
+        // δ (task #5016): cross-merge the objective component's captured
+        // best-of-K set (if any) with the shared non-objective values, so
+        // EVERY ranked candidate — not just the winner — carries the full
+        // merged-cluster value map. `objective_candidates[0]` (post
+        // cross-merge) is by construction exactly `(merged_values, all_unique)`
+        // below: `other_values ∪ candidates[0].values == merged_values` and
+        // `other_unique && candidates[0].unique == all_unique`, since
+        // `merged_values`/`all_unique` above were folded from the SAME
+        // `other_values`/`other_unique` plus the SAME winner.
+        // Perf: when there is no independent non-objective component,
+        // `other_values` is empty and `other_values.clone().extend(c.values)`
+        // is exactly `c.values` — skip the clone-and-rehash for every one of
+        // the K captured candidates in that (common, single-component
+        // merged-cluster) case instead of paying an unconditional
+        // allocation+rehash K times over. When `other_values` IS non-empty (a
+        // real independent component to cross-merge, e.g. the (c) test
+        // fixture), behaviour is unchanged.
+        let objective_candidates = captured_candidates.map(|candidates| {
+            candidates
+                .into_iter()
+                .map(|c| {
+                    let values = if other_values.is_empty() {
+                        c.values
+                    } else {
+                        let mut values = other_values.clone();
+                        values.extend(c.values);
+                        values
+                    };
+                    RankedCandidate {
+                        values,
+                        objective_score: c.objective_score,
+                        unique: c.unique && other_unique,
+                    }
+                })
+                .collect::<Vec<_>>()
+        });
 
         (
             SolveResult::Solved {
@@ -283,6 +389,7 @@ impl SolverRegistry {
             },
             captured_optimality,
             captured_score,
+            objective_candidates,
         )
     }
 }
@@ -294,8 +401,35 @@ impl ConstraintSolver for SolverRegistry {
         self.solve_inner(problem, false).0
     }
 
+    /// δ (task #5016) contract: `solve_ranked` is a best-of-K propagation, NOT
+    /// a pure single-point projection of `solve()`. When the objective
+    /// component is multistart-eligible (`DimensionalSolver::solve_ranked`'s
+    /// dim>=2 gate), the FULL candidate set it produces is cross-merged with
+    /// the other components' (shared) values into K ranked merged candidates
+    /// here — `candidates[0]` is always the best (I2), and for a single-basin
+    /// problem (every start converges to the same point) it is operationally
+    /// identical to `solve()`; for a multi-basin problem it can be STRICTLY
+    /// BETTER (dominance: `candidates[0]`'s score is never worse than
+    /// `solve()`'s, but not guaranteed byte-identical — see
+    /// `solve_ranked_registry_candidate0_dominates_solve` /
+    /// `solve_ranked_multistart_dominates_single_start_solve`). Falls back to
+    /// the pre-δ single-candidate lift whenever `solve_inner` captured no
+    /// objective-component candidate set (no objective, lexicographic
+    /// staging, dim<=1, or a degenerate/all-infeasible solve) — every dim=1
+    /// fixture (F-result I1 byte-identical test, B1/B2, BT6) stays on this
+    /// unchanged fallback path.
+    ///
+    /// `candidates[1..]` are NOT deduplicated: they are
+    /// `DimensionalSolver::solve_ranked`'s non-winning starts cross-merged
+    /// verbatim, so for a single-basin objective (most merged clusters) they
+    /// may be near-/byte-identical repeats of the SAME resolved point rather
+    /// than distinct alternative designs — best-of-K runner-ups, not a
+    /// guaranteed-distinct alternative set. Callers that need genuinely
+    /// distinct alternatives must dedupe by resolved-value fingerprint
+    /// themselves.
     fn solve_ranked(&self, problem: &ResolutionProblem) -> RankedSolveResult {
-        let (result, optimality, objective_score) = self.solve_inner(problem, true);
+        let (result, optimality, objective_score, objective_candidates) =
+            self.solve_inner(problem, true);
         match result {
             SolveResult::Solved { values, unique } => {
                 // Prefer the optimality recovered from the objective component.
@@ -315,12 +449,21 @@ impl ConstraintSolver for SolverRegistry {
                         OptimalityStatus::FeasibilityOnly
                     }
                 });
-                RankedSolveResult::Ranked {
-                    candidates: vec![RankedCandidate {
+                // δ: propagate the full cross-merged K-candidate set when
+                // `solve_inner` captured one; otherwise fall back to the pre-δ
+                // single-candidate lift. `values`/`objective_score`/`unique`
+                // here already equal `objective_candidates[0]` whenever the
+                // latter is `Some` (see `solve_inner`'s cross-merge comment),
+                // so the two arms agree on candidates[0] in every case.
+                let candidates = objective_candidates.unwrap_or_else(|| {
+                    vec![RankedCandidate {
                         values,
                         objective_score,
                         unique,
-                    }],
+                    }]
+                });
+                RankedSolveResult::Ranked {
+                    candidates,
                     optimality,
                 }
             }

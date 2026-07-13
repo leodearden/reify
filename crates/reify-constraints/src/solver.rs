@@ -928,6 +928,63 @@ fn effective_bounds(param: &AutoParam) -> (f64, f64) {
         .unwrap_or_else(|| default_bounds_for(&param.param_type))
 }
 
+/// Deterministic multistart seed generator for best-of-K multistart
+/// (PRD `docs/prds/v0_6/whole-model-objective-coupling.md` §5.3, §11 Q4, task δ).
+///
+/// Produces exactly `K = 2 * (dim + 1)` start vectors for a `dim`-dimensional
+/// problem (`dim = problem.auto_params.len()`):
+///   - start #0: the historical [`extract_initial_point`] seed. Anchoring the
+///     incumbent as one of the K starts guarantees best-of-K is a superset of
+///     today's single start, so `candidate[0]` can never be worse than
+///     `solve()`'s result (dominance).
+///   - start #1: the all-midpoint point — every axis at its [`effective_bounds`]
+///     midpoint.
+///   - starts #2..K-1: per axis `i` (in `auto_params` order), one vector with
+///     axis `i` at its low `effective_bounds` and one with axis `i` at its
+///     high bound, every other axis held at its own midpoint.
+///
+/// Pure function of `problem` — no RNG, clock, or seed (§3.2 determinism
+/// contract; BT5). Two calls on the same `problem` return identical vectors.
+fn multistart_points(problem: &ResolutionProblem) -> Vec<Vec<f64>> {
+    let dim = problem.auto_params.len();
+    let mut points = Vec::with_capacity(2 * (dim + 1));
+
+    // Start #0: the historical single-start seed (dominance anchor).
+    points.push(extract_initial_point(problem));
+
+    // Per-axis midpoint — shared by the all-midpoint point and as the
+    // "other axes" value for every corner anchor below.
+    let midpoint: Vec<f64> = problem
+        .auto_params
+        .iter()
+        .map(|p| {
+            let (lo, hi) = effective_bounds(p);
+            (lo + hi) / 2.0
+        })
+        .collect();
+    points.push(midpoint.clone());
+
+    // Per-axis low/high corner anchors, every other axis held at midpoint.
+    for (i, param) in problem.auto_params.iter().enumerate() {
+        let (lo, hi) = effective_bounds(param);
+
+        let mut low = midpoint.clone();
+        low[i] = lo;
+        points.push(low);
+
+        let mut high = midpoint.clone();
+        high[i] = hi;
+        points.push(high);
+    }
+
+    debug_assert_eq!(
+        points.len(),
+        2 * (dim + 1),
+        "multistart_points must produce exactly K = 2*(dim+1) starts"
+    );
+    points
+}
+
 /// Relative tolerance for uniqueness comparison between two solutions.
 const UNIQUENESS_REL_TOL: f64 = 1e-6;
 
@@ -1647,6 +1704,119 @@ fn best_found_reason(iter_limited: bool) -> reify_ir::BestFoundReason {
     }
 }
 
+/// Finalises the uniqueness verdict for a `Solved` result.
+///
+/// For problems with any strict (non-free) auto param, re-solves from a
+/// perturbed starting point ([`verify_uniqueness`]) and either confirms
+/// `unique: true` or demotes the whole result to
+/// `SolveResult::Infeasible` (`ConstraintNonUnique`) when a different
+/// solution is found — a strict auto param MUST be uniquely determined by
+/// the constraints, independent of which candidate is being finalised.
+/// All-free problems skip the re-solve entirely and report `unique: false`
+/// (free auto params accept any feasible solution).
+///
+/// Shared by [`DimensionalSolver::solve_with_meta`] (applied to the sole
+/// candidate — `solve()`'s behaviour is unchanged by this extraction) and
+/// the best-of-K [`ConstraintSolver::solve_ranked`] override (applied ONLY
+/// to the winning candidate; alternative optima are by definition not *the*
+/// unique solution, so non-winning candidates carry `unique: false`
+/// directly, without a re-solve).
+fn finalise_uniqueness(
+    problem: &ResolutionProblem,
+    values: HashMap<ValueCellId, Value>,
+) -> SolveResult {
+    // Check if any param requires uniqueness verification (strict auto)
+    let has_strict = problem.auto_params.iter().any(|p| !p.free);
+    if has_strict {
+        if verify_uniqueness(problem, &values) {
+            SolveResult::Solved {
+                values,
+                unique: true,
+            }
+        } else {
+            // Strict auto params require a unique solution. The
+            // perturbation-based check found a different solution,
+            // indicating the problem is underdetermined.
+            SolveResult::Infeasible {
+                diagnostics: vec![
+                    reify_core::Diagnostic::error(
+                        "strict auto parameter resolution is not uniquely \
+                              determined \u{2014} consider using auto(free) \
+                              for exploration",
+                    )
+                    .with_code(DiagnosticCode::ConstraintNonUnique),
+                ],
+            }
+        }
+    } else {
+        // All params are free — skip uniqueness verification entirely.
+        // Free auto params accept any feasible solution, so we report
+        // unique=false to let the eval engine emit appropriate warnings.
+        SolveResult::Solved {
+            values,
+            unique: false,
+        }
+    }
+}
+
+/// The historical single-candidate [`ConstraintSolver::solve_ranked`] body
+/// (pre-δ #5016): wraps one `(SolveResult, SolveMeta)` pair into a
+/// 1-candidate [`reify_ir::RankedSolveResult`].
+///
+/// Used verbatim by every multistart-ineligible gate branch (dim<=1, no
+/// objective, or a `cost_robustness_tradeoff` objective — PRD §5.3) AND as
+/// the best-of-K all-infeasible fallback (`solve_ranked`'s multistart branch,
+/// re-anchored on the historical seed via `solve_with_meta`), so neither path
+/// can drift from the single-candidate contract invariants (F-result I1
+/// byte-identical test, B1/B2, BT6 — all dim=1 fixtures).
+fn rank_single(
+    problem: &ResolutionProblem,
+    result: SolveResult,
+    meta: SolveMeta,
+) -> reify_ir::RankedSolveResult {
+    use reify_ir::{OptimalityStatus, RankedCandidate, RankedSolveResult};
+    match result {
+        SolveResult::Solved { values, unique } => {
+            // Compute objective score at the solved value map.
+            // Keys off problem.objective (the USER objective), NOT effective_objective,
+            // per I3/I4: a feasibility-only solve reports FeasibilityOnly + None even
+            // when the solver internally optimized a synthetic centrality objective.
+            let objective_score = problem.objective.as_ref().and_then(|obj| {
+                let mut full = problem.current_values.clone();
+                for (id, v) in &values {
+                    full.insert(id.clone(), v.clone());
+                }
+                eval_objective_set(obj, &full, &problem.functions)
+            });
+            // Key optimality off objective_score (not problem.objective.is_some())
+            // to preserve I4: BestFound is only emitted when the score is present.
+            // In the edge case where eval_objective_set returns None despite
+            // problem.objective.is_some() (e.g. objective expression non-numeric
+            // at the solved map), fall back to FeasibilityOnly so that
+            // objective_score: None is never paired with BestFound.
+            let optimality = match &objective_score {
+                Some(_) => OptimalityStatus::BestFound {
+                    reason: best_found_reason(meta.iter_limited),
+                },
+                None => OptimalityStatus::FeasibilityOnly,
+            };
+            RankedSolveResult::Ranked {
+                candidates: vec![RankedCandidate {
+                    values,
+                    objective_score,
+                    unique,
+                }],
+                optimality,
+            }
+        }
+        // Infeasible and NoProgress are structurally identical to the default
+        // trait lift — delegate to the shared helper to avoid drift.
+        non_solved => non_solved
+            .into_ranked_pass_through()
+            .expect("Solved arm already handled above"),
+    }
+}
+
 impl DimensionalSolver {
     /// Run the full solve orchestration and return both the result and its metadata.
     ///
@@ -1681,40 +1851,7 @@ impl DimensionalSolver {
         };
 
         let final_result = match result {
-            SolveResult::Solved { values, .. } => {
-                // Check if any param requires uniqueness verification (strict auto)
-                let has_strict = problem.auto_params.iter().any(|p| !p.free);
-                if has_strict {
-                    if verify_uniqueness(problem, &values) {
-                        SolveResult::Solved {
-                            values,
-                            unique: true,
-                        }
-                    } else {
-                        // Strict auto params require a unique solution. The
-                        // perturbation-based check found a different solution,
-                        // indicating the problem is underdetermined.
-                        SolveResult::Infeasible {
-                            diagnostics: vec![
-                                reify_core::Diagnostic::error(
-                                    "strict auto parameter resolution is not uniquely \
-                                          determined \u{2014} consider using auto(free) \
-                                          for exploration",
-                                )
-                                .with_code(DiagnosticCode::ConstraintNonUnique),
-                            ],
-                        }
-                    }
-                } else {
-                    // All params are free — skip uniqueness verification entirely.
-                    // Free auto params accept any feasible solution, so we report
-                    // unique=false to let the eval engine emit appropriate warnings.
-                    SolveResult::Solved {
-                        values,
-                        unique: false,
-                    }
-                }
-            }
+            SolveResult::Solved { values, .. } => finalise_uniqueness(problem, values),
             other => other, // Infeasible, NoProgress pass through unchanged
         };
         (final_result, meta)
@@ -1731,13 +1868,56 @@ impl ConstraintSolver for DimensionalSolver {
         problem: &ResolutionProblem,
     ) -> reify_ir::RankedSolveResult {
         use reify_ir::{OptimalityStatus, RankedCandidate, RankedSolveResult};
-        let (result, meta) = self.solve_with_meta(problem);
-        match result {
-            SolveResult::Solved { values, unique } => {
-                // Compute objective score at the solved value map.
-                // Keys off problem.objective (the USER objective), NOT effective_objective,
-                // per I3/I4: a feasibility-only solve reports FeasibilityOnly + None even
-                // when the solver internally optimized a synthetic centrality objective.
+
+        // Best-of-K deterministic multistart gate (PRD
+        // `docs/prds/v0_6/whole-model-objective-coupling.md` §5.3, §11 Q4,
+        // task δ #5016): a merged cluster is always >=2 coupled auto params
+        // under a governing objective, so dim>=2 + objective is the in-scope
+        // proxy for "merged cluster" (`ResolutionProblem` carries no cluster
+        // marker — see design notes). dim<=1, no-objective, and the
+        // `cost_robustness_tradeoff` special form (its own single-start
+        // two-anchor blend, task γ #4791) keep today's single-candidate path
+        // VERBATIM — this is REQUIRED to preserve the dim=1 invariants
+        // (F-result I1 byte-identical test, B1/B2, BT6).
+        //
+        // Deliberately NOT gated on auto-param free/strict shape: multistart's
+        // value chiefly targets free-auto exploration (§5.3), but strict-auto
+        // clusters are left eligible too rather than adding a second gate
+        // predicate for what is a benign edge case — see the winner/`solve()`
+        // divergence note below for the resulting, low-risk
+        // Solved-vs-Infeasible corner case and why it's accepted as-is.
+        let multistart_eligible = match &problem.objective {
+            Some(obj) => problem.auto_params.len() >= 2 && obj.cost_robustness_lambda.is_none(),
+            None => false,
+        };
+
+        if !multistart_eligible {
+            let (result, meta) = self.solve_with_meta(problem);
+            return rank_single(problem, result, meta);
+        }
+
+        // ---- best-of-K multistart (dim>=2 + objective, §5.3/§11 Q4) ----
+        //
+        // Run the EXISTING solve_core (Money robustness floor + centrality
+        // synth + drift fallback all inherited unchanged, since this loop
+        // calls the SAME function `solve_with_meta` uses for the
+        // single-start path — task #4789 α's `apply_robustness_floor = true`
+        // is therefore inherited per start, not re-implemented here) once per
+        // deterministic seed from `multistart_points`; score each Solved
+        // candidate against the USER objective (I3/I4), exactly as the
+        // single-candidate path above already does.
+        //
+        // Cost: K = 2*(dim+1) full `solve_core` solves — linear in `dim`,
+        // with no cap. §11 Q4 resolved this growth rate deliberately (a
+        // seeded per-cluster global solver for larger clusters is out of
+        // scope, §10), on the expectation that real merged clusters stay in
+        // the single-digit-to-low-tens dimension range.
+        let starts = multistart_points(problem);
+        let mut scored: Vec<(usize, HashMap<ValueCellId, Value>, f64, bool)> = Vec::new();
+
+        for (start_index, start) in starts.iter().enumerate() {
+            let (result, meta) = solve_core(problem, start);
+            if let SolveResult::Solved { values, .. } = result {
                 let objective_score = problem.objective.as_ref().and_then(|obj| {
                     let mut full = problem.current_values.clone();
                     for (id, v) in &values {
@@ -1745,32 +1925,103 @@ impl ConstraintSolver for DimensionalSolver {
                     }
                     eval_objective_set(obj, &full, &problem.functions)
                 });
-                // Key optimality off objective_score (not problem.objective.is_some())
-                // to preserve I4: BestFound is only emitted when the score is present.
-                // In the edge case where eval_objective_set returns None despite
-                // problem.objective.is_some() (e.g. objective expression non-numeric
-                // at the solved map), fall back to FeasibilityOnly so that
-                // objective_score: None is never paired with BestFound.
-                let optimality = match &objective_score {
-                    Some(_) => OptimalityStatus::BestFound {
-                        reason: best_found_reason(meta.iter_limited),
-                    },
-                    None => OptimalityStatus::FeasibilityOnly,
-                };
-                RankedSolveResult::Ranked {
-                    candidates: vec![RankedCandidate {
+                if let Some(score) = objective_score {
+                    scored.push((start_index, values, score, meta.iter_limited));
+                }
+                // A Solved-but-unscored candidate (objective non-numeric at
+                // this particular start) is dropped — it cannot be ranked,
+                // and the all-starts-unscored case is exactly the
+                // `scored.is_empty()` fallback below (I4: never pair
+                // BestFound with objective_score: None).
+            }
+        }
+
+        // No start yielded a feasible, scoreable candidate — map the
+        // seed-start's own result (recomputed via the single-candidate path,
+        // which uses the same `extract_initial_point` seed as start #0) via
+        // the shared pass-through, exactly like every other Infeasible/
+        // NoProgress arm in this module.
+        if scored.is_empty() {
+            let (result, meta) = self.solve_with_meta(problem);
+            return rank_single(problem, result, meta);
+        }
+
+        // Rank feasible candidates by strict ascending objective_score, ties
+        // broken by ascending start index (start #0, the historical seed,
+        // wins exact ties). candidates[0] is the optimum (I2). `partial_cmp`
+        // only returns `None` for NaN, which `eval_objective_set` already
+        // filters out (`.filter(|v| v.is_finite())`), so every score here is
+        // a well-ordered finite f64 — `unwrap_or(Equal)` is a defensive
+        // fallback, never actually exercised.
+        scored.sort_by(|a, b| {
+            a.2.partial_cmp(&b.2)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.0.cmp(&b.0))
+        });
+
+        let (_winner_start, winner_values, winner_score, winner_iter_limited) = scored.remove(0);
+
+        // Only the winner is uniqueness-finalised — alternative optima are
+        // by definition not *the* unique solution, so non-winners carry
+        // `unique: false` directly (no re-solve). A non-unique winner
+        // (strict auto params only) is demoted to Infeasible by
+        // `finalise_uniqueness`, exactly as `solve_with_meta` would — so a
+        // non-unique winner can never be silently reported as BestFound.
+        //
+        // Authoritative verdict, may differ from solve(): the winner is not
+        // necessarily start #0 (the seed `solve()` anchors on). For a
+        // strict-auto multi-basin problem, `solve()` can land in one basin
+        // and pass its own perturbation re-solve (Solved), while the
+        // multistart winner is a different, better-scoring basin whose
+        // perturbation re-solve lands elsewhere and gets demoted
+        // (Infeasible) — so `solve()` and `solve_ranked()` can disagree on
+        // Solved-vs-Infeasible for the SAME `problem`. This is intentional:
+        // the winner's `finalise_uniqueness` verdict is authoritative for
+        // `solve_ranked` (I2 — candidate[0] must be the best-scoring
+        // FEASIBLE-AND-UNIQUE point, never a stale verdict borrowed from a
+        // different start). Low-risk in practice: strict-auto non-uniqueness
+        // is a property of the shared constraint system rather than the
+        // objective, and multistart's value chiefly targets free-auto
+        // exploration (§5.3). See
+        // `solve_ranked_multistart_winner_non_unique_demotes_to_infeasible`
+        // for the demotion mechanism itself.
+        //
+        // NOT deduplicated: `scored` (the non-winning candidates folded in
+        // below) carries every feasible start verbatim. For a single-basin
+        // objective — the common case — most or all of the K starts
+        // converge to the SAME point, so `candidates[1..]` are
+        // near-/byte-identical convergences of that ONE optimum, not K
+        // distinct alternative designs. Today's only consumers
+        // (`SolverRegistry::solve_ranked`, engine_eval.rs) read
+        // `candidates[0]` alone, so this is currently harmless; a future
+        // consumer that iterates `candidates[1..]` expecting genuinely
+        // different solutions must dedupe by resolved-value fingerprint
+        // (e.g. within `UNIQUENESS_REL_TOL`) itself first.
+        match finalise_uniqueness(problem, winner_values) {
+            SolveResult::Solved { values, unique } => {
+                let mut candidates = Vec::with_capacity(scored.len() + 1);
+                candidates.push(RankedCandidate {
+                    values,
+                    objective_score: Some(winner_score),
+                    unique,
+                });
+                candidates.extend(scored.into_iter().map(|(_, values, score, _)| {
+                    RankedCandidate {
                         values,
-                        objective_score,
-                        unique,
-                    }],
-                    optimality,
+                        objective_score: Some(score),
+                        unique: false,
+                    }
+                }));
+                RankedSolveResult::Ranked {
+                    candidates,
+                    optimality: OptimalityStatus::BestFound {
+                        reason: best_found_reason(winner_iter_limited),
+                    },
                 }
             }
-            // Infeasible and NoProgress are structurally identical to the default
-            // trait lift — delegate to the shared helper to avoid drift.
             non_solved => non_solved
                 .into_ranked_pass_through()
-                .expect("Solved arm already handled above"),
+                .expect("finalise_uniqueness only ever returns Solved or Infeasible"),
         }
     }
 }
@@ -3924,6 +4175,160 @@ mod tests {
         let simplex = build_simplex(&initial_3d, &params_3d);
         assert_eq!(simplex.len(), 4, "3D simplex must have N+1=4 vertices");
     }
+
+    // ---- multistart_points unit tests (task δ #5016, step-1 RED / step-2 GREEN) ----
+    //
+    // `multistart_points` is the pure deterministic seed generator behind
+    // `DimensionalSolver::solve_ranked`'s best-of-K multistart (PRD §5.3, §11 Q4).
+    // These tests pin its K-count, seed-first ordering, bounds containment,
+    // determinism, and corner/midpoint anchor shape before any call site wires it
+    // into `solve_ranked` (step-3/4).
+
+    /// Builds a 2-param length `ResolutionProblem` with distinct per-axis bounds and a
+    /// `current_values` seed that sits off both axes' bounds-midpoints, so the seed
+    /// point (start #0) is distinguishable from the all-midpoint point and every axis
+    /// corner anchor. No constraints/objective — `multistart_points` reads only
+    /// `auto_params` and `current_values` (via `extract_initial_point`).
+    fn two_param_multistart_problem() -> ResolutionProblem {
+        use reify_core::Type;
+        use reify_ir::AutoParam;
+        use reify_test_support::{mm, vcid};
+
+        let x_id = vcid("Part", "x");
+        let y_id = vcid("Part", "y");
+
+        let mut current = ValueMap::new();
+        current.insert(x_id.clone(), mm(10.0)); // 0.010 m — off the [5mm,100mm] midpoint (52.5mm)
+        current.insert(y_id.clone(), mm(40.0)); // 0.040 m — off the [2mm,50mm] midpoint (26mm)
+
+        ResolutionProblem {
+            auto_params: vec![
+                AutoParam {
+                    id: x_id,
+                    param_type: Type::length(),
+                    bounds: Some((0.005, 0.100)),
+                    free: false,
+                },
+                AutoParam {
+                    id: y_id,
+                    param_type: Type::length(),
+                    bounds: Some((0.002, 0.050)),
+                    free: false,
+                },
+            ],
+            constraints: vec![],
+            current_values: current,
+            objective: None,
+            functions: vec![].into(),
+        }
+    }
+
+    #[test]
+    fn multistart_points_count_is_2_times_dim_plus_1() {
+        use super::multistart_points;
+
+        let problem = two_param_multistart_problem();
+        let points = multistart_points(&problem);
+        // dim = 2 → K = 2*(2+1) = 6
+        assert_eq!(
+            points.len(),
+            6,
+            "expected K=2*(dim+1)=6 starts for a 2-param problem, got {}",
+            points.len()
+        );
+        for p in &points {
+            assert_eq!(
+                p.len(),
+                2,
+                "each start vector must have one coordinate per auto param"
+            );
+        }
+    }
+
+    #[test]
+    fn multistart_points_start_0_is_extract_initial_point_seed() {
+        use super::{extract_initial_point, multistart_points};
+
+        let problem = two_param_multistart_problem();
+        let points = multistart_points(&problem);
+        let seed = extract_initial_point(&problem);
+        assert_eq!(
+            points[0], seed,
+            "start #0 must be the historical extract_initial_point seed \
+             (dominance: best-of-K must never be worse than today's single start)"
+        );
+    }
+
+    #[test]
+    fn multistart_points_all_starts_within_effective_bounds() {
+        use super::{effective_bounds, multistart_points};
+
+        let problem = two_param_multistart_problem();
+        let points = multistart_points(&problem);
+        for (start_idx, point) in points.iter().enumerate() {
+            for (axis, (&coord, param)) in point.iter().zip(problem.auto_params.iter()).enumerate()
+            {
+                let (lo, hi) = effective_bounds(param);
+                assert!(
+                    coord >= lo && coord <= hi,
+                    "start {start_idx} axis {axis}: coordinate {coord} outside effective bounds [{lo}, {hi}]"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn multistart_points_is_deterministic_across_calls() {
+        use super::multistart_points;
+
+        let problem = two_param_multistart_problem();
+        let first = multistart_points(&problem);
+        let second = multistart_points(&problem);
+        assert_eq!(
+            first, second,
+            "multistart_points is a pure function of `problem` (no RNG/clock/seed, BT5) — \
+             two calls on the same problem must return identical vectors"
+        );
+    }
+
+    #[test]
+    fn multistart_points_includes_midpoint_and_per_axis_corner_anchors() {
+        use super::{effective_bounds, multistart_points};
+
+        let problem = two_param_multistart_problem();
+        let points = multistart_points(&problem);
+
+        let (lo_x, hi_x) = effective_bounds(&problem.auto_params[0]);
+        let (lo_y, hi_y) = effective_bounds(&problem.auto_params[1]);
+        let mid_x = (lo_x + hi_x) / 2.0;
+        let mid_y = (lo_y + hi_y) / 2.0;
+
+        // All-midpoint point.
+        assert!(
+            points.iter().any(|p| p[0] == mid_x && p[1] == mid_y),
+            "expected an all-midpoint start [{mid_x}, {mid_y}]; got {points:?}"
+        );
+        // Axis 0 (x) low/high anchors, y held at its midpoint.
+        assert!(
+            points.iter().any(|p| p[0] == lo_x && p[1] == mid_y),
+            "expected an x-low/y-mid corner anchor [{lo_x}, {mid_y}]; got {points:?}"
+        );
+        assert!(
+            points.iter().any(|p| p[0] == hi_x && p[1] == mid_y),
+            "expected an x-high/y-mid corner anchor [{hi_x}, {mid_y}]; got {points:?}"
+        );
+        // Axis 1 (y) low/high anchors, x held at its midpoint.
+        assert!(
+            points.iter().any(|p| p[0] == mid_x && p[1] == lo_y),
+            "expected a y-low/x-mid corner anchor [{mid_x}, {lo_y}]; got {points:?}"
+        );
+        assert!(
+            points.iter().any(|p| p[0] == mid_x && p[1] == hi_y),
+            "expected a y-high/x-mid corner anchor [{mid_x}, {hi_y}]; got {points:?}"
+        );
+    }
+
+    // ---- end multistart_points unit tests ----
 
     /// Verify that the optimizer converges near the lower bound when minimizing.
     /// With auto param bounds [5mm, 100mm] and a trivially-satisfied constraint
