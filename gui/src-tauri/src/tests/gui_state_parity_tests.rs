@@ -314,6 +314,95 @@ fn changed_meshes_follow_new_states_vector_order_when_multiple_change() {
     assert_eq!(mesh_event_paths, vec!["B.body", "A.body"]);
 }
 
+/// Same reorder-must-follow-`new` guarantee as
+/// `changed_meshes_follow_new_states_vector_order_when_multiple_change`,
+/// exercised for the `values` collection (keyed by `cell_id`). The
+/// keyed-diff logic is macro-generated and shared across collections, but a
+/// regression in a hand-tweaked per-collection path would not necessarily
+/// show up in the meshes case alone.
+#[test]
+fn changed_values_follow_new_states_vector_order_when_multiple_change() {
+    let old = GuiState {
+        values: vec![
+            sample_value("Bracket.width", "1"),
+            sample_value("Bracket.height", "2"),
+        ],
+        ..empty_gui_state()
+    };
+    let new = GuiState {
+        values: vec![
+            // Reordered relative to `old` (height before width) *and* both changed.
+            sample_value("Bracket.height", "22"),
+            sample_value("Bracket.width", "11"),
+        ],
+        ..empty_gui_state()
+    };
+
+    let delta = diff_gui_state(&old, &new);
+    let changed_ids: Vec<&str> = delta
+        .changed_values
+        .iter()
+        .map(|v| v.cell_id.as_str())
+        .collect();
+    assert_eq!(
+        changed_ids,
+        vec!["Bracket.height", "Bracket.width"],
+        "changed_values must follow new's vector order, not old's"
+    );
+
+    // The ordering must survive event serialization too.
+    let events = delta_to_events(&delta);
+    let value_event_ids: Vec<_> = events
+        .iter()
+        .filter(|(name, _)| name == "value-update")
+        .map(|(_, payload)| payload["cell_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(value_event_ids, vec!["Bracket.height", "Bracket.width"]);
+}
+
+/// Same reorder-must-follow-`new` guarantee as
+/// `changed_meshes_follow_new_states_vector_order_when_multiple_change`,
+/// exercised for the `constraints` collection (keyed by `node_id`).
+#[test]
+fn changed_constraints_follow_new_states_vector_order_when_multiple_change() {
+    let old = GuiState {
+        constraints: vec![
+            sample_constraint("Bracket.0", "Satisfied"),
+            sample_constraint("Bracket.1", "Satisfied"),
+        ],
+        ..empty_gui_state()
+    };
+    let new = GuiState {
+        constraints: vec![
+            // Reordered relative to `old` (1 before 0) *and* both changed.
+            sample_constraint("Bracket.1", "Violated"),
+            sample_constraint("Bracket.0", "Violated"),
+        ],
+        ..empty_gui_state()
+    };
+
+    let delta = diff_gui_state(&old, &new);
+    let changed_ids: Vec<&str> = delta
+        .changed_constraints
+        .iter()
+        .map(|c| c.node_id.as_str())
+        .collect();
+    assert_eq!(
+        changed_ids,
+        vec!["Bracket.1", "Bracket.0"],
+        "changed_constraints must follow new's vector order, not old's"
+    );
+
+    // The ordering must survive event serialization too.
+    let events = delta_to_events(&delta);
+    let constraint_event_ids: Vec<_> = events
+        .iter()
+        .filter(|(name, _)| name == "constraint-update")
+        .map(|(_, payload)| payload["node_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(constraint_event_ids, vec!["Bracket.1", "Bracket.0"]);
+}
+
 /// Pins `GuiState`'s full-snapshot wire contract: the serialized top-level
 /// key order. `GuiState` (unlike `StateDelta`) is serialized directly to the
 /// wire (the full-snapshot command return), so its field order must be
