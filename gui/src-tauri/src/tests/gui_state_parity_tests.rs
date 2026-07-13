@@ -911,6 +911,19 @@ fn full_reload_only_fields_never_produce_delta_events() {
 /// wire (the full-snapshot command return), so its field order must be
 /// byte-preserved across the step-8 migration to the `gui_state!` macro.
 ///
+/// No current frontend consumer reads this positionally: `bridge.ts`'s
+/// `getInitialState`/`refreshFullState`/etc. deserialize the Tauri IPC
+/// response into `RawGuiState` (Tauri's `invoke` parses JSON into a plain
+/// object) and `convertRawGuiState` reads fields by name, not position — so
+/// this test's value is as a migration-stability tripwire (catching an
+/// accidental field reorder in the `gui_state!` invocation) rather than
+/// protection of a live positional contract. Unlike the frozen `mod legacy`
+/// oracle above, this test has no dependency on retired pre-L5 code and
+/// nothing to rot — task #5165's cleanup scope is limited to `mod legacy`
+/// and the oracle-comparison assertions (`assert_delta_parity`,
+/// `parity_holds_across_corpus`); this test is explicitly called out there
+/// to be kept.
+///
 /// Reads the key order via the custom `Deserialize` below (`TopLevelKeys`)
 /// rather than `serde_json::Value::as_object().keys()`: this workspace does
 /// not enable serde_json's `preserve_order` feature, so `Value`'s object map
