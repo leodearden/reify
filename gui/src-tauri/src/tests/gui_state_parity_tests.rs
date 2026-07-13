@@ -266,6 +266,53 @@ fn full_reload_only_fields_never_produce_delta_events() {
     );
 }
 
+/// When two-or-more items in a keyed collection change simultaneously *and*
+/// their relative order differs between `old` and `new`, `changed_meshes`
+/// (and its serialized events) must follow `new`'s vector order. A
+/// single-changed-item case can't distinguish "follows new's order" from
+/// "follows old's order" or "keyed by iteration over some internal map" —
+/// only a multi-item reorder can, and none of diff_tests.rs's single-item
+/// change cases cover it.
+#[test]
+fn changed_meshes_follow_new_states_vector_order_when_multiple_change() {
+    let old = GuiState {
+        meshes: vec![
+            sample_mesh("A.body", vec![1.0, 1.0, 1.0]),
+            sample_mesh("B.body", vec![2.0, 2.0, 2.0]),
+        ],
+        ..empty_gui_state()
+    };
+    let new = GuiState {
+        meshes: vec![
+            // Reordered relative to `old` (B before A) *and* both changed.
+            sample_mesh("B.body", vec![22.0, 22.0, 22.0]),
+            sample_mesh("A.body", vec![11.0, 11.0, 11.0]),
+        ],
+        ..empty_gui_state()
+    };
+
+    let delta = diff_gui_state(&old, &new);
+    let changed_paths: Vec<&str> = delta
+        .changed_meshes
+        .iter()
+        .map(|m| m.entity_path.as_str())
+        .collect();
+    assert_eq!(
+        changed_paths,
+        vec!["B.body", "A.body"],
+        "changed_meshes must follow new's vector order, not old's"
+    );
+
+    // The ordering must survive event serialization too.
+    let events = delta_to_events(&delta);
+    let mesh_event_paths: Vec<_> = events
+        .iter()
+        .filter(|(name, _)| name == "mesh-update")
+        .map(|(_, payload)| payload["entity_path"].as_str().unwrap())
+        .collect();
+    assert_eq!(mesh_event_paths, vec!["B.body", "A.body"]);
+}
+
 /// Pins `GuiState`'s full-snapshot wire contract: the serialized top-level
 /// key order. `GuiState` (unlike `StateDelta`) is serialized directly to the
 /// wire (the full-snapshot command return), so its field order must be
