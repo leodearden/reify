@@ -6394,13 +6394,11 @@ impl Engine {
     ///    (single hit) and, cold-vs-warm,
     ///    `probe_realization_cache_cold_warm_side_effect_set_parity`.
     /// 4. **The 4349 cross-kernel eviction is a documented interim
-    ///    trade-off, not a fix.** `topology_attribute_table.remove(cached_handle.id)`
-    ///    also evicts a same-id sibling entry recorded by a different
-    ///    kernel in this build (every kernel's `GeometryHandleId` counter
-    ///    starts at 1). Retiring it in favor of a fail-closed
-    ///    `KernelHandle`-keyed table is follow-up task θ's job, gated on
-    ///    #4351 — this task lands the mechanism only, so INV-BUILD-3 stays
-    ///    `proposed`. Pinned by
+    ///    trade-off, not a fix** — see the `Cross-kernel collision guard
+    ///    (task 4349)` comment at the `topology_attribute_table.remove(...)`
+    ///    call site below for the mechanism and trade-off. Retiring it is
+    ///    follow-up task θ's job, gated on #4351 — this task lands the
+    ///    mechanism only, so INV-BUILD-3 stays `proposed`. Pinned by
     ///    `cache_hit_short_circuit_tolerates_cross_kernel_topology_attribute_id_collision`.
     #[allow(clippy::too_many_arguments)]
     fn probe_realization_cache(
@@ -6556,6 +6554,13 @@ impl Engine {
                 // exercising the check and will trip in any debug-assertions
                 // build (including `cargo test`) the moment that invariant
                 // breaks, rather than staying silently wrong.
+                //
+                // A regression test that made this genuinely non-tautological
+                // would need a PRIMARY cache hit resolving to a non-`BRep`
+                // repr from a real kernel dispatch — but reify-eval links no
+                // Mesh-capable boolean kernel (see "WHY THE FALLBACK PROBE IS
+                // LOAD-BEARING" above), so every resolved repr the cache can
+                // actually contain today is `BRep`. Deferred until one does.
                 debug_assert_eq!(
                     resolved_repr,
                     outputs.produced_repr_out.unwrap_or(ReprKind::BRep),
