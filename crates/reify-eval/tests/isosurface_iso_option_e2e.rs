@@ -22,8 +22,8 @@
 //!
 //! - Linker anchors, `OCCT_AVAILABLE` runtime gate, `Engine::with_registered_kernel`
 //!   + `ensure_openvdb_kernel()` pairing, `snapshot()` terminal-by-index +
-//!   `tessellate_realizations()` terminal-mesh extraction:
-//!   `crates/reify-eval/tests/voxel_to_mesh_e2e.rs`.
+//!     `tessellate_realizations()` terminal-mesh extraction:
+//!     `crates/reify-eval/tests/voxel_to_mesh_e2e.rs`.
 //! - Runtime-read-fixture RED mechanism (`std::fs::read_to_string` of a
 //!   `CARGO_MANIFEST_DIR`-relative example path via `.expect(...)`, NOT
 //!   `include_str!`, so a missing fixture is a clean test panic rather than a
