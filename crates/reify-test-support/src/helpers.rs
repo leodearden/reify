@@ -734,6 +734,26 @@ pub fn mesh_aabb(mesh: &reify_ir::Mesh) -> ([f32; 3], [f32; 3]) {
     (min, max)
 }
 
+/// Look up the `Value` of a value cell by `(structure, member)` from an
+/// [`reify_eval::EvalResult`]. Canonical replacement for the verbatim-duplicated
+/// `cell_value` helper in `result_recovery_e2e.rs`, `result_fallback_e2e.rs`, and
+/// `fallback_recovery_e2e.rs`, and the generalization of `parse_length_e2e.rs`'s
+/// 1-arg variant (task 5182 / esc-4039-1).
+/// # Panics
+/// Panics if no cell named `{structure}.{member}` exists; the message lists
+/// available cell names.
+#[cfg(feature = "eval-helpers")]
+#[track_caller]
+pub fn cell_value(result: &reify_eval::EvalResult, structure: &str, member: &str) -> reify_ir::Value {
+    let id = reify_core::ValueCellId::new(structure, member);
+    result.values.get(&id).cloned().unwrap_or_else(|| {
+        panic!(
+            "{structure}.{member} not found in eval result; available: {:?}",
+            result.values.iter().map(|(k, _)| k.to_string()).collect::<Vec<_>>()
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use crate::fixtures::bracket_source;
