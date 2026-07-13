@@ -1,32 +1,17 @@
-// Consumer-face parity/characterization test guarding the step-8 GuiState
-// migration (L5 plan step 7). See `gui_state_schema.rs` for the `gui_state!`
-// macro and `gui_state_macro_tests.rs` for its isolated behavior tests on a
-// `MiniState` fixture.
+// Tests for `GuiState`'s delta/event channel and full-snapshot wire
+// contract, exercised directly against the macro-generated
+// `crate::diff::{diff_gui_state, delta_to_events}` (see `gui_state_schema.rs`
+// for the `gui_state!` macro and `gui_state_macro_tests.rs` for its isolated
+// behavior tests on a `MiniState` fixture).
 //
-// `mod legacy` below is a frozen, byte-identical copy of TODAY's (pre-L5)
-// hand-written `crate::diff::{StateDelta, StateDelta::full, diff_gui_state,
-// delta_to_events}` — renamed (`LegacyStateDelta`/`legacy_diff`/
-// `legacy_events`) so it can sit alongside the real items without a name
-// clash. It is the oracle every corpus pair below is checked against.
-// DO NOT update `mod legacy` to track future `diff.rs`/`gui_state_schema.rs`
-// changes — freezing it is the entire point: this test is green today
-// (before step-8 swaps the real `diff_gui_state`/`delta_to_events`/
-// `StateDelta` for macro-generated equivalents) and MUST stay green after,
-// proving the swap is behavior-preserving.
+// `full_reload_only_fields_never_produce_delta_events` proves the four
+// full_reload_only fields (files, fea_diagnostics, fea_convergence,
+// demand_prune_measurement) never reach the delta/event channel.
 //
-// Corpus covers (per pair, see `corpus()`): identical states, a keyed
-// change/add/remove/mixed per collection (meshes/values/constraints), a
-// whole-field change and a whole-field clear (non-empty -> empty, which
-// must still produce a `Some(vec![])` event — NOT `None`), full_reload_only
-// fields (files/fea_diagnostics/fea_convergence/demand_prune_measurement)
-// varying alone (must yield zero delta events, since none of them ever
-// reach `StateDelta`), and the empty<->fully-populated transitions in both
-// directions.
-//
-// `gui_state_full_snapshot_key_order_is_stable` separately pins `GuiState`'s
-// serialized top-level key ORDER (the full-snapshot wire contract) —
-// independent of `StateDelta`, since `GuiState` (not `StateDelta`) is what
-// crosses the wire directly (see the task plan's parity design decision).
+// `gui_state_full_snapshot_key_order_is_stable` pins `GuiState`'s serialized
+// top-level key ORDER (the full-snapshot wire contract) — independent of
+// `StateDelta`, since `GuiState` (not `StateDelta`) is what crosses the wire
+// directly.
 
 use std::collections::HashMap;
 
