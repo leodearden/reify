@@ -252,3 +252,125 @@ fn bt8_named_leaf_eval_yields_symbolic_named_selector() {
         "BT8: expected zero stale-Undef violations post-eval; got {violations:?}"
     );
 }
+
+/// Review amendment (task #5120 R2c, round-2 review): the unit-level tests in
+/// `geometry_ops/tests.rs` pin that `try_eval_symbolic_topology_selector`
+/// returns `None` for the solid-CSG-boolean overload of `union`/`intersect`/
+/// `difference` (operands are `Value::GeometryHandle`, not `Value::Selector`
+/// — e.g. `manifold_boolean.ri`'s `union(box_a,box_b):Solid` or
+/// `m5_geometry_flange`'s `difference(body,holes):Solid`). But that `None`
+/// only proves the SELECTOR mint declines the cell; it says nothing about
+/// what the cell's value actually ends up being, nor whether it is correctly
+/// kept out of the α no-stale-Undef net end-to-end. This test closes that
+/// gap empirically rather than by assumption.
+///
+/// Verified fact (NOT `Value::Undef`, contra a first draft of this test):
+/// `Engine::eval`'s `mint_symbolic_geometry_handles_into_values` pass
+/// (task #4652 R2a, `engine_build.rs`) mints a symbolic
+/// `Value::GeometryHandle { kernel_handle: None, .. }` placeholder for EVERY
+/// named `Type::Geometry` cell, regardless of whether its `default_expr` is a
+/// leaf ctor (`box(..)`) or a composed op like this solid-boolean `union` —
+/// this is a pre-existing, R2c-independent mechanism. Consequently the cell
+/// is not even a *candidate* stale-Undef violation: `invariants.rs`'s clause
+/// 3 ("only a currently-Undef cell can be stale") already filters it out
+/// before clause 7's `Type::Geometry` carve-out would need to fire. Either
+/// way, the OBSERVABLE contract the reviewer asked for — zero violations on
+/// eval, then a real resolution on `build()` — is what this test pins.
+///
+/// Complements, rather than duplicates,
+/// `no_stale_undef_invariant_gate.rs`'s
+/// `seeded_solid_boolean_union_undef_is_exempted_by_geometry_clause`: that
+/// test FABRICATES a graph/values state with the union cell held at literal
+/// `Value::Undef` to pin clause 7 in isolation at the checker level. This
+/// test instead drives the REAL `Engine::eval`/`Engine::build` pipeline
+/// end-to-end over compiled source — which is how the gap in the discovery
+/// above was actually found: the real pipeline never reaches clause 7 for
+/// this shape at all, because the placeholder mint gets there first.
+///
+/// Only `union` is exercised here (not a per-operator triplication like the
+/// unit-level None-return tests): the mechanism above is keyed SOLELY on the
+/// cell's declared `Type::Geometry`, not on which of the three overloaded
+/// names produced it, so a second/third copy of this test under
+/// `intersect`/`difference` would walk the identical code path with no added
+/// branch coverage — unlike `symbolic_eval_helper_for_name`'s dispatch, which
+/// IS per-name and is exactly why that unit-level coverage is tripled.
+#[test]
+fn solid_csg_boolean_union_is_not_stale_undef_on_eval_and_resolves_on_build() {
+    const SRC: &str = r#"
+structure def R2cSolidBooleanUnion {
+    let box_a = box(10mm, 10mm, 10mm)
+    let box_b = box(10mm, 10mm, 10mm)
+    let body  = union(box_a, box_b)
+}
+"#;
+    let compiled = reify_test_support::compile_source_with_stdlib(SRC);
+    let errors = reify_test_support::collect_errors(&compiled.diagnostics);
+    assert!(
+        errors.is_empty(),
+        "solid-CSG-boolean union fixture must compile without errors: {errors:#?}"
+    );
+
+    let cell_id = ValueCellId::new("R2cSolidBooleanUnion", "body");
+
+    // Path A: pure eval (no kernel). `union(Geometry, Geometry)` is the
+    // solid-CSG-boolean overload, not selector composition, so it must NOT
+    // resolve via the selector mint — but the cell is not left at
+    // `Value::Undef` either: the general symbolic-geometry-handle mint
+    // (task #4652 R2a) stamps a `kernel_handle: None` placeholder for every
+    // named Type::Geometry cell.
+    let mut eval_engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+    let eval_result = eval_engine.eval(&compiled);
+    let eval_value = eval_result.values.get_or_undef(&cell_id);
+    assert!(
+        matches!(
+            eval_value,
+            Value::GeometryHandle {
+                kernel_handle: None,
+                ..
+            }
+        ),
+        "solid-CSG-boolean union must mint a SYMBOLIC (kernel_handle=None) \
+         GeometryHandle placeholder on the kernel-free eval surface — not a \
+         Value::Selector (this is the solid-CSG-boolean overload, not \
+         selector composition) and not literally Value::Undef; got {eval_value:?}"
+    );
+
+    // Whatever the precise exempting clause, the cell must NOT be reported
+    // as a stale-Undef violation — this is the end-to-end contract the
+    // review flagged as unverified.
+    let violations = eval_engine.check_no_stale_undef();
+    assert!(
+        violations.is_empty(),
+        "solid-CSG-boolean union cell must not be flagged as a stale-Undef \
+         violation; got {violations:?}"
+    );
+
+    // Path B: build with a mock kernel — the solid boolean DOES resolve on
+    // the build() path, to a realized geometry handle.
+    let kernel = MockGeometryKernel::new();
+    let mut build_engine =
+        Engine::new(Box::new(SimpleConstraintChecker), Some(Box::new(kernel)));
+    let build_result = build_engine.build(&compiled, ExportFormat::Step);
+    let build_errors: Vec<_> = build_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == reify_core::Severity::Error)
+        .map(|d| d.message.clone())
+        .collect();
+    assert!(
+        build_errors.is_empty(),
+        "build must succeed with MockGeometryKernel; got: {build_errors:?}"
+    );
+    let build_value = build_result.values.get_or_undef(&cell_id);
+    assert!(
+        matches!(
+            build_value,
+            Value::GeometryHandle {
+                kernel_handle: Some(_),
+                ..
+            }
+        ),
+        "solid-CSG-boolean union must resolve to a realized GeometryHandle on \
+         the build() path; got {build_value:?}"
+    );
+}
