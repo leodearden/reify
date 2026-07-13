@@ -38,7 +38,7 @@ use crate::{
     auto_size::AutoSizeConfig,
     mesh_volume::{compute_thickness_warnings, resolve_mesh_size},
     options::MeshingOptions,
-    repair::RepairConfig,
+    repair::{RepairConfig, repair_surface_mesh_with_correspondence},
     through_thickness::{ThroughThicknessConfig, ThroughThicknessWarning},
 };
 
@@ -319,20 +319,35 @@ pub fn raw_open_edge_census(surface: &Mesh) -> (usize, (u32, u32)) {
 /// caller-provided OCCT handles via nearest-anchor matching within
 /// `attribution.match_tolerance`.
 ///
-/// # Repair incompatibility
+/// # Repair / welding (task ξ, #5116)
 ///
-/// Calling with `repair_cfg = Some(...)` is not currently supported and
-/// returns `Err(GeometryError::OperationFailed)`. Apply repair upstream and
-/// pass `None`.
+/// The surface is ALWAYS welded before being handed to gmsh, via
+/// `repair_surface_mesh_with_correspondence(surface, repair_cfg.unwrap_or_default())`
+/// — `repair_cfg` selects the weld/repair configuration (`None` uses
+/// `RepairConfig::default()`) rather than gating whether welding happens at
+/// all, as it did pre-ξ. This is safe for attribution: entity anchors are
+/// POSITIONS (mean node position / face centroid), and position-welding only
+/// merges near-coincident vertices onto a shared position — surviving
+/// vertices keep their exact original coordinates, so no anchor moves and
+/// per-node attribution (derived from gmsh entity membership, not input-vertex
+/// identity — see above) is unaffected. The correspondence map returned
+/// alongside the welded mesh makes the weld non-lossy for input-node
+/// identity; it is consumed here via a `tracing::debug!` weld-stats event
+/// (mirroring `mesh_volume.rs::apply_repair_if_requested`'s pattern) rather
+/// than threaded further, since gmsh's re-meshing already discards raw input
+/// node identity regardless of welding.
 ///
 /// # Stage order
 ///
-/// 1. (Repair guard — rejects `Some(repair_cfg)` for now.)
-/// 2. `resolve_mesh_size` — honours caller override or derives from features.
-/// 3. GMesh pipeline — classify + create_geometry + HXT tet meshing.
-/// 4. Entity-membership queries (`ffi::get_nodes_at_entity`).
-/// 5. Nearest-anchor matching → builds `BoundaryAssociation`.
-/// 6. `compute_thickness_warnings` post-stage.
+/// 1. Weld — `repair_surface_mesh_with_correspondence`.
+/// 2. Watertightness preflight (task #4876) — now evaluated on the WELDED
+///    surface, so it fails closed only for genuinely-open input (a real hole
+///    survives welding).
+/// 3. `resolve_mesh_size` — honours caller override or derives from features.
+/// 4. GMesh pipeline — classify + create_geometry + HXT tet meshing.
+/// 5. Entity-membership queries (`ffi::get_nodes_at_entity`).
+/// 6. Nearest-anchor matching → builds `BoundaryAssociation`.
+/// 7. `compute_thickness_warnings` post-stage.
 #[cfg(has_gmsh)]
 pub fn mesh_surface_to_volume_with_attribution(
     surface: &Mesh,
@@ -343,35 +358,44 @@ pub fn mesh_surface_to_volume_with_attribution(
     thickness_cfg: Option<ThroughThicknessConfig>,
     attribution: &EntityAttribution,
 ) -> Result<BoundaryAttributedReport, GeometryError> {
-    // Reject repair (attribution reassignment after vertex merging is not
-    // yet supported — see task description).
-    if repair_cfg.is_some() {
-        return Err(GeometryError::OperationFailed(
-            "mesh_surface_to_volume_with_attribution: repair_cfg must be None; \
-             vertex-merging repair invalidates per-vertex attribution. \
-             Apply repair upstream before building the EntityAttribution."
-                .into(),
-        ));
-    }
+    // --- Weld (task ξ, #5116) ---
+    //
+    // gmsh requires watertight input; a real OCCT-tessellated surface is
+    // unwelded by design (per-face vertex blocks) and previously SIGSEGVd
+    // inside gmsh's FFI if handed straight in. Weld near-coincident vertices
+    // first — position-based entity anchors (see fn doc) make this safe for
+    // attribution. `correspondence` maps each ORIGINAL vertex index to its
+    // compacted post-weld index (`u32::MAX` if its merge-survivor was
+    // compacted away); gmsh re-meshes from scratch and discards input-node
+    // identity regardless of welding, so `correspondence` is not threaded
+    // any further here — it is consumed via a weld-stats debug event so it
+    // stays genuinely used rather than dead.
+    let (welded, correspondence) =
+        repair_surface_mesh_with_correspondence(surface, repair_cfg.unwrap_or_default());
+    let dropped_verts = correspondence.iter().filter(|&&c| c == u32::MAX).count();
+    tracing::debug!(
+        target: "reify_kernel_gmsh::mesh_boundary",
+        original_verts = correspondence.len(),
+        welded_verts = welded.vertices.len() / 3,
+        dropped_verts,
+        "mesh_surface_to_volume_with_attribution: weld pre-stage applied"
+    );
 
     // --- Watertightness preflight (task #4876) ---
     //
-    // This producer forbids vertex-merging repair (guard above) and so
-    // consumes the RAW, unwelded index buffer directly. A real
-    // OCCT-tessellated surface is unwelded by design (per-face vertex
-    // blocks) and SIGSEGVs inside gmsh's FFI if handed straight in — a crash
-    // the caller's `Result`-based honest-degradation fallback cannot catch.
-    // Fail closed here, before any gmsh FFI call, so a non-watertight
-    // surface degrades gracefully to the plain producer instead.
-    preflight_watertight_surface(surface, 0.0)?;
+    // Now evaluated on the WELDED surface (task ξ, #5116): fail closed here,
+    // before any gmsh FFI call, so a surface that is STILL non-watertight
+    // after welding (a genuine hole, not just per-face-block duplication)
+    // degrades gracefully to the plain producer instead of crashing.
+    preflight_watertight_surface(&welded, 0.0)?;
 
     // --- Pre-stage: resolve mesh size ---
-    let resolved = resolve_mesh_size(surface, options, auto_size_cfg)?;
+    let resolved = resolve_mesh_size(&welded, options, auto_size_cfg)?;
     let inner_options = MeshingOptions { mesh_size: resolved, ..options.clone() };
 
     // --- GMesh pipeline + entity-membership queries ---
     let (volume, node_attribution) =
-        run_meshing_with_entity_queries(surface, &inner_options, order, attribution)?;
+        run_meshing_with_entity_queries(&welded, &inner_options, order, attribution)?;
 
     // --- Build BoundaryAssociation from entity-membership map ---
     let mut boundary = BoundaryAssociation::default();
@@ -380,7 +404,7 @@ pub fn mesh_surface_to_volume_with_attribution(
     }
 
     // --- Post-stage: through-thickness warnings ---
-    let through_thickness_warnings = compute_thickness_warnings(&volume, surface, thickness_cfg);
+    let through_thickness_warnings = compute_thickness_warnings(&volume, &welded, thickness_cfg);
 
     Ok(BoundaryAttributedReport { volume, through_thickness_warnings, boundary })
 }
