@@ -69,6 +69,42 @@ impl Default for RepairConfig {
 /// function should NOT assume the function only merges directly-coincident
 /// pairs; pairs at >ε can also be unified through intermediate vertices.
 pub fn repair_surface_mesh(mesh: &Mesh, cfg: RepairConfig) -> Mesh {
+    repair_surface_mesh_with_correspondence(mesh, cfg).0
+}
+
+/// Repair a surface mesh exactly as [`repair_surface_mesh`] does, additionally
+/// returning a correspondence map from each ORIGINAL vertex index to its
+/// COMPACTED output index in the returned `Mesh`.
+///
+/// # Correspondence contract
+///
+/// - **Domain**: `0..(mesh.vertices.len() / 3)` — one entry per ORIGINAL
+///   input vertex, in original order. `correspondence.len()` always equals
+///   the original vertex count.
+/// - **Codomain**: an index into the returned `Mesh`'s compacted `vertices`
+///   array (i.e. `correspondence[old] as usize` is a valid vertex index into
+///   the returned mesh), OR the sentinel `u32::MAX` when the original
+///   vertex's merge-survivor was compacted away entirely — every triangle
+///   referencing it was dropped as degenerate-after-merge or a sub-threshold
+///   sliver (see the module-level and [`repair_surface_mesh`] docs).
+/// - **Transitive merges**: `correspondence` is the composition
+///   `remap[merge_map[old]]` of the same `merge_map` (each vertex → its
+///   first-match-wins near-coincident survivor, transitive across chains)
+///   and `remap` (survivor old-index → compacted new-index) that
+///   [`repair_surface_mesh`] already builds internally — so chain-merged
+///   vertices (A↔B↔C, see [`repair_surface_mesh`]'s chain-merge docs) all
+///   resolve to the SAME compacted slot as their shared survivor, with no
+///   additional scanning.
+///
+/// This is the primitive that lets a caller thread per-input-vertex identity
+/// (e.g. B-rep attribution anchors keyed by original vertex index) through
+/// the weld: a surviving vertex keeps its exact original position (welding
+/// never averages or moves a survivor), so only INDEX-keyed caller data needs
+/// remapping via this correspondence — position-keyed data is unaffected.
+pub fn repair_surface_mesh_with_correspondence(
+    mesh: &Mesh,
+    cfg: RepairConfig,
+) -> (Mesh, Vec<u32>) {
     let vert_count = mesh.vertices.len() / 3;
 
     // Perf canary: the O(n²) merge scan is cheap on v0.3 surface meshes
@@ -184,9 +220,21 @@ pub fn repair_surface_mesh(mesh: &Mesh, cfg: RepairConfig) -> Mesh {
     }
     let new_indices: Vec<u32> = survivors.into_iter().map(|i| remap[i as usize]).collect();
 
-    Mesh {
-        vertices: new_vertices,
-        indices: new_indices,
-        normals: None,
-    }
+    // -----------------------------------------------------------------
+    // (4) Correspondence: compose merge_map then remap so each ORIGINAL
+    //     vertex index maps to its COMPACTED output index (or u32::MAX if
+    //     its survivor was compacted away in step (3)).
+    // -----------------------------------------------------------------
+    let correspondence: Vec<u32> = (0..vert_count)
+        .map(|old| remap[merge_map[old] as usize])
+        .collect();
+
+    (
+        Mesh {
+            vertices: new_vertices,
+            indices: new_indices,
+            normals: None,
+        },
+        correspondence,
+    )
 }
