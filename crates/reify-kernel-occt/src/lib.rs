@@ -5301,10 +5301,12 @@ mod tests {
         // uses a *dirty* consumer to get a RED-on-main signal).
         let kernel_b = warm_restore(&kernel_a, OcctKernel::new());
 
-        // faces_a[0]'s underlying shape blob round-trips into kernel_b's
-        // shape table verbatim (extracted sub-shapes are ordinary entries in
-        // `shapes`/`reprs`, PERSIST-classified like any other handle) — but
-        // its provenance link must not have survived. If `warm_state()` ever
+        // faces_a[0]'s id is a `parent_handle` key, so (#5162) `warm_state()`
+        // filters it out entirely — its shape blob is absent from kernel_b's
+        // `shapes`/`reprs` tables, not merely disconnected from its owner.
+        // The assertion below still holds regardless of that filtering: it
+        // depends only on kernel_b's (always-empty-here) `parent_handle`, not
+        // on whether the blob itself round-tripped. If `warm_state()` ever
         // starts serializing `parent_handle`, this fresh kernel_b would
         // silently resolve the owner "correctly" (there is no stale state
         // here to expose the bug the way a dirty consumer would), so this
