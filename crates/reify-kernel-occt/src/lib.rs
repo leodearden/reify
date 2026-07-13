@@ -5298,6 +5298,68 @@ mod tests {
         );
     }
 
+    /// RED step-1 (task 5162): `warm_state()` currently persists sub-shape
+    /// blobs minted by `extract_faces`/`extract_edges`/`extract_vertices`
+    /// wholesale, even though those ids are orphaned on restore (their
+    /// `parent_handle` provenance is CLEAR-on-restore). Across repeated
+    /// warm-start cycles — capture, restore into a fresh kernel, re-extract
+    /// to re-seed `parent_handle` against the cleared idempotency cache —
+    /// this is unbounded, not just single-cycle bloat: each cycle's orphans
+    /// round-trip through the next, and the following extraction mints yet
+    /// more fresh ids on top.
+    ///
+    /// A single root box (id 1) has 6 faces + 12 edges + 8 vertices = 26
+    /// sub-shapes, so on current main the persisted count grows
+    /// [1, 27, 53, 79] across 4 cycles — the first window (1 -> 27) trips
+    /// the "does not grow" assertion below. After the fix, only the root
+    /// persists every cycle: [1, 1, 1, 1].
+    #[test]
+    fn warm_state_persisted_shape_count_stays_bounded_across_cycles() {
+        let mut kernel = OcctKernel::new();
+        kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+
+        let mut counts = Vec::new();
+        for _ in 0..4 {
+            let state = kernel.warm_state().expect("kernel should have warm state");
+            let persisted = state
+                .downcast_ref::<OcctWarmState>()
+                .expect("warm state should downcast_ref to OcctWarmState")
+                .shapes
+                .len();
+            counts.push(persisted);
+
+            let mut next = OcctKernel::new();
+            next.with_warm_state(state);
+
+            // Re-seed parent_handle against the cleared idempotency cache,
+            // mirroring the extract-after-restore pattern from
+            // `owner_body_survives_warm_start`.
+            next.extract_faces(GeometryHandleId(1))
+                .expect("extract_faces on the restored box should succeed");
+            next.extract_edges(GeometryHandleId(1))
+                .expect("extract_edges on the restored box should succeed");
+            next.extract_vertices(GeometryHandleId(1))
+                .expect("extract_vertices on the restored box should succeed");
+
+            kernel = next;
+        }
+
+        assert!(
+            counts.windows(2).all(|w| w[1] <= w[0]),
+            "persisted shape count must not grow cycle-over-cycle: {counts:?}"
+        );
+        assert!(
+            counts.iter().all(|&c| c == counts[0]),
+            "persisted shape count must stay constant at the root count across cycles: {counts:?}"
+        );
+    }
+
     #[test]
     fn extract_vertices_box_returns_eight_handles_with_brepkind_vertex() {
         let mut kernel = OcctKernel::new();
