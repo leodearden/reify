@@ -315,6 +315,27 @@ pub(crate) fn resolve_order_ordering_only(templates: &[TopologyTemplate]) -> Res
     resolve_order_impl(templates, false)
 }
 
+/// Ordering-AND-clusters variant for the warm `eval_cached` path (M-WHOLE
+/// whole-model co-solve, task #5118).
+///
+/// Computes `order` identically to [`resolve_order`] / [`resolve_order_ordering_only`]
+/// (the `compute_cluster_set` gate never perturbs `order`) and — unlike
+/// `resolve_order_ordering_only` — ALSO computes the M-WHOLE α pre-solve
+/// `clusters` set, so `eval_cached` can co-solve within-cap `MergedSolve`
+/// clusters exactly as the cold `eval()` path does (closing the cold/warm
+/// fidelity divergence, esc-5014-10 Option A).
+///
+/// `coupling_diagnostics` is always cleared to empty: `eval()` alone owns
+/// `W_SCOPE_COUPLING` / `W_COUPLING_APPROXIMATED` emission (engine_eval.rs
+/// comment near the warm solver sub-pass) — `eval_cached` must never emit
+/// these, so the contract is made explicit here rather than relying on the
+/// caller to ignore the field.
+pub(crate) fn resolve_order_ordering_and_clusters(templates: &[TopologyTemplate]) -> ResolveOrder {
+    let mut ro = resolve_order_impl(templates, true);
+    ro.coupling_diagnostics = Vec::new();
+    ro
+}
+
 /// Shared implementation of [`resolve_order`] / [`resolve_order_ordering_only`].
 ///
 /// `compute_cluster_set` gates the pre-solve clustering pass: `true` for the cold
