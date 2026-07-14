@@ -38,6 +38,13 @@ use reify_ir::{CompiledFunction, DeterminacyState, PersistentMap, Value, ValueMa
 /// re-check for stragglers first. (ε / #5057 targets `unfold.rs`, which
 /// doesn't call the method today, so it isn't a precondition here.)
 ///
+/// Until then, this body duplicates the method's capability-wiring chain
+/// verbatim (deliberate transitional coexistence, not drift) — no test in
+/// either module would catch the two diverging, so keep them in lockstep
+/// by hand. Retire by making the method delegate to (or be replaced by)
+/// this free function, so the crate ends up with one implementation of the
+/// wiring chain instead of two independent copies.
+///
 /// Lifts `functions` / `meta_map` / `containment` out of `&self` into
 /// explicit params. `undef_causes` stays unset — it is wired separately by
 /// `record_op_contract_failures`, not a cell-eval-ctx capability.
