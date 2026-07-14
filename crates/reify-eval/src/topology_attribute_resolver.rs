@@ -1480,4 +1480,73 @@ mod tests {
             diag.message
         );
     }
+
+    /// Task 4351 step-5 — RED: `resolve_unique_by_attribute` has no
+    /// `scope_kernel` parameter yet, so this 6-arg call (and therefore the
+    /// whole crate's lib test target) fails to compile. GREEN (step-6) adds
+    /// the parameter and threads it into the fallback pre-pass and
+    /// `collect_matches`, replacing the interim `KernelId::Occt` scoping.
+    ///
+    /// Records an attribute under `KernelHandle{Manifold, h(1)}` and shows
+    /// the resolver only finds it when queried with `scope_kernel =
+    /// KernelId::Manifold`; querying the SAME candidate id with
+    /// `scope_kernel = KernelId::Occt` must miss (`FallbackToComputed`) —
+    /// there is no `{Occt, h(1)}` entry, only `{Manifold, h(1)}`. This is
+    /// the resolution-scope half of the cross-kernel `GeometryHandleId`
+    /// collision task 4351 fixes (the write half is pinned by
+    /// `cross_kernel_attribute_collision_e2e.rs`).
+    #[test]
+    fn resolve_unique_by_attribute_scopes_lookups_by_kernel() {
+        let mut table = TopologyAttributeTable::default();
+        table.record(
+            KernelHandle {
+                kernel: KernelId::Manifold,
+                id: h(1),
+            },
+            attr(Role::Side, 0, None),
+        );
+        let candidates = [h(1)];
+        let query = AttributeQuery {
+            user_label: None,
+            role_and_index: Some((Role::Side, 0)),
+            feature_id: None,
+        };
+
+        let mut diagnostics = Vec::new();
+        let result_manifold = resolve_unique_by_attribute(
+            &table,
+            &candidates,
+            &query,
+            span(),
+            KernelId::Manifold,
+            &mut diagnostics,
+        );
+        assert_eq!(
+            result_manifold,
+            AttributeResolution::Resolved(h(1)),
+            "querying with scope_kernel = Manifold must resolve the entry \
+             recorded under KernelHandle{{Manifold, h(1)}}"
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "no diagnostics expected on a unique scoped match"
+        );
+
+        let mut diagnostics_occt = Vec::new();
+        let result_occt = resolve_unique_by_attribute(
+            &table,
+            &candidates,
+            &query,
+            span(),
+            KernelId::Occt,
+            &mut diagnostics_occt,
+        );
+        assert_eq!(
+            result_occt,
+            AttributeResolution::FallbackToComputed,
+            "querying the SAME candidate id with scope_kernel = Occt must \
+             miss — there is no entry under KernelHandle{{Occt, h(1)}}, only \
+             Manifold"
+        );
+    }
 }
