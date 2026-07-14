@@ -8707,6 +8707,15 @@ mod tests {
     /// RED: `classify_material_as_printed_zones` currently returns a bare
     /// `MaterialModel`, so matching `Err(..)` fails to type-check until
     /// step-2 converts it to `Result<MaterialModel, FeaValueShapeError>`.
+    ///
+    /// Amendment (task #5085 review round 3, suggestion 1): the local
+    /// arity guard (`..._rejects_wrong_arity` below) also yields
+    /// `ExpectedList`, so a bare variant match doesn't prove this `Err`
+    /// actually came from `extract_point3_si` via `?` rather than from a
+    /// mis-ordered local guard. The 7-element list here already satisfies
+    /// the arity check, so pinning the `context` field proves leaf
+    /// propagation and keeps the test meaningful under future reordering
+    /// of the guards.
     #[test]
     fn classify_material_as_printed_zones_rejects_malformed_lambda() {
         // 7-element list; element 0 (aabb_min) is a non-Point Value::Real,
@@ -8715,9 +8724,14 @@ mod tests {
         let malformed = Value::List(vec![Value::Real(0.0); 7]);
         let res = classify_material_as_printed_zones(&malformed);
         assert!(
-            matches!(res, Err(FeaValueShapeError::ExpectedList { .. })),
-            "expected Err(ExpectedList) for a malformed AsPrintedZones lambda \
-             (non-Point aabb_min element)"
+            matches!(
+                res,
+                Err(FeaValueShapeError::ExpectedList { context, .. })
+                    if context.starts_with("extract_point3_si")
+            ),
+            "expected Err(ExpectedList) from extract_point3_si (leaf \
+             propagation via `?`), not from a local arity/shape guard, for \
+             a malformed AsPrintedZones lambda (non-Point aabb_min element)"
         );
     }
 
