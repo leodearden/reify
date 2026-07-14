@@ -156,10 +156,19 @@ fn int_plus_dimensioned_complex_order_reversed_emits_arith_operand_kind() {
 }
 
 /// Sub direction: `z - 1` must also produce `ArithOperandKind`, with a
-/// message mentioning `-`.
+/// message mentioning `-`, AND must poison `w`'s result_type to
+/// `Type::Error` — mirrors the `make_poison_type` override assertion on the
+/// primary `z + 1` case above, so a regression that pushed the diagnostic
+/// but skipped the poison for `Sub` specifically would be caught directly
+/// rather than only indirectly via the Add-only anti-cascade test.
 #[test]
-fn dimensioned_complex_minus_int_emits_arith_operand_kind() {
-    let errors = compile_complex_expr_errors("let w = z - 1");
+fn dimensioned_complex_minus_int_emits_arith_operand_kind_and_poisons_result() {
+    let module = compile_complex_expr("let w = z - 1");
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
     let flagged: Vec<_> = errors
         .iter()
         .filter(|d| d.code == Some(DiagnosticCode::ArithOperandKind))
@@ -174,6 +183,14 @@ fn dimensioned_complex_minus_int_emits_arith_operand_kind() {
         flagged[0].message.contains("operator `-`"),
         "`z - 1` error message must name the `-` operator; got: {:?}",
         flagged[0].message
+    );
+
+    let w = get_let_expr_in(&module, "P", "w");
+    assert_eq!(
+        w.result_type,
+        Type::Error,
+        "`z - 1` must poison `w`'s result_type to Type::Error, got: {:?}",
+        w.result_type
     );
 }
 
