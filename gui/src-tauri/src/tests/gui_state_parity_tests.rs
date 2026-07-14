@@ -13,7 +13,10 @@
 // keyed collection change at once, both the delta entries and their
 // serialized events follow `new`'s vector order rather than `old`'s —
 // diff_tests.rs only exercises single-item changes, which can't distinguish
-// "follows new's order" from other orderings.
+// "follows new's order" from other orderings. Each fixture also carries a
+// third, unchanged item so the same test proves unchanged items stay
+// excluded from the delta while the changed items around them are
+// reordered.
 //
 // `gui_state_full_snapshot_key_order_is_stable` pins `GuiState`'s serialized
 // top-level key ORDER (the full-snapshot wire contract) — independent of
@@ -312,13 +315,16 @@ fn assert_multi_item_reorder_follows_new_order(
 /// single-changed-item case can't distinguish "follows new's order" from
 /// "follows old's order" or "keyed by iteration over some internal map" —
 /// only a multi-item reorder can, and none of diff_tests.rs's single-item
-/// change cases cover it.
+/// change cases cover it. An unchanged third item (`Keep.body`) rides along
+/// in both `old` and `new` to prove unchanged items stay excluded from the
+/// delta even while the changed items around them are reordered.
 #[test]
 fn changed_meshes_follow_new_states_vector_order_when_multiple_change() {
     let old = GuiState {
         meshes: vec![
             sample_mesh("A.body", vec![1.0, 1.0, 1.0]),
             sample_mesh("B.body", vec![2.0, 2.0, 2.0]),
+            sample_mesh("Keep.body", vec![9.0, 9.0, 9.0]),
         ],
         ..empty_gui_state()
     };
@@ -327,6 +333,9 @@ fn changed_meshes_follow_new_states_vector_order_when_multiple_change() {
             // Reordered relative to `old` (B before A) *and* both changed.
             sample_mesh("B.body", vec![22.0, 22.0, 22.0]),
             sample_mesh("A.body", vec![11.0, 11.0, 11.0]),
+            // Unchanged: must be excluded from the delta even though it
+            // shares the collection with the reordered, changed items.
+            sample_mesh("Keep.body", vec![9.0, 9.0, 9.0]),
         ],
         ..empty_gui_state()
     };
@@ -349,16 +358,18 @@ fn changed_meshes_follow_new_states_vector_order_when_multiple_change() {
 
 /// Same reorder-must-follow-`new` guarantee as
 /// `changed_meshes_follow_new_states_vector_order_when_multiple_change`,
-/// exercised for the `values` collection (keyed by `cell_id`). The
-/// keyed-diff logic is macro-generated and shared across collections, but a
-/// regression in a hand-tweaked per-collection path would not necessarily
-/// show up in the meshes case alone.
+/// exercised for the `values` collection (keyed by `cell_id`), plus the same
+/// unchanged-third-item (`Bracket.keep`) proof that exclusion-of-unchanged
+/// holds here too. The keyed-diff logic is macro-generated and shared across
+/// collections, but a regression in a hand-tweaked per-collection path would
+/// not necessarily show up in the meshes case alone.
 #[test]
 fn changed_values_follow_new_states_vector_order_when_multiple_change() {
     let old = GuiState {
         values: vec![
             sample_value("Bracket.a", "1"),
             sample_value("Bracket.z", "2"),
+            sample_value("Bracket.keep", "9"),
         ],
         ..empty_gui_state()
     };
@@ -371,6 +382,9 @@ fn changed_values_follow_new_states_vector_order_when_multiple_change() {
             // "follows old's order".
             sample_value("Bracket.z", "22"),
             sample_value("Bracket.a", "11"),
+            // Unchanged: must be excluded from the delta even though it
+            // shares the collection with the reordered, changed items.
+            sample_value("Bracket.keep", "9"),
         ],
         ..empty_gui_state()
     };
@@ -393,13 +407,16 @@ fn changed_values_follow_new_states_vector_order_when_multiple_change() {
 
 /// Same reorder-must-follow-`new` guarantee as
 /// `changed_meshes_follow_new_states_vector_order_when_multiple_change`,
-/// exercised for the `constraints` collection (keyed by `node_id`).
+/// exercised for the `constraints` collection (keyed by `node_id`), plus the
+/// same unchanged-third-item (`Bracket.2`) proof that exclusion-of-unchanged
+/// holds here too.
 #[test]
 fn changed_constraints_follow_new_states_vector_order_when_multiple_change() {
     let old = GuiState {
         constraints: vec![
             sample_constraint("Bracket.0", "Satisfied"),
             sample_constraint("Bracket.1", "Satisfied"),
+            sample_constraint("Bracket.2", "Satisfied"),
         ],
         ..empty_gui_state()
     };
@@ -408,6 +425,9 @@ fn changed_constraints_follow_new_states_vector_order_when_multiple_change() {
             // Reordered relative to `old` (1 before 0) *and* both changed.
             sample_constraint("Bracket.1", "Violated"),
             sample_constraint("Bracket.0", "Violated"),
+            // Unchanged: must be excluded from the delta even though it
+            // shares the collection with the reordered, changed items.
+            sample_constraint("Bracket.2", "Satisfied"),
         ],
         ..empty_gui_state()
     };
