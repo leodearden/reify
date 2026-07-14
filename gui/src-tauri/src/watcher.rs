@@ -6,7 +6,9 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -119,8 +121,15 @@ impl Debouncer {
 }
 
 /// Watches a directory for .ri file changes and invokes a callback.
+///
+/// Filesystem events are trailing-edge debounced (see [`Debouncer`]) by a
+/// single background worker thread that owns `callback`. `Drop` shuts that
+/// worker down and joins it so no thread outlives the watcher.
 pub struct FileWatcher {
     _watcher: RecommendedWatcher,
+    worker: Option<JoinHandle<()>>,
+    shared: Arc<(Mutex<Debouncer>, Condvar)>,
+    shutdown: Arc<AtomicBool>,
 }
 
 impl FileWatcher {
@@ -131,13 +140,23 @@ impl FileWatcher {
     /// filter and fire for any `.ri` file in the directory.
     /// When `None`, all `.ri` `Changed` events trigger the callback.
     ///
-    /// The `callback` is invoked with a [`FileEvent`], debounced to avoid
-    /// rapid duplicate notifications.
+    /// The `callback` is invoked with a [`FileEvent`] after filesystem
+    /// events for a path go quiet for `DEBOUNCE_DURATION` (trailing-edge
+    /// debounce), so a non-atomic write (e.g. truncate followed by a
+    /// separate append) coalesces into a single callback firing that
+    /// observes the final on-disk content rather than a transient partial
+    /// buffer.
     pub fn new<F>(dir: &Path, target_file: Option<PathBuf>, callback: F) -> Result<Self, String>
     where
         F: Fn(FileEvent) + Send + 'static,
     {
-        let last_seen: Arc<Mutex<HashMap<PathBuf, Instant>>> = Arc::new(Mutex::new(HashMap::new()));
+        let shared: Arc<(Mutex<Debouncer>, Condvar)> = Arc::new((
+            Mutex::new(Debouncer::new(DEBOUNCE_DURATION)),
+            Condvar::new(),
+        ));
+        let shutdown = Arc::new(AtomicBool::new(false));
+
+        let notify_shared = shared.clone();
 
         let mut watcher = RecommendedWatcher::new(
             move |res: Result<Event, notify::Error>| {
@@ -167,23 +186,15 @@ impl FileWatcher {
                             continue;
                         }
 
-                        // Debounce: skip if we've seen this path recently
-                        let mut guard = last_seen.lock().unwrap();
-                        let now = Instant::now();
-                        if let Some(last) = guard.get(&path)
-                            && now.duration_since(*last) < DEBOUNCE_DURATION
-                        {
-                            continue;
-                        }
-                        guard.insert(path.clone(), now);
-                        drop(guard);
-
-                        let file_event = if is_remove {
-                            FileEvent::Removed(path)
+                        let kind = if is_remove {
+                            ChangeKind::Removed
                         } else {
-                            FileEvent::Changed(path)
+                            ChangeKind::Changed
                         };
-                        callback(file_event);
+
+                        let (lock, cvar) = &*notify_shared;
+                        lock.lock().unwrap().record(path, kind, Instant::now());
+                        cvar.notify_one();
                     }
                 }
             },
@@ -195,6 +206,65 @@ impl FileWatcher {
             .watch(dir, RecursiveMode::NonRecursive)
             .map_err(|e| format!("Failed to watch directory: {}", e))?;
 
-        Ok(FileWatcher { _watcher: watcher })
+        let worker_shared = shared.clone();
+        let worker_shutdown = shutdown.clone();
+        let worker = std::thread::spawn(move || {
+            let (lock, cvar) = &*worker_shared;
+            let mut guard = lock.lock().unwrap();
+            loop {
+                if worker_shutdown.load(Ordering::SeqCst) {
+                    return;
+                }
+
+                let now = Instant::now();
+                let ready = guard.drain_ready(now);
+
+                if ready.is_empty() {
+                    guard = match guard.next_wait(now) {
+                        Some(wait) => cvar.wait_timeout(guard, wait).unwrap().0,
+                        None => cvar.wait(guard).unwrap(),
+                    };
+                    continue;
+                }
+
+                // Release the lock before invoking the callback so a slow
+                // or reentrant callback never blocks the notify thread from
+                // recording new events.
+                drop(guard);
+                for (path, kind) in ready {
+                    let file_event = match kind {
+                        ChangeKind::Changed => FileEvent::Changed(path),
+                        ChangeKind::Removed => FileEvent::Removed(path),
+                    };
+                    callback(file_event);
+                }
+                guard = lock.lock().unwrap();
+            }
+        });
+
+        Ok(FileWatcher {
+            _watcher: watcher,
+            worker: Some(worker),
+            shared,
+            shutdown,
+        })
+    }
+}
+
+impl Drop for FileWatcher {
+    fn drop(&mut self) {
+        let (lock, cvar) = &*self.shared;
+        // Set the shutdown flag while holding the same mutex the worker
+        // checks it under, so a concurrent check-then-wait in the worker
+        // can't race this store and go back to sleep with no one left to
+        // wake it (a classic condvar lost-wakeup).
+        {
+            let _guard = lock.lock().unwrap();
+            self.shutdown.store(true, Ordering::SeqCst);
+        }
+        cvar.notify_all();
+        if let Some(handle) = self.worker.take() {
+            let _ = handle.join();
+        }
     }
 }
