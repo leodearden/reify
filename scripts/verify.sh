@@ -16,6 +16,13 @@
 #                                  When DF_VERIFY_ROLE=merge and no explicit --profile
 #                                  is given, defaults to 'both' automatically so the
 #                                  orchestrator merge path gets release coverage.
+#                                  DF_VERIFY_ROLE=background (task 5210, dark-factory's
+#                                  main-tip integrity sweep) = merge-level COMPLETENESS
+#                                  (profile=both default, --scope forced to all, wholesale
+#                                  infra pool — same guards as merge) at offline-level idle
+#                                  CARGO_PRIO, but — unlike merge — gated (NON-exempt)
+#                                  admission: it competes for the test-run semaphore/PSI
+#                                  gates on the task FIFO, never the merge fast lane.
 #   --scope   all|staged|branch    all     = verify everything (orchestrator / merges).
 #                                  staged  = scope by `git diff --cached` (hook fast path).
 #                                  branch  = scope by merge-base(main,HEAD) → working tree;
@@ -509,7 +516,23 @@ case "$DF_VERIFY_ROLE" in
             echo "verify.sh: WARNING — nice/ionice not found; offline role running at normal priority" >&2
             CARGO_PRIO=""
         fi ;;
-    *)  echo "verify.sh: ERROR — unknown DF_VERIFY_ROLE '$DF_VERIFY_ROLE' (want task|merge|offline)" >&2; exit 64 ;;
+    background)
+        # task 5210: background = merge-level completeness at offline-level
+        # idle priority + gated (non-exempt) admission. The CARGO_PRIO output
+        # is byte-identical to offline's idle class by design, but this is a
+        # DEDICATED arm (not folded into `offline|background)`) so offline's
+        # arm — and its golden print-plan — stay byte-for-byte unchanged;
+        # only the warning text below differs, naming the background role.
+        if   [ "$_HAS_NICE" -eq 1 ] && [ "$_HAS_IONICE" -eq 1 ]; then
+            CARGO_PRIO="nice -n 19 ionice -c3 "
+        elif [ "$_HAS_NICE" -eq 1 ]; then
+            echo "verify.sh: WARNING — ionice not found; background role using nice only (no IO throttle)" >&2
+            CARGO_PRIO="nice -n 19 "
+        else
+            echo "verify.sh: WARNING — nice/ionice not found; background role running at normal priority" >&2
+            CARGO_PRIO=""
+        fi ;;
+    *)  echo "verify.sh: ERROR — unknown DF_VERIFY_ROLE '$DF_VERIFY_ROLE' (want task|merge|offline|background)" >&2; exit 64 ;;
 esac
 
 # Gate-exclusion fragment (task 4915/A4, PRD §6/§8 flip-seam contract): gate
