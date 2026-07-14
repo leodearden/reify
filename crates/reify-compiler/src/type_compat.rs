@@ -1971,17 +1971,12 @@ pub(crate) fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
         // Complex operand does not widen — falls through to the unchanged
         // `left.clone()` fallback, same as before this arm existed.
         //
-        // CLOSED (task compiler-type-hygiene follow-up 5163): a DIMENSIONED
-        // `Complex` + Int/Real still claims a placeholder type here via the
-        // `left.clone()` fallback below (this arm is intentionally UNCHANGED,
-        // mirroring the β2 Mul/Div arm's own `Int` placeholder). The
-        // `expr.rs` `compile_binop` operand-kind guard
-        // (`add_sub_dimensioned_complex_reject`) overrides `result_type` to
-        // `Type::Error` and emits `E_ArithOperandKind` for BOTH operand
-        // orders, closing the order-dependent asymmetry. This module's
-        // placeholder-pinning tests below cover the pure-fn value; the
-        // sibling `add_sub_operand_guard_tests.rs` integration module covers
-        // the observable end-to-end (poisoned-to-Error) behavior.
+        // CLOSED (task compiler-type-hygiene follow-up 5163): this arm's
+        // placeholder for a DIMENSIONED `Complex` + Int/Real is intentionally
+        // UNCHANGED, mirroring the β2 Mul/Div arm's own `Int` placeholder —
+        // the `expr.rs` `compile_binop` operand-kind guard overrides
+        // `result_type` downstream instead. See
+        // `add_sub_dimensioned_complex_reject`'s doc for the full rationale.
         //
         // SCOPE (code-review confirmation, task 5061 amendment pass): the
         // dimensionless-Complex widening arm above is intentionally folded
