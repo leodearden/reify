@@ -1,0 +1,20 @@
+# Agent-confusion codebook — persistent cause registry for legibility surveys.
+# version 2. MERGER-OWNED FILE: written solely by scripts/legibility/codebook.py
+# (plans/confusion-reduction-prd.md §7.1/§7.3). Append-only, never hand-edited:
+# entries are never deleted (retire via status: retired); sightings/candidates
+# are appended by the deterministic merger's apply_coding_record(). Hand edits
+# will be normalized/overwritten on the next merge.
+#
+# reify note: reify is a hosted project (dark_factory operates its agent
+# harness), so harness-rooted confusion causes observed in reify sessions
+# carry an `upstream: dark_factory:<entry-id>` link back to the
+# dark_factory codebook entry that actually owns the fix (PRD decision 4,
+# plans/confusion-reduction-prd.md). reify's periodic census may also file
+# remediation tasks directly into dark_factory (same fused-memory
+# instance, different project_root) when a cause's fix lives there.
+#
+# Seeded empty: the nightly trickle (dark_factory ε, deployed by θ′)
+# appends dated sightings and candidates as reify sessions are surveyed.
+version: 2
+entries: []
+candidates: []
