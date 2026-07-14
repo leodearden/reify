@@ -367,6 +367,28 @@ fn wedge(width: Length, depth: Length, height: Length, top_width: Length) -> Sol
 // fn extrude_infinite(profile: Surface, direction: Vector3<Length>) -> Solid
 ```
 
+**Anchoring & orientation.** Three distinct anchor conventions coexist across the solids above —
+deliberately not unified (redefining `box`'s corner-at-origin would break ~370 existing call sites
+and their world positions; see `docs/prds/geometry-primitive-constructors.md`). This table is
+mirrored — condensed, for MCP tool consumption — in
+`crates/reify-mcp/src/tools/chunks/geometry.md`; keep both in sync when a primitive's anchor
+convention changes:
+
+| Primitive | Anchor | Notes |
+|---|---|---|
+| `box` | centred at origin, all 3 axes | corner at `(-w/2, -h/2, -d/2)` internally |
+| `box_centered` | centred at origin, all 3 axes | op-identical alias of `box`, for symmetry with `cylinder_centered` |
+| `sphere` | centred at origin | |
+| `torus` | centred at origin; axis is +Z | |
+| `cylinder` | base at z=0, axis +Z, x/y centred | top face at `z = height`; NOT centred on z |
+| `cylinder_centered` | z-centred at origin, axis +Z, x/y centred | `cylinder` + `translate(z=-height/2)`, composed for you |
+| `cone` | base at z=0, axis +Z, x/y centred | bottom radius at z=0, top radius at z=height |
+| `wedge` | min-corner at origin, +X/+Y/+Z octant | the one primitive anchored at a corner |
+
+`cylinder`/`cone` sit base-first on the origin along +Z; `box`/`sphere`/`torus` are centred;
+`wedge` sits corner-first in the +octant. Prefer `cylinder_centered`/`box_centered` over a manual
+`translate(primitive(...), 0, 0, -h/2)` workaround.
+
 **2D shapes:**
 
 ```
@@ -375,6 +397,10 @@ fn circle(radius: Length) -> Surface
 fn polygon(vertices: List<Point2<Length>>) -> Surface
 fn ellipse(semi_major: Length, semi_minor: Length) -> Surface
 ```
+
+All 2D shapes are planar faces in the XY plane at z=0. `rectangle`/`circle`/`ellipse` are centred
+at origin (same centring as `box`); `polygon` is the exception — its position is set by the
+caller's explicit vertex coordinates, not auto-centred.
 
 **Curves:**
 
@@ -396,6 +422,10 @@ fn nurbs<N: Nat>(control_points: List<Point<N,Length>>, weights: List<Real>, kno
 fn tube(outer_radius: Length, inner_radius: Length, height: Length) -> Solid
 fn pipe(path: Curve, radius: Length) -> Solid
 ```
+
+`tube` is composed from an outer `cylinder` minus an inner `cylinder`, so it inherits
+`cylinder`'s anchor: base at z=0, axis +Z, x/y centred at origin — not z-centred (no
+`tube_centered` variant exists yet).
 
 ### 3.4 `std.geometry.boolean`
 
