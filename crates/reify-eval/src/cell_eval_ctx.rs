@@ -30,6 +30,15 @@ use reify_ir::{CompiledFunction, DeterminacyState, PersistentMap, Value, ValueMa
 /// once that adoption lands. It is not yet "the only" constructor in use —
 /// pick deliberately at call sites until the method is retired.
 ///
+/// Review has repeatedly flagged this same-name coexistence as an
+/// ergonomic footgun and suggested renaming this free function for the
+/// transition window instead. Rejected: the PRD's own sketch
+/// (`docs/prds/v0_6/eval-cell-commit-substrate.md` §2.5 code block, §8 β)
+/// names this constructor `cell_eval_ctx` specifically, and γ/δ/ε
+/// (#5053/#5056/#5057) are already scoped to migrate call sites onto that
+/// exact name — renaming here would ripple into those tasks' plans, which
+/// is outside task β's footprint.
+///
 /// TODO(#5053, #5056, #5065): closing this coexistence needs the
 /// method's own call sites gone. Today those are in `engine_eval.rs`
 /// (γ) and `engine_edit.rs` (δ), plus this crate's dead-code
@@ -44,6 +53,16 @@ use reify_ir::{CompiledFunction, DeterminacyState, PersistentMap, Value, ValueMa
 /// by hand. Retire by making the method delegate to (or be replaced by)
 /// this free function, so the crate ends up with one implementation of the
 /// wiring chain instead of two independent copies.
+///
+/// That delegation swap (method body calls this free function) touches
+/// only the method body, not its call sites, so it need not wait for the
+/// γ/δ/ε call-site migrations above — it could land as soon as this free
+/// function exists. It isn't done here because it requires editing
+/// `engine_eval.rs`, which is outside task β's locked module set
+/// (`cell_eval_ctx.rs` + `lib.rs` only) — and per PRD §8, "engine_eval.rs
+/// is the mandatory contention point," serialized to one task at a time.
+/// γ (#5053), which already owns that file, is best placed to land the
+/// delegation ahead of or alongside its call-site migration.
 ///
 /// Lifts `functions` / `meta_map` / `containment` out of `&self` into
 /// explicit params. `undef_causes` stays unset — it is wired separately by
