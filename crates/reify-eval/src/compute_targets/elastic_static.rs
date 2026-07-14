@@ -8802,17 +8802,21 @@ mod tests {
     /// calling the OUTER `classify_material`, which bridges through
     /// `.fea_shim()` and would itself panic on `Err` rather than surface
     /// it. This test calls the Result-ified function directly and asserts
-    /// `Ok(Heterogeneous(_))`, then re-probes the same wall-vs-infill
-    /// dispatch as test A above: a bare `matches!(res, Ok(Heterogeneous(_)))`
-    /// alone would NOT catch a regression that swaps `list[4]`/`list[5]`
-    /// (mat_wall/mat_skin) — both are well-formed `AnisotropicMaterial`
-    /// StructureInstances either way, so only sampling the assembled field
-    /// distinguishes them.
+    /// the `Ok(Heterogeneous(_))` shape.
+    ///
+    /// Amendment (task #5085 review round 4, suggestion 1, test_duplication):
+    /// this test previously also re-probed the wall-vs-infill spatial
+    /// dispatch on the sampled field, duplicating
+    /// `classify_material_as_printed_zones_returns_heterogeneous`'s
+    /// assertion over the identical fixture. That coverage is left solely
+    /// to the sibling test above; this test's only reason to exist is the
+    /// direct `Ok(Heterogeneous(_))` shape check, since the sibling only
+    /// observes the shim-bridged `MaterialModel` return, not the `Result`.
     #[test]
     fn classify_material_as_printed_zones_accepts_wellformed_lambda() {
         // Same fixture shape as `classify_material_as_printed_zones_returns_heterogeneous`
-        // above: point [0.05, 0.5, 0.5] falls in the wall zone (stiff),
-        // point [0.5, 0.5, 0.5] falls in the infill zone (soft).
+        // above; the field's spatial wall/infill dispatch is exercised there,
+        // not here — see doc comment.
         let field = het_as_printed_field(
             [0.0, 0.0, 0.0], [1.0, 1.0, 1.0],
             [0.0, 0.0, 1.0],  // build_z
@@ -8826,22 +8830,11 @@ mod tests {
         };
 
         let res = classify_material_as_printed_zones(lambda);
-        let cell_field = match res {
-            Ok(MaterialModel::Heterogeneous(cell_field)) => cell_field,
-            Ok(_) => panic!(
-                "expected Ok(Heterogeneous) for a well-formed AsPrintedZones lambda"
-            ),
-            Err(e) => panic!(
-                "expected Ok(Heterogeneous) for a well-formed AsPrintedZones lambda, got Err({e})"
-            ),
-        };
-
-        let d_wall = cell_field.material_at([0.05, 0.5, 0.5]).d_matrix_global();
-        let d_infill = cell_field.material_at([0.5, 0.5, 0.5]).d_matrix_global();
+        // Note: `res` cannot be interpolated with `{:?}` here — see the
+        // arity test above for why (`MaterialModel` isn't `Debug`).
         assert!(
-            d_wall[0][0] > d_infill[0][0],
-            "wall material D[0][0]={} should exceed infill D[0][0]={}",
-            d_wall[0][0], d_infill[0][0],
+            matches!(res, Ok(MaterialModel::Heterogeneous(_))),
+            "expected Ok(Heterogeneous) for a well-formed AsPrintedZones lambda"
         );
     }
 
