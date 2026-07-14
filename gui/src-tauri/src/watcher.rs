@@ -200,7 +200,19 @@ impl FileWatcher {
                         };
 
                         let (lock, cvar) = &*notify_shared;
-                        lock.lock().unwrap().record(path, kind, Instant::now());
+                        // Recover from a poisoned mutex rather than propagating
+                        // the panic: `Debouncer`'s methods are simple and not
+                        // expected to panic, but if one ever did while holding
+                        // this lock, letting every subsequent `.lock()` here
+                        // and in the worker panic too would permanently and
+                        // silently kill event delivery (this closure would
+                        // keep recording into the debouncer with no live
+                        // consumer left to drain it). `into_inner()` just
+                        // recovers the guard; the original panic still prints
+                        // via the default panic hook.
+                        lock.lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .record(path, kind, Instant::now());
                         cvar.notify_one();
                     }
                 }
@@ -217,7 +229,8 @@ impl FileWatcher {
         let worker_shutdown = shutdown.clone();
         let worker = std::thread::spawn(move || {
             let (lock, cvar) = &*worker_shared;
-            let mut guard = lock.lock().unwrap();
+            // Poison-recovering lock, same rationale as the notify closure above.
+            let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
             loop {
                 if worker_shutdown.load(Ordering::SeqCst) {
                     return;
@@ -228,8 +241,11 @@ impl FileWatcher {
 
                 if ready.is_empty() {
                     guard = match guard.next_wait(now) {
-                        Some(wait) => cvar.wait_timeout(guard, wait).unwrap().0,
-                        None => cvar.wait(guard).unwrap(),
+                        Some(wait) => cvar
+                            .wait_timeout(guard, wait)
+                            .unwrap_or_else(|e| e.into_inner())
+                            .0,
+                        None => cvar.wait(guard).unwrap_or_else(|e| e.into_inner()),
                     };
                     continue;
                 }
@@ -262,7 +278,7 @@ impl FileWatcher {
                         eprintln!("FileWatcher callback panicked (continuing to watch): {message}");
                     }
                 }
-                guard = lock.lock().unwrap();
+                guard = lock.lock().unwrap_or_else(|e| e.into_inner());
             }
         });
 
@@ -283,7 +299,9 @@ impl Drop for FileWatcher {
         // can't race this store and go back to sleep with no one left to
         // wake it (a classic condvar lost-wakeup).
         {
-            let _guard = lock.lock().unwrap();
+            // Poison-recovering lock, same rationale as the notify closure
+            // in `FileWatcher::new`.
+            let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
             self.shutdown.store(true, Ordering::SeqCst);
         }
         cvar.notify_all();
