@@ -29,6 +29,12 @@
 #   L — Tier-3 Pass-2 boundary: an orphan worktree (non-lane-glob name) on a
 #       terminal, ahead-of-main task/NNNN branch is still governed solely by
 #       _is_reclaimable — _backing_task_terminal never runs in Pass 2 (task 5167)
+#   M — ephemeral verify/sweep worktrees (_mainsweep-*/_mainprobe-*) protected
+#       by the DEFAULT protect-glob, DF-faithful (--mount only, no
+#       --protect-glob) (task 5221)
+#   N — full managed-worktree protect set (_solo-*/_substrate-gate-*/
+#       _offline-deep (exact name)/_iact-*) protected by default, plus an
+#       explicit --protect-glob override still re-narrows the set (task 5221)
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -1491,5 +1497,209 @@ assert "L1: status oracle NOT invoked (_backing_task_terminal never runs in Pass
     bash -c '[ ! -f "$1" ] || [ ! -s "$1" ]' _ "$L1_CALL_LOG"
 
 unset ORACLE_CALL_LOG
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block M — ephemeral verify/sweep worktrees protected by default
+# _mainsweep-*/_mainprobe-* are dark-factory's ephemeral background-verify and
+# merge/main-probe worktrees, minted directly under the warm-lane mount (the
+# same directory gc.sh scans). DF's gc reclaim call site
+# (git_ops.py _run_warm_lane_gc_reclaim) passes ONLY --mount — no
+# --protect-glob — so gc's DEFAULT protect-glob is the only thing standing
+# between a live sweep/probe worktree and Pass-2 `git worktree remove --force`.
+# Their sole other guard, a per-worktree advisory flock, demonstrably failed
+# twice in production (task 5221 analysis), removing a live worktree out from
+# under a running background integrity sweep. This block is DF-faithful:
+# --mount only, no --protect-glob, exercising the default exactly as invoked
+# in production.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block M: ephemeral verify/sweep worktrees protected by default ---"
+
+M_ROOT="$(mktemp -d /tmp/test-gc-m-XXXXXX)"
+_TMPDIRS+=("$M_ROOT")
+
+M_REPO="$M_ROOT/repo"
+M_WORKTREES="$M_ROOT/worktrees"
+M_BASE="$M_ROOT/base"
+mkdir -p "$M_WORKTREES" "$M_BASE"
+
+make_repo "$M_REPO"
+
+mkdir -p "$M_BASE/target.gen.1"
+touch "$M_BASE/target.gen.1.lock"
+ln -sfn "$M_BASE/target.gen.1" "$M_BASE/target"
+
+# Fixture 1: _mainsweep-abcd1234 — DF's background main-tip integrity-sweep
+# worktree (clean, landed — as it is immediately after DF mints it at main_sha).
+git -C "$M_REPO" worktree add -q "$M_WORKTREES/_mainsweep-abcd1234"
+touch "$M_WORKTREES/_mainsweep-abcd1234/PROTECTED_MARKER"
+mkdir -p "$M_WORKTREES/_mainsweep-abcd1234/target"
+touch "$M_WORKTREES/_mainsweep-abcd1234/target/DIVERGENT_MARKER"
+
+# Fixture 2: _mainprobe-abcd1234 — DF's merge/main-probe worktree, same shape.
+git -C "$M_REPO" worktree add -q "$M_WORKTREES/_mainprobe-abcd1234"
+touch "$M_WORKTREES/_mainprobe-abcd1234/PROTECTED_MARKER"
+mkdir -p "$M_WORKTREES/_mainprobe-abcd1234/target"
+touch "$M_WORKTREES/_mainprobe-abcd1234/target/DIVERGENT_MARKER"
+
+# Control: task-9999 — genuine cold orphan (non-underscore, clean, landed),
+# proving reclaim capability stays intact and the fix does not over-protect.
+git -C "$M_REPO" worktree add -q "$M_WORKTREES/task-9999"
+
+M_SEED_LOG="$M_ROOT/seed_calls.log"
+M_SEED_STUB="$M_ROOT/seed_stub.sh"
+cat > "$M_SEED_STUB" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$SEED_LOG"
+LANE_DIR="$2"
+rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
+exit 0
+STUB_EOF
+chmod +x "$M_SEED_STUB"
+export SEED_LOG="$M_SEED_LOG"
+
+# DF-faithful invocation: --mount only, NO --protect-glob (exercises the DEFAULT).
+run_helper reclaim \
+    --mount "$M_WORKTREES" \
+    --seed-script "$M_SEED_STUB"
+
+assert "M1: exit 0" test "$RC" -eq 0
+assert "M2: _mainsweep-abcd1234 dir preserved" \
+    test -d "$M_WORKTREES/_mainsweep-abcd1234"
+assert "M3: _mainsweep-abcd1234 PROTECTED_MARKER intact" \
+    test -f "$M_WORKTREES/_mainsweep-abcd1234/PROTECTED_MARKER"
+assert "M4: _mainprobe-abcd1234 dir preserved" \
+    test -d "$M_WORKTREES/_mainprobe-abcd1234"
+assert "M5: _mainprobe-abcd1234 PROTECTED_MARKER intact" \
+    test -f "$M_WORKTREES/_mainprobe-abcd1234/PROTECTED_MARKER"
+assert "M6: _mainsweep-abcd1234 seed-script NOT invoked (skipped, not reset)" \
+    bash -c '[ ! -f "$1" ] || ! grep -q "_mainsweep-abcd1234" "$1"' _ "$M_SEED_LOG"
+assert "M7: _mainprobe-abcd1234 seed-script NOT invoked (skipped, not reset)" \
+    bash -c '[ ! -f "$1" ] || ! grep -q "_mainprobe-abcd1234" "$1"' _ "$M_SEED_LOG"
+assert "M8: control orphan task-9999 removed (dir gone; reclaim capability intact)" \
+    bash -c '[ ! -d "$1" ]' _ "$M_WORKTREES/task-9999"
+assert "M9: control orphan task-9999 absent from git worktree list" \
+    bash -c '! git -C "$1" worktree list | grep -q "task-9999"' _ "$M_REPO"
+assert "M10: summary shows preserved=2 (the two managed worktrees)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "preserved=2"' _ "$OUT"
+assert "M11: summary shows removed=1 (control orphan)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "removed=1"' _ "$OUT"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block N — full managed-worktree protect set + explicit override intact
+# Extends Block M's coverage to the remaining orchestrator-managed non-pool
+# worktree kinds (mirroring dark-factory's PROTECTED_PREFIXES inventory):
+# _solo-*, _substrate-gate-*, _offline-deep (persistent, exact name), _iact-*.
+# Sub-case N-default proves the DEFAULT protect-glob covers the full set;
+# sub-case N-override proves an explicit --protect-glob still re-narrows the
+# protect set exactly as before — the fix changes only the DEFAULT, never the
+# override mechanism.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block N: full managed-worktree protect set + explicit override intact ---"
+
+# ── N-default: the full managed set survives the DEFAULT protect-glob ─────────
+N_ROOT="$(mktemp -d /tmp/test-gc-n-XXXXXX)"
+_TMPDIRS+=("$N_ROOT")
+
+N_REPO="$N_ROOT/repo"
+N_WORKTREES="$N_ROOT/worktrees"
+N_BASE="$N_ROOT/base"
+mkdir -p "$N_WORKTREES" "$N_BASE"
+
+make_repo "$N_REPO"
+
+mkdir -p "$N_BASE/target.gen.1"
+touch "$N_BASE/target.gen.1.lock"
+ln -sfn "$N_BASE/target.gen.1" "$N_BASE/target"
+
+# Four remaining orchestrator-managed non-pool worktree kinds, each clean/landed.
+for _n_name in _solo-1234 _substrate-gate-1234 _offline-deep _iact-demo; do
+    git -C "$N_REPO" worktree add -q "$N_WORKTREES/$_n_name"
+    touch "$N_WORKTREES/$_n_name/PROTECTED_MARKER"
+done
+
+# Control: task-8888 — genuine cold orphan, must still be removed.
+git -C "$N_REPO" worktree add -q "$N_WORKTREES/task-8888"
+
+N_SEED_LOG="$N_ROOT/seed_calls.log"
+N_SEED_STUB="$N_ROOT/seed_stub.sh"
+cat > "$N_SEED_STUB" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$SEED_LOG"
+LANE_DIR="$2"
+rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
+exit 0
+STUB_EOF
+chmod +x "$N_SEED_STUB"
+export SEED_LOG="$N_SEED_LOG"
+
+run_helper reclaim \
+    --mount "$N_WORKTREES" \
+    --seed-script "$N_SEED_STUB"
+
+assert "N-default: exit 0" test "$RC" -eq 0
+for _n_name in _solo-1234 _substrate-gate-1234 _offline-deep _iact-demo; do
+    assert "N-default: $_n_name dir preserved" \
+        test -d "$N_WORKTREES/$_n_name"
+    assert "N-default: $_n_name PROTECTED_MARKER intact" \
+        test -f "$N_WORKTREES/$_n_name/PROTECTED_MARKER"
+    assert "N-default: $_n_name seed-script NOT invoked (skipped, not reset)" \
+        bash -c '[ ! -f "$1" ] || ! grep -q "$2" "$1"' _ "$N_SEED_LOG" "$_n_name"
+done
+assert "N-default: control orphan task-8888 removed (dir gone; reclaim capability intact)" \
+    bash -c '[ ! -d "$1" ]' _ "$N_WORKTREES/task-8888"
+assert "N-default: control orphan task-8888 absent from git worktree list" \
+    bash -c '! git -C "$1" worktree list | grep -q "task-8888"' _ "$N_REPO"
+assert "N-default: summary shows preserved=4 (the four managed worktrees)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "preserved=4"' _ "$OUT"
+assert "N-default: summary shows removed=1 (control orphan)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "removed=1"' _ "$OUT"
+
+# ── N-override: explicit --protect-glob re-narrows the protect set ────────────
+# On a separate mount, an explicit --protect-glob "_merge-*" re-narrows the
+# set exactly as before the fix, so _mainsweep-abcd1234 (no longer covered by
+# the narrowed glob) IS removed by Pass 2 — proving the fix changes only the
+# DEFAULT, never the override mechanism.
+NOV_ROOT="$(mktemp -d /tmp/test-gc-nov-XXXXXX)"
+_TMPDIRS+=("$NOV_ROOT")
+
+NOV_REPO="$NOV_ROOT/repo"
+NOV_WORKTREES="$NOV_ROOT/worktrees"
+NOV_BASE="$NOV_ROOT/base"
+mkdir -p "$NOV_WORKTREES" "$NOV_BASE"
+
+make_repo "$NOV_REPO"
+
+mkdir -p "$NOV_BASE/target.gen.1"
+touch "$NOV_BASE/target.gen.1.lock"
+ln -sfn "$NOV_BASE/target.gen.1" "$NOV_BASE/target"
+
+git -C "$NOV_REPO" worktree add -q "$NOV_WORKTREES/_mainsweep-abcd1234"
+touch "$NOV_WORKTREES/_mainsweep-abcd1234/PROTECTED_MARKER"
+
+NOV_SEED_LOG="$NOV_ROOT/seed_calls.log"
+NOV_SEED_STUB="$NOV_ROOT/seed_stub.sh"
+cat > "$NOV_SEED_STUB" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$SEED_LOG"
+exit 0
+STUB_EOF
+chmod +x "$NOV_SEED_STUB"
+export SEED_LOG="$NOV_SEED_LOG"
+
+run_helper reclaim \
+    --worktrees-dir "$NOV_WORKTREES" \
+    --base-target "$NOV_BASE/target" \
+    --protect-glob "_merge-*" \
+    --seed-script "$NOV_SEED_STUB"
+
+assert "N-override: exit 0" test "$RC" -eq 0
+assert "N-override: explicit --protect-glob _merge-* re-narrows — _mainsweep-abcd1234 IS removed" \
+    bash -c '[ ! -d "$1" ]' _ "$NOV_WORKTREES/_mainsweep-abcd1234"
+assert "N-override: _mainsweep-abcd1234 absent from git worktree list" \
+    bash -c '! git -C "$1" worktree list | grep -q "_mainsweep-abcd1234"' _ "$NOV_REPO"
+assert "N-override: summary shows removed=1" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "removed=1"' _ "$OUT"
 
 test_summary

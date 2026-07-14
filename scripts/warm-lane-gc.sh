@@ -57,8 +57,17 @@
 #   --main-ref REF         Git ref for "main" branch (default: main).
 #   --lane-glob GLOB       Glob matching pool-lane entries (default: _lane-*,_spec-*).
 #                          Matched entries are reset via α, not removed.
-#   --protect-glob GLOB    Glob matching entries to never touch (default: _merge-*).
-#                          Matched entries are skipped entirely.
+#   --protect-glob GLOB    Glob matching entries to never touch (default:
+#                          _merge-*,_mainprobe-*,_mainsweep-*,_solo-*,
+#                          _substrate-gate-*,_offline-deep,_iact-*). Matched
+#                          entries are skipped entirely. This is the full set
+#                          of orchestrator-managed non-pool worktree kinds
+#                          dark-factory mints directly under the warm-lane
+#                          mount (git_ops.py ephemeral_worktree /
+#                          PROTECTED_PREFIXES); none of them may ever be
+#                          orphan-removed by Pass 2 — e.g. _mainprobe-*/
+#                          _mainsweep-* must survive while a background
+#                          integrity sweep is live (task 5221).
 #   --seed-script PATH     Path to the α seed primitive (default: sibling seed-warm-lane.sh).
 #                          Overridable for hermetic testing.
 #   --status-cmd PATH      Optional advisory status oracle for the Tier-3
@@ -179,7 +188,13 @@ Usage: $(basename "$0") reclaim --mount WORKTREE_BASE [OPTIONS]
   Optional options:
     --main-ref REF        Git ref for 'main' (default: main).
     --lane-glob GLOB      Glob for pool-lane entries (default: _lane-*,_spec-*).
-    --protect-glob GLOB   Glob for protected entries (default: _merge-*).
+    --protect-glob GLOB   Glob for protected entries (default:
+                          _merge-*,_mainprobe-*,_mainsweep-*,_solo-*,
+                          _substrate-gate-*,_offline-deep,_iact-*) — the full
+                          set of orchestrator-managed non-pool worktree kinds,
+                          which must never be orphan-removed (e.g. ephemeral
+                          verify/sweep worktrees while a background integrity
+                          sweep is live).
     --seed-script PATH    Path to α seed primitive (default: sibling seed-warm-lane.sh).
     --status-cmd PATH     Advisory status oracle for Tier-3 terminal-task reclaim
                           (default: REIFY_WARM_LANE_GC_STATUS_CMD, falling back to
@@ -293,7 +308,17 @@ fi
 
 # ── apply defaults for optional globs and seed-script ─────────────────────────
 [ -n "$LANE_GLOB" ]    || LANE_GLOB="_lane-*,_spec-*"
-[ -n "$PROTECT_GLOB" ] || PROTECT_GLOB="_merge-*"
+# This list mirrors dark-factory's PROTECTED_PREFIXES worktree-kind inventory
+# (git_ops.py) — every orchestrator-managed non-pool worktree kind minted
+# directly under the warm-lane mount. Keeping the full set here means Pass 2
+# (destructive orphan removal) can only ever target genuine pool lanes
+# (_lane-*/_spec-*, handled by Pass 1's reset instead) and genuine cold
+# non-underscore orphans (e.g. legacy task-*) — never a live managed worktree
+# such as an ephemeral _mainsweep-*/_mainprobe-* verify sweep (task 5221).
+# _merge-* MUST stay first/present: it is _merge-verify's ONLY gc protection
+# (dark-factory's .merge_verify.lock is a different path gc never inspects),
+# so this list only ever grows, never narrows an existing prefix.
+[ -n "$PROTECT_GLOB" ] || PROTECT_GLOB="_merge-*,_mainprobe-*,_mainsweep-*,_solo-*,_substrate-gate-*,_offline-deep,_iact-*"
 if [ -z "$SEED_SCRIPT" ]; then
     SEED_SCRIPT="$SCRIPT_DIR/seed-warm-lane.sh"
 fi
