@@ -1475,7 +1475,11 @@ build_plan() {
     # broadcast onto the run_all.sh plan line: a broadcast leaks into all ~103
     # pool tests, suppressing run_all in their captured plans and tripping the
     # ambient-isolation guard (test_run_all_ambient_isolation.sh, task 4961).
-    if [ "$DF_VERIFY_ROLE" = "merge" ] && [ "$RUN_RUST" -eq 1 ] && [ "$DO_TEST" -eq 1 ] && [ -z "${REIFY_INFRA_SUITE_ACTIVE:-}" ]; then
+    # background (task 5210, main-tip integrity sweep) shares the merge tier
+    # here too: same full-pool completeness, gated by the same re-entrancy
+    # sentinel (test_verify_semaphore_e2e.sh Section H sets it on its own
+    # nested background spawn, mirroring Section B's merge spawn).
+    if { [ "$DF_VERIFY_ROLE" = "merge" ] || [ "$DF_VERIFY_ROLE" = "background" ]; } && [ "$RUN_RUST" -eq 1 ] && [ "$DO_TEST" -eq 1 ] && [ -z "${REIFY_INFRA_SUITE_ACTIVE:-}" ]; then
         # task #4624: pre-build reify-audit OUTSIDE the run_all.sh wall (30m).
         # By the time run_all.sh runs, target/release/{reify-audit,ptodo-baseline-gen}
         # are fresh so the in-wall freshness guard finds them fresh and skips the cold
@@ -1580,7 +1584,10 @@ build_plan() {
     # Suppressed when DF_VERIFY_ROLE=merge (task 5125): run_all.sh already runs
     # the full suite there (a superset), so the selective subset would
     # double-run hermetic tests. Exactly-one invariant (INV-5): every verify
-    # runs either the full pool (merge) XOR the selective subset (task/offline).
+    # runs either the full pool (merge/background) XOR the selective subset
+    # (task/offline). background (task 5210) is suppressed here for the same
+    # reason: it gets the full pool above, so the selective subset must not
+    # also fire.
     # RE-ENTRANCY GUARD (task 5125): also suppressed when already inside an infra
     # suite (REIFY_INFRA_SUITE_ACTIVE set). The per-task selective path runs
     # test_verify_*.sh, which matches test_verify_semaphore_e2e.sh — whose
@@ -1589,7 +1596,7 @@ build_plan() {
     # spawn site, so this guard fires for it WITHOUT this line broadcasting the
     # sentinel to every selected test (which would leak it as an ambient export;
     # cf. test_run_all_ambient_isolation.sh, task 4961).
-    if [ "$DO_TEST" -eq 1 ] && [ -n "$SELECTED_INFRA_GLOBS" ] && [ "$DF_VERIFY_ROLE" != "merge" ] && [ -z "${REIFY_INFRA_SUITE_ACTIVE:-}" ]; then
+    if [ "$DO_TEST" -eq 1 ] && [ -n "$SELECTED_INFRA_GLOBS" ] && [ "$DF_VERIFY_ROLE" != "merge" ] && [ "$DF_VERIFY_ROLE" != "background" ] && [ -z "${REIFY_INFRA_SUITE_ACTIVE:-}" ]; then
         local _glob
         set -f  # disable pathname expansion: keep glob tokens as literals
         for _glob in $SELECTED_INFRA_GLOBS; do
@@ -1613,11 +1620,13 @@ build_plan
 # ---------------------------------------------------------------------------
 if [ "$PRINT_PLAN" -eq 1 ]; then
     echo "# verify.sh plan — action=$ACTION profile=$PROFILE scope=$SCOPE include_infra=$INCLUDE_INFRA nextest=$NEXTEST role=$DF_VERIFY_ROLE"
-    # NOTE (task 5125 review): a manual --include-infra run outside the merge
-    # gate no longer gets the wholesale infra pool suite (moved to the
-    # merge-only tier above) — only the cheaper selective per-artifact subset
-    # runs. Flagged here so this isn't mistaken for full local infra coverage.
-    if [ "$INCLUDE_INFRA" -eq 1 ] && [ "$DF_VERIFY_ROLE" != "merge" ]; then
+    # NOTE (task 5125 review): a manual --include-infra run outside the
+    # merge/background gate no longer gets the wholesale infra pool suite
+    # (moved to the merge/background tier above) — only the cheaper selective
+    # per-artifact subset runs. Flagged here so this isn't mistaken for full
+    # local infra coverage. background (task 5210) is excluded from this NOTE
+    # for the same reason merge is: it gets the full pool, not the subset.
+    if [ "$INCLUDE_INFRA" -eq 1 ] && [ "$DF_VERIFY_ROLE" != "merge" ] && [ "$DF_VERIFY_ROLE" != "background" ]; then
         echo "# NOTE: include_infra=1 under role=$DF_VERIFY_ROLE gets the selective per-artifact infra subset only (scripts/verify-pipeline-infra-tests.txt) — the wholesale infra pool suite now runs at the merge tier exclusively, not here"
     fi
     echo "# scope decision — RUN_RUST=$RUN_RUST RUN_GUI=$RUN_GUI RUN_OCCT_GATE=$RUN_OCCT_GATE"
