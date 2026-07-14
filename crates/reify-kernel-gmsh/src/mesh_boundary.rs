@@ -217,6 +217,20 @@ pub struct BoundaryAttributedReport {
 ///   per-face duplicates, so this branch should not fire for a correctly
 ///   configured weld, but it remains load-bearing defense-in-depth.
 ///
+/// # Cost note (efficiency)
+///
+/// On the common `repair_cfg = None` + unwelded-input path, the two calls
+/// above run on genuinely different data (RAW surface, then WELDED
+/// surface), so they are not literally duplicated work — but the RAW-surface
+/// call's [`raw_open_edge_census`] scan (only reached when [`Mesh::weldedness`]
+/// fails on it) is discarded by the caller's short-circuit decision (a plain
+/// `bool`, see [`surface_needs_weld`]) rather than threaded into the
+/// subsequent WELDED-surface call. This is intentional, not an oversight:
+/// the discarded scan is `O(n)` over the raw index buffer, negligible next
+/// to the `O(n²)` vertex-merge scan (`repair.rs`) the weld itself performs
+/// whenever the probe fails, so avoiding it would add API surface (plumbing
+/// the raw census through to the weld call site) for no measurable benefit.
+///
 /// # Why weldedness, not just `validate`
 ///
 /// OCCT emits per-face vertex blocks (unwelded by design,
