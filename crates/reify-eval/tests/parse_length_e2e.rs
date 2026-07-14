@@ -11,10 +11,9 @@
 //! → `Option::None`, `parse_length_r("12mm")` → `Result::Ok`,
 //! `parse_length_r("bogus")` → `Result::Err`.
 
-use reify_core::ValueCellId;
 use reify_ir::Value;
 use reify_test_support::mocks::MockConstraintChecker;
-use reify_test_support::{mm, parse_and_compile_with_stdlib};
+use reify_test_support::{cell_value, mm, parse_and_compile_with_stdlib};
 
 const SOURCE: &str = r#"
     structure S {
@@ -31,15 +30,6 @@ fn eval_source_with_stdlib(source: &str) -> reify_eval::EvalResult {
     engine.eval(&compiled)
 }
 
-fn cell_value(result: &reify_eval::EvalResult, member: &str) -> Value {
-    let id = ValueCellId::new("S", member);
-    result
-        .values
-        .get(&id)
-        .unwrap_or_else(|| panic!("S.{member} not found in eval result"))
-        .clone()
-}
-
 /// `parse_length("12mm")` → `Value::Option(Some(Scalar{0.012m, LENGTH}))`.
 ///
 /// `mm(12.0)` computes the identical `12.0 * 0.001` multiplication that
@@ -49,7 +39,7 @@ fn cell_value(result: &reify_eval::EvalResult, member: &str) -> Value {
 fn parse_length_some_case_evaluates_to_option_some_scalar() {
     let result = eval_source_with_stdlib(SOURCE);
     assert_eq!(
-        cell_value(&result, "some_len"),
+        cell_value(&result, "S", "some_len"),
         Value::Option(Some(Box::new(mm(12.0))))
     );
 }
@@ -58,14 +48,14 @@ fn parse_length_some_case_evaluates_to_option_some_scalar() {
 #[test]
 fn parse_length_none_case_evaluates_to_option_none() {
     let result = eval_source_with_stdlib(SOURCE);
-    assert_eq!(cell_value(&result, "none_len"), Value::Option(None));
+    assert_eq!(cell_value(&result, "S", "none_len"), Value::Option(None));
 }
 
 /// `parse_length_r("12mm")` → `Value::Enum{Result, Ok, [("value", 0.012m)]}`.
 #[test]
 fn parse_length_r_ok_case_evaluates_to_result_ok_enum() {
     let result = eval_source_with_stdlib(SOURCE);
-    match cell_value(&result, "ok_result") {
+    match cell_value(&result, "S", "ok_result") {
         Value::Enum {
             type_name,
             variant,
@@ -85,7 +75,7 @@ fn parse_length_r_ok_case_evaluates_to_result_ok_enum() {
 #[test]
 fn parse_length_r_err_case_evaluates_to_result_err_enum() {
     let result = eval_source_with_stdlib(SOURCE);
-    match cell_value(&result, "err_result") {
+    match cell_value(&result, "S", "err_result") {
         Value::Enum {
             type_name,
             variant,

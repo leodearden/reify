@@ -734,6 +734,26 @@ pub fn mesh_aabb(mesh: &reify_ir::Mesh) -> ([f32; 3], [f32; 3]) {
     (min, max)
 }
 
+/// Look up the `Value` of a value cell by `(structure, member)` from an
+/// [`reify_eval::EvalResult`]. Canonical replacement for the verbatim-duplicated
+/// `cell_value` helper in `result_recovery_e2e.rs`, `result_fallback_e2e.rs`, and
+/// `fallback_recovery_e2e.rs`, and the generalization of `parse_length_e2e.rs`'s
+/// 1-arg variant (task 5182 / esc-4039-1).
+/// # Panics
+/// Panics if no cell named `{structure}.{member}` exists; the message lists
+/// available cell names.
+#[cfg(feature = "eval-helpers")]
+#[track_caller]
+pub fn cell_value(result: &reify_eval::EvalResult, structure: &str, member: &str) -> reify_ir::Value {
+    let id = reify_core::ValueCellId::new(structure, member);
+    result.values.get(&id).cloned().unwrap_or_else(|| {
+        panic!(
+            "{structure}.{member} not found in eval result; available: {:?}",
+            result.values.iter().map(|(k, _)| k.to_string()).collect::<Vec<_>>()
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use crate::fixtures::bracket_source;
@@ -781,6 +801,42 @@ mod tests {
         let (min, max) = super::mesh_aabb(&mesh);
         assert_eq!(min, [0.0, 0.0, 0.0], "unexpected min; got {min:?}");
         assert_eq!(max, [1.0, 2.0, 3.0], "unexpected max; got {max:?}");
+    }
+
+    /// cell_value: returns the `Value` for a present `(structure, member)` cell.
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    fn cell_value_returns_value_for_present_cell() {
+        use reify_ir::ValueMap;
+        use std::collections::HashMap;
+        let mut values = ValueMap::new();
+        values.insert(reify_core::ValueCellId::new("S", "x"), reify_ir::Value::Bool(true));
+        let result = reify_eval::EvalResult {
+            values,
+            diagnostics: vec![],
+            resolved_params: HashMap::new(),
+            objective_provenance: HashMap::new(),
+            structured_detail: vec![],
+        };
+        assert_eq!(super::cell_value(&result, "S", "x"), reify_ir::Value::Bool(true));
+    }
+
+    /// cell_value: panics (message naming the missing cell) when no cell named
+    /// `{structure}.{member}` is present in the result's `ValueMap`.
+    #[cfg(feature = "eval-helpers")]
+    #[test]
+    #[should_panic(expected = "not found in eval result")]
+    fn cell_value_panics_on_absent_cell() {
+        use reify_ir::ValueMap;
+        use std::collections::HashMap;
+        let result = reify_eval::EvalResult {
+            values: ValueMap::new(),
+            diagnostics: vec![],
+            resolved_params: HashMap::new(),
+            objective_provenance: HashMap::new(),
+            structured_detail: vec![],
+        };
+        let _ = super::cell_value(&result, "Nope", "missing");
     }
 
     /// assert_no_eval_errors should not panic when the result has no diagnostics.

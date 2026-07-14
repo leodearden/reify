@@ -16,29 +16,15 @@
 //! RED before step-2: `examples/m6_fallback_recovery.ri` does not exist yet,
 //! so the fixture read fails (panic) — the missing-example RED signal.
 
-use reify_core::{Severity, ValueCellId};
+use reify_core::Severity;
 use reify_ir::Value;
-use reify_test_support::{collect_errors, mm, parse_and_compile_with_stdlib};
+use reify_test_support::{cell_value, collect_errors, mm, parse_and_compile_with_stdlib};
 
 /// Absolute path to the example, resolved at compile time from the crate root.
 const EXAMPLE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../examples/m6_fallback_recovery.ri"
 );
-
-fn cell_value(result: &reify_eval::EvalResult, structure: &str, member: &str) -> Value {
-    let id = ValueCellId::new(structure, member);
-    result.values.get(&id).cloned().unwrap_or_else(|| {
-        panic!(
-            "{structure}.{member} not found in eval result; available: {:?}",
-            result
-                .values
-                .iter()
-                .map(|(k, _)| k.to_string())
-                .collect::<Vec<_>>()
-        )
-    })
-}
 
 /// `examples/m6_fallback_recovery.ri` must compile + eval with zero Error
 /// diagnostics, and the six value cells across `MountValid` (raw="12mm") and
