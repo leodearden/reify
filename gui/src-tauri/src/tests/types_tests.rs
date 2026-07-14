@@ -94,6 +94,8 @@ fn value_data_serializes_with_expected_fields() {
         freshness: "final".to_string(),
         reason: None,
         last_substantive_value: None,
+        dimension: String::new(),
+        si_value: None,
     };
     let v = serde_json::to_value(&val).unwrap();
     assert_eq!(v["cell_id"], json!("Bracket.width"));
@@ -892,6 +894,8 @@ fn value_data_serializes_with_freshness_field() {
         freshness: "final".to_string(),
         reason: None,
         last_substantive_value: None,
+        dimension: String::new(),
+        si_value: None,
     };
     let v = serde_json::to_value(&val).unwrap();
     assert_eq!(
@@ -2941,6 +2945,8 @@ fn value_data_reason_some_serializes_as_string() {
         freshness: "final".to_string(),
         reason: Some("outer_d unbound".to_string()),
         last_substantive_value: None,
+        dimension: String::new(),
+        si_value: None,
     };
     let v = serde_json::to_value(&val).unwrap();
     assert_eq!(v["reason"], json!("outer_d unbound"));
@@ -2959,6 +2965,8 @@ fn value_data_reason_none_serializes_as_null() {
         freshness: "final".to_string(),
         reason: None,
         last_substantive_value: None,
+        dimension: String::new(),
+        si_value: None,
     };
     let v = serde_json::to_value(&val).unwrap();
     assert!(v["reason"].is_null());
@@ -2998,6 +3006,8 @@ fn value_data_last_substantive_value_some_serializes_and_round_trips() {
         freshness: "pending".to_string(),
         reason: None,
         last_substantive_value: Some("42 mm".to_string()),
+        dimension: String::new(),
+        si_value: None,
     };
     let v = serde_json::to_value(&val).unwrap();
     assert_eq!(v["last_substantive_value"], json!("42 mm"));

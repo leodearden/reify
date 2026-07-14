@@ -3697,6 +3697,11 @@ fn build_values(
                 freshness,
                 reason,
                 last_substantive_value,
+                // TODO(#5199): real population lands in step-6 (display_scalar
+                // helper + dim.canonical_name()). Placeholder keeps the tree
+                // compiling for step-4.
+                dimension: String::new(),
+                si_value: None,
             });
         }
     }
