@@ -3378,4 +3378,145 @@ mod tests {
              baseline would incorrectly include it)"
         );
     }
+
+    // ── Task 5193 step-1: RED — the debug open funnel must adopt the
+    // newly-opened file's identity, not the previously-loaded file's ──
+    //
+    // `open_source_into_engine_and_refresh_baseline` currently calls
+    // `update_source(&path, &content)`. When `self.file_path` is already
+    // `Some` (set by a prior `load_file`), `update_source` derives
+    // `module_name` from the OLD `self.file_path` and commits
+    // `FilePathUpdate::Preserve` — correct for live-buffer edits (task
+    // #3370), but wrong when the caller is opening a DIFFERENT file: the
+    // newly-opened file's content is evaluated under the PREVIOUS file's
+    // identity, so `GuiState::files[].path` and every diagnostic's
+    // `file_path` keep citing the old file.
+    //
+    // Both tests below reproduce the buggy precondition by loading file A
+    // via `load_file` (so `self.file_path = Some`) BEFORE opening file B
+    // through the helper — with `self.file_path == None`, `update_source`
+    // takes its single-file branch and would not exhibit the bug.
+    //
+    // FAILS TO COMPILE until step-2 changes the helper to a 3-arg signature
+    // `(engine, last_state, path)` that routes through
+    // `EngineSession::load_file` (`FilePathUpdate::Set`) instead of
+    // `update_source`.
+
+    /// T1 (open_file variant, files-path facet): launch on bracket.ri, then
+    /// open deck.ri through the helper — `GuiState::files[0].path` must
+    /// adopt deck.ri's identity, never bracket.ri's.
+    #[tokio::test]
+    async fn open_file_adopts_new_file_identity() {
+        use reify_test_support::bracket_source;
+
+        let dir = tempfile::tempdir().unwrap();
+        let bracket_path = dir.path().join("bracket.ri");
+        std::fs::write(&bracket_path, bracket_source()).unwrap();
+        let deck_path = dir.path().join("deck.ri");
+        std::fs::write(&deck_path, bracket_source()).unwrap();
+        let deck_canonical = std::fs::canonicalize(&deck_path)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+
+        let engine = crate::tests::make_test_engine();
+
+        // Reproduce the buggy precondition: launch on bracket.ri via
+        // load_file so self.file_path = Some(bracket.ri).
+        crate::engine_lock::with_engine_lock(&engine, |s| s.load_file(&bracket_path))
+            .and_then(std::convert::identity)
+            .expect("load_file(bracket.ri) must succeed");
+
+        let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+            std::sync::Mutex::new(None);
+
+        // Debug-driven open of a DIFFERENT file (deck.ri) through the helper.
+        let state =
+            open_source_into_engine_and_refresh_baseline(&engine, &last_state, &deck_canonical)
+                .await
+                .expect("open_source_into_engine_and_refresh_baseline must return Ok");
+
+        assert!(
+            !state.files.is_empty(),
+            "GuiState.files must be non-empty after opening deck.ri"
+        );
+        assert!(
+            state.files[0].path.ends_with("deck.ri"),
+            "files[0].path must adopt the newly-opened file's identity (deck.ri), got: {}",
+            state.files[0].path
+        );
+        assert!(
+            !state.files[0].path.ends_with("bracket.ri"),
+            "files[0].path must NOT retain the previously-loaded file's \
+             identity (bracket.ri), got: {}",
+            state.files[0].path
+        );
+    }
+
+    /// T2 (load_fixture-after-launch variant, diagnostics facet): launch on
+    /// bracket.ri, then open warn.ri (reliably emits exactly one Warning)
+    /// through the helper — every `compile_diagnostics[].file_path` must
+    /// cite warn.ri, never bracket.ri.
+    #[tokio::test]
+    async fn load_fixture_after_launch_diagnostics_cite_fixture() {
+        use reify_test_support::{bracket_source, warn_source_with_unknown_port_type};
+
+        let dir = tempfile::tempdir().unwrap();
+        let bracket_path = dir.path().join("bracket.ri");
+        std::fs::write(&bracket_path, bracket_source()).unwrap();
+        let warn_path = dir.path().join("warn.ri");
+        std::fs::write(&warn_path, warn_source_with_unknown_port_type()).unwrap();
+        let warn_canonical = std::fs::canonicalize(&warn_path)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+
+        let engine = crate::tests::make_test_engine();
+
+        // Reproduce the buggy precondition: launch on bracket.ri via
+        // load_file so self.file_path = Some(bracket.ri).
+        crate::engine_lock::with_engine_lock(&engine, |s| s.load_file(&bracket_path))
+            .and_then(std::convert::identity)
+            .expect("load_file(bracket.ri) must succeed");
+
+        let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+            std::sync::Mutex::new(None);
+
+        // Debug-driven open of a DIFFERENT file (warn.ri, the
+        // fixture-after-launch variant of load_fixture) through the helper.
+        let state =
+            open_source_into_engine_and_refresh_baseline(&engine, &last_state, &warn_canonical)
+                .await
+                .expect("open_source_into_engine_and_refresh_baseline must return Ok");
+
+        assert!(
+            !state.compile_diagnostics.is_empty(),
+            "warn.ri must produce a non-empty compile_diagnostics (unknown-port-type warning)"
+        );
+        assert!(
+            state
+                .compile_diagnostics
+                .iter()
+                .all(|d| d.file_path == "warn.ri"),
+            "every diagnostic's file_path must cite warn.ri, got: {:?}",
+            state
+                .compile_diagnostics
+                .iter()
+                .map(|d| &d.file_path)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            !state
+                .compile_diagnostics
+                .iter()
+                .any(|d| d.file_path == "bracket.ri"),
+            "no diagnostic may cite the previously-loaded file's identity \
+             (bracket.ri), got: {:?}",
+            state
+                .compile_diagnostics
+                .iter()
+                .map(|d| &d.file_path)
+                .collect::<Vec<_>>()
+        );
+    }
 }
