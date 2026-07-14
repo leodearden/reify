@@ -1923,6 +1923,14 @@ mod tests {
             func_labels.contains(&"ellipse"),
             "should include 'ellipse'"
         );
+        assert!(
+            func_labels.contains(&"rounded_box"),
+            "should include 'rounded_box'"
+        );
+        assert!(
+            func_labels.contains(&"rounded_rect"),
+            "should include 'rounded_rect'"
+        );
     }
 
     // --- stdlib completions: orientation functions (step-4) ---
