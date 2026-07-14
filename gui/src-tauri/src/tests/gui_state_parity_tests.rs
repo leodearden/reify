@@ -85,10 +85,10 @@ fn sample_constraint(node_id: &str, status: &str) -> ConstraintData {
     }
 }
 
-fn sample_tensegrity_wire(entity_path: &str, kind: &str) -> TensegrityWireData {
+fn sample_tensegrity_wire(entity_path: &str) -> TensegrityWireData {
     TensegrityWireData {
         entity_path: entity_path.to_string(),
-        kind: kind.to_string(),
+        kind: "strut".to_string(),
         x1: 0.0,
         y1: 0.0,
         z1: 0.0,
@@ -98,10 +98,10 @@ fn sample_tensegrity_wire(entity_path: &str, kind: &str) -> TensegrityWireData {
     }
 }
 
-fn sample_tensegrity_surface(entity_path: &str, kind: &str) -> TensegritySurfaceData {
+fn sample_tensegrity_surface(entity_path: &str) -> TensegritySurfaceData {
     TensegritySurfaceData {
         entity_path: entity_path.to_string(),
-        kind: kind.to_string(),
+        kind: "membrane".to_string(),
         i0: 0,
         i1: 1,
         i2: 2,
@@ -124,13 +124,13 @@ fn sample_display_directive(subject: &str, pane: i32) -> DisplayDirective {
     }
 }
 
-fn sample_appearance_directive(subject: &str, opacity: f32) -> AppearanceDirective {
+fn sample_appearance_directive(subject: &str) -> AppearanceDirective {
     AppearanceDirective {
         subject: subject.to_string(),
         style: DisplayStyleData {
-            color: [0.5, 0.3, 0.1, opacity],
+            color: [0.5, 0.3, 0.1, 1.0],
             finish: 1,
-            opacity,
+            opacity: 1.0,
             wireframe: false,
         },
     }
@@ -171,8 +171,8 @@ fn fully_populated_gui_state() -> GuiState {
         }],
         tessellation_diagnostics: vec![sample_diagnostic("warning", "tessellation warning")],
         compile_diagnostics: vec![sample_diagnostic("error", "compile error")],
-        tensegrity_wires: vec![sample_tensegrity_wire("TPrism.wire[0]", "strut")],
-        tensegrity_surfaces: vec![sample_tensegrity_surface("TPatch.surface[0]", "membrane")],
+        tensegrity_wires: vec![sample_tensegrity_wire("TPrism.wire[0]")],
+        tensegrity_surfaces: vec![sample_tensegrity_surface("TPatch.surface[0]")],
         demand_prune_measurement: Some(DemandPruneMeasurementDto {
             eval_set_size: 10,
             observed_retained: 6,
@@ -185,7 +185,7 @@ fn fully_populated_gui_state() -> GuiState {
             },
         }),
         display_panes: vec![sample_display_directive("Bracket.body", 0)],
-        display_appearance: vec![sample_appearance_directive("Bracket.body", 1.0)],
+        display_appearance: vec![sample_appearance_directive("Bracket.body")],
         fea_diagnostics: vec![FeaDiagnosticInfo::ProblemElements { ids: vec![1, 2] }],
         fea_convergence: Some(FeaConvergenceInfo {
             converged: true,
