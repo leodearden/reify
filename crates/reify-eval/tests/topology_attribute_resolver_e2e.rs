@@ -39,7 +39,8 @@ use reify_eval::{
     AttributeQuery, AttributeResolution, resolve_unique_by_attribute, seed_primitive_attributes,
 };
 use reify_ir::{
-    FeatureId, GeometryHandleId, GeometryOp, Role, TopologyAttribute, TopologyAttributeTable, Value,
+    FeatureId, GeometryHandleId, GeometryOp, KernelHandle, KernelId, Role, TopologyAttribute,
+    TopologyAttributeTable, Value,
 };
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 
@@ -93,10 +94,11 @@ fn resolver_dispatches_against_seeded_box_attributes() {
     let mut table = TopologyAttributeTable::default();
     seed_primitive_attributes(
         &mut table,
+        KernelId::Occt,
         &mut kernel,
-        &face_handles,
         &edge_handles,
         &[],
+        &face_handles,
         &feature_id,
         &box_op,
     )
@@ -106,7 +108,7 @@ fn resolver_dispatches_against_seeded_box_attributes() {
     // entry. This pins the seeding contract the resolver depends on.
     for (idx, &face_id) in face_handles.iter().enumerate() {
         let attr = table
-            .lookup(face_id)
+            .lookup(KernelHandle { kernel: KernelId::Occt, id: face_id })
             .expect("box face must have a seeded TopologyAttribute");
         assert_eq!(attr.role, Role::Side);
         assert_eq!(attr.local_index, idx as u32);
@@ -145,11 +147,11 @@ fn resolver_dispatches_against_seeded_box_attributes() {
     // `(Role::Side, 3)`, but PRD line 62 says a unique user_label match
     // wins — the resolver must return face 0.
     let original_face_0 = table
-        .lookup(face_handles[0])
+        .lookup(KernelHandle { kernel: KernelId::Occt, id: face_handles[0] })
         .expect("face 0 must already be seeded")
         .clone();
     table.record(
-        face_handles[0],
+        KernelHandle { kernel: KernelId::Occt, id: face_handles[0] },
         TopologyAttribute {
             user_label: Some("manual".to_string()),
             ..original_face_0
@@ -195,7 +197,7 @@ fn resolver_dispatches_against_seeded_box_attributes() {
             + 1000,
     );
     assert!(
-        table.lookup(unallocated).is_none(),
+        table.lookup(KernelHandle { kernel: KernelId::Occt, id: unallocated }).is_none(),
         "test precondition: derived id {:?} must not exist in the attribute table",
         unallocated,
     );

@@ -513,8 +513,8 @@ mod tests {
     #[test]
     fn resolve_unique_by_attribute_user_label_match_returns_resolved() {
         let mut table = TopologyAttributeTable::default();
-        table.record(h(10), attr(Role::Side, 0, Some("top")));
-        table.record(h(11), attr(Role::Side, 1, Some("bottom")));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::Side, 0, Some("top")));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(11) }, attr(Role::Side, 1, Some("bottom")));
         let candidates = [h(10), h(11)];
         let query = AttributeQuery {
             user_label: Some("top".to_string()),
@@ -537,8 +537,8 @@ mod tests {
     #[test]
     fn resolve_unique_by_attribute_role_and_index_match_returns_resolved() {
         let mut table = TopologyAttributeTable::default();
-        table.record(h(20), attr(Role::Cap(CapKind::Top), 0, None));
-        table.record(h(21), attr(Role::Side, 0, None));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr(Role::Cap(CapKind::Top), 0, None));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(21) }, attr(Role::Side, 0, None));
         let candidates = [h(20), h(21)];
         let query = AttributeQuery {
             user_label: None,
@@ -566,9 +566,9 @@ mod tests {
     fn user_label_preferred_over_role_and_index_when_both_apply() {
         let mut table = TopologyAttributeTable::default();
         // handle 30 — has the user_label, but mismatched role/idx.
-        table.record(h(30), attr(Role::Side, 7, Some("top")));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(30) }, attr(Role::Side, 7, Some("top")));
         // handle 31 — no user_label, but matches the queried role/idx.
-        table.record(h(31), attr(Role::Cap(CapKind::Top), 0, None));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(31) }, attr(Role::Cap(CapKind::Top), 0, None));
         let candidates = [h(30), h(31)];
 
         // (a) user_label match exists → user_label wins, role/idx ignored.
@@ -686,8 +686,8 @@ mod tests {
 
         for case in cases {
             let mut table = TopologyAttributeTable::default();
-            table.record(h(60), case.attr_a);
-            table.record(h(61), case.attr_b);
+            table.record(KernelHandle { kernel: KernelId::Occt, id: h(60) }, case.attr_a);
+            table.record(KernelHandle { kernel: KernelId::Occt, id: h(61) }, case.attr_b);
             let candidates = [h(60), h(61)];
             let mut diagnostics = Vec::new();
             let result = resolve_unique_by_attribute(
@@ -756,8 +756,8 @@ mod tests {
             splitting_feature_id: FeatureId::realization("Fuse", 0),
             split_index: 1,
         }];
-        table.record(h(60), a);
-        table.record(h(61), b);
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(60) }, a);
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(61) }, b);
         let candidates = [h(60), h(61)];
         let query = AttributeQuery {
             user_label: None,
@@ -805,8 +805,8 @@ mod tests {
             splitting_feature_id: FeatureId::realization("Fuse", 0),
             split_index: 1,
         }];
-        table.record(h(70), a);
-        table.record(h(71), b);
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(70) }, a);
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(71) }, b);
         let candidates = [h(70), h(71)];
         let query = AttributeQuery {
             user_label: Some("seam".to_string()),
@@ -842,7 +842,7 @@ mod tests {
     #[test]
     fn unresolved_with_diagnostic_when_zero_match_but_entries_exist() {
         let mut table = TopologyAttributeTable::default();
-        table.record(h(50), attr(Role::Side, 0, None));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(50) }, attr(Role::Side, 0, None));
         let candidates = [h(50)];
         let selector_span = SourceSpan::new(10, 20);
         let query = AttributeQuery {
@@ -906,7 +906,7 @@ mod tests {
 
         // (b) Table populated for OTHER handles.
         let mut table_b = TopologyAttributeTable::default();
-        table_b.record(h(99), attr(Role::Side, 0, None));
+        table_b.record(KernelHandle { kernel: KernelId::Occt, id: h(99) }, attr(Role::Side, 0, None));
         // Candidates 40/41 still have no entries.
         let mut diagnostics = Vec::new();
         let result_b =
@@ -936,8 +936,8 @@ mod tests {
         let slot = FeatureId::realization("Slot", 0);
         let other = FeatureId::realization("Other", 0);
         let mut table = TopologyAttributeTable::default();
-        table.record(h(70), attr_for(boss.clone(), Role::Side, 0, None));
-        table.record(h(71), attr_for(slot.clone(), Role::Side, 0, None));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(70) }, attr_for(boss.clone(), Role::Side, 0, None));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(71) }, attr_for(slot.clone(), Role::Side, 0, None));
         let candidates = [h(70), h(71)];
 
         // (a) feature_id=Slot → handle 71.
@@ -1020,7 +1020,7 @@ mod tests {
     fn edge_cases() {
         // (a) Empty candidate slice + populated table.
         let mut table_a = TopologyAttributeTable::default();
-        table_a.record(h(80), attr(Role::Side, 0, None));
+        table_a.record(KernelHandle { kernel: KernelId::Occt, id: h(80) }, attr(Role::Side, 0, None));
         let candidates_a: [GeometryHandleId; 0] = [];
         let query_a = AttributeQuery {
             user_label: None,
@@ -1044,7 +1044,7 @@ mod tests {
 
         // (b) All-None query on populated candidates.
         let mut table_b = TopologyAttributeTable::default();
-        table_b.record(h(81), attr(Role::Side, 0, Some("anything")));
+        table_b.record(KernelHandle { kernel: KernelId::Occt, id: h(81) }, attr(Role::Side, 0, Some("anything")));
         let candidates_b = [h(81)];
         let query_b = AttributeQuery {
             user_label: None,
@@ -1077,7 +1077,7 @@ mod tests {
 
         // (c) Duplicate candidate ids → Resolved (dedup before counting).
         let mut table_c = TopologyAttributeTable::default();
-        table_c.record(h(80), attr(Role::Side, 0, None));
+        table_c.record(KernelHandle { kernel: KernelId::Occt, id: h(80) }, attr(Role::Side, 0, None));
         // h(80) repeated three times.
         let candidates_c = [h(80), h(80), h(80)];
         let query_c = AttributeQuery {
@@ -1116,8 +1116,8 @@ mod tests {
         let id_match = h(90);
         let id_nomatch = h(91);
         let mut table = TopologyAttributeTable::default();
-        table.record(id_match, attr(Role::Side, 0, None));
-        table.record(id_nomatch, attr(Role::Side, 1, None));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: id_match }, attr(Role::Side, 0, None));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: id_nomatch }, attr(Role::Side, 1, None));
         let candidates = [id_match, id_nomatch, id_nomatch, id_match];
         let query = AttributeQuery {
             user_label: None,
@@ -1163,8 +1163,8 @@ mod tests {
         // even when some candidates would match the filter.
         let other_feature = FeatureId::realization("OtherFeature", 0);
         let mut table = TopologyAttributeTable::default();
-        table.record(h(90), attr(Role::Side, 0, None));
-        table.record(h(91), attr_for(other_feature, Role::Side, 1, None));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(90) }, attr(Role::Side, 0, None));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(91) }, attr_for(other_feature, Role::Side, 1, None));
         let candidates = [h(90), h(91)];
 
         // feature_id=Some, but both positional fields are None.
@@ -1227,8 +1227,8 @@ mod tests {
             splitting_feature_id: FeatureId::realization("Fuse", 0),
             split_index: 0, // same as a — populator bug: identical split_index
         }];
-        table.record(h(60), a);
-        table.record(h(61), b);
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(60) }, a);
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(61) }, b);
         let candidates = [h(60), h(61)];
         let query = AttributeQuery {
             user_label: None,
@@ -1271,8 +1271,8 @@ mod tests {
         let mut table = TopologyAttributeTable::default();
         // Both attrs use the default empty mod_history — no split has been
         // recorded at all, yet the parent-key matches. Classic populator bug.
-        table.record(h(70), attr(Role::Side, 0, None));
-        table.record(h(71), attr(Role::Side, 0, None));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(70) }, attr(Role::Side, 0, None));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(71) }, attr(Role::Side, 0, None));
         let candidates = [h(70), h(71)];
         let query = AttributeQuery {
             user_label: None,
@@ -1309,9 +1309,9 @@ mod tests {
     #[test]
     fn resolve_keeps_unresolved_for_three_matches_with_empty_mod_history() {
         let mut table = TopologyAttributeTable::default();
-        table.record(h(80), attr(Role::Side, 0, None));
-        table.record(h(81), attr(Role::Side, 0, None));
-        table.record(h(82), attr(Role::Side, 0, None));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(80) }, attr(Role::Side, 0, None));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(81) }, attr(Role::Side, 0, None));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(82) }, attr(Role::Side, 0, None));
         let candidates = [h(80), h(81), h(82)];
         let query = AttributeQuery {
             user_label: None,
@@ -1382,9 +1382,9 @@ mod tests {
         h61.mod_history = mod_entry_a; // A (duplicate)
         let mut h62 = attr(Role::Side, 0, None);
         h62.mod_history = mod_entry_b; // B
-        table.record(h(60), h60);
-        table.record(h(61), h61);
-        table.record(h(62), h62);
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(60) }, h60);
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(61) }, h61);
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(62) }, h62);
         let candidates = [h(60), h(61), h(62)];
         let query = AttributeQuery {
             user_label: None,
@@ -1441,8 +1441,8 @@ mod tests {
         let mut table = TopologyAttributeTable::default();
         // Distinct feature_ids on the two matched candidates → mixed
         // parent-keys → cluster check fails → Unresolved.
-        table.record(h(60), attr_for(boss, Role::Side, 0, None));
-        table.record(h(61), attr_for(slot, Role::Side, 0, None));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(60) }, attr_for(boss, Role::Side, 0, None));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: h(61) }, attr_for(slot, Role::Side, 0, None));
         let candidates = [h(60), h(61)];
         // user_label "missing" matches neither candidate: sets last_count = Some(0).
         // role_and_index (Role::Side, 0) matches both: sets last_count = Some(2).

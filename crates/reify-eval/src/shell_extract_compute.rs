@@ -1211,10 +1211,10 @@ mod tests {
             assert!(attr.mod_history.is_empty());
             // High bit set
             assert_eq!(
-                id.0 & 0x8000_0000_0000_0000,
+                id.id.0 & 0x8000_0000_0000_0000,
                 0x8000_0000_0000_0000,
                 "MidSurfaceFace id {:#018x} must have high bit set",
-                id.0
+                id.id.0
             );
         }
         // local_index values: {0, 1}
@@ -1232,13 +1232,13 @@ mod tests {
         assert_eq!(edge_attr.local_index, 0);
         assert_eq!(edge_attr.role, Role::MidSurfaceEdge);
         assert_eq!(
-            edge_id.0 & 0x8000_0000_0000_0000,
+            edge_id.id.0 & 0x8000_0000_0000_0000,
             0x8000_0000_0000_0000,
             "MidSurfaceEdge id must have high bit set"
         );
 
         // (3) All IDs are distinct
-        let mut all_ids: Vec<u64> = table.iter().map(|(id, _)| id.0).collect();
+        let mut all_ids: Vec<u64> = table.iter().map(|(id, _)| id.id.0).collect();
         let total = all_ids.len();
         all_ids.sort();
         all_ids.dedup();
@@ -1249,11 +1249,11 @@ mod tests {
         fold_mid_surface_attributes_into_table(&mut table2, &value);
         let mut entries1: Vec<(u64, Role, u32, String)> = table
             .iter()
-            .map(|(id, a)| (id.0, a.role, a.local_index, a.feature_id.to_string()))
+            .map(|(id, a)| (id.id.0, a.role, a.local_index, a.feature_id.to_string()))
             .collect();
         let mut entries2: Vec<(u64, Role, u32, String)> = table2
             .iter()
-            .map(|(id, a)| (id.0, a.role, a.local_index, a.feature_id.to_string()))
+            .map(|(id, a)| (id.id.0, a.role, a.local_index, a.feature_id.to_string()))
             .collect();
         entries1.sort_by_key(|(id, _, _, _)| *id);
         entries2.sort_by_key(|(id, _, _, _)| *id);

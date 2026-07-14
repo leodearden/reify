@@ -133,7 +133,7 @@ fn dispatch_and_collect(
         .iter()
         .map(|(id, attr)| {
             (
-                id.0,
+                id.id.0,
                 attr.role,
                 attr.local_index,
                 attr.feature_id.to_string(),

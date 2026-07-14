@@ -157,7 +157,10 @@ mod tests {
     use reify_compiler::ValueCellKind;
     use reify_eval::graph::{EvaluationGraph, RealizationNodeData, ValueCellNode};
     use reify_core::{ContentHash, RealizationNodeId, Type, ValueCellId};
-    use reify_ir::{CapKind, FeatureId, ReprKind, Role, TopologyAttribute, TopologyAttributeTable, Value, ValueMap};
+    use reify_ir::{
+        CapKind, FeatureId, KernelHandle, KernelId, ReprKind, Role, TopologyAttribute,
+        TopologyAttributeTable, Value, ValueMap,
+    };
 
     // ── Test fixture helpers ──────────────────────────────────────────────
 
@@ -367,11 +370,11 @@ mod tests {
         let new_values = old_values.clone();
 
         let mut old_table = TopologyAttributeTable::default();
-        old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0));
+        old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::Cap(CapKind::Top), 0));
 
         let mut new_table = TopologyAttributeTable::default();
-        new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0));
-        new_table.record(h(21), attr(Role::Cap(CapKind::Bottom), 1));
+        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr(Role::Cap(CapKind::Top), 0));
+        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(21) }, attr(Role::Cap(CapKind::Bottom), 1));
 
         let old_snap = MorphSnapshot {
             graph: &old_graph,
@@ -412,10 +415,10 @@ mod tests {
 
         // old and new use different FeatureIds → attributes don't match → UnmappedElement.
         let mut old_table = TopologyAttributeTable::default();
-        old_table.record(h(10), attr_for_feat(feat(), Role::Cap(CapKind::Top), 0));
+        old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr_for_feat(feat(), Role::Cap(CapKind::Top), 0));
 
         let mut new_table = TopologyAttributeTable::default();
-        new_table.record(h(20), attr_for_feat(feat2(), Role::Cap(CapKind::Top), 0));
+        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr_for_feat(feat2(), Role::Cap(CapKind::Top), 0));
 
         let old_snap = MorphSnapshot {
             graph: &old_graph,
@@ -505,12 +508,12 @@ mod tests {
         // old side: only h(10) has an attribute; h(11) is unattributed →
         // partial attribution on old side → NamingLayerError::Partial.
         let mut old_table = TopologyAttributeTable::default();
-        old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0));
+        old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::Cap(CapKind::Top), 0));
         // h(11) intentionally absent
 
         let mut new_table = TopologyAttributeTable::default();
-        new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0));
-        new_table.record(h(21), attr(Role::Cap(CapKind::Bottom), 1));
+        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr(Role::Cap(CapKind::Top), 0));
+        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(21) }, attr(Role::Cap(CapKind::Bottom), 1));
 
         let old_snap = MorphSnapshot {
             graph: &old_graph,
