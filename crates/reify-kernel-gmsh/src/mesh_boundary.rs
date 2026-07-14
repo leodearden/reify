@@ -468,9 +468,14 @@ pub fn mesh_surface_to_volume_with_attribution(
     // merge-survivor was compacted away); gmsh re-meshes from scratch and
     // discards input-node identity regardless of welding, so
     // `correspondence` is not threaded any further here — it is consumed
-    // via a weld-stats debug event (its `dropped_verts` field is computed
-    // lazily, inline, so the O(n) scan only runs when DEBUG is enabled) so
-    // it stays genuinely used rather than dead.
+    // via a weld-stats debug event (all fields computed lazily, inline, so
+    // nothing runs unless DEBUG is enabled) so it stays genuinely used
+    // rather than dead. `weld_merged_verts` (reusing `WeldednessReport`'s
+    // naming, see `reify_ir::geometry::WeldednessReport`) is the true merge
+    // magnitude, `original_verts - welded_verts`; `compacted_away_verts`
+    // counts only the narrower u32::MAX subset — vertices whose survivor
+    // was itself dropped as a sliver/degenerate, which for a normal
+    // per-face-block weld is ~0 even though `weld_merged_verts` is large.
     let welded: Cow<'_, Mesh> = if surface_needs_weld(surface, repair_cfg) {
         let (w, correspondence) =
             repair_surface_mesh_with_correspondence(surface, repair_cfg.unwrap_or_default());
@@ -478,7 +483,8 @@ pub fn mesh_surface_to_volume_with_attribution(
             target: "reify_kernel_gmsh::mesh_boundary",
             original_verts = correspondence.len(),
             welded_verts = w.vertices.len() / 3,
-            dropped_verts = correspondence.iter().filter(|&&c| c == u32::MAX).count(),
+            weld_merged_verts = correspondence.len() - (w.vertices.len() / 3),
+            compacted_away_verts = correspondence.iter().filter(|&&c| c == u32::MAX).count(),
             "mesh_surface_to_volume_with_attribution: weld pre-stage applied"
         );
 
