@@ -7647,6 +7647,15 @@ impl Engine {
 
                     match kernel.execute_with_history(&geom_op) {
                         Ok((handle, attribute_history)) => {
+                            // Task 4351 step-4: the op kernel actually dispatched
+                            // to for this op (identical expression to the one
+                            // that tags `step_handles` below), reused for both
+                            // write-path attribute-recording calls immediately
+                            // below so a manifold-routed op records under
+                            // `KernelHandle{Manifold, id}` and an occt-routed op
+                            // under `KernelHandle{Occt, id}` — replacing the
+                            // former interim single-kernel `KernelId::Occt`.
+                            let op_kernel = kernel_id_for_registry_name(&resolved_kernel_name);
                             // v0.2 persistent-naming-v2 (PRD task 6, #2574): seed
                             // per-face/per-edge `TopologyAttribute` records for
                             // primitive constructors (Box / Cylinder / Sphere).
@@ -7663,9 +7672,7 @@ impl Engine {
                             let feature_id = FeatureId::from(realization_id);
                             if let Err(e) = seed_primitive_attributes_for_handle(
                                 topology_attribute_table,
-                                // interim single-kernel Occt (#4351) — step-4
-                                // threads the real op kernel here.
-                                KernelId::Occt,
+                                op_kernel,
                                 kernel,
                                 handle.id,
                                 &feature_id,
@@ -7685,9 +7692,7 @@ impl Engine {
                             // match is a no-op for them.
                             if let Err(e) = populate_attribute_history(
                                 topology_attribute_table,
-                                // interim single-kernel Occt (#4351) — step-4
-                                // threads the real op kernel here.
-                                KernelId::Occt,
+                                op_kernel,
                                 kernel,
                                 &feature_id,
                                 &geom_op,
