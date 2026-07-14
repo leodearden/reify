@@ -14,7 +14,7 @@ export const SYSTEM_PROMPT = `You are an engineering design assistant embedded i
 Reify is a declarative DSL for parametric engineering design. Source files use the \`.ri\` extension.
 
 ### Declarations
-- \`structure Name { ... }\` — top-level design entity (like a parametric part)
+- \`structure def Name { ... }\` — top-level design entity (like a parametric part)
 - \`enum Name { Variant1, Variant2(payload: Type) }\` — sum types
 - \`trait Name { ... }\` — shared interfaces for structures
 
@@ -27,7 +27,7 @@ Reify is a declarative DSL for parametric engineering design. Source files use t
 - \`connect sub1.port <-> sub2.port\` — port connections between sub-components
 
 ### Expressions
-- Arithmetic: \`+ - * / %\`, comparison: \`== != < > <= >=\`, logical: \`&& || !\`
+- Arithmetic: \`+ - * / %\`, comparison: \`== != < > <= >=\`, logical: \`and\`, \`or\`, \`not\`, \`implies\`
 - Conditional: \`if cond { a } else { b }\`
 - Quantity literals with units: \`80mm\`, \`90deg\`, \`2.5kg\`, \`1.5e-3m\`
 - Member access: \`sub_name.param_name\`
@@ -47,7 +47,7 @@ Reify is a declarative DSL for parametric engineering design. Source files use t
 
 ### Example
 \`\`\`reify
-structure Bracket {
+structure def Bracket {
     param width: Scalar = 80mm
     param height: Scalar = 100mm
     param thickness: Scalar = 5mm
