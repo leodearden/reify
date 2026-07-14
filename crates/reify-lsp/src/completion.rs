@@ -350,6 +350,12 @@ const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
         sort_group: "01-geometry",
     },
     BuiltinFunctionInfo {
+        name: "rounded_box",
+        signature: "rounded_box(width: Length, depth: Length, height: Length, corner_r: Length) -> Solid",
+        doc: "Creates a rectangular box solid, centred at the origin on all 3 axes, with the 4 vertical (plan-view) edges rounded to radius `corner_r`. Requires `corner_r > 0` and `2*corner_r < min(width, depth)`.",
+        sort_group: "01-geometry",
+    },
+    BuiltinFunctionInfo {
         name: "torus",
         signature: "torus(major_radius: Length, minor_radius: Length) -> Solid",
         doc: "Creates a torus solid.",
@@ -377,6 +383,12 @@ const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
         name: "circle",
         signature: "circle(radius: Length) -> Surface",
         doc: "Creates a circular 2D profile.",
+        sort_group: "01-geometry",
+    },
+    BuiltinFunctionInfo {
+        name: "rounded_rect",
+        signature: "rounded_rect(width: Length, depth: Length, corner_r: Length) -> Surface",
+        doc: "Creates a planar rounded-rectangle 2D profile, centred at the origin in the XY plane (z=0), with the 4 corners rounded to radius `corner_r`. Requires `corner_r > 0` and `2*corner_r < min(width, depth)`.",
         sort_group: "01-geometry",
     },
     BuiltinFunctionInfo {
