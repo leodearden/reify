@@ -1604,17 +1604,16 @@ mod tests {
         // 5 >= 2 parents tracked.
         let history = history_with_single_face_modified(HistoryRecord {
             parent_index: 5,
- 
+            parent_subshape_index: 0,
+            result_subshape_index: 0,
+        });
+
+        let err = propagate_attributes_via_brepalgoapi_history(
             &mut table,
             KernelId::Occt,
             &parents,
             &layout.result_faces,
             &layout.result_edges,
-            &history,
-            &fuse_feature_id(),
-                   &parents,
-            &layout.result_edges,
-            &layout.result_faces,
             &history,
             &fuse_feature_id(),
         )
@@ -1646,17 +1645,16 @@ mod tests {
         // Parent 0 has only 1 face, so subshape 99 is out of range.
         let history = history_with_single_face_modified(HistoryRecord {
             parent_index: 0,
-  
+            parent_subshape_index: 99,
+            result_subshape_index: 0,
+        });
+
+        let err = propagate_attributes_via_brepalgoapi_history(
             &mut table,
             KernelId::Occt,
             &parents,
             &layout.result_faces,
             &layout.result_edges,
-            &history,
-            &fuse_feature_id(),
-                   &parents,
-            &layout.result_edges,
-            &layout.result_faces,
             &history,
             &fuse_feature_id(),
         )
@@ -1688,17 +1686,16 @@ mod tests {
         // Result has only 1 face, so subshape 7 is out of range.
         let history = history_with_single_face_modified(HistoryRecord {
             parent_index: 0,
- 
+            parent_subshape_index: 0,
+            result_subshape_index: 7,
+        });
+
+        let err = propagate_attributes_via_brepalgoapi_history(
             &mut table,
             KernelId::Occt,
             &parents,
             &layout.result_faces,
             &layout.result_edges,
-            &history,
-            &fuse_feature_id(),
-                   &parents,
-            &layout.result_edges,
-            &layout.result_faces,
             &history,
             &fuse_feature_id(),
         )
@@ -1731,17 +1728,16 @@ mod tests {
         // arg is threaded into the error message.
         let history = history_with_single_edge_modified(HistoryRecord {
             parent_index: 4,
+            parent_subshape_index: 0,
+            result_subshape_index: 0,
+        });
+
+        let err = propagate_attributes_via_brepalgoapi_history(
             &mut table,
             KernelId::Occt,
             &parents,
             &layout.result_faces,
             &layout.result_edges,
-            &history,
-            &fuse_feature_id(),
-        
-            &parents,
-            &layout.result_edges,
-            &layout.result_faces,
             &history,
             &fuse_feature_id(),
         )
@@ -1773,18 +1769,16 @@ mod tests {
         // Parent 0 has only 1 edge, so subshape 99 is out of range.
         let history = history_with_single_edge_modified(HistoryRecord {
             parent_index: 0,
+            parent_subshape_index: 99,
+            result_subshape_index: 0,
+        });
 
+        let err = propagate_attributes_via_brepalgoapi_history(
             &mut table,
             KernelId::Occt,
             &parents,
             &layout.result_faces,
             &layout.result_edges,
-            &history,
-            &fuse_feature_id(),
-        
-            &parents,
-            &layout.result_edges,
-            &layout.result_faces,
             &history,
             &fuse_feature_id(),
         )
@@ -1816,17 +1810,16 @@ mod tests {
         // Result has only 1 edge, so subshape 7 is out of range.
         let history = history_with_single_edge_modified(HistoryRecord {
             parent_index: 0,
+            parent_subshape_index: 0,
+            result_subshape_index: 7,
+        });
+
+        let err = propagate_attributes_via_brepalgoapi_history(
             &mut table,
             KernelId::Occt,
             &parents,
             &layout.result_faces,
             &layout.result_edges,
-            &history,
-            &fuse_feature_id(),
-        
-            &parents,
-            &layout.result_edges,
-            &layout.result_faces,
             &history,
             &fuse_feature_id(),
         )
@@ -1877,18 +1870,16 @@ mod tests {
         let layout = minimal_parent_result_layout();
         let parents = BooleanOpParents::Binary {
             faces: [&layout.parent_faces[0], &layout.parent_faces[1]],
-            edges: [&layout.parent_ed
+            edges: [&layout.parent_edges[0], &layout.parent_edges[1]],
+        };
+        let history = BooleanOpHistoryRecords::default();
+
+        propagate_attributes_via_brepalgoapi_history(
             &mut table,
             KernelId::Occt,
             &parents,
             &layout.result_faces,
             &layout.result_edges,
-            &history,
-            &fuse_feature_id(),
-        cct,
-            &parents,
-            &layout.result_edges,
-            &layout.result_faces,
             &history,
             &fuse_feature_id(),
         )
@@ -1920,8 +1911,7 @@ mod tests {
 
         let parent_handle = layout.parent_faces[0][0];
         let parent_feature_id = FeatureId::realization("Parent", 0);
-        table.record(
-            KernelHandle { kernel: KernelId::Occt, id: parent_handle },
+        table.record(KernelHandle { kernel: KernelId::Occt, id: parent_handle },
             TopologyAttribute {
                 feature_id: parent_feature_id.clone(),
                 role: Role::Side,
@@ -1942,18 +1932,18 @@ mod tests {
             face_generated: vec![HistoryRecord {
                 parent_index: 0,
                 parent_subshape_index: 0,
-                result_subsh
+                result_subshape_index: 2,
+            }],
+            ..Default::default()
+        };
+
+        let splitting = fuse_feature_id();
+        propagate_attributes_via_brepalgoapi_history(
             &mut table,
             KernelId::Occt,
             &parents,
             &layout.result_faces,
             &layout.result_edges,
-            &history,
-            &splitting,
-                   KernelId::Occt,
-            &parents,
-            &layout.result_edges,
-            &layout.result_faces,
             &history,
             &splitting,
         )
@@ -2010,8 +2000,7 @@ mod tests {
             splitting_feature_id: FeatureId::realization("Earlier", 0),
             split_index: 5,
         }];
-        table.record(
-            KernelHandle { kernel: KernelId::Occt, id: parent_handle },
+        table.record(KernelHandle { kernel: KernelId::Occt, id: parent_handle },
             TopologyAttribute {
                 feature_id: parent_feature_id.clone(),
                 role: Role::Side,
@@ -2026,19 +2015,18 @@ mod tests {
         let history = BooleanOpHistoryRecords {
             face_modified: vec![HistoryRecord {
                 parent_index: 0,
-               
+                parent_subshape_index: 0,
+                result_subshape_index: 1,
+            }],
+            ..Default::default()
+        };
+
+        propagate_attributes_via_brepalgoapi_history(
             &mut table,
             KernelId::Occt,
             &parents,
             &layout.result_faces,
             &layout.result_edges,
-            &history,
-            &fuse_feature_id(),
-        e,
-            KernelId::Occt,
-            &parents,
-            &layout.result_edges,
-            &layout.result_faces,
             &history,
             &fuse_feature_id(),
         )
@@ -2078,8 +2066,7 @@ mod tests {
         // user_label is also propagated unchanged).
         let parent_handle = layout.parent_faces[0][0];
         let parent_feature_id = FeatureId::realization("Parent", 0);
-        table.record(
-            KernelHandle { kernel: KernelId::Occt, id: parent_handle },
+        table.record(KernelHandle { kernel: KernelId::Occt, id: parent_handle },
             TopologyAttribute {
                 feature_id: parent_feature_id.clone(),
                 role: Role::Side,
@@ -2101,19 +2088,19 @@ mod tests {
                 HistoryRecord {
                     parent_index: 0,
                     parent_subshape_index: 0,
-                    result_subshap
+                    result_subshape_index: 2,
+                },
+            ],
+            ..Default::default()
+        };
+
+        let splitting = fuse_feature_id();
+        propagate_attributes_via_brepalgoapi_history(
             &mut table,
             KernelId::Occt,
             &parents,
             &layout.result_faces,
             &layout.result_edges,
-            &history,
-            &splitting,
-           &mut table,
-            KernelId::Occt,
-            &parents,
-            &layout.result_edges,
-            &layout.result_faces,
             &history,
             &splitting,
         )
@@ -2215,7 +2202,11 @@ mod tests {
     #[test]
     fn populate_extrude_writes_cap_top_for_start_cap_index() {
         let mut table = TopologyAttributeTable::default();
-     
+        let layout = extrude_layout_for_step11();
+        let feature_id = FeatureId::realization("Bracket", 0);
+        let history = step11_extrude_history();
+
+        populate_extrude_attributes(
             &mut table,
             KernelId::Occt,
             &feature_id,
@@ -2223,14 +2214,6 @@ mod tests {
             &layout.profile_edges,
             &layout.result_faces,
             &layout.result_edges,
-            &history,
-            &[],
-            &[],
-            &[],
-        e_edges,
-            &layout.result_faces,
-            &layout.result_edges,
-            &layout.profile_faces,
             &history,
             &[],
             &[],
@@ -2251,7 +2234,11 @@ mod tests {
     #[test]
     fn populate_extrude_writes_cap_bottom_for_end_cap_index() {
         let mut table = TopologyAttributeTable::default();
-     
+        let layout = extrude_layout_for_step11();
+        let feature_id = FeatureId::realization("Bracket", 0);
+        let history = step11_extrude_history();
+
+        populate_extrude_attributes(
             &mut table,
             KernelId::Occt,
             &feature_id,
@@ -2259,14 +2246,6 @@ mod tests {
             &layout.profile_edges,
             &layout.result_faces,
             &layout.result_edges,
-            &history,
-            &[],
-            &[],
-            &[],
-        e_edges,
-            &layout.result_faces,
-            &layout.result_edges,
-            &layout.profile_faces,
             &history,
             &[],
             &[],
@@ -2287,7 +2266,11 @@ mod tests {
     #[test]
     fn populate_extrude_writes_side_with_sequential_local_index_for_face_generated() {
         let mut table = TopologyAttributeTable::default();
-     
+        let layout = extrude_layout_for_step11();
+        let feature_id = FeatureId::realization("Bracket", 0);
+        let history = step11_extrude_history();
+
+        populate_extrude_attributes(
             &mut table,
             KernelId::Occt,
             &feature_id,
@@ -2295,14 +2278,6 @@ mod tests {
             &layout.profile_edges,
             &layout.result_faces,
             &layout.result_edges,
-            &history,
-            &[],
-            &[],
-            &[],
-        e_edges,
-            &layout.result_faces,
-            &layout.result_edges,
-            &layout.profile_faces,
             &history,
             &[],
             &[],
@@ -2332,7 +2307,11 @@ mod tests {
     #[test]
     fn populate_extrude_does_not_write_to_result_face_indices_not_in_records() {
         let mut table = TopologyAttributeTable::default();
-     
+        let layout = extrude_layout_for_step11();
+        let feature_id = FeatureId::realization("Bracket", 0);
+        let history = step11_extrude_history();
+
+        populate_extrude_attributes(
             &mut table,
             KernelId::Occt,
             &feature_id,
@@ -2340,14 +2319,6 @@ mod tests {
             &layout.profile_edges,
             &layout.result_faces,
             &layout.result_edges,
-            &history,
-            &[],
-            &[],
-            &[],
-        e_edges,
-            &layout.result_faces,
-            &layout.result_edges,
-            &layout.profile_faces,
             &history,
             &[],
             &[],
@@ -2374,7 +2345,12 @@ mod tests {
         let mut table = TopologyAttributeTable::default();
         let layout = extrude_layout_for_step11();
         let feature_id = FeatureId::realization("Bracket", 0);
-        let histor
+        let history = SweepOpHistoryRecords {
+            start_cap_face_indices: vec![99], // result has only 9 faces.
+            ..Default::default()
+        };
+
+        let err = populate_extrude_attributes(
             &mut table,
             KernelId::Occt,
             &feature_id,
@@ -2382,14 +2358,6 @@ mod tests {
             &layout.profile_edges,
             &layout.result_faces,
             &layout.result_edges,
-            &history,
-            &[],
-            &[],
-            &[],
-        e_edges,
-            &layout.result_faces,
-            &layout.result_edges,
-            &layout.profile_faces,
             &history,
             &[],
             &[],
@@ -2415,7 +2383,13 @@ mod tests {
         let history = SweepOpHistoryRecords {
             face_generated: vec![HistoryRecord {
                 parent_index: 0,
-                parent
+                parent_subshape_index: 0,
+                result_subshape_index: 42, // > result faces (9).
+            }],
+            ..Default::default()
+        };
+
+        let err = populate_extrude_attributes(
             &mut table,
             KernelId::Occt,
             &feature_id,
@@ -2423,14 +2397,6 @@ mod tests {
             &layout.profile_edges,
             &layout.result_faces,
             &layout.result_edges,
-            &history,
-            &[],
-            &[],
-            &[],
-        e_edges,
-            &layout.result_faces,
-            &layout.result_edges,
-            &layout.profile_faces,
             &history,
             &[],
             &[],
@@ -2451,7 +2417,11 @@ mod tests {
     #[test]
     fn populate_extrude_empty_history_is_a_noop() {
         let mut table = TopologyAttributeTable::default();
-        let l
+        let layout = extrude_layout_for_step11();
+        let feature_id = FeatureId::realization("Bracket", 0);
+        let history = SweepOpHistoryRecords::default();
+
+        populate_extrude_attributes(
             &mut table,
             KernelId::Occt,
             &feature_id,
@@ -2459,14 +2429,6 @@ mod tests {
             &layout.profile_edges,
             &layout.result_faces,
             &layout.result_edges,
-            &history,
-            &[],
-            &[],
-            &[],
-        e_edges,
-            &layout.result_faces,
-            &layout.result_edges,
-            &layout.profile_faces,
             &history,
             &[],
             &[],
@@ -2538,7 +2500,11 @@ mod tests {
     #[test]
     fn populate_partial_revolve_writes_cap_start_and_cap_end_for_cap_indices() {
         let mut table = TopologyAttributeTable::default();
-   
+        let layout = revolve_layout_for_step13();
+        let feature_id = FeatureId::realization("Bowl", 0);
+        let history = step13_partial_revolve_history();
+
+        populate_revolve_attributes(
             &mut table,
             KernelId::Occt,
             &feature_id,
@@ -2546,14 +2512,6 @@ mod tests {
             &layout.profile_edges,
             &layout.result_faces,
             &layout.result_edges,
-            &history,
-            &[],
-            &[],
-            &[],
-        .profile_edges,
-            &layout.result_faces,
-            &layout.result_edges,
-            &layout.profile_faces,
             &history,
             &[],
             &[],
@@ -2583,7 +2541,11 @@ mod tests {
     #[test]
     fn populate_partial_revolve_writes_revolved_face_with_sequential_local_index() {
         let mut table = TopologyAttributeTable::default();
-   
+        let layout = revolve_layout_for_step13();
+        let feature_id = FeatureId::realization("Bowl", 0);
+        let history = step13_partial_revolve_history();
+
+        populate_revolve_attributes(
             &mut table,
             KernelId::Occt,
             &feature_id,
@@ -2591,14 +2553,6 @@ mod tests {
             &layout.profile_edges,
             &layout.result_faces,
             &layout.result_edges,
-            &history,
-            &[],
-            &[],
-            &[],
-        .profile_edges,
-            &layout.result_faces,
-            &layout.result_edges,
-            &layout.profile_faces,
             &history,
             &[],
             &[],
@@ -2644,7 +2598,14 @@ mod tests {
                     parent_index: 0,
                     parent_subshape_index: 1,
                     result_subshape_index: 1,
+                },
+            ],
+            start_cap_face_indices: vec![],
+            end_cap_face_indices: vec![],
+            ..Default::default()
+        };
 
+        populate_revolve_attributes(
             &mut table,
             KernelId::Occt,
             &feature_id,
@@ -2652,14 +2613,6 @@ mod tests {
             &layout.profile_edges,
             &layout.result_faces,
             &layout.result_edges,
-            &history,
-            &[],
-            &[],
-            &[],
-        t.profile_edges,
-            &layout.result_faces,
-            &layout.result_edges,
-            &layout.profile_faces,
             &history,
             &[],
             &[],
@@ -2687,7 +2640,12 @@ mod tests {
         let mut table = TopologyAttributeTable::default();
         let layout = revolve_layout_for_step13();
         let feature_id = FeatureId::realization("Bowl", 0);
-        le
+        let history = SweepOpHistoryRecords {
+            start_cap_face_indices: vec![123], // result has only 8 faces.
+            ..Default::default()
+        };
+
+        let err = populate_revolve_attributes(
             &mut table,
             KernelId::Occt,
             &feature_id,
@@ -2695,14 +2653,6 @@ mod tests {
             &layout.profile_edges,
             &layout.result_faces,
             &layout.result_edges,
-            &history,
-            &[],
-            &[],
-            &[],
-        ut.profile_edges,
-            &layout.result_faces,
-            &layout.result_edges,
-            &layout.profile_faces,
             &history,
             &[],
             &[],
@@ -2728,7 +2678,13 @@ mod tests {
         let history = SweepOpHistoryRecords {
             face_generated: vec![HistoryRecord {
                 parent_index: 0,
-              
+                parent_subshape_index: 0,
+                result_subshape_index: 256, // > result faces (8).
+            }],
+            ..Default::default()
+        };
+
+        let err = populate_revolve_attributes(
             &mut table,
             KernelId::Occt,
             &feature_id,
@@ -2736,14 +2692,6 @@ mod tests {
             &layout.profile_edges,
             &layout.result_faces,
             &layout.result_edges,
-            &history,
-            &[],
-            &[],
-            &[],
-        ut.profile_edges,
-            &layout.result_faces,
-            &layout.result_edges,
-            &layout.profile_faces,
             &history,
             &[],
             &[],
@@ -2813,7 +2761,12 @@ mod tests {
 
     #[test]
     fn populate_sweep_writes_cap_start_for_start_cap_index() {
-        let mut table = TopologyAt
+        let mut table = TopologyAttributeTable::default();
+        let layout = sweep_layout_for_step7();
+        let feature_id = FeatureId::realization("Pipe", 0);
+        let history = step7_sweep_history();
+
+        populate_sweep_attributes(
             &mut table,
             KernelId::Occt,
             &feature_id,
@@ -2821,14 +2774,6 @@ mod tests {
             &layout.profile_edges,
             &layout.result_faces,
             &layout.result_edges,
-            &history,
-            &[],
-            &[],
-            &[],
-             &layout.profile_edges,
-            &layout.result_faces,
-            &layout.result_edges,
-            &layout.profile_faces,
             &history,
             &[],
             &[],
@@ -2848,7 +2793,12 @@ mod tests {
 
     #[test]
     fn populate_sweep_writes_cap_end_for_end_cap_index() {
-        let mut table = TopologyAt
+        let mut table = TopologyAttributeTable::default();
+        let layout = sweep_layout_for_step7();
+        let feature_id = FeatureId::realization("Pipe", 0);
+        let history = step7_sweep_history();
+
+        populate_sweep_attributes(
             &mut table,
             KernelId::Occt,
             &feature_id,
@@ -2856,14 +2806,6 @@ mod tests {
             &layout.profile_edges,
             &layout.result_faces,
             &layout.result_edges,
-            &history,
-            &[],
-            &[],
-            &[],
-             &layout.profile_edges,
-            &layout.result_faces,
-            &layout.result_edges,
-            &layout.profile_faces,
             &history,
             &[],
             &[],
@@ -2883,7 +2825,12 @@ mod tests {
 
     #[test]
     fn populate_sweep_writes_swept_face_with_sequential_local_index_for_face_generated() {
-        let mut table = TopologyAt
+        let mut table = TopologyAttributeTable::default();
+        let layout = sweep_layout_for_step7();
+        let feature_id = FeatureId::realization("Pipe", 0);
+        let history = step7_sweep_history();
+
+        populate_sweep_attributes(
             &mut table,
             KernelId::Occt,
             &feature_id,
@@ -2891,14 +2838,6 @@ mod tests {
             &layout.profile_edges,
             &layout.result_faces,
             &layout.result_edges,
-            &history,
-            &[],
-            &[],
-            &[],
-             &layout.profile_edges,
-            &layout.result_faces,
-            &layout.result_edges,
-            &layout.profile_faces,
             &history,
             &[],
             &[],
@@ -2927,7 +2866,12 @@ mod tests {
 
     #[test]
     fn populate_sweep_empty_history_is_a_noop() {
-        let mut table = TopologyAttributeTabl
+        let mut table = TopologyAttributeTable::default();
+        let layout = sweep_layout_for_step7();
+        let feature_id = FeatureId::realization("Pipe", 0);
+        let history = SweepOpHistoryRecords::default();
+
+        populate_sweep_attributes(
             &mut table,
             KernelId::Occt,
             &feature_id,
@@ -2935,14 +2879,6 @@ mod tests {
             &layout.profile_edges,
             &layout.result_faces,
             &layout.result_edges,
-            &history,
-            &[],
-            &[],
-            &[],
-             &layout.profile_edges,
-            &layout.result_faces,
-            &layout.result_edges,
-            &layout.profile_faces,
             &history,
             &[],
             &[],
@@ -2956,7 +2892,13 @@ mod tests {
     fn populate_sweep_returns_query_failed_when_start_cap_index_out_of_range() {
         let mut table = TopologyAttributeTable::default();
         let layout = sweep_layout_for_step7();
-        let feature_id = FeatureId::realization("Pipe", 0
+        let feature_id = FeatureId::realization("Pipe", 0);
+        let history = SweepOpHistoryRecords {
+            start_cap_face_indices: vec![99], // result has only 9 faces.
+            ..Default::default()
+        };
+
+        let err = populate_sweep_attributes(
             &mut table,
             KernelId::Occt,
             &feature_id,
@@ -2964,14 +2906,6 @@ mod tests {
             &layout.profile_edges,
             &layout.result_faces,
             &layout.result_edges,
-            &history,
-            &[],
-            &[],
-            &[],
-             &layout.profile_edges,
-            &layout.result_faces,
-            &layout.result_edges,
-            &layout.profile_faces,
             &history,
             &[],
             &[],
@@ -2997,7 +2931,13 @@ mod tests {
         let history = SweepOpHistoryRecords {
             face_generated: vec![HistoryRecord {
                 parent_index: 0,
- 
+                parent_subshape_index: 0,
+                result_subshape_index: 42, // > result faces (9).
+            }],
+            ..Default::default()
+        };
+
+        let err = populate_sweep_attributes(
             &mut table,
             KernelId::Occt,
             &feature_id,
@@ -3005,14 +2945,6 @@ mod tests {
             &layout.profile_edges,
             &layout.result_faces,
             &layout.result_edges,
-            &history,
-            &[],
-            &[],
-            &[],
-             &layout.profile_edges,
-            &layout.result_faces,
-            &layout.result_edges,
-            &layout.profile_faces,
             &history,
             &[],
             &[],
@@ -3038,7 +2970,13 @@ mod tests {
         let history = SweepOpHistoryRecords {
             face_generated: vec![HistoryRecord {
                 parent_index: 0,
-  
+                parent_subshape_index: 99, // > profile edges (4).
+                result_subshape_index: 7,
+            }],
+            ..Default::default()
+        };
+
+        let err = populate_sweep_attributes(
             &mut table,
             KernelId::Occt,
             &feature_id,
@@ -3046,14 +2984,6 @@ mod tests {
             &layout.profile_edges,
             &layout.result_faces,
             &layout.result_edges,
-            &history,
-            &[],
-            &[],
-            &[],
-             &layout.profile_edges,
-            &layout.result_faces,
-            &layout.result_edges,
-            &layout.profile_faces,
             &history,
             &[],
             &[],
@@ -3145,7 +3075,12 @@ mod tests {
 
     #[test]
     fn populate_loft_writes_cap_start_for_start_cap_index() {
-        let mut table = Topol
+        let mut table = TopologyAttributeTable::default();
+        let layout = loft_layout_for_step9();
+        let feature_id = FeatureId::realization("Loft", 0);
+        let history = step9_loft_history();
+
+        populate_loft_attributes(
             &mut table,
             KernelId::Occt,
             &feature_id,
@@ -3153,14 +3088,6 @@ mod tests {
             &layout.section_edges,
             &layout.result_faces,
             &layout.result_edges,
-            &history,
-            &[],
-            &[],
-            &[],
-               &layout.section_edges,
-            &layout.section_faces,
-            &layout.result_edges,
-            &layout.result_faces,
             &history,
             &[],
             &[],
@@ -3180,7 +3107,12 @@ mod tests {
 
     #[test]
     fn populate_loft_writes_cap_end_for_end_cap_index() {
-        let mut table = Topol
+        let mut table = TopologyAttributeTable::default();
+        let layout = loft_layout_for_step9();
+        let feature_id = FeatureId::realization("Loft", 0);
+        let history = step9_loft_history();
+
+        populate_loft_attributes(
             &mut table,
             KernelId::Occt,
             &feature_id,
@@ -3188,14 +3120,6 @@ mod tests {
             &layout.section_edges,
             &layout.result_faces,
             &layout.result_edges,
-            &history,
-            &[],
-            &[],
-            &[],
-               &layout.section_edges,
-            &layout.section_faces,
-            &layout.result_edges,
-            &layout.result_faces,
             &history,
             &[],
             &[],
@@ -3215,7 +3139,12 @@ mod tests {
 
     #[test]
     fn populate_loft_writes_lofted_face_with_sequential_local_index_across_sections() {
-        let mut table = Topol
+        let mut table = TopologyAttributeTable::default();
+        let layout = loft_layout_for_step9();
+        let feature_id = FeatureId::realization("Loft", 0);
+        let history = step9_loft_history();
+
+        populate_loft_attributes(
             &mut table,
             KernelId::Occt,
             &feature_id,
@@ -3223,14 +3152,6 @@ mod tests {
             &layout.section_edges,
             &layout.result_faces,
             &layout.result_edges,
-            &history,
-            &[],
-            &[],
-            &[],
-               &layout.section_edges,
-            &layout.section_faces,
-            &layout.result_edges,
-            &layout.result_faces,
             &history,
             &[],
             &[],
@@ -3264,7 +3185,12 @@ mod tests {
 
     #[test]
     fn populate_loft_empty_history_is_a_noop() {
-        let mut table = TopologyAttrib
+        let mut table = TopologyAttributeTable::default();
+        let layout = loft_layout_for_step9();
+        let feature_id = FeatureId::realization("Loft", 0);
+        let history = LoftOpHistoryRecords::default();
+
+        populate_loft_attributes(
             &mut table,
             KernelId::Occt,
             &feature_id,
@@ -3272,14 +3198,6 @@ mod tests {
             &layout.section_edges,
             &layout.result_faces,
             &layout.result_edges,
-            &history,
-            &[],
-            &[],
-            &[],
-                 &layout.section_edges,
-            &layout.section_faces,
-            &layout.result_edges,
-            &layout.result_faces,
             &history,
             &[],
             &[],
@@ -3296,7 +3214,14 @@ mod tests {
         let feature_id = FeatureId::realization("Loft", 0);
         let history = LoftOpHistoryRecords {
             face_generated: vec![HistoryRecord {
-                parent_i
+                parent_index: 9, // > sections (2).
+                parent_subshape_index: 0,
+                result_subshape_index: 2,
+            }],
+            ..Default::default()
+        };
+
+        let err = populate_loft_attributes(
             &mut table,
             KernelId::Occt,
             &feature_id,
@@ -3304,14 +3229,6 @@ mod tests {
             &layout.section_edges,
             &layout.result_faces,
             &layout.result_edges,
-            &history,
-            &[],
-            &[],
-            &[],
-                 &layout.section_edges,
-            &layout.section_faces,
-            &layout.result_edges,
-            &layout.result_faces,
             &history,
             &[],
             &[],
@@ -3341,7 +3258,14 @@ mod tests {
         // Section 0 has 2 edges; index 7 is out of range.
         let history = LoftOpHistoryRecords {
             face_generated: vec![HistoryRecord {
-     
+                parent_index: 0,
+                parent_subshape_index: 7,
+                result_subshape_index: 2,
+            }],
+            ..Default::default()
+        };
+
+        let err = populate_loft_attributes(
             &mut table,
             KernelId::Occt,
             &feature_id,
@@ -3349,14 +3273,6 @@ mod tests {
             &layout.section_edges,
             &layout.result_faces,
             &layout.result_edges,
-            &history,
-            &[],
-            &[],
-            &[],
-                 &layout.section_edges,
-            &layout.section_faces,
-            &layout.result_edges,
-            &layout.result_faces,
             &history,
             &[],
             &[],
@@ -3381,7 +3297,14 @@ mod tests {
         let feature_id = FeatureId::realization("Loft", 0);
         let history = LoftOpHistoryRecords {
             face_generated: vec![HistoryRecord {
-                parent_index:
+                parent_index: 0,
+                parent_subshape_index: 0,
+                result_subshape_index: 99, // > result faces (6).
+            }],
+            ..Default::default()
+        };
+
+        let err = populate_loft_attributes(
             &mut table,
             KernelId::Occt,
             &feature_id,
@@ -3389,14 +3312,6 @@ mod tests {
             &layout.section_edges,
             &layout.result_faces,
             &layout.result_edges,
-            &history,
-            &[],
-            &[],
-            &[],
-                 &layout.section_edges,
-            &layout.section_faces,
-            &layout.result_edges,
-            &layout.result_faces,
             &history,
             &[],
             &[],
@@ -3418,7 +3333,13 @@ mod tests {
     fn populate_loft_returns_query_failed_when_start_cap_index_out_of_range() {
         let mut table = TopologyAttributeTable::default();
         let layout = loft_layout_for_step9();
-        let feature_id = FeatureId::realization
+        let feature_id = FeatureId::realization("Loft", 0);
+        let history = LoftOpHistoryRecords {
+            start_cap_face_indices: vec![123], // > result faces (6).
+            ..Default::default()
+        };
+
+        let err = populate_loft_attributes(
             &mut table,
             KernelId::Occt,
             &feature_id,
@@ -3426,14 +3347,6 @@ mod tests {
             &layout.section_edges,
             &layout.result_faces,
             &layout.result_edges,
-            &history,
-            &[],
-            &[],
-            &[],
-                 &layout.section_edges,
-            &layout.section_faces,
-            &layout.result_edges,
-            &layout.result_faces,
             &history,
             &[],
             &[],
@@ -3468,7 +3381,11 @@ mod tests {
                 .map(|i| vec![GeometryHandleId(800_u64 + i as u64)])
                 .collect();
             let result_faces = vec![GeometryHandleId(7000)];
-            let result_edges: Vec<GeometryHa
+            let result_edges: Vec<GeometryHandleId> = vec![];
+            let history = LoftOpHistoryRecords::default();
+
+            let call_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = populate_loft_attributes(
                     &mut table,
                     KernelId::Occt,
                     &feature_id,
@@ -3476,13 +3393,6 @@ mod tests {
                     &section_edges,
                     &result_faces,
                     &result_edges,
-                    &history,
-                    &[],
-                    &[],
-                    &[],
-                         &section_faces,
-                    &result_edges,
-                    &result_faces,
                     &history,
                     &[],
                     &[],
@@ -3872,7 +3782,12 @@ mod tests {
         };
 
         // 8 result vertices: 0..3 belong to the start cap, 4..7 to the end cap.
-        let result_vertices: Vec<Geome
+        let result_vertices: Vec<GeometryHandleId> =
+            (0..8).map(|i| GeometryHandleId(4000 + i)).collect();
+        let start_cap_vertex_index_lists: Vec<Vec<u32>> = vec![vec![0, 1, 2, 3]];
+        let end_cap_vertex_index_lists: Vec<Vec<u32>> = vec![vec![4, 5, 6, 7]];
+
+        populate_extrude_attributes(
             &mut table,
             KernelId::Occt,
             &feature_id,
@@ -3884,16 +3799,6 @@ mod tests {
             &result_vertices,
             &start_cap_vertex_index_lists,
             &end_cap_vertex_index_lists,
-        
-            &feature_id,
-            &profile_edges,
-            &result_faces,
-            &result_edges,
-            &profile_faces,
-            &history,
-            &result_vertices,
-            &end_cap_vertex_index_lists,
-            &start_cap_vertex_index_lists,
         )
         .expect("well-formed extrude history + vertex lists should succeed");
 
@@ -3957,7 +3862,12 @@ mod tests {
             ..Default::default()
         };
 
-        let result_vertices: Vec<G
+        let result_vertices: Vec<GeometryHandleId> =
+            (0..8).map(|i| GeometryHandleId(5300 + i)).collect();
+        let start_cap_vertex_index_lists: Vec<Vec<u32>> = vec![vec![0, 1, 2, 3]];
+        let end_cap_vertex_index_lists: Vec<Vec<u32>> = vec![vec![4, 5, 6, 7]];
+
+        populate_revolve_attributes(
             &mut table,
             KernelId::Occt,
             &feature_id,
@@ -3969,16 +3879,6 @@ mod tests {
             &result_vertices,
             &start_cap_vertex_index_lists,
             &end_cap_vertex_index_lists,
-        cct,
-            &feature_id,
-            &profile_edges,
-            &result_faces,
-            &result_edges,
-            &profile_faces,
-            &history,
-            &result_vertices,
-            &end_cap_vertex_index_lists,
-            &start_cap_vertex_index_lists,
         )
         .expect("well-formed revolve history + vertex lists should succeed");
 
@@ -4020,7 +3920,12 @@ mod tests {
             ..Default::default()
         };
 
-        let result_vertices: Vec
+        let result_vertices: Vec<GeometryHandleId> =
+            (0..8).map(|i| GeometryHandleId(6300 + i)).collect();
+        let start_cap_vertex_index_lists: Vec<Vec<u32>> = vec![vec![0, 1, 2, 3]];
+        let end_cap_vertex_index_lists: Vec<Vec<u32>> = vec![vec![4, 5, 6, 7]];
+
+        populate_sweep_attributes(
             &mut table,
             KernelId::Occt,
             &feature_id,
@@ -4032,16 +3937,6 @@ mod tests {
             &result_vertices,
             &start_cap_vertex_index_lists,
             &end_cap_vertex_index_lists,
-        cct,
-            &feature_id,
-            &profile_edges,
-            &result_faces,
-            &result_edges,
-            &profile_faces,
-            &history,
-            &result_vertices,
-            &end_cap_vertex_index_lists,
-            &start_cap_vertex_index_lists,
         )
         .expect("well-formed sweep history + vertex lists should succeed");
 
@@ -4088,7 +3983,12 @@ mod tests {
             ..Default::default()
         };
 
-        let result_vertices: Ve
+        let result_vertices: Vec<GeometryHandleId> =
+            (0..8).map(|i| GeometryHandleId(7500 + i)).collect();
+        let start_cap_vertex_index_lists: Vec<Vec<u32>> = vec![vec![0, 1, 2, 3]];
+        let end_cap_vertex_index_lists: Vec<Vec<u32>> = vec![vec![4, 5, 6, 7]];
+
+        populate_loft_attributes(
             &mut table,
             KernelId::Occt,
             &feature_id,
@@ -4100,16 +4000,6 @@ mod tests {
             &result_vertices,
             &start_cap_vertex_index_lists,
             &end_cap_vertex_index_lists,
-        cct,
-            &feature_id,
-            &section_edges,
-            &section_faces,
-            &result_edges,
-            &result_faces,
-            &history,
-            &result_vertices,
-            &end_cap_vertex_index_lists,
-            &start_cap_vertex_index_lists,
         )
         .expect("well-formed loft history + vertex lists should succeed");
 
@@ -4204,7 +4094,14 @@ mod tests {
                 let result_face = GeometryHandleId(11);
 
                 let mut table = TopologyAttributeTable::default();
-                table.record(KernelHandle { kernel: KernelId::Occt, id: 
+                table.record(KernelHandle { kernel: KernelId::Occt, id: parent_face }, make_attr(&fid, Role::Side, 0));
+
+                let history = LocalFeatureOpHistoryRecords {
+                    face_modified: vec![rec(0, 0)],
+                    ..Default::default()
+                };
+
+                propagate_attributes_via_local_feature_history(
                     &mut table,
                     KernelId::Occt,
                     &[parent_face], // parent_face_handles
@@ -4212,15 +4109,6 @@ mod tests {
                     &[],            // parent_vertex_handles
                     &[result_face], // result_face_handles
                     &[],            // result_edge_handles
-                    &history,
-                    &splitting_fid,
-                         &mut table,
-                    KernelId::Occt,
-                    &[],
-                    &[],
-                    &[result_face],
-                    &[],
-                    &[parent_face],
                     &history,
                     &splitting_fid,
                 )
@@ -4259,7 +4147,14 @@ mod tests {
                 let result_face_b = GeometryHandleId(12);
 
                 let mut table = TopologyAttributeTable::default();
-                table.record(KernelHandle { kernel: KernelId::Occt, id: parent_
+                table.record(KernelHandle { kernel: KernelId::Occt, id: parent_face }, make_attr(&fid, Role::Side, 0));
+
+                let history = LocalFeatureOpHistoryRecords {
+                    face_modified: vec![rec(0, 0), rec(0, 1)],
+                    ..Default::default()
+                };
+
+                propagate_attributes_via_local_feature_history(
                     &mut table,
                     KernelId::Occt,
                     &[parent_face],
@@ -4267,15 +4162,6 @@ mod tests {
                     &[],
                     &[result_face_a, result_face_b],
                     &[],
-                    &history,
-                    &splitting_fid,
-                 table,
-                    KernelId::Occt,
-                    &[],
-                    &[],
-                    &[result_face_a, result_face_b],
-                    &[],
-                    &[parent_face],
                     &history,
                     &splitting_fid,
                 )
@@ -4328,7 +4214,13 @@ mod tests {
             let mut table = TopologyAttributeTable::default();
             table.record(KernelHandle { kernel: KernelId::Occt, id: parent_edge }, make_attr(&fid, Role::NewEdge, 5));
 
-     
+            // One parent edge sponsors two generated result faces.
+            let history = LocalFeatureOpHistoryRecords {
+                face_generated: vec![rec(0, 0), rec(0, 1)],
+                ..Default::default()
+            };
+
+            propagate_attributes_via_local_feature_history(
                 &mut table,
                 KernelId::Occt,
                 &[],                             // parent_face_handles (unused here)
@@ -4336,16 +4228,6 @@ mod tests {
                 &[],                             // parent_vertex_handles
                 &[result_face_a, result_face_b], // result_face_handles
                 &[],                             // result_edge_handles
-                &history,
-                &splitting_fid,
-            _feature_history(
-                &mut table,
-                KernelId::Occt,
-                &[parent_edge],
-                &[],
-                &[result_face_a, result_face_b],
-                &[],
-                &[],
                 &history,
                 &splitting_fid,
             )
@@ -4388,7 +4270,14 @@ mod tests {
             let result_edge = GeometryHandleId(21);
 
             let mut table = TopologyAttributeTable::default();
-            table.record(KernelHandle { ker
+            table.record(KernelHandle { kernel: KernelId::Occt, id: parent_edge }, make_attr(&fid, Role::NewEdge, 2));
+
+            let history = LocalFeatureOpHistoryRecords {
+                edge_modified: vec![rec(0, 0)],
+                ..Default::default()
+            };
+
+            propagate_attributes_via_local_feature_history(
                 &mut table,
                 KernelId::Occt,
                 &[],            // parent_face_handles
@@ -4396,16 +4285,6 @@ mod tests {
                 &[],            // parent_vertex_handles
                 &[],            // result_face_handles
                 &[result_edge], // result_edge_handles
-                &history,
-                &fillet_feature_id(),
-            tes_via_local_feature_history(
-                &mut table,
-                KernelId::Occt,
-                &[parent_edge],
-                &[],
-                &[],
-                &[result_edge],
-                &[],
                 &history,
                 &fillet_feature_id(),
             )
@@ -4443,7 +4322,14 @@ mod tests {
                 y: AxisSign::Pos,
                 z: AxisSign::Pos,
             };
-            table.record(KernelHandle { kernel: Kerne
+            table.record(KernelHandle { kernel: KernelId::Occt, id: parent_vertex }, make_attr(&fid, corner_role, 3));
+
+            let history = LocalFeatureOpHistoryRecords {
+                edge_generated: vec![rec(0, 0), rec(0, 1)],
+                ..Default::default()
+            };
+
+            propagate_attributes_via_local_feature_history(
                 &mut table,
                 KernelId::Occt,
                 &[],                             // parent_face_handles
@@ -4451,16 +4337,6 @@ mod tests {
                 &[parent_vertex],                // parent_vertex_handles
                 &[],                             // result_face_handles
                 &[result_edge_a, result_edge_b], // result_edge_handles
-                &history,
-                &splitting_fid,
-            al_feature_history(
-                &mut table,
-                KernelId::Occt,
-                &[],
-                &[parent_vertex],
-                &[],
-                &[result_edge_a, result_edge_b],
-                &[],
                 &history,
                 &splitting_fid,
             )
@@ -4524,7 +4400,14 @@ mod tests {
                 let mut table = TopologyAttributeTable::default();
                 let mut attr = make_attr(&fid, Role::Side, 0);
                 attr.mod_history.push(prior_entry.clone());
-                table.record(Ker
+                table.record(KernelHandle { kernel: KernelId::Occt, id: parent_face }, attr);
+
+                let history = LocalFeatureOpHistoryRecords {
+                    face_modified: vec![rec(0, 0)],
+                    ..Default::default()
+                };
+
+                propagate_attributes_via_local_feature_history(
                     &mut table,
                     KernelId::Occt,
                     &[parent_face],
@@ -4532,15 +4415,6 @@ mod tests {
                     &[],
                     &[result_face],
                     &[],
-                    &history,
-                    &fillet_feature_id(),
-                                 &mut table,
-                    KernelId::Occt,
-                    &[],
-                    &[],
-                    &[result_face],
-                    &[],
-                    &[parent_face],
                     &history,
                     &fillet_feature_id(),
                 )
@@ -4574,22 +4448,20 @@ mod tests {
                 let mut table = TopologyAttributeTable::default();
                 let mut attr = make_attr(&fid, Role::NewEdge, 0);
                 attr.mod_history.push(prior_entry.clone());
-                table.record(KernelH
+                table.record(KernelHandle { kernel: KernelId::Occt, id: parent_edge }, attr);
+
+                let history = LocalFeatureOpHistoryRecords {
+                    face_generated: vec![rec(0, 0), rec(0, 1)],
+                    ..Default::default()
+                };
+
+                propagate_attributes_via_local_feature_history(
                     &mut table,
                     KernelId::Occt,
                     &[],
                     &[parent_edge],
                     &[],
                     &[result_face_a, result_face_b],
-                    &[],
-                    &history,
-                    &splitting_fid,
-                              &mut table,
-                    KernelId::Occt,
-                    &[parent_edge],
-                    &[],
-                    &[result_face_a, result_face_b],
-                    &[],
                     &[],
                     &history,
                     &splitting_fid,
@@ -4627,7 +4499,15 @@ mod tests {
 
             let history = LocalFeatureOpHistoryRecords {
                 // parent_subshape_index=99 but parent_face_handles has only 1 entry.
-                
+                face_modified: vec![HistoryRecord {
+                    parent_index: 0,
+                    parent_subshape_index: 99,
+                    result_subshape_index: 0,
+                }],
+                ..Default::default()
+            };
+
+            let err = propagate_attributes_via_local_feature_history(
                 &mut table,
                 KernelId::Occt,
                 &[GeometryHandleId(1)], // only 1 parent face (index 0 valid, 99 is OOB)
@@ -4635,16 +4515,6 @@ mod tests {
                 &[],
                 &[GeometryHandleId(11)],
                 &[],
-                &history,
-                &fillet_feature_id(),
-            _via_local_feature_history(
-                &mut table,
-                KernelId::Occt,
-                &[],
-                &[],
-                &[GeometryHandleId(11)],
-                &[],
-                &[GeometryHandleId(1)],
                 &history,
                 &fillet_feature_id(),
             )
@@ -4668,23 +4538,21 @@ mod tests {
 
             let history = LocalFeatureOpHistoryRecords {
                 // result_subshape_index=7 but result_face_handles has only 1 entry.
-                
+                face_generated: vec![HistoryRecord {
+                    parent_index: 0,
+                    parent_subshape_index: 0,
+                    result_subshape_index: 7,
+                }],
+                ..Default::default()
+            };
+
+            let err = propagate_attributes_via_local_feature_history(
                 &mut table,
                 KernelId::Occt,
                 &[],
                 &[parent_edge],
                 &[],
                 &[GeometryHandleId(11)], // only 1 result face (index 0 valid, 7 is OOB)
-                &[],
-                &history,
-                &fillet_feature_id(),
-            tributes_via_local_feature_history(
-                &mut table,
-                KernelId::Occt,
-                &[parent_edge],
-                &[],
-                &[GeometryHandleId(11)],
-                &[],
                 &[],
                 &history,
                 &fillet_feature_id(),
@@ -4709,7 +4577,15 @@ mod tests {
             let history = LocalFeatureOpHistoryRecords {
                 // parent_index=1 but local-feature records always target a
                 // single parent shape (parent_index must be 0).
-               
+                face_modified: vec![HistoryRecord {
+                    parent_index: 1,
+                    parent_subshape_index: 0,
+                    result_subshape_index: 0,
+                }],
+                ..Default::default()
+            };
+
+            let err = propagate_attributes_via_local_feature_history(
                 &mut table,
                 KernelId::Occt,
                 &[GeometryHandleId(1)],
@@ -4717,16 +4593,6 @@ mod tests {
                 &[],
                 &[GeometryHandleId(11)],
                 &[],
-                &history,
-                &fillet_feature_id(),
-            _via_local_feature_history(
-                &mut table,
-                KernelId::Occt,
-                &[],
-                &[],
-                &[GeometryHandleId(11)],
-                &[],
-                &[GeometryHandleId(1)],
                 &history,
                 &fillet_feature_id(),
             )
@@ -4755,7 +4621,15 @@ mod tests {
 
             let history = LocalFeatureOpHistoryRecords {
                 // result_subshape_index=7 but result_face_handles has only 1 entry.
-               
+                face_modified: vec![HistoryRecord {
+                    parent_index: 0,
+                    parent_subshape_index: 0,
+                    result_subshape_index: 7,
+                }],
+                ..Default::default()
+            };
+
+            let err = propagate_attributes_via_local_feature_history(
                 &mut table,
                 KernelId::Occt,
                 &[GeometryHandleId(1)], // 1 parent face (index 0 valid)
@@ -4763,16 +4637,6 @@ mod tests {
                 &[],
                 &[GeometryHandleId(11)], // only 1 result face (index 0 valid, 7 is OOB)
                 &[],
-                &history,
-                &fillet_feature_id(),
-            _via_local_feature_history(
-                &mut table,
-                KernelId::Occt,
-                &[],
-                &[],
-                &[GeometryHandleId(11)],
-                &[],
-                &[GeometryHandleId(1)],
                 &history,
                 &fillet_feature_id(),
             )
