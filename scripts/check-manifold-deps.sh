@@ -65,4 +65,31 @@ if [ "$STAMPED_VER" != "$CSG_SYS_VER" ]; then
     exit 1
 fi
 
+# ---------- TBB pin dir preflight (task #5192, mechanism A'') ----------
+#
+# Each workspace binary needs a direct NEEDED libtbb.so.12 resolved via this
+# tbb-ONLY pin dir (prepended first in the binary's own RUNPATH) so it loads
+# before the transitive libTKernel->libtbb edge — DT_RUNPATH is non-transitive
+# and cannot redirect that edge otherwise. See CLAUDE.md "Native deps" and
+# crates/reify-build-utils/src/lib.rs's emit_tbb_pin_for_bins/_for_tests.
+TBB_PIN_LIB="/opt/reify-deps/tbb-pin/libtbb.so.12"
+
+if [ ! -L "$TBB_PIN_LIB" ]; then
+    err "manifold-deps guard: tbb-pin missing — no symlink at $TBB_PIN_LIB."
+    hint
+    exit 1
+fi
+
+TBB_PIN_TARGET="$(readlink -f "$TBB_PIN_LIB" 2>/dev/null || true)"
+case "$TBB_PIN_TARGET" in
+    */libtbb.so.12.*)
+        ;;
+    *)
+        err "manifold-deps guard: tbb-pin at $TBB_PIN_LIB resolves to"
+        err "                     '${TBB_PIN_TARGET:-<broken symlink>}', expected a libtbb.so.12.<N> file."
+        hint
+        exit 1
+        ;;
+esac
+
 exit 0
