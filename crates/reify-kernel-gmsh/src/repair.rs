@@ -56,6 +56,20 @@ impl Default for RepairConfig {
 /// if needed (carrying old normals across a re-indexing introduces subtle
 /// alignment bugs and the volume mesher does not require them).
 ///
+/// # Correspondence allocation (intentional)
+///
+/// This function delegates to
+/// [`repair_surface_mesh_with_correspondence`] and discards its `Vec<u32>`
+/// correspondence map (`.0`), so every existing plain-repair caller
+/// (`mesh_volume.rs::apply_repair_if_requested` and friends) unconditionally
+/// pays for building that map even though it never reads it. This is
+/// intentional, not an oversight: the correspondence map is a `O(n)`
+/// allocate-and-populate pass, negligible next to the `O(n²)` vertex-merge
+/// scan both functions already perform (see the module-level `# Performance
+/// bound` doc above), and keeping a single implementation avoids maintaining
+/// a second, bool-gated code path solely to skip a comparatively tiny
+/// allocation.
+///
 /// # Transitive (chain) merging
 ///
 /// The algorithm performs a single first-match-wins pass, so it is **transitive**
