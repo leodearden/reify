@@ -136,7 +136,9 @@ assert "MERGE: plan LACKS the selective test_verify_*.sh loop (exactly-one: full
 # genuinely runs its branch-diff path instead of the test itself handing it
 # an empty CHANGED_FILES_RAW via an explicit --scope all flag. The plan
 # header's `scope=all` token is asserted directly, proving contract-C2
-# forcing (verify.sh:583, "DF_VERIFY_ROLE=merge — forcing --scope all")
+# forcing (verify.sh's DF_VERIFY_ROLE scope-forcing guard, tagged
+# "contract C2" in its diagnostic message — no line number cited here since
+# task 5210 shifted it once already; grep for "contract C2" instead)
 # actually fired for this real diff, rather than merely being assumed.
 #
 # Belt-and-braces limit (documented, not a gap this test can close): C2
