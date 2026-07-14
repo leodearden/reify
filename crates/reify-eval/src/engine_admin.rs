@@ -3080,9 +3080,12 @@ mod tests {
     /// below). Asserts the engine's CURRENT snapshot carries the expected
     /// `(SnapshotId, VersionId)` pair — the "byte-identical numbering"
     /// property these tests exist to pin — AND that both counters advanced
-    /// by exactly `expected_delta` since `before_next`, a relative check
-    /// that documents the invariant under test independent of the absolute
-    /// starting point.
+    /// by exactly `expected_delta` since their OWN respective baselines
+    /// (`before_snapshot`/`before_version`, captured separately rather than
+    /// shared). Keeping the two baselines distinct means this helper stays
+    /// correct even if a future caller measures from a desynced starting
+    /// state (e.g. after an eval_cached()-style snapshot-only bump), rather
+    /// than silently assuming the two counters start equal.
     ///
     /// Deliberate characterization lock, stated once for all call sites:
     /// these exact ids/deltas are tied to the number and ordering of
@@ -3094,7 +3097,8 @@ mod tests {
         engine: &Engine,
         expected_snapshot: u64,
         expected_version: u64,
-        before_next: u64,
+        before_snapshot: u64,
+        before_version: u64,
         expected_delta: u64,
         context: &str,
     ) {
@@ -3114,13 +3118,13 @@ mod tests {
             "{context}: expected VersionId({expected_version})",
         );
         assert_eq!(
-            engine.next_snapshot_id - before_next,
+            engine.next_snapshot_id - before_snapshot,
             expected_delta,
             "{context}: next_snapshot_id should have advanced by exactly \
              {expected_delta} across this call",
         );
         assert_eq!(
-            engine.next_version_id - before_next,
+            engine.next_version_id - before_version,
             expected_delta,
             "{context}: next_version_id should have advanced by exactly \
              {expected_delta} across this call",
@@ -3147,13 +3151,31 @@ mod tests {
             parse_and_compile_with_stdlib("structure S { param width: Length = 100mm }");
         let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
 
-        let before_first = engine.next_snapshot_id;
+        let before_snapshot_first = engine.next_snapshot_id;
+        let before_version_first = engine.next_version_id;
         let _ = engine.eval(&compiled);
-        assert_snapshot_numbering(&engine, 0, 0, before_first, 1, "first eval() call (site 1)");
+        assert_snapshot_numbering(
+            &engine,
+            0,
+            0,
+            before_snapshot_first,
+            before_version_first,
+            1,
+            "first eval() call (site 1)",
+        );
 
-        let before_second = engine.next_snapshot_id;
+        let before_snapshot_second = engine.next_snapshot_id;
+        let before_version_second = engine.next_version_id;
         let _ = engine.eval(&compiled);
-        assert_snapshot_numbering(&engine, 1, 1, before_second, 1, "second eval() call (site 1)");
+        assert_snapshot_numbering(
+            &engine,
+            1,
+            1,
+            before_snapshot_second,
+            before_version_second,
+            1,
+            "second eval() call (site 1)",
+        );
     }
 
     /// Characterization lock on the OBSERVABLE snapshot/version numbering
@@ -3218,7 +3240,8 @@ mod tests {
         let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
             .with_solver(Box::new(solver));
 
-        let before = engine.next_snapshot_id;
+        let before_snapshot = engine.next_snapshot_id;
+        let before_version = engine.next_version_id;
         let result = engine.eval(&module);
 
         // Sanity: confirm the solver's Solved arm actually fired (not
@@ -3242,7 +3265,8 @@ mod tests {
             &engine,
             1,
             1,
-            before,
+            before_snapshot,
+            before_version,
             2,
             "resolution-phase eval() call (site 1 + site 2)",
         );
@@ -3311,7 +3335,8 @@ mod tests {
         let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
             .with_solver(Box::new(solver));
 
-        let before = engine.next_snapshot_id;
+        let before_snapshot = engine.next_snapshot_id;
+        let before_version = engine.next_version_id;
         let result = engine.eval(&module);
 
         // Sanity: confirm the merged solve's Solved arm actually fired
@@ -3341,7 +3366,8 @@ mod tests {
             &engine,
             1,
             1,
-            before,
+            before_snapshot,
+            before_version,
             2,
             "merged-cluster-solve eval() call (site 1 + site 3)",
         );
