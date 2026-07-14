@@ -856,10 +856,10 @@ echo "=== Background-gate contract guard (task 5210) ==="
 
 # ---------------------------------------------------------------------------
 # Scenario BG-B6b: role=background defeats an attempted --scope branch
-# (RED until step-6 impl)
+# (GREEN now)
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Scenario BG-B6b: role=background + --scope branch on changed-crate branch -> unconditional scope=all (RED until step-6 impl) ---"
+echo "--- Scenario BG-B6b: role=background + --scope branch on changed-crate branch -> unconditional scope=all (GREEN now) ---"
 FIX_BG_B6B=""
 make_branch_fixture FIX_BG_B6B
 git -C "$FIX_BG_B6B" checkout -q -b task-branch

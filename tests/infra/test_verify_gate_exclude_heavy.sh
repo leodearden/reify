@@ -149,8 +149,9 @@ POSITIVE_PATTERN='-E "('
 
 # Sanity so the NO-pattern assertions below are non-vacuous (an unrecognized
 # role produces NO plan at all, which would vacuously satisfy both negative
-# checks for the wrong reason). RED today: DF_VERIFY_ROLE=background is not
-# yet a recognized role, so plan generation exits 64.
+# checks for the wrong reason). Confirms DF_VERIFY_ROLE=background is a
+# recognized role and plan generation exits 0, so the negative checks below
+# exercise a real plan rather than passing vacuously.
 assert "role=background, knob=1: verify.sh exits 0 (plan generation succeeds)" \
     bash -c 'DF_VERIFY_ROLE=background REIFY_GATE_EXCLUDE_HEAVY=1 bash "$1/scripts/verify.sh" test --scope all --print-plan >/dev/null 2>&1' \
     _ "$REPO_ROOT"
