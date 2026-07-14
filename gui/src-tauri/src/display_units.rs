@@ -38,9 +38,154 @@ pub struct DimensionLadder {
 
 /// Return the full set of per-dimension unit ladders.
 ///
-/// Stub — filled in by task #5199 step-2.
+/// Each dimension's `is_default` entry is numerically identical to the unit
+/// `DimensionVector::to_display_units` already chooses for that dimension
+/// (Length→mm, Area→mm², Volume→mm³, Angle→deg; Mass/Pressure/Density fall
+/// through `to_display_units`'s `"SI"` fallback branch, so their defaults are
+/// the raw SI base unit — kg, Pa, kg/m³ — at `si_scale: 1.0`).
 pub fn unit_ladders() -> Vec<DimensionLadder> {
-    vec![]
+    vec![
+        DimensionLadder {
+            dimension: "Length".to_string(),
+            units: vec![
+                UnitOption {
+                    label: "mm".to_string(),
+                    si_scale: 1e-3,
+                    is_default: true,
+                },
+                UnitOption {
+                    label: "cm".to_string(),
+                    si_scale: 1e-2,
+                    is_default: false,
+                },
+                UnitOption {
+                    label: "m".to_string(),
+                    si_scale: 1.0,
+                    is_default: false,
+                },
+                UnitOption {
+                    label: "in".to_string(),
+                    si_scale: 0.0254,
+                    is_default: false,
+                },
+            ],
+        },
+        DimensionLadder {
+            dimension: "Area".to_string(),
+            units: vec![
+                UnitOption {
+                    label: "mm\u{00B2}".to_string(),
+                    si_scale: 1e-6,
+                    is_default: true,
+                },
+                UnitOption {
+                    label: "cm\u{00B2}".to_string(),
+                    si_scale: 1e-4,
+                    is_default: false,
+                },
+                UnitOption {
+                    label: "m\u{00B2}".to_string(),
+                    si_scale: 1.0,
+                    is_default: false,
+                },
+            ],
+        },
+        DimensionLadder {
+            dimension: "Volume".to_string(),
+            units: vec![
+                UnitOption {
+                    label: "mm\u{00B3}".to_string(),
+                    si_scale: 1e-9,
+                    is_default: true,
+                },
+                UnitOption {
+                    label: "cm\u{00B3}".to_string(),
+                    si_scale: 1e-6,
+                    is_default: false,
+                },
+                UnitOption {
+                    label: "L".to_string(),
+                    si_scale: 1e-3,
+                    is_default: false,
+                },
+                UnitOption {
+                    label: "m\u{00B3}".to_string(),
+                    si_scale: 1.0,
+                    is_default: false,
+                },
+            ],
+        },
+        DimensionLadder {
+            dimension: "Angle".to_string(),
+            units: vec![
+                UnitOption {
+                    label: "deg".to_string(),
+                    si_scale: std::f64::consts::PI / 180.0,
+                    is_default: true,
+                },
+                UnitOption {
+                    label: "rad".to_string(),
+                    si_scale: 1.0,
+                    is_default: false,
+                },
+            ],
+        },
+        DimensionLadder {
+            dimension: "Mass".to_string(),
+            units: vec![
+                UnitOption {
+                    label: "g".to_string(),
+                    si_scale: 1e-3,
+                    is_default: false,
+                },
+                UnitOption {
+                    label: "kg".to_string(),
+                    si_scale: 1.0,
+                    is_default: true,
+                },
+            ],
+        },
+        DimensionLadder {
+            dimension: "Pressure".to_string(),
+            units: vec![
+                UnitOption {
+                    label: "Pa".to_string(),
+                    si_scale: 1.0,
+                    is_default: true,
+                },
+                UnitOption {
+                    label: "kPa".to_string(),
+                    si_scale: 1e3,
+                    is_default: false,
+                },
+                UnitOption {
+                    label: "MPa".to_string(),
+                    si_scale: 1e6,
+                    is_default: false,
+                },
+                UnitOption {
+                    label: "GPa".to_string(),
+                    si_scale: 1e9,
+                    is_default: false,
+                },
+            ],
+        },
+        DimensionLadder {
+            dimension: "Density".to_string(),
+            units: vec![
+                UnitOption {
+                    label: "kg/m\u{00B3}".to_string(),
+                    si_scale: 1.0,
+                    is_default: true,
+                },
+                UnitOption {
+                    label: "g/cm\u{00B3}".to_string(),
+                    si_scale: 1000.0,
+                    is_default: false,
+                },
+            ],
+        },
+    ]
 }
 
 #[cfg(test)]
