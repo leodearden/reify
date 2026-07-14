@@ -28,39 +28,44 @@ use reify_ir::{GeometryHandleId, GeometryKernel, QueryError};
 use reify_kernel_manifold::ManifoldKernel;
 
 /// Assert the handle-stability contract (INV-GEO-2) this file's arms pin:
-/// the first run must be non-vacuous (non-empty, pairwise-distinct,
-/// non-INVALID, and distinct from `parent` — mirrors the distinctness guard
-/// in `topology_extract_integration.rs`'s
-/// `extract_edges_box_returns_twelve_distinct_handles`), and every
-/// subsequent run must be *exactly* equal to the first (same ids, same
-/// order).
+/// EVERY run must be non-vacuous (non-empty, pairwise-distinct, non-INVALID,
+/// and distinct from `parent` — mirrors the distinctness guard in
+/// `topology_extract_integration.rs`'s
+/// `extract_edges_box_returns_twelve_distinct_handles`), and every run after
+/// the first must ALSO be *exactly* equal to the first (same ids, same
+/// order). The non-vacuity checks are re-derived per run — rather than only
+/// on `runs[0]`, trusting equality to carry them — so a later change that
+/// weakens the cross-run equality assertion (e.g. to a length-only compare)
+/// can't silently drop the distinctness/non-INVALID guarantees for runs 1..n.
 fn assert_stable_ids(label: &str, parent: GeometryHandleId, runs: &[Vec<GeometryHandleId>]) {
     let first = runs
         .first()
         .unwrap_or_else(|| panic!("[{label}] assert_stable_ids called with no runs"));
 
-    assert!(
-        !first.is_empty(),
-        "[{label}] first run must be non-empty (a vacuous stability check would trivially pass)"
-    );
-
-    let mut seen = std::collections::HashSet::new();
-    for id in first {
-        assert_ne!(
-            *id, parent,
-            "[{label}] extracted handle must differ from the parent handle"
-        );
-        assert_ne!(
-            *id,
-            GeometryHandleId::INVALID,
-            "[{label}] extracted handle must not be the INVALID sentinel"
-        );
+    for (i, run) in runs.iter().enumerate() {
         assert!(
-            seen.insert(*id),
-            "[{label}] duplicate handle id {:?} in first run: {:?}",
-            id,
-            first
+            !run.is_empty(),
+            "[{label}] run {i} must be non-empty (a vacuous stability check would trivially pass)"
         );
+
+        let mut seen = std::collections::HashSet::new();
+        for id in run {
+            assert_ne!(
+                *id, parent,
+                "[{label}] run {i}: extracted handle must differ from the parent handle"
+            );
+            assert_ne!(
+                *id,
+                GeometryHandleId::INVALID,
+                "[{label}] run {i}: extracted handle must not be the INVALID sentinel"
+            );
+            assert!(
+                seen.insert(*id),
+                "[{label}] run {i}: duplicate handle id {:?} in run: {:?}",
+                id,
+                run
+            );
+        }
     }
 
     for (i, run) in runs.iter().enumerate().skip(1) {
