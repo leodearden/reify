@@ -16,9 +16,19 @@ use reify_core::{Diagnostic, ValueCellId};
 use reify_expr::{ContainmentQuery, EvalContext};
 use reify_ir::{CompiledFunction, DeterminacyState, PersistentMap, Value, ValueMap};
 
-/// The only sanctioned in-engine `cell_eval_ctx` constructor (INV-EVAL-2).
-/// `determinacy` / `runtime_sink` / `containment` are REQUIRED (plain
-/// `&'a T`, not `Option`); omitting one is a compile error (E0061).
+/// Required-args free-function constructor for cell-eval contexts
+/// (INV-EVAL-2). `determinacy` / `runtime_sink` / `containment` are
+/// REQUIRED (plain `&'a T`, not `Option`); omitting one is a compile error
+/// (E0061).
+///
+/// Transitional note: this coexists with the pre-existing
+/// `Engine::cell_eval_ctx` *method* (`engine_eval.rs`) — same name,
+/// different namespace (`self.cell_eval_ctx(..)` vs. this free function's
+/// `crate::cell_eval_ctx::cell_eval_ctx(..)`). The method remains the
+/// incumbent at today's production call sites; this free function is the
+/// constructor γ/δ/ε migrate those call sites onto, superseding the method
+/// once that adoption lands. It is not yet "the only" constructor in use —
+/// pick deliberately at call sites until the method is retired.
 ///
 /// Lifts `functions` / `meta_map` / `containment` out of `&self` into
 /// explicit params. `undef_causes` stays unset — it is wired separately by
