@@ -5938,6 +5938,53 @@ TessResult tessellate_shape(const OcctShape& shape, double tolerance) {
             for (int i = 1; i <= nb_tris; ++i) {
                 int n1, n2, n3;
                 tri->Triangle(i).Get(n1, n2, n3);
+
+                // INV-GEO-1 (docs/prds/kernel-seam-contracts.md §2 obligation 3,
+                // task #5164): a periodic surface with a pole (e.g. a full
+                // sphere) has BRepMesh_IncrementalMesh emit one raw pole node
+                // per meridian, all at a bit-identical 3D position. The seam
+                // fan triangle whose two non-ring corners are duplicate pole
+                // nodes therefore has two coincident corners — zero area.
+                // Detect it here, on the same FLOAT-cast corner positions
+                // (post-`loc` transform) as the vertex-extraction loop above,
+                // via the identical (b-a)×(c-a) cross product
+                // `Mesh::check_contract`'s NonDegenerate obligation uses
+                // (`crates/reify-ir/src/geometry.rs:2852-2861`) — so the
+                // producer emits exactly the triangle set `validate(0.0)`
+                // accepts. Threshold is exact zero (squared magnitude <=
+                // 0.0f), not a positive epsilon: a positive epsilon could
+                // drop a real thin sliver and open a hole.
+                gp_Pnt pa = tri->Node(n1);
+                gp_Pnt pb = tri->Node(n2);
+                gp_Pnt pc = tri->Node(n3);
+                if (!loc.IsIdentity()) {
+                    pa.Transform(loc.Transformation());
+                    pb.Transform(loc.Transformation());
+                    pc.Transform(loc.Transformation());
+                }
+                float ax = static_cast<float>(pa.X());
+                float ay = static_cast<float>(pa.Y());
+                float az = static_cast<float>(pa.Z());
+                float bx = static_cast<float>(pb.X());
+                float by = static_cast<float>(pb.Y());
+                float bz = static_cast<float>(pb.Z());
+                float cx = static_cast<float>(pc.X());
+                float cy = static_cast<float>(pc.Y());
+                float cz = static_cast<float>(pc.Z());
+                float abx = bx - ax, aby = by - ay, abz = bz - az;
+                float acx = cx - ax, acy = cy - ay, acz = cz - az;
+                float cross_x = aby * acz - abz * acy;
+                float cross_y = abz * acx - abx * acz;
+                float cross_z = abx * acy - aby * acx;
+                float twice_area_sq = cross_x * cross_x + cross_y * cross_y + cross_z * cross_z;
+                if (twice_area_sq <= 0.0f) {
+                    // Degenerate (two coincident corners) — skip emitting
+                    // this triangle's indices. Vertex/normal buffers and
+                    // vertex_offset accounting are untouched: every
+                    // subsequent face's indices remain correct.
+                    continue;
+                }
+
                 result.indices.push_back(vertex_offset + static_cast<uint32_t>(n1 - 1));
                 if (reversed) {
                     result.indices.push_back(vertex_offset + static_cast<uint32_t>(n3 - 1));
