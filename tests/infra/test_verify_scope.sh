@@ -848,6 +848,34 @@ assert "MG-hook: pre-merge-commit does NOT pass --scope branch or --scope staged
     bash -c '! grep -qE "verify\.sh.*--scope (branch|staged)" "$1"' _ "$REPO_ROOT/hooks/pre-merge-commit"
 
 # ===========================================================================
+# Background-gate contract guard (task 5210, mirrors T2/C2 for
+# DF_VERIFY_ROLE=background — a main-tip integrity sweep must never narrow)
+# ===========================================================================
+echo ""
+echo "=== Background-gate contract guard (task 5210) ==="
+
+# ---------------------------------------------------------------------------
+# Scenario BG-B6b: role=background defeats an attempted --scope branch
+# (GREEN now)
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario BG-B6b: role=background + --scope branch on changed-crate branch -> unconditional scope=all (GREEN now) ---"
+FIX_BG_B6B=""
+make_branch_fixture FIX_BG_B6B
+git -C "$FIX_BG_B6B" checkout -q -b task-branch
+mkdir -p "$FIX_BG_B6B/crates/reify-doc/src"
+printf 'x\n' > "$FIX_BG_B6B/crates/reify-doc/src/lib.rs"
+git -C "$FIX_BG_B6B" add crates
+git -C "$FIX_BG_B6B" commit -q -m "task changes"
+PLAN_BG_B6B="$(cd "$FIX_BG_B6B" && DF_VERIFY_ROLE=background bash scripts/verify.sh all --profile both --scope branch --print-plan 2>/dev/null)" || true
+git -C "$FIX_BG_B6B" checkout -q main
+git -C "$FIX_BG_B6B" branch -q -D task-branch
+assert "BG-B6b: scope=all in plan header (background forces full scope despite --scope branch)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "scope=all"' _ "$PLAN_BG_B6B"
+assert "BG-B6b: RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1 (forced full scope, not a narrowed branch plan)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1"' _ "$PLAN_BG_B6B"
+
+# ===========================================================================
 # VS-* scenarios: selective infra test injection (task 4523)
 #
 # When a task-level verify (--scope branch, NO --include-infra) detects that a

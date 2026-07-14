@@ -16,6 +16,13 @@
 #                                  When DF_VERIFY_ROLE=merge and no explicit --profile
 #                                  is given, defaults to 'both' automatically so the
 #                                  orchestrator merge path gets release coverage.
+#                                  DF_VERIFY_ROLE=background (task 5210, dark-factory's
+#                                  main-tip integrity sweep) = merge-level COMPLETENESS
+#                                  (profile=both default, --scope forced to all, wholesale
+#                                  infra pool — same guards as merge) at offline-level idle
+#                                  CARGO_PRIO, but — unlike merge — gated (NON-exempt)
+#                                  admission: it competes for the test-run semaphore/PSI
+#                                  gates on the task FIFO, never the merge fast lane.
 #   --scope   all|staged|branch    all     = verify everything (orchestrator / merges).
 #                                  staged  = scope by `git diff --cached` (hook fast path).
 #                                  branch  = scope by merge-base(main,HEAD) → working tree;
@@ -466,9 +473,11 @@ DF_VERIFY_ROLE="${DF_VERIFY_ROLE:-task}"
 # Role-based PROFILE default: when no explicit --profile was given and the
 # orchestrator merge path stamps DF_VERIFY_ROLE=merge, default to 'both' so
 # release-only tests are exercised on every merge (matching the local
-# hooks/pre-merge-commit gate which also runs --profile both).
+# hooks/pre-merge-commit gate which also runs --profile both). background
+# (task 5210, main-tip integrity sweep) shares this merge-level completeness
+# for the same reason: full dev+release coverage on every sweep.
 # Explicit --profile always wins; task/unset roles keep debug (fast feedback).
-if [ "$PROFILE_EXPLICIT" -eq 0 ] && [ "$DF_VERIFY_ROLE" = "merge" ]; then
+if [ "$PROFILE_EXPLICIT" -eq 0 ] && { [ "$DF_VERIFY_ROLE" = "merge" ] || [ "$DF_VERIFY_ROLE" = "background" ]; }; then
     PROFILE="both"
 elif [ "$PROFILE_EXPLICIT" -eq 0 ] && [ "$DF_VERIFY_ROLE" = "offline" ]; then
     # offline (task 4913/A2) is a single-profile deep-test lane: the heavy
@@ -481,6 +490,26 @@ fi
 _HAS_NICE=0; _HAS_IONICE=0
 command -v nice   >/dev/null 2>&1 && _HAS_NICE=1
 command -v ionice >/dev/null 2>&1 && _HAS_IONICE=1
+# task 5210: single source of truth for the "idle" priority class shared by
+# the offline and background roles below — both want byte-identical
+# CARGO_PRIO output (nice -n 19 + ionice -c3, degrading gracefully), so the
+# string is computed here once instead of being duplicated per-arm. Each
+# caller passes its own role name so the graceful-degrade WARNING text still
+# names the correct role; the case arms themselves stay separate (rather than
+# folding into `offline|background)`) purely so offline's golden print-plan
+# output is untouched — see the comment on the `background)` arm below.
+_idle_cargo_prio() {
+    local _idle_role="$1"
+    if   [ "$_HAS_NICE" -eq 1 ] && [ "$_HAS_IONICE" -eq 1 ]; then
+        CARGO_PRIO="nice -n 19 ionice -c3 "
+    elif [ "$_HAS_NICE" -eq 1 ]; then
+        echo "verify.sh: WARNING — ionice not found; ${_idle_role} role using nice only (no IO throttle)" >&2
+        CARGO_PRIO="nice -n 19 "
+    else
+        echo "verify.sh: WARNING — nice/ionice not found; ${_idle_role} role running at normal priority" >&2
+        CARGO_PRIO=""
+    fi
+}
 case "$DF_VERIFY_ROLE" in
     task)
         if   [ "$_HAS_NICE" -eq 1 ] && [ "$_HAS_IONICE" -eq 1 ]; then
@@ -500,16 +529,17 @@ case "$DF_VERIFY_ROLE" in
             CARGO_PRIO=""
         fi ;;
     offline)
-        if   [ "$_HAS_NICE" -eq 1 ] && [ "$_HAS_IONICE" -eq 1 ]; then
-            CARGO_PRIO="nice -n 19 ionice -c3 "
-        elif [ "$_HAS_NICE" -eq 1 ]; then
-            echo "verify.sh: WARNING — ionice not found; offline role using nice only (no IO throttle)" >&2
-            CARGO_PRIO="nice -n 19 "
-        else
-            echo "verify.sh: WARNING — nice/ionice not found; offline role running at normal priority" >&2
-            CARGO_PRIO=""
-        fi ;;
-    *)  echo "verify.sh: ERROR — unknown DF_VERIFY_ROLE '$DF_VERIFY_ROLE' (want task|merge|offline)" >&2; exit 64 ;;
+        _idle_cargo_prio offline ;;
+    background)
+        # task 5210: background = merge-level completeness at offline-level
+        # idle priority + gated (non-exempt) admission. Shares its CARGO_PRIO
+        # string with offline via _idle_cargo_prio above (single source of
+        # truth for the idle-class priority — see the comment there) — a
+        # DEDICATED case arm still keeps offline's arm byte-for-byte
+        # untouched, and passing its own role name keeps the graceful-degrade
+        # WARNING text background-specific.
+        _idle_cargo_prio background ;;
+    *)  echo "verify.sh: ERROR — unknown DF_VERIFY_ROLE '$DF_VERIFY_ROLE' (want task|merge|offline|background)" >&2; exit 64 ;;
 esac
 
 # Gate-exclusion fragment (task 4915/A4, PRD §6/§8 flip-seam contract): gate
@@ -579,9 +609,11 @@ fi
 # dark-factory orchestrator's post-merge verify stamps DF_VERIFY_ROLE=merge;
 # force --scope all so a future caller cannot hand the merge gate a narrowing
 # scope (branch/staged). Independent of the role-driven --profile default above
-# and of the affected-crate machinery. Mirrors the MERGE_HEAD force.
-if [ "$DF_VERIFY_ROLE" = "merge" ] && [ "$SCOPE" != "all" ]; then
-    echo "verify.sh: DF_VERIFY_ROLE=merge — forcing --scope all (merge gate never narrows, contract C2)" >&2
+# and of the affected-crate machinery. Mirrors the MERGE_HEAD force. background
+# (task 5210, main-tip integrity sweep) shares this same never-narrow
+# guarantee — an integrity gate must never silently under-cover main.
+if { [ "$DF_VERIFY_ROLE" = "merge" ] || [ "$DF_VERIFY_ROLE" = "background" ]; } && [ "$SCOPE" != "all" ]; then
+    echo "verify.sh: DF_VERIFY_ROLE=$DF_VERIFY_ROLE — forcing --scope all (integrity gate never narrows, contract C2)" >&2
     SCOPE="all"
 fi
 
@@ -1448,7 +1480,11 @@ build_plan() {
     # broadcast onto the run_all.sh plan line: a broadcast leaks into all ~103
     # pool tests, suppressing run_all in their captured plans and tripping the
     # ambient-isolation guard (test_run_all_ambient_isolation.sh, task 4961).
-    if [ "$DF_VERIFY_ROLE" = "merge" ] && [ "$RUN_RUST" -eq 1 ] && [ "$DO_TEST" -eq 1 ] && [ -z "${REIFY_INFRA_SUITE_ACTIVE:-}" ]; then
+    # background (task 5210, main-tip integrity sweep) shares the merge tier
+    # here too: same full-pool completeness, gated by the same re-entrancy
+    # sentinel (test_verify_semaphore_e2e.sh Section H sets it on its own
+    # nested background spawn, mirroring Section B's merge spawn).
+    if { [ "$DF_VERIFY_ROLE" = "merge" ] || [ "$DF_VERIFY_ROLE" = "background" ]; } && [ "$RUN_RUST" -eq 1 ] && [ "$DO_TEST" -eq 1 ] && [ -z "${REIFY_INFRA_SUITE_ACTIVE:-}" ]; then
         # task #4624: pre-build reify-audit OUTSIDE the run_all.sh wall (30m).
         # By the time run_all.sh runs, target/release/{reify-audit,ptodo-baseline-gen}
         # are fresh so the in-wall freshness guard finds them fresh and skips the cold
@@ -1456,13 +1492,44 @@ build_plan() {
         # Timeout is 10m (distinct from the run_all wall) so the plan-shape test can assert
         # the pre-step is not the walled run_all.sh line.
         #
-        # ADMISSION CONTROLS: this pre-step runs OUTSIDE compile_gate()/psi_gate().
-        # Rationale: (1) DF_VERIFY_ROLE=merge is exempt from all gates anyway;
-        # (2) sccache makes this a no-op when warm; (3) this plan line emits in the
-        # infra block — after all main Rust compile phases — so it does not race with
-        # the compile-gate window that guards clippy/check; (4) the CLAUDE.md
-        # admission-control invariant is for task×compile contention during the
-        # main psi-gate/slot region, which this small pre-build does not enter.
+        # ADMISSION CONTROLS: this pre-step runs OUTSIDE compile_gate()/psi_gate()/
+        # @@SEMAPHORE_ACQUIRE@@ — build_plan() emits this whole block (the
+        # pre-builds AND the run_all.sh call below) BEFORE add_test_passes() is
+        # invoked (~:1618), so no role passes through an admission gate here; it is
+        # a structural consequence of where the block sits in the plan, not a
+        # per-role exemption. The lint-side compile-gate line emitted earlier in
+        # build_plan() (~:1297) targets the clippy/check compile wave immediately
+        # following it and does not re-check PSI this far downstream (PSI "can
+        # change materially across the long clippy/check phase" — see the
+        # add_test_passes() design note on the two compile-gate lines).
+        #
+        # task 5210: DF_VERIFY_ROLE=background also reaches this block now (the
+        # merge-level-completeness guard just above matches background too), and
+        # background is explicitly NON-exempt elsewhere: lib_test_semaphore.sh:91
+        # and cpu-admit.sh:223 stay strict `= "merge"`, so the test-run
+        # semaphore/PSI gates still hold background everywhere else in the plan.
+        # Rationale (1) below is a merge-only fact — do NOT read it as covering
+        # background too; a non-exempt role reaching an admission-gate-free block
+        # is exactly the task×compile contention the CLAUDE.md admission-control
+        # invariant exists to bound. What actually bounds it here for background:
+        # CARGO_PRIO is the offline-style IDLE class (`nice -n 19 ionice -c3`, set
+        # above via _idle_cargo_prio) rather than merge's near-normal `nice -n 5`,
+        # so these cargo build lines yield to any concurrently scheduled task
+        # compile instead of contending with it head-on. That is scheduler-level
+        # mitigation, not admission control — there is no wait if the host is
+        # saturated, only reduced impact once running. If that proves
+        # insufficient in practice, the fix is to route background through
+        # compile_gate()/psi_gate() for this block specifically, not to lean on
+        # merge's exemption.
+        #
+        # Rationale for merge (unchanged by task 5210; (1) does not extend to
+        # background — see above): (1) DF_VERIFY_ROLE=merge is exempt from all
+        # gates anyway; (2) sccache makes this a no-op when warm; (3) this plan
+        # line emits in the infra block — after all main Rust compile phases — so
+        # it does not race with the compile-gate window that guards clippy/check;
+        # (4) the CLAUDE.md admission-control invariant is for task×compile
+        # contention during the main psi-gate/slot region, which this small
+        # pre-build does not enter.
         # task 5139: dropped -q — it swallowed compiler diagnostics, so the
         # 06-27/28 failure cluster (4763/4744/4822/4873) and esc-5077-1
         # pre-build failures archived with no usable evidence. Dropping -q
@@ -1553,7 +1620,10 @@ build_plan() {
     # Suppressed when DF_VERIFY_ROLE=merge (task 5125): run_all.sh already runs
     # the full suite there (a superset), so the selective subset would
     # double-run hermetic tests. Exactly-one invariant (INV-5): every verify
-    # runs either the full pool (merge) XOR the selective subset (task/offline).
+    # runs either the full pool (merge/background) XOR the selective subset
+    # (task/offline). background (task 5210) is suppressed here for the same
+    # reason: it gets the full pool above, so the selective subset must not
+    # also fire.
     # RE-ENTRANCY GUARD (task 5125): also suppressed when already inside an infra
     # suite (REIFY_INFRA_SUITE_ACTIVE set). The per-task selective path runs
     # test_verify_*.sh, which matches test_verify_semaphore_e2e.sh — whose
@@ -1562,7 +1632,7 @@ build_plan() {
     # spawn site, so this guard fires for it WITHOUT this line broadcasting the
     # sentinel to every selected test (which would leak it as an ambient export;
     # cf. test_run_all_ambient_isolation.sh, task 4961).
-    if [ "$DO_TEST" -eq 1 ] && [ -n "$SELECTED_INFRA_GLOBS" ] && [ "$DF_VERIFY_ROLE" != "merge" ] && [ -z "${REIFY_INFRA_SUITE_ACTIVE:-}" ]; then
+    if [ "$DO_TEST" -eq 1 ] && [ -n "$SELECTED_INFRA_GLOBS" ] && [ "$DF_VERIFY_ROLE" != "merge" ] && [ "$DF_VERIFY_ROLE" != "background" ] && [ -z "${REIFY_INFRA_SUITE_ACTIVE:-}" ]; then
         local _glob
         set -f  # disable pathname expansion: keep glob tokens as literals
         for _glob in $SELECTED_INFRA_GLOBS; do
@@ -1586,11 +1656,13 @@ build_plan
 # ---------------------------------------------------------------------------
 if [ "$PRINT_PLAN" -eq 1 ]; then
     echo "# verify.sh plan — action=$ACTION profile=$PROFILE scope=$SCOPE include_infra=$INCLUDE_INFRA nextest=$NEXTEST role=$DF_VERIFY_ROLE"
-    # NOTE (task 5125 review): a manual --include-infra run outside the merge
-    # gate no longer gets the wholesale infra pool suite (moved to the
-    # merge-only tier above) — only the cheaper selective per-artifact subset
-    # runs. Flagged here so this isn't mistaken for full local infra coverage.
-    if [ "$INCLUDE_INFRA" -eq 1 ] && [ "$DF_VERIFY_ROLE" != "merge" ]; then
+    # NOTE (task 5125 review): a manual --include-infra run outside the
+    # merge/background gate no longer gets the wholesale infra pool suite
+    # (moved to the merge/background tier above) — only the cheaper selective
+    # per-artifact subset runs. Flagged here so this isn't mistaken for full
+    # local infra coverage. background (task 5210) is excluded from this NOTE
+    # for the same reason merge is: it gets the full pool, not the subset.
+    if [ "$INCLUDE_INFRA" -eq 1 ] && [ "$DF_VERIFY_ROLE" != "merge" ] && [ "$DF_VERIFY_ROLE" != "background" ]; then
         echo "# NOTE: include_infra=1 under role=$DF_VERIFY_ROLE gets the selective per-artifact infra subset only (scripts/verify-pipeline-infra-tests.txt) — the wholesale infra pool suite now runs at the merge tier exclusively, not here"
     fi
     echo "# scope decision — RUN_RUST=$RUN_RUST RUN_GUI=$RUN_GUI RUN_OCCT_GATE=$RUN_OCCT_GATE"
