@@ -59,7 +59,7 @@
 #                          Matched entries are reset via α, not removed.
 #   --protect-glob GLOB    Glob matching entries to never touch (default:
 #                          _merge-*,_mainprobe-*,_mainsweep-*,_solo-*,
-#                          _substrate-gate-*,_offline-deep*,_iact-*). Matched
+#                          _substrate-gate-*,_offline-deep,_iact-*). Matched
 #                          entries are skipped entirely. This is the full set
 #                          of orchestrator-managed non-pool worktree kinds
 #                          dark-factory mints directly under the warm-lane
@@ -190,7 +190,7 @@ Usage: $(basename "$0") reclaim --mount WORKTREE_BASE [OPTIONS]
     --lane-glob GLOB      Glob for pool-lane entries (default: _lane-*,_spec-*).
     --protect-glob GLOB   Glob for protected entries (default:
                           _merge-*,_mainprobe-*,_mainsweep-*,_solo-*,
-                          _substrate-gate-*,_offline-deep*,_iact-*) — the full
+                          _substrate-gate-*,_offline-deep,_iact-*) — the full
                           set of orchestrator-managed non-pool worktree kinds,
                           which must never be orphan-removed (e.g. ephemeral
                           verify/sweep worktrees while a background integrity
