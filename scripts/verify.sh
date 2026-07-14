@@ -1492,13 +1492,44 @@ build_plan() {
         # Timeout is 10m (distinct from the run_all wall) so the plan-shape test can assert
         # the pre-step is not the walled run_all.sh line.
         #
-        # ADMISSION CONTROLS: this pre-step runs OUTSIDE compile_gate()/psi_gate().
-        # Rationale: (1) DF_VERIFY_ROLE=merge is exempt from all gates anyway;
-        # (2) sccache makes this a no-op when warm; (3) this plan line emits in the
-        # infra block — after all main Rust compile phases — so it does not race with
-        # the compile-gate window that guards clippy/check; (4) the CLAUDE.md
-        # admission-control invariant is for task×compile contention during the
-        # main psi-gate/slot region, which this small pre-build does not enter.
+        # ADMISSION CONTROLS: this pre-step runs OUTSIDE compile_gate()/psi_gate()/
+        # @@SEMAPHORE_ACQUIRE@@ — build_plan() emits this whole block (the
+        # pre-builds AND the run_all.sh call below) BEFORE add_test_passes() is
+        # invoked (~:1618), so no role passes through an admission gate here; it is
+        # a structural consequence of where the block sits in the plan, not a
+        # per-role exemption. The lint-side compile-gate line emitted earlier in
+        # build_plan() (~:1297) targets the clippy/check compile wave immediately
+        # following it and does not re-check PSI this far downstream (PSI "can
+        # change materially across the long clippy/check phase" — see the
+        # add_test_passes() design note on the two compile-gate lines).
+        #
+        # task 5210: DF_VERIFY_ROLE=background also reaches this block now (the
+        # merge-level-completeness guard just above matches background too), and
+        # background is explicitly NON-exempt elsewhere: lib_test_semaphore.sh:91
+        # and cpu-admit.sh:223 stay strict `= "merge"`, so the test-run
+        # semaphore/PSI gates still hold background everywhere else in the plan.
+        # Rationale (1) below is a merge-only fact — do NOT read it as covering
+        # background too; a non-exempt role reaching an admission-gate-free block
+        # is exactly the task×compile contention the CLAUDE.md admission-control
+        # invariant exists to bound. What actually bounds it here for background:
+        # CARGO_PRIO is the offline-style IDLE class (`nice -n 19 ionice -c3`, set
+        # above via _idle_cargo_prio) rather than merge's near-normal `nice -n 5`,
+        # so these cargo build lines yield to any concurrently scheduled task
+        # compile instead of contending with it head-on. That is scheduler-level
+        # mitigation, not admission control — there is no wait if the host is
+        # saturated, only reduced impact once running. If that proves
+        # insufficient in practice, the fix is to route background through
+        # compile_gate()/psi_gate() for this block specifically, not to lean on
+        # merge's exemption.
+        #
+        # Rationale for merge (unchanged by task 5210; (1) does not extend to
+        # background — see above): (1) DF_VERIFY_ROLE=merge is exempt from all
+        # gates anyway; (2) sccache makes this a no-op when warm; (3) this plan
+        # line emits in the infra block — after all main Rust compile phases — so
+        # it does not race with the compile-gate window that guards clippy/check;
+        # (4) the CLAUDE.md admission-control invariant is for task×compile
+        # contention during the main psi-gate/slot region, which this small
+        # pre-build does not enter.
         # task 5139: dropped -q — it swallowed compiler diagnostics, so the
         # 06-27/28 failure cluster (4763/4744/4822/4873) and esc-5077-1
         # pre-build failures archived with no usable evidence. Dropping -q
