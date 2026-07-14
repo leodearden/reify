@@ -368,3 +368,79 @@ fn rounded_box_inferred_traits_all() {
         "expected Some(InferredTraits::all()) for \"rounded_box\", got: {result:?}"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Step-3: rounded_box constraint contract — RED tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// `corner_r` not `> 0` (here: `0mm`) must emit a designer-readable Error
+/// diagnostic naming `corner_r`.
+///
+/// RED until step-4 adds the compile-time constraint check — currently a
+/// zero corner_r silently lowers (degenerate zero-radius corner cylinders)
+/// with no diagnostic.
+#[test]
+fn rounded_box_corner_r_not_positive_emits_error() {
+    let source = r#"structure def S {
+    let body = rounded_box(40mm, 30mm, 20mm, 0mm)
+}"#;
+    let compiled = do_compile(source);
+    let messages: Vec<&str> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        messages.iter().any(|m| m.contains("corner_r")),
+        "expected an error diagnostic naming corner_r, got: {messages:#?}"
+    );
+}
+
+/// `2*corner_r >= min(width, depth)` (here: `2*25mm=50mm >= min(40mm,30mm)=30mm`)
+/// must emit a designer-readable Error naming the concrete offending values.
+///
+/// RED until step-4.
+#[test]
+fn rounded_box_corner_r_violates_min_dimension_emits_error() {
+    let source = r#"structure def S {
+    let body = rounded_box(40mm, 30mm, 20mm, 25mm)
+}"#;
+    let compiled = do_compile(source);
+    let messages: Vec<&str> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("corner_r") && m.contains("width") && m.contains("depth")),
+        "expected an error diagnostic naming the 2*corner_r < min(width, depth) \
+         violation with concrete values, got: {messages:#?}"
+    );
+}
+
+/// Valid constant args (satisfying `corner_r > 0` and
+/// `2*corner_r < min(width, depth)`) must compile with zero error diagnostics.
+#[test]
+fn rounded_box_valid_constant_args_compile_clean() {
+    let source = r#"structure def S {
+    let body = rounded_box(40mm, 30mm, 20mm, 5mm)
+}"#;
+    compile_no_errors(source);
+}
+
+/// A param-driven (non-constant) `corner_r` cannot be checked statically and
+/// must NOT be false-flagged — even when its default value would numerically
+/// violate the constraint (here `r`'s default `25mm` would fail against
+/// `width=40mm, depth=30mm`, same numbers as the violating case above).
+#[test]
+fn rounded_box_param_driven_corner_r_skips_static_check() {
+    let source = r#"structure def S {
+    param r: Length = 25mm
+    let body = rounded_box(40mm, 30mm, 20mm, r)
+}"#;
+    compile_no_errors(source);
+}
