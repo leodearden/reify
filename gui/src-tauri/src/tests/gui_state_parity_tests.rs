@@ -85,10 +85,10 @@ fn sample_constraint(node_id: &str, status: &str) -> ConstraintData {
     }
 }
 
-fn sample_tensegrity_wire(entity_path: &str) -> TensegrityWireData {
+fn sample_tensegrity_wire(entity_path: &str, kind: &str) -> TensegrityWireData {
     TensegrityWireData {
         entity_path: entity_path.to_string(),
-        kind: "strut".to_string(),
+        kind: kind.to_string(),
         x1: 0.0,
         y1: 0.0,
         z1: 0.0,
@@ -98,10 +98,10 @@ fn sample_tensegrity_wire(entity_path: &str) -> TensegrityWireData {
     }
 }
 
-fn sample_tensegrity_surface(entity_path: &str) -> TensegritySurfaceData {
+fn sample_tensegrity_surface(entity_path: &str, kind: &str) -> TensegritySurfaceData {
     TensegritySurfaceData {
         entity_path: entity_path.to_string(),
-        kind: "membrane".to_string(),
+        kind: kind.to_string(),
         i0: 0,
         i1: 1,
         i2: 2,
@@ -124,13 +124,13 @@ fn sample_display_directive(subject: &str, pane: i32) -> DisplayDirective {
     }
 }
 
-fn sample_appearance_directive(subject: &str) -> AppearanceDirective {
+fn sample_appearance_directive(subject: &str, opacity: f32) -> AppearanceDirective {
     AppearanceDirective {
         subject: subject.to_string(),
         style: DisplayStyleData {
-            color: [0.5, 0.3, 0.1, 1.0],
+            color: [0.5, 0.3, 0.1, opacity],
             finish: 1,
-            opacity: 1.0,
+            opacity,
             wireframe: false,
         },
     }
@@ -171,8 +171,8 @@ fn fully_populated_gui_state() -> GuiState {
         }],
         tessellation_diagnostics: vec![sample_diagnostic("warning", "tessellation warning")],
         compile_diagnostics: vec![sample_diagnostic("error", "compile error")],
-        tensegrity_wires: vec![sample_tensegrity_wire("TPrism.wire[0]")],
-        tensegrity_surfaces: vec![sample_tensegrity_surface("TPatch.surface[0]")],
+        tensegrity_wires: vec![sample_tensegrity_wire("TPrism.wire[0]", "strut")],
+        tensegrity_surfaces: vec![sample_tensegrity_surface("TPatch.surface[0]", "membrane")],
         demand_prune_measurement: Some(DemandPruneMeasurementDto {
             eval_set_size: 10,
             observed_retained: 6,
@@ -185,7 +185,7 @@ fn fully_populated_gui_state() -> GuiState {
             },
         }),
         display_panes: vec![sample_display_directive("Bracket.body", 0)],
-        display_appearance: vec![sample_appearance_directive("Bracket.body")],
+        display_appearance: vec![sample_appearance_directive("Bracket.body", 1.0)],
         fea_diagnostics: vec![FeaDiagnosticInfo::ProblemElements { ids: vec![1, 2] }],
         fea_convergence: Some(FeaConvergenceInfo {
             converged: true,
@@ -267,6 +267,35 @@ fn full_reload_only_fields_never_produce_delta_events() {
     );
 }
 
+/// Shared assertion for the three `changed_*_follow_new_states_vector_order_when_multiple_change`
+/// tests below: proves a keyed collection's delta entries (`delta_keys`) and
+/// their serialized events (matched by `event_name`, keyed by `event_key` in
+/// the payload) both follow `new`'s vector order rather than `old`'s.
+/// Factored out of the three tests (rather than left as three independent
+/// copies) specifically so the event-serialization half of the assertion
+/// can't silently be dropped from one collection's test while the others
+/// keep it.
+fn assert_multi_item_reorder_follows_new_order(
+    delta_keys: Vec<&str>,
+    events: &[(String, serde_json::Value)],
+    event_name: &str,
+    event_key: &str,
+    expected: Vec<&str>,
+) {
+    assert_eq!(
+        delta_keys, expected,
+        "delta entries must follow new's vector order, not old's"
+    );
+
+    // The ordering must survive event serialization too.
+    let event_keys: Vec<_> = events
+        .iter()
+        .filter(|(name, _)| name == event_name)
+        .map(|(_, payload)| payload[event_key].as_str().unwrap())
+        .collect();
+    assert_eq!(event_keys, expected);
+}
+
 /// When two-or-more items in a keyed collection change simultaneously *and*
 /// their relative order differs between `old` and `new`, `changed_meshes`
 /// (and its serialized events) must follow `new`'s vector order. A
@@ -298,20 +327,14 @@ fn changed_meshes_follow_new_states_vector_order_when_multiple_change() {
         .iter()
         .map(|m| m.entity_path.as_str())
         .collect();
-    assert_eq!(
-        changed_paths,
-        vec!["B.body", "A.body"],
-        "changed_meshes must follow new's vector order, not old's"
-    );
-
-    // The ordering must survive event serialization too.
     let events = delta_to_events(&delta);
-    let mesh_event_paths: Vec<_> = events
-        .iter()
-        .filter(|(name, _)| name == "mesh-update")
-        .map(|(_, payload)| payload["entity_path"].as_str().unwrap())
-        .collect();
-    assert_eq!(mesh_event_paths, vec!["B.body", "A.body"]);
+    assert_multi_item_reorder_follows_new_order(
+        changed_paths,
+        &events,
+        "mesh-update",
+        "entity_path",
+        vec!["B.body", "A.body"],
+    );
 }
 
 /// Same reorder-must-follow-`new` guarantee as
@@ -344,20 +367,14 @@ fn changed_values_follow_new_states_vector_order_when_multiple_change() {
         .iter()
         .map(|v| v.cell_id.as_str())
         .collect();
-    assert_eq!(
-        changed_ids,
-        vec!["Bracket.height", "Bracket.width"],
-        "changed_values must follow new's vector order, not old's"
-    );
-
-    // The ordering must survive event serialization too.
     let events = delta_to_events(&delta);
-    let value_event_ids: Vec<_> = events
-        .iter()
-        .filter(|(name, _)| name == "value-update")
-        .map(|(_, payload)| payload["cell_id"].as_str().unwrap())
-        .collect();
-    assert_eq!(value_event_ids, vec!["Bracket.height", "Bracket.width"]);
+    assert_multi_item_reorder_follows_new_order(
+        changed_ids,
+        &events,
+        "value-update",
+        "cell_id",
+        vec!["Bracket.height", "Bracket.width"],
+    );
 }
 
 /// Same reorder-must-follow-`new` guarantee as
@@ -387,20 +404,14 @@ fn changed_constraints_follow_new_states_vector_order_when_multiple_change() {
         .iter()
         .map(|c| c.node_id.as_str())
         .collect();
-    assert_eq!(
-        changed_ids,
-        vec!["Bracket.1", "Bracket.0"],
-        "changed_constraints must follow new's vector order, not old's"
-    );
-
-    // The ordering must survive event serialization too.
     let events = delta_to_events(&delta);
-    let constraint_event_ids: Vec<_> = events
-        .iter()
-        .filter(|(name, _)| name == "constraint-update")
-        .map(|(_, payload)| payload["node_id"].as_str().unwrap())
-        .collect();
-    assert_eq!(constraint_event_ids, vec!["Bracket.1", "Bracket.0"]);
+    assert_multi_item_reorder_follows_new_order(
+        changed_ids,
+        &events,
+        "constraint-update",
+        "node_id",
+        vec!["Bracket.1", "Bracket.0"],
+    );
 }
 
 /// Pins `GuiState`'s full-snapshot wire contract: the serialized top-level
