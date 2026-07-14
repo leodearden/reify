@@ -35,8 +35,12 @@
 //
 //   parse               → active    (fillet_top_edges_ri_parses_cleanly)
 //   compile-with-stdlib → #[ignore] (fillet_top_edges_compiles_with_stdlib_no_errors)
-//                         — see that test's own doc comment for its current
-//                         status; do not infer a design gap from this tier.
+//                         — verified: running it with `--ignored` passes.
+//                         Its #[ignore] reason and doc comment predate
+//                         #3205/#4360/#4362 and are STALE (still claim the
+//                         3-arg binding is missing) — do not trust them.
+//                         Un-ignoring it is a test-file change, out of
+//                         scope for this doc-only fix.
 //   eval (bare MockGeometryKernel) → #[ignore] (fillet_top_edges_evals_to_solid_via_topology_walk)
 //                         — blocked on #4727 (pending): all semantic
 //                         prerequisites (#3205/#4360/#4362) have landed, but
