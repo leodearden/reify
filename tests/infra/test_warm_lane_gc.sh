@@ -33,8 +33,8 @@
 #       by the DEFAULT protect-glob, DF-faithful (--mount only, no
 #       --protect-glob) (task 5221)
 #   N — full managed-worktree protect set (_solo-*/_substrate-gate-*/
-#       _offline-deep*/_iact-*) protected by default, plus an explicit
-#       --protect-glob override still re-narrows the set (task 5221)
+#       _offline-deep (exact name)/_iact-*) protected by default, plus an
+#       explicit --protect-glob override still re-narrows the set (task 5221)
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 

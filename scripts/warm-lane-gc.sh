@@ -318,7 +318,7 @@ fi
 # _merge-* MUST stay first/present: it is _merge-verify's ONLY gc protection
 # (dark-factory's .merge_verify.lock is a different path gc never inspects),
 # so this list only ever grows, never narrows an existing prefix.
-[ -n "$PROTECT_GLOB" ] || PROTECT_GLOB="_merge-*,_mainprobe-*,_mainsweep-*,_solo-*,_substrate-gate-*,_offline-deep*,_iact-*"
+[ -n "$PROTECT_GLOB" ] || PROTECT_GLOB="_merge-*,_mainprobe-*,_mainsweep-*,_solo-*,_substrate-gate-*,_offline-deep,_iact-*"
 if [ -z "$SEED_SCRIPT" ]; then
     SEED_SCRIPT="$SCRIPT_DIR/seed-warm-lane.sh"
 fi
