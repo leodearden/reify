@@ -21,56 +21,14 @@ use reify_ir::{CompiledFunction, DeterminacyState, PersistentMap, Value, ValueMa
 /// REQUIRED (plain `&'a T`, not `Option`); omitting one is a compile error
 /// (E0061).
 ///
-/// Transitional note: this coexists with the pre-existing
-/// `Engine::cell_eval_ctx` *method* (`engine_eval.rs`) — same name,
-/// different namespace (`self.cell_eval_ctx(..)` vs. this free function's
-/// `crate::cell_eval_ctx::cell_eval_ctx(..)`). The method remains the
-/// incumbent at today's production call sites; this free function is the
-/// constructor γ/δ/ε migrate those call sites onto, superseding the method
-/// once that adoption lands. It is not yet "the only" constructor in use —
-/// pick deliberately at call sites until the method is retired.
-///
-/// Review has repeatedly flagged this same-name coexistence as an
-/// ergonomic footgun and suggested renaming this free function for the
-/// transition window instead. Rejected: the PRD's own sketch
-/// (`docs/prds/v0_6/eval-cell-commit-substrate.md` §2.5 code block, §8 β)
-/// names this constructor `cell_eval_ctx` specifically, and γ/δ/ε
-/// (#5053/#5056/#5057) are already scoped to migrate call sites onto that
-/// exact name — renaming here would ripple into those tasks' plans, which
-/// is outside task β's footprint.
-///
-/// TODO(#5053, #5056, #5065): closing this coexistence needs the
-/// method's own call sites gone. Today those are in `engine_eval.rs`
-/// (γ) and `engine_edit.rs` (δ), plus this crate's dead-code
-/// `concurrent.rs` module, which ο deletes outright rather than
-/// migrating. Retire `Engine::cell_eval_ctx` once all three land —
-/// re-check for stragglers first. (ε / #5057 targets `unfold.rs`, which
-/// doesn't call the method today, so it isn't a precondition here.)
-///
-/// Until then, this body duplicates the method's capability-wiring chain
-/// verbatim (deliberate transitional coexistence, not drift) — no test in
-/// either module would catch the two diverging, so keep them in lockstep
-/// by hand. Retire by making the method delegate to (or be replaced by)
-/// this free function, so the crate ends up with one implementation of the
-/// wiring chain instead of two independent copies.
-///
-/// That delegation swap (method body calls this free function) touches
-/// only the method body, not its call sites, so it need not wait for the
-/// γ/δ/ε call-site migrations above — it could land as soon as this free
-/// function exists. It isn't done here because it requires editing
-/// `engine_eval.rs`, which is outside task β's locked module set
-/// (`cell_eval_ctx.rs` + `lib.rs` only) — and per PRD §8, "engine_eval.rs
-/// is the mandatory contention point," serialized to one task at a time.
-/// γ (#5053), which already owns that file, is best placed to land the
-/// delegation ahead of or alongside its call-site migration.
+/// Coexists with the pre-existing `Engine::cell_eval_ctx` *method*
+/// (`engine_eval.rs`) until γ/δ/ε (#5053/#5056/#5057) migrate its call
+/// sites onto this free function; transition rationale and review history
+/// live in `docs/prds/v0_6/eval-cell-commit-substrate.md` §8, not here.
 ///
 /// Lifts `functions` / `meta_map` / `containment` out of `&self` into
 /// explicit params. `undef_causes` stays unset — it is wired separately by
 /// `record_op_contract_failures`, not a cell-eval-ctx capability.
-///
-/// Does not migrate existing call sites (γ/δ/ε own adoption in
-/// `engine_eval.rs` / `engine_edit.rs` / `unfold.rs`); each must
-/// re-validate this signature against its own call site's borrow shape.
 //
 // TODO(#5053, #5056, #5057): only caller today is the test module below
 // (built under `#[cfg(test)]`, so it doesn't count for a normal build) —
