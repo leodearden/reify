@@ -34,6 +34,8 @@ use reify_ir::geometry::{MeshInvariant, MeshViolationCounts, MeshWitness};
 #[cfg(has_gmsh)]
 use reify_ir::ElementOrderTag;
 #[cfg(has_gmsh)]
+use std::borrow::Cow;
+#[cfg(has_gmsh)]
 use crate::{
     auto_size::AutoSizeConfig,
     mesh_volume::{compute_thickness_warnings, resolve_mesh_size},
@@ -194,11 +196,14 @@ pub struct BoundaryAttributedReport {
 /// This is a generic, pure watertightness check with no opinion on whether
 /// `surface` has been welded — the unit tests below exercise it directly on
 /// both an unwelded per-face-block fixture and a welded fixture. Its sole
-/// production caller, [`mesh_surface_to_volume_with_attribution`], WELDS the
-/// surface first (task ξ, #5116, via `repair_surface_mesh_with_correspondence`)
-/// and runs this preflight on the WELDED result (see that function's
-/// `# Stage order`), so in practice this now fails closed in two distinct
-/// scenarios rather than one:
+/// production caller, [`mesh_surface_to_volume_with_attribution`], calls this
+/// TWICE in the general case (task ξ, #5116): first as a cheap probe on the
+/// RAW surface — an `Ok` here short-circuits the weld entirely, since an
+/// already-watertight surface needs no repair — and, only when that probe
+/// fails, again on the WELDED result (via
+/// `repair_surface_mesh_with_correspondence`) as a fail-closed net (see that
+/// function's `# Stage order`). So in practice this now fails closed in two
+/// distinct scenarios rather than one:
 ///
 /// - The [`Mesh::validate`] check below still catches a GENUINE hole (e.g. a
 ///   face missing from the B-rep) that welding cannot fix — welding only
@@ -340,15 +345,22 @@ pub fn raw_open_edge_census(surface: &Mesh) -> (usize, (u32, u32)) {
 ///
 /// # Repair / welding (task ξ, #5116)
 ///
-/// The surface is ALWAYS welded before being handed to gmsh, via
+/// The surface is welded before being handed to gmsh whenever it is not
+/// already watertight, via
 /// `repair_surface_mesh_with_correspondence(surface, repair_cfg.unwrap_or_default())`
 /// — `repair_cfg` selects the weld/repair configuration (`None` uses
-/// `RepairConfig::default()`) rather than gating whether welding happens at
-/// all, as it did pre-ξ. This is safe for attribution: entity anchors are
-/// POSITIONS (mean node position / face centroid), and position-welding only
-/// merges near-coincident vertices onto a shared position — surviving
-/// vertices keep their exact original coordinates, so no anchor moves and
-/// per-node attribution (derived from gmsh entity membership, not input-vertex
+/// `RepairConfig::default()`) rather than gating whether welding can happen
+/// at all, as it did pre-ξ. A cheap `preflight_watertight_surface` probe on
+/// the RAW surface decides whether the weld's O(n²) vertex-merge scan
+/// (repair.rs) is worth paying for: an already-watertight surface (e.g. a
+/// hand-built, pre-welded fixture) is used as-is, since welding one would be
+/// a bit-identical no-op anyway (this also means an already-watertight
+/// surface's `repair_cfg` is not consulted — there is nothing for it to do).
+/// This is safe for attribution: entity anchors are POSITIONS (mean node
+/// position / face centroid), and position-welding only merges
+/// near-coincident vertices onto a shared position — surviving vertices keep
+/// their exact original coordinates, so no anchor moves and per-node
+/// attribution (derived from gmsh entity membership, not input-vertex
 /// identity — see above) is unaffected. The correspondence map returned
 /// alongside the welded mesh makes the weld non-lossy for input-node
 /// identity; it is consumed here via a `tracing::debug!` weld-stats event
@@ -358,10 +370,13 @@ pub fn raw_open_edge_census(surface: &Mesh) -> (usize, (u32, u32)) {
 ///
 /// # Stage order
 ///
-/// 1. Weld — `repair_surface_mesh_with_correspondence`.
-/// 2. Watertightness preflight (task #4876) — now evaluated on the WELDED
-///    surface, so it fails closed only for genuinely-open input (a real hole
-///    survives welding).
+/// 1. Watertightness preflight (task #4876) probe on the RAW surface — an
+///    `Ok` here means the surface is already watertight, so it is used as-is
+///    and stage 2's weld is skipped entirely.
+/// 2. Weld — `repair_surface_mesh_with_correspondence`, only reached when
+///    stage 1 returned `Err`; re-runs the preflight on the WELDED result as
+///    a fail-closed net, so it fails closed only for genuinely-open input (a
+///    real hole survives welding).
 /// 3. `resolve_mesh_size` — honours caller override or derives from features.
 /// 4. GMesh pipeline — classify + create_geometry + HXT tet meshing.
 /// 5. Entity-membership queries (`ffi::get_nodes_at_entity`).
@@ -377,44 +392,57 @@ pub fn mesh_surface_to_volume_with_attribution(
     thickness_cfg: Option<ThroughThicknessConfig>,
     attribution: &EntityAttribution,
 ) -> Result<BoundaryAttributedReport, GeometryError> {
-    // --- Weld (task ξ, #5116) ---
+    // --- Weld (task ξ, #5116), short-circuited when already watertight ---
     //
     // gmsh requires watertight input; a real OCCT-tessellated surface is
     // unwelded by design (per-face vertex blocks) and previously SIGSEGVd
-    // inside gmsh's FFI if handed straight in. Weld near-coincident vertices
-    // first — position-based entity anchors (see fn doc) make this safe for
-    // attribution. `correspondence` maps each ORIGINAL vertex index to its
-    // compacted post-weld index (`u32::MAX` if its merge-survivor was
-    // compacted away); gmsh re-meshes from scratch and discards input-node
-    // identity regardless of welding, so `correspondence` is not threaded
-    // any further here — it is consumed via a weld-stats debug event so it
-    // stays genuinely used rather than dead.
-    let (welded, correspondence) =
-        repair_surface_mesh_with_correspondence(surface, repair_cfg.unwrap_or_default());
-    let dropped_verts = correspondence.iter().filter(|&&c| c == u32::MAX).count();
-    tracing::debug!(
-        target: "reify_kernel_gmsh::mesh_boundary",
-        original_verts = correspondence.len(),
-        welded_verts = welded.vertices.len() / 3,
-        dropped_verts,
-        "mesh_surface_to_volume_with_attribution: weld pre-stage applied"
-    );
-
-    // --- Watertightness preflight (task #4876) ---
+    // inside gmsh's FFI if handed straight in. Probe the RAW surface with
+    // the #4876 preflight first, and only pay for the weld's O(n²)
+    // vertex-merge scan (repair.rs) when that probe fails: an
+    // already-watertight surface (e.g. a hand-built, pre-welded fixture)
+    // needs no repair, and welding one would be a bit-identical no-op
+    // anyway (see fn doc) — so skipping it changes no observable behavior,
+    // only cost. `Cow` avoids cloning the surface in the common
+    // already-watertight case, mirroring
+    // `mesh_volume.rs::apply_repair_if_requested`.
     //
-    // Now evaluated on the WELDED surface (task ξ, #5116): fail closed here,
-    // before any gmsh FFI call, so a surface that is STILL non-watertight
-    // after welding (a genuine hole, not just per-face-block duplication)
-    // degrades gracefully to the plain producer instead of crashing.
-    preflight_watertight_surface(&welded, 0.0)?;
+    // When welding IS needed, position-based entity anchors (see fn doc)
+    // make it safe for attribution. `correspondence` maps each ORIGINAL
+    // vertex index to its compacted post-weld index (`u32::MAX` if its
+    // merge-survivor was compacted away); gmsh re-meshes from scratch and
+    // discards input-node identity regardless of welding, so
+    // `correspondence` is not threaded any further here — it is consumed
+    // via a weld-stats debug event (its `dropped_verts` field is computed
+    // lazily, inline, so the O(n) scan only runs when DEBUG is enabled) so
+    // it stays genuinely used rather than dead.
+    let welded: Cow<'_, Mesh> = if preflight_watertight_surface(surface, 0.0).is_ok() {
+        Cow::Borrowed(surface)
+    } else {
+        let (w, correspondence) =
+            repair_surface_mesh_with_correspondence(surface, repair_cfg.unwrap_or_default());
+        tracing::debug!(
+            target: "reify_kernel_gmsh::mesh_boundary",
+            original_verts = correspondence.len(),
+            welded_verts = w.vertices.len() / 3,
+            dropped_verts = correspondence.iter().filter(|&&c| c == u32::MAX).count(),
+            "mesh_surface_to_volume_with_attribution: weld pre-stage applied"
+        );
+
+        // Fail-closed net (task #4876): evaluated on the WELDED surface, so
+        // this rejects only a surface that is STILL non-watertight after
+        // welding (a genuine hole, not just per-face-block duplication),
+        // degrading gracefully to the plain producer instead of crashing.
+        preflight_watertight_surface(&w, 0.0)?;
+        Cow::Owned(w)
+    };
 
     // --- Pre-stage: resolve mesh size ---
-    let resolved = resolve_mesh_size(&welded, options, auto_size_cfg)?;
+    let resolved = resolve_mesh_size(welded.as_ref(), options, auto_size_cfg)?;
     let inner_options = MeshingOptions { mesh_size: resolved, ..options.clone() };
 
     // --- GMesh pipeline + entity-membership queries ---
     let (volume, node_attribution) =
-        run_meshing_with_entity_queries(&welded, &inner_options, order, attribution)?;
+        run_meshing_with_entity_queries(welded.as_ref(), &inner_options, order, attribution)?;
 
     // --- Build BoundaryAssociation from entity-membership map ---
     let mut boundary = BoundaryAssociation::default();
@@ -423,7 +451,8 @@ pub fn mesh_surface_to_volume_with_attribution(
     }
 
     // --- Post-stage: through-thickness warnings ---
-    let through_thickness_warnings = compute_thickness_warnings(&volume, &welded, thickness_cfg);
+    let through_thickness_warnings =
+        compute_thickness_warnings(&volume, welded.as_ref(), thickness_cfg);
 
     Ok(BoundaryAttributedReport { volume, through_thickness_warnings, boundary })
 }
