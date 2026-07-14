@@ -13685,6 +13685,69 @@ fn build_values_populates_last_substantive_value_for_pruned_pending_cell() {
     );
 }
 
+// --- ValueData::dimension / si_value population (per-cell display-unit picker, task #5199) ---
+
+/// step-5 (RED until step-6): `build_values` surfaces the per-cell canonical
+/// dimension name and raw SI magnitude alongside the existing default-unit
+/// `value`/`unit` pair. A Volume `let` cell (derived from Length·Length·Length)
+/// carries `dimension == "Volume"` and `si_value == Some(<m³ magnitude>)`; a
+/// Length param carries `dimension == "Length"` + its own SI magnitude; an
+/// unbound (Undef) param — non-scalar — carries `dimension == ""` and
+/// `si_value == None`.
+///
+/// RED today: build_values still emits the step-4 placeholders
+/// (`dimension: String::new(), si_value: None`) for every cell. GREEN after
+/// step-6 wires the local `display_scalar` helper into build_values.
+#[test]
+fn build_values_populates_dimension_and_si_value_for_scalar_cells() {
+    const SRC: &str = r#"
+structure Tank {
+    param w : Length = 10mm
+    let capacity = w * w * w
+    param free_val : Length
+}
+"#;
+
+    let mut session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    let state = session
+        .load_from_source(SRC, "tank")
+        .expect("load_from_source should succeed");
+
+    let w = state
+        .values
+        .iter()
+        .find(|v| v.name == "w")
+        .expect("w must surface as a ValueData");
+    assert_eq!(w.dimension, "Length");
+    assert_eq!(w.si_value, Some(0.01), "w = 10mm = 0.01m in SI");
+
+    let capacity = state
+        .values
+        .iter()
+        .find(|v| v.name == "capacity")
+        .expect("capacity must surface as a ValueData");
+    assert_eq!(capacity.dimension, "Volume");
+    assert_eq!(
+        capacity.si_value,
+        Some(0.01 * 0.01 * 0.01),
+        "capacity = w³ = 1e-6 m³ in SI"
+    );
+
+    let free_val = state
+        .values
+        .iter()
+        .find(|v| v.name == "free_val")
+        .expect("free_val must surface as a ValueData");
+    assert_eq!(
+        free_val.dimension, "",
+        "an unbound (Undef) cell has no scalar dimension"
+    );
+    assert_eq!(free_val.si_value, None);
+}
+
 // ── ζ §11.2 row 4: GUI binary checker-injection smoke (task 4437) ─────────────
 
 /// GUI-binary engine-path injection smoke: proves that the GUI binary's compile
