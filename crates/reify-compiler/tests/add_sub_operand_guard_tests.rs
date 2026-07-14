@@ -27,6 +27,8 @@
 //! **No-false-positive / regression (must stay GREEN throughout):**
 //! - `complex(1.0, 1.0) + 1` (dimensionless Complex widening, D3 policy) →
 //!   zero `ArithOperandKind`
+//! - `complex(1.0, 1.0) - 1` (dimensionless Complex widening, Sub direction)
+//!   → zero `ArithOperandKind`
 //! - `z + z` (same dimensioned Complex on both sides) → zero
 //!   `ArithOperandKind` (Complex-vs-Complex is out of this guard's scope)
 //! - `let w = z + 1` then `let x = w + 1` (anti-cascade) → exactly ONE
@@ -206,6 +208,23 @@ fn dimensionless_complex_plus_int_no_spurious_arith_operand_kind() {
         0,
         "`complex(1.0, 1.0) + 1` (dimensionless Complex widening) must NOT \
          produce ArithOperandKind; got errors: {errors:?}"
+    );
+}
+
+/// Sub-direction counterpart of the sibling pin above: the dimensionless-
+/// widening path is per-op, so a regression that mis-handles `Sub` there
+/// (e.g. falsely rejecting) would not be caught by the `Add`-only case above.
+#[test]
+fn dimensionless_complex_minus_int_no_spurious_arith_operand_kind() {
+    let errors = compile_complex_expr_errors(
+        r#"let d = complex(1.0, 1.0)
+    let w = d - 1"#,
+    );
+    assert_eq!(
+        arith_operand_kind_count(&errors),
+        0,
+        "`complex(1.0, 1.0) - 1` (dimensionless Complex widening, Sub) must \
+         NOT produce ArithOperandKind; got errors: {errors:?}"
     );
 }
 
