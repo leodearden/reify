@@ -483,6 +483,7 @@ fn watcher_rereads_final_content_after_nonatomic_truncate_then_append() {
     // merging into one at the OS level.
     std::thread::sleep(Duration::from_millis(40));
 
+    let partial_content = "module bottom_deck\n\n";
     let full_content = "module bottom_deck\n\nvalue a = 1\n";
     std::fs::write(&target, full_content).unwrap();
 
@@ -500,5 +501,81 @@ fn watcher_rereads_final_content_after_nonatomic_truncate_then_append() {
         "expected the watcher's terminal read to equal the fully-appended \
          content {:?}, got: {:?}",
         full_content, *texts
+    );
+
+    // The terminal-read check above would also pass for a watcher that
+    // fires on EVERY event (no coalescing) as long as the second read
+    // happens to observe the settled file -- it doesn't actually pin
+    // coalescing. Assert directly that the transient partial (truncated)
+    // content was never delivered: that's only possible if the truncate
+    // and append events coalesced into a single trailing-edge emission
+    // rather than the truncation getting its own early callback firing.
+    assert!(
+        !texts.iter().any(|t| t == partial_content),
+        "the watcher should coalesce the truncate+append into a single \
+         trailing-edge emission and never deliver the transient partial \
+         content {:?}, got emissions: {:?}",
+        partial_content,
+        *texts
+    );
+}
+
+/// A callback that panics on its first invocation must not permanently kill
+/// event delivery: the worker thread catches the unwind and keeps draining
+/// the debouncer, so a later filesystem event still reaches the callback.
+#[test]
+fn watcher_survives_a_panicking_callback_and_keeps_delivering_later_events() {
+    let dir = tempfile::tempdir().unwrap();
+    let ri_file = dir.path().join("flaky.ri");
+    std::fs::write(&ri_file, "structure Flaky {}").unwrap();
+
+    let call_count: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
+    let received: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(vec![]));
+    let call_count_clone = call_count.clone();
+    let received_clone = received.clone();
+
+    let Some(_watcher) = try_watcher(dir.path(), None, move |event| {
+        let mut n = call_count_clone.lock().unwrap();
+        *n += 1;
+        let is_first_call = *n == 1;
+        drop(n);
+
+        // Simulate a callback bug on the very first delivery only.
+        if is_first_call {
+            panic!("simulated callback panic on first event");
+        }
+        if let FileEvent::Changed(path) = event {
+            received_clone.lock().unwrap().push(path);
+        }
+    }) else {
+        return;
+    };
+
+    // Give the watcher time to register.
+    std::thread::sleep(Duration::from_millis(200));
+
+    // First modification: reaches the callback, which panics. If the
+    // worker thread didn't catch that unwind, it would terminate here and
+    // no further event would ever be delivered.
+    std::fs::write(&ri_file, "structure Flaky { param x = 1mm }").unwrap();
+
+    // Let the debounce window elapse so the panicking call is fully
+    // processed (and, if uncaught, the worker fully dead) before the
+    // second write.
+    std::thread::sleep(Duration::from_millis(300));
+
+    // Second modification: only observable if the worker survived the
+    // first callback's panic and is still draining the debouncer.
+    std::fs::write(&ri_file, "structure Flaky { param x = 2mm }").unwrap();
+
+    let found = wait_for(&received, Duration::from_secs(10), |paths| {
+        paths.iter().any(|p| p.ends_with("flaky.ri"))
+    });
+
+    let paths = received.lock().unwrap();
+    assert!(
+        found,
+        "watcher should keep delivering events after a callback panic, got: {:?}",
+        *paths
     );
 }

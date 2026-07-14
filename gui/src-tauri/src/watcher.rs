@@ -88,20 +88,20 @@ impl Debouncer {
     /// Remove and return every pending path whose quiet window has
     /// elapsed as of `now` (i.e. `now.duration_since(last_seen) >= window`).
     pub(crate) fn drain_ready(&mut self, now: Instant) -> Vec<(PathBuf, ChangeKind)> {
-        let ready_paths: Vec<PathBuf> = self
-            .pending
-            .iter()
-            .filter(|(_, p)| now.duration_since(p.last_seen) >= self.window)
-            .map(|(path, _)| path.clone())
-            .collect();
-
-        ready_paths
-            .into_iter()
-            .map(|path| {
-                let pending = self.pending.remove(&path).expect("key just observed in iter");
-                (path, pending.kind)
-            })
-            .collect()
+        // Single pass: `retain` visits each entry once and removes it
+        // in-place, so a ready entry is neither re-hashed nor looked up a
+        // second time (unlike a filter-then-remove-by-key two-pass).
+        let mut ready = Vec::new();
+        let window = self.window;
+        self.pending.retain(|path, pending| {
+            if now.duration_since(pending.last_seen) >= window {
+                ready.push((path.clone(), pending.kind));
+                false
+            } else {
+                true
+            }
+        });
+        ready
     }
 
     /// The smallest remaining time until some pending path becomes ready,
@@ -146,6 +146,13 @@ impl FileWatcher {
     /// separate append) coalesces into a single callback firing that
     /// observes the final on-disk content rather than a transient partial
     /// buffer.
+    ///
+    /// `callback` runs on a dedicated worker thread and **must not block
+    /// for an unbounded time**: [`Drop`] joins that worker to shut it down
+    /// cleanly, so a callback invocation that never returns will make
+    /// dropping the `FileWatcher` hang indefinitely. A *panicking* callback
+    /// is caught and logged rather than killing the worker (see the worker
+    /// loop), so `callback` only needs to be non-blocking, not panic-free.
     pub fn new<F>(dir: &Path, target_file: Option<PathBuf>, callback: F) -> Result<Self, String>
     where
         F: Fn(FileEvent) + Send + 'static,
@@ -236,7 +243,24 @@ impl FileWatcher {
                         ChangeKind::Changed => FileEvent::Changed(path),
                         ChangeKind::Removed => FileEvent::Removed(path),
                     };
-                    callback(file_event);
+                    // Isolate a panicking callback: without this, a single
+                    // bad event would unwind and terminate this worker
+                    // thread, and since nothing else drains the debouncer,
+                    // every future event would silently stop being
+                    // delivered (the notify closure would keep recording
+                    // into it with no consumer left).
+                    if let Err(payload) =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            callback(file_event);
+                        }))
+                    {
+                        let message = payload
+                            .downcast_ref::<&str>()
+                            .map(|s| s.to_string())
+                            .or_else(|| payload.downcast_ref::<String>().cloned())
+                            .unwrap_or_else(|| "<non-string panic payload>".to_string());
+                        eprintln!("FileWatcher callback panicked (continuing to watch): {message}");
+                    }
                 }
                 guard = lock.lock().unwrap();
             }
