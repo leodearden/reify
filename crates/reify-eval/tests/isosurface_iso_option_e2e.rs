@@ -6,27 +6,35 @@
 //! measurably changes the surfaced mesh END-TO-END, guarding PRD D4's
 //! options-threading path against the C-10 "declared-but-unexercised" shape.
 //!
-//! Two builds of a narrow-band 20mm-box fixture with DISTINCT `iso:` values
-//! (`0mm` vs `100mm`) must produce a measurably different outcome: `iso:
-//! 0mm` crosses the SDF at the box boundary (non-empty, per δ/5002), while
-//! `iso: 100mm` (0.1m) is >=5x the 20mm box and well outside its narrow
-//! band's documented LOWER BOUND (`narrow_band * h >= longest_extent/2`,
-//! `crates/reify-kernel-openvdb/src/kernel_real.rs:623-628` — a floor, not a
-//! ceiling, on band width), so it is EXPECTED that marching cubes finds no
-//! crossing and returns `Ok(empty)`
-//! (`crates/reify-kernel-openvdb/src/kernel_real.rs:340-344` — never
-//! panics). The options-threading proof itself is the BINARY `assert_ne!`
-//! on triangle counts, which holds for ANY live `iso:` regardless of the
-//! exact band width: equal counts would mean `iso:` was ignored (D4
-//! options-threading collapsed to default). A separate `assert_eq!` locks
-//! in the documented `Ok(empty)` contract as its own regression guard, so a
-//! future change that makes `iso: 100mm` surface a (still-distinct)
-//! non-empty mesh is caught explicitly rather than only incidentally
-//! passing `assert_ne!`. `surface_shell_triangle_count` additionally
-//! asserts each build has no `Severity::Error` diagnostics, so the `iso:
-//! 100mm` zero count is provably the documented `Ok(empty)` no-crossing
-//! path rather than a silently degraded/errored build masquerading as an
-//! empty mesh.
+//! Two independent tests each build a narrow-band 20mm-box fixture with
+//! DISTINCT `iso:` values:
+//!
+//! - `iso_option_changes_surfaced_mesh` compares two IN-BAND non-default
+//!   values (`0mm` vs `3mm`, the latter mirroring the committed example
+//!   fixture) and asserts BOTH surface a non-empty mesh with a DIFFERENT
+//!   triangle count. This is the core options-threading proof: since
+//!   neither build collapses to empty, the inequality can only be driven by
+//!   a genuine isocontour shift, not by one build merely falling outside
+//!   the narrow band. It holds for ANY live `iso:` regardless of the exact
+//!   band width: equal counts would mean `iso:` was ignored (D4
+//!   options-threading collapsed to default).
+//! - `iso_option_out_of_band_surfaces_empty_mesh` is a SEPARATE regression
+//!   guard locking in the documented `Ok(empty)` no-crossing contract
+//!   (`crates/reify-kernel-openvdb/src/kernel_real.rs:340-344` — never
+//!   panics): `iso: 100mm` (0.1m) is >=5x the 20mm box and well outside its
+//!   narrow band's documented LOWER BOUND (`narrow_band * h >=
+//!   longest_extent/2`,
+//!   `crates/reify-kernel-openvdb/src/kernel_real.rs:623-628` — a floor,
+//!   not a ceiling, on band width), so it is EXPECTED that marching cubes
+//!   finds no crossing and returns `Ok(empty)`. Keeping this claim in its
+//!   own test means a future legitimate change that widens the band (and
+//!   makes `iso: 100mm` surface a still-distinct non-empty mesh) fails only
+//!   this contract guard, not the options-threading proof above.
+//!
+//! `surface_shell_triangle_count` additionally asserts each build has no
+//! `Severity::Error` diagnostics, so neither test's triangle count can be
+//! attributed to a silently degraded/errored build masquerading as a
+//! genuine result.
 //!
 //! ## Reuse
 //!
@@ -131,16 +139,20 @@ fn surface_shell_triangle_count(source: &str, entity: &str) -> usize {
 }
 
 /// Two INLINE sources, byte-identical except the `iso:` literal, prove
-/// `iso:` is a LIVE options-threading knob end-to-end: `iso: 0mm` (baseline,
-/// per δ) must surface a non-empty mesh, and `iso: 100mm` must surface a
-/// DIFFERENT triangle count (the binary `assert_ne!`, which is the
-/// options-threading proof and holds regardless of the exact narrow-band
-/// width). `iso: 100mm` — well outside the narrow band's documented
-/// LOWER-BOUND width for a 20mm box — is additionally expected to surface
-/// an EMPTY mesh per the kernel's `Ok(empty)` no-crossing contract,
-/// asserted explicitly below as its own regression guard. Equal counts
-/// would mean the isosurface `iso:` option never reached marching cubes (D4
+/// `iso:` is a LIVE options-threading knob end-to-end: two IN-BAND
+/// non-default values (`0mm` vs `3mm`, the latter mirroring the committed
+/// example fixture) must EACH surface a non-empty mesh, with DIFFERENT
+/// triangle counts. Comparing two non-empty, in-band results (rather than
+/// non-empty vs empty) is the stronger proof: since neither build can
+/// collapse to empty, the `assert_ne!` inequality can only be explained by
+/// `iso:` genuinely moving the extracted isocontour, not by one build
+/// merely falling outside the narrow band. It holds for ANY live `iso:`
+/// regardless of the exact band width. Equal counts would mean the
+/// isosurface `iso:` option never reached marching cubes (D4
 /// options-threading collapsed to default).
+///
+/// See `iso_option_out_of_band_surfaces_empty_mesh` below for the separate
+/// `Ok(empty)` no-crossing contract guard.
 #[cfg(has_openvdb)]
 #[test]
 fn iso_option_changes_surfaced_mesh() {
@@ -153,35 +165,62 @@ fn iso_option_changes_surfaced_mesh() {
     }
 
     let source_zero = "structure IsoKnob { param size: Length = 20mm  let solid = box(size, size, size)  let shell = isosurface(solid, iso: 0mm) }";
-    let source_outband = "structure IsoKnob { param size: Length = 20mm  let solid = box(size, size, size)  let shell = isosurface(solid, iso: 100mm) }";
+    let source_inband = "structure IsoKnob { param size: Length = 20mm  let solid = box(size, size, size)  let shell = isosurface(solid, iso: 3mm) }";
 
     let tris_zero = surface_shell_triangle_count(source_zero, "IsoKnob");
-    let tris_outband = surface_shell_triangle_count(source_outband, "IsoKnob");
+    let tris_inband = surface_shell_triangle_count(source_inband, "IsoKnob");
 
     assert!(
         tris_zero > 0,
         "iso: 0mm must surface a non-empty mesh (a closed 20mm box's \
          narrow-band SDF crosses iso=0 at its boundary, per δ/5002); got {tris_zero} triangles"
     );
-    assert_ne!(
-        tris_zero, tris_outband,
-        "iso: 0mm and iso: 100mm must surface DIFFERENT triangle counts — \
-         this binary inequality IS the options-threading proof, and holds \
-         for ANY live `iso:` regardless of the exact narrow-band width; \
-         equal counts ({tris_zero} == {tris_outband}) mean the `iso:` \
-         option never reached marching cubes (D4 options-threading \
-         collapsed to default)"
+    assert!(
+        tris_inband > 0,
+        "iso: 3mm must also surface a non-empty mesh (in-band for a 20mm \
+         box's ~0.01m narrow-band half-width, mirroring the committed \
+         example fixture examples/multi_kernel/voxel_to_mesh_iso.ri); got \
+         {tris_inband} triangles"
     );
-    // Separate regression guard for the documented Ok(empty) contract
-    // itself (distinct from the assert_ne! options-threading proof above).
-    // The cited narrow-band invariant (kernel_real.rs:623-628,
-    // `narrow_band * h >= longest_extent/2`) is only a LOWER bound on band
-    // width, not a ceiling, so it does not by itself guarantee 100mm lies
-    // outside the band — this assert_eq! makes the expected emptiness an
-    // explicit, independently-checked claim rather than an assumption baked
-    // into the assert_ne! message, so a future change that makes `iso:
-    // 100mm` surface a (still-distinct) non-empty mesh is caught here
-    // rather than silently passing assert_ne! alone.
+    assert_ne!(
+        tris_zero, tris_inband,
+        "iso: 0mm and iso: 3mm — both IN-BAND and both non-empty — must \
+         surface DIFFERENT triangle counts; this binary inequality IS the \
+         options-threading proof, driven by a genuine isocontour shift \
+         rather than by either build collapsing to empty, and it holds for \
+         ANY live `iso:` regardless of the exact narrow-band width; equal \
+         counts ({tris_zero} == {tris_inband}) mean the `iso:` option never \
+         reached marching cubes (D4 options-threading collapsed to default)"
+    );
+}
+
+/// Separate regression guard for the kernel's documented `Ok(empty)`
+/// no-crossing contract
+/// (`crates/reify-kernel-openvdb/src/kernel_real.rs:340-344` — never
+/// panics), deliberately decoupled from the options-threading proof in
+/// `iso_option_changes_surfaced_mesh` above: `iso: 100mm` (0.1m) is >=5x
+/// the 20mm box and well outside its narrow band's documented LOWER-BOUND
+/// width (`narrow_band * h >= longest_extent/2`,
+/// `crates/reify-kernel-openvdb/src/kernel_real.rs:623-628` — a floor, not
+/// a ceiling, on band width), so it is expected to surface an EMPTY mesh.
+/// Keeping this claim in its own test means a future legitimate change
+/// that widens the band (and makes `iso: 100mm` surface a still-distinct
+/// non-empty mesh) fails only this contract guard, not the
+/// options-threading proof.
+#[cfg(has_openvdb)]
+#[test]
+fn iso_option_out_of_band_surfaces_empty_mesh() {
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping iso_option_out_of_band_surfaces_empty_mesh: OCCT not \
+             available (cfg(has_occt) not set — stub-mode build)"
+        );
+        return;
+    }
+
+    let source_outband = "structure IsoKnob { param size: Length = 20mm  let solid = box(size, size, size)  let shell = isosurface(solid, iso: 100mm) }";
+    let tris_outband = surface_shell_triangle_count(source_outband, "IsoKnob");
+
     assert_eq!(
         tris_outband, 0,
         "iso: 100mm (0.1m) is >=5x the 20mm box and well outside its narrow \
