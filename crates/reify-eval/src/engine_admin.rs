@@ -3261,6 +3261,124 @@ mod tests {
         );
     }
 
+    /// Characterization lock on the OBSERVABLE snapshot/version numbering
+    /// produced by `dispatch_merged_cluster_solve`'s `SolveResult::Solved`
+    /// arm (site 3), complementing
+    /// `eval_snapshot_numbering_is_stable_across_repeated_calls` (site 1)
+    /// and `resolution_phase_snapshot_numbering_is_stable` (site 2) above.
+    /// Without this test, a mis-migration at site 3 (extra/missing bump,
+    /// swapped snapshot/version order) would not be caught.
+    ///
+    /// Two templates forming a 2-cycle (`A` reads `B.m`, `B` reads `A.k`)
+    /// are an irreducible SCC of size 2, well within the whole-model
+    /// cluster dimension cap, so `resolve_order::compute_clusters` assigns
+    /// them `ClusterDisposition::MergedSolve` and the cold `eval()` driver
+    /// dispatches ONE merged solve for the whole cluster — mirrors
+    /// `two_cycle_cluster_module` /
+    /// `merged_cluster_dispatches_single_solve_with_union_auto_params` in
+    /// `tests/merged_cluster_solve.rs`, already known-good against task
+    /// #5014's own unit tests. Because every scope in this module is a
+    /// member of the one merged cluster, the ordinary per-template
+    /// resolution branch (site 2) stays dormant here. So exactly TWO pairs
+    /// are minted in this one `eval()` call: the cold-path pair at site 1
+    /// (`SnapshotId(0)`, `VersionId(0)`), then the merged-cluster-solve
+    /// pair at site 3 (`SnapshotId(1)`, `VersionId(1)`), which overwrites
+    /// `snapshot.id`/`.version` before `eval()` returns. Uses
+    /// `MockConstraintSolver::new_solved` (not the real `DimensionalSolver`)
+    /// so the resolution outcome — and therefore whether site 3 fires at
+    /// all — is deterministic.
+    #[test]
+    fn merged_cluster_solve_snapshot_numbering_is_stable() {
+        use std::collections::HashMap;
+
+        use reify_core::{ModulePath, SnapshotId, Type, ValueCellId, VersionId};
+        use reify_ir::Value;
+        use reify_test_support::{
+            CompiledModuleBuilder, MockConstraintChecker, MockConstraintSolver,
+            TopologyTemplateBuilder, gt, literal, mm, value_ref,
+        };
+
+        let a_k = ValueCellId::new("A", "k");
+        let b_m = ValueCellId::new("B", "m");
+        let mut solved_values = HashMap::new();
+        solved_values.insert(a_k.clone(), mm(3.0));
+        solved_values.insert(b_m.clone(), mm(7.0));
+        let solver = MockConstraintSolver::new_solved(solved_values);
+
+        let a = TopologyTemplateBuilder::new("A")
+            .auto_param("A", "k", Type::length())
+            // A reads B.m — creates edge B→A in the read-DAG.
+            .constraint("A", 0, None, gt(value_ref("B", "m"), literal(mm(0.0))))
+            .build();
+        let b = TopologyTemplateBuilder::new("B")
+            .auto_param("B", "m", Type::length())
+            // B reads A.k — creates edge A→B in the read-DAG → cycle!
+            .constraint("B", 0, None, gt(value_ref("A", "k"), literal(mm(0.0))))
+            .build();
+
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(a)
+            .template(b)
+            .build();
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+            .with_solver(Box::new(solver));
+
+        let result = engine.eval(&module);
+
+        // Sanity: confirm the merged solve's Solved arm actually fired
+        // (both cluster members resolved together via ONE merged solve),
+        // not left Undef by a dormant dispatch.
+        assert!(
+            matches!(
+                result.values.get(&a_k),
+                Some(Value::Scalar { si_value, .. }) if (*si_value - 0.003).abs() < 1e-10
+            ),
+            "expected A.k = mm(3.0) = 0.003 SI, got {:?}",
+            result.values.get(&a_k)
+        );
+        assert!(
+            matches!(
+                result.values.get(&b_m),
+                Some(Value::Scalar { si_value, .. }) if (*si_value - 0.007).abs() < 1e-10
+            ),
+            "expected B.m = mm(7.0) = 0.007 SI, got {:?}",
+            result.values.get(&b_m)
+        );
+
+        let snapshot = engine
+            .snapshot()
+            .expect("eval() must populate a current snapshot");
+        // Deliberate characterization lock (same caveat as the site-1/
+        // site-2 tests above): these exact counts/ids are tied to precisely
+        // two allocation sites firing (site 1 then site 3). A legitimate
+        // future change that adds/removes an allocation site during eval()
+        // must re-baseline these values on purpose, not treat a red here as
+        // an automatic regression.
+        assert_eq!(
+            snapshot.id, SnapshotId(1),
+            "merged-cluster-solve pair (site 3) must be the SECOND \
+             allocation after the site-1 cold-path pair — expected \
+             SnapshotId(1)",
+        );
+        assert_eq!(
+            snapshot.version, VersionId(1),
+            "merged-cluster-solve pair (site 3) must be the SECOND \
+             allocation after the site-1 cold-path pair — expected \
+             VersionId(1)",
+        );
+        assert_eq!(
+            engine.next_snapshot_id, 2,
+            "exactly two snapshot ids must be minted: cold path (site 1) \
+             + merged-cluster-solve (site 3)",
+        );
+        assert_eq!(
+            engine.next_version_id, 2,
+            "exactly two version ids must be minted: cold path (site 1) + \
+             merged-cluster-solve (site 3)",
+        );
+    }
+
     // ── kernel_pin_diagnostics unit tests (task π / #3444 S1/S2) ──────────
 
     /// (a) registered {"occt"} + pins [kernels]\nmanifold="1.0.0"
