@@ -1375,17 +1375,22 @@ async fn open_path_into_engine(state: &DebugServerState, raw_path: &str) -> Resu
 /// newly-opened file's identity (`FilePathUpdate::Set`) instead of preserving
 /// whatever file was previously loaded, which `update_source` would do (task
 /// #5193). `load_file` already routes through `post_engine_call_telemetry`
-/// (the L4 emission choke-point) by construction.
+/// (the L4 emission choke-point) by construction. On failure, the underlying
+/// `load_file_into_engine` error is wrapped with an "open funnel failed to
+/// load {path}" prefix so debug-harness failure triage can tell the error
+/// came from this open funnel rather than a normal command.
 pub async fn open_source_into_engine_and_refresh_baseline(
     engine: &Arc<Mutex<EngineSession>>,
     last_state: &std::sync::Mutex<Option<crate::types::GuiState>>,
     path: &str,
 ) -> Result<crate::types::GuiState, String> {
     let path = path.to_owned();
+    let load_path = path.clone();
     let gui_state = run_on_engine(engine, move |session| {
-        crate::commands::load_file_into_engine(session, std::path::Path::new(&path))
+        crate::commands::load_file_into_engine(session, std::path::Path::new(&load_path))
     })
-    .await?;
+    .await
+    .map_err(|e| format!("open funnel failed to load {path}: {e}"))?;
     crate::diff::compute_delta(last_state, &gui_state);
     Ok(gui_state)
 }
@@ -3461,15 +3466,15 @@ mod tests {
             "GuiState.files must be non-empty after opening deck.ri"
         );
         assert!(
-            state.files[0].path.ends_with("deck.ri"),
-            "files[0].path must adopt the newly-opened file's identity (deck.ri), got: {}",
-            state.files[0].path
+            state.files.iter().all(|f| f.path.ends_with("deck.ri")),
+            "every files[].path must adopt the newly-opened file's identity (deck.ri), got: {:?}",
+            state.files.iter().map(|f| &f.path).collect::<Vec<_>>()
         );
         assert!(
-            !state.files[0].path.ends_with("bracket.ri"),
-            "files[0].path must NOT retain the previously-loaded file's \
-             identity (bracket.ri), got: {}",
-            state.files[0].path
+            !state.files.iter().any(|f| f.path.ends_with("bracket.ri")),
+            "no files[].path may retain the previously-loaded file's \
+             identity (bracket.ri), got: {:?}",
+            state.files.iter().map(|f| &f.path).collect::<Vec<_>>()
         );
     }
 
