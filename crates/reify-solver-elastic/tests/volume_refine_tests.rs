@@ -6,6 +6,7 @@
 //! `reify-solver-elastic` crate has no build.rs that propagates `has_gmsh`).
 
 use reify_kernel_gmsh::MeshingOptions;
+use reify_solver_elastic::refine_marked_elements;
 use reify_solver_elastic::volume_refine::{RefineError, refine_with_size_field};
 use reify_ir::{ElementOrderTag, Mesh, VolumeConnectivity, VolumeMesh};
 
@@ -135,6 +136,48 @@ fn dummy_surface() -> Mesh {
     }
 }
 
+/// Hex8 `VolumeMesh` (8 vertices, P1-only) — non-tetrahedral connectivity
+/// used to exercise the tet-only connectivity guard (task 4996).
+fn hex_vm() -> VolumeMesh {
+    VolumeMesh {
+        vertices: vec![
+            0.0, 0.0, 0.0, // 0
+            1.0, 0.0, 0.0, // 1
+            1.0, 1.0, 0.0, // 2
+            0.0, 1.0, 0.0, // 3
+            0.0, 0.0, 1.0, // 4
+            1.0, 0.0, 1.0, // 5
+            1.0, 1.0, 1.0, // 6
+            0.0, 1.0, 1.0, // 7
+        ],
+        connectivity: VolumeConnectivity::Hex {
+            indices: vec![0, 1, 2, 3, 4, 5, 6, 7],
+        },
+        normals: None,
+        boundary: None,
+    }
+}
+
+/// Wedge/PRI6 `VolumeMesh` (6 vertices, P1-only) — non-tetrahedral
+/// connectivity used to exercise the tet-only connectivity guard (task 4996).
+fn wedge_vm() -> VolumeMesh {
+    VolumeMesh {
+        vertices: vec![
+            0.0, 0.0, 0.0, // 0
+            1.0, 0.0, 0.0, // 1
+            0.0, 1.0, 0.0, // 2
+            0.0, 0.0, 1.0, // 3
+            1.0, 0.0, 1.0, // 4
+            0.0, 1.0, 1.0, // 5
+        ],
+        connectivity: VolumeConnectivity::Wedge {
+            indices: vec![0, 1, 2, 3, 4, 5],
+        },
+        normals: None,
+        boundary: None,
+    }
+}
+
 /// `size_hints` with wrong length must return `SizeHintsLengthMismatch`.
 #[test]
 fn size_hints_length_mismatch_errors() {
@@ -183,6 +226,42 @@ fn non_finite_size_errors() {
     assert!(
         matches!(result, Err(RefineError::NonFiniteSize { index: 1 })),
         "expected NonFiniteSize {{index: 1}}, got: {result:?}",
+    );
+}
+
+/// A Hex `VolumeMesh` passed to `refine_with_size_field` (tet-only) must be
+/// rejected via `RefineError::UnsupportedConnectivity` from the
+/// `element_count` guard, before any size-hint validation or gmsh call
+/// (task 4996).
+#[test]
+fn refine_with_size_field_errors_on_hex_connectivity() {
+    let surface = dummy_surface();
+    let vm = hex_vm();
+    let opts = MeshingOptions::default();
+
+    // size_hints length is irrelevant here: the connectivity guard fires
+    // before the length check.
+    let result = refine_with_size_field(&surface, &vm, &[], &opts);
+    assert!(
+        matches!(result, Err(RefineError::UnsupportedConnectivity)),
+        "expected UnsupportedConnectivity, got: {result:?}",
+    );
+}
+
+/// A Wedge `VolumeMesh` passed to `refine_marked_elements` (tet-only) must be
+/// rejected via `RefineError::UnsupportedConnectivity` from the shared
+/// `element_count` chokepoint, before any size-hint/marked-index validation
+/// or gmsh call (task 4996).
+#[test]
+fn refine_marked_elements_errors_on_wedge_connectivity() {
+    let surface = dummy_surface();
+    let vm = wedge_vm();
+    let opts = MeshingOptions::default();
+
+    let result = refine_marked_elements(&surface, &vm, &[], &[], &opts);
+    assert!(
+        matches!(result, Err(RefineError::UnsupportedConnectivity)),
+        "expected UnsupportedConnectivity, got: {result:?}",
     );
 }
 
