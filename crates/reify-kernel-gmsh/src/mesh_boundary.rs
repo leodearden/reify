@@ -198,9 +198,10 @@ pub struct BoundaryAttributedReport {
 /// both an unwelded per-face-block fixture and a welded fixture. Its sole
 /// production caller, [`mesh_surface_to_volume_with_attribution`], calls this
 /// TWICE in the general case (task ξ, #5116): first as a cheap probe on the
-/// RAW surface — an `Ok` here short-circuits the weld entirely, since an
-/// already-watertight surface needs no repair — and, only when that probe
-/// fails, again on the WELDED result (via
+/// RAW surface, but ONLY when the caller passed no explicit `repair_cfg` —
+/// an `Ok` here short-circuits the weld entirely, since an already-watertight
+/// surface needs no repair — and, only when that probe fails (or is skipped
+/// because `repair_cfg` was `Some`), again on the WELDED result (via
 /// `repair_surface_mesh_with_correspondence`) as a fail-closed net (see that
 /// function's `# Stage order`). So in practice this now fails closed in two
 /// distinct scenarios rather than one:
@@ -350,14 +351,20 @@ pub fn raw_open_edge_census(surface: &Mesh) -> (usize, (u32, u32)) {
 /// `repair_surface_mesh_with_correspondence(surface, repair_cfg.unwrap_or_default())`
 /// — `repair_cfg` selects the weld/repair configuration (`None` uses
 /// `RepairConfig::default()`) rather than gating whether welding can happen
-/// at all, as it did pre-ξ. A cheap `preflight_watertight_surface` probe on
-/// the RAW surface decides whether the weld's O(n²) vertex-merge scan
-/// (repair.rs) is worth paying for: an already-watertight surface (e.g. a
-/// hand-built, pre-welded fixture) is used as-is, since welding one would be
-/// a bit-identical no-op anyway (this also means an already-watertight
-/// surface's `repair_cfg` is not consulted — there is nothing for it to do).
-/// This is safe for attribution: entity anchors are POSITIONS (mean node
-/// position / face centroid), and position-welding only merges
+/// at all, as it did pre-ξ. When `repair_cfg` is `None`, a cheap
+/// `preflight_watertight_surface` probe on the RAW surface decides whether
+/// the weld's O(n²) vertex-merge scan (repair.rs) is worth paying for: an
+/// already-watertight surface (e.g. a hand-built, pre-welded fixture) is
+/// used as-is, since welding it with the default config would be a
+/// bit-identical no-op anyway. An explicit `Some(repair_cfg)` always runs
+/// the weld, even on an already-watertight raw surface: the caller asked for
+/// a specific configuration (e.g. a coarser merge epsilon meant to always
+/// apply), and the RAW-surface probe is a purely topological check that
+/// cannot know whether a non-default config would still change the output —
+/// so an explicit config is never silently dropped just because the surface
+/// already happens to be closed. This is safe for attribution: entity
+/// anchors are POSITIONS (mean node position / face centroid), and
+/// position-welding only merges
 /// near-coincident vertices onto a shared position — surviving vertices keep
 /// their exact original coordinates, so no anchor moves and per-node
 /// attribution (derived from gmsh entity membership, not input-vertex
@@ -370,12 +377,15 @@ pub fn raw_open_edge_census(surface: &Mesh) -> (usize, (u32, u32)) {
 ///
 /// # Stage order
 ///
-/// 1. Watertightness preflight (task #4876) probe on the RAW surface — an
-///    `Ok` here means the surface is already watertight, so it is used as-is
-///    and stage 2's weld is skipped entirely.
-/// 2. Weld — `repair_surface_mesh_with_correspondence`, only reached when
-///    stage 1 returned `Err`; re-runs the preflight on the WELDED result as
-///    a fail-closed net, so it fails closed only for genuinely-open input (a
+/// 1. Watertightness preflight (task #4876) probe on the RAW surface —
+///    skipped entirely when the caller passed an explicit `repair_cfg`. An
+///    `Ok` here (only possible when `repair_cfg` is `None`) means the
+///    surface is already watertight, so it is used as-is and stage 2's weld
+///    is skipped.
+/// 2. Weld — `repair_surface_mesh_with_correspondence`, always run when
+///    `repair_cfg` is `Some`, or when `repair_cfg` is `None` and stage 1
+///    returned `Err`; re-runs the preflight on the WELDED result as a
+///    fail-closed net, so it fails closed only for genuinely-open input (a
 ///    real hole survives welding).
 /// 3. `resolve_mesh_size` — honours caller override or derives from features.
 /// 4. GMesh pipeline — classify + create_geometry + HXT tet meshing.
@@ -392,18 +402,25 @@ pub fn mesh_surface_to_volume_with_attribution(
     thickness_cfg: Option<ThroughThicknessConfig>,
     attribution: &EntityAttribution,
 ) -> Result<BoundaryAttributedReport, GeometryError> {
-    // --- Weld (task ξ, #5116), short-circuited when already watertight ---
+    // --- Weld (task ξ, #5116), short-circuited when already watertight AND
+    // no explicit repair_cfg was requested ---
     //
     // gmsh requires watertight input; a real OCCT-tessellated surface is
     // unwelded by design (per-face vertex blocks) and previously SIGSEGVd
-    // inside gmsh's FFI if handed straight in. Probe the RAW surface with
-    // the #4876 preflight first, and only pay for the weld's O(n²)
-    // vertex-merge scan (repair.rs) when that probe fails: an
-    // already-watertight surface (e.g. a hand-built, pre-welded fixture)
-    // needs no repair, and welding one would be a bit-identical no-op
-    // anyway (see fn doc) — so skipping it changes no observable behavior,
-    // only cost. `Cow` avoids cloning the surface in the common
-    // already-watertight case, mirroring
+    // inside gmsh's FFI if handed straight in. When `repair_cfg` is `None`,
+    // probe the RAW surface with the #4876 preflight first, and only pay
+    // for the weld's O(n²) vertex-merge scan (repair.rs) when that probe
+    // fails: an already-watertight surface (e.g. a hand-built, pre-welded
+    // fixture) needs no repair, and welding it with the default config
+    // would be a bit-identical no-op anyway (see fn doc) — so skipping it
+    // changes no observable behavior, only cost. An explicit
+    // `Some(repair_cfg)` always runs the weld, bypassing the probe: the
+    // preflight is a purely topological check, so it cannot know whether a
+    // caller-supplied (e.g. non-default-epsilon) config would still change
+    // the output, and a caller that explicitly asked for a repair
+    // configuration must never have it silently dropped (see fn doc). `Cow`
+    // avoids cloning the surface in the common already-watertight,
+    // no-explicit-cfg case, mirroring
     // `mesh_volume.rs::apply_repair_if_requested`.
     //
     // When welding IS needed, position-based entity anchors (see fn doc)
@@ -415,7 +432,9 @@ pub fn mesh_surface_to_volume_with_attribution(
     // via a weld-stats debug event (its `dropped_verts` field is computed
     // lazily, inline, so the O(n) scan only runs when DEBUG is enabled) so
     // it stays genuinely used rather than dead.
-    let welded: Cow<'_, Mesh> = if preflight_watertight_surface(surface, 0.0).is_ok() {
+    let welded: Cow<'_, Mesh> = if repair_cfg.is_none()
+        && preflight_watertight_surface(surface, 0.0).is_ok()
+    {
         Cow::Borrowed(surface)
     } else {
         let (w, correspondence) =
