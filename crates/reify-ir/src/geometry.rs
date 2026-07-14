@@ -7837,8 +7837,12 @@ mod tests {
     fn topology_attribute_table_record_then_lookup() {
         let mut table = TopologyAttributeTable::default();
         let attr = make_attr("F", 0);
-        table.record(GeometryHandleId(1), attr.clone());
-        assert_eq!(table.lookup(GeometryHandleId(1)), Some(&attr));
+        let handle = KernelHandle {
+            kernel: KernelId::Occt,
+            id: GeometryHandleId(1),
+        };
+        table.record(handle, attr.clone());
+        assert_eq!(table.lookup(handle), Some(&attr));
         assert_eq!(table.len(), 1);
         assert!(!table.is_empty());
     }
@@ -7846,8 +7850,20 @@ mod tests {
     #[test]
     fn topology_attribute_table_lookup_unknown_returns_none() {
         let mut table = TopologyAttributeTable::default();
-        table.record(GeometryHandleId(1), make_attr("F", 0));
-        assert_eq!(table.lookup(GeometryHandleId(99)), None);
+        table.record(
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: GeometryHandleId(1),
+            },
+            make_attr("F", 0),
+        );
+        assert_eq!(
+            table.lookup(KernelHandle {
+                kernel: KernelId::Occt,
+                id: GeometryHandleId(99),
+            }),
+            None
+        );
     }
 
     #[test]
@@ -7855,9 +7871,13 @@ mod tests {
         let mut table = TopologyAttributeTable::default();
         let first = make_attr("F", 0);
         let second = make_attr("G", 7);
-        table.record(GeometryHandleId(1), first);
-        table.record(GeometryHandleId(1), second.clone());
-        assert_eq!(table.lookup(GeometryHandleId(1)), Some(&second));
+        let handle = KernelHandle {
+            kernel: KernelId::Occt,
+            id: GeometryHandleId(1),
+        };
+        table.record(handle, first);
+        table.record(handle, second.clone());
+        assert_eq!(table.lookup(handle), Some(&second));
         assert_eq!(table.len(), 1);
     }
 
@@ -7867,21 +7887,62 @@ mod tests {
         let attr0 = make_attr("F", 0);
         let attr1 = make_attr("F", 1);
         let attr2 = make_attr("G", 0);
-        table.record(GeometryHandleId(1), attr0.clone());
-        table.record(GeometryHandleId(2), attr1.clone());
-        table.record(GeometryHandleId(3), attr2.clone());
+        let h1 = KernelHandle {
+            kernel: KernelId::Occt,
+            id: GeometryHandleId(1),
+        };
+        let h2 = KernelHandle {
+            kernel: KernelId::Occt,
+            id: GeometryHandleId(2),
+        };
+        let h3 = KernelHandle {
+            kernel: KernelId::Occt,
+            id: GeometryHandleId(3),
+        };
+        table.record(h1, attr0.clone());
+        table.record(h2, attr1.clone());
+        table.record(h3, attr2.clone());
 
         // iter() must yield exactly len() entries.
         assert_eq!(table.iter().count(), 3);
 
         // Collect into a HashMap so membership is order-agnostic
         // (TopologyAttributeTable iteration order is unspecified — HashMap-backed).
-        let collected: std::collections::HashMap<GeometryHandleId, &TopologyAttribute> =
+        let collected: std::collections::HashMap<KernelHandle, &TopologyAttribute> =
             table.iter().collect();
         assert_eq!(collected.len(), 3);
-        assert_eq!(collected.get(&GeometryHandleId(1)), Some(&&attr0));
-        assert_eq!(collected.get(&GeometryHandleId(2)), Some(&&attr1));
-        assert_eq!(collected.get(&GeometryHandleId(3)), Some(&&attr2));
+        assert_eq!(collected.get(&h1), Some(&&attr0));
+        assert_eq!(collected.get(&h2), Some(&&attr1));
+        assert_eq!(collected.get(&h3), Some(&&attr2));
+    }
+
+    /// The core behavioral RED for task #4351: `GeometryHandleId` is only
+    /// unique WITHIN a kernel, so the same numeric id minted by two
+    /// different kernels must resolve to two independent entries once the
+    /// table is keyed by the full `KernelHandle` — not collapse onto one
+    /// key the way a bare-`GeometryHandleId` key would.
+    #[test]
+    fn topology_attribute_table_distinguishes_same_id_across_kernels() {
+        let mut table = TopologyAttributeTable::default();
+        let attr_a = make_attr("F", 0);
+        let attr_b = make_attr("G", 1);
+        let occt_handle = KernelHandle {
+            kernel: KernelId::Occt,
+            id: GeometryHandleId(1),
+        };
+        let manifold_handle = KernelHandle {
+            kernel: KernelId::Manifold,
+            id: GeometryHandleId(1),
+        };
+        table.record(occt_handle, attr_a.clone());
+        table.record(manifold_handle, attr_b.clone());
+        assert_eq!(
+            table.len(),
+            2,
+            "same numeric id minted by different kernels must not collide"
+        );
+        assert_eq!(table.lookup(occt_handle), Some(&attr_a));
+        assert_eq!(table.lookup(manifold_handle), Some(&attr_b));
     }
 
     #[test]
@@ -10532,7 +10593,10 @@ mod tests {
     #[test]
     fn topology_attribute_table_remove_returns_some_and_empties_entry() {
         let mut table = TopologyAttributeTable::default();
-        let id = GeometryHandleId(1);
+        let id = KernelHandle {
+            kernel: KernelId::Occt,
+            id: GeometryHandleId(1),
+        };
         table.record(id, make_topology_attribute());
         let removed = table.remove(id);
         assert!(removed.is_some(), "remove must return Some after record");
@@ -10544,7 +10608,10 @@ mod tests {
     #[test]
     fn topology_attribute_table_remove_absent_returns_none() {
         let mut table = TopologyAttributeTable::default();
-        let removed = table.remove(GeometryHandleId(99));
+        let removed = table.remove(KernelHandle {
+            kernel: KernelId::Occt,
+            id: GeometryHandleId(99),
+        });
         assert!(removed.is_none(), "remove of absent id must return None");
     }
 
