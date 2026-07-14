@@ -4182,12 +4182,35 @@ impl WarmStartable for OcctKernel {
             shapes,
             reprs,
             next_id,
-            extracted_edges: _,
-            extracted_faces: _,
-            extracted_vertices: _,
+            extracted_edges,
+            extracted_faces,
+            extracted_vertices,
             parent_handle,
             last_warm_start_failures: _,
         } = self;
+        // Completeness cross-check for the bounded-payload filter below: it is
+        // only correct if every extracted_edges/extracted_faces/
+        // extracted_vertices cached id is also a `parent_handle` key. That
+        // holds today because extract_edges/extract_faces/extract_vertices
+        // insert into `parent_handle` immediately after minting each id (see
+        // their `store_with_repr` call sites), but nothing at the type level
+        // enforces that pairing — `debug_assert_fresh_id` only guards id
+        // freshness, not this coupling. Assert it explicitly (read-only; these
+        // fields are otherwise unused here, not persisted) so a future code
+        // path that repopulates one of the extracted_* caches, or stores a
+        // sub-shape, without a matching `parent_handle` insert fails loudly
+        // here instead of silently re-opening the unbounded multi-cycle
+        // growth this filter exists to prevent.
+        debug_assert!(
+            [extracted_edges, extracted_faces, extracted_vertices]
+                .into_iter()
+                .flat_map(|cache| cache.values().flatten())
+                .all(|id| parent_handle.contains_key(&id.0)),
+            "every extracted_edges/extracted_faces/extracted_vertices cached \
+             id must be a parent_handle key, or warm_state()'s bounded-payload \
+             filter would silently leak an un-filtered orphan back into \
+             persisted warm-start state"
+        );
         if shapes.is_empty() {
             return None;
         }
@@ -4826,6 +4849,45 @@ mod tests {
         into
     }
 
+    /// Run one warm-start capture/restore/re-extract cycle, shared by
+    /// `warm_state_persisted_shape_count_stays_bounded_across_cycles` and
+    /// `warm_state_persisted_shape_count_bounded_with_post_extraction_root`
+    /// so each test body keeps only its distinct setup and final assertion.
+    ///
+    /// Captures `kernel`'s warm state, records the persisted
+    /// `(shapes.len(), reprs.len())` counts, restores into a fresh kernel,
+    /// runs `mid_cycle` on the restored (pre-re-extraction) kernel for any
+    /// cycle-specific checks (e.g. asserting root survival), then re-seeds
+    /// `parent_handle` by re-running extract_faces/extract_edges/
+    /// extract_vertices on the box root (`GeometryHandleId(1)`) against the
+    /// cleared idempotency cache. Returns the restored+re-extracted kernel
+    /// plus the counts captured before restore.
+    fn warm_state_reextract_cycle(
+        kernel: OcctKernel,
+        mid_cycle: impl FnOnce(&OcctKernel),
+    ) -> (OcctKernel, usize, usize) {
+        let state = kernel.warm_state().expect("kernel should have warm state");
+        let warm = state
+            .downcast_ref::<OcctWarmState>()
+            .expect("warm state should downcast_ref to OcctWarmState");
+        let shapes_len = warm.shapes.len();
+        let reprs_len = warm.reprs.len();
+
+        let mut next = OcctKernel::new();
+        next.with_warm_state(state);
+
+        mid_cycle(&next);
+
+        next.extract_faces(GeometryHandleId(1))
+            .expect("extract_faces on the restored box should succeed");
+        next.extract_edges(GeometryHandleId(1))
+            .expect("extract_edges on the restored box should succeed");
+        next.extract_vertices(GeometryHandleId(1))
+            .expect("extract_vertices on the restored box should succeed");
+
+        (next, shapes_len, reprs_len)
+    }
+
     /// RED step-1 (task 4999): `GeometryOp::Surface` is a Mesh-repr terminal
     /// anchor fed by a Voxel→Mesh conversion edge (PRD
     /// docs/prds/v0_3/voxel-to-mesh-surfacing.md C-1) — it must never reach
@@ -5387,26 +5449,12 @@ mod tests {
         let mut counts = Vec::new();
         let mut repr_counts = Vec::new();
         for _ in 0..4 {
-            let state = kernel.warm_state().expect("kernel should have warm state");
-            let warm = state
-                .downcast_ref::<OcctWarmState>()
-                .expect("warm state should downcast_ref to OcctWarmState");
-            counts.push(warm.shapes.len());
-            repr_counts.push(warm.reprs.len());
-
-            let mut next = OcctKernel::new();
-            next.with_warm_state(state);
-
-            // Re-seed parent_handle against the cleared idempotency cache,
+            // Re-seeds parent_handle against the cleared idempotency cache,
             // mirroring the extract-after-restore pattern from
-            // `owner_body_survives_warm_start`.
-            next.extract_faces(GeometryHandleId(1))
-                .expect("extract_faces on the restored box should succeed");
-            next.extract_edges(GeometryHandleId(1))
-                .expect("extract_edges on the restored box should succeed");
-            next.extract_vertices(GeometryHandleId(1))
-                .expect("extract_vertices on the restored box should succeed");
-
+            // `owner_body_survives_warm_start`; no mid-cycle checks needed here.
+            let (next, shapes_len, reprs_len) = warm_state_reextract_cycle(kernel, |_next| {});
+            counts.push(shapes_len);
+            repr_counts.push(reprs_len);
             kernel = next;
         }
 
@@ -5476,30 +5524,17 @@ mod tests {
 
         let mut counts = Vec::new();
         for _ in 0..4 {
-            let state = kernel.warm_state().expect("kernel should have warm state");
-            let warm = state
-                .downcast_ref::<OcctWarmState>()
-                .expect("warm state should downcast_ref to OcctWarmState");
-            counts.push(warm.shapes.len());
-
-            let mut next = OcctKernel::new();
-            next.with_warm_state(state);
-
-            // Both roots must resolve after every restore.
-            next.query(&GeometryQuery::Volume(GeometryHandleId(1)))
-                .expect("box root should survive warm-start round-trip");
-            next.query(&GeometryQuery::Volume(cyl_id))
-                .expect("post-extraction cylinder root should survive warm-start round-trip");
-
-            // Re-seed parent_handle against the cleared idempotency cache,
-            // mirroring `warm_state_persisted_shape_count_stays_bounded_across_cycles`.
-            next.extract_faces(GeometryHandleId(1))
-                .expect("extract_faces on the restored box should succeed");
-            next.extract_edges(GeometryHandleId(1))
-                .expect("extract_edges on the restored box should succeed");
-            next.extract_vertices(GeometryHandleId(1))
-                .expect("extract_vertices on the restored box should succeed");
-
+            // Mid-cycle: both roots must resolve after every restore. Re-seeding
+            // parent_handle against the cleared idempotency cache (mirroring
+            // `warm_state_persisted_shape_count_stays_bounded_across_cycles`)
+            // happens inside the shared helper after this check.
+            let (next, shapes_len, _) = warm_state_reextract_cycle(kernel, |next| {
+                next.query(&GeometryQuery::Volume(GeometryHandleId(1)))
+                    .expect("box root should survive warm-start round-trip");
+                next.query(&GeometryQuery::Volume(cyl_id))
+                    .expect("post-extraction cylinder root should survive warm-start round-trip");
+            });
+            counts.push(shapes_len);
             kernel = next;
         }
 
