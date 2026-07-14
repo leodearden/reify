@@ -92,6 +92,23 @@ models:
 # defaults. Consuming them requires a dark_factory change to
 # classify_agent_class — out of scope for this reify leaf; tracked as a
 # dark_factory follow-up per the cross-repo pattern above.
+#
+# Markers manually verified against the shared encode_cwd (dark_factory
+# scripts/legibility/inventory.py: cwd.replace('/', '-').replace('.', '-'))
+# on 2026-07-14 — each is a literal substring of the encoded form of its
+# corresponding representative reify cwd:
+#   encode_cwd('/home/leo/src/warm-lanes/worktrees/_lane-9')
+#     = '-home-leo-src-warm-lanes-worktrees-_lane-9'
+#     -> contains '-warm-lanes-worktrees-'
+#   encode_cwd('/media/leo/data/lv-1/leo/reify/build-worktrees/12')
+#     = '-media-leo-data-lv-1-leo-reify-build-worktrees-12'
+#     -> contains '-reify-build-worktrees-'
+# and neither marker false-matches the reify/.worktrees, .claude-worktrees,
+# or bare main-checkout shapes (those already classify correctly via the
+# generic --worktrees-/--claude-worktrees- markers). No automated
+# regression check exists for this yet — that belongs alongside
+# TestCwdPrefixCoverage in scripts/test_legibility_reify_config.py, which
+# is outside this amendment's locked scope (docs/legibility/*.yaml only).
 strata:
   worktree_dir_markers:
     - '-warm-lanes-worktrees-'
