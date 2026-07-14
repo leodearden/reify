@@ -598,6 +598,30 @@ impl OcctKernel {
         }
     }
 
+    /// Debug-only invariant guard shared by `extract_edges`/`extract_faces`/
+    /// `extract_vertices`: asserts that `h`, just returned from
+    /// `store_with_repr`, really did get a strictly fresh id (never reused).
+    ///
+    /// This protects `warm_state()`'s bounded-payload filter (see its
+    /// "Bounded payload" note): the filter treats every `parent_handle` key
+    /// as a derived, rebuildable sub-shape id and drops it from persisted
+    /// state. That's only safe because `store_with_repr` mints ids by
+    /// fetch-and-increment on `next_id` and never reuses one, so a
+    /// root/persistent handle id can never end up back here as `h.id.0`.
+    /// Assert that freshness explicitly so a future change that breaks it
+    /// (e.g. a `store_with_repr` that interns/reuses ids) fails loudly here
+    /// instead of silently making the filter drop real root data.
+    fn debug_assert_fresh_id(&self, h: &GeometryHandle) {
+        debug_assert_eq!(
+            h.id.0,
+            self.next_id - 1,
+            "store_with_repr must mint a strictly fresh id; a non-fresh \
+             id here could alias an existing root/persistent handle and \
+             make warm_state()'s parent_handle filter silently drop real \
+             root data"
+        );
+    }
+
     /// Look up a shape by handle ID.
     fn get_shape(&self, id: GeometryHandleId) -> Result<&ffi::ffi::OcctShape, GeometryError> {
         let ptr = self
@@ -666,24 +690,10 @@ impl OcctKernel {
         let mut ids = Vec::with_capacity(materialized.len());
         for sub in materialized {
             let h = self.store_with_repr(sub, BRepKind::Edge);
-            // Defensive invariant guard: warm_state()'s bounded-payload
-            // filter (see its "Bounded payload" note) treats every
-            // `parent_handle` key as a derived, rebuildable sub-shape id and
-            // drops it from persisted state. That's only safe because
-            // `store_with_repr` mints ids by fetch-and-increment on
-            // `next_id` and never reuses one, so a root/persistent handle id
-            // can never end up back here as `h.id.0`. Assert that freshness
-            // explicitly so a future change that breaks it (e.g. a
-            // `store_with_repr` that interns/reuses ids) fails loudly here
-            // instead of silently making the filter drop real root data.
-            debug_assert_eq!(
-                h.id.0,
-                self.next_id - 1,
-                "store_with_repr must mint a strictly fresh id; a non-fresh \
-                 id here could alias an existing root/persistent handle and \
-                 make warm_state()'s parent_handle filter silently drop real \
-                 root data"
-            );
+            // Defensive invariant guard; see `debug_assert_fresh_id` doc for
+            // rationale (protects warm_state()'s parent_handle-keyed
+            // bounded-payload filter).
+            self.debug_assert_fresh_id(&h);
             // Record provenance so `OwnerBody(child)` can answer
             // "what body did this edge come from?" without re-extraction.
             self.parent_handle.insert(h.id.0, handle);
@@ -727,17 +737,10 @@ impl OcctKernel {
         let mut ids = Vec::with_capacity(materialized.len());
         for sub in materialized {
             let h = self.store_with_repr(sub, BRepKind::Face);
-            // Defensive invariant guard — sister to `extract_edges`; see its
-            // comment for the rationale (protects warm_state()'s
-            // parent_handle-keyed bounded-payload filter).
-            debug_assert_eq!(
-                h.id.0,
-                self.next_id - 1,
-                "store_with_repr must mint a strictly fresh id; a non-fresh \
-                 id here could alias an existing root/persistent handle and \
-                 make warm_state()'s parent_handle filter silently drop real \
-                 root data"
-            );
+            // Defensive invariant guard; see `debug_assert_fresh_id` doc for
+            // rationale (protects warm_state()'s parent_handle-keyed
+            // bounded-payload filter).
+            self.debug_assert_fresh_id(&h);
             // Record provenance — sister to `extract_edges`. See
             // `parent_handle` field doc for the design contract.
             self.parent_handle.insert(h.id.0, handle);
@@ -793,17 +796,10 @@ impl OcctKernel {
         let mut ids = Vec::with_capacity(materialized.len());
         for sub in materialized {
             let h = self.store_with_repr(sub, BRepKind::Vertex);
-            // Defensive invariant guard — sister to `extract_edges`; see its
-            // comment for the rationale (protects warm_state()'s
-            // parent_handle-keyed bounded-payload filter).
-            debug_assert_eq!(
-                h.id.0,
-                self.next_id - 1,
-                "store_with_repr must mint a strictly fresh id; a non-fresh \
-                 id here could alias an existing root/persistent handle and \
-                 make warm_state()'s parent_handle filter silently drop real \
-                 root data"
-            );
+            // Defensive invariant guard; see `debug_assert_fresh_id` doc for
+            // rationale (protects warm_state()'s parent_handle-keyed
+            // bounded-payload filter).
+            self.debug_assert_fresh_id(&h);
             // Record provenance so `OwnerBody(child)` can answer
             // "what body did this vertex come from?" without re-extraction.
             self.parent_handle.insert(h.id.0, handle);
