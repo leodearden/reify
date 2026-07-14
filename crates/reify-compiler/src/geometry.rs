@@ -872,6 +872,71 @@ fn check_profile_preconditions(
     }
 }
 
+/// Fold a compiled scalar arg to its constant SI value when it is a literal
+/// dimensioned quantity — the `CompiledExprKind::Literal(Value::Scalar{si_value,..})`
+/// shape produced for source quantity literals like `40mm` (see `expr.rs`'s
+/// `QuantityLiteral` handling). Returns `None` for non-constant (e.g.
+/// param-driven `ValueRef`) expressions, which callers must skip rather than
+/// false-flag.
+fn const_length_m(expr: &CompiledExpr) -> Option<f64> {
+    match &expr.kind {
+        CompiledExprKind::Literal(Value::Scalar { si_value, .. }) => Some(*si_value),
+        _ => None,
+    }
+}
+
+/// Best-effort compile-time constraint check shared by `rounded_box` and
+/// `rounded_rect`: `corner_r > 0` and `2*corner_r < min(width, depth)`. Only
+/// fires when width/depth/corner_r all fold to constant literals
+/// (`const_length_m`); param-driven args cannot be checked statically and are
+/// silently skipped rather than false-flagged. Pushes a designer-readable
+/// `Diagnostic::error` naming the concrete offending SI values (metres) on
+/// violation. Returns `false` iff a diagnostic was pushed — callers should
+/// abort the arm (`return None`) in that case.
+fn validate_rounded_corner_constraint(
+    name: &str,
+    width: &CompiledExpr,
+    depth: &CompiledExpr,
+    corner_r: &CompiledExpr,
+    span: reify_core::SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> bool {
+    let (Some(w), Some(d), Some(r)) = (
+        const_length_m(width),
+        const_length_m(depth),
+        const_length_m(corner_r),
+    ) else {
+        // At least one arg is param-driven (non-constant) — cannot check statically.
+        return true;
+    };
+
+    if r <= 0.0 {
+        diagnostics.push(
+            Diagnostic::error(format!("{name}: corner_r must be > 0, got {r}m"))
+                .with_label(DiagnosticLabel::new(span, "corner_r must be positive")),
+        );
+        return false;
+    }
+
+    let min_wd = w.min(d);
+    if 2.0 * r >= min_wd {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "{name}: 2*corner_r ({}m) must be < min(width, depth) ({}m)",
+                2.0 * r,
+                min_wd
+            ))
+            .with_label(DiagnosticLabel::new(
+                span,
+                "corner radius too large for width/depth",
+            )),
+        );
+        return false;
+    }
+
+    true
+}
+
 /// Compile a geometry function call expression into CompiledGeometryOps.
 ///
 /// Maps positional arguments to the named parameters expected by each primitive:
@@ -2169,6 +2234,17 @@ pub(crate) fn compile_geometry_call(
             let depth = it.next().unwrap();
             let height = it.next().unwrap();
             let corner_r = it.next().unwrap();
+
+            if !validate_rounded_corner_constraint(
+                "rounded_box",
+                &width,
+                &depth,
+                &corner_r,
+                expr.span,
+                diagnostics,
+            ) {
+                return None;
+            }
 
             let half = CompiledExpr::literal(Value::Real(0.5), reify_core::Type::dimensionless_scalar());
             let two = CompiledExpr::literal(Value::Real(2.0), reify_core::Type::dimensionless_scalar());
