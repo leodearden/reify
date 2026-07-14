@@ -1,4 +1,4 @@
-structure Bracket {
+structure def Bracket {
     param width: Length = 80mm
     param height: Length = 100mm
     param thickness: Length = 5mm
