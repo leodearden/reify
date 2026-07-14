@@ -1314,7 +1314,7 @@ async fn open_path_into_engine(state: &DebugServerState, raw_path: &str) -> Resu
     // (the e2e visual-regression harness) run serially and never overlap a
     // debug op with a normal command; see PRD §4 D7.
     let gui_state =
-        open_source_into_engine_and_refresh_baseline(&state.engine, &state.last_state, &path, &content)
+        open_source_into_engine_and_refresh_baseline(&state.engine, &state.last_state, &path)
             .await?;
 
     // Serialize GUI state for the frontend
@@ -1354,26 +1354,24 @@ async fn open_path_into_engine(state: &DebugServerState, raw_path: &str) -> Resu
 // `handle_set_fea_case`): the refresh lands before the frontend push, so
 // this assumes debug ops never overlap a normal command.
 
-/// Mirrors `open_path_into_engine`'s engine block (`update_source` +
-/// `build_gui_state` on a real OS thread), then refreshes the delta
-/// baseline — see the INV-GUI-2 note above for why/how. `update_source`
-/// already routes through `post_engine_call_telemetry` (the L4 emission
-/// choke-point) by construction.
+/// Mirrors `open_path_into_engine`'s engine block (`load_file_into_engine`
+/// on a real OS thread), then refreshes the delta baseline — see the
+/// INV-GUI-2 note above for why/how. Routes through
+/// `crate::commands::load_file_into_engine` — the same `EngineSession::load_file`
+/// + abs-path-rewrite helper the normal `open_file_engine_impl` command uses
+/// — so the debug bridge's open_file/load_fixture funnel ADOPTS the
+/// newly-opened file's identity (`FilePathUpdate::Set`) instead of preserving
+/// whatever file was previously loaded, which `update_source` would do (task
+/// #5193). `load_file` already routes through `post_engine_call_telemetry`
+/// (the L4 emission choke-point) by construction.
 pub async fn open_source_into_engine_and_refresh_baseline(
     engine: &Arc<Mutex<EngineSession>>,
     last_state: &std::sync::Mutex<Option<crate::types::GuiState>>,
     path: &str,
-    content: &str,
 ) -> Result<crate::types::GuiState, String> {
     let path = path.to_owned();
-    let content = content.to_owned();
     let gui_state = run_on_engine(engine, move |session| {
-        session
-            .update_source(&path, &content)
-            .map_err(|e| format!("update_source failed: {e}"))?;
-        session
-            .build_gui_state()
-            .map_err(|e| format!("build_gui_state failed: {e}"))
+        crate::commands::load_file_into_engine(session, std::path::Path::new(&path))
     })
     .await?;
     crate::diff::compute_delta(last_state, &gui_state);
@@ -3329,23 +3327,33 @@ mod tests {
         use reify_test_support::bracket_source;
 
         // make_test_engine() pre-loads bracket_source() at module path
-        // "bracket" already; the helper under test re-drives update_source
+        // "bracket" already; the helper under test re-drives load_file
         // (mirroring what open_path_into_engine always does on open/
         // load-fixture), exercising the same code path a debug-driven
         // open_file/load_fixture call would.
         let engine = crate::tests::make_test_engine();
 
+        let dir = tempfile::tempdir().unwrap();
+        let bracket_path = dir.path().join("bracket.ri");
+        std::fs::write(&bracket_path, bracket_source()).unwrap();
+        let bracket_canonical = std::fs::canonicalize(&bracket_path)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+
         // Pre-debug delta baseline (S0): cold, no command has run yet.
         let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
             std::sync::Mutex::new(None);
 
-        // Debug-driven mutation: open/load bracket_source() via the
-        // NOT-YET-EXISTING refresh helper (S0 -> S1).
-        let content = bracket_source();
-        let s1 =
-            open_source_into_engine_and_refresh_baseline(&engine, &last_state, "bracket", content)
-                .await
-                .expect("open_source_into_engine_and_refresh_baseline must return Ok");
+        // Debug-driven mutation: open/load bracket.ri via the refresh helper
+        // (S0 -> S1).
+        let s1 = open_source_into_engine_and_refresh_baseline(
+            &engine,
+            &last_state,
+            &bracket_canonical,
+        )
+        .await
+        .expect("open_source_into_engine_and_refresh_baseline must return Ok");
         assert!(
             !s1.values.is_empty(),
             "open_source_into_engine_and_refresh_baseline must return GuiState with >= 1 value"

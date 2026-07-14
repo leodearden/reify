@@ -407,32 +407,29 @@ pub fn save_file_impl(path: &str, content: &str) -> Result<(), String> {
     std::fs::write(path, content).map_err(|e| format!("Error writing {}: {}", path, e))
 }
 
-/// Load a file into the engine and return the initial state.
-///
-/// The input `path` is canonicalised to an absolute realpath via
-/// [`crate::path_key::canonicalize_document_key`] before being passed to
-/// `EngineSession::load_file`.  This propagates the canonical key into the
-/// engine's `file_path` field (used later by `update_source` for import
-/// resolution) and ensures the returned [`GuiState::files`] contains
-/// absolute paths rather than bare module-key filenames.
+/// Load `canonical` into the engine, adopting its identity via
+/// `EngineSession::load_file` (`FilePathUpdate::Set`), and rewrite each
+/// stem-only `GuiState::files[].path` entry to a canonical absolute path.
 ///
 /// Note: `engine.source_map()` stores entries under `module_key(name)` =
-/// `"{name}.ri"` (a stem-only key).  After loading, this function rewrites
-/// each `FileData.path` in the returned `GuiState` by resolving it against the
-/// canonical entry path's parent directory, so the frontend receives a stable
-/// absolute identity key regardless of how the caller spelled the input path.
-pub fn open_file_engine_impl(
-    engine: &Mutex<EngineSession>,
-    path: &str,
+/// `"{name}.ri"` (a stem-only key).  This rewrites each `FileData.path` in the
+/// returned `GuiState` by resolving it against `canonical`'s parent
+/// directory, so callers receive a stable absolute identity key regardless of
+/// how the original input path was spelled.
+///
+/// Shared choke-point for both open-file entry points — [`open_file_engine_impl`]
+/// (the normal Tauri command) and `debug_server::open_source_into_engine_and_refresh_baseline`
+/// (the debug bridge's open_file/load_fixture funnel) — so the load_file +
+/// abs-path-rewrite pair cannot drift between them again (task #5193).
+pub(crate) fn load_file_into_engine(
+    session: &mut EngineSession,
+    canonical: &Path,
 ) -> Result<GuiState, String> {
-    let canonical = crate::path_key::canonicalize_document_key(path);
-    let mut state =
-        crate::engine_lock::with_engine_lock(engine, |s| s.load_file(Path::new(&canonical)))
-            .and_then(std::convert::identity)?;
+    let mut state = session.load_file(canonical)?;
 
     // source_map keys are "{name}.ri" (stem-only). Resolve each against the
     // canonical entry directory so the frontend receives absolute paths.
-    if let Some(entry_dir) = Path::new(&canonical).parent() {
+    if let Some(entry_dir) = canonical.parent() {
         for f in &mut state.files {
             let resolved = entry_dir.join(&f.path);
             if let Ok(c) = std::fs::canonicalize(&resolved) {
@@ -442,6 +439,25 @@ pub fn open_file_engine_impl(
     }
 
     Ok(state)
+}
+
+/// Load a file into the engine and return the initial state.
+///
+/// The input `path` is canonicalised to an absolute realpath via
+/// [`crate::path_key::canonicalize_document_key`] before being passed to
+/// [`load_file_into_engine`], which propagates the canonical key into the
+/// engine's `file_path` field (used later by `update_source` for import
+/// resolution) and ensures the returned [`GuiState::files`] contains
+/// absolute paths rather than bare module-key filenames.
+pub fn open_file_engine_impl(
+    engine: &Mutex<EngineSession>,
+    path: &str,
+) -> Result<GuiState, String> {
+    let canonical = crate::path_key::canonicalize_document_key(path);
+    crate::engine_lock::with_engine_lock(engine, |s| {
+        load_file_into_engine(s, Path::new(&canonical))
+    })
+    .and_then(std::convert::identity)
 }
 
 /// Resolve the CLI argv path to a canonical [`PathBuf`] suitable for
