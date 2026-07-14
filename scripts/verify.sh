@@ -490,6 +490,26 @@ fi
 _HAS_NICE=0; _HAS_IONICE=0
 command -v nice   >/dev/null 2>&1 && _HAS_NICE=1
 command -v ionice >/dev/null 2>&1 && _HAS_IONICE=1
+# task 5210: single source of truth for the "idle" priority class shared by
+# the offline and background roles below — both want byte-identical
+# CARGO_PRIO output (nice -n 19 + ionice -c3, degrading gracefully), so the
+# string is computed here once instead of being duplicated per-arm. Each
+# caller passes its own role name so the graceful-degrade WARNING text still
+# names the correct role; the case arms themselves stay separate (rather than
+# folding into `offline|background)`) purely so offline's golden print-plan
+# output is untouched — see the comment on the `background)` arm below.
+_idle_cargo_prio() {
+    local _idle_role="$1"
+    if   [ "$_HAS_NICE" -eq 1 ] && [ "$_HAS_IONICE" -eq 1 ]; then
+        CARGO_PRIO="nice -n 19 ionice -c3 "
+    elif [ "$_HAS_NICE" -eq 1 ]; then
+        echo "verify.sh: WARNING — ionice not found; ${_idle_role} role using nice only (no IO throttle)" >&2
+        CARGO_PRIO="nice -n 19 "
+    else
+        echo "verify.sh: WARNING — nice/ionice not found; ${_idle_role} role running at normal priority" >&2
+        CARGO_PRIO=""
+    fi
+}
 case "$DF_VERIFY_ROLE" in
     task)
         if   [ "$_HAS_NICE" -eq 1 ] && [ "$_HAS_IONICE" -eq 1 ]; then
@@ -509,31 +529,16 @@ case "$DF_VERIFY_ROLE" in
             CARGO_PRIO=""
         fi ;;
     offline)
-        if   [ "$_HAS_NICE" -eq 1 ] && [ "$_HAS_IONICE" -eq 1 ]; then
-            CARGO_PRIO="nice -n 19 ionice -c3 "
-        elif [ "$_HAS_NICE" -eq 1 ]; then
-            echo "verify.sh: WARNING — ionice not found; offline role using nice only (no IO throttle)" >&2
-            CARGO_PRIO="nice -n 19 "
-        else
-            echo "verify.sh: WARNING — nice/ionice not found; offline role running at normal priority" >&2
-            CARGO_PRIO=""
-        fi ;;
+        _idle_cargo_prio offline ;;
     background)
         # task 5210: background = merge-level completeness at offline-level
-        # idle priority + gated (non-exempt) admission. The CARGO_PRIO output
-        # is byte-identical to offline's idle class by design, but this is a
-        # DEDICATED arm (not folded into `offline|background)`) so offline's
-        # arm — and its golden print-plan — stay byte-for-byte unchanged;
-        # only the warning text below differs, naming the background role.
-        if   [ "$_HAS_NICE" -eq 1 ] && [ "$_HAS_IONICE" -eq 1 ]; then
-            CARGO_PRIO="nice -n 19 ionice -c3 "
-        elif [ "$_HAS_NICE" -eq 1 ]; then
-            echo "verify.sh: WARNING — ionice not found; background role using nice only (no IO throttle)" >&2
-            CARGO_PRIO="nice -n 19 "
-        else
-            echo "verify.sh: WARNING — nice/ionice not found; background role running at normal priority" >&2
-            CARGO_PRIO=""
-        fi ;;
+        # idle priority + gated (non-exempt) admission. Shares its CARGO_PRIO
+        # string with offline via _idle_cargo_prio above (single source of
+        # truth for the idle-class priority — see the comment there) — a
+        # DEDICATED case arm still keeps offline's arm byte-for-byte
+        # untouched, and passing its own role name keeps the graceful-degrade
+        # WARNING text background-specific.
+        _idle_cargo_prio background ;;
     *)  echo "verify.sh: ERROR — unknown DF_VERIFY_ROLE '$DF_VERIFY_ROLE' (want task|merge|offline|background)" >&2; exit 64 ;;
 esac
 
