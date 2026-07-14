@@ -666,6 +666,24 @@ impl OcctKernel {
         let mut ids = Vec::with_capacity(materialized.len());
         for sub in materialized {
             let h = self.store_with_repr(sub, BRepKind::Edge);
+            // Defensive invariant guard: warm_state()'s bounded-payload
+            // filter (see its "Bounded payload" note) treats every
+            // `parent_handle` key as a derived, rebuildable sub-shape id and
+            // drops it from persisted state. That's only safe because
+            // `store_with_repr` mints ids by fetch-and-increment on
+            // `next_id` and never reuses one, so a root/persistent handle id
+            // can never end up back here as `h.id.0`. Assert that freshness
+            // explicitly so a future change that breaks it (e.g. a
+            // `store_with_repr` that interns/reuses ids) fails loudly here
+            // instead of silently making the filter drop real root data.
+            debug_assert_eq!(
+                h.id.0,
+                self.next_id - 1,
+                "store_with_repr must mint a strictly fresh id; a non-fresh \
+                 id here could alias an existing root/persistent handle and \
+                 make warm_state()'s parent_handle filter silently drop real \
+                 root data"
+            );
             // Record provenance so `OwnerBody(child)` can answer
             // "what body did this edge come from?" without re-extraction.
             self.parent_handle.insert(h.id.0, handle);
@@ -709,6 +727,17 @@ impl OcctKernel {
         let mut ids = Vec::with_capacity(materialized.len());
         for sub in materialized {
             let h = self.store_with_repr(sub, BRepKind::Face);
+            // Defensive invariant guard — sister to `extract_edges`; see its
+            // comment for the rationale (protects warm_state()'s
+            // parent_handle-keyed bounded-payload filter).
+            debug_assert_eq!(
+                h.id.0,
+                self.next_id - 1,
+                "store_with_repr must mint a strictly fresh id; a non-fresh \
+                 id here could alias an existing root/persistent handle and \
+                 make warm_state()'s parent_handle filter silently drop real \
+                 root data"
+            );
             // Record provenance — sister to `extract_edges`. See
             // `parent_handle` field doc for the design contract.
             self.parent_handle.insert(h.id.0, handle);
@@ -764,6 +793,17 @@ impl OcctKernel {
         let mut ids = Vec::with_capacity(materialized.len());
         for sub in materialized {
             let h = self.store_with_repr(sub, BRepKind::Vertex);
+            // Defensive invariant guard — sister to `extract_edges`; see its
+            // comment for the rationale (protects warm_state()'s
+            // parent_handle-keyed bounded-payload filter).
+            debug_assert_eq!(
+                h.id.0,
+                self.next_id - 1,
+                "store_with_repr must mint a strictly fresh id; a non-fresh \
+                 id here could alias an existing root/persistent handle and \
+                 make warm_state()'s parent_handle filter silently drop real \
+                 root data"
+            );
             // Record provenance so `OwnerBody(child)` can answer
             // "what body did this vertex come from?" without re-extraction.
             self.parent_handle.insert(h.id.0, handle);
@@ -5333,8 +5373,9 @@ mod tests {
     ///
     /// A single root box (id 1) has 6 faces + 12 edges + 8 vertices = 26
     /// sub-shapes, so on current main the persisted count grows
-    /// [1, 27, 53, 79] across 4 cycles — the first window (1 -> 27) trips
-    /// the "does not grow" assertion below. After the fix, only the root
+    /// [1, 27, 53, 79] across 4 cycles — the "stays constant at the root
+    /// count" assertion below trips because cycles after the first (27, 53,
+    /// 79) differ from `counts[0]` (1). After the fix, only the root
     /// persists every cycle: [1, 1, 1, 1].
     #[test]
     fn warm_state_persisted_shape_count_stays_bounded_across_cycles() {
@@ -5373,10 +5414,11 @@ mod tests {
             kernel = next;
         }
 
-        assert!(
-            counts.windows(2).all(|w| w[1] <= w[0]),
-            "persisted shape count must not grow cycle-over-cycle: {counts:?}"
-        );
+        // The stronger "stays constant at the root count" assertion below
+        // subsumes a "does not grow cycle-over-cycle" check (windows(2).all(|w|
+        // w[1] <= w[0])) — any growth is itself a violation of all-equal, and
+        // the printed `counts`/`repr_counts` vector already pinpoints where
+        // growth would occur, so only the all-equal assertion is kept here.
         assert!(
             counts.iter().all(|&c| c == counts[0]),
             "persisted shape count must stay constant at the root count across cycles: {counts:?}"
@@ -5386,10 +5428,6 @@ mod tests {
         // a future change that filters shapes but forgets reprs, which the
         // consumer-side debug_assert in with_warm_state only catches in debug
         // builds.
-        assert!(
-            repr_counts.windows(2).all(|w| w[1] <= w[0]),
-            "persisted repr count must not grow cycle-over-cycle: {repr_counts:?}"
-        );
         assert!(
             repr_counts.iter().all(|&c| c == repr_counts[0]),
             "persisted repr count must stay constant at the root count across cycles: {repr_counts:?}"
