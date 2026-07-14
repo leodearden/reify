@@ -435,3 +435,70 @@ fn watcher_emits_remove_event_even_when_target_file_filter_excludes_other_files(
             .collect::<Vec<_>>()
     );
 }
+
+/// Reproduces the non-atomic-write papercut: a writer that truncates a file
+/// and then appends to it in two separate syscalls (e.g.
+/// `printf 'module bottom_deck\n\n' > f && cat other.ri >> f`) must not
+/// leave the watcher stuck on the partially-written (truncated) content.
+/// The callback re-reads the file from disk on every fire, so once
+/// debouncing correctly coalesces the truncate+append into a single
+/// trailing-edge emission, that re-read observes the FINAL on-disk content
+/// rather than the transient partial buffer.
+#[test]
+fn watcher_rereads_final_content_after_nonatomic_truncate_then_append() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("bottom_deck.ri");
+    std::fs::write(&target, "module bottom_deck\n\nvalue a = 0\n").unwrap();
+
+    let contents: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
+    let contents_clone = contents.clone();
+
+    let Some(_watcher) = try_watcher(
+        dir.path(),
+        Some(PathBuf::from("bottom_deck.ri")),
+        move |event| {
+            if let FileEvent::Changed(path) = event
+                && let Ok(text) = std::fs::read_to_string(&path)
+            {
+                contents_clone.lock().unwrap().push(text);
+            }
+        },
+    ) else {
+        return;
+    };
+
+    // Give the watcher time to register.
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Simulate a non-atomic write: truncate first, then append moments
+    // later in a SEPARATE syscall -- e.g. `printf '...' > f && cat other >> f`.
+    std::fs::write(&target, "module bottom_deck\n\n").unwrap();
+
+    // Sub-window pause: 40ms is comfortably less than the production 100ms
+    // debounce window (DEBOUNCE_DURATION, watcher.rs:15), so the append
+    // below lands inside the SAME quiet-window cycle as the truncation
+    // rather than starting a fresh one -- exercising per-path coalescing,
+    // not two independent debounce cycles. It's also ample separation for
+    // the two writes to land as two distinct filesystem events rather than
+    // merging into one at the OS level.
+    std::thread::sleep(Duration::from_millis(40));
+
+    let full_content = "module bottom_deck\n\nvalue a = 1\n";
+    std::fs::write(&target, full_content).unwrap();
+
+    // Poll for the sink's TERMINAL entry to equal the full (post-append)
+    // content -- i.e. the watcher's emission re-read the file after both
+    // writes settled, rather than firing early on the truncation and
+    // getting suppressed for the trailing append.
+    let found = wait_for(&contents, Duration::from_secs(10), |texts| {
+        texts.last().is_some_and(|t| t == full_content)
+    });
+
+    let texts = contents.lock().unwrap();
+    assert!(
+        found,
+        "expected the watcher's terminal read to equal the fully-appended \
+         content {:?}, got: {:?}",
+        full_content, *texts
+    );
+}
