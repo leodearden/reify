@@ -389,10 +389,13 @@ impl Engine {
     /// are numerically lockstep (equal `.0` values) ONLY as a consequence of
     /// the two counters already being equal on entry — i.e. as long as every
     /// allocation site bumps both together. This method reads two
-    /// independent counters and does not itself enforce that equality; see
-    /// the `eval_cached()` note below for the concrete case (a snapshot-only
-    /// bump) that desyncs them, after which this method still advances each
-    /// counter by exactly one but the returned pair's numeric values differ.
+    /// independent counters and does not itself enforce that equality:
+    /// `eval_cached()`'s snapshot-only cold-path bump is a concrete case
+    /// that desyncs them (advances `next_snapshot_id` alone, with no
+    /// matching version bump), after which this method still advances each
+    /// counter by exactly one but the returned pair's numeric values
+    /// differ. That site is a distinct, non-paired concern outside this
+    /// helper's scope, not a migration candidate.
     ///
     /// This is the allocate half of INV-BUILD-2 (docs/invariants.md):
     /// "Version/snapshot IDs are allocated and read through exactly one API
@@ -400,24 +403,14 @@ impl Engine {
     /// version id together MUST go through this method rather than bumping
     /// `next_snapshot_id`/`next_version_id` directly.
     ///
-    /// Migration status (task 5040, engine-build hardening α): only the 3
-    /// paired sites in `engine_eval.rs` go through this method so far —
-    /// `eval()`'s cold-path snapshot construction, the resolution phase, and
-    /// `dispatch_merged_cluster_solve`. The following paired
-    /// allocate-and-bump sites are NOT yet migrated and still read+bump
-    /// `next_snapshot_id`/`next_version_id` directly; this is tracked,
-    /// scoped-out follow-up work, not an oversight (named by owning
-    /// function rather than line number, since those drift — see the
-    /// tracking task for the current call site):
-    ///   - `concurrent.rs`: `Engine::prepare_concurrent_edit` (sibling task γ)
-    ///   - `engine_edit.rs`: `Engine::edit_param` (sibling task β)
-    ///   - `engine_edit.rs`: `Engine::edit_source` (sibling task β)
-    ///
-    /// Until those land, treat the "exactly one API" invariant as fully
-    /// enforced only for `engine_eval.rs`. Separately, `eval_cached()`'s
-    /// snapshot-only cold-path bump has no matching version bump and is a
-    /// distinct, non-paired concern outside this helper's scope regardless
-    /// of that migration.
+    /// Migration status: not every paired allocate-and-bump site in the
+    /// crate goes through this method yet — task 5040 (engine-build
+    /// hardening α) migrated only the `engine_eval.rs` sites. See
+    /// `docs/invariants.md`'s INV-BUILD-2 row and
+    /// `docs/prds/v0_6/engine-build-hardening.md` §5.2 for the live
+    /// inventory of remaining raw call sites, their owning tasks, and
+    /// current enforcement status — tracked there rather than enumerated
+    /// here so this comment doesn't drift as sibling tasks land.
     ///
     /// `pub(crate)`, not private: `engine_admin` and `engine_eval` are
     /// separate sibling `mod`s (see lib.rs), so a bare-private fn here is
