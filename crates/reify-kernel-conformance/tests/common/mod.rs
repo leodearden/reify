@@ -28,18 +28,14 @@ use reify_kernel_occt::OcctKernel;
 const OCCT_TESS_TOL: f64 = 1.0e-4;
 
 /// 10×20×30 mm box.
+///
+/// Tessellates the same solid `occt_box_solid()` (below) builds, so the
+/// canonical box dimensions live in exactly one place.
 #[cfg(has_occt)]
 pub fn occt_box() -> reify_ir::Mesh {
-    let mut kernel = OcctKernel::new();
-    let h = kernel
-        .execute(&GeometryOp::Box {
-            width: Value::Real(10.0e-3),
-            height: Value::Real(20.0e-3),
-            depth: Value::Real(30.0e-3),
-        })
-        .expect("box creation should succeed");
+    let (kernel, box_id) = occt_box_solid();
     kernel
-        .tessellate(h.id, OCCT_TESS_TOL)
+        .tessellate(box_id, OCCT_TESS_TOL)
         .expect("box tessellate should succeed")
 }
 
@@ -174,8 +170,10 @@ pub fn fixtures() -> Vec<(&'static str, FixtureFn)> {
 // ── OCCT solid-handle builder (kernel-seam ζ) ───────────────────────────────
 
 /// 10×20×30 mm OCCT BRep box, returned as the owning kernel plus the solid's
-/// handle id — NOT a tessellated `Mesh` like `occt_box()` above. This is the
-/// shared PARENT-handle source for the handle-stability arms in
+/// handle id — NOT a tessellated `Mesh` like `occt_box()` above (which
+/// tessellates this same solid, so the dimensions live in exactly one
+/// place). This is the shared PARENT-handle source for the handle-stability
+/// arms in
 /// `handle_stability_conformance.rs`: `extract_faces`/`extract_edges` act on
 /// a BRep solid handle, which none of the `fixtures()` builders expose (they
 /// return only the tessellated `Mesh`). Mirrors `box_kernel` in
