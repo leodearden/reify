@@ -3052,12 +3052,23 @@ mod tests {
         // Companion check: the lockstep above falls out of both counters
         // starting at 0, not a guarantee this method enforces. Desync them
         // manually (mirrors eval_cached()'s snapshot-only bump) and confirm
-        // the method still advances each counter by exactly one while the
-        // returned pair is no longer numerically equal.
+        // the method still advances each counter by exactly one — asserted
+        // via deltas from freshly-captured baselines, not hardcoded
+        // absolute ids, so this check needs no re-baselining if the call
+        // count above changes — while the returned pair is no longer
+        // numerically equal.
         engine.next_snapshot_id += 1;
+        let before_snapshot_desync = engine.next_snapshot_id;
+        let before_version_desync = engine.next_version_id;
         let (snap2, ver2) = engine.allocate_snapshot_version();
-        assert_eq!(snap2, SnapshotId(3), "snapshot counter had already advanced to 3");
-        assert_eq!(ver2, VersionId(2), "version counter was still at its prior value");
+        assert_eq!(
+            snap2.0, before_snapshot_desync,
+            "allocated snapshot id must equal the pre-call counter value",
+        );
+        assert_eq!(
+            ver2.0, before_version_desync,
+            "allocated version id must equal the pre-call counter value",
+        );
         assert_ne!(
             snap2.0, ver2.0,
             "once the counters are desynced, the returned pair is NOT \
@@ -3065,40 +3076,37 @@ mod tests {
              counters and does not couple them",
         );
         assert_eq!(
-            engine.next_snapshot_id, 4,
+            engine.next_snapshot_id - before_snapshot_desync,
+            1,
             "next_snapshot_id must still advance by exactly 1",
         );
         assert_eq!(
-            engine.next_version_id, 3,
+            engine.next_version_id - before_version_desync,
+            1,
             "next_version_id must still advance by exactly 1",
         );
     }
 
     /// Shared assertion for the `allocate_snapshot_version` migration's
-    /// characterization tests (task 5040 amend pass 2 — collapses
-    /// duplicated boilerplate previously repeated across all three tests
-    /// below). Asserts the engine's CURRENT snapshot carries the expected
-    /// `(SnapshotId, VersionId)` pair — the "byte-identical numbering"
-    /// property these tests exist to pin — AND that both counters advanced
-    /// by exactly `expected_delta` since their OWN respective baselines
-    /// (`before_snapshot`/`before_version`, captured separately rather than
-    /// shared). Keeping the two baselines distinct means this helper stays
-    /// correct even if a future caller measures from a desynced starting
-    /// state (e.g. after an eval_cached()-style snapshot-only bump), rather
-    /// than silently assuming the two counters start equal.
+    /// characterization tests. Asserts the engine's CURRENT snapshot
+    /// carries the expected `(SnapshotId, VersionId)` pair — the
+    /// "byte-identical numbering" property these tests exist to pin — and
+    /// that both counters advanced by exactly `expected_delta` from the
+    /// single shared `before` baseline. One baseline suffices because
+    /// every call site here allocates the pair in lockstep from the same
+    /// starting point (both counters equal immediately before the call);
+    /// a caller measuring from a desynced state would need its own check.
     ///
-    /// Deliberate characterization lock, stated once for all call sites:
-    /// these exact ids/deltas are tied to the number and ordering of
-    /// allocation sites that fire for a given input. A legitimate future
-    /// change that adds/removes a site must re-baseline the caller's
-    /// expected values on purpose — don't read a red here as an automatic
-    /// regression without checking site count first.
+    /// These exact ids/deltas are characterization values tied to the
+    /// number and ordering of allocation sites that fire for a given
+    /// input — see `docs/prds/v0_6/engine-build-hardening.md` §5.2 for the
+    /// full site inventory. A legitimate future change that adds/removes a
+    /// site must re-baseline the caller's expected values on purpose.
     fn assert_snapshot_numbering(
         engine: &Engine,
         expected_snapshot: u64,
         expected_version: u64,
-        before_snapshot: u64,
-        before_version: u64,
+        before: u64,
         expected_delta: u64,
         context: &str,
     ) {
@@ -3118,13 +3126,13 @@ mod tests {
             "{context}: expected VersionId({expected_version})",
         );
         assert_eq!(
-            engine.next_snapshot_id - before_snapshot,
+            engine.next_snapshot_id - before,
             expected_delta,
             "{context}: next_snapshot_id should have advanced by exactly \
              {expected_delta} across this call",
         );
         assert_eq!(
-            engine.next_version_id - before_version,
+            engine.next_version_id - before,
             expected_delta,
             "{context}: next_version_id should have advanced by exactly \
              {expected_delta} across this call",
@@ -3151,54 +3159,35 @@ mod tests {
             parse_and_compile_with_stdlib("structure S { param width: Length = 100mm }");
         let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
 
-        let before_snapshot_first = engine.next_snapshot_id;
-        let before_version_first = engine.next_version_id;
+        let before_first = engine.next_snapshot_id;
         let _ = engine.eval(&compiled);
-        assert_snapshot_numbering(
-            &engine,
-            0,
-            0,
-            before_snapshot_first,
-            before_version_first,
-            1,
-            "first eval() call (site 1)",
-        );
+        assert_snapshot_numbering(&engine, 0, 0, before_first, 1, "first eval() call (site 1)");
 
-        let before_snapshot_second = engine.next_snapshot_id;
-        let before_version_second = engine.next_version_id;
+        let before_second = engine.next_snapshot_id;
         let _ = engine.eval(&compiled);
         assert_snapshot_numbering(
             &engine,
             1,
             1,
-            before_snapshot_second,
-            before_version_second,
+            before_second,
             1,
             "second eval() call (site 1)",
         );
     }
 
     /// Characterization lock on the OBSERVABLE snapshot/version numbering
-    /// produced by the SOLVER-DRIVEN resolution phase (site 2 — the
-    /// `SolveResult::Solved` arm in `engine_eval.rs`'s per-template
-    /// resolution loop), complementing
-    /// `eval_snapshot_numbering_is_stable_across_repeated_calls` above,
-    /// which only exercises the no-solver cold path (site 1) and leaves
-    /// this site dormant. Without this test, a mis-migration at site 2
-    /// (extra/missing bump, swapped order) would not be caught.
+    /// produced by the SOLVER-DRIVEN resolution phase (site 2), complementing
+    /// `eval_snapshot_numbering_is_stable_across_repeated_calls` above (site
+    /// 1 only, no solver interaction). See
+    /// `docs/prds/v0_6/engine-build-hardening.md` §5.2 for the full site
+    /// inventory, including why a single non-coupled template takes this
+    /// branch rather than `dispatch_merged_cluster_solve` (site 3).
     ///
-    /// A single template with one `auto` param and plain (non-objective)
-    /// constraints takes the ordinary per-template resolution branch, NOT
-    /// `dispatch_merged_cluster_solve` (site 3), which requires >= 2
-    /// cross-scope-coupled templates (see `resolve_order::compute_clusters`).
-    /// So exactly TWO pairs are minted in this one `eval()` call: the
-    /// cold-path pair at site 1 (`SnapshotId(0)`, `VersionId(0)`), then the
-    /// resolution-phase pair at site 2 (`SnapshotId(1)`, `VersionId(1)`),
-    /// which overwrites `snapshot.id`/`.version` before `eval()` returns.
-    /// Uses `MockConstraintSolver::new_solved` (not the real
-    /// `DimensionalSolver`) so the resolution outcome — and therefore
-    /// whether site 2 fires at all — is deterministic, mirroring
-    /// `resolve_single_auto_param` in `tests/resolution.rs`.
+    /// Site 1 then site 2 both fire: `SnapshotId(0)`/`VersionId(0)` from the
+    /// cold path, then `SnapshotId(1)`/`VersionId(1)` from resolution, which
+    /// overwrites `snapshot.id`/`.version` before `eval()` returns. Uses
+    /// `MockConstraintSolver::new_solved` for a deterministic outcome,
+    /// mirroring `resolve_single_auto_param` in `tests/resolution.rs`.
     #[test]
     fn resolution_phase_snapshot_numbering_is_stable() {
         use std::collections::HashMap;
@@ -3240,8 +3229,7 @@ mod tests {
         let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
             .with_solver(Box::new(solver));
 
-        let before_snapshot = engine.next_snapshot_id;
-        let before_version = engine.next_version_id;
+        let before = engine.next_snapshot_id;
         let result = engine.eval(&module);
 
         // Sanity: confirm the solver's Solved arm actually fired (not
@@ -3258,15 +3246,11 @@ mod tests {
             thickness_val
         );
 
-        // Site 1 then site 2 fire in this one eval() call — see
-        // assert_snapshot_numbering's doc comment above for the
-        // re-baselining caveat.
         assert_snapshot_numbering(
             &engine,
             1,
             1,
-            before_snapshot,
-            before_version,
+            before,
             2,
             "resolution-phase eval() call (site 1 + site 2)",
         );
@@ -3274,30 +3258,18 @@ mod tests {
 
     /// Characterization lock on the OBSERVABLE snapshot/version numbering
     /// produced by `dispatch_merged_cluster_solve`'s `SolveResult::Solved`
-    /// arm (site 3), complementing
-    /// `eval_snapshot_numbering_is_stable_across_repeated_calls` (site 1)
-    /// and `resolution_phase_snapshot_numbering_is_stable` (site 2) above.
-    /// Without this test, a mis-migration at site 3 (extra/missing bump,
-    /// swapped snapshot/version order) would not be caught.
+    /// arm (site 3), complementing the site-1 and site-2 tests above. See
+    /// `docs/prds/v0_6/engine-build-hardening.md` §5.2 for the full site
+    /// inventory.
     ///
     /// Two templates forming a 2-cycle (`A` reads `B.m`, `B` reads `A.k`)
-    /// are an irreducible SCC of size 2, well within the whole-model
-    /// cluster dimension cap, so `resolve_order::compute_clusters` assigns
-    /// them `ClusterDisposition::MergedSolve` and the cold `eval()` driver
-    /// dispatches ONE merged solve for the whole cluster — mirrors
-    /// `two_cycle_cluster_module` /
-    /// `merged_cluster_dispatches_single_solve_with_union_auto_params` in
-    /// `tests/merged_cluster_solve.rs`, already known-good against task
-    /// #5014's own unit tests. Because every scope in this module is a
-    /// member of the one merged cluster, the ordinary per-template
-    /// resolution branch (site 2) stays dormant here. So exactly TWO pairs
-    /// are minted in this one `eval()` call: the cold-path pair at site 1
-    /// (`SnapshotId(0)`, `VersionId(0)`), then the merged-cluster-solve
-    /// pair at site 3 (`SnapshotId(1)`, `VersionId(1)`), which overwrites
-    /// `snapshot.id`/`.version` before `eval()` returns. Uses
-    /// `MockConstraintSolver::new_solved` (not the real `DimensionalSolver`)
-    /// so the resolution outcome — and therefore whether site 3 fires at
-    /// all — is deterministic.
+    /// get `ClusterDisposition::MergedSolve`, so `eval()` dispatches ONE
+    /// merged solve and the per-template branch (site 2) stays dormant —
+    /// mirrors `two_cycle_cluster_module` in `tests/merged_cluster_solve.rs`.
+    /// Site 1 then site 3 fire: `SnapshotId(0)`/`VersionId(0)` from the cold
+    /// path, then `SnapshotId(1)`/`VersionId(1)` from the merged solve,
+    /// which overwrites `snapshot.id`/`.version` before `eval()` returns.
+    /// Uses `MockConstraintSolver::new_solved` for a deterministic outcome.
     #[test]
     fn merged_cluster_solve_snapshot_numbering_is_stable() {
         use std::collections::HashMap;
@@ -3335,8 +3307,7 @@ mod tests {
         let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
             .with_solver(Box::new(solver));
 
-        let before_snapshot = engine.next_snapshot_id;
-        let before_version = engine.next_version_id;
+        let before = engine.next_snapshot_id;
         let result = engine.eval(&module);
 
         // Sanity: confirm the merged solve's Solved arm actually fired
@@ -3359,15 +3330,11 @@ mod tests {
             result.values.get(&b_m)
         );
 
-        // Site 1 then site 3 fire in this one eval() call — see
-        // assert_snapshot_numbering's doc comment above for the
-        // re-baselining caveat.
         assert_snapshot_numbering(
             &engine,
             1,
             1,
-            before_snapshot,
-            before_version,
+            before,
             2,
             "merged-cluster-solve eval() call (site 1 + site 3)",
         );
