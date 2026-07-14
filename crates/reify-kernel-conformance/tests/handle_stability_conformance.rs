@@ -153,6 +153,19 @@ fn occt_extract_edges_returns_stable_ids() {
 #[test]
 fn manifold_extract_faces_returns_stable_ids() {
     let mesh = common::occt_box();
+    // Precondition sanity check: `ManifoldKernel::extract_faces` silently
+    // memoizes `Ok(Vec::new())` for an empty/degenerate ingest (kernel.rs's
+    // `verts.is_empty() || tris.is_empty()` branch), which would otherwise
+    // make the `>= 6` assertion below fail with the misleading "cannot
+    // coalesce below its 6 axis-aligned faces" message instead of pointing
+    // at the real cause. `occt_box()` always yields a real tessellated box,
+    // so this is defensive-only.
+    assert!(
+        !mesh.vertices.is_empty() && !mesh.indices.is_empty(),
+        "occt_box() must yield a non-empty mesh; got {} vertices / {} indices",
+        mesh.vertices.len(),
+        mesh.indices.len()
+    );
     let mut manifold = ManifoldKernel::new();
     let handle = manifold
         .ingest_mesh(&mesh)
