@@ -5430,6 +5430,87 @@ mod tests {
         );
     }
 
+    /// Sibling of `warm_state_persisted_shape_count_stays_bounded_across_cycles`
+    /// covering the scenario its debug_assert-only guarantee doesn't pin
+    /// behaviorally: a *second* root created via `execute` AFTER
+    /// `extract_faces`/`extract_edges`/`extract_vertices` has already
+    /// populated `parent_handle` with the first root's derived sub-shape
+    /// ids. `store_with_repr` mints ids by fetch-and-increment and never
+    /// reuses one, so this post-extraction root's id is always strictly
+    /// greater than every existing `parent_handle` key and can never
+    /// collide with — and must never be caught by — the bounded-payload
+    /// filter (the exact invariant `debug_assert_fresh_id` protects). This
+    /// test pins that both roots survive every warm-start cycle while all
+    /// sub-shapes are filtered, rather than relying solely on the debug
+    /// assertion.
+    #[test]
+    fn warm_state_persisted_shape_count_bounded_with_post_extraction_root() {
+        let mut kernel = OcctKernel::new();
+        kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+        kernel
+            .extract_faces(GeometryHandleId(1))
+            .expect("extract_faces on the box should succeed");
+        kernel
+            .extract_edges(GeometryHandleId(1))
+            .expect("extract_edges on the box should succeed");
+        kernel
+            .extract_vertices(GeometryHandleId(1))
+            .expect("extract_vertices on the box should succeed");
+
+        // Second root, created only after parent_handle already holds the
+        // box's derived sub-shape ids above.
+        let cyl = kernel
+            .execute(&GeometryOp::Cylinder {
+                radius: Value::Real(5.0),
+                height: Value::Real(20.0),
+            })
+            .unwrap();
+        let cyl_id = cyl.id;
+        const ROOT_COUNT: usize = 2; // box (id 1) + post-extraction cylinder
+
+        let mut counts = Vec::new();
+        for _ in 0..4 {
+            let state = kernel.warm_state().expect("kernel should have warm state");
+            let warm = state
+                .downcast_ref::<OcctWarmState>()
+                .expect("warm state should downcast_ref to OcctWarmState");
+            counts.push(warm.shapes.len());
+
+            let mut next = OcctKernel::new();
+            next.with_warm_state(state);
+
+            // Both roots must resolve after every restore.
+            next.query(&GeometryQuery::Volume(GeometryHandleId(1)))
+                .expect("box root should survive warm-start round-trip");
+            next.query(&GeometryQuery::Volume(cyl_id))
+                .expect("post-extraction cylinder root should survive warm-start round-trip");
+
+            // Re-seed parent_handle against the cleared idempotency cache,
+            // mirroring `warm_state_persisted_shape_count_stays_bounded_across_cycles`.
+            next.extract_faces(GeometryHandleId(1))
+                .expect("extract_faces on the restored box should succeed");
+            next.extract_edges(GeometryHandleId(1))
+                .expect("extract_edges on the restored box should succeed");
+            next.extract_vertices(GeometryHandleId(1))
+                .expect("extract_vertices on the restored box should succeed");
+
+            kernel = next;
+        }
+
+        assert!(
+            counts.iter().all(|&c| c == ROOT_COUNT),
+            "persisted shape count must stay pinned at the two-root count \
+             ({ROOT_COUNT}) across cycles — a post-extraction root must never \
+             be dropped, and sub-shapes must stay filtered: {counts:?}"
+        );
+    }
+
     #[test]
     fn extract_vertices_box_returns_eight_handles_with_brepkind_vertex() {
         let mut kernel = OcctKernel::new();
