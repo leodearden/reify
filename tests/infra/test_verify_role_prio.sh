@@ -418,4 +418,40 @@ assert "background: plan does NOT carry offline's 'off the merge jobserver' unse
     bash -c '! printf "%s\n" "$1" | grep -qF "off the merge jobserver"' \
     _ "$BACKGROUND_FIFO_FULL"
 
+# ---------------------------------------------------------------------------
+# Cycle F2: background profile default — merge-level completeness (task 5210
+# step-3 / step-4). Mirrors Cycle C1/C2 (merge) with role=background.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle F2: background profile default (task 5210) ---"
+
+# F2a: background + no explicit --profile => profile=both (release coverage,
+# same as merge — a main integrity sweep needs full dev+release coverage).
+F2A_FULL="$(DF_VERIFY_ROLE=background bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan || true)"
+F2A_CMDS="$(printf '%s\n' "$F2A_FULL" | grep -v '^#')"
+
+assert "F2a: background+no-profile: header shows profile=both" \
+    bash -c 'printf "%s\n" "$1" | grep "^# verify.sh plan" | grep -q "profile=both"' \
+    _ "$F2A_FULL"
+
+assert "F2a: background+no-profile: a release test pass is present (sensitivity-scoped, no --workspace)" \
+    bash -c 'printf "%s\n" "$1" | grep -v "cargo-test-occt-gated.sh" | grep -qE "cargo (test|nextest run).*--release"' \
+    _ "$F2A_CMDS"
+
+assert "F2a: background+no-profile: a non-release (debug) --workspace pass is also present" \
+    bash -c 'printf "%s\n" "$1" | grep -E "cargo (test|nextest run) --workspace" | grep -qv -- "--release"' \
+    _ "$F2A_CMDS"
+
+# F2b: background + explicit --profile debug => debug (explicit still wins)
+F2B_FULL="$(DF_VERIFY_ROLE=background bash "$REPO_ROOT/scripts/verify.sh" test --scope all --profile debug --print-plan || true)"
+F2B_CMDS="$(printf '%s\n' "$F2B_FULL" | grep -v '^#')"
+
+assert "F2b: background+--profile debug: header shows profile=debug (explicit wins)" \
+    bash -c 'printf "%s\n" "$1" | grep "^# verify.sh plan" | grep -q "profile=debug"' \
+    _ "$F2B_FULL"
+
+assert "F2b: background+--profile debug: no release workspace pass (explicit wins)" \
+    bash -c '! printf "%s\n" "$1" | grep -qE "cargo (test|nextest run) --workspace.*--release"' \
+    _ "$F2B_CMDS"
+
 test_summary
