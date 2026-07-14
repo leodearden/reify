@@ -150,6 +150,7 @@ pub fn resolve_unique_by_attribute(
     candidates: &[GeometryHandleId],
     query: &AttributeQuery,
     selector_span: SourceSpan,
+    scope_kernel: KernelId,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> AttributeResolution {
     // (step-16a) Empty candidate slice: nothing to look up — by definition
@@ -170,13 +171,13 @@ pub fn resolve_unique_by_attribute(
     // answer, so duplicate candidate ids cannot change the outcome. The
     // dedup discipline is enforced where it matters, inside
     // `count_unique_matches` (which counts matches, not just any-match).
-    // Interim single-kernel Occt (#4351 step-2) — step-6 threads a
-    // `scope_kernel` parameter through this function so cross-kernel builds
-    // resolve against the correct kernel's handles.
+    // Scoped to `scope_kernel` (#4351 step-6): a candidate id is only ever
+    // meaningful within the kernel scope that produced it, so cross-kernel
+    // builds must look it up under that same scope.
     if !candidates.iter().any(|&id| {
         table
             .lookup(KernelHandle {
-                kernel: KernelId::Occt,
+                kernel: scope_kernel,
                 id,
             })
             .is_some()
@@ -231,7 +232,7 @@ pub fn resolve_unique_by_attribute(
     // multi-match clustering path both consume the same Vec, dropping the
     // redundant predicate-closure construction per multi-match.
     if let Some(label) = query.user_label.as_deref() {
-        let matches = collect_matches(table, candidates, |attr| {
+        let matches = collect_matches(table, candidates, scope_kernel, |attr| {
             attr.user_label.as_deref() == Some(label) && feature_id_filter(attr)
         });
         match matches.len() {
@@ -263,7 +264,7 @@ pub fn resolve_unique_by_attribute(
     // role + local_index branch (step-4). Same single-scan discipline as
     // the user_label branch above.
     if let Some((role, idx)) = query.role_and_index {
-        let matches = collect_matches(table, candidates, |attr| {
+        let matches = collect_matches(table, candidates, scope_kernel, |attr| {
             attr.role == role && attr.local_index == idx && feature_id_filter(attr)
         });
         match matches.len() {
@@ -340,6 +341,7 @@ fn emit_attribute_stale_diagnostic(
 fn collect_matches<'t, F>(
     table: &'t TopologyAttributeTable,
     candidates: &[GeometryHandleId],
+    scope_kernel: KernelId,
     predicate: F,
 ) -> Vec<(GeometryHandleId, &'t TopologyAttribute)>
 where
@@ -351,12 +353,10 @@ where
         if !seen.insert(id) {
             continue;
         }
-        // Interim single-kernel Occt (#4351 step-2) — step-6 threads a
-        // `scope_kernel` parameter through this function (and its caller,
-        // `resolve_unique_by_attribute`) so cross-kernel builds resolve
-        // against the correct kernel's handles.
+        // Scoped to `scope_kernel` (#4351 step-6) — a candidate id is only
+        // ever meaningful within the kernel scope that produced it.
         if let Some(attr) = table.lookup(KernelHandle {
-            kernel: KernelId::Occt,
+            kernel: scope_kernel,
             id,
         }) && predicate(attr)
         {
@@ -375,7 +375,10 @@ where
 /// Operates directly on the `(handle, attr)` pairs returned by
 /// [`collect_matches`] — both the parent-key windows check and the
 /// children-list construction use the borrowed attrs, so no
-/// `table.lookup` is re-issued per matched id.
+/// `table.lookup` is re-issued per matched id. Consequently this function
+/// takes no `scope_kernel` parameter of its own (#4351 step-6): it never
+/// looks the table up directly, so it has nothing to scope — the pairs it
+/// receives were already resolved against the caller's scope.
 ///
 /// Failure modes that yield `None` (caller proceeds to Unresolved):
 ///   - `matches.len() < 2` — no cluster to detect; a single-element
@@ -523,7 +526,7 @@ mod tests {
         };
         let mut diagnostics = Vec::new();
         let result =
-            resolve_unique_by_attribute(&table, &candidates, &query, span(), &mut diagnostics);
+            resolve_unique_by_attribute(&table, &candidates, &query, span(), KernelId::Occt, &mut diagnostics);
         assert_eq!(result, AttributeResolution::Resolved(h(10)));
         assert!(
             diagnostics.is_empty(),
@@ -547,7 +550,7 @@ mod tests {
         };
         let mut diagnostics = Vec::new();
         let result =
-            resolve_unique_by_attribute(&table, &candidates, &query, span(), &mut diagnostics);
+            resolve_unique_by_attribute(&table, &candidates, &query, span(), KernelId::Occt, &mut diagnostics);
         assert_eq!(result, AttributeResolution::Resolved(h(20)));
         assert!(
             diagnostics.is_empty(),
@@ -579,7 +582,7 @@ mod tests {
         };
         let mut diagnostics = Vec::new();
         let result_a =
-            resolve_unique_by_attribute(&table, &candidates, &query_a, span(), &mut diagnostics);
+            resolve_unique_by_attribute(&table, &candidates, &query_a, span(), KernelId::Occt, &mut diagnostics);
         assert_eq!(
             result_a,
             AttributeResolution::Resolved(h(30)),
@@ -595,7 +598,7 @@ mod tests {
         };
         let mut diagnostics = Vec::new();
         let result_b =
-            resolve_unique_by_attribute(&table, &candidates, &query_b, span(), &mut diagnostics);
+            resolve_unique_by_attribute(&table, &candidates, &query_b, span(), KernelId::Occt, &mut diagnostics);
         assert_eq!(
             result_b,
             AttributeResolution::Resolved(h(31)),
@@ -695,6 +698,7 @@ mod tests {
                 &candidates,
                 &case.query,
                 span(),
+                KernelId::Occt,
                 &mut diagnostics,
             );
             assert_eq!(
@@ -766,7 +770,7 @@ mod tests {
         };
         let mut diagnostics = Vec::new();
         let result =
-            resolve_unique_by_attribute(&table, &candidates, &query, span(), &mut diagnostics);
+            resolve_unique_by_attribute(&table, &candidates, &query, span(), KernelId::Occt, &mut diagnostics);
         assert_eq!(
             result,
             AttributeResolution::AmbiguousAfterSplit {
@@ -815,7 +819,7 @@ mod tests {
         };
         let mut diagnostics = Vec::new();
         let result =
-            resolve_unique_by_attribute(&table, &candidates, &query, span(), &mut diagnostics);
+            resolve_unique_by_attribute(&table, &candidates, &query, span(), KernelId::Occt, &mut diagnostics);
         assert_eq!(
             result,
             AttributeResolution::AmbiguousAfterSplit {
@@ -856,6 +860,7 @@ mod tests {
             &candidates,
             &query,
             selector_span,
+            KernelId::Occt,
             &mut diagnostics,
         );
         assert_eq!(result, AttributeResolution::Unresolved);
@@ -897,7 +902,7 @@ mod tests {
         };
         let mut diagnostics = Vec::new();
         let result =
-            resolve_unique_by_attribute(&table, &candidates, &query, span(), &mut diagnostics);
+            resolve_unique_by_attribute(&table, &candidates, &query, span(), KernelId::Occt, &mut diagnostics);
         assert_eq!(result, AttributeResolution::FallbackToComputed);
         assert!(
             diagnostics.is_empty(),
@@ -910,7 +915,7 @@ mod tests {
         // Candidates 40/41 still have no entries.
         let mut diagnostics = Vec::new();
         let result_b =
-            resolve_unique_by_attribute(&table_b, &candidates, &query, span(), &mut diagnostics);
+            resolve_unique_by_attribute(&table_b, &candidates, &query, span(), KernelId::Occt, &mut diagnostics);
         assert_eq!(result_b, AttributeResolution::FallbackToComputed);
         assert!(diagnostics.is_empty());
     }
@@ -948,7 +953,7 @@ mod tests {
         };
         let mut diagnostics = Vec::new();
         let result_slot =
-            resolve_unique_by_attribute(&table, &candidates, &query_slot, span(), &mut diagnostics);
+            resolve_unique_by_attribute(&table, &candidates, &query_slot, span(), KernelId::Occt, &mut diagnostics);
         assert_eq!(
             result_slot,
             AttributeResolution::Resolved(h(71)),
@@ -964,7 +969,7 @@ mod tests {
         };
         let mut diagnostics = Vec::new();
         let result_boss =
-            resolve_unique_by_attribute(&table, &candidates, &query_boss, span(), &mut diagnostics);
+            resolve_unique_by_attribute(&table, &candidates, &query_boss, span(), KernelId::Occt, &mut diagnostics);
         assert_eq!(
             result_boss,
             AttributeResolution::Resolved(h(70)),
@@ -987,6 +992,7 @@ mod tests {
             &candidates,
             &query_other,
             span(),
+            KernelId::Occt,
             &mut diagnostics,
         );
         assert_eq!(result_other, AttributeResolution::Unresolved);
@@ -1033,6 +1039,7 @@ mod tests {
             &candidates_a,
             &query_a,
             span(),
+            KernelId::Occt,
             &mut diagnostics,
         );
         assert_eq!(
@@ -1057,6 +1064,7 @@ mod tests {
             &candidates_b,
             &query_b,
             span(),
+            KernelId::Occt,
             &mut diagnostics,
         );
         assert_eq!(
@@ -1091,6 +1099,7 @@ mod tests {
             &candidates_c,
             &query_c,
             span(),
+            KernelId::Occt,
             &mut diagnostics,
         );
         assert_eq!(
@@ -1126,7 +1135,7 @@ mod tests {
         };
         let mut diagnostics = Vec::new();
         let result =
-            resolve_unique_by_attribute(&table, &candidates, &query, span(), &mut diagnostics);
+            resolve_unique_by_attribute(&table, &candidates, &query, span(), KernelId::Occt, &mut diagnostics);
         assert_eq!(
             result,
             AttributeResolution::Resolved(id_match),
@@ -1176,7 +1185,7 @@ mod tests {
         };
         let mut diagnostics = Vec::new();
         let result =
-            resolve_unique_by_attribute(&table, &candidates, &query, span(), &mut diagnostics);
+            resolve_unique_by_attribute(&table, &candidates, &query, span(), KernelId::Occt, &mut diagnostics);
 
         // The all-None positional check fires regardless of feature_id, so
         // the resolver returns Unresolved with the standard zero-match
@@ -1237,7 +1246,7 @@ mod tests {
         };
         let mut diagnostics = Vec::new();
         let result =
-            resolve_unique_by_attribute(&table, &candidates, &query, span(), &mut diagnostics);
+            resolve_unique_by_attribute(&table, &candidates, &query, span(), KernelId::Occt, &mut diagnostics);
         assert_eq!(
             result,
             AttributeResolution::Unresolved,
@@ -1281,7 +1290,7 @@ mod tests {
         };
         let mut diagnostics = Vec::new();
         let result =
-            resolve_unique_by_attribute(&table, &candidates, &query, span(), &mut diagnostics);
+            resolve_unique_by_attribute(&table, &candidates, &query, span(), KernelId::Occt, &mut diagnostics);
         assert_eq!(
             result,
             AttributeResolution::Unresolved,
@@ -1320,7 +1329,7 @@ mod tests {
         };
         let mut diagnostics = Vec::new();
         let result =
-            resolve_unique_by_attribute(&table, &candidates, &query, span(), &mut diagnostics);
+            resolve_unique_by_attribute(&table, &candidates, &query, span(), KernelId::Occt, &mut diagnostics);
         assert_eq!(
             result,
             AttributeResolution::Unresolved,
@@ -1393,7 +1402,7 @@ mod tests {
         };
         let mut diagnostics = Vec::new();
         let result =
-            resolve_unique_by_attribute(&table, &candidates, &query, span(), &mut diagnostics);
+            resolve_unique_by_attribute(&table, &candidates, &query, span(), KernelId::Occt, &mut diagnostics);
         assert_eq!(
             result,
             AttributeResolution::Unresolved,
@@ -1453,7 +1462,7 @@ mod tests {
         };
         let mut diagnostics = Vec::new();
         let result =
-            resolve_unique_by_attribute(&table, &candidates, &query, span(), &mut diagnostics);
+            resolve_unique_by_attribute(&table, &candidates, &query, span(), KernelId::Occt, &mut diagnostics);
 
         // Neither branch produced a unique match; mixed parent-keys mean
         // try_cluster_after_split returns None → Unresolved.

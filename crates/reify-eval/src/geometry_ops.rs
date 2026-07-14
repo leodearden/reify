@@ -9159,9 +9159,12 @@ pub fn try_eval_ad_hoc_selector(
         None => return None,
     };
 
-    // (5) Look up the base name in named_steps → GeometryHandleId.
-    let handle = match named_steps.get(name.as_str()) {
-        Some(kh) => kh.id,
+    // (5) Look up the base name in named_steps → KernelHandle, capturing both
+    //     the GeometryHandleId and its producing kernel (#4351 step-6): the
+    //     resolver must scope its lookups to that same kernel, or a
+    //     cross-kernel build's attribute reads miss.
+    let (handle, scope_kernel) = match named_steps.get(name.as_str()) {
+        Some(kh) => (kh.id, kh.kernel),
         None => return None,
     };
 
@@ -9195,12 +9198,13 @@ pub fn try_eval_ad_hoc_selector(
         feature_id: None,
     };
 
-    // (8) Resolve via the attribute table.
+    // (8) Resolve via the attribute table, scoped to the producing kernel.
     let resolution = crate::topology_attribute_resolver::resolve_unique_by_attribute(
         table,
         &candidates,
         &query,
         selector_span,
+        scope_kernel,
         diagnostics,
     );
 

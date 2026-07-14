@@ -128,6 +128,7 @@ fn resolver_dispatches_against_seeded_box_attributes() {
         &face_handles,
         &query_role_idx,
         span,
+        KernelId::Occt,
         &mut diagnostics,
     );
     assert_eq!(
@@ -164,8 +165,14 @@ fn resolver_dispatches_against_seeded_box_attributes() {
         feature_id: None,
     };
     let mut diagnostics = Vec::new();
-    let result_b =
-        resolve_unique_by_attribute(&table, &face_handles, &query_label, span, &mut diagnostics);
+    let result_b = resolve_unique_by_attribute(
+        &table,
+        &face_handles,
+        &query_label,
+        span,
+        KernelId::Occt,
+        &mut diagnostics,
+    );
     assert_eq!(
         result_b,
         AttributeResolution::Resolved(face_handles[0]),
@@ -207,8 +214,14 @@ fn resolver_dispatches_against_seeded_box_attributes() {
         feature_id: None,
     };
     let mut diagnostics = Vec::new();
-    let result_c =
-        resolve_unique_by_attribute(&table, &[unallocated], &query_any, span, &mut diagnostics);
+    let result_c = resolve_unique_by_attribute(
+        &table,
+        &[unallocated],
+        &query_any,
+        span,
+        KernelId::Occt,
+        &mut diagnostics,
+    );
     assert_eq!(
         result_c,
         AttributeResolution::FallbackToComputed,

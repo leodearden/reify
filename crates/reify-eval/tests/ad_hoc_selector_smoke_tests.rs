@@ -1218,32 +1218,38 @@ fn try_eval_ad_hoc_selector_point_returns_none() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Task 4142 Cluster B RED contract test (ad-hoc selector leaf)
+// Task 4142 Cluster B contract test (ad-hoc selector leaf) — superseded by
+// #4351 step-6's kernel-scoped resolution
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Contract test (task 4142, Cluster B RED — ad-hoc selector leaf):
-/// `try_eval_ad_hoc_selector` resolves the base body via `KernelHandle.id`,
-/// ignoring `KernelHandle.kernel`.
+/// Contract test (originally task 4142, Cluster B; flipped by #4351 step-6):
+/// `try_eval_ad_hoc_selector` now scopes attribute-table resolution by the
+/// base handle's `KernelHandle.kernel`, not just its `.id`.
 ///
-/// Uses `KernelId::Manifold` for the body handle (deliberately non-default)
-/// to prove the leaf at geometry_ops.rs:4221 keys only off `.id` and never
-/// consults `.kernel`.
+/// Uses `KernelId::Manifold` for the body handle while the attribute table
+/// (`seeded_cylinder_table()`, via the file's `kh()` helper) is seeded under
+/// `KernelId::Occt` — a deliberate kernel mismatch. Before #4351 step-6,
+/// `.kernel` was ignored (task 4142's original premise), so this resolved to
+/// `Some(Value::Frame {{ .. }})` regardless of the mismatch. After step-6, the
+/// resolver's lookups are scoped to `named_steps.get(name).kernel`, so a
+/// mismatched scope now MISSES — there is no `{Manifold, TOP_FACE}` entry,
+/// only `{Occt, TOP_FACE}` — and `resolve_unique_by_attribute` returns
+/// `FallbackToComputed` from its imported-geometry pre-pass (silent, no
+/// diagnostic — the same signal imported/STEP geometry produces), which
+/// `try_eval_ad_hoc_selector` surfaces as `Some(Value::Undef)`.
 ///
-/// RED on current main (after step-2): `try_eval_ad_hoc_selector` still takes
-/// `&HashMap<String, GeometryHandleId>` → E0308 type mismatch on `&named_steps`.
-/// GREEN after step-4: signature changed + leaf projection updated.
-///
-/// NOTE: Pins the leaf-projection contract only (`.kernel` unused in the current
-/// single-kernel-per-build design). When cross-kernel handle resolution lands,
-/// update to assert per-kernel dispatch rather than treating `.kernel` as ignored.
+/// This is the intentional flip anticipated by the original test's own NOTE:
+/// "When cross-kernel handle resolution lands, update to assert per-kernel
+/// dispatch rather than treating `.kernel` as ignored."
 #[test]
-fn try_eval_ad_hoc_selector_resolves_base_via_kernel_handle_id() {
-    // Map "body" to a KernelHandle with deliberately non-default kernel.
+fn try_eval_ad_hoc_selector_scopes_resolution_by_kernel_handle_kernel() {
+    // Map "body" to a KernelHandle tagged with a kernel that does NOT match
+    // the Occt-seeded attribute table.
     let mut named_steps: HashMap<String, KernelHandle> = HashMap::new();
     named_steps.insert(
         "body".to_string(),
         KernelHandle {
-            kernel: KernelId::Manifold, // non-default: must be ignored
+            kernel: KernelId::Manifold, // mismatched: table is seeded under Occt
             id: BODY_HANDLE,
         },
     );
@@ -1271,40 +1277,21 @@ fn try_eval_ad_hoc_selector_resolves_base_via_kernel_handle_id() {
         &mut diagnostics,
     );
 
-    // Kernel is set up for BODY_HANDLE; `.kernel` (Manifold) must be ignored.
-    let Some(Value::Frame {
-        ref origin,
-        ref basis,
-    }) = result
-    else {
-        panic!(
-            "@face(\"top\") with KernelHandle{{Manifold, BODY_HANDLE}} should resolve to \
-             Some(Value::Frame {{ .. }}), got {:?}",
-            result
-        );
-    };
-    assert_eq!(
-        **origin,
-        Value::Point(vec![
-            Value::length(0.0),
-            Value::length(0.0),
-            Value::length(0.01),
-        ]),
-        "@face(\"top\") origin should be (0m, 0m, 0.01m)"
-    );
-    assert_eq!(
-        **basis,
-        Value::Orientation {
-            w: 1.0,
-            x: 0.0,
-            y: 0.0,
-            z: 0.0
-        },
-        "@face(\"top\") basis should be identity (normal +Z → +Z is zero rotation)"
+    // Kernel is set up for BODY_HANDLE and the table has a TOP_FACE entry —
+    // but it is scoped to Occt, not Manifold, so the mismatched named_steps
+    // kernel tag must cause a miss, not a match.
+    assert!(
+        matches!(result, Some(Value::Undef)),
+        "@face(\"top\") with KernelHandle{{Manifold, BODY_HANDLE}} against an \
+         Occt-seeded table must miss (Some(Value::Undef)) — resolution is \
+         scoped by KernelHandle.kernel (#4351 step-6); got {:?}",
+        result
     );
     assert!(
         diagnostics.is_empty(),
-        "no diagnostic expected on a clean resolution; got {:?}",
+        "a kernel-scope mismatch takes the FallbackToComputed pre-pass path \
+         (silent, like imported geometry) — no diagnostic should be emitted; \
+         got {:?}",
         diagnostics
     );
 }

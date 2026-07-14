@@ -914,6 +914,7 @@ fn assert_mod_history_propagation_and_clustering(
         result_face_handles,
         &query,
         SourceSpan::empty(0),
+        KernelId::Occt,
         &mut diagnostics,
     );
 
