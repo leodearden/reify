@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Infrastructure test for task 4051 (Cycles A-B), task 4078 (Cycle C), and
-# task 4913/A2 (Cycles D-E).
+# Infrastructure test for task 4051 (Cycles A-B), task 4078 (Cycle C),
+# task 4913/A2 (Cycles D-E), and task 5210 (Cycle F).
 # Covers:
 #   Cycle A — DF_VERIFY_ROLE validation / exit-64 contract (step-1 / step-2)
 #   Cycle B — CARGO_PRIO prefix-wrapping contract         (step-3 / step-4)
@@ -10,6 +10,9 @@
 #             (task 4913/A2 step-1 / step-2)
 #   Cycle E — offline positive heavy filter + --run-ignored all + jobserver detach
 #             (task 4913/A2 step-3 / step-4)
+#   Cycle F1 — background role recognition, idle-class CARGO_PRIO, gated
+#              (non-exempt) admission plan-lines, task-FIFO jobserver
+#              (task 5210 step-1 / step-2)
 #
 # Drives verify.sh via --print-plan (hermetic: never builds anything).
 
@@ -45,7 +48,7 @@ assert "DF_VERIFY_ROLE=bogus: exits 64" \
 
 # (b) stderr must contain the exact diagnostic (em-dash U+2014 is literal in the string below)
 assert "DF_VERIFY_ROLE=bogus: stderr contains expected ERROR diagnostic" \
-    bash -c 'printf "%s\n" "$1" | grep -qF "verify.sh: ERROR — unknown DF_VERIFY_ROLE '"'"'bogus'"'"' (want task|merge|offline)"' \
+    bash -c 'printf "%s\n" "$1" | grep -qF "verify.sh: ERROR — unknown DF_VERIFY_ROLE '"'"'bogus'"'"' (want task|merge|offline|background)"' \
     _ "$_bogus_stderr"
 
 # (c) valid role 'task' must exit 0
@@ -343,5 +346,76 @@ fi
 assert "offline: plan has NO 'export CARGO_MAKEFLAGS=' line (off the merge jobserver)" \
     bash -c '! printf "%s\n" "$1" | grep -q "export CARGO_MAKEFLAGS="' \
     _ "$OFFLINE_FULL"
+
+# ---------------------------------------------------------------------------
+# Cycle F1: background role — recognition, idle-class CARGO_PRIO, gated
+# (non-exempt) admission plan-lines, task-FIFO jobserver (task 5210)
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Cycle F1: background role (task 5210) ---"
+
+# (a) valid role 'background' must exit 0 (recognized role)
+assert "DF_VERIFY_ROLE=background: exits 0" \
+    bash -c 'DF_VERIFY_ROLE=background bash "$1/scripts/verify.sh" test --scope all --print-plan >/dev/null 2>&1' \
+    _ "$REPO_ROOT"
+
+# Capture the background plan. Guarded with '|| true' so an as-yet-unrecognized
+# role (RED phase, pre step-2) reports clean assertion FAILs below instead of
+# tripping this script's own `set -e` on the failing command substitution.
+BACKGROUND_FULL="$(DF_VERIFY_ROLE=background bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan || true)"
+BACKGROUND_CMDS="$(printf '%s\n' "$BACKGROUND_FULL" | grep -v '^#')"
+
+# (b) idle-class CARGO_PRIO prefix contract — byte-identical to offline's,
+# mirrors the Cycle D offline prefix idiom (own arm, own warning text — the
+# CARGO_PRIO string itself is identical by design, task 5210 design decision).
+assert "background/test/all: at least 1 cargo command line (sanity)" \
+    bash -c '[ "$(printf "%s\n" "$1" | grep -cE "(^| )cargo " || echo 0)" -ge 1 ]' \
+    _ "$BACKGROUND_CMDS"
+
+assert "background/test/all: all cargo lines prefixed with 'nice -n 19 ionice -c3 cargo'" \
+    bash -c '! printf "%s\n" "$1" | grep -E "(^| )cargo " | grep -vq "nice -n 19 ionice -c3 cargo"' \
+    _ "$BACKGROUND_CMDS"
+
+assert "background/test/all: only cargo lines carry the nice/ionice prefix (non-cargo lines clean)" \
+    bash -c '! printf "%s\n" "$1" | grep -F "nice -n 19 ionice -c3 " | grep -vq "cargo"' \
+    _ "$BACKGROUND_CMDS"
+
+# (c) admission plan-lines PRESENT exactly as task/offline (background is
+# gated, NOT admission-exempt — contrast the merge role, whose plan carries
+# these same role-invariant lines but bypasses them at RUNTIME).
+assert "background: plan contains './scripts/verify.sh psi-gate'" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "./scripts/verify.sh psi-gate"' \
+    _ "$BACKGROUND_CMDS"
+
+assert "background: plan contains './scripts/verify.sh compile-gate'" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "./scripts/verify.sh compile-gate"' \
+    _ "$BACKGROUND_CMDS"
+
+assert "background: plan contains the test-run semaphore ACQUIRE region marker/comment" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "test-run semaphore.*ACQUIRE"' \
+    _ "$BACKGROUND_FULL"
+
+# (d) jobserver: background rides the TASK (non-merge, non-offline-detached)
+# FIFO path. Sentinel non-existent FIFO paths make this host-FIFO-independent
+# — a live merge FIFO on the test host would otherwise make the negative
+# assertion vacuously true for the wrong reason.
+_BG_SENTINEL_TASK_FIFO="/tmp/reify-test-sentinel-task-fifo-nonexistent-$$-$RANDOM"
+_BG_SENTINEL_MERGE_FIFO="/tmp/reify-test-sentinel-merge-fifo-nonexistent-$$-$RANDOM"
+BACKGROUND_FIFO_FULL="$(DF_VERIFY_ROLE=background \
+    REIFY_JOBSERVER_TASK_FIFO="$_BG_SENTINEL_TASK_FIFO" \
+    REIFY_JOBSERVER_MERGE_FIFO="$_BG_SENTINEL_MERGE_FIFO" \
+    bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan || true)"
+
+assert "background: plan names the TASK FIFO sentinel path (took the task branch)" \
+    bash -c 'printf "%s\n" "$1" | grep -qF -- "$2"' \
+    _ "$BACKGROUND_FIFO_FULL" "$_BG_SENTINEL_TASK_FIFO"
+
+assert "background: plan does NOT reference the MERGE FIFO sentinel path (never took the merge branch)" \
+    bash -c '! printf "%s\n" "$1" | grep -qF -- "$2"' \
+    _ "$BACKGROUND_FIFO_FULL" "$_BG_SENTINEL_MERGE_FIFO"
+
+assert "background: plan does NOT carry offline's 'off the merge jobserver' unset comment" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "off the merge jobserver"' \
+    _ "$BACKGROUND_FIFO_FULL"
 
 test_summary

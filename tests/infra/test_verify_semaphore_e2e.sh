@@ -1526,6 +1526,83 @@ assert_marker "G2: G_ERR captured the CLOCK_START marker (reason=psi_pressure)" 
 assert "G2: stderr does NOT match fairness-floor admit-on-timeout message" \
     bash -c '! grep -qiE "admit|fairness|proceeding under load|sustained pressure" "$1"' _ "$G_ERR"
 
+# run_background_verify_check_no_bypass
+# Runs a single DF_VERIFY_ROLE=background verify.sh test with the slot FREE
+# (no external holder — proving the gated path ran needs no contention, just
+# an event-log record) and REIFY_SLOT_EVENT_LOG set. Sets H_RC/H_ERR/H_EVENTLOG.
+# Mirrors run_merge_while_task_slot_held's hermetic-harness idiom (stub dir,
+# apply_hermetic_env inside a subshell so exports don't leak to the outer
+# shell), but asserts the OPPOSITE outcome: background must actually acquire
+# the slot, not bypass it.
+# REIFY_INFRA_SUITE_ACTIVE=1 (task 5210, mirroring task 5125's Section-B
+# idiom): step-8 of this task makes background run the wholesale run_all.sh
+# infra pool (like merge), so a nested background verify inside THIS infra
+# suite would otherwise recurse (run_all -> this test -> background verify ->
+# run_all -> ...). Scoped narrowly to this one spawn, not broadcast, for the
+# same ambient-isolation reason documented at the run_all.sh pool guard.
+run_background_verify_check_no_bypass() {
+    local _tmpdir _stubdir _lock
+    _tmpdir="$(mktemp -d)"
+    _TMPDIRS+=("$_tmpdir")
+    _stubdir="$_tmpdir/stubs"
+    _lock="$_tmpdir/sem.lock"
+    mkdir -p "$_stubdir"
+    # Stub cargo with SLEEP=0: free-slot run should be fast (instant nextest pass).
+    REIFY_E2E_CARGO_SLEEP=0 make_stub_bin "$_stubdir"
+
+    local _eventlog
+    _eventlog="$_tmpdir/events.log"
+    : > "$_eventlog"
+    H_EVENTLOG="$_eventlog"
+
+    H_ERR="$_tmpdir/background_err.txt"
+    touch "$H_ERR"
+
+    H_RC=0
+    (
+        apply_hermetic_env "$_stubdir" "$_lock" 30
+        export REIFY_SLOT_EVENT_LOG="$_eventlog"
+        REIFY_INFRA_SUITE_ACTIVE=1 DF_VERIFY_ROLE=background bash "$REPO_ROOT/scripts/verify.sh" test --scope all
+    ) 2>"$H_ERR" || H_RC=$?
+}
+
+# ===========================================================================
+# Section H: background non-exemption (execute mode; task 5210)
+# ===========================================================================
+# Contrasts Section B's merge exemption: DF_VERIFY_ROLE=background must NOT
+# bypass test_semaphore_acquire — lib_test_semaphore.sh:91 is a strict
+# `= "merge"` check, so background falls through to the real acquire path
+# unchanged. Proven two ways: the event log (R-technique, load-independent)
+# records a real ACQUIRE, and stderr (S-technique) LACKS the merge-bypass
+# marker. Unlike Section B, no external holder is needed — a free-slot
+# acquire is sufficient proof the gated code path executed.
+echo ""
+echo "--- Section H: background non-exemption (execute mode, task 5210) ---"
+
+H_RC=0
+H_ERR=""
+H_EVENTLOG=""
+if [ "$_TS_READY" = "1" ]; then
+    run_background_verify_check_no_bypass
+    assert "background-role verify.sh test succeeds with a free slot (exit 0, got ${H_RC})" \
+        test "$H_RC" -eq 0
+    # Mode-4 observability (task 5144 idiom): surface captured stderr when the
+    # exit-code assertion above fails.
+    if [ "$H_RC" -ne 0 ]; then
+        _dump_captured_stderr "Section H background-role run (rc=${H_RC})" "$H_ERR"
+    fi
+    # --- Section H causal assertion (R-technique): background actually ACQUIRES the slot ---
+    H_ACQ_COUNT=$(awk '$3 == "ACQUIRE"' "$H_EVENTLOG" | wc -l | tr -d ' ')
+    assert "Section H causal: background recorded an ACQUIRE event (slot actually taken, count=${H_ACQ_COUNT})" \
+        test "$H_ACQ_COUNT" -ge 1
+    # --- Section H structural assertion (S-technique): merge-bypass marker ABSENT ---
+    assert "Section H structural: stderr LACKS the merge-bypass marker (background is non-exempt, contrast Section B)" \
+        bash -c '! grep -qF "lib_test_semaphore.sh: bypass (role=merge)" "$1"' _ "$H_ERR"
+else
+    assert "Section H SKIPPED: tree-sitter artifacts not ready — cannot run execute-mode e2e sections (see readiness diagnostic above)" \
+        false
+fi
+
 # ===========================================================================
 # Section I: clock-marker isolation regression guard (static source scan)
 # ===========================================================================
