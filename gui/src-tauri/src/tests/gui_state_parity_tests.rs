@@ -300,7 +300,10 @@ fn assert_multi_item_reorder_follows_new_order(
         .filter(|(name, _)| name == event_name)
         .map(|(_, payload)| payload[event_key].as_str().unwrap())
         .collect();
-    assert_eq!(event_keys, expected);
+    assert_eq!(
+        event_keys, expected,
+        "serialized events must follow new's vector order, not old's"
+    );
 }
 
 /// When two-or-more items in a keyed collection change simultaneously *and*
