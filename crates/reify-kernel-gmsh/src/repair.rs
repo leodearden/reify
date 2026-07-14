@@ -243,6 +243,23 @@ pub fn repair_surface_mesh_with_correspondence(
         .map(|old| remap[merge_map[old] as usize])
         .collect();
 
+    // Invariant guard (contract doc above): every non-sentinel entry must be
+    // a valid index into `new_vertices` post-compaction. Guaranteed by
+    // construction today (`remap` is only ever populated with `new_idx`
+    // values in range, or left at its `u32::MAX` init), but this is
+    // load-bearing for attribution callers, so a future refactor of the
+    // compaction loop that silently breaks it should fail fast in
+    // debug/test builds rather than hand a caller an out-of-bounds index.
+    debug_assert!(
+        correspondence
+            .iter()
+            .all(|&c| c == u32::MAX || (c as usize) < new_vertices.len() / 3),
+        "repair_surface_mesh_with_correspondence: every non-MAX correspondence entry must be \
+         < new vertex count ({}); got {:?}",
+        new_vertices.len() / 3,
+        correspondence
+    );
+
     (
         Mesh {
             vertices: new_vertices,
