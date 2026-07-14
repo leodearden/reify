@@ -875,7 +875,7 @@ pub fn try_infer_traits_for_function_call_in_env(
         "offset_curve" => Some(InferredTraits::curve()),
 
         // ─── Profile face constructors → surface() (2-D faces) ──────────
-        "rectangle" | "circle" | "ellipse" => Some(InferredTraits::surface()),
+        "rectangle" | "circle" | "ellipse" | "rounded_rect" => Some(InferredTraits::surface()),
         "polygon" => Some(InferredTraits::surface_nonconvex()),
 
         // ─── Free-form surface constructors → surface_freeform() ────────

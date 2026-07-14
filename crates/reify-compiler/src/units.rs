@@ -82,6 +82,7 @@ pub const GEOMETRY_FUNCTION_NAMES: &[&str] = &[
     "nurbs_surface",
     "isosurface",
     "rounded_box",
+    "rounded_rect",
 ];
 
 pub(crate) fn is_geometry_function(name: &str) -> bool {
