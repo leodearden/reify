@@ -354,16 +354,20 @@ fn changed_meshes_follow_new_states_vector_order_when_multiple_change() {
 fn changed_values_follow_new_states_vector_order_when_multiple_change() {
     let old = GuiState {
         values: vec![
-            sample_value("Bracket.width", "1"),
-            sample_value("Bracket.height", "2"),
+            sample_value("Bracket.a", "1"),
+            sample_value("Bracket.z", "2"),
         ],
         ..empty_gui_state()
     };
     let new = GuiState {
         values: vec![
-            // Reordered relative to `old` (height before width) *and* both changed.
-            sample_value("Bracket.height", "22"),
-            sample_value("Bracket.width", "11"),
+            // Reordered relative to `old` (z before a) *and* both changed.
+            // `z`-before-`a` also reverses cell_id's *sorted* order, so
+            // (unlike an alphabetically-coincident key choice) this alone
+            // rules out "follows key-sorted/iteration order" as well as
+            // "follows old's order".
+            sample_value("Bracket.z", "22"),
+            sample_value("Bracket.a", "11"),
         ],
         ..empty_gui_state()
     };
@@ -380,7 +384,7 @@ fn changed_values_follow_new_states_vector_order_when_multiple_change() {
         &events,
         "value-update",
         "cell_id",
-        vec!["Bracket.height", "Bracket.width"],
+        vec!["Bracket.z", "Bracket.a"],
     );
 }
 
