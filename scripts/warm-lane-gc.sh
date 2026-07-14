@@ -57,8 +57,14 @@
 #   --main-ref REF         Git ref for "main" branch (default: main).
 #   --lane-glob GLOB       Glob matching pool-lane entries (default: _lane-*,_spec-*).
 #                          Matched entries are reset via α, not removed.
-#   --protect-glob GLOB    Glob matching entries to never touch (default: _merge-*).
-#                          Matched entries are skipped entirely.
+#   --protect-glob GLOB    Glob matching entries to never touch (default:
+#                          _merge-*,_mainprobe-*,_mainsweep-*). Matched entries
+#                          are skipped entirely. _mainprobe-*/_mainsweep-* are
+#                          dark-factory's ephemeral merge/main-probe and
+#                          background main-tip integrity-sweep worktrees
+#                          (git_ops.py ephemeral_worktree); they must never be
+#                          orphan-removed by Pass 2 while a background
+#                          integrity sweep is live (task 5221).
 #   --seed-script PATH     Path to the α seed primitive (default: sibling seed-warm-lane.sh).
 #                          Overridable for hermetic testing.
 #   --status-cmd PATH      Optional advisory status oracle for the Tier-3
@@ -179,7 +185,10 @@ Usage: $(basename "$0") reclaim --mount WORKTREE_BASE [OPTIONS]
   Optional options:
     --main-ref REF        Git ref for 'main' (default: main).
     --lane-glob GLOB      Glob for pool-lane entries (default: _lane-*,_spec-*).
-    --protect-glob GLOB   Glob for protected entries (default: _merge-*).
+    --protect-glob GLOB   Glob for protected entries (default:
+                          _merge-*,_mainprobe-*,_mainsweep-*). Ephemeral
+                          verify/sweep worktrees must never be orphan-removed
+                          while a background integrity sweep is live.
     --seed-script PATH    Path to α seed primitive (default: sibling seed-warm-lane.sh).
     --status-cmd PATH     Advisory status oracle for Tier-3 terminal-task reclaim
                           (default: REIFY_WARM_LANE_GC_STATUS_CMD, falling back to
@@ -293,7 +302,7 @@ fi
 
 # ── apply defaults for optional globs and seed-script ─────────────────────────
 [ -n "$LANE_GLOB" ]    || LANE_GLOB="_lane-*,_spec-*"
-[ -n "$PROTECT_GLOB" ] || PROTECT_GLOB="_merge-*"
+[ -n "$PROTECT_GLOB" ] || PROTECT_GLOB="_merge-*,_mainprobe-*,_mainsweep-*"
 if [ -z "$SEED_SCRIPT" ]; then
     SEED_SCRIPT="$SCRIPT_DIR/seed-warm-lane.sh"
 fi
