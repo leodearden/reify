@@ -33,8 +33,9 @@ use std::hash::{Hash, Hasher};
 use reify_core::Diagnostic;
 use reify_core::persistent_cache::PersistentlyCacheable;
 use reify_ir::{
-    FeatureId, GeometryHandleId, OpaqueState, PersistentMap, Role, SampledField,
-    StructureInstanceData, StructureTypeId, TopologyAttribute, TopologyAttributeTable, Value,
+    FeatureId, GeometryHandleId, KernelHandle, KernelId, OpaqueState, PersistentMap, Role,
+    SampledField, StructureInstanceData, StructureTypeId, TopologyAttribute, TopologyAttributeTable,
+    Value,
 };
 use reify_shell_extract::{
     GridValidationError, MedialError, MedialOptions, MesherError, MesherOptions, MidSurfaceError,
@@ -1022,7 +1023,16 @@ pub(crate) fn fold_mid_surface_attributes_into_table(
             // Detect 30-bit FxHash collision at record time: warn if the synthetic
             // id is already occupied by a *different* feature_id — silent overwrite
             // would be undetectable data loss (see "Hash collision detection" in doc).
-            if let Some(existing) = table.lookup(id)
+            //
+            // Non-threaded reader/writer (interim single-kernel Occt, #4351):
+            // mid-surface naming is OCCT-only today and is not part of the
+            // resolver/ad-hoc-selector scope threading this task adds
+            // (step-6); mixed-kernel scoping here is downstream work.
+            let kernel_handle = KernelHandle {
+                kernel: KernelId::Occt,
+                id,
+            };
+            if let Some(existing) = table.lookup(kernel_handle)
                 && existing.feature_id != attr.feature_id
             {
                 tracing::warn!(
@@ -1033,7 +1043,7 @@ pub(crate) fn fold_mid_surface_attributes_into_table(
                     attr.feature_id,
                 );
             }
-            table.record(id, attr);
+            table.record(kernel_handle, attr);
         }
     } else {
         tracing::warn!("fold_mid_surface_attributes: naming.face_records missing or not a List");
@@ -1081,8 +1091,13 @@ pub(crate) fn fold_mid_surface_attributes_into_table(
                 mod_history: vec![],
             };
             // Detect 30-bit FxHash collision at record time (see face-records
-            // block above for the full rationale).
-            if let Some(existing) = table.lookup(id)
+            // block above for the full rationale). Non-threaded reader/writer
+            // (interim single-kernel Occt, #4351) — see rationale above.
+            let kernel_handle = KernelHandle {
+                kernel: KernelId::Occt,
+                id,
+            };
+            if let Some(existing) = table.lookup(kernel_handle)
                 && existing.feature_id != attr.feature_id
             {
                 tracing::warn!(
@@ -1093,7 +1108,7 @@ pub(crate) fn fold_mid_surface_attributes_into_table(
                     attr.feature_id,
                 );
             }
-            table.record(id, attr);
+            table.record(kernel_handle, attr);
         }
     } else {
         tracing::warn!("fold_mid_surface_attributes: naming.edges missing or not a List");

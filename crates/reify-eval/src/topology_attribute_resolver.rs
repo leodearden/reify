@@ -37,7 +37,10 @@
 use std::collections::HashSet;
 
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
-use reify_ir::{FeatureId, GeometryHandleId, Role, TopologyAttribute, TopologyAttributeTable};
+use reify_ir::{
+    FeatureId, GeometryHandleId, KernelHandle, KernelId, Role, TopologyAttribute,
+    TopologyAttributeTable,
+};
 
 /// Query used to pick a unique sub-shape out of a candidate slice.
 ///
@@ -167,7 +170,17 @@ pub fn resolve_unique_by_attribute(
     // answer, so duplicate candidate ids cannot change the outcome. The
     // dedup discipline is enforced where it matters, inside
     // `count_unique_matches` (which counts matches, not just any-match).
-    if !candidates.iter().any(|&id| table.lookup(id).is_some()) {
+    // Interim single-kernel Occt (#4351 step-2) — step-6 threads a
+    // `scope_kernel` parameter through this function so cross-kernel builds
+    // resolve against the correct kernel's handles.
+    if !candidates.iter().any(|&id| {
+        table
+            .lookup(KernelHandle {
+                kernel: KernelId::Occt,
+                id,
+            })
+            .is_some()
+    }) {
         return AttributeResolution::FallbackToComputed;
     }
 
@@ -338,8 +351,14 @@ where
         if !seen.insert(id) {
             continue;
         }
-        if let Some(attr) = table.lookup(id)
-            && predicate(attr)
+        // Interim single-kernel Occt (#4351 step-2) — step-6 threads a
+        // `scope_kernel` parameter through this function (and its caller,
+        // `resolve_unique_by_attribute`) so cross-kernel builds resolve
+        // against the correct kernel's handles.
+        if let Some(attr) = table.lookup(KernelHandle {
+            kernel: KernelId::Occt,
+            id,
+        }) && predicate(attr)
         {
             out.push((id, attr));
         }

@@ -73,7 +73,7 @@ fn seeded_cylinder_table() -> TopologyAttributeTable {
     let feature_id = cylinder_feature_id();
     let mut table = TopologyAttributeTable::default();
     table.record(
-        TOP_FACE,
+        kh(TOP_FACE),
         TopologyAttribute {
             feature_id: feature_id.clone(),
             role: Role::Cap(CapKind::Top),
@@ -83,7 +83,7 @@ fn seeded_cylinder_table() -> TopologyAttributeTable {
         },
     );
     table.record(
-        BOTTOM_FACE,
+        kh(BOTTOM_FACE),
         TopologyAttribute {
             feature_id: feature_id.clone(),
             role: Role::Cap(CapKind::Bottom),
@@ -93,7 +93,7 @@ fn seeded_cylinder_table() -> TopologyAttributeTable {
         },
     );
     table.record(
-        SIDE_FACE,
+        kh(SIDE_FACE),
         TopologyAttribute {
             feature_id,
             role: Role::Side,
@@ -679,7 +679,7 @@ fn seeded_edge_table() -> TopologyAttributeTable {
     let feature_id = cylinder_feature_id();
     let mut table = TopologyAttributeTable::default();
     table.record(
-        EDGE_HANDLE,
+        kh(EDGE_HANDLE),
         TopologyAttribute {
             feature_id,
             role: Role::NewEdge,

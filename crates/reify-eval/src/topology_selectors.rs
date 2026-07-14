@@ -1243,10 +1243,18 @@ fn resolve_leaf<K: GeometryKernel + ?Sized>(
             // `LeafQuery::Named` name-resolution path). The empty→Undef contract
             // one layer up therefore holds per-DESIGN ("no body carries this
             // role"), NOT per-BODY.
+            //
+            // Non-threaded reader (interim single-kernel Occt, #4351): this
+            // ByRole leaf is not part of the resolver/ad-hoc-selector scope
+            // threading this task adds (step-6) — every handle recorded
+            // today is Occt-scoped, so collapsing `table.iter()`'s
+            // `KernelHandle` key back to its bare `GeometryHandleId` here is
+            // behavior-preserving. Mixed-kernel selector scoping is
+            // downstream work (e.g. #5071).
             let mut matches: Vec<(u32, GeometryHandleId)> = table
                 .iter()
                 .filter(|(_, attr)| attr.role == *role)
-                .map(|(id, attr)| (attr.local_index, id))
+                .map(|(kernel_handle, attr)| (attr.local_index, kernel_handle.id))
                 .collect();
             matches.sort_unstable();
             Ok(matches.into_iter().map(|(_, id)| id).collect())
@@ -1266,15 +1274,19 @@ fn resolve_leaf<K: GeometryKernel + ?Sized>(
         // requires, so inlining the table-walk here (rather than calling
         // them) is the faithful ByRole mirror.
         LeafQuery::CreatedByFeature(fid) => {
+            // Non-threaded reader (interim single-kernel Occt, #4351) — see
+            // rationale on `LeafQuery::ByRole` above.
             let mut matches: Vec<(u32, GeometryHandleId)> = table
                 .iter()
                 .filter(|(_, attr)| attr.feature_id == *fid && role_is_face(attr.role))
-                .map(|(id, attr)| (attr.local_index, id))
+                .map(|(kernel_handle, attr)| (attr.local_index, kernel_handle.id))
                 .collect();
             matches.sort_unstable();
             Ok(matches.into_iter().map(|(_, id)| id).collect())
         }
         LeafQuery::SplitByFeature(fid) => {
+            // Non-threaded reader (interim single-kernel Occt, #4351) — see
+            // rationale on `LeafQuery::ByRole` above.
             let mut matches: Vec<(u32, GeometryHandleId)> = table
                 .iter()
                 .filter(|(_, attr)| {
@@ -1284,7 +1296,7 @@ fn resolve_leaf<K: GeometryKernel + ?Sized>(
                             .iter()
                             .any(|entry| entry.splitting_feature_id == *fid)
                 })
-                .map(|(id, attr)| (attr.local_index, id))
+                .map(|(kernel_handle, attr)| (attr.local_index, kernel_handle.id))
                 .collect();
             matches.sort_unstable();
             Ok(matches.into_iter().map(|(_, id)| id).collect())

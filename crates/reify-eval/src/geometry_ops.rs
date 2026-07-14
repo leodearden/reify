@@ -6,7 +6,9 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use reify_core::Diagnostic;
-use reify_ir::{CompiledFunction, GeometryHandleId, GeometryKernel, KernelHandle, ValueMap};
+use reify_ir::{
+    CompiledFunction, GeometryHandleId, GeometryKernel, KernelHandle, KernelId, ValueMap,
+};
 
 use crate::eval_ctx_with_meta;
 
@@ -3817,8 +3819,15 @@ pub(crate) fn project_handle_to_feature(
         );
         return None;
     };
+    // Non-threaded reader (interim single-kernel Occt, #4351): this accessor
+    // is not part of the resolver/ad-hoc-selector scope threading this task
+    // adds (step-6) — every handle recorded today is Occt-scoped. Mixed-kernel
+    // scoping for this accessor is downstream work.
     let feature_id = table
-        .lookup(handle_id)
+        .lookup(KernelHandle {
+            kernel: KernelId::Occt,
+            id: handle_id,
+        })
         .map(|attr| attr.feature_id.clone())
         .unwrap_or_else(|| reify_ir::FeatureId::from(&realization_ref));
     Some(reify_ir::Value::Feature(feature_id))

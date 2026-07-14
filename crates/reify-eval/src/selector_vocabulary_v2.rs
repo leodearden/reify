@@ -68,7 +68,7 @@ use std::collections::HashSet;
 
 use reify_ir::{
     EdgeCurveKind, FaceSurfaceKind, FeatureId, GeometryHandleId, GeometryKernel, GeometryQuery,
-    QueryError, TopologyAttributeTable, Value,
+    KernelHandle, KernelId, QueryError, TopologyAttributeTable, Value,
 };
 
 use crate::topology_selectors::{
@@ -698,11 +698,17 @@ pub fn created_by_feature(
     candidates: &[GeometryHandleId],
     feature_id: &FeatureId,
 ) -> Vec<GeometryHandleId> {
+    // Non-threaded reader (interim single-kernel Occt, #4351): this ByFeature
+    // selector is not part of the resolver/ad-hoc-selector scope threading
+    // this task adds (step-6). Mixed-kernel selector scoping is downstream
+    // work (e.g. #5071).
     let mut seen: HashSet<GeometryHandleId> = HashSet::with_capacity(candidates.len());
     let mut out: Vec<GeometryHandleId> = Vec::new();
     for id in candidates {
-        if let Some(attr) = table.lookup(*id)
-            && &attr.feature_id == feature_id
+        if let Some(attr) = table.lookup(KernelHandle {
+            kernel: KernelId::Occt,
+            id: *id,
+        }) && &attr.feature_id == feature_id
             && seen.insert(*id)
         {
             out.push(*id);
@@ -731,10 +737,15 @@ pub fn split_by_feature(
     candidates: &[GeometryHandleId],
     feature_id: &FeatureId,
 ) -> Vec<GeometryHandleId> {
+    // Non-threaded reader (interim single-kernel Occt, #4351) — see rationale
+    // on `created_by_feature` above.
     let mut seen: HashSet<GeometryHandleId> = HashSet::with_capacity(candidates.len());
     let mut out: Vec<GeometryHandleId> = Vec::new();
     for id in candidates {
-        if let Some(attr) = table.lookup(*id) {
+        if let Some(attr) = table.lookup(KernelHandle {
+            kernel: KernelId::Occt,
+            id: *id,
+        }) {
             let matches = attr
                 .mod_history
                 .iter()

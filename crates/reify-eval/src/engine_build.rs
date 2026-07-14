@@ -1017,6 +1017,7 @@ fn snapshot_named_steps(
 /// metadata — a failure here must NOT regress the realization to Failed.
 fn populate_attribute_history(
     table: &mut TopologyAttributeTable,
+    kernel_id: KernelId,
     kernel: &mut dyn GeometryKernel,
     feature_id: &FeatureId,
     geom_op: &GeometryOp,
@@ -1037,6 +1038,7 @@ fn populate_attribute_history(
             };
             populate_single_parent_sweep_op(
                 table,
+                kernel_id,
                 kernel,
                 feature_id,
                 profile_handle,
@@ -1057,6 +1059,7 @@ fn populate_attribute_history(
             };
             populate_single_parent_sweep_op(
                 table,
+                kernel_id,
                 kernel,
                 feature_id,
                 profile_handle,
@@ -1080,6 +1083,7 @@ fn populate_attribute_history(
             };
             populate_single_parent_sweep_op(
                 table,
+                kernel_id,
                 kernel,
                 feature_id,
                 profile_handle,
@@ -1101,7 +1105,9 @@ fn populate_attribute_history(
                     )));
                 }
             };
-            populate_loft_op(table, kernel, feature_id, profiles, result_handle, history)
+            populate_loft_op(
+                table, kernel_id, kernel, feature_id, profiles, result_handle, history,
+            )
         }
         AttributeHistory::Boolean(history) => {
             // Binary boolean ops (Union/Difference/Intersection): two parents
@@ -1119,6 +1125,7 @@ fn populate_attribute_history(
             };
             populate_boolean_op(
                 table,
+                kernel_id,
                 kernel,
                 feature_id,
                 left_handle,
@@ -1143,6 +1150,7 @@ fn populate_attribute_history(
             };
             populate_local_feature_op(
                 table,
+                kernel_id,
                 kernel,
                 feature_id,
                 target_handle,
@@ -1447,6 +1455,7 @@ fn populate_single_parent_sweep_op(
     match kind {
         SingleParentSweepKind::Extrude => populate_extrude_attributes(
             table,
+            kernel_id,
             feature_id,
             &profile_faces,
             &profile_edges,
@@ -1459,6 +1468,7 @@ fn populate_single_parent_sweep_op(
         ),
         SingleParentSweepKind::Revolve => populate_revolve_attributes(
             table,
+            kernel_id,
             feature_id,
             &profile_faces,
             &profile_edges,
@@ -1471,6 +1481,7 @@ fn populate_single_parent_sweep_op(
         ),
         SingleParentSweepKind::Sweep => populate_sweep_attributes(
             table,
+            kernel_id,
             feature_id,
             &profile_faces,
             &profile_edges,
@@ -1518,6 +1529,7 @@ fn populate_single_parent_sweep_op(
 ///       still be populated per-section).
 fn populate_loft_op(
     table: &mut TopologyAttributeTable,
+    kernel_id: KernelId,
     kernel: &mut dyn GeometryKernel,
     feature_id: &FeatureId,
     profile_handles: &[GeometryHandleId],
@@ -1548,6 +1560,7 @@ fn populate_loft_op(
 
     populate_loft_attributes(
         table,
+        kernel_id,
         feature_id,
         &section_faces,
         &section_edges,
@@ -1576,6 +1589,7 @@ fn populate_loft_op(
 /// call site — no Failed regression, per the task-2574 convention).
 fn populate_boolean_op(
     table: &mut TopologyAttributeTable,
+    kernel_id: KernelId,
     kernel: &mut dyn GeometryKernel,
     feature_id: &FeatureId,
     left_handle: GeometryHandleId,
@@ -1597,6 +1611,7 @@ fn populate_boolean_op(
 
     propagate_attributes_via_brepalgoapi_history(
         table,
+        kernel_id,
         &parents,
         &result_faces,
         &result_edges,
@@ -6496,36 +6511,27 @@ impl Engine {
                     }
                 });
             if let Some((cached_handle, resolved_repr)) = cache_probe {
-                // Cross-kernel collision guard (task 4349): `TopologyAttributeTable`
-                // is keyed by bare `GeometryHandleId` — NOT by the full
-                // `KernelHandle`. Each kernel's handle-id counter starts at 1, so
-                // OCCT and Manifold independently produce `GeometryHandleId(1)`
-                // for their first handle. Within one build a Manifold op may
-                // record `topology_attribute_table.record(GeometryHandleId(1),
-                // attr)` before this cache-hit short-circuit returns the cached
-                // `{Occt, GeometryHandleId(1)}` from a prior build — two
-                // distinct `KernelHandle`s collapsing onto the same numeric key.
+                // Cross-kernel collision guard (task 4349), re-keyed by task
+                // #4351: `TopologyAttributeTable` is now keyed by the full
+                // `KernelHandle` (kernel + kernel-local id) rather than a bare
+                // `GeometryHandleId`, so this eviction removes exactly the
+                // cached handle's own entry and no longer collaterally evicts
+                // a different kernel's sibling entry that happens to share the
+                // same numeric id.
                 //
-                // Rather than asserting the table is empty at the cached key
-                // (which fails under cross-kernel collision even though the
-                // per-build reset is unconditional), we defensively remove any
-                // entry at `cached_handle.id` from the table. This is a no-op
-                // in the common single-kernel case (the per-build reset already
-                // cleared the table) and enforces the #3226 spec ("a cache-served
-                // handle has no entries in those tables on the second build") in
-                // the cross-kernel case by evicting the colliding sibling entry.
+                // We defensively remove any entry at `cached_handle` from the
+                // table rather than asserting it is already absent. This is a
+                // no-op in the common case (the per-build reset already
+                // cleared the table) and enforces the #3226 spec ("a
+                // cache-served handle has no entries in those tables on the
+                // second build") when a stale entry from a prior build
+                // happens to still be present at this exact handle.
                 //
-                // Trade-off: before this change the SIBLING handle (e.g.
-                // Manifold's `GeometryHandleId(1)`) was the last writer and
-                // therefore returned its correct attribute on `lookup(1)` — only
-                // the cache-served handle read the wrong (foreign) value.  After
-                // `remove()`, the sibling's `lookup(1)` also returns `None`,
-                // regressing it from correct to absent.  This is the accepted
-                // interim cost of enforcing the #3226 spec on the cached handle;
-                // only follow-up task #4351's `KernelHandle` re-key will
-                // preserve both entries independently and eliminate the
-                // regression.
-                outputs.topology_attribute_table.remove(cached_handle.id);
+                // DO NOT retire this eviction — downstream task #5064 removes
+                // it and installs a fail-closed assert once the surrounding
+                // invariants are strong enough to guarantee the table is
+                // already empty at this point.
+                outputs.topology_attribute_table.remove(cached_handle);
                 outputs.step_handles.push(cached_handle);
                 outputs.named_steps.insert(name.to_string(), cached_handle);
                 // Task 5033 Gap #2 Gap A: by-name repr sibling write. Mirrors
@@ -7657,6 +7663,9 @@ impl Engine {
                             let feature_id = FeatureId::from(realization_id);
                             if let Err(e) = seed_primitive_attributes_for_handle(
                                 topology_attribute_table,
+                                // interim single-kernel Occt (#4351) — step-4
+                                // threads the real op kernel here.
+                                KernelId::Occt,
                                 kernel,
                                 handle.id,
                                 &feature_id,
@@ -7676,6 +7685,9 @@ impl Engine {
                             // match is a no-op for them.
                             if let Err(e) = populate_attribute_history(
                                 topology_attribute_table,
+                                // interim single-kernel Occt (#4351) — step-4
+                                // threads the real op kernel here.
+                                KernelId::Occt,
                                 kernel,
                                 &feature_id,
                                 &geom_op,
@@ -7955,10 +7967,17 @@ impl Engine {
             // `HashMap<FeatureId, Vec<GeometryHandleId>>` index inside
             // `TopologyAttributeTable` so `entries_for_feature(feature_id)` is
             // O(per-feature-entries). Per task #3369 review of #2654.
+            // Non-threaded reader (interim single-kernel Occt, #4351): this
+            // diagnostic scan is not part of the resolver/selector scoping
+            // this task threads (step-6) — every handle recorded today is
+            // Occt-scoped, so collapsing back to a bare `GeometryHandleId`
+            // here is behavior-preserving. Mixed-kernel-aware diagnostics are
+            // downstream work.
             let realization_attrs: Vec<(GeometryHandleId, &TopologyAttribute)> =
                 topology_attribute_table
                     .iter()
                     .filter(|(_, attr)| attr.feature_id == realization_feature_id)
+                    .map(|(kernel_handle, attr)| (kernel_handle.id, attr))
                     .collect();
             if !realization_attrs.is_empty() {
                 // Step-8 (task ε / 3436): the centroid query is a

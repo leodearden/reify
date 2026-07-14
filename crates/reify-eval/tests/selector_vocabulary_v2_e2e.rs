@@ -33,8 +33,8 @@ use reify_eval::{
     intersect, siblings_of_face,
 };
 use reify_ir::{
-    CapKind, FaceSurfaceKind, FeatureId, GeometryHandleId, GeometryOp, GeometryQuery, Role,
-    TopologyAttribute, TopologyAttributeTable, Value,
+    CapKind, FaceSurfaceKind, FeatureId, GeometryHandleId, GeometryOp, GeometryQuery, KernelHandle,
+    KernelId, Role, TopologyAttribute, TopologyAttributeTable, Value,
 };
 use reify_kernel_occt::{OCCT_AVAILABLE, OcctKernelHandle};
 
@@ -516,7 +516,10 @@ fn compositional_smoke_attribute_filters_over_box_faces() {
             None
         };
         table.record(
-            *fid,
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: *fid,
+            },
             TopologyAttribute {
                 feature_id: box_feature.clone(),
                 role: Role::Cap(CapKind::Top),

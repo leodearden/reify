@@ -43,7 +43,7 @@
 
 use reify_core::ModulePath;
 use reify_eval::topology_selectors::role_is_face;
-use reify_ir::{ExportFormat, GeometryHandleId, Role};
+use reify_ir::{ExportFormat, KernelHandle, Role};
 
 /// Run a source string through parse → compile → Engine::build and return
 /// the engine. Returns `None` if OCCT is not available.
@@ -270,7 +270,7 @@ fn fillet_provenance_attributes_creating_feature() {
 
     // created_by(fillet_feat): face-kind entries owned by the fillet — the
     // ~12 originated (face_generated) faces.
-    let created_by_fillet: Vec<GeometryHandleId> = table
+    let created_by_fillet: Vec<KernelHandle> = table
         .iter()
         .filter(|(_id, attr)| role_is_face(attr.role) && attr.feature_id == fillet_feat)
         .map(|(id, _attr)| id)
@@ -292,7 +292,7 @@ fn fillet_provenance_attributes_creating_feature() {
 
     // split_by(fillet_feat): face-kind entries whose mod_history records the
     // fillet as a splitting feature — the ~6 modified faces.
-    let split_by_fillet: Vec<GeometryHandleId> = table
+    let split_by_fillet: Vec<KernelHandle> = table
         .iter()
         .filter(|(_id, attr)| {
             role_is_face(attr.role)
@@ -319,7 +319,7 @@ fn fillet_provenance_attributes_creating_feature() {
     // created_by(base_feat): face-kind entries still owned by the box (the
     // surviving/modified Side faces) — non-empty and disjoint from the
     // fillet's own created_by set.
-    let created_by_base: Vec<GeometryHandleId> = table
+    let created_by_base: Vec<KernelHandle> = table
         .iter()
         .filter(|(_id, attr)| role_is_face(attr.role) && attr.feature_id == base_feat)
         .map(|(id, _attr)| id)

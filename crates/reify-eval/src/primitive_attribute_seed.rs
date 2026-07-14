@@ -88,7 +88,7 @@ use std::collections::HashMap;
 
 use reify_ir::{
     AxisSign, CapKind, FeatureId, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery,
-    QueryError, Role, TopologyAttribute, TopologyAttributeTable, Value,
+    KernelHandle, KernelId, QueryError, Role, TopologyAttribute, TopologyAttributeTable, Value,
 };
 
 /// Tolerance for cylinder cap-vs-side classification by face-normal
@@ -135,6 +135,7 @@ const NORMAL_Z_EPSILON: f64 = 1.0e-6;
 /// worth preserving here.
 pub fn seed_primitive_attributes_for_handle(
     table: &mut TopologyAttributeTable,
+    kernel_id: KernelId,
     kernel: &mut dyn GeometryKernel,
     result_handle: GeometryHandleId,
     feature_id: &FeatureId,
@@ -162,6 +163,7 @@ pub fn seed_primitive_attributes_for_handle(
     };
     seed_primitive_attributes(
         table,
+        kernel_id,
         kernel,
         &face_handles,
         &edge_handles,
@@ -226,6 +228,7 @@ fn is_seedable_primitive(op: &GeometryOp) -> bool {
 /// continue) rather than a primary geometry failure.
 pub fn seed_primitive_attributes(
     table: &mut TopologyAttributeTable,
+    kernel_id: KernelId,
     kernel: &mut dyn GeometryKernel,
     face_handles: &[GeometryHandleId],
     edge_handles: &[GeometryHandleId],
@@ -235,9 +238,9 @@ pub fn seed_primitive_attributes(
 ) -> Result<(), QueryError> {
     match op {
         GeometryOp::Box { .. } => {
-            record_all_faces_as_side(table, face_handles, feature_id);
-            record_all_edges_as_new_edge(table, edge_handles, feature_id);
-            record_box_corner_vertices(table, kernel, vertex_handles, feature_id)?;
+            record_all_faces_as_side(table, kernel_id, face_handles, feature_id);
+            record_all_edges_as_new_edge(table, kernel_id, edge_handles, feature_id);
+            record_box_corner_vertices(table, kernel_id, kernel, vertex_handles, feature_id)?;
             Ok(())
         }
         GeometryOp::Sphere { .. } => {
@@ -245,8 +248,8 @@ pub fn seed_primitive_attributes(
             // face gets Role::Side with construction-order local_index — but
             // no analytic vertices per PRD §2 Q-MM2-1, so vertex_handles
             // is intentionally ignored.
-            record_all_faces_as_side(table, face_handles, feature_id);
-            record_all_edges_as_new_edge(table, edge_handles, feature_id);
+            record_all_faces_as_side(table, kernel_id, face_handles, feature_id);
+            record_all_edges_as_new_edge(table, kernel_id, edge_handles, feature_id);
             Ok(())
         }
         GeometryOp::Wedge { .. } => {
@@ -256,8 +259,8 @@ pub fn seed_primitive_attributes(
             // Cap/Side distinction in the current selector vocabulary (PRD δ
             // step 7). No vertex seeding — vertex_handles is intentionally
             // ignored (non-Box ops carry no analytic vertex attributes).
-            record_all_faces_as_side(table, face_handles, feature_id);
-            record_all_edges_as_new_edge(table, edge_handles, feature_id);
+            record_all_faces_as_side(table, kernel_id, face_handles, feature_id);
+            record_all_edges_as_new_edge(table, kernel_id, edge_handles, feature_id);
             Ok(())
         }
         GeometryOp::Torus { .. } => {
@@ -265,8 +268,8 @@ pub fn seed_primitive_attributes(
             // semantics: every face is Role::Side with construction-order
             // local_index, every edge Role::NewEdge. No analytic vertices, so
             // vertex_handles is intentionally ignored.
-            record_all_faces_as_side(table, face_handles, feature_id);
-            record_all_edges_as_new_edge(table, edge_handles, feature_id);
+            record_all_faces_as_side(table, kernel_id, face_handles, feature_id);
+            record_all_edges_as_new_edge(table, kernel_id, edge_handles, feature_id);
             Ok(())
         }
         GeometryOp::HalfSpace { .. } => {
@@ -275,8 +278,8 @@ pub fn seed_primitive_attributes(
             // Role::NewEdge, sharing the Torus/Sphere semantics.
             // No analytic vertices (the planar face is infinite); vertex_handles
             // is intentionally ignored.
-            record_all_faces_as_side(table, face_handles, feature_id);
-            record_all_edges_as_new_edge(table, edge_handles, feature_id);
+            record_all_faces_as_side(table, kernel_id, face_handles, feature_id);
+            record_all_edges_as_new_edge(table, kernel_id, edge_handles, feature_id);
             Ok(())
         }
         GeometryOp::Cylinder { .. } | GeometryOp::Cone { .. } => {
@@ -323,7 +326,10 @@ pub fn seed_primitive_attributes(
                     assigned
                 };
                 table.record(
-                    face_id,
+                    KernelHandle {
+                        kernel: kernel_id,
+                        id: face_id,
+                    },
                     TopologyAttribute {
                         feature_id: feature_id.clone(),
                         role,
@@ -333,7 +339,7 @@ pub fn seed_primitive_attributes(
                     },
                 );
             }
-            record_all_edges_as_new_edge(table, edge_handles, feature_id);
+            record_all_edges_as_new_edge(table, kernel_id, edge_handles, feature_id);
             Ok(())
         }
         // All other variants are intentional no-ops. Per-op auto-population
@@ -356,12 +362,16 @@ pub fn seed_primitive_attributes(
 /// geometric ties.
 fn record_all_faces_as_side(
     table: &mut TopologyAttributeTable,
+    kernel_id: KernelId,
     face_handles: &[GeometryHandleId],
     feature_id: &FeatureId,
 ) {
     for (idx, &face_id) in face_handles.iter().enumerate() {
         table.record(
-            face_id,
+            KernelHandle {
+                kernel: kernel_id,
+                id: face_id,
+            },
             TopologyAttribute {
                 feature_id: feature_id.clone(),
                 role: Role::Side,
@@ -384,12 +394,16 @@ fn record_all_faces_as_side(
 /// geometric distinguisher in the current selector vocabulary).
 fn record_all_edges_as_new_edge(
     table: &mut TopologyAttributeTable,
+    kernel_id: KernelId,
     edge_handles: &[GeometryHandleId],
     feature_id: &FeatureId,
 ) {
     for (idx, &edge_id) in edge_handles.iter().enumerate() {
         table.record(
-            edge_id,
+            KernelHandle {
+                kernel: kernel_id,
+                id: edge_id,
+            },
             TopologyAttribute {
                 feature_id: feature_id.clone(),
                 role: Role::NewEdge,
@@ -481,6 +495,7 @@ fn parse_normal_z(value: &Value) -> Result<f64, QueryError> {
 /// builds.
 fn record_box_corner_vertices(
     table: &mut TopologyAttributeTable,
+    kernel_id: KernelId,
     kernel: &mut dyn GeometryKernel,
     vertex_handles: &[GeometryHandleId],
     feature_id: &FeatureId,
@@ -504,7 +519,10 @@ fn record_box_corner_vertices(
             AxisSign::Neg
         };
         table.record(
-            vertex_id,
+            KernelHandle {
+                kernel: kernel_id,
+                id: vertex_id,
+            },
             TopologyAttribute {
                 feature_id: feature_id.clone(),
                 role: Role::CornerVertex { x, y, z },
@@ -716,8 +734,17 @@ mod tests {
         // entries (rather than seeding garbage), but a fall-through into
         // the kernel for a Cylinder-shaped variant would still surface
         // via the kernel's `MockKernel::query` error.
-        seed_primitive_attributes(&mut table, &mut kernel, &[], &[], &[], &feature_id(), op)
-            .expect("seed_primitive_attributes must return Ok(()) for non-seedable variants");
+        seed_primitive_attributes(
+            &mut table,
+            KernelId::Occt,
+            &mut kernel,
+            &[],
+            &[],
+            &[],
+            &feature_id(),
+            op,
+        )
+        .expect("seed_primitive_attributes must return Ok(()) for non-seedable variants");
         assert!(
             table.is_empty(),
             "seed_primitive_attributes must not write any entries for non-seedable variants; \
@@ -968,6 +995,7 @@ mod tests {
 
         seed_primitive_attributes(
             &mut table,
+            KernelId::Occt,
             &mut kernel,
             &face_handles,
             &edge_handles,
@@ -984,9 +1012,12 @@ mod tests {
         );
 
         for (idx, &fh) in face_handles.iter().enumerate() {
-            let attr = table.lookup(fh).unwrap_or_else(|| {
-                panic!("wedge face #{idx} (handle {:?}) must have an entry", fh)
-            });
+            let attr = table
+                .lookup(KernelHandle {
+                    kernel: KernelId::Occt,
+                    id: fh,
+                })
+                .unwrap_or_else(|| panic!("wedge face #{idx} (handle {:?}) must have an entry", fh));
             assert_eq!(
                 attr.role,
                 Role::Side,
@@ -999,9 +1030,12 @@ mod tests {
         }
 
         for (idx, &eh) in edge_handles.iter().enumerate() {
-            let attr = table.lookup(eh).unwrap_or_else(|| {
-                panic!("wedge edge #{idx} (handle {:?}) must have an entry", eh)
-            });
+            let attr = table
+                .lookup(KernelHandle {
+                    kernel: KernelId::Occt,
+                    id: eh,
+                })
+                .unwrap_or_else(|| panic!("wedge edge #{idx} (handle {:?}) must have an entry", eh));
             assert_eq!(
                 attr.role,
                 Role::NewEdge,

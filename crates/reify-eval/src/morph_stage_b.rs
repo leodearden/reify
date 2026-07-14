@@ -21,7 +21,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use reify_ir::{GeometryHandleId, TopologyAttributeTable};
+use reify_ir::{GeometryHandleId, KernelHandle, KernelId, TopologyAttributeTable};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -282,13 +282,31 @@ fn match_one_kind(
     }
 
     // 3. Imported-geometry pre-pass.
+    // Non-threaded reader (interim single-kernel Occt, #4351): morph is
+    // OCCT-only today, and this reader's scope is not threaded by this task
+    // (only the resolver + ad-hoc selector are, per step-6) — mixed-kernel
+    // morph scoping is downstream work.
     let old_attributed = old
         .iter()
-        .filter(|&&h| old_table.lookup(h).is_some())
+        .filter(|&&h| {
+            old_table
+                .lookup(KernelHandle {
+                    kernel: KernelId::Occt,
+                    id: h,
+                })
+                .is_some()
+        })
         .count();
     let new_attributed = new
         .iter()
-        .filter(|&&h| new_table.lookup(h).is_some())
+        .filter(|&&h| {
+            new_table
+                .lookup(KernelHandle {
+                    kernel: KernelId::Occt,
+                    id: h,
+                })
+                .is_some()
+        })
         .count();
 
     if old_attributed == 0 && new_attributed == 0 {
@@ -323,7 +341,10 @@ fn match_one_kind(
         // The step-3 pre-pass guarantees all old handles are attributed; the
         // step-2 precondition check guarantees no duplicates in `old`.
         let old_attr = old_table
-            .lookup(old_handle)
+            .lookup(KernelHandle {
+                kernel: KernelId::Occt,
+                id: old_handle,
+            })
             .expect("all old handles attributed — guaranteed by pre-pass above");
 
         // Linear scan over new handles — O(n) per old handle, O(n²) overall.
@@ -333,10 +354,13 @@ fn match_one_kind(
         // Match equality is exact (PartialEq on TopologyAttribute, which compares
         // all fields including mod_history), so greedy first-fit is sound: any
         // 1-to-1 pairing of identical attributes is interchangeable.
-        let matched_new = new
-            .iter()
-            .copied()
-            .find(|&nh| !consumed.contains(&nh) && new_table.lookup(nh) == Some(old_attr));
+        let matched_new = new.iter().copied().find(|&nh| {
+            !consumed.contains(&nh)
+                && new_table.lookup(KernelHandle {
+                    kernel: KernelId::Occt,
+                    id: nh,
+                }) == Some(old_attr)
+        });
 
         match matched_new {
             Some(new_handle) => {
