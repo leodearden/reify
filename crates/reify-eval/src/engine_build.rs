@@ -13090,6 +13090,10 @@ pub(crate) enum MixedRegionError {
         /// Unified index (into the merged node list) of the offending node.
         node_index: usize,
     },
+    /// `tet`'s connectivity is `Hex` or `Wedge` — `build_mixed_region_mesh` is
+    /// tet-only (task 4996 hardening; the tet-side `VolumeMesh` must carry
+    /// `VolumeConnectivity::Tet`).
+    UnsupportedConnectivity,
 }
 
 impl std::fmt::Display for MixedRegionError {
@@ -13110,6 +13114,11 @@ impl std::fmt::Display for MixedRegionError {
                 f,
                 "unified node {node_index} has a non-finite coordinate (NaN or ±infinity); \
                  it would poison the interface-tying comparisons"
+            ),
+            MixedRegionError::UnsupportedConnectivity => write!(
+                f,
+                "mixed-region assembly is tet-only: a Hex/Wedge VolumeMesh has no \
+                 mixed-region path"
             ),
         }
     }
@@ -13143,7 +13152,9 @@ impl std::error::Error for MixedRegionError {}
 /// preconditions. Returns [`MixedRegionError::NonFiniteNodeCoordinate`] if
 /// any unified node coordinate is non-finite and at least one interface is
 /// present (the pure merge with no interfaces tolerates non-finite nodes,
-/// since it performs no comparison on them).
+/// since it performs no comparison on them). Returns
+/// [`MixedRegionError::UnsupportedConnectivity`] if `tet`'s connectivity is
+/// `Hex` or `Wedge` (this function is tet-only).
 #[allow(dead_code)] // T12 layer-B seam; consumer pending engine-bridge mixed solve (PRD δ/ε)
 pub(crate) fn build_mixed_region_mesh(
     shell: &MidSurfaceMesh,
@@ -13161,7 +13172,7 @@ pub(crate) fn build_mixed_region_mesh(
     // ── Elements: one shell element per triangle, one tet element per tet ─────
     let tet_indices = tet
         .tet_indices()
-        .expect("build_mixed_region_mesh: tet-only (hex/wedge VolumeMesh not supported)");
+        .ok_or(MixedRegionError::UnsupportedConnectivity)?;
     let mut elements: Vec<UnifiedElement> =
         Vec::with_capacity(shell.triangles.len() + tet_indices.len());
     for tri in &shell.triangles {
@@ -13170,15 +13181,10 @@ pub(crate) fn build_mixed_region_mesh(
             connectivity: vec![tri[0] as usize, tri[1] as usize, tri[2] as usize],
         });
     }
-    // Per-tet node count from the element order (P1 = 4, P2 = 10); tet local
-    // node `m` → unified node `n_shell + m`.
-    let nodes_per_tet = match tet
-        .element_order()
-        .expect("build_mixed_region_mesh: tet-only (hex/wedge VolumeMesh not supported)")
-    {
-        ElementOrderTag::P1 => 4,
-        ElementOrderTag::P2 => 10,
-    };
+    // Per-tet node count (P1 = 4, P2 = 10); tet local node `m` → unified node
+    // `n_shell + m`. The `tet_indices()?` guard above already established
+    // `tet.connectivity` is `Tet`, so `nodes_per_element()` returns 4/10 here.
+    let nodes_per_tet = tet.nodes_per_element();
     for tet_conn in tet_indices.chunks_exact(nodes_per_tet) {
         elements.push(UnifiedElement {
             kind: UnifiedElementKind::Tet,
