@@ -192,5 +192,44 @@ class TestCwdPrefixCoverage(unittest.TestCase):
                 )
 
 
+class TestConfusionCodebook(unittest.TestCase):
+    """docs/legibility/confusion-codebook.yaml — seeded, empty v2 codebook.
+
+    Exercises the SHARED dark_factory validator (both as a library call and
+    as the literal `codebook.py validate` CLI the task's acceptance signal
+    names) against reify's committed codebook, rather than reimplementing
+    the v2 schema check.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        _require_legibility_package()
+        # Deliberately NOT guarded against _CODEBOOK_YAML being absent —
+        # see TestLegibilityConfig's docstring: a missing local artifact
+        # must be a real failure, not a skip.
+        cls.codebook = _codebook_mod.load(_CODEBOOK_YAML)
+
+    def test_validate_returns_no_errors(self):
+        self.assertEqual(_codebook_mod.validate(self.codebook), [])
+
+    def test_seeded_v2_shape(self):
+        self.assertEqual(self.codebook["version"], 2)
+        self.assertEqual(self.codebook["entries"], [])
+        self.assertEqual(self.codebook["candidates"], [])
+
+    def test_validator_cli_exits_zero(self):
+        """The task's literal user-observable acceptance signal: dark_factory's
+        shared validator CLI exits green on reify's committed codebook."""
+        result = subprocess.run(
+            [sys.executable, str(_DARK_FACTORY_CODEBOOK_PY), "validate", str(_CODEBOOK_YAML)],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            result.returncode, 0,
+            f"codebook.py validate exited {result.returncode}; stderr:\n{result.stderr}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
