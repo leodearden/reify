@@ -1666,6 +1666,14 @@ fn is_dimensioned_complex(ty: &Type) -> bool {
 /// separate skip-set (contrast the broader Mul/Div
 /// `is_mul_div_gradualism_skip`).
 ///
+/// Scope: only the dimensioned-Complex-vs-bare-dimensionless-numeric row.
+/// `Complex<Q> ± Scalar<Q>` (a dimensioned, non-Int/Real `Scalar`) and
+/// `Complex<Q1> ± Complex<Q2>` (mismatched-dimension `Complex` operands) are
+/// both also runtime-`Value::Undef` and both remain unguarded by this
+/// predicate — TODO(#5219): guard those two rows, or record a
+/// permanent-accept decision, and update this doc plus the out-of-scope-gap
+/// tests in `add_sub_operand_guard_tests.rs` accordingly.
+///
 /// Pure and unit-tested below (see the
 /// `add_sub_dimensioned_complex_reject_*`/`is_dimensioned_complex_*` tests);
 /// poisoning `result_type` and emitting the diagnostic happen at the

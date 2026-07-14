@@ -42,7 +42,9 @@
 //!   CURRENT behavior, not a correctness claim: task 5163 only guards the
 //!   dimensioned-Complex-vs-bare-dimensionless-numeric row (see
 //!   `add_sub_dimensioned_complex_reject`'s doc in `type_compat.rs`); this
-//!   pairing is analogous to the `z + z` Complex-vs-Complex gap above.
+//!   pairing, and mismatched-dimension `Complex<Q1> ± Complex<Q2>` (not
+//!   pinned by any test here — see `z + z` above for the same-dimension,
+//!   forever-legitimate case), are tracked by follow-up TODO(#5219).
 
 use reify_core::{DiagnosticCode, Severity, Type};
 use reify_test_support::{compile_source, get_let_expr_in};
@@ -320,6 +322,9 @@ fn unresolved_name_operand_no_spurious_arith_operand_kind() {
 /// out-of-scope gap alongside `z + z` above, NOT a correctness claim: task
 /// 5163 only guards the dimensioned-Complex-vs-bare-dimensionless-numeric
 /// row (see `add_sub_dimensioned_complex_reject`'s doc in `type_compat.rs`).
+/// TODO(#5219): guard this row (or record a permanent-accept decision),
+/// alongside the sibling mismatched-dimension `Complex<Q1> ± Complex<Q2>`
+/// gap, which is not pinned by any test in this file.
 #[test]
 fn dimensioned_complex_plus_dimensioned_scalar_is_documented_unguarded_gap() {
     let errors = compile_complex_expr_errors("let w = z + len");
