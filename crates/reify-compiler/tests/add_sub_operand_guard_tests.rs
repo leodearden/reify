@@ -130,15 +130,28 @@ fn dimensioned_complex_plus_int_emits_arith_operand_kind_and_poisons_result() {
 
 /// Order-reversed counterpart: `1 + z` must ALSO produce `ArithOperandKind`
 /// — closes the documented order-dependent asymmetry (previously `1 + z`
-/// silently collapsed to bare `Int` via `left.clone()`, with no diagnostic).
+/// silently collapsed to bare `Int` via `left.clone()`, with no diagnostic)
+/// — AND must poison `w`'s result_type to `Type::Error`, verifying the
+/// `make_poison_type` override (not just a diagnostic push) fires for the
+/// reversed operand order too, mirroring the primary `z + 1` case above.
 #[test]
 fn int_plus_dimensioned_complex_order_reversed_emits_arith_operand_kind() {
-    let errors = compile_complex_expr_errors("let w = 1 + z");
+    let module = compile_complex_expr("let w = 1 + z");
     assert_eq!(
-        arith_operand_kind_count(&errors),
+        arith_operand_kind_count(&module.diagnostics),
         1,
         "`1 + z` (order-reversed) must produce exactly ONE ArithOperandKind; \
-         got errors: {errors:?}"
+         got diagnostics: {:?}",
+        module.diagnostics
+    );
+
+    let w = get_let_expr_in(&module, "P", "w");
+    assert_eq!(
+        w.result_type,
+        Type::Error,
+        "`1 + z` (order-reversed) must poison `w`'s result_type to \
+         Type::Error, got: {:?}",
+        w.result_type
     );
 }
 
