@@ -86,15 +86,14 @@ fn occt_fixtures_ingest_and_revalidate_through_manifold() {
 }
 
 /// Sphere-only seam cycle, isolated from the shared `fixtures()` loop above
-/// (see `common::occt_sphere`'s doc comment: real OCCT sphere tessellation
-/// fails `Mesh::validate`'s `NonDegenerate` obligation at the poles — a
-/// producer defect outside this crate's scope). This is task #5164's
-/// acceptance test: once the OCCT producer dedups/drops the zero-area
-/// periodic-surface pole triangles, remove this `#[ignore]` and this test
-/// must pass the identical produce → validate → consume → re-validate cycle
-/// every other fixture already satisfies.
+/// (see `common::occt_sphere`'s doc comment). Task #5164 fixed the producer
+/// defect that left zero-area periodic-surface pole triangles in
+/// `tessellate_shape`'s output: the per-face index-emission loop now skips
+/// emitting any triangle whose `(b-a) × (c-a)` cross product is exactly
+/// zero (two coincident corners), so this test now passes the identical
+/// produce → validate → consume → re-validate cycle every other fixture
+/// already satisfies.
 #[test]
-#[ignore = "blocked on #5164 — OCCT periodic-surface pole node dedup / zero-area pole triangle"]
 fn occt_sphere_ingests_and_revalidates_through_manifold() {
     let mesh = common::occt_sphere();
 

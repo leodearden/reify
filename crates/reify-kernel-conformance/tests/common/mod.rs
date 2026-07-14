@@ -41,15 +41,17 @@ pub fn occt_box() -> reify_ir::Mesh {
 
 /// 8 mm-radius sphere.
 ///
-/// NOT included in `fixtures()` — real OCCT tessellation of a full sphere
-/// (a periodic surface with poles) leaves 2 zero-area triangles at the poles
-/// once `Mesh::weld_positions` collapses OCCT's bit-identical duplicate pole
-/// nodes, violating `Mesh::validate`'s `NonDegenerate` producer obligation.
-/// This is a real, reproducible producer defect in `tessellate_shape`
-/// (`crates/reify-kernel-occt/cpp/occt_wrapper.cpp`), outside this crate's
-/// scope — tracked by #5164 (task ε escalation `esc-5106-1`, human-ratified
-/// resolution). Exercised on its own by the dedicated `#[ignore]`d arm in
-/// `occt_manifold_ingest_conformance.rs` that #5164 will un-ignore.
+/// NOT included in `fixtures()` — a full sphere is a periodic surface with
+/// poles, and task #5164 fixed the producer defect that used to leave 2
+/// zero-area pole triangles in `tessellate_shape`'s output
+/// (`crates/reify-kernel-occt/cpp/occt_wrapper.cpp`): the per-face
+/// index-emission loop now drops any triangle whose corners are coincident
+/// (exactly zero `(b-a) × (c-a)` cross product), so real OCCT sphere
+/// tessellation now satisfies `Mesh::validate`'s `NonDegenerate` producer
+/// obligation. Exercised on its own by the dedicated arm in
+/// `occt_manifold_ingest_conformance.rs`
+/// (`occt_sphere_ingests_and_revalidates_through_manifold`, no longer
+/// `#[ignore]`d).
 #[cfg(has_occt)]
 pub fn occt_sphere() -> reify_ir::Mesh {
     let mut kernel = OcctKernel::new();
