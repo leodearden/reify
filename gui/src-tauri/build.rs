@@ -13,6 +13,12 @@ fn main() {
     #[cfg(feature = "gui")]
     {
         use reify_build_utils::NativeDep;
+        // Mechanism A″ (task #5192): give the `reify-gui` binary a direct
+        // NEEDED libtbb.so.12 via the tbb-only pin dir, prepended FIRST in
+        // RUNPATH — BEFORE the native-dep rpath emissions below, so
+        // tbb-pin lands first in the binary's DT_RUNPATH ahead of
+        // /opt/reify-deps/lib et al.
+        reify_build_utils::emit_tbb_pin_for_bins();
         reify_build_utils::emit_rpath_for_bins(NativeDep::Occt);
         reify_build_utils::emit_rpath_for_bins(NativeDep::Gmsh);
     }
