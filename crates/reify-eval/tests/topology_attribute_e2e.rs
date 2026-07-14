@@ -271,8 +271,8 @@ fn attribute_data_model_and_brepalgoapi_propagation_end_to_end() {
         &mut table,
         KernelId::Occt,
         &parents,
-        &result_edge_handles,
         &result_face_handles,
+        &result_edge_handles,
         &history,
         &fuse_feature_id,
     )
@@ -520,8 +520,8 @@ fn mod_history_threading_through_propagation_and_resolver_end_to_end() {
         &mut table,
         KernelId::Occt,
         &parents,
-        &result_edge_handles,
         &result_face_handles,
+        &result_edge_handles,
         &history,
         &fuse_feature_id,
     )
@@ -687,8 +687,8 @@ fn mod_history_threading_with_orthogonal_slabs() {
         &mut table,
         KernelId::Occt,
         &parents,
-        &result_edge_handles,
         &result_face_handles,
+        &result_edge_handles,
         &history,
         &fuse_feature_id,
     )
