@@ -1424,6 +1424,7 @@ fn try_extract_sweep_cap_vertex_data(
 /// is caught locally — empty vertex slices are passed to the propagation
 /// helper, and face/edge seeding proceeds normally. This ensures mock-kernel
 /// tests that check face/edge attributes are not broken by the vertex wire.
+#[allow(clippy::too_many_arguments)]
 fn populate_single_parent_sweep_op(
     table: &mut TopologyAttributeTable,
     kernel_id: KernelId,
@@ -1587,6 +1588,7 @@ fn populate_loft_op(
 /// Modelled on `populate_single_parent_sweep_op`; failure semantics are
 /// identical (returned `QueryError` surfaces as `Diagnostic::warning` at the
 /// call site — no Failed regression, per the task-2574 convention).
+#[allow(clippy::too_many_arguments)]
 fn populate_boolean_op(
     table: &mut TopologyAttributeTable,
     kernel_id: KernelId,

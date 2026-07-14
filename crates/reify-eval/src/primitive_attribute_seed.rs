@@ -226,6 +226,7 @@ fn is_seedable_primitive(op: &GeometryOp) -> bool {
 /// kernel reports an error.
 /// Callers should treat this as auxiliary-metadata failure (warn and
 /// continue) rather than a primary geometry failure.
+#[allow(clippy::too_many_arguments)]
 pub fn seed_primitive_attributes(
     table: &mut TopologyAttributeTable,
     kernel_id: KernelId,
