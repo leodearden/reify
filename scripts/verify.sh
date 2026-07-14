@@ -604,9 +604,11 @@ fi
 # dark-factory orchestrator's post-merge verify stamps DF_VERIFY_ROLE=merge;
 # force --scope all so a future caller cannot hand the merge gate a narrowing
 # scope (branch/staged). Independent of the role-driven --profile default above
-# and of the affected-crate machinery. Mirrors the MERGE_HEAD force.
-if [ "$DF_VERIFY_ROLE" = "merge" ] && [ "$SCOPE" != "all" ]; then
-    echo "verify.sh: DF_VERIFY_ROLE=merge — forcing --scope all (merge gate never narrows, contract C2)" >&2
+# and of the affected-crate machinery. Mirrors the MERGE_HEAD force. background
+# (task 5210, main-tip integrity sweep) shares this same never-narrow
+# guarantee — an integrity gate must never silently under-cover main.
+if { [ "$DF_VERIFY_ROLE" = "merge" ] || [ "$DF_VERIFY_ROLE" = "background" ]; } && [ "$SCOPE" != "all" ]; then
+    echo "verify.sh: DF_VERIFY_ROLE=$DF_VERIFY_ROLE — forcing --scope all (integrity gate never narrows, contract C2)" >&2
     SCOPE="all"
 fi
 
