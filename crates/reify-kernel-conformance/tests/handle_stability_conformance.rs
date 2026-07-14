@@ -19,6 +19,20 @@
 //! #4262; Manifold `extracted_faces` cache). Their value is red-on-revert —
 //! delete the relevant cache and a repeated `extract_*` call mints fresh
 //! ids, `first != second`, and the test fails: exactly the #4262 defect.
+//!
+//! Also out of scope: none of the arms below call `OcctKernel::with_warm_state`,
+//! so this file pins ONLY within-session stability, not the cache's
+//! *invalidation* half of the memoization contract (that
+//! `extracted_faces`/`extracted_edges` are cleared on warm-state restore, so
+//! a post-restore extraction mints fresh ids rather than returning stale
+//! handles). That invalidation contract is INV-GEO-3 (warm-start drift
+//! guards, §12), not this file's INV-GEO-2, and is not currently exercised
+//! for `extract_faces`/`extract_edges` anywhere in the workspace —
+//! `reify-kernel-occt/src/lib.rs`'s
+//! `extract_vertices_invalidates_cache_on_warm_state` unit test is the
+//! existing template such coverage would follow for the sibling
+//! `extracted_vertices` cache, but no analogous `extract_faces`/
+//! `extract_edges` test exists yet and no task currently tracks adding one.
 
 #![cfg(has_occt)]
 
