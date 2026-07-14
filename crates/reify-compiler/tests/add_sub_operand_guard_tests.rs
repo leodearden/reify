@@ -199,15 +199,28 @@ fn dimensioned_complex_minus_int_emits_arith_operand_kind_and_poisons_result() {
 /// Order-reversed counterpart of the sibling pin above: `1 - z` must ALSO
 /// produce `ArithOperandKind` — mirrors
 /// `int_plus_dimensioned_complex_order_reversed_emits_arith_operand_kind`
-/// for the `Sub` direction, closing the same order-dependent asymmetry.
+/// for the `Sub` direction, closing the same order-dependent asymmetry —
+/// AND must poison `w`'s result_type to `Type::Error`, verifying the
+/// `make_poison_type` override fires for this operand order too, mirroring
+/// the poison assertions on the other three error-path tests above.
 #[test]
 fn int_minus_dimensioned_complex_order_reversed_emits_arith_operand_kind() {
-    let errors = compile_complex_expr_errors("let w = 1 - z");
+    let module = compile_complex_expr("let w = 1 - z");
     assert_eq!(
-        arith_operand_kind_count(&errors),
+        arith_operand_kind_count(&module.diagnostics),
         1,
         "`1 - z` (order-reversed) must produce exactly ONE ArithOperandKind; \
-         got errors: {errors:?}"
+         got diagnostics: {:?}",
+        module.diagnostics
+    );
+
+    let w = get_let_expr_in(&module, "P", "w");
+    assert_eq!(
+        w.result_type,
+        Type::Error,
+        "`1 - z` (order-reversed) must poison `w`'s result_type to \
+         Type::Error, got: {:?}",
+        w.result_type
     );
 }
 
