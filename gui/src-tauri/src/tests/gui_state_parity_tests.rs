@@ -8,6 +8,13 @@
 // full_reload_only fields (files, fea_diagnostics, fea_convergence,
 // demand_prune_measurement) never reach the delta/event channel.
 //
+// The three `changed_*_follow_new_states_vector_order_when_multiple_change`
+// tests (meshes, values, constraints) prove that when multiple items in a
+// keyed collection change at once, both the delta entries and their
+// serialized events follow `new`'s vector order rather than `old`'s —
+// diff_tests.rs only exercises single-item changes, which can't distinguish
+// "follows new's order" from other orderings.
+//
 // `gui_state_full_snapshot_key_order_is_stable` pins `GuiState`'s serialized
 // top-level key ORDER (the full-snapshot wire contract) — independent of
 // `StateDelta`, since `GuiState` (not `StateDelta`) is what crosses the wire
