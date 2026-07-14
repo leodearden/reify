@@ -46,11 +46,17 @@ fn tessellate_sphere(tol: f64) -> reify_ir::Mesh {
 
 // ---------------------------------------------------------------------------
 // Geometric helper — same (b-a) × (c-a) cross product as
-// `Mesh::check_contract`'s NonDegenerate obligation and
-// `tessellation_winding_integration.rs`'s `tri_winding_normal`.
+// `Mesh::check_contract`'s NonDegenerate obligation
+// (`crates/reify-ir/src/geometry.rs:2848-2861`), computed in f32 to
+// exactly mirror that obligation's arithmetic (it operates on
+// `mesh_vertex`'s `[f32; 3]` positions) and the producer's emit-time gate
+// in `occt_wrapper.cpp`. An exact-zero degeneracy check needs bit-identical
+// precision to the contract it verifies — unlike
+// `tessellation_winding_integration.rs`'s `tri_winding_normal`, which only
+// needs a correctly-signed direction and so uses f64.
 // ---------------------------------------------------------------------------
 
-fn tri_cross(pa: [f64; 3], pb: [f64; 3], pc: [f64; 3]) -> [f64; 3] {
+fn tri_cross(pa: [f32; 3], pb: [f32; 3], pc: [f32; 3]) -> [f32; 3] {
     let ab = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
     let ac = [pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]];
     [
@@ -95,19 +101,19 @@ fn tessellated_sphere_has_no_zero_area_pole_triangles() {
             let i2 = mesh.indices[t * 3 + 2] as usize;
 
             let pa = [
-                mesh.vertices[i0 * 3] as f64,
-                mesh.vertices[i0 * 3 + 1] as f64,
-                mesh.vertices[i0 * 3 + 2] as f64,
+                mesh.vertices[i0 * 3],
+                mesh.vertices[i0 * 3 + 1],
+                mesh.vertices[i0 * 3 + 2],
             ];
             let pb = [
-                mesh.vertices[i1 * 3] as f64,
-                mesh.vertices[i1 * 3 + 1] as f64,
-                mesh.vertices[i1 * 3 + 2] as f64,
+                mesh.vertices[i1 * 3],
+                mesh.vertices[i1 * 3 + 1],
+                mesh.vertices[i1 * 3 + 2],
             ];
             let pc = [
-                mesh.vertices[i2 * 3] as f64,
-                mesh.vertices[i2 * 3 + 1] as f64,
-                mesh.vertices[i2 * 3 + 2] as f64,
+                mesh.vertices[i2 * 3],
+                mesh.vertices[i2 * 3 + 1],
+                mesh.vertices[i2 * 3 + 2],
             ];
 
             let cross = tri_cross(pa, pb, pc);
