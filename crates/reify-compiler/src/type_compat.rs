@@ -1643,8 +1643,11 @@ fn is_dimensionless_complex(ty: &Type) -> bool {
     matches!(ty, Type::Complex(q) if matches!(q.as_ref(), Type::Scalar { dimension } if dimension.is_dimensionless()))
 }
 
-/// Exact complement of `is_dimensionless_complex`: a `Complex` wrapping a
-/// non-dimensionless `Scalar` (e.g. `Complex<Length>`, `Complex<Resistance>`).
+/// The dimensioned counterpart of `is_dimensionless_complex`: true only for a
+/// `Complex` wrapping a non-dimensionless `Scalar` (e.g. `Complex<Length>`,
+/// `Complex<Resistance>`). NOT a logical complement — a non-`Complex` type
+/// (e.g. `Type::Int`, `Type::length()`, `Type::Error`) matches neither this
+/// predicate nor `is_dimensionless_complex`.
 fn is_dimensioned_complex(ty: &Type) -> bool {
     matches!(ty, Type::Complex(q) if matches!(q.as_ref(), Type::Scalar { dimension } if !dimension.is_dimensionless()))
 }
