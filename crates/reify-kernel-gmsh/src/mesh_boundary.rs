@@ -403,7 +403,8 @@ pub fn mesh_surface_to_volume_with_attribution(
     attribution: &EntityAttribution,
 ) -> Result<BoundaryAttributedReport, GeometryError> {
     // --- Weld (task ξ, #5116), short-circuited when already watertight AND
-    // no explicit repair_cfg was requested ---
+    // no explicit repair_cfg was requested (decided by `surface_needs_weld`
+    // below, unit-tested directly against both branches) ---
     //
     // gmsh requires watertight input; a real OCCT-tessellated surface is
     // unwelded by design (per-face vertex blocks) and previously SIGSEGVd
@@ -432,11 +433,7 @@ pub fn mesh_surface_to_volume_with_attribution(
     // via a weld-stats debug event (its `dropped_verts` field is computed
     // lazily, inline, so the O(n) scan only runs when DEBUG is enabled) so
     // it stays genuinely used rather than dead.
-    let welded: Cow<'_, Mesh> = if repair_cfg.is_none()
-        && preflight_watertight_surface(surface, 0.0).is_ok()
-    {
-        Cow::Borrowed(surface)
-    } else {
+    let welded: Cow<'_, Mesh> = if surface_needs_weld(surface, repair_cfg) {
         let (w, correspondence) =
             repair_surface_mesh_with_correspondence(surface, repair_cfg.unwrap_or_default());
         tracing::debug!(
@@ -453,6 +450,8 @@ pub fn mesh_surface_to_volume_with_attribution(
         // degrading gracefully to the plain producer instead of crashing.
         preflight_watertight_surface(&w, 0.0)?;
         Cow::Owned(w)
+    } else {
+        Cow::Borrowed(surface)
     };
 
     // --- Pre-stage: resolve mesh size ---
@@ -474,6 +473,30 @@ pub fn mesh_surface_to_volume_with_attribution(
         compute_thickness_warnings(&volume, welded.as_ref(), thickness_cfg);
 
     Ok(BoundaryAttributedReport { volume, through_thickness_warnings, boundary })
+}
+
+// ---------------------------------------------------------------------------
+// Internal helper: weld decision (task ξ, #5116)
+// ---------------------------------------------------------------------------
+
+/// Decide whether `surface` must be welded before being handed to gmsh.
+///
+/// Pulled out of [`mesh_surface_to_volume_with_attribution`] as a small,
+/// pure predicate so the "an explicit `repair_cfg` always welds, even on an
+/// already-watertight surface" behavior (see that function's `# Repair /
+/// welding` doc) can be pinned by a plain unit test below, independent of
+/// the real gmsh FFI the rest of that function requires.
+///
+/// Returns `false` (skip the weld) only when `repair_cfg` is `None` AND the
+/// RAW `surface` already passes [`preflight_watertight_surface`]. Returns
+/// `true` (weld) in every other case, including an already-watertight
+/// surface paired with an explicit `Some(repair_cfg)` — the probe is a
+/// purely topological check that cannot know whether a caller-supplied
+/// config would still change the output, so an explicit config is never
+/// silently dropped.
+#[cfg(has_gmsh)]
+fn surface_needs_weld(surface: &Mesh, repair_cfg: Option<RepairConfig>) -> bool {
+    !(repair_cfg.is_none() && preflight_watertight_surface(surface, 0.0).is_ok())
 }
 
 // ---------------------------------------------------------------------------
@@ -1243,5 +1266,65 @@ mod tests {
             }
             other => panic!("expected GeometryError::MeshContractViolation, got {other:?}"),
         }
+    }
+
+    // ── Weld decision (task ξ, #5116) ───────────────────────────────────────
+    //
+    // Every existing production caller of `mesh_surface_to_volume_with_attribution`
+    // passes `repair_cfg = None` (kernel_real.rs, node_attachment_producer.rs,
+    // the conformance and attributed integration tests), so prior to these
+    // tests the "an explicit `Some(repair_cfg)` always welds, even on an
+    // already-watertight surface" branch had no direct pinning assertion — a
+    // regression that reintroduced probe-based short-circuiting for the
+    // `Some` path would have passed CI. These exercise `surface_needs_weld`
+    // directly (pure logic, no gmsh FFI call) against both fixtures already
+    // used by the preflight tests above.
+
+    /// `repair_cfg = None` on an already-watertight surface: the RAW-surface
+    /// probe succeeds, so the weld is skipped.
+    #[cfg(has_gmsh)]
+    #[test]
+    fn surface_needs_weld_skips_already_watertight_surface_when_cfg_is_none() {
+        let mesh = welded_tetra_mesh();
+        assert!(
+            !surface_needs_weld(&mesh, None),
+            "an already-watertight surface with no explicit repair_cfg must skip the weld"
+        );
+    }
+
+    /// `repair_cfg = Some(default())` on the SAME already-watertight surface
+    /// as above: the weld must run anyway. This is the exact branch the
+    /// review flagged as untested — pins that an explicit config is never
+    /// silently dropped just because the raw surface already happens to be
+    /// closed.
+    #[cfg(has_gmsh)]
+    #[test]
+    fn surface_needs_weld_always_welds_explicit_cfg_even_on_watertight_surface() {
+        let mesh = welded_tetra_mesh();
+        assert!(
+            surface_needs_weld(&mesh, Some(RepairConfig::default())),
+            "an explicit repair_cfg must always trigger the weld, even on an \
+             already-watertight surface (task ξ / #5116) — the raw-surface \
+             probe must never silently drop a caller-supplied repair configuration"
+        );
+    }
+
+    /// An unwelded (per-face-block) surface must weld regardless of
+    /// `repair_cfg` — negative control confirming `None` does not ALSO
+    /// short-circuit when the probe genuinely fails.
+    #[cfg(has_gmsh)]
+    #[test]
+    fn surface_needs_weld_welds_unwelded_surface_regardless_of_cfg() {
+        let mesh = per_face_block_tetra_mesh();
+        assert!(
+            surface_needs_weld(&mesh, None),
+            "an unwelded surface must be welded even with no explicit repair_cfg, \
+             since the RAW-surface probe fails on it"
+        );
+        assert!(
+            surface_needs_weld(&mesh, Some(RepairConfig::default())),
+            "an unwelded surface must be welded when an explicit repair_cfg is \
+             also supplied"
+        );
     }
 }
