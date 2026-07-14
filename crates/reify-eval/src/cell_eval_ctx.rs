@@ -30,6 +30,14 @@ use reify_ir::{CompiledFunction, DeterminacyState, PersistentMap, Value, ValueMa
 /// once that adoption lands. It is not yet "the only" constructor in use —
 /// pick deliberately at call sites until the method is retired.
 ///
+/// TODO(#5053, #5056, #5065): closing this coexistence needs the
+/// method's own call sites gone. Today those are in `engine_eval.rs`
+/// (γ) and `engine_edit.rs` (δ), plus this crate's dead-code
+/// `concurrent.rs` module, which ο deletes outright rather than
+/// migrating. Retire `Engine::cell_eval_ctx` once all three land —
+/// re-check for stragglers first. (ε / #5057 targets `unfold.rs`, which
+/// doesn't call the method today, so it isn't a precondition here.)
+///
 /// Lifts `functions` / `meta_map` / `containment` out of `&self` into
 /// explicit params. `undef_causes` stays unset — it is wired separately by
 /// `record_op_contract_failures`, not a cell-eval-ctx capability.
@@ -38,8 +46,10 @@ use reify_ir::{CompiledFunction, DeterminacyState, PersistentMap, Value, ValueMa
 /// `engine_eval.rs` / `engine_edit.rs` / `unfold.rs`); each must
 /// re-validate this signature against its own call site's borrow shape.
 //
-// `allow(dead_code)`: only caller today is the test module below;
-// production callers land when γ/δ/ε adopt this constructor.
+// TODO(#5053, #5056, #5057): only caller today is the test module below
+// (built under `#[cfg(test)]`, so it doesn't count for a normal build) —
+// a real caller lands once tasks γ/δ/ε adopt this constructor at their
+// respective call sites. Drop this `allow` once any of them lands.
 #[allow(dead_code)]
 pub(crate) fn cell_eval_ctx<'a>(
     values: &'a ValueMap,
