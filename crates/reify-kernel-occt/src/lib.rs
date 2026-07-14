@@ -8160,6 +8160,27 @@ mod tests {
             ffi::ffi::make_offset_surface(&face, 0.0).is_err(),
             "zero-distance surface offset should fail (degenerate)"
         );
+
+        // Negative distance: offsets along the face's -normal, opposite the
+        // +0.002 case above. Previously uncovered (reviewer finding) — pin
+        // the *sign*, not just success, via query_bbox: the result must land
+        // at z ≈ -0.002m, catching a regression that mis-signs the normal
+        // or silently no-ops on inward/negative offsets.
+        let neg = ffi::ffi::make_offset_surface(&face, -0.002)
+            .expect("-2mm surface offset should succeed (-normal direction)");
+        let bb = ffi::ffi::query_bbox(&neg).expect("query_bbox should succeed");
+        let expected_z = -0.002_f64;
+        let tol = 0.0005_f64; // 0.5mm, matching offset_surface_e2e's bbox tolerance
+        assert!(
+            (bb.zmin - expected_z).abs() < tol,
+            "-2mm surface offset: bbox.zmin should be ≈-0.002m, got {}",
+            bb.zmin
+        );
+        assert!(
+            (bb.zmax - expected_z).abs() < tol,
+            "-2mm surface offset: bbox.zmax should be ≈-0.002m, got {}",
+            bb.zmax
+        );
     }
 
     // --- OffsetSolid high-level execute tests ---
