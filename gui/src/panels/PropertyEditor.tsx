@@ -1,7 +1,9 @@
 import { type Component, createSignal, createMemo, For, Show } from 'solid-js';
-import type { ValueData } from '../types';
+import type { UnitLadderMap, UnitOption, ValueData } from '../types';
 import styles from './PropertyEditor.module.css';
 import { SelectionBreadcrumb } from './SelectionBreadcrumb';
+import { convertToUnit, formatDisplayNumber, ladderForDimension } from '../stores/unitLadder';
+import { loadUnitPreference, saveUnitPreference } from '../stores/unitPreferences';
 
 /**
  * Return a short glyph for the non-Final freshness variants.
@@ -37,6 +39,8 @@ export interface PropertyEditorProps {
   onSetParameter: (cellId: string, value: string) => void;
   onGroupDoubleClick?: (entityPath: string) => void;
   highlightedParams?: string[];
+  /** Per-dimension display-unit ladders (task #5199), fetched once via `get_unit_ladders`. */
+  unitLadders?: UnitLadderMap;
 }
 
 /** Group values by the first dot-separated segment of entity_path. */
@@ -65,6 +69,42 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
   const [editingCellId, setEditingCellId] = createSignal<string | null>(null);
   const [editValue, setEditValue] = createSignal('');
   let escapingRef = false;
+
+  // Per-cell display-unit picker (task #5199). Keyed by cell_id in a single
+  // signal (rather than one signal per row) so a picked unit survives the
+  // <For> row potentially being recreated on an unrelated values update.
+  const [selectedUnits, setSelectedUnits] = createSignal<Record<string, string>>({});
+
+  /**
+   * The selectable unit ladder for a cell, or `undefined` when the cell has
+   * no dimension/si_value or its dimension has no ladder (<2 options) — in
+   * which case the caller falls back to the static unit badge.
+   */
+  function pickerLadder(val: ValueData): UnitOption[] | undefined {
+    if (!val.dimension || val.si_value == null) return undefined;
+    const ladder = ladderForDimension(props.unitLadders ?? {}, val.dimension);
+    if (!ladder || ladder.length < 2) return undefined;
+    return ladder;
+  }
+
+  /** The currently chosen unit option for a cell: in-session pick, else persisted, else the ladder default. */
+  function chosenOptionFor(val: ValueData, ladder: UnitOption[]): UnitOption {
+    const label = selectedUnits()[val.cell_id] ?? loadUnitPreference(val.cell_id) ?? undefined;
+    const found = label !== undefined ? ladder.find((u) => u.label === label) : undefined;
+    return found ?? ladder.find((u) => u.is_default) ?? ladder[0];
+  }
+
+  /** The magnitude to display for the picker: backend value verbatim at the default unit, else converted. */
+  function displayForPicker(val: ValueData, ladder: UnitOption[]): string {
+    const chosen = chosenOptionFor(val, ladder);
+    if (chosen.is_default) return displayValue(val);
+    return formatDisplayNumber(convertToUnit(val.si_value ?? 0, chosen.si_scale));
+  }
+
+  function handleUnitChange(cellId: string, label: string) {
+    saveUnitPreference(cellId, label);
+    setSelectedUnits((prev) => ({ ...prev, [cellId]: label }));
+  }
 
   const filteredGroups = createMemo(() => {
     const filter = filterText().toLowerCase();
@@ -244,8 +284,29 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
                               onBlur={(e) => handleBlur(val.cell_id, e)}
                             />
                           </Show>
-                          <Show when={val.unit}>
-                            <span class={styles.unitBadge}>{val.unit}</span>
+                          <Show
+                            when={pickerLadder(val)}
+                            fallback={
+                              <Show when={val.unit}>
+                                <span class={styles.unitBadge}>{val.unit}</span>
+                              </Show>
+                            }
+                          >
+                            {(ladder) => (
+                              <span class={styles.unitBadge}>
+                                {displayForPicker(val, ladder())}
+                                <select
+                                  aria-label={`unit for ${val.name}`}
+                                  data-testid={`unit-select-${val.cell_id}`}
+                                  value={chosenOptionFor(val, ladder()).label}
+                                  onChange={(e) => handleUnitChange(val.cell_id, e.currentTarget.value)}
+                                >
+                                  <For each={ladder()}>
+                                    {(opt) => <option value={opt.label}>{opt.label}</option>}
+                                  </For>
+                                </select>
+                              </span>
+                            )}
                           </Show>
                           <span
                             class={styles.determinacyBadge}
