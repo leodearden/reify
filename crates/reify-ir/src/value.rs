@@ -10238,6 +10238,46 @@ mod tests {
         );
     }
 
+    // ── dimension_unit_label / format_display_pair composed base-unit tests ──
+    // (task 5198 fix b) — MASS_DENSITY has no curated arm in either fallback,
+    // so both must compose from Display ("kg·m^-3") instead of leaking "SI".
+
+    #[test]
+    fn dimension_unit_label_mass_density_composes_base_units() {
+        assert_eq!(
+            dimension_unit_label(&DimensionVector::MASS_DENSITY),
+            "kg\u{b7}m^-3",
+            "dimension_unit_label(MASS_DENSITY) should compose the Display form, not fall through to \"SI\""
+        );
+    }
+
+    #[test]
+    fn format_hover_mass_density_scalar_renders_composed_units() {
+        // body_density-style scalar must render composed base units, never "1270 SI".
+        let v = Value::Scalar {
+            si_value: 1270.0,
+            dimension: DimensionVector::MASS_DENSITY,
+        };
+        assert_eq!(
+            v.format_hover(),
+            "1270 kg\u{b7}m^-3",
+            "format_hover() on a MASS_DENSITY scalar should render composed base units, not \"1270 SI\""
+        );
+    }
+
+    #[test]
+    fn format_display_pair_mass_density_scalar_renders_composed_units() {
+        let v = Value::Scalar {
+            si_value: 1270.0,
+            dimension: DimensionVector::MASS_DENSITY,
+        };
+        assert_eq!(
+            v.format_display_pair(),
+            ("1270".to_string(), "kg\u{b7}m^-3".to_string()),
+            "format_display_pair() on a MASS_DENSITY scalar should return composed base units, not \"SI\""
+        );
+    }
+
     // --- Freshness::is_final tests (task #2356) ---
 
     #[test]

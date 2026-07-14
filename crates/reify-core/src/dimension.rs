@@ -1108,6 +1108,19 @@ mod tests {
     }
 
     #[test]
+    fn to_display_units_composes_base_units_for_mass_density() {
+        // MASS_DENSITY (kg·m^-3) has no curated LENGTH/ANGLE/AREA/VOLUME/MONEY/
+        // dimensionless arm, so the fallback must compose from Display —
+        // "kg·m^-3" — never the bare literal "SI".
+        let (value, unit) = DimensionVector::MASS_DENSITY.to_display_units(1270.0);
+        assert_eq!(value, 1270.0, "MASS_DENSITY value should pass through unscaled");
+        assert_eq!(
+            unit, "kg·m^-3",
+            "composed fallback must render the Display form, not \"SI\""
+        );
+    }
+
+    #[test]
     fn moment_of_inertia_has_kg_m_squared_exponents() {
         let mi = DimensionVector::MOMENT_OF_INERTIA;
         assert_eq!(mi, DimensionVector::from_exps(&[(0, 2), (1, 1)]));
