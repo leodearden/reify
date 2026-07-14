@@ -114,15 +114,17 @@ fn tbb_pin_present() -> bool {
 
 /// Run `env -u LD_LIBRARY_PATH ldd <path>` and return its stdout. `None`
 /// (skip) when `env`/`ldd` is unavailable or the invocation itself fails —
-/// mirrors `readelf_d`'s skip posture.
+/// mirrors `readelf_d`'s skip posture. Any spawn error (not just
+/// `NotFound` — e.g. `EACCES`/`EAGAIN`) degrades to skip rather than
+/// panicking, since a sandboxed or resource-constrained CI image can fail
+/// to spawn for reasons other than a missing binary.
 fn bare_ldd(path: &str) -> Option<String> {
     let output = match Command::new("env").args(["-u", "LD_LIBRARY_PATH", "ldd", path]).output() {
         Ok(o) => o,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            eprintln!("env/ldd unavailable on PATH; skipping");
+        Err(e) => {
+            eprintln!("env/ldd invocation failed ({e}); skipping");
             return None;
         }
-        Err(e) => panic!("ldd invocation failed: {e}"),
     };
     if !output.status.success() {
         eprintln!("ldd exited non-zero (status={:?}); skipping", output.status);
@@ -251,12 +253,17 @@ fn reify_binary_bare_launch_collateral_libs_do_not_shift_to_tbb_pin() {
     ];
     for lib in COLLATERAL_LIBS {
         match ldd_resolved_path(&ldd_out, lib) {
+            // Assert the actual invariant directly — that tbb-pin (which
+            // holds EXACTLY one entry) redirected no other soname — rather
+            // than an allowlist of pre-existing RUNPATH dirs. A path-prefix
+            // allowlist is stricter than necessary and false-fails on
+            // merged-/usr hosts where `ldd` reports the `/lib/x86_64-linux-
+            // gnu/` symlink form instead of `/usr/lib/x86_64-linux-gnu/`.
             Some(resolved) => assert!(
-                resolved.starts_with("/usr/lib/x86_64-linux-gnu/")
-                    || resolved.starts_with("/opt/reify-deps/lib/"),
-                "{lib} resolved to {resolved} — expected /usr/lib/x86_64-linux-gnu or \
-                 /opt/reify-deps/lib (the pre-existing RUNPATH entries), never \
-                 {TBB_PIN_DIR} (the tbb-only pin dir must flip no other soname)"
+                !resolved.starts_with(TBB_PIN_DIR),
+                "{lib} resolved to {resolved}, inside {TBB_PIN_DIR} (the tbb-only pin \
+                 dir) — it must flip no other soname; {lib} should still resolve to \
+                 whatever pre-existing RUNPATH entry it resolved to before this task"
             ),
             None => eprintln!("{lib} not in {exe}'s NEEDED graph; skipping collateral check for it"),
         }

@@ -118,6 +118,26 @@ fn synthetic_tempdir() -> PathBuf {
     base
 }
 
+/// RAII guard that removes the synthetic tempdir on drop — including on a
+/// panic-unwind from an earlier `assert!`/`run_cc`/`run_bare` failure — so
+/// per-pid tempdirs under `/tmp` don't leak and accumulate across repeated
+/// CI runs when the test fails partway through. `Deref`s to `Path` so call
+/// sites can use it exactly like the `PathBuf` it wraps.
+struct TempDirGuard(PathBuf);
+
+impl std::ops::Deref for TempDirGuard {
+    type Target = std::path::Path;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Drop for TempDirGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn run_cc(cc: &str, args: &[&str]) {
     let output = Command::new(cc).args(args).output().expect("spawn cc");
     assert!(
@@ -159,7 +179,7 @@ fn direct_needed_binds_pinned_leaf_over_transitive_system() {
         return;
     };
 
-    let root = synthetic_tempdir();
+    let root = TempDirGuard(synthetic_tempdir());
     let pin_dir = root.join("pin");
     let sys_dir = root.join("sys");
     let mid_dir = root.join("midlib");
@@ -290,5 +310,6 @@ fn direct_needed_binds_pinned_leaf_over_transitive_system() {
          not hold on this host/loader"
     );
 
-    let _ = std::fs::remove_dir_all(&root);
+    // `root`'s `TempDirGuard` removes the tempdir on drop here (and would
+    // have on an earlier panic-unwind too).
 }

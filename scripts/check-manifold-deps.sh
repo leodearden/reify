@@ -17,6 +17,7 @@
 set -euo pipefail
 
 err() { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; }
+warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*" >&2; }
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOCKFILE="$REPO_ROOT/Cargo.lock"
@@ -72,12 +73,28 @@ fi
 # before the transitive libTKernel->libtbb edge — DT_RUNPATH is non-transitive
 # and cannot redirect that edge otherwise. See CLAUDE.md "Native deps" and
 # crates/reify-build-utils/src/lib.rs's emit_tbb_pin_for_bins/_for_tests.
-TBB_PIN_LIB="/opt/reify-deps/tbb-pin/libtbb.so.12"
+TBB_PIN_DIR="/opt/reify-deps/tbb-pin"
+TBB_PIN_LIB="$TBB_PIN_DIR/libtbb.so.12"
+DEPS_LIBTBB="/opt/reify-deps/lib/libtbb.so.12"
 
 if [ ! -L "$TBB_PIN_LIB" ]; then
-    err "manifold-deps guard: tbb-pin missing — no symlink at $TBB_PIN_LIB."
-    hint
-    exit 1
+    # Self-heal: a host whose /opt/reify-deps/lib was already populated
+    # before task #5192 added the pin dir is missing only the symlink, not
+    # the lib itself — recreate it here (mirrors build-manifold-deps.sh's
+    # idempotent ensure_tbb_pin()) so the FIRST verify after this change
+    # lands self-heals instead of hard-failing until someone re-runs the
+    # build script on the shared deps host.
+    if [ -e "$DEPS_LIBTBB" ]; then
+        mkdir -p "$TBB_PIN_DIR"
+        ln -sfn "$DEPS_LIBTBB" "$TBB_PIN_LIB"
+        warn "manifold-deps guard: tbb-pin was missing — self-healed $TBB_PIN_LIB -> $DEPS_LIBTBB."
+        warn "                     Run ./scripts/build-manifold-deps.sh to make this permanent."
+    else
+        err "manifold-deps guard: tbb-pin missing — no symlink at $TBB_PIN_LIB,"
+        err "                     and $DEPS_LIBTBB does not exist to self-heal from."
+        hint
+        exit 1
+    fi
 fi
 
 TBB_PIN_TARGET="$(readlink -f "$TBB_PIN_LIB" 2>/dev/null || true)"

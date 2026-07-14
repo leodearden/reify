@@ -241,6 +241,16 @@ pub fn emit_tbb_pin_for_bins() -> bool {
 /// Same as [`emit_tbb_pin_for_bins`] but emits the unscoped
 /// `cargo:rustc-link-arg` form so test/example/lib-unittest bins are
 /// covered too — mirrors [`emit_rpath_for_tests`].
+///
+/// For packages with bins of their own (`reify-cli`, `reify-gui`) that call
+/// both this and [`emit_tbb_pin_for_bins`], the bin target receives the
+/// pin `-rpath` and the forced `--no-as-needed -l:libtbb.so.12 --as-needed`
+/// link-arg twice (once bin-scoped, once unscoped) — this is intentional,
+/// the same bin double-emission [`emit_rpath_for_tests`] documents for
+/// `-rpath` alone. A duplicate `-rpath` token is harmlessly idempotent; a
+/// duplicate direct `NEEDED libtbb.so.12` entry resolves identically at
+/// load time (both bind the same pin-dir copy) and is harmless to the
+/// loader, just slightly redundant in the ELF.
 pub fn emit_tbb_pin_for_tests() -> bool {
     emit_tbb_pin("cargo:rustc-link-arg")
 }
