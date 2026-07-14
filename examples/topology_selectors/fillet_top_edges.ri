@@ -11,32 +11,40 @@
 //      walk topology to collect the perimeter edges of the chosen face
 //   3. fillet(solid, edges, radius) → apply the fillet to the curated edge set
 //
-// Compile-with-stdlib status: gated on the missing 3-arg
-// `fillet(solid, edges, radius)` stdlib binding.  The current compiler only
-// wires 2-arg `fillet(solid, radius)` (crates/reify-compiler/src/geometry_modify.rs:115).
-// This is NOT a task 2698/2699 gap — `single`, `flat_map`, `faces_by_normal`,
-// `adjacent_faces`, and `shared_edges` are all landed on HEAD.  The example
-// is intentionally preserved with the 3-arg call to demonstrate the v0.1
-// design vision (fillet only selected edges); switching to the 2-arg form
-// would fillet ALL edges and defeat the example's purpose.
+// Capability status: LIVE. 3-arg `fillet(solid, edges, radius)` — the
+// compiler stdlib binding (`crates/reify-compiler/src/geometry_modify.rs`,
+// `"fillet" => match compiled_args.len() { 2 | 3 => ... }`), the
+// `GeometryOp::Fillet` `edges` field, and in-loop curated-fillet dispatch
+// (selector→op build) — landed via #3205 and #4360; the UnifiedDag default
+// flip landed via #4362. `single`, `flat_map`, `faces_by_normal`,
+// `adjacent_faces`, and `shared_edges` were already landed before that
+// (task 2698/2699). This example is NOT a phantom capability gap — it
+// demonstrates the v0.1 design vision end-to-end: fillet only the four
+// top-perimeter edges via topology-relational selection, rather than
+// filleting all edges of the box (which the 2-arg form would do, defeating
+// the example's pedagogic purpose).
 //
-// Eval-deepening status: gated on two prerequisites:
-//   (a) 3-arg fillet(solid, edges, radius) stdlib binding (same as compile gate)
-//   (b) eval-side dispatch for list helpers (single/flat_map) AND topology
-//       selectors (faces_by_normal/adjacent_faces/shared_edges) in
-//       crates/reify-eval/src/geometry_ops.rs::try_eval_topology_selector
-//       (currently falls through to `_ => return None` at lines 1646-1661,
-//       leaving all topology-derived cells at Value::Undef).
-//   Until both land, `top`, `top_edges`, and `result` all stay at Value::Undef.
+// Real-kernel end-to-end coverage:
+// crates/reify-eval/tests/fillet_curated_edges_e2e.rs
+// (fillet_curated_edges_3205_e2e) drives this same selector chain
+// (faces_by_normal → single → adjacent_faces → shared_edges → flat_map →
+// 3-arg fillet) against a real kernel / UnifiedDag scheduler.
 //
 // Smoke-test coverage tiers in
 //   crates/reify-eval/tests/topology_selector_smoke_tests.rs:
 //
-//   parse               → active   (fillet_top_edges_ri_parses_cleanly)
+//   parse               → active    (fillet_top_edges_ri_parses_cleanly)
 //   compile-with-stdlib → #[ignore] (fillet_top_edges_compiles_with_stdlib_no_errors)
-//                         unblocked by: (a) 3-arg fillet binding
-//   eval                → #[ignore] (fillet_top_edges_evals_to_solid_via_topology_walk)
-//                         unblocked by: (a) + (b) eval dispatch
+//                         — see that test's own doc comment for its current
+//                         status; do not infer a design gap from this tier.
+//   eval (bare MockGeometryKernel) → #[ignore] (fillet_top_edges_evals_to_solid_via_topology_walk)
+//                         — blocked on #4727 (pending): all semantic
+//                         prerequisites (#3205/#4360/#4362) have landed, but
+//                         the bare mock kernel cannot resolve the topology
+//                         walk without a real-OCCT-kernel +
+//                         set_build_scheduler(UnifiedDag) rewrite; that
+//                         coverage is already provided by
+//                         fillet_curated_edges_3205_e2e above.
 
 structure def FilletTopEdges {
     let b = box(50mm, 30mm, 10mm)
