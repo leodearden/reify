@@ -774,7 +774,7 @@ pub fn try_infer_traits_for_function_call_in_env(
     match name {
         // ─── Primitive constructors → all() ─────────────────────────────
         "box" | "box_centered" | "cylinder" | "cylinder_centered" | "sphere" | "tube" | "cone"
-        | "wedge" => Some(InferredTraits::all()),
+        | "wedge" | "rounded_box" => Some(InferredTraits::all()),
 
         // ─── Torus → bounded + connected, NON-convex ────────────────────
         // The first non-convex primitive: a ring has a hole, so it cannot

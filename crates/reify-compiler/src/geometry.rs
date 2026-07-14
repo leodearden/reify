@@ -2138,6 +2138,144 @@ pub(crate) fn compile_geometry_call(
             });
             Some(sub_ops)
         }
+        // rounded_box(width, depth, height, corner_r) — a rectangular prism
+        // with the 4 vertical (plan-view) edges rounded to radius corner_r.
+        // Origin-centred on all 3 axes (matches box_centered's anchor).
+        //
+        // No new FFI and no curated-fillet dependency: the 3-arg curated
+        // `fillet(target, edges, radius)` resolves its `edges` Selector
+        // against a NAMED geometry realization (see the task-4668 comment
+        // above on "one let = one realization"), but here the box is an
+        // anonymous `GeomRef::Step` sub-op with no named let — fillet-compose
+        // cannot be synthesised inside a single-expression lowering. Lowered
+        // instead as a boolean-union compose of 6 origin-centred solids,
+        // mirroring zone_annulus/zone_profile's multi-op compose + step-index
+        // tracking idiom:
+        //
+        //   Box A = box(width, depth-2r, height)  — x∈[-w/2,w/2],       y∈[-(d/2-r),d/2-r]
+        //   Box B = box(width-2r, depth, height)  — x∈[-(w/2-r),w/2-r], y∈[-d/2,d/2]
+        //   4x cylinder(corner_r, height), each Translated to a corner centre
+        //   (±(w/2-r), ±(d/2-r), dz=-(height/2)) — same dz shape as cylinder_centered.
+        //
+        // Emit order: [BoxA, BoxB, (Cylinder,Translate)x4, Union(A,B), Union(·,C1..4)].
+        // The final Union is the realization root (last op in sub_ops).
+        "rounded_box" => {
+            if !check_arg_count_exact("rounded_box", compiled_args.len(), 4, expr.span, diagnostics)
+            {
+                return None;
+            }
+            let mut it = compiled_args.into_iter();
+            let width = it.next().unwrap();
+            let depth = it.next().unwrap();
+            let height = it.next().unwrap();
+            let corner_r = it.next().unwrap();
+
+            let half = CompiledExpr::literal(Value::Real(0.5), reify_core::Type::dimensionless_scalar());
+            let two = CompiledExpr::literal(Value::Real(2.0), reify_core::Type::dimensionless_scalar());
+
+            // two_r = corner_r * 2
+            let two_r = CompiledExpr::binop(BinOp::Mul, corner_r.clone(), two, corner_r.result_type.clone());
+            // depth_minus_2r = depth - 2*corner_r ; width_minus_2r = width - 2*corner_r
+            let depth_minus_2r =
+                CompiledExpr::binop(BinOp::Sub, depth.clone(), two_r.clone(), depth.result_type.clone());
+            let width_minus_2r =
+                CompiledExpr::binop(BinOp::Sub, width.clone(), two_r, width.result_type.clone());
+
+            // half_width_minus_r = width/2 - corner_r ; half_depth_minus_r = depth/2 - corner_r
+            let half_width =
+                CompiledExpr::binop(BinOp::Mul, width.clone(), half.clone(), width.result_type.clone());
+            let half_depth =
+                CompiledExpr::binop(BinOp::Mul, depth.clone(), half.clone(), depth.result_type.clone());
+            let half_width_minus_r =
+                CompiledExpr::binop(BinOp::Sub, half_width, corner_r.clone(), width.result_type.clone());
+            let half_depth_minus_r =
+                CompiledExpr::binop(BinOp::Sub, half_depth, corner_r.clone(), depth.result_type.clone());
+
+            // dz (all 4 corner cylinders) = -(height / 2) — same shape as cylinder_centered.
+            let dz = CompiledExpr::binop(
+                BinOp::Mul,
+                height.clone(),
+                CompiledExpr::literal(Value::Real(-0.5), reify_core::Type::dimensionless_scalar()),
+                height.result_type.clone(),
+            );
+
+            // signed(base, sign) = base * sign — reused for dx/dy on each corner.
+            let signed = |base: &CompiledExpr, sign: f64, ty: &reify_core::Type| {
+                CompiledExpr::binop(
+                    BinOp::Mul,
+                    base.clone(),
+                    CompiledExpr::literal(Value::Real(sign), reify_core::Type::dimensionless_scalar()),
+                    ty.clone(),
+                )
+            };
+
+            // Box A: box(width, depth-2r, height)
+            sub_ops.push(CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".to_string(), width.clone()),
+                    ("height".to_string(), depth_minus_2r),
+                    ("depth".to_string(), height.clone()),
+                ],
+            });
+            let box_a_step = step_offset + sub_ops.len() - 1;
+
+            // Box B: box(width-2r, depth, height)
+            sub_ops.push(CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".to_string(), width_minus_2r),
+                    ("height".to_string(), depth.clone()),
+                    ("depth".to_string(), height.clone()),
+                ],
+            });
+            let box_b_step = step_offset + sub_ops.len() - 1;
+
+            // 4 corner cylinders + translate: (+,+), (+,-), (-,+), (-,-)
+            let corner_signs = [(1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)];
+            let mut translate_steps = Vec::with_capacity(4);
+            for (sx, sy) in corner_signs {
+                sub_ops.push(CompiledGeometryOp::Primitive {
+                    kind: PrimitiveKind::Cylinder,
+                    args: vec![
+                        ("radius".to_string(), corner_r.clone()),
+                        ("height".to_string(), height.clone()),
+                    ],
+                });
+                let cyl_step = step_offset + sub_ops.len() - 1;
+
+                let dx = signed(&half_width_minus_r, sx, &width.result_type);
+                let dy = signed(&half_depth_minus_r, sy, &depth.result_type);
+                sub_ops.push(CompiledGeometryOp::Transform {
+                    kind: TransformKind::Translate,
+                    target: GeomRef::Step(cyl_step),
+                    args: vec![
+                        ("dx".to_string(), dx),
+                        ("dy".to_string(), dy),
+                        ("dz".to_string(), dz.clone()),
+                    ],
+                });
+                translate_steps.push(step_offset + sub_ops.len() - 1);
+            }
+
+            // Union chain: A ∪ B, then ∪ C1 .. ∪ C4 (left fold; last op is the root).
+            sub_ops.push(CompiledGeometryOp::Boolean {
+                op: BooleanOp::Union,
+                left: GeomRef::Step(box_a_step),
+                right: GeomRef::Step(box_b_step),
+            });
+            let mut acc_step = step_offset + sub_ops.len() - 1;
+            for t_step in translate_steps {
+                sub_ops.push(CompiledGeometryOp::Boolean {
+                    op: BooleanOp::Union,
+                    left: GeomRef::Step(acc_step),
+                    right: GeomRef::Step(t_step),
+                });
+                acc_step = step_offset + sub_ops.len() - 1;
+            }
+
+            Some(sub_ops)
+        }
         // --- Transforms ---
         "translate" | "rotate" | "scale" | "rotate_around" | "apply_transform" | "affine_apply" => {
             compile_transform_op(
