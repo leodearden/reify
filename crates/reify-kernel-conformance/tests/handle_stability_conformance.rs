@@ -7,11 +7,12 @@
 //! Scope: the three currently-STABLE arms only (§12 ζ) — OCCT
 //! `extract_faces`, OCCT `extract_edges`, Manifold `extract_faces`. The
 //! Manifold `extract_edges` arm is DELIBERATELY OMITTED here: it is
-//! un-memoized on main (`crates/reify-kernel-manifold/src/kernel.rs:880-901`
-//! mints a fresh id every call), so a stability assertion would be
-//! permanently red and un-greenable within this task's scope. That arm —
-//! and the memoization fix it depends on — is owned by the downstream leaf
-//! η (§5/§8/§12).
+//! un-memoized on main (`ManifoldKernel::extract_edges`, in
+//! `crates/reify-kernel-manifold/src/kernel.rs`, mints a fresh id every
+//! call — there is no `extracted_edges` cache), so a stability assertion
+//! would be permanently red and un-greenable within this task's scope.
+//! That arm — and the memoization fix it depends on — is owned by the
+//! downstream leaf η (§5/§8/§12).
 //!
 //! All three arms here are GREEN on current main: the memoization they pin
 //! already landed (OCCT `extracted_faces`/`extracted_edges` caches, #318/
@@ -29,8 +30,10 @@ use reify_kernel_manifold::ManifoldKernel;
 /// Assert the handle-stability contract (INV-GEO-2) this file's arms pin:
 /// the first run must be non-vacuous (non-empty, pairwise-distinct,
 /// non-INVALID, and distinct from `parent` — mirrors the distinctness guard
-/// in `topology_extract_integration.rs:44-60`), and every subsequent run
-/// must be *exactly* equal to the first (same ids, same order).
+/// in `topology_extract_integration.rs`'s
+/// `extract_edges_box_returns_twelve_distinct_handles`), and every
+/// subsequent run must be *exactly* equal to the first (same ids, same
+/// order).
 fn assert_stable_ids(label: &str, parent: GeometryHandleId, runs: &[Vec<GeometryHandleId>]) {
     let first = runs
         .first()
@@ -90,10 +93,10 @@ fn run_thrice(
 /// `extract_faces` on a real OCCT BRep box SOLID handle returns identical
 /// ids, in identical order, across repeated calls within a session.
 ///
-/// GREEN on main (`extracted_faces` cache,
-/// `crates/reify-kernel-occt/src/lib.rs:686-719`); red-on-revert if that
-/// cache is removed (a fresh id set would be minted per call, so the second
-/// call would diverge from the first — the #4262 defect).
+/// GREEN on main (`OcctKernel::extract_faces`'s `extracted_faces` cache, in
+/// `crates/reify-kernel-occt/src/lib.rs`); red-on-revert if that cache is
+/// removed (a fresh id set would be minted per call, so the second call
+/// would diverge from the first — the #4262 defect).
 #[test]
 fn occt_extract_faces_returns_stable_ids() {
     let (mut kernel, box_id) = common::occt_box_solid();
@@ -113,10 +116,10 @@ fn occt_extract_faces_returns_stable_ids() {
 /// `extract_edges` on a real OCCT BRep box SOLID handle returns identical
 /// ids, in identical order, across repeated calls within a session.
 ///
-/// GREEN on main (`extracted_edges` cache,
-/// `crates/reify-kernel-occt/src/lib.rs:640-676`); red-on-revert if that
-/// cache is removed (a fresh id set would be minted per call, so the second
-/// call would diverge from the first — the #4262 defect).
+/// GREEN on main (`OcctKernel::extract_edges`'s `extracted_edges` cache, in
+/// `crates/reify-kernel-occt/src/lib.rs`); red-on-revert if that cache is
+/// removed (a fresh id set would be minted per call, so the second call
+/// would diverge from the first — the #4262 defect).
 #[test]
 fn occt_extract_edges_returns_stable_ids() {
     let (mut kernel, box_id) = common::occt_box_solid();
@@ -140,10 +143,10 @@ fn occt_extract_edges_returns_stable_ids() {
 /// The exact coalesced-face COUNT is deliberately not pinned here — only a
 /// loose lower bound (a box cannot coalesce below its 6 axis-aligned faces),
 /// plus pairwise-distinct + 3-way exact identity: stability, not an exact
-/// face count, is this arm's contract. GREEN on main (Manifold
-/// `extracted_faces` cache,
-/// `crates/reify-kernel-manifold/src/kernel.rs:835-867`); red-on-revert if
-/// that cache is removed.
+/// face count, is this arm's contract. GREEN on main
+/// (`ManifoldKernel::extract_faces`'s `extracted_faces` cache, in
+/// `crates/reify-kernel-manifold/src/kernel.rs`); red-on-revert if that
+/// cache is removed.
 ///
 /// The Manifold `extract_edges` arm is intentionally NOT added here — see
 /// the module doc comment.

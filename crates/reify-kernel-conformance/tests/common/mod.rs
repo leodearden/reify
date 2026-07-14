@@ -176,8 +176,8 @@ pub fn fixtures() -> Vec<(&'static str, FixtureFn)> {
 /// arms in
 /// `handle_stability_conformance.rs`: `extract_faces`/`extract_edges` act on
 /// a BRep solid handle, which none of the `fixtures()` builders expose (they
-/// return only the tessellated `Mesh`). Mirrors `box_kernel` in
-/// `reify-kernel-occt/tests/topology_extract_integration.rs:17-27`.
+/// return only the tessellated `Mesh`). Mirrors the `box_kernel` helper in
+/// `reify-kernel-occt/tests/topology_extract_integration.rs`.
 #[cfg(has_occt)]
 pub fn occt_box_solid() -> (OcctKernel, GeometryHandleId) {
     let mut kernel = OcctKernel::new();
