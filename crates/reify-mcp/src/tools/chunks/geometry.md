@@ -75,19 +75,26 @@ wedge(width, depth, height, top_width)               -> Solid
 tube(outer_radius, inner_radius, height)             -> Solid   // outer cylinder minus inner cylinder
 ```
 
-**2D profiles** (planar faces in the XY plane at z=0, centred at origin — same centring as `box`/`rectangle`):
+**2D profiles** (planar faces in the XY plane at z=0). `rectangle`/`circle`/`ellipse` are centred
+at origin (same centring as `box`); `polygon` is the exception — it is positioned by its explicit
+vertex coordinates, not auto-centred (see the Anchoring & orientation table below):
 
 ```
 rectangle(width, height)   circle(radius)
 polygon(vertices)          ellipse(semi_major, semi_minor)
 ```
 
+Note: this `circle(radius)` is the origin-centred 2D-profile form used with `extrude`/`revolve`/etc.
+— distinct from the prelude `circle(center, radius)` above, which places the circle at an explicit center.
+
 ### Anchoring & orientation
 
 Three distinct anchor conventions coexist across the solid primitives — they are deliberately
 **not** unified (redefining `box`'s corner-at-origin would break ~370 existing call sites and
 their world positions; see `docs/prds/geometry-primitive-constructors.md`). Know which family a
-primitive belongs to before composing a `translate`:
+primitive belongs to before composing a `translate`. This table is mirrored — with full type
+signatures — in `docs/reify-stdlib-reference.md` §3.2-3.3; keep both in sync when a primitive's
+anchor convention changes (e.g. a future `wedge_centered` variant):
 
 | Primitive | Anchor | Notes |
 |---|---|---|
@@ -100,7 +107,8 @@ primitive belongs to before composing a `translate`:
 | `cone` | **base at z=0**, axis **+Z**, x/y centred at origin | same base-anchor convention as `cylinder`; base radius at z=0, top radius at z=height |
 | `tube` | **base at z=0**, axis **+Z**, x/y centred at origin | composed from `outer cylinder − inner cylinder`, so it inherits `cylinder`'s base-at-z0 anchor |
 | `wedge` | **min-corner at origin**, occupying the **+X/+Y/+Z octant** | the one primitive anchored at a corner rather than centred or base-centred; no `wedge_centered` variant exists yet |
-| 2D profiles (`rectangle`, `circle`, `polygon`, `ellipse`) | planar in the **XY plane at z=0**, **centred at origin** | consumed by `extrude`/`revolve`/`sweep`/`loft` |
+| 2D profiles (`rectangle`, `circle`, `ellipse`) | planar in the **XY plane at z=0**, **centred at origin** | consumed by `extrude`/`revolve`/`sweep`/`loft` |
+| `polygon` (2D profile) | planar in the **XY plane at z=0**; position set by its **explicit vertices** — not auto-centred | same consumers as above; a caller-supplied vertex set can sit off-origin, unlike the other 2D profiles |
 | `extrude(profile, distance)` | extrudes along the profile plane's normal, starting at the profile's own z=0 plane | inherits the profile's XY centring |
 | `revolve(profile, axis, angle)` | sweeps the profile about a caller-supplied `axis` | anchor is whatever the profile + axis define — no implicit centring |
 

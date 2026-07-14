@@ -369,7 +369,10 @@ fn wedge(width: Length, depth: Length, height: Length, top_width: Length) -> Sol
 
 **Anchoring & orientation.** Three distinct anchor conventions coexist across the solids above —
 deliberately not unified (redefining `box`'s corner-at-origin would break ~370 existing call sites
-and their world positions; see `docs/prds/geometry-primitive-constructors.md`):
+and their world positions; see `docs/prds/geometry-primitive-constructors.md`). This table is
+mirrored — condensed, for MCP tool consumption — in
+`crates/reify-mcp/src/tools/chunks/geometry.md`; keep both in sync when a primitive's anchor
+convention changes:
 
 | Primitive | Anchor | Notes |
 |---|---|---|
@@ -395,7 +398,9 @@ fn polygon(vertices: List<Point2<Length>>) -> Surface
 fn ellipse(semi_major: Length, semi_minor: Length) -> Surface
 ```
 
-All 2D shapes are planar faces in the XY plane at z=0, centred at origin (same centring as `box`).
+All 2D shapes are planar faces in the XY plane at z=0. `rectangle`/`circle`/`ellipse` are centred
+at origin (same centring as `box`); `polygon` is the exception — its position is set by the
+caller's explicit vertex coordinates, not auto-centred.
 
 **Curves:**
 
