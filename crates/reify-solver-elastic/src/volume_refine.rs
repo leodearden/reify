@@ -51,6 +51,11 @@ pub enum RefineError {
     GmshUnavailable,
     /// The kernel-gmsh FFI call failed at runtime.
     Gmsh(GeometryError),
+    /// `volume_mesh`'s connectivity is `Hex` or `Wedge` — this crate's
+    /// a-posteriori refinement pipeline is tet-only (task 4996 hardening;
+    /// hex/wedge meshes come from the sweep pipeline and have no refine path
+    /// here).
+    UnsupportedConnectivity,
 }
 
 impl fmt::Display for RefineError {
@@ -78,6 +83,11 @@ impl fmt::Display for RefineError {
                 write!(f, "libgmsh is not available in this build")
             }
             RefineError::Gmsh(e) => write!(f, "gmsh FFI error: {e}"),
+            RefineError::UnsupportedConnectivity => write!(
+                f,
+                "volume refinement is tet-only: a Hex/Wedge VolumeMesh cannot be \
+                 remeshed by the Gmsh size-field refiner"
+            ),
         }
     }
 }
@@ -95,32 +105,23 @@ impl std::error::Error for RefineError {
 // Element topology helpers
 // ---------------------------------------------------------------------------
 
-/// Number of nodes per tetrahedral element for a given element order
-/// (`P1` = 4 linear, `P2` = 10 quadratic).
-///
-/// Single source of truth for the order → node-count map, shared by
-/// [`element_count`], [`project_per_element_sizes_to_vertices`], and
-/// [`refine_with_size_field`] (and, via `element_count`,
-/// [`crate::adaptive::refine_marked_elements`]) — so a new [`ElementOrderTag`]
-/// variant only needs handling in one place instead of drifting across call
-/// sites.
-pub(crate) fn nodes_per_element(order: ElementOrderTag) -> usize {
-    match order {
-        ElementOrderTag::P1 => 4,
-        ElementOrderTag::P2 => 10,
-    }
-}
-
 /// Number of tetrahedral elements in `volume_mesh` (`tet_indices.len()` divided
 /// by the per-element node count for its [`ElementOrderTag`]).
-pub(crate) fn element_count(volume_mesh: &VolumeMesh) -> usize {
-    volume_mesh
+///
+/// This is the shared connectivity gate for both public entry points
+/// ([`refine_with_size_field`] and [`crate::adaptive::refine_marked_elements`],
+/// which both call this first) — a Hex/Wedge mesh is rejected here, before
+/// any panic-prone helper or gmsh call runs.
+///
+/// # Errors
+///
+/// Returns [`RefineError::UnsupportedConnectivity`] if `volume_mesh`'s
+/// connectivity is `Hex` or `Wedge`.
+pub(crate) fn element_count(volume_mesh: &VolumeMesh) -> Result<usize, RefineError> {
+    let tet_indices = volume_mesh
         .tet_indices()
-        .expect("volume_refine: tet-only pipeline (hex/wedge VolumeMesh not supported)")
-        .len()
-        / nodes_per_element(volume_mesh.element_order().expect(
-            "volume_refine: tet-only pipeline (hex/wedge VolumeMesh not supported)",
-        ))
+        .ok_or(RefineError::UnsupportedConnectivity)?;
+    Ok(tet_indices.len() / volume_mesh.nodes_per_element())
 }
 
 // ---------------------------------------------------------------------------
@@ -171,15 +172,20 @@ pub(crate) fn project_per_element_sizes_to_vertices(
     per_element_sizes: &[f64],
 ) -> Vec<f64> {
     let n_verts = volume_mesh.vertices.len() / 3;
-    let nodes_per_elem = nodes_per_element(volume_mesh.element_order().expect(
-        "volume_refine: tet-only pipeline (hex/wedge VolumeMesh not supported)",
-    ));
+    let nodes_per_elem = volume_mesh.nodes_per_element();
 
     let mut vertex_sizes = vec![f64::INFINITY; n_verts];
 
-    let tet_indices = volume_mesh
-        .tet_indices()
-        .expect("volume_refine: tet-only pipeline (hex/wedge VolumeMesh not supported)");
+    // Guarded invariant: the only caller, `refine_with_size_field`, calls
+    // `element_count(volume_mesh)?` before this function, which already
+    // proves `volume_mesh.connectivity` is `Tet` (Hex/Wedge is rejected
+    // there as `RefineError::UnsupportedConnectivity`) — so this is
+    // unreachable for a Hex/Wedge mesh, not a live panic path.
+    let tet_indices = volume_mesh.tet_indices().expect(
+        "project_per_element_sizes_to_vertices: caller (refine_with_size_field) \
+         already guarded via element_count(volume_mesh)? — Hex/Wedge connectivity \
+         cannot reach here",
+    );
     for (elem_idx, chunk) in tet_indices.chunks(nodes_per_elem).enumerate() {
         let size = per_element_sizes[elem_idx];
         for &v_idx in chunk {
@@ -222,8 +228,17 @@ pub fn refine_with_size_field(
     size_hints: &[f64],
     options: &MeshingOptions,
 ) -> Result<VolumeMesh, RefineError> {
+    // Connectivity gate: rejects Hex/Wedge before any other validation,
+    // panic-prone helper, or gmsh call runs.
+    let n_elements = element_count(volume_mesh)?;
+    // The `element_count(...)?` guard above already proves `volume_mesh`'s
+    // connectivity is `Tet`, so `element_order()` is provably `Some` here —
+    // bound once and reused at the kernel call below.
+    let element_order: ElementOrderTag = volume_mesh
+        .element_order()
+        .ok_or(RefineError::UnsupportedConnectivity)?;
+
     // Validate size_hints length.
-    let n_elements = element_count(volume_mesh);
     if size_hints.len() != n_elements {
         return Err(RefineError::SizeHintsLengthMismatch {
             got: size_hints.len(),
@@ -260,9 +275,7 @@ pub fn refine_with_size_field(
         surface,
         &surface_vertex_sizes,
         options,
-        volume_mesh.element_order().expect(
-            "volume_refine: tet-only pipeline (hex/wedge VolumeMesh not supported)",
-        ),
+        element_order,
     )
     .map_err(map_geometry_error)
 }

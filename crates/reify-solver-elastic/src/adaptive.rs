@@ -525,7 +525,9 @@ pub fn refine_marked_elements(
     options: &MeshingOptions,
 ) -> Result<VolumeMesh, RefineError> {
     // Element count from the mesh topology (shared with refine_with_size_field).
-    let n_elements = element_count(volume_mesh);
+    // Also the connectivity gate: rejects a Hex/Wedge `volume_mesh` here,
+    // before any size-hint/marked-index validation or gmsh call runs.
+    let n_elements = element_count(volume_mesh)?;
 
     // Length guard BEFORE any gmsh work: one current size per element.
     if current_sizes.len() != n_elements {
