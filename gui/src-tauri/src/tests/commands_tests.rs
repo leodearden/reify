@@ -94,7 +94,7 @@ fn save_and_open_file_roundtrip() {
     // Open
     let file_data = open_file_impl(path.to_str().unwrap()).expect("open should succeed");
     assert_eq!(file_data.path, path.to_str().unwrap());
-    assert!(file_data.content.contains("structure Bracket"));
+    assert!(file_data.content.contains("structure def Bracket"));
 }
 
 #[test]

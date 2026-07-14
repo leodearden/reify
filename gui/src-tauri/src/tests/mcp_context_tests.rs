@@ -42,7 +42,7 @@ fn get_source_returns_bracket_content() {
     let ctx = make_tauri_context();
     let source = ctx.get_source(None).expect("get_source should succeed");
     assert!(
-        source.content.contains("structure Bracket"),
+        source.content.contains("structure def Bracket"),
         "source should contain bracket structure"
     );
     assert_eq!(source.file_path, "bracket.ri");
@@ -225,7 +225,7 @@ fn save_file_writes_to_disk() {
     assert!(result);
 
     let content = std::fs::read_to_string(&path).unwrap();
-    assert!(content.contains("structure Bracket"));
+    assert!(content.contains("structure def Bracket"));
 }
 
 #[test]

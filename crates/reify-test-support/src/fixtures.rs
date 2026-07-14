@@ -1354,7 +1354,7 @@ mod tests {
     #[test]
     fn bracket_source_is_well_formed() {
         let source = bracket_source();
-        assert!(source.contains("structure Bracket"));
+        assert!(source.contains("structure def Bracket"));
         assert!(source.contains("param width"));
         assert!(source.contains("constraint thickness > 2mm"));
         assert!(source.contains("let body = box("));

@@ -85,8 +85,8 @@ fn harness_bracket_fixture_loads() {
     assert!(BRACKET_EDIT_SRC.contains("structure Bracket"));
     let on_disk = bracket_source();
     assert!(
-        on_disk.contains("structure Bracket"),
-        "examples/bracket.ri should define `structure Bracket`"
+        on_disk.contains("structure def Bracket"),
+        "examples/bracket.ri should define `structure def Bracket`"
     );
 }
 
