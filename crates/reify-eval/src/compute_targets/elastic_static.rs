@@ -8700,6 +8700,21 @@ mod tests {
         );
     }
 
+    // ── D6: classify_material_as_printed_zones Result-ification tests ──────
+    //
+    // Coverage boundary (amendment, task #5085 review round 5, suggestion 1):
+    // together the 4 tests below cover the 3 LOCAL guards this function owns
+    // (non-List lambda, arity, non-Real cos_threshold) plus ONE of its 6
+    // `?`-threaded leaf delegations (extract_point3_si on aabb_min) — enough
+    // to prove the uniform `?`-propagation mechanism itself. The remaining
+    // delegations — extract_point3_si (aabb_max), extract_zone_process_params
+    // (params), and anisotropic_material_from_value (mat_wall/mat_skin/
+    // mat_infill) — are deliberately not re-probed here: `?` propagation is
+    // already proven above, and each leaf's own Err variants are exhaustively
+    // covered by its own `extract_zone_process_params_rejects_*` /
+    // `anisotropic_material_from_value_rejects_*` unit tests elsewhere in
+    // this module.
+
     /// step-1 RED (task #5085, D6): `classify_material_as_printed_zones`
     /// must propagate a leaf extractor's `Err` via `?` instead of
     /// panicking, when the AsPrintedZones lambda is malformed.
@@ -8716,6 +8731,15 @@ mod tests {
     /// the arity check, so pinning the `context` field proves leaf
     /// propagation and keeps the test meaningful under future reordering
     /// of the guards.
+    ///
+    /// Amendment (task #5085 review round 5, suggestion 2): pinning
+    /// `context` does couple this test to `extract_point3_si`'s internal
+    /// `&'static str` label — renaming that literal breaks this test even
+    /// though propagation behavior is unchanged. Accepted tradeoff: it is
+    /// the only way to distinguish leaf-propagated errors from a
+    /// mis-ordered local guard (both yield `ExpectedList`), and no other
+    /// test in this module currently asserts on that string, so the
+    /// coupling is confined to here.
     #[test]
     fn classify_material_as_printed_zones_rejects_malformed_lambda() {
         // 7-element list; element 0 (aabb_min) is a non-Point Value::Real,
