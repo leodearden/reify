@@ -384,12 +384,18 @@ impl Engine {
 
     /// Allocates a fresh `(SnapshotId, VersionId)` pair: reads and advances
     /// `next_snapshot_id`, then reads and advances `next_version_id` — one
-    /// bump each. Call this instead of bumping the counters directly.
+    /// bump each. New call sites, and sites migrated off the old raw
+    /// read-and-bump idiom, should call this instead of bumping the
+    /// counters directly.
     ///
     /// This is the allocate half of INV-BUILD-2 (docs/invariants.md):
     /// "Version/snapshot IDs are allocated and read through exactly one API
-    /// each." See `docs/prds/v0_6/engine-build-hardening.md` §5.2 for
-    /// migration status and the live call-site inventory.
+    /// each." Migration is in progress, not yet complete: this task (5040)
+    /// routes the 3 paired sites in `engine_eval.rs` through this helper,
+    /// but `engine_edit.rs` and `concurrent.rs` still bump the counters by
+    /// hand pending their own migration tasks. See
+    /// `docs/prds/v0_6/engine-build-hardening.md` §5.2 for the live
+    /// call-site inventory.
     pub(crate) fn allocate_snapshot_version(&mut self) -> (SnapshotId, VersionId) {
         let snapshot_id = SnapshotId(self.next_snapshot_id);
         self.next_snapshot_id += 1;
@@ -3004,8 +3010,6 @@ mod tests {
     /// `eval_cached()`'s snapshot-only bump) to confirm that lockstep is a
     /// consequence of the initial state, not something this method itself
     /// enforces.
-    ///
-    /// RED until `allocate_snapshot_version` exists — this fails to compile.
     #[test]
     fn allocate_snapshot_version_allocates_pair_and_bumps_both_counters() {
         use reify_core::{SnapshotId, VersionId};
