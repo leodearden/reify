@@ -170,6 +170,36 @@ fn all_examples_parse_and_compile_with_stdlib() {
     }
 }
 
+/// Focused regression: `examples/bracket.ri` is the de-facto canonical
+/// example (mirrored into `bracket_source()` for Rust/GUI test fixtures) and
+/// must use the canonical `structure def` declaration form — not the bare
+/// `structure` alias — while still compiling clean with zero Error-severity
+/// diagnostics.
+#[test]
+fn bracket_example_is_canonical_def_form() {
+    let path = Path::new(EXAMPLES_DIR).join("bracket.ri");
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("cannot read '{}': {}", path.display(), e));
+    assert!(
+        source.starts_with("structure def Bracket"),
+        "examples/bracket.ri should begin with the canonical `structure def Bracket` \
+         form, got: {:?}",
+        &source[..source.len().min(40)]
+    );
+
+    let mut failures: Vec<(String, String)> = Vec::new();
+    smoke_one(&path, "bracket.ri", &mut failures);
+    assert!(
+        failures.is_empty(),
+        "examples/bracket.ri should compile with zero Error-severity diagnostics:\n{}",
+        failures
+            .into_iter()
+            .map(|(name, errors)| format!("=== {} ===\n{}", name, errors))
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    );
+}
+
 /// Sanity guard: every entry in SKIP_SET must name a relative path that actually
 /// exists under `examples/`.  Catches mis-typed or stale skip entries before they
 /// silently disable coverage.
