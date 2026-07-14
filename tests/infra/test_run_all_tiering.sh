@@ -180,6 +180,80 @@ assert "MERGE (non-vacuous): plan LACKS the selective test_verify_*.sh loop even
     plan_lacks 'tests/infra/test_verify_\*\.sh'
 
 # ===========================================================================
+# BACKGROUND tier (task 5210): DF_VERIFY_ROLE=background is dark-factory's
+# main-tip integrity sweep — merge-level COMPLETENESS. Mirrors the MERGE tier
+# scenarios above exactly: the full run_all.sh pool suite must run here too,
+# never the cheap per-task selective subset, and the print-plan NOTE that
+# warns "selective subset only" must NOT appear (it would be a phantom-green
+# lie for an integrity sweep). --include-infra is passed deliberately (unlike
+# the plain MERGE scenario above) so the NOTE guard's own trigger condition
+# (INCLUDE_INFRA=1 && role!=merge) is live — the clean non-vacuous RED->GREEN
+# oracle for this tier (see task 5210 plan design_decisions).
+# ===========================================================================
+echo ""
+echo "--- BACKGROUND tier: role=background --scope all --include-infra -> full run_all.sh pool, no selective leak, no NOTE (RED until step-8) ---"
+
+capture_print_plan PLAN_OUT "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+    bash -c 'cd "$1" && export DF_VERIFY_ROLE=background && exec bash scripts/verify.sh all --profile both --scope all --include-infra --print-plan' \
+    _ "$FIX" || true
+
+assert "BACKGROUND: plan capture complete (structural markers present)" \
+    plan_capture_complete "$PLAN_OUT"
+
+assert "BACKGROUND: plan CONTAINS tests/infra/run_all.sh (full pool suite, RED until step-8)" \
+    plan_has 'tests/infra/run_all\.sh'
+
+assert "BACKGROUND: run_all.sh line carries REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 (RED until step-8)" \
+    bash -c 'printf "%s\n" "$1" | grep "run_all\.sh" | grep -q "REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1"' _ "$PLAN_OUT"
+
+assert "BACKGROUND: run_all.sh line carries REIFY_AUDIT_NO_COLD_BUILD=1 (RED until step-8)" \
+    bash -c 'printf "%s\n" "$1" | grep "run_all\.sh" | grep -q "REIFY_AUDIT_NO_COLD_BUILD=1"' _ "$PLAN_OUT"
+
+assert "BACKGROUND: run_all.sh line does NOT export REIFY_INFRA_SUITE_ACTIVE (no ambient leak into pool tests)" \
+    bash -c '! { printf "%s\n" "$1" | grep "run_all\.sh" | grep -q "REIFY_INFRA_SUITE_ACTIVE"; }' _ "$PLAN_OUT"
+
+assert "BACKGROUND: plan LACKS the selective test_verify_*.sh loop (exactly-one: full pool present, selective absent)" \
+    plan_lacks 'tests/infra/test_verify_\*\.sh'
+
+assert "BACKGROUND: plan LACKS the 'selective per-artifact infra subset only' NOTE (RED until step-8 — a main integrity sweep gets the full pool, not a phantom-green subset)" \
+    plan_lacks 'selective per-artifact infra subset only'
+
+# ---------------------------------------------------------------------------
+# BACKGROUND tier (non-vacuous, task 5210): mirrors the MERGE (non-vacuous)
+# drift-guard above — a real diff to a mapped artifact (scripts/verify.sh) on
+# a branch, with an ATTEMPTED --scope branch (not --scope all), proves
+# contract-C2 forcing (step-6) actually fired for background and that the
+# selective-subset suppression genuinely excludes background (not merely
+# vacuously absent because SELECTED_INFRA_GLOBS was empty).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- BACKGROUND tier (non-vacuous): role=background --scope branch (attempted), verify.sh changed -> forced to scope=all, still no selective leak (RED until step-8) ---"
+
+git -C "$FIX" checkout -q -b background-diff-branch
+echo "# task-5210 BACKGROUND-tier verify.sh-change simulation sentinel" >> "$FIX/scripts/verify.sh"
+git -C "$FIX" add scripts/verify.sh
+git -C "$FIX" commit -q -m "background-tier diff simulation"
+
+capture_print_plan PLAN_OUT "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+    bash -c 'cd "$1" && export DF_VERIFY_ROLE=background && exec bash scripts/verify.sh all --profile both --scope branch --print-plan' \
+    _ "$FIX" || true
+
+git -C "$FIX" checkout -q main
+git -C "$FIX" branch -q -D background-diff-branch
+
+assert "BACKGROUND (non-vacuous): plan capture complete (structural markers present)" \
+    plan_capture_complete "$PLAN_OUT"
+
+assert "BACKGROUND (non-vacuous): plan header shows scope=all (contract C2 forced the attempted --scope branch back to all, despite a real diff)" \
+    plan_has 'scope=all'
+
+assert "BACKGROUND (non-vacuous): plan CONTAINS tests/infra/run_all.sh despite the attempted narrow scope (RED until step-8)" \
+    plan_has 'tests/infra/run_all\.sh'
+
+assert "BACKGROUND (non-vacuous): plan LACKS the selective test_verify_*.sh loop even though scripts/verify.sh (a mapped artifact) genuinely changed on this branch (RED until step-8)" \
+    plan_lacks 'tests/infra/test_verify_\*\.sh'
+
+# ===========================================================================
 # RE-ENTRANCY GUARD (task 5125): a DF_VERIFY_ROLE=merge verify running INSIDE
 # an infra suite must NOT re-emit the run_all.sh line. run_all.sh keys the pool
 # on the INHERITED env var DF_VERIFY_ROLE=merge, and
