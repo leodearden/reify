@@ -809,6 +809,65 @@
         capture.assert_count(0);
     }
 
+    /// A Hex or Wedge `VolumeMesh` is non-tetrahedral connectivity that
+    /// `build_mixed_region_mesh` (tet-only) cannot process. Both must be
+    /// rejected via `MixedRegionError::UnsupportedConnectivity` instead of
+    /// panicking in the `tet_indices().expect()` guard (task 4996).
+    #[test]
+    fn build_mixed_region_mesh_errors_on_unsupported_connectivity() {
+        let shell = make_shell_mesh();
+
+        // Hex8: 8 vertices (24 f32), P1-only connectivity.
+        let hex = VolumeMesh {
+            vertices: vec![
+                0.0, 0.0, 1.0, // node 0
+                1.0, 0.0, 1.0, // node 1
+                1.0, 1.0, 1.0, // node 2
+                0.0, 1.0, 1.0, // node 3
+                0.0, 0.0, 2.0, // node 4
+                1.0, 0.0, 2.0, // node 5
+                1.0, 1.0, 2.0, // node 6
+                0.0, 1.0, 2.0, // node 7
+            ],
+            connectivity: VolumeConnectivity::Hex {
+                indices: vec![0, 1, 2, 3, 4, 5, 6, 7],
+            },
+            normals: None,
+            boundary: None,
+        };
+        let err = build_mixed_region_mesh(&shell, &hex, &[])
+            .expect_err("a Hex VolumeMesh must be rejected (tet-only)");
+        assert_eq!(
+            err,
+            MixedRegionError::UnsupportedConnectivity,
+            "Hex connectivity must yield UnsupportedConnectivity, not a panic",
+        );
+
+        // Wedge/PRI6: 6 vertices (18 f32), P1-only connectivity.
+        let wedge = VolumeMesh {
+            vertices: vec![
+                0.0, 0.0, 1.0, // node 0
+                1.0, 0.0, 1.0, // node 1
+                0.0, 1.0, 1.0, // node 2
+                0.0, 0.0, 2.0, // node 3
+                1.0, 0.0, 2.0, // node 4
+                0.0, 1.0, 2.0, // node 5
+            ],
+            connectivity: VolumeConnectivity::Wedge {
+                indices: vec![0, 1, 2, 3, 4, 5],
+            },
+            normals: None,
+            boundary: None,
+        };
+        let err = build_mixed_region_mesh(&shell, &wedge, &[])
+            .expect_err("a Wedge VolumeMesh must be rejected (tet-only)");
+        assert_eq!(
+            err,
+            MixedRegionError::UnsupportedConnectivity,
+            "Wedge connectivity must yield UnsupportedConnectivity, not a panic",
+        );
+    }
+
     // ── op_accepts_repr / classify_op_input_reprs unit tests (task 4049) ────────
 
     /// Pins the `(Operation, ReprKind)` input-repr classifier table for the
