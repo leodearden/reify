@@ -104,8 +104,8 @@ fn dimensioned_complex_plus_int_emits_arith_operand_kind_and_poisons_result() {
          ArithOperandKind; got errors: {errors:?}"
     );
     assert!(
-        flagged[0].message.contains('+'),
-        "`z + 1` error message must mention `+`; got: {:?}",
+        flagged[0].message.contains("operator `+`"),
+        "`z + 1` error message must name the `+` operator; got: {:?}",
         flagged[0].message
     );
     // Derive the expected operand-kind substring from `Type`'s own Display
@@ -171,8 +171,8 @@ fn dimensioned_complex_minus_int_emits_arith_operand_kind() {
          ArithOperandKind; got errors: {errors:?}"
     );
     assert!(
-        flagged[0].message.contains('-'),
-        "`z - 1` error message must mention `-`; got: {:?}",
+        flagged[0].message.contains("operator `-`"),
+        "`z - 1` error message must name the `-` operator; got: {:?}",
         flagged[0].message
     );
 }
