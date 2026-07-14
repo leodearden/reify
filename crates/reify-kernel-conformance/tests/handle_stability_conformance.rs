@@ -4,21 +4,25 @@
 //! session, per real kernel. This is the regression guard that "would have
 //! caught #4262" — see `docs/prds/kernel-seam-contracts.md` §5/§12.
 //!
-//! Scope: the three currently-STABLE arms only (§12 ζ) — OCCT
-//! `extract_faces`, OCCT `extract_edges`, Manifold `extract_faces`. The
-//! Manifold `extract_edges` arm is DELIBERATELY OMITTED here: it is
-//! un-memoized on main (`ManifoldKernel::extract_edges`, in
-//! `crates/reify-kernel-manifold/src/kernel.rs`, mints a fresh id every
-//! call — there is no `extracted_edges` cache), so a stability assertion
-//! would be permanently red and un-greenable within this task's scope.
-//! That arm — and the memoization fix it depends on — is owned by the
-//! downstream leaf η (§5/§8/§12).
+//! Scope: all four arms of the §12 ζ conformance matrix — OCCT
+//! `extract_faces`, OCCT `extract_edges`, Manifold `extract_faces`, and
+//! Manifold `extract_edges`. The Manifold `extract_edges` arm was
+//! DELIBERATELY OMITTED when this file was first landed (task ζ):
+//! `ManifoldKernel::extract_edges`, in
+//! `crates/reify-kernel-manifold/src/kernel.rs`, minted a fresh id every
+//! call — there was no `extracted_edges` cache — a dormant re-instance of
+//! the #4262 defect that `extract_faces` already had fixed, so a stability
+//! assertion would have been permanently red and un-greenable within that
+//! task's scope. The downstream leaf η landed the mirrored
+//! `extracted_edges` memoization cache and added this arm to complete the
+//! matrix (§5/§8/§12).
 //!
-//! All three arms here are GREEN on current main: the memoization they pin
+//! All four arms here are GREEN on current main: the memoization they pin
 //! already landed (OCCT `extracted_faces`/`extracted_edges` caches, #318/
-//! #4262; Manifold `extracted_faces` cache). Their value is red-on-revert —
-//! delete the relevant cache and a repeated `extract_*` call mints fresh
-//! ids, `first != second`, and the test fails: exactly the #4262 defect.
+//! #4262; Manifold `extracted_faces`/`extracted_edges` caches). Their value
+//! is red-on-revert — delete the relevant cache and a repeated `extract_*`
+//! call mints fresh ids, `first != second`, and the test fails: exactly the
+//! #4262 defect.
 //!
 //! Also out of scope: none of the arms below call `OcctKernel::with_warm_state`,
 //! so this file pins ONLY within-session stability, not the cache's
@@ -167,8 +171,9 @@ fn occt_extract_edges_returns_stable_ids() {
 /// `crates/reify-kernel-manifold/src/kernel.rs`); red-on-revert if that
 /// cache is removed.
 ///
-/// The Manifold `extract_edges` arm is intentionally NOT added here — see
-/// the module doc comment.
+/// The Manifold `extract_edges` arm follows immediately below
+/// (`manifold_extract_edges_returns_stable_ids`) — see the module doc
+/// comment for its landing history.
 #[test]
 fn manifold_extract_faces_returns_stable_ids() {
     let mesh = common::occt_box();
@@ -202,4 +207,53 @@ fn manifold_extract_faces_returns_stable_ids() {
     );
 
     assert_stable_ids("manifold extract_faces", handle.id, &runs);
+}
+
+/// `extract_edges` on a real Manifold handle — a genuine OCCT box mesh
+/// ingested via `ManifoldKernel::ingest_mesh` — returns identical ids, in
+/// identical order, across repeated calls within a session.
+///
+/// The exact edge COUNT is deliberately not pinned here — only a loose lower
+/// bound (a box has 12 BRep edges, so it cannot have fewer than 6), mirroring
+/// `manifold_extract_faces_returns_stable_ids`'s style above: stability, not
+/// an exact count, is this arm's contract (the real-mesh canonical edge
+/// enumeration is finer-grained than the BRep edge count and depends on
+/// OCCT's tessellation, so hard-pinning an exact number would be brittle).
+///
+/// RED (task η step-2): `ManifoldKernel::extract_edges` is un-memoized on
+/// current main — a dormant re-instance of the #4262 defect that
+/// `extract_faces` already had fixed — so each of the three `run_thrice`
+/// calls mints a fresh, disjoint id set and `assert_stable_ids` fails on the
+/// run-1-vs-run-0 equality check. GREEN after task η step-3 (mirrored
+/// `extracted_edges` memoization cache, in
+/// `crates/reify-kernel-manifold/src/kernel.rs`); red-on-revert if that
+/// cache is removed.
+#[test]
+fn manifold_extract_edges_returns_stable_ids() {
+    let mesh = common::occt_box();
+    // Precondition sanity check — see the analogous comment in
+    // `manifold_extract_faces_returns_stable_ids` above.
+    assert!(
+        !mesh.vertices.is_empty() && !mesh.indices.is_empty(),
+        "occt_box() must yield a non-empty mesh; got {} vertices / {} indices",
+        mesh.vertices.len(),
+        mesh.indices.len()
+    );
+    let mut manifold = ManifoldKernel::new();
+    let handle = manifold
+        .ingest_mesh(&mesh)
+        .expect("ingest_mesh should accept a validated real OCCT box mesh");
+
+    let runs = run_thrice("manifold extract_edges", || {
+        manifold.extract_edges(handle.id)
+    });
+
+    assert!(
+        runs[0].len() >= 6,
+        "a box mesh cannot have fewer than 6 edges (a lower value suggests a \
+         degenerate regression), got {}",
+        runs[0].len()
+    );
+
+    assert_stable_ids("manifold extract_edges", handle.id, &runs);
 }
