@@ -1301,7 +1301,19 @@ async fn open_path_into_engine(state: &DebugServerState, raw_path: &str) -> Resu
     // absolute spelling (fixes bug #3892: duplicate tabs via debug bridge).
     let path = crate::path_key::canonicalize_debug_open_path(raw_path);
 
-    // Read file from disk
+    // Read file from disk — this copy is ONLY for the "content" field of the
+    // frontend open_file push below. `open_source_into_engine_and_refresh_baseline`
+    // (below) independently re-reads the same `path` a second time inside
+    // `load_file_into_engine` -> `EngineSession::load_file`. Two reads, not
+    // one, mirrors the normal (non-debug) GUI path exactly: `open_file_impl`
+    // (frontend content fetch) and `open_file_engine_impl` (engine load) each
+    // read the file independently too (commands.rs). A merged single-read
+    // helper would need an engine.rs load-from-source-with-path variant,
+    // which is out of scope for task #5193. This is benign — not a bug — for
+    // the current sole caller (the serial e2e visual-regression harness over
+    // static fixtures: no concurrent writer, so the two reads cannot diverge
+    // in practice); see PRD §4 D7 for the same serial-debug-ops assumption
+    // the baseline-refresh note below relies on.
     let content =
         std::fs::read_to_string(&path).map_err(|e| format!("failed to read {path}: {e}"))?;
 
@@ -3387,28 +3399,28 @@ mod tests {
         );
     }
 
-    // ── Task 5193 step-1: RED — the debug open funnel must adopt the
+    // ── Task 5193 step-1: regression — the debug open funnel must adopt the
     // newly-opened file's identity, not the previously-loaded file's ──
     //
-    // `open_source_into_engine_and_refresh_baseline` currently calls
-    // `update_source(&path, &content)`. When `self.file_path` is already
-    // `Some` (set by a prior `load_file`), `update_source` derives
-    // `module_name` from the OLD `self.file_path` and commits
+    // `open_source_into_engine_and_refresh_baseline` previously called
+    // `update_source(&path, &content)`. When `self.file_path` was already
+    // `Some` (set by a prior `load_file`), `update_source` derived
+    // `module_name` from the OLD `self.file_path` and committed
     // `FilePathUpdate::Preserve` — correct for live-buffer edits (task
-    // #3370), but wrong when the caller is opening a DIFFERENT file: the
-    // newly-opened file's content is evaluated under the PREVIOUS file's
+    // #3370), but wrong when the caller was opening a DIFFERENT file: the
+    // newly-opened file's content was evaluated under the PREVIOUS file's
     // identity, so `GuiState::files[].path` and every diagnostic's
-    // `file_path` keep citing the old file.
+    // `file_path` kept citing the old file.
     //
     // Both tests below reproduce the buggy precondition by loading file A
     // via `load_file` (so `self.file_path = Some`) BEFORE opening file B
     // through the helper — with `self.file_path == None`, `update_source`
-    // takes its single-file branch and would not exhibit the bug.
+    // took its single-file branch and would not have exhibited the bug.
     //
-    // FAILS TO COMPILE until step-2 changes the helper to a 3-arg signature
-    // `(engine, last_state, path)` that routes through
-    // `EngineSession::load_file` (`FilePathUpdate::Set`) instead of
-    // `update_source`.
+    // These tests lock in the fix: the helper now routes through
+    // `EngineSession::load_file` (`FilePathUpdate::Set`, via
+    // `crate::commands::load_file_into_engine`) instead of `update_source`,
+    // so the debug open funnel adopts the newly-opened file's identity.
 
     /// T1 (open_file variant, files-path facet): launch on bracket.ri, then
     /// open deck.ri through the helper — `GuiState::files[0].path` must
