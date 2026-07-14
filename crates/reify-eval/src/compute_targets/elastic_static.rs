@@ -8702,44 +8702,32 @@ mod tests {
 
     // ── D6: classify_material_as_printed_zones Result-ification tests ──────
     //
-    // Coverage boundary (amendment, task #5085 review round 5, suggestion 1):
-    // together the 4 tests below cover the 3 LOCAL guards this function owns
-    // (non-List lambda, arity, non-Real cos_threshold) plus ONE of its 6
-    // `?`-threaded leaf delegations (extract_point3_si on aabb_min) — enough
-    // to prove the uniform `?`-propagation mechanism itself. The remaining
-    // delegations — extract_point3_si (aabb_max), extract_zone_process_params
-    // (params), and anisotropic_material_from_value (mat_wall/mat_skin/
-    // mat_infill) — are deliberately not re-probed here: `?` propagation is
-    // already proven above, and each leaf's own Err variants are exhaustively
-    // covered by its own `extract_zone_process_params_rejects_*` /
+    // Coverage boundary: together the 4 tests below cover the 3 LOCAL guards
+    // this function owns (non-List lambda, arity, non-Real cos_threshold)
+    // plus ONE of its 6 `?`-threaded leaf delegations (extract_point3_si on
+    // aabb_min) — enough to prove the uniform `?`-propagation mechanism
+    // itself. The remaining delegations — extract_point3_si (aabb_max),
+    // extract_zone_process_params (params), and anisotropic_material_from_value
+    // (mat_wall/mat_skin/mat_infill) — are deliberately not re-probed here:
+    // `?` propagation is already proven above, and each leaf's own Err
+    // variants are exhaustively covered by its own
+    // `extract_zone_process_params_rejects_*` /
     // `anisotropic_material_from_value_rejects_*` unit tests elsewhere in
     // this module.
 
-    /// step-1 RED (task #5085, D6): `classify_material_as_printed_zones`
-    /// must propagate a leaf extractor's `Err` via `?` instead of
-    /// panicking, when the AsPrintedZones lambda is malformed.
+    /// `classify_material_as_printed_zones` must propagate a leaf
+    /// extractor's `Err` via `?` instead of panicking, when the
+    /// AsPrintedZones lambda is malformed.
     ///
-    /// RED: `classify_material_as_printed_zones` currently returns a bare
-    /// `MaterialModel`, so matching `Err(..)` fails to type-check until
-    /// step-2 converts it to `Result<MaterialModel, FeaValueShapeError>`.
-    ///
-    /// Amendment (task #5085 review round 3, suggestion 1): the local
-    /// arity guard (`..._rejects_wrong_arity` below) also yields
-    /// `ExpectedList`, so a bare variant match doesn't prove this `Err`
-    /// actually came from `extract_point3_si` via `?` rather than from a
+    /// The local arity guard (`..._rejects_wrong_arity` below) also yields
+    /// `ExpectedList`, so a bare variant match wouldn't prove this `Err`
+    /// came from `extract_point3_si` via `?` rather than from a
     /// mis-ordered local guard. The 7-element list here already satisfies
     /// the arity check, so pinning the `context` field proves leaf
-    /// propagation and keeps the test meaningful under future reordering
-    /// of the guards.
-    ///
-    /// Amendment (task #5085 review round 5, suggestion 2): pinning
-    /// `context` does couple this test to `extract_point3_si`'s internal
-    /// `&'static str` label — renaming that literal breaks this test even
-    /// though propagation behavior is unchanged. Accepted tradeoff: it is
-    /// the only way to distinguish leaf-propagated errors from a
-    /// mis-ordered local guard (both yield `ExpectedList`), and no other
-    /// test in this module currently asserts on that string, so the
-    /// coupling is confined to here.
+    /// propagation — the only way to distinguish the two, since both
+    /// yield `ExpectedList`. This couples the test to
+    /// `extract_point3_si`'s internal `&'static str` label, but no other
+    /// test in this module asserts on that string.
     #[test]
     fn classify_material_as_printed_zones_rejects_malformed_lambda() {
         // 7-element list; element 0 (aabb_min) is a non-Point Value::Real,
@@ -8759,10 +8747,9 @@ mod tests {
         );
     }
 
-    /// Amendment (task #5085 review, suggestion 1): the arity guard
-    /// (`list.len() < 7`) is a second branch this function owns directly
-    /// (not delegated to a leaf extractor), so it needs its own case
-    /// distinct from the leaf-propagation test above. Mirrors
+    /// The arity guard (`list.len() < 7`) is a second branch this function
+    /// owns directly (not delegated to a leaf extractor), so it needs its
+    /// own case distinct from the leaf-propagation test above. Mirrors
     /// `extract_zone_process_params_rejects_wrong_arity`'s policy of
     /// asserting the `ExpectedList` variant only, not the `got` prose.
     #[test]
@@ -8779,14 +8766,13 @@ mod tests {
         );
     }
 
-    /// Amendment (task #5085 review, suggestion 1): the `cos_threshold`
-    /// non-`Real` branch is the third local guard this function owns
-    /// directly. Elements 0..2 must be well-formed (a valid `Point3` pair
-    /// plus a valid 7-element `params` list) so the leaf extractors ahead
-    /// of `cos_threshold` succeed via `?` and the error is proven to come
-    /// from THIS check, not an earlier one; elements 4..6 are unchecked
-    /// placeholders since the function returns before reaching
-    /// `mat_wall`/`mat_skin`/`mat_infill`.
+    /// The `cos_threshold` non-`Real` branch is the third local guard this
+    /// function owns directly. Elements 0..2 must be well-formed (a valid
+    /// `Point3` pair plus a valid 7-element `params` list) so the leaf
+    /// extractors ahead of `cos_threshold` succeed via `?` and the error
+    /// is proven to come from THIS check, not an earlier one; elements
+    /// 4..6 are unchecked placeholders since the function returns before
+    /// reaching `mat_wall`/`mat_skin`/`mat_infill`.
     #[test]
     fn classify_material_as_printed_zones_rejects_non_real_cos_threshold() {
         let scalar = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::DIMENSIONLESS };
@@ -8818,24 +8804,16 @@ mod tests {
         );
     }
 
-    /// Amendment (task #5085 review round 2, suggestion 1): the Ok/success
-    /// path — a well-formed 7-element AsPrintedZones lambda threading all
-    /// six extractor calls through to a successful `Heterogeneous` field —
-    /// is otherwise only exercised indirectly, via
+    /// The Ok/success path — a well-formed 7-element AsPrintedZones lambda
+    /// threading all six extractor calls through to a successful
+    /// `Heterogeneous` field — is otherwise only exercised indirectly, via
     /// `classify_material_as_printed_zones_returns_heterogeneous` above
     /// calling the OUTER `classify_material`, which bridges through
     /// `.fea_shim()` and would itself panic on `Err` rather than surface
     /// it. This test calls the Result-ified function directly and asserts
-    /// the `Ok(Heterogeneous(_))` shape.
-    ///
-    /// Amendment (task #5085 review round 4, suggestion 1, test_duplication):
-    /// this test previously also re-probed the wall-vs-infill spatial
-    /// dispatch on the sampled field, duplicating
-    /// `classify_material_as_printed_zones_returns_heterogeneous`'s
-    /// assertion over the identical fixture. That coverage is left solely
-    /// to the sibling test above; this test's only reason to exist is the
-    /// direct `Ok(Heterogeneous(_))` shape check, since the sibling only
-    /// observes the shim-bridged `MaterialModel` return, not the `Result`.
+    /// only the `Ok(Heterogeneous(_))` shape; the wall-vs-infill spatial
+    /// dispatch on the sampled field is already covered by the sibling
+    /// test above (over the identical fixture), so it isn't re-probed here.
     #[test]
     fn classify_material_as_printed_zones_accepts_wellformed_lambda() {
         // Same fixture shape as `classify_material_as_printed_zones_returns_heterogeneous`
