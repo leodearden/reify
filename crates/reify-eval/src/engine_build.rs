@@ -1265,6 +1265,7 @@ fn diagnose_topology_correspondence_drops(
 /// Failed-realization regression (per task-2574 convention).
 fn populate_local_feature_op(
     table: &mut TopologyAttributeTable,
+    kernel_id: KernelId,
     kernel: &mut dyn GeometryKernel,
     feature_id: &FeatureId,
     target_handle: GeometryHandleId,
@@ -1279,6 +1280,7 @@ fn populate_local_feature_op(
 
     crate::topology_attribute_propagation::propagate_attributes_via_local_feature_history(
         table,
+        kernel_id,
         &target_faces,
         &target_edges,
         &target_vertices,
@@ -1416,6 +1418,7 @@ fn try_extract_sweep_cap_vertex_data(
 /// tests that check face/edge attributes are not broken by the vertex wire.
 fn populate_single_parent_sweep_op(
     table: &mut TopologyAttributeTable,
+    kernel_id: KernelId,
     kernel: &mut dyn GeometryKernel,
     feature_id: &FeatureId,
     profile_handle: GeometryHandleId,

@@ -5049,7 +5049,7 @@ impl Role {
 /// Per-topology-entity attribute record for v0.2 persistent naming.
 ///
 /// One of these is associated with each face/edge produced by a feature,
-/// keyed by `GeometryHandleId` in the runtime `TopologyAttributeTable`.
+/// keyed by `KernelHandle` in the runtime `TopologyAttributeTable`.
 ///
 /// Fields per PRD lines 52-61:
 ///   - `feature_id` — the feature that produced (or last touched) this entity.
@@ -5062,7 +5062,7 @@ impl Role {
 ///
 /// Note: deliberately not `Hash` — `Vec<ModEntry>` would force a Hash bound
 /// chain, and TopologyAttribute is never used as a HashMap key (the table
-/// is keyed by GeometryHandleId).
+/// is keyed by KernelHandle).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TopologyAttribute {
     pub feature_id: FeatureId,
@@ -5095,32 +5095,40 @@ impl TopologyAttribute {
     }
 }
 
-/// Runtime table mapping geometry handle ids to `TopologyAttribute`s.
+/// Runtime table mapping kernel-scoped geometry handles to `TopologyAttribute`s.
+///
+/// Keyed by the full `KernelHandle` (kernel + kernel-local id) rather than a
+/// bare `GeometryHandleId` — `GeometryHandleId` is unique only WITHIN a
+/// kernel (each kernel mints ids from 1), so in any cross-kernel build two
+/// different kernels' handles can share the same numeric id. Keying by
+/// `KernelHandle` keeps those entries independently addressable instead of
+/// colliding onto one slot (task #4351).
 ///
 /// Tasks 5-8 wire per-op auto-population; task 2 (#2570) wires
 /// selector lookup against this table.
 // `Clone` (task 4744 β step-20): the morph-source side-table snapshots the
 // live attribute table into an owned `OwnedBRepSnapshot` BEFORE a rebuild wipes
 // it, so `morph_eligible` Stage-B can run against the OLD BRep on the next tick.
-// The single `HashMap<GeometryHandleId, TopologyAttribute>` field is `Clone`
+// The single `HashMap<KernelHandle, TopologyAttribute>` field is `Clone`
 // (both key and value derive it), so this is a trivial additive derive.
 #[derive(Debug, Default, Clone)]
 pub struct TopologyAttributeTable {
-    entries: HashMap<GeometryHandleId, TopologyAttribute>,
+    entries: HashMap<KernelHandle, TopologyAttribute>,
 }
 
 impl TopologyAttributeTable {
-    /// Record that geometry handle `id` carries `attr`.
+    /// Record that geometry handle `handle` carries `attr`.
     ///
-    /// Overwrites any prior entry for the same id (last-write-wins). Tasks 3
-    /// (#2571) and 4 (#2572) will add diagnostics around accidental rebinds.
-    pub fn record(&mut self, id: GeometryHandleId, attr: TopologyAttribute) {
-        self.entries.insert(id, attr);
+    /// Overwrites any prior entry for the same handle (last-write-wins).
+    /// Tasks 3 (#2571) and 4 (#2572) will add diagnostics around accidental
+    /// rebinds.
+    pub fn record(&mut self, handle: KernelHandle, attr: TopologyAttribute) {
+        self.entries.insert(handle, attr);
     }
 
-    /// Look up the attribute for a given geometry handle, if any.
-    pub fn lookup(&self, id: GeometryHandleId) -> Option<&TopologyAttribute> {
-        self.entries.get(&id)
+    /// Look up the attribute for a given kernel-scoped geometry handle, if any.
+    pub fn lookup(&self, handle: KernelHandle) -> Option<&TopologyAttribute> {
+        self.entries.get(&handle)
     }
 
     /// Number of entries currently in the table.
@@ -5133,32 +5141,34 @@ impl TopologyAttributeTable {
         self.entries.is_empty()
     }
 
-    /// Remove the entry for `id`, returning it if present.
+    /// Remove the entry for `handle`, returning it if present.
     ///
     /// Used by the cache-hit short-circuit in `Engine::execute_realization_ops`
-    /// to evict any cross-kernel colliding entry at `id` before pushing the
-    /// cached handle — so a subsequent `lookup(id)` correctly returns `None`
+    /// to evict any colliding entry at `handle` before pushing the cached
+    /// handle — so a subsequent `lookup(handle)` correctly returns `None`
     /// (the #3226 spec: a cache-served handle has no entries in the attribute
-    /// table on the second build).
+    /// table on the second build). Keying by the full `KernelHandle` means
+    /// this eviction can no longer collaterally remove a different kernel's
+    /// entry that happens to share the same numeric id (#4351).
     ///
-    /// Returns `None` silently when `id` is absent (no-op in the common
+    /// Returns `None` silently when `handle` is absent (no-op in the common
     /// single-kernel case where the per-build reset already cleared the table).
-    pub fn remove(&mut self, id: GeometryHandleId) -> Option<TopologyAttribute> {
-        self.entries.remove(&id)
+    pub fn remove(&mut self, handle: KernelHandle) -> Option<TopologyAttribute> {
+        self.entries.remove(&handle)
     }
 
-    /// Iterate over all `(GeometryHandleId, &TopologyAttribute)` pairs in the table.
+    /// Iterate over all `(KernelHandle, &TopologyAttribute)` pairs in the table.
     ///
     /// Iteration order is **unspecified** — the table is HashMap-backed, so
     /// callers needing a deterministic order must collect and sort
-    /// (e.g. by `GeometryHandleId` or `(feature_id, role, local_index)`).
+    /// (e.g. by `KernelHandle` or `(feature_id, role, local_index)`).
     ///
     /// Used by per-realization fragility detection in
     /// `reify_eval::engine_build` to filter the just-completed realization's
     /// attribute entries (`attr.feature_id == realization_feature_id`) for
     /// the `detect_local_index_reassignment_diagnostics` helper
     /// (PRD `docs/prds/v0_2/persistent-naming-v2.md` line 72).
-    pub fn iter(&self) -> impl Iterator<Item = (GeometryHandleId, &TopologyAttribute)> {
+    pub fn iter(&self) -> impl Iterator<Item = (KernelHandle, &TopologyAttribute)> {
         self.entries.iter().map(|(k, v)| (*k, v))
     }
 }

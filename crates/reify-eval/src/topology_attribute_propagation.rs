@@ -45,8 +45,8 @@ use std::collections::HashMap;
 use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
 use reify_ir::{
     AxisSign, BooleanOpHistoryRecords, BooleanOpParents, CapKind, FeatureId, GeometryHandleId,
-    HistoryRecord, LocalFeatureOpHistoryRecords, LoftOpHistoryRecords, ModEntry, QueryError, Role,
-    SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable,
+    HistoryRecord, KernelHandle, KernelId, LocalFeatureOpHistoryRecords, LoftOpHistoryRecords,
+    ModEntry, QueryError, Role, SweepOpHistoryRecords, TopologyAttribute, TopologyAttributeTable,
 };
 
 /// Propagate parent topology attributes onto the result of a `BRepAlgoAPI`
@@ -114,6 +114,7 @@ use reify_ir::{
 /// of decomposition-plan task 1 (lines 89-103).
 pub fn propagate_attributes_via_brepalgoapi_history(
     table: &mut TopologyAttributeTable,
+    kernel_id: KernelId,
     parents: &BooleanOpParents<'_>,
     result_face_handles: &[GeometryHandleId],
     result_edge_handles: &[GeometryHandleId],
@@ -151,6 +152,7 @@ pub fn propagate_attributes_via_brepalgoapi_history(
     {
         propagate_one(
             table,
+            kernel_id,
             parent_face_handles,
             result_face_handles,
             record,
@@ -172,6 +174,7 @@ pub fn propagate_attributes_via_brepalgoapi_history(
     {
         propagate_one(
             table,
+            kernel_id,
             parent_edge_handles,
             result_edge_handles,
             record,
@@ -235,6 +238,7 @@ pub fn propagate_attributes_via_brepalgoapi_history(
 #[allow(clippy::too_many_arguments)]
 pub fn propagate_attributes_via_local_feature_history(
     table: &mut TopologyAttributeTable,
+    kernel_id: KernelId,
     parent_face_handles: &[GeometryHandleId],
     parent_edge_handles: &[GeometryHandleId],
     parent_vertex_handles: &[GeometryHandleId],
@@ -297,7 +301,10 @@ pub fn propagate_attributes_via_local_feature_history(
             // earlier stage intentionally left it unattributed) simply
             // yields no result attribute rather than an error; diagnostics
             // for accidental unattributed-parent rebinds are deferred.
-            if let Some(parent_attr) = table.lookup(parent_handle) {
+            if let Some(parent_attr) = table.lookup(KernelHandle {
+                kernel: kernel_id,
+                id: parent_handle,
+            }) {
                 let mut attr_clone = parent_attr.clone();
                 let parent_key = (record.parent_index, record.parent_subshape_index);
                 let split_index = split_counters.entry(parent_key).or_insert(0);
@@ -306,7 +313,13 @@ pub fn propagate_attributes_via_local_feature_history(
                     split_index: *split_index,
                 });
                 *split_index += 1;
-                table.record(result_handle, attr_clone);
+                table.record(
+                    KernelHandle {
+                        kernel: kernel_id,
+                        id: result_handle,
+                    },
+                    attr_clone,
+                );
             }
         }
     }
@@ -333,7 +346,10 @@ pub fn propagate_attributes_via_local_feature_history(
             }
             let result_handle = result_face_handles[result_subshape_idx];
             table.record(
-                result_handle,
+                KernelHandle {
+                    kernel: kernel_id,
+                    id: result_handle,
+                },
                 TopologyAttribute {
                     feature_id: splitting_feature_id.clone(),
                     role: Role::LocalFeatureFace,
@@ -353,6 +369,7 @@ pub fn propagate_attributes_via_local_feature_history(
         for record in &history.edge_modified {
             propagate_one(
                 table,
+                kernel_id,
                 &[parent_edge_handles],
                 result_edge_handles,
                 record,
@@ -370,6 +387,7 @@ pub fn propagate_attributes_via_local_feature_history(
         for record in &history.edge_generated {
             propagate_one(
                 table,
+                kernel_id,
                 &[parent_vertex_handles],
                 result_edge_handles,
                 record,
@@ -490,6 +508,7 @@ fn maybe_append_split_entry(
 /// Returns `Err(QueryError::QueryFailed)` if any index is out of range.
 fn propagate_one(
     table: &mut TopologyAttributeTable,
+    kernel_id: KernelId,
     parent_handles: &[&[GeometryHandleId]],
     result_handles: &[GeometryHandleId],
     record: &HistoryRecord,
@@ -532,11 +551,20 @@ fn propagate_one(
     // for some op kinds; task-1 tests hand-seed only faces), there's
     // nothing to clone — silently skip. The end-to-end test asserts
     // that explicitly-seeded parents propagate.
-    if let Some(parent_attr) = table.lookup(parent_handle) {
+    if let Some(parent_attr) = table.lookup(KernelHandle {
+        kernel: kernel_id,
+        id: parent_handle,
+    }) {
         let mut attr_clone = parent_attr.clone();
         let parent_key = (record.parent_index, record.parent_subshape_index);
         maybe_append_split_entry(&mut attr_clone, parent_key, ctx);
-        table.record(result_handle, attr_clone);
+        table.record(
+            KernelHandle {
+                kernel: kernel_id,
+                id: result_handle,
+            },
+            attr_clone,
+        );
     }
     Ok(())
 }
@@ -601,6 +629,7 @@ fn propagate_one(
 #[allow(clippy::too_many_arguments)]
 pub fn populate_extrude_attributes(
     table: &mut TopologyAttributeTable,
+    kernel_id: KernelId,
     feature_id: &FeatureId,
     profile_face_handles: &[GeometryHandleId],
     profile_edge_handles: &[GeometryHandleId],
@@ -614,6 +643,7 @@ pub fn populate_extrude_attributes(
     // Caps: start → Top, end → Bottom; each cap is unique → local_index = 0.
     write_cap_attributes(
         table,
+        kernel_id,
         feature_id,
         result_face_handles,
         &history.start_cap_face_indices,
@@ -622,6 +652,7 @@ pub fn populate_extrude_attributes(
     )?;
     write_cap_attributes(
         table,
+        kernel_id,
         feature_id,
         result_face_handles,
         &history.end_cap_face_indices,
@@ -634,6 +665,7 @@ pub fn populate_extrude_attributes(
     // TopExp ordering, stable across parameter edits).
     write_face_generated_attributes(
         table,
+        kernel_id,
         feature_id,
         profile_face_handles,
         profile_edge_handles,
@@ -647,6 +679,7 @@ pub fn populate_extrude_attributes(
     // Cap vertices: start → Top, end → Bottom.
     write_cap_vertex_attributes(
         table,
+        kernel_id,
         feature_id,
         result_vertex_handles,
         start_cap_vertex_index_lists,
@@ -655,6 +688,7 @@ pub fn populate_extrude_attributes(
     )?;
     write_cap_vertex_attributes(
         table,
+        kernel_id,
         feature_id,
         result_vertex_handles,
         end_cap_vertex_index_lists,
@@ -706,6 +740,7 @@ pub fn populate_extrude_attributes(
 #[allow(clippy::too_many_arguments)]
 pub fn populate_revolve_attributes(
     table: &mut TopologyAttributeTable,
+    kernel_id: KernelId,
     feature_id: &FeatureId,
     profile_face_handles: &[GeometryHandleId],
     profile_edge_handles: &[GeometryHandleId],
@@ -718,6 +753,7 @@ pub fn populate_revolve_attributes(
 ) -> Result<(), QueryError> {
     write_cap_attributes(
         table,
+        kernel_id,
         feature_id,
         result_face_handles,
         &history.start_cap_face_indices,
@@ -726,6 +762,7 @@ pub fn populate_revolve_attributes(
     )?;
     write_cap_attributes(
         table,
+        kernel_id,
         feature_id,
         result_face_handles,
         &history.end_cap_face_indices,
@@ -735,6 +772,7 @@ pub fn populate_revolve_attributes(
 
     write_face_generated_attributes(
         table,
+        kernel_id,
         feature_id,
         profile_face_handles,
         profile_edge_handles,
@@ -747,6 +785,7 @@ pub fn populate_revolve_attributes(
 
     write_cap_vertex_attributes(
         table,
+        kernel_id,
         feature_id,
         result_vertex_handles,
         start_cap_vertex_index_lists,
@@ -755,6 +794,7 @@ pub fn populate_revolve_attributes(
     )?;
     write_cap_vertex_attributes(
         table,
+        kernel_id,
         feature_id,
         result_vertex_handles,
         end_cap_vertex_index_lists,
@@ -794,6 +834,7 @@ pub fn populate_revolve_attributes(
 #[allow(clippy::too_many_arguments)]
 pub fn populate_sweep_attributes(
     table: &mut TopologyAttributeTable,
+    kernel_id: KernelId,
     feature_id: &FeatureId,
     profile_face_handles: &[GeometryHandleId],
     profile_edge_handles: &[GeometryHandleId],
@@ -806,6 +847,7 @@ pub fn populate_sweep_attributes(
 ) -> Result<(), QueryError> {
     write_cap_attributes(
         table,
+        kernel_id,
         feature_id,
         result_face_handles,
         &history.start_cap_face_indices,
@@ -814,6 +856,7 @@ pub fn populate_sweep_attributes(
     )?;
     write_cap_attributes(
         table,
+        kernel_id,
         feature_id,
         result_face_handles,
         &history.end_cap_face_indices,
@@ -823,6 +866,7 @@ pub fn populate_sweep_attributes(
 
     write_face_generated_attributes(
         table,
+        kernel_id,
         feature_id,
         profile_face_handles,
         profile_edge_handles,
@@ -835,6 +879,7 @@ pub fn populate_sweep_attributes(
 
     write_cap_vertex_attributes(
         table,
+        kernel_id,
         feature_id,
         result_vertex_handles,
         start_cap_vertex_index_lists,
@@ -843,6 +888,7 @@ pub fn populate_sweep_attributes(
     )?;
     write_cap_vertex_attributes(
         table,
+        kernel_id,
         feature_id,
         result_vertex_handles,
         end_cap_vertex_index_lists,
@@ -900,6 +946,7 @@ pub fn populate_sweep_attributes(
 #[allow(clippy::too_many_arguments)]
 pub fn populate_loft_attributes(
     table: &mut TopologyAttributeTable,
+    kernel_id: KernelId,
     feature_id: &FeatureId,
     section_face_handles_per_section: &[Vec<GeometryHandleId>],
     section_edge_handles_per_section: &[Vec<GeometryHandleId>],
@@ -935,6 +982,7 @@ pub fn populate_loft_attributes(
 
     write_cap_attributes(
         table,
+        kernel_id,
         feature_id,
         result_face_handles,
         &history.start_cap_face_indices,
@@ -943,6 +991,7 @@ pub fn populate_loft_attributes(
     )?;
     write_cap_attributes(
         table,
+        kernel_id,
         feature_id,
         result_face_handles,
         &history.end_cap_face_indices,
@@ -951,6 +1000,7 @@ pub fn populate_loft_attributes(
     )?;
     write_loft_face_generated_attributes(
         table,
+        kernel_id,
         feature_id,
         section_edge_handles_per_section,
         result_face_handles,
@@ -959,6 +1009,7 @@ pub fn populate_loft_attributes(
 
     write_cap_vertex_attributes(
         table,
+        kernel_id,
         feature_id,
         result_vertex_handles,
         start_cap_vertex_index_lists,
@@ -967,6 +1018,7 @@ pub fn populate_loft_attributes(
     )?;
     write_cap_vertex_attributes(
         table,
+        kernel_id,
         feature_id,
         result_vertex_handles,
         end_cap_vertex_index_lists,
@@ -982,6 +1034,7 @@ pub fn populate_loft_attributes(
 /// range for `result_face_handles`.
 fn write_cap_attributes(
     table: &mut TopologyAttributeTable,
+    kernel_id: KernelId,
     feature_id: &FeatureId,
     result_face_handles: &[GeometryHandleId],
     cap_indices: &[u32],
@@ -999,7 +1052,10 @@ fn write_cap_attributes(
         }
         let handle = result_face_handles[idx_usize];
         table.record(
-            handle,
+            KernelHandle {
+                kernel: kernel_id,
+                id: handle,
+            },
             TopologyAttribute {
                 feature_id: feature_id.clone(),
                 role,
@@ -1027,6 +1083,7 @@ fn write_cap_attributes(
 /// kernel-derived indices that are guaranteed in-range for well-formed ops).
 fn write_cap_vertex_attributes(
     table: &mut TopologyAttributeTable,
+    kernel_id: KernelId,
     feature_id: &FeatureId,
     result_vertex_handles: &[GeometryHandleId],
     cap_vertex_index_lists: &[Vec<u32>],
@@ -1045,7 +1102,10 @@ fn write_cap_vertex_attributes(
             }
             let handle = result_vertex_handles[idx_usize];
             table.record(
-                handle,
+                KernelHandle {
+                    kernel: kernel_id,
+                    id: handle,
+                },
                 TopologyAttribute {
                     feature_id: feature_id.clone(),
                     role: Role::CapCornerVertex { face },
@@ -1068,6 +1128,7 @@ fn write_cap_vertex_attributes(
 #[allow(clippy::too_many_arguments)] // sweep helpers fan out parent + result slices for both faces and edges
 fn write_face_generated_attributes(
     table: &mut TopologyAttributeTable,
+    kernel_id: KernelId,
     feature_id: &FeatureId,
     profile_face_handles: &[GeometryHandleId],
     profile_edge_handles: &[GeometryHandleId],
@@ -1104,7 +1165,10 @@ fn write_face_generated_attributes(
 
         let handle = result_face_handles[result_subshape_idx];
         table.record(
-            handle,
+            KernelHandle {
+                kernel: kernel_id,
+                id: handle,
+            },
             TopologyAttribute {
                 feature_id: feature_id.clone(),
                 role,
@@ -1138,6 +1202,7 @@ fn write_face_generated_attributes(
 /// then section 1's, ...).
 fn write_loft_face_generated_attributes(
     table: &mut TopologyAttributeTable,
+    kernel_id: KernelId,
     feature_id: &FeatureId,
     section_edge_handles_per_section: &[Vec<GeometryHandleId>],
     result_face_handles: &[GeometryHandleId],
@@ -1183,7 +1248,10 @@ fn write_loft_face_generated_attributes(
         // Step 4: write the attribute, keyed by the result face handle.
         let handle = result_face_handles[result_subshape_idx];
         table.record(
-            handle,
+            KernelHandle {
+                kernel: kernel_id,
+                id: handle,
+            },
             TopologyAttribute {
                 feature_id: feature_id.clone(),
                 role: Role::LoftedFace,
