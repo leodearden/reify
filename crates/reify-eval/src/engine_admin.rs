@@ -382,41 +382,14 @@ impl Engine {
         }
     }
 
-    /// Allocate a fresh `(SnapshotId, VersionId)` pair for the "paired
-    /// allocate-and-bump" pattern: `next_snapshot_id` and `next_version_id`
-    /// are each read and advanced by exactly one, snapshot first then
-    /// version. That is the method's actual contract. The two returned ids
-    /// are numerically lockstep (equal `.0` values) ONLY as a consequence of
-    /// the two counters already being equal on entry — i.e. as long as every
-    /// allocation site bumps both together. This method reads two
-    /// independent counters and does not itself enforce that equality:
-    /// `eval_cached()`'s snapshot-only cold-path bump is a concrete case
-    /// that desyncs them (advances `next_snapshot_id` alone, with no
-    /// matching version bump), after which this method still advances each
-    /// counter by exactly one but the returned pair's numeric values
-    /// differ. That site is a distinct, non-paired concern outside this
-    /// helper's scope, not a migration candidate.
+    /// Allocates a fresh `(SnapshotId, VersionId)` pair: reads and advances
+    /// `next_snapshot_id`, then reads and advances `next_version_id` — one
+    /// bump each. Call this instead of bumping the counters directly.
     ///
     /// This is the allocate half of INV-BUILD-2 (docs/invariants.md):
     /// "Version/snapshot IDs are allocated and read through exactly one API
-    /// each." New call sites that need a fresh snapshot id AND a fresh
-    /// version id together MUST go through this method rather than bumping
-    /// `next_snapshot_id`/`next_version_id` directly.
-    ///
-    /// Migration status: not every paired allocate-and-bump site in the
-    /// crate goes through this method yet — task 5040 (engine-build
-    /// hardening α) migrated only the `engine_eval.rs` sites. See
-    /// `docs/invariants.md`'s INV-BUILD-2 row and
-    /// `docs/prds/v0_6/engine-build-hardening.md` §5.2 for the live
-    /// inventory of remaining raw call sites, their owning tasks, and
-    /// current enforcement status — tracked there rather than enumerated
-    /// here so this comment doesn't drift as sibling tasks land.
-    ///
-    /// `pub(crate)`, not private: `engine_admin` and `engine_eval` are
-    /// separate sibling `mod`s (see lib.rs), so a bare-private fn here is
-    /// invisible to engine_eval.rs's call sites despite being the same
-    /// crate. `pub(crate)` is the minimal fix — it stays fully contained to
-    /// `reify-eval`, preserving the "sole writer of the counters" property.
+    /// each." See `docs/prds/v0_6/engine-build-hardening.md` §5.2 for
+    /// migration status and the live call-site inventory.
     pub(crate) fn allocate_snapshot_version(&mut self) -> (SnapshotId, VersionId) {
         let snapshot_id = SnapshotId(self.next_snapshot_id);
         self.next_snapshot_id += 1;
