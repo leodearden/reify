@@ -3027,6 +3027,10 @@ mod tests {
     /// the first call must return `(SnapshotId(0), VersionId(0))` and the
     /// second `(SnapshotId(1), VersionId(1))`, with `next_snapshot_id` and
     /// `next_version_id` each having advanced by exactly 1 after each call.
+    /// A final companion check desyncs the counters (mirroring
+    /// `eval_cached()`'s snapshot-only bump) to confirm that lockstep is a
+    /// consequence of the initial state, not something this method itself
+    /// enforces.
     ///
     /// RED until `allocate_snapshot_version` exists — this fails to compile.
     #[test]
@@ -3047,13 +3051,6 @@ mod tests {
         let (snap0, ver0) = engine.allocate_snapshot_version();
         assert_eq!(snap0, SnapshotId(0), "first allocation must mint SnapshotId(0)");
         assert_eq!(ver0, VersionId(0), "first allocation must mint VersionId(0)");
-        // snap0.0 == ver0.0 here is a consequence of both counters starting
-        // at 0, not a guarantee the method enforces — see
-        // `allocate_snapshot_version_does_not_enforce_lockstep_when_counters_are_desynced`
-        // below, which pre-desyncs the counters and shows the pair diverges.
-        // (Not asserted here: the exact-id asserts above already pin both
-        // `.0` values, so a `snap0.0 == ver0.0` check could never fail
-        // independently of them.)
         assert_eq!(
             engine.next_snapshot_id, 1,
             "next_snapshot_id must advance by exactly 1 after one call",
@@ -3066,10 +3063,6 @@ mod tests {
         let (snap1, ver1) = engine.allocate_snapshot_version();
         assert_eq!(snap1, SnapshotId(1), "second allocation must mint SnapshotId(1)");
         assert_eq!(ver1, VersionId(1), "second allocation must mint VersionId(1)");
-        // Same caveat as above: lockstep here falls out of both counters
-        // having advanced in lockstep so far, not an enforced invariant.
-        // (Not asserted here, for the same reason: already pinned by the
-        // exact-id asserts above.)
         assert_eq!(
             engine.next_snapshot_id, 2,
             "next_snapshot_id must advance by exactly 1 again",
@@ -3078,42 +3071,28 @@ mod tests {
             engine.next_version_id, 2,
             "next_version_id must advance by exactly 1 again",
         );
-    }
 
-    /// Companion to `allocate_snapshot_version_allocates_pair_and_bumps_both_counters`:
-    /// that test's `snap.0 == ver.0` asserts hold only because a fresh
-    /// engine starts both counters at 0 — they are not a guarantee
-    /// `allocate_snapshot_version` enforces. This test pre-desyncs the
-    /// counters the same way `eval_cached()`'s snapshot-only cold-path bump
-    /// does (advances `next_snapshot_id` alone), then confirms the method
-    /// still advances each counter by exactly one while the returned pair
-    /// is no longer numerically equal — i.e. lockstep is a property of the
-    /// initial state, not something this method couples.
-    #[test]
-    fn allocate_snapshot_version_does_not_enforce_lockstep_when_counters_are_desynced() {
-        use reify_core::{SnapshotId, VersionId};
-        use reify_test_support::mocks::MockConstraintChecker;
-        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
-
-        // Simulate eval_cached()'s snapshot-only bump: advance
-        // next_snapshot_id alone, leaving next_version_id untouched.
+        // Companion check: the lockstep above falls out of both counters
+        // starting at 0, not a guarantee this method enforces. Desync them
+        // manually (mirrors eval_cached()'s snapshot-only bump) and confirm
+        // the method still advances each counter by exactly one while the
+        // returned pair is no longer numerically equal.
         engine.next_snapshot_id += 1;
-
-        let (snap, ver) = engine.allocate_snapshot_version();
-        assert_eq!(snap, SnapshotId(1), "snapshot counter had already advanced to 1");
-        assert_eq!(ver, VersionId(0), "version counter was still at its initial value");
+        let (snap2, ver2) = engine.allocate_snapshot_version();
+        assert_eq!(snap2, SnapshotId(3), "snapshot counter had already advanced to 3");
+        assert_eq!(ver2, VersionId(2), "version counter was still at its prior value");
         assert_ne!(
-            snap.0, ver.0,
-            "once the counters are desynced, the returned pair is NOT lockstep \
-             — allocate_snapshot_version reads two independent counters and \
-             does not couple them",
+            snap2.0, ver2.0,
+            "once the counters are desynced, the returned pair is NOT \
+             lockstep — allocate_snapshot_version reads two independent \
+             counters and does not couple them",
         );
         assert_eq!(
-            engine.next_snapshot_id, 2,
+            engine.next_snapshot_id, 4,
             "next_snapshot_id must still advance by exactly 1",
         );
         assert_eq!(
-            engine.next_version_id, 1,
+            engine.next_version_id, 3,
             "next_version_id must still advance by exactly 1",
         );
     }
