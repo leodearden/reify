@@ -1,17 +1,13 @@
 //! Required-args `cell_eval_ctx` free-function constructor (INV-EVAL-2).
 //!
-//! PRD: `docs/prds/v0_6/eval-cell-commit-substrate.md` §2.5, §8 — task β of
-//! the eval cell-commit substrate.
-//!
 //! `reify_expr::EvalContext` is an optional-capability builder: omitting
 //! `.with_determinacy` / `.with_runtime_diagnostics` / `.with_containment`
-//! does not fail to compile — it silently degrades evaluation instead
-//! (`DeterminacyPredicate` cells resolve to `Value::Undef`, runtime warnings
-//! are dropped, and `sample(restrict(field, region), point)` is forced to
-//! `Value::Undef`). This module's `cell_eval_ctx` free function makes those
-//! three capabilities REQUIRED parameters (plain `&'a T`, not `Option`), so
-//! omitting a load-bearing capability at a call site is a compile error
-//! rather than a silent behavior change.
+//! silently degrades evaluation rather than failing to compile. This
+//! module's `cell_eval_ctx` makes those three capabilities REQUIRED (plain
+//! `&'a T`, not `Option`), so omitting one at a call site is a compile
+//! error instead.
+//!
+//! See `docs/prds/v0_6/eval-cell-commit-substrate.md` §2.5, §8.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -21,38 +17,19 @@ use reify_expr::{ContainmentQuery, EvalContext};
 use reify_ir::{CompiledFunction, DeterminacyState, PersistentMap, Value, ValueMap};
 
 /// The only sanctioned in-engine `cell_eval_ctx` constructor (INV-EVAL-2).
+/// `determinacy` / `runtime_sink` / `containment` are REQUIRED (plain
+/// `&'a T`, not `Option`); omitting one is a compile error (E0061).
 ///
-/// `determinacy`, `runtime_sink`, and `containment` are REQUIRED — plain
-/// `&'a T`, not `Option` — so no builder path can omit a load-bearing
-/// capability; leaving one out is a compile error (E0061), not a silent
-/// behavior change.
+/// Lifts `functions` / `meta_map` / `containment` out of `&self` into
+/// explicit params. `undef_causes` stays unset — it is wired separately by
+/// `record_op_contract_failures`, not a cell-eval-ctx capability.
 ///
-/// Lifts `functions`, `meta_map`, and `containment` out of `&self` into
-/// explicit params, which dissolves the borrow-scope excuse recorded on
-/// `Engine::cell_eval_ctx`'s doc comment for building `EvalContext` inline
-/// at some call sites.
-///
-/// `undef_causes` is intentionally left unset (`None`): it is not a
-/// cell-eval-ctx capability — the op/builtin contract-failure sink is
-/// attached separately by `record_op_contract_failures` during the
-/// post-eval re-evaluation pass.
-///
-/// This constructor does not migrate any existing call site (γ/δ/ε own
-/// adoption in `engine_eval.rs` / `engine_edit.rs` / `unfold.rs`).
+/// Does not migrate existing call sites (γ/δ/ε own adoption in
+/// `engine_eval.rs` / `engine_edit.rs` / `unfold.rs`); each must
+/// re-validate this signature against its own call site's borrow shape.
 //
-// `allow(dead_code)`: in this task (P1 β, #5039) the only caller is the
-// golden unit test below; the production callers land when γ/δ/ε migrate
-// `engine_eval.rs` / `engine_edit.rs` / `unfold.rs` onto this constructor.
-// See docs/prds/v0_6/eval-cell-commit-substrate.md §2.5, §8.
-//
-// Residual risk of landing without a real adopter: the tests below exercise
-// this constructor in isolation (a local `NoContainment` / `AlwaysInside`
-// stub, not `Engine`), so a green `cargo test -p reify-eval cell_eval_ctx`
-// proves the signature is internally consistent but does NOT prove the
-// single-lifetime `'a` borrow shape fits any real call site's actual borrow
-// structure. Each of γ/δ/ε (PRD §8) MUST re-validate this signature against
-// its own call site's borrows during adoption — do not assume it compiles
-// in situ unmodified merely because it compiles here.
+// `allow(dead_code)`: only caller today is the test module below;
+// production callers land when γ/δ/ε adopt this constructor.
 #[allow(dead_code)]
 pub(crate) fn cell_eval_ctx<'a>(
     values: &'a ValueMap,
