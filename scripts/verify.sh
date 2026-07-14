@@ -473,9 +473,11 @@ DF_VERIFY_ROLE="${DF_VERIFY_ROLE:-task}"
 # Role-based PROFILE default: when no explicit --profile was given and the
 # orchestrator merge path stamps DF_VERIFY_ROLE=merge, default to 'both' so
 # release-only tests are exercised on every merge (matching the local
-# hooks/pre-merge-commit gate which also runs --profile both).
+# hooks/pre-merge-commit gate which also runs --profile both). background
+# (task 5210, main-tip integrity sweep) shares this merge-level completeness
+# for the same reason: full dev+release coverage on every sweep.
 # Explicit --profile always wins; task/unset roles keep debug (fast feedback).
-if [ "$PROFILE_EXPLICIT" -eq 0 ] && [ "$DF_VERIFY_ROLE" = "merge" ]; then
+if [ "$PROFILE_EXPLICIT" -eq 0 ] && { [ "$DF_VERIFY_ROLE" = "merge" ] || [ "$DF_VERIFY_ROLE" = "background" ]; }; then
     PROFILE="both"
 elif [ "$PROFILE_EXPLICIT" -eq 0 ] && [ "$DF_VERIFY_ROLE" = "offline" ]; then
     # offline (task 4913/A2) is a single-profile deep-test lane: the heavy
