@@ -73,8 +73,10 @@ import {
   getEntityAtSourceLocation as bridgeGetEntityAtSourceLocation,
   getDefPreview as bridgeGetDefPreview,
   getMechanismDescriptors as bridgeGetMechanismDescriptors,
+  getUnitLadders as bridgeGetUnitLadders,
   ask as bridgeAsk,
 } from './bridge';
+import type { UnitLadderMap } from './types';
 import {
   navigateToSource,
   navigateToEntity,
@@ -459,6 +461,11 @@ const App: Component = () => {
 
   // Track the currently-open file path so the debounced save effect can key off it.
   const [currentFilePath, setCurrentFilePath] = createSignal<string | null>(null);
+
+  // Per-dimension display-unit ladders for the Parameters panel's unit picker
+  // (task #5199), fetched once on mount. Empty map means every cell falls
+  // back to its static unit badge.
+  const [unitLadders, setUnitLadders] = createSignal<UnitLadderMap>({});
 
   // Fuzzy-rebind toast bookkeeping (see the rebind effect block below).
   //
@@ -1383,6 +1390,20 @@ const App: Component = () => {
 
     if (!alive) return;
 
+    // Fetch the per-dimension display-unit ladders (task #5199). Tolerate
+    // failure: an empty map means every cell keeps its static unit badge.
+    try {
+      const ladders = await bridgeGetUnitLadders();
+      if (!alive) return;
+      const map: UnitLadderMap = {};
+      for (const ladder of ladders) {
+        map[ladder.dimension] = ladder.units;
+      }
+      setUnitLadders(map);
+    } catch (err) {
+      console.warn('[unit-ladders] fetch failed:', err);
+    }
+
     // Subscribe to events before showing ready state — "ready" means
     // fully initialized including live update subscriptions
     try {
@@ -2099,6 +2120,7 @@ const App: Component = () => {
                 onSetParameter={handleSetParameter}
                 onGroupDoubleClick={handleGroupDoubleClick}
                 highlightedParams={selectionStore.state.highlightedParams}
+                unitLadders={unitLadders()}
               />
               <Splitter orientation="horizontal" onResize={handleSideResize} data-testid="splitter-side" />
               <ConstraintPanel
