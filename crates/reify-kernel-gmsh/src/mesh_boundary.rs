@@ -375,6 +375,30 @@ pub fn raw_open_edge_census(surface: &Mesh) -> (usize, (u32, u32)) {
 /// than threaded further, since gmsh's re-meshing already discards raw input
 /// node identity regardless of welding.
 ///
+/// # Weld-epsilon assumption (robustness)
+///
+/// The default `RepairConfig::vertex_merge_epsilon` (`1e-12`) is tight
+/// enough to collapse OCCT's per-face duplicate corners for one empirical
+/// reason only: OCCT emits those duplicates bit-identically (Euclidean
+/// distance exactly `0.0`), NOT because `1e-12` is derived in any way from
+/// OCCT's tessellation deflection/tolerance. If a future OCCT version ever
+/// emitted per-face corner coordinates that differ by more than the
+/// configured epsilon (e.g. float rounding that diverges across faces), the
+/// weld above would silently fail to merge them, the surface would stay
+/// non-watertight, and stage 2's fail-closed net below would reject it —
+/// indistinguishable, from the caller's `Result` alone, from a genuinely
+/// open surface. Two things guard against this landing silently: the
+/// `has_gmsh`+`has_occt`-gated `occt_box_attributed_volume_preserves_face_attribution`
+/// conformance test
+/// (`crates/reify-kernel-conformance/tests/occt_gmsh_attributed_conformance.rs`)
+/// exercises a REAL OCCT box tessellation end-to-end and asserts `Ok`, so it
+/// is the CI pin that goes red first if this empirical guarantee ever
+/// breaks; and the `tracing::warn!` emitted at the fail-closed net below
+/// (not just a silently-propagated `Err`) surfaces the trip at its source,
+/// independent of whether a given caller relays the error into a
+/// user-visible diagnostic (as `crates/reify-eval/src/engine_build.rs`'s
+/// attributed-producer degrade arm already does).
+///
 /// # Stage order
 ///
 /// 1. Watertightness preflight (task #4876) probe on the RAW surface —
@@ -448,7 +472,26 @@ pub fn mesh_surface_to_volume_with_attribution(
         // this rejects only a surface that is STILL non-watertight after
         // welding (a genuine hole, not just per-face-block duplication),
         // degrading gracefully to the plain producer instead of crashing.
-        preflight_watertight_surface(&w, 0.0)?;
+        // This also covers the narrower "weld epsilon too tight for this
+        // input" failure mode (see fn doc `# Weld-epsilon assumption`),
+        // which is otherwise indistinguishable from a genuine hole to a
+        // caller inspecting only the returned `Err` — a `tracing::warn!`
+        // fires here (rather than silently propagating via `?`) so the trip
+        // is visible at its source regardless of whether the caller relays
+        // it into a user-facing diagnostic.
+        if let Err(e) = preflight_watertight_surface(&w, 0.0) {
+            tracing::warn!(
+                target: "reify_kernel_gmsh::mesh_boundary",
+                error = %e,
+                original_verts = correspondence.len(),
+                welded_verts = w.vertices.len() / 3,
+                "mesh_surface_to_volume_with_attribution: surface still non-watertight after \
+                 weld pre-stage — either a genuine open boundary, or the configured \
+                 vertex_merge_epsilon is too tight for this input's near-duplicate spacing \
+                 (see fn doc `# Weld-epsilon assumption`); degrading to the plain producer"
+            );
+            return Err(e);
+        }
         Cow::Owned(w)
     } else {
         Cow::Borrowed(surface)
