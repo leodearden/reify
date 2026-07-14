@@ -1336,6 +1336,18 @@ mod tests {
     // `Some` path would have passed CI. These exercise `surface_needs_weld`
     // directly (pure logic, no gmsh FFI call) against both fixtures already
     // used by the preflight tests above.
+    //
+    // Known coverage gap (reviewer, test-coverage): the above pins the
+    // *decision* predicate only. No test yet runs
+    // `repair_surface_mesh_with_correspondence` with a caller-supplied
+    // NON-DEFAULT `RepairConfig` (e.g. a coarser `vertex_merge_epsilon`)
+    // through the real gmsh FFI pipeline in
+    // `mesh_surface_to_volume_with_attribution` end-to-end — closing that
+    // gap needs a `has_gmsh` integration test in
+    // `crates/reify-kernel-gmsh/tests/mesh_surface_to_volume_attributed.rs`,
+    // outside this amendment pass's locked scope (`src/mesh_boundary.rs`,
+    // `src/repair.rs` only); left for the next review cycle / a follow-up
+    // task.
 
     /// `repair_cfg = None` on an already-watertight surface: the RAW-surface
     /// probe succeeds, so the weld is skipped.
