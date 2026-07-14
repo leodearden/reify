@@ -8714,35 +8714,19 @@ mod tests {
     // `extract_zone_process_params_rejects_*` /
     // `anisotropic_material_from_value_rejects_*` unit tests elsewhere in
     // this module.
+    //
+    // Assertion style: all four match the error *variant* only, per this
+    // module's policy of never pinning `got`'s free-text prose — except
+    // `rejects_malformed_lambda`, which also pins `context` (a fixed
+    // provenance tag, not `got` prose) since it's the only way to tell
+    // leaf propagation apart from the local arity guard below (both yield
+    // `ExpectedList`); see that test's doc comment.
 
-    /// `classify_material_as_printed_zones` must propagate a leaf
-    /// extractor's `Err` via `?` instead of panicking, when the
-    /// AsPrintedZones lambda is malformed.
-    ///
-    /// The local arity guard (`..._rejects_wrong_arity` below) also yields
-    /// `ExpectedList`, so a bare variant match wouldn't prove this `Err`
-    /// came from `extract_point3_si` via `?` rather than from a
-    /// mis-ordered local guard. The 7-element list here already satisfies
-    /// the arity check, so pinning the `context` field proves leaf
-    /// propagation — the only way to distinguish the two, since both
-    /// yield `ExpectedList`. This couples the test to
-    /// `extract_point3_si`'s internal `&'static str` label, but no other
-    /// test in this module asserts on that string.
-    ///
-    /// Amendment (task #5085 review, test_coupling): this `context` pin is
-    /// a deliberate, narrow exception to the module's general policy of
-    /// matching the error *variant* only and never pinning `got`'s
-    /// free-text prose (see `..._rejects_wrong_arity` below and
-    /// `extract_zone_process_params_rejects_non_real_element`). `context`
-    /// is not diagnostic prose like `got` (a `format!`-built `String`) —
-    /// it is a fixed `&'static str` provenance tag set once per call site,
-    /// so matching it is the same kind of assertion as matching the
-    /// variant, just at finer grain (which of the two
-    /// `ExpectedList`-yielding branches fired). A bare variant match here
-    /// would still pass under a regression that let the arity guard
-    /// mis-fire on a well-formed 7-element list (masking a broken `?`
-    /// hand-off to `extract_point3_si`), so the extra precision is
-    /// load-bearing, not incidental.
+    /// Proves a leaf `Err` (`extract_point3_si`) propagates via `?` instead
+    /// of panicking, for a malformed lambda (non-Point aabb_min). Pins
+    /// `context` because the arity guard below also yields `ExpectedList`
+    /// on this well-arity 7-element list — see the coverage-boundary
+    /// comment above.
     #[test]
     fn classify_material_as_printed_zones_rejects_malformed_lambda() {
         // 7-element list; element 0 (aabb_min) is a non-Point Value::Real,
@@ -8762,11 +8746,9 @@ mod tests {
         );
     }
 
-    /// The arity guard (`list.len() < 7`) is a second branch this function
-    /// owns directly (not delegated to a leaf extractor), so it needs its
-    /// own case distinct from the leaf-propagation test above. Mirrors
-    /// `extract_zone_process_params_rejects_wrong_arity`'s policy of
-    /// asserting the `ExpectedList` variant only, not the `got` prose.
+    /// Targets the local arity guard (`list.len() < 7`), a second branch
+    /// this function owns directly, distinct from the leaf-propagation
+    /// test above — a 1-element list is too short.
     #[test]
     fn classify_material_as_printed_zones_rejects_wrong_arity() {
         let short_list = Value::List(vec![Value::Real(1.0)]);
@@ -8781,13 +8763,10 @@ mod tests {
         );
     }
 
-    /// The `cos_threshold` non-`Real` branch is the third local guard this
-    /// function owns directly. Elements 0..2 must be well-formed (a valid
-    /// `Point3` pair plus a valid 7-element `params` list) so the leaf
-    /// extractors ahead of `cos_threshold` succeed via `?` and the error
-    /// is proven to come from THIS check, not an earlier one; elements
-    /// 4..6 are unchecked placeholders since the function returns before
-    /// reaching `mat_wall`/`mat_skin`/`mat_infill`.
+    /// Targets the local `cos_threshold` guard, the third branch this
+    /// function owns directly. Elements 0..2 are well-formed so the leaf
+    /// extractors ahead of it succeed via `?` first, proving the error
+    /// comes from this check and not an earlier one.
     #[test]
     fn classify_material_as_printed_zones_rejects_non_real_cos_threshold() {
         let scalar = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::DIMENSIONLESS };
@@ -8819,21 +8798,13 @@ mod tests {
         );
     }
 
-    /// The Ok/success path — a well-formed 7-element AsPrintedZones lambda
-    /// threading all six extractor calls through to a successful
-    /// `Heterogeneous` field — is otherwise only exercised indirectly, via
-    /// `classify_material_as_printed_zones_returns_heterogeneous` above
-    /// calling the OUTER `classify_material`, which bridges through
-    /// `.fea_shim()` and would itself panic on `Err` rather than surface
-    /// it. This test calls the Result-ified function directly and asserts
-    /// only the `Ok(Heterogeneous(_))` shape; the wall-vs-infill spatial
-    /// dispatch on the sampled field is already covered by the sibling
-    /// test above (over the identical fixture), so it isn't re-probed here.
+    /// The Ok path: calls the Result-ified function directly (unlike
+    /// `..._returns_heterogeneous` above, which goes through the
+    /// panic-on-Err `.fea_shim()` bridge) and asserts only the
+    /// `Ok(Heterogeneous(_))` shape — spatial wall/infill dispatch is
+    /// already covered by that sibling test over the same fixture.
     #[test]
     fn classify_material_as_printed_zones_accepts_wellformed_lambda() {
-        // Same fixture shape as `classify_material_as_printed_zones_returns_heterogeneous`
-        // above; the field's spatial wall/infill dispatch is exercised there,
-        // not here — see doc comment.
         let field = het_as_printed_field(
             [0.0, 0.0, 0.0], [1.0, 1.0, 1.0],
             [0.0, 0.0, 1.0],  // build_z
