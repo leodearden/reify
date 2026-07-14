@@ -2748,9 +2748,45 @@ pub fn quaternion_is_finite(w: f64, x: f64, y: f64, z: f64) -> bool {
     w.is_finite() && x.is_finite() && y.is_finite() && z.is_finite()
 }
 
+/// Number of significant figures values are rounded to before display.
+///
+/// 12 (not 10) cleans every observed 1-ulp f64 artifact from the SI-m
+/// canonical storage round-trip (6.4 / 105 / 475.2 / 247.2) while preserving
+/// legitimately small or high-precision tolerances (e.g. `0.00005`, or a
+/// 12-digit value like `0.000123456789012`). f64 has ~15-17 significant
+/// decimal digits, so 12 stays comfortably inside round-trip fidelity.
+const DISPLAY_SIG_FIGS: u32 = 12;
+
+/// Round `v` to `sig` significant figures for display, cleaning up 1-ulp f64
+/// noise without reintroducing float error of its own.
+///
+/// Rounds via a decimal scientific-notation round-trip —
+/// `format!("{:.*e}", sig - 1, v).parse::<f64>()` — rather than multiplying
+/// and dividing by a power of ten (which would reintroduce its own float
+/// error, since the product/quotient is generally not exactly representable).
+/// Formatting to `sig - 1` fractional digits in scientific notation asks the
+/// standard float formatter for the correctly-rounded decimal at exactly
+/// `sig` significant figures; parsing it back gives the nearest f64 to that
+/// clean decimal.
+///
+/// Returns `v` unchanged for non-finite (`NaN`/`inf`) or zero values, so
+/// callers preserve `"NaN"` / `"inf"` / `"0"` display exactly as before.
+fn round_to_sig_figs(v: f64, sig: u32) -> f64 {
+    if !v.is_finite() || v == 0.0 {
+        v
+    } else {
+        format!("{:.*e}", (sig - 1) as usize, v)
+            .parse::<f64>()
+            .unwrap_or(v)
+    }
+}
+
 /// Format a floating-point number for display: whole numbers render without
-/// decimal points (e.g. `80.0` → `"80"`).
+/// decimal points (e.g. `80.0` → `"80"`), and values are first rounded to
+/// [`DISPLAY_SIG_FIGS`] significant figures to clean up 1-ulp f64 noise
+/// (e.g. `6.3999999999999995` → `"6.4"`).
 pub fn format_display_number(v: f64) -> String {
+    let v = round_to_sig_figs(v, DISPLAY_SIG_FIGS);
     if v == v.trunc() && v.abs() < 1e15 {
         format!("{}", v as i64)
     } else {
