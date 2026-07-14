@@ -32,6 +32,92 @@ pub enum FileEvent {
     Removed(PathBuf),
 }
 
+/// The kind of filesystem change recorded by [`Debouncer`] for a path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChangeKind {
+    /// The path was created or modified.
+    Changed,
+    /// The path was removed.
+    Removed,
+}
+
+/// A pending (not-yet-emitted) change for a single path.
+struct Pending {
+    kind: ChangeKind,
+    last_seen: Instant,
+}
+
+/// Pure, clock-injected trailing-edge debouncer with per-path coalescing.
+///
+/// Every [`record`](Debouncer::record) call for a path resets that path's
+/// quiet window and overwrites its kind with the latest one observed. A
+/// path only becomes ready — and is returned by
+/// [`drain_ready`](Debouncer::drain_ready) — once `window` has elapsed
+/// since its *last* record, so rapid bursts of events for the same path
+/// (e.g. a non-atomic truncate-then-append write) coalesce into a single
+/// emission carrying the most recent kind, fired after things go quiet.
+///
+/// All methods take an explicit `now: Instant` rather than reading the
+/// clock themselves, so the trailing-edge + coalescing contract can be
+/// pinned deterministically in tests with synthetic instants.
+pub(crate) struct Debouncer {
+    window: Duration,
+    pending: HashMap<PathBuf, Pending>,
+}
+
+impl Debouncer {
+    /// Create a new debouncer with the given quiet-window duration.
+    pub(crate) fn new(window: Duration) -> Self {
+        Debouncer {
+            window,
+            pending: HashMap::new(),
+        }
+    }
+
+    /// Record a filesystem change for `path` observed at `now`.
+    ///
+    /// Insert-or-update: this overwrites any existing pending entry for
+    /// `path` with the new `kind` and resets its quiet window to start
+    /// counting from `now`.
+    pub(crate) fn record(&mut self, path: PathBuf, kind: ChangeKind, now: Instant) {
+        self.pending.insert(path, Pending { kind, last_seen: now });
+    }
+
+    /// Remove and return every pending path whose quiet window has
+    /// elapsed as of `now` (i.e. `now.duration_since(last_seen) >= window`).
+    pub(crate) fn drain_ready(&mut self, now: Instant) -> Vec<(PathBuf, ChangeKind)> {
+        let ready_paths: Vec<PathBuf> = self
+            .pending
+            .iter()
+            .filter(|(_, p)| now.duration_since(p.last_seen) >= self.window)
+            .map(|(path, _)| path.clone())
+            .collect();
+
+        ready_paths
+            .into_iter()
+            .map(|path| {
+                let pending = self.pending.remove(&path).expect("key just observed in iter");
+                (path, pending.kind)
+            })
+            .collect()
+    }
+
+    /// The smallest remaining time until some pending path becomes ready,
+    /// or `None` if nothing is pending.
+    ///
+    /// Saturates to `Duration::ZERO` for a path that's already due (i.e.
+    /// its window has already elapsed as of `now`).
+    pub(crate) fn next_wait(&self, now: Instant) -> Option<Duration> {
+        self.pending
+            .values()
+            .map(|p| {
+                let elapsed = now.duration_since(p.last_seen);
+                self.window.saturating_sub(elapsed)
+            })
+            .min()
+    }
+}
+
 /// Watches a directory for .ri file changes and invokes a callback.
 pub struct FileWatcher {
     _watcher: RecommendedWatcher,
