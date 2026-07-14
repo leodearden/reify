@@ -21,6 +21,7 @@ import type {
   DefInfo,
   PersistentViewState,
   MechanismDescriptor,
+  DimensionLadder,
   AutoResolveIteration,
   WarmPoolEvent,
   FeaCaseChanged,
@@ -183,6 +184,11 @@ export async function getEntityTree(): Promise<EntityTreeNode[]> {
 /** Get mechanism descriptors from the backend (one per evaluated Mechanism cell). */
 export async function getMechanismDescriptors(): Promise<MechanismDescriptor[]> {
   return invoke<MechanismDescriptor[]>('get_mechanism_descriptors');
+}
+
+/** Get the per-dimension display-unit ladders for the Parameters panel's unit picker (task #5199). */
+export async function getUnitLadders(): Promise<DimensionLadder[]> {
+  return invoke<DimensionLadder[]>('get_unit_ladders');
 }
 
 /** Get the source location for an entity. */
