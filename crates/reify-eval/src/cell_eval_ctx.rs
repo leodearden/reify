@@ -103,8 +103,10 @@ mod tests {
         CompiledExpr, CompiledExprKind, CompiledFunction, DeterminacyPredicateKind,
         DeterminacyState, FieldSourceKind, PersistentMap, ResolvedFunction, Value, ValueMap,
     };
+    use reify_test_support::mocks::MockConstraintChecker;
 
     use super::cell_eval_ctx;
+    use crate::Engine;
 
     /// Trivial `ContainmentQuery` impl so the test doesn't need a full
     /// `Engine`/geometry-kernel to exercise the constructor.
@@ -219,6 +221,59 @@ mod tests {
         // threads an undef-cause sink through this constructor should fail
         // this assertion rather than pass unnoticed.
         assert!(ctx.undef_causes.is_none());
+    }
+
+    /// Cross-checks this free function against `Engine::cell_eval_ctx`
+    /// (`engine_eval.rs`), whose capability-wiring chain
+    /// (`eval_ctx_with_meta(..).with_determinacy(..).with_runtime_diagnostics(..)
+    /// .with_containment(..)`) this module's `cell_eval_ctx` hand-copies.
+    /// Builds a context via BOTH paths from the same `Engine`'s
+    /// `functions`/`meta_map`/`self`-as-containment plus shared
+    /// `values`/`determinacy`/`sink`, then asserts they set the same
+    /// capability fields `Some`. A future edit that adds or drops a
+    /// `.with_*` link on only one of the two wiring chains fails this test
+    /// instead of shipping a silent divergence — neither the type-level
+    /// guard above (which only pins this free function's own signature) nor
+    /// the other tests in this module (which never call the method) would
+    /// catch that class of regression.
+    #[test]
+    fn cell_eval_ctx_matches_engine_method_wiring() {
+        let engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let values = ValueMap::new();
+        let determinacy = PersistentMap::new();
+        let sink = RefCell::new(Vec::new());
+
+        let via_method = engine.cell_eval_ctx(&values, &determinacy, &sink);
+        let via_free_fn = cell_eval_ctx(
+            &values,
+            engine.functions.as_ref(),
+            engine.meta_map.as_ref(),
+            &determinacy,
+            &sink,
+            &engine,
+        );
+
+        let capability_shape = |ctx: &EvalContext<'_>| {
+            (
+                ctx.determinacy.is_some(),
+                ctx.diagnostics.is_some(),
+                ctx.containment.is_some(),
+                ctx.meta.is_some(),
+            )
+        };
+        assert_eq!(
+            capability_shape(&via_method),
+            capability_shape(&via_free_fn),
+            "cell_eval_ctx (free fn) and Engine::cell_eval_ctx (method) must wire the same set \
+             of required capabilities from identical inputs — a mismatch means the two \
+             hand-copied wiring chains have drifted apart"
+        );
+        assert_eq!(
+            capability_shape(&via_method),
+            (true, true, true, true),
+            "both cell_eval_ctx paths must wire every required capability, not just agree with \
+             each other while both silently dropping one"
+        );
     }
 
     /// Behavioral complement to the wiring test above: proves the
