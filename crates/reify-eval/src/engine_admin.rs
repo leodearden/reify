@@ -3074,19 +3074,72 @@ mod tests {
         );
     }
 
+    /// Shared assertion for the `allocate_snapshot_version` migration's
+    /// characterization tests (task 5040 amend pass 2 — collapses
+    /// duplicated boilerplate previously repeated across all three tests
+    /// below). Asserts the engine's CURRENT snapshot carries the expected
+    /// `(SnapshotId, VersionId)` pair — the "byte-identical numbering"
+    /// property these tests exist to pin — AND that both counters advanced
+    /// by exactly `expected_delta` since `before_next`, a relative check
+    /// that documents the invariant under test independent of the absolute
+    /// starting point.
+    ///
+    /// Deliberate characterization lock, stated once for all call sites:
+    /// these exact ids/deltas are tied to the number and ordering of
+    /// allocation sites that fire for a given input. A legitimate future
+    /// change that adds/removes a site must re-baseline the caller's
+    /// expected values on purpose — don't read a red here as an automatic
+    /// regression without checking site count first.
+    fn assert_snapshot_numbering(
+        engine: &Engine,
+        expected_snapshot: u64,
+        expected_version: u64,
+        before_next: u64,
+        expected_delta: u64,
+        context: &str,
+    ) {
+        use reify_core::{SnapshotId, VersionId};
+
+        let snapshot = engine
+            .snapshot()
+            .expect("eval() must populate a current snapshot");
+        assert_eq!(
+            snapshot.id,
+            SnapshotId(expected_snapshot),
+            "{context}: expected SnapshotId({expected_snapshot})",
+        );
+        assert_eq!(
+            snapshot.version,
+            VersionId(expected_version),
+            "{context}: expected VersionId({expected_version})",
+        );
+        assert_eq!(
+            engine.next_snapshot_id - before_next,
+            expected_delta,
+            "{context}: next_snapshot_id should have advanced by exactly \
+             {expected_delta} across this call",
+        );
+        assert_eq!(
+            engine.next_version_id - before_next,
+            expected_delta,
+            "{context}: next_version_id should have advanced by exactly \
+             {expected_delta} across this call",
+        );
+    }
+
     /// Characterization lock on the OBSERVABLE snapshot/version numbering
     /// produced by `eval()`'s cold-path snapshot construction (site 1),
     /// guarding the "byte-identical numbering" claim across its migration
     /// onto `allocate_snapshot_version` (task 5040 steps 4-6). Passes
     /// before AND after the migration; would go RED if a migration
     /// perturbed numbering (extra/missing allocation, reordering, etc).
+    /// See `assert_snapshot_numbering` above for the re-baselining caveat.
     ///
     /// `structure S { param width: Length = 100mm }` has no solver
     /// interaction, so only the eval() site-1 pair fires — the
     /// resolution-phase and merged-cluster-solve sites stay dormant.
     #[test]
     fn eval_snapshot_numbering_is_stable_across_repeated_calls() {
-        use reify_core::{SnapshotId, VersionId};
         use reify_test_support::mocks::MockConstraintChecker;
         use reify_test_support::parse_and_compile_with_stdlib;
 
@@ -3094,38 +3147,13 @@ mod tests {
             parse_and_compile_with_stdlib("structure S { param width: Length = 100mm }");
         let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
 
+        let before_first = engine.next_snapshot_id;
         let _ = engine.eval(&compiled);
-        let snapshot = engine
-            .snapshot()
-            .expect("eval() must populate a current snapshot");
-        // Deliberate characterization lock: these exact ids are tied to the
-        // number/ordering of allocation sites that fire during eval(). If
-        // this goes red after intentionally adding/removing an allocation
-        // site (e.g. migrating another engine_edit.rs site onto
-        // allocate_snapshot_version), re-baseline the expected values —
-        // don't read the red as a numbering regression without checking
-        // site count first.
-        assert_eq!(
-            snapshot.id, SnapshotId(0),
-            "first eval() call must mint SnapshotId(0)",
-        );
-        assert_eq!(
-            snapshot.version, VersionId(0),
-            "first eval() call must mint VersionId(0)",
-        );
+        assert_snapshot_numbering(&engine, 0, 0, before_first, 1, "first eval() call (site 1)");
 
+        let before_second = engine.next_snapshot_id;
         let _ = engine.eval(&compiled);
-        let snapshot = engine
-            .snapshot()
-            .expect("second eval() must populate a current snapshot");
-        assert_eq!(
-            snapshot.id, SnapshotId(1),
-            "second eval() call must mint SnapshotId(1)",
-        );
-        assert_eq!(
-            snapshot.version, VersionId(1),
-            "second eval() call must mint VersionId(1)",
-        );
+        assert_snapshot_numbering(&engine, 1, 1, before_second, 1, "second eval() call (site 1)");
     }
 
     /// Characterization lock on the OBSERVABLE snapshot/version numbering
@@ -3153,7 +3181,7 @@ mod tests {
     fn resolution_phase_snapshot_numbering_is_stable() {
         use std::collections::HashMap;
 
-        use reify_core::{ModulePath, SnapshotId, Type, ValueCellId, VersionId};
+        use reify_core::{ModulePath, Type, ValueCellId};
         use reify_ir::Value;
         use reify_test_support::{
             CompiledModuleBuilder, MockConstraintChecker, MockConstraintSolver,
@@ -3190,6 +3218,7 @@ mod tests {
         let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
             .with_solver(Box::new(solver));
 
+        let before = engine.next_snapshot_id;
         let result = engine.eval(&module);
 
         // Sanity: confirm the solver's Solved arm actually fired (not
@@ -3206,35 +3235,16 @@ mod tests {
             thickness_val
         );
 
-        let snapshot = engine
-            .snapshot()
-            .expect("eval() must populate a current snapshot");
-        // Deliberate characterization lock (same caveat as
-        // eval_snapshot_numbering_is_stable_across_repeated_calls above):
-        // these exact counts/ids are tied to precisely two allocation sites
-        // firing (site 1 then site 2). A legitimate future change that
-        // adds/removes an allocation site during eval() must re-baseline
-        // these values on purpose, not treat a red here as an automatic
-        // regression.
-        assert_eq!(
-            snapshot.id, SnapshotId(1),
-            "resolution-phase pair (site 2) must be the SECOND allocation \
-             after the site-1 cold-path pair — expected SnapshotId(1)",
-        );
-        assert_eq!(
-            snapshot.version, VersionId(1),
-            "resolution-phase pair (site 2) must be the SECOND allocation \
-             after the site-1 cold-path pair — expected VersionId(1)",
-        );
-        assert_eq!(
-            engine.next_snapshot_id, 2,
-            "exactly two snapshot ids must be minted: cold path (site 1) + \
-             resolution phase (site 2)",
-        );
-        assert_eq!(
-            engine.next_version_id, 2,
-            "exactly two version ids must be minted: cold path (site 1) + \
-             resolution phase (site 2)",
+        // Site 1 then site 2 fire in this one eval() call — see
+        // assert_snapshot_numbering's doc comment above for the
+        // re-baselining caveat.
+        assert_snapshot_numbering(
+            &engine,
+            1,
+            1,
+            before,
+            2,
+            "resolution-phase eval() call (site 1 + site 2)",
         );
     }
 
@@ -3268,7 +3278,7 @@ mod tests {
     fn merged_cluster_solve_snapshot_numbering_is_stable() {
         use std::collections::HashMap;
 
-        use reify_core::{ModulePath, SnapshotId, Type, ValueCellId, VersionId};
+        use reify_core::{ModulePath, Type, ValueCellId};
         use reify_ir::Value;
         use reify_test_support::{
             CompiledModuleBuilder, MockConstraintChecker, MockConstraintSolver,
@@ -3301,6 +3311,7 @@ mod tests {
         let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
             .with_solver(Box::new(solver));
 
+        let before = engine.next_snapshot_id;
         let result = engine.eval(&module);
 
         // Sanity: confirm the merged solve's Solved arm actually fired
@@ -3323,36 +3334,16 @@ mod tests {
             result.values.get(&b_m)
         );
 
-        let snapshot = engine
-            .snapshot()
-            .expect("eval() must populate a current snapshot");
-        // Deliberate characterization lock (same caveat as the site-1/
-        // site-2 tests above): these exact counts/ids are tied to precisely
-        // two allocation sites firing (site 1 then site 3). A legitimate
-        // future change that adds/removes an allocation site during eval()
-        // must re-baseline these values on purpose, not treat a red here as
-        // an automatic regression.
-        assert_eq!(
-            snapshot.id, SnapshotId(1),
-            "merged-cluster-solve pair (site 3) must be the SECOND \
-             allocation after the site-1 cold-path pair — expected \
-             SnapshotId(1)",
-        );
-        assert_eq!(
-            snapshot.version, VersionId(1),
-            "merged-cluster-solve pair (site 3) must be the SECOND \
-             allocation after the site-1 cold-path pair — expected \
-             VersionId(1)",
-        );
-        assert_eq!(
-            engine.next_snapshot_id, 2,
-            "exactly two snapshot ids must be minted: cold path (site 1) \
-             + merged-cluster-solve (site 3)",
-        );
-        assert_eq!(
-            engine.next_version_id, 2,
-            "exactly two version ids must be minted: cold path (site 1) + \
-             merged-cluster-solve (site 3)",
+        // Site 1 then site 3 fire in this one eval() call — see
+        // assert_snapshot_numbering's doc comment above for the
+        // re-baselining caveat.
+        assert_snapshot_numbering(
+            &engine,
+            1,
+            1,
+            before,
+            2,
+            "merged-cluster-solve eval() call (site 1 + site 3)",
         );
     }
 
