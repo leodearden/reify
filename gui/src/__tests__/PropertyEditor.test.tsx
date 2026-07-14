@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@solidjs/testing-library';
 import { createSignal } from 'solid-js';
 import { PropertyEditor } from '../panels/PropertyEditor';
-import type { ValueData } from '../types';
+import type { UnitLadderMap, ValueData } from '../types';
+import { loadUnitPreference, saveUnitPreference } from '../stores/unitPreferences';
 
 function makeValue(overrides: Partial<ValueData> & { cell_id: string }): ValueData {
   return {
@@ -16,6 +17,8 @@ function makeValue(overrides: Partial<ValueData> & { cell_id: string }): ValueDa
     freshness: overrides.freshness ?? 'final',
     reason: overrides.reason,
     last_substantive_value: overrides.last_substantive_value,
+    dimension: overrides.dimension,
+    si_value: overrides.si_value,
   };
 }
 
@@ -1316,5 +1319,123 @@ describe('PropertyEditor pending last-substantive value (#4739 γ)', () => {
     // The readonly span shows the prior good value, not the stale current one.
     expect(row.textContent).toContain('42');
     expect(row.textContent).not.toContain('99');
+  });
+});
+
+describe('PropertyEditor per-cell unit picker (task #5199)', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  const VOLUME_LADDER: UnitLadderMap = {
+    Volume: [
+      { label: 'mm³', si_scale: 1e-9, is_default: true },
+      { label: 'cm³', si_scale: 1e-6, is_default: false },
+      { label: 'L', si_scale: 1e-3, is_default: false },
+      { label: 'm³', si_scale: 1.0, is_default: false },
+    ],
+  };
+
+  function capacityValues(overrides: Partial<ValueData> = {}): Record<string, ValueData> {
+    return {
+      c1: makeValue({
+        cell_id: 'c1',
+        name: 'capacity',
+        entity_path: 'Tank.capacity',
+        value: '7045002.24',
+        unit: 'mm³',
+        dimension: 'Volume',
+        si_value: 0.00704500224,
+        ...overrides,
+      }),
+    };
+  }
+
+  it('(a) a Volume cell with si_value renders a unit-picker select with the ladder option labels', () => {
+    render(() => (
+      <PropertyEditor
+        values={capacityValues()}
+        selectedEntity={null}
+        onSetParameter={vi.fn()}
+        unitLadders={VOLUME_LADDER}
+      />
+    ));
+    const select = screen.getByTestId('unit-select-c1') as HTMLSelectElement;
+    const labels = Array.from(select.options).map((o) => o.value);
+    expect(labels).toEqual(['mm³', 'cm³', 'L', 'm³']);
+  });
+
+  it('(b) selecting "L" shows the converted displayed value and label', () => {
+    render(() => (
+      <PropertyEditor
+        values={capacityValues()}
+        selectedEntity={null}
+        onSetParameter={vi.fn()}
+        unitLadders={VOLUME_LADDER}
+      />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const select = screen.getByTestId('unit-select-c1') as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: 'L' } });
+    expect(select.value).toBe('L');
+    expect(row.textContent).toContain('7.04500224');
+  });
+
+  it('(c) a cell whose unit is pre-persisted renders that unit + converted value on first render', () => {
+    saveUnitPreference('c1', 'L');
+    render(() => (
+      <PropertyEditor
+        values={capacityValues()}
+        selectedEntity={null}
+        onSetParameter={vi.fn()}
+        unitLadders={VOLUME_LADDER}
+      />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const select = screen.getByTestId('unit-select-c1') as HTMLSelectElement;
+    expect(select.value).toBe('L');
+    expect(row.textContent).toContain('7.04500224');
+  });
+
+  it('(d) changing the select persists the choice via saveUnitPreference', () => {
+    render(() => (
+      <PropertyEditor
+        values={capacityValues()}
+        selectedEntity={null}
+        onSetParameter={vi.fn()}
+        unitLadders={VOLUME_LADDER}
+      />
+    ));
+    const select = screen.getByTestId('unit-select-c1') as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: 'L' } });
+    expect(loadUnitPreference('c1')).toBe('L');
+  });
+
+  it('(e) the default-unit selection shows the backend value verbatim', () => {
+    render(() => (
+      <PropertyEditor
+        values={capacityValues()}
+        selectedEntity={null}
+        onSetParameter={vi.fn()}
+        unitLadders={VOLUME_LADDER}
+      />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const select = screen.getByTestId('unit-select-c1') as HTMLSelectElement;
+    expect(select.value).toBe('mm³');
+    expect(row.textContent).toContain('7045002.24');
+  });
+
+  it('(f) a cell without si_value/dimension still renders the plain static badge, no select', () => {
+    render(() => (
+      <PropertyEditor
+        values={EDITABLE_C1}
+        selectedEntity={null}
+        onSetParameter={vi.fn()}
+        unitLadders={VOLUME_LADDER}
+      />
+    ));
+    expect(screen.queryByTestId('unit-select-c1')).toBeNull();
+    expect(screen.getByTestId('prop-row-c1').textContent).toContain('mm');
   });
 });
