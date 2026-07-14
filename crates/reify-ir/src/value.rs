@@ -10607,6 +10607,85 @@ mod tests {
         );
     }
 
+    // ── format_display_number sig-fig rounding tests (task 5198 fix a) ───────
+    //
+    // format_display_number currently does `format!("{}", v)` with zero
+    // rounding, so Rust's shortest-round-trip printing faithfully renders
+    // 1-ulp f64 noise left over from the SI-m canonical storage round-trip.
+    // These pin both the noisy→clean cleanup and the pass-through invariants
+    // that the eventual rounding helper must not disturb.
+
+    #[test]
+    fn format_display_number_rounds_ulp_noise_fractional() {
+        // Real artifact observed in the GUI values panel.
+        assert_eq!(format_display_number(6.3999999999999995), "6.4");
+    }
+
+    #[test]
+    fn format_display_number_rounds_ulp_noise_whole_number() {
+        // Real artifact observed in the GUI values panel.
+        assert_eq!(format_display_number(105.00000000000001), "105");
+    }
+
+    #[test]
+    fn format_display_number_rounds_ulp_noise_fractional_large() {
+        // Real artifact observed in the GUI values panel.
+        assert_eq!(format_display_number(475.19999999999993), "475.2");
+    }
+
+    #[test]
+    fn format_display_number_rounds_synthetic_ulp_noise() {
+        // Synthesize a 1-ulp perturbation of a clean value the same way the
+        // real artifacts above arise, rather than relying on a hand-picked
+        // noisy literal that might not land on a distinct bit pattern.
+        let clean = 247.2_f64;
+        let noisy = f64::from_bits(clean.to_bits() + 1);
+        assert_ne!(
+            format!("{noisy}"),
+            "247.2",
+            "test precondition: the +1-ulp neighbour must actually print noisy pre-fix"
+        );
+        assert_eq!(format_display_number(noisy), "247.2");
+    }
+
+    #[test]
+    fn format_display_number_preserves_small_tolerance() {
+        // Small-magnitude smoke test for the 12-not-10 sig-fig choice: a
+        // tolerance like 0.00005 must survive unchanged.
+        assert_eq!(format_display_number(0.00005), "0.00005");
+    }
+
+    #[test]
+    fn format_display_number_preserves_twelve_significant_figures() {
+        // Pins DISPLAY_SIG_FIGS = 12, not 10: a legitimate 12-significant-figure
+        // value must round-trip unchanged. At 10 sig figs this would be
+        // rounded away, corrupting a real high-precision tolerance.
+        assert_eq!(
+            format_display_number(0.000123456789012),
+            "0.000123456789012"
+        );
+    }
+
+    #[test]
+    fn format_display_number_zero_unchanged() {
+        assert_eq!(format_display_number(0.0), "0");
+    }
+
+    #[test]
+    fn format_display_number_whole_number_trims_decimal() {
+        assert_eq!(format_display_number(80.0), "80");
+    }
+
+    #[test]
+    fn format_display_number_nan_renders_nan() {
+        assert_eq!(format_display_number(f64::NAN), "NaN");
+    }
+
+    #[test]
+    fn format_display_number_infinity_renders_inf() {
+        assert_eq!(format_display_number(f64::INFINITY), "inf");
+    }
+
     // ── Value::Selector substrate tests (step-3 RED / task 4116 α) ───────────
     //
     // These tests reference GeometryHandleRef, SelectorValue, LeafQuery, SelectorNode,
