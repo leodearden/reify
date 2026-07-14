@@ -525,6 +525,42 @@ fn extract_edges_unit_cube_returns_18_distinct_handles() {
     assert_handles_valid_and_distinct(&edges, "edge");
 }
 
+/// `extract_edges` on the same parent handle returns the **same** ids in the
+/// **same order** on every call (per-parent memoization).
+///
+/// The per-parent idempotency contract mirrors OCCT's
+/// (`crates/reify-kernel-occt/src/lib.rs:619-628` doc) and
+/// `extract_faces_is_idempotent_per_parent_handle` above: given the same
+/// parent handle, the returned `Vec<GeometryHandleId>` must be
+/// element-for-element identical — both in id values and in order — across
+/// calls.
+///
+/// RED (task η step-1): `extract_edges` mints FRESH monotonic ids via
+/// `store_sub_shape` on every call — no `extracted_edges` cache exists — a
+/// dormant re-instance of the #4262 defect that `extract_faces` already had
+/// fixed, so the second call returns a disjoint vec and `assert_eq!` fails.
+/// GREEN after task η step-3 (mirrored `extracted_edges` memoization cache).
+#[test]
+fn extract_edges_is_idempotent_per_parent_handle() {
+    let mut kernel = ManifoldKernel::new();
+    let handle = ingest(&mut kernel, [0.0, 0.0, 0.0]);
+
+    let first = kernel
+        .extract_edges(handle)
+        .expect("first extract_edges call must succeed");
+    let second = kernel
+        .extract_edges(handle)
+        .expect("second extract_edges call must succeed");
+
+    assert_eq!(
+        first,
+        second,
+        "extract_edges must return identical ids in identical order for the same parent handle \
+         (per-parent memoization contract, mirroring OCCT); \
+         first={first:?}, second={second:?}",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Sub-element property queries: SurfaceArea + FaceNormal (steps 5 + 6),
 // EdgeTangent + BoundingBox (steps 7 + 8)
