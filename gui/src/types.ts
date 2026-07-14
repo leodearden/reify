@@ -232,7 +232,47 @@ export interface ValueData {
    * `null` / absent for final/intermediate/failed cells (mirrors `reason`).
    */
   last_substantive_value?: string | null;
+  /**
+   * Canonical dimension name for this cell's value (e.g. `"Volume"`,
+   * `"Length"`), from `DimensionVector::canonical_name()`. Empty string /
+   * absent for non-scalar, dimensionless, or composed-dimension values
+   * (task #5199: drives the Parameters panel's per-cell unit picker — only
+   * cells with a non-empty `dimension` AND a ladder of >=2 units get a
+   * `<select>` instead of the static unit badge).
+   */
+  dimension?: string;
+  /**
+   * The cell's raw canonical SI magnitude (e.g. cubic metres for a Volume
+   * cell), for converting into whichever display unit the user picks:
+   * `displayed = si_value / chosenUnit.si_scale`. `null` / absent for
+   * non-scalar values (mirrors `dimension` being empty/absent). This is
+   * canonical-SI data alongside the existing default-unit-formatted
+   * `value`/`unit` pair — the unit picker's own selection never crosses
+   * the IPC wire (task #5199 engine_state decision: additive-only).
+   */
+  si_value?: number | null;
 }
+
+/** One selectable display unit within a {@link DimensionLadder} (task #5199). */
+export interface UnitOption {
+  /** User-facing unit label (e.g. `"mm"`, `"L"`). */
+  label: string;
+  /** `displayMagnitude = si_value / si_scale`. */
+  si_scale: number;
+  /** Exactly one option per ladder has `is_default: true`. */
+  is_default: boolean;
+}
+
+/** The ordered set of display-unit options for one canonical dimension. */
+export interface DimensionLadder {
+  /** Canonical dimension name (`DimensionVector::canonical_name()`, e.g. `"Volume"`). */
+  dimension: string;
+  /** Selectable units, in picker display order. */
+  units: UnitOption[];
+}
+
+/** Canonical dimension name -> its selectable unit ladder, as returned by `get_unit_ladders`. */
+export type UnitLadderMap = Record<string, UnitOption[]>;
 
 /** Status and label of a constraint node. */
 export interface ConstraintData {
