@@ -8728,6 +8728,21 @@ mod tests {
     /// yield `ExpectedList`. This couples the test to
     /// `extract_point3_si`'s internal `&'static str` label, but no other
     /// test in this module asserts on that string.
+    ///
+    /// Amendment (task #5085 review, test_coupling): this `context` pin is
+    /// a deliberate, narrow exception to the module's general policy of
+    /// matching the error *variant* only and never pinning `got`'s
+    /// free-text prose (see `..._rejects_wrong_arity` below and
+    /// `extract_zone_process_params_rejects_non_real_element`). `context`
+    /// is not diagnostic prose like `got` (a `format!`-built `String`) —
+    /// it is a fixed `&'static str` provenance tag set once per call site,
+    /// so matching it is the same kind of assertion as matching the
+    /// variant, just at finer grain (which of the two
+    /// `ExpectedList`-yielding branches fired). A bare variant match here
+    /// would still pass under a regression that let the arity guard
+    /// mis-fire on a well-formed 7-element list (masking a broken `?`
+    /// hand-off to `extract_point3_si`), so the extra precision is
+    /// load-bearing, not incidental.
     #[test]
     fn classify_material_as_printed_zones_rejects_malformed_lambda() {
         // 7-element list; element 0 (aabb_min) is a non-Point Value::Real,
