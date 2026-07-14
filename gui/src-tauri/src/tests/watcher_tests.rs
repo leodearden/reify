@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::watcher::{FileEvent, FileWatcher};
+use crate::watcher::{ChangeKind, Debouncer, FileEvent, FileWatcher};
 
 /// Poll `sink` until `predicate` holds or `timeout` elapses.
 ///
@@ -51,6 +51,112 @@ where
         }
         Err(e) => panic!("unexpected watcher error: {e}"),
     }
+}
+
+// --- Debouncer unit tests (deterministic, clock-injected, no filesystem/threads) ---
+//
+// These pin the trailing-edge + per-path coalescing contract that
+// `Debouncer` implements, using synthetic `Instant`s so the assertions are
+// exact and never depend on wall-clock scheduling.
+
+#[test]
+fn debouncer_lone_record_becomes_ready_only_after_the_window_elapses() {
+    let t0 = Instant::now();
+    let path = PathBuf::from("a.ri");
+    let mut deb = Debouncer::new(Duration::from_millis(100));
+
+    deb.record(path.clone(), ChangeKind::Changed, t0);
+
+    // Not yet ready: only 50ms of quiet has elapsed.
+    assert_eq!(deb.drain_ready(t0 + Duration::from_millis(50)), vec![]);
+
+    // Ready: 150ms of quiet has elapsed (>= the 100ms window).
+    assert_eq!(
+        deb.drain_ready(t0 + Duration::from_millis(150)),
+        vec![(path.clone(), ChangeKind::Changed)]
+    );
+
+    // Draining removes the entry -- a second drain finds nothing pending.
+    assert_eq!(deb.drain_ready(t0 + Duration::from_millis(500)), vec![]);
+}
+
+#[test]
+fn debouncer_second_record_resets_the_quiet_window() {
+    let t0 = Instant::now();
+    let path = PathBuf::from("a.ri");
+    let mut deb = Debouncer::new(Duration::from_millis(100));
+
+    deb.record(path.clone(), ChangeKind::Changed, t0);
+    deb.record(
+        path.clone(),
+        ChangeKind::Changed,
+        t0 + Duration::from_millis(50),
+    );
+
+    // Only 70ms since the LATEST event (120 - 50) -- still not ready, even
+    // though 120ms have elapsed since the FIRST event.
+    assert_eq!(deb.drain_ready(t0 + Duration::from_millis(120)), vec![]);
+
+    // 110ms since the latest event (160 - 50) -- now ready.
+    assert_eq!(
+        deb.drain_ready(t0 + Duration::from_millis(160)),
+        vec![(path.clone(), ChangeKind::Changed)]
+    );
+}
+
+#[test]
+fn debouncer_coalesces_rapid_records_to_one_emission_with_the_latest_kind() {
+    let t0 = Instant::now();
+    let path = PathBuf::from("a.ri");
+    let mut deb = Debouncer::new(Duration::from_millis(100));
+
+    deb.record(path.clone(), ChangeKind::Changed, t0);
+    deb.record(
+        path.clone(),
+        ChangeKind::Changed,
+        t0 + Duration::from_millis(10),
+    );
+    deb.record(
+        path.clone(),
+        ChangeKind::Changed,
+        t0 + Duration::from_millis(20),
+    );
+    deb.record(
+        path.clone(),
+        ChangeKind::Removed,
+        t0 + Duration::from_millis(30),
+    );
+
+    let ready = deb.drain_ready(t0 + Duration::from_millis(200));
+    assert_eq!(
+        ready,
+        vec![(path, ChangeKind::Removed)],
+        "rapid same-path records should coalesce into a single emission carrying the latest kind"
+    );
+}
+
+#[test]
+fn debouncer_next_wait_reports_remaining_time_or_none_when_empty() {
+    let t0 = Instant::now();
+    let path = PathBuf::from("a.ri");
+    let mut deb = Debouncer::new(Duration::from_millis(100));
+
+    assert_eq!(
+        deb.next_wait(t0),
+        None,
+        "empty debouncer has nothing to wait for"
+    );
+
+    deb.record(path.clone(), ChangeKind::Changed, t0);
+    assert_eq!(deb.next_wait(t0), Some(Duration::from_millis(100)));
+    assert_eq!(
+        deb.next_wait(t0 + Duration::from_millis(40)),
+        Some(Duration::from_millis(60))
+    );
+
+    // Draining clears pending state, so next_wait goes back to None.
+    deb.drain_ready(t0 + Duration::from_millis(150));
+    assert_eq!(deb.next_wait(t0 + Duration::from_millis(150)), None);
 }
 
 #[test]
