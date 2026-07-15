@@ -5945,32 +5945,42 @@ TessResult tessellate_shape(const OcctShape& shape, double tolerance) {
                 // per meridian, all at a bit-identical 3D position. The seam
                 // fan triangle whose two non-ring corners are duplicate pole
                 // nodes therefore has two coincident corners — zero area.
-                // Detect it here, on the same FLOAT-cast corner positions
-                // (post-`loc` transform) as the vertex-extraction loop above,
-                // via the identical (b-a)×(c-a) cross product
+                // Detect it here by reading the corners' positions straight
+                // back out of `result.vertices` at
+                // (vertex_offset + n{1,2,3} - 1) * 3 — the SAME loc-
+                // transformed, float-cast values the vertex-extraction loop
+                // above already wrote — rather than re-fetching via
+                // `tri->Node()` + `Transform()` a second time. This avoids
+                // ~3 redundant Node()/Transform() calls per triangle and,
+                // more importantly, makes the "bit-identical to what
+                // validate sees" guarantee structural: the gate reads the
+                // exact stored bytes validate reads, rather than relying on
+                // a recomputation that merely happens to be deterministic.
+                // The (b-a)×(c-a) cross product is identical to the one
                 // `Mesh::check_contract`'s NonDegenerate obligation uses
                 // (`crates/reify-ir/src/geometry.rs:2852-2861`) — so the
                 // producer emits exactly the triangle set `validate(0.0)`
                 // accepts. Threshold is exact zero (squared magnitude <=
                 // 0.0f), not a positive epsilon: a positive epsilon could
-                // drop a real thin sliver and open a hole.
-                gp_Pnt pa = tri->Node(n1);
-                gp_Pnt pb = tri->Node(n2);
-                gp_Pnt pc = tri->Node(n3);
-                if (!loc.IsIdentity()) {
-                    pa.Transform(loc.Transformation());
-                    pb.Transform(loc.Transformation());
-                    pc.Transform(loc.Transformation());
-                }
-                float ax = static_cast<float>(pa.X());
-                float ay = static_cast<float>(pa.Y());
-                float az = static_cast<float>(pa.Z());
-                float bx = static_cast<float>(pb.X());
-                float by = static_cast<float>(pb.Y());
-                float bz = static_cast<float>(pb.Z());
-                float cx = static_cast<float>(pc.X());
-                float cy = static_cast<float>(pc.Y());
-                float cz = static_cast<float>(pc.Z());
+                // drop a real thin sliver and open a hole. NOTE: this
+                // producer/validator agreement is scoped to `validate(0.0)`
+                // only — `validate(tol)` with tol > 0 gates on
+                // `twice_area <= tol*tol`, so a thin-but-nonzero pole sliver
+                // could still fail a positive-tolerance validate even though
+                // it clears this exact-zero gate; callers must not assume
+                // this gate pre-satisfies a positive-tol validate.
+                uint32_t base_a = (vertex_offset + static_cast<uint32_t>(n1 - 1)) * 3;
+                uint32_t base_b = (vertex_offset + static_cast<uint32_t>(n2 - 1)) * 3;
+                uint32_t base_c = (vertex_offset + static_cast<uint32_t>(n3 - 1)) * 3;
+                float ax = result.vertices[base_a];
+                float ay = result.vertices[base_a + 1];
+                float az = result.vertices[base_a + 2];
+                float bx = result.vertices[base_b];
+                float by = result.vertices[base_b + 1];
+                float bz = result.vertices[base_b + 2];
+                float cx = result.vertices[base_c];
+                float cy = result.vertices[base_c + 1];
+                float cz = result.vertices[base_c + 2];
                 float abx = bx - ax, aby = by - ay, abz = bz - az;
                 float acx = cx - ax, acy = cy - ay, acz = cz - az;
                 float cross_x = aby * acz - abz * acy;
@@ -5981,7 +5991,14 @@ TessResult tessellate_shape(const OcctShape& shape, double tolerance) {
                     // Degenerate (two coincident corners) — skip emitting
                     // this triangle's indices. Vertex/normal buffers and
                     // vertex_offset accounting are untouched: every
-                    // subsequent face's indices remain correct.
+                    // subsequent face's indices remain correct. The
+                    // duplicate pole node(s) this triangle would have
+                    // referenced stay in `result.vertices`/`result.normals`,
+                    // now unreferenced by any index — by design, to keep
+                    // the vertex_offset accounting above simple. This is
+                    // harmless: no obligation requires every vertex be
+                    // referenced, and the ring/pole nodes stay reachable via
+                    // adjacent real fan triangles.
                     continue;
                 }
 
