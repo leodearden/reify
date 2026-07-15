@@ -865,17 +865,21 @@ structure def Parent {
     );
 }
 
-/// External access into a `priv param` nested inside a block-form guarded
-/// group does not emit E_PRIV_MEMBER_ACCESS today — not because it is
-/// silently allowed (it isn't), but because the priv gate is never reached.
+/// External dot-access on a `priv param` nested inside a block-form guarded
+/// group now emits E_PRIV_MEMBER_ACCESS (task #5171): `template_member_is_priv`
+/// scans `guarded_groups[].members`, and the E_PRIV_MEMBER_ACCESS check is
+/// reordered to run before the StructureMemberNotFound early-return (a priv
+/// guarded-block member is never `member_known`, since `template_has_member`
+/// doesn't scan `guarded_groups`).
 #[test]
-fn external_priv_guarded_member_access_not_yet_priv_gated() {
+fn external_priv_guarded_member_access_emits_error() {
     let module = compile_source(
         r#"
 structure def GuardHost {
     param active : Bool = true
     where active {
         priv param g : Length = 5mm
+        param vis : Length = 5mm
     }
 }
 
@@ -886,13 +890,51 @@ structure def Parent {
 "#,
     );
 
+    let priv_errs = priv_access_errors(&module);
+    assert_eq!(
+        priv_errs.len(),
+        1,
+        "external access to `h.g` (priv guarded-block member) must emit exactly one \
+         E_PRIV_MEMBER_ACCESS; all diagnostics: {:?}",
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    assert!(priv_errs[0].message.contains("E_PRIV_MEMBER_ACCESS"));
+    assert!(
+        priv_errs[0].message.contains('g'),
+        "diagnostic should name the offending member: {}",
+        priv_errs[0].message
+    );
+}
+
+/// External dot-access on a default-visible guarded-block member sibling
+/// still fails — but via E_STRUCTURE_MEMBER_NOT_FOUND, not
+/// E_PRIV_MEMBER_ACCESS (pub guarded-member resolution remains a separate,
+/// pre-existing gap that this task does not close: `template_has_member`
+/// still doesn't scan `guarded_groups`).
+#[test]
+fn external_pub_guarded_member_access_not_found_unchanged() {
+    let module = compile_source(
+        r#"
+structure def GuardHost {
+    param active : Bool = true
+    where active {
+        priv param g : Length = 5mm
+        param vis : Length = 5mm
+    }
+}
+
+structure def Parent {
+    sub h = GuardHost()
+    let touch = h.vis
+}
+"#,
+    );
+
     assert_eq!(
         priv_access_errors(&module).len(),
         0,
-        "external access to a priv guarded-block member must not emit \
-         E_PRIV_MEMBER_ACCESS today — the lowered visibility field is not yet \
-         consulted by any enforcement path (tracked by \
-         {NOT_YET_PRIV_GATED_FOLLOWUP}); all diagnostics: {:?}",
+        "external access to `h.vis` (default-visible guarded-block member) must NOT \
+         emit E_PRIV_MEMBER_ACCESS; all diagnostics: {:?}",
         module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
     let not_found = module
@@ -900,16 +942,11 @@ structure def Parent {
         .iter()
         .filter(|d| d.code == Some(DiagnosticCode::StructureMemberNotFound))
         .count();
-    // Load-bearing, mirroring the function-body variant below: without this, a
-    // future regression that made `h.g` resolve cleanly with NO diagnostic at
-    // all (fail *open*, not closed) would leave this test green, defeating its
-    // purpose as a trip-wire.
     assert!(
         not_found >= 1,
-        "external access to `h.g` must fail with at least one \
-         E_STRUCTURE_MEMBER_NOT_FOUND (`template_has_member` doesn't scan \
-         `guarded_groups[].members`) — this pins that the access fails closed, \
-         not open; all diagnostics: {:?}",
+        "external access to `h.vis` must still fail via E_STRUCTURE_MEMBER_NOT_FOUND \
+         (pub guarded-member resolution is unchanged by task #5171); all \
+         diagnostics: {:?}",
         module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
