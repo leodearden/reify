@@ -704,6 +704,16 @@ fn watcher_drop_joins_worker_promptly_even_with_a_pending_event() {
 /// explicitly so a future change that decided to flush pending events on
 /// shutdown instead would fail here rather than silently altering
 /// observable behavior with nothing to catch it.
+///
+/// A fixed sleep between the write and the drop can't distinguish "the
+/// event was recorded and then correctly discarded" from "the event never
+/// reached the notify closure in time" (e.g. on a slow/loaded host) -- both
+/// look identical from here (`received` ends up empty either way), and the
+/// latter would let this test pass vacuously without exercising the
+/// discard-on-drop contract it claims to pin. So this polls
+/// `FileWatcher::pending_paths` (a test-only hook into the debouncer's
+/// internal state) to positively confirm the event was recorded as pending
+/// *before* dropping, and fails loudly if that confirmation never arrives.
 #[test]
 fn watcher_drop_discards_a_pending_event_rather_than_delivering_it() {
     let dir = tempfile::tempdir().unwrap();
@@ -724,11 +734,37 @@ fn watcher_drop_discards_a_pending_event_rather_than_delivering_it() {
     // Give the watcher time to register.
     std::thread::sleep(Duration::from_millis(200));
 
-    // Trigger an event and drop almost immediately -- well within the
-    // 100ms debounce window, so this change is still pending (not yet
-    // drained) in the Debouncer when Drop runs below.
+    // Trigger an event.
     std::fs::write(&ri_file, "structure Abandoned { param x = 1mm }").unwrap();
-    std::thread::sleep(Duration::from_millis(10));
+
+    // Confirm the notify closure actually recorded this event into the
+    // debouncer before we drop. Once recorded, the entry is guaranteed to
+    // stay pending for the full 100ms debounce window before the worker
+    // could drain it, so polling at a much finer grain than that window
+    // reliably observes it while it's still pending -- this is what makes
+    // the drop below race against a genuinely-pending entry rather than an
+    // empty debouncer.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let recorded = loop {
+        if watcher
+            .pending_paths()
+            .iter()
+            .any(|p| p.ends_with("abandoned.ri"))
+        {
+            break true;
+        }
+        if Instant::now() >= deadline {
+            break false;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    };
+    assert!(
+        recorded,
+        "the event was never recorded as pending in the debouncer within \
+         the deadline -- can't exercise the discard-on-drop contract \
+         without it (this would otherwise let the test pass vacuously, \
+         see doc comment above)"
+    );
 
     // `Drop` joins the worker thread before returning, so once this call
     // is back, the worker has already exited -- there's no race to poll

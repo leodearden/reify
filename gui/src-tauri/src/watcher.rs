@@ -297,6 +297,25 @@ impl FileWatcher {
             shutdown,
         })
     }
+
+    /// Test-only observability hook: a snapshot of the paths currently
+    /// pending in the debouncer (recorded by the notify closure but not yet
+    /// drained/fired). Lets a test confirm an event was actually recorded
+    /// before racing it against something else (e.g. dropping the
+    /// watcher), rather than assuming a fixed `sleep` was long enough —
+    /// otherwise a slow/loaded host could make the race pass vacuously
+    /// (nothing recorded yet) rather than by exercising the intended
+    /// behavior.
+    #[cfg(test)]
+    pub(crate) fn pending_paths(&self) -> Vec<PathBuf> {
+        let (lock, _cvar) = &*self.shared;
+        lock.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pending
+            .keys()
+            .cloned()
+            .collect()
+    }
 }
 
 impl Drop for FileWatcher {
