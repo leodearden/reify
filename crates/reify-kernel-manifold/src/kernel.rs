@@ -1009,6 +1009,24 @@ impl GeometryKernel for ManifoldKernel {
 /// (`engine_build.rs`'s kernel-attribute-hook dispatch site) intentionally
 /// swallows all three `Ok` variants, so returning `Propagated` without
 /// writing the table is safe for the current call graph.
+///
+/// # Coarse solid-level placeholder (review follow-up, task #4636 amendment)
+///
+/// Every `parent_map` value above is whatever `TopologyAttribute` is
+/// recorded at the parent's `KernelHandle` — in practice always the
+/// per-solid representative entry
+/// `reify_eval::primitive_attribute_seed::record_solid_attribute` writes
+/// (`Role::Side`, `local_index: 0`), exact for all-`Side` primitives but a
+/// coarse placeholder for Cylinder/Cone. `correlate_facets` clones that
+/// placeholder verbatim onto every `FacetProvenance::source` in the run
+/// (`provenance.rs`'s `source.clone()`), so it rides all the way to
+/// per-triangle granularity. This is harmless ONLY because this function
+/// never reads `role`/`local_index` back out of `facets` (above) and never
+/// persists them. If this function, `engine_build.rs`, or a future
+/// Manifold-side selector ever starts reading a `FacetProvenance::source`
+/// or a solid-level table entry's `role`/`local_index` as authoritative
+/// per-face data, that change must land together with (or after) #4263's
+/// per-face persistence — not against this placeholder.
 impl KernelAttributeHook for ManifoldKernel {
     fn propagate_attributes(
         &self,

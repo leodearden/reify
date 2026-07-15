@@ -589,6 +589,30 @@ fn pack_sign_bits(x: AxisSign, y: AxisSign, z: AxisSign) -> u32 {
 /// only looks up `KernelHandle`s drawn from the caller-supplied face
 /// candidate slice — the solid handle id is never a face candidate — so this
 /// solid-level entry cannot be spuriously matched by a face selector.
+///
+/// # Invariant for any future consumer (review follow-up, task #4636 amendment)
+///
+/// `role`/`local_index` on this entry are a representative placeholder, not
+/// authoritative per-face data. They are provably inert today: the only
+/// reader is `ManifoldKernel::propagate_attributes`
+/// (`crates/reify-kernel-manifold/src/kernel.rs`), which clones this entry
+/// into its `parent_map` and hands it to `correlate_facets`
+/// (`crates/reify-kernel-manifold/src/provenance.rs`), which in turn clones
+/// it verbatim onto every `FacetProvenance::source` in the affected run
+/// (a plain `source.clone()`, no field-level use) — but
+/// `propagate_attributes` itself only checks `source.is_some()` and drops
+/// the resulting `Vec<FacetProvenance>` before returning, so `role`/
+/// `local_index` never escape. A distinguishable sentinel `Role` variant was
+/// considered instead of this doc contract, but `Role` lives in `reify-ir`
+/// (outside this task's locked modules) and its `content_hash_bytes`
+/// encoding is a wildcard-free frozen contract that a new variant would
+/// ripple through — out of scope for this amendment. Do **not** add a
+/// consumer (selector, diagnostics scan, or #4263's descriptor-keyed
+/// persistence) that reads `role`/`local_index` off a solid-level entry —
+/// or off a `FacetProvenance::source` derived from one — as authoritative
+/// until #4263 replaces this placeholder with real per-face roles.
+/// `record_solid_attribute_records_only_the_solid_handle` (below) pins the
+/// exact placeholder shape so a drive-by change here is caught.
 pub fn record_solid_attribute(
     table: &mut TopologyAttributeTable,
     kernel_id: KernelId,
