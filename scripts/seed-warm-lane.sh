@@ -17,7 +17,16 @@
 # Usage (seed mode):
 #   lane_target=$(scripts/seed-warm-lane.sh <base_target_dir> <lane_dir> \
 #                    (--fresh-checkout|--reset-in-place) \
-#                    [--base-commit <sha>] [--touch <path>]...)
+#                    [--base-commit <sha>] [--touch <path>]... [--lane-lock])
+#
+#   --lane-lock (opt-in, default OFF; PRD §9.5 inv.11): acquire an EXCLUSIVE
+#     flock on the sibling-path ${LANE_DIR}.lock -- the same convention
+#     thin-warm-lane.sh (T3) and warm-lane-gc.sh (live-consumer probe) use --
+#     BEFORE any target mutation, held across the whole run. Non-blocking:
+#     refuses with EX_TEMPFAIL (75) when a live consumer already holds it.
+#     Existing callers that omit this flag are unaffected -- see
+#     thin-warm-lane.sh --reseed, which already holds this same lock before
+#     invoking this script.
 #
 # Usage (record-base mode):
 #   sidecar=$(scripts/seed-warm-lane.sh --record-base <base_target_dir>)
@@ -63,7 +72,7 @@ _usage() {
     cat >&2 <<'EOF'
 Usage:
   seed-warm-lane.sh <base_target_dir> <lane_dir> (--fresh-checkout|--reset-in-place) \
-      [--base-commit <sha>] [--touch <path>]...
+      [--base-commit <sha>] [--touch <path>]... [--lane-lock]
   seed-warm-lane.sh --record-base <base_target_dir>
 
 Seed mode: CoW-clone a warm base target/ into a pool lane.
@@ -76,6 +85,10 @@ Seed mode: CoW-clone a warm base target/ into a pool lane.
                       production acquires always use --fresh-checkout).  No bulk stamp.
   --base-commit sha   Git commit the base was built from; drives git diff --name-only.
   --touch path        Additional path to touch to now after bulk stamp (repeatable).
+  --lane-lock         Opt-in (default OFF; PRD §9.5 inv.11): hold an exclusive flock
+                      on the sibling ${LANE_DIR}.lock across the whole run, BEFORE any
+                      target mutation. Refuses (EX_TEMPFAIL 75) if a live consumer
+                      already holds it (inv.2 one-consumer-per-lane-at-a-time).
 
 Record-base mode: stamp provenance beside the base target dir.
   --record-base dir   Write sidecar at $(dirname dir)/.warm-base-meta; print path on stdout.
@@ -108,6 +121,7 @@ RESET_IN_PLACE=""
 BASE_COMMIT=""
 TOUCH_PATHS=()
 RECORD_BASE_DIR=""
+LANE_LOCK_OPT=""
 _POSITIONALS=()
 
 while [ $# -gt 0 ]; do
@@ -122,6 +136,10 @@ while [ $# -gt 0 ]; do
             ;;
         --reset-in-place)
             RESET_IN_PLACE=1
+            shift
+            ;;
+        --lane-lock)
+            LANE_LOCK_OPT=1
             shift
             ;;
         --base-commit)
@@ -408,6 +426,38 @@ if [ "$ENV_INVOCATION" != "$RECORDED_INVOCATION" ]; then
     err "The base artifact was built with a different invocation fingerprint — seeding would produce a cold rebuild."
     err "Re-build the warm base with matching REIFY_WARM_LANE_INVOCATION, or update via --record-base."
     exit 1
+fi
+
+# ── --lane-lock (opt-in, default OFF): acquire-time lane-lock exclusivity ────
+# PRD §9.5 inv.11. Acquires an EXCLUSIVE flock on the sibling-path
+# ${LANE_DIR}.lock -- the SAME convention thin-warm-lane.sh's T3 (FD 9) and
+# warm-lane-gc.sh's live-consumer probe (FD 8) already use -- BEFORE any
+# target mutation (i.e. before the mode-split below / the fresh-checkout mv),
+# and holds it across the whole run so the destructive replace+clone never
+# races a live consumer (inv.2: one consumer per lane at a time). Runs before
+# the mode-split so it guards BOTH --fresh-checkout and --reset-in-place.
+#
+# OPT-IN and default OFF: thin-warm-lane.sh --reseed ALREADY holds
+# ${LANE_DIR}.lock on FD 9 before invoking this script, so an unconditional
+# acquire here would self-refuse that caller. Every existing caller (thin
+# --reseed, dark-factory acquire_lane pre-DF-wiring, tests) that does not pass
+# --lane-lock is byte-for-byte unchanged.
+if [ -n "$LANE_LOCK_OPT" ]; then
+    LANE_LOCK="${LANE_DIR}.lock"
+    # Mirrors thin-warm-lane.sh's breadcrumb: the pool's acquire/release
+    # convention (inv.2) guarantees this lock file already exists for any
+    # lane that went through acquire_lane; a missing lock here likely means
+    # the lane never was.
+    [ -e "$LANE_LOCK" ] || info "Lane lock does not exist yet, creating: $LANE_LOCK (lane may never have been acquired through the pool)"
+    exec 9>"$LANE_LOCK"
+    if ! flock -n 9; then
+        exec 9>&-
+        err "Lane lock held by a live consumer (flock -n failed): $LANE_LOCK"
+        err "Refusing to reseed an ASSIGNED lane (inv.2: one consumer per lane at a time)."
+        exit 75
+    fi
+    # FD 9 stays open (lock held) for the rest of the run -- spanning the
+    # mv+clone below with no check-then-act gap; bash releases it on exit.
 fi
 
 # ── mode-split: replace-existing (fresh-checkout) vs clobber-guard (reset-in-place) ──
