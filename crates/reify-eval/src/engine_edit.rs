@@ -1269,32 +1269,29 @@ impl Engine {
                 &self.meta_map,
                 Some(&runtime_sink),
             );
-            values.insert(field_cell.clone(), new_field_value.clone());
-            new_snapshot.values.insert(
+            // Commit via the cell-commit primitive (task δ #5056): atomically
+            // writes values/snapshot/cache/journal (INV-EVAL-1), recording the
+            // edit-reeval provenance slug on the journal's Started event (see
+            // T2's commit above for the full rationale). Records the static
+            // dependency trace (matching the cold-start contract) rather than
+            // `DependencyTrace::default()` — without this,
+            // `CacheStore::invalidate_dependents` (cache.rs) would see an
+            // empty `reads` set on the rebuilt entry and silently skip
+            // propagation when one of the field's actual deps later changes.
+            commit_cell_result(
+                CommitLegs {
+                    values: &mut values,
+                    snapshot_values: &mut new_snapshot.values,
+                    cache: &mut self.cache,
+                    journal: &mut self.journal,
+                },
                 field_cell,
-                (new_field_value.clone(), DeterminacyState::Determined),
-            );
-            // Refresh the cache entry so a subsequent demand-driven fetch
-            // picks up the rebuilt lambda rather than the stale one. We
-            // record_evaluation rather than mark_pending — the field is
-            // freshly computed at this point and downstream consumers can
-            // treat it as Final.
-            //
-            // Record the static dependency trace (matching the cold-start
-            // contract) rather than `DependencyTrace::default()`. Without
-            // this, `CacheStore::invalidate_dependents` (cache.rs) would
-            // see an empty `reads` set on the rebuilt entry and silently
-            // skip propagation when one of the field's actual deps later
-            // changes — leaving the cache invariant 'entries carry the
-            // static trace of their reads' broken on this code path. The
-            // reverse-index drives invalidation via `compute_dirty_cone`
-            // today, but the cache trace is the durable per-entry record
-            // and must stay consistent with the cold-start path.
-            self.cache.record_evaluation(
-                field_node,
-                CachedResult::Value(new_field_value, DeterminacyState::Determined),
-                VersionId(version_id),
+                new_field_value,
+                DeterminacyRule::UnconditionalDetermined,
+                TraceSource::EditReeval,
                 extract_dependency_trace(expr),
+                VersionId(version_id),
+                CacheLeg::Record,
             );
         }
 
@@ -1482,29 +1479,33 @@ impl Engine {
                         unique,
                     } => {
                         for (id, val) in &solver_values {
-                            values.insert(id.clone(), val.clone());
                             resolved_params.insert(id.clone(), val.clone());
                             all_resolved_ids.insert(id.clone());
-
-                            // Update snapshot values
-                            new_snapshot
-                                .values
-                                .insert(id.clone(), (val.clone(), DeterminacyState::Determined));
 
                             // Update param_overrides so subsequent edits
                             // use the resolved value
                             self.param_overrides.insert(id.clone(), val.clone());
 
-                            // Update cache
-                            let node_id = NodeId::Value(id.clone());
-                            let trace = DependencyTrace::default();
-                            let cached_result =
-                                CachedResult::Value(val.clone(), DeterminacyState::Determined);
-                            self.cache.record_evaluation(
-                                node_id,
-                                cached_result,
+                            // Commit via the cell-commit primitive (task δ
+                            // #5056): atomically writes values/snapshot/cache/
+                            // journal (INV-EVAL-1). DependencyTrace::default()
+                            // matches the pre-migration cache entry — a
+                            // solver-resolved auto has no static expr
+                            // dependency trace.
+                            commit_cell_result(
+                                CommitLegs {
+                                    values: &mut values,
+                                    snapshot_values: &mut new_snapshot.values,
+                                    cache: &mut self.cache,
+                                    journal: &mut self.journal,
+                                },
+                                id.clone(),
+                                val.clone(),
+                                DeterminacyRule::UnconditionalDetermined,
+                                TraceSource::EditReeval,
+                                DependencyTrace::default(),
                                 VersionId(version_id),
-                                trace,
+                                CacheLeg::Record,
                             );
                         }
                         if !unique {
@@ -1631,19 +1632,24 @@ impl Engine {
                             &eval_ctx_with_meta(&values, &functions, &self.meta_map)
                                 .with_runtime_diagnostics(&runtime_sink),
                         );
-                        values.insert(vcid.clone(), val.clone());
-                        new_snapshot
-                            .values
-                            .insert(vcid.clone(), (val.clone(), DeterminacyState::Determined));
 
-                        // Update cache for re-evaluated node
-                        let trace = extract_dependency_trace(expr);
-                        let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
-                        self.cache.record_evaluation(
-                            node_id.clone(),
-                            cached_result,
+                        // Commit via the cell-commit primitive (task δ #5056):
+                        // atomically writes values/snapshot/cache/journal
+                        // (INV-EVAL-1).
+                        commit_cell_result(
+                            CommitLegs {
+                                values: &mut values,
+                                snapshot_values: &mut new_snapshot.values,
+                                cache: &mut self.cache,
+                                journal: &mut self.journal,
+                            },
+                            vcid.clone(),
+                            val,
+                            DeterminacyRule::UnconditionalDetermined,
+                            TraceSource::EditReeval,
+                            extract_dependency_trace(expr),
                             VersionId(version_id),
-                            trace,
+                            CacheLeg::Record,
                         );
                     }
                 }
