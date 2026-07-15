@@ -40,6 +40,8 @@ use reify_ir::{
 };
 
 use crate::cache::{CacheStore, CachedResult, EvalOutcome, NodeId};
+use crate::cell_commit::{CacheLeg, CommitLegs, DeterminacyRule, TraceSource, commit_cell_result};
+use crate::cell_eval_ctx::cell_eval_ctx;
 use crate::deps::{DependencyTrace, extract_dependency_trace};
 use crate::engine_admin::{ParamOverrideRejection, validate_param_override};
 use crate::engine_helpers::collect_member_list;
@@ -1056,18 +1058,16 @@ impl Engine {
                 && let Some(node) = new_snapshot.graph.value_cells.get(vcid)
                 && let Some(ref expr) = node.default_expr
             {
-                let start = Instant::now();
-                self.journal.record(EvalEvent {
-                    timestamp: start,
-                    node_id: node_id.clone(),
-                    kind: EventKind::Started,
-                    version: VersionId(version_id),
-                    payload: None,
-                });
-
                 let val = reify_expr::eval_expr(
                     expr,
-                    &self.cell_eval_ctx(&values, &new_snapshot.values, &runtime_sink),
+                    &cell_eval_ctx(
+                        &values,
+                        &functions,
+                        &self.meta_map,
+                        &new_snapshot.values,
+                        &runtime_sink,
+                        self,
+                    ),
                 );
                 // R3d (#4900): if eval returned Undef, try the in-walk symbolic
                 // mint — geometry handle first (for solid params and lets with a
@@ -1118,28 +1118,34 @@ impl Engine {
                 if was_undef && !matches!(val, Value::Undef) {
                     minted_in_walk.insert(vcid.clone());
                 }
-                values.insert(vcid.clone(), val.clone());
-                new_snapshot
-                    .values
-                    .insert(vcid.clone(), (val.clone(), DeterminacyState::Determined));
 
-                // Record in cache and check for early cutoff
+                // Commit via the cell-commit primitive (task δ #5056): atomically
+                // writes values/snapshot/cache/journal (INV-EVAL-1), recording the
+                // edit-reeval provenance slug on the journal's Started event. The
+                // primitive's own Instant::now() supersedes the Started timestamp
+                // this loop used to capture before eval_expr — the Started/
+                // Completed pair now brackets the commit itself rather than the
+                // whole eval+mint walk (telemetry-only shift, not a correctness
+                // signal; see cell_commit.rs's `commit_cell_result` doc).
                 let trace = extract_dependency_trace(expr);
-                let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
-                let outcome = self.cache.record_evaluation(
-                    node_id.clone(),
-                    cached_result,
-                    VersionId(version_id),
+                let commit_outcome = commit_cell_result(
+                    CommitLegs {
+                        values: &mut values,
+                        snapshot_values: &mut new_snapshot.values,
+                        cache: &mut self.cache,
+                        journal: &mut self.journal,
+                    },
+                    vcid.clone(),
+                    val,
+                    DeterminacyRule::UnconditionalDetermined,
+                    TraceSource::EditReeval,
                     trace,
+                    VersionId(version_id),
+                    CacheLeg::Record,
                 );
-
-                self.journal.record(EvalEvent {
-                    timestamp: Instant::now(),
-                    node_id: node_id.clone(),
-                    kind: EventKind::Completed { outcome },
-                    version: VersionId(version_id),
-                    payload: Some(EventPayload::Duration(start.elapsed())),
-                });
+                let outcome = commit_outcome
+                    .cache_outcome()
+                    .expect("CacheLeg::Record always yields Some(cache_outcome)");
 
                 // Early cutoff with mixed fan-in protection:
                 // - Changed: propagate has_changed_parent to dependents,
