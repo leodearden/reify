@@ -958,12 +958,11 @@ impl Engine {
         let _ = state;
 
         // Update snapshot ID, version, and provenance
-        let snapshot_id = self.next_snapshot_id;
-        self.next_snapshot_id += 1;
-        let version_id = self.next_version_id;
-        self.next_version_id += 1;
-        new_snapshot.id = SnapshotId(snapshot_id);
-        new_snapshot.version = VersionId(version_id);
+        let (snap_id, ver_id) = self.allocate_snapshot_version();
+        // downstream consumers below still read the raw u64 version
+        let version_id = ver_id.0;
+        new_snapshot.id = snap_id;
+        new_snapshot.version = ver_id;
 
         new_snapshot.provenance = SnapshotProvenance::Edit {
             changed: changed_set.clone(),
