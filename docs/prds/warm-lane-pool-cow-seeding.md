@@ -148,12 +148,18 @@ provision-warm-lane-fs.sh [--size-gib <N>] [--img <path>] [--mount <dir>]
 ### 9.2 Clone + warmth-transfer primitive — `scripts/seed-warm-lane.sh`
 
 ```
-seed-warm-lane.sh <base_target_dir> <lane_dir> (--fresh-checkout | --reset-in-place)
+seed-warm-lane.sh <base_target_dir> <lane_dir> (--fresh-checkout | --reset-in-place) [--lane-lock]
   1. ASSERT env RUSTFLAGS == the base's recorded RUSTFLAGS (default "") → else exit non-zero (D4, fail-closed).
-  2. cp -a --reflink=always <base_target_dir> <lane_dir>/target   (deltas-only; ~seconds).
-  3. --fresh-checkout: find <lane_dir> -path target -prune -o -path .git -prune -o -exec touch -d 2020-01-01 (D5);
+  2. --lane-lock (opt-in, default OFF; §9.5 inv.11): flock -x <lane_dir>.lock BEFORE any target
+     mutation, held across the whole run — refuses (EX_TEMPFAIL 75) if a live consumer already
+     holds it. REIFY_WARM_LANE_LANE_LOCK_WAIT (env, only with --lane-lock): 0 (default) =
+     non-blocking refuse (flock -n); N>0 = bounded queue (flock -w N), refuse on timeout;
+     "unlimited" = block until acquired, never refuses. Anything else → exit 64 (usage).
+  3. cp -a --reflink=always <base_target_dir> <lane_dir>/target   (deltas-only; ~seconds).
+  4. --fresh-checkout: find <lane_dir> -path target -prune -o -path .git -prune -o -exec touch -d 2020-01-01 (D5);
      --reset-in-place: no global stamp (git clean -xfd -e target already moved only changed-file mtimes).
-  STDOUT: nothing on success (or the lane_dir). STDERR: diagnostics. Exit: 0 on faithful warm seed.
+  STDOUT: nothing on success (or the lane_dir). STDERR: diagnostics. Exit: 0 on faithful warm seed;
+    75 on a --lane-lock refusal or queue-timeout; 64 on an invalid REIFY_WARM_LANE_LANE_LOCK_WAIT.
 ```
 *Invariant S1:* the base must have been built with the **same** `verify.sh` invocation the lane will run (D4) — the helper records/checks an invocation fingerprint stamped beside the base. *Invariant S2:* `--reflink=always` (not `auto`) — a silent non-reflink full copy is a provisioning error, not a slow path.
 
@@ -228,17 +234,23 @@ warm-lane-preflight.sh   (mirrors check-manifold-deps.sh; first step of a pooled
 
 ### 9.5 Pool lifecycle contract (consumed by dark-factory ζ/η)
 
-*(Updated 2026-06-18 — D10 amendment. acquire_lane ALWAYS re-seeds; release_lane retains nothing load-bearing. Two new invariants (inv.8/inv.9) added; total: 9. Updated 2026-06-25 — esc-3468-75 fix: inv.9 now records the EXACT landed commit per gen; seed derives its delta-touch base from the authoritative per-gen stamp with priority over the legacy .warm-base-meta; _touch_git_delta is fail-closed; a seed-time post-condition forbids any changed file retaining the 2020-01-01 stamp. Updated 2026-07-07 — task 5126: inv.8 gains a third sub-note — links-metadata/OUT_DIR path relocation (esc-5052), the third member of the non-relocatable-baked-path family alongside task 4712's tauri deletion and task 4983's env!() relink. Updated 2026-07-12 — task 5177 (`warm-lane-pool-sizing-lifecycle.md` δ/η, D3): release_lane now ALSO actively free-first thins the divergent `target/` via `scripts/thin-warm-lane.sh` (reify δ; wired into the DF `release_lane` call site by dark-factory η) — beyond the "retains nothing load-bearing" of the D10 amendment above. See sizing-lifecycle §9.5 inv.10 (release-thin safety) and the new invariant appended below.)*
+*(Updated 2026-06-18 — D10 amendment. acquire_lane ALWAYS re-seeds; release_lane retains nothing load-bearing. Two new invariants (inv.8/inv.9) added; total: 9. Updated 2026-06-25 — esc-3468-75 fix: inv.9 now records the EXACT landed commit per gen; seed derives its delta-touch base from the authoritative per-gen stamp with priority over the legacy .warm-base-meta; _touch_git_delta is fail-closed; a seed-time post-condition forbids any changed file retaining the 2020-01-01 stamp. Updated 2026-07-07 — task 5126: inv.8 gains a third sub-note — links-metadata/OUT_DIR path relocation (esc-5052), the third member of the non-relocatable-baked-path family alongside task 4712's tauri deletion and task 4983's env!() relink. Updated 2026-07-12 — task 5177 (`warm-lane-pool-sizing-lifecycle.md` δ/η, D3): release_lane now ALSO actively free-first thins the divergent `target/` via `scripts/thin-warm-lane.sh` (reify δ; wired into the DF `release_lane` call site by dark-factory η) — beyond the "retains nothing load-bearing" of the D10 amendment above. See sizing-lifecycle §9.5 inv.10 (release-thin safety) and the new invariant appended below. Updated 2026-07-15 — task 5223 (closing the deferred acquisition-exclusivity half of task 5221's GC reclaim-ordering fix): `acquire_lane`'s reseed now passes `--lane-lock` to `seed-warm-lane.sh`, holding `flock -x <lane_dir>.lock` across the destructive replace+clone — enforcing inv.2 (one consumer per lane at a time) at ACQUIRE time, not just at reclaim (`thin-warm-lane.sh`/`warm-lane-gc.sh` already enforced it there). New invariant 11 (acquire-time lane-lock exclusivity) added below; total invariants: 11.)*
 
 A lane is `FREE` or `ASSIGNED`. The DF wiring implements:
 
 ```
 acquire_lane(role ∈ {task, merge-spec}) -> lane_dir
     pick a FREE lane of the role's pool.
-    ALWAYS re-seed from the CURRENT base via seed-warm-lane.sh --fresh-checkout:
+    ALWAYS re-seed from the CURRENT base via seed-warm-lane.sh --fresh-checkout --lane-lock:
       resolve <base>/target symlink to its concrete .gen.N path;
       hold  flock -s <base>.gen.<N>.lock  during the cp -a walk (reader-refcount GC defers);
-      seed-warm-lane.sh --fresh-checkout <base>.gen.<N>/target <lane_dir>
+      seed-warm-lane.sh --fresh-checkout <base>.gen.<N>/target <lane_dir> --lane-lock
+        [--lane-lock refuses (75) or queues on <lane_dir>.lock if a live consumer still
+         holds it — inv.11. The role's pool determines the wait policy: merge-spec (the
+         SINGLETON _merge-verify lane, no alternate FREE lane to fall back to) should pass
+         REIFY_WARM_LANE_LANE_LOCK_WAIT=unlimited (or a generous bounded N) to QUEUE; task
+         lanes can stay at the WAIT=0 default (non-blocking refuse) and pick a different
+         FREE lane instead.]
     NOT "seed-if-cold" — every acquire gets a fresh clone of the current base. (D10)
 reset_lane(lane_dir, target_commit)
     git reset --hard <target_commit> && git clean -xfd -e target        (determinism invariant, inv.1)
