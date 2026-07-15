@@ -1592,6 +1592,129 @@ fn eval_cached_merged_cluster_let_surfaces_co_solved_cross_scope_auto() {
 }
 
 // ---------------------------------------------------------------------------
+// step-07/08: capstone G2 value-parity — cold eval() vs warm eval_cached()
+// for an OBJECTIVE-formed (not SCC-read-cycle) MergedSolve cluster.
+// ---------------------------------------------------------------------------
+
+/// The user-observable signal task #5118 exists to fix: cold `eval()` and
+/// warm `eval_cached()` must now co-solve the SAME `MergedSolve` cluster to
+/// the SAME values, closing the cold/warm fidelity divergence (esc-5014-10
+/// Option A). Uses `spanning_objective_cluster_module` (Parent minimizes
+/// ChildA.cost+ChildB.cost) rather than the {A,B} SCC read-cycle fixture
+/// steps 3/5 use -- here the cluster is formed by CROSS-SCOPE OBJECTIVE
+/// coupling, proving `resolve_order_ordering_and_clusters` /
+/// `cluster_of_scope` picks up both coupling shapes on the warm path, not
+/// just read-cycles.
+///
+/// Also exercises the warm edit-recompute dimension: `eval_cached`'s solver
+/// sub-pass is not dirty-gated (it must re-run on every call so
+/// Infeasible/NoProgress can surface on every keystroke), so a second warm
+/// call at a bumped `VersionId` re-solves the same cluster and must yield
+/// the SAME values.
+///
+/// Would fail if the warm merged dispatch did not thread `governance` into
+/// `build_merged_solver_problem` (the objective would be silently dropped,
+/// shifting the argmin cold-vs-warm) or otherwise mishandled an
+/// objective-formed (as opposed to SCC) cluster. Passes today: step-4 wired
+/// `&governance` through `dispatch_merged_cluster_solve_cached`'s call to
+/// the SAME shared `build_merged_solver_problem` cold uses, so this test
+/// locks that parity as a regression guard.
+///
+/// NOTE on solver fidelity: `SpyConstraintSolver` returns a FIXED canned
+/// `Solved` result regardless of the `ResolutionProblem` it is handed, so a
+/// value-equality check ALONE cannot distinguish "objective correctly
+/// threaded" from "objective silently dropped" (a dumb mock can't compute a
+/// different argmin either way). This test therefore ALSO directly captures
+/// the warm dispatch's `ResolutionProblem` and asserts `objective.is_some()`
+/// -- the direct regression lock for the governance-threading failure mode
+/// this step guards against -- alongside the value-parity check for the
+/// write-back/filtering logic.
+///
+/// Compares `values` only, NOT `resolved_params`: warm `eval_cached()` never
+/// populates `resolved_params` (always `HashMap::new()`, by design -- see
+/// `EvalResult::resolved_params`'s doc comment and this task's design
+/// decision #4), so `values` is the sole field both paths populate and the
+/// one the G2 signal (LSP-observed values) actually depends on.
+#[test]
+fn eval_vs_eval_cached_merged_cluster_values_equal() {
+    let module = spanning_objective_cluster_module();
+
+    let parent_total = ValueCellId::new("Parent", "total");
+    let child_a_cost = ValueCellId::new("ChildA", "cost");
+    let child_b_cost = ValueCellId::new("ChildB", "cost");
+
+    let mut solved = HashMap::new();
+    solved.insert(parent_total.clone(), mm(1.0));
+    solved.insert(child_a_cost.clone(), mm(2.0));
+    solved.insert(child_b_cost.clone(), mm(3.0));
+
+    // Cold eval() -- baseline.
+    let solver_a = SpyConstraintSolver::new_solved(solved.clone());
+    let mut engine_a =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver_a));
+    let result_a = engine_a.eval(&module);
+
+    // Warm eval_cached() -- an independent engine with an identically-seeded
+    // deterministic solver, so any value difference is attributable to the
+    // warm dispatch, not to solver nondeterminism.
+    let solver_b = SpyConstraintSolver::new_solved(solved.clone());
+    let captured_b = solver_b.captured_problem();
+    let mut engine_b =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver_b));
+    let result_b1 = engine_b.eval_cached(&module, VersionId(1));
+
+    // Direct governance-threading check (see NOTE above): the warm merged
+    // dispatch's ResolutionProblem must carry Parent's spanning objective,
+    // not `None`.
+    let problem_b = captured_b
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("warm merged dispatch must have called the solver with a ResolutionProblem");
+    assert!(
+        problem_b.objective.is_some(),
+        "warm eval_cached()'s merged dispatch must thread `governance` into \
+         build_merged_solver_problem so the spanning objective reaches the \
+         solver -- got objective: None",
+    );
+
+    for (id, want) in [
+        (&parent_total, mm(1.0)),
+        (&child_a_cost, mm(2.0)),
+        (&child_b_cost, mm(3.0)),
+    ] {
+        assert_eq!(
+            result_a.values.get(id),
+            Some(&want),
+            "{id:?}: cold eval() must resolve to the solver's co-solved value",
+        );
+        assert_eq!(
+            result_b1.eval_result.values.get(id),
+            Some(&want),
+            "{id:?}: warm eval_cached() must resolve to the SAME co-solved \
+             value as cold eval() for an objective-formed cluster",
+        );
+    }
+
+    // Warm edit-recompute: a second eval_cached() call at a bumped VersionId
+    // must reproduce the SAME co-solved values -- the merged solve reruns
+    // unconditionally every call (it is not cache-gated).
+    let result_b2 = engine_b.eval_cached(&module, VersionId(2));
+    for (id, want) in [
+        (&parent_total, mm(1.0)),
+        (&child_a_cost, mm(2.0)),
+        (&child_b_cost, mm(3.0)),
+    ] {
+        assert_eq!(
+            result_b2.eval_result.values.get(id),
+            Some(&want),
+            "{id:?}: a second warm recompute (VersionId(2)) must yield the \
+             SAME co-solved value as the first",
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // amendment (review round N): objective `combination` is preserved, not
 // hardcoded to WeightedSum (reviewer_comprehensive, engine_eval.rs:1710-1716).
 // ---------------------------------------------------------------------------
