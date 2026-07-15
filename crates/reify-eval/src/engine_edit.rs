@@ -6244,4 +6244,135 @@ mod tests {
             other => panic!("expected CachedResult::Value, got {other:?}"),
         }
     }
+
+    /// Assert that `id`'s journal, snapshot, and cache all show the effects of
+    /// a `commit_cell_result(.., TraceSource::EditReeval, .., CacheLeg::Record)`
+    /// commit: a `Started`/`Completed` journal pair with the edit-reeval
+    /// provenance slug, and `(expected_si, DeterminacyState::Determined)` in
+    /// both the snapshot and the cache. Shared by the recorded-site fixtures
+    /// below (task δ #5056 step-3) so each site's test is a thin setup +
+    /// one-line assertion, mirroring `assert_scalar_si_approx_eq` above.
+    fn assert_recorded_via_commit_primitive(
+        engine: &crate::Engine,
+        id: &reify_core::ValueCellId,
+        expected_si: f64,
+        label: &str,
+    ) {
+        use crate::cache::{CachedResult, NodeId};
+        use crate::cell_commit::TraceSource;
+        use crate::journal::{EventKind, EventPayload};
+        use reify_ir::DeterminacyState;
+
+        let node = NodeId::Value(id.clone());
+        let events = engine.journal().events_for_node(&node);
+        assert!(
+            events.len() >= 2,
+            "{label}: expected at least a Started+Completed pair, got {events:?}"
+        );
+        let started = events[events.len() - 2];
+        let completed = events[events.len() - 1];
+        assert!(
+            matches!(started.kind, EventKind::Started),
+            "{label}: expected the second-to-last event to be Started, got {:?}",
+            started.kind
+        );
+        match &started.payload {
+            Some(EventPayload::Custom(slug)) => assert_eq!(
+                slug,
+                TraceSource::EditReeval.as_str(),
+                "{label}: Started payload must carry the edit-reeval provenance slug"
+            ),
+            other => panic!(
+                "{label}: expected Started payload Custom(\"{}\"), got {other:?}",
+                TraceSource::EditReeval.as_str()
+            ),
+        }
+        assert!(
+            matches!(completed.kind, EventKind::Completed { .. }),
+            "{label}: expected the last event to be Completed, got {:?}",
+            completed.kind
+        );
+
+        let snapshot = engine
+            .snapshot()
+            .unwrap_or_else(|| panic!("{label}: snapshot must exist"));
+        let (snap_v, snap_det) = snapshot
+            .values
+            .get(id)
+            .unwrap_or_else(|| panic!("{label}: {id} missing from snapshot.values"));
+        assert_eq!(
+            *snap_det,
+            DeterminacyState::Determined,
+            "{label}: snapshot determinacy"
+        );
+        assert_scalar_si_approx_eq(snap_v, expected_si, 1e-9, &format!("{label}: snapshot value"));
+
+        let cache_entry = engine
+            .cache_store()
+            .get(&node)
+            .unwrap_or_else(|| panic!("{label}: {id} missing a cache entry"));
+        match &cache_entry.result {
+            CachedResult::Value(v, d) => {
+                assert_eq!(
+                    *d,
+                    DeterminacyState::Determined,
+                    "{label}: cache determinacy"
+                );
+                assert_scalar_si_approx_eq(v, expected_si, 1e-9, &format!("{label}: cache value"));
+            }
+            other => panic!("{label}: expected CachedResult::Value, got {other:?}"),
+        }
+    }
+
+    /// Task δ (#5056) step-3: pins that `edit_param`'s remaining RECORDED
+    /// transaction copies — T4 (solver-resolved autos) and T5 (wave2 reseed
+    /// re-eval) — route through `commit_cell_result` exactly like T2 (pinned
+    /// by `edit_param_dependent_reeval_routes_through_commit_primitive`
+    /// above).
+    ///
+    /// Reuses `edit_param_back_props_solved_auto`'s module and edit
+    /// (`param x: Length = auto; constraint x == 10mm; let y = x + 5mm`,
+    /// edited to the solved value 10mm): the SAME `edit_param` call drives
+    /// BOTH sites in one flow — x is resolved by the solver loop (T4, writes
+    /// x's cache entry inside the per-entity-group `SolveResult::Solved` arm)
+    /// and y is re-evaluated by the resolution reseed that follows it (T5,
+    /// the wave2-schedule re-eval loop) — so one fixture covers both without
+    /// needing two separate models.
+    ///
+    /// RED on base: neither site's `record_evaluation` call is paired with
+    /// any `self.journal.record(..)` call, so `events_for_node` gains zero
+    /// new events for x or y across the edit (unlike T2, T4/T5 write no
+    /// journal events today at all — the primitive would be the FIRST
+    /// journal write either site ever makes).
+    #[test]
+    fn edit_param_recorded_sites_route_through_commit_primitive() {
+        use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
+        use reify_core::ValueCellId;
+        use reify_ir::Value;
+        use reify_test_support::compile_source;
+
+        const SRC: &str = r#"structure WarmAutoConcCommit {
+    param x : Length = auto
+    constraint x == 10mm
+    let y = x + 5mm
+}"#;
+
+        let compiled = compile_source(SRC);
+        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None)
+            .with_solver(Box::new(DimensionalSolver));
+        engine.eval(&compiled);
+
+        let x_id = ValueCellId::new("WarmAutoConcCommit", "x");
+        let y_id = ValueCellId::new("WarmAutoConcCommit", "y");
+
+        // Solver early-exit seed (mirrors edit_param_back_props_solved_auto):
+        // x is edited to exactly the solution, so the Solved arm fires
+        // without a Nelder-Mead search.
+        engine
+            .edit_param(x_id.clone(), Value::length(0.01))
+            .expect("edit_param must succeed");
+
+        assert_recorded_via_commit_primitive(&engine, &x_id, 0.01, "T4 solver-resolved auto (x)");
+        assert_recorded_via_commit_primitive(&engine, &y_id, 0.015, "T5 wave2 reseed (y)");
+    }
 }
