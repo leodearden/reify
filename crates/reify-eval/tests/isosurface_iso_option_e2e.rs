@@ -322,6 +322,14 @@ fn iso_option_changes_surfaced_mesh() {
 /// that widens the band (and makes `iso: 100mm` surface a still-distinct
 /// non-empty mesh) fails only this contract guard, not the
 /// options-threading proof.
+///
+/// `narrow_band * h >= longest_extent/2` is a documented LOWER BOUND, not a
+/// ceiling, so this exact-zero assertion is implementation-coupled: if it
+/// starts failing, check FIRST whether `kernel_real.rs`'s narrow-band voxel
+/// count or `honest_floor` voxel size `h` changed (which would legitimately
+/// widen the band past 0.1m) before treating it as an options-threading
+/// regression. In that case the fix is to raise this test's `iso:` literal
+/// further out of band, not to relax the equality.
 #[cfg(has_openvdb)]
 #[test]
 fn iso_option_out_of_band_surfaces_empty_mesh() {
@@ -338,7 +346,12 @@ fn iso_option_out_of_band_surfaces_empty_mesh() {
          band's documented LOWER-BOUND width, so it is expected to surface \
          an EMPTY mesh via the kernel's `Ok(empty)` no-crossing contract \
          (crates/reify-kernel-openvdb/src/kernel_real.rs:340-344); got \
-         {} triangles",
+         {} triangles. That bound is a FLOOR, not a ceiling — before \
+         treating this failure as an options-threading regression, check \
+         whether kernel_real.rs's narrow-band defaults (voxel count or the \
+         honest_floor voxel size h) legitimately widened past 0.1m; if so, \
+         raise this test's iso: literal further out of band instead of \
+         relaxing the equality",
         outband.triangle_count
     );
 }
