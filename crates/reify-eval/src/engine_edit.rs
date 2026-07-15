@@ -125,11 +125,14 @@ pub(crate) fn rewrite_port_placeholder(template: &str, sub_name: &str, i: i64) -
 /// given the already-computed guard value.
 ///
 /// - **Active branch** (`is_true` for `members`, `is_false` for `else_members`):
-///   each cell's `default_expr` is evaluated with
-///   `eval_ctx_with_meta(values, functions, meta_map)` and written into
-///   both `values` and `snapshot_values` with `DeterminacyState::Determined`.
-///   Cells without a `default_expr` (or absent from the graph) are left
-///   unchanged.
+///   each cell's `default_expr` is evaluated with `cell_eval_ctx(values,
+///   functions, meta_map, snapshot_values, runtime_sink, containment)` (task δ
+///   #5056 — reborrows the not-yet-updated `snapshot_values` as the
+///   determinacy source, threading it alongside `runtime_sink`/`containment`
+///   so a newly-activated member's expr sees the same capability set as cold
+///   `eval()`) and written into both `values` and `snapshot_values` with
+///   `DeterminacyState::Determined`. Cells without a `default_expr` (or
+///   absent from the graph) are left unchanged.
 /// - **Inactive branch**: each cell is passed to `deactivate_if_not_auto`,
 ///   which writes `Undef / Undetermined` for non-Auto cells and skips Auto
 ///   cells (whose lifecycle is owned by the constraint solver).
@@ -145,6 +148,8 @@ fn reelaborate_guarded_group(
     snapshot_values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
     functions: &[CompiledFunction],
     meta_map: &HashMap<String, HashMap<String, String>>,
+    runtime_sink: &RefCell<Vec<Diagnostic>>,
+    containment: &dyn reify_expr::ContainmentQuery,
 ) {
     let is_true = matches!(guard_val, Value::Bool(true));
     let is_false = matches!(guard_val, Value::Bool(false));
@@ -157,7 +162,14 @@ fn reelaborate_guarded_group(
                 {
                     let val = reify_expr::eval_expr(
                         expr,
-                        &eval_ctx_with_meta(values, functions, meta_map),
+                        &cell_eval_ctx(
+                            values,
+                            functions,
+                            meta_map,
+                            snapshot_values,
+                            runtime_sink,
+                            containment,
+                        ),
                     );
                     values.insert(mid.clone(), val.clone());
                     snapshot_values.insert(mid.clone(), (val, DeterminacyState::Determined));
@@ -1317,9 +1329,14 @@ impl Engine {
                         if let Some(ref expr) = node.default_expr {
                             reify_expr::eval_expr(
                                 expr,
-                                &eval_ctx_with_meta(&values, &functions, &self.meta_map)
-                                    .with_determinacy(&new_snapshot.values)
-                                    .with_runtime_diagnostics(&runtime_sink),
+                                &cell_eval_ctx(
+                                    &values,
+                                    &functions,
+                                    &self.meta_map,
+                                    &new_snapshot.values,
+                                    &runtime_sink,
+                                    self,
+                                ),
                             )
                         } else {
                             Value::Undef
@@ -1365,6 +1382,8 @@ impl Engine {
                         &mut new_snapshot.values,
                         &functions,
                         &self.meta_map,
+                        &runtime_sink,
+                        self,
                     );
                     // Record guard_cell so the post-wave2 reseed knows which
                     // groups Phase 1 already processed (Case A). The map enables
@@ -1628,8 +1647,14 @@ impl Engine {
                     {
                         let val = reify_expr::eval_expr(
                             expr,
-                            &eval_ctx_with_meta(&values, &functions, &self.meta_map)
-                                .with_runtime_diagnostics(&runtime_sink),
+                            &cell_eval_ctx(
+                                &values,
+                                &functions,
+                                &self.meta_map,
+                                &new_snapshot.values,
+                                &runtime_sink,
+                                self,
+                            ),
                         );
 
                         // Commit via the cell-commit primitive (task δ #5056):
@@ -1781,7 +1806,14 @@ impl Engine {
                             {
                                 let val = reify_expr::eval_expr(
                                     expr,
-                                    &eval_ctx_with_meta(&values, &functions, &self.meta_map),
+                                    &cell_eval_ctx(
+                                        &values,
+                                        &functions,
+                                        &self.meta_map,
+                                        &new_snapshot.values,
+                                        &runtime_sink,
+                                        self,
+                                    ),
                                 );
                                 // Commit via the cell-commit primitive (task δ
                                 // #5056): atomically writes values/snapshot/
@@ -2015,8 +2047,14 @@ impl Engine {
                         let val = if let Some(expr) = default_expr {
                             reify_expr::eval_expr(
                                 expr,
-                                &eval_ctx_with_meta(&values, &functions, &self.meta_map)
-                                    .with_runtime_diagnostics(&runtime_sink),
+                                &cell_eval_ctx(
+                                    &values,
+                                    &functions,
+                                    &self.meta_map,
+                                    &new_snapshot.values,
+                                    &runtime_sink,
+                                    self,
+                                ),
                             )
                         } else {
                             Value::Undef
@@ -2441,8 +2479,14 @@ impl Engine {
                         {
                             let val = reify_expr::eval_expr(
                                 expr,
-                                &eval_ctx_with_meta(&values, &functions, &self.meta_map)
-                                    .with_runtime_diagnostics(&runtime_sink),
+                                &cell_eval_ctx(
+                                    &values,
+                                    &functions,
+                                    &self.meta_map,
+                                    &new_snapshot.values,
+                                    &runtime_sink,
+                                    self,
+                                ),
                             );
                             // Commit via the cell-commit primitive (task δ
                             // #5056): atomically writes values/snapshot/
@@ -4139,11 +4183,25 @@ mod tests {
         ContentHash, Diagnostic, DiagnosticCode, DiagnosticLabel, Severity, SourceSpan, Type,
         ValueCellId,
     };
+    use reify_expr::ContainmentQuery;
     use reify_ir::{CompiledExpr, DeterminacyState, PersistentMap, Value, ValueMap};
 
+    use std::cell::RefCell;
     use std::collections::HashMap;
 
     use crate::graph::{EvaluationGraph, GuardedGroupInfo, ValueCellNode};
+
+    /// Trivial `ContainmentQuery` impl for `reelaborate_guarded_group` tests
+    /// below (task δ #5056): none of them exercise `restrict`/`sample`
+    /// containment resolution, so a no-op stub suffices — mirrors
+    /// `cell_eval_ctx.rs`'s own `NoContainment` test double.
+    struct NoContainment;
+
+    impl ContainmentQuery for NoContainment {
+        fn contains(&self, _region: &Value, _point: &Value) -> Option<bool> {
+            None
+        }
+    }
 
     use super::{
         deactivate_if_not_auto, dedup_diagnostics_preserve_order, guard_value_unchanged,
@@ -4186,6 +4244,8 @@ mod tests {
     ) {
         let mut values = ValueMap::default();
         let mut snapshot_values = PersistentMap::default();
+        let sink = RefCell::new(Vec::new());
+        let containment = NoContainment;
         reelaborate_guarded_group(
             &graph,
             &group,
@@ -4194,6 +4254,8 @@ mod tests {
             &mut snapshot_values,
             &[],
             &HashMap::new(),
+            &sink,
+            &containment,
         );
         (values, snapshot_values)
     }
@@ -4816,6 +4878,8 @@ mod tests {
             let mut values: ValueMap = ValueMap::default();
             let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
                 PersistentMap::default();
+            let sink = RefCell::new(Vec::new());
+            let containment = NoContainment;
 
             reelaborate_guarded_group(
                 &graph,
@@ -4825,6 +4889,8 @@ mod tests {
                 &mut snapshot_values,
                 &[],
                 &HashMap::new(),
+                &sink,
+                &containment,
             );
 
             // Active else_member: evaluated default_expr → Int(7), Determined.
@@ -4857,6 +4923,8 @@ mod tests {
             let mut values: ValueMap = ValueMap::default();
             let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
                 PersistentMap::default();
+            let sink = RefCell::new(Vec::new());
+            let containment = NoContainment;
 
             reelaborate_guarded_group(
                 &graph,
@@ -4866,6 +4934,8 @@ mod tests {
                 &mut snapshot_values,
                 &[],
                 &HashMap::new(),
+                &sink,
+                &containment,
             );
 
             // Both branches deactivated: non-Auto → Undef, Auto → absent.
