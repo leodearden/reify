@@ -3007,9 +3007,9 @@ mod tests {
     /// second `(SnapshotId(1), VersionId(1))`, with `next_snapshot_id` and
     /// `next_version_id` each having advanced by exactly 1 after each call.
     /// A final companion check desyncs the counters (mirroring
-    /// `eval_cached()`'s snapshot-only bump) to confirm that lockstep is a
-    /// consequence of the initial state, not something this method itself
-    /// enforces.
+    /// `eval_cached()`'s snapshot-only bump) to confirm the "advances each
+    /// counter by exactly one per call" contract also holds when the two
+    /// counters do not start equal.
     #[test]
     fn allocate_snapshot_version_allocates_pair_and_bumps_both_counters() {
         use reify_core::{SnapshotId, VersionId};
@@ -3049,14 +3049,12 @@ mod tests {
             "next_version_id must advance by exactly 1 again",
         );
 
-        // Companion check: the lockstep above falls out of both counters
-        // starting at 0, not a guarantee this method enforces. Desync them
-        // manually (mirrors eval_cached()'s snapshot-only bump) and confirm
-        // the method still advances each counter by exactly one — asserted
-        // via deltas from freshly-captured baselines, not hardcoded
-        // absolute ids, so this check needs no re-baselining if the call
-        // count above changes — while the returned pair is no longer
-        // numerically equal.
+        // Companion check: confirm the "advances each counter by exactly
+        // one per call" contract still holds when the two counters do not
+        // start equal (mirrors eval_cached()'s snapshot-only bump) —
+        // asserted via deltas from freshly-captured baselines, not
+        // hardcoded absolute ids, so this check needs no re-baselining if
+        // the call count above changes.
         engine.next_snapshot_id += 1;
         let before_snapshot_desync = engine.next_snapshot_id;
         let before_version_desync = engine.next_version_id;
@@ -3068,12 +3066,6 @@ mod tests {
         assert_eq!(
             ver2.0, before_version_desync,
             "allocated version id must equal the pre-call counter value",
-        );
-        assert_ne!(
-            snap2.0, ver2.0,
-            "once the counters are desynced, the returned pair is NOT \
-             lockstep — allocate_snapshot_version reads two independent \
-             counters and does not couple them",
         );
         assert_eq!(
             engine.next_snapshot_id - before_snapshot_desync,
@@ -3091,11 +3083,11 @@ mod tests {
     /// characterization tests. Asserts the engine's CURRENT snapshot
     /// carries the expected `(SnapshotId, VersionId)` pair — the
     /// "byte-identical numbering" property these tests exist to pin — and
-    /// that both counters advanced by exactly `expected_delta` from the
-    /// single shared `before` baseline. One baseline suffices because
-    /// every call site here allocates the pair in lockstep from the same
-    /// starting point (both counters equal immediately before the call);
-    /// a caller measuring from a desynced state would need its own check.
+    /// that each counter advanced by exactly `expected_delta` from its own
+    /// pre-call baseline. The two baselines (`before_snapshot`,
+    /// `before_version`) are taken independently so this helper stays
+    /// correct even if a caller's two counters were desynced before the
+    /// call, rather than assuming they started equal.
     ///
     /// These exact ids/deltas are characterization values tied to the
     /// number and ordering of allocation sites that fire for a given
@@ -3106,7 +3098,8 @@ mod tests {
         engine: &Engine,
         expected_snapshot: u64,
         expected_version: u64,
-        before: u64,
+        before_snapshot: u64,
+        before_version: u64,
         expected_delta: u64,
         context: &str,
     ) {
@@ -3126,13 +3119,13 @@ mod tests {
             "{context}: expected VersionId({expected_version})",
         );
         assert_eq!(
-            engine.next_snapshot_id - before,
+            engine.next_snapshot_id - before_snapshot,
             expected_delta,
             "{context}: next_snapshot_id should have advanced by exactly \
              {expected_delta} across this call",
         );
         assert_eq!(
-            engine.next_version_id - before,
+            engine.next_version_id - before_version,
             expected_delta,
             "{context}: next_version_id should have advanced by exactly \
              {expected_delta} across this call",
@@ -3159,17 +3152,28 @@ mod tests {
             parse_and_compile_with_stdlib("structure S { param width: Length = 100mm }");
         let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
 
-        let before_first = engine.next_snapshot_id;
+        let before_first_snapshot = engine.next_snapshot_id;
+        let before_first_version = engine.next_version_id;
         let _ = engine.eval(&compiled);
-        assert_snapshot_numbering(&engine, 0, 0, before_first, 1, "first eval() call (site 1)");
+        assert_snapshot_numbering(
+            &engine,
+            0,
+            0,
+            before_first_snapshot,
+            before_first_version,
+            1,
+            "first eval() call (site 1)",
+        );
 
-        let before_second = engine.next_snapshot_id;
+        let before_second_snapshot = engine.next_snapshot_id;
+        let before_second_version = engine.next_version_id;
         let _ = engine.eval(&compiled);
         assert_snapshot_numbering(
             &engine,
             1,
             1,
-            before_second,
+            before_second_snapshot,
+            before_second_version,
             1,
             "second eval() call (site 1)",
         );
@@ -3229,7 +3233,8 @@ mod tests {
         let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
             .with_solver(Box::new(solver));
 
-        let before = engine.next_snapshot_id;
+        let before_snapshot = engine.next_snapshot_id;
+        let before_version = engine.next_version_id;
         let result = engine.eval(&module);
 
         // Sanity: confirm the solver's Solved arm actually fired (not
@@ -3250,7 +3255,8 @@ mod tests {
             &engine,
             1,
             1,
-            before,
+            before_snapshot,
+            before_version,
             2,
             "resolution-phase eval() call (site 1 + site 2)",
         );
@@ -3307,7 +3313,8 @@ mod tests {
         let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
             .with_solver(Box::new(solver));
 
-        let before = engine.next_snapshot_id;
+        let before_snapshot = engine.next_snapshot_id;
+        let before_version = engine.next_version_id;
         let result = engine.eval(&module);
 
         // Sanity: confirm the merged solve's Solved arm actually fired
@@ -3334,7 +3341,8 @@ mod tests {
             &engine,
             1,
             1,
-            before,
+            before_snapshot,
+            before_version,
             2,
             "merged-cluster-solve eval() call (site 1 + site 3)",
         );
