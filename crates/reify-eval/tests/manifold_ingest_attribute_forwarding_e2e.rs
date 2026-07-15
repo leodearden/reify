@@ -33,15 +33,30 @@
 //!   `crates/reify-kernel-manifold/src/kernel.rs`
 //!   (`propagate_attributes_returns_propagated_when_parent_provenance_present`).
 //! - `propagate_via_kernel_attribute_hook` dispatcher: `crates/reify-eval/src/kernel_attribute_hook.rs`.
+//! - Engine cross-kernel conversion harness (`Engine::with_test_kernels_and_registry`
+//!   + `MockGeometryKernel` + a counting/tracking `ingest_mesh` wrapper):
+//!   `crates/reify-eval/tests/cross_kernel_handoff.rs`.
+//! - Mock-registry seeding staging (`with_extracted_faces`/`with_extracted_edges`)
+//!   + `engine.topology_attribute_table()` observation:
+//!   `crates/reify-eval/tests/cross_kernel_attribute_collision_e2e.rs`.
 
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+
+use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
+use reify_core::{ModulePath, Type};
 use reify_eval::primitive_attribute_seed::record_solid_attribute;
-use reify_eval::{forward_solid_attribute_on_ingest, propagate_via_kernel_attribute_hook};
+use reify_eval::{Engine, forward_solid_attribute_on_ingest, propagate_via_kernel_attribute_hook};
 use reify_ir::{
-    FeatureId, GeometryHandleId, GeometryKernel, GeometryOp, KernelAttributeOutcome, KernelHandle,
-    KernelId, Role, TopologyAttribute, TopologyAttributeTable,
+    CapabilityDescriptor, CompiledExpr, ExportFormat, FeatureId, GeometryHandleId, GeometryKernel,
+    GeometryOp, KernelAttributeOutcome, KernelHandle, KernelId, Operation, ReprKind, Role,
+    TopologyAttribute, TopologyAttributeTable,
 };
 use reify_kernel_manifold::ManifoldKernel;
 use reify_kernel_manifold::test_fixtures::unit_cube_mesh;
+use reify_test_support::builders::{CompiledModuleBuilder, TopologyTemplateBuilder};
+use reify_test_support::mocks::MockGeometryKernel;
+use reify_test_support::{MockConstraintChecker, manufacturing_purpose, mm, step_output_template};
 
 /// Completion condition (b): forwarding a solid-level attribute across the
 /// OCCT->Manifold ingest seam is exactly what `propagate_attributes` needs
@@ -197,5 +212,206 @@ fn table_with_only_face_scoped_entry_yields_discarded_link2_root_cause() {
             "expected Ok(Discarded) — no entry exists at either parent's SOLID handle, only at \
              an unrelated face-scoped handle, so parent_map must stay empty; got {other:?}"
         ),
+    }
+}
+
+// ─── Completion condition (a): the INGEST PATH populates the table ─────────
+
+/// "manifold"-like kernel whose `ingest_mesh` tracks every assigned handle
+/// into a shared `Arc<Mutex<Vec<GeometryHandleId>>>` (read back by the test
+/// after `build()`), and whose `execute` delegates to an inner
+/// [`MockGeometryKernel`] (for the final `BooleanUnion`). Mirrors
+/// `CountingManifoldKernel` in `cross_kernel_handoff.rs`, replacing its call
+/// counter with a handle-id log — this test needs the actual ingested ids to
+/// look them up in `engine.topology_attribute_table()`, not just a count.
+struct IngestTrackingManifoldKernel {
+    inner: MockGeometryKernel,
+    next_ingest_id: u64,
+    ingested_handles: Arc<Mutex<Vec<GeometryHandleId>>>,
+}
+
+impl reify_ir::GeometryKernel for IngestTrackingManifoldKernel {
+    fn execute(
+        &mut self,
+        op: &reify_ir::GeometryOp,
+    ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+        self.inner.execute(op)
+    }
+
+    fn query(&self, q: &reify_ir::GeometryQuery) -> Result<reify_ir::Value, reify_ir::QueryError> {
+        self.inner.query(q)
+    }
+
+    fn export(
+        &self,
+        handle: GeometryHandleId,
+        format: ExportFormat,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<(), reify_ir::ExportError> {
+        self.inner.export(handle, format, writer)
+    }
+
+    fn tessellate(
+        &self,
+        handle: GeometryHandleId,
+        tolerance: f64,
+    ) -> Result<reify_ir::Mesh, reify_ir::TessError> {
+        self.inner.tessellate(handle, tolerance)
+    }
+
+    fn ingest_mesh(
+        &mut self,
+        _mesh: &reify_ir::Mesh,
+    ) -> Result<reify_ir::GeometryHandle, reify_ir::GeometryError> {
+        let id = GeometryHandleId(self.next_ingest_id);
+        self.next_ingest_id += 1;
+        self.ingested_handles.lock().unwrap().push(id);
+        Ok(reify_ir::GeometryHandle { id, repr: None })
+    }
+}
+
+/// Build the `MyDesign` template carrying ONE terminal realization whose ops
+/// are two BRep `PrimitiveSphere` solids consumed by a `BooleanUnion`.
+/// Sphere (not Box) so the primitive seeder needs no vertex/`BoundingBox`
+/// staging on the mock — mirrors `cross_kernel_attribute_collision_e2e.rs`'s
+/// sphere fixture, which stages only `with_extracted_faces`/`with_extracted_edges`.
+fn two_sphere_union_template() -> reify_compiler::TopologyTemplate {
+    let mm_lit = |v: f64| CompiledExpr::literal(mm(v), Type::length());
+    let sphere_op = || CompiledGeometryOp::Primitive {
+        kind: PrimitiveKind::Sphere,
+        args: vec![("radius".into(), mm_lit(5.0))],
+    };
+    let union_op = CompiledGeometryOp::Boolean {
+        op: BooleanOp::Union,
+        left: GeomRef::Step(0),
+        right: GeomRef::Step(1),
+    };
+    TopologyTemplateBuilder::new("MyDesign")
+        .param("MyDesign", "thickness", Type::dimensionless_scalar(), None)
+        .realization_named("MyDesign", 0, "body", vec![sphere_op(), sphere_op(), union_op])
+        .build()
+}
+
+/// Completion condition (a): the engine's OCCT->Manifold ingest path — the
+/// `'convert:` loop plus the primitive seed site in `engine_build.rs` —
+/// populates `topology_attribute_table` at `{Manifold, ingested_handle}` for
+/// each converted operand.
+///
+/// Drives a two-kernel build (`occt` produces two BRep spheres; `manifold`
+/// supplies the only `(BooleanUnion, Mesh)` capability, forcing a BRep->Mesh
+/// conversion + `ingest_mesh` for both sphere operands) through
+/// `Engine::build`, then asserts:
+/// 1. No error-severity diagnostics.
+/// 2. Exactly two `ingest_mesh` calls landed on the "manifold" kernel (one
+///    per sphere operand) — the non-vacuousness premise for (3).
+/// 3. `engine.topology_attribute_table()` has an entry at
+///    `KernelHandle{Manifold, ingested_handle}` for EVERY ingested handle.
+///
+/// RED today: the engine seed site does not yet call `record_solid_attribute`
+/// and the `'convert:` loop does not yet call `forward_solid_attribute_on_ingest`
+/// (both are step-6), so the Manifold-scoped solid lookup misses for both
+/// operands.
+#[test]
+fn engine_convert_loop_forwards_solid_attribute_to_manifold_ingested_handle() {
+    let module = CompiledModuleBuilder::new(ModulePath::new(vec![
+        "test_manifold_ingest_attribute_forwarding".to_string(),
+    ]))
+    .template(step_output_template(1e-6))
+    .template(two_sphere_union_template())
+    .compiled_purpose(manufacturing_purpose("manufacturing", 1e-6))
+    .build();
+
+    // occt: two spheres allocate handles 1 and 2 (MockGeometryKernel's own
+    // sequential counter) — stage face/edge extraction for both so the
+    // primitive seeder succeeds cleanly (a seeding failure would skip the
+    // record_solid_attribute call once step-6 lands, permanently masking
+    // this test's RED->GREEN transition).
+    let occt_kernel = MockGeometryKernel::new()
+        .with_extracted_faces(GeometryHandleId(1), vec![GeometryHandleId(101)])
+        .with_extracted_edges(GeometryHandleId(1), vec![GeometryHandleId(102)])
+        .with_extracted_faces(GeometryHandleId(2), vec![GeometryHandleId(201)])
+        .with_extracted_edges(GeometryHandleId(2), vec![GeometryHandleId(202)]);
+
+    let ingested_handles = Arc::new(Mutex::new(Vec::new()));
+    let manifold_kernel = IngestTrackingManifoldKernel {
+        inner: MockGeometryKernel::new(),
+        next_ingest_id: 5000,
+        ingested_handles: Arc::clone(&ingested_handles),
+    };
+
+    let mut kernels: BTreeMap<String, Box<dyn reify_ir::GeometryKernel>> = BTreeMap::new();
+    kernels.insert("occt".to_string(), Box::new(occt_kernel));
+    kernels.insert("manifold".to_string(), Box::new(manifold_kernel));
+
+    // occt: (PrimitiveSphere, BRep) + (Convert{BRep}, Mesh); manifold:
+    // (BooleanUnion, Mesh) — forces the union to route to manifold preceded
+    // by a BRep->Mesh conversion stage on occt (mirrors cross_kernel_handoff.rs).
+    let mut registry: BTreeMap<String, CapabilityDescriptor> = BTreeMap::new();
+    registry.insert(
+        "occt".to_string(),
+        CapabilityDescriptor {
+            supports: vec![
+                (Operation::PrimitiveSphere, ReprKind::BRep),
+                (
+                    Operation::Convert {
+                        from: ReprKind::BRep,
+                    },
+                    ReprKind::Mesh,
+                ),
+            ],
+        },
+    );
+    registry.insert(
+        "manifold".to_string(),
+        CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
+        },
+    );
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::with_test_kernels_and_registry(
+        Box::new(checker),
+        kernels,
+        registry,
+        Some("occt".to_string()),
+    );
+
+    let _eval = engine.eval(&module);
+    engine.activate_purpose("manufacturing", "MyDesign");
+
+    let build = engine.build(&module, ExportFormat::Stl);
+    let errors: Vec<_> = build
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.severity, reify_core::Severity::Error))
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "cross-kernel build must not emit error diagnostics; got: {errors:?}"
+    );
+
+    // Sanity: exactly one ingest_mesh call per sphere operand — the
+    // non-vacuousness premise for the per-handle assertion below.
+    let ingested = ingested_handles.lock().unwrap().clone();
+    assert_eq!(
+        ingested.len(),
+        2,
+        "expected exactly 2 manifold.ingest_mesh calls (one per sphere operand); got {ingested:?}"
+    );
+
+    let table = engine.topology_attribute_table();
+    for &h in &ingested {
+        assert!(
+            table
+                .lookup(KernelHandle {
+                    kernel: KernelId::Manifold,
+                    id: h,
+                })
+                .is_some(),
+            "expected topology_attribute_table.lookup(KernelHandle{{Manifold, {h:?}}}) to be \
+             Some after build() — forward_solid_attribute_on_ingest (wired into the 'convert: \
+             loop) should have forwarded the source solid's record_solid_attribute entry across \
+             the ingest seam; got None"
+        );
     }
 }
