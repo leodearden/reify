@@ -269,6 +269,16 @@ impl FileWatcher {
                 // Release the lock before invoking the callback so a slow
                 // or reentrant callback never blocks the notify thread from
                 // recording new events.
+                //
+                // Note: `shutdown` is intentionally not re-checked here.
+                // This batch was already returned by `drain_ready` above,
+                // so every event in it is still delivered to `callback`
+                // even if `Drop` concurrently requests shutdown while this
+                // loop runs -- `shutdown` is only consulted at the top of
+                // the loop, before the *next* `drain_ready` call. Only
+                // entries that are still pending (not yet ready) at that
+                // point are discarded on shutdown; anything already drained
+                // into `ready` always fires.
                 drop(guard);
                 for (path, kind) in ready {
                     let file_event = match kind {
