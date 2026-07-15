@@ -475,12 +475,31 @@ pub fn solve_elastic_static_trampoline(
     // material → length → width → height → loads — and returns
     // `ComputeOutcome::Failed` with a diagnostic naming the offending arg on
     // the FIRST `Err`, instead of panicking (the pre-D9 `FeaShimExt::fea_shim`
-    // behavior). Each arm binds its `Ok` value directly — a single extraction;
+    // behavior). Each arg binds its `Ok` value directly — a single extraction;
     // re-extracting after a separate validate pass would be both wasteful and,
     // for a heterogeneous material's non-Clone `Box<dyn Fn>` locator,
     // impossible. `solve_elastic_static_trampoline` returns `ComputeOutcome`,
-    // not `Result`, so `?` cannot be used here; each arg is instead bound via
-    // an explicit `match` with an early `return` on `Err`.
+    // not `Result`, so `?` cannot be used here; `gate_or_fail!` expands to the
+    // equivalent explicit `match` with an early `return` on `Err`, collapsing
+    // what would otherwise be five copy-pasted match/return arms (one per
+    // arg) into a single definition so the arg label can never drift from a
+    // copy-paste mistake.
+    macro_rules! gate_or_fail {
+        ($result:expr, $arg:literal) => {
+            match $result {
+                Ok(v) => v,
+                Err(e) => {
+                    return ComputeOutcome::Failed {
+                        diagnostics: vec![Diagnostic::error(format!(
+                            "solve_elastic_static_trampoline: {}: {e}",
+                            $arg
+                        ))],
+                        structured_detail: vec![],
+                    };
+                }
+            }
+        };
+    }
 
     // ── (1) Classify material and build MaterialModel (step-6: full dispatch) ──
     //
@@ -488,52 +507,12 @@ pub fn solve_elastic_static_trampoline(
     // (OrthotropicMaterial, TransverseIsotropicMaterial) are produced by γ/3779
     // (stdlib/constitutive.ri); the isotropic fallback reads youngs_modulus+
     // poisson_ratio (unchanged from the pre-δ trampoline).
-    let model = match classify_material(&value_inputs[0]) {
-        Ok(v) => v,
-        Err(e) => {
-            return ComputeOutcome::Failed {
-                diagnostics: vec![Diagnostic::error(format!(
-                    "solve_elastic_static_trampoline: material: {e}"
-                ))],
-                structured_detail: vec![],
-            };
-        }
-    };
+    let model = gate_or_fail!(classify_material(&value_inputs[0]), "material");
 
     // ── (2) Extract geometry scalars (SI: metres) ─────────────────────────────
-    let length = match extract_scalar_si(&value_inputs[1]) {
-        Ok(v) => v,
-        Err(e) => {
-            return ComputeOutcome::Failed {
-                diagnostics: vec![Diagnostic::error(format!(
-                    "solve_elastic_static_trampoline: length: {e}"
-                ))],
-                structured_detail: vec![],
-            };
-        }
-    };
-    let width = match extract_scalar_si(&value_inputs[2]) {
-        Ok(v) => v,
-        Err(e) => {
-            return ComputeOutcome::Failed {
-                diagnostics: vec![Diagnostic::error(format!(
-                    "solve_elastic_static_trampoline: width: {e}"
-                ))],
-                structured_detail: vec![],
-            };
-        }
-    };
-    let height = match extract_scalar_si(&value_inputs[3]) {
-        Ok(v) => v,
-        Err(e) => {
-            return ComputeOutcome::Failed {
-                diagnostics: vec![Diagnostic::error(format!(
-                    "solve_elastic_static_trampoline: height: {e}"
-                ))],
-                structured_detail: vec![],
-            };
-        }
-    };
+    let length = gate_or_fail!(extract_scalar_si(&value_inputs[1]), "length");
+    let width = gate_or_fail!(extract_scalar_si(&value_inputs[2]), "width");
+    let height = gate_or_fail!(extract_scalar_si(&value_inputs[3]), "height");
 
     // ── (3) Extract loads from value_inputs[4] (List of StructureInstances) ──
     //
@@ -551,18 +530,10 @@ pub fn solve_elastic_static_trampoline(
     //
     // Both accumulate into disjoint targets and compose: a scene may mix
     // PointLoad and PressureLoad in the same LoadCase.
-    let (tip_force, pressures, body_force) =
-        match extract_loads(&value_inputs[4], extract_density(&value_inputs[0])) {
-            Ok(v) => v,
-            Err(e) => {
-                return ComputeOutcome::Failed {
-                    diagnostics: vec![Diagnostic::error(format!(
-                        "solve_elastic_static_trampoline: loads: {e}"
-                    ))],
-                    structured_detail: vec![],
-                };
-            }
-        };
+    let (tip_force, pressures, body_force) = gate_or_fail!(
+        extract_loads(&value_inputs[4], extract_density(&value_inputs[0])),
+        "loads"
+    );
 
     // ── (3b) Shell-route dispatch (task 3594/δ) ──────────────────────────────
     //
@@ -10239,17 +10210,18 @@ mod tests {
     // ── task 5087 (PRD compute-fea-hardening D9): top-level validate-all-inputs
     // gate in `solve_elastic_static_trampoline` — replaces the panic-via-
     // `FeaShimExt::fea_shim` behavior with a real `ComputeOutcome::Failed`
-    // diagnostic naming the offending arg. Each RED test below takes the
+    // diagnostic naming the offending arg. Each test below takes the
     // shell9_* valid baseline (material/length/width/height/loads/supports/
     // options) and swaps exactly one entry for a malformed `Value`, then
     // calls the trampoline directly (no `catch_unwind`) and asserts it
     // degrades gracefully instead of panicking.
     //
-    // RED today: the trampoline still binds each extractor via `.fea_shim()`
-    // (`.unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"))`),
-    // so a malformed arg panics and unwinds straight through this direct
-    // call instead of returning `ComputeOutcome::Failed`. GREEN once the
-    // gate (step-2) replaces the shim call sites. ─────────────────────────
+    // The gate (`gate_or_fail!`, defined above in this trampoline) binds each
+    // arg in order — material → length → width → height → loads — and
+    // returns on the first `Err` with an Error diagnostic naming the
+    // offending arg, instead of panicking via the old `.fea_shim()`
+    // (`.unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"))`)
+    // bridge, which no longer exists. ───────────────────────────────────────
 
     /// step-1 RED: a malformed `material` arg ([0] = `Value::Real`, not a
     /// `StructureInstance`) must produce `ComputeOutcome::Failed` with an
@@ -10316,6 +10288,80 @@ mod tests {
             }
             other => panic!(
                 "a malformed length arg must yield ComputeOutcome::Failed (not a \
+                 panic), got {other:?}"
+            ),
+        }
+    }
+
+    /// D9 review amendment (task #5087, suggestion 2): `width` and `height`
+    /// are gated by the same `extract_scalar_si` call as `length` (just a
+    /// different `value_inputs` index and arg-label literal), but only
+    /// `length` had a dedicated malformed-input test. Because the gate's
+    /// arms are hand-written per arg, a copy-paste mistake giving the
+    /// `height` arm the string literal `"width"` (or vice versa) would go
+    /// uncaught without a test pinned to each label. [1] and [3] stay
+    /// well-formed scalars so only the `width` arm can fail.
+    #[test]
+    fn validate_all_inputs_gate_rejects_malformed_width() {
+        let value_inputs = [
+            shell9_make_isotropic_material(205e9, 0.29),
+            shell9_make_len(0.1),
+            Value::Real(0.1), // malformed: width must be a Value::Scalar
+            shell9_make_len(0.1),
+            shell9_make_point_loads(1000.0),
+            shell9_make_supports(),
+            shell9_make_options("Off"),
+        ];
+        let cancellation = CancellationHandle::new();
+        let outcome =
+            solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
+        match outcome {
+            ComputeOutcome::Failed { diagnostics, .. } => {
+                assert!(
+                    diagnostics.iter().any(|d| {
+                        d.severity == reify_core::Severity::Error && d.message.contains("width")
+                    }),
+                    "a malformed width arg must yield an Error diagnostic naming \
+                     \"width\", got {diagnostics:?}"
+                );
+            }
+            other => panic!(
+                "a malformed width arg must yield ComputeOutcome::Failed (not a \
+                 panic), got {other:?}"
+            ),
+        }
+    }
+
+    /// D9 review amendment (task #5087, suggestion 2): see
+    /// `validate_all_inputs_gate_rejects_malformed_width` — same rationale,
+    /// pinning the `height` arm's label. [1] and [2] stay well-formed
+    /// scalars so only the `height` arm can fail.
+    #[test]
+    fn validate_all_inputs_gate_rejects_malformed_height() {
+        let value_inputs = [
+            shell9_make_isotropic_material(205e9, 0.29),
+            shell9_make_len(0.1),
+            shell9_make_len(0.1),
+            Value::Real(0.1), // malformed: height must be a Value::Scalar
+            shell9_make_point_loads(1000.0),
+            shell9_make_supports(),
+            shell9_make_options("Off"),
+        ];
+        let cancellation = CancellationHandle::new();
+        let outcome =
+            solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
+        match outcome {
+            ComputeOutcome::Failed { diagnostics, .. } => {
+                assert!(
+                    diagnostics.iter().any(|d| {
+                        d.severity == reify_core::Severity::Error && d.message.contains("height")
+                    }),
+                    "a malformed height arg must yield an Error diagnostic naming \
+                     \"height\", got {diagnostics:?}"
+                );
+            }
+            other => panic!(
+                "a malformed height arg must yield ComputeOutcome::Failed (not a \
                  panic), got {other:?}"
             ),
         }
