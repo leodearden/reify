@@ -34,11 +34,13 @@ use reify_ir::geometry::{MeshInvariant, MeshViolationCounts, MeshWitness};
 #[cfg(has_gmsh)]
 use reify_ir::ElementOrderTag;
 #[cfg(has_gmsh)]
+use std::borrow::Cow;
+#[cfg(has_gmsh)]
 use crate::{
     auto_size::AutoSizeConfig,
     mesh_volume::{compute_thickness_warnings, resolve_mesh_size},
     options::MeshingOptions,
-    repair::RepairConfig,
+    repair::{RepairConfig, repair_surface_mesh_with_correspondence},
     through_thickness::{ThroughThicknessConfig, ThroughThicknessWarning},
 };
 
@@ -188,8 +190,46 @@ pub struct BoundaryAttributedReport {
 // NEAR-TERM preflight leaf; INV-GEO-1)
 // ---------------------------------------------------------------------------
 
-/// Preflight the RAW watertightness of `surface` before it is handed to the
+/// Preflight the watertightness of `surface` before it is handed to the
 /// gmsh attributed producer ([`mesh_surface_to_volume_with_attribution`]).
+///
+/// This is a generic, pure watertightness check with no opinion on whether
+/// `surface` has been welded — the unit tests below exercise it directly on
+/// both an unwelded per-face-block fixture and a welded fixture. Its sole
+/// production caller, [`mesh_surface_to_volume_with_attribution`], calls this
+/// TWICE in the general case (task ξ, #5116): first as a cheap probe on the
+/// RAW surface, but ONLY when the caller passed no explicit `repair_cfg` —
+/// an `Ok` here short-circuits the weld entirely, since an already-watertight
+/// surface needs no repair — and, only when that probe fails (or is skipped
+/// because `repair_cfg` was `Some`), again on the WELDED result (via
+/// `repair_surface_mesh_with_correspondence`) as a fail-closed net (see that
+/// function's `# Stage order`). So in practice this now fails closed in two
+/// distinct scenarios rather than one:
+///
+/// - The [`Mesh::validate`] check below still catches a GENUINE hole (e.g. a
+///   face missing from the B-rep) that welding cannot fix — welding only
+///   merges near-coincident vertex positions, it cannot fabricate a missing
+///   triangle.
+/// - The [`Mesh::weldedness`] check below is a fail-safe for a weld that did
+///   not fully collapse near-duplicate positions (e.g. a caller-supplied
+///   `repair_cfg` with a merge epsilon too tight for the input's duplicate
+///   spacing). The default `RepairConfig` collapses OCCT's bit-identical
+///   per-face duplicates, so this branch should not fire for a correctly
+///   configured weld, but it remains load-bearing defense-in-depth.
+///
+/// # Cost note (efficiency)
+///
+/// On the common `repair_cfg = None` + unwelded-input path, the two calls
+/// above run on genuinely different data (RAW surface, then WELDED
+/// surface), so they are not literally duplicated work — but the RAW-surface
+/// call's [`raw_open_edge_census`] scan (only reached when [`Mesh::weldedness`]
+/// fails on it) is discarded by the caller's short-circuit decision (a plain
+/// `bool`, see [`surface_needs_weld`]) rather than threaded into the
+/// subsequent WELDED-surface call. This is intentional, not an oversight:
+/// the discarded scan is `O(n)` over the raw index buffer, negligible next
+/// to the `O(n²)` vertex-merge scan (`repair.rs`) the weld itself performs
+/// whenever the probe fails, so avoiding it would add API surface (plumbing
+/// the raw census through to the weld call site) for no measurable benefit.
 ///
 /// # Why weldedness, not just `validate`
 ///
@@ -197,14 +237,13 @@ pub struct BoundaryAttributedReport {
 /// `occt_wrapper.cpp:5847`): every corner shared by several faces is
 /// duplicated once per incident face. Such a surface is a fully valid,
 /// closed, consistently-wound 2-manifold on its POSITION-WELDED QUOTIENT
-/// topology, so [`Mesh::validate`] alone happily returns `Ok`. But
-/// `mesh_surface_to_volume_with_attribution` forbids vertex-merging repair
-/// (it would invalidate per-vertex attribution, see its repair guard) and so
-/// consumes the RAW, unwelded index buffer directly — which is genuinely
-/// non-watertight (an open edge at every shared face-perimeter edge).
-/// Feeding that raw surface into gmsh SIGSEGVs inside the FFI, a failure
-/// mode the caller's `Result`-based honest-degradation fallback cannot
-/// catch.
+/// topology, so [`Mesh::validate`] alone happily returns `Ok` on the RAW,
+/// unwelded index buffer — which is genuinely non-watertight (an open edge
+/// at every shared face-perimeter edge) and SIGSEGVs inside gmsh's FFI if
+/// handed in directly, a failure mode the caller's `Result`-based
+/// honest-degradation fallback cannot catch. `validate` alone cannot tell a
+/// truly closed surface apart from one that is only closed on its welded
+/// quotient, which is exactly why this preflight adds the weldedness check.
 ///
 /// This is the `docs/prds/kernel-seam-contracts.md` §4 site-3 fail-closed
 /// exception: rather than let an uncatchable crash happen, this preflight
@@ -319,20 +358,78 @@ pub fn raw_open_edge_census(surface: &Mesh) -> (usize, (u32, u32)) {
 /// caller-provided OCCT handles via nearest-anchor matching within
 /// `attribution.match_tolerance`.
 ///
-/// # Repair incompatibility
+/// # Repair / welding (task ξ, #5116)
 ///
-/// Calling with `repair_cfg = Some(...)` is not currently supported and
-/// returns `Err(GeometryError::OperationFailed)`. Apply repair upstream and
-/// pass `None`.
+/// The surface is welded before being handed to gmsh whenever it is not
+/// already watertight, via
+/// `repair_surface_mesh_with_correspondence(surface, repair_cfg.unwrap_or_default())`
+/// — `repair_cfg` selects the weld/repair configuration (`None` uses
+/// `RepairConfig::default()`) rather than gating whether welding can happen
+/// at all, as it did pre-ξ. When `repair_cfg` is `None`, a cheap
+/// `preflight_watertight_surface` probe on the RAW surface decides whether
+/// the weld's O(n²) vertex-merge scan (repair.rs) is worth paying for: an
+/// already-watertight surface (e.g. a hand-built, pre-welded fixture) is
+/// used as-is, since welding it with the default config would be a
+/// bit-identical no-op anyway. An explicit `Some(repair_cfg)` always runs
+/// the weld, even on an already-watertight raw surface: the caller asked for
+/// a specific configuration (e.g. a coarser merge epsilon meant to always
+/// apply), and the RAW-surface probe is a purely topological check that
+/// cannot know whether a non-default config would still change the output —
+/// so an explicit config is never silently dropped just because the surface
+/// already happens to be closed. This is safe for attribution: entity
+/// anchors are POSITIONS (mean node position / face centroid), and
+/// position-welding only merges
+/// near-coincident vertices onto a shared position — surviving vertices keep
+/// their exact original coordinates, so no anchor moves and per-node
+/// attribution (derived from gmsh entity membership, not input-vertex
+/// identity — see above) is unaffected. The correspondence map returned
+/// alongside the welded mesh makes the weld non-lossy for input-node
+/// identity; it is consumed here via a `tracing::debug!` weld-stats event
+/// (mirroring `mesh_volume.rs::apply_repair_if_requested`'s pattern) rather
+/// than threaded further, since gmsh's re-meshing already discards raw input
+/// node identity regardless of welding.
+///
+/// # Weld-epsilon assumption (robustness)
+///
+/// The default `RepairConfig::vertex_merge_epsilon` (`1e-12`) is tight
+/// enough to collapse OCCT's per-face duplicate corners for one empirical
+/// reason only: OCCT emits those duplicates bit-identically (Euclidean
+/// distance exactly `0.0`), NOT because `1e-12` is derived in any way from
+/// OCCT's tessellation deflection/tolerance. If a future OCCT version ever
+/// emitted per-face corner coordinates that differ by more than the
+/// configured epsilon (e.g. float rounding that diverges across faces), the
+/// weld above would silently fail to merge them, the surface would stay
+/// non-watertight, and stage 2's fail-closed net below would reject it —
+/// indistinguishable, from the caller's `Result` alone, from a genuinely
+/// open surface. Two things guard against this landing silently: the
+/// `has_gmsh`+`has_occt`-gated `occt_box_attributed_volume_preserves_face_attribution`
+/// conformance test
+/// (`crates/reify-kernel-conformance/tests/occt_gmsh_attributed_conformance.rs`)
+/// exercises a REAL OCCT box tessellation end-to-end and asserts `Ok`, so it
+/// is the CI pin that goes red first if this empirical guarantee ever
+/// breaks; and the `tracing::warn!` emitted at the fail-closed net below
+/// (not just a silently-propagated `Err`) surfaces the trip at its source,
+/// independent of whether a given caller relays the error into a
+/// user-visible diagnostic (as `crates/reify-eval/src/engine_build.rs`'s
+/// attributed-producer degrade arm already does).
 ///
 /// # Stage order
 ///
-/// 1. (Repair guard — rejects `Some(repair_cfg)` for now.)
-/// 2. `resolve_mesh_size` — honours caller override or derives from features.
-/// 3. GMesh pipeline — classify + create_geometry + HXT tet meshing.
-/// 4. Entity-membership queries (`ffi::get_nodes_at_entity`).
-/// 5. Nearest-anchor matching → builds `BoundaryAssociation`.
-/// 6. `compute_thickness_warnings` post-stage.
+/// 1. Watertightness preflight (task #4876) probe on the RAW surface —
+///    skipped entirely when the caller passed an explicit `repair_cfg`. An
+///    `Ok` here (only possible when `repair_cfg` is `None`) means the
+///    surface is already watertight, so it is used as-is and stage 2's weld
+///    is skipped.
+/// 2. Weld — `repair_surface_mesh_with_correspondence`, always run when
+///    `repair_cfg` is `Some`, or when `repair_cfg` is `None` and stage 1
+///    returned `Err`; re-runs the preflight on the WELDED result as a
+///    fail-closed net, so it fails closed only for genuinely-open input (a
+///    real hole survives welding).
+/// 3. `resolve_mesh_size` — honours caller override or derives from features.
+/// 4. GMesh pipeline — classify + create_geometry + HXT tet meshing.
+/// 5. Entity-membership queries (`ffi::get_nodes_at_entity`).
+/// 6. Nearest-anchor matching → builds `BoundaryAssociation`.
+/// 7. `compute_thickness_warnings` post-stage.
 #[cfg(has_gmsh)]
 pub fn mesh_surface_to_volume_with_attribution(
     surface: &Mesh,
@@ -343,35 +440,90 @@ pub fn mesh_surface_to_volume_with_attribution(
     thickness_cfg: Option<ThroughThicknessConfig>,
     attribution: &EntityAttribution,
 ) -> Result<BoundaryAttributedReport, GeometryError> {
-    // Reject repair (attribution reassignment after vertex merging is not
-    // yet supported — see task description).
-    if repair_cfg.is_some() {
-        return Err(GeometryError::OperationFailed(
-            "mesh_surface_to_volume_with_attribution: repair_cfg must be None; \
-             vertex-merging repair invalidates per-vertex attribution. \
-             Apply repair upstream before building the EntityAttribution."
-                .into(),
-        ));
-    }
-
-    // --- Watertightness preflight (task #4876) ---
+    // --- Weld (task ξ, #5116), short-circuited when already watertight AND
+    // no explicit repair_cfg was requested (decided by `surface_needs_weld`
+    // below, unit-tested directly against both branches) ---
     //
-    // This producer forbids vertex-merging repair (guard above) and so
-    // consumes the RAW, unwelded index buffer directly. A real
-    // OCCT-tessellated surface is unwelded by design (per-face vertex
-    // blocks) and SIGSEGVs inside gmsh's FFI if handed straight in — a crash
-    // the caller's `Result`-based honest-degradation fallback cannot catch.
-    // Fail closed here, before any gmsh FFI call, so a non-watertight
-    // surface degrades gracefully to the plain producer instead.
-    preflight_watertight_surface(surface, 0.0)?;
+    // gmsh requires watertight input; a real OCCT-tessellated surface is
+    // unwelded by design (per-face vertex blocks) and previously SIGSEGVd
+    // inside gmsh's FFI if handed straight in. When `repair_cfg` is `None`,
+    // probe the RAW surface with the #4876 preflight first, and only pay
+    // for the weld's O(n²) vertex-merge scan (repair.rs) when that probe
+    // fails: an already-watertight surface (e.g. a hand-built, pre-welded
+    // fixture) needs no repair, and welding it with the default config
+    // would be a bit-identical no-op anyway (see fn doc) — so skipping it
+    // changes no observable behavior, only cost. An explicit
+    // `Some(repair_cfg)` always runs the weld, bypassing the probe: the
+    // preflight is a purely topological check, so it cannot know whether a
+    // caller-supplied (e.g. non-default-epsilon) config would still change
+    // the output, and a caller that explicitly asked for a repair
+    // configuration must never have it silently dropped (see fn doc). `Cow`
+    // avoids cloning the surface in the common already-watertight,
+    // no-explicit-cfg case, mirroring
+    // `mesh_volume.rs::apply_repair_if_requested`.
+    //
+    // When welding IS needed, position-based entity anchors (see fn doc)
+    // make it safe for attribution. `correspondence` maps each ORIGINAL
+    // vertex index to its compacted post-weld index (`u32::MAX` if its
+    // merge-survivor was compacted away); gmsh re-meshes from scratch and
+    // discards input-node identity regardless of welding, so
+    // `correspondence` is not threaded any further here — it is consumed
+    // via a weld-stats debug event (all fields computed lazily, inline, so
+    // nothing runs unless DEBUG is enabled) so it stays genuinely used
+    // rather than dead. `weld_merged_verts` (reusing `WeldednessReport`'s
+    // naming, see `reify_ir::geometry::WeldednessReport`) is the true merge
+    // magnitude, `original_verts - welded_verts`; `compacted_away_verts`
+    // counts only the narrower u32::MAX subset — vertices whose survivor
+    // was itself dropped as a sliver/degenerate, which for a normal
+    // per-face-block weld is ~0 even though `weld_merged_verts` is large.
+    let welded: Cow<'_, Mesh> = if surface_needs_weld(surface, repair_cfg) {
+        let (w, correspondence) =
+            repair_surface_mesh_with_correspondence(surface, repair_cfg.unwrap_or_default());
+        tracing::debug!(
+            target: "reify_kernel_gmsh::mesh_boundary",
+            original_verts = correspondence.len(),
+            welded_verts = w.vertices.len() / 3,
+            weld_merged_verts = correspondence.len() - (w.vertices.len() / 3),
+            compacted_away_verts = correspondence.iter().filter(|&&c| c == u32::MAX).count(),
+            "mesh_surface_to_volume_with_attribution: weld pre-stage applied"
+        );
+
+        // Fail-closed net (task #4876): evaluated on the WELDED surface, so
+        // this rejects only a surface that is STILL non-watertight after
+        // welding (a genuine hole, not just per-face-block duplication),
+        // degrading gracefully to the plain producer instead of crashing.
+        // This also covers the narrower "weld epsilon too tight for this
+        // input" failure mode (see fn doc `# Weld-epsilon assumption`),
+        // which is otherwise indistinguishable from a genuine hole to a
+        // caller inspecting only the returned `Err` — a `tracing::warn!`
+        // fires here (rather than silently propagating via `?`) so the trip
+        // is visible at its source regardless of whether the caller relays
+        // it into a user-facing diagnostic.
+        if let Err(e) = preflight_watertight_surface(&w, 0.0) {
+            tracing::warn!(
+                target: "reify_kernel_gmsh::mesh_boundary",
+                error = %e,
+                original_verts = correspondence.len(),
+                welded_verts = w.vertices.len() / 3,
+                "mesh_surface_to_volume_with_attribution: surface still non-watertight after \
+                 weld pre-stage — either a genuine open boundary, or the configured \
+                 vertex_merge_epsilon is too tight for this input's near-duplicate spacing \
+                 (see fn doc `# Weld-epsilon assumption`); degrading to the plain producer"
+            );
+            return Err(e);
+        }
+        Cow::Owned(w)
+    } else {
+        Cow::Borrowed(surface)
+    };
 
     // --- Pre-stage: resolve mesh size ---
-    let resolved = resolve_mesh_size(surface, options, auto_size_cfg)?;
+    let resolved = resolve_mesh_size(welded.as_ref(), options, auto_size_cfg)?;
     let inner_options = MeshingOptions { mesh_size: resolved, ..options.clone() };
 
     // --- GMesh pipeline + entity-membership queries ---
     let (volume, node_attribution) =
-        run_meshing_with_entity_queries(surface, &inner_options, order, attribution)?;
+        run_meshing_with_entity_queries(welded.as_ref(), &inner_options, order, attribution)?;
 
     // --- Build BoundaryAssociation from entity-membership map ---
     let mut boundary = BoundaryAssociation::default();
@@ -380,9 +532,34 @@ pub fn mesh_surface_to_volume_with_attribution(
     }
 
     // --- Post-stage: through-thickness warnings ---
-    let through_thickness_warnings = compute_thickness_warnings(&volume, surface, thickness_cfg);
+    let through_thickness_warnings =
+        compute_thickness_warnings(&volume, welded.as_ref(), thickness_cfg);
 
     Ok(BoundaryAttributedReport { volume, through_thickness_warnings, boundary })
+}
+
+// ---------------------------------------------------------------------------
+// Internal helper: weld decision (task ξ, #5116)
+// ---------------------------------------------------------------------------
+
+/// Decide whether `surface` must be welded before being handed to gmsh.
+///
+/// Pulled out of [`mesh_surface_to_volume_with_attribution`] as a small,
+/// pure predicate so the "an explicit `repair_cfg` always welds, even on an
+/// already-watertight surface" behavior (see that function's `# Repair /
+/// welding` doc) can be pinned by a plain unit test below, independent of
+/// the real gmsh FFI the rest of that function requires.
+///
+/// Returns `false` (skip the weld) only when `repair_cfg` is `None` AND the
+/// RAW `surface` already passes [`preflight_watertight_surface`]. Returns
+/// `true` (weld) in every other case, including an already-watertight
+/// surface paired with an explicit `Some(repair_cfg)` — the probe is a
+/// purely topological check that cannot know whether a caller-supplied
+/// config would still change the output, so an explicit config is never
+/// silently dropped.
+#[cfg(has_gmsh)]
+fn surface_needs_weld(surface: &Mesh, repair_cfg: Option<RepairConfig>) -> bool {
+    !(repair_cfg.is_none() && preflight_watertight_surface(surface, 0.0).is_ok())
 }
 
 // ---------------------------------------------------------------------------
@@ -1152,5 +1329,77 @@ mod tests {
             }
             other => panic!("expected GeometryError::MeshContractViolation, got {other:?}"),
         }
+    }
+
+    // ── Weld decision (task ξ, #5116) ───────────────────────────────────────
+    //
+    // Every existing production caller of `mesh_surface_to_volume_with_attribution`
+    // passes `repair_cfg = None` (kernel_real.rs, node_attachment_producer.rs,
+    // the conformance and attributed integration tests), so prior to these
+    // tests the "an explicit `Some(repair_cfg)` always welds, even on an
+    // already-watertight surface" branch had no direct pinning assertion — a
+    // regression that reintroduced probe-based short-circuiting for the
+    // `Some` path would have passed CI. These exercise `surface_needs_weld`
+    // directly (pure logic, no gmsh FFI call) against both fixtures already
+    // used by the preflight tests above.
+    //
+    // Known coverage gap (reviewer, test-coverage): the above pins the
+    // *decision* predicate only. No test yet runs
+    // `repair_surface_mesh_with_correspondence` with a caller-supplied
+    // NON-DEFAULT `RepairConfig` (e.g. a coarser `vertex_merge_epsilon`)
+    // through the real gmsh FFI pipeline in
+    // `mesh_surface_to_volume_with_attribution` end-to-end — closing that
+    // gap needs a `has_gmsh` integration test in
+    // `crates/reify-kernel-gmsh/tests/mesh_surface_to_volume_attributed.rs`,
+    // outside this amendment pass's locked scope (`src/mesh_boundary.rs`,
+    // `src/repair.rs` only); left for the next review cycle / a follow-up
+    // task.
+
+    /// `repair_cfg = None` on an already-watertight surface: the RAW-surface
+    /// probe succeeds, so the weld is skipped.
+    #[cfg(has_gmsh)]
+    #[test]
+    fn surface_needs_weld_skips_already_watertight_surface_when_cfg_is_none() {
+        let mesh = welded_tetra_mesh();
+        assert!(
+            !surface_needs_weld(&mesh, None),
+            "an already-watertight surface with no explicit repair_cfg must skip the weld"
+        );
+    }
+
+    /// `repair_cfg = Some(default())` on the SAME already-watertight surface
+    /// as above: the weld must run anyway. This is the exact branch the
+    /// review flagged as untested — pins that an explicit config is never
+    /// silently dropped just because the raw surface already happens to be
+    /// closed.
+    #[cfg(has_gmsh)]
+    #[test]
+    fn surface_needs_weld_always_welds_explicit_cfg_even_on_watertight_surface() {
+        let mesh = welded_tetra_mesh();
+        assert!(
+            surface_needs_weld(&mesh, Some(RepairConfig::default())),
+            "an explicit repair_cfg must always trigger the weld, even on an \
+             already-watertight surface (task ξ / #5116) — the raw-surface \
+             probe must never silently drop a caller-supplied repair configuration"
+        );
+    }
+
+    /// An unwelded (per-face-block) surface must weld regardless of
+    /// `repair_cfg` — negative control confirming `None` does not ALSO
+    /// short-circuit when the probe genuinely fails.
+    #[cfg(has_gmsh)]
+    #[test]
+    fn surface_needs_weld_welds_unwelded_surface_regardless_of_cfg() {
+        let mesh = per_face_block_tetra_mesh();
+        assert!(
+            surface_needs_weld(&mesh, None),
+            "an unwelded surface must be welded even with no explicit repair_cfg, \
+             since the RAW-surface probe fails on it"
+        );
+        assert!(
+            surface_needs_weld(&mesh, Some(RepairConfig::default())),
+            "an unwelded surface must be welded when an explicit repair_cfg is \
+             also supplied"
+        );
     }
 }
