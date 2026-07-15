@@ -8664,6 +8664,53 @@ mod tests {
         );
     }
 
+    /// D7 review amendment (task #5086, suggestion 1): `classify_material`
+    /// must propagate a leaf extractor's `Err` through its `?`-threaded
+    /// `"OrthotropicMaterial"` arm instead of panicking. A `StructureInstance`
+    /// with `type_name: "OrthotropicMaterial"` and an empty `fields` map is
+    /// missing `e1` — the arm's first `scalar_si_field` read — so
+    /// `classify_material` must surface `Err(FeaValueShapeError::MissingField
+    /// { field: "e1", .. })` rather than panicking, proving the arm's 9
+    /// `.fea_shim()` calls were genuinely replaced with `?` and not left as
+    /// disguised `.unwrap()`s.
+    ///
+    /// Like `classify_material_rejects_non_structure_instance` above, `res`
+    /// cannot be interpolated with `{:?}` as a whole (`MaterialModel`, the
+    /// `Ok` side, does not derive `Debug`), so the `Err` payload is matched
+    /// out and formatted on its own; a bare `Ok(_)` arm covers the success
+    /// case without touching the non-Debug `MaterialModel`. Mirrors
+    /// `anisotropic_material_from_value_rejects_missing_law_field`'s
+    /// match-and-panic style for the same non-Debug-`Ok` reason.
+    #[test]
+    fn classify_material_rejects_orthotropic_missing_e1_field() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        let val = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "OrthotropicMaterial".to_string(),
+            version: 1,
+            fields: PersistentMap::<String, Value>::new(),
+        }));
+
+        let res = classify_material(&val);
+        match res {
+            Err(FeaValueShapeError::MissingField { field, .. }) => {
+                assert_eq!(field, "e1");
+            }
+            Err(other) => panic!(
+                "expected Err(MissingField {{ field: \"e1\" }}) for an \
+                 OrthotropicMaterial StructureInstance with no fields, got a \
+                 different Err variant: {:?}",
+                other
+            ),
+            Ok(_) => panic!(
+                "expected Err(MissingField {{ field: \"e1\" }}) for an \
+                 OrthotropicMaterial StructureInstance with no fields, got Ok(_) \
+                 instead of propagating the leaf error"
+            ),
+        }
+    }
+
     // ── Test B: Loewner compliance monotonicity for two-zone cantilever ──────
 
     /// (B) `solve_cantilever_fea` with a two-zone AsPrintedZones field converges,
