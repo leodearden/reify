@@ -408,27 +408,37 @@ pub fn save_file_impl(path: &str, content: &str) -> Result<(), String> {
 }
 
 /// Load `canonical` into the engine, adopting its identity via
-/// `EngineSession::load_file` (`FilePathUpdate::Set`), and rewrite each
-/// stem-only `GuiState::files[].path` entry to a canonical absolute path.
-///
-/// Note: `engine.source_map()` stores entries under `module_key(name)` =
-/// `"{name}.ri"` (a stem-only key).  This rewrites each `FileData.path` in the
-/// returned `GuiState` by resolving it against `canonical`'s parent
-/// directory, so callers receive a stable absolute identity key regardless of
-/// how the original input path was spelled.
+/// `EngineSession::load_file` (`FilePathUpdate::Set`).
 ///
 /// Shared choke-point for both open-file entry points — [`open_file_engine_impl`]
 /// (the normal Tauri command) and `debug_server::open_source_into_engine_and_refresh_baseline`
-/// (the debug bridge's open_file/load_fixture funnel) — so the load_file +
-/// abs-path-rewrite pair cannot drift between them again (task #5193).
+/// (the debug bridge's open_file/load_fixture funnel) — so the load_file
+/// call cannot drift between them again (task #5193).
+///
+/// Callers MUST follow up with [`rewrite_files_to_abs`] on the returned
+/// `GuiState`. That step is deliberately NOT inlined here (task #5193
+/// review): it is filesystem I/O that touches no engine state, so callers
+/// run it AFTER releasing the engine lock rather than holding the mutex
+/// across N `std::fs::canonicalize` syscalls.
 pub(crate) fn load_file_into_engine(
     session: &mut EngineSession,
     canonical: &Path,
 ) -> Result<GuiState, String> {
-    let mut state = session.load_file(canonical)?;
+    session.load_file(canonical)
+}
 
-    // source_map keys are "{name}.ri" (stem-only). Resolve each against the
-    // canonical entry directory so the frontend receives absolute paths.
+/// Rewrite each stem-only `GuiState::files[].path` entry to a canonical
+/// absolute path, resolved against `canonical`'s parent directory.
+///
+/// Note: `engine.source_map()` stores entries under `module_key(name)` =
+/// `"{name}.ri"` (a stem-only key). This gives callers a stable absolute
+/// identity key regardless of how the original input path was spelled.
+///
+/// Must be called on the `GuiState` returned by [`load_file_into_engine`],
+/// AFTER the engine lock that call was made under has been released:
+/// canonicalizing paths touches no engine state, so it does not need the
+/// lock (task #5193 review).
+pub(crate) fn rewrite_files_to_abs(state: &mut GuiState, canonical: &Path) {
     if let Some(entry_dir) = canonical.parent() {
         for f in &mut state.files {
             let resolved = entry_dir.join(&f.path);
@@ -437,8 +447,6 @@ pub(crate) fn load_file_into_engine(
             }
         }
     }
-
-    Ok(state)
 }
 
 /// Load a file into the engine and return the initial state.
@@ -447,17 +455,21 @@ pub(crate) fn load_file_into_engine(
 /// [`crate::path_key::canonicalize_document_key`] before being passed to
 /// [`load_file_into_engine`], which propagates the canonical key into the
 /// engine's `file_path` field (used later by `update_source` for import
-/// resolution) and ensures the returned [`GuiState::files`] contains
-/// absolute paths rather than bare module-key filenames.
+/// resolution). [`rewrite_files_to_abs`] then runs AFTER the engine lock is
+/// released, so the returned [`GuiState::files`] contains absolute paths
+/// rather than bare module-key filenames without the engine mutex being
+/// held across the canonicalize filesystem calls (task #5193 review).
 pub fn open_file_engine_impl(
     engine: &Mutex<EngineSession>,
     path: &str,
 ) -> Result<GuiState, String> {
     let canonical = crate::path_key::canonicalize_document_key(path);
-    crate::engine_lock::with_engine_lock(engine, |s| {
+    let mut state = crate::engine_lock::with_engine_lock(engine, |s| {
         load_file_into_engine(s, Path::new(&canonical))
     })
-    .and_then(std::convert::identity)
+    .and_then(std::convert::identity)?;
+    rewrite_files_to_abs(&mut state, Path::new(&canonical));
+    Ok(state)
 }
 
 /// Resolve the CLI argv path to a canonical [`PathBuf`] suitable for
