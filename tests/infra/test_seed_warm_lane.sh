@@ -194,6 +194,29 @@ done
 exec /bin/rm "$@"
 REAL_RM_STUB_EOF
         chmod +x "$real_stub_dir/rm"
+    elif [ "${REIFY_TEST_SLEEP_RESEED_TRASH_RM:-}" = "1" ]; then
+        # Selective SLEEPING rm stub: only active when
+        # REIFY_TEST_SLEEP_RESEED_TRASH_RM=1. For the trash path (same glob as
+        # the PIN stub above), sleeps ~2s before exiting 0 (no-op, like PIN) --
+        # long enough that a caller probing immediately after the seed script
+        # itself has exited (RC returned to run_helper_real) can deterministically
+        # observe a detached background `rm &` that is STILL RUNNING, e.g. to
+        # assert it did/didn't leak an inherited FD. All other rm calls exec
+        # /bin/rm to stay real. Callers that do not set this var are unchanged.
+        cat > "$real_stub_dir/rm" << 'REAL_SLEEP_RM_STUB_EOF'
+#!/usr/bin/env bash
+echo "rm $*" >> "${REIFY_TEST_CALLS_FILE:-/dev/null}"
+for arg in "$@"; do
+    case "$arg" in
+        *target.reseed-trash.*|*/.reseed-trash/*)
+            sleep 2
+            exit 0
+            ;;
+    esac
+done
+exec /bin/rm "$@"
+REAL_SLEEP_RM_STUB_EOF
+        chmod +x "$real_stub_dir/rm"
     fi
     OUT="$(
         REIFY_TEST_CALLS_FILE="$CALLS_FILE" \
@@ -1966,5 +1989,27 @@ assert "H3: opt-in default-off: cp invoked with --reflink=always (replace path r
 
 kill "$Q_LOCK3_PID" 2>/dev/null || true
 wait "$Q_LOCK3_PID" 2>/dev/null || true
+
+# ── H4: FD-hygiene — a detached background trash-rm must NOT inherit the held
+# lane-lock FD 9, so the lock is fully released the instant seed itself exits
+# (not only once the orphaned background rm eventually finishes). ───────────
+# REIFY_WARM_LANE_RESEED_TRASH_SYNC left UNSET (default async path) and a
+# real non-empty target so a background trash rm is actually spawned; the
+# sleeping rm stub (REIFY_TEST_SLEEP_RESEED_TRASH_RM=1) keeps that background
+# process alive for ~2s so the immediate lock re-probe below is deterministic.
+Q_LANE4="$(mktemp -d /tmp/test-seed-Q-lane4-XXXXXX)"
+_TMPDIRS+=("$Q_LANE4")
+mkdir -p "$Q_LANE4/target"
+echo "stale artifact" > "$Q_LANE4/target/stale.a"
+Q_LOCK4="${Q_LANE4}.lock"
+_TMPDIRS+=("$Q_LOCK4")
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_TEST_SLEEP_RESEED_TRASH_RM=1 \
+    run_helper_real "$Q_BASE" "$Q_LANE4" --fresh-checkout --lane-lock
+
+assert "H4: seed exits 0 (async trash rm spawned)" test "$RC" -eq 0
+assert "H4: lane lock is re-acquirable immediately after seed exits (no FD-9 leak to background rm)" \
+    bash -c 'exec 8>"$1"; flock -n 8' _ "$Q_LOCK4"
 
 test_summary
