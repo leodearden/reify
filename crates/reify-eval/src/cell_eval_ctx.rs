@@ -201,6 +201,13 @@ mod tests {
     /// guard above (which only pins this free function's own signature) nor
     /// the other tests in this module (which never call the method) would
     /// catch that class of regression.
+    ///
+    /// Beyond the shape check, the per-field pointer-identity assertions
+    /// below also confirm each capability lands in the matching slot on
+    /// both paths (not just that some slot is filled) — e.g. `determinacy`
+    /// landing in the `diagnostics` slot would still pass the shape check
+    /// (both paths would still report `(true, true, true, true)`) but fails
+    /// these.
     #[test]
     fn cell_eval_ctx_matches_engine_method_wiring() {
         let engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
@@ -238,6 +245,54 @@ mod tests {
             (true, true, true, true),
             "both cell_eval_ctx paths must wire every required capability, not just agree with \
              each other while both silently dropping one"
+        );
+
+        // Per-field pointer identity: proves each capability lands in the
+        // SAME slot on both paths, closing the gap the shape check above
+        // leaves open (it would accept a capability silently wired to the
+        // wrong `.with_*` link as long as some slot ends up `Some`).
+        assert!(
+            via_method
+                .determinacy
+                .zip(via_free_fn.determinacy)
+                .is_some_and(|(m, f)| std::ptr::eq(m, f)),
+            "determinacy must resolve to the same underlying map via both paths"
+        );
+        assert!(
+            via_method
+                .diagnostics
+                .zip(via_free_fn.diagnostics)
+                .is_some_and(|(m, f)| std::ptr::eq(m, f)),
+            "diagnostics sink must resolve to the same underlying RefCell via both paths"
+        );
+        // `containment` is a trait object (`&dyn ContainmentQuery`): its fat
+        // pointer carries a vtable-pointer component alongside the data
+        // address, and Rust does not guarantee vtable addresses are unique
+        // per (type, trait) pair across separate unsizing-coercion call
+        // sites — `Engine::cell_eval_ctx`'s internal `.with_containment(self)`
+        // and this test's `cell_eval_ctx(.., &engine)` call are two such
+        // sites. Comparing the fat pointers directly with `std::ptr::eq`
+        // spuriously fails even though both wrap the same `engine` (verified:
+        // same data address, different vtable pointer) — do not "simplify"
+        // this back to a bare `std::ptr::eq(m, f)`. Casting to `*const ()`
+        // first compares only the data address, which is what "same
+        // underlying engine" actually means here.
+        assert!(
+            via_method
+                .containment
+                .zip(via_free_fn.containment)
+                .is_some_and(|(m, f)| std::ptr::eq(
+                    m as *const dyn ContainmentQuery as *const (),
+                    f as *const dyn ContainmentQuery as *const ()
+                )),
+            "containment must resolve to the same underlying engine via both paths"
+        );
+        assert!(
+            via_method
+                .meta
+                .zip(via_free_fn.meta)
+                .is_some_and(|(m, f)| std::ptr::eq(m, f)),
+            "meta map must resolve to the same underlying map via both paths"
         );
     }
 
