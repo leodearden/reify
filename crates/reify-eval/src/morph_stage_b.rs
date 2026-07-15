@@ -1150,10 +1150,10 @@ mod tests {
         // Both sides are attributed so the imported pre-pass is bypassed and execution
         // reaches the precondition site — which must be structurally absent in release.
         let mut old_table = TopologyAttributeTable::default();
-        old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0, None));
+        old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::Cap(CapKind::Top), 0, None));
         let mut new_table = TopologyAttributeTable::default();
-        new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0, None));
-        new_table.record(h(30), attr(Role::Cap(CapKind::Bottom), 0, None));
+        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr(Role::Cap(CapKind::Top), 0, None));
+        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(30) }, attr(Role::Cap(CapKind::Bottom), 0, None));
         // h(10) appears twice — would panic in debug; must not panic in release.
         // In the matching loop the second h(10) finds h(20) already consumed and
         // h(30) with a non-matching attribute, so it returns UnmappedElement.
