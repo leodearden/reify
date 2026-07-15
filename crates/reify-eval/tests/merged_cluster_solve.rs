@@ -1526,6 +1526,54 @@ fn eval_cached_merges_within_cap_cluster_like_cold_eval() {
     );
 }
 
+/// Warm analog of `merged_cluster_let_surfaces_co_solved_cross_scope_auto`
+/// (above, cold `eval()`): `eval_cached()`'s merged-cluster dispatch must
+/// ALSO re-evaluate B's downstream `let` cell (`B.out = A.k * 2`) against the
+/// CO-SOLVED A.k, not a frozen/undef value from B's pre-merge-solve main
+/// pass.
+///
+/// RED until step-06: today (step-04)
+/// `dispatch_merged_cluster_solve_cached` writes every cluster member's
+/// solver-resolved autos back to `values`/`snapshot_values`/the cache, but
+/// does not yet re-evaluate downstream let cones on the warm path (see that
+/// function's "Downstream let-cone re-evaluation ... deferred to step 6"
+/// comment).
+#[test]
+fn eval_cached_merged_cluster_let_surfaces_co_solved_cross_scope_auto() {
+    let module = two_cycle_cluster_with_cross_scope_let_module();
+
+    let a_k = ValueCellId::new("A", "k");
+    let b_m = ValueCellId::new("B", "m");
+    let b_out = ValueCellId::new("B", "out");
+
+    let mut solved = HashMap::new();
+    solved.insert(a_k.clone(), mm(4.0));
+    solved.insert(b_m.clone(), mm(1.0));
+
+    let spy = MultiCallSpyConstraintSolver::new(vec![SolveResult::Solved {
+        values: solved,
+        unique: true,
+    }]);
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+    let result = engine.eval_cached(&module, VersionId(1));
+
+    let out_val = result
+        .eval_result
+        .values
+        .get(&b_out)
+        .expect("B.out missing from EvalResult.values");
+    assert_eq!(
+        *out_val,
+        mm(8.0),
+        "B.out = A.k * 2 must surface the CO-SOLVED A.k (4mm -> 8mm) on the \
+         warm eval_cached path too, not a frozen/undef value from B's \
+         pre-merge-solve main pass; got {:?}",
+        out_val,
+    );
+}
+
 // ---------------------------------------------------------------------------
 // amendment (review round N): objective `combination` is preserved, not
 // hardcoded to WeightedSum (reviewer_comprehensive, engine_eval.rs:1710-1716).
