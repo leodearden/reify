@@ -166,11 +166,18 @@ impl Engine {
             values.insert(id.clone(), val.clone());
         }
 
-        // Bump snapshot/version IDs
-        let snapshot_id = self.next_snapshot_id;
-        self.next_snapshot_id += 1;
-        let version_id = self.next_version_id;
-        self.next_version_id += 1;
+        // Clone the remaining state fields (O(1) via PersistentMap) now, ending
+        // `state`'s borrow of `self.eval_state` before the `&mut self` call
+        // below — `allocate_snapshot_version` can't be split-borrowed the way
+        // the raw field bump could.
+        let graph = state.snapshot.graph.clone();
+        let traces = state.trace_map.clone();
+        let reverse_index = state.reverse_index.clone();
+
+        // Allocate the snapshot/version ID pair via the single INV-BUILD-2 API
+        // (Engine::allocate_snapshot_version), instead of bumping the counters
+        // by hand.
+        let (snapshot_id, version_id) = self.allocate_snapshot_version();
 
         // Extract previous content hashes from CacheStore for nodes in eval set
         let mut previous_hashes = HashMap::new();
@@ -188,14 +195,14 @@ impl Engine {
 
         Ok(ConcurrentEditSetup {
             eval_set,
-            graph: state.snapshot.graph.clone(),
+            graph,
             values,
             snapshot_values: new_snapshot_values,
-            traces: state.trace_map.clone(),
-            reverse_index: state.reverse_index.clone(),
+            traces,
+            reverse_index,
             previous_hashes,
-            version: VersionId(version_id),
-            snapshot_id: SnapshotId(snapshot_id),
+            version: version_id,
+            snapshot_id,
             parent_snapshot_id: parent_id,
             changed_cells: changed_set,
             functions: Arc::clone(&self.functions),
