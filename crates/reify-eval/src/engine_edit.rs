@@ -31,8 +31,8 @@ use std::time::Instant;
 
 use reify_compiler::{CompiledConnection, CompiledForallBody, CompiledFunction, CompiledModule};
 use reify_core::{
-    ConstraintNodeId, ContentHash, Diagnostic, DiagnosticCode, RealizationNodeId, Severity,
-    SnapshotId, Type, ValueCellId, VersionId,
+    ConstraintNodeId, ContentHash, Diagnostic, DiagnosticCode, RealizationNodeId, Severity, Type,
+    ValueCellId, VersionId,
 };
 use reify_ir::{
     AutoParam, CompiledExpr, DeterminacyState, PersistentMap, ResolutionProblem,
@@ -2572,6 +2572,20 @@ impl Engine {
         // `clear_realization_cache_public_api_resets_cache_for_production_callers`
         // in `tests/tolerance_wiring_e2e.rs`.
         self.clear_realization_cache();
+        // Allocate the new snapshot/version pair before taking the
+        // `eval_state` borrow below: `allocate_snapshot_version` takes
+        // `&mut self` (the whole struct, via a method call), which cannot
+        // coexist with `eval_state`'s live immutable borrow of `self` (held
+        // through `diff_value_cells` further down) the way direct field
+        // arithmetic could — see the disjoint-field-borrow note on
+        // `eval_state` immediately below. Numbering is unaffected: this
+        // remains the function's only allocation site, called
+        // unconditionally exactly once past the `NotInitialized` guard
+        // above, same as the raw-arithmetic block it replaces, and no
+        // fallible code sits between the two positions.
+        let (snap_id, ver_id) = self.allocate_snapshot_version();
+        // downstream consumers below still read the raw u64 version
+        let version_id = ver_id.0;
         // Disjoint-field borrow: Rust's NLL tracks this borrow as touching only
         // the `eval_state` field (not all of `self`), so later mutable borrows
         // of sibling fields — `self.param_overrides.retain(...)` and
@@ -2588,16 +2602,12 @@ impl Engine {
         //     (Undef, Undetermined) or (Undef, Auto); the seeding loop
         //     below overwrites those with the preserved prior values for
         //     cells whose content_hash matches the old graph.
-        let snapshot_id = self.next_snapshot_id;
-        self.next_snapshot_id += 1;
-        let version_id = self.next_version_id;
-        self.next_version_id += 1;
         let mut new_snapshot = crate::snapshot::Snapshot::from_compiled_module(module);
         // Invariant mirror of engine_eval.rs:248-249 — covers the edit-time recompile path.
         #[cfg(debug_assertions)]
         crate::engine_eval::assert_value_cell_types_representable(&new_snapshot.graph);
-        new_snapshot.id = SnapshotId(snapshot_id);
-        new_snapshot.version = VersionId(version_id);
+        new_snapshot.id = snap_id;
+        new_snapshot.version = ver_id;
 
         // (3) Rebuild dependency structures against the NEW graph plus the
         //     module's composed fields. Full rebuild is O(nodes · avg_trace_size),
