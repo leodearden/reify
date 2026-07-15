@@ -1,18 +1,37 @@
 // Recursive sub-component unfolding — unfold_recursive_sub and elaborate_child_* functions.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use reify_compiler::{TopologyTemplate, ValueCellKind, find_template};
 use reify_core::{Diagnostic, ValueCellId, VersionId};
+use reify_expr::ContainmentQuery;
 use reify_ir::{CompiledFunction, DeterminacyState, Value, ValueMap};
 
 use crate::cache::{CacheStore, CachedResult, NodeId};
+use crate::cell_commit::{CacheLeg, CommitLegs, DeterminacyRule, TraceSource, commit_cell_result};
+use crate::cell_eval_ctx::cell_eval_ctx;
 use crate::deps::{DependencyTrace, extract_dependency_trace, take_trace};
 use crate::dirty::topological_sort;
 use crate::eval_ctx_with_meta;
 use crate::journal::{EvalEvent, EventJournal, EventKind, EventPayload};
 use crate::snapshot::Snapshot;
+
+/// No-op [`ContainmentQuery`]: reproduces the pre-migration containment=None
+/// behaviour of the bare `eval_ctx_with_meta` context that the eval-and-commit
+/// sites below used before adopting `cell_eval_ctx`'s required-capability
+/// constructor (task ε, #5057). Passing the live `Engine` instead would
+/// require threading `&self` through these free functions, conflicting with
+/// the already-split `&mut journal`/`&mut cache` borrows at the call sites in
+/// engine_eval.rs.
+struct NoContainment;
+
+impl ContainmentQuery for NoContainment {
+    fn contains(&self, _region: &Value, _point: &Value) -> Option<bool> {
+        None
+    }
+}
 
 /// Recursively unfold a recursive sub-component until the guard evaluates to false
 /// or the depth limit is reached.
@@ -301,6 +320,8 @@ fn elaborate_child_params_only(
     meta_map: &HashMap<String, HashMap<String, String>>,
 ) -> ValueMap {
     let mut child_values = ValueMap::new();
+    let runtime_sink = RefCell::new(Vec::new());
+    let containment = NoContainment;
 
     for cell in &child_template.value_cells {
         if cell.kind != ValueCellKind::Param {
@@ -334,45 +355,46 @@ fn elaborate_child_params_only(
         }
 
         let val = if let Some((_name, arg_expr)) = args.iter().find(|(name, _)| name == member) {
-            reify_expr::eval_expr(arg_expr, &eval_ctx_with_meta(values, functions, meta_map))
+            let ctx = cell_eval_ctx(
+                values,
+                functions,
+                meta_map,
+                &snapshot.values,
+                &runtime_sink,
+                &containment,
+            );
+            reify_expr::eval_expr(arg_expr, &ctx)
         } else if let Some(ref default_expr) = cell.default_expr {
-            reify_expr::eval_expr(
-                default_expr,
-                &eval_ctx_with_meta(&child_values, functions, meta_map),
-            )
+            let ctx = cell_eval_ctx(
+                &child_values,
+                functions,
+                meta_map,
+                &snapshot.values,
+                &runtime_sink,
+                &containment,
+            );
+            reify_expr::eval_expr(default_expr, &ctx)
         } else {
             Value::Undef
         };
 
         child_values.insert(cell.id.clone(), val.clone());
-        let node_id = NodeId::Value(scoped_id.clone());
-        let start = Instant::now();
-        journal.record(EvalEvent {
-            timestamp: start,
-            node_id: node_id.clone(),
-            kind: EventKind::Started,
-            version: VersionId(version_id),
-            payload: None,
-        });
 
-        values.insert(scoped_id.clone(), val.clone());
-        snapshot.values.insert(
+        commit_cell_result(
+            CommitLegs {
+                values,
+                snapshot_values: &mut snapshot.values,
+                cache,
+                journal,
+            },
             scoped_id.clone(),
-            (val.clone(), DeterminacyState::Determined),
+            val,
+            DeterminacyRule::UnconditionalDetermined,
+            TraceSource::GuardedGroup,
+            DependencyTrace::default(),
+            VersionId(version_id),
+            CacheLeg::Record,
         );
-
-        let trace = DependencyTrace::default();
-        let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
-        let outcome =
-            cache.record_evaluation(node_id.clone(), cached_result, VersionId(version_id), trace);
-
-        journal.record(EvalEvent {
-            timestamp: Instant::now(),
-            node_id,
-            kind: EventKind::Completed { outcome },
-            version: VersionId(version_id),
-            payload: Some(EventPayload::Duration(start.elapsed())),
-        });
     }
 
     child_values
