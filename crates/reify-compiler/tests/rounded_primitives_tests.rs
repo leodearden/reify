@@ -424,6 +424,34 @@ fn rounded_box_corner_r_violates_min_dimension_emits_error() {
     );
 }
 
+/// A corner_r expressed as constant arithmetic over dimensioned literals
+/// (`10mm + 15mm`, folding to the same `25mm` violating value as
+/// `rounded_box_corner_r_violates_min_dimension_emits_error` above) must
+/// still be caught by the static constraint check — `const_length_m` folds
+/// `Add`/`Sub`/`Mul` of constant operands, not just bare literals, so an
+/// obviously-constant violation written with arithmetic doesn't silently
+/// compile clean and defer to an opaque runtime/OCCT failure.
+#[test]
+fn rounded_box_corner_r_constant_arithmetic_still_caught_statically() {
+    let source = r#"structure def S {
+    let body = rounded_box(40mm, 30mm, 20mm, 10mm + 15mm)
+}"#;
+    let compiled = do_compile(source);
+    let messages: Vec<&str> = compiled
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| d.message.as_str())
+        .collect();
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("corner_r") && m.contains("width") && m.contains("depth")),
+        "expected a constant-arithmetic corner_r (10mm+15mm=25mm) to be folded and \
+         still trip the 2*corner_r < min(width, depth) check, got: {messages:#?}"
+    );
+}
+
 /// Valid constant args (satisfying `corner_r > 0` and
 /// `2*corner_r < min(width, depth)`) must compile with zero error diagnostics.
 #[test]

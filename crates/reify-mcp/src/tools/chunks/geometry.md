@@ -76,7 +76,7 @@ tube(outer_radius, inner_radius, height)             -> Solid   // outer cylinde
 rounded_box(width, depth, height, corner_r)          -> Solid   // box with the 4 vertical edges rounded
 ```
 
-`rounded_box` requires `corner_r > 0` and `2*corner_r < min(width, depth)`; violations are a compile-time error when the args are constant literals.
+`rounded_box` requires `corner_r > 0` and `2*corner_r < min(width, depth)`; violations are a compile-time error when the args are constant literals (including constant arithmetic like `10mm + 15mm`). A param-driven `corner_r` that violates the constraint at runtime is **not** caught statically — it fails at evaluation with an opaque kernel error instead of a diagnostic.
 
 **2D profiles** (planar faces in the XY plane at z=0). `rectangle`/`circle`/`ellipse` are centred
 at origin (same centring as `box`); `polygon` is the exception — it is positioned by its explicit
@@ -91,7 +91,7 @@ rounded_rect(width, depth, corner_r)   -> Surface   // rectangle with the 4 corn
 Note: this `circle(radius)` is the origin-centred 2D-profile form used with `extrude`/`revolve`/etc.
 — distinct from the prelude `circle(center, radius)` above, which places the circle at an explicit center.
 
-`rounded_rect` shares `rounded_box`'s constraint: `corner_r > 0` and `2*corner_r < min(width, depth)`.
+`rounded_rect` shares `rounded_box`'s constraint (`corner_r > 0` and `2*corner_r < min(width, depth)`) and the same compile-time-only, constant-args-only enforcement caveat above.
 
 ### Anchoring & orientation
 

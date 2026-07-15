@@ -352,7 +352,7 @@ const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
     BuiltinFunctionInfo {
         name: "rounded_box",
         signature: "rounded_box(width: Length, depth: Length, height: Length, corner_r: Length) -> Solid",
-        doc: "Creates a rectangular box solid, centred at the origin on all 3 axes, with the 4 vertical (plan-view) edges rounded to radius `corner_r`. Requires `corner_r > 0` and `2*corner_r < min(width, depth)`.",
+        doc: "Creates a rectangular box solid, centred at the origin on all 3 axes, with the 4 vertical (plan-view) edges rounded to radius `corner_r`. Requires `corner_r > 0` and `2*corner_r < min(width, depth)`; this is checked at compile time only when width/depth/corner_r are all constant — a param-driven value that violates it fails at evaluation time with an opaque kernel error instead of a diagnostic.",
         sort_group: "01-geometry",
     },
     BuiltinFunctionInfo {
@@ -388,7 +388,7 @@ const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
     BuiltinFunctionInfo {
         name: "rounded_rect",
         signature: "rounded_rect(width: Length, depth: Length, corner_r: Length) -> Surface",
-        doc: "Creates a planar rounded-rectangle 2D profile, centred at the origin in the XY plane (z=0), with the 4 corners rounded to radius `corner_r`. Requires `corner_r > 0` and `2*corner_r < min(width, depth)`.",
+        doc: "Creates a planar rounded-rectangle 2D profile, centred at the origin in the XY plane (z=0), with the 4 corners rounded to radius `corner_r`. Requires `corner_r > 0` and `2*corner_r < min(width, depth)`; this is checked at compile time only when width/depth/corner_r are all constant — a param-driven value that violates it fails at evaluation time with an opaque kernel error instead of a diagnostic.",
         sort_group: "01-geometry",
     },
     BuiltinFunctionInfo {

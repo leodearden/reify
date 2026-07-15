@@ -394,7 +394,11 @@ convention changes:
 
 `rounded_box`/`rounded_rect` additionally require `corner_r > 0` and
 `2*corner_r < min(width, depth)`; a statically-known violation (constant literal
-arguments) is a compile-time error.
+arguments, including constant arithmetic like `10mm + 15mm`) is a compile-time
+error. This check is best-effort: it only fires when `width`/`depth`/`corner_r`
+all fold to constants. A param-driven value that violates the constraint at
+runtime is **not** caught statically — it fails at evaluation with an opaque
+kernel error instead of a diagnostic.
 
 **2D shapes:**
 

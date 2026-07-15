@@ -875,12 +875,27 @@ fn check_profile_preconditions(
 /// Fold a compiled scalar arg to its constant SI value when it is a literal
 /// dimensioned quantity — the `CompiledExprKind::Literal(Value::Scalar{si_value,..})`
 /// shape produced for source quantity literals like `40mm` (see `expr.rs`'s
-/// `QuantityLiteral` handling). Returns `None` for non-constant (e.g.
-/// param-driven `ValueRef`) expressions, which callers must skip rather than
-/// false-flag.
+/// `QuantityLiteral` handling) — or simple constant arithmetic over such
+/// literals (`Add`/`Sub`/`Mul` where both operands themselves fold, e.g.
+/// `10mm + 15mm`), so an arithmetic-expressed but still statically-constant
+/// violation isn't silently waved through. Mirrors `expr.rs`'s
+/// `const_numeric_value` recursive-fold idiom, scoped down to the
+/// dimensioned-literal base case this call site needs. Returns `None` for
+/// any non-constant (e.g. param-driven `ValueRef`) sub-expression, which
+/// callers must skip rather than false-flag.
 fn const_length_m(expr: &CompiledExpr) -> Option<f64> {
     match &expr.kind {
         CompiledExprKind::Literal(Value::Scalar { si_value, .. }) => Some(*si_value),
+        CompiledExprKind::BinOp { op, left, right } => {
+            let l = const_length_m(left)?;
+            let r = const_length_m(right)?;
+            match op {
+                BinOp::Add => Some(l + r),
+                BinOp::Sub => Some(l - r),
+                BinOp::Mul => Some(l * r),
+                _ => None,
+            }
+        }
         _ => None,
     }
 }
@@ -935,6 +950,135 @@ fn validate_rounded_corner_constraint(
     }
 
     true
+}
+
+/// Derived corner-position expressions shared by the `rounded_box` /
+/// `rounded_rect` boolean-compose lowering: the two reduced-dimension
+/// lengths (`width - 2*corner_r`, `depth - 2*corner_r`) used for the two
+/// "body" solids/profiles, and the two corner-centre half-offsets
+/// (`width/2 - corner_r`, `depth/2 - corner_r`) used to translate each
+/// corner primitive into place. Built with the same
+/// `CompiledExpr::binop(.., dimensionless factor, ..)` idiom as
+/// `zone_annulus`/`cylinder_centered`.
+struct RoundedCornerDims {
+    width_minus_2r: CompiledExpr,
+    depth_minus_2r: CompiledExpr,
+    half_width_minus_r: CompiledExpr,
+    half_depth_minus_r: CompiledExpr,
+}
+
+fn rounded_corner_dims(
+    width: &CompiledExpr,
+    depth: &CompiledExpr,
+    corner_r: &CompiledExpr,
+) -> RoundedCornerDims {
+    let half = CompiledExpr::literal(Value::Real(0.5), reify_core::Type::dimensionless_scalar());
+    let two = CompiledExpr::literal(Value::Real(2.0), reify_core::Type::dimensionless_scalar());
+
+    // two_r = corner_r * 2
+    let two_r = CompiledExpr::binop(BinOp::Mul, corner_r.clone(), two, corner_r.result_type.clone());
+    // depth_minus_2r = depth - 2*corner_r ; width_minus_2r = width - 2*corner_r
+    let depth_minus_2r =
+        CompiledExpr::binop(BinOp::Sub, depth.clone(), two_r.clone(), depth.result_type.clone());
+    let width_minus_2r =
+        CompiledExpr::binop(BinOp::Sub, width.clone(), two_r, width.result_type.clone());
+
+    // half_width_minus_r = width/2 - corner_r ; half_depth_minus_r = depth/2 - corner_r
+    let half_width =
+        CompiledExpr::binop(BinOp::Mul, width.clone(), half.clone(), width.result_type.clone());
+    let half_depth =
+        CompiledExpr::binop(BinOp::Mul, depth.clone(), half.clone(), depth.result_type.clone());
+    let half_width_minus_r =
+        CompiledExpr::binop(BinOp::Sub, half_width, corner_r.clone(), width.result_type.clone());
+    let half_depth_minus_r =
+        CompiledExpr::binop(BinOp::Sub, half_depth, corner_r.clone(), depth.result_type.clone());
+
+    RoundedCornerDims {
+        width_minus_2r,
+        depth_minus_2r,
+        half_width_minus_r,
+        half_depth_minus_r,
+    }
+}
+
+/// Shared corner-op + left-folded `Boolean{Union}` emission for
+/// `rounded_box`/`rounded_rect`: pushes `body_a`, `body_b`, then for each of
+/// the 4 plan-view corner signs `(±,±)` pushes `corner_op()` immediately
+/// followed by a `Transform{Translate}` to
+/// `(±half_width_minus_r, ±half_depth_minus_r, dz)`, then left-folds a
+/// `Boolean{Union}` chain over all 6 ops — mirroring the
+/// `zone_annulus`/`zone_profile` multi-op compose + `step_offset +
+/// sub_ops.len()` index-tracking idiom. The final `Union` (the last element
+/// of the returned `Vec`) is the realization root. `dz` is cloned across all
+/// 4 corners by the caller: a dimensioned `-(height/2)` for `rounded_box`'s
+/// solid cylinders, a dimensionless `Literal(Real(0.0))` for
+/// `rounded_rect`'s planar circles.
+#[allow(clippy::too_many_arguments)]
+fn emit_rounded_union_compose(
+    mut sub_ops: Vec<CompiledGeometryOp>,
+    step_offset: usize,
+    dims: &RoundedCornerDims,
+    width_ty: &reify_core::Type,
+    depth_ty: &reify_core::Type,
+    body_a: CompiledGeometryOp,
+    body_b: CompiledGeometryOp,
+    corner_op: impl Fn() -> CompiledGeometryOp,
+    dz: &CompiledExpr,
+) -> Vec<CompiledGeometryOp> {
+    // signed(base, sign) = base * sign — reused for dx/dy on each corner.
+    let signed = |base: &CompiledExpr, sign: f64, ty: &reify_core::Type| {
+        CompiledExpr::binop(
+            BinOp::Mul,
+            base.clone(),
+            CompiledExpr::literal(Value::Real(sign), reify_core::Type::dimensionless_scalar()),
+            ty.clone(),
+        )
+    };
+
+    sub_ops.push(body_a);
+    let body_a_step = step_offset + sub_ops.len() - 1;
+
+    sub_ops.push(body_b);
+    let body_b_step = step_offset + sub_ops.len() - 1;
+
+    // 4 corner ops + translate: (+,+), (+,-), (-,+), (-,-)
+    let corner_signs = [(1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)];
+    let mut translate_steps = Vec::with_capacity(4);
+    for (sx, sy) in corner_signs {
+        sub_ops.push(corner_op());
+        let corner_step = step_offset + sub_ops.len() - 1;
+
+        let dx = signed(&dims.half_width_minus_r, sx, width_ty);
+        let dy = signed(&dims.half_depth_minus_r, sy, depth_ty);
+        sub_ops.push(CompiledGeometryOp::Transform {
+            kind: TransformKind::Translate,
+            target: GeomRef::Step(corner_step),
+            args: vec![
+                ("dx".to_string(), dx),
+                ("dy".to_string(), dy),
+                ("dz".to_string(), dz.clone()),
+            ],
+        });
+        translate_steps.push(step_offset + sub_ops.len() - 1);
+    }
+
+    // Union chain: A ∪ B, then ∪ C1 .. ∪ C4 (left fold; last op is the root).
+    sub_ops.push(CompiledGeometryOp::Boolean {
+        op: BooleanOp::Union,
+        left: GeomRef::Step(body_a_step),
+        right: GeomRef::Step(body_b_step),
+    });
+    let mut acc_step = step_offset + sub_ops.len() - 1;
+    for t_step in translate_steps {
+        sub_ops.push(CompiledGeometryOp::Boolean {
+            op: BooleanOp::Union,
+            left: GeomRef::Step(acc_step),
+            right: GeomRef::Step(t_step),
+        });
+        acc_step = step_offset + sub_ops.len() - 1;
+    }
+
+    sub_ops
 }
 
 /// Compile a geometry function call expression into CompiledGeometryOps.
@@ -2213,17 +2357,15 @@ pub(crate) fn compile_geometry_call(
         // above on "one let = one realization"), but here the box is an
         // anonymous `GeomRef::Step` sub-op with no named let — fillet-compose
         // cannot be synthesised inside a single-expression lowering. Lowered
-        // instead as a boolean-union compose of 6 origin-centred solids,
-        // mirroring zone_annulus/zone_profile's multi-op compose + step-index
-        // tracking idiom:
+        // instead as a boolean-union compose of 6 origin-centred solids via
+        // the shared `emit_rounded_union_compose` helper (see its doc for the
+        // op-emission order/shape), mirroring zone_annulus/zone_profile's
+        // multi-op compose + step-index tracking idiom:
         //
         //   Box A = box(width, depth-2r, height)  — x∈[-w/2,w/2],       y∈[-(d/2-r),d/2-r]
         //   Box B = box(width-2r, depth, height)  — x∈[-(w/2-r),w/2-r], y∈[-d/2,d/2]
         //   4x cylinder(corner_r, height), each Translated to a corner centre
         //   (±(w/2-r), ±(d/2-r), dz=-(height/2)) — same dz shape as cylinder_centered.
-        //
-        // Emit order: [BoxA, BoxB, (Cylinder,Translate)x4, Union(A,B), Union(·,C1..4)].
-        // The final Union is the realization root (last op in sub_ops).
         "rounded_box" => {
             if !check_arg_count_exact("rounded_box", compiled_args.len(), 4, expr.span, diagnostics)
             {
@@ -2246,26 +2388,7 @@ pub(crate) fn compile_geometry_call(
                 return None;
             }
 
-            let half = CompiledExpr::literal(Value::Real(0.5), reify_core::Type::dimensionless_scalar());
-            let two = CompiledExpr::literal(Value::Real(2.0), reify_core::Type::dimensionless_scalar());
-
-            // two_r = corner_r * 2
-            let two_r = CompiledExpr::binop(BinOp::Mul, corner_r.clone(), two, corner_r.result_type.clone());
-            // depth_minus_2r = depth - 2*corner_r ; width_minus_2r = width - 2*corner_r
-            let depth_minus_2r =
-                CompiledExpr::binop(BinOp::Sub, depth.clone(), two_r.clone(), depth.result_type.clone());
-            let width_minus_2r =
-                CompiledExpr::binop(BinOp::Sub, width.clone(), two_r, width.result_type.clone());
-
-            // half_width_minus_r = width/2 - corner_r ; half_depth_minus_r = depth/2 - corner_r
-            let half_width =
-                CompiledExpr::binop(BinOp::Mul, width.clone(), half.clone(), width.result_type.clone());
-            let half_depth =
-                CompiledExpr::binop(BinOp::Mul, depth.clone(), half.clone(), depth.result_type.clone());
-            let half_width_minus_r =
-                CompiledExpr::binop(BinOp::Sub, half_width, corner_r.clone(), width.result_type.clone());
-            let half_depth_minus_r =
-                CompiledExpr::binop(BinOp::Sub, half_depth, corner_r.clone(), depth.result_type.clone());
+            let dims = rounded_corner_dims(&width, &depth, &corner_r);
 
             // dz (all 4 corner cylinders) = -(height / 2) — same shape as cylinder_centered.
             let dz = CompiledExpr::binop(
@@ -2275,80 +2398,46 @@ pub(crate) fn compile_geometry_call(
                 height.result_type.clone(),
             );
 
-            // signed(base, sign) = base * sign — reused for dx/dy on each corner.
-            let signed = |base: &CompiledExpr, sign: f64, ty: &reify_core::Type| {
-                CompiledExpr::binop(
-                    BinOp::Mul,
-                    base.clone(),
-                    CompiledExpr::literal(Value::Real(sign), reify_core::Type::dimensionless_scalar()),
-                    ty.clone(),
-                )
-            };
-
             // Box A: box(width, depth-2r, height)
-            sub_ops.push(CompiledGeometryOp::Primitive {
+            let body_a = CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
                     ("width".to_string(), width.clone()),
-                    ("height".to_string(), depth_minus_2r),
+                    ("height".to_string(), dims.depth_minus_2r.clone()),
                     ("depth".to_string(), height.clone()),
                 ],
-            });
-            let box_a_step = step_offset + sub_ops.len() - 1;
-
+            };
             // Box B: box(width-2r, depth, height)
-            sub_ops.push(CompiledGeometryOp::Primitive {
+            let body_b = CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args: vec![
-                    ("width".to_string(), width_minus_2r),
+                    ("width".to_string(), dims.width_minus_2r.clone()),
                     ("height".to_string(), depth.clone()),
                     ("depth".to_string(), height.clone()),
                 ],
-            });
-            let box_b_step = step_offset + sub_ops.len() - 1;
+            };
+            // Corner op: cylinder(corner_r, height), re-emitted once per corner.
+            let corner_radius = corner_r.clone();
+            let corner_height = height.clone();
+            let corner_op = move || CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Cylinder,
+                args: vec![
+                    ("radius".to_string(), corner_radius.clone()),
+                    ("height".to_string(), corner_height.clone()),
+                ],
+            };
 
-            // 4 corner cylinders + translate: (+,+), (+,-), (-,+), (-,-)
-            let corner_signs = [(1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)];
-            let mut translate_steps = Vec::with_capacity(4);
-            for (sx, sy) in corner_signs {
-                sub_ops.push(CompiledGeometryOp::Primitive {
-                    kind: PrimitiveKind::Cylinder,
-                    args: vec![
-                        ("radius".to_string(), corner_r.clone()),
-                        ("height".to_string(), height.clone()),
-                    ],
-                });
-                let cyl_step = step_offset + sub_ops.len() - 1;
-
-                let dx = signed(&half_width_minus_r, sx, &width.result_type);
-                let dy = signed(&half_depth_minus_r, sy, &depth.result_type);
-                sub_ops.push(CompiledGeometryOp::Transform {
-                    kind: TransformKind::Translate,
-                    target: GeomRef::Step(cyl_step),
-                    args: vec![
-                        ("dx".to_string(), dx),
-                        ("dy".to_string(), dy),
-                        ("dz".to_string(), dz.clone()),
-                    ],
-                });
-                translate_steps.push(step_offset + sub_ops.len() - 1);
-            }
-
-            // Union chain: A ∪ B, then ∪ C1 .. ∪ C4 (left fold; last op is the root).
-            sub_ops.push(CompiledGeometryOp::Boolean {
-                op: BooleanOp::Union,
-                left: GeomRef::Step(box_a_step),
-                right: GeomRef::Step(box_b_step),
-            });
-            let mut acc_step = step_offset + sub_ops.len() - 1;
-            for t_step in translate_steps {
-                sub_ops.push(CompiledGeometryOp::Boolean {
-                    op: BooleanOp::Union,
-                    left: GeomRef::Step(acc_step),
-                    right: GeomRef::Step(t_step),
-                });
-                acc_step = step_offset + sub_ops.len() - 1;
-            }
+            sub_ops = emit_rounded_union_compose(
+                sub_ops,
+                step_offset,
+                &dims,
+                &width.result_type,
+                &depth.result_type,
+                body_a,
+                body_b,
+                corner_op,
+                &dz,
+            );
 
             Some(sub_ops)
         }
@@ -2356,15 +2445,13 @@ pub(crate) fn compile_geometry_call(
         // face (2D analogue of rounded_box, for extrude/sweep flows). Origin-
         // centred in the XY plane at z=0 (matches rectangle's anchor).
         //
-        // Same boolean-union compose as rounded_box, minus the height axis:
+        // Same boolean-union compose as rounded_box (via the shared
+        // `emit_rounded_union_compose` helper), minus the height axis:
         //
         //   Rect A = rectangle(width, depth-2r)  — x∈[-w/2,w/2],       y∈[-(d/2-r),d/2-r]
         //   Rect B = rectangle(width-2r, depth)  — x∈[-(w/2-r),w/2-r], y∈[-d/2,d/2]
         //   4x circle(corner_r), each Translated to a corner centre
         //   (±(w/2-r), ±(d/2-r), dz=0) — planar, no z-offset.
-        //
-        // Emit order: [RectA, RectB, (Circle,Translate)x4, Union(A,B), Union(·,C1..4)].
-        // The final Union is the realization root (last op in sub_ops).
         "rounded_rect" => {
             if !check_arg_count_exact(
                 "rounded_rect",
@@ -2391,98 +2478,44 @@ pub(crate) fn compile_geometry_call(
                 return None;
             }
 
-            let half = CompiledExpr::literal(Value::Real(0.5), reify_core::Type::dimensionless_scalar());
-            let two = CompiledExpr::literal(Value::Real(2.0), reify_core::Type::dimensionless_scalar());
-            let zero =
-                CompiledExpr::literal(Value::Real(0.0), reify_core::Type::dimensionless_scalar());
-
-            // two_r = corner_r * 2
-            let two_r = CompiledExpr::binop(BinOp::Mul, corner_r.clone(), two, corner_r.result_type.clone());
-            // depth_minus_2r = depth - 2*corner_r ; width_minus_2r = width - 2*corner_r
-            let depth_minus_2r =
-                CompiledExpr::binop(BinOp::Sub, depth.clone(), two_r.clone(), depth.result_type.clone());
-            let width_minus_2r =
-                CompiledExpr::binop(BinOp::Sub, width.clone(), two_r, width.result_type.clone());
-
-            // half_width_minus_r = width/2 - corner_r ; half_depth_minus_r = depth/2 - corner_r
-            let half_width =
-                CompiledExpr::binop(BinOp::Mul, width.clone(), half.clone(), width.result_type.clone());
-            let half_depth =
-                CompiledExpr::binop(BinOp::Mul, depth.clone(), half.clone(), depth.result_type.clone());
-            let half_width_minus_r =
-                CompiledExpr::binop(BinOp::Sub, half_width, corner_r.clone(), width.result_type.clone());
-            let half_depth_minus_r =
-                CompiledExpr::binop(BinOp::Sub, half_depth, corner_r.clone(), depth.result_type.clone());
-
-            // signed(base, sign) = base * sign — reused for dx/dy on each corner.
-            let signed = |base: &CompiledExpr, sign: f64, ty: &reify_core::Type| {
-                CompiledExpr::binop(
-                    BinOp::Mul,
-                    base.clone(),
-                    CompiledExpr::literal(Value::Real(sign), reify_core::Type::dimensionless_scalar()),
-                    ty.clone(),
-                )
-            };
+            let dims = rounded_corner_dims(&width, &depth, &corner_r);
+            // dz (all 4 corner circles) = 0 — planar, no z-offset.
+            let dz = CompiledExpr::literal(Value::Real(0.0), reify_core::Type::dimensionless_scalar());
 
             // Rect A: rectangle(width, depth-2r)
-            sub_ops.push(CompiledGeometryOp::Profile {
+            let body_a = CompiledGeometryOp::Profile {
                 kind: ProfileKind::Rectangle,
                 args: vec![
                     ("width".to_string(), width.clone()),
-                    ("height".to_string(), depth_minus_2r),
+                    ("height".to_string(), dims.depth_minus_2r.clone()),
                 ],
-            });
-            let rect_a_step = step_offset + sub_ops.len() - 1;
-
+            };
             // Rect B: rectangle(width-2r, depth)
-            sub_ops.push(CompiledGeometryOp::Profile {
+            let body_b = CompiledGeometryOp::Profile {
                 kind: ProfileKind::Rectangle,
                 args: vec![
-                    ("width".to_string(), width_minus_2r),
+                    ("width".to_string(), dims.width_minus_2r.clone()),
                     ("height".to_string(), depth.clone()),
                 ],
-            });
-            let rect_b_step = step_offset + sub_ops.len() - 1;
+            };
+            // Corner op: circle(corner_r), re-emitted once per corner.
+            let corner_radius = corner_r.clone();
+            let corner_op = move || CompiledGeometryOp::Profile {
+                kind: ProfileKind::Circle,
+                args: vec![("radius".to_string(), corner_radius.clone())],
+            };
 
-            // 4 corner circles + translate: (+,+), (+,-), (-,+), (-,-)
-            let corner_signs = [(1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0)];
-            let mut translate_steps = Vec::with_capacity(4);
-            for (sx, sy) in corner_signs {
-                sub_ops.push(CompiledGeometryOp::Profile {
-                    kind: ProfileKind::Circle,
-                    args: vec![("radius".to_string(), corner_r.clone())],
-                });
-                let circ_step = step_offset + sub_ops.len() - 1;
-
-                let dx = signed(&half_width_minus_r, sx, &width.result_type);
-                let dy = signed(&half_depth_minus_r, sy, &depth.result_type);
-                sub_ops.push(CompiledGeometryOp::Transform {
-                    kind: TransformKind::Translate,
-                    target: GeomRef::Step(circ_step),
-                    args: vec![
-                        ("dx".to_string(), dx),
-                        ("dy".to_string(), dy),
-                        ("dz".to_string(), zero.clone()),
-                    ],
-                });
-                translate_steps.push(step_offset + sub_ops.len() - 1);
-            }
-
-            // Union chain: A ∪ B, then ∪ C1 .. ∪ C4 (left fold; last op is the root).
-            sub_ops.push(CompiledGeometryOp::Boolean {
-                op: BooleanOp::Union,
-                left: GeomRef::Step(rect_a_step),
-                right: GeomRef::Step(rect_b_step),
-            });
-            let mut acc_step = step_offset + sub_ops.len() - 1;
-            for t_step in translate_steps {
-                sub_ops.push(CompiledGeometryOp::Boolean {
-                    op: BooleanOp::Union,
-                    left: GeomRef::Step(acc_step),
-                    right: GeomRef::Step(t_step),
-                });
-                acc_step = step_offset + sub_ops.len() - 1;
-            }
+            sub_ops = emit_rounded_union_compose(
+                sub_ops,
+                step_offset,
+                &dims,
+                &width.result_type,
+                &depth.result_type,
+                body_a,
+                body_b,
+                corner_op,
+                &dz,
+            );
 
             Some(sub_ops)
         }
