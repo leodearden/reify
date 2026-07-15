@@ -1,7 +1,7 @@
     use reify_ir::{
-        AttributeHistory, FeatureId, GeometryHandleId, GeometryOp, HistoryRecord,
-        LocalFeatureOpHistoryRecords, QueryError, Role, TopologyAttribute, TopologyAttributeTable,
-        Value,
+        AttributeHistory, FeatureId, GeometryHandleId, GeometryOp, HistoryRecord, KernelHandle,
+        KernelId, LocalFeatureOpHistoryRecords, QueryError, Role, TopologyAttribute,
+        TopologyAttributeTable, Value,
     };
     use reify_test_support::mocks::MockGeometryKernel;
 
@@ -60,8 +60,20 @@
         let fid = FeatureId::realization("Box", 0);
         let splitting_fid = fillet_fid();
         let mut table = TopologyAttributeTable::default();
-        table.record(parent_face, make_attr(&fid, Role::Side, 0));
-        table.record(parent_edge, make_attr(&fid, Role::NewEdge, 5));
+        table.record(
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: parent_face,
+            },
+            make_attr(&fid, Role::Side, 0),
+        );
+        table.record(
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: parent_edge,
+            },
+            make_attr(&fid, Role::NewEdge, 5),
+        );
 
         // History: one parent edge → two result faces (cross-kind split)
         let history = LocalFeatureOpHistoryRecords {
@@ -78,6 +90,9 @@
 
         populate_attribute_history(
             &mut table,
+            // interim single-kernel Occt (#4351) — step-4 threads the real op
+            // kernel here.
+            KernelId::Occt,
             &mut kernel,
             &splitting_fid,
             &geom_op,
@@ -90,7 +105,10 @@
         // the fillet — not cloned from parent_edge's Box/NewEdge/5 attr.
         for (handle, expected_local_index) in [(result_face_a, 0u32), (result_face_b, 1u32)] {
             let attr = table
-                .lookup(handle)
+                .lookup(KernelHandle {
+                    kernel: KernelId::Occt,
+                    id: handle,
+                })
                 .unwrap_or_else(|| panic!("{handle:?} must have attr after fillet propagation"));
             assert_eq!(
                 attr.feature_id, splitting_fid,
@@ -132,7 +150,13 @@
         let fid = FeatureId::realization("Box", 0);
         let splitting_fid = fillet_fid();
         let mut table = TopologyAttributeTable::default();
-        table.record(parent_edge, make_attr(&fid, Role::NewEdge, 3));
+        table.record(
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: parent_edge,
+            },
+            make_attr(&fid, Role::NewEdge, 3),
+        );
 
         // edge_modified: 1 parent edge → 1 result edge (pure pass-through)
         let history = LocalFeatureOpHistoryRecords {
@@ -149,6 +173,9 @@
 
         populate_attribute_history(
             &mut table,
+            // interim single-kernel Occt (#4351) — step-4 threads the real op
+            // kernel here.
+            KernelId::Occt,
             &mut kernel,
             &splitting_fid,
             &geom_op,
@@ -158,7 +185,10 @@
         .expect("chamfer LocalFeature dispatch should succeed");
 
         let attr = table
-            .lookup(result_edge)
+            .lookup(KernelHandle {
+                kernel: KernelId::Occt,
+                id: result_edge,
+            })
             .expect("result_edge must have attr after chamfer propagation");
         assert_eq!(attr.feature_id, fid);
         assert_eq!(attr.role, Role::NewEdge);
@@ -194,6 +224,9 @@
 
         let err = populate_attribute_history(
             &mut table,
+            // interim single-kernel Occt (#4351) — step-4 threads the real op
+            // kernel here.
+            KernelId::Occt,
             &mut kernel,
             &fid,
             &geom_op,

@@ -204,6 +204,78 @@ pub fn emit_rpath_for_tests(dep: NativeDep) -> bool {
     }
 }
 
+/// Absolute path to the tbb-only RUNPATH pin dir materialized by
+/// `scripts/build-manifold-deps.sh` (task #5192, mechanism A″). Contains
+/// EXACTLY one entry — a `libtbb.so.12` symlink chaining to the deps lib —
+/// so prepending it to RUNPATH flips no other soname.
+const TBB_PIN_DIR: &str = "/opt/reify-deps/tbb-pin";
+
+fn tbb_pin_lib() -> PathBuf {
+    Path::new(TBB_PIN_DIR).join("libtbb.so.12")
+}
+
+/// Probe for the tbb-pin dir; if present, emit directives so the calling
+/// package's bin targets carry a DIRECT `NEEDED libtbb.so.12`, resolved via
+/// [`TBB_PIN_DIR`] prepended FIRST in RUNPATH. Fail-soft: no-op (returns
+/// `false`, mirroring [`find_dir`]'s posture) when the pin dir is absent,
+/// so stub-only builds (no `/opt/reify-deps` host) still compile.
+///
+/// Mechanism A″ (task #5192): a workspace binary's own RUNPATH can never
+/// redirect the *transitive* NEEDED `libtbb.so.12` pulled in by system
+/// `libTKernel.so` (OCCT) — DT_RUNPATH is non-transitive. Giving the binary
+/// its OWN direct NEEDED — resolved via this tbb-only pin dir, which the
+/// loader consults for the binary's own direct deps — lets it load the
+/// deps `libtbb.so.12.18` (which has symbols the system `libtbb.so.12`
+/// lacks) *before* the transitive `libTKernel` edge in the loader's BFS, so
+/// every later `libtbb.so.12` soname need binds the same already-loaded
+/// copy.
+///
+/// Call this BEFORE [`emit_rpath_for_bins`] in the binary package's
+/// `build.rs` so the tbb-pin `-rpath` is emitted first and lands first in
+/// DT_RUNPATH (`ld` concatenates `-rpath` occurrences in command-line
+/// order).
+pub fn emit_tbb_pin_for_bins() -> bool {
+    emit_tbb_pin("cargo:rustc-link-arg-bins")
+}
+
+/// Same as [`emit_tbb_pin_for_bins`] but emits the unscoped
+/// `cargo:rustc-link-arg` form so test/example/lib-unittest bins are
+/// covered too — mirrors [`emit_rpath_for_tests`].
+///
+/// For packages with bins of their own (`reify-cli`, `reify-gui`) that call
+/// both this and [`emit_tbb_pin_for_bins`], the bin target receives the
+/// pin `-rpath` and the forced `--no-as-needed -l:libtbb.so.12 --as-needed`
+/// link-arg twice (once bin-scoped, once unscoped) — this is intentional,
+/// the same bin double-emission [`emit_rpath_for_tests`] documents for
+/// `-rpath` alone. A duplicate `-rpath` token is harmlessly idempotent; a
+/// duplicate direct `NEEDED libtbb.so.12` entry resolves identically at
+/// load time (both bind the same pin-dir copy) and is harmless to the
+/// loader, just slightly redundant in the ELF.
+pub fn emit_tbb_pin_for_tests() -> bool {
+    emit_tbb_pin("cargo:rustc-link-arg")
+}
+
+fn emit_tbb_pin(link_arg: &str) -> bool {
+    let pin_lib = tbb_pin_lib();
+    // Re-run if the pin symlink is created/changed later, even in the
+    // fail-soft no-op case below.
+    println!("cargo:rerun-if-changed={}", pin_lib.display());
+    if !pin_lib.exists() {
+        return false;
+    }
+    // Pin dir FIRST in RUNPATH so the exe's own direct NEEDED resolves
+    // there ahead of any transitive libtbb.so.12 need.
+    println!("{link_arg}=-Wl,-rpath,{TBB_PIN_DIR}");
+    // Link-time resolution for the `-l:libtbb.so.12` directive below.
+    println!("cargo:rustc-link-search=native={TBB_PIN_DIR}");
+    // The exe's own objects reference no tbb symbol, so plain --as-needed
+    // (rustc's default posture) would drop the NEEDED entry; force it.
+    // `-l:libtbb.so.12` records the file's SONAME, not an absolute path,
+    // so it stays a normal soname need resolvable via RUNPATH.
+    println!("{link_arg}=-Wl,--no-as-needed,-l:libtbb.so.12,--as-needed");
+    true
+}
+
 /// Read the SONAME suffix encoded into the canonical symlink for `lib_name`
 /// at `lib_dir`. Used by `reify-kernel-occt/build.rs` to pin OCCT linkage to
 /// the exact filename that exists at the resolved `lib_dir` (e.g.

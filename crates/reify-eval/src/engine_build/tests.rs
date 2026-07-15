@@ -8165,7 +8165,7 @@ structure Assembly {
             let mut named_step_reprs: HashMap<String, ReprKind> = HashMap::new();
             let mut topology_attribute_table = TopologyAttributeTable::default();
             topology_attribute_table.record(
-                seeded.id,
+                seeded,
                 TopologyAttribute {
                     feature_id: FeatureId::from(&realization_id),
                     role: Role::Side,
@@ -8214,7 +8214,7 @@ structure Assembly {
                 "guard case [{label}] must not write produced_repr_out"
             );
             assert!(
-                topology_attribute_table.lookup(seeded.id).is_some(),
+                topology_attribute_table.lookup(seeded).is_some(),
                 "guard case [{label}] must NOT evict the pre-seeded \
                  topology_attribute_table entry (eviction only runs on a hit)"
             );
@@ -8572,7 +8572,10 @@ structure Assembly {
                 // simulating a cross-kernel sibling Mesh op that recorded its
                 // first handle's attribute earlier in this same build.
                 state.topology_attribute_table.record(
-                    GeometryHandleId(1),
+                    KernelHandle {
+                        kernel: KernelId::Occt,
+                        id: GeometryHandleId(1),
+                    },
                     TopologyAttribute {
                         feature_id: FeatureId::from(realization_id),
                         role: Role::Side,
@@ -8588,7 +8591,10 @@ structure Assembly {
         assert!(
             state
                 .topology_attribute_table
-                .lookup(GeometryHandleId(1))
+                .lookup(KernelHandle {
+                    kernel: KernelId::Occt,
+                    id: GeometryHandleId(1),
+                })
                 .is_none(),
             "topology_attribute_table must have no entry for the cached handle id \
              after cache-hit short-circuit: cross-kernel sibling's colliding entry \

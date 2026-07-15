@@ -455,7 +455,10 @@ mod tests {
     use reify_compiler::ValueCellKind;
     use reify_eval::graph::{EvaluationGraph, RealizationNodeData, ValueCellNode};
     use reify_core::{ContentHash, RealizationNodeId, Type, ValueCellId};
-    use reify_ir::{CapKind, FeatureId, GeometryHandleId, ReprKind, Role, TopologyAttribute, TopologyAttributeTable, Value, ValueMap};
+    use reify_ir::{
+        CapKind, FeatureId, GeometryHandleId, KernelHandle, KernelId, ReprKind, Role,
+        TopologyAttribute, TopologyAttributeTable, Value, ValueMap,
+    };
 
     // ── Test fixture helpers (mirrored from eligibility::tests) ───────────────
 
@@ -800,11 +803,11 @@ mod tests {
         // old: 1 face with Cap(Top); new: 2 faces Cap(Top)+Cap(Bottom).
         // Stage A passes (identical graphs); Stage B rejects on CountMismatch.
         let mut old_table = TopologyAttributeTable::default();
-        old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0));
+        old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::Cap(CapKind::Top), 0));
 
         let mut new_table = TopologyAttributeTable::default();
-        new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0));
-        new_table.record(h(21), attr(Role::Cap(CapKind::Bottom), 1));
+        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr(Role::Cap(CapKind::Top), 0));
+        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(21) }, attr(Role::Cap(CapKind::Bottom), 1));
 
         let old_brep = BRep {
             graph: &old_graph,
@@ -984,9 +987,9 @@ mod tests {
             values.insert(id, Value::length(0.05));
 
             let mut old_table = TopologyAttributeTable::default();
-            old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0));
+            old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::Cap(CapKind::Top), 0));
             let mut new_table = TopologyAttributeTable::default();
-            new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0));
+            new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr(Role::Cap(CapKind::Top), 0));
 
             let old_brep = BRep {
                 graph: &old_graph,
@@ -1053,10 +1056,10 @@ mod tests {
             values.insert(id, Value::length(0.05));
 
             let mut old_table = TopologyAttributeTable::default();
-            old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0));
+            old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::Cap(CapKind::Top), 0));
             let mut new_table = TopologyAttributeTable::default();
-            new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0));
-            new_table.record(h(21), attr(Role::Cap(CapKind::Bottom), 1));
+            new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr(Role::Cap(CapKind::Top), 0));
+            new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(21) }, attr(Role::Cap(CapKind::Bottom), 1));
 
             let old_brep = BRep {
                 graph: &old_graph,
@@ -1113,9 +1116,9 @@ mod tests {
             values.insert(id, Value::length(0.05));
 
             let mut old_table = TopologyAttributeTable::default();
-            old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0));
+            old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::Cap(CapKind::Top), 0));
             let mut new_table = TopologyAttributeTable::default();
-            new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0));
+            new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr(Role::Cap(CapKind::Top), 0));
 
             let old_brep = BRep {
                 graph: &old_graph,
@@ -1203,9 +1206,9 @@ mod tests {
             values.insert(id, Value::length(0.05));
 
             let mut old_table = TopologyAttributeTable::default();
-            old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0));
+            old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::Cap(CapKind::Top), 0));
             let mut new_table = TopologyAttributeTable::default();
-            new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0));
+            new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr(Role::Cap(CapKind::Top), 0));
 
             let old_faces = [h(10)];
             let new_faces = [h(20)];

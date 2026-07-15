@@ -17,6 +17,7 @@
 set -euo pipefail
 
 err() { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; }
+warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*" >&2; }
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOCKFILE="$REPO_ROOT/Cargo.lock"
@@ -64,5 +65,58 @@ if [ "$STAMPED_VER" != "$CSG_SYS_VER" ]; then
     hint
     exit 1
 fi
+
+# ---------- TBB pin dir preflight (task #5192, mechanism A'') ----------
+#
+# Each workspace binary needs a direct NEEDED libtbb.so.12 resolved via this
+# tbb-ONLY pin dir (prepended first in the binary's own RUNPATH) so it loads
+# before the transitive libTKernel->libtbb edge — DT_RUNPATH is non-transitive
+# and cannot redirect that edge otherwise. See CLAUDE.md "Native deps" and
+# crates/reify-build-utils/src/lib.rs's emit_tbb_pin_for_bins/_for_tests.
+TBB_PIN_DIR="/opt/reify-deps/tbb-pin"
+TBB_PIN_LIB="$TBB_PIN_DIR/libtbb.so.12"
+DEPS_LIBTBB="/opt/reify-deps/lib/libtbb.so.12"
+
+if [ ! -L "$TBB_PIN_LIB" ]; then
+    # Self-heal: a host whose /opt/reify-deps/lib was already populated
+    # before task #5192 added the pin dir is missing only the symlink, not
+    # the lib itself — recreate it here (mirrors build-manifold-deps.sh's
+    # idempotent ensure_tbb_pin()) so the FIRST verify after this change
+    # lands self-heals instead of hard-failing until someone re-runs the
+    # build script on the shared deps host.
+    if [ -e "$DEPS_LIBTBB" ]; then
+        mkdir -p "$TBB_PIN_DIR"
+        # Multiple worktree verify pipelines can hit this self-heal
+        # concurrently on this shared host. `mkdir -p` and a direct
+        # `ln -sfn` are each individually idempotent (so the race is
+        # benign), but publishing via a unique temp name + `mv -T` makes
+        # the final rename a single atomic syscall, so a concurrent
+        # reader's `readlink -f` below can never observe a symlink
+        # mid-recreation (which would otherwise risk a transient spurious
+        # hard-fail under heavy parallel verify load).
+        tmp_link="$TBB_PIN_DIR/.libtbb.so.12.tmp.$$"
+        ln -sfn "$DEPS_LIBTBB" "$tmp_link"
+        mv -T "$tmp_link" "$TBB_PIN_LIB"
+        warn "manifold-deps guard: tbb-pin was missing — self-healed $TBB_PIN_LIB -> $DEPS_LIBTBB."
+        warn "                     Run ./scripts/build-manifold-deps.sh to make this permanent."
+    else
+        err "manifold-deps guard: tbb-pin missing — no symlink at $TBB_PIN_LIB,"
+        err "                     and $DEPS_LIBTBB does not exist to self-heal from."
+        hint
+        exit 1
+    fi
+fi
+
+TBB_PIN_TARGET="$(readlink -f "$TBB_PIN_LIB" 2>/dev/null || true)"
+case "$TBB_PIN_TARGET" in
+    */libtbb.so.12.*)
+        ;;
+    *)
+        err "manifold-deps guard: tbb-pin at $TBB_PIN_LIB resolves to"
+        err "                     '${TBB_PIN_TARGET:-<broken symlink>}', expected a libtbb.so.12.<N> file."
+        hint
+        exit 1
+        ;;
+esac
 
 exit 0

@@ -16,8 +16,8 @@ use reify_eval::selector_vocabulary_v2::{
     owner_body_of, siblings_of_face, split_by_feature, union,
 };
 use reify_ir::{
-    CapKind, EdgeCurveKind, FaceSurfaceKind, FeatureId, GeometryHandleId, ModEntry, QueryError,
-    Role, TopologyAttribute, TopologyAttributeTable, Value,
+    CapKind, EdgeCurveKind, FaceSurfaceKind, FeatureId, GeometryHandleId, KernelHandle, KernelId,
+    ModEntry, QueryError, Role, TopologyAttribute, TopologyAttributeTable, Value,
 };
 use reify_test_support::MockGeometryKernel;
 
@@ -1041,7 +1041,7 @@ fn fixture_history_table() -> (
 
     let mut table = TopologyAttributeTable::default();
     table.record(
-        a,
+        KernelHandle { kernel: KernelId::Occt, id: a },
         TopologyAttribute {
             feature_id: f1.clone(),
             role: Role::Cap(CapKind::Top),
@@ -1051,7 +1051,7 @@ fn fixture_history_table() -> (
         },
     );
     table.record(
-        b,
+        KernelHandle { kernel: KernelId::Occt, id: b },
         TopologyAttribute {
             feature_id: f2.clone(),
             role: Role::Side,
@@ -1064,7 +1064,7 @@ fn fixture_history_table() -> (
         },
     );
     table.record(
-        c,
+        KernelHandle { kernel: KernelId::Occt, id: c },
         TopologyAttribute {
             feature_id: f2.clone(),
             role: Role::Side,
