@@ -176,7 +176,12 @@ pub fn seed_primitive_attributes_for_handle(
 /// Returns `true` for `GeometryOp` variants that this seeder originates
 /// attribute records for. Non-seedable variants are intentional no-ops —
 /// see the module docstring for the deferred-task accounting.
-fn is_seedable_primitive(op: &GeometryOp) -> bool {
+///
+/// Visibility: `pub(crate)` — widened from private in task #4636 (step-6) so
+/// `engine_build.rs`'s seed call site can gate its `record_solid_attribute`
+/// call on the same seedability condition this module uses, without
+/// duplicating the variant list.
+pub(crate) fn is_seedable_primitive(op: &GeometryOp) -> bool {
     matches!(
         op,
         GeometryOp::Box { .. }

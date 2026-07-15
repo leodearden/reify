@@ -26,7 +26,10 @@ use crate::deps::{DependencyTrace, extract_realization_dependencies};
 use crate::dispatcher::{DispatchPlan, dispatch, per_stage_tolerance_for_plan};
 use crate::geometry_ops::compile_geometry_op;
 use crate::journal::{EvalEvent, EventJournal, EventKind};
-use crate::primitive_attribute_seed::{parse_bbox_xyz_min, seed_primitive_attributes_for_handle};
+use crate::primitive_attribute_seed::{
+    is_seedable_primitive, parse_bbox_xyz_min, record_solid_attribute,
+    seed_primitive_attributes_for_handle,
+};
 use crate::realization_cache::{NO_OPTIONS, RealizationCache};
 use crate::sweep_classifier::{
     SweptKind, SweptKindTable, classify_swept_body, swept_kind_to_sweep_params,
@@ -7403,6 +7406,22 @@ impl Engine {
                                             per_stage_tol,
                                             options_hash,
                                         ) {
+                                            // Task #4636 (LINK1): topology_attribute_table
+                                            // is per-build, unlike realization_cache (which
+                                            // persists the intermediate handle itself
+                                            // across builds) — so a cache hit still needs
+                                            // to (re-)forward the source solid's attribute
+                                            // onto the reused target handle, or this
+                                            // build's table would have no entry at all for
+                                            // it despite the handle being valid.
+                                            forward_solid_attribute_on_ingest(
+                                                topology_attribute_table,
+                                                KernelHandle {
+                                                    kernel: kernel_id_for_registry_name(source_name),
+                                                    id: pid,
+                                                },
+                                                cached,
+                                            );
                                             substitution.insert(pid, cached.id);
                                             continue;
                                         }
@@ -7526,6 +7545,22 @@ impl Engine {
                                                     per_stage_tol,
                                                     options_hash,
                                                 ));
+                                                // Task #4636 (LINK1): forward the source
+                                                // solid's attribute (recorded by
+                                                // record_solid_attribute at the seed site
+                                                // above) across the ingest seam onto the
+                                                // fresh target handle. A no-op when the
+                                                // source was never seeded (e.g. a
+                                                // non-primitive parent), degrading
+                                                // gracefully to the existing Discarded path.
+                                                forward_solid_attribute_on_ingest(
+                                                    topology_attribute_table,
+                                                    KernelHandle {
+                                                        kernel: kernel_id_for_registry_name(source_name),
+                                                        id: pid,
+                                                    },
+                                                    intermediate_handle,
+                                                );
                                                 substitution.insert(pid, handle.id);
                                             }
                                             Err(e) => {
@@ -7710,17 +7745,38 @@ impl Engine {
                             // breaks. Per-task design decision recorded in
                             // .task/plan.json.
                             let feature_id = FeatureId::from(realization_id);
-                            if let Err(e) = seed_primitive_attributes_for_handle(
+                            let seed_result = seed_primitive_attributes_for_handle(
                                 topology_attribute_table,
                                 op_kernel,
                                 kernel,
                                 handle.id,
                                 &feature_id,
                                 &geom_op,
-                            ) {
+                            );
+                            if let Err(e) = &seed_result {
                                 diagnostics.push(Diagnostic::warning(format!(
                                 "topology-attribute seeding failed for {realization_id} op {op_idx}: {e}"
                             )));
+                            }
+                            // Task #4636 (LINK2): on a successful seed of a
+                            // seedable primitive, also record a per-solid
+                            // representative entry — the seed call above only
+                            // writes per-face/edge/vertex entries, never the
+                            // solid handle itself, which is exactly what
+                            // ManifoldKernel::propagate_attributes' parent_map
+                            // lookup (and the OCCT->Manifold ingest forwarder
+                            // below) needs. Gated on the same seedability
+                            // check the seed function itself uses, and on
+                            // `Ok` so a seeding failure never leaves a
+                            // solid-level entry orphaned from its face/edge
+                            // siblings.
+                            if seed_result.is_ok() && is_seedable_primitive(&geom_op) {
+                                record_solid_attribute(
+                                    topology_attribute_table,
+                                    op_kernel,
+                                    handle.id,
+                                    &feature_id,
+                                );
                             }
                             // v0.2 persistent-naming-v2 (PRD task 5a, #2573): per-op
                             // attribute population for sweep ops (extrude / revolve).

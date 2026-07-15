@@ -986,14 +986,29 @@ impl GeometryKernel for ManifoldKernel {
 /// `reify_kernel_manifold::kernel` target (operator visibility for the
 /// lossy-attribute diagnostic), and `Ok(Discarded)` is returned.
 ///
+/// # Where the parent map's entries come from (task #4636)
+///
+/// The `table.lookup(KernelHandle { kernel: KernelId::Manifold, id: handle
+/// })` calls above are keyed on the SOLID parent handle. Per-solid entries at
+/// that key are populated by the engine's OCCT->Manifold ingest-forwarding
+/// path (`reify_eval::engine_build`'s `'convert:` loop, via
+/// `forward_solid_attribute_on_ingest`), fed by
+/// `reify_eval::primitive_attribute_seed::record_solid_attribute` at the
+/// primitive seed site — not by anything in this module. Before task #4636,
+/// nothing recorded a solid-level entry at all, so this lookup always missed
+/// and every cross-kernel propagation took the degenerate path above,
+/// regardless of whether the source solid legitimately carried an attribute.
+///
 /// # Descriptor-keyed persistence
 ///
 /// The correlation (`Vec<FacetProvenance>`) is computed and validated but
-/// **not** persisted into the `GeometryHandleId`-keyed
-/// `TopologyAttributeTable` — there is no descriptor-keyed store until
-/// task 4262, and `&self` is immutable.  The engine (`engine_build.rs:4414`)
-/// intentionally swallows all three `Ok` variants, so returning `Propagated`
-/// without writing the table is safe for the current call graph.
+/// **not** persisted into the full `KernelHandle`-keyed `TopologyAttributeTable`
+/// (re-keyed from a bare `GeometryHandleId` by task #4351) — there is no
+/// per-face/descriptor-keyed store for the RESULT handle's individual facets
+/// until task #4263, and `&self` is immutable.  The engine
+/// (`engine_build.rs`'s kernel-attribute-hook dispatch site) intentionally
+/// swallows all three `Ok` variants, so returning `Propagated` without
+/// writing the table is safe for the current call graph.
 impl KernelAttributeHook for ManifoldKernel {
     fn propagate_attributes(
         &self,
