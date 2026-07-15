@@ -549,6 +549,62 @@ fn pack_sign_bits(x: AxisSign, y: AxisSign, z: AxisSign) -> u32 {
     (xb << 2) | (yb << 1) | zb
 }
 
+/// Record a single per-solid representative `TopologyAttribute` entry for
+/// `solid_handle` (task #4636).
+///
+/// Unlike [`seed_primitive_attributes`] / [`record_all_faces_as_side`], which
+/// seed one entry per *face* (and edge/vertex), this records exactly one
+/// entry keyed by the SOLID handle itself: `KernelHandle{kernel_id,
+/// solid_handle} -> TopologyAttribute{feature_id, Role::Side, local_index: 0,
+/// user_label: None, mod_history: vec![]}`.
+///
+/// Why this exists: `ManifoldKernel::propagate_attributes`'s `parent_map`
+/// lookup is keyed by the *solid* parent handle (Manifold's `original_id()`
+/// is inherently per-ingested-solid, and `correlate_facets` keys its
+/// `parent_map` by that per-solid id) — never by a face handle. Before this
+/// helper, nothing ever recorded a solid-level entry, so that lookup always
+/// missed, `parent_map` came back empty, and `propagate_attributes` treated
+/// the result as degenerate (`Ok(KernelAttributeOutcome::Discarded)`) even
+/// when the source solid legitimately carried an attribute.
+///
+/// Called from the engine's realization-op seed site (NOT from inside
+/// [`seed_primitive_attributes`]/[`seed_primitive_attributes_for_handle`]) so
+/// that the ~10 exact `table.len()` assertions in
+/// `tests/topology_attribute_primitives_direct.rs`, which invoke the shared
+/// seed function directly, are unaffected by this additional entry.
+///
+/// The representative `Role::Side`/`local_index: 0` payload is exact for
+/// all-`Side` primitives (Box/Sphere/Wedge/Torus/HalfSpace) and a documented
+/// coarse placeholder for Cylinder/Cone (whose faces split into Cap/Side);
+/// the role is irrelevant to `propagate_attributes`, which only needs *an*
+/// entry to exist at the solid handle. Per-face result-face persistence
+/// (refining this placeholder) is deferred to #4263.
+///
+/// Safety against selector-resolution pollution: `resolve_unique_by_attribute`
+/// only looks up `KernelHandle`s drawn from the caller-supplied face
+/// candidate slice — the solid handle id is never a face candidate — so this
+/// solid-level entry cannot be spuriously matched by a face selector.
+pub fn record_solid_attribute(
+    table: &mut TopologyAttributeTable,
+    kernel_id: KernelId,
+    solid_handle: GeometryHandleId,
+    feature_id: &FeatureId,
+) {
+    table.record(
+        KernelHandle {
+            kernel: kernel_id,
+            id: solid_handle,
+        },
+        TopologyAttribute {
+            feature_id: feature_id.clone(),
+            role: Role::Side,
+            local_index: 0,
+            user_label: None,
+            mod_history: Vec::new(),
+        },
+    );
+}
+
 /// Extract `(xmin, ymin, zmin)` from a `GeometryQuery::BoundingBox`
 /// response payload.
 ///
