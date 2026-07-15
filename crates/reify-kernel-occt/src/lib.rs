@@ -4888,40 +4888,47 @@ mod tests {
     /// so each test body keeps only its distinct setup and final assertion.
     ///
     /// Captures `kernel`'s warm state, records the persisted
-    /// `(shapes.len(), reprs.len())` counts, restores into a fresh kernel,
-    /// runs `mid_cycle` on the restored (pre-re-extraction) kernel for any
-    /// cycle-specific checks (e.g. asserting root survival) — `mid_cycle`
-    /// takes `&mut OcctKernel` so a caller can also re-extract sub-shapes on
-    /// a root of its own (e.g. a second, post-extraction root) instead of
-    /// just the box — then re-seeds `parent_handle` by re-running
-    /// extract_faces/extract_edges/extract_vertices on the box root
-    /// (`GeometryHandleId(1)`) against the cleared idempotency cache.
-    /// Returns the restored+re-extracted kernel plus the counts captured
+    /// `(shapes.len(), reprs.len())` counts and the persisted `shapes` key
+    /// set (so callers can pin surviving-id identity, not just cardinality),
+    /// restores into a fresh kernel, runs `mid_cycle` on the restored
+    /// (pre-re-extraction) kernel for any cycle-specific checks (e.g.
+    /// asserting root survival) — `mid_cycle` takes `&mut OcctKernel` so a
+    /// caller can also re-extract sub-shapes on a root of its own (e.g. a
+    /// second, post-extraction root) instead of just the box — then
+    /// re-seeds `parent_handle` by re-running extract_faces/extract_edges/
+    /// extract_vertices on `box_root` against the cleared idempotency cache.
+    /// `box_root` is taken as a parameter — the caller's actual box handle
+    /// id, captured from its `execute` return value — instead of this
+    /// helper assuming `GeometryHandleId(1)`, so it stays correct if a
+    /// caller's id-assignment order ever changes. Returns the
+    /// restored+re-extracted kernel plus the counts and id set captured
     /// before restore.
     fn warm_state_reextract_cycle(
         kernel: OcctKernel,
+        box_root: GeometryHandleId,
         mid_cycle: impl FnOnce(&mut OcctKernel),
-    ) -> (OcctKernel, usize, usize) {
+    ) -> (OcctKernel, usize, usize, std::collections::HashSet<u64>) {
         let state = kernel.warm_state().expect("kernel should have warm state");
         let warm = state
             .downcast_ref::<OcctWarmState>()
             .expect("warm state should downcast_ref to OcctWarmState");
         let shapes_len = warm.shapes.len();
         let reprs_len = warm.reprs.len();
+        let shape_ids: std::collections::HashSet<u64> = warm.shapes.keys().copied().collect();
 
         let mut next = OcctKernel::new();
         next.with_warm_state(state);
 
         mid_cycle(&mut next);
 
-        next.extract_faces(GeometryHandleId(1))
+        next.extract_faces(box_root)
             .expect("extract_faces on the restored box should succeed");
-        next.extract_edges(GeometryHandleId(1))
+        next.extract_edges(box_root)
             .expect("extract_edges on the restored box should succeed");
-        next.extract_vertices(GeometryHandleId(1))
+        next.extract_vertices(box_root)
             .expect("extract_vertices on the restored box should succeed");
 
-        (next, shapes_len, reprs_len)
+        (next, shapes_len, reprs_len, shape_ids)
     }
 
     /// RED step-1 (task 4999): `GeometryOp::Surface` is a Mesh-repr terminal
@@ -5474,13 +5481,14 @@ mod tests {
     #[test]
     fn warm_state_persisted_shape_count_stays_bounded_across_cycles() {
         let mut kernel = OcctKernel::new();
-        kernel
+        let box_handle = kernel
             .execute(&GeometryOp::Box {
                 width: Value::Real(10.0),
                 height: Value::Real(20.0),
                 depth: Value::Real(30.0),
             })
             .unwrap();
+        let box_id = box_handle.id;
 
         let mut counts = Vec::new();
         let mut repr_counts = Vec::new();
@@ -5488,7 +5496,8 @@ mod tests {
             // Re-seeds parent_handle against the cleared idempotency cache,
             // mirroring the extract-after-restore pattern from
             // `owner_body_survives_warm_start`; no mid-cycle checks needed here.
-            let (next, shapes_len, reprs_len) = warm_state_reextract_cycle(kernel, |_next| {});
+            let (next, shapes_len, reprs_len, _shape_ids) =
+                warm_state_reextract_cycle(kernel, box_id, |_next| {});
             counts.push(shapes_len);
             repr_counts.push(reprs_len);
             kernel = next;
@@ -5535,21 +5544,22 @@ mod tests {
     #[test]
     fn warm_state_persisted_shape_count_bounded_with_post_extraction_root() {
         let mut kernel = OcctKernel::new();
-        kernel
+        let box_handle = kernel
             .execute(&GeometryOp::Box {
                 width: Value::Real(10.0),
                 height: Value::Real(20.0),
                 depth: Value::Real(30.0),
             })
             .unwrap();
+        let box_id = box_handle.id;
         kernel
-            .extract_faces(GeometryHandleId(1))
+            .extract_faces(box_id)
             .expect("extract_faces on the box should succeed");
         kernel
-            .extract_edges(GeometryHandleId(1))
+            .extract_edges(box_id)
             .expect("extract_edges on the box should succeed");
         kernel
-            .extract_vertices(GeometryHandleId(1))
+            .extract_vertices(box_id)
             .expect("extract_vertices on the box should succeed");
 
         // Second root, created only after parent_handle already holds the
@@ -5562,6 +5572,13 @@ mod tests {
             .unwrap();
         let cyl_id = cyl.id;
         const ROOT_COUNT: usize = 2; // box (id 1) + post-extraction cylinder
+        // Pins *identity*, not just cardinality: a filter that dropped a
+        // root and kept an equal number of unrelated sub-shapes would still
+        // satisfy the `counts == ROOT_COUNT` check below, so also assert
+        // every cycle's persisted `warm.shapes` key set is exactly the two
+        // root ids.
+        let expected_ids: std::collections::HashSet<u64> =
+            [box_id.0, cyl_id.0].into_iter().collect();
 
         let mut counts = Vec::new();
         for _ in 0..4 {
@@ -5571,19 +5588,27 @@ mod tests {
             // bounded-payload filter is exercised against a second root's
             // derived ids too, not just the box's. Re-seeding parent_handle
             // for the box happens inside the shared helper after this closure.
-            let (next, shapes_len, _) = warm_state_reextract_cycle(kernel, |next| {
-                next.query(&GeometryQuery::Volume(GeometryHandleId(1)))
-                    .expect("box root should survive warm-start round-trip");
-                next.query(&GeometryQuery::Volume(cyl_id))
-                    .expect("post-extraction cylinder root should survive warm-start round-trip");
-                next.extract_faces(cyl_id)
-                    .expect("extract_faces on the restored cylinder should succeed");
-                next.extract_edges(cyl_id)
-                    .expect("extract_edges on the restored cylinder should succeed");
-                next.extract_vertices(cyl_id)
-                    .expect("extract_vertices on the restored cylinder should succeed");
-            });
+            let (next, shapes_len, _, shape_ids) =
+                warm_state_reextract_cycle(kernel, box_id, |next| {
+                    next.query(&GeometryQuery::Volume(box_id))
+                        .expect("box root should survive warm-start round-trip");
+                    next.query(&GeometryQuery::Volume(cyl_id)).expect(
+                        "post-extraction cylinder root should survive warm-start round-trip",
+                    );
+                    next.extract_faces(cyl_id)
+                        .expect("extract_faces on the restored cylinder should succeed");
+                    next.extract_edges(cyl_id)
+                        .expect("extract_edges on the restored cylinder should succeed");
+                    next.extract_vertices(cyl_id)
+                        .expect("extract_vertices on the restored cylinder should succeed");
+                });
             counts.push(shapes_len);
+            assert_eq!(
+                shape_ids, expected_ids,
+                "persisted shapes key set must be exactly the root ids \
+                 (box={box_id:?}, cylinder={cyl_id:?}), not merely matching \
+                 cardinality: got {shape_ids:?}"
+            );
             kernel = next;
         }
 
