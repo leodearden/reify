@@ -73,7 +73,10 @@ sphere(radius)                                       -> Solid
 torus(major_radius, minor_radius)                    -> Solid
 wedge(width, depth, height, top_width)               -> Solid
 tube(outer_radius, inner_radius, height)             -> Solid   // outer cylinder minus inner cylinder
+rounded_box(width, depth, height, corner_r)          -> Solid   // box with the 4 vertical edges rounded
 ```
+
+`rounded_box` requires `corner_r > 0` and `2*corner_r < min(width, depth)`; violations are a compile-time error when the args are constant literals (including constant arithmetic like `10mm + 15mm`). A param-driven `corner_r` that violates the constraint at runtime is **not** caught statically — it fails at evaluation with an opaque kernel error instead of a diagnostic.
 
 **2D profiles** (planar faces in the XY plane at z=0). `rectangle`/`circle`/`ellipse` are centred
 at origin (same centring as `box`); `polygon` is the exception — it is positioned by its explicit
@@ -82,10 +85,13 @@ vertex coordinates, not auto-centred (see the Anchoring & orientation table belo
 ```
 rectangle(width, height)   circle(radius)
 polygon(vertices)          ellipse(semi_major, semi_minor)
+rounded_rect(width, depth, corner_r)   -> Surface   // rectangle with the 4 corners rounded
 ```
 
 Note: this `circle(radius)` is the origin-centred 2D-profile form used with `extrude`/`revolve`/etc.
 — distinct from the prelude `circle(center, radius)` above, which places the circle at an explicit center.
+
+`rounded_rect` shares `rounded_box`'s constraint (`corner_r > 0` and `2*corner_r < min(width, depth)`) and the same compile-time-only, constant-args-only enforcement caveat above.
 
 ### Anchoring & orientation
 
@@ -107,7 +113,9 @@ anchor convention changes (e.g. a future `wedge_centered` variant):
 | `cone` | **base at z=0**, axis **+Z**, x/y centred at origin | same base-anchor convention as `cylinder`; base radius at z=0, top radius at z=height |
 | `tube` | **base at z=0**, axis **+Z**, x/y centred at origin | composed from `outer cylinder − inner cylinder`, so it inherits `cylinder`'s base-at-z0 anchor |
 | `wedge` | **min-corner at origin**, occupying the **+X/+Y/+Z octant** | the one primitive anchored at a corner rather than centred or base-centred; no `wedge_centered` variant exists yet |
+| `rounded_box` | **centred at origin**, all 3 axes | same anchor as `box`; the 4 vertical (plan-view) edges are rounded to `corner_r` |
 | 2D profiles (`rectangle`, `circle`, `ellipse`) | planar in the **XY plane at z=0**, **centred at origin** | consumed by `extrude`/`revolve`/`sweep`/`loft` |
+| `rounded_rect` (2D profile) | planar in the **XY plane at z=0**, **centred at origin** | same anchor as `rectangle`; all 4 corners rounded to `corner_r` |
 | `polygon` (2D profile) | planar in the **XY plane at z=0**; position set by its **explicit vertices** — not auto-centred | same consumers as above; a caller-supplied vertex set can sit off-origin, unlike the other 2D profiles |
 | `extrude(profile, distance)` | extrudes along the profile plane's normal, starting at the profile's own z=0 plane | inherits the profile's XY centring |
 | `revolve(profile, axis, angle)` | sweeps the profile about a caller-supplied `axis` | anchor is whatever the profile + axis define — no implicit centring |

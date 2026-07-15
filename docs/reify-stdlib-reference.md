@@ -358,6 +358,7 @@ fn cone(bottom_radius: Length, top_radius: Length, height: Length) -> Solid
 fn sphere(radius: Length) -> Solid
 fn torus(major_radius: Length, minor_radius: Length) -> Solid
 fn wedge(width: Length, depth: Length, height: Length, top_width: Length) -> Solid
+fn rounded_box(width: Length, depth: Length, height: Length, corner_r: Length) -> Solid
 
 // Planned — not yet implemented; see tracking task 3465 / PRD docs/prds/geometry-primitive-constructors.md
 // fn half_space(plane: Plane) -> Solid     // Unbounded -- Solid no longer implies Bounded
@@ -384,10 +385,20 @@ convention changes:
 | `cylinder_centered` | z-centred at origin, axis +Z, x/y centred | `cylinder` + `translate(z=-height/2)`, composed for you |
 | `cone` | base at z=0, axis +Z, x/y centred | bottom radius at z=0, top radius at z=height |
 | `wedge` | min-corner at origin, +X/+Y/+Z octant | the one primitive anchored at a corner |
+| `rounded_box` | centred at origin, all 3 axes | same anchor as `box`; the 4 vertical (plan-view) edges are rounded to `corner_r` |
+| `rounded_rect` (2D) | planar XY at z=0, centred at origin | same anchor as `rectangle`; all 4 corners rounded to `corner_r` |
 
 `cylinder`/`cone` sit base-first on the origin along +Z; `box`/`sphere`/`torus` are centred;
 `wedge` sits corner-first in the +octant. Prefer `cylinder_centered`/`box_centered` over a manual
 `translate(primitive(...), 0, 0, -h/2)` workaround.
+
+`rounded_box`/`rounded_rect` additionally require `corner_r > 0` and
+`2*corner_r < min(width, depth)`; a statically-known violation (constant literal
+arguments, including constant arithmetic like `10mm + 15mm`) is a compile-time
+error. This check is best-effort: it only fires when `width`/`depth`/`corner_r`
+all fold to constants. A param-driven value that violates the constraint at
+runtime is **not** caught statically — it fails at evaluation with an opaque
+kernel error instead of a diagnostic.
 
 **2D shapes:**
 
@@ -396,11 +407,12 @@ fn rectangle(width: Length, height: Length) -> Surface
 fn circle(radius: Length) -> Surface
 fn polygon(vertices: List<Point2<Length>>) -> Surface
 fn ellipse(semi_major: Length, semi_minor: Length) -> Surface
+fn rounded_rect(width: Length, depth: Length, corner_r: Length) -> Surface
 ```
 
-All 2D shapes are planar faces in the XY plane at z=0. `rectangle`/`circle`/`ellipse` are centred
-at origin (same centring as `box`); `polygon` is the exception — its position is set by the
-caller's explicit vertex coordinates, not auto-centred.
+All 2D shapes are planar faces in the XY plane at z=0. `rectangle`/`circle`/`ellipse`/`rounded_rect`
+are centred at origin (same centring as `box`); `polygon` is the exception — its position is set by
+the caller's explicit vertex coordinates, not auto-centred.
 
 **Curves:**
 
