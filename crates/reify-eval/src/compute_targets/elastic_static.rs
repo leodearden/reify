@@ -469,18 +469,71 @@ pub fn solve_elastic_static_trampoline(
         return ComputeOutcome::Failed { diagnostics: vec![], structured_detail: vec![] };
     }
 
+    // ── Validate-all-inputs gate (task 5087, PRD compute-fea-hardening D9) ────
+    //
+    // Runs each Result-returning extractor/classifier below in sequence —
+    // material → length → width → height → loads — and returns
+    // `ComputeOutcome::Failed` with a diagnostic naming the offending arg on
+    // the FIRST `Err`, instead of panicking (the pre-D9 `FeaShimExt::fea_shim`
+    // behavior). Each arm binds its `Ok` value directly — a single extraction;
+    // re-extracting after a separate validate pass would be both wasteful and,
+    // for a heterogeneous material's non-Clone `Box<dyn Fn>` locator,
+    // impossible. `solve_elastic_static_trampoline` returns `ComputeOutcome`,
+    // not `Result`, so `?` cannot be used here; each arg is instead bound via
+    // an explicit `match` with an early `return` on `Err`.
+
     // ── (1) Classify material and build MaterialModel (step-6: full dispatch) ──
     //
     // Dispatch on the StructureInstance type_name.  Anisotropic conformers
     // (OrthotropicMaterial, TransverseIsotropicMaterial) are produced by γ/3779
     // (stdlib/constitutive.ri); the isotropic fallback reads youngs_modulus+
     // poisson_ratio (unchanged from the pre-δ trampoline).
-    let model = classify_material(&value_inputs[0]).fea_shim();
+    let model = match classify_material(&value_inputs[0]) {
+        Ok(v) => v,
+        Err(e) => {
+            return ComputeOutcome::Failed {
+                diagnostics: vec![Diagnostic::error(format!(
+                    "solve_elastic_static_trampoline: material: {e}"
+                ))],
+                structured_detail: vec![],
+            };
+        }
+    };
 
     // ── (2) Extract geometry scalars (SI: metres) ─────────────────────────────
-    let length = extract_scalar_si(&value_inputs[1]).fea_shim();
-    let width = extract_scalar_si(&value_inputs[2]).fea_shim();
-    let height = extract_scalar_si(&value_inputs[3]).fea_shim();
+    let length = match extract_scalar_si(&value_inputs[1]) {
+        Ok(v) => v,
+        Err(e) => {
+            return ComputeOutcome::Failed {
+                diagnostics: vec![Diagnostic::error(format!(
+                    "solve_elastic_static_trampoline: length: {e}"
+                ))],
+                structured_detail: vec![],
+            };
+        }
+    };
+    let width = match extract_scalar_si(&value_inputs[2]) {
+        Ok(v) => v,
+        Err(e) => {
+            return ComputeOutcome::Failed {
+                diagnostics: vec![Diagnostic::error(format!(
+                    "solve_elastic_static_trampoline: width: {e}"
+                ))],
+                structured_detail: vec![],
+            };
+        }
+    };
+    let height = match extract_scalar_si(&value_inputs[3]) {
+        Ok(v) => v,
+        Err(e) => {
+            return ComputeOutcome::Failed {
+                diagnostics: vec![Diagnostic::error(format!(
+                    "solve_elastic_static_trampoline: height: {e}"
+                ))],
+                structured_detail: vec![],
+            };
+        }
+    };
 
     // ── (3) Extract loads from value_inputs[4] (List of StructureInstances) ──
     //
@@ -499,7 +552,17 @@ pub fn solve_elastic_static_trampoline(
     // Both accumulate into disjoint targets and compose: a scene may mix
     // PointLoad and PressureLoad in the same LoadCase.
     let (tip_force, pressures, body_force) =
-        extract_loads(&value_inputs[4], extract_density(&value_inputs[0])).fea_shim();
+        match extract_loads(&value_inputs[4], extract_density(&value_inputs[0])) {
+            Ok(v) => v,
+            Err(e) => {
+                return ComputeOutcome::Failed {
+                    diagnostics: vec![Diagnostic::error(format!(
+                        "solve_elastic_static_trampoline: loads: {e}"
+                    ))],
+                    structured_detail: vec![],
+                };
+            }
+        };
 
     // ── (3b) Shell-route dispatch (task 3594/δ) ──────────────────────────────
     //
@@ -3369,9 +3432,9 @@ fn element_stress_anisotropic(
 /// `scalar_si_field`, `real_field`, `extract_material`) via `?`, and its own
 /// non-StructureInstance guard now returns `Err(ExpectedStructureInstance)`
 /// directly instead of panicking. The sole production call site
-/// (`solve_elastic_static_trampoline`) bridges with `FeaShimExt::fea_shim` so
-/// external behavior is unchanged until D9 replaces it with real `Result`
-/// propagation and deletes the shim.
+/// (`solve_elastic_static_trampoline`'s validate-all-inputs gate, D9/task
+/// 5087) propagates this `Result` via a `match` with an early
+/// `ComputeOutcome::Failed` return, naming the offending arg.
 fn classify_material(val: &Value) -> Result<MaterialModel, FeaValueShapeError> {
     // ── AsPrintedZones field: heterogeneous per-element dispatch (task #4757) ─
     if let Value::Field { source: FieldSourceKind::AsPrintedZones, lambda, .. } = val {
@@ -3467,7 +3530,8 @@ fn classify_material(val: &Value) -> Result<MaterialModel, FeaValueShapeError> {
 /// x2, `extract_zone_process_params`, `anisotropic_material_from_value` x3)
 /// via `?`. The sole call site (`classify_material`, D7) now propagates this
 /// `Result` directly via `?`; `classify_material`'s own sole production call
-/// site bridges with `FeaShimExt::fea_shim` until D9 removes it.
+/// site is the validate-all-inputs gate (D9/task 5087) in
+/// `solve_elastic_static_trampoline`.
 fn classify_material_as_printed_zones(lambda: &Value) -> Result<MaterialModel, FeaValueShapeError> {
     let list = match lambda {
         Value::List(v) => v,
@@ -3523,15 +3587,14 @@ fn classify_material_as_printed_zones(lambda: &Value) -> Result<MaterialModel, F
 /// the input does not match the expected shape (PRD compute-fea-hardening
 /// §C3).
 ///
-/// This module's extract/classify helpers are being migrated (tasks D2-D9)
-/// from "panic on malformed `Value`" to `Result<_, FeaValueShapeError>`. Task
-/// D2 (this task) only Result-ifies the leaf extractors (`extract_scalar_si`,
-/// `scalar_si_field`, `real_field`, `extract_point3_si`, `extract_vec3_si`);
-/// every call site still bridges with the `FeaShimExt::fea_shim` extension
-/// method (below), which panics with `"solve_elastic_static_trampoline:
-/// {e}"` — so external behavior is unchanged until D9 replaces every call
-/// site with real `Result` propagation, deletes `fea_shim`, and reports the
-/// first error as a diagnostic naming the offending arg.
+/// This module's extract/classify helpers were migrated (tasks D2-D9) from
+/// "panic on malformed `Value`" to `Result<_, FeaValueShapeError>`. D9 (task
+/// 5087) completed the migration: every production call site in
+/// `solve_elastic_static_trampoline` now runs through that fn's
+/// validate-all-inputs gate, which `match`es each `Result` and returns
+/// `ComputeOutcome::Failed` with a diagnostic naming the offending arg on the
+/// first `Err`, instead of panicking. The transitional `FeaShimExt::fea_shim`
+/// bridging shim (D2-D8) has been removed.
 #[allow(dead_code)] // ExpectedStructureInstance is constructed by D3/D5/D7, not D2
 #[derive(Debug, Clone, PartialEq)]
 enum FeaValueShapeError {
@@ -3569,27 +3632,6 @@ impl std::fmt::Display for FeaValueShapeError {
                 write!(f, "missing field {field:?} for {context}")
             }
         }
-    }
-}
-
-/// Amendment (task #5080 review round 3, suggestion 1): bridging-shim
-/// extension trait for the transitional Result-ified extractors above.
-///
-/// Every one of D2's ~36 call sites needs the exact same
-/// `.unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"))` to
-/// preserve today's panic-on-malformed-`Value` behavior (PRD
-/// compute-fea-hardening D2). Repeating that literal at each call site made
-/// the eventual D9 cleanup error-prone — a single site missed during the
-/// sweep would silently keep panicking instead of propagating `Result` — and
-/// bloated the diff. Centralizing it here gives D9 one definition to delete
-/// and one unambiguous grep target (`fea_shim`) for the migration boundary.
-trait FeaShimExt<T> {
-    fn fea_shim(self) -> T;
-}
-
-impl<T> FeaShimExt<T> for Result<T, FeaValueShapeError> {
-    fn fea_shim(self) -> T {
-        self.unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"))
     }
 }
 
@@ -3702,9 +3744,10 @@ fn extract_zone_process_params(val: &Value) -> Result<ZoneProcessParams, FeaValu
     let real = |idx: usize| match &list[idx] {
         Value::Real(r) => Ok(*r),
         // Amendment (task #5082 review, suggestion 1): fold the failing
-        // index into `got` so the error (and the eventual fea_shim panic)
-        // still identifies which of the 7 positions was malformed, matching
-        // the diagnosability of the pre-refactor panic message.
+        // index into `got` so the error (and the eventual validate-all-inputs
+        // gate diagnostic, D9/task 5087) still identifies which of the 7
+        // positions was malformed, matching the diagnosability of the
+        // pre-refactor panic message.
         other => Err(FeaValueShapeError::ExpectedReal {
             context: "extract_zone_process_params element",
             got: format!("params[{idx}] = {other:?}"),
@@ -3901,8 +3944,8 @@ fn real_field(
 /// `Err(FeaValueShapeError)` instead of panicking on a malformed `Value`;
 /// the sole call site (`classify_material`'s isotropic fallback, D7) now
 /// propagates this `Result` directly via `?`; `classify_material`'s own sole
-/// production call site bridges with `FeaShimExt::fea_shim` until D9 removes
-/// it.
+/// production call site is the validate-all-inputs gate (D9/task 5087) in
+/// `solve_elastic_static_trampoline`.
 ///
 /// Note (task #5081 review round 3, suggestion 2): `scalar_si_field` accepts
 /// any `Value::Scalar` for `youngs_modulus` regardless of its `dimension`
@@ -10191,5 +10234,162 @@ mod tests {
         .collect();
 
         let _ = anisotropic_material_from_value(&anisotropic_material(fields));
+    }
+
+    // ── task 5087 (PRD compute-fea-hardening D9): top-level validate-all-inputs
+    // gate in `solve_elastic_static_trampoline` — replaces the panic-via-
+    // `FeaShimExt::fea_shim` behavior with a real `ComputeOutcome::Failed`
+    // diagnostic naming the offending arg. Each RED test below takes the
+    // shell9_* valid baseline (material/length/width/height/loads/supports/
+    // options) and swaps exactly one entry for a malformed `Value`, then
+    // calls the trampoline directly (no `catch_unwind`) and asserts it
+    // degrades gracefully instead of panicking.
+    //
+    // RED today: the trampoline still binds each extractor via `.fea_shim()`
+    // (`.unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"))`),
+    // so a malformed arg panics and unwinds straight through this direct
+    // call instead of returning `ComputeOutcome::Failed`. GREEN once the
+    // gate (step-2) replaces the shim call sites. ─────────────────────────
+
+    /// step-1 RED: a malformed `material` arg ([0] = `Value::Real`, not a
+    /// `StructureInstance`) must produce `ComputeOutcome::Failed` with an
+    /// Error diagnostic naming "material" — not panic.
+    #[test]
+    fn validate_all_inputs_gate_rejects_malformed_material() {
+        let value_inputs = [
+            Value::Real(1.0), // malformed: material must be a StructureInstance
+            shell9_make_len(0.1),
+            shell9_make_len(0.1),
+            shell9_make_len(0.1),
+            shell9_make_point_loads(1000.0),
+            shell9_make_supports(),
+            shell9_make_options("Off"),
+        ];
+        let cancellation = CancellationHandle::new();
+        let outcome =
+            solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
+        match outcome {
+            ComputeOutcome::Failed { diagnostics, .. } => {
+                assert!(
+                    diagnostics.iter().any(|d| {
+                        d.severity == reify_core::Severity::Error && d.message.contains("material")
+                    }),
+                    "a malformed material arg must yield an Error diagnostic naming \
+                     \"material\", got {diagnostics:?}"
+                );
+            }
+            other => panic!(
+                "a malformed material arg must yield ComputeOutcome::Failed (not a \
+                 panic), got {other:?}"
+            ),
+        }
+    }
+
+    /// step-1 RED: a malformed `length` arg ([1] = `Value::Real`, not a
+    /// `Value::Scalar`) must produce `ComputeOutcome::Failed` with an Error
+    /// diagnostic naming "length" — not panic. [2] stays a well-formed
+    /// scalar so `body_path` (which keys on [1] being a `GeometryHandle`/
+    /// `Undef` AND [2] being a `List`) is not accidentally triggered.
+    #[test]
+    fn validate_all_inputs_gate_rejects_malformed_length() {
+        let value_inputs = [
+            shell9_make_isotropic_material(205e9, 0.29),
+            Value::Real(0.1), // malformed: length must be a Value::Scalar
+            shell9_make_len(0.1),
+            shell9_make_len(0.1),
+            shell9_make_point_loads(1000.0),
+            shell9_make_supports(),
+            shell9_make_options("Off"),
+        ];
+        let cancellation = CancellationHandle::new();
+        let outcome =
+            solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
+        match outcome {
+            ComputeOutcome::Failed { diagnostics, .. } => {
+                assert!(
+                    diagnostics.iter().any(|d| {
+                        d.severity == reify_core::Severity::Error && d.message.contains("length")
+                    }),
+                    "a malformed length arg must yield an Error diagnostic naming \
+                     \"length\", got {diagnostics:?}"
+                );
+            }
+            other => panic!(
+                "a malformed length arg must yield ComputeOutcome::Failed (not a \
+                 panic), got {other:?}"
+            ),
+        }
+    }
+
+    /// step-1 RED: a malformed `loads` arg ([4] = `Value::Real`, not a
+    /// `Value::List`) must produce `ComputeOutcome::Failed` with an Error
+    /// diagnostic naming "loads" — not panic.
+    #[test]
+    fn validate_all_inputs_gate_rejects_malformed_loads() {
+        let value_inputs = [
+            shell9_make_isotropic_material(205e9, 0.29),
+            shell9_make_len(0.1),
+            shell9_make_len(0.1),
+            shell9_make_len(0.1),
+            Value::Real(1.0), // malformed: loads must be a Value::List
+            shell9_make_supports(),
+            shell9_make_options("Off"),
+        ];
+        let cancellation = CancellationHandle::new();
+        let outcome =
+            solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
+        match outcome {
+            ComputeOutcome::Failed { diagnostics, .. } => {
+                assert!(
+                    diagnostics.iter().any(|d| {
+                        d.severity == reify_core::Severity::Error && d.message.contains("loads")
+                    }),
+                    "a malformed loads arg must yield an Error diagnostic naming \
+                     \"loads\", got {diagnostics:?}"
+                );
+            }
+            other => panic!(
+                "a malformed loads arg must yield ComputeOutcome::Failed (not a \
+                 panic), got {other:?}"
+            ),
+        }
+    }
+
+    /// step-1 RED: when BOTH `material` ([0]) and `length` ([1]) are
+    /// malformed, the gate must name the FIRST offending arg in check order
+    /// (material before length) — not the last, and not both. Pins the
+    /// "collect the first Err" sequencing requirement (material → length →
+    /// width → height → loads).
+    #[test]
+    fn validate_all_inputs_gate_reports_first_offending_arg_in_order() {
+        let value_inputs = [
+            Value::Real(1.0), // malformed: material
+            Value::Real(1.0), // malformed: length
+            shell9_make_len(0.1),
+            shell9_make_len(0.1),
+            shell9_make_point_loads(1000.0),
+            shell9_make_supports(),
+            shell9_make_options("Off"),
+        ];
+        let cancellation = CancellationHandle::new();
+        let outcome =
+            solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
+        match outcome {
+            ComputeOutcome::Failed { diagnostics, .. } => {
+                assert!(
+                    diagnostics.iter().any(|d| {
+                        d.severity == reify_core::Severity::Error
+                            && d.message.contains("material")
+                            && !d.message.contains("length")
+                    }),
+                    "when both material and length are malformed, the gate must name \
+                     \"material\" (checked first) and not \"length\", got {diagnostics:?}"
+                );
+            }
+            other => panic!(
+                "malformed material+length args must yield ComputeOutcome::Failed (not \
+                 a panic), got {other:?}"
+            ),
+        }
     }
 }
