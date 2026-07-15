@@ -7579,11 +7579,7 @@ impl Engine {
         snapshot_values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
         diagnostics: &mut Vec<Diagnostic>,
         version: VersionId,
-        // Unused until step 6 adds the downstream let-cone wave-2 re-eval
-        // (which needs `cell_eval_ctx`'s runtime-diagnostics sink) — kept in
-        // the signature now since the call site above already threads it
-        // through, matching the warm per-template arm's parameter shape.
-        _runtime_sink: &RefCell<Vec<Diagnostic>>,
+        runtime_sink: &RefCell<Vec<Diagnostic>>,
     ) {
         let problem = build_merged_solver_problem(
             cluster,
@@ -7646,12 +7642,20 @@ impl Engine {
                 // snapshot the solver also saw.
                 let auto_param_ids: HashSet<&ValueCellId> =
                     problem.auto_params.iter().map(|ap| &ap.id).collect();
+                // Accumulated across EVERY cluster member in this one merged
+                // solve (task #5118, step 6) — `solver_values` already spans
+                // the whole cluster (it is not split per-member), so the
+                // single pass below both writes back every member's cells
+                // and gathers the union set the wave-2 dirty-cone re-eval
+                // below needs.
+                let mut resolved_ids: HashSet<ValueCellId> = HashSet::new();
 
                 for (id, val) in solver_values
                     .iter()
                     .filter(|(id, _)| auto_param_ids.contains(id))
                 {
                     values.insert(id.clone(), val.clone());
+                    resolved_ids.insert(id.clone());
                     snapshot_values
                         .insert(id.clone(), (val.clone(), DeterminacyState::Determined));
 
@@ -7681,12 +7685,60 @@ impl Engine {
                     }
                 }
 
-                // Downstream let-cone re-evaluation (mirrors the warm
-                // per-template arm's wave-2 dirty-cone mechanism) is
-                // deferred to step 6 (task #5118): this dispatch writes
-                // every cluster member's solver-resolved autos back above,
-                // but a member's `let` cell that reads a co-solved auto
-                // owned by a DIFFERENT member is not yet re-evaluated here.
+                // Wave-2 (task #5118, step 6): re-evaluate downstream let
+                // cells that read any of THIS cluster's co-solved autos. The
+                // reverse index is scope-agnostic (keyed by `ValueCellId`),
+                // so one pass re-evals cross-member let cones (BT3) exactly
+                // as cold's per-member `evaluate_let_bindings` loop does.
+                // Mirrors the warm per-template arm's identical wave-2
+                // mechanism verbatim.
+                if !resolved_ids.is_empty() {
+                    let nodes_to_reeval: Vec<(NodeId, CompiledExpr)> =
+                        if let Some(es) = self.eval_state.as_ref() {
+                            let wave2_dirty = crate::dirty::compute_dirty_cone(
+                                &resolved_ids,
+                                &es.reverse_index,
+                                &es.snapshot.graph,
+                            );
+                            let wave2_eval = crate::dirty::compute_eval_set(
+                                &wave2_dirty,
+                                &self.demand,
+                                &es.trace_map,
+                            );
+                            wave2_eval
+                                .into_iter()
+                                .filter_map(|node_id| {
+                                    if let NodeId::Value(vcid) = &node_id
+                                        && let Some(node) =
+                                            es.snapshot.graph.value_cells.get(vcid)
+                                        && let Some(ref expr) = node.default_expr
+                                    {
+                                        return Some((node_id, expr.clone()));
+                                    }
+                                    None
+                                })
+                                .collect()
+                        } else {
+                            Vec::new()
+                        };
+
+                    for (node_id, expr) in nodes_to_reeval {
+                        let val = reify_expr::eval_expr(
+                            &expr,
+                            &self.cell_eval_ctx(values, snapshot_values, runtime_sink),
+                        );
+                        if let NodeId::Value(vcid) = &node_id {
+                            values.insert(vcid.clone(), val.clone());
+                            snapshot_values
+                                .insert(vcid.clone(), (val.clone(), DeterminacyState::Determined));
+                        }
+                        let trace = extract_dependency_trace(&expr);
+                        let cached_result =
+                            CachedResult::Value(val, DeterminacyState::Determined);
+                        self.cache
+                            .record_evaluation(node_id, cached_result, version, trace);
+                    }
+                }
             }
             SolveResult::Infeasible {
                 diagnostics: solver_diags,
