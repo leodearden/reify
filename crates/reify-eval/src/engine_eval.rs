@@ -7740,6 +7740,33 @@ impl Engine {
         // for an objective-bearing problem — matches the warm per-template
         // arm above, which never calls `solve_ranked`/populates
         // `objective_provenance` (design decision, task #5118 plan.json).
+        //
+        // Documented, PERMITTED cold/warm divergence (reviewer_comprehensive,
+        // task #5118 amendment): cold `dispatch_merged_cluster_solve` calls
+        // `solve_ranked` for an objective-bearing problem and keeps its
+        // top-ranked candidate; this warm dispatch never does. This is not
+        // merely a hypothetical mock-solver quirk — the production
+        // `SolverRegistry`/`DimensionalSolver` pair's `solve_ranked` performs
+        // best-of-K deterministic multistart for dim>=2 objective problems,
+        // and its winning candidate "is not guaranteed byte-identical" to
+        // `solve()`'s single-start result (see `SolverRegistry::solve_ranked`'s
+        // doc, reify-constraints/src/registry.rs, and
+        // `solve_ranked_multistart_dominates_single_start_solve`,
+        // reify-constraints/tests/solver_integration.rs). A within-cap merged
+        // cluster is exactly the dim>=2 multi-auto shape that gate targets, so
+        // a multi-basin objective-bearing cluster CAN legitimately converge to
+        // a different optimum warm vs. cold. `W_SOLVER_OPTIMALITY_UNPROVEN` is
+        // correspondingly cold-only: it is pushed only from the `solve_ranked`
+        // arm (cold `dispatch_merged_cluster_solve`, above), so warm never
+        // surfaces it even when the underlying solve was iteration-limited.
+        // This mirrors a pre-existing characteristic of the warm per-template
+        // arm this dispatch was built to match structurally (not a new gap
+        // #5118 introduces), accepted per design decision #4 (task #5118
+        // plan.json) so #5053's mechanical per-arm migration onto
+        // `commit_cell_result` stays uniform. See
+        // `eval_vs_eval_cached_merged_cluster_objective_cluster_may_diverge_by_solve_entrypoint`
+        // (tests/merged_cluster_solve.rs) for a test pinning this divergence
+        // explicitly with a solver whose two entry points disagree.
         let solve_result = self
             .lookup_solver_for_module(module)
             .expect("has_active_solver is true => solver lookup returns Some")

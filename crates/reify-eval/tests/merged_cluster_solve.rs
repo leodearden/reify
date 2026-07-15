@@ -1606,6 +1606,99 @@ fn eval_cached_merged_cluster_let_surfaces_co_solved_cross_scope_auto() {
     );
 }
 
+/// Pins the SECOND-consecutive-`eval_cached`-call staleness the SCOPE NOTE
+/// above (and `Engine::reeval_downstream_let_cones`'s doc, engine_eval.rs)
+/// documents but did not test (reviewer_comprehensive, task #5118 amendment,
+/// suggestion 3): `eval_cached` unconditionally rebuilds `self.eval_state` at
+/// the end of EVERY call with an empty `ReverseDependencyIndex::default()`,
+/// so the wave-2 downstream-let re-eval only finds real dependents on the
+/// FIRST warm call after a cold `eval()`. A SECOND consecutive `eval_cached`
+/// call whose merged solve produces a NEW co-solved auto value leaves B's
+/// downstream `let` cell (`B.out = A.k * 2`) STALE -- still reflecting the
+/// FIRST call's co-solved value -- even though the auto cell it reads
+/// (`A.k`) itself stays current (written unconditionally every call by the
+/// primary, non-wave-2 write-back loop). Tracked as a follow-up, task #5224,
+/// not fixed here; this test exists so a future reverse-index fix has a
+/// failing assertion to flip (suggested_fix: "add a test that asserts ... the
+/// second-call downstream-let staleness").
+#[test]
+fn eval_cached_second_consecutive_call_downstream_let_stays_stale_pending_5224() {
+    let module = two_cycle_cluster_with_cross_scope_let_module();
+
+    let a_k = ValueCellId::new("A", "k");
+    let b_m = ValueCellId::new("B", "m");
+    let b_out = ValueCellId::new("B", "out");
+
+    let mut cold_solved = HashMap::new();
+    cold_solved.insert(a_k.clone(), mm(1.0));
+    cold_solved.insert(b_m.clone(), mm(1.0));
+
+    let mut first_warm_solved = HashMap::new();
+    first_warm_solved.insert(a_k.clone(), mm(4.0));
+    first_warm_solved.insert(b_m.clone(), mm(1.0));
+
+    let mut second_warm_solved = HashMap::new();
+    second_warm_solved.insert(a_k.clone(), mm(10.0));
+    second_warm_solved.insert(b_m.clone(), mm(1.0));
+
+    let spy = MultiCallSpyConstraintSolver::new(vec![
+        SolveResult::Solved {
+            values: cold_solved,
+            unique: true,
+        },
+        SolveResult::Solved {
+            values: first_warm_solved,
+            unique: true,
+        },
+        SolveResult::Solved {
+            values: second_warm_solved,
+            unique: true,
+        },
+    ]);
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+
+    // Establish the warm precondition (see SCOPE NOTE above): cold eval()
+    // populates eval_state so the FIRST eval_cached's wave-2 can re-eval
+    // downstream lets.
+    engine.eval(&module);
+
+    // First warm call: wave-2 finds B.out's dependency on A.k via the
+    // populated reverse index and re-evaluates it -- matches
+    // `eval_cached_merged_cluster_let_surfaces_co_solved_cross_scope_auto`.
+    let result1 = engine.eval_cached(&module, VersionId(1));
+    assert_eq!(
+        result1.eval_result.values.get(&b_out),
+        Some(&mm(8.0)),
+        "first warm call: B.out must reflect the co-solved A.k (4mm -> 8mm)",
+    );
+
+    // Second consecutive warm call: eval_cached rebuilt self.eval_state at
+    // the end of the FIRST call with an empty reverse index, so THIS call's
+    // wave-2 finds no dependents for the newly co-solved A.k.
+    let result2 = engine.eval_cached(&module, VersionId(2));
+
+    assert_eq!(
+        result2.eval_result.values.get(&a_k),
+        Some(&mm(10.0)),
+        "A.k itself must stay current -- it is written unconditionally by \
+         the primary (non-wave-2) write-back loop every call, regardless of \
+         the reverse-index gap",
+    );
+    assert_eq!(
+        result2.eval_result.values.get(&b_out),
+        Some(&mm(8.0)),
+        "known limitation (task #5224): B.out is NOT re-evaluated against \
+         the second call's new A.k (10mm -> would be 20mm) -- it stays \
+         stale at the FIRST call's co-solved value because wave-2's \
+         reverse-index is empty on every call after the first. If this \
+         assertion starts failing with Some(mm(20.0)), #5224 has been fixed \
+         and this test (plus its doc comment and the SCOPE NOTE above) \
+         should be updated to match.",
+    );
+}
+
 /// Warm analog of `merged_cluster_skips_solver_when_every_auto_is_excluded`
 /// (above, cold `eval()`): when every auto cell a `MergedSolve` cluster
 /// contributed is a strict connector-instance auto, `eval_cached()`'s
@@ -1895,6 +1988,132 @@ fn eval_vs_eval_cached_merged_cluster_values_equal() {
             Some(&want),
             "{id:?}: a second warm recompute (VersionId(2)) must yield the \
              SAME co-solved value as the first",
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// amendment (reviewer_comprehensive, task #5118 amendment, suggestion 1/2):
+// pin the ONE documented, permitted cold/warm VALUE divergence this task
+// leaves open for objective-bearing clusters -- `.solve()` (warm) vs.
+// `.solve_ranked()` (cold) disagreeing on which optimum to return.
+// ---------------------------------------------------------------------------
+
+/// A solver whose `.solve()` and `.solve_ranked()` deliberately return
+/// DIFFERENT resolved values, modeling the REAL divergence documented at
+/// `SolverRegistry::solve_ranked` (reify-constraints/src/registry.rs): for a
+/// multi-basin, dim>=2 objective-bearing problem, best-of-K multistart can
+/// return a candidate that "is not guaranteed byte-identical" to the
+/// single-start `solve()` result (see
+/// `solve_ranked_multistart_dominates_single_start_solve`,
+/// reify-constraints/tests/solver_integration.rs). This is not a contrived
+/// mock-only quirk -- it is the same divergence CLASS a real solver exhibits;
+/// unlike `SpyConstraintSolver`/`IterationLimitRankedSolver` (which return
+/// the SAME values from both entry points), this spy makes the divergence
+/// observable.
+struct DivergentRankedSolver {
+    solve_values: HashMap<ValueCellId, Value>,
+    ranked_values: HashMap<ValueCellId, Value>,
+}
+
+impl ConstraintSolver for DivergentRankedSolver {
+    fn solve(&self, _problem: &ResolutionProblem) -> SolveResult {
+        SolveResult::Solved {
+            values: self.solve_values.clone(),
+            unique: true,
+        }
+    }
+
+    fn solve_ranked(&self, _problem: &ResolutionProblem) -> RankedSolveResult {
+        RankedSolveResult::Ranked {
+            candidates: vec![RankedCandidate {
+                values: self.ranked_values.clone(),
+                objective_score: Some(0.0),
+                unique: true,
+            }],
+            optimality: OptimalityStatus::BestFound {
+                reason: BestFoundReason::IterationLimit,
+            },
+        }
+    }
+}
+
+/// `eval_vs_eval_cached_merged_cluster_values_equal` (above) cannot detect
+/// the cold/warm divergence documented at `dispatch_merged_cluster_solve_cached`
+/// (engine_eval.rs, "Documented, PERMITTED cold/warm divergence") because
+/// `SpyConstraintSolver` returns the SAME canned result regardless of whether
+/// `.solve()` or `.solve_ranked()` is invoked -- a value-equality check alone
+/// is structurally blind to this divergence class (reviewer_comprehensive,
+/// task #5118 amendment, suggestion 2). This test uses `DivergentRankedSolver`
+/// to make the two entry points disagree and asserts the INTENTIONALLY-PINNED
+/// divergence explicitly: cold `eval()` (objective-bearing merged cluster ⇒
+/// `solve_ranked`) must take the RANKED candidate; warm `eval_cached()` (plain
+/// `.solve()`, unconditionally, per design decision #4) must take the SOLVE
+/// candidate. This is documented, accepted behavior, not a regression --
+/// see the "Documented, PERMITTED cold/warm divergence" comment cross-referenced
+/// above.
+#[test]
+fn eval_vs_eval_cached_merged_cluster_objective_cluster_may_diverge_by_solve_entrypoint() {
+    let module = spanning_objective_cluster_module();
+
+    let parent_total = ValueCellId::new("Parent", "total");
+    let child_a_cost = ValueCellId::new("ChildA", "cost");
+    let child_b_cost = ValueCellId::new("ChildB", "cost");
+
+    let mut solve_values = HashMap::new();
+    solve_values.insert(parent_total.clone(), mm(1.0));
+    solve_values.insert(child_a_cost.clone(), mm(2.0));
+    solve_values.insert(child_b_cost.clone(), mm(3.0));
+
+    // A DIFFERENT (better-basin) candidate that only `solve_ranked` finds.
+    let mut ranked_values = HashMap::new();
+    ranked_values.insert(parent_total.clone(), mm(0.5));
+    ranked_values.insert(child_a_cost.clone(), mm(0.2));
+    ranked_values.insert(child_b_cost.clone(), mm(0.3));
+
+    // Cold eval(): objective-bearing merged cluster -> solve_ranked() -> the
+    // RANKED (multistart-best) candidate.
+    let solver_a = DivergentRankedSolver {
+        solve_values: solve_values.clone(),
+        ranked_values: ranked_values.clone(),
+    };
+    let mut engine_a =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver_a));
+    let result_a = engine_a.eval(&module);
+
+    // Warm eval_cached(): merged dispatch always calls plain `.solve()` -> the
+    // single-start SOLVE candidate (design decision #4, task #5118 plan.json).
+    let solver_b = DivergentRankedSolver {
+        solve_values: solve_values.clone(),
+        ranked_values: ranked_values.clone(),
+    };
+    let mut engine_b =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(solver_b));
+    let result_b = engine_b.eval_cached(&module, VersionId(1));
+
+    for (id, cold_want, warm_want) in [
+        (&parent_total, mm(0.5), mm(1.0)),
+        (&child_a_cost, mm(0.2), mm(2.0)),
+        (&child_b_cost, mm(0.3), mm(3.0)),
+    ] {
+        assert_eq!(
+            result_a.values.get(id),
+            Some(&cold_want),
+            "{id:?}: cold eval() must take solve_ranked()'s top-ranked \
+             candidate for an objective-bearing merged cluster",
+        );
+        assert_eq!(
+            result_b.eval_result.values.get(id),
+            Some(&warm_want),
+            "{id:?}: warm eval_cached() must take plain .solve()'s result -- \
+             this is the documented, permitted cold/warm divergence for \
+             objective-bearing clusters (reviewer_comprehensive, task #5118 \
+             amendment), not a regression",
+        );
+        assert_ne!(
+            cold_want, warm_want,
+            "test setup sanity: cold_want/warm_want must actually differ, or \
+             this test pins nothing",
         );
     }
 }
