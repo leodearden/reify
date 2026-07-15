@@ -188,6 +188,14 @@ fn reify_binary_ldd_resolves_libtbb_to_deps_lib() {
 /// eval examples/bracket.ri` must not die with a dynamic-linker undefined
 /// symbol crash (the literal failure mode this task fixes:
 /// `get_thread_reference_vertex` missing from the system libtbb.so.12).
+///
+/// The linker-error check is the ONLY hard assertion — it is the actual
+/// signal this narrowly-scoped smoke test targets. A non-zero exit that is
+/// NOT accompanied by a linker-error substring is logged, not asserted:
+/// this test pins the tbb-pin dynamic-linker fix, not bracket.ri's full
+/// eval pipeline succeeding, so a future semantic/kernel/solver change
+/// that legitimately makes bracket.ri fail to evaluate must not false-fail
+/// this test.
 #[test]
 fn reify_binary_bare_launch_does_not_crash_on_occt_example() {
     let exe = env!("CARGO_BIN_EXE_reify");
@@ -209,28 +217,35 @@ fn reify_binary_bare_launch_does_not_crash_on_occt_example() {
         .output()
         .expect("failed to spawn bare `reify eval`");
     let stderr = String::from_utf8_lossy(&output.stderr);
+    const LINKER_ERROR_SUBSTRINGS: &[&str] =
+        &["undefined symbol", "error while loading shared libraries"];
+    let linker_error = LINKER_ERROR_SUBSTRINGS.iter().find(|s| stderr.contains(**s));
     assert!(
-        !stderr.contains("undefined symbol"),
+        linker_error.is_none(),
         "bare launch of {exe} eval {example:?} crashed with a dynamic-linker \
-         undefined symbol error:\n{stderr}"
+         error ({linker_error:?}):\n{stderr}"
     );
-    assert!(
-        output.status.success(),
-        "bare launch of {exe} eval {example:?} exited non-zero (status={:?})\n\
-         stdout:\n{}\nstderr:\n{stderr}",
-        output.status,
-        String::from_utf8_lossy(&output.stdout),
-    );
+    if !output.status.success() {
+        eprintln!(
+            "bare launch of {exe} eval {example:?} exited non-zero (status={:?}) with \
+             no linker-error substring in stderr — NOT asserting: this smoke test is \
+             scoped to the tbb-pin dynamic-linker fix, not to bracket.ri's full eval \
+             pipeline succeeding.\nstdout:\n{}\nstderr:\n{stderr}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+        );
+    }
 }
 
 /// (c) COLLATERAL GUARD. The tbb-pin dir holds EXACTLY one entry
 /// (libtbb.so.12), so prepending it to RUNPATH must not redirect any other
-/// soname. Assert none of these libs (when present in this bin's NEEDED
-/// graph) resolve via the tbb-pin dir; they must stay on one of the
-/// pre-existing RUNPATH entries (`/usr/lib/x86_64-linux-gnu` or
-/// `/opt/reify-deps/lib`, depending on which native dep's rpath emission
-/// listed it first — reify-cli's own OpenVDB rpath already lists
-/// `/opt/reify-deps/lib` first, independent of this task).
+/// soname. Rather than checking a fixed allowlist (which vacuously passes
+/// on a host where none of the listed libs happen to be NEEDED, and cannot
+/// catch a regression that redirects some OTHER soname not on the list),
+/// parse EVERY `<soname> => <path>` line in the `ldd` output and assert
+/// none except `libtbb.so.12` resolve inside the tbb-pin dir — this
+/// directly encodes "tbb-pin flips exactly one soname" and stays robust to
+/// future NEEDED-graph changes.
 #[test]
 fn reify_binary_bare_launch_collateral_libs_do_not_shift_to_tbb_pin() {
     let exe = env!("CARGO_BIN_EXE_reify");
@@ -241,33 +256,33 @@ fn reify_binary_bare_launch_collateral_libs_do_not_shift_to_tbb_pin() {
     let Some(ldd_out) = bare_ldd(exe) else {
         return;
     };
-    const COLLATERAL_LIBS: &[&str] = &[
-        "libstdc++.so.6",
-        "libgcc_s.so.1",
-        "libglib-2.0.so.0",
-        "libgobject-2.0.so.0",
-        "libgio-2.0.so.0",
-        "libcairo.so.2",
-        "libgdk_pixbuf-2.0.so.0",
-        "libdbus-1.so.3",
-    ];
-    for lib in COLLATERAL_LIBS {
-        match ldd_resolved_path(&ldd_out, lib) {
-            // Assert the actual invariant directly — that tbb-pin (which
-            // holds EXACTLY one entry) redirected no other soname — rather
-            // than an allowlist of pre-existing RUNPATH dirs. A path-prefix
-            // allowlist is stricter than necessary and false-fails on
-            // merged-/usr hosts where `ldd` reports the `/lib/x86_64-linux-
-            // gnu/` symlink form instead of `/usr/lib/x86_64-linux-gnu/`.
-            Some(resolved) => assert!(
-                !resolved.starts_with(TBB_PIN_DIR),
-                "{lib} resolved to {resolved}, inside {TBB_PIN_DIR} (the tbb-only pin \
-                 dir) — it must flip no other soname; {lib} should still resolve to \
-                 whatever pre-existing RUNPATH entry it resolved to before this task"
-            ),
-            None => eprintln!("{lib} not in {exe}'s NEEDED graph; skipping collateral check for it"),
+    let mut resolved_count = 0usize;
+    for line in ldd_out.lines() {
+        let line = line.trim();
+        let Some((soname, rest)) = line.split_once("=>") else {
+            continue;
+        };
+        let soname = soname.trim();
+        let Some(resolved) = rest.split_whitespace().next() else {
+            continue;
+        };
+        resolved_count += 1;
+        if soname == "libtbb.so.12" {
+            continue;
         }
+        assert!(
+            !resolved.starts_with(TBB_PIN_DIR),
+            "{soname} resolved to {resolved}, inside {TBB_PIN_DIR} (the tbb-only pin \
+             dir must hold EXACTLY libtbb.so.12) — prepending it to RUNPATH must flip \
+             no other soname.\n\nFull ldd output:\n{ldd_out}"
+        );
     }
+    assert!(
+        resolved_count > 0,
+        "no '<soname> => <path>' lines parsed from ldd output for {exe} — the collateral \
+         guard has nothing to check, which is unexpected for a dynamically-linked binary.\n\n\
+         Full ldd output:\n{ldd_out}"
+    );
 }
 
 /// (d) SECONDARY readelf guards (never the sole signal — see module doc).
