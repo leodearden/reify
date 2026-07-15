@@ -1783,10 +1783,27 @@ impl Engine {
                                     expr,
                                     &eval_ctx_with_meta(&values, &functions, &self.meta_map),
                                 );
-                                values.insert(mid.clone(), val.clone());
-                                new_snapshot
-                                    .values
-                                    .insert(mid.clone(), (val, DeterminacyState::Determined));
+                                // Commit via the cell-commit primitive (task δ
+                                // #5056): atomically writes values/snapshot/
+                                // journal while deliberately SKIPPING the
+                                // cache leg (U1 in the task's site inventory)
+                                // — preserves the pre-δ behaviour of never
+                                // caching a post-wave2 active-member reseed.
+                                commit_cell_result(
+                                    CommitLegs {
+                                        values: &mut values,
+                                        snapshot_values: &mut new_snapshot.values,
+                                        cache: &mut self.cache,
+                                        journal: &mut self.journal,
+                                    },
+                                    mid.clone(),
+                                    val,
+                                    DeterminacyRule::UnconditionalDetermined,
+                                    TraceSource::EditReeval,
+                                    DependencyTrace::default(),
+                                    VersionId(version_id),
+                                    CacheLeg::Skip("post-wave2 guard-member reseed"),
+                                );
                             }
                         }
                         Some(false) => {
@@ -2004,10 +2021,29 @@ impl Engine {
                         } else {
                             Value::Undef
                         };
-                        values.insert(scoped_id.clone(), val.clone());
-                        new_snapshot
-                            .values
-                            .insert(scoped_id, (val, DeterminacyState::Determined));
+                        // Commit via the cell-commit primitive (task δ
+                        // #5056): atomically writes values/snapshot/journal
+                        // while deliberately SKIPPING the cache leg (U2) — a
+                        // structural resize always removes+recreates every
+                        // instance (the removal loop above already calls
+                        // `self.cache.invalidate` on the old cells), so
+                        // caching here would just go stale on the NEXT
+                        // resize; this site has never cached these cells.
+                        commit_cell_result(
+                            CommitLegs {
+                                values: &mut values,
+                                snapshot_values: &mut new_snapshot.values,
+                                cache: &mut self.cache,
+                                journal: &mut self.journal,
+                            },
+                            scoped_id,
+                            val,
+                            DeterminacyRule::UnconditionalDetermined,
+                            TraceSource::EditReeval,
+                            DependencyTrace::default(),
+                            VersionId(version_id),
+                            CacheLeg::Skip("collection-resize child re-recorded by structural rebuild"),
+                        );
                     }
                 }
 
@@ -2024,10 +2060,27 @@ impl Engine {
                         &col_sub.parent_entity,
                         format!("__list_{}__{}", col_sub.sub_name, member),
                     );
-                    values.insert(member_list_id.clone(), member_list_val.clone());
-                    new_snapshot.values.insert(
+                    // Commit via the cell-commit primitive (task δ #5056):
+                    // atomically writes values/snapshot/journal while
+                    // deliberately SKIPPING the cache leg (U3) — the
+                    // synthetic aggregate is fully re-derived from the
+                    // (already-committed) child cells on every structural
+                    // resize, so it has never been an independently cached
+                    // node.
+                    commit_cell_result(
+                        CommitLegs {
+                            values: &mut values,
+                            snapshot_values: &mut new_snapshot.values,
+                            cache: &mut self.cache,
+                            journal: &mut self.journal,
+                        },
                         member_list_id,
-                        (member_list_val, DeterminacyState::Determined),
+                        member_list_val,
+                        DeterminacyRule::UnconditionalDetermined,
+                        TraceSource::EditReeval,
+                        DependencyTrace::default(),
+                        VersionId(version_id),
+                        CacheLeg::Skip("synthetic member-list aggregate"),
                     );
                 }
 
@@ -2391,10 +2444,28 @@ impl Engine {
                                 &eval_ctx_with_meta(&values, &functions, &self.meta_map)
                                     .with_runtime_diagnostics(&runtime_sink),
                             );
-                            values.insert(vcid.clone(), val.clone());
-                            new_snapshot
-                                .values
-                                .insert(vcid.clone(), (val, DeterminacyState::Determined));
+                            // Commit via the cell-commit primitive (task δ
+                            // #5056): atomically writes values/snapshot/
+                            // journal while deliberately SKIPPING the cache
+                            // leg (U4) — a grown cell reseeded here is
+                            // brand-new to this snapshot generation (never
+                            // cached before), and mirrors U1/U2/U3 in never
+                            // caching a post-structural-grow reseed.
+                            commit_cell_result(
+                                CommitLegs {
+                                    values: &mut values,
+                                    snapshot_values: &mut new_snapshot.values,
+                                    cache: &mut self.cache,
+                                    journal: &mut self.journal,
+                                },
+                                vcid.clone(),
+                                val,
+                                DeterminacyRule::UnconditionalDetermined,
+                                TraceSource::EditReeval,
+                                DependencyTrace::default(),
+                                VersionId(version_id),
+                                CacheLeg::Skip("grown-instance reseed after structural grow (θ2)"),
+                            );
                         }
                         self.last_eval_set.push(node_id.clone());
                     }
