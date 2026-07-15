@@ -230,8 +230,8 @@ impl Engine {
         // Roll back the snapshot/version ID bumps done in prepare_concurrent_edit.
         // Safe because no external observer has seen these IDs yet — they only
         // exist in the ConcurrentEditSetup which is being discarded.
-        self.next_snapshot_id = setup.snapshot_id.0;
-        self.next_version_id = setup.version.0;
+        self.next_snapshot_id = setup.snapshot_id.0; // version-id-gate: allow — setup restore, not allocation
+        self.next_version_id = setup.version.0; // version-id-gate: allow — setup restore, not allocation
     }
 
     /// Apply the results of concurrent evaluation back to the Engine.
