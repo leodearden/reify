@@ -407,6 +407,36 @@ pub fn save_file_impl(path: &str, content: &str) -> Result<(), String> {
     std::fs::write(path, content).map_err(|e| format!("Error writing {}: {}", path, e))
 }
 
+/// A [`GuiState`] fresh out of [`load_file_into_engine`], whose `files[].path`
+/// entries are still stem-only module keys rather than canonical absolute
+/// paths. The only way to get a plain [`GuiState`] back out is
+/// [`resolve`](Self::resolve) — that keeps the rewrite step paired with the
+/// load at the type level, so a future call site cannot return the
+/// unresolved state directly (or forget the rewrite) and silently ship
+/// stem-only paths to the frontend, which is exactly the class of identity
+/// bug task #5193 fixed (task #5193 review).
+pub(crate) struct UnresolvedGuiState(GuiState);
+
+impl UnresolvedGuiState {
+    /// Rewrite each stem-only `files[].path` entry to a canonical absolute
+    /// path, resolved against `canonical`'s parent directory, and unwrap to
+    /// a plain `GuiState`.
+    ///
+    /// Note: `engine.source_map()` stores entries under `module_key(name)` =
+    /// `"{name}.ri"` (a stem-only key). This gives callers a stable absolute
+    /// identity key regardless of how the original input path was spelled.
+    ///
+    /// Deliberately a separate step from [`load_file_into_engine`] (task
+    /// #5193 review): it is filesystem I/O that touches no engine state, so
+    /// callers call this AFTER releasing the engine lock that produced
+    /// `self`, rather than holding the mutex across N
+    /// `std::fs::canonicalize` syscalls.
+    pub(crate) fn resolve(mut self, canonical: &Path) -> GuiState {
+        rewrite_files_to_abs(&mut self.0, canonical);
+        self.0
+    }
+}
+
 /// Load `canonical` into the engine, adopting its identity via
 /// `EngineSession::load_file` (`FilePathUpdate::Set`).
 ///
@@ -415,30 +445,23 @@ pub fn save_file_impl(path: &str, content: &str) -> Result<(), String> {
 /// (the debug bridge's open_file/load_fixture funnel) — so the load_file
 /// call cannot drift between them again (task #5193).
 ///
-/// Callers MUST follow up with [`rewrite_files_to_abs`] on the returned
-/// `GuiState`. That step is deliberately NOT inlined here (task #5193
-/// review): it is filesystem I/O that touches no engine state, so callers
-/// run it AFTER releasing the engine lock rather than holding the mutex
-/// across N `std::fs::canonicalize` syscalls.
+/// Returns an [`UnresolvedGuiState`]: callers MUST call
+/// [`UnresolvedGuiState::resolve`] to obtain a `GuiState` fit to hand to a
+/// caller. See that method's docs for why the step is separate rather than
+/// inlined here.
 pub(crate) fn load_file_into_engine(
     session: &mut EngineSession,
     canonical: &Path,
-) -> Result<GuiState, String> {
-    session.load_file(canonical)
+) -> Result<UnresolvedGuiState, String> {
+    session.load_file(canonical).map(UnresolvedGuiState)
 }
 
 /// Rewrite each stem-only `GuiState::files[].path` entry to a canonical
 /// absolute path, resolved against `canonical`'s parent directory.
 ///
-/// Note: `engine.source_map()` stores entries under `module_key(name)` =
-/// `"{name}.ri"` (a stem-only key). This gives callers a stable absolute
-/// identity key regardless of how the original input path was spelled.
-///
-/// Must be called on the `GuiState` returned by [`load_file_into_engine`],
-/// AFTER the engine lock that call was made under has been released:
-/// canonicalizing paths touches no engine state, so it does not need the
-/// lock (task #5193 review).
-pub(crate) fn rewrite_files_to_abs(state: &mut GuiState, canonical: &Path) {
+/// Private implementation detail of [`UnresolvedGuiState::resolve`], the
+/// only caller — kept as a separate function for readability.
+fn rewrite_files_to_abs(state: &mut GuiState, canonical: &Path) {
     if let Some(entry_dir) = canonical.parent() {
         for f in &mut state.files {
             let resolved = entry_dir.join(&f.path);
@@ -455,21 +478,20 @@ pub(crate) fn rewrite_files_to_abs(state: &mut GuiState, canonical: &Path) {
 /// [`crate::path_key::canonicalize_document_key`] before being passed to
 /// [`load_file_into_engine`], which propagates the canonical key into the
 /// engine's `file_path` field (used later by `update_source` for import
-/// resolution). [`rewrite_files_to_abs`] then runs AFTER the engine lock is
-/// released, so the returned [`GuiState::files`] contains absolute paths
-/// rather than bare module-key filenames without the engine mutex being
-/// held across the canonicalize filesystem calls (task #5193 review).
+/// resolution). [`UnresolvedGuiState::resolve`] then runs AFTER the engine
+/// lock is released, so the returned [`GuiState::files`] contains absolute
+/// paths rather than bare module-key filenames without the engine mutex
+/// being held across the canonicalize filesystem calls (task #5193 review).
 pub fn open_file_engine_impl(
     engine: &Mutex<EngineSession>,
     path: &str,
 ) -> Result<GuiState, String> {
     let canonical = crate::path_key::canonicalize_document_key(path);
-    let mut state = crate::engine_lock::with_engine_lock(engine, |s| {
+    let state = crate::engine_lock::with_engine_lock(engine, |s| {
         load_file_into_engine(s, Path::new(&canonical))
     })
     .and_then(std::convert::identity)?;
-    rewrite_files_to_abs(&mut state, Path::new(&canonical));
-    Ok(state)
+    Ok(state.resolve(Path::new(&canonical)))
 }
 
 /// Resolve the CLI argv path to a canonical [`PathBuf`] suitable for
