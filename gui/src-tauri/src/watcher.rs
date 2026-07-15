@@ -145,7 +145,15 @@ impl FileWatcher {
     /// debounce), so a non-atomic write (e.g. truncate followed by a
     /// separate append) coalesces into a single callback firing that
     /// observes the final on-disk content rather than a transient partial
-    /// buffer.
+    /// buffer. This is a deliberate tradeoff: it adds a fixed
+    /// ~`DEBOUNCE_DURATION` minimum latency to *every* change notification,
+    /// including ordinary atomic saves that a leading-edge throttle would
+    /// have fired instantly. For this GUI's live-reload use case that
+    /// ~100ms delay is imperceptible next to the correctness win of never
+    /// getting stuck on a partially-written file; a hybrid leading+trailing
+    /// scheme (fire immediately, then also coalesce the tail) was considered
+    /// and rejected to keep the debounce/coalescing contract in one
+    /// deterministically-testable code path (see [`Debouncer`]).
     ///
     /// `callback` runs on a dedicated worker thread and **must not block
     /// for an unbounded time**: [`Drop`] joins that worker to shut it down
