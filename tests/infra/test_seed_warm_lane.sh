@@ -2027,4 +2027,87 @@ assert "H4: seed exits 0 (async trash rm spawned)" test "$RC" -eq 0
 assert "H4: lane lock is re-acquirable immediately after seed exits (no FD-9 leak to background rm)" \
     bash -c 'exec 8>"$1"; flock -n 8' _ "$Q_LOCK4"
 
+# ── H5: bounded-wait "queue" via REIFY_WARM_LANE_LANE_LOCK_WAIT ─────────────
+# A refused acquirer of the SINGLETON _merge-verify lane has no alternate
+# FREE lane to fall back to, so the WAIT knob lets --lane-lock QUEUE (bounded
+# flock -w N) instead of refusing instantly (flock -n, the WAIT-unset
+# default from H1-H4 above).
+#
+# H5a: lock HELD (same backgrounded flock -x holder + _wait_for_reader_lock
+# causal handshake as H1) + WAIT=1 -> still refuses (75), but only AFTER the
+# bounded wait elapses -- i.e. it queued, it did not refuse at 0s like H1.
+# SECONDS is a plain lower-bound check (-ge, not -le/-lt) so it cannot be a
+# flaky wall-clock UPPER bound (tests/infra/test_no_new_wallclock_upper_bounds.sh
+# only flags -le/-lt time comparisons; a slower CI host only ever makes an
+# elapsed-queued wait LONGER, never shorter, so -ge 1 cannot flake high).
+Q_LANE5="$(mktemp -d /tmp/test-seed-Q-lane5-XXXXXX)"
+_TMPDIRS+=("$Q_LANE5")
+mkdir -p "$Q_LANE5/target"
+echo "sentinel content" > "$Q_LANE5/target/SENTINEL.txt"
+
+Q_LOCK5="${Q_LANE5}.lock"
+_TMPDIRS+=("$Q_LOCK5")
+Q_READY5="${Q_LOCK5}.ready-marker"
+_TMPDIRS+=("$Q_READY5")
+touch "$Q_LOCK5"
+( flock -x 9 && touch "$Q_READY5" && sleep 300 ) 9>"$Q_LOCK5" &
+Q_LOCK5_PID=$!
+_BGPIDS+=("$Q_LOCK5_PID")
+_wait_for_reader_lock "$Q_READY5" 30
+
+reset_calls
+SECONDS=0
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_WARM_LANE_LANE_LOCK_WAIT=1 \
+    run_helper_real "$Q_BASE" "$Q_LANE5" --fresh-checkout --lane-lock
+Q_H5A_WAITED_S=$SECONDS
+
+assert "H5a: lock held + WAIT=1 -> exit 75 (EX_TEMPFAIL) after the bounded wait" \
+    test "$RC" -eq 75
+assert "H5a: bounded wait actually elapsed (queued, not an instant refuse like H1)" \
+    test "$Q_H5A_WAITED_S" -ge 1
+assert "H5a: sentinel file in <lane>/target still present (lane NOT clobbered)" \
+    test -f "$Q_LANE5/target/SENTINEL.txt"
+assert "H5a: cp NEVER invoked (refused before clone)" \
+    bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
+
+kill "$Q_LOCK5_PID" 2>/dev/null || true
+wait "$Q_LOCK5_PID" 2>/dev/null || true
+
+# H5b: lock FREE + WAIT=1 -> succeeds exactly as H2 (the knob only changes
+# behavior when the lock is contended; an uncontended flock -w N acquires on
+# the very first try, same as flock -n or a bare blocking flock).
+Q_LANE6="$(mktemp -d /tmp/test-seed-Q-lane6-XXXXXX)"
+_TMPDIRS+=("$Q_LANE6")
+mkdir -p "$Q_LANE6/target"
+echo "sentinel content" > "$Q_LANE6/target/SENTINEL.txt"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_WARM_LANE_LANE_LOCK_WAIT=1 \
+    run_helper_real "$Q_BASE" "$Q_LANE6" --fresh-checkout --lane-lock
+
+assert "H5b: lock free + WAIT=1 -> exit 0" test "$RC" -eq 0
+assert "H5b: STDOUT is exactly <lane_dir>/target" \
+    bash -c '[ "$1" = "'"$Q_LANE6/target"'" ]' _ "$OUT"
+assert "H5b: sentinel file GONE (target was replaced from base)" \
+    bash -c '[ ! -e "'"$Q_LANE6/target/SENTINEL.txt"'" ]'
+
+# H5c: invalid WAIT knob value ("abc") -> usage error (exit 64), no target
+# mutation -- rejected before the flock is even attempted.
+Q_LANE7="$(mktemp -d /tmp/test-seed-Q-lane7-XXXXXX)"
+_TMPDIRS+=("$Q_LANE7")
+mkdir -p "$Q_LANE7/target"
+echo "sentinel content" > "$Q_LANE7/target/SENTINEL.txt"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_WARM_LANE_LANE_LOCK_WAIT=abc \
+    run_helper_real "$Q_BASE" "$Q_LANE7" --fresh-checkout --lane-lock
+
+assert "H5c: invalid WAIT knob ('abc') -> exit 64 (usage error)" test "$RC" -eq 64
+assert "H5c: stderr names the invalid knob (REIFY_WARM_LANE_LANE_LOCK_WAIT)" \
+    bash -c 'printf "%s\n" "$1" | grep -q "REIFY_WARM_LANE_LANE_LOCK_WAIT"' _ "$ERR_OUT"
+assert "H5c: sentinel file in <lane>/target still present (no target mutation)" \
+    test -f "$Q_LANE7/target/SENTINEL.txt"
+assert "H5c: cp NEVER invoked (rejected before any mutation)" \
+    bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
+
 test_summary
