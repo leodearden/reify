@@ -159,6 +159,7 @@ pub use dispatcher::{
     no_kernel_chain_diagnostic, per_stage_tolerance_for_plan, pinned_kernel_missing_diagnostic,
     unpinned_kernel_loaded_diagnostic,
 };
+pub use engine_build::forward_solid_attribute_on_ingest;
 pub use geometry_ops::try_eval_ad_hoc_selector;
 pub use kernel_attribute_hook::propagate_via_kernel_attribute_hook;
 pub use kernel_registry::{

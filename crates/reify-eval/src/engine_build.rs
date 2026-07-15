@@ -83,6 +83,44 @@ fn kernel_id_for_registry_name(name: &str) -> KernelId {
     KernelId::from_registry_name(name).unwrap_or(KernelId::Occt)
 }
 
+/// Forward a solid-level `TopologyAttribute` entry across the OCCT->Manifold
+/// ingest seam (task #4636, LINK1).
+///
+/// A pure table op: `table.lookup(source).cloned()` then, on a hit,
+/// `table.record(target, attr)`. No-op on a source miss (a non-seeded parent
+/// — e.g. a non-primitive result feeding the conversion — degrades
+/// gracefully to the existing `Ok(KernelAttributeOutcome::Discarded)` path
+/// rather than panicking or erroring).
+///
+/// Called from the `'convert:` loop below immediately after a successful
+/// `target_kernel.ingest_mesh(&mesh)`, forwarding `{source_kernel_id, pid}`
+/// (the pre-conversion parent handle, seeded by [`record_solid_attribute`]
+/// at the engine seed site) onto `{target_kernel_id, handle.id}` (the fresh
+/// ingested handle). This is what lets
+/// `ManifoldKernel::propagate_attributes`'s `parent_map` lookup — keyed on
+/// the SOLID parent handle — hit instead of missing.
+///
+/// Deliberately solid-granularity, not per-face: a per-face forward would
+/// need `source_kernel.extract_faces(pid)`, which requires a `&mut` borrow
+/// of the source kernel that conflicts with the concurrent `&mut
+/// target_kernel` borrow already live at the ingest call site, and Manifold's
+/// `parent_map` is keyed by per-solid `original_id()` regardless (a per-face
+/// forward would have nothing coarser to attach to at this layer). Per-face
+/// result-face persistence is deferred to #4263.
+///
+/// [`record_solid_attribute`]: crate::primitive_attribute_seed::record_solid_attribute
+pub fn forward_solid_attribute_on_ingest(
+    table: &mut TopologyAttributeTable,
+    source: KernelHandle,
+    target: KernelHandle,
+) {
+    if let Some(attr) = table.lookup(source).cloned() {
+        table.record(target, attr);
+    }
+    // TODO(#4263): forward per-face attributes via extract_faces for
+    // descriptor-keyed result-face persistence (LINK3).
+}
+
 /// Per-op kind for `populate_single_parent_sweep_op` — the three single-
 /// parent sweep variants (extrude, revolve, sweep) that share the
 /// `SweepOpHistoryRecords` shape but emit different per-op
