@@ -658,4 +658,106 @@ mod tests {
             );
         }
     }
+
+    /// Covers `MassPropertiesPsdDetector`'s fast early-out guard
+    /// (`has_mass_props == false` → `return`), which no other test
+    /// exercises: [`mass_properties_psd_detector_flags_and_replaces_deterministically`]
+    /// always seeds at least one `MassProperties` cell, and
+    /// [`same_post_pass_state_yields_same_diagnostic_set`] only runs the
+    /// `FixedMarkerDetector` test doubles, never `with_builtins()`. Runs
+    /// the real registry against a state with no `MassProperties` cell at
+    /// all — a decoy `StructureInstance` of a *different* `type_name`, plus
+    /// a plain non-struct value — and asserts a complete no-op: zero
+    /// diagnostics, every value and snapshot entry byte-identical to what
+    /// was seeded. If the guard were ever inverted or dropped, this test
+    /// would fail.
+    #[test]
+    fn mass_properties_psd_detector_is_a_no_op_without_mass_properties_cells() {
+        let other_struct_cell = ValueCellId::new("BodyX", "other_struct");
+        let other_struct_value = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "NotMassProperties".to_string(),
+            version: 0,
+            fields: PersistentMap::new(),
+        }));
+        let plain_cell = ValueCellId::new("BodyY", "plain");
+        let plain_value = Value::Real(42.0);
+
+        let entries = [
+            (other_struct_cell.clone(), other_struct_value.clone()),
+            (plain_cell.clone(), plain_value.clone()),
+        ];
+        let mut state = OwnedState::seeded(&entries);
+
+        let registry = DetectorRegistry::with_builtins();
+        assert!(registry.ids().contains(&"mass-properties-psd"));
+        registry.run_all(&mut state.as_state());
+
+        assert!(
+            state.diagnostics.is_empty(),
+            "expected no diagnostics when no MassProperties cell is present, got {:?}",
+            diag_keys(&state.diagnostics)
+        );
+        assert_eq!(
+            state.values.get(&other_struct_cell),
+            Some(&other_struct_value)
+        );
+        assert_eq!(state.values.get(&plain_cell), Some(&plain_value));
+        assert_eq!(
+            state.snapshot_values.get(&other_struct_cell),
+            Some(&(other_struct_value, DeterminacyState::Determined))
+        );
+        assert_eq!(
+            state.snapshot_values.get(&plain_cell),
+            Some(&(plain_value, DeterminacyState::Determined))
+        );
+    }
+
+    /// Pins the FIXED diagnostic wording (excluding the interpolated cell
+    /// id and the non-PSD message's `{:.3e}`-formatted eigenvalue, to avoid
+    /// a fragile numeric-format premise) against the characterization
+    /// source it mirrors, `engine_eval.rs:4662-4762` — see
+    /// [`MassPropertiesPsdDetector`]'s drift-warning doc comment. A wording
+    /// change to either message that isn't mirrored on the other side is
+    /// caught here rather than silently drifting.
+    #[test]
+    fn mass_properties_psd_detector_messages_match_characterization_wording() {
+        let malformed_cell = ValueCellId::new("BodyC", "mass_props");
+        let malformed_value = mass_properties(Some(Value::Matrix(vec![
+            vec![Value::Real(1.0), Value::Real(0.0)],
+            vec![Value::Real(0.0), Value::Real(1.0)],
+        ])));
+        let neg_eig_cell = ValueCellId::new("BodyB", "mass_props");
+        let neg_eig_value = mass_properties(Some(matrix3([
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, -1.0],
+        ])));
+
+        let entries = [
+            (malformed_cell, malformed_value),
+            (neg_eig_cell, neg_eig_value),
+        ];
+        let mut state = OwnedState::seeded(&entries);
+        DetectorRegistry::with_builtins().run_all(&mut state.as_state());
+
+        let messages: Vec<&str> = state
+            .diagnostics
+            .iter()
+            .map(|d| d.message.as_str())
+            .collect();
+
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.contains("inertia field cannot be parsed as a 3×3 numeric matrix")),
+            "malformed message wording drifted from engine_eval.rs:4662-4762; got {messages:?}"
+        );
+        assert!(
+            messages.iter().any(|m| m.contains(
+                "inertia tensor is not positive semi-definite (min eigenvalue ≈ "
+            )),
+            "non-PSD message wording drifted from engine_eval.rs:4662-4762; got {messages:?}"
+        );
+    }
 }
