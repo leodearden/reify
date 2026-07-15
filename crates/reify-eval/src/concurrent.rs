@@ -658,6 +658,53 @@ mod tests {
         assert_eq!(snap_det, &DeterminacyState::Determined);
     }
 
+    /// step-1 (task 5044/γ): Characterization lock on prepare_concurrent_edit's
+    /// snapshot/version numbering, pinned BEFORE migrating the raw counter bump
+    /// (concurrent.rs:170-173) to `Engine::allocate_snapshot_version()`
+    /// (INV-BUILD-2, engine_admin.rs:399). Must stay GREEN after the migration —
+    /// the allocator performs the same read-then-+=1 on both counters, so the
+    /// numbering is byte-identical. Deltas are taken from freshly-captured
+    /// baselines (no hardcoded absolute ids) so the test is order-independent.
+    #[test]
+    fn prepare_concurrent_edit_numbering_is_byte_identical() {
+        use reify_test_support::bracket_compiled_module;
+        use reify_test_support::mocks::MockConstraintChecker;
+
+        let module = bracket_compiled_module();
+        let checker = MockConstraintChecker::new();
+        let mut engine = Engine::new(Box::new(checker), None);
+        let _initial = engine.eval(&module);
+
+        let before_snapshot = engine.next_snapshot_id;
+        let before_version = engine.next_version_id;
+
+        let width_id = ValueCellId::new("Bracket", "width");
+        let setup = engine
+            .prepare_concurrent_edit(width_id, Value::length(0.1))
+            .unwrap();
+
+        assert_eq!(
+            setup.snapshot_id,
+            SnapshotId(before_snapshot),
+            "setup.snapshot_id must mint the pre-call next_snapshot_id value"
+        );
+        assert_eq!(
+            setup.version,
+            VersionId(before_version),
+            "setup.version must mint the pre-call next_version_id value"
+        );
+        assert_eq!(
+            engine.next_snapshot_id - before_snapshot,
+            1,
+            "next_snapshot_id must advance by exactly 1 across the call"
+        );
+        assert_eq!(
+            engine.next_version_id - before_version,
+            1,
+            "next_version_id must advance by exactly 1 across the call"
+        );
+    }
+
     /// step-7 (revised): When eval_duration is None, apply_concurrent_edit falls
     /// back to `start.elapsed()` for the journal Completed event's Duration payload.
     ///
