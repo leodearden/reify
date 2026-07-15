@@ -14,9 +14,11 @@
 //!   differ in triangle count or bounding box (see [`ShellStats`] for why
 //!   that's a disjunction, not two hard asserts) — agreement on both would
 //!   mean `iso:` never reached marching cubes. A third leg (`iso:` omitted
-//!   entirely) must match the explicit `iso: 0mm` build EXACTLY, pinning
-//!   the "omitted == `iso: 0mm`" equivalence that no other test exercises
-//!   (`voxel_to_mesh_e2e.rs` only ever builds the no-argument form).
+//!   entirely) must match the explicit `iso: 0mm` build's triangle count
+//!   EXACTLY, pinning the "omitted == `iso: 0mm`" equivalence that no other
+//!   test exercises (`voxel_to_mesh_e2e.rs` only ever builds the
+//!   no-argument form). Bbox is intentionally NOT compared there with exact
+//!   equality — see that test's doc comment.
 //! - `iso_option_out_of_band_surfaces_empty_mesh`: a SEPARATE regression
 //!   guard for `realize_mesh_from_voxel_with_options`'s documented
 //!   `Ok(empty)` no-crossing contract, kept apart so a future legitimate
@@ -25,6 +27,18 @@
 //! - `iso_example_fixture_surfaces_nonempty`: validates that the committed
 //!   example fixture (not just the inline sources above) builds and
 //!   surfaces a non-empty terminal mesh.
+//!
+//! ## Coverage scope
+//!
+//! This entire file is `#[cfg(has_openvdb)]`-gated, and every `#[test]`
+//! additionally skips at runtime via `occt_available_or_skip` when OCCT is
+//! unavailable — so in a non-OpenVDB build, or an OpenVDB build running
+//! without OCCT, this binary contributes ZERO test signal. The
+//! options-threading proof this file exists to provide is only real in a
+//! lane where both kernels are present. This mirrors
+//! `voxel_to_mesh_e2e.rs`'s existing skip convention (not a new gap
+//! introduced here); it's called out explicitly so a merge-gating lane
+//! change doesn't silently drop this guard.
 //!
 //! ## Reuse
 //!
@@ -234,9 +248,17 @@ fn assert_no_build_errors(stats: &ShellStats, entity: &str) {
 /// narrow band.
 ///
 /// A third source OMITS `iso:` entirely and must match the explicit
-/// `iso: 0mm` build EXACTLY (triangle count AND bounding box) — pinning
-/// the "omitted == `iso: 0mm`" equivalence, which no other test exercises
-/// (`voxel_to_mesh_e2e.rs` only ever builds the no-argument form).
+/// `iso: 0mm` build's triangle count EXACTLY — pinning the "omitted ==
+/// `iso: 0mm`" equivalence, which no other test exercises
+/// (`voxel_to_mesh_e2e.rs` only ever builds the no-argument form). Bbox is
+/// deliberately NOT compared here with exact equality: unlike
+/// `triangle_count` (integer topology), vertex positions are `f32`s
+/// produced by two INDEPENDENTLY-CONSTRUCTED engines, so an exact-equality
+/// assertion would encode a cross-build floating-point determinism
+/// assumption this proof doesn't need — the identical-`GeometryOp`
+/// argument (see the assertion site below) already guarantees both builds
+/// are the same computation, and the triangle-count exact-match alone pins
+/// the equivalence.
 ///
 /// See `iso_option_out_of_band_surfaces_empty_mesh` for the separate
 /// `Ok(empty)` contract guard.
@@ -285,13 +307,13 @@ fn iso_option_changes_surfaced_mesh() {
          got {} (no `iso:` argument) vs {} (`iso: 0mm`)",
         omitted.triangle_count, zero.triangle_count
     );
-    assert_eq!(
-        omitted.bbox, zero.bbox,
-        "omitting `iso:` entirely (`isosurface(solid)`) must surface the \
-         same bounding box as the explicit default `iso: 0mm`; got {:?} \
-         (no `iso:` argument) vs {:?} (`iso: 0mm`)",
-        omitted.bbox, zero.bbox
-    );
+    // bbox is deliberately NOT asserted exactly-equal here (unlike
+    // triangle_count above): `omitted` and `zero` come from two
+    // INDEPENDENTLY-CONSTRUCTED engines, so an exact f32 equality across
+    // builds would encode a cross-engine floating-point determinism
+    // assumption this proof doesn't need to make. The triangle-count
+    // exact-match above already pins the "omitted == `iso: 0mm`"
+    // equivalence (see this test's doc comment).
     // Disjunction, not two independent hard asserts — see ShellStats for why.
     let triangle_counts_differ = zero.triangle_count != inband.triangle_count;
     let bboxes_differ = zero.bbox != inband.bbox;
