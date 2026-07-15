@@ -22504,6 +22504,38 @@
     // added to this trio symmetric with the existing three rather than
     // collapsing them.
 
+    /// Test-setup helper (review amendment, task #5120 R2c,
+    /// reviewer_comprehensive suggestion #2 — test-duplication): every
+    /// composition/named-leaf test below hand-rolls the same symbolic
+    /// (`kernel_handle == None`) `Value::GeometryHandle` insertion — same
+    /// `RealizationNodeId::new(entity, index)` + `upstream_values_hash` +
+    /// `kernel_handle: None` shape, varying only `entity`/`cell_name`/
+    /// `index`/hash. Factored here so the ValueMap/handle boilerplate lives
+    /// in one place while every operator/case keeps its own independently-
+    /// named `#[test]` and assertions (per the NOTE above — this helper only
+    /// dedupes SETUP, it does not collapse the tests). Returns the
+    /// `RealizationNodeId` for the tests that assert `target.realization_ref`
+    /// against it later.
+    fn insert_symbolic_geometry_handle(
+        values: &mut reify_ir::ValueMap,
+        entity: &str,
+        cell_name: &str,
+        realization_index: u32,
+        uvh: [u8; 32],
+    ) -> reify_core::identity::RealizationNodeId {
+        use reify_core::identity::{RealizationNodeId, ValueCellId};
+        let rr = RealizationNodeId::new(entity, realization_index);
+        values.insert(
+            ValueCellId::new(entity, cell_name),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: uvh,
+                kernel_handle: None,
+            },
+        );
+        rr
+    }
+
     /// `union(faces_by_normal(b,up,tol), faces_by_normal(b,down,tol))` over a
     /// SYMBOLIC body handle (`kernel_handle == None`) must yield
     /// `Some(Value::Selector(Face))` with a `SelectorNode::Union` of two Leaf
@@ -22511,24 +22543,15 @@
     /// Mirrors BT2 (`bt2_same_kind_union.ri`).
     #[test]
     fn try_eval_symbolic_topology_selector_union_of_inline_nested_leaves() {
-        use reify_core::identity::{RealizationNodeId, ValueCellId};
+        use reify_core::identity::ValueCellId;
         use reify_core::DimensionVector;
         use reify_ir::value::{LeafQuery, SelectorNode};
 
         let entity = "R2cUnion";
-        let rr = RealizationNodeId::new(entity, 0);
-        let uvh: [u8; 32] = [0x5Cu8; 32];
         let tol_rad = std::f64::consts::PI / 180.0;
 
         let mut values = reify_ir::ValueMap::new();
-        values.insert(
-            ValueCellId::new(entity, "body"),
-            reify_ir::Value::GeometryHandle {
-                realization_ref: rr.clone(),
-                upstream_values_hash: uvh,
-                kernel_handle: None,
-            },
-        );
+        let rr = insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0x5Cu8; 32]);
         values.insert(
             ValueCellId::new(entity, "up"),
             reify_ir::Value::Vector(vec![
@@ -22634,24 +22657,15 @@
     /// Mirrors BT3's intersect half (`bt3_difference_intersect.ri`).
     #[test]
     fn try_eval_symbolic_topology_selector_intersect_of_inline_nested_leaves() {
-        use reify_core::identity::{RealizationNodeId, ValueCellId};
+        use reify_core::identity::ValueCellId;
         use reify_core::DimensionVector;
         use reify_ir::value::{LeafQuery, SelectorNode};
 
         let entity = "R2cIntersect";
-        let rr = RealizationNodeId::new(entity, 0);
-        let uvh: [u8; 32] = [0x5Du8; 32];
         let tol_rad = std::f64::consts::PI / 180.0;
 
         let mut values = reify_ir::ValueMap::new();
-        values.insert(
-            ValueCellId::new(entity, "body"),
-            reify_ir::Value::GeometryHandle {
-                realization_ref: rr.clone(),
-                upstream_values_hash: uvh,
-                kernel_handle: None,
-            },
-        );
+        insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0x5Du8; 32]);
         values.insert(
             ValueCellId::new(entity, "up"),
             reify_ir::Value::Vector(vec![
@@ -22752,24 +22766,15 @@
     /// symbolic Leaf nodes. Mirrors BT3's difference half.
     #[test]
     fn try_eval_symbolic_topology_selector_difference_of_inline_nested_leaves() {
-        use reify_core::identity::{RealizationNodeId, ValueCellId};
+        use reify_core::identity::ValueCellId;
         use reify_core::DimensionVector;
         use reify_ir::value::SelectorNode;
 
         let entity = "R2cDifference";
-        let rr = RealizationNodeId::new(entity, 0);
-        let uvh: [u8; 32] = [0x5Eu8; 32];
         let tol_rad = std::f64::consts::PI / 180.0;
 
         let mut values = reify_ir::ValueMap::new();
-        values.insert(
-            ValueCellId::new(entity, "body"),
-            reify_ir::Value::GeometryHandle {
-                realization_ref: rr.clone(),
-                upstream_values_hash: uvh,
-                kernel_handle: None,
-            },
-        );
+        insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0x5Eu8; 32]);
         values.insert(
             ValueCellId::new(entity, "up"),
             reify_ir::Value::Vector(vec![
@@ -22853,26 +22858,12 @@
     /// mis-constructed selector.
     #[test]
     fn try_eval_symbolic_topology_selector_union_returns_none_for_non_selector_operands() {
-        use reify_core::identity::{RealizationNodeId, ValueCellId};
+        use reify_core::identity::ValueCellId;
 
         let entity = "R2cSolidBoolean";
         let mut values = reify_ir::ValueMap::new();
-        values.insert(
-            ValueCellId::new(entity, "box_a"),
-            reify_ir::Value::GeometryHandle {
-                realization_ref: RealizationNodeId::new(entity, 0),
-                upstream_values_hash: [0x01u8; 32],
-                kernel_handle: None,
-            },
-        );
-        values.insert(
-            ValueCellId::new(entity, "box_b"),
-            reify_ir::Value::GeometryHandle {
-                realization_ref: RealizationNodeId::new(entity, 1),
-                upstream_values_hash: [0x02u8; 32],
-                kernel_handle: None,
-            },
-        );
+        insert_symbolic_geometry_handle(&mut values, entity, "box_a", 0, [0x01u8; 32]);
+        insert_symbolic_geometry_handle(&mut values, entity, "box_b", 1, [0x02u8; 32]);
 
         let arg_a = reify_ir::CompiledExpr::value_ref(
             ValueCellId::new(entity, "box_a"),
@@ -22909,26 +22900,12 @@
     /// fall-through without the other.
     #[test]
     fn try_eval_symbolic_topology_selector_intersect_returns_none_for_non_selector_operands() {
-        use reify_core::identity::{RealizationNodeId, ValueCellId};
+        use reify_core::identity::ValueCellId;
 
         let entity = "R2cSolidBooleanIntersect";
         let mut values = reify_ir::ValueMap::new();
-        values.insert(
-            ValueCellId::new(entity, "box_a"),
-            reify_ir::Value::GeometryHandle {
-                realization_ref: RealizationNodeId::new(entity, 0),
-                upstream_values_hash: [0x01u8; 32],
-                kernel_handle: None,
-            },
-        );
-        values.insert(
-            ValueCellId::new(entity, "box_b"),
-            reify_ir::Value::GeometryHandle {
-                realization_ref: RealizationNodeId::new(entity, 1),
-                upstream_values_hash: [0x02u8; 32],
-                kernel_handle: None,
-            },
-        );
+        insert_symbolic_geometry_handle(&mut values, entity, "box_a", 0, [0x01u8; 32]);
+        insert_symbolic_geometry_handle(&mut values, entity, "box_b", 1, [0x02u8; 32]);
 
         let arg_a = reify_ir::CompiledExpr::value_ref(
             ValueCellId::new(entity, "box_a"),
@@ -22966,26 +22943,12 @@
     /// must ALSO fall through to `None`.
     #[test]
     fn try_eval_symbolic_topology_selector_difference_returns_none_for_non_selector_operands() {
-        use reify_core::identity::{RealizationNodeId, ValueCellId};
+        use reify_core::identity::ValueCellId;
 
         let entity = "R2cSolidBooleanDifference";
         let mut values = reify_ir::ValueMap::new();
-        values.insert(
-            ValueCellId::new(entity, "box_a"),
-            reify_ir::Value::GeometryHandle {
-                realization_ref: RealizationNodeId::new(entity, 0),
-                upstream_values_hash: [0x01u8; 32],
-                kernel_handle: None,
-            },
-        );
-        values.insert(
-            ValueCellId::new(entity, "box_b"),
-            reify_ir::Value::GeometryHandle {
-                realization_ref: RealizationNodeId::new(entity, 1),
-                upstream_values_hash: [0x02u8; 32],
-                kernel_handle: None,
-            },
-        );
+        insert_symbolic_geometry_handle(&mut values, entity, "box_a", 0, [0x01u8; 32]);
+        insert_symbolic_geometry_handle(&mut values, entity, "box_b", 1, [0x02u8; 32]);
 
         let arg_a = reify_ir::CompiledExpr::value_ref(
             ValueCellId::new(entity, "box_a"),
@@ -23020,18 +22983,9 @@
     /// minimum) must yield `None`.
     #[test]
     fn try_eval_symbolic_topology_selector_union_arity_below_two_returns_none() {
-        use reify_core::identity::{RealizationNodeId, ValueCellId};
-
         let entity = "R2cUnionArity";
         let mut values = reify_ir::ValueMap::new();
-        values.insert(
-            ValueCellId::new(entity, "body"),
-            reify_ir::Value::GeometryHandle {
-                realization_ref: RealizationNodeId::new(entity, 0),
-                upstream_values_hash: [0x03u8; 32],
-                kernel_handle: None,
-            },
-        );
+        insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0x03u8; 32]);
         let faces_expr = topology_selector_call_one_value_ref(
             "faces",
             entity,
@@ -23057,18 +23011,9 @@
     /// special-case one operator's arity gate without the other.
     #[test]
     fn try_eval_symbolic_topology_selector_intersect_arity_below_two_returns_none() {
-        use reify_core::identity::{RealizationNodeId, ValueCellId};
-
         let entity = "R2cIntersectArity";
         let mut values = reify_ir::ValueMap::new();
-        values.insert(
-            ValueCellId::new(entity, "body"),
-            reify_ir::Value::GeometryHandle {
-                realization_ref: RealizationNodeId::new(entity, 0),
-                upstream_values_hash: [0x04u8; 32],
-                kernel_handle: None,
-            },
-        );
+        insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0x04u8; 32]);
         let faces_expr = topology_selector_call_one_value_ref(
             "faces",
             entity,
@@ -23101,18 +23046,9 @@
     /// through the variadic `>= 2` gate instead of the exact-arity one.
     #[test]
     fn try_eval_symbolic_topology_selector_difference_arity_not_two_returns_none() {
-        use reify_core::identity::{RealizationNodeId, ValueCellId};
-
         let entity = "R2cDifferenceArity";
         let mut values = reify_ir::ValueMap::new();
-        values.insert(
-            ValueCellId::new(entity, "body"),
-            reify_ir::Value::GeometryHandle {
-                realization_ref: RealizationNodeId::new(entity, 0),
-                upstream_values_hash: [0x05u8; 32],
-                kernel_handle: None,
-            },
-        );
+        insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0x05u8; 32]);
         let faces_expr = topology_selector_call_one_value_ref(
             "faces",
             entity,
@@ -23169,18 +23105,9 @@
     /// one Warning diagnostic naming the kind-closure violation.
     #[test]
     fn try_eval_symbolic_topology_selector_union_kind_mismatch_yields_undef_with_warning() {
-        use reify_core::identity::{RealizationNodeId, ValueCellId};
-
         let entity = "R2cUnionKindMismatch";
         let mut values = reify_ir::ValueMap::new();
-        values.insert(
-            ValueCellId::new(entity, "body"),
-            reify_ir::Value::GeometryHandle {
-                realization_ref: RealizationNodeId::new(entity, 0),
-                upstream_values_hash: [0xC0u8; 32],
-                kernel_handle: None,
-            },
-        );
+        insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0xC0u8; 32]);
         let faces_expr = topology_selector_call_one_value_ref(
             "faces",
             entity,
@@ -23228,18 +23155,9 @@
     /// `union` above, pinned separately for `intersect`.
     #[test]
     fn try_eval_symbolic_topology_selector_intersect_kind_mismatch_yields_undef_with_warning() {
-        use reify_core::identity::{RealizationNodeId, ValueCellId};
-
         let entity = "R2cIntersectKindMismatch";
         let mut values = reify_ir::ValueMap::new();
-        values.insert(
-            ValueCellId::new(entity, "body"),
-            reify_ir::Value::GeometryHandle {
-                realization_ref: RealizationNodeId::new(entity, 0),
-                upstream_values_hash: [0xC1u8; 32],
-                kernel_handle: None,
-            },
-        );
+        insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0xC1u8; 32]);
         let faces_expr = topology_selector_call_one_value_ref(
             "faces",
             entity,
@@ -23291,18 +23209,9 @@
     /// pinned for the binary `difference` operator.
     #[test]
     fn try_eval_symbolic_topology_selector_difference_kind_mismatch_yields_undef_with_warning() {
-        use reify_core::identity::{RealizationNodeId, ValueCellId};
-
         let entity = "R2cDifferenceKindMismatch";
         let mut values = reify_ir::ValueMap::new();
-        values.insert(
-            ValueCellId::new(entity, "body"),
-            reify_ir::Value::GeometryHandle {
-                realization_ref: RealizationNodeId::new(entity, 0),
-                upstream_values_hash: [0xC2u8; 32],
-                kernel_handle: None,
-            },
-        );
+        insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0xC2u8; 32]);
         let faces_expr = topology_selector_call_one_value_ref(
             "faces",
             entity,
@@ -23365,26 +23274,12 @@
     /// NOT leaked into the caller's `diagnostics`.
     #[test]
     fn try_eval_symbolic_topology_selector_union_none_fallthrough_no_diagnostic_leak() {
-        use reify_core::identity::{RealizationNodeId, ValueCellId};
+        use reify_core::identity::ValueCellId;
 
         let entity = "R2cUnionDiagLeak";
         let mut values = reify_ir::ValueMap::new();
-        values.insert(
-            ValueCellId::new(entity, "body"),
-            reify_ir::Value::GeometryHandle {
-                realization_ref: RealizationNodeId::new(entity, 0),
-                upstream_values_hash: [0xD0u8; 32],
-                kernel_handle: None,
-            },
-        );
-        values.insert(
-            ValueCellId::new(entity, "box_a"),
-            reify_ir::Value::GeometryHandle {
-                realization_ref: RealizationNodeId::new(entity, 1),
-                upstream_values_hash: [0xD1u8; 32],
-                kernel_handle: None,
-            },
-        );
+        insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0xD0u8; 32]);
+        insert_symbolic_geometry_handle(&mut values, entity, "box_a", 1, [0xD1u8; 32]);
 
         let faces_expr = topology_selector_call_one_value_ref(
             "faces",
@@ -23430,6 +23325,83 @@
         );
     }
 
+    /// Complementary coverage for the drop above (review amendment, task
+    /// #5120 R2c, reviewer_comprehensive suggestion #1 — robustness): the
+    /// leaked-diagnostic risk isn't limited to the failing operand itself —
+    /// it must also hold once `scratch` has ALREADY accumulated a clean,
+    /// fully-reconstructed nested selector from an EARLIER operand before a
+    /// later operand pushes a warning and fails.
+    ///
+    /// `union(faces(b), union(faces(b), edges(b)))`: operand[0] (`faces(b)`)
+    /// resolves via the `FunctionCall` arm of
+    /// `reconstruct_selector_value_symbolic` to `Some(Value::Selector(Face))`
+    /// with NO diagnostic — a real success, not just a `ValueRef` fall-
+    /// through. Operand[1] is the same Face/Edge-kind-mismatched nested
+    /// `union` as the test above, which pushes its kind-closure Warning into
+    /// the SAME `scratch` buffer before resolving to `Value::Undef` (i.e.
+    /// `None` to the outer `collect`). The outer `union` must still fall
+    /// through to `None` with `diagnostics` left EMPTY, proving `scratch` is
+    /// discarded wholesale on the `?` short-circuit regardless of how many
+    /// operands — successful or not — contributed to it first.
+    ///
+    /// (A literal "operand[0] warns-but-succeeds, independent sibling fails"
+    /// shape is not constructible here: every diagnostic-push in this
+    /// composition machinery is paired 1:1 with that same call resolving to
+    /// `Some(Value::Undef)` — i.e. `None` from `reconstruct_selector_value_
+    /// symbolic`'s point of view — so a warning-emitting operand always IS
+    /// the one `collect` short-circuits on. This test instead pins the
+    /// realistic form of the same risk: multiple operands feeding `scratch`
+    /// before the drop.)
+    #[test]
+    fn try_eval_symbolic_topology_selector_union_drops_scratch_after_leading_success() {
+        let entity = "R2cUnionDiagLeakAfterSuccess";
+        let mut values = reify_ir::ValueMap::new();
+        insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0xD2u8; 32]);
+
+        let leading_faces_expr = topology_selector_call_one_value_ref(
+            "faces",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            reify_core::Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let faces_expr = topology_selector_call_one_value_ref(
+            "faces",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            reify_core::Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let edges_expr = topology_selector_call_one_value_ref(
+            "edges",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            reify_core::Type::Selector(reify_core::ty::SelectorKind::Edge),
+        );
+        // Malformed nested selector (kind-mismatched union), hand-crafted IR —
+        // processed SECOND, after a leading operand that resolves cleanly.
+        let nested_union = mk_symbolic_call_3523("union", vec![faces_expr, edges_expr]);
+        let outer_union = mk_symbolic_call_3523("union", vec![leading_faces_expr, nested_union]);
+
+        let mut diagnostics = Vec::new();
+        let result =
+            super::try_eval_symbolic_topology_selector(&outer_union, &values, &mut diagnostics);
+
+        assert!(
+            result.is_none(),
+            "operand[1]'s kind-closure violation must still fail the outer union even though \
+             operand[0] resolved cleanly first; got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "a leading successful operand must not cause operand[1]'s dropped warning to leak; \
+             got {:?}",
+            diagnostics
+        );
+    }
+
     // ── Task #5120 R2c: named-leaf (face/edge/solid_body/vertex) wired onto
     // the kernel-free symbolic-eval surface ──────────────────────────────────
     //
@@ -23450,21 +23422,9 @@
     /// LeafQuery::Named(tag), .. }` and a symbolic target.
     #[test]
     fn try_eval_symbolic_topology_selector_named_leaf_ctors() {
-        use reify_core::identity::{RealizationNodeId, ValueCellId};
-
         let entity = "R2cNamedLeaf";
-        let rr = RealizationNodeId::new(entity, 0);
-        let uvh: [u8; 32] = [0x6Du8; 32];
-
         let mut values = reify_ir::ValueMap::new();
-        values.insert(
-            ValueCellId::new(entity, "body"),
-            reify_ir::Value::GeometryHandle {
-                realization_ref: rr.clone(),
-                upstream_values_hash: uvh,
-                kernel_handle: None,
-            },
-        );
+        let rr = insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0x6Du8; 32]);
 
         let cases = [
             ("face", reify_core::ty::SelectorKind::Face),
@@ -23521,21 +23481,9 @@
     /// chained-first-arg form.
     #[test]
     fn try_eval_symbolic_topology_selector_face_over_inline_nested_selector() {
-        use reify_core::identity::{RealizationNodeId, ValueCellId};
-
         let entity = "R2cChainedFace";
-        let rr = RealizationNodeId::new(entity, 0);
-        let uvh: [u8; 32] = [0x6Eu8; 32];
-
         let mut values = reify_ir::ValueMap::new();
-        values.insert(
-            ValueCellId::new(entity, "body"),
-            reify_ir::Value::GeometryHandle {
-                realization_ref: rr.clone(),
-                upstream_values_hash: uvh,
-                kernel_handle: None,
-            },
-        );
+        let rr = insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0x6Eu8; 32]);
 
         let mid_surface_expr = topology_selector_call_one_value_ref(
             "mid_surface",
@@ -23595,18 +23543,11 @@
     /// Arity guard: `face(body)` (1 arg, expects 2: geometry + name) → None.
     #[test]
     fn try_eval_symbolic_topology_selector_face_arity_mismatch_returns_none() {
-        use reify_core::identity::{RealizationNodeId, ValueCellId};
+        use reify_core::identity::ValueCellId;
 
         let entity = "R2cFaceArity";
         let mut values = reify_ir::ValueMap::new();
-        values.insert(
-            ValueCellId::new(entity, "body"),
-            reify_ir::Value::GeometryHandle {
-                realization_ref: RealizationNodeId::new(entity, 0),
-                upstream_values_hash: [0x6Fu8; 32],
-                kernel_handle: None,
-            },
-        );
+        insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0x6Fu8; 32]);
         let body_ref = reify_ir::CompiledExpr::value_ref(
             ValueCellId::new(entity, "body"),
             reify_core::Type::Geometry,
