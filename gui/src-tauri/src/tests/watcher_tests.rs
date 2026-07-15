@@ -160,6 +160,52 @@ fn debouncer_next_wait_reports_remaining_time_or_none_when_empty() {
 }
 
 #[test]
+fn debouncer_paths_are_coalesced_and_drained_independently() {
+    let t0 = Instant::now();
+    let a = PathBuf::from("a.ri");
+    let b = PathBuf::from("b.ri");
+    let mut deb = Debouncer::new(Duration::from_millis(100));
+
+    // `a`'s quiet window starts at t0. `b`'s starts later and is reset
+    // again at t0+60ms, so it stays pending well after `a` is due alone.
+    deb.record(a.clone(), ChangeKind::Changed, t0);
+    deb.record(
+        b.clone(),
+        ChangeKind::Changed,
+        t0 + Duration::from_millis(30),
+    );
+    deb.record(
+        b.clone(),
+        ChangeKind::Removed,
+        t0 + Duration::from_millis(60),
+    );
+
+    // At t0+110ms, `a`'s window (started at t0) has elapsed (110 >= 100),
+    // but `b`'s window (last reset at t0+60ms) has only seen 50ms of quiet
+    // -- so only `a` drains, and `b`'s pending entry is untouched.
+    assert_eq!(
+        deb.drain_ready(t0 + Duration::from_millis(110)),
+        vec![(a.clone(), ChangeKind::Changed)],
+        "only the path whose OWN window has elapsed should drain; a \
+         different pending path's window is tracked independently"
+    );
+    assert_eq!(
+        deb.next_wait(t0 + Duration::from_millis(110)),
+        Some(Duration::from_millis(50)),
+        "b is due at t0+160ms (last_seen 60ms + 100ms window); 50ms remain at t0+110ms"
+    );
+
+    // At t0+160ms, `b`'s window has elapsed too and it drains independently
+    // of `a` (already drained 50ms earlier), carrying its LATEST kind
+    // (Removed) from the second record at t0+60ms.
+    assert_eq!(
+        deb.drain_ready(t0 + Duration::from_millis(160)),
+        vec![(b.clone(), ChangeKind::Removed)]
+    );
+    assert_eq!(deb.next_wait(t0 + Duration::from_millis(160)), None);
+}
+
+#[test]
 fn wait_for_returns_true_promptly_when_condition_already_satisfied() {
     let sink: Arc<Mutex<Vec<u32>>> = Arc::new(Mutex::new(vec![42]));
     let start = Instant::now();
@@ -444,6 +490,21 @@ fn watcher_emits_remove_event_even_when_target_file_filter_excludes_other_files(
 /// debouncing correctly coalesces the truncate+append into a single
 /// trailing-edge emission, that re-read observes the FINAL on-disk content
 /// rather than the transient partial buffer.
+///
+/// This is a best-effort, real-filesystem SMOKE TEST, not the authoritative
+/// coalescing guarantee. It depends on the OS delivering both writes' notify
+/// events within the same real-time debounce window; a sufficiently
+/// slow/loaded host could in principle violate that (e.g. if the test
+/// thread's `sleep` between the two writes gets descheduled long enough to
+/// blow past `DEBOUNCE_DURATION`, the two writes legitimately become two
+/// separate debounce cycles rather than one coalesced cycle, and the
+/// "never delivers the partial content" assertion below could fail on a
+/// correct implementation). The exact, deterministic trailing-edge +
+/// per-path coalescing contract is pinned with synthetic `Instant`s --
+/// immune to scheduling jitter -- by the `debouncer_*` unit tests above;
+/// this test only adds end-to-end confirmation that the production wiring
+/// (notify closure + worker thread) actually exercises that contract on a
+/// real filesystem.
 #[test]
 fn watcher_rereads_final_content_after_nonatomic_truncate_then_append() {
     let dir = tempfile::tempdir().unwrap();
@@ -578,4 +639,64 @@ fn watcher_survives_a_panicking_callback_and_keeps_delivering_later_events() {
         "watcher should keep delivering events after a callback panic, got: {:?}",
         *paths
     );
+}
+
+/// `Drop` must cleanly shut down and join the worker thread even while a
+/// change is still pending in the `Debouncer` (i.e. its quiet window hasn't
+/// elapsed yet) -- this is the subtlest part of the trailing-edge rewrite:
+/// the shutdown flag is set and the condvar notified under the SAME mutex
+/// the worker checks it under, specifically to avoid a lost wakeup where
+/// the worker re-checks the flag, finds it unset, and goes back to sleep
+/// with no one left to wake it. If that were broken, dropping a
+/// `FileWatcher` shortly after a write would hang.
+#[test]
+fn watcher_drop_joins_worker_promptly_even_with_a_pending_event() {
+    let dir = tempfile::tempdir().unwrap();
+    let ri_file = dir.path().join("closing.ri");
+    std::fs::write(&ri_file, "structure Closing {}").unwrap();
+
+    let Some(watcher) = try_watcher(dir.path(), None, |_event| {}) else {
+        return;
+    };
+
+    // Give the watcher time to register.
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Trigger an event and drop almost immediately -- well within the
+    // 100ms debounce window, so a not-yet-drained entry is very likely
+    // still sitting in the Debouncer when Drop runs below.
+    std::fs::write(&ri_file, "structure Closing { param x = 1mm }").unwrap();
+    std::thread::sleep(Duration::from_millis(10));
+
+    let start = Instant::now();
+    drop(watcher);
+    let elapsed = start.elapsed();
+
+    // Generous bound: a correct Drop wakes the worker via the condvar and
+    // joins almost instantly. This is only guarding against a hang (a
+    // lost-wakeup regression would block here indefinitely), not timing
+    // the happy path precisely.
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "Drop should join the worker thread promptly even with a pending \
+         event, took {:?}",
+        elapsed
+    );
+}
+
+/// Constructing and immediately dropping a `FileWatcher` in a loop must
+/// always return -- a smoke test that `Drop` never hangs or leaks its
+/// worker thread across repeated rapid create/destroy cycles, as happens
+/// in the GUI when the user switches files and `create_watcher` runs again
+/// (main.rs re-creates the watcher on `open_file`).
+#[test]
+fn watcher_construct_and_drop_in_a_loop_never_hangs() {
+    let dir = tempfile::tempdir().unwrap();
+
+    for _ in 0..20 {
+        let Some(watcher) = try_watcher(dir.path(), None, |_event| {}) else {
+            return;
+        };
+        drop(watcher);
+    }
 }
