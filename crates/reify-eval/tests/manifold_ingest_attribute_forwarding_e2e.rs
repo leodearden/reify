@@ -50,7 +50,7 @@ use reify_eval::{Engine, forward_solid_attribute_on_ingest, propagate_via_kernel
 use reify_ir::{
     CapabilityDescriptor, CompiledExpr, ExportFormat, FeatureId, GeometryHandleId, GeometryKernel,
     GeometryOp, KernelAttributeOutcome, KernelHandle, KernelId, Operation, ReprKind, Role,
-    TopologyAttribute, TopologyAttributeTable,
+    TopologyAttribute, TopologyAttributeTable, Value,
 };
 use reify_kernel_manifold::ManifoldKernel;
 use reify_kernel_manifold::test_fixtures::unit_cube_mesh;
@@ -414,4 +414,170 @@ fn engine_convert_loop_forwards_solid_attribute_to_manifold_ingested_handle() {
              the ingest seam; got None"
         );
     }
+}
+
+// ─── Regression: forwarded entries must not pollute the diagnostic scan ────
+
+/// Regression for the reviewer's diagnostic-pollution finding (task #4636
+/// step-8/9): the forwarded Manifold-scoped solid entries
+/// `forward_solid_attribute_on_ingest` writes at the ingest seam share the
+/// realization's `feature_id` with every other entry in the table, so the
+/// post-loop centroid / local-index-reassignment scan (which filters purely
+/// on `feature_id`) must explicitly exclude them too — otherwise they leak
+/// into `collect_centroids_with_failure_summary`, get centroid-queried
+/// against the engine's default (occt) kernel under their bare
+/// `GeometryHandleId` (never staged there — they are Manifold-only ingest
+/// handles), and produce a spurious "topology-attribute centroid query
+/// failed" Warning (or, on an id collision with a real occt handle, a
+/// false-positive reassignment diagnostic fed by the wrong shape's
+/// centroid).
+///
+/// Reuses the completion-(a) harness (`two_sphere_union_template` +
+/// `IngestTrackingManifoldKernel`, `next_ingest_id: 5000`, occt as the
+/// default kernel) but additionally stages BOTH a centroid and a
+/// bounding-box result for every real occt handle seeded during primitive
+/// attribute seeding (faces 101/201, edges 102/202), with distinct
+/// coordinates per handle, so that:
+/// - every REAL scanned handle's diagnostic query succeeds — pinning
+///   `query_fail_count` to exactly the forwarded-handle count (2 before the
+///   fix, 0 after), for a clean non-brittle signal on assertion (1);
+/// - staging both query types per handle removes any dependence on which
+///   query type a given handle's `Role` actually routes through;
+/// - the two `Role::Side` faces (101, 201) and the two `Role::NewEdge` edges
+///   (102, 202) never share a centroid / bbox-midpoint, so they can never
+///   trip the local-index-reassignment tie detector — a guard that holds in
+///   both the RED and GREEN states (assertion (2)).
+///
+/// RED against the CURRENT already-landed code: `solid_attribute_handles`
+/// (engine_build.rs) tracks only the SOURCE occt solid handles (1, 2), never
+/// the forwarded TARGET handles `forward_solid_attribute_on_ingest` writes at
+/// `{Manifold, 5000}` / `{Manifold, 5001}`. Those forwarded entries carry
+/// this realization's `feature_id`, so they pass the `feature_id`-only scan
+/// filter, get centroid-queried against the occt default kernel under bare
+/// ids 5000/5001 (deliberately non-colliding with any occt handle id used
+/// here, so they are unambiguously scanned), and the query fails against the
+/// unstaged occt mock — emitting a "topology-attribute centroid query failed
+/// for 2 handle(s)" Warning, which assertion (1) below catches.
+#[test]
+fn forwarded_manifold_solid_entries_excluded_from_centroid_and_reassignment_scan() {
+    let module = CompiledModuleBuilder::new(ModulePath::new(vec![
+        "test_manifold_ingest_attribute_forwarding_pollution".to_string(),
+    ]))
+    .template(step_output_template(1e-6))
+    .template(two_sphere_union_template())
+    .compiled_purpose(manufacturing_purpose("manufacturing", 1e-6))
+    .build();
+
+    // Kernel-emitted JSON shapes (mirrored from crates/reify-kernel-occt/src/lib.rs):
+    // Centroid -> `{"x":_,"y":_,"z":_}`; BoundingBox -> `{"xmin":_,"ymin":_,"zmin":_,
+    // "xmax":_,"ymax":_,"zmax":_}`. Values must parse via this shape (not just be
+    // query-able) so the reassignment tie-detector actually walks real centroid
+    // data — making assertion (2) below a genuine guard, not a vacuous one.
+    let centroid_json =
+        |x: f64, y: f64, z: f64| Value::String(format!("{{\"x\":{x},\"y\":{y},\"z\":{z}}}"));
+    let bbox_json = |xmin: f64, ymin: f64, zmin: f64, xmax: f64, ymax: f64, zmax: f64| {
+        Value::String(format!(
+            "{{\"xmin\":{xmin},\"ymin\":{ymin},\"zmin\":{zmin},\"xmax\":{xmax},\"ymax\":{ymax},\
+             \"zmax\":{zmax}}}"
+        ))
+    };
+
+    // occt: two spheres allocate handles 1 and 2, faces 101/201, edges
+    // 102/202 (same topology as the completion-(a) test above). Additionally
+    // stage BOTH a centroid and a bbox result per real handle — distinct
+    // coordinates per handle so the Role::Side pair (101, 201) and the
+    // Role::NewEdge pair (102, 202) never tie.
+    let occt_kernel = MockGeometryKernel::new()
+        .with_extracted_faces(GeometryHandleId(1), vec![GeometryHandleId(101)])
+        .with_extracted_edges(GeometryHandleId(1), vec![GeometryHandleId(102)])
+        .with_extracted_faces(GeometryHandleId(2), vec![GeometryHandleId(201)])
+        .with_extracted_edges(GeometryHandleId(2), vec![GeometryHandleId(202)])
+        .with_centroid_result(GeometryHandleId(101), centroid_json(1.0, 0.0, 0.0))
+        .with_bbox_result(GeometryHandleId(101), bbox_json(0.5, -0.5, -0.5, 1.5, 0.5, 0.5))
+        .with_centroid_result(GeometryHandleId(201), centroid_json(5.0, 0.0, 0.0))
+        .with_bbox_result(GeometryHandleId(201), bbox_json(4.5, -0.5, -0.5, 5.5, 0.5, 0.5))
+        .with_centroid_result(GeometryHandleId(102), centroid_json(1.0, 1.0, 1.0))
+        .with_bbox_result(GeometryHandleId(102), bbox_json(0.0, 0.0, 0.0, 2.0, 2.0, 2.0))
+        .with_centroid_result(GeometryHandleId(202), centroid_json(11.0, 11.0, 11.0))
+        .with_bbox_result(GeometryHandleId(202), bbox_json(10.0, 10.0, 10.0, 12.0, 12.0, 12.0));
+
+    let manifold_kernel = IngestTrackingManifoldKernel {
+        inner: MockGeometryKernel::new(),
+        next_ingest_id: 5000,
+        ingested_handles: Arc::new(Mutex::new(Vec::new())),
+    };
+
+    let mut kernels: BTreeMap<String, Box<dyn reify_ir::GeometryKernel>> = BTreeMap::new();
+    kernels.insert("occt".to_string(), Box::new(occt_kernel));
+    kernels.insert("manifold".to_string(), Box::new(manifold_kernel));
+
+    let mut registry: BTreeMap<String, CapabilityDescriptor> = BTreeMap::new();
+    registry.insert(
+        "occt".to_string(),
+        CapabilityDescriptor {
+            supports: vec![
+                (Operation::PrimitiveSphere, ReprKind::BRep),
+                (
+                    Operation::Convert {
+                        from: ReprKind::BRep,
+                    },
+                    ReprKind::Mesh,
+                ),
+            ],
+        },
+    );
+    registry.insert(
+        "manifold".to_string(),
+        CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
+        },
+    );
+
+    let checker = MockConstraintChecker::new();
+    let mut engine = Engine::with_test_kernels_and_registry(
+        Box::new(checker),
+        kernels,
+        registry,
+        Some("occt".to_string()),
+    );
+
+    let _eval = engine.eval(&module);
+    engine.activate_purpose("manufacturing", "MyDesign");
+
+    let build = engine.build(&module, ExportFormat::Stl);
+
+    let errors: Vec<_> = build
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.severity, reify_core::Severity::Error))
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "cross-kernel build must not emit error diagnostics; got: {errors:?}"
+    );
+
+    let query_failed: Vec<_> = build
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("topology-attribute centroid query failed"))
+        .collect();
+    assert!(
+        query_failed.is_empty(),
+        "forwarded Manifold-scoped solid entries must be excluded from the centroid diagnostic \
+         scan, not centroid-queried against the occt default kernel under their bare (unstaged) \
+         handle id; got: {query_failed:?}"
+    );
+
+    let reassignment_diags: Vec<_> = build
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            d.code == Some(reify_core::DiagnosticCode::TopologyAttributeLocalIndexReassigned)
+        })
+        .collect();
+    assert!(
+        reassignment_diags.is_empty(),
+        "distinct per-handle coordinates must not trip the local-index-reassignment tie \
+         detector; got: {reassignment_diags:?}"
+    );
 }
