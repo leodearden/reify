@@ -18,7 +18,13 @@
 //!   against a non-default value is precisely what makes this an
 //!   options-threading proof: if `iso:` were ignored, the `3mm` build would
 //!   silently collapse to the same default surface as the `0mm` build and
-//!   the two would be indistinguishable.
+//!   the two would be indistinguishable. A third leg builds
+//!   `isosurface(solid)` with `iso:` OMITTED entirely and asserts it
+//!   matches the explicit `iso: 0mm` build's triangle count and bounding
+//!   box exactly, pinning the "omitting `iso:` == passing `iso: 0mm`"
+//!   equivalence this bullet asserts in prose — a claim the sibling
+//!   `voxel_to_mesh_e2e.rs` never directly checks, since it only ever
+//!   builds the no-argument form.
 //! - `iso_option_out_of_band_surfaces_empty_mesh` is a SEPARATE regression
 //!   guard locking in `realize_mesh_from_voxel_with_options`'s documented
 //!   `Ok(empty)` no-crossing contract (`kernel_real.rs`): an `iso:` far
@@ -265,6 +271,16 @@ fn assert_no_build_errors(stats: &ShellStats, entity: &str) {
 /// build silently collapsed to the SAME default (`0mm`) surface as the
 /// other build (D4 options-threading collapsed to default).
 ///
+/// A third source OMITS `iso:` entirely (`isosurface(solid)`, the same form
+/// `examples/multi_kernel/voxel_to_mesh.ri` and `voxel_to_mesh_e2e.rs`
+/// build) and must match the explicit `iso: 0mm` build EXACTLY (same
+/// triangle count, same bounding box) — pinning the "omitting `iso:` is
+/// equivalent to passing `iso: 0mm`" claim this doc comment otherwise only
+/// asserts in prose. That equivalence is never directly exercised
+/// elsewhere: the sibling `voxel_to_mesh_e2e.rs` builds only the
+/// no-argument default, never the explicit `iso: 0mm` form, so nothing else
+/// in the test suite would catch a regression where the two diverge.
+///
 /// See `iso_option_out_of_band_surfaces_empty_mesh` below for the separate
 /// `Ok(empty)` no-crossing contract guard.
 #[cfg(has_openvdb)]
@@ -276,11 +292,14 @@ fn iso_option_changes_surfaced_mesh() {
 
     let source_zero = "structure IsoKnob { param size: Length = 20mm  let solid = box(size, size, size)  let shell = isosurface(solid, iso: 0mm) }";
     let source_inband = "structure IsoKnob { param size: Length = 20mm  let solid = box(size, size, size)  let shell = isosurface(solid, iso: 3mm) }";
+    let source_omitted = "structure IsoKnob { param size: Length = 20mm  let solid = box(size, size, size)  let shell = isosurface(solid) }";
 
     let zero = surface_shell_stats(source_zero, "IsoKnob");
     let inband = surface_shell_stats(source_inband, "IsoKnob");
+    let omitted = surface_shell_stats(source_omitted, "IsoKnob");
     assert_no_build_errors(&zero, "IsoKnob");
     assert_no_build_errors(&inband, "IsoKnob");
+    assert_no_build_errors(&omitted, "IsoKnob");
 
     assert!(
         zero.triangle_count > 0,
@@ -296,6 +315,27 @@ fn iso_option_changes_surfaced_mesh() {
          example fixture examples/multi_kernel/voxel_to_mesh_iso.ri); got \
          {} triangles",
         inband.triangle_count
+    );
+    // Pins the "omitting `iso:` == passing `iso: 0mm`" equivalence this
+    // test's doc comment asserts in prose (see above): eval::geometry_ops
+    // defaults BOTH the missing-`iso` and missing-`adaptive` named args to
+    // the same values `iso: 0mm` (no `adaptive:`) resolves to, so these two
+    // builds compute the IDENTICAL GeometryOp::Surface{iso_level: 0.0,
+    // adaptive: false} — an exact match, not merely an expected one.
+    assert_eq!(
+        omitted.triangle_count, zero.triangle_count,
+        "omitting `iso:` entirely (`isosurface(solid)`) must surface the \
+         same triangle count as the explicit default `iso: 0mm` — the two \
+         are documented to be equivalent (see this test's doc comment); \
+         got {} (no `iso:` argument) vs {} (`iso: 0mm`)",
+        omitted.triangle_count, zero.triangle_count
+    );
+    assert_eq!(
+        omitted.bbox, zero.bbox,
+        "omitting `iso:` entirely (`isosurface(solid)`) must surface the \
+         same bounding box as the explicit default `iso: 0mm`; got {:?} \
+         (no `iso:` argument) vs {:?} (`iso: 0mm`)",
+        omitted.bbox, zero.bbox
     );
     // Disjunction, not two independent hard asserts — see ShellStats and the
     // doc comment above for why (a coincidental equal-triangle-count case
@@ -403,6 +443,16 @@ fn iso_option_out_of_band_surfaces_empty_mesh() {
 /// separate also means a fixture-specific regression fails with a message
 /// that points straight at `voxel_to_mesh_iso.ri`, rather than being folded
 /// into `iso_option_changes_surfaced_mesh`'s options-threading proof.
+///
+/// Beyond the behavioral (non-empty mesh) check, this test also greps the
+/// fixture's raw source text for the exact `size : Length = 20mm` and
+/// `iso: 3mm` literals the narrow-band reasoning above depends on — a drift
+/// guard the inline `iso_option_changes_surfaced_mesh` test cannot provide,
+/// since it never reads this committed file's text. Without it, a silent
+/// edit to either literal (e.g. widening the box, or nudging `iso:` to a
+/// different in-band value) would go undetected: `triangle_count > 0` alone
+/// is satisfied by many box-size/iso combinations, not just the ones this
+/// file's comments document.
 #[cfg(has_openvdb)]
 #[test]
 fn iso_example_fixture_surfaces_nonempty() {
@@ -420,6 +470,27 @@ fn iso_example_fixture_surfaces_nonempty() {
     .expect(
         "examples/multi_kernel/voxel_to_mesh_iso.ri must exist \
          (task 5003 step-2 creates this fixture)",
+    );
+
+    // File-drift guard: pins the exact literals this fixture's own header
+    // comment and this test's narrow-band reasoning depend on. The
+    // behavioral assert below (triangle_count > 0) would still pass for
+    // many other in-band iso/box-size combinations, so it alone cannot
+    // catch a silent edit that changes these values without taking the
+    // fixture out of band.
+    assert!(
+        source.contains("size : Length = 20mm"),
+        "examples/multi_kernel/voxel_to_mesh_iso.ri's `size` param default \
+         must stay 20mm (this fixture's header comment and this test's \
+         narrow-band reasoning are both keyed to that box size); got \
+         source:\n{source}"
+    );
+    assert!(
+        source.contains("iso: 3mm"),
+        "examples/multi_kernel/voxel_to_mesh_iso.ri must call \
+         isosurface(..., iso: 3mm) — this fixture exists specifically to \
+         demonstrate a non-default IN-BAND iso value (see this file's \
+         module doc comment); got source:\n{source}"
     );
 
     let stats = surface_shell_stats(&source, "VoxelToMeshIso");
