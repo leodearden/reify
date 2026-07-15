@@ -13748,6 +13748,74 @@ structure Tank {
     assert_eq!(free_val.si_value, None);
 }
 
+/// Regression coverage (task #5199 amend, reviewer_comprehensive
+/// test_coverage finding): `display_scalar`'s `Value::Option(Some(inner))`
+/// recursion arm — the auto-resolve/optional-wrapper unwrap — was never
+/// exercised by any test above; only a bare `Value::Scalar` (param), a
+/// derived `let`, and an `Undef` param are covered. A `some(...)` literal
+/// compiles to exactly `Value::Option(Some(Box::new(Value::Scalar {..})))`
+/// (see `crates/reify-expr/tests/option_eval_tests.rs`), giving a real,
+/// compiled fixture that reaches this branch without touching
+/// `display_scalar` directly (it is a private `engine.rs` helper, not
+/// reachable from this test module).
+#[test]
+fn build_values_surfaces_dimension_and_si_value_through_option_some_wrapper() {
+    const SRC: &str = r#"
+structure Part {
+    param yield_stress : Option<Pressure> = some(250MPa)
+}
+"#;
+    let mut session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    let state = session
+        .load_from_source(SRC, "part")
+        .expect("load_from_source should succeed");
+
+    let yield_stress = state
+        .values
+        .iter()
+        .find(|v| v.name == "yield_stress")
+        .expect("yield_stress must surface as a ValueData");
+    assert_eq!(
+        yield_stress.dimension, "Pressure",
+        "dimension must be surfaced from inside the Option(Some(..)) wrapper, not left blank"
+    );
+    assert_eq!(
+        yield_stress.si_value,
+        Some(250_000_000.0),
+        "si_value must be the wrapped scalar's raw SI magnitude (250 MPa = 2.5e8 Pa)"
+    );
+}
+
+/// Companion to the above: `Value::Option(None)` — `display_scalar`'s `_ =>
+/// None` arm — must surface as `dimension: ""` / `si_value: None`, same as
+/// any other non-scalar cell, not e.g. a zero or garbage magnitude.
+#[test]
+fn build_values_option_none_cell_has_no_dimension_or_si_value() {
+    const SRC: &str = r#"
+structure Part {
+    param yield_stress : Option<Pressure> = none
+}
+"#;
+    let mut session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    let state = session
+        .load_from_source(SRC, "part")
+        .expect("load_from_source should succeed");
+
+    let yield_stress = state
+        .values
+        .iter()
+        .find(|v| v.name == "yield_stress")
+        .expect("yield_stress must surface as a ValueData");
+    assert_eq!(yield_stress.dimension, "");
+    assert_eq!(yield_stress.si_value, None);
+}
+
 // ── ζ §11.2 row 4: GUI binary checker-injection smoke (task 4437) ─────────────
 
 /// GUI-binary engine-path injection smoke: proves that the GUI binary's compile

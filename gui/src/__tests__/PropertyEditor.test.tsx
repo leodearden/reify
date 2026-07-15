@@ -1476,4 +1476,107 @@ describe('PropertyEditor per-cell unit picker (task #5199)', () => {
     fireEvent.keyDown(input, { key: 'Enter' });
     expect(onSetParam).toHaveBeenCalledWith('c1', '7045002.24');
   });
+
+  it('(h) focusing a cell while a non-default unit is picked shows an explicit "editing in <default>" hint', () => {
+    // Reviewer finding (task #5199 amend, robustness): the edit buffer
+    // silently reseeds to the canonical magnitude on focus while the
+    // <select> keeps reading the picked unit — this hint makes that switch
+    // explicit instead of leaving it silent.
+    render(() => (
+      <PropertyEditor
+        values={capacityValues()}
+        selectedEntity={null}
+        onSetParameter={vi.fn()}
+        unitLadders={VOLUME_LADDER}
+      />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const select = screen.getByTestId('unit-select-c1') as HTMLSelectElement;
+
+    // No hint before a non-default unit is even picked.
+    expect(screen.queryByTestId('unit-edit-hint-c1')).toBeNull();
+
+    fireEvent.change(select, { target: { value: 'L' } });
+    // Still no hint at rest — only while actually editing.
+    expect(screen.queryByTestId('unit-edit-hint-c1')).toBeNull();
+
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    expect(screen.getByTestId('unit-edit-hint-c1').textContent).toContain('mm³');
+
+    // Committing ends the edit and the hint disappears again.
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(screen.queryByTestId('unit-edit-hint-c1')).toBeNull();
+  });
+
+  it('(h2) no edit-hint appears when editing while the default unit is selected', () => {
+    render(() => (
+      <PropertyEditor
+        values={capacityValues()}
+        selectedEntity={null}
+        onSetParameter={vi.fn()}
+        unitLadders={VOLUME_LADDER}
+      />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    expect(screen.queryByTestId('unit-edit-hint-c1')).toBeNull();
+  });
+
+  it('(i) typing a NEW value while a non-default unit is picked commits the raw typed number, uninterpreted by the picked unit', () => {
+    // Reviewer finding (task #5199 amend, robustness): test (g) only covers
+    // the no-op focus+Enter case. This covers the actually-lossy case: the
+    // user types a fresh number while "L" is selected. onSetParameter must
+    // receive exactly what was typed (submission is never silently
+    // converted by the picked unit) — documented here so a future change to
+    // this contract cannot land unnoticed.
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor
+        values={capacityValues()}
+        selectedEntity={null}
+        onSetParameter={onSetParam}
+        unitLadders={VOLUME_LADDER}
+      />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const select = screen.getByTestId('unit-select-c1') as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: 'L' } });
+
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: '9999' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    expect(onSetParam).toHaveBeenCalledWith('c1', '9999');
+  });
+
+  it('(j) a demand-pruned cell showing last_substantive_value suppresses the picker entirely', () => {
+    // Reviewer finding (task #5199 amend, correctness): the picker's
+    // non-default conversion reads the LIVE (possibly stale) si_value, which
+    // is a different source of truth than the last-good value shown at the
+    // default unit — converting it would flip the displayed magnitude
+    // between the last-good and stale numbers across a single unit change.
+    // The picker must not appear at all for such cells.
+    const values = capacityValues({
+      freshness: 'pending',
+      last_substantive_value: '42',
+    });
+    render(() => (
+      <PropertyEditor
+        values={values}
+        selectedEntity={null}
+        onSetParameter={vi.fn()}
+        unitLadders={VOLUME_LADDER}
+      />
+    ));
+    expect(screen.queryByTestId('unit-select-c1')).toBeNull();
+    const row = screen.getByTestId('prop-row-c1');
+    // The value lives in the input's `value` property, not row.textContent
+    // (an <input>'s value is never part of its element's text content).
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    expect(input.value).toBe('42');
+    expect(row.textContent).toContain('mm³');
+  });
 });

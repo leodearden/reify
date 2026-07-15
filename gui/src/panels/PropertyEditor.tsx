@@ -84,14 +84,39 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
   // binding). Any pick made THIS session goes through `selectedUnits`
   // (checked first below, and always up to date), so this snapshot only
   // needs to cover preferences saved before mount.
+  //
+  // Mount-scoped assumption (task #5199 amend, reviewer_comprehensive
+  // reactivity finding): this only stays correct because PropertyEditor is a
+  // single, non-keyed, long-lived component instance for the whole App
+  // session — `gui/src/App.tsx`'s one `<PropertyEditor>` render site has no
+  // `key` and no `<Show>`/conditional ancestor, so file loads update
+  // `props.values` reactively rather than unmounting/remounting this
+  // component (SolidJS component bodies run once per instance, unlike
+  // React). If a future caller renders more than one PropertyEditor
+  // instance, or starts remounting this one per file load, a preference
+  // saved through a DIFFERENT instance/mount after this snapshot was taken
+  // will NOT be reflected here until this instance itself remounts —
+  // in-session picks made through THIS instance are unaffected, since those
+  // always go through the always-fresh `selectedUnits` signal above.
   const persistedUnits = loadAllUnitPreferences();
 
   /**
    * The selectable unit ladder for a cell, or `undefined` when the cell has
-   * no dimension/si_value or its dimension has no ladder (<2 options) — in
-   * which case the caller falls back to the static unit badge.
+   * no dimension/si_value, its dimension has no ladder (<2 options), or the
+   * cell is demand-pruned and showing a prior good value — in which case the
+   * caller falls back to the static unit badge.
    */
   function pickerLadder(val: ValueData): UnitOption[] | undefined {
+    // A demand-pruned (`freshness === 'pending'`) cell with a
+    // `last_substantive_value` displays that STRING, formatted in the
+    // default unit, with no SI magnitude of its own (task #4739 γ never
+    // needed one). Converting to a non-default unit would have to use the
+    // cell's live `si_value` instead — a different, possibly stale,
+    // un-recomputed number — so the displayed magnitude would silently flip
+    // between the last-good value (default unit) and a stale value (any
+    // other unit) for the same cell (task #5199 amend, reviewer_comprehensive
+    // correctness finding). Suppress the picker entirely for these cells.
+    if (val.freshness === 'pending' && val.last_substantive_value != null) return undefined;
     if (!val.dimension || val.si_value == null) return undefined;
     const ladder = ladderForDimension(props.unitLadders ?? {}, val.dimension);
     if (!ladder || ladder.length < 2) return undefined;
@@ -123,6 +148,35 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
   function primaryDisplay(val: ValueData): string {
     const ladder = pickerLadder(val);
     return ladder ? displayForPicker(val, ladder) : displayValue(val);
+  }
+
+  /**
+   * The ladder's default (canonical) unit label, or `undefined` when the
+   * cell has no active picker ladder.
+   */
+  function defaultUnitLabel(val: ValueData): string | undefined {
+    const ladder = pickerLadder(val);
+    return ladder?.find((u) => u.is_default)?.label ?? ladder?.[0]?.label;
+  }
+
+  /**
+   * Whether this cell is CURRENTLY being edited while its picker is showing
+   * a non-default unit (task #5199 amend, reviewer_comprehensive robustness
+   * finding). Editing always operates on the canonical/default-unit
+   * magnitude (see `handleFocus`) so an unmodified commit is a true no-op,
+   * but the `<select>` keeps showing whichever unit was picked for at-rest
+   * display — e.g. a Length cell displayed in "in" still reads "in" in the
+   * picker while the input has just silently switched to the "mm" magnitude
+   * underneath. Drives an explicit on-screen hint (below) instead of leaving
+   * that switch silent: a user who did not notice it and types a fresh
+   * number would otherwise believe they are entering a value in the picked
+   * unit, when it is actually committed in the canonical unit.
+   */
+  function editingInDifferentUnit(val: ValueData): boolean {
+    if (editingCellId() !== val.cell_id) return false;
+    const ladder = pickerLadder(val);
+    if (!ladder) return false;
+    return !chosenOptionFor(val, ladder).is_default;
   }
 
   function handleUnitChange(cellId: string, label: string) {
@@ -314,6 +368,15 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
                               onKeyDown={(e) => handleKeyDown(val.cell_id, e)}
                               onBlur={(e) => handleBlur(val.cell_id, e)}
                             />
+                          </Show>
+                          <Show when={editingInDifferentUnit(val)}>
+                            <span
+                              class={styles.unitBadge}
+                              data-testid={`unit-edit-hint-${val.cell_id}`}
+                              title="Editing always uses the canonical unit, regardless of the unit picked for display."
+                            >
+                              editing in {defaultUnitLabel(val)}
+                            </span>
                           </Show>
                           <Show
                             when={pickerLadder(val)}
