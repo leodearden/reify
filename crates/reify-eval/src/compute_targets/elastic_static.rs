@@ -475,7 +475,7 @@ pub fn solve_elastic_static_trampoline(
     // (OrthotropicMaterial, TransverseIsotropicMaterial) are produced by γ/3779
     // (stdlib/constitutive.ri); the isotropic fallback reads youngs_modulus+
     // poisson_ratio (unchanged from the pre-δ trampoline).
-    let model = classify_material(&value_inputs[0]);
+    let model = classify_material(&value_inputs[0]).fea_shim();
 
     // ── (2) Extract geometry scalars (SI: metres) ─────────────────────────────
     let length = extract_scalar_si(&value_inputs[1]).fea_shim();
@@ -3362,34 +3362,45 @@ fn element_stress_anisotropic(
 /// surface (axis-aligned cantilever, beam axis = material 1-axis → E1 governs
 /// bending). The heterogeneous arm honours the per-zone `MaterialFrame`
 /// (build-Z = weak axis) via `anisotropic_material_from_value`.
-fn classify_material(val: &Value) -> MaterialModel {
+///
+/// Task D7 (compute-fea-hardening PRD): Result-ified — returns
+/// `Err(FeaValueShapeError)` instead of panicking on a malformed `Value`,
+/// propagating every dependency-extractor call (`classify_material_as_printed_zones`,
+/// `scalar_si_field`, `real_field`, `extract_material`) via `?`, and its own
+/// non-StructureInstance guard now returns `Err(ExpectedStructureInstance)`
+/// directly instead of panicking. The sole production call site
+/// (`solve_elastic_static_trampoline`) bridges with `FeaShimExt::fea_shim` so
+/// external behavior is unchanged until D9 replaces it with real `Result`
+/// propagation and deletes the shim.
+fn classify_material(val: &Value) -> Result<MaterialModel, FeaValueShapeError> {
     // ── AsPrintedZones field: heterogeneous per-element dispatch (task #4757) ─
     if let Value::Field { source: FieldSourceKind::AsPrintedZones, lambda, .. } = val {
-        return classify_material_as_printed_zones(lambda).fea_shim();
+        return classify_material_as_printed_zones(lambda);
     }
 
     let data = match val {
         Value::StructureInstance(d) => d,
-        other => panic!(
-            "solve_elastic_static_trampoline: expected material to be \
-             Value::StructureInstance, got: {:?}",
-            other
-        ),
+        other => {
+            return Err(FeaValueShapeError::ExpectedStructureInstance {
+                context: "classify_material",
+                got: format!("{other:?}"),
+            })
+        }
     };
     // Identity material frame: global axes = material principal axes.
     const IDENTITY: [[f64; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
     match data.type_name.as_str() {
         "OrthotropicMaterial" => {
-            let e1 = scalar_si_field(data, "e1").fea_shim();
-            let e2 = scalar_si_field(data, "e2").fea_shim();
-            let e3 = scalar_si_field(data, "e3").fea_shim();
-            let g12 = scalar_si_field(data, "g12").fea_shim();
-            let g13 = scalar_si_field(data, "g13").fea_shim();
-            let g23 = scalar_si_field(data, "g23").fea_shim();
-            let nu12 = real_field(data, "nu12").fea_shim();
-            let nu13 = real_field(data, "nu13").fea_shim();
-            let nu23 = real_field(data, "nu23").fea_shim();
+            let e1 = scalar_si_field(data, "e1")?;
+            let e2 = scalar_si_field(data, "e2")?;
+            let e3 = scalar_si_field(data, "e3")?;
+            let g12 = scalar_si_field(data, "g12")?;
+            let g13 = scalar_si_field(data, "g13")?;
+            let g23 = scalar_si_field(data, "g23")?;
+            let nu12 = real_field(data, "nu12")?;
+            let nu13 = real_field(data, "nu13")?;
+            let nu23 = real_field(data, "nu23")?;
             let law = OrthotropicMaterial {
                 e1,
                 e2,
@@ -3402,14 +3413,14 @@ fn classify_material(val: &Value) -> MaterialModel {
                 nu23,
             };
             let aniso = AnisotropicMaterial::from_law(&law, IDENTITY);
-            MaterialModel::Anisotropic(aniso)
+            Ok(MaterialModel::Anisotropic(aniso))
         }
         "TransverseIsotropicMaterial" => {
-            let e_in_plane = scalar_si_field(data, "e_in_plane").fea_shim();
-            let e_axial = scalar_si_field(data, "e_axial").fea_shim();
-            let nu_in_plane = real_field(data, "nu_in_plane").fea_shim();
-            let nu_axial = real_field(data, "nu_axial").fea_shim();
-            let g_axial = scalar_si_field(data, "g_axial").fea_shim();
+            let e_in_plane = scalar_si_field(data, "e_in_plane")?;
+            let e_axial = scalar_si_field(data, "e_axial")?;
+            let nu_in_plane = real_field(data, "nu_in_plane")?;
+            let nu_axial = real_field(data, "nu_axial")?;
+            let g_axial = scalar_si_field(data, "g_axial")?;
             let law = TransverseIsotropicMaterial {
                 e_in_plane,
                 e_axial,
@@ -3418,18 +3429,18 @@ fn classify_material(val: &Value) -> MaterialModel {
                 g_axial,
             };
             let aniso = AnisotropicMaterial::from_law(&law, IDENTITY);
-            MaterialModel::Anisotropic(aniso)
+            Ok(MaterialModel::Anisotropic(aniso))
         }
         _ => {
             // Isotropic fallback: reads youngs_modulus + poisson_ratio (unchanged
             // from the pre-δ trampoline). `val` is already known to be
-            // Value::StructureInstance here — the `data` match above panics on
-            // any other variant before control reaches this arm — so
+            // Value::StructureInstance here — the `data` match above returns
+            // Err on any other variant before control reaches this arm — so
             // extract_material's own ExpectedStructureInstance check is
             // defensive/unreachable from this call site; it exists so the leaf
             // is directly unit-testable on a non-StructureInstance input (see
             // extract_material_rejects_non_structure_instance).
-            MaterialModel::Isotropic(extract_material(val).fea_shim())
+            Ok(MaterialModel::Isotropic(extract_material(val)?))
         }
     }
 }
@@ -3454,9 +3465,9 @@ fn classify_material(val: &Value) -> MaterialModel {
 /// `Err(FeaValueShapeError)` instead of panicking on a malformed `Value`,
 /// propagating each of its 6 dependency-extractor calls (`extract_point3_si`
 /// x2, `extract_zone_process_params`, `anisotropic_material_from_value` x3)
-/// via `?`. The sole call site (`classify_material`) bridges with
-/// `FeaShimExt::fea_shim` until D7 Result-ifies `classify_material` and
-/// removes the shim.
+/// via `?`. The sole call site (`classify_material`, D7) now propagates this
+/// `Result` directly via `?`; `classify_material`'s own sole production call
+/// site bridges with `FeaShimExt::fea_shim` until D9 removes it.
 fn classify_material_as_printed_zones(lambda: &Value) -> Result<MaterialModel, FeaValueShapeError> {
     let list = match lambda {
         Value::List(v) => v,
@@ -3888,9 +3899,10 @@ fn real_field(
 ///
 /// PRD compute-fea-hardening D3: Result-ified leaf extractor. Returns
 /// `Err(FeaValueShapeError)` instead of panicking on a malformed `Value`;
-/// the sole call site (`classify_material`'s isotropic fallback) bridges
-/// with `FeaShimExt::fea_shim` so external behavior is unchanged until D7
-/// Result-ifies `classify_material` and removes the shim.
+/// the sole call site (`classify_material`'s isotropic fallback, D7) now
+/// propagates this `Result` directly via `?`; `classify_material`'s own sole
+/// production call site bridges with `FeaShimExt::fea_shim` until D9 removes
+/// it.
 ///
 /// Note (task #5081 review round 3, suggestion 2): `scalar_si_field` accepts
 /// any `Value::Scalar` for `youngs_modulus` regardless of its `dimension`
@@ -8594,7 +8606,8 @@ mod tests {
             200e9, 40e9,      // e_stiff, e_soft
         );
 
-        let model = classify_material(&field);
+        let model = classify_material(&field)
+            .expect("classify_material should accept a well-formed AsPrintedZones field");
         // RED: MaterialModel::Heterogeneous does not exist yet.
         assert!(
             matches!(model, MaterialModel::Heterogeneous(_)),
@@ -8616,6 +8629,85 @@ mod tests {
                 );
             }
             _ => panic!("expected MaterialModel::Heterogeneous"),
+        }
+    }
+
+    /// D7 (compute-fea-hardening PRD): `classify_material` returns
+    /// `Result<MaterialModel, FeaValueShapeError>` instead of panicking on a
+    /// malformed material `Value`. A `Value` that is neither
+    /// `Value::StructureInstance` nor a `Value::Field { source:
+    /// AsPrintedZones, .. }` (e.g. a bare `Value::Real`) must yield
+    /// `Err(FeaValueShapeError::ExpectedStructureInstance { context:
+    /// "classify_material", .. })` rather than panicking.
+    ///
+    /// Note: unlike the leaf-extractor sibling tests, `res` cannot be
+    /// interpolated with `{:?}` here — `MaterialModel` (the `Ok` side) does
+    /// not derive `Debug` (its `Heterogeneous` variant holds a boxed
+    /// closure), so the assert message stays descriptive-only (mirrors
+    /// `classify_material_as_printed_zones_rejects_wrong_arity`).
+    ///
+    /// RED: `classify_material` currently returns a bare `MaterialModel`, so
+    /// matching `Err(..)` fails to type-check until step-2 converts it to
+    /// `Result<MaterialModel, FeaValueShapeError>`.
+    #[test]
+    fn classify_material_rejects_non_structure_instance() {
+        let res = classify_material(&Value::Real(1.0));
+        assert!(
+            matches!(
+                res,
+                Err(FeaValueShapeError::ExpectedStructureInstance { context, .. })
+                    if context == "classify_material"
+            ),
+            "classify_material should return Err(ExpectedStructureInstance) with \
+             context \"classify_material\", not panic, for a non-StructureInstance, \
+             non-AsPrintedZones material Value"
+        );
+    }
+
+    /// D7 review amendment (task #5086, suggestion 1): `classify_material`
+    /// must propagate a leaf extractor's `Err` through its `?`-threaded
+    /// `"OrthotropicMaterial"` arm instead of panicking. A `StructureInstance`
+    /// with `type_name: "OrthotropicMaterial"` and an empty `fields` map is
+    /// missing `e1` — the arm's first `scalar_si_field` read — so
+    /// `classify_material` must surface `Err(FeaValueShapeError::MissingField
+    /// { field: "e1", .. })` rather than panicking, proving the arm's 9
+    /// `.fea_shim()` calls were genuinely replaced with `?` and not left as
+    /// disguised `.unwrap()`s.
+    ///
+    /// Like `classify_material_rejects_non_structure_instance` above, `res`
+    /// cannot be interpolated with `{:?}` as a whole (`MaterialModel`, the
+    /// `Ok` side, does not derive `Debug`), so the `Err` payload is matched
+    /// out and formatted on its own; a bare `Ok(_)` arm covers the success
+    /// case without touching the non-Debug `MaterialModel`. Mirrors
+    /// `anisotropic_material_from_value_rejects_missing_law_field`'s
+    /// match-and-panic style for the same non-Debug-`Ok` reason.
+    #[test]
+    fn classify_material_rejects_orthotropic_missing_e1_field() {
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        let val = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "OrthotropicMaterial".to_string(),
+            version: 1,
+            fields: PersistentMap::<String, Value>::new(),
+        }));
+
+        let res = classify_material(&val);
+        match res {
+            Err(FeaValueShapeError::MissingField { field, .. }) => {
+                assert_eq!(field, "e1");
+            }
+            Err(other) => panic!(
+                "expected Err(MissingField {{ field: \"e1\" }}) for an \
+                 OrthotropicMaterial StructureInstance with no fields, got a \
+                 different Err variant: {:?}",
+                other
+            ),
+            Ok(_) => panic!(
+                "expected Err(MissingField {{ field: \"e1\" }}) for an \
+                 OrthotropicMaterial StructureInstance with no fields, got Ok(_) \
+                 instead of propagating the leaf error"
+            ),
         }
     }
 
@@ -8654,7 +8746,8 @@ mod tests {
         );
 
         // RED: MaterialModel::Heterogeneous does not exist yet.
-        let two_zone_model = classify_material(&two_zone_field);
+        let two_zone_model = classify_material(&two_zone_field)
+            .expect("classify_material should accept a well-formed AsPrintedZones field");
         let field = match two_zone_model {
             MaterialModel::Heterogeneous(f) => f,
             _ => panic!("expected Heterogeneous"),
