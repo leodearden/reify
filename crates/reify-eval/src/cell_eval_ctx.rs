@@ -127,6 +127,13 @@ mod tests {
     /// mechanism; unlike the call-site test below, it stays enforced even if
     /// that test is later deleted or refactored.
     ///
+    /// Deliberately redundant with `cell_eval_ctx_wires_all_required_capabilities`
+    /// below: Rust never auto-coerces `&T` to `Option<&T>`, so that test's own
+    /// call site would already fail to compile if any of the three required
+    /// params were Option-ified. This const is kept anyway as defense-in-depth
+    /// (per the previous paragraph) — do not delete it as "duplicate coverage"
+    /// of that test.
+    ///
     /// Note: an intentional signature change to `cell_eval_ctx` must update
     /// this const's type to match, or the crate stops compiling — that's
     /// the guard doing its job, not a bug.
