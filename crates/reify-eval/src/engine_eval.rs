@@ -6382,6 +6382,19 @@ impl Engine {
         // `resolve_order_ordering_and_clusters` clears `coupling_diagnostics`
         // unconditionally, so this still never emits W_SCOPE_COUPLING /
         // W_COUPLING_APPROXIMATED (eval() alone owns that emission).
+        //
+        // Cost (reviewer_comprehensive, task #5118 amendment): this reinstates
+        // the per-call `compute_clusters` pass on the warm/keystroke path that
+        // `resolve_order_ordering_only` (#5013) was introduced to skip.
+        // `compute_clusters` is a near-linear union-find over template count
+        // (see its doc), reusing the `sccs_topo`/`objective_reads` that the
+        // unconditional SCC/topo-sort above already computes every warm call
+        // regardless — it adds no new asymptotic cost tier, just extends
+        // existing O(templates + read-edges) work already paid per keystroke.
+        // Negligible for the single-digit-template modules this path targets
+        // today; if module sizes large enough to matter come into scope,
+        // consider caching the cluster set across cached evaluations keyed by
+        // structural module identity.
         let ro = crate::resolve_order::resolve_order_ordering_and_clusters(&module.templates);
 
         for template in &module.templates {
@@ -7598,7 +7611,7 @@ impl Engine {
     /// per-template warm arm this helper was extracted from, not something
     /// the #5118 merged-cluster dispatch introduced; broadening it (e.g. an
     /// `eval_cached` that maintains a real incremental reverse index across
-    /// calls) is a follow-up, not in scope here.
+    /// calls) is tracked as a follow-up, task #5224, not in scope here.
     fn reeval_downstream_let_cones(
         &mut self,
         resolved_ids: &HashSet<ValueCellId>,
