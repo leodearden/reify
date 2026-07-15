@@ -6113,4 +6113,129 @@ mod tests {
             result.diagnostics
         );
     }
+
+    /// Task δ (#5056) step-1: pins that `edit_param`'s MAIN dependent re-eval
+    /// loop (the primary per-cell re-eval site, T2 in the task's site
+    /// inventory) is wired through the `commit_cell_result` primitive
+    /// (`cell_commit.rs`) rather than the hand-rolled
+    /// Started-event/values-insert/snapshot-insert/record_evaluation/
+    /// Completed-event copy.
+    ///
+    /// Module: `param p: Length = 1mm; let q = p + 1mm`. Editing `p` to 2mm
+    /// dirties `q` (dependent re-eval), landing `q = 3mm`.
+    ///
+    /// Asserts two things the hand-rolled copy cannot produce today:
+    /// (1) journal provenance — `q`'s journal gains a `Started` event whose
+    ///     payload carries `TraceSource::EditReeval.as_str()` ("edit-reeval"),
+    ///     paired with a `Completed{outcome}` — RED on base, where the
+    ///     Started event at engine_edit.rs:1060 always uses `payload: None`;
+    /// (2) three-leg agreement — `result.values[q]`, `engine.snapshot().values[q]`,
+    ///     and the cache entry for q all carry `(3mm, DeterminacyState::Determined)`,
+    ///     proving the primitive's atomic four-leg commit (minus the journal,
+    ///     checked separately above) actually ran.
+    ///
+    /// Checks the LAST two events for `q` (rather than assuming exactly two
+    /// total) since cold `eval()` may itself record journal events for `q`
+    /// before `edit_param` runs.
+    #[test]
+    fn edit_param_dependent_reeval_routes_through_commit_primitive() {
+        use reify_constraints::SimpleConstraintChecker;
+        use reify_core::ValueCellId;
+        use reify_ir::{DeterminacyState, Value};
+        use reify_test_support::compile_source;
+
+        use crate::cache::{CachedResult, NodeId};
+        use crate::cell_commit::TraceSource;
+        use crate::journal::{EventKind, EventPayload};
+
+        const SRC: &str = r#"structure S {
+    param p : Length = 1mm
+    let q = p + 1mm
+}"#;
+
+        let compiled = compile_source(SRC);
+        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None);
+        engine.eval(&compiled);
+
+        let p_id = ValueCellId::new("S", "p");
+        let q_id = ValueCellId::new("S", "q");
+        let q_node = NodeId::Value(q_id.clone());
+
+        let events_before_len = engine.journal().events_for_node(&q_node).len();
+
+        let result = engine
+            .edit_param(p_id, Value::length(0.002))
+            .expect("edit_param must succeed");
+
+        // Journal: the primitive's own Started/Completed pair, with the
+        // EditReeval provenance slug recorded on Started.
+        let events_after = engine.journal().events_for_node(&q_node);
+        assert!(
+            events_after.len() >= events_before_len + 2,
+            "edit_param must append at least a Started+Completed pair for q, \
+             had {events_before_len} events before, {} after",
+            events_after.len()
+        );
+        let started = events_after[events_after.len() - 2];
+        let completed = events_after[events_after.len() - 1];
+        assert!(
+            matches!(started.kind, EventKind::Started),
+            "expected the second-to-last event to be Started, got {:?}",
+            started.kind
+        );
+        match &started.payload {
+            Some(EventPayload::Custom(slug)) => assert_eq!(
+                slug,
+                TraceSource::EditReeval.as_str(),
+                "Started payload must carry the edit-reeval provenance slug"
+            ),
+            other => panic!(
+                "expected Started payload Custom(\"{}\"), got {other:?}",
+                TraceSource::EditReeval.as_str()
+            ),
+        }
+        assert!(
+            matches!(completed.kind, EventKind::Completed { .. }),
+            "expected the last event to be Completed, got {:?}",
+            completed.kind
+        );
+
+        // Three-leg agreement: result.values, snapshot, and cache all carry
+        // (3mm, Determined) for q.
+        let q_result_val = result
+            .values
+            .get(&q_id)
+            .expect("q must be in result.values after edit_param");
+        assert_scalar_si_approx_eq(q_result_val, 0.003, 1e-9, "result.values[q] must be 3mm");
+
+        let snapshot = engine
+            .snapshot()
+            .expect("snapshot must exist after edit_param");
+        let (snap_q, snap_det) = snapshot
+            .values
+            .get(&q_id)
+            .expect("q must be in snapshot.values after edit_param");
+        assert_eq!(
+            *snap_det,
+            DeterminacyState::Determined,
+            "snapshot.values[q] must be Determined"
+        );
+        assert_scalar_si_approx_eq(snap_q, 0.003, 1e-9, "snapshot.values[q] must be 3mm");
+
+        let cache_entry = engine
+            .cache_store()
+            .get(&q_node)
+            .expect("q must have a cache entry after edit_param");
+        match &cache_entry.result {
+            CachedResult::Value(v, d) => {
+                assert_eq!(
+                    *d,
+                    DeterminacyState::Determined,
+                    "cache[q] determinacy must be Determined"
+                );
+                assert_scalar_si_approx_eq(v, 0.003, 1e-9, "cache[q] must be 3mm");
+            }
+            other => panic!("expected CachedResult::Value, got {other:?}"),
+        }
+    }
 }
