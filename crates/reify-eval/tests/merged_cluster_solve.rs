@@ -1532,12 +1532,24 @@ fn eval_cached_merges_within_cap_cluster_like_cold_eval() {
 /// CO-SOLVED A.k, not a frozen/undef value from B's pre-merge-solve main
 /// pass.
 ///
-/// RED until step-06: today (step-04)
-/// `dispatch_merged_cluster_solve_cached` writes every cluster member's
-/// solver-resolved autos back to `values`/`snapshot_values`/the cache, but
-/// does not yet re-evaluate downstream let cones on the warm path (see that
-/// function's "Downstream let-cone re-evaluation ... deferred to step 6"
-/// comment).
+/// GREEN at step-06: `dispatch_merged_cluster_solve_cached` re-evaluates
+/// downstream let cones on the warm path (wave-2), byte-for-byte mirroring the
+/// per-template warm arm (engine_eval.rs ~6636).
+///
+/// PRECONDITION (esc-5118-2): warm downstream-let wave-2 re-eval is gated on a
+/// populated `self.eval_state` (built by a prior cold `eval()`), exactly like
+/// every other warm-backprop test in this repo — see
+/// `warm_eval_cached_with_solver` (tests/common/differential.rs:1380), whose
+/// doc-comment states the cold `eval()` is required "so eval_state is
+/// populated". This is NOT a test crutch: the sole G1 consumer, the LSP
+/// keystroke path (reify-lsp/src/diagnostics.rs:137-149), routes an
+/// uninitialized engine to cold `eval()` BY CONSTRUCTION
+/// (`content_unchanged = … && state.is_engine_initialized()`), so
+/// `eval_cached()` never runs downstream-let back-prop on a fresh engine in
+/// production. The cold `eval()` below establishes that same precondition; the
+/// subsequent `eval_cached()` is what this test actually exercises (merged
+/// co-solve + wave-2 on the WARM path). The spy repeats its last sequenced
+/// result, so both solves see the same `Solved` outcome.
 #[test]
 fn eval_cached_merged_cluster_let_surfaces_co_solved_cross_scope_auto() {
     let module = two_cycle_cluster_with_cross_scope_let_module();
@@ -1557,6 +1569,11 @@ fn eval_cached_merged_cluster_let_surfaces_co_solved_cross_scope_auto() {
 
     let mut engine =
         Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+    // Establish the warm precondition: cold eval() populates eval_state (and
+    // demand) so the subsequent eval_cached() wave-2 can re-eval downstream
+    // lets. Mirrors warm_eval_cached_with_solver + the LSP consumer's
+    // is_engine_initialized() guard (see doc-comment above).
+    engine.eval(&module);
     let result = engine.eval_cached(&module, VersionId(1));
 
     let out_val = result
