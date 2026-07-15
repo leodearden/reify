@@ -10,8 +10,8 @@
 //!
 //! Test strategy (mirrors geometry_centered_primitives_tests.rs):
 //! - `rounded_box(width, depth, height, corner_r)`: compose proof — lowers to
-//!   the EXACT boolean-compose op sequence: 2×Primitive(Box), 4×(Primitive(Cylinder)
-//!   + Transform(Translate)), and a left-folded Boolean{Union} chain of 5 ops,
+//!   the EXACT boolean-compose op sequence: 2×Primitive(Box), 4×(Primitive(Cylinder) +
+//!   Transform(Translate)), and a left-folded Boolean{Union} chain of 5 ops,
 //!   15 ops total, whose LAST op is the realization root.
 //! - Wrong arg count emits an Error diagnostic.
 //! - `try_infer_traits_for_function_call("rounded_box", &[])` returns
@@ -121,8 +121,8 @@ fn rounded_box_lowers_to_boolean_compose() {
     );
 
     // ── ops[0..2]: two Primitive(Box) ────────────────────────────────────────
-    for i in 0..2 {
-        match &ops[i] {
+    for (i, op) in ops.iter().enumerate().take(2) {
+        match op {
             CompiledGeometryOp::Primitive {
                 kind: PrimitiveKind::Box,
                 args,
@@ -484,8 +484,8 @@ fn rounded_rect_lowers_to_boolean_compose() {
     );
 
     // ── ops[0..2]: two Profile(Rectangle) ────────────────────────────────────
-    for i in 0..2 {
-        match &ops[i] {
+    for (i, op) in ops.iter().enumerate().take(2) {
+        match op {
             CompiledGeometryOp::Profile {
                 kind: ProfileKind::Rectangle,
                 args,
