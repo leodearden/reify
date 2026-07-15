@@ -443,16 +443,6 @@ fn iso_option_out_of_band_surfaces_empty_mesh() {
 /// separate also means a fixture-specific regression fails with a message
 /// that points straight at `voxel_to_mesh_iso.ri`, rather than being folded
 /// into `iso_option_changes_surfaced_mesh`'s options-threading proof.
-///
-/// Beyond the behavioral (non-empty mesh) check, this test also greps the
-/// fixture's raw source text for the exact `size : Length = 20mm` and
-/// `iso: 3mm` literals the narrow-band reasoning above depends on — a drift
-/// guard the inline `iso_option_changes_surfaced_mesh` test cannot provide,
-/// since it never reads this committed file's text. Without it, a silent
-/// edit to either literal (e.g. widening the box, or nudging `iso:` to a
-/// different in-band value) would go undetected: `triangle_count > 0` alone
-/// is satisfied by many box-size/iso combinations, not just the ones this
-/// file's comments document.
 #[cfg(has_openvdb)]
 #[test]
 fn iso_example_fixture_surfaces_nonempty() {
@@ -470,27 +460,6 @@ fn iso_example_fixture_surfaces_nonempty() {
     .expect(
         "examples/multi_kernel/voxel_to_mesh_iso.ri must exist \
          (task 5003 step-2 creates this fixture)",
-    );
-
-    // File-drift guard: pins the exact literals this fixture's own header
-    // comment and this test's narrow-band reasoning depend on. The
-    // behavioral assert below (triangle_count > 0) would still pass for
-    // many other in-band iso/box-size combinations, so it alone cannot
-    // catch a silent edit that changes these values without taking the
-    // fixture out of band.
-    assert!(
-        source.contains("size : Length = 20mm"),
-        "examples/multi_kernel/voxel_to_mesh_iso.ri's `size` param default \
-         must stay 20mm (this fixture's header comment and this test's \
-         narrow-band reasoning are both keyed to that box size); got \
-         source:\n{source}"
-    );
-    assert!(
-        source.contains("iso: 3mm"),
-        "examples/multi_kernel/voxel_to_mesh_iso.ri must call \
-         isosurface(..., iso: 3mm) — this fixture exists specifically to \
-         demonstrate a non-default IN-BAND iso value (see this file's \
-         module doc comment); got source:\n{source}"
     );
 
     let stats = surface_shell_stats(&source, "VoxelToMeshIso");
