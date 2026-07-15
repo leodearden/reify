@@ -37,7 +37,7 @@
 use std::collections::HashMap;
 
 use manifold3d::Manifold;
-use reify_ir::{ExportError, ExportFormat, ExportOptions, ExportWarning, FeatureId, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, KernelAttributeOutcome, Mesh, QueryError, TessError, ThreeMfOptions, ThreeMfWarning, TopologyAttributeTable, Value, write_3mf, write_stl_binary};
+use reify_ir::{ExportError, ExportFormat, ExportOptions, ExportWarning, FeatureId, GeometryError, GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, KernelAttributeHook, KernelAttributeOutcome, KernelHandle, KernelId, Mesh, QueryError, TessError, ThreeMfOptions, ThreeMfWarning, TopologyAttributeTable, Value, write_3mf, write_stl_binary};
 
 /// Error message used by the v0.2 stub paths (`query`/`export`) that
 /// have not yet been wired to real FFI. Boolean ops (`Union`,
@@ -1011,9 +1011,13 @@ impl KernelAttributeHook for ManifoldKernel {
         for &handle in parent_handles {
             if let Some(m) = self.shapes.get(&handle.0) {
                 let oid = m.original_id();
-                if let (Some(id), Some(attr)) =
-                    (u32::try_from(oid).ok(), table.lookup(handle))
-                {
+                if let (Some(id), Some(attr)) = (
+                    u32::try_from(oid).ok(),
+                    table.lookup(KernelHandle {
+                        kernel: KernelId::Manifold,
+                        id: handle,
+                    }),
+                ) {
                     parent_map.insert(id, attr.clone());
                 }
             }
@@ -2255,8 +2259,20 @@ mod tests {
             .expect("ingest_mesh must accept a valid unit cube");
 
         let mut table = TopologyAttributeTable::default();
-        table.record(handle_a.id, make_attr("A"));
-        table.record(handle_b.id, make_attr("B"));
+        table.record(
+            KernelHandle {
+                kernel: KernelId::Manifold,
+                id: handle_a.id,
+            },
+            make_attr("A"),
+        );
+        table.record(
+            KernelHandle {
+                kernel: KernelId::Manifold,
+                id: handle_b.id,
+            },
+            make_attr("B"),
+        );
 
         let result_handle = kernel
             .execute(&GeometryOp::Union { left: handle_a.id, right: handle_b.id })
@@ -2284,16 +2300,31 @@ mod tests {
         // persistence is deferred to task 4262 (`propagate_attributes` takes `&self`;
         // there is no descriptor store until 4262 lands).
         assert!(
-            table.lookup(result_handle.id).is_none(),
+            table
+                .lookup(KernelHandle {
+                    kernel: KernelId::Manifold,
+                    id: result_handle.id,
+                })
+                .is_none(),
             "propagate_attributes must not write a result-handle entry on the Propagated path \
              (descriptor-keyed persistence deferred to task 4262)"
         );
         assert!(
-            table.lookup(handle_a.id).is_some(),
+            table
+                .lookup(KernelHandle {
+                    kernel: KernelId::Manifold,
+                    id: handle_a.id,
+                })
+                .is_some(),
             "handle_a entry must be unchanged in the table after propagate_attributes"
         );
         assert!(
-            table.lookup(handle_b.id).is_some(),
+            table
+                .lookup(KernelHandle {
+                    kernel: KernelId::Manifold,
+                    id: handle_b.id,
+                })
+                .is_some(),
             "handle_b entry must be unchanged in the table after propagate_attributes"
         );
 

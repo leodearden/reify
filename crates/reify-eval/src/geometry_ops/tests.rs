@@ -13530,9 +13530,9 @@
             mod_history: vec![],
         };
         let mut table = reify_ir::TopologyAttributeTable::default();
-        table.record(face_b, attr(reify_ir::Role::MidSurfaceFace, 1));
-        table.record(face_a, attr(reify_ir::Role::MidSurfaceFace, 0));
-        table.record(other, attr(reify_ir::Role::Side, 0));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: face_b }, attr(reify_ir::Role::MidSurfaceFace, 1));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: face_a }, attr(reify_ir::Role::MidSurfaceFace, 0));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: other }, attr(reify_ir::Role::Side, 0));
 
         let mut named_steps = HashMap::new();
         named_steps.insert("body".to_string(), kh(parent_handle));
@@ -13647,7 +13647,7 @@
         let empty = reify_ir::TopologyAttributeTable::default();
         let mut other_only = reify_ir::TopologyAttributeTable::default();
         other_only.record(
-            GeometryHandleId(8001),
+            KernelHandle { kernel: KernelId::Occt, id: GeometryHandleId(8001) },
             reify_ir::TopologyAttribute {
                 feature_id: reify_ir::FeatureId::realization("body", 0),
                 role: reify_ir::Role::Side,
@@ -13736,7 +13736,7 @@
         let empty = reify_ir::TopologyAttributeTable::default();
         let mut other_only = reify_ir::TopologyAttributeTable::default();
         other_only.record(
-            GeometryHandleId(8001),
+            KernelHandle { kernel: KernelId::Occt, id: GeometryHandleId(8001) },
             reify_ir::TopologyAttribute {
                 feature_id: other_fid,
                 role: reify_ir::Role::Side,
@@ -13817,7 +13817,7 @@
         let mut table = reify_ir::TopologyAttributeTable::default();
         let matching_face = GeometryHandleId(9001);
         table.record(
-            matching_face,
+            KernelHandle { kernel: KernelId::Occt, id: matching_face },
             reify_ir::TopologyAttribute {
                 feature_id: fid_other,
                 role: reify_ir::Role::MidSurfaceFace,
@@ -14004,10 +14004,10 @@
             mod_history: vec![],
         };
         let mut table = reify_ir::TopologyAttributeTable::default();
-        table.record(face_a0, attr("body_a", 0));
-        table.record(face_a1, attr("body_a", 1));
-        table.record(face_b0, attr("body_b", 0));
-        table.record(face_b1, attr("body_b", 1));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: face_a0 }, attr("body_a", 0));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: face_a1 }, attr("body_a", 1));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: face_b0 }, attr("body_b", 0));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: face_b1 }, attr("body_b", 1));
 
         // Two target cells: a real shell body ("body_a") and a body with no
         // mid-surface entry of its own ("non_shell"). Resolution ignores the
@@ -22427,7 +22427,7 @@
         let handle_id = GeometryHandleId(1);
         let mut table = reify_ir::TopologyAttributeTable::default();
         table.record(
-            handle_id,
+            KernelHandle { kernel: KernelId::Occt, id: handle_id },
             reify_ir::TopologyAttribute {
                 feature_id: reify_ir::FeatureId::realization("Fillet", 1),
                 role: reify_ir::Role::Side,

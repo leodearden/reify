@@ -21,7 +21,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use reify_ir::{GeometryHandleId, TopologyAttributeTable};
+use reify_ir::{GeometryHandleId, KernelHandle, KernelId, TopologyAttributeTable};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -282,13 +282,31 @@ fn match_one_kind(
     }
 
     // 3. Imported-geometry pre-pass.
+    // Non-threaded reader (interim single-kernel Occt, #4351): morph is
+    // OCCT-only today, and this reader's scope is not threaded by this task
+    // (only the resolver + ad-hoc selector are, per step-6) — mixed-kernel
+    // morph scoping is downstream work.
     let old_attributed = old
         .iter()
-        .filter(|&&h| old_table.lookup(h).is_some())
+        .filter(|&&h| {
+            old_table
+                .lookup(KernelHandle {
+                    kernel: KernelId::Occt,
+                    id: h,
+                })
+                .is_some()
+        })
         .count();
     let new_attributed = new
         .iter()
-        .filter(|&&h| new_table.lookup(h).is_some())
+        .filter(|&&h| {
+            new_table
+                .lookup(KernelHandle {
+                    kernel: KernelId::Occt,
+                    id: h,
+                })
+                .is_some()
+        })
         .count();
 
     if old_attributed == 0 && new_attributed == 0 {
@@ -323,7 +341,10 @@ fn match_one_kind(
         // The step-3 pre-pass guarantees all old handles are attributed; the
         // step-2 precondition check guarantees no duplicates in `old`.
         let old_attr = old_table
-            .lookup(old_handle)
+            .lookup(KernelHandle {
+                kernel: KernelId::Occt,
+                id: old_handle,
+            })
             .expect("all old handles attributed — guaranteed by pre-pass above");
 
         // Linear scan over new handles — O(n) per old handle, O(n²) overall.
@@ -333,10 +354,13 @@ fn match_one_kind(
         // Match equality is exact (PartialEq on TopologyAttribute, which compares
         // all fields including mod_history), so greedy first-fit is sound: any
         // 1-to-1 pairing of identical attributes is interchangeable.
-        let matched_new = new
-            .iter()
-            .copied()
-            .find(|&nh| !consumed.contains(&nh) && new_table.lookup(nh) == Some(old_attr));
+        let matched_new = new.iter().copied().find(|&nh| {
+            !consumed.contains(&nh)
+                && new_table.lookup(KernelHandle {
+                    kernel: KernelId::Occt,
+                    id: nh,
+                }) == Some(old_attr)
+        });
 
         match matched_new {
             Some(new_handle) => {
@@ -441,9 +465,9 @@ mod tests {
     #[test]
     fn stage_b_eligible_single_face_with_matching_attribute_pairs_handles() {
         let mut old_table = TopologyAttributeTable::default();
-        old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0, None));
+        old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::Cap(CapKind::Top), 0, None));
         let mut new_table = TopologyAttributeTable::default();
-        new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0, None));
+        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr(Role::Cap(CapKind::Top), 0, None));
         let result = stage_b_eligible(
             &old_table,
             &new_table,
@@ -472,9 +496,9 @@ mod tests {
     #[test]
     fn stage_b_eligible_single_edge_with_matching_attribute_pairs_handles() {
         let mut old_table = TopologyAttributeTable::default();
-        old_table.record(h(10), attr(Role::NewEdge, 0, None));
+        old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::NewEdge, 0, None));
         let mut new_table = TopologyAttributeTable::default();
-        new_table.record(h(20), attr(Role::NewEdge, 0, None));
+        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr(Role::NewEdge, 0, None));
         let result = stage_b_eligible(
             &old_table,
             &new_table,
@@ -508,9 +532,9 @@ mod tests {
             z: AxisSign::Pos,
         };
         let mut old_table = TopologyAttributeTable::default();
-        old_table.record(h(100), attr(corner, 0, None));
+        old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(100) }, attr(corner, 0, None));
         let mut new_table = TopologyAttributeTable::default();
-        new_table.record(h(200), attr(corner, 0, None));
+        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(200) }, attr(corner, 0, None));
 
         let result = stage_b_eligible(
             &old_table,
@@ -548,9 +572,9 @@ mod tests {
         // old: h(100) → (feat(), corner, 0)
         // new: h(200) → (feat2(), corner, 0) — different feature_id → disjoint
         let mut old_table = TopologyAttributeTable::default();
-        old_table.record(h(100), attr(corner, 0, None));
+        old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(100) }, attr(corner, 0, None));
         let mut new_table = TopologyAttributeTable::default();
-        new_table.record(h(200), attr_for_feat(feat2(), corner, 0));
+        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(200) }, attr_for_feat(feat2(), corner, 0));
 
         let result = stage_b_eligible(
             &old_table,
@@ -582,11 +606,11 @@ mod tests {
             z: AxisSign::Pos,
         };
         let mut old_table = TopologyAttributeTable::default();
-        old_table.record(h(100), attr(corner, 0, None));
+        old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(100) }, attr(corner, 0, None));
         let mut new_table = TopologyAttributeTable::default();
-        new_table.record(h(200), attr(corner, 0, None));
+        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(200) }, attr(corner, 0, None));
         new_table.record(
-            h(201),
+            KernelHandle { kernel: KernelId::Occt, id: h(201) },
             attr(
                 Role::CornerVertex {
                     x: AxisSign::Neg,
@@ -623,10 +647,10 @@ mod tests {
     #[test]
     fn stage_b_eligible_face_total_count_mismatch_returns_count_mismatch_failure() {
         let mut old_table = TopologyAttributeTable::default();
-        old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0, None));
+        old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::Cap(CapKind::Top), 0, None));
         let mut new_table = TopologyAttributeTable::default();
-        new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0, None));
-        new_table.record(h(21), attr(Role::Cap(CapKind::Bottom), 0, None));
+        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr(Role::Cap(CapKind::Top), 0, None));
+        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(21) }, attr(Role::Cap(CapKind::Bottom), 0, None));
         let result = stage_b_eligible(
             &old_table,
             &new_table,
@@ -651,10 +675,10 @@ mod tests {
     #[test]
     fn stage_b_eligible_edge_total_count_mismatch_returns_count_mismatch_failure() {
         let mut old_table = TopologyAttributeTable::default();
-        old_table.record(h(10), attr(Role::NewEdge, 0, None));
+        old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::NewEdge, 0, None));
         let mut new_table = TopologyAttributeTable::default();
-        new_table.record(h(20), attr(Role::NewEdge, 0, None));
-        new_table.record(h(21), attr(Role::NewEdge, 1, None));
+        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr(Role::NewEdge, 0, None));
+        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(21) }, attr(Role::NewEdge, 1, None));
         let result = stage_b_eligible(
             &old_table,
             &new_table,
@@ -682,9 +706,9 @@ mod tests {
         // K1: (feat(), Cap(Top), 0)
         // K2: (feat2(), Cap(Top), 0) — different feature_id → disjoint
         let mut old_table = TopologyAttributeTable::default();
-        old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0, None));
+        old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::Cap(CapKind::Top), 0, None));
         let mut new_table = TopologyAttributeTable::default();
-        new_table.record(h(20), attr_for_feat(feat2(), Role::Cap(CapKind::Top), 0));
+        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr_for_feat(feat2(), Role::Cap(CapKind::Top), 0));
         let result = stage_b_eligible(
             &old_table,
             &new_table,
@@ -743,12 +767,12 @@ mod tests {
         );
 
         let mut old_table = TopologyAttributeTable::default();
-        old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0, None)); // key A, no mod_history
-        old_table.record(h(11), attr(Role::Cap(CapKind::Bottom), 0, None)); // key B
+        old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::Cap(CapKind::Top), 0, None)); // key A, no mod_history
+        old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(11) }, attr(Role::Cap(CapKind::Bottom), 0, None)); // key B
 
         let mut new_table = TopologyAttributeTable::default();
-        new_table.record(h(20), child_0); // key A + split mod_history[0]
-        new_table.record(h(21), child_1); // key A + split mod_history[1]
+        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, child_0); // key A + split mod_history[0]
+        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(21) }, child_1); // key A + split mod_history[1]
 
         let result = stage_b_eligible(
             &old_table,
@@ -802,11 +826,11 @@ mod tests {
         // old has h(10) attributed but h(11) NOT in table — partial old attribution.
         // new is fully attributed.
         let mut old_table = TopologyAttributeTable::default();
-        old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0, None));
+        old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::Cap(CapKind::Top), 0, None));
         // h(11) is deliberately absent from old_table
         let mut new_table = TopologyAttributeTable::default();
-        new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0, None));
-        new_table.record(h(21), attr(Role::Cap(CapKind::Bottom), 0, None));
+        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr(Role::Cap(CapKind::Top), 0, None));
+        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(21) }, attr(Role::Cap(CapKind::Bottom), 0, None));
         let result = stage_b_eligible(
             &old_table,
             &new_table,
@@ -832,11 +856,11 @@ mod tests {
     #[test]
     fn stage_b_eligible_multiple_faces_with_distinct_attributes_pairs_all_handles() {
         let mut old_table = TopologyAttributeTable::default();
-        old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0, None));
-        old_table.record(h(11), attr(Role::Cap(CapKind::Bottom), 0, None));
+        old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::Cap(CapKind::Top), 0, None));
+        old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(11) }, attr(Role::Cap(CapKind::Bottom), 0, None));
         let mut new_table = TopologyAttributeTable::default();
-        new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0, None));
-        new_table.record(h(21), attr(Role::Cap(CapKind::Bottom), 0, None));
+        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr(Role::Cap(CapKind::Top), 0, None));
+        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(21) }, attr(Role::Cap(CapKind::Bottom), 0, None));
 
         let result = stage_b_eligible(
             &old_table,
@@ -869,11 +893,11 @@ mod tests {
         let dup_attr = attr(Role::Cap(CapKind::Top), 0, None);
 
         let mut old_table = TopologyAttributeTable::default();
-        old_table.record(h(10), dup_attr.clone());
-        old_table.record(h(11), dup_attr.clone());
+        old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, dup_attr.clone());
+        old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(11) }, dup_attr.clone());
         let mut new_table = TopologyAttributeTable::default();
-        new_table.record(h(20), dup_attr.clone());
-        new_table.record(h(21), dup_attr.clone());
+        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, dup_attr.clone());
+        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(21) }, dup_attr.clone());
 
         let result = stage_b_eligible(
             &old_table,
@@ -909,13 +933,13 @@ mod tests {
     #[test]
     fn stage_b_eligible_faces_and_edges_both_populated_in_single_call() {
         let mut old_table = TopologyAttributeTable::default();
-        old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0, None));
-        old_table.record(h(30), attr(Role::NewEdge, 0, None));
-        old_table.record(h(50), attr(Role::NewEdge, 1, None));
+        old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::Cap(CapKind::Top), 0, None));
+        old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(30) }, attr(Role::NewEdge, 0, None));
+        old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(50) }, attr(Role::NewEdge, 1, None));
         let mut new_table = TopologyAttributeTable::default();
-        new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0, None));
-        new_table.record(h(40), attr(Role::NewEdge, 0, None));
-        new_table.record(h(60), attr(Role::NewEdge, 1, None));
+        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr(Role::Cap(CapKind::Top), 0, None));
+        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(40) }, attr(Role::NewEdge, 0, None));
+        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(60) }, attr(Role::NewEdge, 1, None));
 
         let result = stage_b_eligible(
             &old_table,
@@ -955,10 +979,10 @@ mod tests {
         // old is fully attributed (two handles).
         // new has h(20) attributed but h(21) is absent from new_table — partial new attribution.
         let mut old_table = TopologyAttributeTable::default();
-        old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0, None));
-        old_table.record(h(11), attr(Role::Cap(CapKind::Bottom), 0, None));
+        old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::Cap(CapKind::Top), 0, None));
+        old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(11) }, attr(Role::Cap(CapKind::Bottom), 0, None));
         let mut new_table = TopologyAttributeTable::default();
-        new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0, None));
+        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr(Role::Cap(CapKind::Top), 0, None));
         // h(21) is deliberately absent from new_table
 
         let result = stage_b_eligible(
@@ -1062,10 +1086,10 @@ mod tests {
         // h(20)/h(30). Both sides are attributed so the imported pre-pass is
         // bypassed and execution reaches the precondition site.
         let mut old_table = TopologyAttributeTable::default();
-        old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0, None));
+        old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::Cap(CapKind::Top), 0, None));
         let mut new_table = TopologyAttributeTable::default();
-        new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0, None));
-        new_table.record(h(30), attr(Role::Cap(CapKind::Bottom), 0, None));
+        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr(Role::Cap(CapKind::Top), 0, None));
+        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(30) }, attr(Role::Cap(CapKind::Bottom), 0, None));
         // h(10) appears twice in old_faces — contract violation
         let _ = stage_b_eligible(
             &old_table,
@@ -1090,10 +1114,10 @@ mod tests {
         // under h(20). Both sides are attributed so the imported pre-pass is
         // bypassed and execution reaches the precondition site.
         let mut old_table = TopologyAttributeTable::default();
-        old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0, None));
-        old_table.record(h(11), attr(Role::Cap(CapKind::Bottom), 0, None));
+        old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::Cap(CapKind::Top), 0, None));
+        old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(11) }, attr(Role::Cap(CapKind::Bottom), 0, None));
         let mut new_table = TopologyAttributeTable::default();
-        new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0, None));
+        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr(Role::Cap(CapKind::Top), 0, None));
         // h(20) appears twice in new_faces — contract violation
         let _ = stage_b_eligible(
             &old_table,
@@ -1126,10 +1150,10 @@ mod tests {
         // Both sides are attributed so the imported pre-pass is bypassed and execution
         // reaches the precondition site — which must be structurally absent in release.
         let mut old_table = TopologyAttributeTable::default();
-        old_table.record(h(10), attr(Role::Cap(CapKind::Top), 0, None));
+        old_table.record(KernelHandle { kernel: KernelId::Occt, id: h(10) }, attr(Role::Cap(CapKind::Top), 0, None));
         let mut new_table = TopologyAttributeTable::default();
-        new_table.record(h(20), attr(Role::Cap(CapKind::Top), 0, None));
-        new_table.record(h(30), attr(Role::Cap(CapKind::Bottom), 0, None));
+        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(20) }, attr(Role::Cap(CapKind::Top), 0, None));
+        new_table.record(KernelHandle { kernel: KernelId::Occt, id: h(30) }, attr(Role::Cap(CapKind::Bottom), 0, None));
         // h(10) appears twice — would panic in debug; must not panic in release.
         // In the matching loop the second h(10) finds h(20) already consumed and
         // h(30) with a non-matching attribute, so it returns UnmappedElement.

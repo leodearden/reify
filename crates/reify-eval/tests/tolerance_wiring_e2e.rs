@@ -1517,7 +1517,13 @@ fn cache_hit_short_circuit_leaves_topology_attribute_table_empty_after_second_bu
     // after build #1, asserting it is empty after build #2 would prove
     // nothing.
     assert!(
-        engine.topology_attribute_table().lookup(seeded_face).is_some(),
+        engine
+            .topology_attribute_table()
+            .lookup(reify_ir::KernelHandle {
+                kernel: KernelId::Occt,
+                id: seeded_face,
+            })
+            .is_some(),
         "sanity: expected topology_attribute_table to contain an entry for \
          seeded_face {:?} after build #1 — the primitive-attribute seeder in \
          the op-loop must record the sphere's extracted face. If this fires, \
@@ -1583,7 +1589,13 @@ fn cache_hit_short_circuit_leaves_topology_attribute_table_empty_after_second_bu
     // build() clears the table before the short-circuit fires. Net effect:
     // the previously-seeded face has no entry.
     assert!(
-        engine.topology_attribute_table().lookup(seeded_face).is_none(),
+        engine
+            .topology_attribute_table()
+            .lookup(reify_ir::KernelHandle {
+                kernel: KernelId::Occt,
+                id: seeded_face,
+            })
+            .is_none(),
         "regression PIN: expected topology_attribute_table to have NO entry \
          for seeded_face {:?} on the second build — the cache-hit \
          short-circuit at engine_build.rs::execute_realization_ops \

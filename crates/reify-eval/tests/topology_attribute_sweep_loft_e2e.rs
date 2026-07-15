@@ -38,7 +38,8 @@ use reify_core::{ModulePath, Type};
 use reify_ir::{
     AttributeHistory, CapKind, CompiledExpr, ExportFormat, FeatureId, GeometryError,
     GeometryHandle, GeometryHandleId, GeometryKernel, GeometryOp, GeometryQuery, HistoryRecord,
-    LoftOpHistoryRecords, Mesh, QueryError, Role, SweepOpHistoryRecords, TessError,
+    KernelHandle, KernelId, LoftOpHistoryRecords, Mesh, QueryError, Role, SweepOpHistoryRecords,
+    TessError,
     TopologyAttribute, Value,
 };
 use reify_test_support::*;
@@ -304,7 +305,7 @@ fn collect_attrs_at(
     let table = engine.topology_attribute_table();
     indices
         .iter()
-        .map(|&idx| table.lookup(result_face_handles[idx]).cloned())
+        .map(|&idx| table.lookup(KernelHandle { kernel: KernelId::Occt, id: result_face_handles[idx] }).cloned())
         .collect()
 }
 
@@ -374,7 +375,7 @@ fn engine_build_sweep_with_mock_history_populates_table_with_cap_and_swept_face_
         // Cap (Start) — start_cap_face_indices[0] = 2 (sweep parametric Start/End,
         // NOT extrude's Top/Bottom).
         let start = table
-            .lookup(result_faces[2])
+            .lookup(KernelHandle { kernel: KernelId::Occt, id: result_faces[2] })
             .expect("Cap(Start) entry at result_faces[2] missing");
         assert_eq!(start.role, Role::Cap(CapKind::Start));
         assert_eq!(start.local_index, 0);
@@ -383,14 +384,14 @@ fn engine_build_sweep_with_mock_history_populates_table_with_cap_and_swept_face_
 
         // Cap (End) — end_cap_face_indices[0] = 3.
         let end = table
-            .lookup(result_faces[3])
+            .lookup(KernelHandle { kernel: KernelId::Occt, id: result_faces[3] })
             .expect("Cap(End) entry at result_faces[3] missing");
         assert_eq!(end.role, Role::Cap(CapKind::End));
         assert_eq!(end.local_index, 0);
 
         // SweptFace entries — face_generated entries with sequential local_index.
         let swept_a = table
-            .lookup(result_faces[4])
+            .lookup(KernelHandle { kernel: KernelId::Occt, id: result_faces[4] })
             .expect("SweptFace entry at result_faces[4] missing");
         assert_eq!(
             swept_a.role,
@@ -399,7 +400,7 @@ fn engine_build_sweep_with_mock_history_populates_table_with_cap_and_swept_face_
         );
         assert_eq!(swept_a.local_index, 0);
         let swept_b = table
-            .lookup(result_faces[5])
+            .lookup(KernelHandle { kernel: KernelId::Occt, id: result_faces[5] })
             .expect("SweptFace entry at result_faces[5] missing");
         assert_eq!(swept_b.role, Role::SweptFace);
         assert_eq!(swept_b.local_index, 1);
@@ -530,13 +531,13 @@ fn engine_build_loft_with_mock_history_populates_table_with_cap_and_lofted_face_
 
         // Cap (Start) — start_cap_face_indices[0] = 2.
         let start = table
-            .lookup(result_faces[2])
+            .lookup(KernelHandle { kernel: KernelId::Occt, id: result_faces[2] })
             .expect("Cap(Start) entry at result_faces[2] missing");
         assert_eq!(start.role, Role::Cap(CapKind::Start));
         assert_eq!(start.local_index, 0);
         // Cap (End) — end_cap_face_indices[0] = 3.
         let end = table
-            .lookup(result_faces[3])
+            .lookup(KernelHandle { kernel: KernelId::Occt, id: result_faces[3] })
             .expect("Cap(End) entry at result_faces[3] missing");
         assert_eq!(end.role, Role::Cap(CapKind::End));
         assert_eq!(end.local_index, 0);
@@ -545,7 +546,7 @@ fn engine_build_loft_with_mock_history_populates_table_with_cap_and_lofted_face_
         // local_index (0,1,2,3 across all sections, NOT 0,1,0,1 per section).
         for (sequential_idx, result_face_idx) in [4_usize, 5, 6, 7].iter().enumerate() {
             let attr = table
-                .lookup(result_faces[*result_face_idx])
+                .lookup(KernelHandle { kernel: KernelId::Occt, id: result_faces[*result_face_idx] })
                 .unwrap_or_else(|| {
                     panic!(
                         "LoftedFace entry at result_faces[{result_face_idx}] missing\

@@ -1243,10 +1243,18 @@ fn resolve_leaf<K: GeometryKernel + ?Sized>(
             // `LeafQuery::Named` name-resolution path). The empty→Undef contract
             // one layer up therefore holds per-DESIGN ("no body carries this
             // role"), NOT per-BODY.
+            //
+            // Non-threaded reader (interim single-kernel Occt, #4351): this
+            // ByRole leaf is not part of the resolver/ad-hoc-selector scope
+            // threading this task adds (step-6) — every handle recorded
+            // today is Occt-scoped, so collapsing `table.iter()`'s
+            // `KernelHandle` key back to its bare `GeometryHandleId` here is
+            // behavior-preserving. Mixed-kernel selector scoping is
+            // downstream work (e.g. #5071).
             let mut matches: Vec<(u32, GeometryHandleId)> = table
                 .iter()
                 .filter(|(_, attr)| attr.role == *role)
-                .map(|(id, attr)| (attr.local_index, id))
+                .map(|(kernel_handle, attr)| (attr.local_index, kernel_handle.id))
                 .collect();
             matches.sort_unstable();
             Ok(matches.into_iter().map(|(_, id)| id).collect())
@@ -1266,15 +1274,19 @@ fn resolve_leaf<K: GeometryKernel + ?Sized>(
         // requires, so inlining the table-walk here (rather than calling
         // them) is the faithful ByRole mirror.
         LeafQuery::CreatedByFeature(fid) => {
+            // Non-threaded reader (interim single-kernel Occt, #4351) — see
+            // rationale on `LeafQuery::ByRole` above.
             let mut matches: Vec<(u32, GeometryHandleId)> = table
                 .iter()
                 .filter(|(_, attr)| attr.feature_id == *fid && role_is_face(attr.role))
-                .map(|(id, attr)| (attr.local_index, id))
+                .map(|(kernel_handle, attr)| (attr.local_index, kernel_handle.id))
                 .collect();
             matches.sort_unstable();
             Ok(matches.into_iter().map(|(_, id)| id).collect())
         }
         LeafQuery::SplitByFeature(fid) => {
+            // Non-threaded reader (interim single-kernel Occt, #4351) — see
+            // rationale on `LeafQuery::ByRole` above.
             let mut matches: Vec<(u32, GeometryHandleId)> = table
                 .iter()
                 .filter(|(_, attr)| {
@@ -1284,7 +1296,7 @@ fn resolve_leaf<K: GeometryKernel + ?Sized>(
                             .iter()
                             .any(|entry| entry.splitting_feature_id == *fid)
                 })
-                .map(|(id, attr)| (attr.local_index, id))
+                .map(|(kernel_handle, attr)| (attr.local_index, kernel_handle.id))
                 .collect();
             matches.sort_unstable();
             Ok(matches.into_iter().map(|(_, id)| id).collect())
@@ -1698,7 +1710,8 @@ mod tests {
     use super::*;
     use reify_ir::{
         CapKind, ExportError, ExportFormat, FeatureId, GeometryError, GeometryHandle, GeometryOp,
-        Mesh, ModEntry, Role, TessError, TopologyAttribute, TopologyAttributeTable,
+        KernelHandle, KernelId, Mesh, ModEntry, Role, TessError, TopologyAttribute,
+        TopologyAttributeTable,
     };
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -3583,10 +3596,10 @@ mod tests {
         // Record face_b (local_index 1) BEFORE face_a (local_index 0) so the
         // output order is governed by the (local_index, id) sort, not by the
         // (unspecified) HashMap iteration / insertion order.
-        table.record(face_b, role_attr(Role::MidSurfaceFace, 1));
-        table.record(face_a, role_attr(Role::MidSurfaceFace, 0));
-        table.record(edge, role_attr(Role::MidSurfaceEdge, 0));
-        table.record(other, role_attr(Role::Side, 0));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: face_b }, role_attr(Role::MidSurfaceFace, 1));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: face_a }, role_attr(Role::MidSurfaceFace, 0));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: edge }, role_attr(Role::MidSurfaceEdge, 0));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: other }, role_attr(Role::Side, 0));
 
         // Disjoint sentinel sub-shapes: if the ByRole arm wrongly fell through
         // to extract_faces/extract_edges, the result would contain these.
@@ -3709,11 +3722,11 @@ mod tests {
         let mut table = TopologyAttributeTable::default();
         // f1's faces recorded OUT OF ORDER (local_index 1 before 0) so the
         // output order is governed by the (local_index, id) sort.
-        table.record(f1_face_b, feature_attr(f1.clone(), Role::Cap(CapKind::Top), 1, vec![]));
-        table.record(f1_face_a, feature_attr(f1.clone(), Role::Side, 0, vec![]));
-        table.record(f1_edge, feature_attr(f1.clone(), Role::NewEdge, 0, vec![]));
-        table.record(f2_face_b, feature_attr(f2.clone(), Role::Cap(CapKind::Bottom), 1, vec![]));
-        table.record(f2_face_a, feature_attr(f2.clone(), Role::Side, 0, vec![]));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: f1_face_b }, feature_attr(f1.clone(), Role::Cap(CapKind::Top), 1, vec![]));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: f1_face_a }, feature_attr(f1.clone(), Role::Side, 0, vec![]));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: f1_edge }, feature_attr(f1.clone(), Role::NewEdge, 0, vec![]));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: f2_face_b }, feature_attr(f2.clone(), Role::Cap(CapKind::Bottom), 1, vec![]));
+        table.record(KernelHandle { kernel: KernelId::Occt, id: f2_face_a }, feature_attr(f2.clone(), Role::Side, 0, vec![]));
 
         // Disjoint sentinel sub-shapes: if the arm wrongly fell through to
         // extract_faces/extract_edges, the result would contain these.
@@ -3782,19 +3795,19 @@ mod tests {
         let mut table = TopologyAttributeTable::default();
         // Recorded OUT OF ORDER (local_index 1 before 0).
         table.record(
-            split_face_b,
+            KernelHandle { kernel: KernelId::Occt, id: split_face_b },
             feature_attr(other_feature.clone(), Role::Cap(CapKind::Top), 1, vec![split_entry.clone()]),
         );
         table.record(
-            split_face_a,
+            KernelHandle { kernel: KernelId::Occt, id: split_face_a },
             feature_attr(other_feature.clone(), Role::Side, 0, vec![split_entry.clone()]),
         );
         table.record(
-            split_edge,
+            KernelHandle { kernel: KernelId::Occt, id: split_edge },
             feature_attr(other_feature.clone(), Role::NewEdge, 0, vec![split_entry]),
         );
         table.record(
-            unsplit_face,
+            KernelHandle { kernel: KernelId::Occt, id: unsplit_face },
             feature_attr(other_feature, Role::Side, 2, vec![other_entry]),
         );
 
