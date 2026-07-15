@@ -6381,4 +6381,119 @@ mod tests {
         assert_recorded_via_commit_primitive(&engine, &x_id, 0.01, "T4 solver-resolved auto (x)");
         assert_recorded_via_commit_primitive(&engine, &y_id, 0.015, "T5 wave2 reseed (y)");
     }
+
+    /// Task δ (#5056) step-5: pins that `edit_param`'s UNRECORDED transaction
+    /// copies (U1-U4 in the task's site inventory — reseed/aggregate sites
+    /// that write values+snapshot but deliberately omit the cache leg) are,
+    /// once step-6 migrates them onto `commit_cell_result`, wired through
+    /// with `CacheLeg::Skip("<reason>")` rather than a bare values/snapshot
+    /// insert pair with no journal trace at all.
+    ///
+    /// Exercises U2 (collection-resize child re-eval, in the "Collection
+    /// count re-elaboration phase" block): growing `GrowColl.n` from 2 to 3
+    /// removes every existing `bolts[i].diameter` child cell (invalidating
+    /// its cache entry) and recreates ALL of `bolts[0..3)` fresh, so
+    /// `bolts[2].diameter` — a newly-created instance — is written to
+    /// values/snapshot but never gains a cache entry.
+    ///
+    /// Asserts, for `bolts[2].diameter` after the grow:
+    /// (a) `result.values` and `engine.snapshot().values` both carry
+    ///     `(5mm, DeterminacyState::Determined)`;
+    /// (b) `engine.cache_store().get(&node)` is `None` (no cache entry —
+    ///     the site is deliberately unrecorded);
+    /// (c) the journal's `Started` event for the node carries the
+    ///     `"edit-reeval|cache-skip=<reason>"` marker — the exact format
+    ///     `commit_cell_result` stamps on its `CacheLeg::Skip` arm
+    ///     (cell_commit.rs:268-271). Checked via `starts_with` (not an exact
+    ///     string) since the specific `<reason>` text is step-6's to choose.
+    ///
+    /// RED on base: (a) and (b) already hold today (the site already inserts
+    /// into values/snapshot without touching the cache), but the site emits
+    /// NO journal event at all — so (c) fails outright (`events_for_node`
+    /// returns empty, not even a bare Started/Completed pair).
+    #[test]
+    fn edit_param_unrecorded_sites_skip_cache_via_primitive() {
+        use reify_constraints::SimpleConstraintChecker;
+        use reify_core::ValueCellId;
+        use reify_ir::{DeterminacyState, Value};
+        use reify_test_support::compile_source;
+
+        use crate::cache::NodeId;
+        use crate::cell_commit::TraceSource;
+        use crate::journal::{EventKind, EventPayload};
+
+        const SRC: &str = r#"structure BoltPart {
+    param diameter : Length = 5mm
+}
+structure GrowColl {
+    param n : Int = 2
+    sub bolts : List<BoltPart>
+    constraint bolts.count == n
+}"#;
+
+        let compiled = compile_source(SRC);
+        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None);
+        engine.eval(&compiled);
+
+        let n_id = ValueCellId::new("GrowColl", "n");
+        let result = engine
+            .edit_param(n_id, Value::Int(3))
+            .expect("edit_param(n, 3) must succeed after a cold eval");
+
+        // bolts[2] is a NEW instance (old_count was 2: indices 0,1) — it
+        // unambiguously never had a cache entry before this edit.
+        let child_id = ValueCellId::new("GrowColl.bolts[2]", "diameter");
+        let node = NodeId::Value(child_id.clone());
+
+        // (a) values + snapshot legs.
+        let result_val = result
+            .values
+            .get(&child_id)
+            .expect("bolts[2].diameter must be in result.values after the grow");
+        assert_scalar_si_approx_eq(result_val, 0.005, 1e-9, "result.values[bolts[2].diameter]");
+
+        let snapshot = engine
+            .snapshot()
+            .expect("snapshot must exist after edit_param");
+        let (snap_v, snap_det) = snapshot
+            .values
+            .get(&child_id)
+            .expect("bolts[2].diameter must be in snapshot.values after the grow");
+        assert_eq!(
+            *snap_det,
+            DeterminacyState::Determined,
+            "snapshot.values[bolts[2].diameter] must be Determined"
+        );
+        assert_scalar_si_approx_eq(snap_v, 0.005, 1e-9, "snapshot.values[bolts[2].diameter]");
+
+        // (b) NO cache entry — the "unrecorded" shape U2 deliberately keeps.
+        assert!(
+            engine.cache_store().get(&node).is_none(),
+            "bolts[2].diameter must have NO cache entry (unrecorded site)"
+        );
+
+        // (c) journal Started payload carries the cache-skip marker. RED on
+        // base: the site emits no journal event at all today, so this fails
+        // before ever reaching the payload-format check.
+        let events = engine.journal().events_for_node(&node);
+        assert!(
+            events.len() >= 2,
+            "expected at least a Started+Completed pair for bolts[2].diameter, got {events:?}"
+        );
+        let started = events[events.len() - 2];
+        assert!(
+            matches!(started.kind, EventKind::Started),
+            "expected the second-to-last event to be Started, got {:?}",
+            started.kind
+        );
+        match &started.payload {
+            Some(EventPayload::Custom(slug)) => assert!(
+                slug.starts_with(&format!("{}|cache-skip=", TraceSource::EditReeval.as_str())),
+                "Started payload must carry the edit-reeval cache-skip marker, got {slug:?}"
+            ),
+            other => panic!(
+                "expected Started payload Custom(\"edit-reeval|cache-skip=<reason>\"), got {other:?}"
+            ),
+        }
+    }
 }
