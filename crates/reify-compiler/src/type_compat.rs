@@ -1643,6 +1643,46 @@ fn is_dimensionless_complex(ty: &Type) -> bool {
     matches!(ty, Type::Complex(q) if matches!(q.as_ref(), Type::Scalar { dimension } if dimension.is_dimensionless()))
 }
 
+/// The dimensioned counterpart of `is_dimensionless_complex`: true only for a
+/// `Complex` wrapping a non-dimensionless `Scalar` (e.g. `Complex<Length>`,
+/// `Complex<Resistance>`). NOT a logical complement — a non-`Complex` type
+/// (e.g. `Type::Int`, `Type::length()`, `Type::Error`) matches neither this
+/// predicate nor `is_dimensionless_complex`.
+fn is_dimensioned_complex(ty: &Type) -> bool {
+    matches!(ty, Type::Complex(q) if matches!(q.as_ref(), Type::Scalar { dimension } if !dimension.is_dimensionless()))
+}
+
+/// Canonical rationale for the `+`/`-` dimensioned-Complex-vs-bare-numeric
+/// reject (task 5163) — `expr.rs`'s operand-kind guard and
+/// `DiagnosticCode::ArithOperandKind`'s doc cross-reference here rather
+/// than restate it.
+///
+/// `true` when one operand is a DIMENSIONED `Complex` and the other is a
+/// bare dimensionless numeric (`Int`/`Scalar{DIMENSIONLESS}`), in EITHER
+/// order — the exact pairing the runtime `guard_dimensionless_complex`
+/// (reify-expr) evaluates to `Value::Undef` (D3 policy; see
+/// `is_dimensionless_complex`'s doc above). `Type::Error`/`Type::TypeParam`
+/// operands match neither half, so gradualism holds structurally with no
+/// separate skip-set (contrast the broader Mul/Div
+/// `is_mul_div_gradualism_skip`).
+///
+/// Scope: only the dimensioned-Complex-vs-bare-dimensionless-numeric row.
+/// `Complex<Q> ± Scalar<Q>` (a dimensioned, non-Int/Real `Scalar`) and
+/// `Complex<Q1> ± Complex<Q2>` (mismatched-dimension `Complex` operands) are
+/// both also runtime-`Value::Undef` and both remain unguarded by this
+/// predicate — TODO(#5219): guard those two rows, or record a
+/// permanent-accept decision, and update this doc plus the out-of-scope-gap
+/// tests in `add_sub_operand_guard_tests.rs` accordingly.
+///
+/// Pure and unit-tested below (see the
+/// `add_sub_dimensioned_complex_reject_*`/`is_dimensioned_complex_*` tests);
+/// poisoning `result_type` and emitting the diagnostic happen at the
+/// `expr.rs` call site.
+pub(crate) fn add_sub_dimensioned_complex_reject(left: &Type, right: &Type) -> bool {
+    (is_dimensioned_complex(left) && is_dimensionless_numeric(right))
+        || (is_dimensionless_numeric(left) && is_dimensioned_complex(right))
+}
+
 /// Single source of truth for BOTH the correct static result type of `*`/`/`
 /// AND the runtime-supported/unsupported partition (task compiler-type-hygiene
 /// β2, INV-COMP-3).
@@ -1942,48 +1982,21 @@ pub(crate) fn infer_binop_type(op: BinOp, left: &Type, right: &Type) -> Type {
         // Complex operand does not widen — falls through to the unchanged
         // `left.clone()` fallback, same as before this arm existed.
         //
-        // KNOWN GAP (out of scope for β2, which is Mul/Div-only per PRD
-        // decision 2): a DIMENSIONED `Complex` + Int/Real (e.g.
-        // `Complex<Length> + 1`) still statically claims `left`'s dimensioned
-        // Complex type via the `left.clone()` fallback below, even though
-        // `guard_dimensionless_complex` evaluates `Value::Undef` for it at
-        // runtime — the same static/runtime disagreement class β2 closes for
-        // Mul/Div (this fn's `Mul`/`Div` arm below), but Add/Sub has no
-        // operand-kind guard to surface it as a diagnostic. Pinned (as
-        // current, not desired, behavior) by
-        // `binop_add_dimensioned_complex_plus_int_does_not_widen` below.
+        // CLOSED (task compiler-type-hygiene follow-up 5163): this arm's
+        // placeholder for a DIMENSIONED `Complex` + Int/Real is intentionally
+        // UNCHANGED, mirroring the β2 Mul/Div arm's own `Int` placeholder —
+        // the `expr.rs` `compile_binop` operand-kind guard overrides
+        // `result_type` downstream instead. See
+        // `add_sub_dimensioned_complex_reject`'s doc for the full rationale.
         //
-        // ORDER-DEPENDENT ASYMMETRY: the gap is not even consistent across
-        // operand order. `Complex<Length> + Int` hits the `else` fallthrough
-        // below with `left` = the dimensioned Complex, so `left.clone()`
-        // preserves `Complex<Length>`. The REVERSE `Int + Complex<Length>`
-        // hits neither widening branch either (the dimensioned Complex is on
-        // `right`, and `is_dimensionless_complex(right)` is false — it's
-        // dimensioned, not dimensionless), but `left.clone()` there means
-        // `left` = the bare `Int` — so the result collapses to plain `Int`,
-        // silently discarding the Complex-ness entirely. The same
-        // runtime-Undef expression class therefore yields TWO DIFFERENT
-        // static types depending purely on operand order, and the bare-`Int`
-        // collapse can trigger a spurious downstream `E_ArithOperandKind` on
-        // a follow-on `/ Complex` — the exact widening-gap failure class β2
-        // fixed for the dimensionless case (see the imaginary-literal-sugar
-        // note above this match arm). Pinned (as current, not desired,
-        // behavior) by `binop_add_int_plus_dimensioned_complex_does_not_widen`
-        // below.
-        // TODO(#5163): add an Add/Sub operand-kind guard for this case
-        // (covering BOTH operand orders), or document it as a
-        // permanently-accepted static/runtime gap.
-        //
-        // SCOPE (code-review confirmation, task 5061 amendment pass): this
-        // dimensionless-Complex widening arm is intentionally folded into β2
-        // rather than split into a separate change — it is a direct
+        // SCOPE (code-review confirmation, task 5061 amendment pass): the
+        // dimensionless-Complex widening arm above is intentionally folded
+        // into β2 rather than split into a separate change — it is a direct
         // prerequisite for β2's own Mul/Div guard, needed to avoid a spurious
         // `E_ArithOperandKind` on the imaginary-literal-sugar path described
         // above (`w = 3 + 4j` followed by e.g. `w / complex(1.0, 2.0)`), so
         // it cannot be bisected away from the Mul/Div guard without
-        // reintroducing that false positive. Only the follow-up (closing the
-        // dimensioned-Complex gap/asymmetry documented above) is deferred,
-        // tracked by #5163.
+        // reintroducing that false positive.
         BinOp::Add | BinOp::Sub => {
             if is_dimensionless_complex(left) && is_dimensionless_numeric(right) {
                 left.clone()
@@ -2557,14 +2570,14 @@ mod tests {
     }
 
     #[test]
-    fn binop_add_dimensioned_complex_plus_int_does_not_widen() {
-        // D3 policy (reify-expr `guard_dimensionless_complex`): a DIMENSIONED
-        // Complex does not promote against a bare Int/Real at runtime (evals
-        // Undef) — the static side must not claim a result type either, so
-        // this combination is deliberately left on the pre-existing
-        // `left.clone()` fallback (unchanged by this fix). This pins the
-        // CURRENT (mistyped) behavior, not the desired one — closing the gap
-        // is tracked separately, see TODO(#5163) above this match arm.
+    fn binop_add_dimensioned_complex_plus_int_returns_placeholder_poisoned_by_guard() {
+        // D3 policy: a DIMENSIONED Complex does not promote against a bare
+        // Int/Real at runtime (evals Undef). This pure fn is intentionally
+        // UNCHANGED (mirrors the β2 Mul/Div arm's own `Int` placeholder) and
+        // still returns this placeholder; the `expr.rs` operand-kind guard
+        // (`add_sub_dimensioned_complex_reject`) overrides `result_type` to
+        // `Type::Error` downstream. See `add_sub_operand_guard_tests.rs` for
+        // the observable end-to-end behavior.
         let dimensioned = Type::complex(Type::length());
         assert_eq!(
             infer_binop_type(BinOp::Add, &dimensioned, &Type::Int),
@@ -2572,23 +2585,156 @@ mod tests {
         );
     }
 
-    /// Order-reversed counterpart of `binop_add_dimensioned_complex_plus_int_does_not_widen`
-    /// above: with the DIMENSIONED Complex on the RIGHT, neither widening
-    /// branch fires (`is_dimensionless_complex(right)` is false — the Complex
-    /// is dimensioned, not dimensionless), so the `else` fallthrough returns
-    /// `left.clone()` = the bare `Int`, NOT the Complex. This is the
-    /// order-dependent asymmetry documented in the TODO(#5163) comment above
-    /// this match arm: `Complex<Length> + Int` preserves `Complex<Length>`
-    /// (previous test) but `Int + Complex<Length>` collapses to bare `Int`.
-    /// Pins the CURRENT (accepted-gap) behavior, not the desired one —
-    /// closing the gap in both directions is tracked by #5163.
+    /// Order-reversed counterpart of the sibling pin above: with the
+    /// DIMENSIONED Complex on the RIGHT, neither widening branch fires, so
+    /// the `else` fallthrough returns `left.clone()` = the bare `Int`, not
+    /// the Complex — the pure fn's placeholder is order-dependent. This fn
+    /// is intentionally UNCHANGED; the `expr.rs` operand-kind guard now
+    /// overrides `result_type` to `Type::Error` for BOTH operand orders,
+    /// closing the asymmetry. See `add_sub_operand_guard_tests.rs` for the
+    /// observable behavior.
     #[test]
-    fn binop_add_int_plus_dimensioned_complex_does_not_widen() {
+    fn binop_add_int_plus_dimensioned_complex_returns_placeholder_poisoned_by_guard() {
         let dimensioned = Type::complex(Type::length());
         assert_eq!(
             infer_binop_type(BinOp::Add, &Type::Int, &dimensioned),
             Type::Int
         );
+    }
+
+    // ── task-5163: is_dimensioned_complex / add_sub_dimensioned_complex_reject ──
+
+    #[test]
+    fn is_dimensioned_complex_true_for_dimensioned_quantity() {
+        assert!(is_dimensioned_complex(&Type::complex(Type::length())));
+    }
+
+    #[test]
+    fn is_dimensioned_complex_false_for_dimensionless_quantity() {
+        assert!(!is_dimensioned_complex(&Type::complex(
+            Type::dimensionless_scalar()
+        )));
+    }
+
+    #[test]
+    fn is_dimensioned_complex_false_for_non_complex() {
+        assert!(!is_dimensioned_complex(&Type::length()));
+        assert!(!is_dimensioned_complex(&Type::Int));
+    }
+
+    #[test]
+    fn add_sub_dimensioned_complex_reject_true_for_dimensioned_complex_plus_int() {
+        let dimensioned = Type::complex(Type::length());
+        assert!(add_sub_dimensioned_complex_reject(&dimensioned, &Type::Int));
+    }
+
+    /// Order-reversed counterpart: closes the documented asymmetry — both
+    /// operand orders must reject.
+    #[test]
+    fn add_sub_dimensioned_complex_reject_true_for_int_plus_dimensioned_complex_order_reversed() {
+        let dimensioned = Type::complex(Type::length());
+        assert!(add_sub_dimensioned_complex_reject(&Type::Int, &dimensioned));
+    }
+
+    #[test]
+    fn add_sub_dimensioned_complex_reject_true_for_dimensioned_complex_plus_dimensionless_scalar()
+    {
+        let dimensioned = Type::complex(Type::length());
+        assert!(add_sub_dimensioned_complex_reject(
+            &dimensioned,
+            &Type::dimensionless_scalar()
+        ));
+    }
+
+    #[test]
+    fn add_sub_dimensioned_complex_reject_true_for_dimensionless_scalar_plus_dimensioned_complex()
+    {
+        let dimensioned = Type::complex(Type::length());
+        assert!(add_sub_dimensioned_complex_reject(
+            &Type::dimensionless_scalar(),
+            &dimensioned
+        ));
+    }
+
+    /// Must NOT reject — this is the pre-existing D3 widening case (`3 + 4j`).
+    #[test]
+    fn add_sub_dimensioned_complex_reject_false_for_dimensionless_complex_plus_int_widening_case()
+    {
+        let dimensionless = Type::complex(Type::dimensionless_scalar());
+        assert!(!add_sub_dimensioned_complex_reject(
+            &dimensionless,
+            &Type::Int
+        ));
+    }
+
+    /// `Complex<Q1> ± Complex<Q2>` dimension-mismatch is a separate, unguarded
+    /// gap (out of scope for task 5163) — this predicate must not touch it.
+    #[test]
+    fn add_sub_dimensioned_complex_reject_false_for_complex_plus_complex_out_of_scope() {
+        let dimensioned = Type::complex(Type::length());
+        assert!(!add_sub_dimensioned_complex_reject(
+            &dimensioned,
+            &dimensioned
+        ));
+    }
+
+    /// `Complex<Length> + Length` (dimensioned Complex + dimensioned, non-Int
+    /// `Scalar`) matches neither this predicate (the `Scalar` side isn't a
+    /// bare dimensionless numeric) nor the `expr.rs` Scalar/Scalar
+    /// dimension-compat block (the `Complex` side isn't a bare `Scalar`) — a
+    /// separate, unguarded gap analogous to the Complex-vs-Complex case
+    /// above, also out of scope for task 5163. Pins CURRENT (unguarded)
+    /// behavior, not a correctness claim.
+    #[test]
+    fn add_sub_dimensioned_complex_reject_false_for_dimensioned_complex_plus_dimensioned_scalar_out_of_scope()
+     {
+        let dimensioned_complex = Type::complex(Type::length());
+        assert!(!add_sub_dimensioned_complex_reject(
+            &dimensioned_complex,
+            &Type::length()
+        ));
+    }
+
+    #[test]
+    fn add_sub_dimensioned_complex_reject_false_for_error_left_gradualism() {
+        let dimensioned = Type::complex(Type::length());
+        assert!(!add_sub_dimensioned_complex_reject(
+            &Type::Error,
+            &dimensioned
+        ));
+    }
+
+    #[test]
+    fn add_sub_dimensioned_complex_reject_false_for_error_right_gradualism() {
+        let dimensioned = Type::complex(Type::length());
+        assert!(!add_sub_dimensioned_complex_reject(
+            &dimensioned,
+            &Type::Error
+        ));
+    }
+
+    #[test]
+    fn add_sub_dimensioned_complex_reject_false_for_type_param_gradualism() {
+        let dimensioned = Type::complex(Type::length());
+        assert!(!add_sub_dimensioned_complex_reject(
+            &Type::TypeParam("T".into()),
+            &dimensioned
+        ));
+    }
+
+    /// Plain dimensioned `Scalar` (not `Complex`) + `Int` is handled by the
+    /// pre-existing dimension-compat block in `expr.rs`, not this predicate.
+    #[test]
+    fn add_sub_dimensioned_complex_reject_false_for_dimensioned_scalar_plus_int() {
+        assert!(!add_sub_dimensioned_complex_reject(
+            &Type::length(),
+            &Type::Int
+        ));
+    }
+
+    #[test]
+    fn add_sub_dimensioned_complex_reject_false_for_int_plus_int() {
+        assert!(!add_sub_dimensioned_complex_reject(&Type::Int, &Type::Int));
     }
 
     #[test]

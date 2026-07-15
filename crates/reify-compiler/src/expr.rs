@@ -164,6 +164,31 @@ fn make_poison_type(diagnostics: &mut Vec<Diagnostic>, diagnostic: Diagnostic) -
     Type::Error
 }
 
+/// Emit the canonical `ArithOperandKind` diagnostic — "operator `{op}` is
+/// undefined for operand kinds `{left}` and `{right}`", labeled "unsupported
+/// operand kinds" — via [`make_poison_type`], poisoning to `Type::Error`.
+///
+/// Shared by the Add/Sub dimensioned-Complex guard and the Mul/Div guard
+/// (task compiler-type-hygiene β2/5163) so the message/label form has one
+/// source of truth instead of diverging by copy as more binop operand-kind
+/// guards accrete.
+fn poison_arith_operand_kind(
+    diagnostics: &mut Vec<Diagnostic>,
+    op: &str,
+    left_ty: &Type,
+    right_ty: &Type,
+    span: reify_core::SourceSpan,
+) -> Type {
+    make_poison_type(
+        diagnostics,
+        Diagnostic::error(format!(
+            "operator `{op}` is undefined for operand kinds `{left_ty}` and `{right_ty}`",
+        ))
+        .with_code(DiagnosticCode::ArithOperandKind)
+        .with_label(DiagnosticLabel::new(span, "unsupported operand kinds")),
+    )
+}
+
 /// Return a `CompiledExpr` poison literal for **consumer-propagation** sites.
 ///
 /// Unlike [`make_poison_literal`], this helper takes no diagnostic argument and
@@ -1792,6 +1817,35 @@ pub(crate) fn compile_expr_guarded_with_expected(
                         }
                     }
 
+                    // Operand-kind guard for `+`/`-` on a DIMENSIONED `Complex`
+                    // paired with a bare dimensionless numeric (task
+                    // compiler-type-hygiene follow-up 5163, reusing
+                    // `E_ArithOperandKind` — shares its diagnostic emission,
+                    // via `poison_arith_operand_kind`, with the β2 Mul/Div
+                    // guard further below). See
+                    // `type_compat::add_sub_dimensioned_complex_reject`'s doc
+                    // for the full rationale (runtime Undef pairing, both
+                    // operand orders, structural gradualism).
+                    //
+                    // `infer_binop_type`'s `Add`/`Sub` arm keeps its
+                    // pre-existing placeholder UNCHANGED for this pairing;
+                    // this guard overrides `result_type` exactly like the
+                    // Mul/Div guard overrides its own placeholder below.
+                    if matches!(bin_op, BinOp::Add | BinOp::Sub)
+                        && type_compat::add_sub_dimensioned_complex_reject(
+                            &compiled_left.result_type,
+                            &compiled_right.result_type,
+                        )
+                    {
+                        result_type = poison_arith_operand_kind(
+                            diagnostics,
+                            op,
+                            &compiled_left.result_type,
+                            &compiled_right.result_type,
+                            expr.span,
+                        );
+                    }
+
                     // Operand-kind (and later dimension) guard for comparison ops
                     // (task-4490 / PRD §7.1 / `E_CmpOperandKind`).
                     //
@@ -1890,21 +1944,18 @@ pub(crate) fn compile_expr_guarded_with_expected(
                     // result), this guard POISONS `result_type` to `Type::Error` — `*`/`/`
                     // produce a value type, so a mistyped product must stop follow-on
                     // cascades on that value (mirrors the Pow/Mod poison precedent).
+                    // Diagnostic emission is shared with the Add/Sub dimensioned-Complex
+                    // guard above via `poison_arith_operand_kind`.
                     if let Some(None) = &mul_div_inferred
                         && !type_compat::is_mul_div_gradualism_skip(&compiled_left.result_type)
                         && !type_compat::is_mul_div_gradualism_skip(&compiled_right.result_type)
                     {
-                        result_type = make_poison_type(
+                        result_type = poison_arith_operand_kind(
                             diagnostics,
-                            Diagnostic::error(format!(
-                                "operator `{op}` is undefined for operand kinds `{}` and `{}`",
-                                compiled_left.result_type, compiled_right.result_type,
-                            ))
-                            .with_code(DiagnosticCode::ArithOperandKind)
-                            .with_label(DiagnosticLabel::new(
-                                expr.span,
-                                "unsupported operand kinds",
-                            )),
+                            op,
+                            &compiled_left.result_type,
+                            &compiled_right.result_type,
+                            expr.span,
                         );
                     }
 
