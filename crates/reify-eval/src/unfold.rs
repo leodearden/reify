@@ -2,20 +2,19 @@
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::time::Instant;
 
 use reify_compiler::{TopologyTemplate, ValueCellKind, find_template};
 use reify_core::{Diagnostic, ValueCellId, VersionId};
 use reify_expr::ContainmentQuery;
 use reify_ir::{CompiledFunction, DeterminacyState, Value, ValueMap};
 
-use crate::cache::{CacheStore, CachedResult, NodeId};
+use crate::cache::{CacheStore, NodeId};
 use crate::cell_commit::{CacheLeg, CommitLegs, DeterminacyRule, TraceSource, commit_cell_result};
 use crate::cell_eval_ctx::cell_eval_ctx;
 use crate::deps::{DependencyTrace, extract_dependency_trace, take_trace};
 use crate::dirty::topological_sort;
 use crate::eval_ctx_with_meta;
-use crate::journal::{EvalEvent, EventJournal, EventKind, EventPayload};
+use crate::journal::EventJournal;
 use crate::snapshot::Snapshot;
 
 /// No-op [`ContainmentQuery`]: reproduces the pre-migration containment=None
@@ -439,6 +438,9 @@ fn elaborate_child_lets_only<'t>(
     templates: &'t [TopologyTemplate],
     diagnostics: &mut Vec<Diagnostic>,
 ) {
+    let runtime_sink = RefCell::new(Vec::new());
+    let containment = NoContainment;
+
     // Enrich child_values with sub-component values projected from the global map.
     // Only needed for recursive subs where deeper levels have already been elaborated
     // (leaves-first ordering).
@@ -589,28 +591,20 @@ fn elaborate_child_lets_only<'t>(
         };
         let member = &child_cell_id.member;
 
-        let val = reify_expr::eval_expr(
-            expr,
-            &eval_ctx_with_meta(&child_values, functions, meta_map),
-        );
+        let val = {
+            let ctx = cell_eval_ctx(
+                &child_values,
+                functions,
+                meta_map,
+                &snapshot.values,
+                &runtime_sink,
+                &containment,
+            );
+            reify_expr::eval_expr(expr, &ctx)
+        };
         child_values.insert(child_cell_id.clone(), val.clone());
 
         let scoped_id = ValueCellId::new(scoped_entity, member);
-        let node_id = NodeId::Value(scoped_id.clone());
-        let start = Instant::now();
-        journal.record(EvalEvent {
-            timestamp: start,
-            node_id: node_id.clone(),
-            kind: EventKind::Started,
-            version: VersionId(version_id),
-            payload: None,
-        });
-
-        values.insert(scoped_id.clone(), val.clone());
-        snapshot.values.insert(
-            scoped_id.clone(),
-            (val.clone(), DeterminacyState::Determined),
-        );
 
         // sorted_child_lets and child_let_traces are built from the same key set, so remove() cannot fail.
         let trace = take_trace(
@@ -619,17 +613,22 @@ fn elaborate_child_lets_only<'t>(
             "sorted_child_lets",
             "child_let_traces",
         );
-        let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
-        let outcome =
-            cache.record_evaluation(node_id.clone(), cached_result, VersionId(version_id), trace);
 
-        journal.record(EvalEvent {
-            timestamp: Instant::now(),
-            node_id,
-            kind: EventKind::Completed { outcome },
-            version: VersionId(version_id),
-            payload: Some(EventPayload::Duration(start.elapsed())),
-        });
+        commit_cell_result(
+            CommitLegs {
+                values,
+                snapshot_values: &mut snapshot.values,
+                cache,
+                journal,
+            },
+            scoped_id,
+            val,
+            DeterminacyRule::UnconditionalDetermined,
+            TraceSource::GuardedGroup,
+            trace,
+            VersionId(version_id),
+            CacheLeg::Record,
+        );
     }
 }
 
