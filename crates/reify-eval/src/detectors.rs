@@ -28,10 +28,12 @@
 //!   task μ (PRD §10 open-question #2).
 //! - Per-node diagnostic attribution and `NodeCache` storage/replay
 //!   (consuming task κ's per-node diagnostics vec) is also task μ's.
-//! - The inline `MassProperties` PSD pass at `engine_eval.rs:4298-4397`
+//! - The inline `MassProperties` PSD pass at `engine_eval.rs:4662-4762`
 //!   stays in place until task μ removes it and wires this registry into
 //!   the three eval paths (foundation-then-migrate, mirroring how task α
-//!   shipped `commit_cell_result` ahead of its own migration leaves).
+//!   shipped `commit_cell_result` ahead of its own migration leaves). Until
+//!   then, [`MassPropertiesPsdDetector`] is a live second copy of that
+//!   logic — see its doc comment for the drift-avoidance note.
 
 use reify_core::{Diagnostic, DiagnosticCode, ValueCellId};
 use reify_ir::{DeterminacyState, PersistentMap, Value, ValueMap};
@@ -127,7 +129,7 @@ impl DetectorRegistry {
 }
 
 /// A faithful, characterization-preserving port of the inline `MassProperties`
-/// PSD inertia validation at `engine_eval.rs:4298-4397` (RBD-α, task 3822).
+/// PSD inertia validation at `engine_eval.rs:4662-4762` (RBD-α, task 3822).
 ///
 /// For every cell whose value is a `StructureInstance` with
 /// `type_name == "MassProperties"`, classifies the `inertia` field and
@@ -138,8 +140,14 @@ impl DetectorRegistry {
 /// case. A cell with no `inertia` field (or an already-`Undef` one) is left
 /// untouched — no false positives.
 ///
-/// The inline copy in `engine_eval.rs` stays in place until task μ removes
-/// it and wires this registry into the eval paths.
+/// **Drift warning**: until task μ (#5044) removes the inline copy in
+/// `engine_eval.rs` and wires this registry into the eval paths, this is a
+/// live second copy of that logic — the two bodies are deliberately kept
+/// byte-for-byte identical rather than sharing an implementation. A change
+/// to the classification rules, diagnostic wording, or Undef-replacement
+/// behavior on either side (this detector or the `engine_eval.rs` site)
+/// must be mirrored on the other, or the two will silently diverge before
+/// μ deletes the inline copy.
 #[allow(dead_code)] // wired in by task μ; exercised by tests until then
 pub(crate) struct MassPropertiesPsdDetector;
 
@@ -485,15 +493,21 @@ mod tests {
     /// cell's `inertia` field identically across two independently-seeded
     /// but equal states — proving the trait/state design hosts real,
     /// mutating production logic, not just test doubles. Ports the
-    /// characterization at `engine_eval.rs:4298-4397`. Only unambiguous
+    /// characterization at `engine_eval.rs:4662-4762`. Only unambiguous
     /// matrices are used (clearly-PSD identity vs. clearly-non-PSD
-    /// `diag(1,1,-1)`) — no near-tolerance-boundary premise.
+    /// `diag(1,1,-1)`) — no near-tolerance-boundary premise. Covers all
+    /// three `InertiaResult` arms (Skip / Malformed / Valid), including
+    /// both ways to land on Skip (absent field vs. already-`Undef` field)
+    /// and both ways to land on Malformed (wrong-shape vs.
+    /// right-shape-but-non-numeric).
     #[test]
     fn mass_properties_psd_detector_flags_and_replaces_deterministically() {
         let identity_cell = ValueCellId::new("BodyA", "mass_props");
         let neg_eig_cell = ValueCellId::new("BodyB", "mass_props");
         let malformed_cell = ValueCellId::new("BodyC", "mass_props");
         let no_inertia_cell = ValueCellId::new("BodyD", "mass_props");
+        let already_undef_cell = ValueCellId::new("BodyE", "mass_props");
+        let non_numeric_cell = ValueCellId::new("BodyF", "mass_props");
 
         // (a) identity = clearly PSD.
         let identity_value = mass_properties(Some(matrix3([
@@ -514,12 +528,25 @@ mod tests {
         ])));
         // (d) no `inertia` field at all.
         let no_inertia_value = mass_properties(None);
+        // (e) `inertia` field already `Value::Undef` — distinct from (d)'s
+        // absent-field case, but must ALSO be left untouched (no false
+        // positives / no re-flagging of an already-undetermined cell).
+        let already_undef_value = mass_properties(Some(Value::Undef));
+        // (f) right-shape (3×3) but non-numeric entry — unparseable, so
+        // Malformed via a different path than (c)'s wrong-shape case.
+        let non_numeric_value = mass_properties(Some(Value::Matrix(vec![
+            vec![Value::Bool(true), Value::Real(0.0), Value::Real(0.0)],
+            vec![Value::Real(0.0), Value::Real(1.0), Value::Real(0.0)],
+            vec![Value::Real(0.0), Value::Real(0.0), Value::Real(1.0)],
+        ])));
 
         let entries = [
             (identity_cell.clone(), identity_value.clone()),
             (neg_eig_cell.clone(), neg_eig_value.clone()),
             (malformed_cell.clone(), malformed_value.clone()),
             (no_inertia_cell.clone(), no_inertia_value.clone()),
+            (already_undef_cell.clone(), already_undef_value.clone()),
+            (non_numeric_cell.clone(), non_numeric_value.clone()),
         ];
 
         let registry = DetectorRegistry::with_builtins();
@@ -540,8 +567,8 @@ mod tests {
         assert_eq!(diag_keys(&run1.diagnostics), diag_keys(&run2.diagnostics));
         assert_eq!(
             run1.diagnostics.len(),
-            2,
-            "expected exactly the non-PSD + malformed cells to be flagged, got {:?}",
+            3,
+            "expected exactly the non-PSD + 2 malformed cells to be flagged, got {:?}",
             diag_keys(&run1.diagnostics)
         );
         for key in diag_keys(&run1.diagnostics) {
@@ -575,6 +602,25 @@ mod tests {
             assert_eq!(
                 run.snapshot_values.get(&no_inertia_cell),
                 Some(&(no_inertia_value.clone(), DeterminacyState::Determined))
+            );
+
+            // (e) already-Undef inertia field = Skip → left untouched (not
+            // re-flagged; distinct from (d)'s absent-field Skip).
+            assert_eq!(
+                run.values.get(&already_undef_cell),
+                Some(&already_undef_value)
+            );
+            assert_eq!(
+                run.snapshot_values.get(&already_undef_cell),
+                Some(&(already_undef_value.clone(), DeterminacyState::Determined))
+            );
+
+            // (f) right-shape but non-numeric inertia → Malformed →
+            // Undef-replaced in both values and snapshot, same as (c).
+            assert_eq!(run.values.get(&non_numeric_cell), Some(&Value::Undef));
+            assert_eq!(
+                run.snapshot_values.get(&non_numeric_cell),
+                Some(&(Value::Undef, DeterminacyState::Determined))
             );
         }
     }
