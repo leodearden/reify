@@ -3365,7 +3365,7 @@ fn element_stress_anisotropic(
 fn classify_material(val: &Value) -> MaterialModel {
     // ── AsPrintedZones field: heterogeneous per-element dispatch (task #4757) ─
     if let Value::Field { source: FieldSourceKind::AsPrintedZones, lambda, .. } = val {
-        return classify_material_as_printed_zones(lambda);
+        return classify_material_as_printed_zones(lambda).fea_shim();
     }
 
     let data = match val {
@@ -3449,37 +3449,49 @@ fn classify_material(val: &Value) -> MaterialModel {
 /// The returned `DiscreteCellField` has `cells = [wall, skin, infill]` and a
 /// `locator` that calls `reify_fdm::classify_point` → Zone → cell index 0/1/2.
 /// Mirrors the `sample_as_printed_zones` reconstruction in `reify-expr` exactly.
-fn classify_material_as_printed_zones(lambda: &Value) -> MaterialModel {
+///
+/// Task D6 (compute-fea-hardening PRD): Result-ified — returns
+/// `Err(FeaValueShapeError)` instead of panicking on a malformed `Value`,
+/// propagating each of its 6 dependency-extractor calls (`extract_point3_si`
+/// x2, `extract_zone_process_params`, `anisotropic_material_from_value` x3)
+/// via `?`. The sole call site (`classify_material`) bridges with
+/// `FeaShimExt::fea_shim` until D7 Result-ifies `classify_material` and
+/// removes the shim.
+fn classify_material_as_printed_zones(lambda: &Value) -> Result<MaterialModel, FeaValueShapeError> {
     let list = match lambda {
         Value::List(v) => v,
-        other => panic!(
-            "solve_elastic_static_trampoline: AsPrintedZones field lambda must be \
-             a Value::List (7 elements), got: {:?}",
-            other
-        ),
+        other => {
+            return Err(FeaValueShapeError::ExpectedList {
+                context: "classify_material_as_printed_zones (AsPrintedZones lambda)",
+                got: format!("{other:?}"),
+            })
+        }
     };
     if list.len() < 7 {
-        panic!(
-            "solve_elastic_static_trampoline: AsPrintedZones lambda has {} elements, \
-             expected at least 7",
-            list.len()
-        );
+        return Err(FeaValueShapeError::ExpectedList {
+            context: "classify_material_as_printed_zones",
+            got: format!(
+                "List with wrong arity: {} elements (expected at least 7)",
+                list.len()
+            ),
+        });
     }
 
-    let aabb_min = extract_point3_si(&list[0]).fea_shim();
-    let aabb_max = extract_point3_si(&list[1]).fea_shim();
-    let params   = extract_zone_process_params(&list[2]).fea_shim();
+    let aabb_min = extract_point3_si(&list[0])?;
+    let aabb_max = extract_point3_si(&list[1])?;
+    let params   = extract_zone_process_params(&list[2])?;
     let cos_threshold = match &list[3] {
         Value::Real(r) => *r,
-        other => panic!(
-            "solve_elastic_static_trampoline: AsPrintedZones cos_threshold must be \
-             Value::Real, got: {:?}",
-            other
-        ),
+        other => {
+            return Err(FeaValueShapeError::ExpectedReal {
+                context: "classify_material_as_printed_zones cos_threshold",
+                got: format!("{other:?}"),
+            })
+        }
     };
-    let mat_wall   = anisotropic_material_from_value(&list[4]).fea_shim();
-    let mat_skin   = anisotropic_material_from_value(&list[5]).fea_shim();
-    let mat_infill = anisotropic_material_from_value(&list[6]).fea_shim();
+    let mat_wall   = anisotropic_material_from_value(&list[4])?;
+    let mat_skin   = anisotropic_material_from_value(&list[5])?;
+    let mat_infill = anisotropic_material_from_value(&list[6])?;
 
     let aabb = AxisAlignedBox { min: aabb_min, max: aabb_max };
 
@@ -3493,7 +3505,7 @@ fn classify_material_as_printed_zones(lambda: &Value) -> MaterialModel {
             })
         }),
     };
-    MaterialModel::Heterogeneous(field)
+    Ok(MaterialModel::Heterogeneous(field))
 }
 
 /// Errors produced by the FEA `Value`-shape leaf extractors/classifiers when
@@ -3649,9 +3661,9 @@ fn extract_vec3_si(val: &Value) -> Result<[f64; 3], FeaValueShapeError> {
 /// All elements are `Value::Real`.
 ///
 /// Task D4 (compute-fea-hardening PRD): Result-ified leaf extractor — returns
-/// `Err(FeaValueShapeError)` on a malformed `Value` instead of panicking. The
-/// sole call site bridges with `FeaShimExt::fea_shim` until D6 Result-ifies
-/// `classify_material_as_printed_zones` and propagates the error directly.
+/// `Err(FeaValueShapeError)` on a malformed `Value` instead of panicking. Its
+/// sole call site (`classify_material_as_printed_zones`) threads the error
+/// via `?` (task D6).
 fn extract_zone_process_params(val: &Value) -> Result<ZoneProcessParams, FeaValueShapeError> {
     let list = match val {
         Value::List(v) => v,
@@ -3715,9 +3727,7 @@ fn extract_zone_process_params(val: &Value) -> Result<ZoneProcessParams, FeaValu
 /// decision on this task's plan.
 ///
 /// Its 3 call sites (`classify_material_as_printed_zones`'s mat_wall/
-/// mat_skin/mat_infill) bridge the `Result` arms with `FeaShimExt::fea_shim`
-/// so external behavior is unchanged until D6 Result-ifies
-/// `classify_material_as_printed_zones` and removes the shim.
+/// mat_skin/mat_infill) thread the `Result` via `?` (task D6).
 ///
 /// Used by `classify_material_as_printed_zones` to parse the three zone-material
 /// Values packed in the AsPrintedZones lambda.
@@ -8687,6 +8697,132 @@ mod tests {
         assert!(
             tip_hetero.is_finite() && tip_hetero > 0.0,
             "two-zone max_von_mises must be finite and positive, got {tip_hetero}"
+        );
+    }
+
+    // ── D6: classify_material_as_printed_zones Result-ification tests ──────
+    //
+    // Coverage boundary: together the 4 tests below cover the 3 LOCAL guards
+    // this function owns (non-List lambda, arity, non-Real cos_threshold)
+    // plus ONE of its 6 `?`-threaded leaf delegations (extract_point3_si on
+    // aabb_min) — enough to prove the uniform `?`-propagation mechanism
+    // itself. The remaining delegations — extract_point3_si (aabb_max),
+    // extract_zone_process_params (params), and anisotropic_material_from_value
+    // (mat_wall/mat_skin/mat_infill) — are deliberately not re-probed here:
+    // `?` propagation is already proven above, and each leaf's own Err
+    // variants are exhaustively covered by its own
+    // `extract_zone_process_params_rejects_*` /
+    // `anisotropic_material_from_value_rejects_*` unit tests elsewhere in
+    // this module.
+    //
+    // Assertion style: all four match the error *variant* only, per this
+    // module's policy of never pinning `got`'s free-text prose — except
+    // `rejects_malformed_lambda`, which also pins `context` (a fixed
+    // provenance tag, not `got` prose) since it's the only way to tell
+    // leaf propagation apart from the local arity guard below (both yield
+    // `ExpectedList`); see that test's doc comment.
+
+    /// Proves a leaf `Err` (`extract_point3_si`) propagates via `?` instead
+    /// of panicking, for a malformed lambda (non-Point aabb_min). Pins
+    /// `context` because the arity guard below also yields `ExpectedList`
+    /// on this well-arity 7-element list — see the coverage-boundary
+    /// comment above.
+    #[test]
+    fn classify_material_as_printed_zones_rejects_malformed_lambda() {
+        // 7-element list; element 0 (aabb_min) is a non-Point Value::Real,
+        // so extract_point3_si's Err propagates via `?` before any other
+        // element is parsed — elements 1..7 are unchecked placeholders.
+        let malformed = Value::List(vec![Value::Real(0.0); 7]);
+        let res = classify_material_as_printed_zones(&malformed);
+        assert!(
+            matches!(
+                res,
+                Err(FeaValueShapeError::ExpectedList { context, .. })
+                    if context.starts_with("extract_point3_si")
+            ),
+            "expected Err(ExpectedList) from extract_point3_si (leaf \
+             propagation via `?`), not from a local arity/shape guard, for \
+             a malformed AsPrintedZones lambda (non-Point aabb_min element)"
+        );
+    }
+
+    /// Targets the local arity guard (`list.len() < 7`), a second branch
+    /// this function owns directly, distinct from the leaf-propagation
+    /// test above — a 1-element list is too short.
+    #[test]
+    fn classify_material_as_printed_zones_rejects_wrong_arity() {
+        let short_list = Value::List(vec![Value::Real(1.0)]);
+        let res = classify_material_as_printed_zones(&short_list);
+        // Note: unlike the leaf-extractor sibling tests, `res` cannot be
+        // interpolated with `{:?}` here — `MaterialModel` (the `Ok` side)
+        // does not derive `Debug` (its `Heterogeneous` variant holds a
+        // boxed closure), so the assert message stays descriptive-only.
+        assert!(
+            matches!(res, Err(FeaValueShapeError::ExpectedList { .. })),
+            "expected Err(ExpectedList) for a List with < 7 elements"
+        );
+    }
+
+    /// Targets the local `cos_threshold` guard, the third branch this
+    /// function owns directly. Elements 0..2 are well-formed so the leaf
+    /// extractors ahead of it succeed via `?` first, proving the error
+    /// comes from this check and not an earlier one.
+    #[test]
+    fn classify_material_as_printed_zones_rejects_non_real_cos_threshold() {
+        let scalar = |v: f64| Value::Scalar { si_value: v, dimension: DimensionVector::DIMENSIONLESS };
+        let point = Value::Point(vec![scalar(1.0), scalar(2.0), scalar(3.0)]);
+        let params = Value::List(vec![
+            Value::Real(2.0),
+            Value::Real(3.0),
+            Value::Real(0.25),
+            Value::Real(0.5),
+            Value::Real(0.0),
+            Value::Real(0.0),
+            Value::Real(1.0),
+        ]);
+        let malformed = Value::List(vec![
+            point.clone(),
+            point,
+            params,
+            Value::Point(vec![]), // cos_threshold: wrong shape, not Value::Real
+            Value::Real(0.0),
+            Value::Real(0.0),
+            Value::Real(0.0),
+        ]);
+        let res = classify_material_as_printed_zones(&malformed);
+        // Note: `res` cannot be interpolated with `{:?}` here — see the
+        // arity test above for why (`MaterialModel` isn't `Debug`).
+        assert!(
+            matches!(res, Err(FeaValueShapeError::ExpectedReal { .. })),
+            "expected Err(ExpectedReal) for a non-Real cos_threshold element"
+        );
+    }
+
+    /// The Ok path: calls the Result-ified function directly (unlike
+    /// `..._returns_heterogeneous` above, which goes through the
+    /// panic-on-Err `.fea_shim()` bridge) and asserts only the
+    /// `Ok(Heterogeneous(_))` shape — spatial wall/infill dispatch is
+    /// already covered by that sibling test over the same fixture.
+    #[test]
+    fn classify_material_as_printed_zones_accepts_wellformed_lambda() {
+        let field = het_as_printed_field(
+            [0.0, 0.0, 0.0], [1.0, 1.0, 1.0],
+            [0.0, 0.0, 1.0],  // build_z
+            1.0, 0.1,         // walls, line_width (wall_thickness=0.1m)
+            1.0, 0.1,         // top_bottom_layers, layer_height (skin_thickness=0.1m)
+            200e9, 40e9,      // e_stiff, e_soft
+        );
+        let lambda = match &field {
+            Value::Field { lambda, .. } => lambda,
+            other => panic!("expected Value::Field, got {other:?}"),
+        };
+
+        let res = classify_material_as_printed_zones(lambda);
+        // Note: `res` cannot be interpolated with `{:?}` here — see the
+        // arity test above for why (`MaterialModel` isn't `Debug`).
+        assert!(
+            matches!(res, Ok(MaterialModel::Heterogeneous(_))),
+            "expected Ok(Heterogeneous) for a well-formed AsPrintedZones lambda"
         );
     }
 
