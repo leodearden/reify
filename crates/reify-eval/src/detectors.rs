@@ -140,14 +140,25 @@ impl DetectorRegistry {
 /// case. A cell with no `inertia` field (or an already-`Undef` one) is left
 /// untouched — no false positives.
 ///
-/// **Drift warning**: until task μ (#5044) removes the inline copy in
-/// `engine_eval.rs` and wires this registry into the eval paths, this is a
-/// live second copy of that logic — the two bodies are deliberately kept
-/// byte-for-byte identical rather than sharing an implementation. A change
-/// to the classification rules, diagnostic wording, or Undef-replacement
-/// behavior on either side (this detector or the `engine_eval.rs` site)
-/// must be mirrored on the other, or the two will silently diverge before
-/// μ deletes the inline copy.
+/// **Drift warning**: until task μ (#5044) removes the inline copy at
+/// `engine_eval.rs:4662-4762` (the "RBD-α (task 3822)" block) and wires
+/// this registry into the eval paths, this is a live second copy of that
+/// logic. The two bodies are deliberately kept semantically/logically
+/// identical — same classification rules, same diagnostic wording, same
+/// Undef-replacement behavior — modulo state-access binding: this detector
+/// reads `state.values` / `state.snapshot_values` / `state.diagnostics`
+/// where the inline copy reads the bare `values` / `snapshot.values` /
+/// `diagnostics` locals, and the two use different early-out shapes (a
+/// guarded `if` block there vs. an early `return` here). A byte-for-byte
+/// diff of the two will therefore show mismatches even though they are not
+/// intended to diverge; `mass_properties_psd_detector_messages_match_characterization_wording`
+/// (below) pins the fixed diagnostic wording instead, so a wording change
+/// on either side without updating the other surfaces as a test failure. A
+/// change to the classification rules, diagnostic wording, or
+/// Undef-replacement behavior on either side (this detector, or the
+/// `engine_eval.rs:4662-4762` site it mirrors) must be mirrored on the
+/// other, or the two will silently diverge before μ deletes the inline
+/// copy.
 #[allow(dead_code)] // wired in by task μ; exercised by tests until then
 pub(crate) struct MassPropertiesPsdDetector;
 
