@@ -61,6 +61,9 @@ _TMPDIRS+=("$CALLS_FILE")
 ERR_FILE="$(mktemp /tmp/test-seed-warm-lane-err-XXXXXX)"
 _TMPDIRS+=("$ERR_FILE")
 
+OUT_FILE="$(mktemp /tmp/test-seed-warm-lane-out-XXXXXX)"
+_TMPDIRS+=("$OUT_FILE")
+
 # ── PATH stubs ────────────────────────────────────────────────────────────────
 
 # cp stub: record argv; REIFY_TEST_REFLINK_OK=1 → exit 0, else error + exit 1
@@ -218,11 +221,23 @@ exec /bin/rm "$@"
 REAL_SLEEP_RM_STUB_EOF
         chmod +x "$real_stub_dir/rm"
     fi
-    OUT="$(
-        REIFY_TEST_CALLS_FILE="$CALLS_FILE" \
-        PATH="$real_stub_dir:$PATH" \
-            bash "$SCRIPT" "$@" 2>"$ERR_FILE"
-    )" || rc=$?
+    # NOTE: stdout is captured via a real FILE (OUT_FILE), NOT command
+    # substitution ($(...)). A backgrounded child of $SCRIPT that inherits
+    # stdout (fd 1) -- e.g. the reseed-trash `rm &` -- keeps a pipe's write
+    # end open, so $(...) would block until THAT descendant also exits
+    # (the classic bash "command substitution hangs on a background job"
+    # pitfall) -- masking exactly the FD-hygiene bug Block Q/H4 exists to
+    # catch: with a pipe, the probe below would never run until the leaking
+    # background rm had already exited on its own, so the lock would always
+    # read back FREE regardless of whether seed itself leaked FD 9. A file
+    # redirect has no EOF-on-all-writers semantics: this returns as soon as
+    # the direct `bash "$SCRIPT"` child exits, like a plain `wait`, letting
+    # H4 observe seed's own exit independently of any detached grandchild.
+    > "$OUT_FILE"
+    REIFY_TEST_CALLS_FILE="$CALLS_FILE" \
+    PATH="$real_stub_dir:$PATH" \
+        bash "$SCRIPT" "$@" >"$OUT_FILE" 2>"$ERR_FILE" || rc=$?
+    OUT="$(cat "$OUT_FILE")"
     ERR_OUT="$(cat "$ERR_FILE")"
     RC=$rc
     rm -rf "$real_stub_dir"
