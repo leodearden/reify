@@ -6227,10 +6227,13 @@ pub(crate) fn build_structure_def_skeleton(
         // `function_body_priv_port_member_access_not_yet_priv_gated` /
         // `function_body_priv_guarded_member_access_not_yet_priv_gated` in
         // priv_member_visibility_tests.rs (Part D coda, function-body variant),
-        // which pin this empirically. Same gap, same root cause, and same
-        // follow-up (#5171) as the external-access enforcement seam documented
-        // there — extending the skeleton to carry these members is out of this
-        // task's scope.
+        // which pin this empirically. Same gap and same root cause as the
+        // external-access enforcement seam that task #5171 closed for
+        // `obj.member` access (both port-member and guarded-block priv
+        // params) — but this skeleton is untouched by that fix, since
+        // function bodies never reach a real per-structure template at all.
+        // Extending the skeleton to carry these members (so function-body
+        // access can be priv-gated too) is tracked by follow-up #5222.
         ports: vec![],
         connections: vec![],
         guarded_groups: vec![],

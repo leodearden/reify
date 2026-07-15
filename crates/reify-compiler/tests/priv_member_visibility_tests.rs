@@ -516,18 +516,23 @@ purpose okp(subject : Motor) {
 // field to match `param.is_priv` at all four sites.
 //
 // Scope note: `template_member_is_priv` (expr.rs) — the sole predicate behind
-// E_PRIV_MEMBER_ACCESS enforcement — doesn't scan `ports[].members[].visibility`
-// or `guarded_groups[].members[].visibility`, so the field fixed here isn't yet
-// consulted for these two member kinds; the priv gate can't fire for them today.
-// External access to these members already fails (see the
-// `..._not_yet_priv_gated` tests below), but only because the composite
-// port/guarded member paths aren't wired into the external `obj.member`
-// resolver yet — a separate, pre-existing gap. Enforcing the now-correct
-// visibility field is out of scope for #5161 and tracked as follow-up
-// #5171 ("Enforce lowered priv visibility in E_PRIV_MEMBER_ACCESS
-// (port-member / guarded-block params)"). Part D asserts only the lowered
-// `visibility` field, not dot-access enforcement, so it stays green
-// regardless of whether #5171 has landed.
+// E_PRIV_MEMBER_ACCESS enforcement — didn't scan `ports[].members[].visibility`
+// or `guarded_groups[].members[].visibility`, so the field fixed here wasn't
+// yet consulted for these two member kinds; the priv gate couldn't fire for
+// them. Enforcing the now-correct visibility field was out of scope for
+// #5161 and tracked as follow-up #5171 ("Enforce lowered priv visibility in
+// E_PRIV_MEMBER_ACCESS (port-member / guarded-block params)") — which has
+// now landed for EXTERNAL access: guarded-block members via an extended
+// `template_member_is_priv` plus reordering the priv check ahead of the
+// StructureMemberNotFound early-return, and port members (the two-level
+// `<sub>.<port>.<member>` shape) via a dedicated AST-pattern branch in
+// `compile_member_access` (see the `_emits_error` tests below). Function-body
+// access still can't reach either member kind at all — the composite
+// port/guarded member paths aren't wired into `build_structure_def_skeleton`
+// — so that slice of the gap remains open, now tracked by follow-up #5222
+// (see the `..._not_yet_priv_gated` tests further below). Part D itself
+// asserts only the lowered `visibility` field, not dot-access enforcement,
+// so it stays green independent of either follow-up's status.
 
 /// Locate a template by name in the compiled module (generalizes `motor_template`
 /// for the Part D fixtures below, which use distinct structure names).
@@ -797,21 +802,24 @@ structure def PerDeclGuardHost {
 }
 
 // ── Part D coda: pins the enforcement-seam boundary from the scope note
-// above with real (empirically verified) diagnostics, not just prose. Today
-// neither access path resolves at all — `h.secret.main` fails with a
-// generic "member access not yet supported" diagnostic, `h.g` fails with
-// E_STRUCTURE_MEMBER_NOT_FOUND — so these pin the narrow, accurate claim
-// that E_PRIV_MEMBER_ACCESS never fires here because the priv gate is never
-// reached, NOT that access is silently allowed. If a future change makes
-// these paths reachable and consults the now-correct `visibility` field,
-// these assertions must flip — that's the intended trip-wire.
+// above with real (empirically verified) diagnostics, not just prose.
+// EXTERNAL access on both member kinds is now enforced (task #5171): `h.g`
+// and `h.secret.main` each emit exactly one E_PRIV_MEMBER_ACCESS (see the
+// `_emits_error` tests below), while their default-visible siblings still
+// fail via their pre-existing, unrelated diagnostics — StructureMemberNotFound
+// for guarded members, "member access not yet supported" for port members —
+// unchanged. FUNCTION-BODY access is the remaining gap: neither member kind
+// resolves at all there, so the priv gate is still never reached (see the
+// `..._not_yet_priv_gated` tests further below, tracked by follow-up #5222).
 
-/// Follow-up task tracking the priv-gate enforcement gap pinned by the
-/// `..._not_yet_priv_gated` tests below. When #5171 lands (wiring
-/// `template_member_is_priv` to scan port/guarded-block member visibility),
-/// grep this file for `NOT_YET_PRIV_GATED_FOLLOWUP` to find every assertion
-/// that must flip from "expect 0 E_PRIV_MEMBER_ACCESS" to "expect exactly 1".
-const NOT_YET_PRIV_GATED_FOLLOWUP: &str = "#5171";
+/// Follow-up task tracking the remaining function-body/skeleton priv-gate
+/// enforcement gap pinned by the `..._not_yet_priv_gated` tests below
+/// (EXTERNAL-access enforcement landed via #5171). When #5222 lands
+/// (populating `build_structure_def_skeleton`'s `ports`/`guarded_groups` so
+/// function bodies can resolve these members), grep this file for
+/// `NOT_YET_PRIV_GATED_FOLLOWUP` to find every assertion that must flip from
+/// "expect 0 E_PRIV_MEMBER_ACCESS" to "expect exactly 1".
+const NOT_YET_PRIV_GATED_FOLLOWUP: &str = "#5222";
 
 /// External dot-access on a `priv param` nested inside a port now emits
 /// E_PRIV_MEMBER_ACCESS (task #5171): a dedicated AST-pattern branch in
@@ -1032,8 +1040,10 @@ structure def Parent {
 // today (verified below): an empty `ports`/`guarded_groups` vec means the
 // port or guarded member isn't found on the skeleton, so function-body
 // access fails at E_STRUCTURE_MEMBER_NOT_FOUND before any visibility check
-// — same failure mode and root cause as the external-access coda above, and
-// the same follow-up (#5171). No silent success, no new leak.
+// — same failure mode and root cause as the external-access coda above had,
+// before #5171 landed EXTERNAL-access enforcement there. The function-body
+// path is unaffected by that landing (the skeleton itself is untouched) and
+// remains open, tracked by follow-up #5222. No silent success, no new leak.
 
 /// A function body cannot reach a `priv` param nested inside a `port { }`
 /// block via the skeleton registry — the skeleton's `ports` vec is always
