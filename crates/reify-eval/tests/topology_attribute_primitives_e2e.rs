@@ -80,7 +80,10 @@ fn assert_no_geometry_errors(build_result: &reify_eval::BuildResult) {
 /// After `Engine::build()` on a `box(...)` realization, the engine's
 /// `topology_attribute_table()` must contain one entry per face/edge of
 /// the resulting box: 6 face entries (each `Role::Side`, since a box
-/// has no caps) + 12 edge entries (each `Role::NewEdge`). The per-role /
+/// has no caps) + 12 edge entries (each `Role::NewEdge`) + 8 corner-vertex
+/// entries, plus 1 per-solid representative entry (task #4636's
+/// `record_solid_attribute`, keyed on the box's own solid handle — consumed
+/// by the OCCT->Manifold cross-kernel ingest forwarder). The per-role /
 /// per-feature_id assertions are covered by
 /// `topology_attribute_primitives_direct.rs` — see this file's module
 /// rustdoc for why iteration-based assertions live there, not here.
@@ -102,8 +105,8 @@ fn engine_build_records_topology_attributes_for_box_realization() {
     let table = engine.topology_attribute_table();
     assert_eq!(
         table.len(),
-        6 + 12 + 8,
-        "topology_attribute_table must hold 6 face + 12 edge + 8 vertex entries after a single box realization, got {}",
+        6 + 12 + 8 + 1,
+        "topology_attribute_table must hold 6 face + 12 edge + 8 vertex + 1 solid-representative (task #4636) entries after a single box realization, got {}",
         table.len()
     );
 }
@@ -195,11 +198,12 @@ fn engine_build_records_topology_attributes_for_sphere_realization() {
 /// reset between builds — the second build's entries must not carry
 /// stale entries from the first.
 ///
-/// Concretely: build a single-box structure (table holds 6+12+8 = 26
-/// entries: 6 faces + 12 edges + 8 corner vertices), then on the **same
-/// engine instance** build a single-sphere structure with no realizations
-/// from the box. The table after the second build must reflect only the
-/// sphere's entries, not the disjoint union.
+/// Concretely: build a single-box structure (table holds 6+12+8+1 = 27
+/// entries: 6 faces + 12 edges + 8 corner vertices + 1 per-solid
+/// representative entry from task #4636's `record_solid_attribute`), then
+/// on the **same engine instance** build a single-sphere structure with no
+/// realizations from the box. The table after the second build must
+/// reflect only the sphere's entries, not the disjoint union.
 ///
 /// This pins the reset wire-up in `Engine::build` (the
 /// `self.topology_attribute_table = TopologyAttributeTable::default()`
@@ -214,32 +218,33 @@ fn engine_build_resets_topology_attribute_table_across_builds() {
 
     let mut engine = engine_with_occt();
 
-    // First build: box. The table should hold 6 face + 12 edge + 8 vertex entries.
+    // First build: box. The table should hold 6 face + 12 edge + 8 vertex + 1
+    // solid-representative (task #4636) entries.
     let box_compiled = compile_no_errors("structure A { let body = box(10mm, 10mm, 10mm) }");
     let box_build = engine.build(&box_compiled, ExportFormat::Step);
     assert_no_geometry_errors(&box_build);
     assert_eq!(
         engine.topology_attribute_table().len(),
-        6 + 12 + 8,
-        "first build must seed exactly 6 face + 12 edge + 8 vertex entries for a box realization"
+        6 + 12 + 8 + 1,
+        "first build must seed exactly 6 face + 12 edge + 8 vertex + 1 solid-representative entries for a box realization"
     );
 
     // Second build: sphere on the SAME engine instance. The table must
-    // be cleared and repopulated — the box's 18 entries must not
+    // be cleared and repopulated — the box's 27 entries must not
     // persist alongside the sphere's.
     let sphere_compiled = compile_no_errors("structure B { let body = sphere(5mm) }");
     let sphere_build = engine.build(&sphere_compiled, ExportFormat::Step);
     assert_no_geometry_errors(&sphere_build);
 
     let after_sphere = engine.topology_attribute_table().len();
-    // Sphere's entry count is version-dependent (≥1 face, 0+ edges, no vertices)
-    // but emphatically less than the 6+12+8 = 26 the box produced. If the
-    // table didn't reset, after_sphere would be ≥ 26 + 1 = 27.
+    // Sphere's entry count is version-dependent (≥1 face, 0+ edges, no vertices,
+    // +1 solid-representative) but emphatically less than the 6+12+8+1 = 27 the
+    // box produced. If the table didn't reset, after_sphere would be ≥ 27 + 1 = 28.
     assert!(
-        after_sphere < 6 + 12 + 8,
+        after_sphere < 6 + 12 + 8 + 1,
         "topology_attribute_table must be reset between builds; after the second \
          (sphere) build the table holds {after_sphere} entries, which is ≥ the box's \
-         26 — the reset before/after `Engine::build` was missed"
+         27 — the reset before/after `Engine::build` was missed"
     );
     assert!(
         after_sphere >= 1,
@@ -256,7 +261,7 @@ fn engine_build_resets_topology_attribute_table_across_builds() {
 /// (`A(realization_index=0)` and `A(realization_index=1)` since each
 /// `let` becomes a separate realization), and thus distinct
 /// `FeatureId`s. The table after the build must hold:
-/// - the box's 6+12+8 = 26 entries (feature_id `A.a#realization[0]`)
+/// - the box's 6+12+8+1 = 27 entries (feature_id `A.a#realization[0]`)
 /// - plus the sphere's ≥1 face entries (feature_id `A.b#realization[1]`)
 ///
 /// A regression that resets the table between realizations within
@@ -276,12 +281,15 @@ fn engine_build_records_topology_attributes_for_multi_realization_module() {
     assert_no_geometry_errors(&build_result);
 
     let table_len = engine.topology_attribute_table().len();
-    // 6 box faces + 12 box edges + 8 box vertices + ≥1 sphere face = ≥27 entries.
-    // Sphere edge counts are version-dependent (0+).
+    // 6 box faces + 12 box edges + 8 box vertices + 1 box solid-representative
+    // (task #4636) + ≥1 sphere face = ≥28 entries. Sphere edge counts are
+    // version-dependent (0+); the sphere also contributes its own +1
+    // solid-representative entry.
     assert!(
-        table_len > 6 + 12 + 8,
+        table_len > 6 + 12 + 8 + 1,
         "topology_attribute_table must accumulate entries across both realizations; \
-         expected ≥27 (6 box faces + 12 box edges + 8 box vertices + ≥1 sphere face), got {table_len} — \
+         expected ≥28 (6 box faces + 12 box edges + 8 box vertices + 1 box solid-representative \
+         + ≥1 sphere face), got {table_len} — \
          the table was likely reset between realizations within a single build"
     );
 }

@@ -6839,6 +6839,21 @@ impl Engine {
         // every `step_handles.push(...)` below pushes the same `.id` here, so
         // the slice stays in lockstep without re-projecting per op.
         let mut realization_step_ids: Vec<GeometryHandleId> = Vec::with_capacity(operations.len());
+        // Task #4636: handles that `record_solid_attribute` (LINK2) wrote a
+        // per-solid representative entry for, below. That entry is internal
+        // cross-kernel-forwarding bookkeeping (consumed by
+        // `ManifoldKernel::propagate_attributes` and the OCCT->Manifold
+        // ingest forwarder), not a user-selectable face/edge/vertex
+        // attribute — it must NOT participate in the post-loop centroid /
+        // local-index-reassignment diagnostic scan
+        // (`collect_centroids_with_failure_summary` /
+        // `detect_local_index_reassignment_diagnostics` below), which walks
+        // `topology_attribute_table` filtered by `feature_id` alone and has
+        // no other way to tell a solid-representative entry apart from a
+        // real face entry. Tracked separately from `realization_step_ids`
+        // (which mixes in non-seedable ops too) so the filter below excludes
+        // exactly the entries this task added.
+        let mut solid_attribute_handles: Vec<GeometryHandleId> = Vec::new();
         // Task 4050 step-8: the produced [`ReprKind`] of each step handle,
         // tracked in lockstep with `realization_step_ids`. The per-op
         // `available` set is read from the reprs of the op's resolved input
@@ -7777,6 +7792,7 @@ impl Engine {
                                     handle.id,
                                     &feature_id,
                                 );
+                                solid_attribute_handles.push(handle.id);
                             }
                             // v0.2 persistent-naming-v2 (PRD task 5a, #2573): per-op
                             // attribute population for sweep ops (extrude / revolve).
@@ -8074,10 +8090,19 @@ impl Engine {
             // Occt-scoped, so collapsing back to a bare `GeometryHandleId`
             // here is behavior-preserving. Mixed-kernel-aware diagnostics are
             // downstream work.
+            // Task #4636: also excludes `solid_attribute_handles` — the
+            // per-solid representative entries `record_solid_attribute`
+            // wrote above share this realization's `feature_id` but are not
+            // real face/edge/vertex attributes, so they must not be
+            // centroid-queried or fed into the local-index-reassignment tie
+            // scan (see the declaration comment above).
             let realization_attrs: Vec<(GeometryHandleId, &TopologyAttribute)> =
                 topology_attribute_table
                     .iter()
-                    .filter(|(_, attr)| attr.feature_id == realization_feature_id)
+                    .filter(|(kernel_handle, attr)| {
+                        attr.feature_id == realization_feature_id
+                            && !solid_attribute_handles.contains(&kernel_handle.id)
+                    })
                     .map(|(kernel_handle, attr)| (kernel_handle.id, attr))
                     .collect();
             if !realization_attrs.is_empty() {

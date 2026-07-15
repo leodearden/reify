@@ -35,10 +35,10 @@
 //! - `propagate_via_kernel_attribute_hook` dispatcher: `crates/reify-eval/src/kernel_attribute_hook.rs`.
 //! - Engine cross-kernel conversion harness (`Engine::with_test_kernels_and_registry`
 //!   + `MockGeometryKernel` + a counting/tracking `ingest_mesh` wrapper):
-//!   `crates/reify-eval/tests/cross_kernel_handoff.rs`.
+//!     `crates/reify-eval/tests/cross_kernel_handoff.rs`.
 //! - Mock-registry seeding staging (`with_extracted_faces`/`with_extracted_edges`)
 //!   + `engine.topology_attribute_table()` observation:
-//!   `crates/reify-eval/tests/cross_kernel_attribute_collision_e2e.rs`.
+//!     `crates/reify-eval/tests/cross_kernel_attribute_collision_e2e.rs`.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
