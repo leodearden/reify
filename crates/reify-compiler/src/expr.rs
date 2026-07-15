@@ -250,6 +250,37 @@ fn template_member_is_priv(template: &TopologyTemplate, name: &str) -> bool {
         })
 }
 
+/// Returns `true` if `template` declares a port named `port_name` with a
+/// nested `priv param` member named `member` (task #5171). Companion to
+/// [`template_member_is_priv`], but keyed by the port-qualified composite
+/// name `CompiledPort::members` cells actually carry
+/// (`ValueCellId.member == "<port_name>.<member>"`, set in entity.rs's
+/// port-member compilation), rather than a bare top-level member name.
+///
+/// A separate helper is needed because the two-level `<sub>.<port>.<member>`
+/// access shape never reaches `template_member_is_priv`: the intermediate
+/// `<sub>.<port>` access does not resolve to a `Type::StructureRef` (ports
+/// are absent from `value_cells`), so the `Type::StructureRef` member-access
+/// block's priv gate is never entered for the outer `.<member>`. The
+/// AST-pattern branch in `compile_expr_guarded` (mirroring the cluster /
+/// keyed-sub branches) calls this directly instead.
+///
+/// The `kind == Param` guard mirrors the load-bearing guard on
+/// `template_member_is_priv`'s `value_cells` arm: a port may also declare
+/// `let` members, which default to `Visibility::Private` but are never
+/// externally accessible by name.
+fn port_member_is_priv(template: &TopologyTemplate, port_name: &str, member: &str) -> bool {
+    let composite = format!("{port_name}.{member}");
+    template.ports.iter().any(|p| {
+        p.name == port_name
+            && p.members.iter().any(|vc| {
+                vc.id.member == composite
+                    && vc.kind == ValueCellKind::Param
+                    && vc.visibility == Visibility::Private
+            })
+    })
+}
+
 /// The Option/Map recovery combinators whose `dflt` argument type must unify
 /// with the subject's element type (contract C-3,
 /// PRD docs/prds/v0_6/result-and-fallback.md).
@@ -3925,6 +3956,54 @@ pub(crate) fn compile_expr_guarded_with_expected(
                             .with_label(DiagnosticLabel::new(expr.span, "unknown port member")),
                     );
                 }
+            }
+
+            // Pattern: <sub>.<port>.<member> — external priv port-member
+            // access (task #5171). `h.secret.main` where `h` is a
+            // (non-collection) sub-component and `secret` is a port
+            // declared on h's structure template. Must fire BEFORE the
+            // inner `h.secret` MemberAccess is compiled through the normal
+            // path: ports are absent from `value_cells`, so `h.secret`
+            // alone resolves to a non-`StructureRef` receiver
+            // (`dimensionless_scalar()`), meaning the outer `.main` would
+            // never reach the `Type::StructureRef` member-access block's
+            // E_PRIV_MEMBER_ACCESS check (~expr.rs:6511). Mirrors the
+            // AST-pattern-matching style (name-keyed lookup, no recursive
+            // `compile_expr_guarded` on `object`) of the cluster (~3957)
+            // and keyed-sub (~4012) branches below.
+            //
+            // Only DETECTS and poisons the *priv* case; a non-priv port
+            // member keeps falling through unchanged to today's generic
+            // "member access not yet supported" diagnostic — full nested
+            // port-member resolution is a separate, pre-existing gap this
+            // task does not close. `sub_name != "self"` is redundant with
+            // the `sub_component_types` lookup (`self` can never be a sub
+            // name) but spelled out to make the internal/external boundary
+            // explicit: internal access (bare `port.member`, handled just
+            // above) must never be gated here.
+            if let reify_ast::ExprKind::MemberAccess {
+                object: inner_obj,
+                member: port_name,
+            } = &object.kind
+                && let reify_ast::ExprKind::Ident(sub_name) = &inner_obj.kind
+                && sub_name != "self"
+                && !scope.collection_sub_names.contains(sub_name.as_str())
+                && let Some(structure_name) = scope.sub_component_types.get(sub_name.as_str())
+                && let Some(registry) = scope.template_registry
+                && let Some(template) = registry.get(structure_name.as_str())
+                && port_member_is_priv(template, port_name, member)
+            {
+                return make_poison_literal(
+                    diagnostics,
+                    Diagnostic::error(format!(
+                        "E_PRIV_MEMBER_ACCESS: member '{member}' of structure '{structure_name}' is private"
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        expr.span,
+                        "private member accessed here",
+                    ))
+                    .with_code(DiagnosticCode::PrivMemberAccess),
+                );
             }
 
             // Pattern: <col_sub>[i].<cluster>.<inner> — task 2871.
