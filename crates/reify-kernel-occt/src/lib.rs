@@ -4178,6 +4178,29 @@ impl WarmStartable for OcctKernel {
         // rebuildable sub-shape ids — roots created by `execute` (Box,
         // Cylinder, Union, Sphere, ...) are never keys, so only
         // root/persistent shapes round-trip.
+        //
+        // Consumer contract: a `GeometryHandleId` returned by extract_edges/
+        // extract_faces/extract_vertices must not be held across a
+        // `with_warm_state()` boundary. After restore, such an id is only
+        // valid again once re-minted by a fresh extract_* call on its root;
+        // querying the old id directly (Volume, OwnerBody, repr_of, ...)
+        // now fails with `QueryError::InvalidHandle` instead of the
+        // pre-filter behavior of returning a stale-but-queryable orphan.
+        // Callers must re-extract sub-shapes from their root after every
+        // warm-start restore (see `warm_state_reextract_cycle` in the test
+        // module below). Verified at the time this filter was added (task
+        // #5162): no in-tree production caller exercises this cycle today.
+        // `OcctKernelHandle` (crates/reify-kernel-occt/src/handle.rs)
+        // forwards `warm_state`/`with_warm_state` over its request channel,
+        // but nothing outside this crate's own tests sends
+        // `OcctRequest::WarmState`/`WithWarmState`; and `reify-eval`'s only
+        // production warm-state wiring (`CacheStore::donate_warm_state`/
+        // `get_warm_state`, driven from `engine_compute.rs`/
+        // `engine_edit.rs`) is scoped to `NodeId::Compute` solver state, not
+        // `OcctKernel`/`OcctKernelHandle` geometry state — `engine_build.rs`
+        // has no `warm_state`/`OpaqueState` reference at all. A future
+        // caller that wires OCCT warm-start into the eval graph must follow
+        // the re-extraction contract above.
         let Self {
             shapes,
             reprs,
@@ -4857,14 +4880,17 @@ mod tests {
     /// Captures `kernel`'s warm state, records the persisted
     /// `(shapes.len(), reprs.len())` counts, restores into a fresh kernel,
     /// runs `mid_cycle` on the restored (pre-re-extraction) kernel for any
-    /// cycle-specific checks (e.g. asserting root survival), then re-seeds
-    /// `parent_handle` by re-running extract_faces/extract_edges/
-    /// extract_vertices on the box root (`GeometryHandleId(1)`) against the
-    /// cleared idempotency cache. Returns the restored+re-extracted kernel
-    /// plus the counts captured before restore.
+    /// cycle-specific checks (e.g. asserting root survival) — `mid_cycle`
+    /// takes `&mut OcctKernel` so a caller can also re-extract sub-shapes on
+    /// a root of its own (e.g. a second, post-extraction root) instead of
+    /// just the box — then re-seeds `parent_handle` by re-running
+    /// extract_faces/extract_edges/extract_vertices on the box root
+    /// (`GeometryHandleId(1)`) against the cleared idempotency cache.
+    /// Returns the restored+re-extracted kernel plus the counts captured
+    /// before restore.
     fn warm_state_reextract_cycle(
         kernel: OcctKernel,
-        mid_cycle: impl FnOnce(&OcctKernel),
+        mid_cycle: impl FnOnce(&mut OcctKernel),
     ) -> (OcctKernel, usize, usize) {
         let state = kernel.warm_state().expect("kernel should have warm state");
         let warm = state
@@ -4876,7 +4902,7 @@ mod tests {
         let mut next = OcctKernel::new();
         next.with_warm_state(state);
 
-        mid_cycle(&next);
+        mid_cycle(&mut next);
 
         next.extract_faces(GeometryHandleId(1))
             .expect("extract_faces on the restored box should succeed");
@@ -5490,7 +5516,12 @@ mod tests {
     /// filter (the exact invariant `debug_assert_fresh_id` protects). This
     /// test pins that both roots survive every warm-start cycle while all
     /// sub-shapes are filtered, rather than relying solely on the debug
-    /// assertion.
+    /// assertion. The mid-cycle closure re-extracts the cylinder's own
+    /// faces/edges/vertices on every restored kernel (mirroring the shared
+    /// helper's box-only re-extraction), so the filter is exercised against
+    /// a *second* root's derived ids each cycle — not just the box's —
+    /// rather than the two-root count vacuously holding because the
+    /// cylinder never has any sub-shape ids to filter in the first place.
     #[test]
     fn warm_state_persisted_shape_count_bounded_with_post_extraction_root() {
         let mut kernel = OcctKernel::new();
@@ -5524,15 +5555,23 @@ mod tests {
 
         let mut counts = Vec::new();
         for _ in 0..4 {
-            // Mid-cycle: both roots must resolve after every restore. Re-seeding
-            // parent_handle against the cleared idempotency cache (mirroring
-            // `warm_state_persisted_shape_count_stays_bounded_across_cycles`)
-            // happens inside the shared helper after this check.
+            // Mid-cycle: both roots must resolve after every restore, and the
+            // cylinder's own faces/edges/vertices are re-extracted here (the
+            // shared helper only re-extracts the box root afterward) so the
+            // bounded-payload filter is exercised against a second root's
+            // derived ids too, not just the box's. Re-seeding parent_handle
+            // for the box happens inside the shared helper after this closure.
             let (next, shapes_len, _) = warm_state_reextract_cycle(kernel, |next| {
                 next.query(&GeometryQuery::Volume(GeometryHandleId(1)))
                     .expect("box root should survive warm-start round-trip");
                 next.query(&GeometryQuery::Volume(cyl_id))
                     .expect("post-extraction cylinder root should survive warm-start round-trip");
+                next.extract_faces(cyl_id)
+                    .expect("extract_faces on the restored cylinder should succeed");
+                next.extract_edges(cyl_id)
+                    .expect("extract_edges on the restored cylinder should succeed");
+                next.extract_vertices(cyl_id)
+                    .expect("extract_vertices on the restored cylinder should succeed");
             });
             counts.push(shapes_len);
             kernel = next;
