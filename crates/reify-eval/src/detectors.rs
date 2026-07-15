@@ -274,6 +274,25 @@ mod tests {
         diags.iter().map(diag_key).collect()
     }
 
+    /// Order-insensitive projection for comparing diagnostics from two
+    /// INDEPENDENTLY-built states. `PostPassState.values` is an
+    /// `im::HashMap`-backed `ValueMap` with a per-instance `RandomState`, so
+    /// two separately-constructed-but-equal states can iterate in different
+    /// orders; a detector that walks `values.iter()` unsorted (like
+    /// [`MassPropertiesPsdDetector`], faithfully mirroring the inline
+    /// `engine_eval.rs:4662-4762` pass, which also iterates unsorted) then
+    /// yields the same diagnostic MULTISET but not necessarily the same
+    /// SEQUENCE across runs. A `HashSet` (not `BTreeSet`: `DiagnosticCode`
+    /// is `Eq + Hash`, not `Ord`) is the honest INV-EVAL-3 comparison for
+    /// such a detector — sequence equality is asserted separately only
+    /// where the detectors involved don't read hashmap-ordered state (see
+    /// [`run_all_executes_in_registration_order`]).
+    fn diag_key_set(
+        diags: &[Diagnostic],
+    ) -> std::collections::HashSet<(Option<DiagnosticCode>, String)> {
+        diags.iter().map(diag_key).collect()
+    }
+
     /// A deterministic test-double detector: pushes one fixed diagnostic and
     /// inserts one fixed marker cell into `values` — a pure function of its
     /// own fields, reading nothing from the incoming state.
@@ -574,8 +593,12 @@ mod tests {
         registry.run_all(&mut run2.as_state());
 
         // Exactly the non-PSD and malformed cells are flagged, both runs
-        // agreeing bit-for-bit via the (code, message) projection.
-        assert_eq!(diag_keys(&run1.diagnostics), diag_keys(&run2.diagnostics));
+        // agreeing on the SET of (code, message) diagnostics. Compared as a
+        // multiset, not a sequence: the detector walks `values.iter()`
+        // (an unsorted `im::HashMap`), so two independently-built states
+        // can surface the same diagnostics in a different order — see
+        // `diag_key_set`'s doc comment.
+        assert_eq!(diag_key_set(&run1.diagnostics), diag_key_set(&run2.diagnostics));
         assert_eq!(
             run1.diagnostics.len(),
             3,
