@@ -43,7 +43,11 @@ echo "=== scripts/seed-warm-lane.sh hermetic tests (task 4660) ==="
 # Shared temp state
 # ─────────────────────────────────────────────────────────────────────────────
 _TMPDIRS=()
+_BGPIDS=()
 cleanup() {
+    for pid in "${_BGPIDS[@]+${_BGPIDS[@]}}"; do
+        kill "$pid" 2>/dev/null || true
+    done
     for d in "${_TMPDIRS[@]+${_TMPDIRS[@]}}"; do rm -rf "$d"; done
 }
 trap cleanup EXIT
@@ -203,6 +207,27 @@ REAL_RM_STUB_EOF
 
 reset_calls() {
     > "$CALLS_FILE"
+}
+
+# _wait_for_reader_lock <ready-marker> <deadline-seconds>
+# Causal ordering (technique R, docs/prds/infra-test-wallclock-deflake.md,
+# task #4847): polls for the READY marker file in 0.05s ticks instead of a
+# fixed sleep, so a background flock holder's acquisition is causally
+# guaranteed complete before the caller's next statement runs -- a fixed
+# sleep races the holder under CPU/IO load. Mirrors
+# tests/infra/test_thin_warm_lane.sh's and tests/infra/test_warm_lane_gc.sh's
+# identically-named helper.
+_wait_for_reader_lock() {
+    local ready_marker="$1"
+    local deadline_s="$2"
+    local max_ticks=$(( deadline_s * 20 ))
+    local tick=0
+    while [ "$tick" -lt "$max_ticks" ]; do
+        [ -f "$ready_marker" ] && return 0
+        sleep 0.05
+        tick=$(( tick + 1 ))
+    done
+    return 1
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1823,5 +1848,123 @@ assert "P3c: out/libfoo.a BYTE-UNCHANGED (binary; never rewritten regardless of 
 P3BC_LANE_RP="$(realpath -m "$P3BC_LANE")"
 assert "P3c: build/cxx-AAAA/output WAS relocated in this same run (guards non-vacuous)" \
     bash -c 'grep -qF "$1" "$2"' _ "$P3BC_LANE_RP" "$P3BC_LANE/target/debug/build/cxx-AAAA/output"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Block Q — acquisition-time lane-lock exclusivity (task #5223, PRD
+# docs/prds/warm-lane-pool-cow-seeding.md §9.5 inv.11)
+#
+# The opt-in --lane-lock flag holds an exclusive flock on the sibling-path
+# ${LANE_DIR}.lock (the SAME convention thin-warm-lane.sh T3 / warm-lane-gc.sh's
+# live-consumer probe already use) across the destructive replace+clone, so a
+# reseed never clobbers a lane a live consumer still holds (inv.2).
+#
+# Uses run_helper_real (real fixture: a non-empty <lane_dir>/target containing
+# a sentinel file) so the mv/clobber actually executes or is actually refused.
+# The held-lock scenarios use a BACKGROUNDED subshell lock-holder + the
+# _wait_for_reader_lock causal handshake (mirrors test_thin_warm_lane.sh B3),
+# not an fd inherited in this test shell, so contention is against a genuinely
+# separate process -- deterministic RED/GREEN, no fixed-sleep race.
+#
+# H1/H2/H3 (step-1/step-2). H4 (step-3/step-4). H5 (step-5/step-6).
+# ─────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block Q: acquisition-time lane-lock exclusivity (--lane-lock) ---"
+
+# Shared base fixture: base with empty sidecar so RUSTFLAGS+invocation guards pass.
+Q_BASE_PARENT="$(mktemp -d /tmp/test-seed-Q-parent-XXXXXX)"
+Q_BASE="$Q_BASE_PARENT/target"
+_TMPDIRS+=("$Q_BASE_PARENT")
+mkdir -p "$Q_BASE/debug"
+echo "base artifact" > "$Q_BASE/debug/base_artifact.a"
+printf 'RUSTFLAGS=\nINVOCATION=\n' > "$Q_BASE_PARENT/.warm-base-meta"
+
+# ── H1: lock HELD by a live consumer → --lane-lock refuses (EX_TEMPFAIL 75),
+# does NOT clobber the lane (sentinel survives), cp never invoked. ───────────
+Q_LANE1="$(mktemp -d /tmp/test-seed-Q-lane1-XXXXXX)"
+_TMPDIRS+=("$Q_LANE1")
+mkdir -p "$Q_LANE1/target"
+echo "sentinel content" > "$Q_LANE1/target/SENTINEL.txt"
+
+Q_LOCK1="${Q_LANE1}.lock"
+_TMPDIRS+=("$Q_LOCK1")
+Q_READY1="${Q_LOCK1}.ready-marker"
+_TMPDIRS+=("$Q_READY1")
+touch "$Q_LOCK1"
+# Causal handshake: the subshell touches Q_READY1 AFTER acquiring flock -x, so
+# the run below only fires once the lock is provably held by this OTHER process.
+( flock -x 9 && touch "$Q_READY1" && sleep 300 ) 9>"$Q_LOCK1" &
+Q_LOCK1_PID=$!
+_BGPIDS+=("$Q_LOCK1_PID")
+_wait_for_reader_lock "$Q_READY1" 30
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$Q_BASE" "$Q_LANE1" --fresh-checkout --lane-lock
+
+assert "H1: lock held by live consumer → exit 75 (EX_TEMPFAIL)" test "$RC" -eq 75
+assert "H1: stderr mentions the lock/live-consumer refusal" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "lock|consumer"' _ "$ERR_OUT"
+assert "H1: STDOUT is EMPTY (fail-closed, no path emitted)" \
+    bash -c '[ -z "$1" ]' _ "$OUT"
+assert "H1: sentinel file in <lane>/target still present (lane NOT clobbered)" \
+    test -f "$Q_LANE1/target/SENTINEL.txt"
+assert "H1: cp NEVER invoked (refused before clone)" \
+    bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
+
+kill "$Q_LOCK1_PID" 2>/dev/null || true
+wait "$Q_LOCK1_PID" 2>/dev/null || true
+
+# ── H2: lock FREE → --lane-lock succeeds (RC 0, stdout resolved <lane>/target,
+# target replaced from base). ─────────────────────────────────────────────────
+Q_LANE2="$(mktemp -d /tmp/test-seed-Q-lane2-XXXXXX)"
+_TMPDIRS+=("$Q_LANE2")
+mkdir -p "$Q_LANE2/target"
+echo "sentinel content" > "$Q_LANE2/target/SENTINEL.txt"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$Q_BASE" "$Q_LANE2" --fresh-checkout --lane-lock
+
+assert "H2: lock free → exit 0" test "$RC" -eq 0
+assert "H2: STDOUT is exactly <lane_dir>/target" \
+    bash -c '[ "$1" = "'"$Q_LANE2/target"'" ]' _ "$OUT"
+assert "H2: sentinel file GONE (target was replaced from base)" \
+    bash -c '[ ! -e "'"$Q_LANE2/target/SENTINEL.txt"'" ]'
+assert "H2: base_artifact.a IS present in <lane>/target (clone from base succeeded)" \
+    test -f "$Q_LANE2/target/debug/base_artifact.a"
+assert "H2: cp invoked with --reflink=always" \
+    bash -c 'grep "^cp" "$1" | grep -q -- "--reflink=always"' _ "$CALLS_FILE"
+
+# ── H3: opt-in default-off — lock HELD but --lane-lock NOT passed → seed still
+# clobbers/replaces as today (byte-for-byte unchanged for existing callers). ──
+Q_LANE3="$(mktemp -d /tmp/test-seed-Q-lane3-XXXXXX)"
+_TMPDIRS+=("$Q_LANE3")
+mkdir -p "$Q_LANE3/target"
+echo "sentinel content" > "$Q_LANE3/target/SENTINEL.txt"
+
+Q_LOCK3="${Q_LANE3}.lock"
+_TMPDIRS+=("$Q_LOCK3")
+Q_READY3="${Q_LOCK3}.ready-marker"
+_TMPDIRS+=("$Q_READY3")
+touch "$Q_LOCK3"
+( flock -x 9 && touch "$Q_READY3" && sleep 300 ) 9>"$Q_LOCK3" &
+Q_LOCK3_PID=$!
+_BGPIDS+=("$Q_LOCK3_PID")
+_wait_for_reader_lock "$Q_READY3" 30
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$Q_BASE" "$Q_LANE3" --fresh-checkout
+# NOTE: no --lane-lock above -- opt-in default-off.
+
+assert "H3: opt-in default-off: lock held but no --lane-lock → still exits 0" \
+    test "$RC" -eq 0
+assert "H3: opt-in default-off: sentinel GONE (still replaced, unchanged behavior)" \
+    bash -c '[ ! -e "'"$Q_LANE3/target/SENTINEL.txt"'" ]'
+assert "H3: opt-in default-off: cp invoked with --reflink=always (replace path ran)" \
+    bash -c 'grep "^cp" "$1" | grep -q -- "--reflink=always"' _ "$CALLS_FILE"
+
+kill "$Q_LOCK3_PID" 2>/dev/null || true
+wait "$Q_LOCK3_PID" 2>/dev/null || true
 
 test_summary
