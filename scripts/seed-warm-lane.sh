@@ -562,9 +562,14 @@ if [ -n "$FRESH_CHECKOUT" ]; then
         # <lane>.<pid> entry under RESEED_TRASH_DIR cannot be from a concurrent live
         # seed — it is always a prior-crash orphan and is safe to reclaim now.
         # Background rm mirrors the main rm (large tree, must not block acquire).
+        # 9<&-: close the (possibly held, --lane-lock) exclusive lane-lock FD
+        # before backgrounding so a detached child never inherits it -- the
+        # lock must release exactly when seed exits, not whenever this rm
+        # happens to finish (lib_slot_acquire.sh daemon-FD-inheritance guard).
+        # A no-op when FD 9 was never opened (--lane-lock not passed).
         while IFS= read -r -d '' _rp_orphan; do
             warn "Sweeping orphaned trash entry (prior-crash recovery): $_rp_orphan"
-            { rm -rf "$_rp_orphan" || warn "orphan trash sweep rm failed (leaked): $_rp_orphan"; } &
+            { rm -rf "$_rp_orphan" || warn "orphan trash sweep rm failed (leaked): $_rp_orphan"; } 9<&- &
         done < <(find "$RESEED_TRASH_DIR" -maxdepth 1 -name "$(basename "$LANE_DIR").*" -print0 2>/dev/null)
         unset _rp_orphan
         RESEED_TRASH="$RESEED_TRASH_DIR/$(basename "$LANE_DIR").$$"
@@ -854,12 +859,18 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     # On cp failure RESEED_TRASH is unset (no rename happened), so this block is skipped.
     # Background by default (production: large lane rm must not block acquire).
     # Foreground when REIFY_WARM_LANE_RESEED_TRASH_SYNC=1 (test-determinism knob).
+    # 9<&-: close the (possibly held, --lane-lock) exclusive lane-lock FD
+    # before backgrounding so a detached child never inherits it -- the lock
+    # must release exactly when seed exits, not whenever this rm happens to
+    # finish (lib_slot_acquire.sh daemon-FD-inheritance guard). No-op when
+    # FD 9 was never opened (--lane-lock not passed); the SYNC (foreground)
+    # branch needs no change -- it completes before seed exits either way.
     if [ -n "$RESEED_TRASH" ] && [ -d "$RESEED_TRASH" ]; then
         info "Removing reseed trash: $(basename "$RESEED_TRASH") ..."
         if [ "${REIFY_WARM_LANE_RESEED_TRASH_SYNC:-}" = "1" ]; then
             rm -rf "$RESEED_TRASH"
         else
-            { rm -rf "$RESEED_TRASH" || warn "reseed trash rm failed (leaked): $RESEED_TRASH"; } &
+            { rm -rf "$RESEED_TRASH" || warn "reseed trash rm failed (leaked): $RESEED_TRASH"; } 9<&- &
         fi
     fi
 fi
