@@ -3270,16 +3270,15 @@ impl Engine {
         self.last_undef_causes.clear();
 
         // Build Snapshot from CompiledModule (creates EvaluationGraph internally)
-        let snapshot_id = self.next_snapshot_id;
-        self.next_snapshot_id += 1;
-        let version_id = self.next_version_id;
-        self.next_version_id += 1;
-        let version = VersionId(version_id);
+        let (snap_id, ver_id) = self.allocate_snapshot_version();
+        // downstream consumers below still take the raw u64 version and the VersionId
+        let version_id = ver_id.0;
+        let version = ver_id;
 
         let mut snapshot = Snapshot::from_compiled_module(module);
         #[cfg(debug_assertions)]
         assert_value_cell_types_representable(&snapshot.graph);
-        snapshot.id = SnapshotId(snapshot_id);
+        snapshot.id = snap_id;
         snapshot.version = version;
         snapshot.provenance = SnapshotProvenance::Initial;
 
@@ -4222,10 +4221,9 @@ impl Engine {
                         // entries so all resolution-phase entries share the same
                         // basis_version as the snapshot. This preserves the invariant
                         // that try_fast_path relies on for incremental evaluation.
-                        let res_snapshot_id = self.next_snapshot_id;
-                        self.next_snapshot_id += 1;
-                        let res_version_id = self.next_version_id;
-                        self.next_version_id += 1;
+                        let (snap_id, ver_id) = self.allocate_snapshot_version();
+                        let res_snapshot_id = snap_id.0;
+                        let res_version_id = ver_id.0;
 
                         // Write pinned connector-instance autos (task #4710): excluded from
                         // auto_params by build_solver_problem, written here as Determined
@@ -5528,10 +5526,9 @@ impl Engine {
                 values: solver_values,
                 unique,
             } => {
-                let res_snapshot_id = self.next_snapshot_id;
-                self.next_snapshot_id += 1;
-                let res_version_id = self.next_version_id;
-                self.next_version_id += 1;
+                let (snap_id, ver_id) = self.allocate_snapshot_version();
+                let res_snapshot_id = snap_id.0;
+                let res_version_id = ver_id.0;
                 let parent_snap_id = snapshot.id;
 
                 // step-04: write back EVERY cluster member's cells in one

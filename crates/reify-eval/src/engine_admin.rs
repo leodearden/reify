@@ -6,7 +6,7 @@ use crate::journal::EventJournal;
 use crate::snapshot::Snapshot;
 use crate::{Engine, EvaluationState};
 use reify_compiler::{CompiledModule, EntityKind, ValueCellKind};
-use reify_core::Diagnostic;
+use reify_core::{Diagnostic, SnapshotId, VersionId};
 use reify_ir::{
     CompiledFunction, ConstraintChecker, ConstraintSolver, GeometryKernel, OptimizedImpl,
     TopologyAttributeTable,
@@ -380,6 +380,28 @@ impl Engine {
             persistent_hit_count: 0,
             persistent_miss_count: 0,
         }
+    }
+
+    /// Allocates a fresh `(SnapshotId, VersionId)` pair: reads and advances
+    /// `next_snapshot_id`, then reads and advances `next_version_id` — one
+    /// bump each. New call sites, and sites migrated off the old raw
+    /// read-and-bump idiom, should call this instead of bumping the
+    /// counters directly.
+    ///
+    /// This is the allocate half of INV-BUILD-2 (docs/invariants.md):
+    /// "Version/snapshot IDs are allocated and read through exactly one API
+    /// each." Migration is in progress, not yet complete: this task (5040)
+    /// routes the 3 paired sites in `engine_eval.rs` through this helper,
+    /// but `engine_edit.rs` and `concurrent.rs` still bump the counters by
+    /// hand pending their own migration tasks. See
+    /// `docs/prds/v0_6/engine-build-hardening.md` §5.2 for the live
+    /// call-site inventory.
+    pub(crate) fn allocate_snapshot_version(&mut self) -> (SnapshotId, VersionId) {
+        let snapshot_id = SnapshotId(self.next_snapshot_id);
+        self.next_snapshot_id += 1;
+        let version_id = VersionId(self.next_version_id);
+        self.next_version_id += 1;
+        (snapshot_id, version_id)
     }
 
     /// **`#[cfg(any(test, feature = "test-instrumentation"))]`-gated** test
@@ -2972,6 +2994,357 @@ mod tests {
         assert!(
             engine.demands_volume_mesh("test::vm-demand"),
             "re-registering the same target keeps it demanding",
+        );
+    }
+
+    // ── allocate_snapshot_version pair-allocator (task 5040, INV-BUILD-2 α) ──
+
+    /// `allocate_snapshot_version` mints a fresh `(SnapshotId, VersionId)`
+    /// pair and advances both underlying counters by exactly one per call,
+    /// in lockstep. A fresh engine starts both counters at 0 (no allocation
+    /// happens during construction — see the field initializers above), so
+    /// the first call must return `(SnapshotId(0), VersionId(0))` and the
+    /// second `(SnapshotId(1), VersionId(1))`, with `next_snapshot_id` and
+    /// `next_version_id` each having advanced by exactly 1 after each call.
+    /// A final companion check desyncs the counters (mirroring
+    /// `eval_cached()`'s snapshot-only bump) to confirm the "advances each
+    /// counter by exactly one per call" contract also holds when the two
+    /// counters do not start equal.
+    #[test]
+    fn allocate_snapshot_version_allocates_pair_and_bumps_both_counters() {
+        use reify_core::{SnapshotId, VersionId};
+        use reify_test_support::mocks::MockConstraintChecker;
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+
+        assert_eq!(
+            engine.next_snapshot_id, 0,
+            "fresh engine must start next_snapshot_id at 0",
+        );
+        assert_eq!(
+            engine.next_version_id, 0,
+            "fresh engine must start next_version_id at 0",
+        );
+
+        let (snap0, ver0) = engine.allocate_snapshot_version();
+        assert_eq!(snap0, SnapshotId(0), "first allocation must mint SnapshotId(0)");
+        assert_eq!(ver0, VersionId(0), "first allocation must mint VersionId(0)");
+        assert_eq!(
+            engine.next_snapshot_id, 1,
+            "next_snapshot_id must advance by exactly 1 after one call",
+        );
+        assert_eq!(
+            engine.next_version_id, 1,
+            "next_version_id must advance by exactly 1 after one call",
+        );
+
+        let (snap1, ver1) = engine.allocate_snapshot_version();
+        assert_eq!(snap1, SnapshotId(1), "second allocation must mint SnapshotId(1)");
+        assert_eq!(ver1, VersionId(1), "second allocation must mint VersionId(1)");
+        assert_eq!(
+            engine.next_snapshot_id, 2,
+            "next_snapshot_id must advance by exactly 1 again",
+        );
+        assert_eq!(
+            engine.next_version_id, 2,
+            "next_version_id must advance by exactly 1 again",
+        );
+
+        // Companion check: confirm the "advances each counter by exactly
+        // one per call" contract still holds when the two counters do not
+        // start equal (mirrors eval_cached()'s snapshot-only bump) —
+        // asserted via deltas from freshly-captured baselines, not
+        // hardcoded absolute ids, so this check needs no re-baselining if
+        // the call count above changes.
+        engine.next_snapshot_id += 1;
+        let before_snapshot_desync = engine.next_snapshot_id;
+        let before_version_desync = engine.next_version_id;
+        let (snap2, ver2) = engine.allocate_snapshot_version();
+        assert_eq!(
+            snap2.0, before_snapshot_desync,
+            "allocated snapshot id must equal the pre-call counter value",
+        );
+        assert_eq!(
+            ver2.0, before_version_desync,
+            "allocated version id must equal the pre-call counter value",
+        );
+        assert_eq!(
+            engine.next_snapshot_id - before_snapshot_desync,
+            1,
+            "next_snapshot_id must still advance by exactly 1",
+        );
+        assert_eq!(
+            engine.next_version_id - before_version_desync,
+            1,
+            "next_version_id must still advance by exactly 1",
+        );
+    }
+
+    /// Shared assertion for the `allocate_snapshot_version` migration's
+    /// characterization tests. Asserts the engine's CURRENT snapshot
+    /// carries the expected `(SnapshotId, VersionId)` pair — the
+    /// "byte-identical numbering" property these tests exist to pin — and
+    /// that each counter advanced by exactly `expected_delta` from its own
+    /// pre-call baseline. The two baselines (`before_snapshot`,
+    /// `before_version`) are taken independently so this helper stays
+    /// correct even if a caller's two counters were desynced before the
+    /// call, rather than assuming they started equal.
+    ///
+    /// These exact ids/deltas are characterization values tied to the
+    /// number and ordering of allocation sites that fire for a given
+    /// input — see `docs/prds/v0_6/engine-build-hardening.md` §5.2 for the
+    /// full site inventory. A legitimate future change that adds/removes a
+    /// site must re-baseline the caller's expected values on purpose.
+    fn assert_snapshot_numbering(
+        engine: &Engine,
+        expected_snapshot: u64,
+        expected_version: u64,
+        before_snapshot: u64,
+        before_version: u64,
+        expected_delta: u64,
+        context: &str,
+    ) {
+        use reify_core::{SnapshotId, VersionId};
+
+        let snapshot = engine
+            .snapshot()
+            .expect("eval() must populate a current snapshot");
+        assert_eq!(
+            snapshot.id,
+            SnapshotId(expected_snapshot),
+            "{context}: expected SnapshotId({expected_snapshot})",
+        );
+        assert_eq!(
+            snapshot.version,
+            VersionId(expected_version),
+            "{context}: expected VersionId({expected_version})",
+        );
+        assert_eq!(
+            engine.next_snapshot_id - before_snapshot,
+            expected_delta,
+            "{context}: next_snapshot_id should have advanced by exactly \
+             {expected_delta} across this call",
+        );
+        assert_eq!(
+            engine.next_version_id - before_version,
+            expected_delta,
+            "{context}: next_version_id should have advanced by exactly \
+             {expected_delta} across this call",
+        );
+    }
+
+    /// Characterization lock on the OBSERVABLE snapshot/version numbering
+    /// produced by `eval()`'s cold-path snapshot construction (site 1),
+    /// guarding the "byte-identical numbering" claim across its migration
+    /// onto `allocate_snapshot_version` (task 5040 steps 4-6). Passes
+    /// before AND after the migration; would go RED if a migration
+    /// perturbed numbering (extra/missing allocation, reordering, etc).
+    /// See `assert_snapshot_numbering` above for the re-baselining caveat.
+    ///
+    /// `structure S { param width: Length = 100mm }` has no solver
+    /// interaction, so only the eval() site-1 pair fires — the
+    /// resolution-phase and merged-cluster-solve sites stay dormant.
+    #[test]
+    fn eval_snapshot_numbering_is_stable_across_repeated_calls() {
+        use reify_test_support::mocks::MockConstraintChecker;
+        use reify_test_support::parse_and_compile_with_stdlib;
+
+        let compiled =
+            parse_and_compile_with_stdlib("structure S { param width: Length = 100mm }");
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+
+        let before_first_snapshot = engine.next_snapshot_id;
+        let before_first_version = engine.next_version_id;
+        let _ = engine.eval(&compiled);
+        assert_snapshot_numbering(
+            &engine,
+            0,
+            0,
+            before_first_snapshot,
+            before_first_version,
+            1,
+            "first eval() call (site 1)",
+        );
+
+        let before_second_snapshot = engine.next_snapshot_id;
+        let before_second_version = engine.next_version_id;
+        let _ = engine.eval(&compiled);
+        assert_snapshot_numbering(
+            &engine,
+            1,
+            1,
+            before_second_snapshot,
+            before_second_version,
+            1,
+            "second eval() call (site 1)",
+        );
+    }
+
+    /// Characterization lock on the OBSERVABLE snapshot/version numbering
+    /// produced by the SOLVER-DRIVEN resolution phase (site 2), complementing
+    /// `eval_snapshot_numbering_is_stable_across_repeated_calls` above (site
+    /// 1 only, no solver interaction). See
+    /// `docs/prds/v0_6/engine-build-hardening.md` §5.2 for the full site
+    /// inventory, including why a single non-coupled template takes this
+    /// branch rather than `dispatch_merged_cluster_solve` (site 3).
+    ///
+    /// Site 1 then site 2 both fire: `SnapshotId(0)`/`VersionId(0)` from the
+    /// cold path, then `SnapshotId(1)`/`VersionId(1)` from resolution, which
+    /// overwrites `snapshot.id`/`.version` before `eval()` returns. Uses
+    /// `MockConstraintSolver::new_solved` for a deterministic outcome,
+    /// mirroring `resolve_single_auto_param` in `tests/resolution.rs`.
+    #[test]
+    fn resolution_phase_snapshot_numbering_is_stable() {
+        use std::collections::HashMap;
+
+        use reify_core::{ModulePath, Type, ValueCellId};
+        use reify_ir::Value;
+        use reify_test_support::{
+            CompiledModuleBuilder, MockConstraintChecker, MockConstraintSolver,
+            TopologyTemplateBuilder, gt, literal, lt, mm, value_ref,
+        };
+
+        let thickness_id = ValueCellId::new("S", "thickness");
+        let mut solved_values = HashMap::new();
+        solved_values.insert(thickness_id.clone(), mm(5.0));
+        let solver = MockConstraintSolver::new_solved(solved_values);
+
+        let template = TopologyTemplateBuilder::new("S")
+            .auto_param("S", "thickness", Type::length())
+            // constraint: thickness > 2mm
+            .constraint(
+                "S",
+                0,
+                None,
+                gt(value_ref("S", "thickness"), literal(mm(2.0))),
+            )
+            // constraint: thickness < 20mm
+            .constraint(
+                "S",
+                1,
+                None,
+                lt(value_ref("S", "thickness"), literal(mm(20.0))),
+            )
+            .build();
+
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(template)
+            .build();
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+            .with_solver(Box::new(solver));
+
+        let before_snapshot = engine.next_snapshot_id;
+        let before_version = engine.next_version_id;
+        let result = engine.eval(&module);
+
+        // Sanity: confirm the solver's Solved arm actually fired (not
+        // Infeasible/NoProgress) — thickness resolved to mm(5.0), not left
+        // Undef — so the assertions below are exercising site 2, not a
+        // dormant no-op resolution pass.
+        let thickness_val = result
+            .values
+            .get(&thickness_id)
+            .expect("thickness should be in values after resolution");
+        assert!(
+            matches!(thickness_val, Value::Scalar { si_value, .. } if (*si_value - 0.005).abs() < 1e-10),
+            "expected mm(5.0) = 0.005 SI, got {:?}",
+            thickness_val
+        );
+
+        assert_snapshot_numbering(
+            &engine,
+            1,
+            1,
+            before_snapshot,
+            before_version,
+            2,
+            "resolution-phase eval() call (site 1 + site 2)",
+        );
+    }
+
+    /// Characterization lock on the OBSERVABLE snapshot/version numbering
+    /// produced by `dispatch_merged_cluster_solve`'s `SolveResult::Solved`
+    /// arm (site 3), complementing the site-1 and site-2 tests above. See
+    /// `docs/prds/v0_6/engine-build-hardening.md` §5.2 for the full site
+    /// inventory.
+    ///
+    /// Two templates forming a 2-cycle (`A` reads `B.m`, `B` reads `A.k`)
+    /// get `ClusterDisposition::MergedSolve`, so `eval()` dispatches ONE
+    /// merged solve and the per-template branch (site 2) stays dormant —
+    /// mirrors `two_cycle_cluster_module` in `tests/merged_cluster_solve.rs`.
+    /// Site 1 then site 3 fire: `SnapshotId(0)`/`VersionId(0)` from the cold
+    /// path, then `SnapshotId(1)`/`VersionId(1)` from the merged solve,
+    /// which overwrites `snapshot.id`/`.version` before `eval()` returns.
+    /// Uses `MockConstraintSolver::new_solved` for a deterministic outcome.
+    #[test]
+    fn merged_cluster_solve_snapshot_numbering_is_stable() {
+        use std::collections::HashMap;
+
+        use reify_core::{ModulePath, Type, ValueCellId};
+        use reify_ir::Value;
+        use reify_test_support::{
+            CompiledModuleBuilder, MockConstraintChecker, MockConstraintSolver,
+            TopologyTemplateBuilder, gt, literal, mm, value_ref,
+        };
+
+        let a_k = ValueCellId::new("A", "k");
+        let b_m = ValueCellId::new("B", "m");
+        let mut solved_values = HashMap::new();
+        solved_values.insert(a_k.clone(), mm(3.0));
+        solved_values.insert(b_m.clone(), mm(7.0));
+        let solver = MockConstraintSolver::new_solved(solved_values);
+
+        let a = TopologyTemplateBuilder::new("A")
+            .auto_param("A", "k", Type::length())
+            // A reads B.m — creates edge B→A in the read-DAG.
+            .constraint("A", 0, None, gt(value_ref("B", "m"), literal(mm(0.0))))
+            .build();
+        let b = TopologyTemplateBuilder::new("B")
+            .auto_param("B", "m", Type::length())
+            // B reads A.k — creates edge A→B in the read-DAG → cycle!
+            .constraint("B", 0, None, gt(value_ref("A", "k"), literal(mm(0.0))))
+            .build();
+
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(a)
+            .template(b)
+            .build();
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None)
+            .with_solver(Box::new(solver));
+
+        let before_snapshot = engine.next_snapshot_id;
+        let before_version = engine.next_version_id;
+        let result = engine.eval(&module);
+
+        // Sanity: confirm the merged solve's Solved arm actually fired
+        // (both cluster members resolved together via ONE merged solve),
+        // not left Undef by a dormant dispatch.
+        assert!(
+            matches!(
+                result.values.get(&a_k),
+                Some(Value::Scalar { si_value, .. }) if (*si_value - 0.003).abs() < 1e-10
+            ),
+            "expected A.k = mm(3.0) = 0.003 SI, got {:?}",
+            result.values.get(&a_k)
+        );
+        assert!(
+            matches!(
+                result.values.get(&b_m),
+                Some(Value::Scalar { si_value, .. }) if (*si_value - 0.007).abs() < 1e-10
+            ),
+            "expected B.m = mm(7.0) = 0.007 SI, got {:?}",
+            result.values.get(&b_m)
+        );
+
+        assert_snapshot_numbering(
+            &engine,
+            1,
+            1,
+            before_snapshot,
+            before_version,
+            2,
+            "merged-cluster-solve eval() call (site 1 + site 3)",
         );
     }
 
