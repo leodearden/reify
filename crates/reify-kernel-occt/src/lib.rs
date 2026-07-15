@@ -4179,6 +4179,16 @@ impl WarmStartable for OcctKernel {
         // Cylinder, Union, Sphere, ...) are never keys, so only
         // root/persistent shapes round-trip.
         //
+        // `next_id` is not part of this bounded-vs-unbounded concern: it is
+        // persisted verbatim (see the `OcctWarmState` construction below)
+        // and, by design, keeps advancing across warm-start cycles — every
+        // `store_with_repr` call, root or (pre-filter) sub-shape alike,
+        // mints its id via fetch-and-increment and never reuses one, so
+        // `next_id` is monotonic regardless of this filter. That's expected
+        // and harmless: it's a single 8-byte scalar, not a per-entry
+        // collection, so it never contributes to the multi-cycle payload
+        // growth this filter exists to bound.
+        //
         // Consumer contract: a `GeometryHandleId` returned by extract_edges/
         // extract_faces/extract_vertices must not be held across a
         // `with_warm_state()` boundary. After restore, such an id is only
@@ -5605,7 +5615,12 @@ mod tests {
     /// counterpart is added: `shapes`/`reprs` filtering never consults
     /// `extracted_*`, so a release build's silently-elided assert has no
     /// distinct fall-through behavior to pin beyond what the bounded-payload
-    /// tests above already cover.
+    /// tests above already cover. If a future change ever makes the
+    /// bounded-payload filter itself consult `extracted_*` (instead of
+    /// keying solely off `parent_handle`), add a release-mode behavioral
+    /// test alongside that change confirming a coupling violation still
+    /// cannot leak an orphan into persisted state — this debug-only guard
+    /// would no longer be sufficient on its own.
     #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "must be a parent_handle key")]
