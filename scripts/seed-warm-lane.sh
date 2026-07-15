@@ -32,6 +32,9 @@
 #     refusing; "unlimited" = block until acquired, never refuses. A
 #     refused acquirer of a task lane can just try a different FREE lane, but
 #     the SINGLETON _merge-verify lane has no alternate -- it QUEUEs instead.
+#     FD 9 (fixed, matching thin-warm-lane.sh's T3 convention): callers that
+#     pass --lane-lock MUST NOT themselves hold a load-bearing FD 9 open across
+#     this invocation -- `exec 9>"$LANE_LOCK"` would silently reassign it.
 #
 # Usage (record-base mode):
 #   sidecar=$(scripts/seed-warm-lane.sh --record-base <base_target_dir>)
@@ -99,6 +102,9 @@ Seed mode: CoW-clone a warm base target/ into a pool lane.
                       to N seconds before refusing (flock -w N); "unlimited"
                       (case-insensitive) = block until acquired, never refuses
                       (flock). Anything else is a usage error (exit 64).
+                      Uses a fixed FD 9 (matching thin-warm-lane.sh's T3):
+                      callers passing --lane-lock must not themselves hold a
+                      load-bearing FD 9 open across this invocation.
 
 Record-base mode: stamp provenance beside the base target dir.
   --record-base dir   Write sidecar at $(dirname dir)/.warm-base-meta; print path on stdout.
@@ -476,6 +482,10 @@ if [ -n "$LANE_LOCK_OPT" ]; then
         [Uu][Nn][Ll][Ii][Mm][Ii][Tt][Ee][Dd]) _llw_unlimited=1 ;;
     esac
     if [ "$_llw_unlimited" -eq 0 ]; then
+        # The '' alternative is defensive-only: LANE_LOCK_WAIT is assigned via
+        # ${REIFY_WARM_LANE_LANE_LOCK_WAIT:-0}, and `:-` substitutes the
+        # default for both unset AND empty, so LANE_LOCK_WAIT can never
+        # actually be empty here -- kept in case that assignment ever changes.
         case "$LANE_LOCK_WAIT" in
             ''|*[!0-9]*)
                 err "REIFY_WARM_LANE_LANE_LOCK_WAIT must be a non-negative integer or 'unlimited' (got '${LANE_LOCK_WAIT}')"
@@ -484,6 +494,12 @@ if [ -n "$LANE_LOCK_OPT" ]; then
         esac
     fi
 
+    # Fixed FD 9 (matches thin-warm-lane.sh's T3 convention, not dynamically
+    # allocated): this silently reassigns any FD 9 already open in this
+    # process, so callers passing --lane-lock must not hold a load-bearing
+    # FD 9 of their own across this invocation -- see the --lane-lock header
+    # note above and thin-warm-lane.sh --reseed, the one caller that already
+    # holds ${LANE_DIR}.lock on FD 9 itself and therefore omits --lane-lock.
     exec 9>"$LANE_LOCK"
     if [ "$_llw_unlimited" -eq 1 ]; then
         flock 9   # block until acquired -- never refuses, no exit-75 case
