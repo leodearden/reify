@@ -93,7 +93,11 @@ fn kernel_id_for_registry_name(name: &str) -> KernelId {
 /// `table.record(target, attr)`. No-op on a source miss (a non-seeded parent
 /// — e.g. a non-primitive result feeding the conversion — degrades
 /// gracefully to the existing `Ok(KernelAttributeOutcome::Discarded)` path
-/// rather than panicking or erroring).
+/// rather than panicking or erroring). Returns whether it recorded an entry,
+/// so callers can track the forwarded TARGET handle alongside the SOURCE
+/// solid handles they already track (task #4636 step-9 — see
+/// `solid_attribute_handles` below) and exclude both from the post-loop
+/// diagnostic scan.
 ///
 /// Called from the `'convert:` loop below immediately after a successful
 /// `target_kernel.ingest_mesh(&mesh)`, forwarding `{source_kernel_id, pid}`
@@ -116,9 +120,12 @@ pub fn forward_solid_attribute_on_ingest(
     table: &mut TopologyAttributeTable,
     source: KernelHandle,
     target: KernelHandle,
-) {
+) -> bool {
     if let Some(attr) = table.lookup(source).cloned() {
         table.record(target, attr);
+        true
+    } else {
+        false
     }
     // TODO(#4263): forward per-face attributes via extract_faces for
     // descriptor-keyed result-face persistence (LINK3).
@@ -6840,20 +6847,29 @@ impl Engine {
         // the slice stays in lockstep without re-projecting per op.
         let mut realization_step_ids: Vec<GeometryHandleId> = Vec::with_capacity(operations.len());
         // Task #4636: handles that `record_solid_attribute` (LINK2) wrote a
-        // per-solid representative entry for, below. That entry is internal
+        // per-solid representative entry for, below, PLUS the forwarded
+        // TARGET handles `forward_solid_attribute_on_ingest` (LINK1) writes
+        // at the OCCT->Manifold ingest seam. Both are internal
         // cross-kernel-forwarding bookkeeping (consumed by
         // `ManifoldKernel::propagate_attributes` and the OCCT->Manifold
         // ingest forwarder), not a user-selectable face/edge/vertex
-        // attribute — it must NOT participate in the post-loop centroid /
+        // attribute — neither must participate in the post-loop centroid /
         // local-index-reassignment diagnostic scan
         // (`collect_centroids_with_failure_summary` /
         // `detect_local_index_reassignment_diagnostics` below), which walks
         // `topology_attribute_table` filtered by `feature_id` alone and has
-        // no other way to tell a solid-representative entry apart from a
-        // real face entry. Tracked separately from `realization_step_ids`
-        // (which mixes in non-seedable ops too) so the filter below excludes
-        // exactly the entries this task added.
-        let mut solid_attribute_handles: Vec<GeometryHandleId> = Vec::new();
+        // no other way to tell a solid-representative/forwarded entry apart
+        // from a real face entry. Tracked separately from
+        // `realization_step_ids` (which mixes in non-seedable ops too) so
+        // the filter below excludes exactly the entries this task added.
+        //
+        // Holds full `KernelHandle`s (kernel + id), not bare
+        // `GeometryHandleId`s, so the scan filter below matches on the full
+        // key. A bare-id exclusion set would risk excluding a real
+        // `{Occt, X}` face entry that happens to share its id with a
+        // forwarded `{Manifold, X}` entry — the cross-kernel id-collision
+        // class this task's ingest-forwarding path introduces.
+        let mut solid_attribute_handles: Vec<KernelHandle> = Vec::new();
         // Task 4050 step-8: the produced [`ReprKind`] of each step handle,
         // tracked in lockstep with `realization_step_ids`. The per-op
         // `available` set is read from the reprs of the op's resolved input
@@ -7429,14 +7445,20 @@ impl Engine {
                                             // onto the reused target handle, or this
                                             // build's table would have no entry at all for
                                             // it despite the handle being valid.
-                                            forward_solid_attribute_on_ingest(
+                                            if forward_solid_attribute_on_ingest(
                                                 topology_attribute_table,
                                                 KernelHandle {
                                                     kernel: kernel_id_for_registry_name(source_name),
                                                     id: pid,
                                                 },
                                                 cached,
-                                            );
+                                            ) {
+                                                // Task #4636 step-9: exclude the forwarded
+                                                // TARGET handle from the post-loop diagnostic
+                                                // scan too (see `solid_attribute_handles`
+                                                // declaration comment above).
+                                                solid_attribute_handles.push(cached);
+                                            }
                                             substitution.insert(pid, cached.id);
                                             continue;
                                         }
@@ -7568,14 +7590,21 @@ impl Engine {
                                                 // source was never seeded (e.g. a
                                                 // non-primitive parent), degrading
                                                 // gracefully to the existing Discarded path.
-                                                forward_solid_attribute_on_ingest(
+                                                if forward_solid_attribute_on_ingest(
                                                     topology_attribute_table,
                                                     KernelHandle {
                                                         kernel: kernel_id_for_registry_name(source_name),
                                                         id: pid,
                                                     },
                                                     intermediate_handle,
-                                                );
+                                                ) {
+                                                    // Task #4636 step-9: exclude the
+                                                    // forwarded TARGET handle from the
+                                                    // post-loop diagnostic scan too (see
+                                                    // `solid_attribute_handles` declaration
+                                                    // comment above).
+                                                    solid_attribute_handles.push(intermediate_handle);
+                                                }
                                                 substitution.insert(pid, handle.id);
                                             }
                                             Err(e) => {
@@ -7792,7 +7821,10 @@ impl Engine {
                                     handle.id,
                                     &feature_id,
                                 );
-                                solid_attribute_handles.push(handle.id);
+                                solid_attribute_handles.push(KernelHandle {
+                                    kernel: op_kernel,
+                                    id: handle.id,
+                                });
                             }
                             // v0.2 persistent-naming-v2 (PRD task 5a, #2573): per-op
                             // attribute population for sweep ops (extrude / revolve).
@@ -8086,22 +8118,29 @@ impl Engine {
             // O(per-feature-entries). Per task #3369 review of #2654.
             // Non-threaded reader (interim single-kernel Occt, #4351): this
             // diagnostic scan is not part of the resolver/selector scoping
-            // this task threads (step-6) — every handle recorded today is
-            // Occt-scoped, so collapsing back to a bare `GeometryHandleId`
-            // here is behavior-preserving. Mixed-kernel-aware diagnostics are
+            // this task threads (step-6) — every SURVIVING handle (i.e. after
+            // the `solid_attribute_handles` exclusion below) is Occt-scoped,
+            // so collapsing to a bare `GeometryHandleId` in the `.map` below
+            // is behavior-preserving. Mixed-kernel-aware diagnostics are
             // downstream work.
             // Task #4636: also excludes `solid_attribute_handles` — the
             // per-solid representative entries `record_solid_attribute`
-            // wrote above share this realization's `feature_id` but are not
-            // real face/edge/vertex attributes, so they must not be
+            // wrote (source, Occt-scoped) and the entries
+            // `forward_solid_attribute_on_ingest` forwarded (target,
+            // Manifold-scoped) share this realization's `feature_id` but are
+            // not real face/edge/vertex attributes, so they must not be
             // centroid-queried or fed into the local-index-reassignment tie
-            // scan (see the declaration comment above).
+            // scan (see the declaration comment above). The filter matches
+            // the FULL `KernelHandle` (kernel + id), not just the bare id, so
+            // excluding a forwarded `{Manifold, X}` entry can never
+            // over-exclude a real `{Occt, X}` face entry that happens to
+            // share id `X`.
             let realization_attrs: Vec<(GeometryHandleId, &TopologyAttribute)> =
                 topology_attribute_table
                     .iter()
                     .filter(|(kernel_handle, attr)| {
                         attr.feature_id == realization_feature_id
-                            && !solid_attribute_handles.contains(&kernel_handle.id)
+                            && !solid_attribute_handles.contains(kernel_handle)
                     })
                     .map(|(kernel_handle, attr)| (kernel_handle.id, attr))
                     .collect();
