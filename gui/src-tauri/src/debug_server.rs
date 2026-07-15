@@ -1367,18 +1367,23 @@ async fn open_path_into_engine(state: &DebugServerState, raw_path: &str) -> Resu
 // this assumes debug ops never overlap a normal command.
 
 /// Mirrors `open_path_into_engine`'s engine block (`load_file_into_engine`
-/// on a real OS thread), then refreshes the delta baseline — see the
-/// INV-GUI-2 note above for why/how. Routes through
-/// `crate::commands::load_file_into_engine` — the same `EngineSession::load_file`
-/// + abs-path-rewrite helper the normal `open_file_engine_impl` command uses
-/// — so the debug bridge's open_file/load_fixture funnel ADOPTS the
+/// on a real OS thread; `rewrite_files_to_abs` afterward, once the lock is
+/// released), then refreshes the delta baseline — see the INV-GUI-2 note
+/// above for why/how. Routes through `crate::commands::load_file_into_engine`
+/// and `crate::commands::rewrite_files_to_abs` — the same
+/// `EngineSession::load_file` and abs-path-rewrite pair the normal
+/// `open_file_engine_impl` command uses — so the debug bridge's
+/// open_file/load_fixture funnel ADOPTS the
 /// newly-opened file's identity (`FilePathUpdate::Set`) instead of preserving
 /// whatever file was previously loaded, which `update_source` would do (task
 /// #5193). `load_file` already routes through `post_engine_call_telemetry`
-/// (the L4 emission choke-point) by construction. On failure, the underlying
-/// `load_file_into_engine` error is wrapped with an "open funnel failed to
-/// load {path}" prefix so debug-harness failure triage can tell the error
-/// came from this open funnel rather than a normal command.
+/// (the L4 emission choke-point) by construction. The abs-path rewrite runs
+/// AFTER `run_on_engine` returns — i.e. once the engine mutex is released —
+/// so the lock is not held across `std::fs::canonicalize` filesystem I/O
+/// (task #5193 review). On failure, the underlying `load_file_into_engine`
+/// error is wrapped with an "open funnel failed to load {path}" prefix so
+/// debug-harness failure triage can tell the error came from this open
+/// funnel rather than a normal command.
 pub async fn open_source_into_engine_and_refresh_baseline(
     engine: &Arc<Mutex<EngineSession>>,
     last_state: &std::sync::Mutex<Option<crate::types::GuiState>>,
@@ -1386,11 +1391,12 @@ pub async fn open_source_into_engine_and_refresh_baseline(
 ) -> Result<crate::types::GuiState, String> {
     let path = path.to_owned();
     let load_path = path.clone();
-    let gui_state = run_on_engine(engine, move |session| {
+    let mut gui_state = run_on_engine(engine, move |session| {
         crate::commands::load_file_into_engine(session, std::path::Path::new(&load_path))
     })
     .await
     .map_err(|e| format!("open funnel failed to load {path}: {e}"))?;
+    crate::commands::rewrite_files_to_abs(&mut gui_state, std::path::Path::new(&path));
     crate::diff::compute_delta(last_state, &gui_state);
     Ok(gui_state)
 }
@@ -3537,6 +3543,76 @@ mod tests {
                 .any(|d| d.file_path == "bracket.ri"),
             "no diagnostic may cite the previously-loaded file's identity \
              (bracket.ri), got: {:?}",
+            state
+                .compile_diagnostics
+                .iter()
+                .map(|d| &d.file_path)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// T3 (same-file re-open facet, task #5193 review): launch on warn.ri,
+    /// then re-open warn.ri AGAIN — the SAME file, not a different one —
+    /// through the same helper. `GuiState::files[].path` and every
+    /// diagnostic's `file_path` must still cite warn.ri.
+    ///
+    /// T1/T2 lock in that the helper's `load_file` route (`FilePathUpdate::Set`)
+    /// correctly ADOPTS a newly-opened DIFFERENT file's identity instead of
+    /// preserving the previous one. This test guards the other side of that
+    /// change: re-opening the file that is ALREADY loaded must not churn or
+    /// corrupt identity either — i.e. routing the debug open funnel through
+    /// `load_file` instead of `update_source` does not regress the
+    /// same-file re-open/reload path the debug bridge may also exercise.
+    #[tokio::test]
+    async fn open_file_same_file_reopen_keeps_identity() {
+        use reify_test_support::warn_source_with_unknown_port_type;
+
+        let dir = tempfile::tempdir().unwrap();
+        let warn_path = dir.path().join("warn.ri");
+        std::fs::write(&warn_path, warn_source_with_unknown_port_type()).unwrap();
+        let warn_canonical = std::fs::canonicalize(&warn_path)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+
+        let engine = crate::tests::make_test_engine();
+
+        // Launch on warn.ri via load_file (self.file_path = Some(warn.ri)) —
+        // same launched-file precondition as T1/T2, but here the file being
+        // re-opened through the helper is the SAME file, not a different one.
+        crate::engine_lock::with_engine_lock(&engine, |s| s.load_file(&warn_path))
+            .and_then(std::convert::identity)
+            .expect("load_file(warn.ri) must succeed");
+
+        let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+            std::sync::Mutex::new(None);
+
+        // Debug-driven RE-open of the SAME file (warn.ri again) through the
+        // helper.
+        let state =
+            open_source_into_engine_and_refresh_baseline(&engine, &last_state, &warn_canonical)
+                .await
+                .expect("open_source_into_engine_and_refresh_baseline must return Ok");
+
+        assert!(
+            !state.files.is_empty(),
+            "GuiState.files must be non-empty after re-opening warn.ri"
+        );
+        assert!(
+            state.files.iter().all(|f| f.path.ends_with("warn.ri")),
+            "re-opening the SAME file must still cite warn.ri, got: {:?}",
+            state.files.iter().map(|f| &f.path).collect::<Vec<_>>()
+        );
+        assert!(
+            !state.compile_diagnostics.is_empty(),
+            "warn.ri must still produce its unknown-port-type warning after re-open"
+        );
+        assert!(
+            state
+                .compile_diagnostics
+                .iter()
+                .all(|d| d.file_path == "warn.ri"),
+            "every diagnostic's file_path must still cite warn.ri after re-open, got: {:?}",
             state
                 .compile_diagnostics
                 .iter()
