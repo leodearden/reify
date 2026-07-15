@@ -213,10 +213,10 @@ impl Engine {
 
     /// Roll back the Engine state after a failed concurrent evaluation.
     ///
-    /// Restores all eval_set nodes from Pending back to Final and decrements
-    /// the snapshot/version ID counters to avoid gaps in numbering. This
-    /// returns the engine to a consistent state as if prepare_concurrent_edit()
-    /// was never called.
+    /// Restores all eval_set nodes from Pending back to Final and restores
+    /// the snapshot/version ID counters to their pre-prepare values, avoiding
+    /// gaps in numbering. This returns the engine to a consistent state as if
+    /// prepare_concurrent_edit() was never called.
     ///
     /// Called on the error path when ConcurrentScheduler::execute() returns Err
     /// (e.g. TaskPanicked), to prevent nodes from being permanently stuck in
@@ -711,6 +711,11 @@ mod tests {
             engine.next_version_id - before_version,
             1,
             "next_version_id must advance by exactly 1 across the call"
+        );
+        assert_ne!(
+            setup.parent_snapshot_id, setup.snapshot_id,
+            "the freshly-minted snapshot id must differ from its parent — guards against \
+             a future regression that accidentally aliases the two"
         );
     }
 
