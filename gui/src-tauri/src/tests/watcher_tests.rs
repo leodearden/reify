@@ -584,29 +584,40 @@ fn watcher_rereads_final_content_after_nonatomic_truncate_then_append() {
 /// A callback that panics on its first invocation must not permanently kill
 /// event delivery: the worker thread catches the unwind and keeps draining
 /// the debouncer, so a later filesystem event still reaches the callback.
+///
+/// The panic is gated on the FIRST write's distinct content (read back
+/// inside the callback) rather than a call counter, and the survival
+/// assertion checks for the SECOND write's distinct content specifically.
+/// This means the test cannot be satisfied by a double-fire of the first
+/// write alone: if the worker (incorrectly) delivered the first write's
+/// event twice, both deliveries would observe the first-write content and
+/// panic, and `received` would still end up empty. Only a genuine delivery
+/// of the second write proves the worker kept draining after the panic.
 #[test]
 fn watcher_survives_a_panicking_callback_and_keeps_delivering_later_events() {
     let dir = tempfile::tempdir().unwrap();
     let ri_file = dir.path().join("flaky.ri");
     std::fs::write(&ri_file, "structure Flaky {}").unwrap();
 
-    let call_count: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
-    let received: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(vec![]));
-    let call_count_clone = call_count.clone();
+    let first_write_content = "structure Flaky { param x = 1mm }";
+    let second_write_content = "structure Flaky { param x = 2mm }";
+
+    let received: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
     let received_clone = received.clone();
 
     let Some(_watcher) = try_watcher(dir.path(), None, move |event| {
-        let mut n = call_count_clone.lock().unwrap();
-        *n += 1;
-        let is_first_call = *n == 1;
-        drop(n);
-
-        // Simulate a callback bug on the very first delivery only.
-        if is_first_call {
-            panic!("simulated callback panic on first event");
-        }
-        if let FileEvent::Changed(path) = event {
-            received_clone.lock().unwrap().push(path);
+        if let FileEvent::Changed(path) = event
+            && let Ok(text) = std::fs::read_to_string(&path)
+        {
+            // Simulate a callback bug specifically on the first write's
+            // content -- see the doc comment above for why gating on
+            // content (not a call counter) matters here.
+            if text == first_write_content {
+                panic!("simulated callback panic on first-write content");
+            }
+            if text == second_write_content {
+                received_clone.lock().unwrap().push(text);
+            }
         }
     }) else {
         return;
@@ -618,26 +629,27 @@ fn watcher_survives_a_panicking_callback_and_keeps_delivering_later_events() {
     // First modification: reaches the callback, which panics. If the
     // worker thread didn't catch that unwind, it would terminate here and
     // no further event would ever be delivered.
-    std::fs::write(&ri_file, "structure Flaky { param x = 1mm }").unwrap();
+    std::fs::write(&ri_file, first_write_content).unwrap();
 
     // Let the debounce window elapse so the panicking call is fully
     // processed (and, if uncaught, the worker fully dead) before the
     // second write.
     std::thread::sleep(Duration::from_millis(300));
 
-    // Second modification: only observable if the worker survived the
-    // first callback's panic and is still draining the debouncer.
-    std::fs::write(&ri_file, "structure Flaky { param x = 2mm }").unwrap();
+    // Second modification, with content DISTINCT from the first: only
+    // observable if the worker survived the first callback's panic and is
+    // still draining the debouncer.
+    std::fs::write(&ri_file, second_write_content).unwrap();
 
-    let found = wait_for(&received, Duration::from_secs(10), |paths| {
-        paths.iter().any(|p| p.ends_with("flaky.ri"))
+    let found = wait_for(&received, Duration::from_secs(10), |texts| {
+        texts.iter().any(|t| t == second_write_content)
     });
 
-    let paths = received.lock().unwrap();
+    let texts = received.lock().unwrap();
     assert!(
         found,
         "watcher should keep delivering events after a callback panic, got: {:?}",
-        *paths
+        *texts
     );
 }
 
@@ -684,19 +696,86 @@ fn watcher_drop_joins_worker_promptly_even_with_a_pending_event() {
     );
 }
 
+/// Pins the "pending-on-shutdown is dropped, not flushed" contract
+/// documented on `FileWatcher::new`: a change still sitting in the
+/// `Debouncer` when `Drop` runs (its quiet window hasn't elapsed yet) is
+/// silently discarded rather than delivered to the callback. This is a
+/// deliberate design choice, not an oversight -- this test pins it
+/// explicitly so a future change that decided to flush pending events on
+/// shutdown instead would fail here rather than silently altering
+/// observable behavior with nothing to catch it.
+#[test]
+fn watcher_drop_discards_a_pending_event_rather_than_delivering_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let ri_file = dir.path().join("abandoned.ri");
+    std::fs::write(&ri_file, "structure Abandoned {}").unwrap();
+
+    let received: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(vec![]));
+    let received_clone = received.clone();
+
+    let Some(watcher) = try_watcher(dir.path(), None, move |event| {
+        if let FileEvent::Changed(path) = event {
+            received_clone.lock().unwrap().push(path);
+        }
+    }) else {
+        return;
+    };
+
+    // Give the watcher time to register.
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Trigger an event and drop almost immediately -- well within the
+    // 100ms debounce window, so this change is still pending (not yet
+    // drained) in the Debouncer when Drop runs below.
+    std::fs::write(&ri_file, "structure Abandoned { param x = 1mm }").unwrap();
+    std::thread::sleep(Duration::from_millis(10));
+
+    // `Drop` joins the worker thread before returning, so once this call
+    // is back, the worker has already exited -- there's no race to poll
+    // for below; a direct snapshot is enough.
+    drop(watcher);
+
+    let paths = received.lock().unwrap();
+    assert!(
+        paths.is_empty(),
+        "a change still pending in the Debouncer when Drop runs should be \
+         discarded, not delivered -- got: {:?}",
+        *paths
+    );
+}
+
 /// Constructing and immediately dropping a `FileWatcher` in a loop must
 /// always return -- a smoke test that `Drop` never hangs or leaks its
 /// worker thread across repeated rapid create/destroy cycles, as happens
 /// in the GUI when the user switches files and `create_watcher` runs again
 /// (main.rs re-creates the watcher on `open_file`).
+///
+/// `try_watcher` returning `None` mid-loop (OS inotify resources exhausted)
+/// is a legitimate environment skip, same as every other test in this
+/// file. But if it returns `None` on the very FIRST iteration, bailing out
+/// silently would make this test report green while never having run a
+/// single create/destroy cycle -- exercising nothing and masking exactly
+/// the kind of Drop-hang regression it exists to catch. So completion is
+/// tracked explicitly and asserted, rather than trusting a silent early
+/// return to mean success.
 #[test]
 fn watcher_construct_and_drop_in_a_loop_never_hangs() {
     let dir = tempfile::tempdir().unwrap();
 
+    let mut constructed = 0;
     for _ in 0..20 {
         let Some(watcher) = try_watcher(dir.path(), None, |_event| {}) else {
-            return;
+            break;
         };
         drop(watcher);
+        constructed += 1;
     }
+
+    assert!(
+        constructed > 0,
+        "inotify resources were exhausted before a single create/destroy \
+         cycle could run -- this test would otherwise pass vacuously \
+         without exercising Drop at all (see the SKIP message above for \
+         the underlying try_watcher error)"
+    );
 }
