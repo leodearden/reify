@@ -665,15 +665,17 @@ mod tests {
         assert_eq!(snap_det, &DeterminacyState::Determined);
     }
 
-    /// step-1 (task 5044/γ): Characterization lock on prepare_concurrent_edit's
-    /// snapshot/version numbering, pinned BEFORE migrating the raw counter bump
-    /// (concurrent.rs:170-173) to `Engine::allocate_snapshot_version()`
-    /// (INV-BUILD-2, engine_admin.rs:399). Must stay GREEN after the migration —
-    /// the allocator performs the same read-then-+=1 on both counters, so the
-    /// numbering is byte-identical. Deltas are taken from freshly-captured
-    /// baselines (no hardcoded absolute ids) so the test is order-independent.
+    /// step-1 (task 5044/γ): Characterization lock confirming prepare_concurrent_edit
+    /// routes through the single `Engine::allocate_snapshot_version()` call
+    /// (INV-BUILD-2, engine_admin.rs:399) to mint its snapshot/version pair: the
+    /// setup captures the pre-call counter values and each counter advances by
+    /// exactly one. This complements — not duplicates — engine_admin.rs's
+    /// `allocate_snapshot_version_allocates_pair_and_bumps_both_counters`, which pins
+    /// the allocator's own semantics; this test pins that the call site uses it.
+    /// Deltas are taken from freshly-captured baselines (no hardcoded absolute ids)
+    /// so the test is order-independent.
     #[test]
-    fn prepare_concurrent_edit_numbering_is_byte_identical() {
+    fn prepare_concurrent_edit_mints_one_snapshot_version_pair() {
         use reify_test_support::bracket_compiled_module;
         use reify_test_support::mocks::MockConstraintChecker;
 
