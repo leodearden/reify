@@ -8619,6 +8619,38 @@ mod tests {
         }
     }
 
+    /// D7 (compute-fea-hardening PRD): `classify_material` returns
+    /// `Result<MaterialModel, FeaValueShapeError>` instead of panicking on a
+    /// malformed material `Value`. A `Value` that is neither
+    /// `Value::StructureInstance` nor a `Value::Field { source:
+    /// AsPrintedZones, .. }` (e.g. a bare `Value::Real`) must yield
+    /// `Err(FeaValueShapeError::ExpectedStructureInstance { context:
+    /// "classify_material", .. })` rather than panicking.
+    ///
+    /// Note: unlike the leaf-extractor sibling tests, `res` cannot be
+    /// interpolated with `{:?}` here — `MaterialModel` (the `Ok` side) does
+    /// not derive `Debug` (its `Heterogeneous` variant holds a boxed
+    /// closure), so the assert message stays descriptive-only (mirrors
+    /// `classify_material_as_printed_zones_rejects_wrong_arity`).
+    ///
+    /// RED: `classify_material` currently returns a bare `MaterialModel`, so
+    /// matching `Err(..)` fails to type-check until step-2 converts it to
+    /// `Result<MaterialModel, FeaValueShapeError>`.
+    #[test]
+    fn classify_material_rejects_non_structure_instance() {
+        let res = classify_material(&Value::Real(1.0));
+        assert!(
+            matches!(
+                res,
+                Err(FeaValueShapeError::ExpectedStructureInstance { context, .. })
+                    if context == "classify_material"
+            ),
+            "classify_material should return Err(ExpectedStructureInstance) with \
+             context \"classify_material\", not panic, for a non-StructureInstance, \
+             non-AsPrintedZones material Value"
+        );
+    }
+
     // ── Test B: Loewner compliance monotonicity for two-zone cantilever ──────
 
     /// (B) `solve_cantilever_fea` with a two-zone AsPrintedZones field converges,
