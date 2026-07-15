@@ -518,6 +518,21 @@ mod tests {
         )
     }
 
+    /// A nested `Value::List` (3×3, `Value::Int` cells) built from a plain
+    /// `[[i64; 3]; 3]` — the OTHER input shape (and cell type)
+    /// `inertia_3x3_from_value` accepts alongside `Value::Matrix` /
+    /// `Value::Real` (`dynamics_psd.rs:56-105`). Covered by `dynamics_psd`'s
+    /// own unit tests, but — before
+    /// `mass_properties_psd_detector_accepts_nested_list_and_int_cells`
+    /// below — never exercised through the detector's classification path.
+    fn list3_int(rows: [[i64; 3]; 3]) -> Value {
+        Value::List(
+            rows.iter()
+                .map(|row| Value::List(row.iter().map(|&c| Value::Int(c)).collect()))
+                .collect(),
+        )
+    }
+
     /// INV-EVAL-3 over a REAL detector: `MassPropertiesPsdDetector` (via
     /// `DetectorRegistry::with_builtins()`) classifies each `MassProperties`
     /// cell's `inertia` field identically across two independently-seeded
@@ -758,6 +773,62 @@ mod tests {
                 "inertia tensor is not positive semi-definite (min eigenvalue ≈ "
             )),
             "non-PSD message wording drifted from engine_eval.rs:4662-4762; got {messages:?}"
+        );
+    }
+
+    /// `MassPropertiesPsdDetector` dispatches identically when `inertia` is
+    /// a nested `Value::List` of `Value::Int` cells — not just the
+    /// `Value::Matrix` of `Value::Real` cells every other test in this
+    /// module uses. Both `InertiaResult::Valid` sub-outcomes are covered: a
+    /// clearly-PSD identity list is left untouched, and a clearly-non-PSD
+    /// `diag(1,1,-1)` list is flagged + Undef-replaced exactly as the
+    /// `Value::Matrix` case is. The exact `diagnostics.len()` assertion
+    /// also rules out a silent misroute into `Malformed` for the PSD cell
+    /// (which would likewise leave `values`/`snapshot_values` untouched but
+    /// WOULD push a diagnostic, so "untouched" alone wouldn't prove Valid
+    /// was reached).
+    #[test]
+    fn mass_properties_psd_detector_accepts_nested_list_and_int_cells() {
+        let psd_list_cell = ValueCellId::new("BodyG", "mass_props");
+        let psd_list_value =
+            mass_properties(Some(list3_int([[1, 0, 0], [0, 1, 0], [0, 0, 1]])));
+        let non_psd_list_cell = ValueCellId::new("BodyH", "mass_props");
+        let non_psd_list_value =
+            mass_properties(Some(list3_int([[1, 0, 0], [0, 1, 0], [0, 0, -1]])));
+
+        let entries = [
+            (psd_list_cell.clone(), psd_list_value.clone()),
+            (non_psd_list_cell.clone(), non_psd_list_value.clone()),
+        ];
+        let mut state = OwnedState::seeded(&entries);
+
+        DetectorRegistry::with_builtins().run_all(&mut state.as_state());
+
+        assert_eq!(
+            state.diagnostics.len(),
+            1,
+            "expected exactly the non-PSD list cell to be flagged (a Malformed \
+             misroute of the PSD list cell would also produce a diagnostic \
+             here), got {:?}",
+            diag_keys(&state.diagnostics)
+        );
+        assert_eq!(
+            diag_keys(&state.diagnostics)[0].0,
+            Some(DiagnosticCode::DynamicsInertiaNotPSD)
+        );
+
+        // PSD list cell: parsed successfully (Valid), PSD → untouched.
+        assert_eq!(state.values.get(&psd_list_cell), Some(&psd_list_value));
+        assert_eq!(
+            state.snapshot_values.get(&psd_list_cell),
+            Some(&(psd_list_value.clone(), DeterminacyState::Determined))
+        );
+
+        // Non-PSD list cell: parsed successfully (Valid), non-PSD → Undef-replaced.
+        assert_eq!(state.values.get(&non_psd_list_cell), Some(&Value::Undef));
+        assert_eq!(
+            state.snapshot_values.get(&non_psd_list_cell),
+            Some(&(Value::Undef, DeterminacyState::Determined))
         );
     }
 }
