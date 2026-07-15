@@ -3348,6 +3348,90 @@ mod tests {
         );
     }
 
+    // ── engine_edit.rs migration (task 5041, INV-BUILD-2 β) ───────────────
+
+    /// Characterization lock on the OBSERVABLE snapshot/version numbering
+    /// produced by `edit_param`'s allocation site (β site 1), guarding the
+    /// "byte-identical numbering" claim across its migration onto
+    /// `allocate_snapshot_version` (task 5041 step-2). Passes before AND
+    /// after the migration; would go RED if the migration perturbed
+    /// numbering (extra/missing/reordered allocation). See
+    /// `assert_snapshot_numbering` above for the re-baselining caveat.
+    ///
+    /// `structure S { param width: Length = 100mm }` has no solver
+    /// interaction, so the initial `eval()` fires only its own site-1
+    /// allocation (snapshot lands at `(0,0)`, counters advance to
+    /// `(1,1)`); `edit_param` then fires its single allocation site, the
+    /// one under test here.
+    #[test]
+    fn edit_param_snapshot_numbering_is_stable() {
+        use reify_core::ValueCellId;
+        use reify_ir::Value;
+        use reify_test_support::mocks::MockConstraintChecker;
+        use reify_test_support::parse_and_compile_with_stdlib;
+
+        let compiled =
+            parse_and_compile_with_stdlib("structure S { param width: Length = 100mm }");
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let _ = engine.eval(&compiled);
+
+        let before_snapshot = engine.next_snapshot_id;
+        let before_version = engine.next_version_id;
+        engine
+            .edit_param(ValueCellId::new("S", "width"), Value::length(0.15))
+            .expect("edit_param must succeed");
+        assert_snapshot_numbering(
+            &engine,
+            1,
+            1,
+            before_snapshot,
+            before_version,
+            1,
+            "edit_param call (INV-BUILD-2 β site 1)",
+        );
+    }
+
+    /// Characterization lock on the OBSERVABLE snapshot/version numbering
+    /// produced by `edit_source`'s allocation site (β site 2), guarding the
+    /// "byte-identical numbering" claim across its migration onto
+    /// `allocate_snapshot_version` (task 5041 step-4). Passes before AND
+    /// after the migration; would go RED if the migration perturbed
+    /// numbering (extra/missing/reordered allocation). See
+    /// `assert_snapshot_numbering` above for the re-baselining caveat.
+    ///
+    /// `structure S { param width: Length = 100mm }` has no solver
+    /// interaction, so the initial `eval()` fires only its own site-1
+    /// allocation (snapshot lands at `(0,0)`, counters advance to
+    /// `(1,1)`); `edit_source` then fires its single allocation site, the
+    /// one under test here.
+    #[test]
+    fn edit_source_snapshot_numbering_is_stable() {
+        use reify_test_support::mocks::MockConstraintChecker;
+        use reify_test_support::parse_and_compile_with_stdlib;
+
+        let compiled_a =
+            parse_and_compile_with_stdlib("structure S { param width: Length = 100mm }");
+        let compiled_b =
+            parse_and_compile_with_stdlib("structure S { param width: Length = 150mm }");
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let _ = engine.eval(&compiled_a);
+
+        let before_snapshot = engine.next_snapshot_id;
+        let before_version = engine.next_version_id;
+        engine
+            .edit_source(&compiled_b)
+            .expect("edit_source must succeed");
+        assert_snapshot_numbering(
+            &engine,
+            1,
+            1,
+            before_snapshot,
+            before_version,
+            1,
+            "edit_source call (INV-BUILD-2 β site 2)",
+        );
+    }
+
     // ── kernel_pin_diagnostics unit tests (task π / #3444 S1/S2) ──────────
 
     /// (a) registered {"occt"} + pins [kernels]\nmanifold="1.0.0"
