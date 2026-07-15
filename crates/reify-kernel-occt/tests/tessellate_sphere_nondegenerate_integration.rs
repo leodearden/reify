@@ -94,6 +94,13 @@ fn tessellated_sphere_has_no_zero_area_pole_triangles() {
             "index count must be a multiple of 3 (deflection {deflection})"
         );
 
+        // Belt-and-suspenders: this per-triangle scan recomputes the exact
+        // same f32 (b-a)×(c-a) cross product `Mesh::check_contract`'s
+        // NonDegenerate obligation already evaluated inside `validate(0.0)`
+        // above, so it does not add independent coverage — a triangle fails
+        // here iff `validate(0.0)` would already have returned Err for it.
+        // Its value is a *localized* failure message (which triangle and
+        // which vertex indices are degenerate) instead of just a count.
         let num_tris = mesh.indices.len() / 3;
         for t in 0..num_tris {
             let i0 = mesh.indices[t * 3] as usize;
