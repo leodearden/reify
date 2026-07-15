@@ -1904,6 +1904,12 @@ assert "P3c: build/cxx-AAAA/output WAS relocated in this same run (guards non-va
 # separate process -- deterministic RED/GREEN, no fixed-sleep race.
 #
 # H1/H2/H3 (step-1/step-2). H4 (step-3/step-4). H5 (step-5/step-6).
+# H5d, H6a/H6b (task #5223 amend, reviewer_comprehensive test-coverage
+# findings): H5d exercises the previously-untested WAIT="unlimited"
+# block-until-acquired branch (mixed-case, via a backgrounded seed run +
+# done-marker file); H6a/H6b confirm the lock block genuinely spans
+# --reset-in-place too, not just the --fresh-checkout path every case above
+# exercises.
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block Q: acquisition-time lane-lock exclusivity (--lane-lock) ---"
@@ -2109,5 +2115,136 @@ assert "H5c: sentinel file in <lane>/target still present (no target mutation)" 
     test -f "$Q_LANE7/target/SENTINEL.txt"
 assert "H5c: cp NEVER invoked (rejected before any mutation)" \
     bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
+
+# ── H5d: bounded-wait "unlimited" (mixed-case) -> blocks until acquired,
+# never refuses. Exercises the bare blocking `flock 9` branch
+# (seed-warm-lane.sh's _llw_unlimited=1 path) -- the exact path the
+# SINGLETON _merge-verify lane is documented to rely on (queue forever
+# rather than refuse, since it has no alternate FREE lane to fall back to).
+# Mixed-case "UnLiMiTeD" also covers the case-insensitive glob match. ───────
+Q_LANE8="$(mktemp -d /tmp/test-seed-Q-lane8-XXXXXX)"
+_TMPDIRS+=("$Q_LANE8")
+mkdir -p "$Q_LANE8/target"
+echo "sentinel content" > "$Q_LANE8/target/SENTINEL.txt"
+
+Q_LOCK8="${Q_LANE8}.lock"
+_TMPDIRS+=("$Q_LOCK8")
+Q_READY8="${Q_LOCK8}.ready-marker"
+_TMPDIRS+=("$Q_READY8")
+touch "$Q_LOCK8"
+( flock -x 9 && touch "$Q_READY8" && sleep 300 ) 9>"$Q_LOCK8" &
+Q_LOCK8_PID=$!
+_BGPIDS+=("$Q_LOCK8_PID")
+_wait_for_reader_lock "$Q_READY8" 30
+
+# Run seed itself in the BACKGROUND -- with WAIT=unlimited it must block for
+# as long as the holder above lives. Completion signal is a done-marker file
+# (touched only after run_helper_real returns), NOT the subshell PID's
+# liveness: a finished-but-unreaped background job is a zombie, and `kill -0`
+# on a zombie PID still succeeds, so PID liveness alone cannot distinguish
+# "still blocked" from "done but not yet wait(1)-ed".
+Q_DONE8="${Q_LANE8}.done-marker"
+_TMPDIRS+=("$Q_DONE8" "${Q_DONE8}.rc" "${Q_DONE8}.out")
+
+reset_calls
+(
+    RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 REIFY_WARM_LANE_LANE_LOCK_WAIT=UnLiMiTeD \
+        run_helper_real "$Q_BASE" "$Q_LANE8" --fresh-checkout --lane-lock
+    printf '%s' "$RC" > "${Q_DONE8}.rc"
+    printf '%s' "$OUT" > "${Q_DONE8}.out"
+    touch "$Q_DONE8"
+) &
+Q_SEED8_PID=$!
+_BGPIDS+=("$Q_SEED8_PID")
+
+# Brief settle so the backgrounded job has actually forked/reached the flock
+# call; this is NOT a wall-clock upper-bound assertion -- the "not done yet"
+# check below can only be a false failure (never a false pass), since the
+# holder genuinely holds the lock until killed below.
+sleep 0.3
+assert "H5d: 'unlimited' (mixed-case) is still blocked while the lock is held (no done-marker yet)" \
+    bash -c '[ ! -e "$1" ]' _ "$Q_DONE8"
+assert "H5d: sentinel file in <lane>/target still present while blocked (no clobber yet)" \
+    test -f "$Q_LANE8/target/SENTINEL.txt"
+
+# Release the holder; the queued seed should now acquire the lock and run.
+kill "$Q_LOCK8_PID" 2>/dev/null || true
+wait "$Q_LOCK8_PID" 2>/dev/null || true
+
+_wait_for_reader_lock "$Q_DONE8" 30
+wait "$Q_SEED8_PID" 2>/dev/null || true
+
+Q_H5D_RC="$(cat "${Q_DONE8}.rc" 2>/dev/null || echo "unset")"
+Q_H5D_OUT="$(cat "${Q_DONE8}.out" 2>/dev/null || echo "")"
+
+assert "H5d: after the holder releases, 'unlimited' seed completes with exit 0 (got '${Q_H5D_RC}')" \
+    test "$Q_H5D_RC" -eq 0
+assert "H5d: STDOUT is exactly <lane_dir>/target" \
+    bash -c '[ "$1" = "'"$Q_LANE8/target"'" ]' _ "$Q_H5D_OUT"
+assert "H5d: sentinel file GONE (target was replaced from base after unblocking)" \
+    bash -c '[ ! -e "'"$Q_LANE8/target/SENTINEL.txt"'" ]'
+assert "H5d: base_artifact.a IS present in <lane>/target (clone from base succeeded)" \
+    test -f "$Q_LANE8/target/debug/base_artifact.a"
+
+# ── H6: --lane-lock also guards --reset-in-place, not just --fresh-checkout ──
+# The lock block runs BEFORE the mode-split (seed-warm-lane.sh comment: "so it
+# guards BOTH --fresh-checkout and --reset-in-place"), but H1-H5 above only
+# ever exercise --fresh-checkout. A future refactor that moved the lock block
+# below the mode-split would silently drop reset-in-place protection with no
+# failing test above -- H6 pins the ordering directly against real fixtures.
+
+# H6a: lock HELD + --reset-in-place + --lane-lock, on a NON-EMPTY lane target
+# (which --reset-in-place's OWN clobber guard would otherwise refuse with
+# exit 1) -> exit 75, not 1: proves the lock check runs and refuses BEFORE
+# the clobber guard gets a chance to run its own (different) refusal.
+Q_LANE9="$(mktemp -d /tmp/test-seed-Q-lane9-XXXXXX)"
+_TMPDIRS+=("$Q_LANE9")
+mkdir -p "$Q_LANE9/target"
+echo "sentinel content" > "$Q_LANE9/target/SENTINEL.txt"
+
+Q_LOCK9="${Q_LANE9}.lock"
+_TMPDIRS+=("$Q_LOCK9")
+Q_READY9="${Q_LOCK9}.ready-marker"
+_TMPDIRS+=("$Q_READY9")
+touch "$Q_LOCK9"
+( flock -x 9 && touch "$Q_READY9" && sleep 300 ) 9>"$Q_LOCK9" &
+Q_LOCK9_PID=$!
+_BGPIDS+=("$Q_LOCK9_PID")
+_wait_for_reader_lock "$Q_READY9" 30
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$Q_BASE" "$Q_LANE9" --reset-in-place --lane-lock
+
+assert "H6a: reset-in-place + lock held -> exit 75 (lock check precedes the clobber guard, not exit 1)" \
+    test "$RC" -eq 75
+assert "H6a: stderr mentions the lock/live-consumer refusal (not the clobber-guard message)" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "lock|consumer"' _ "$ERR_OUT"
+assert "H6a: sentinel file in <lane>/target still present (lane NOT touched)" \
+    test -f "$Q_LANE9/target/SENTINEL.txt"
+assert "H6a: cp NEVER invoked" \
+    bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
+
+kill "$Q_LOCK9_PID" 2>/dev/null || true
+wait "$Q_LOCK9_PID" 2>/dev/null || true
+
+# H6b: lock FREE + --reset-in-place + --lane-lock, on an EMPTY lane (no
+# pre-existing target/ at all, mirroring Block E's E1 fixture) -> exit 0:
+# confirms the lock genuinely spans --reset-in-place's uncontended success
+# path too, not just its held-lock refusal path in H6a.
+Q_LANE10="$(mktemp -d /tmp/test-seed-Q-lane10-XXXXXX)"
+_TMPDIRS+=("$Q_LANE10")
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$Q_BASE" "$Q_LANE10" --reset-in-place --lane-lock
+
+assert "H6b: reset-in-place + lock free + empty lane -> exit 0" test "$RC" -eq 0
+assert "H6b: STDOUT is exactly <lane_dir>/target" \
+    bash -c '[ "$1" = "'"$Q_LANE10/target"'" ]' _ "$OUT"
+assert "H6b: base_artifact.a IS present in <lane>/target (clone from base succeeded)" \
+    test -f "$Q_LANE10/target/debug/base_artifact.a"
+assert "H6b: cp invoked with --reflink=always" \
+    bash -c 'grep "^cp" "$1" | grep -q -- "--reflink=always"' _ "$CALLS_FILE"
 
 test_summary
