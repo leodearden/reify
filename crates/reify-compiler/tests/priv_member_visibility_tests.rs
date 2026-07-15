@@ -813,11 +813,14 @@ structure def PerDeclGuardHost {
 /// that must flip from "expect 0 E_PRIV_MEMBER_ACCESS" to "expect exactly 1".
 const NOT_YET_PRIV_GATED_FOLLOWUP: &str = "#5171";
 
-/// External access into a `priv param` nested inside a port does not emit
-/// E_PRIV_MEMBER_ACCESS today — not because it is silently allowed (it
-/// isn't), but because the priv gate is never reached.
+/// External dot-access on a `priv param` nested inside a port now emits
+/// E_PRIV_MEMBER_ACCESS (task #5171): a dedicated AST-pattern branch in
+/// `compile_member_access` detects the `<sub>.<port>.<member>` shape before
+/// `<sub>.<port>` is compiled down to a non-`StructureRef` receiver, and
+/// poisons the access when the port's composite member cell
+/// (`"<port>.<member>"`) is `Visibility::Private`.
 #[test]
-fn external_priv_port_member_access_not_yet_priv_gated() {
+fn external_priv_port_member_access_emits_error() {
     let module = compile_source(
         r#"
 trait Iface {}
@@ -825,6 +828,9 @@ trait Iface {}
 structure def PortHost {
     port secret : Iface {
         priv param main : Length = 5mm
+    }
+    port plain : Iface {
+        param vis : Length = 5mm
     }
 }
 
@@ -835,13 +841,55 @@ structure def Parent {
 "#,
     );
 
+    let priv_errs = priv_access_errors(&module);
+    assert_eq!(
+        priv_errs.len(),
+        1,
+        "external access to `h.secret.main` (priv port-member) must emit exactly one \
+         E_PRIV_MEMBER_ACCESS; all diagnostics: {:?}",
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    assert!(priv_errs[0].message.contains("E_PRIV_MEMBER_ACCESS"));
+    assert!(
+        priv_errs[0].message.contains("main"),
+        "diagnostic should name the offending member: {}",
+        priv_errs[0].message
+    );
+}
+
+/// External dot-access on a default-visible port member sibling still
+/// fails — but via the pre-existing generic "member access not yet
+/// supported" diagnostic, not E_PRIV_MEMBER_ACCESS (pub port-member
+/// resolution remains a separate, pre-existing gap that this task does not
+/// close: the new AST-pattern branch only detects and poisons the priv
+/// case).
+#[test]
+fn external_pub_port_member_access_not_yet_supported_unchanged() {
+    let module = compile_source(
+        r#"
+trait Iface {}
+
+structure def PortHost {
+    port secret : Iface {
+        priv param main : Length = 5mm
+    }
+    port plain : Iface {
+        param vis : Length = 5mm
+    }
+}
+
+structure def Parent {
+    sub h = PortHost()
+    let touch = h.plain.vis
+}
+"#,
+    );
+
     assert_eq!(
         priv_access_errors(&module).len(),
         0,
-        "external access to a priv port-member must not emit E_PRIV_MEMBER_ACCESS \
-         today — the lowered visibility field is not yet consulted by any \
-         enforcement path (tracked by {NOT_YET_PRIV_GATED_FOLLOWUP}); all \
-         diagnostics: {:?}",
+        "external access to `h.plain.vis` (default-visible port member) must NOT \
+         emit E_PRIV_MEMBER_ACCESS; all diagnostics: {:?}",
         module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
     let not_yet_supported = module
@@ -849,18 +897,42 @@ structure def Parent {
         .iter()
         .filter(|d| d.message.contains("member access not yet supported"))
         .count();
-    // Load-bearing: without this, a future regression that made `h.secret.main`
-    // resolve cleanly with NO diagnostic at all (fail *open*, not closed) would
-    // leave this test green, defeating its purpose as a trip-wire. `.main`'s
-    // nested port-member path currently falls through to the generic catch-all
-    // (code:None) rather than E_STRUCTURE_MEMBER_NOT_FOUND, so this pins that
-    // exact failure mode.
     assert!(
         not_yet_supported >= 1,
-        "external access to `h.secret.main` must fail with at least one generic \
-         'member access not yet supported' diagnostic (the composite port-member \
-         path is not yet wired into the external `obj.member` resolver) — this \
-         pins that the access fails closed, not open; all diagnostics: {:?}",
+        "external access to `h.plain.vis` must still fail with at least one generic \
+         'member access not yet supported' diagnostic (pub port-member resolution is \
+         unchanged by task #5171); all diagnostics: {:?}",
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// Internal access to a structure's own `priv` port member — the bare
+/// `<port>.<member>` path (task #3978 δ, expr.rs:~3912), NOT
+/// `self.<port>.<member>` — stays ungated: priv hides members from OUTSIDE
+/// the defining scope only. The new external-access AST-pattern branch
+/// (task #5171) requires a non-`self` sub receiver bound in
+/// `sub_component_types`, so it structurally cannot fire on this
+/// single-level shape; this test pins that with a real diagnostic count.
+#[test]
+fn internal_priv_port_member_access_ok() {
+    let module = compile_source(
+        r#"
+trait Iface {}
+
+structure def PortHostSelf {
+    port secret : Iface {
+        priv param main : Length = 5mm
+    }
+    let echo = secret.main
+}
+"#,
+    );
+
+    assert_eq!(
+        priv_access_errors(&module).len(),
+        0,
+        "internal access to `secret.main` (own priv port member, bare port.member path) \
+         must NOT emit E_PRIV_MEMBER_ACCESS; all diagnostics: {:?}",
         module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
