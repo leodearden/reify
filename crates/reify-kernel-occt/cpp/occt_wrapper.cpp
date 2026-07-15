@@ -5939,6 +5939,19 @@ TessResult tessellate_shape(const OcctShape& shape, double tolerance) {
                 int n1, n2, n3;
                 tri->Triangle(i).Get(n1, n2, n3);
 
+                // Debug-only: document and cheaply enforce the node-index
+                // invariant that both the unchecked `result.vertices[...]`
+                // reads in the INV-GEO-1 gate below AND the index emission
+                // further down depend on — OCCT triangle node indices are
+                // 1-based and within [1, nb_nodes]. Not a new trust
+                // boundary: index emission already relied on this same
+                // invariant before the gate existed.
+#ifndef NDEBUG
+                assert(n1 >= 1 && n1 <= nb_nodes);
+                assert(n2 >= 1 && n2 <= nb_nodes);
+                assert(n3 >= 1 && n3 <= nb_nodes);
+#endif
+
                 // INV-GEO-1 (docs/prds/kernel-seam-contracts.md §2 obligation 3,
                 // task #5164): a periodic surface with a pole (e.g. a full
                 // sphere) has BRepMesh_IncrementalMesh emit one raw pole node
