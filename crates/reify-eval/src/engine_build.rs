@@ -6630,6 +6630,19 @@ impl Engine {
                 // loudly in debug rather than being silently swept away.
                 // Release stays permissive-by-absence: the assert compiles
                 // out, matching the tautological `debug_assert_eq!` below.
+                //
+                // Release-mode reliance (reviewer_comprehensive #1, θ amend
+                // pass): with the assert compiled out, a stale same-kernel/
+                // same-id entry surviving ACROSS builds (e.g. a per-build-
+                // reset regression, or a kernel-local id counter re-minting
+                // id 1 on a later build) would be served silently in
+                // release. That failure mode is guarded only by INV-BUILD-1
+                // ("per-build engine state resets exactly once per
+                // build/tessellate entry point" — docs/invariants.md),
+                // which is status `proposed` (type-level enforcement via a
+                // `reset_per_build_state` exhaustive destructure is future
+                // work, not yet test-enforced) — this assert is a debug-mode
+                // detector, not a release backstop.
                 debug_assert!(
                     outputs.topology_attribute_table.lookup(cached_handle).is_none(),
                     "INV-BUILD-3 / INV-GEO-2 (PRD engine-build-hardening §4 D6, \
