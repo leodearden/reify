@@ -86,7 +86,17 @@ if [ ! -L "$TBB_PIN_LIB" ]; then
     # build script on the shared deps host.
     if [ -e "$DEPS_LIBTBB" ]; then
         mkdir -p "$TBB_PIN_DIR"
-        ln -sfn "$DEPS_LIBTBB" "$TBB_PIN_LIB"
+        # Multiple worktree verify pipelines can hit this self-heal
+        # concurrently on this shared host. `mkdir -p` and a direct
+        # `ln -sfn` are each individually idempotent (so the race is
+        # benign), but publishing via a unique temp name + `mv -T` makes
+        # the final rename a single atomic syscall, so a concurrent
+        # reader's `readlink -f` below can never observe a symlink
+        # mid-recreation (which would otherwise risk a transient spurious
+        # hard-fail under heavy parallel verify load).
+        tmp_link="$TBB_PIN_DIR/.libtbb.so.12.tmp.$$"
+        ln -sfn "$DEPS_LIBTBB" "$tmp_link"
+        mv -T "$tmp_link" "$TBB_PIN_LIB"
         warn "manifold-deps guard: tbb-pin was missing — self-healed $TBB_PIN_LIB -> $DEPS_LIBTBB."
         warn "                     Run ./scripts/build-manifold-deps.sh to make this permanent."
     else
