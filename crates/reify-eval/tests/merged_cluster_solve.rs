@@ -1550,6 +1550,21 @@ fn eval_cached_merges_within_cap_cluster_like_cold_eval() {
 /// subsequent `eval_cached()` is what this test actually exercises (merged
 /// co-solve + wave-2 on the WARM path). The spy repeats its last sequenced
 /// result, so both solves see the same `Solved` outcome.
+///
+/// SCOPE NOTE (reviewer_comprehensive, task #5118 amendment): this pins ONE
+/// warm call following the cold `eval()`, not a SECOND consecutive
+/// `eval_cached` call. `eval_cached` unconditionally rebuilds
+/// `self.eval_state` at the end of every call with an empty
+/// `reverse_index` (`ReverseDependencyIndex::default()`), so the shared
+/// `Engine::reeval_downstream_let_cones` helper this test exercises only
+/// finds real dependents on the FIRST warm call after a cold `eval()` — a
+/// second consecutive `eval_cached` would see an empty reverse index and
+/// silently skip re-evaluating `B.out` against that call's newly co-solved
+/// `A.k`, even though `A.k` itself stays current (written unconditionally
+/// by the primary, non-wave-2 write-back). This mirrors a pre-existing
+/// limitation of the per-template warm arm the helper was extracted from —
+/// see that helper's doc comment for the full rationale — and is not
+/// exercised here; broader multi-call coverage is a follow-up.
 #[test]
 fn eval_cached_merged_cluster_let_surfaces_co_solved_cross_scope_auto() {
     let module = two_cycle_cluster_with_cross_scope_let_module();
@@ -1588,6 +1603,176 @@ fn eval_cached_merged_cluster_let_surfaces_co_solved_cross_scope_auto() {
          warm eval_cached path too, not a frozen/undef value from B's \
          pre-merge-solve main pass; got {:?}",
         out_val,
+    );
+}
+
+/// Warm analog of `merged_cluster_skips_solver_when_every_auto_is_excluded`
+/// (above, cold `eval()`): when every auto cell a `MergedSolve` cluster
+/// contributed is a strict connector-instance auto, `eval_cached()`'s
+/// `dispatch_merged_cluster_solve_cached` must ALSO skip the solver call
+/// entirely and push the cluster-wide "left entirely unresolved" warning,
+/// rather than attempting a spurious solve over zero auto params
+/// (reviewer_comprehensive, task #5118 amendment: this warm early-return
+/// branch — the empty-`auto_params` guard — had no dedicated test; every
+/// other warm test in this file exercises a cluster that actually solves).
+#[test]
+fn eval_cached_skips_solver_when_every_auto_is_excluded() {
+    let module = all_connector_autos_two_cycle_cluster_module();
+
+    let spy = MultiCallSpyConstraintSolver::new(vec![SolveResult::Solved {
+        values: HashMap::new(),
+        unique: true,
+    }]);
+    let captured = spy.captured_problems();
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+    let result = engine.eval_cached(&module, VersionId(1));
+
+    assert_eq!(
+        captured.lock().unwrap().len(),
+        0,
+        "eval_cached must NEVER invoke the solver when every auto cell in \
+         the cluster is excluded by the strict connector-instance guard -- \
+         a zero-auto-param solve would be spurious/misleading; got {} \
+         call(s)",
+        captured.lock().unwrap().len(),
+    );
+
+    let errors: Vec<_> = result
+        .eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert_eq!(
+        errors.len(),
+        2,
+        "both cluster members' excluded connector autos must each surface \
+         their own error Diagnostic on the warm path too; got: {:#?}",
+        result.eval_result.diagnostics,
+    );
+
+    let warnings: Vec<_> = result
+        .eval_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Warning)
+        .collect();
+    assert!(
+        warnings
+            .iter()
+            .any(|d| d.message.contains("MergedSolve cluster")
+                && d.message.contains("[A, B]")
+                && d.message.contains("entirely unresolved")),
+        "expected a warning Diagnostic naming the WHOLE cluster ([A, B]) as \
+         left entirely unresolved on the warm path too; got: {:#?}",
+        result.eval_result.diagnostics,
+    );
+
+    let connector_k = ValueCellId::new("A.__connector_0", "k");
+    let connector_m = ValueCellId::new("B.__connector_0", "m");
+    assert!(
+        result.eval_result.values.get_or_undef(&connector_k) == Value::Undef
+            && result.eval_result.values.get_or_undef(&connector_m) == Value::Undef,
+        "neither excluded connector cell can have been resolved in \
+         EvalResult.values -- no solve ever ran",
+    );
+}
+
+/// Warm analog of
+/// `merged_cluster_infeasible_propagates_diagnostics_and_failed_autos_for_every_member`
+/// (above, cold `eval()`): an `Infeasible` merged solve on the warm
+/// `eval_cached` path must ALSO propagate the solver's diagnostics into
+/// `EvalResult.diagnostics` and must not write back any cluster member's
+/// value (reviewer_comprehensive, task #5118 amendment:
+/// `dispatch_merged_cluster_solve_cached`'s `Infeasible` arm had no
+/// dedicated warm test — every other warm test in this file seeds the spy
+/// with `Solved`).
+#[test]
+fn eval_cached_merged_cluster_infeasible_propagates_diagnostics() {
+    let module = two_cycle_cluster_module();
+
+    let spy = MultiCallSpyConstraintSolver::new(vec![SolveResult::Infeasible {
+        diagnostics: vec![Diagnostic::error(
+            "no feasible assignment satisfies the merged {A,B} constraint set",
+        )],
+    }]);
+    let captured = spy.captured_problems();
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+    let result = engine.eval_cached(&module, VersionId(1));
+
+    assert_eq!(
+        captured.lock().unwrap().len(),
+        1,
+        "the merged cluster must still dispatch exactly ONE solve attempt \
+         even though it comes back Infeasible; got {} call(s)",
+        captured.lock().unwrap().len(),
+    );
+    assert!(
+        result.eval_result.diagnostics.iter().any(
+            |d| d.severity == Severity::Error && d.message.contains("no feasible assignment")
+        ),
+        "solver's Infeasible diagnostics must propagate into \
+         EvalResult.diagnostics on the warm path too; got: {:#?}",
+        result.eval_result.diagnostics,
+    );
+
+    let a_k = ValueCellId::new("A", "k");
+    let b_m = ValueCellId::new("B", "m");
+    assert!(
+        result.eval_result.values.get_or_undef(&a_k) == Value::Undef
+            && result.eval_result.values.get_or_undef(&b_m) == Value::Undef,
+        "an Infeasible merged solve must not write back any cluster \
+         member's value on the warm path",
+    );
+}
+
+/// Warm analog of
+/// `merged_cluster_no_progress_propagates_diagnostic_and_failed_autos_for_every_member`
+/// (above, cold `eval()`): a `NoProgress` merged solve on the warm
+/// `eval_cached` path must ALSO push a warning `Diagnostic` naming the
+/// solver's reason, and must not write back any cluster member's value
+/// (reviewer_comprehensive, task #5118 amendment:
+/// `dispatch_merged_cluster_solve_cached`'s `NoProgress` arm had no
+/// dedicated warm test).
+#[test]
+fn eval_cached_merged_cluster_no_progress_propagates_diagnostic() {
+    let module = two_cycle_cluster_module();
+
+    let spy = MultiCallSpyConstraintSolver::new(vec![SolveResult::NoProgress {
+        reason: "solver stalled on the merged {A,B} problem".to_string(),
+    }]);
+    let captured = spy.captured_problems();
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+    let result = engine.eval_cached(&module, VersionId(1));
+
+    assert_eq!(
+        captured.lock().unwrap().len(),
+        1,
+        "the merged cluster must still dispatch exactly ONE solve attempt \
+         even though it makes NoProgress; got {} call(s)",
+        captured.lock().unwrap().len(),
+    );
+    assert!(
+        result.eval_result.diagnostics.iter().any(|d| d.severity == Severity::Warning
+            && d.message.contains("solver stalled on the merged")),
+        "solver's NoProgress reason must surface as a warning Diagnostic on \
+         the warm path too; got: {:#?}",
+        result.eval_result.diagnostics,
+    );
+
+    let a_k = ValueCellId::new("A", "k");
+    let b_m = ValueCellId::new("B", "m");
+    assert!(
+        result.eval_result.values.get_or_undef(&a_k) == Value::Undef
+            && result.eval_result.values.get_or_undef(&b_m) == Value::Undef,
+        "a NoProgress merged solve must not write back any cluster \
+         member's value on the warm path",
     );
 }
 

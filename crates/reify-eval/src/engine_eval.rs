@@ -2189,6 +2189,33 @@ fn build_merged_solver_problem(
     }
 }
 
+/// Diagnostic pushed by `dispatch_merged_cluster_solve`/`_cached`'s
+/// empty-`auto_params` early return: every auto cell the cluster
+/// (`cluster_scope_names`, in `cluster.scopes` order) contributed was
+/// excluded by the strict connector-instance guard (each already diagnosed
+/// individually via the per-cell `Diagnostic::error` pushed above by
+/// `build_merged_solver_problem`), so no merged solve was attempted and the
+/// WHOLE cluster -- not only the member(s) that contributed an excluded
+/// cell -- is left unresolved.
+///
+/// Shared by cold `eval()`'s `dispatch_merged_cluster_solve` and warm
+/// `eval_cached()`'s `dispatch_merged_cluster_solve_cached` so the two call
+/// sites' collateral-warning text cannot drift apart by hand
+/// (reviewer_comprehensive, task #5118 amendment) -- see
+/// `dispatch_merged_cluster_solve`'s doc comment for the full "collateral
+/// observability" rationale this message exists to satisfy.
+fn merged_cluster_left_unresolved_warning(cluster_scope_names: &[&str]) -> Diagnostic {
+    Diagnostic::warning(format!(
+        "MergedSolve cluster [{}] was left entirely unresolved: at \
+         least one member contributed an unsupported connector-\
+         pinned auto cell (see the error diagnostic above naming \
+         the specific cell), so no merged solve was attempted -- \
+         EVERY member of this cluster, not only the one that \
+         contributed the excluded cell, remains undetermined.",
+        cluster_scope_names.join(", "),
+    ))
+}
+
 /// Effective objective governance for a single template scope, computed once per
 /// `eval()` / `eval_cached()` call and indexed by source order.
 ///
@@ -5945,16 +5972,7 @@ impl Engine {
                 .iter()
                 .map(|&member_idx| module.templates[member_idx].name.as_str())
                 .collect();
-            diagnostics.push(Diagnostic::warning(format!(
-                "MergedSolve cluster [{}] was left entirely unresolved: at \
-                 least one member contributed an unsupported connector-\
-                 pinned auto cell (see the error diagnostic above naming \
-                 the specific cell), so no merged solve was attempted -- \
-                 EVERY member of this cluster, not only the one that \
-                 contributed the excluded cell, remains undetermined \
-                 (task #5014).",
-                cluster_scope_names.join(", "),
-            )));
+            diagnostics.push(merged_cluster_left_unresolved_warning(&cluster_scope_names));
             return;
         }
 
@@ -7549,6 +7567,88 @@ impl Engine {
         }
     }
 
+    /// Wave-2 downstream-`let`-cone re-evaluation, shared by every warm
+    /// write-back site that resolves auto cells outside the dirty-gated
+    /// per-cell walk: the per-template solver arm inside `eval_cached`
+    /// above, and `dispatch_merged_cluster_solve_cached` below. Extracted
+    /// (reviewer_comprehensive, task #5118 amendment) because the two sites
+    /// were a near-verbatim hand-copy of each other -- exactly the kind of
+    /// drift the "four warm-resolution sites must stay in sync" comment at
+    /// the per-template call site warns against.
+    ///
+    /// Given `resolved_ids` (the `ValueCellId`s a solver's `Solved` result
+    /// just wrote back), computes the downstream dirty cone via the
+    /// scope-agnostic `self.eval_state.reverse_index`, intersects it with
+    /// demand, re-evaluates each dirty `let` cell's `default_expr`, and
+    /// writes the result back to `values`/`snapshot_values` and
+    /// `self.cache` under `version` -- the same outcome cold `eval()`
+    /// reaches structurally differently, via its per-member
+    /// `evaluate_let_bindings` loop. No-ops when `resolved_ids` is empty.
+    ///
+    /// Known limitation (reviewer_comprehensive, task #5118 amendment):
+    /// `eval_cached` unconditionally rebuilds `self.eval_state` at the end
+    /// of every call with `reverse_index: ReverseDependencyIndex::default()`
+    /// (see that rebuild, near `eval_cached`'s end), so this method only
+    /// finds real dependents on the FIRST warm call following a cold
+    /// `eval()` -- a SECOND consecutive `eval_cached` call sees an empty
+    /// reverse index here and silently no-ops for any newly-resolved id,
+    /// even though the resolved cell ITSELF stays current (written by the
+    /// caller's own primary, non-wave-2 write-back loop, unconditionally,
+    /// every call). This is a pre-existing characteristic of the
+    /// per-template warm arm this helper was extracted from, not something
+    /// the #5118 merged-cluster dispatch introduced; broadening it (e.g. an
+    /// `eval_cached` that maintains a real incremental reverse index across
+    /// calls) is a follow-up, not in scope here.
+    fn reeval_downstream_let_cones(
+        &mut self,
+        resolved_ids: &HashSet<ValueCellId>,
+        values: &mut ValueMap,
+        snapshot_values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+        runtime_sink: &RefCell<Vec<Diagnostic>>,
+        version: VersionId,
+    ) {
+        if resolved_ids.is_empty() {
+            return;
+        }
+
+        let nodes_to_reeval: Vec<(NodeId, CompiledExpr)> = if let Some(es) =
+            self.eval_state.as_ref()
+        {
+            let wave2_dirty =
+                crate::dirty::compute_dirty_cone(resolved_ids, &es.reverse_index, &es.snapshot.graph);
+            let wave2_eval = crate::dirty::compute_eval_set(&wave2_dirty, &self.demand, &es.trace_map);
+            wave2_eval
+                .into_iter()
+                .filter_map(|node_id| {
+                    if let NodeId::Value(vcid) = &node_id
+                        && let Some(node) = es.snapshot.graph.value_cells.get(vcid)
+                        && let Some(ref expr) = node.default_expr
+                    {
+                        return Some((node_id, expr.clone()));
+                    }
+                    None
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        for (node_id, expr) in nodes_to_reeval {
+            let val = reify_expr::eval_expr(
+                &expr,
+                &self.cell_eval_ctx(values, snapshot_values, runtime_sink),
+            );
+            if let NodeId::Value(vcid) = &node_id {
+                values.insert(vcid.clone(), val.clone());
+                snapshot_values.insert(vcid.clone(), (val.clone(), DeterminacyState::Determined));
+            }
+            let trace = extract_dependency_trace(&expr);
+            let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
+            self.cache
+                .record_evaluation(node_id, cached_result, version, trace);
+        }
+    }
+
     /// Warm counterpart to `dispatch_merged_cluster_solve` (see that
     /// function's doc comment, above, for the full cold write-back this
     /// mirrors structurally). Dispatched once per within-cap `MergedSolve`
@@ -7611,16 +7711,7 @@ impl Engine {
                 .iter()
                 .map(|&member_idx| module.templates[member_idx].name.as_str())
                 .collect();
-            diagnostics.push(Diagnostic::warning(format!(
-                "MergedSolve cluster [{}] was left entirely unresolved: at \
-                 least one member contributed an unsupported connector-\
-                 pinned auto cell (see the error diagnostic above naming \
-                 the specific cell), so no merged solve was attempted -- \
-                 EVERY member of this cluster, not only the one that \
-                 contributed the excluded cell, remains undetermined \
-                 (task #5118).",
-                cluster_scope_names.join(", "),
-            )));
+            diagnostics.push(merged_cluster_left_unresolved_warning(&cluster_scope_names));
             return;
         }
 
@@ -7700,55 +7791,17 @@ impl Engine {
                 // reverse index is scope-agnostic (keyed by `ValueCellId`),
                 // so one pass re-evals cross-member let cones (BT3) exactly
                 // as cold's per-member `evaluate_let_bindings` loop does.
-                // Mirrors the warm per-template arm's identical wave-2
-                // mechanism verbatim.
-                if !resolved_ids.is_empty() {
-                    let nodes_to_reeval: Vec<(NodeId, CompiledExpr)> =
-                        if let Some(es) = self.eval_state.as_ref() {
-                            let wave2_dirty = crate::dirty::compute_dirty_cone(
-                                &resolved_ids,
-                                &es.reverse_index,
-                                &es.snapshot.graph,
-                            );
-                            let wave2_eval = crate::dirty::compute_eval_set(
-                                &wave2_dirty,
-                                &self.demand,
-                                &es.trace_map,
-                            );
-                            wave2_eval
-                                .into_iter()
-                                .filter_map(|node_id| {
-                                    if let NodeId::Value(vcid) = &node_id
-                                        && let Some(node) =
-                                            es.snapshot.graph.value_cells.get(vcid)
-                                        && let Some(ref expr) = node.default_expr
-                                    {
-                                        return Some((node_id, expr.clone()));
-                                    }
-                                    None
-                                })
-                                .collect()
-                        } else {
-                            Vec::new()
-                        };
-
-                    for (node_id, expr) in nodes_to_reeval {
-                        let val = reify_expr::eval_expr(
-                            &expr,
-                            &self.cell_eval_ctx(values, snapshot_values, runtime_sink),
-                        );
-                        if let NodeId::Value(vcid) = &node_id {
-                            values.insert(vcid.clone(), val.clone());
-                            snapshot_values
-                                .insert(vcid.clone(), (val.clone(), DeterminacyState::Determined));
-                        }
-                        let trace = extract_dependency_trace(&expr);
-                        let cached_result =
-                            CachedResult::Value(val, DeterminacyState::Determined);
-                        self.cache
-                            .record_evaluation(node_id, cached_result, version, trace);
-                    }
-                }
+                // Shared with the warm per-template arm via
+                // `reeval_downstream_let_cones` (task #5118 amendment) --
+                // see that helper's doc for the full mechanism and its known
+                // first-warm-call-only limitation.
+                self.reeval_downstream_let_cones(
+                    &resolved_ids,
+                    values,
+                    snapshot_values,
+                    runtime_sink,
+                    version,
+                );
             }
             SolveResult::Infeasible {
                 diagnostics: solver_diags,
