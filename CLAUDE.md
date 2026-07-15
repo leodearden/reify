@@ -19,6 +19,7 @@ This file holds **invariants and pointers only**. Mechanism detail lives in the 
 
 ### Native deps
 - A `manifold-csg-sys` pin bump requires re-running `scripts/build-manifold-deps.sh` (all four native kernels — OCCT, OpenVDB, gmsh, manifold — link prebuilt libs from `/opt/reify-deps`; a `links`-override in `.cargo/config.toml` skips the from-source build, scoped to `x86_64-unknown-linux-gnu` so wasm keeps FetchContent). `scripts/check-manifold-deps.sh` preflights this as the first Rust verify step.
+- `scripts/build-manifold-deps.sh` also materializes a tbb-only RUNPATH pin dir at `/opt/reify-deps/tbb-pin` (a `libtbb.so.12` symlink to the deps lib) alongside the four kernels, preflighted by `scripts/check-manifold-deps.sh`; each workspace binary (`reify`, `reify-gui`) prepends it FIRST in its own RUNPATH plus a forced direct `NEEDED libtbb.so.12` (mechanism A″), so bare `./reify` / `./reify-gui` launches resolve the deps oneTBB symbols without `LD_LIBRARY_PATH`.
 
 ### Warm lanes
 - One consumer per lane at a time; `acquire_lane` always re-seeds from the base; only the `_merge-verify` lane's clean landed-commit `target/` may advance the base (`refresh-warm-base.sh --landed-commit <sha>`) — task-lane WIP must **never** advance it. Full lifecycle, invariants, and pool sizing: `docs/prds/warm-lane-pool-cow-seeding.md` §9.3/§9.5.

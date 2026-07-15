@@ -49,6 +49,31 @@ STAMP="$PREFIX/VERSION"
 # The four static libs the override links, by their installed names.
 REQUIRED_LIBS=(libmanifoldc.a libmanifold.a libClipper2.a libtbb.a)
 
+# ---------- TBB pin dir (task #5192, mechanism A'') ----------
+#
+# A workspace binary's own DT_RUNPATH can never redirect the *transitive*
+# NEEDED libtbb.so.12 pulled in by system libTKernel.so (OCCT) — DT_RUNPATH
+# is non-transitive. The fix instead gives each binary a DIRECT NEEDED
+# libtbb.so.12, resolved via this tbb-ONLY pin dir prepended FIRST in the
+# binary's own RUNPATH (see emit_tbb_pin_for_bins/_for_tests in
+# crates/reify-build-utils/src/lib.rs and scripts/check-manifold-deps.sh's
+# preflight). The dir holds EXACTLY one entry so prepending it to RUNPATH
+# flips no other soname.
+TBB_PIN_DIR="/opt/reify-deps/tbb-pin"
+DEPS_LIBTBB="/opt/reify-deps/lib/libtbb.so.12"
+
+# Idempotent: safe to call unconditionally on every run (fast no-op path
+# included), independent of the manifold version stamp above.
+ensure_tbb_pin() {
+    if [ ! -e "$DEPS_LIBTBB" ]; then
+        warn "tbb-pin: $DEPS_LIBTBB not found — skipping tbb-pin dir (is /opt/reify-deps/lib populated?)."
+        return 0
+    fi
+    mkdir -p "$TBB_PIN_DIR"
+    ln -sfn "$DEPS_LIBTBB" "$TBB_PIN_DIR/libtbb.so.12"
+    ok "tbb-pin: $TBB_PIN_DIR/libtbb.so.12 -> $DEPS_LIBTBB"
+}
+
 # ---------- Resolve the pin from Cargo.lock + the sys crate's MANIFOLD_VERSION ----------
 
 if [ ! -f "$LOCKFILE" ]; then
@@ -109,6 +134,7 @@ all_libs_present() {
 if [ "$FORCE" -eq 0 ] && [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$WANT_STAMP" ] && all_libs_present; then
     ok "manifold prebuilt up to date ($WANT_STAMP) at $LIBDIR — nothing to do."
     ok "Re-run with --force to rebuild."
+    ensure_tbb_pin
     exit 0
 fi
 
@@ -220,3 +246,5 @@ ok "VERSION stamp: $WANT_STAMP"
 echo
 info "Installed libs:"
 ls -la "$LIBDIR"
+
+ensure_tbb_pin
