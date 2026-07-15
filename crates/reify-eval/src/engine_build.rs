@@ -6869,7 +6869,14 @@ impl Engine {
         // `{Occt, X}` face entry that happens to share its id with a
         // forwarded `{Manifold, X}` entry — the cross-kernel id-collision
         // class this task's ingest-forwarding path introduces.
-        let mut solid_attribute_handles: Vec<KernelHandle> = Vec::new();
+        //
+        // A `HashSet` (not `Vec`): `KernelHandle` already derives `Hash` +
+        // `Eq`, so membership below (`.contains(kernel_handle)`, on the
+        // scan's per-entry hot path) is O(1) instead of a linear scan — cheap
+        // to get right while the code is fresh, per reviewer_comprehensive's
+        // amendment note, even though S (a few solids/realization) keeps the
+        // `Vec` cost negligible at today's scale.
+        let mut solid_attribute_handles: HashSet<KernelHandle> = HashSet::new();
         // Task 4050 step-8: the produced [`ReprKind`] of each step handle,
         // tracked in lockstep with `realization_step_ids`. The per-op
         // `available` set is read from the reprs of the op's resolved input
@@ -7457,7 +7464,7 @@ impl Engine {
                                                 // TARGET handle from the post-loop diagnostic
                                                 // scan too (see `solid_attribute_handles`
                                                 // declaration comment above).
-                                                solid_attribute_handles.push(cached);
+                                                solid_attribute_handles.insert(cached);
                                             }
                                             substitution.insert(pid, cached.id);
                                             continue;
@@ -7603,7 +7610,7 @@ impl Engine {
                                                     // post-loop diagnostic scan too (see
                                                     // `solid_attribute_handles` declaration
                                                     // comment above).
-                                                    solid_attribute_handles.push(intermediate_handle);
+                                                    solid_attribute_handles.insert(intermediate_handle);
                                                 }
                                                 substitution.insert(pid, handle.id);
                                             }
@@ -7821,7 +7828,7 @@ impl Engine {
                                     handle.id,
                                     &feature_id,
                                 );
-                                solid_attribute_handles.push(KernelHandle {
+                                solid_attribute_handles.insert(KernelHandle {
                                     kernel: op_kernel,
                                     id: handle.id,
                                 });
