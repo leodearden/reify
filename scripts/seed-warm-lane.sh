@@ -27,6 +27,11 @@
 #     Existing callers that omit this flag are unaffected -- see
 #     thin-warm-lane.sh --reseed, which already holds this same lock before
 #     invoking this script.
+#     REIFY_WARM_LANE_LANE_LOCK_WAIT (env, only with --lane-lock): 0 (default)
+#     = non-blocking refuse; N>0 = queue up to N seconds (flock -w N) before
+#     refusing; "unlimited" = block until acquired, never refuses. A
+#     refused acquirer of a task lane can just try a different FREE lane, but
+#     the SINGLETON _merge-verify lane has no alternate -- it QUEUEs instead.
 #
 # Usage (record-base mode):
 #   sidecar=$(scripts/seed-warm-lane.sh --record-base <base_target_dir>)
@@ -89,6 +94,11 @@ Seed mode: CoW-clone a warm base target/ into a pool lane.
                       on the sibling ${LANE_DIR}.lock across the whole run, BEFORE any
                       target mutation. Refuses (EX_TEMPFAIL 75) if a live consumer
                       already holds it (inv.2 one-consumer-per-lane-at-a-time).
+                      REIFY_WARM_LANE_LANE_LOCK_WAIT (env, only with --lane-lock):
+                      0 (default) = non-blocking refuse (flock -n); N>0 = queue up
+                      to N seconds before refusing (flock -w N); "unlimited"
+                      (case-insensitive) = block until acquired, never refuses
+                      (flock). Anything else is a usage error (exit 64).
 
 Record-base mode: stamp provenance beside the base target dir.
   --record-base dir   Write sidecar at $(dirname dir)/.warm-base-meta; print path on stdout.
@@ -449,13 +459,50 @@ if [ -n "$LANE_LOCK_OPT" ]; then
     # lane that went through acquire_lane; a missing lock here likely means
     # the lane never was.
     [ -e "$LANE_LOCK" ] || info "Lane lock does not exist yet, creating: $LANE_LOCK (lane may never have been acquired through the pool)"
-    exec 9>"$LANE_LOCK"
-    if ! flock -n 9; then
-        exec 9>&-
-        err "Lane lock held by a live consumer (flock -n failed): $LANE_LOCK"
-        err "Refusing to reseed an ASSIGNED lane (inv.2: one consumer per lane at a time)."
-        exit 75
+
+    # REIFY_WARM_LANE_LANE_LOCK_WAIT (opt-in knob, default 0): a refused
+    # acquirer of an ordinary task lane should just try a different FREE
+    # lane (0 -> flock -n, non-blocking refuse) -- but the SINGLETON
+    # _merge-verify lane has no alternate to fall back to, so it can QUEUE
+    # instead: N>0 -> flock -w N (bounded queue, refuse on timeout);
+    # "unlimited" (case-insensitive) -> flock (block until acquired, never
+    # refuses). Validation mirrors lib_lane_x_flock.sh's
+    # REIFY_LANE_X_FLOCK_WAIT gate (non-negative integer or "unlimited",
+    # else exit 64/usage) and runs BEFORE the lock FD is even opened, so a
+    # bad knob can never touch the target.
+    LANE_LOCK_WAIT="${REIFY_WARM_LANE_LANE_LOCK_WAIT:-0}"
+    _llw_unlimited=0
+    case "$LANE_LOCK_WAIT" in
+        [Uu][Nn][Ll][Ii][Mm][Ii][Tt][Ee][Dd]) _llw_unlimited=1 ;;
+    esac
+    if [ "$_llw_unlimited" -eq 0 ]; then
+        case "$LANE_LOCK_WAIT" in
+            ''|*[!0-9]*)
+                err "REIFY_WARM_LANE_LANE_LOCK_WAIT must be a non-negative integer or 'unlimited' (got '${LANE_LOCK_WAIT}')"
+                exit 64
+                ;;
+        esac
     fi
+
+    exec 9>"$LANE_LOCK"
+    if [ "$_llw_unlimited" -eq 1 ]; then
+        flock 9   # block until acquired -- never refuses, no exit-75 case
+    elif [ "$LANE_LOCK_WAIT" = "0" ]; then
+        if ! flock -n 9; then
+            exec 9>&-
+            err "Lane lock held by a live consumer (flock -n failed): $LANE_LOCK"
+            err "Refusing to reseed an ASSIGNED lane (inv.2: one consumer per lane at a time)."
+            exit 75
+        fi
+    else
+        if ! flock -w "$LANE_LOCK_WAIT" 9; then
+            exec 9>&-
+            err "Lane lock still held by a live consumer after waiting ${LANE_LOCK_WAIT}s (flock -w timed out): $LANE_LOCK"
+            err "Refusing to reseed an ASSIGNED lane (inv.2: one consumer per lane at a time)."
+            exit 75
+        fi
+    fi
+    unset _llw_unlimited
     # FD 9 stays open (lock held) for the rest of the run -- spanning the
     # mv+clone below with no check-then-act gap; bash releases it on exit.
 fi
