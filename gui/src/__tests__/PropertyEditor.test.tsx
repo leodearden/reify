@@ -1365,7 +1365,7 @@ describe('PropertyEditor per-cell unit picker (task #5199)', () => {
     expect(labels).toEqual(['mm³', 'cm³', 'L', 'm³']);
   });
 
-  it('(b) selecting "L" shows the converted displayed value and label', () => {
+  it('(b) selecting "L" shows the converted displayed value and label, with no duplicate canonical number', () => {
     render(() => (
       <PropertyEditor
         values={capacityValues()}
@@ -1378,7 +1378,16 @@ describe('PropertyEditor per-cell unit picker (task #5199)', () => {
     const select = screen.getByTestId('unit-select-c1') as HTMLSelectElement;
     fireEvent.change(select, { target: { value: 'L' } });
     expect(select.value).toBe('L');
-    expect(row.textContent).toContain('7.04500224');
+    // The PRIMARY value field itself must track the picked unit (task #5199
+    // amend: previously only the badge's secondary number reflected the
+    // pick, so the row showed '7045002.24' in the field and '7.04500224 L'
+    // in the badge for the same cell).
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    expect(input.value).toBe('7.04500224');
+    // The badge/select must carry ONLY the unit label — no second numeric
+    // value living alongside the select.
+    const badge = select.parentElement as HTMLElement;
+    expect(badge.textContent).toBe(select.textContent);
   });
 
   it('(c) a cell whose unit is pre-persisted renders that unit + converted value on first render', () => {
@@ -1394,7 +1403,8 @@ describe('PropertyEditor per-cell unit picker (task #5199)', () => {
     const row = screen.getByTestId('prop-row-c1');
     const select = screen.getByTestId('unit-select-c1') as HTMLSelectElement;
     expect(select.value).toBe('L');
-    expect(row.textContent).toContain('7.04500224');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    expect(input.value).toBe('7.04500224');
   });
 
   it('(d) changing the select persists the choice via saveUnitPreference', () => {
@@ -1423,7 +1433,8 @@ describe('PropertyEditor per-cell unit picker (task #5199)', () => {
     const row = screen.getByTestId('prop-row-c1');
     const select = screen.getByTestId('unit-select-c1') as HTMLSelectElement;
     expect(select.value).toBe('mm³');
-    expect(row.textContent).toContain('7045002.24');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    expect(input.value).toBe('7045002.24');
   });
 
   it('(f) a cell without si_value/dimension still renders the plain static badge, no select', () => {
@@ -1437,5 +1448,32 @@ describe('PropertyEditor per-cell unit picker (task #5199)', () => {
     ));
     expect(screen.queryByTestId('unit-select-c1')).toBeNull();
     expect(screen.getByTestId('prop-row-c1').textContent).toContain('mm');
+  });
+
+  it('(g) starting to edit while a non-default unit is picked seeds the edit buffer with the canonical value', () => {
+    // Guards the fix that came with driving the primary field from the
+    // picker: editing must stay anchored to the canonical backend magnitude
+    // so an unmodified commit does not silently rewrite the parameter by the
+    // picked unit's conversion factor (task #5199 amend).
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor
+        values={capacityValues()}
+        selectedEntity={null}
+        onSetParameter={onSetParam}
+        unitLadders={VOLUME_LADDER}
+      />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const select = screen.getByTestId('unit-select-c1') as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: 'L' } });
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    expect(input.value).toBe('7.04500224');
+
+    // Focus (no edit) then commit: must submit the CANONICAL mm³ magnitude,
+    // not the displayed 'L' magnitude.
+    fireEvent.focus(input);
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).toHaveBeenCalledWith('c1', '7045002.24');
   });
 });

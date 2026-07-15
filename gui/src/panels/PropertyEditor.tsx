@@ -3,7 +3,7 @@ import type { UnitLadderMap, UnitOption, ValueData } from '../types';
 import styles from './PropertyEditor.module.css';
 import { SelectionBreadcrumb } from './SelectionBreadcrumb';
 import { convertToUnit, formatDisplayNumber, ladderForDimension } from '../stores/unitLadder';
-import { loadUnitPreference, saveUnitPreference } from '../stores/unitPreferences';
+import { loadAllUnitPreferences, saveUnitPreference } from '../stores/unitPreferences';
 
 /**
  * Return a short glyph for the non-Final freshness variants.
@@ -75,6 +75,17 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
   // <For> row potentially being recreated on an unrelated values update.
   const [selectedUnits, setSelectedUnits] = createSignal<Record<string, string>>({});
 
+  // Persisted per-cell unit preferences, parsed ONCE at mount rather than
+  // per-cell-per-render (task #5199 amend: `chosenOptionFor` previously
+  // called `loadUnitPreference` — a fresh localStorage.getItem + JSON.parse
+  // of the whole blob — on every invocation, at least twice per
+  // picker-enabled row per render since it's read from both
+  // `primaryDisplay`/`displayForPicker` and the `<select value={...}>`
+  // binding). Any pick made THIS session goes through `selectedUnits`
+  // (checked first below, and always up to date), so this snapshot only
+  // needs to cover preferences saved before mount.
+  const persistedUnits = loadAllUnitPreferences();
+
   /**
    * The selectable unit ladder for a cell, or `undefined` when the cell has
    * no dimension/si_value or its dimension has no ladder (<2 options) — in
@@ -89,7 +100,7 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
 
   /** The currently chosen unit option for a cell: in-session pick, else persisted, else the ladder default. */
   function chosenOptionFor(val: ValueData, ladder: UnitOption[]): UnitOption {
-    const label = selectedUnits()[val.cell_id] ?? loadUnitPreference(val.cell_id) ?? undefined;
+    const label = selectedUnits()[val.cell_id] ?? persistedUnits[val.cell_id] ?? undefined;
     const found = label !== undefined ? ladder.find((u) => u.label === label) : undefined;
     return found ?? ladder.find((u) => u.is_default) ?? ladder[0];
   }
@@ -99,6 +110,19 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
     const chosen = chosenOptionFor(val, ladder);
     if (chosen.is_default) return displayValue(val);
     return formatDisplayNumber(convertToUnit(val.si_value ?? 0, chosen.si_scale));
+  }
+
+  /**
+   * The magnitude to show in the row's primary value slot — the editable
+   * input at rest and the read-only fallback span: the picker-converted
+   * magnitude when the cell has an active unit ladder, else the canonical
+   * `displayValue` (task #5199 amend). Previously only the badge's number
+   * reflected the picked unit while this slot always showed the canonical
+   * magnitude, so the row displayed two different numbers for one cell.
+   */
+  function primaryDisplay(val: ValueData): string {
+    const ladder = pickerLadder(val);
+    return ladder ? displayForPicker(val, ladder) : displayValue(val);
   }
 
   function handleUnitChange(cellId: string, label: string) {
@@ -155,9 +179,16 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
   }
 
   function handleFocus(cellId: string, e: FocusEvent) {
-    const input = e.target as HTMLInputElement;
     setEditingCellId(cellId);
-    setEditValue(input.value);
+    // Seed the edit buffer from the canonical backend value, not whatever is
+    // currently on screen: when a non-default unit is picked, the at-rest
+    // display is `primaryDisplay` — a magnitude in a DIFFERENT unit than
+    // `onSetParameter` expects on submit. Editing always operates in
+    // canonical units so an unmodified commit is a true no-op instead of
+    // silently rewriting the value by the picked unit's conversion factor
+    // (task #5199 amend).
+    const val = props.values[cellId];
+    setEditValue(val ? displayValue(val) : (e.target as HTMLInputElement).value);
   }
 
   function handleInput(cellId: string, e: InputEvent) {
@@ -270,14 +301,14 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
                           <Show
                             when={val.determinacy === 'determined'}
                             fallback={
-                              <span class={styles.valueReadonly}>{displayValue(val)}</span>
+                              <span class={styles.valueReadonly}>{primaryDisplay(val)}</span>
                             }
                           >
                             <input
                               type="text"
                               class={styles.valueInput}
-                              value={editingCellId() === val.cell_id ? editValue() : displayValue(val)}
-                              title={displayValue(val)}
+                              value={editingCellId() === val.cell_id ? editValue() : primaryDisplay(val)}
+                              title={primaryDisplay(val)}
                               onFocus={(e) => handleFocus(val.cell_id, e)}
                               onInput={(e) => handleInput(val.cell_id, e)}
                               onKeyDown={(e) => handleKeyDown(val.cell_id, e)}
@@ -294,7 +325,6 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
                           >
                             {(ladder) => (
                               <span class={styles.unitBadge}>
-                                {displayForPicker(val, ladder())}
                                 <select
                                   aria-label={`unit for ${val.name}`}
                                   data-testid={`unit-select-${val.cell_id}`}
