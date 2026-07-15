@@ -7581,6 +7581,16 @@ impl Engine {
         version: VersionId,
         runtime_sink: &RefCell<Vec<Diagnostic>>,
     ) {
+        // Same shared, free-fn `build_merged_solver_problem` that cold
+        // `dispatch_merged_cluster_solve` calls, with IDENTICAL arguments
+        // (cluster, templates, governance, values, functions, diagnostics)
+        // -- so warm and cold feed the solver byte-identical
+        // `ResolutionProblem`s (including the objective, via `governance`)
+        // for a within-cap `MergedSolve` cluster. This is what keeps
+        // `eval_and_eval_cached_emit_byte_identical_solver_no_progress_warning`
+        // (tests/eval_cached_diagnostics.rs) and the capstone
+        // `eval_vs_eval_cached_merged_cluster_values_equal`
+        // (tests/merged_cluster_solve.rs, task #5118 step 7) green.
         let problem = build_merged_solver_problem(
             cluster,
             &module.templates,
