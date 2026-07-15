@@ -5387,17 +5387,14 @@ pub(crate) fn is_symbolic_eval_wired_selector_ctor(expr: &reify_ir::CompiledExpr
 /// per-name upkeep.
 ///
 /// The `face`/`edge`/`solid_body`/`vertex` named-leaf ctors and composition
-/// `union`/`intersect`/`difference` also satisfy this predicate — they
-/// consume geometry/selector-typed args too — but since task #5120 R2c they
-/// are ALSO [`is_symbolic_eval_wired_selector_ctor`], so clause 8's AND-rule
-/// no longer classifies them as build-only (review amendment: this list
-/// used to place them here as build-only examples, which R2c's wiring made
-/// self-contradictory). The exception is the overloaded solid-CSG
-/// `union`/`intersect`/`difference` booleans: their operands are
-/// `Value::GeometryHandle`, not `Value::Selector`, so the symbolic
-/// reconstruct returns `None` and those specific calls still stay `Undef`
-/// until `build()` — exempted by clause 7's `Type::Geometry` cell-type
-/// carve-out, not clause 8, as the R2c tests assert.
+/// `union`/`intersect`/`difference` also satisfy this predicate, but since
+/// task #5120 R2c they are ALSO [`is_symbolic_eval_wired_selector_ctor`], so
+/// clause 8's AND-rule no longer classifies them as build-only. Exception:
+/// the overloaded solid-CSG `union`/`intersect`/`difference` booleans take
+/// `Value::GeometryHandle` operands, not `Value::Selector`, so the symbolic
+/// reconstruct returns `None` and those calls stay `Undef` until `build()` —
+/// exempted by clause 7's `Type::Geometry` carve-out, not clause 8, as the
+/// R2c tests assert.
 ///
 /// It does NOT cover build-only queries that consume ABSTRACTED handles
 /// rather than a geometry-typed arg — the kernel geometry-query family's
@@ -5465,55 +5462,27 @@ fn reconstruct_selector_value_symbolic(
 }
 
 /// Kernel-FREE sibling of [`eval_variadic_composition`] for the symbolic
-/// eval-path `union`/`intersect`/`difference` arms (task #5120 R2c; the
-/// binary `difference` operator is adapted onto this shared Vec-based
-/// collect+construct+error path via [`selector_value_difference_pair`] —
-/// review amendment — instead of duplicating the "kind-closure violation"
-/// diagnostic text in its own inline arm).
+/// eval-path `union`/`intersect`/`difference` arms (task #5120 R2c; binary
+/// `difference` is adapted onto this shared path via
+/// [`selector_value_difference_pair`] rather than duplicating the
+/// kind-closure diagnostic text in its own inline arm).
 ///
-/// Operands are reconstructed into a local `scratch` buffer FIRST and only
-/// merged into the caller's `diagnostics` once every operand has resolved
-/// (i.e. this composition is "ours"). This matters for the overload
-/// disambiguation contract: a solid-CSG-boolean operand is a
-/// `Value::GeometryHandle`, not `Value::Selector`, so
-/// `reconstruct_selector_value_symbolic` returns `None` for it — and a
-/// `None` return from THIS function must be a SILENT fall-through. But a
-/// NESTED selector-shaped operand can itself push a diagnostic (e.g. its own
-/// kind-closure warning) before ultimately failing to resolve; buffering
-/// first (review amendment) keeps that diagnostic from leaking into
-/// `diagnostics` on the `None` path.
+/// Contract: operands are reconstructed into a local `scratch` buffer and
+/// only merged into the caller's `diagnostics` once every operand resolves.
+/// This keeps a `None` return silent for the overload-disambiguation case (a
+/// solid-CSG-boolean operand is a `Value::GeometryHandle`, not a
+/// `Value::Selector`, so it never resolves) even when a NESTED selector
+/// operand pushed its own diagnostic (e.g. a kind-closure warning) before
+/// itself failing to resolve. Dropping that nested diagnostic on this eval
+/// pass is not a hole in the no-stale-Undef net: the outer cell still stays
+/// `Value::Undef` and is still reported by `invariants.rs`; `build()`'s
+/// kernel-bearing, unbuffered `eval_variadic_composition` re-emits the
+/// specific warning later.
 ///
-/// Two distinct scenarios reach that `None` path, and the buffer only
-/// swallows a REAL diagnostic in one of them (review amendment, task #5120
-/// R2c — spelled out here because the two are easy to conflate): (1) a
-/// solid-CSG-boolean operand's `reconstruct_selector_value_symbolic` call
-/// never pushes into `scratch` at all — it fails the `Value::Selector` match
-/// with no diagnostic — so there is nothing to lose; (2) a NESTED selector
-/// composition that is ITSELF genuinely broken (e.g. `union(union(faces(b),
-/// edges(b)), faces(b))`, where the inner `union` mixes Face/Edge kinds)
-/// DOES push its own "kind-closure violation" warning into `scratch` before
-/// resolving to `Value::Undef` — and since `reconstruct_selector_value_symbolic`
-/// maps that `Undef` to `None`, the outer `collect::<Option<Vec<_>>>()`
-/// short-circuits before `diagnostics.append(&mut scratch)` runs, so the
-/// inner warning is dropped on THIS eval pass too. That is intentional, not a
-/// silent PERMANENT loss, and it is NOT a hole in the no-stale-Undef net: the
-/// outer cell simply stays `Value::Undef` with its (inline, not separately
-/// tracked) nested operand never resolving, so `invariants.rs`'s checker
-/// still correctly reports it as a genuine violation — only the SPECIFIC
-/// "kind-closure violation" wording is missing from that report, not the
-/// fact that something is wrong. `build()`'s kernel-bearing
-/// `eval_variadic_composition` re-runs the same reconstruction UNBUFFERED
-/// and re-emits that specific diagnostic — so the detailed warning surfaces
-/// on `build()`, just not on this intermediate `eval()` pass.
-///
-/// The unconditional `scratch = Vec::new()` per call (mirrored in
-/// [`resolve_named_leaf_target_symbolic`]) was flagged as a minor per-mint
-/// allocation on the symbolic-eval hot path — an empty `Vec` is allocated
-/// and dropped on every clean/overload-fallthrough call, including nested
-/// composition recursion (review amendment, task #5120 R2c). Deliberately
-/// left as-is: an empty-`Vec` allocation is cheap, and lazily allocating
-/// only once the inner reconstruct pushes would complicate the
-/// buffer-then-merge correctness contract above for no measurable gain.
+/// The per-call `scratch = Vec::new()` (mirrored in
+/// [`resolve_named_leaf_target_symbolic`]) is deliberately not lazy — an
+/// empty allocation is cheap, and lazy-init would complicate the
+/// buffer-then-merge contract above for no measurable gain.
 fn eval_variadic_composition_symbolic(
     op_name: &str,
     args: &[reify_ir::CompiledExpr],
@@ -5543,9 +5512,9 @@ fn eval_variadic_composition_symbolic(
 /// Adapts [`reify_ir::value::SelectorValue::difference`]'s binary signature
 /// to the `Vec`-based constructor shape [`eval_variadic_composition_symbolic`]
 /// expects, so `difference` shares that collect+construct+warning path
-/// instead of duplicating it inline (review amendment, task #5120 R2c). Only
-/// ever invoked with exactly 2 elements — guaranteed by the `== 2` arity
-/// gate in [`try_eval_symbolic_topology_selector`] before this is reached.
+/// instead of duplicating it inline (task #5120 R2c). Only ever invoked with
+/// exactly 2 elements — guaranteed by the `== 2` arity gate in
+/// [`try_eval_symbolic_topology_selector`] before this is reached.
 fn selector_value_difference_pair(
     children: Vec<reify_ir::value::SelectorValue>,
 ) -> Result<reify_ir::value::SelectorValue, reify_ir::value::SelectorError> {
@@ -5572,16 +5541,17 @@ fn selector_value_difference_pair(
 /// rooting the Named leaf at the input selector's parent-geometry target.
 ///
 /// Mirrors [`eval_variadic_composition_symbolic`]'s scratch-buffer-then-merge
-/// pattern (review amendment, task #5120 R2c): the fallback reconstruction is
-/// buffered into a local `scratch` and only appended to the caller's
-/// `diagnostics` once a target is actually resolved. Previously the fallback
-/// wrote straight into the caller's `diagnostics`, so a `None` return (the
-/// `first_leaf_target` lookup coming up empty after a successful
-/// reconstruction) could leak a diagnostic while the cell stayed `Undef`.
-/// Kept symmetric with the composition path even though today
-/// `face`/`edge`/`solid_body`/`vertex` carry no non-selector overload for a
-/// leaked diagnostic to spuriously ride alongside — this removes that
-/// latent asymmetry rather than merely documenting it.
+/// contract: the fallback reconstruction is buffered into a local `scratch`
+/// and only appended to `diagnostics` once a target actually resolves, so a
+/// `None` return (`first_leaf_target` coming up empty) can't leak a
+/// diagnostic.
+///
+/// Untested by design: `first_leaf_target` only returns `None` for an empty
+/// `Union`/`Intersect` node, and `SelectorValue`'s validating constructors
+/// (`union`/`intersect` reject empty children; the cached `hash` field is
+/// private with no `Deserialize` impl) make that impossible to construct
+/// through the public API. The buffering is kept for symmetry with the
+/// composition path and as a guard should that invariant ever change.
 fn resolve_named_leaf_target_symbolic(
     arg: &reify_ir::CompiledExpr,
     values: &reify_ir::ValueMap,
