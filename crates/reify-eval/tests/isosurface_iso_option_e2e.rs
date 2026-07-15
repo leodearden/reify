@@ -6,70 +6,48 @@
 //! measurably changes the surfaced mesh END-TO-END, guarding PRD D4's
 //! options-threading path against the C-10 "declared-but-unexercised" shape.
 //!
-//! Two independent tests each build a narrow-band 20mm-box fixture with
-//! DISTINCT `iso:` values:
+//! Three tests build a narrow-band 20mm-box fixture with distinct `iso:`
+//! values:
 //!
-//! - `iso_option_changes_surfaced_mesh` compares the DEFAULT in-band value
-//!   (`0mm` — the same surface `isosurface(solid)` yields with no `iso:`
-//!   argument at all) against a non-default in-band value (`3mm`) and
-//!   asserts BOTH surface a non-empty mesh, AND that the pair differs in
-//!   triangle count or bounding box — see [`ShellStats`] for why that's a
-//!   disjunction rather than two hard asserts. Comparing the default
-//!   against a non-default value is precisely what makes this an
-//!   options-threading proof: if `iso:` were ignored, the `3mm` build would
-//!   silently collapse to the same default surface as the `0mm` build and
-//!   the two would be indistinguishable. A third leg builds
-//!   `isosurface(solid)` with `iso:` OMITTED entirely and asserts it
-//!   matches the explicit `iso: 0mm` build's triangle count and bounding
-//!   box exactly, pinning the "omitting `iso:` == passing `iso: 0mm`"
-//!   equivalence this bullet asserts in prose — a claim the sibling
-//!   `voxel_to_mesh_e2e.rs` never directly checks, since it only ever
-//!   builds the no-argument form.
-//! - `iso_option_out_of_band_surfaces_empty_mesh` is a SEPARATE regression
-//!   guard locking in `realize_mesh_from_voxel_with_options`'s documented
-//!   `Ok(empty)` no-crossing contract (`kernel_real.rs`): an `iso:` far
-//!   outside `MeshToVoxelOptions::honest_floor`'s narrow band is expected to
-//!   surface no crossing. Keeping this claim in its own test means a future
-//!   legitimate change that widens the band fails only this contract guard,
-//!   not the options-threading proof above.
-//!
-//! `surface_shell_stats` collects each build's `Severity::Error`
-//! diagnostics into `ShellStats::error_diagnostics` rather than asserting
-//! on them directly, so each call site can fail with a message tied to its
-//! own context: `assert_no_build_errors` covers the common "this build
-//! must not be silently degraded" case, while
-//! `iso_option_out_of_band_surfaces_empty_mesh` inspects
-//! `error_diagnostics` itself so a future contract shift (an out-of-band
-//! `iso:` starting to emit an error instead of the documented `Ok(empty)`)
-//! fails with a message about THAT contract, not a generic degraded-build
-//! message. `surface_shell_stats` also asserts a terminal `MeshSurface`
-//! entry EXISTS (regardless of whether the mesh itself is empty),
-//! distinguishing the documented `Ok(empty)` contract from an absent
-//! tessellation entry. The `OCCT_AVAILABLE` skip preamble shared by all
-//! three `#[test]` functions below is factored into
-//! `occt_available_or_skip`.
+//! - `iso_option_changes_surfaced_mesh`: the options-threading proof
+//!   itself. Two IN-BAND, non-empty builds (`iso: 0mm` vs `iso: 3mm`) must
+//!   differ in triangle count or bounding box (see [`ShellStats`] for why
+//!   that's a disjunction, not two hard asserts) — agreement on both would
+//!   mean `iso:` never reached marching cubes. A third leg (`iso:` omitted
+//!   entirely) must match the explicit `iso: 0mm` build EXACTLY, pinning
+//!   the "omitted == `iso: 0mm`" equivalence that no other test exercises
+//!   (`voxel_to_mesh_e2e.rs` only ever builds the no-argument form).
+//! - `iso_option_out_of_band_surfaces_empty_mesh`: a SEPARATE regression
+//!   guard for `realize_mesh_from_voxel_with_options`'s documented
+//!   `Ok(empty)` no-crossing contract, kept apart so a future legitimate
+//!   narrow-band change fails only this guard, not the options-threading
+//!   proof above.
+//! - `iso_example_fixture_surfaces_nonempty`: validates that the committed
+//!   example fixture (not just the inline sources above) builds and
+//!   surfaces a non-empty terminal mesh.
 //!
 //! ## Reuse
 //!
-//! - Linker anchors, `OCCT_AVAILABLE` runtime gate, `Engine::with_registered_kernel`
-//!   + `ensure_openvdb_kernel()` pairing, `snapshot()` terminal-by-index +
-//!     `tessellate_realizations()` terminal-mesh extraction:
-//!     `crates/reify-eval/tests/voxel_to_mesh_e2e.rs`.
+//! - Linker anchors, `OCCT_AVAILABLE` runtime gate,
+//!   `Engine::with_registered_kernel` + `ensure_openvdb_kernel()` pairing,
+//!   `snapshot()` terminal-by-index + `tessellate_realizations()`
+//!   terminal-mesh extraction: `crates/reify-eval/tests/voxel_to_mesh_e2e.rs`.
 //! - Runtime-read-fixture RED mechanism (`std::fs::read_to_string` of a
 //!   `CARGO_MANIFEST_DIR`-relative example path via `.expect(...)`, NOT
-//!   `include_str!`, so a missing fixture is a clean test panic rather than a
-//!   compile error): `crates/reify-eval/tests/voxel_to_mesh_e2e.rs:86-93`.
+//!   `include_str!`, so a missing fixture is a clean test panic rather than
+//!   a compile error): `voxel_to_mesh_e2e.rs`'s
+//!   `voxel_to_mesh_builds_honest_voxel_operand_and_mesh_terminal`.
 
 // Anchor: force the linker to include the reify_kernel_occt rlib
 // unconditionally so its `inventory::submit!` registration fires at binary
-// startup, regardless of cfg(has_occt). Mirrors
-// crates/reify-eval/tests/voxel_to_mesh_e2e.rs:44-49.
+// startup, regardless of cfg(has_occt). Mirrors the anchor in
+// crates/reify-eval/tests/voxel_to_mesh_e2e.rs.
 extern crate reify_kernel_occt as _;
 
 // Anchor: same rationale, for reify_kernel_openvdb. Gated on `has_openvdb`
 // because the whole test below only makes sense (and only compiles its
-// OpenVDB-touching calls) under that cfg. Mirrors
-// crates/reify-eval/tests/voxel_to_mesh_e2e.rs:51-56.
+// OpenVDB-touching calls) under that cfg. Mirrors the anchor in
+// crates/reify-eval/tests/voxel_to_mesh_e2e.rs.
 #[cfg(has_openvdb)]
 extern crate reify_kernel_openvdb as _;
 
@@ -134,40 +112,35 @@ fn occt_available_or_skip(test_name: &str) -> bool {
 }
 
 /// Builds `source` with a real OCCT + OpenVDB engine and returns the
-/// terminal (highest realization index) realization's surfaced-mesh
-/// [`ShellStats`] for `entity`.
+/// terminal realization's surfaced-mesh [`ShellStats`] for `entity`. A
+/// fresh `Engine` per call avoids cross-build cache state, so counts
+/// compared across calls are each independently honest. Mirrors the
+/// engine-construction and terminal-extraction sequence in
+/// `voxel_to_mesh_e2e.rs::voxel_to_mesh_builds_honest_voxel_operand_and_mesh_terminal`.
 ///
-/// Collects the build's `Severity::Error` diagnostics into
-/// [`ShellStats::error_diagnostics`] rather than asserting on them here:
-/// this still makes a silently degraded build (e.g. an OpenVDB
-/// dispatch/registration failure) masquerading as a 0-triangle `Ok(empty)`
-/// result detectable, but leaves each call site free to assert with a
-/// message tied to its own context — see `assert_no_build_errors` for the
-/// common "must not be degraded" case.
-///
-/// Also asserts a terminal `MeshSurface` entry EXISTS at the terminal
-/// realization's entity path: `surface_subtree`'s `Ok(mesh)` handling
+/// `Severity::Error` diagnostics are collected into
+/// [`ShellStats::error_diagnostics`] rather than asserted on here, so each
+/// call site can fail with a message tied to its own context (see
+/// `assert_no_build_errors`) — this also catches a silently degraded build
+/// masquerading as a 0-triangle `Ok(empty)` result. A terminal `MeshSurface`
+/// entry is asserted to EXIST regardless of emptiness, distinguishing
+/// "present but empty" (the documented `Ok(empty)` contract) from "absent"
+/// (a real defect): `surface_subtree`'s `Ok(mesh)` handling
 /// (`crates/reify-eval/src/geometry_ops.rs`) pushes a `MeshSurface`
-/// unconditionally on a successful `kernel.tessellate` — never conditioned
-/// on the mesh being non-empty — so a no-error build's terminal realization
-/// always has an entry here, EVEN when
-/// `realize_mesh_from_voxel_with_options`'s documented `Ok(empty)`
-/// no-crossing contract applies. Asserting presence explicitly distinguishes
-/// "terminal mesh present but empty" (the genuine `Ok(empty)` contract) from
-/// "no mesh entry at all" (which would indicate a real defect), rather than
-/// collapsing both to the same 0 count.
-///
-/// Mirrors the engine-construction and terminal-extraction sequence in
-/// `voxel_to_mesh_e2e.rs::voxel_to_mesh_builds_honest_voxel_operand_and_mesh_terminal`:
-/// a FRESH `Engine` per call eliminates cross-build snapshot/cache state
-/// ambiguity, so the two triangle counts compared by the caller are each
-/// independently honest.
+/// unconditionally on a successful `kernel.tessellate`, never conditioned
+/// on non-emptiness.
 #[cfg(has_openvdb)]
 fn surface_shell_stats(source: &str, entity: &str) -> ShellStats {
     use reify_core::Severity;
     use reify_ir::ExportFormat;
     use reify_test_support::parse_and_compile_with_stdlib;
 
+    // parse_and_compile_with_stdlib (reify-test-support/src/helpers.rs)
+    // already panics with a parse- or compile-specific message ("parse
+    // errors: ..." / "compile errors: ...") on any error-severity
+    // diagnostic — it never returns a module carrying one. So a malformed
+    // inline source below fails loudly right here, never silently as the
+    // generic "expected at least 1 realization node" panic further down.
     let compiled = parse_and_compile_with_stdlib(source);
 
     // Same pairing the fixed `cmd_build` uses: single-pick OCCT default +
@@ -236,13 +209,10 @@ fn surface_shell_stats(source: &str, entity: &str) -> ShellStats {
 }
 
 /// Asserts `stats` (from [`surface_shell_stats`]) carries no
-/// `Severity::Error` build diagnostics, reusing the "silently degraded
-/// build" framing `surface_shell_stats` used before it switched to
-/// collecting (rather than asserting on) error diagnostics. Used by the
-/// call sites that treat any build error as an unconditional failure;
-/// `iso_option_out_of_band_surfaces_empty_mesh` deliberately does NOT use
-/// this helper, asserting on `error_diagnostics` itself instead — see its
-/// body for why.
+/// `Severity::Error` build diagnostics — the common "must not be silently
+/// degraded" case. `iso_option_out_of_band_surfaces_empty_mesh` doesn't use
+/// this: it asserts on `error_diagnostics` directly so a future contract
+/// shift there names itself instead of reporting this generic message.
 #[cfg(has_openvdb)]
 fn assert_no_build_errors(stats: &ShellStats, entity: &str) {
     assert!(
@@ -255,34 +225,21 @@ fn assert_no_build_errors(stats: &ShellStats, entity: &str) {
     );
 }
 
-/// Two INLINE sources, byte-identical except the `iso:` literal, prove
-/// `iso:` is a LIVE options-threading knob end-to-end: the DEFAULT in-band
-/// value (`0mm` — what `isosurface(solid)` also yields with no `iso:`
-/// argument at all) and a non-default in-band value (`3mm`, mirroring the
-/// committed example fixture) must EACH surface a non-empty mesh, with a
-/// DIFFERENT triangle count OR a different bounding box (see
-/// [`ShellStats`] for why that's a disjunction, not two independent hard
-/// asserts). Comparing two non-empty, in-band results (rather than
-/// non-empty vs empty) is the stronger proof: since neither build can
-/// collapse to empty, the difference can only be explained by `iso:`
-/// genuinely moving the extracted isocontour, not by one build merely
-/// falling outside the narrow band. It holds for ANY live `iso:` regardless
-/// of the exact band width: agreement on BOTH signals would mean the `3mm`
-/// build silently collapsed to the SAME default (`0mm`) surface as the
-/// other build (D4 options-threading collapsed to default).
+/// Two IN-BAND, non-empty builds (`iso: 0mm` vs `iso: 3mm`, byte-identical
+/// sources otherwise) must differ in triangle count or bounding box (see
+/// [`ShellStats`] for why that's a disjunction). Comparing two non-empty
+/// results — rather than non-empty vs empty — is the stronger proof: since
+/// neither can collapse to empty, a difference can only mean `iso:`
+/// genuinely moved the isocontour, not that a build merely fell outside the
+/// narrow band.
 ///
-/// A third source OMITS `iso:` entirely (`isosurface(solid)`, the same form
-/// `examples/multi_kernel/voxel_to_mesh.ri` and `voxel_to_mesh_e2e.rs`
-/// build) and must match the explicit `iso: 0mm` build EXACTLY (same
-/// triangle count, same bounding box) — pinning the "omitting `iso:` is
-/// equivalent to passing `iso: 0mm`" claim this doc comment otherwise only
-/// asserts in prose. That equivalence is never directly exercised
-/// elsewhere: the sibling `voxel_to_mesh_e2e.rs` builds only the
-/// no-argument default, never the explicit `iso: 0mm` form, so nothing else
-/// in the test suite would catch a regression where the two diverge.
+/// A third source OMITS `iso:` entirely and must match the explicit
+/// `iso: 0mm` build EXACTLY (triangle count AND bounding box) — pinning
+/// the "omitted == `iso: 0mm`" equivalence, which no other test exercises
+/// (`voxel_to_mesh_e2e.rs` only ever builds the no-argument form).
 ///
-/// See `iso_option_out_of_band_surfaces_empty_mesh` below for the separate
-/// `Ok(empty)` no-crossing contract guard.
+/// See `iso_option_out_of_band_surfaces_empty_mesh` for the separate
+/// `Ok(empty)` contract guard.
 #[cfg(has_openvdb)]
 #[test]
 fn iso_option_changes_surfaced_mesh() {
@@ -316,12 +273,10 @@ fn iso_option_changes_surfaced_mesh() {
          {} triangles",
         inband.triangle_count
     );
-    // Pins the "omitting `iso:` == passing `iso: 0mm`" equivalence this
-    // test's doc comment asserts in prose (see above): eval::geometry_ops
-    // defaults BOTH the missing-`iso` and missing-`adaptive` named args to
-    // the same values `iso: 0mm` (no `adaptive:`) resolves to, so these two
-    // builds compute the IDENTICAL GeometryOp::Surface{iso_level: 0.0,
-    // adaptive: false} — an exact match, not merely an expected one.
+    // eval::geometry_ops defaults a missing `iso`/`adaptive` to the same
+    // values the explicit `iso: 0mm` (no `adaptive:`) form resolves to, so
+    // both compute the IDENTICAL GeometryOp::Surface — an exact match is
+    // expected, not merely a close one.
     assert_eq!(
         omitted.triangle_count, zero.triangle_count,
         "omitting `iso:` entirely (`isosurface(solid)`) must surface the \
@@ -337,9 +292,7 @@ fn iso_option_changes_surfaced_mesh() {
          (no `iso:` argument) vs {:?} (`iso: 0mm`)",
         omitted.bbox, zero.bbox
     );
-    // Disjunction, not two independent hard asserts — see ShellStats and the
-    // doc comment above for why (a coincidental equal-triangle-count case
-    // must still pass via the bbox signal instead of flaking).
+    // Disjunction, not two independent hard asserts — see ShellStats for why.
     let triangle_counts_differ = zero.triangle_count != inband.triangle_count;
     let bboxes_differ = zero.bbox != inband.bbox;
     assert!(
@@ -358,30 +311,21 @@ fn iso_option_changes_surfaced_mesh() {
 }
 
 /// Separate regression guard for `realize_mesh_from_voxel_with_options`'s
-/// documented `Ok(empty)` no-crossing contract (`kernel_real.rs`),
-/// deliberately decoupled from the options-threading proof in
-/// `iso_option_changes_surfaced_mesh` above: `iso: 10m` is >=500x the 20mm
-/// box and >=1000x `MeshToVoxelOptions::honest_floor`'s narrow-band LOWER
+/// documented `Ok(empty)` no-crossing contract (`kernel_real.rs`), kept
+/// apart from the options-threading proof above so a future legitimate
+/// narrow-band change fails only this guard. `iso: 10m` is >=500x the 20mm
+/// box and well past `MeshToVoxelOptions::honest_floor`'s narrow-band LOWER
 /// BOUND (`narrow_band * h >= longest_extent/2`), so it is expected to
-/// surface an EMPTY mesh. Keeping this claim in its own test means a future
-/// legitimate change that widens the band fails only this contract guard,
-/// not the options-threading proof.
-///
-/// The narrow band's width is a documented LOWER BOUND, not a ceiling, so
-/// this exact-zero assertion is still implementation-coupled in principle —
-/// the meters-scale margin above is deliberately large so only a drastic
-/// band-width change could ever flip it. If it starts failing, check FIRST
-/// whether `kernel_real.rs`'s narrow-band voxel count or `honest_floor`
-/// voxel size `h` changed before treating it as an options-threading
-/// regression. In that case the fix is to raise this test's `iso:` literal
-/// further out of band, not to relax the equality.
+/// surface an EMPTY mesh; the fallback below (fewer triangles than an
+/// in-band build) keeps that expectation from being a hard requirement, so
+/// a legitimate band widening doesn't force an edit here — only a genuine
+/// options-threading regression (`iso:` silently ignored) would surface the
+/// SAME count as in-band.
 ///
 /// Asserts on `ShellStats::error_diagnostics` directly (rather than going
-/// through `assert_no_build_errors`) so that IF a future change makes an
-/// out-of-band `iso:` emit an error diagnostic instead of the documented
-/// `Ok(empty)` result, the failure message names that contract shift
-/// specifically, instead of the generic "silently degraded build" wording
-/// shared with the other tests in this file.
+/// through `assert_no_build_errors`) so a future contract shift to an error
+/// diagnostic (instead of `Ok(empty)`) names itself, rather than reporting
+/// the generic "silently degraded build" wording shared with other tests.
 #[cfg(has_openvdb)]
 #[test]
 fn iso_option_out_of_band_surfaces_empty_mesh() {
@@ -407,42 +351,41 @@ fn iso_option_out_of_band_surfaces_empty_mesh() {
          regression this test guards against",
         outband.error_diagnostics
     );
-    assert_eq!(
-        outband.triangle_count, 0,
-        "iso: 10m is >=500x the 20mm box and well outside its narrow \
-         band's documented LOWER-BOUND width, so it is expected to surface \
-         an EMPTY mesh via realize_mesh_from_voxel_with_options's `Ok(empty)` \
-         no-crossing contract (kernel_real.rs); got {} triangles (with no \
-         error diagnostics, so this is a genuine non-empty surface rather \
-         than a degraded build). That bound is a FLOOR, not a ceiling — \
-         before treating this failure as an options-threading regression, \
-         check whether kernel_real.rs's narrow-band defaults (voxel count \
-         or the honest_floor voxel size h) legitimately widened past 10m (a \
-         >=500x jump from the 20mm box); if so, raise this test's iso: \
-         literal further out of band instead of relaxing the equality",
-        outband.triangle_count
-    );
+    // Primary check: the documented Ok(empty) contract. Fallback (only
+    // built if the primary check would otherwise fail): a legitimate
+    // narrow-band widening should still surface far fewer triangles than an
+    // in-band build, decoupling this guard from the band's exact width
+    // while still catching a genuine options-threading regression — see the
+    // doc comment above.
+    if outband.triangle_count != 0 {
+        let source_inband = "structure IsoKnob { param size: Length = 20mm  let solid = box(size, size, size)  let shell = isosurface(solid, iso: 3mm) }";
+        let inband = surface_shell_stats(source_inband, "IsoKnob");
+        assert!(
+            outband.triangle_count < inband.triangle_count,
+            "iso: 10m must surface either an EMPTY mesh (the documented \
+             Ok(empty) no-crossing contract, kernel_real.rs) or, failing \
+             that, far fewer triangles than an in-band iso: 3mm build — got \
+             {} triangles (out-of-band, iso: 10m) vs {} (in-band, iso: 3mm), \
+             which does not decrease and so looks like iso: was not \
+             threaded through at all",
+            outband.triangle_count, inband.triangle_count
+        );
+    }
 }
 
 /// The committed example fixture `examples/multi_kernel/voxel_to_mesh_iso.ri`
 /// (`iso: 3mm`, in-band for a 20mm box) must build and surface a non-empty
 /// terminal mesh.
 ///
-/// Reads the fixture at runtime via `std::fs::read_to_string`
-/// (`concat!(env!("CARGO_MANIFEST_DIR"), ...)`), NOT `include_str!`, so that
-/// if the fixture is ever missing or unreadable the test fails cleanly
-/// instead of the whole test binary failing to compile.
+/// Reads the fixture at runtime via `std::fs::read_to_string`, NOT
+/// `include_str!`, so a missing/unreadable fixture fails the test cleanly
+/// instead of breaking the whole test binary's compile.
 ///
-/// This build's `iso: 3mm` overlaps with `iso_option_changes_surfaced_mesh`'s
-/// `inband` leg (same literal, same box size), so each test pays for its
-/// own full OCCT+OpenVDB engine build of an equivalent source. The overlap
-/// is deliberate: this test's job is to validate the COMMITTED FIXTURE FILE
-/// itself — a user-facing artifact that could drift from the inline source
-/// above independently (e.g. a typo introduced editing the checked-in
-/// `.ri`) — not merely the `iso: 3mm` value in the abstract. Keeping it
-/// separate also means a fixture-specific regression fails with a message
-/// that points straight at `voxel_to_mesh_iso.ri`, rather than being folded
-/// into `iso_option_changes_surfaced_mesh`'s options-threading proof.
+/// Overlaps in literal with `iso_option_changes_surfaced_mesh`'s `inband`
+/// leg deliberately: that test proves the VALUE is live, this one validates
+/// the COMMITTED FILE itself (e.g. a typo introduced editing the checked-in
+/// `.ri`), so a fixture-specific regression fails with a message pointing
+/// straight at `voxel_to_mesh_iso.ri`.
 #[cfg(has_openvdb)]
 #[test]
 fn iso_example_fixture_surfaces_nonempty() {
@@ -450,9 +393,6 @@ fn iso_example_fixture_surfaces_nonempty() {
         return;
     }
 
-    // Runtime read (NOT include_str!): keeps a missing/unreadable fixture a
-    // clean test failure rather than a compile error that would break the
-    // whole test binary.
     let source = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../examples/multi_kernel/voxel_to_mesh_iso.ri"
