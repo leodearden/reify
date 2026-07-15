@@ -3464,10 +3464,12 @@ mod tests {
 
     /// T1 (open_file variant, files-path facet): launch on bracket.ri, then
     /// open deck.ri through the helper — `GuiState::files[0].path` must
-    /// adopt deck.ri's identity, never bracket.ri's. Also checks the
-    /// diagnostics facet (reviewer_comprehensive test_coverage finding):
-    /// T2/T3 already assert diagnostics identity, so this closes the gap
-    /// where a regression fixing only one facet could still pass T1 alone.
+    /// adopt deck.ri's identity, never bracket.ri's. Diagnostics-identity
+    /// coverage is intentionally NOT exercised here: deck.ri's content
+    /// (bracket_source) is well-formed and produces zero diagnostics, so a
+    /// `compile_diagnostics` assertion here would be vacuously true and
+    /// could not catch a mis-attribution regression. That facet is covered
+    /// by T2/T3 (warn.ri, which reliably emits a diagnostic).
     #[tokio::test]
     async fn open_file_adopts_new_file_identity() {
         use reify_test_support::bracket_source;
@@ -3505,19 +3507,6 @@ mod tests {
             "no files[].path may retain the previously-loaded file's \
              identity (bracket.ri), got: {:?}",
             state.files.iter().map(|f| &f.path).collect::<Vec<_>>()
-        );
-        assert!(
-            !state
-                .compile_diagnostics
-                .iter()
-                .any(|d| d.file_path == "bracket.ri"),
-            "no diagnostic may cite the previously-loaded file's identity \
-             (bracket.ri), got: {:?}",
-            state
-                .compile_diagnostics
-                .iter()
-                .map(|d| &d.file_path)
-                .collect::<Vec<_>>()
         );
     }
 
@@ -3619,21 +3608,15 @@ mod tests {
         use reify_test_support::warn_source_with_unknown_port_type;
 
         let dir = tempfile::tempdir().unwrap();
-        let warn_path = dir.path().join("warn.ri");
-        std::fs::write(&warn_path, warn_source_with_unknown_port_type()).unwrap();
-        let warn_canonical = std::fs::canonicalize(&warn_path)
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
+        let warn_canonical =
+            write_and_canonicalize(dir.path(), "warn.ri", warn_source_with_unknown_port_type());
 
         let engine = crate::tests::make_test_engine();
 
         // Launch on warn.ri via load_file (self.file_path = Some(warn.ri)) —
         // same launched-file precondition as T1/T2, but here the file being
         // re-opened through the helper is the SAME file, not a different one.
-        crate::engine_lock::with_engine_lock(&engine, |s| s.load_file(&warn_path))
-            .and_then(std::convert::identity)
-            .expect("load_file(warn.ri) must succeed");
+        launch_via_load_file(&engine, &warn_canonical);
 
         let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
             std::sync::Mutex::new(None);
