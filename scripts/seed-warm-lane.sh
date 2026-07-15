@@ -17,7 +17,24 @@
 # Usage (seed mode):
 #   lane_target=$(scripts/seed-warm-lane.sh <base_target_dir> <lane_dir> \
 #                    (--fresh-checkout|--reset-in-place) \
-#                    [--base-commit <sha>] [--touch <path>]...)
+#                    [--base-commit <sha>] [--touch <path>]... [--lane-lock])
+#
+#   --lane-lock (opt-in, default OFF; PRD §9.5 inv.11): acquire an EXCLUSIVE
+#     flock on the sibling-path ${LANE_DIR}.lock -- the same convention
+#     thin-warm-lane.sh (T3) and warm-lane-gc.sh (live-consumer probe) use --
+#     BEFORE any target mutation, held across the whole run. Non-blocking:
+#     refuses with EX_TEMPFAIL (75) when a live consumer already holds it.
+#     Existing callers that omit this flag are unaffected -- see
+#     thin-warm-lane.sh --reseed, which already holds this same lock before
+#     invoking this script.
+#     REIFY_WARM_LANE_LANE_LOCK_WAIT (env, only with --lane-lock): 0 (default)
+#     = non-blocking refuse; N>0 = queue up to N seconds (flock -w N) before
+#     refusing; "unlimited" = block until acquired, never refuses. A
+#     refused acquirer of a task lane can just try a different FREE lane, but
+#     the SINGLETON _merge-verify lane has no alternate -- it QUEUEs instead.
+#     FD 9 (fixed, matching thin-warm-lane.sh's T3 convention): callers that
+#     pass --lane-lock MUST NOT themselves hold a load-bearing FD 9 open across
+#     this invocation -- `exec 9>"$LANE_LOCK"` would silently reassign it.
 #
 # Usage (record-base mode):
 #   sidecar=$(scripts/seed-warm-lane.sh --record-base <base_target_dir>)
@@ -63,7 +80,7 @@ _usage() {
     cat >&2 <<'EOF'
 Usage:
   seed-warm-lane.sh <base_target_dir> <lane_dir> (--fresh-checkout|--reset-in-place) \
-      [--base-commit <sha>] [--touch <path>]...
+      [--base-commit <sha>] [--touch <path>]... [--lane-lock]
   seed-warm-lane.sh --record-base <base_target_dir>
 
 Seed mode: CoW-clone a warm base target/ into a pool lane.
@@ -76,6 +93,18 @@ Seed mode: CoW-clone a warm base target/ into a pool lane.
                       production acquires always use --fresh-checkout).  No bulk stamp.
   --base-commit sha   Git commit the base was built from; drives git diff --name-only.
   --touch path        Additional path to touch to now after bulk stamp (repeatable).
+  --lane-lock         Opt-in (default OFF; PRD §9.5 inv.11): hold an exclusive flock
+                      on the sibling ${LANE_DIR}.lock across the whole run, BEFORE any
+                      target mutation. Refuses (EX_TEMPFAIL 75) if a live consumer
+                      already holds it (inv.2 one-consumer-per-lane-at-a-time).
+                      REIFY_WARM_LANE_LANE_LOCK_WAIT (env, only with --lane-lock):
+                      0 (default) = non-blocking refuse (flock -n); N>0 = queue up
+                      to N seconds before refusing (flock -w N); "unlimited"
+                      (case-insensitive) = block until acquired, never refuses
+                      (flock). Anything else is a usage error (exit 64).
+                      Uses a fixed FD 9 (matching thin-warm-lane.sh's T3):
+                      callers passing --lane-lock must not themselves hold a
+                      load-bearing FD 9 open across this invocation.
 
 Record-base mode: stamp provenance beside the base target dir.
   --record-base dir   Write sidecar at $(dirname dir)/.warm-base-meta; print path on stdout.
@@ -108,6 +137,7 @@ RESET_IN_PLACE=""
 BASE_COMMIT=""
 TOUCH_PATHS=()
 RECORD_BASE_DIR=""
+LANE_LOCK_OPT=""
 _POSITIONALS=()
 
 while [ $# -gt 0 ]; do
@@ -122,6 +152,10 @@ while [ $# -gt 0 ]; do
             ;;
         --reset-in-place)
             RESET_IN_PLACE=1
+            shift
+            ;;
+        --lane-lock)
+            LANE_LOCK_OPT=1
             shift
             ;;
         --base-commit)
@@ -410,6 +444,85 @@ if [ "$ENV_INVOCATION" != "$RECORDED_INVOCATION" ]; then
     exit 1
 fi
 
+# ── --lane-lock (opt-in, default OFF): acquire-time lane-lock exclusivity ────
+# PRD §9.5 inv.11. Acquires an EXCLUSIVE flock on the sibling-path
+# ${LANE_DIR}.lock -- the SAME convention thin-warm-lane.sh's T3 (FD 9) and
+# warm-lane-gc.sh's live-consumer probe (FD 8) already use -- BEFORE any
+# target mutation (i.e. before the mode-split below / the fresh-checkout mv),
+# and holds it across the whole run so the destructive replace+clone never
+# races a live consumer (inv.2: one consumer per lane at a time). Runs before
+# the mode-split so it guards BOTH --fresh-checkout and --reset-in-place.
+#
+# OPT-IN and default OFF: thin-warm-lane.sh --reseed ALREADY holds
+# ${LANE_DIR}.lock on FD 9 before invoking this script, so an unconditional
+# acquire here would self-refuse that caller. Every existing caller (thin
+# --reseed, dark-factory acquire_lane pre-DF-wiring, tests) that does not pass
+# --lane-lock is byte-for-byte unchanged.
+if [ -n "$LANE_LOCK_OPT" ]; then
+    LANE_LOCK="${LANE_DIR}.lock"
+    # Mirrors thin-warm-lane.sh's breadcrumb: the pool's acquire/release
+    # convention (inv.2) guarantees this lock file already exists for any
+    # lane that went through acquire_lane; a missing lock here likely means
+    # the lane never was.
+    [ -e "$LANE_LOCK" ] || info "Lane lock does not exist yet, creating: $LANE_LOCK (lane may never have been acquired through the pool)"
+
+    # REIFY_WARM_LANE_LANE_LOCK_WAIT (opt-in knob, default 0): a refused
+    # acquirer of an ordinary task lane should just try a different FREE
+    # lane (0 -> flock -n, non-blocking refuse) -- but the SINGLETON
+    # _merge-verify lane has no alternate to fall back to, so it can QUEUE
+    # instead: N>0 -> flock -w N (bounded queue, refuse on timeout);
+    # "unlimited" (case-insensitive) -> flock (block until acquired, never
+    # refuses). Validation mirrors lib_lane_x_flock.sh's
+    # REIFY_LANE_X_FLOCK_WAIT gate (non-negative integer or "unlimited",
+    # else exit 64/usage) and runs BEFORE the lock FD is even opened, so a
+    # bad knob can never touch the target.
+    LANE_LOCK_WAIT="${REIFY_WARM_LANE_LANE_LOCK_WAIT:-0}"
+    _llw_unlimited=0
+    case "$LANE_LOCK_WAIT" in
+        [Uu][Nn][Ll][Ii][Mm][Ii][Tt][Ee][Dd]) _llw_unlimited=1 ;;
+    esac
+    if [ "$_llw_unlimited" -eq 0 ]; then
+        # The '' alternative is defensive-only: LANE_LOCK_WAIT is assigned via
+        # ${REIFY_WARM_LANE_LANE_LOCK_WAIT:-0}, and `:-` substitutes the
+        # default for both unset AND empty, so LANE_LOCK_WAIT can never
+        # actually be empty here -- kept in case that assignment ever changes.
+        case "$LANE_LOCK_WAIT" in
+            ''|*[!0-9]*)
+                err "REIFY_WARM_LANE_LANE_LOCK_WAIT must be a non-negative integer or 'unlimited' (got '${LANE_LOCK_WAIT}')"
+                exit 64
+                ;;
+        esac
+    fi
+
+    # Fixed FD 9 (matches thin-warm-lane.sh's T3 convention, not dynamically
+    # allocated): this silently reassigns any FD 9 already open in this
+    # process, so callers passing --lane-lock must not hold a load-bearing
+    # FD 9 of their own across this invocation -- see the --lane-lock header
+    # note above and thin-warm-lane.sh --reseed, the one caller that already
+    # holds ${LANE_DIR}.lock on FD 9 itself and therefore omits --lane-lock.
+    exec 9>"$LANE_LOCK"
+    if [ "$_llw_unlimited" -eq 1 ]; then
+        flock 9   # block until acquired -- never refuses, no exit-75 case
+    elif [ "$LANE_LOCK_WAIT" = "0" ]; then
+        if ! flock -n 9; then
+            exec 9>&-
+            err "Lane lock held by a live consumer (flock -n failed): $LANE_LOCK"
+            err "Refusing to reseed an ASSIGNED lane (inv.2: one consumer per lane at a time)."
+            exit 75
+        fi
+    else
+        if ! flock -w "$LANE_LOCK_WAIT" 9; then
+            exec 9>&-
+            err "Lane lock still held by a live consumer after waiting ${LANE_LOCK_WAIT}s (flock -w timed out): $LANE_LOCK"
+            err "Refusing to reseed an ASSIGNED lane (inv.2: one consumer per lane at a time)."
+            exit 75
+        fi
+    fi
+    unset _llw_unlimited
+    # FD 9 stays open (lock held) for the rest of the run -- spanning the
+    # mv+clone below with no check-then-act gap; bash releases it on exit.
+fi
+
 # ── mode-split: replace-existing (fresh-checkout) vs clobber-guard (reset-in-place) ──
 LANE_TARGET="$LANE_DIR/target"
 RESEED_TRASH=""
@@ -512,9 +625,14 @@ if [ -n "$FRESH_CHECKOUT" ]; then
         # <lane>.<pid> entry under RESEED_TRASH_DIR cannot be from a concurrent live
         # seed — it is always a prior-crash orphan and is safe to reclaim now.
         # Background rm mirrors the main rm (large tree, must not block acquire).
+        # 9<&-: close the (possibly held, --lane-lock) exclusive lane-lock FD
+        # before backgrounding so a detached child never inherits it -- the
+        # lock must release exactly when seed exits, not whenever this rm
+        # happens to finish (lib_slot_acquire.sh daemon-FD-inheritance guard).
+        # A no-op when FD 9 was never opened (--lane-lock not passed).
         while IFS= read -r -d '' _rp_orphan; do
             warn "Sweeping orphaned trash entry (prior-crash recovery): $_rp_orphan"
-            { rm -rf "$_rp_orphan" || warn "orphan trash sweep rm failed (leaked): $_rp_orphan"; } &
+            { rm -rf "$_rp_orphan" || warn "orphan trash sweep rm failed (leaked): $_rp_orphan"; } 9<&- &
         done < <(find "$RESEED_TRASH_DIR" -maxdepth 1 -name "$(basename "$LANE_DIR").*" -print0 2>/dev/null)
         unset _rp_orphan
         RESEED_TRASH="$RESEED_TRASH_DIR/$(basename "$LANE_DIR").$$"
@@ -804,12 +922,18 @@ if [ -n "$FRESH_CHECKOUT" ]; then
     # On cp failure RESEED_TRASH is unset (no rename happened), so this block is skipped.
     # Background by default (production: large lane rm must not block acquire).
     # Foreground when REIFY_WARM_LANE_RESEED_TRASH_SYNC=1 (test-determinism knob).
+    # 9<&-: close the (possibly held, --lane-lock) exclusive lane-lock FD
+    # before backgrounding so a detached child never inherits it -- the lock
+    # must release exactly when seed exits, not whenever this rm happens to
+    # finish (lib_slot_acquire.sh daemon-FD-inheritance guard). No-op when
+    # FD 9 was never opened (--lane-lock not passed); the SYNC (foreground)
+    # branch needs no change -- it completes before seed exits either way.
     if [ -n "$RESEED_TRASH" ] && [ -d "$RESEED_TRASH" ]; then
         info "Removing reseed trash: $(basename "$RESEED_TRASH") ..."
         if [ "${REIFY_WARM_LANE_RESEED_TRASH_SYNC:-}" = "1" ]; then
             rm -rf "$RESEED_TRASH"
         else
-            { rm -rf "$RESEED_TRASH" || warn "reseed trash rm failed (leaked): $RESEED_TRASH"; } &
+            { rm -rf "$RESEED_TRASH" || warn "reseed trash rm failed (leaked): $RESEED_TRASH"; } 9<&- &
         fi
     fi
 fi
