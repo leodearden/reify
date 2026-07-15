@@ -1065,4 +1065,53 @@ mod tests {
             "GeometryOp::Torus must be a seedable primitive (faces/edges seeded like Sphere)"
         );
     }
+
+    // ─── task-4636 step-1/step-2 — record_solid_attribute (solid-level entry) ─
+    //
+    // A NEW standalone helper (mirrors `record_all_faces_as_side`) that
+    // records a single per-solid representative entry. This is consumed by
+    // the OCCT->Manifold cross-kernel ingest forwarding
+    // (`engine_build.rs::forward_solid_attribute_on_ingest`) and by
+    // `ManifoldKernel::propagate_attributes`'s parent_map lookup, which keys
+    // on the SOLID handle (not a face handle). Before this helper existed,
+    // nothing ever recorded a solid-level entry, so that lookup always
+    // missed. RED until step-2 adds `record_solid_attribute` to this module.
+
+    #[test]
+    fn record_solid_attribute_records_only_the_solid_handle() {
+        let fid = feature_id();
+        let mut table = TopologyAttributeTable::default();
+        let solid_handle = GeometryHandleId(7);
+
+        record_solid_attribute(&mut table, KernelId::Occt, solid_handle, &fid);
+
+        assert_eq!(
+            table.len(),
+            1,
+            "record_solid_attribute must record exactly one entry (the solid handle only)"
+        );
+
+        let attr = table
+            .lookup(KernelHandle {
+                kernel: KernelId::Occt,
+                id: solid_handle,
+            })
+            .expect("solid handle must have a recorded entry");
+        assert_eq!(attr.feature_id, fid);
+        assert_eq!(attr.role, Role::Side);
+        assert_eq!(attr.local_index, 0);
+        assert_eq!(attr.user_label, None);
+
+        // An unrelated handle (not the solid handle) must have no entry —
+        // record_solid_attribute must not seed any face/edge entries.
+        assert!(
+            table
+                .lookup(KernelHandle {
+                    kernel: KernelId::Occt,
+                    id: GeometryHandleId(8),
+                })
+                .is_none(),
+            "record_solid_attribute must not record entries for unrelated handles"
+        );
+    }
 }
