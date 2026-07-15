@@ -120,6 +120,19 @@ fn dimensioned_complex_plus_int_emits_arith_operand_kind_and_poisons_result() {
          kind; got: {:?}",
         flagged[0].message
     );
+    // The label text is the canonical `poison_arith_operand_kind` form
+    // shared with the Mul/Div guard — pin it directly so a regression that
+    // drops or alters the label goes caught here rather than only via the
+    // message/code assertions above.
+    assert!(
+        flagged[0]
+            .labels
+            .iter()
+            .any(|label| label.message == "unsupported operand kinds"),
+        "`z + 1` diagnostic must carry a label \"unsupported operand kinds\"; \
+         got labels: {:?}",
+        flagged[0].labels
+    );
 
     let w = get_let_expr_in(&module, "P", "w");
     assert_eq!(
