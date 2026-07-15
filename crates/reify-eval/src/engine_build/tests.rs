@@ -2606,11 +2606,17 @@ structure Assembly {
     // BRep)` fallback, and replaces the `Some(_) =>` deferred-error arm with the
     // tessellate→ingest cross-kernel handoff.
 
-    /// occt-like counting kernel: `execute` / `query` / `export` delegate to an
-    /// inner [`MockGeometryKernel`] (so `PrimitiveBox` → BRep solid handles),
-    /// and `tessellate` bumps a shared counter before returning a trivial
-    /// single-triangle [`Mesh`] — the BRep→Mesh source projection the conversion
-    /// executor drives for each prior-stage input handle.
+    /// occt-like counting kernel: `execute` / `query` / `export` /
+    /// `extract_faces` / `extract_edges` / `extract_vertices` delegate to an
+    /// inner [`MockGeometryKernel`] (so `PrimitiveBox` → BRep solid handles,
+    /// and any `with_extracted_faces`/`with_extracted_edges`/
+    /// `with_extracted_vertices` fixture staged on that inner mock is
+    /// actually consulted by the topology-attribute seeder — task #4636's
+    /// cache-hit-reforwarding test relies on this to reach
+    /// `record_solid_attribute`), and `tessellate` bumps a shared counter
+    /// before returning a trivial single-triangle [`Mesh`] — the BRep→Mesh
+    /// source projection the conversion executor drives for each
+    /// prior-stage input handle.
     struct CountingTessellateKernel {
         inner: reify_test_support::mocks::MockGeometryKernel,
         tessellate_count: std::sync::Arc<std::sync::Mutex<usize>>,
@@ -2651,6 +2657,27 @@ structure Assembly {
                 indices: vec![0, 1, 2],
                 normals: None,
             })
+        }
+
+        fn extract_faces(
+            &mut self,
+            handle: reify_ir::GeometryHandleId,
+        ) -> Result<Vec<reify_ir::GeometryHandleId>, reify_ir::QueryError> {
+            self.inner.extract_faces(handle)
+        }
+
+        fn extract_edges(
+            &mut self,
+            handle: reify_ir::GeometryHandleId,
+        ) -> Result<Vec<reify_ir::GeometryHandleId>, reify_ir::QueryError> {
+            self.inner.extract_edges(handle)
+        }
+
+        fn extract_vertices(
+            &mut self,
+            handle: reify_ir::GeometryHandleId,
+        ) -> Result<Vec<reify_ir::GeometryHandleId>, reify_ir::QueryError> {
+            self.inner.extract_vertices(handle)
         }
     }
 
