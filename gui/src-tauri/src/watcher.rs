@@ -62,6 +62,14 @@ struct Pending {
 /// All methods take an explicit `now: Instant` rather than reading the
 /// clock themselves, so the trailing-edge + coalescing contract can be
 /// pinned deterministically in tests with synthetic instants.
+///
+/// `record`, `drain_ready`, and `next_wait` all scan the full `pending` map
+/// (O(n) per call). That's an accepted tradeoff, not an oversight: this
+/// GUI watches one target file (plus a handful of open scratch tabs), so
+/// `pending` holds at most a few entries and a linear scan is simpler and
+/// easier to reason about than a min-heap keyed by deadline. Revisit if
+/// this is ever pointed at a directory with many concurrently-changing
+/// `.ri` files.
 pub(crate) struct Debouncer {
     window: Duration,
     pending: HashMap<PathBuf, Pending>,
@@ -332,8 +340,15 @@ impl Drop for FileWatcher {
             self.shutdown.store(true, Ordering::SeqCst);
         }
         cvar.notify_all();
-        if let Some(handle) = self.worker.take() {
-            let _ = handle.join();
+        if let Some(handle) = self.worker.take()
+            && handle.join().is_err()
+        {
+            // The worker wraps `callback` in `catch_unwind`, so it should
+            // never itself panic -- but `drain_ready`/`next_wait` or the
+            // poison-recovery path could in principle. Surface that rather
+            // than swallowing it silently, mirroring the callback-panic
+            // logging above.
+            eprintln!("FileWatcher worker thread panicked during shutdown");
         }
     }
 }
