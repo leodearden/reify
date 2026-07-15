@@ -24,6 +24,22 @@ use crate::snapshot::Snapshot;
 /// require threading `&self` through these free functions, conflicting with
 /// the already-split `&mut journal`/`&mut cache` borrows at the call sites in
 /// engine_eval.rs.
+///
+/// Containment is the only one of `cell_eval_ctx`'s three required
+/// capabilities that is a true no-op replica of the pre-migration context.
+/// Determinacy is *not* a stand-in: it is wired to the live
+/// `&snapshot.values`, a capability the old bare `eval_ctx_with_meta` never
+/// had. A child param/let expression containing a `DeterminacyPredicate`
+/// (e.g. `determined(x)`) now resolves against the snapshot instead of
+/// unconditionally degrading to `Value::Undef` — this intentionally matches
+/// the main eval pass, which consistently uses
+/// `.with_determinacy(&snapshot.values)` (engine_eval.rs). The plain
+/// arithmetic param/let expressions this migration's parity fixture
+/// exercises don't observe any difference, but an expression that does
+/// reference a determinacy predicate would now resolve differently than
+/// before this migration. (The third capability, runtime_sink, is wired but
+/// its contents are intentionally discarded — see the comment at its
+/// construction below.)
 struct NoContainment;
 
 impl ContainmentQuery for NoContainment {
@@ -319,6 +335,14 @@ fn elaborate_child_params_only(
     meta_map: &HashMap<String, HashMap<String, String>>,
 ) -> ValueMap {
     let mut child_values = ValueMap::new();
+    // `cell_eval_ctx` requires a runtime_sink argument; diagnostics captured
+    // here are intentionally discarded rather than surfaced. Pre-migration,
+    // this eval ran on the bare `eval_ctx_with_meta` (no sink existed at
+    // all), so nothing was ever surfaced from this path — discarding
+    // preserves that behaviour (task ε, #5057 is a behaviour-preserving
+    // migration; see plan.json design decisions). This function also has no
+    // `diagnostics` parameter to drain into. Surfacing these diagnostics is
+    // deferred to a future task.
     let runtime_sink = RefCell::new(Vec::new());
     let containment = NoContainment;
 
@@ -438,6 +462,15 @@ fn elaborate_child_lets_only<'t>(
     templates: &'t [TopologyTemplate],
     diagnostics: &mut Vec<Diagnostic>,
 ) {
+    // `cell_eval_ctx` requires a runtime_sink argument; diagnostics captured
+    // here are intentionally discarded rather than appended to the
+    // `diagnostics` parameter above. Pre-migration, this eval ran on the
+    // bare `eval_ctx_with_meta` (no sink existed at all), so nothing was
+    // ever surfaced from this path — discarding preserves that behaviour
+    // (task ε, #5057 is a behaviour-preserving migration) and keeps this
+    // site consistent with `elaborate_child_params_only`, which has no
+    // `diagnostics` parameter to drain into at all. Surfacing these
+    // diagnostics is deferred to a future task.
     let runtime_sink = RefCell::new(Vec::new());
     let containment = NoContainment;
 
