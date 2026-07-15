@@ -344,4 +344,57 @@ mod tests {
             );
         }
     }
+
+    /// Drift guard for the module doc's core invariant: each ladder's
+    /// `is_default` entry is "numerically identical" to what
+    /// `DimensionVector::to_display_units` already chooses. The pinned tests
+    /// above (`length_ladder_pins_mm_default_...` etc.) only check the
+    /// ladder's own hand-copied constants against each other; they would
+    /// keep passing even if `to_display_units` itself drifted (e.g. its
+    /// Length default silently changed unit). This test instead runs a known
+    /// SI magnitude through `to_display_units` directly and checks that
+    /// dividing by the ladder's default `si_scale` reproduces its converted
+    /// value, locking the invariant to its actual source.
+    ///
+    /// Only the numeric value is compared, not the unit label:
+    /// Mass/Pressure/Density intentionally use a more specific default label
+    /// (`"kg"`, `"Pa"`, `"kg/m³"`) than `to_display_units`'s generic `"SI"`
+    /// fallback label (see module doc above) — that label divergence is
+    /// deliberate, not drift.
+    #[test]
+    fn default_si_scale_matches_to_display_units_numeric_value() {
+        let ladders = unit_ladders();
+        let cases: &[(reify_core::DimensionVector, f64)] = &[
+            (reify_core::DimensionVector::LENGTH, 0.08),
+            (reify_core::DimensionVector::AREA, 0.0045),
+            (reify_core::DimensionVector::VOLUME, 0.00704500224),
+            (reify_core::DimensionVector::ANGLE, 1.2),
+            (reify_core::DimensionVector::MASS, 2.5),
+            (reify_core::DimensionVector::PRESSURE, 101_325.0),
+            (reify_core::DimensionVector::MASS_DENSITY, 7850.0),
+        ];
+
+        for &(dim, si_value) in cases {
+            let name = dim
+                .canonical_name()
+                .unwrap_or_else(|| panic!("{dim:?} has no canonical_name"));
+            let l = ladder(&ladders, name);
+            let default_unit = l
+                .units
+                .iter()
+                .find(|u| u.is_default)
+                .unwrap_or_else(|| panic!("ladder {name:?} has no is_default unit"));
+
+            let (expected_value, _label) = dim.to_display_units(si_value);
+            let actual_value = si_value / default_unit.si_scale;
+            let tolerance = 1e-9 * expected_value.abs().max(1.0);
+
+            assert!(
+                (actual_value - expected_value).abs() <= tolerance,
+                "ladder {name:?} default si_scale ({}) diverges from to_display_units: \
+                 si_value/si_scale = {actual_value}, to_display_units = {expected_value}",
+                default_unit.si_scale,
+            );
+        }
+    }
 }
