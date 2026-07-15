@@ -7549,6 +7549,159 @@ impl Engine {
         }
     }
 
+    /// Warm counterpart to `dispatch_merged_cluster_solve` (see that
+    /// function's doc comment, above, for the full cold write-back this
+    /// mirrors structurally). Dispatched once per within-cap `MergedSolve`
+    /// cluster from the `eval_cached` solver sub-pass, at the cluster's
+    /// first `ro.order` member — mirrors the cold dispatch's
+    /// cluster-precompute contract exactly (task #5118, closing the
+    /// cold/warm fidelity divergence recorded at esc-5014-10).
+    ///
+    /// Write-back shape matches the WARM per-template arm above (not
+    /// cold's): entries are recorded under the CALLER-supplied `version`
+    /// (not a freshly-allocated internal one) with `DependencyTrace::default()`
+    /// — no journal, no `resolved_params`, no `objective_provenance` (see the
+    /// VERSION / TRACE NOTE at that arm's site for why warm stays in
+    /// caller-version space) — and this dispatch calls plain `.solve()`
+    /// unconditionally, never `solve_ranked`, matching that arm's shape.
+    /// `build_merged_solver_problem` already excludes strict
+    /// connector-instance autos internally (and diagnoses them), so — unlike
+    /// the warm per-template arm — this dispatch needs no
+    /// write_solved/unsolved_pinned_connector_autos handling.
+    #[allow(clippy::too_many_arguments)]
+    fn dispatch_merged_cluster_solve_cached(
+        &mut self,
+        cluster: &crate::resolve_order::Cluster,
+        idx: usize,
+        module: &CompiledModule,
+        governance: &[GoverningObjective],
+        values: &mut ValueMap,
+        snapshot_values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+        diagnostics: &mut Vec<Diagnostic>,
+        version: VersionId,
+        // Unused until step 6 adds the downstream let-cone wave-2 re-eval
+        // (which needs `cell_eval_ctx`'s runtime-diagnostics sink) — kept in
+        // the signature now since the call site above already threads it
+        // through, matching the warm per-template arm's parameter shape.
+        _runtime_sink: &RefCell<Vec<Diagnostic>>,
+    ) {
+        let problem = build_merged_solver_problem(
+            cluster,
+            &module.templates,
+            governance,
+            values,
+            Arc::clone(&self.functions),
+            diagnostics,
+        );
+
+        // Mirrors cold `dispatch_merged_cluster_solve`'s empty-auto_params
+        // early return (see that function's doc for the full rationale):
+        // every member of `cluster.scopes` is collateral-warned and left
+        // entirely unresolved when the merged builder excluded every auto
+        // cell the cluster contributed.
+        if problem.auto_params.is_empty() {
+            let cluster_scope_names: Vec<&str> = cluster
+                .scopes
+                .iter()
+                .map(|&member_idx| module.templates[member_idx].name.as_str())
+                .collect();
+            diagnostics.push(Diagnostic::warning(format!(
+                "MergedSolve cluster [{}] was left entirely unresolved: at \
+                 least one member contributed an unsupported connector-\
+                 pinned auto cell (see the error diagnostic above naming \
+                 the specific cell), so no merged solve was attempted -- \
+                 EVERY member of this cluster, not only the one that \
+                 contributed the excluded cell, remains undetermined \
+                 (task #5118).",
+                cluster_scope_names.join(", "),
+            )));
+            return;
+        }
+
+        debug_assert!(
+            cluster.scopes.contains(&idx),
+            "dispatch_merged_cluster_solve_cached: idx (template `{}`) must be \
+             a member of cluster.scopes ({:?})",
+            module.templates[idx].name,
+            cluster.scopes,
+        );
+
+        // WARM shape (unlike cold): plain `.solve()` unconditionally, even
+        // for an objective-bearing problem — matches the warm per-template
+        // arm above, which never calls `solve_ranked`/populates
+        // `objective_provenance` (design decision, task #5118 plan.json).
+        let solve_result = self
+            .lookup_solver_for_module(module)
+            .expect("has_active_solver is true => solver lookup returns Some")
+            .solve(&problem);
+
+        match solve_result {
+            SolveResult::Solved {
+                values: solver_values,
+                unique,
+            } => {
+                // Defensive auto_params filter (mirrors cold): restrict the
+                // write-back to cells the merged problem actually asked the
+                // solver to resolve, not the wider frozen `current_values`
+                // snapshot the solver also saw.
+                let auto_param_ids: HashSet<&ValueCellId> =
+                    problem.auto_params.iter().map(|ap| &ap.id).collect();
+
+                for (id, val) in solver_values
+                    .iter()
+                    .filter(|(id, _)| auto_param_ids.contains(id))
+                {
+                    values.insert(id.clone(), val.clone());
+                    snapshot_values
+                        .insert(id.clone(), (val.clone(), DeterminacyState::Determined));
+
+                    let node_id = NodeId::Value(id.clone());
+                    let cached_result =
+                        CachedResult::Value(val.clone(), DeterminacyState::Determined);
+                    self.cache.record_evaluation(
+                        node_id,
+                        cached_result,
+                        version,
+                        DependencyTrace::default(),
+                    );
+                }
+
+                // Cluster-wide non-uniqueness warning (mirrors cold): `unique`
+                // is a single flag over the WHOLE merged solve, so this warns
+                // on every free auto param across ALL `cluster.scopes`.
+                if !unique {
+                    for ap in &problem.auto_params {
+                        if ap.free {
+                            diagnostics.push(Diagnostic::warning(format!(
+                                "Parameter `{}` resolved via auto(free) \
+                                 -- result is not uniquely determined.",
+                                ap.id.member
+                            )));
+                        }
+                    }
+                }
+
+                // Downstream let-cone re-evaluation (mirrors the warm
+                // per-template arm's wave-2 dirty-cone mechanism) is
+                // deferred to step 6 (task #5118): this dispatch writes
+                // every cluster member's solver-resolved autos back above,
+                // but a member's `let` cell that reads a co-solved auto
+                // owned by a DIFFERENT member is not yet re-evaluated here.
+            }
+            SolveResult::Infeasible {
+                diagnostics: solver_diags,
+            } => {
+                diagnostics.extend(solver_diags);
+            }
+            SolveResult::NoProgress { reason } => {
+                diagnostics.push(Diagnostic::warning(format!(
+                    "Constraint solver made no progress: {}",
+                    reason
+                )));
+            }
+        }
+    }
+
     /// Persistent-cache key for a solver `ComputeNode`: the structural
     /// [`compute_cache_key`](crate::compute_cache_key::compute_cache_key) (value /
     /// realization inputs + target + `options_hash`) COMBINED with a content hash
