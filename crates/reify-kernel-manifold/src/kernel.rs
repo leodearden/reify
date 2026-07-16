@@ -1106,14 +1106,35 @@ impl KernelAttributeHook for ManifoldKernel {
                 let mut persisted_count = 0usize;
                 for facet in facets {
                     if let Some(attr) = facet.source {
-                        table.record_result_face(
-                            reify_ir::ResultFaceDescriptor {
-                                handle: result_kernel_handle,
-                                run_original_id: facet.descriptor.run_original_id,
-                                face_id: facet.descriptor.face_id,
-                            },
-                            attr,
+                        let descriptor = reify_ir::ResultFaceDescriptor {
+                            handle: result_kernel_handle,
+                            run_original_id: facet.descriptor.run_original_id,
+                            face_id: facet.descriptor.face_id,
+                        };
+                        // `record_result_face` is last-write-wins, so a genuine
+                        // divergence between two facets sharing `descriptor`
+                        // would silently drop data. That can't happen here:
+                        // `correlate_from_vectors` (provenance.rs) computes
+                        // `source` exactly once per run and clones it onto
+                        // every triangle in that run, so any two facets with
+                        // equal `run_original_id` — the only field `source`
+                        // depends on — are structurally guaranteed identical
+                        // `source` values within a single `propagate_attributes`
+                        // call; `handle` is unique per call (tied to
+                        // `result_handle`), so cross-call collisions on the
+                        // same descriptor are impossible too (review
+                        // follow-up, task #4637 amendment). Tripwire kept in
+                        // case a future change to `correlate_facets` breaks
+                        // that per-run invariant.
+                        debug_assert!(
+                            table
+                                .lookup_result_face(descriptor)
+                                .is_none_or(|existing| *existing == attr),
+                            "descriptor {descriptor:?} already recorded with a different \
+                             TopologyAttribute — correlate_facets' per-run source invariant \
+                             (provenance.rs) has been violated"
                         );
+                        table.record_result_face(descriptor, attr);
                         persisted_count += 1;
                     }
                 }
