@@ -3348,6 +3348,60 @@ mod tests {
         );
     }
 
+    // ── last_allocated_version reader (task 5047, INV-BUILD-2 δ) ──────────
+
+    /// `last_allocated_version` is the "read" half of the INV-BUILD-2 API
+    /// family (`allocate_snapshot_version`, above, is the "write"/allocate
+    /// half — task 5040 / α). Pins its documented pre-allocation edge —
+    /// `VersionId(0)` before the first allocation, SATURATING rather than
+    /// panicking (unlike `current_eval_version` in engine_build.rs, which
+    /// panics before the first eval) — and confirms it tracks
+    /// `next_version_id` across successive allocations.
+    #[test]
+    fn last_allocated_version_is_zero_pre_allocation_and_tracks_next_version_id() {
+        use reify_core::VersionId;
+        use reify_test_support::mocks::MockConstraintChecker;
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+
+        // Pre-allocation edge: next_version_id == 0, last_allocated_version()
+        // must saturate to VersionId(0) rather than panic.
+        assert_eq!(
+            engine.next_version_id, 0,
+            "fresh engine must start next_version_id at 0",
+        );
+        assert_eq!(
+            engine.last_allocated_version(),
+            VersionId(0),
+            "last_allocated_version() must saturate to VersionId(0) before the first allocation",
+        );
+
+        // First allocation: last_allocated_version() reports the version
+        // just allocated (0), and next_version_id has advanced to 1.
+        engine.allocate_snapshot_version();
+        assert_eq!(
+            engine.next_version_id, 1,
+            "next_version_id must advance to 1 after the first allocation",
+        );
+        assert_eq!(
+            engine.last_allocated_version(),
+            VersionId(0),
+            "after the first allocation, last_allocated_version() must report the \
+             just-allocated VersionId(0)",
+        );
+
+        // Second allocation: tracks forward to VersionId(1).
+        engine.allocate_snapshot_version();
+        assert_eq!(
+            engine.next_version_id, 2,
+            "next_version_id must advance to 2 after the second allocation",
+        );
+        assert_eq!(
+            engine.last_allocated_version(),
+            VersionId(1),
+            "after the second allocation, last_allocated_version() must report VersionId(1)",
+        );
+    }
+
     // ── engine_edit.rs migration (task 5041, INV-BUILD-2 β) ───────────────
 
     /// Characterization lock on the OBSERVABLE snapshot/version numbering
