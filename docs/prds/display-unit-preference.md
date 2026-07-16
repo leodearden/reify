@@ -17,6 +17,15 @@
 > and formatter-ownership rule (§6) that unify the places a `Value` is rendered for a
 > human: eval `Value` Display (CLI), the GUI parameter cell, LSP hover, and string
 > interpolation.
+>
+> **v0.1 coverage per task:**
+> - §1–§6 Decisions (surface, derived-unit names, auto-scaling, precedence, formatter ownership) — **this file; ground-truth**
+> - §7a Unit-ladder registry relocation + curated names + auto-scale metadata (L1) — task 5232 (pending)
+> - §7b `@display("unit")` annotation schema + diagnostics (L2) — task 5233 (pending)
+> - §7c Shared `resolve_display` formatter (L3) — task 5234 (pending)
+> - §7d Route preference into the four surfaces (L4) — task 5235 (pending)
+> - §7e Magnitude auto-scaling / engineering notation (L5) — task 5236 (pending)
+> - §7f Acceptance sweep — G1 litter-tray 7.0 L cell (L6) — task 5237 (pending)
 
 ---
 
@@ -385,3 +394,38 @@ candidate: `DimensionVector`, `to_display_units`, `NAMED_DIMENSIONS`, and
 crate" with near-zero dependencies (the intentional dependency floor per
 `docs/prds/core-ast-ir-layering.md` task γ). The exact target crate and migration
 shape is left to the owning leaf (§7 L1/L3) — not fixed here.
+
+---
+
+## §7 — Decomposition — spawned implementation leaves
+
+This PRD ships no runtime code itself (§1). The six leaves below realize §3–§6's
+decisions and are filed in the task store (fused-memory), each depending on task
+**#5200** (this PRD) and, where a leaf directly consumes the 5199 ladder table, on task
+**#5199** as well. Sequencing between leaves is wired as real task dependencies (not
+just table order) so the scheduler enforces the same build-up §1's G1 scenario needs:
+registry → annotation + formatter → surface routing → auto-scaling → acceptance.
+
+**Coverage per task:**
+
+| § | Leaf | Task | Depends on | Status |
+|---|------|------|------------|--------|
+| §7a | Relocate the 5199 ladder/registry into a shared crate reachable by eval/ir/expr/lsp; add curated derived-unit names (§4) and auto-scale metadata (§5) | **L1 — task 5232** | 5200, 5199 | pending |
+| §7b | Parser+AST wiring: register the `display` annotation schema, shape-check + dimension-mismatch diagnostics (§3) | **L2 — task 5233** | 5200, L1 (5232) | pending |
+| §7c | Single shared `resolve_display` formatter reading the registry + a resolved preference, replacing `dimension_unit_label`'s `"SI"` fallback for curated dimensions (§6.2) | **L3 — task 5234** | 5200, L1 (5232) | pending |
+| §7d | Route the resolved preference into the four surfaces — eval Display, GUI cell (picker as session override), LSP hover, `__interp_render` (§6.1) | **L4 — task 5235** | 5200, L2 (5233), L3 (5234) | pending |
+| §7e | Magnitude auto-scaling / engineering-notation formatting mode (§5) | **L5 — task 5236** | 5200, 5199, L1 (5232) | pending |
+| §7f | Acceptance sweep: the G1 litter-tray `7.0 L` cell (§1) + cross-surface consistency regression closing the §2b/§2d three-way divergence | **L6 — task 5237** | 5200, L1–L5 (5232–5236) | pending |
+
+**Why L1 is the pivot.** L1 is the only leaf every other leaf transitively depends on:
+it is the sole place the 5199 ladder table is extended with the curated-name (§4) and
+auto-scale (§5) metadata the remaining leaves consume, and the sole place that resolves
+§6's named blocker (moving the registry out of `gui/src-tauri` into a crate
+`reify-ir`/`reify-expr`/`reify-lsp` can reach). L2 and L3 can then proceed in parallel
+(annotation capture and the shared formatter are independent of each other); L4 needs
+both before it can route a real preference into any surface; L5 only needs L1's
+auto-scale metadata and can run in parallel with L2–L4; L6 closes the set once L1–L5 are
+all in.
+
+**This step satisfies the "spawned implementation leaves" half of the task's observable
+signal; the committed PRD (§1–§6, this file) satisfies the other half.**
