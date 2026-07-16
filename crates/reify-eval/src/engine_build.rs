@@ -130,6 +130,21 @@ fn kernel_id_for_registry_name(name: &str) -> KernelId {
 /// with the forwarded placeholder — not on the idempotent cache-hit
 /// re-forward.
 ///
+/// # Release-mode signal (review follow-up, task #4636 amendment)
+///
+/// `debug_assert!` compiles out in release builds, so the *different-entry*
+/// clobber above would go unsignaled there. This function's signature is
+/// part of the crate's public API (`reify_eval::forward_solid_attribute_on_ingest`),
+/// so its `bool` return keeps its original pre-amendment meaning ("did this
+/// forward write `target`?") rather than being widened to also carry the
+/// clobber bit. Instead, `forward_and_track` — the sole caller, in the
+/// `'convert:` loop below — re-checks the identical precondition itself
+/// (`source`/`target` are already in scope there) and pushes a warning
+/// [`reify_ir::Diagnostic`] on a violation, so a release build gets the
+/// same signal a debug/test build gets from the assert. This is provably
+/// unreachable at today's call site (see the doc above); the check is a
+/// tripwire against a future regression, not a currently-reachable path.
+///
 /// [`record_solid_attribute`]: crate::primitive_attribute_seed::record_solid_attribute
 pub fn forward_solid_attribute_on_ingest(
     table: &mut TopologyAttributeTable,
@@ -7528,18 +7543,56 @@ impl Engine {
                                              would silently fall back to KernelId::Occt here, \
                                              degrading attribute forwarding below with zero signal",
                                         );
-                                        let mut forward_and_track = |target: KernelHandle| {
-                                            if forward_solid_attribute_on_ingest(
-                                                topology_attribute_table,
-                                                KernelHandle {
-                                                    kernel: kernel_id_for_registry_name(source_name),
+                                        let mut forward_and_track =
+                                            |target: KernelHandle,
+                                             diagnostics: &mut Vec<Diagnostic>| {
+                                                let source = KernelHandle {
+                                                    kernel: kernel_id_for_registry_name(
+                                                        source_name,
+                                                    ),
                                                     id: pid,
-                                                },
-                                                target,
-                                            ) {
-                                                solid_attribute_handles.insert(target);
-                                            }
-                                        };
+                                                };
+                                                // Release-mode-visible companion to
+                                                // `forward_solid_attribute_on_ingest`'s
+                                                // internal `debug_assert!` (review
+                                                // follow-up, task #4636 amendment,
+                                                // release_mode_safety): that assert
+                                                // compiles out in release builds, so
+                                                // re-check the identical precondition
+                                                // here — a same-value re-forward onto
+                                                // an already-forwarded `target` (e.g. a
+                                                // realization-cache hit) is expected
+                                                // and benign, but overwriting a
+                                                // DIFFERENT existing entry is not — and
+                                                // surface a violation (unreachable by
+                                                // construction today; every call site's
+                                                // precondition is provably satisfied)
+                                                // as a warning `Diagnostic` instead of
+                                                // a silent release-mode clobber.
+                                                if let Some(new_attr) =
+                                                    topology_attribute_table.lookup(source)
+                                                    && let Some(existing) =
+                                                        topology_attribute_table.lookup(target)
+                                                    && existing != new_attr
+                                                {
+                                                    diagnostics.push(Diagnostic::warning(format!(
+                                                        "internal invariant violated: forwarding \
+                                                         the solid-level topology attribute from \
+                                                         {source:?} onto {target:?} would \
+                                                         overwrite a different existing entry \
+                                                         there (task #4636) — this should be \
+                                                         unreachable by construction; please file \
+                                                         a bug"
+                                                    )));
+                                                }
+                                                if forward_solid_attribute_on_ingest(
+                                                    topology_attribute_table,
+                                                    source,
+                                                    target,
+                                                ) {
+                                                    solid_attribute_handles.insert(target);
+                                                }
+                                            };
                                         // Consult the cache BEFORE any kernel work. A
                                         // hit returns the previously-ingested
                                         // target-kernel handle (Copy); reuse its id
@@ -7558,7 +7611,7 @@ impl Engine {
                                             // onto the reused target handle, or this
                                             // build's table would have no entry at all for
                                             // it despite the handle being valid.
-                                            forward_and_track(cached);
+                                            forward_and_track(cached, &mut *diagnostics);
                                             substitution.insert(pid, cached.id);
                                             continue;
                                         }
@@ -7686,7 +7739,10 @@ impl Engine {
                                                 // solid's attribute across the ingest
                                                 // seam onto the fresh target handle (see
                                                 // `forward_and_track` above).
-                                                forward_and_track(intermediate_handle);
+                                                forward_and_track(
+                                                    intermediate_handle,
+                                                    &mut *diagnostics,
+                                                );
                                                 substitution.insert(pid, handle.id);
                                             }
                                             Err(e) => {
@@ -7897,16 +7953,37 @@ impl Engine {
                             // solid-level entry orphaned from its face/edge
                             // siblings.
                             if seed_result.is_ok() && is_seedable_primitive(&geom_op) {
-                                record_solid_attribute(
+                                let solid_key = KernelHandle {
+                                    kernel: op_kernel,
+                                    id: handle.id,
+                                };
+                                // Release-mode-visible companion to
+                                // `record_solid_attribute`'s internal
+                                // `debug_assert!` (review follow-up, task
+                                // #4636 amendment, release_mode_safety): the
+                                // assert compiles out in release builds, so
+                                // surface a violation of its overwrite
+                                // precondition — `solid_key` must not
+                                // already be a real attribute key — as a
+                                // warning `Diagnostic` there via the `bool`
+                                // return, instead of a silent clobber.
+                                // Unreachable by construction today:
+                                // `handle.id` is freshly minted by this op.
+                                if record_solid_attribute(
                                     topology_attribute_table,
                                     op_kernel,
                                     handle.id,
                                     &feature_id,
-                                );
-                                solid_attribute_handles.insert(KernelHandle {
-                                    kernel: op_kernel,
-                                    id: handle.id,
-                                });
+                                ) {
+                                    diagnostics.push(Diagnostic::warning(format!(
+                                        "internal invariant violated: recording the \
+                                         solid-representative topology attribute at \
+                                         {solid_key:?} overwrote an existing entry there \
+                                         (task #4636) — this should be unreachable by \
+                                         construction; please file a bug"
+                                    )));
+                                }
+                                solid_attribute_handles.insert(solid_key);
                             }
                             // v0.2 persistent-naming-v2 (PRD task 5a, #2573): per-op
                             // attribute population for sweep ops (extrude / revolve).

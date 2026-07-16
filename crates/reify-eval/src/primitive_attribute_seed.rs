@@ -616,17 +616,49 @@ fn pack_sign_bits(x: AxisSign, y: AxisSign, z: AxisSign) -> u32 {
 ///
 /// This entry stays resident in `TopologyAttributeTable` under the calling
 /// realization's real `feature_id` — it is not tombstoned or otherwise
-/// marked. Today exactly ONE consumer, the engine's post-loop centroid /
-/// local-index-reassignment diagnostic scan
+/// marked. Two consumers are audited and safe today by construction:
+/// `ManifoldKernel::propagate_attributes` (which intentionally needs this
+/// entry — see `kernel.rs`'s matching doc section) and the engine's
+/// post-loop centroid / local-index-reassignment diagnostic scan
 /// (`Engine::execute_realization_ops`, `crates/reify-eval/src/engine_build.rs`),
-/// knows to skip it, and only by construction: every call site pushes the
-/// same `KernelHandle` this function records into that scan's
-/// `solid_attribute_handles` exclusion list. Any *other* by-`feature_id`
-/// table walk added later (a selector-resolution path, a new diagnostic, a
-/// future export step) would see this entry unless it independently
-/// remembers to consult `solid_attribute_handles` too — the exclusion is
-/// per-consumer opt-in, not a property of the table entry itself. When
-/// #4263 lands, prefer centralizing that exclusion (e.g. a query-side
+/// which knows to skip it because every call site pushes the same
+/// `KernelHandle` this function records into that scan's
+/// `solid_attribute_handles` exclusion list. The exclusion is per-consumer
+/// opt-in, not a property of the table entry itself.
+///
+/// # Audited fan-out (review follow-up, task #4636 amendment)
+///
+/// The remaining by-`feature_id`/by-`Role` table walks named by review were
+/// individually audited rather than assumed safe:
+/// - `selector_vocabulary_v2::created_by_feature`/`split_by_feature` are
+///   SAFE — they walk a caller-supplied `candidates: &[GeometryHandleId]`
+///   slice via `table.lookup` per candidate, never `table.iter()`, and a
+///   solid handle is never a member of a face/edge candidate slice (same
+///   reasoning as the `resolve_unique_by_attribute` safety note above).
+/// - `topology_attribute_propagation::detect_local_index_reassignment_diagnostics`
+///   walks `table.iter()` filtered by `feature_id` alone with no exclusion
+///   of its own, but is SAFE IN PRACTICE: its only call site
+///   (`engine_build.rs`) is the post-loop scan above, which already
+///   pre-filters through `solid_attribute_handles` before calling it.
+/// - `topology_selectors.rs`'s `resolve_leaf` is **NOT** fully safe, and
+///   this is a confirmed gap, not a hypothetical one:
+///   `LeafQuery::ByRole(role)` filters `table.iter()` by `attr.role == role`
+///   alone, and `LeafQuery::CreatedByFeature(fid)` filters by
+///   `attr.feature_id == fid && role_is_face(attr.role)` — and
+///   `role_is_face(Role::Side) == true`. Neither arm consults
+///   `solid_attribute_handles` or any equivalent, and both are reachable
+///   against the raw, unfiltered, build-global table via
+///   `geometry_ops.rs`'s `resolve_with_attributes` call site. A
+///   `created_by(feature_id)` selector targeting a realization that also
+///   seeds a primitive returns that primitive's own solid handle id
+///   alongside its real faces, mislabeled as a face.
+///   (`LeafQuery::SplitByFeature` is unaffected: this entry's `mod_history`
+///   is always empty, so the membership check it filters on can never
+///   match.) The fix belongs in `topology_selectors.rs`, outside this
+///   task's locked modules, so it is tracked via escalation rather than
+///   made here.
+///
+/// When #4263 lands, prefer centralizing the exclusion (e.g. a query-side
 /// filter on `TopologyAttributeTable`, or a distinguishable placeholder
 /// `Role` sentinel once `reify-ir`'s `content_hash_bytes` contract can
 /// absorb a new variant) over asking each new consumer to know about
@@ -643,18 +675,30 @@ fn pack_sign_bits(x: AxisSign, y: AxisSign, z: AxisSign) -> u32 {
 /// `forward_solid_attribute_on_ingest` writes to a *different* kernel's
 /// scope — so the `debug_assert!` below is a trip wire against a future
 /// caller breaking that invariant, not a currently-reachable panic.
+///
+/// # Release-mode signal (review follow-up, task #4636 amendment)
+///
+/// `debug_assert!` compiles out in release builds, so a future violation of
+/// the precondition above would clobber a real attribute silently there.
+/// The `bool` return exposes the identical check the assert makes —
+/// `true` iff a pre-existing entry was just overwritten — so a release
+/// build's caller (the engine seed site, `engine_build.rs`) can surface it
+/// as a warning [`reify_ir::Diagnostic`] instead of losing the signal
+/// entirely. This is provably `false` at every call site today; it exists
+/// as a tripwire, not a currently-reachable state.
 pub fn record_solid_attribute(
     table: &mut TopologyAttributeTable,
     kernel_id: KernelId,
     solid_handle: GeometryHandleId,
     feature_id: &FeatureId,
-) {
+) -> bool {
     let key = KernelHandle {
         kernel: kernel_id,
         id: solid_handle,
     };
+    let clobbered_existing = table.lookup(key).is_some();
     debug_assert!(
-        table.lookup(key).is_none(),
+        !clobbered_existing,
         "record_solid_attribute would overwrite an existing entry at \
          {key:?} — caller must ensure solid_handle is not already a real \
          attribute key before calling this placeholder-recording helper"
@@ -669,6 +713,7 @@ pub fn record_solid_attribute(
             mod_history: Vec::new(),
         },
     );
+    clobbered_existing
 }
 
 /// Extract `(xmin, ymin, zmin)` from a `GeometryQuery::BoundingBox`
@@ -1205,7 +1250,12 @@ mod tests {
         let mut table = TopologyAttributeTable::default();
         let solid_handle = GeometryHandleId(7);
 
-        record_solid_attribute(&mut table, KernelId::Occt, solid_handle, &fid);
+        let clobbered = record_solid_attribute(&mut table, KernelId::Occt, solid_handle, &fid);
+        assert!(
+            !clobbered,
+            "recording into an empty table must not report a clobbered pre-existing entry \
+             (review follow-up, task #4636 amendment: release-mode overwrite signal)"
+        );
 
         assert_eq!(
             table.len(),
@@ -1235,5 +1285,36 @@ mod tests {
                 .is_none(),
             "record_solid_attribute must not record entries for unrelated handles"
         );
+    }
+
+    /// Pins the overwrite-precondition `debug_assert!` (review follow-up,
+    /// task #4636 amendment, release_mode_safety): a second
+    /// `record_solid_attribute` call at the SAME key must trip it. Gated by
+    /// `#[cfg(debug_assertions)]` because `debug_assert!` is a no-op in
+    /// release mode — without the gate `cargo test --release` would run the
+    /// body, the second call would not panic, and `#[should_panic]` would
+    /// fail. Pattern mirrors `engine_edit.rs:4244`.
+    ///
+    /// The release-mode fallback this same precondition drives — a `true`
+    /// return instead of a panic, consumed by the engine seed site
+    /// (`engine_build.rs`) to push a warning `Diagnostic` — is not
+    /// separately tested at the call site: exercising it for real requires
+    /// a release build (the assert always fires first in a debug/test
+    /// build, as this test pins), and the call site's consumption of the
+    /// return value is a direct, one-line `if clobbered { diagnostics.push
+    /// (..) }` over the exact `bool` this test and
+    /// `record_solid_attribute_records_only_the_solid_handle` above already
+    /// pin the meaning of.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "record_solid_attribute would overwrite an existing entry")]
+    fn record_solid_attribute_debug_asserts_on_overwrite() {
+        let fid = feature_id();
+        let mut table = TopologyAttributeTable::default();
+        let solid_handle = GeometryHandleId(7);
+        record_solid_attribute(&mut table, KernelId::Occt, solid_handle, &fid);
+        // Same key, second call: violates the "solid_handle is not already a
+        // real attribute key" precondition documented on the function.
+        record_solid_attribute(&mut table, KernelId::Occt, solid_handle, &fid);
     }
 }
