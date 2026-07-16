@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -2797,23 +2798,29 @@ pub fn format_display_number(v: f64) -> String {
 /// Map a DimensionVector to a human-readable SI unit label.
 ///
 /// Used by [`Value::format_hover`] for user-facing display.
-fn dimension_unit_label(dim: &DimensionVector) -> &'static str {
+///
+/// For dimensions without a curated arm, the fallback composes the base-SI
+/// unit label from [`Display`](std::fmt::Display) (e.g. `"kg·m^-3"` for mass
+/// density) rather than a bare placeholder — hence the `Cow` return: known
+/// arms borrow a `'static` string, the composed fallback owns a freshly
+/// formatted one.
+fn dimension_unit_label(dim: &DimensionVector) -> Cow<'static, str> {
     if *dim == DimensionVector::LENGTH {
-        "m"
+        Cow::Borrowed("m")
     } else if *dim == DimensionVector::AREA {
-        "m\u{00B2}"
+        Cow::Borrowed("m\u{00B2}")
     } else if *dim == DimensionVector::VOLUME {
-        "m\u{00B3}"
+        Cow::Borrowed("m\u{00B3}")
     } else if *dim == DimensionVector::MASS {
-        "kg"
+        Cow::Borrowed("kg")
     } else if *dim == DimensionVector::ANGLE {
-        "rad"
+        Cow::Borrowed("rad")
     } else if *dim == DimensionVector::MONEY {
-        "USD"
+        Cow::Borrowed("USD")
     } else if dim.is_dimensionless() {
-        ""
+        Cow::Borrowed("")
     } else {
-        "SI"
+        Cow::Owned(format!("{dim}"))
     }
 }
 

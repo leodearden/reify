@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::fmt;
 use std::ops::{Add, Neg, Sub};
 
@@ -421,21 +422,27 @@ impl DimensionVector {
     ///
     /// Returns `(converted_value, unit_label)`. For example, LENGTH converts
     /// metres to millimetres: `to_display_units(0.08)` → `(80.0, "mm")`.
-    pub fn to_display_units(&self, si_value: f64) -> (f64, &'static str) {
+    ///
+    /// For dimensions without a curated engineering-unit arm, the fallback
+    /// composes the base-SI unit label from [`Display`](fmt::Display) (e.g.
+    /// `"kg·m^-3"` for mass density) rather than a bare placeholder — hence
+    /// the `Cow` return: known arms borrow a `'static` string, the composed
+    /// fallback owns a freshly formatted one.
+    pub fn to_display_units(&self, si_value: f64) -> (f64, Cow<'static, str>) {
         if *self == DimensionVector::LENGTH {
-            (si_value * 1000.0, "mm")
+            (si_value * 1000.0, Cow::Borrowed("mm"))
         } else if *self == DimensionVector::ANGLE {
-            (si_value * 180.0 / std::f64::consts::PI, "deg")
+            (si_value * 180.0 / std::f64::consts::PI, Cow::Borrowed("deg"))
         } else if *self == DimensionVector::AREA {
-            (si_value * 1e6, "mm\u{00B2}")
+            (si_value * 1e6, Cow::Borrowed("mm\u{00B2}"))
         } else if *self == DimensionVector::VOLUME {
-            (si_value * 1e9, "mm\u{00B3}")
+            (si_value * 1e9, Cow::Borrowed("mm\u{00B3}"))
         } else if *self == DimensionVector::MONEY {
-            (si_value, "USD")
+            (si_value, Cow::Borrowed("USD"))
         } else if self.is_dimensionless() {
-            (si_value, "")
+            (si_value, Cow::Borrowed(""))
         } else {
-            (si_value, "SI")
+            (si_value, Cow::Owned(format!("{self}")))
         }
     }
 
