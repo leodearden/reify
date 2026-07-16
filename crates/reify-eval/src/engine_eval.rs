@@ -3895,10 +3895,26 @@ impl Engine {
                     &eval_ctx_with_meta(&values, &functions, &self.meta_map)
                         .with_determinacy(&snapshot.values),
                 );
-                values.insert(cell.id.clone(), val.clone());
-                snapshot.values.insert(
+                // Commit-only migration (task γ #5053, impl-4): the overlay
+                // eval ctx above is left as-is (no sink/containment — adopting
+                // cell_eval_ctx here would be a B1/4356-class behaviour
+                // change, out of γ's scope). CacheLeg::Skip makes the
+                // pre-existing no-cache decision explicit + auditable instead
+                // of silently omitting the cache leg.
+                commit_cell_result(
+                    CommitLegs {
+                        values: &mut values,
+                        snapshot_values: &mut snapshot.values,
+                        cache: &mut self.cache,
+                        journal: &mut self.journal,
+                    },
                     cell.id.clone(),
-                    (val, DeterminacyState::Determined),
+                    val,
+                    DeterminacyRule::UnconditionalDetermined,
+                    TraceSource::PostPassOverwrite,
+                    DependencyTrace::default(),
+                    version,
+                    CacheLeg::Skip("structural-query post-pass overwrite"),
                 );
             }
         }
