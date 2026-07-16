@@ -507,6 +507,109 @@ fn seeded_composition_over_unresolved_cross_cell_operand_is_exempted_by_dependen
     );
 }
 
+/// Reviewer follow-up (task #5120 R2c amendment, round 3): on the
+/// kind-closure `Err` path, `eval_variadic_composition_symbolic`
+/// (`geometry_ops.rs`) mints a plain `Value::Undef` (no `UndefCause` tag) for
+/// a composition whose operands resolve to MISMATCHED `SelectorKind`s (e.g.
+/// `union(faces(b), edges(b))`). That cell is `Type::Selector`-typed (clause
+/// 7's `Type::Geometry` carve-out does not apply) and `union` IS
+/// `is_symbolic_eval_wired_selector_ctor` (clause 8's build-only exemption
+/// does not apply either) — so IF this cell's Undef ever reached a
+/// `check_no_stale_undef` call, the review asked whether anything actually
+/// exempts it.
+///
+/// This drives the REAL compiler + `Engine::eval` over the exact BT1 fixture
+/// already pinned by `selector_boundary_gate.rs::bt1_wrong_kind_union_rejected`
+/// and `reify-compiler/tests/selector_composition_tests.rs`, to settle the
+/// question empirically instead of by assumption — mirroring the discovery
+/// method of `symbolic_selector_composition_eval.rs`'s
+/// `solid_csg_boolean_union_is_not_stale_undef_on_eval_and_resolves_on_build`
+/// (whose own doc comment records a similar "verified fact, not assumption"
+/// correction).
+///
+/// **Verified facts:**
+///
+/// 1. `union(faces(b), edges(b))` ALWAYS emits exactly one Error-severity
+///    `DiagnosticCode::SelectorKindMismatch` at compile time —
+///    `selector_composition_result_type` (units.rs) emits it unconditionally
+///    for any kind mismatch, with no escape hatch, so a real compiled `.ri`
+///    program can never reach `eval()` in this shape unless a caller
+///    explicitly disregards that error. This is the leg of the reviewer's
+///    disjunction that actually holds.
+/// 2. It is NOT independently exempted at the checker level (the other leg
+///    does not hold): if a caller disregards diagnostics and evaluates
+///    anyway — as this test deliberately does, to close the loop — the
+///    resulting `Value::Undef` cell IS reported by `check_no_stale_undef`;
+///    no clause catches it. Tagging it `UndefCause::OpContractFailed`
+///    (the review's alternative suggestion) would not change that:
+///    `check_no_stale_undef`'s clause 6 excludes cells only by the
+///    *structural shape* of `default_expr` (a literal `undef`) — the
+///    checker's signature (`graph, values, trace_map, functions`) never
+///    receives an `UndefCause` map at all, by design (its own doc comment:
+///    "a pure op-contract-failure cell... α cannot distinguish that from
+///    genuine staleness").
+///
+/// So the real backstop is caller discipline, not a checker-level
+/// exemption: every current caller of `check_no_stale_undef` in this crate
+/// (`run_corpus_shard` below, and every real-pipeline test in
+/// `symbolic_selector_composition_eval.rs`) checks `compiled.diagnostics`
+/// for errors FIRST and skips eval / never calls the checker when errors are
+/// present. `check_no_stale_undef` is also not wired into any live GUI/CLI/
+/// LSP surface today — only this crate's own test suite calls it — so there
+/// is no live user-facing false-positive risk from this defensive arm right
+/// now. This test exists so a regression in either guarantee (the compiler
+/// dropping the diagnostic, or a future caller skipping the errors-first
+/// check) is caught by a named test failure instead of resting on this doc
+/// comment alone.
+#[test]
+fn seeded_kind_mismatch_composition_undef_is_unexempted_without_caller_discipline() {
+    use reify_core::diagnostics::DiagnosticCode;
+
+    let source = std::fs::read_to_string(format!(
+        "{}/tests/fixtures/selectors/bt1_wrong_kind_union.ri",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .expect("fixture bt1_wrong_kind_union.ri must exist");
+    let compiled = reify_test_support::compile_source_with_stdlib(&source);
+
+    // Leg 1: the compiler ALWAYS rejects this before eval.
+    let errors = reify_test_support::collect_errors(&compiled.diagnostics);
+    assert_eq!(
+        errors.len(),
+        1,
+        "bt1_wrong_kind_union.ri must compile with exactly 1 error, got {errors:#?}"
+    );
+    assert_eq!(
+        errors[0].code,
+        Some(DiagnosticCode::SelectorKindMismatch),
+        "expected DiagnosticCode::SelectorKindMismatch, got {:?}",
+        errors[0].code
+    );
+
+    // Leg 2: deliberately evaluate anyway — bypassing the errors-first
+    // discipline every real caller follows — to empirically settle whether
+    // the checker itself would exempt the resulting cell.
+    let mut engine = reify_eval::Engine::new(
+        Box::new(reify_constraints::SimpleConstraintChecker),
+        None,
+    );
+    engine.eval(&compiled);
+
+    let violations = engine.check_no_stale_undef();
+    let cell_id = ValueCellId::new("BT1WrongKindUnion", "u");
+    assert!(
+        violations.iter().any(|v| v.cell == cell_id),
+        "expected the kind-mismatch union cell {:?} to be reported (no clause \
+         exempts a Selector-typed, deps-resolved, eval-wired composition cell \
+         left Undef by the kind-closure Err arm) when eval'd despite the \
+         compile error — got {:?}. If this now passes with zero violations, \
+         the exemption mechanism changed and this test's doc comment (and the \
+         R2c review finding it pins) should be revisited",
+        cell_id,
+        violations.iter().map(|v| &v.cell).collect::<Vec<_>>()
+    );
+}
+
 // ── Step-7: Engine-path corpus test over the deliberately-undef fixtures ────
 
 /// The four fixtures purpose-built for the undef-self-describing PRD family
