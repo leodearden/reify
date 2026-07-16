@@ -465,8 +465,19 @@ fn rewrite_files_to_abs(state: &mut GuiState, canonical: &Path) {
     if let Some(entry_dir) = canonical.parent() {
         for f in &mut state.files {
             let resolved = entry_dir.join(&f.path);
-            if let Ok(c) = std::fs::canonicalize(&resolved) {
-                f.path = c.to_string_lossy().into_owned();
+            match std::fs::canonicalize(&resolved) {
+                Ok(c) => f.path = c.to_string_lossy().into_owned(),
+                // Leave `f.path` as its stem-only module key (e.g. "bracket.ri")
+                // on failure — still a valid, if ambiguous, identity — rather
+                // than erroring the whole open. Warn so a transient FS failure
+                // here is observable instead of silently reintroducing the
+                // stem-only identity ambiguity #5193 eliminated.
+                Err(error) => tracing::warn!(
+                    path = %resolved.display(),
+                    %error,
+                    "rewrite_files_to_abs: canonicalize failed; leaving files[].path as stem-only key {:?}",
+                    f.path
+                ),
             }
         }
     }
