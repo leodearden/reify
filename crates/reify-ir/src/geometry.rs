@@ -5218,11 +5218,37 @@ impl TopologyAttributeTable {
     /// never observed by `lookup`/`record`/`remove`/`iter`, which keeps
     /// them invisible to the engine's `entries`-only per-realization
     /// diagnostic scan (task #4637, substrate for #4263).
+    ///
+    /// # Lifecycle (no dedicated eviction — by design)
+    ///
+    /// Unlike `entries`, `result_faces` has no `remove_result_face`/
+    /// `clear_result_faces` counterpart. This is safe today because
+    /// `reify_eval::engine_build` resets the WHOLE table via
+    /// `self.topology_attribute_table = TopologyAttributeTable::default()`
+    /// at each realization rebuild, which clears `result_faces` along with
+    /// `entries` — both are plain fields on the same `Default`-derived
+    /// struct. So entries recorded here accumulate only across the
+    /// `propagate_attributes` calls WITHIN a single realization, never
+    /// across realizations (review follow-up, task #4637 amendment). If a
+    /// future incremental/reuse path ever retains a `TopologyAttributeTable`
+    /// across realizations instead of resetting it, this no-eviction
+    /// assumption must be revisited — add scoped pruning or a
+    /// `clear_result_faces` at that point.
     pub fn record_result_face(&mut self, desc: ResultFaceDescriptor, attr: TopologyAttribute) {
         self.result_faces.insert(desc, attr);
     }
 
     /// Look up the attribute for a given result-face descriptor, if any.
+    ///
+    /// Currently exercised only by tests (this reify-ir module's
+    /// independent-key assertions) — the production caller is #4263's
+    /// `extract_faces`->descriptor bridge, which has not landed yet. Kept
+    /// alongside `record_result_face`/`iter_result_faces` rather than
+    /// deferred (review follow-up, task #4637 amendment) because #4263 is
+    /// this task's immediate next link in the decomposition and a point
+    /// lookup is the natural shape for that bridge to consume; revisit if
+    /// #4263 ends up needing a different read shape than a bare descriptor
+    /// lookup.
     pub fn lookup_result_face(&self, desc: ResultFaceDescriptor) -> Option<&TopologyAttribute> {
         self.result_faces.get(&desc)
     }
