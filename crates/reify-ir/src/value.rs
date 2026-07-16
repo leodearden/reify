@@ -2774,18 +2774,41 @@ const DISPLAY_SIG_FIGS: u32 = 12;
 /// callers preserve `"NaN"` / `"inf"` / `"0"` display exactly as before.
 fn round_to_sig_figs(v: f64, sig: u32) -> f64 {
     if !v.is_finite() || v == 0.0 {
-        v
-    } else {
-        format!("{:.*e}", (sig - 1) as usize, v)
-            .parse::<f64>()
-            .unwrap_or(v)
+        return v;
     }
+    // Fast path: an exact whole number with at most `sig` digits already
+    // sits at (or below) the target precision, so rounding is provably a
+    // no-op — skip the allocating format!/parse round-trip. This function
+    // runs once per scalar during recursive composite rendering (List/Set/
+    // Map/Matrix), so avoiding the alloc + float-parse for already-clean
+    // whole values (a common case for engineering quantities like counts or
+    // whole millimetres) is worth it. Noisy near-whole values such as
+    // `105.00000000000001` have `v != v.trunc()` and correctly fall through
+    // to the round-trip below; whole numbers at or beyond `10^sig` carry
+    // more significant figures than the target and must also fall through.
+    if v == v.trunc() && v.abs() < 10f64.powi(sig as i32) {
+        return v;
+    }
+    format!("{:.*e}", (sig - 1) as usize, v)
+        .parse::<f64>()
+        .unwrap_or(v)
 }
 
 /// Format a floating-point number for display: whole numbers render without
 /// decimal points (e.g. `80.0` → `"80"`), and values are first rounded to
 /// [`DISPLAY_SIG_FIGS`] significant figures to clean up 1-ulp f64 noise
 /// (e.g. `6.3999999999999995` → `"6.4"`).
+///
+/// Reached by [`Value::format_display`], [`Value::format_display_pair`], and
+/// [`Value::format_display_triple`] — i.e. the GUI values panel, the debug
+/// MCP `engine_state` snapshot, the GUI constraint pretty-printer
+/// (`format_expr`), and `reify-expr` string interpolation (`interp_render`
+/// calls `format_display()` directly). It is *not* reached by
+/// [`Value::format_hover`] (LSP hover) or the raw `impl Display for Value`
+/// (used by `reify eval`'s plain `id = value` cell printing and
+/// `reify-cli`'s MCP value-change tracking) — both of those format floats
+/// via Rust's unrounded shortest-round-trip `Display` and are unaffected by
+/// the [`DISPLAY_SIG_FIGS`] floor.
 pub fn format_display_number(v: f64) -> String {
     let v = round_to_sig_figs(v, DISPLAY_SIG_FIGS);
     if v == v.trunc() && v.abs() < 1e15 {
@@ -10767,6 +10790,68 @@ mod tests {
     #[test]
     fn format_display_number_infinity_renders_inf() {
         assert_eq!(format_display_number(f64::INFINITY), "inf");
+    }
+
+    // ── round_to_sig_figs fast-path boundary (task 5198 amend) ───────────────
+    //
+    // round_to_sig_figs skips the allocating format!/parse round-trip for
+    // exact whole numbers below 10^DISPLAY_SIG_FIGS (an efficiency amendment
+    // to the original fix). These pin the fast path's correctness at its
+    // boundary: values it takes must already be clean, and values just
+    // beyond the threshold must still fall through to real rounding.
+
+    #[test]
+    fn format_display_number_fast_path_whole_number_below_threshold_unchanged() {
+        // 999_999_999_999 has exactly 12 significant figures — sits right at
+        // the fast-path threshold and must render unchanged.
+        assert_eq!(
+            format_display_number(999_999_999_999.0),
+            "999999999999"
+        );
+    }
+
+    #[test]
+    fn format_display_number_rounds_large_whole_number_beyond_fast_path() {
+        // 1_234_567_890_123 has 13 significant figures — one past the
+        // fast-path threshold — and must still be rounded to 12, not
+        // fast-pathed through unchanged.
+        assert_eq!(
+            format_display_number(1_234_567_890_123.0),
+            "1234567890120"
+        );
+    }
+
+    // ── Cross-path sig-fig rounding lock (task 5198 amend) ────────────────────
+    //
+    // format_display_number is a private choke point; these lock rounding at
+    // the public boundaries that other crates/consumers actually call, per
+    // reviewer request, so the guarantee is pinned end-to-end and not just
+    // for the isolated free function above.
+
+    #[test]
+    fn format_display_method_rounds_ulp_noise() {
+        // reify-expr's interp_render (string interpolation, e.g. "{t}" in a
+        // quoted literal) calls `Value::format_display()` directly — lock
+        // rounding at that method boundary.
+        assert_eq!(Value::Real(6.3999999999999995).format_display(), "6.4");
+    }
+
+    #[test]
+    fn format_display_pair_rounds_ulp_noise_for_composed_dimension() {
+        // End-to-end GUI-values-panel / debug-MCP path: Value::Scalar ->
+        // DimensionVector::to_display_units (composed fallback, identity
+        // scale for MASS_DENSITY) -> format_display_number. Locks that the
+        // sig-fig rounding (fix a) and the composed base-unit fallback
+        // (fix b) compose correctly through the same Scalar, not just each
+        // in isolation.
+        let v = Value::Scalar {
+            si_value: 6.3999999999999995,
+            dimension: DimensionVector::MASS_DENSITY,
+        };
+        assert_eq!(
+            v.format_display_pair(),
+            ("6.4".to_string(), "kg\u{b7}m^-3".to_string())
+        );
     }
 
     // ── Value::Selector substrate tests (step-3 RED / task 4116 α) ───────────
