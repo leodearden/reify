@@ -16,8 +16,6 @@
 //! and the trigger `.ri` sources); `test-1` onward each add one `#[test]` fn.
 
 use reify_core::ValueCellId;
-// Consumed starting at test-3/test-7 (`engine.eval_cached(&module, VersionId(..))`).
-#[allow(unused_imports)]
 use reify_core::VersionId;
 use reify_eval::Engine;
 use reify_eval::cache::NodeId;
@@ -82,6 +80,16 @@ const GUARDED_GROUP_SRC: &str = r#"
         }
         let ok_a = determined(x_ok)
         let ok_r = determined(x_rejected)
+    }
+"#;
+
+/// A plain `Let` with no guard/structural-query/self-datum wrapper — drives
+/// the `eval_cached` Let cache-miss path (engine_eval.rs, ~@6317). A sibling
+/// `let` probes `determined(..)` on it.
+const PLAIN_LET_SRC: &str = r#"
+    structure S {
+        let y = 5mm
+        let y_det = determined(y)
     }
 "#;
 
@@ -189,5 +197,55 @@ fn guarded_group_param_provenance_and_determinacy() {
         Some(&Value::Undef),
         "x_rejected's raw value must be Value::Undef in EvalResult.values \
          (parity fixture's rejected-override cell)"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// test-3: eval_cached Let-miss provenance + determinacy
+// ─────────────────────────────────────────────────────────────────────────
+
+/// RED: `eval_cached` Let cache-miss provenance + determinacy preserved.
+///
+/// RED today: the Let cache-miss arm (engine_eval.rs, ~@6317) records its
+/// Started journal event with `payload: None` (@~6322-6328), so
+/// `started_payload` is `None`, not `Some("cached-serve")`. GREEN after
+/// impl-3 migrates the commit onto `commit_cell_result` with
+/// `TraceSource::CachedServe`.
+///
+/// Also pins `UnconditionalDetermined` determinacy PRESERVED across the
+/// migration boundary: `y`'s literal default_expr evaluates to a non-Undef
+/// value, so `determined(y)` stays `Bool(true)`.
+///
+/// Covers only the always-reachable Let-miss path. The impl-3 plan step
+/// also names a secondary "wave-2" cone-reeval site (post-solver downstream
+/// let re-eval), guarded by reachability — omitted here because reaching it
+/// needs a solver-backed engine (`with_solver(..)`), a fixture shape this
+/// file's `make_engine()`-only scaffolding doesn't build, and wave-2 shares
+/// the exact `commit_cell_result`/`cell_eval_ctx` call shape already
+/// exercised by this test and by test-2's `reeval_cone_cell` coverage.
+#[test]
+fn eval_cached_let_miss_provenance_and_determinacy() {
+    let module = parse_and_compile(PLAIN_LET_SRC);
+    let mut engine = make_engine();
+
+    let result = engine.eval_cached(&module, VersionId(1));
+
+    let y_id = ValueCellId::new("S", "y");
+    let y_det_id = ValueCellId::new("S", "y_det");
+
+    eprintln!("y started_payload = {:?}", started_payload(&engine, &y_id));
+    eprintln!("y_det = {:?}", result.eval_result.values.get(&y_det_id));
+
+    assert_eq!(
+        started_payload(&engine, &y_id),
+        Some("cached-serve".to_string()),
+        "eval_cached's Let cache-miss path should carry the 'cached-serve' \
+         TraceSource slug once migrated onto commit_cell_result"
+    );
+    assert_eq!(
+        result.eval_result.values.get(&y_det_id),
+        Some(&Value::Bool(true)),
+        "y should be Determined -> determined(y) = true (UnconditionalDetermined \
+         rule, preserved across the migration boundary)"
     );
 }
