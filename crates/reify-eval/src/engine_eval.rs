@@ -4923,6 +4923,10 @@ impl Engine {
                         // ctx dropped here — immutable borrow on `values` released.
                     }
 
+                    // Commit-only migration (task γ #5053, impl-6): both arms below
+                    // keep their existing pre-commit logic unchanged. CacheLeg::Skip
+                    // makes the pre-existing no-cache decision explicit + auditable
+                    // instead of silently omitting the cache leg.
                     if failure_diags.is_empty() {
                         // All args evaluated and type-checked successfully.
                         // Attach the overlay to the cloned instance data in a single
@@ -4930,20 +4934,42 @@ impl Engine {
                         // than K separate per-arg calls (which would be O(K²)).
                         data.set_materialized_annotations_batch(&collected);
                         let rebuilt = Value::StructureInstance(data);
-                        values.insert(id.clone(), rebuilt.clone());
-                        snapshot
-                            .values
-                            .insert(id, (rebuilt, DeterminacyState::Determined));
+                        commit_cell_result(
+                            CommitLegs {
+                                values: &mut values,
+                                snapshot_values: &mut snapshot.values,
+                                cache: &mut self.cache,
+                                journal: &mut self.journal,
+                            },
+                            id,
+                            rebuilt,
+                            DeterminacyRule::UnconditionalDetermined,
+                            TraceSource::PostPassOverwrite,
+                            DependencyTrace::default(),
+                            version,
+                            CacheLeg::Skip("annotation-args materialization overlay"),
+                        );
                     } else {
                         // Any arg failure → emit all per-arg diagnostics and replace
                         // the instance cell with Undef so downstream consumers never
                         // observe a partially-materialized annotation. Mirrors the
                         // MassProperties PSD hook's replace-on-failure pattern.
                         diagnostics.extend(failure_diags);
-                        values.insert(id.clone(), Value::Undef);
-                        snapshot
-                            .values
-                            .insert(id, (Value::Undef, DeterminacyState::Determined));
+                        commit_cell_result(
+                            CommitLegs {
+                                values: &mut values,
+                                snapshot_values: &mut snapshot.values,
+                                cache: &mut self.cache,
+                                journal: &mut self.journal,
+                            },
+                            id,
+                            Value::Undef,
+                            DeterminacyRule::UnconditionalDetermined,
+                            TraceSource::PostPassOverwrite,
+                            DependencyTrace::default(),
+                            version,
+                            CacheLeg::Skip("annotation-args materialization overlay"),
+                        );
                     }
                 }
             }
