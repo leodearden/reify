@@ -60,9 +60,17 @@ pub(crate) struct PostPassState<'a> {
 
 /// A single post-pass check runnable identically on any eval path.
 ///
-/// Contract: equal input [`PostPassState`] → equal diagnostic sequence +
-/// equal state mutations (INV-EVAL-3). Implementations should treat `state`
-/// as the only source of truth — no hidden global/interior state.
+/// Contract: equal input [`PostPassState`] → equal diagnostic MULTISET +
+/// equal state mutations (INV-EVAL-3). Multiset, not sequence: a detector
+/// that walks `state.values` (an unsorted `im::HashMap`-backed `ValueMap`)
+/// may observe cells in a different order across two independently-
+/// assembled-but-equal states, so it can emit the same diagnostics in a
+/// different order while still forming the same set — see
+/// [`MassPropertiesPsdDetector`] and its tests' `diag_key_set` comparison.
+/// Ordering BETWEEN distinct detectors is a separate, stronger guarantee
+/// owned by [`DetectorRegistry::run_all`] (registration order — a true
+/// sequence guarantee). Implementations should treat `state` as the only
+/// source of truth — no hidden global/interior state.
 #[allow(dead_code)] // wired in by task μ; exercised by tests until then
 pub(crate) trait PostPassDetector {
     /// A stable kebab-case slug identifying this detector — used for
@@ -159,6 +167,21 @@ impl DetectorRegistry {
 /// `engine_eval.rs:4662-4762` site it mirrors) must be mirrored on the
 /// other, or the two will silently diverge before μ deletes the inline
 /// copy.
+///
+/// **What is, and isn't, guarded**: only the diagnostic *wording* is
+/// cross-checked by a test
+/// (`mass_properties_psd_detector_messages_match_characterization_wording`).
+/// A classification-rule change (e.g. the `None | Some(Value::Undef) =>
+/// Skip` predicate, or `psd_tol`'s tolerance formula) or an
+/// Undef-replacement-behavior change on either side is NOT cross-checked
+/// against the other — this asymmetry is intentionally unguarded for this
+/// task's scope. The real fix is extracting a shared classify+replace
+/// function that both this detector and the `engine_eval.rs:4662-4762`
+/// site call — deliberately deferred to task μ (#5044), since it would
+/// require editing `engine_eval.rs`, which is outside this task's locked
+/// modules (`detectors.rs`, `lib.rs`) and is left untouched by design (see
+/// the module doc's "Known scope gaps for task μ") to avoid same-file
+/// contention with the concurrent task γ `engine_eval.rs` migration.
 #[allow(dead_code)] // wired in by task μ; exercised by tests until then
 pub(crate) struct MassPropertiesPsdDetector;
 
@@ -256,7 +279,7 @@ impl PostPassDetector for MassPropertiesPsdDetector {
 
 #[cfg(test)]
 mod tests {
-    use reify_core::{Diagnostic, DiagnosticCode, ValueCellId};
+    use reify_core::{Diagnostic, DiagnosticCode, DimensionVector, ValueCellId};
     use reify_ir::{
         DeterminacyState, PersistentMap, StructureInstanceData, StructureTypeId, Value, ValueMap,
     };
@@ -529,6 +552,31 @@ mod tests {
         Value::List(
             rows.iter()
                 .map(|row| Value::List(row.iter().map(|&c| Value::Int(c)).collect()))
+                .collect(),
+        )
+    }
+
+    /// A `Value::Matrix` built from a plain `[[f64; 3]; 3]`, with each cell
+    /// wrapped as a dimensioned `Value::Scalar { si_value, dimension:
+    /// MOMENT_OF_INERTIA }` (kg·m²) — the OTHER numeric cell shape
+    /// `inertia_3x3_from_value` explicitly accepts alongside bare
+    /// `Value::Real` / `Value::Int` (`dynamics_psd.rs:56-63`), and the
+    /// shape a real `MassProperties` inertia tensor actually carries.
+    /// Covered by `dynamics_psd`'s own unit test (`dynamics_psd.rs:315+`),
+    /// but — before
+    /// `mass_properties_psd_detector_accepts_dimensioned_scalar_cells`
+    /// below — never exercised through the detector's classification path.
+    fn matrix3_scalar_kg_m2(rows: [[f64; 3]; 3]) -> Value {
+        Value::Matrix(
+            rows.iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|&c| Value::Scalar {
+                            si_value: c,
+                            dimension: DimensionVector::MOMENT_OF_INERTIA,
+                        })
+                        .collect()
+                })
                 .collect(),
         )
     }
@@ -829,6 +877,47 @@ mod tests {
         assert_eq!(
             state.snapshot_values.get(&non_psd_list_cell),
             Some(&(Value::Undef, DeterminacyState::Determined))
+        );
+    }
+
+    /// `MassPropertiesPsdDetector` dispatches through `InertiaResult::Valid`
+    /// when `inertia` is a `Value::Matrix` of dimensioned `Value::Scalar`
+    /// cells (kg·m² moment-of-inertia quantities) — the most
+    /// production-realistic input shape (real `MassProperties` tensors
+    /// carry dimensioned cells, not bare `Value::Real`/`Value::Int`), and
+    /// the one shape not yet exercised through the detector's
+    /// classification path: only `dynamics_psd`'s own unit test covered
+    /// `Value::Scalar` extraction directly, never routed through this
+    /// detector's `Valid`/PSD dispatch. A PSD identity tensor is used so
+    /// the only thing under test is that Scalar extraction correctly
+    /// reaches `InertiaResult::Valid` and is then left untouched — PSD
+    /// vs. non-PSD numeric routing itself is already covered by the
+    /// `Value::Matrix`-of-`Value::Real` and `Value::List`-of-`Value::Int`
+    /// tests above.
+    #[test]
+    fn mass_properties_psd_detector_accepts_dimensioned_scalar_cells() {
+        let scalar_cell = ValueCellId::new("BodyI", "mass_props");
+        let scalar_value = mass_properties(Some(matrix3_scalar_kg_m2([
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ])));
+
+        let entries = [(scalar_cell.clone(), scalar_value.clone())];
+        let mut state = OwnedState::seeded(&entries);
+
+        DetectorRegistry::with_builtins().run_all(&mut state.as_state());
+
+        assert!(
+            state.diagnostics.is_empty(),
+            "expected the PSD identity tensor (dimensioned Scalar cells) to be \
+             left untouched, got {:?}",
+            diag_keys(&state.diagnostics)
+        );
+        assert_eq!(state.values.get(&scalar_cell), Some(&scalar_value));
+        assert_eq!(
+            state.snapshot_values.get(&scalar_cell),
+            Some(&(scalar_value, DeterminacyState::Determined))
         );
     }
 }
