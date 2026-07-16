@@ -99,6 +99,17 @@ impl Debouncer {
         // Single pass: `retain` visits each entry once and removes it
         // in-place, so a ready entry is neither re-hashed nor looked up a
         // second time (unlike a filter-then-remove-by-key two-pass).
+        //
+        // Each ready path is still `path.clone()`d below rather than moved
+        // out, since `retain`'s closure only ever gets `&PathBuf` -- there's
+        // no API to take ownership of a key while telling `retain` to drop
+        // it. That's one small allocation per ready path, accepted given
+        // `pending` holds at most a handful of entries for this GUI's
+        // single-target-file (+ a few open scratch tabs) workload (see the
+        // O(n)-scan tradeoff note on `Debouncer` above). If this is ever
+        // pointed at a directory with many concurrently-ready paths, prefer
+        // a two-step drain (collect ready keys first, then `remove` each to
+        // move its `PathBuf` out) over this clone.
         let mut ready = Vec::new();
         let window = self.window;
         self.pending.retain(|path, pending| {
