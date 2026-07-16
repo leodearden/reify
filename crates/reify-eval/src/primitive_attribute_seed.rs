@@ -613,17 +613,36 @@ fn pack_sign_bits(x: AxisSign, y: AxisSign, z: AxisSign) -> u32 {
 /// until #4263 replaces this placeholder with real per-face roles.
 /// `record_solid_attribute_records_only_the_solid_handle` (below) pins the
 /// exact placeholder shape so a drive-by change here is caught.
+///
+/// # Overwrite precondition (review follow-up, task #4636 amendment)
+///
+/// This calls [`TopologyAttributeTable::record`], which is unconditional
+/// last-write-wins: a pre-existing entry at `KernelHandle{kernel_id,
+/// solid_handle}` is silently clobbered by this placeholder. The caller
+/// MUST ensure `solid_handle` is not already a real attribute key. Today
+/// every call site satisfies this by construction — the engine seed site
+/// calls this only once per freshly-minted `handle.id`, and
+/// `forward_solid_attribute_on_ingest` writes to a *different* kernel's
+/// scope — so the `debug_assert!` below is a trip wire against a future
+/// caller breaking that invariant, not a currently-reachable panic.
 pub fn record_solid_attribute(
     table: &mut TopologyAttributeTable,
     kernel_id: KernelId,
     solid_handle: GeometryHandleId,
     feature_id: &FeatureId,
 ) {
+    let key = KernelHandle {
+        kernel: kernel_id,
+        id: solid_handle,
+    };
+    debug_assert!(
+        table.lookup(key).is_none(),
+        "record_solid_attribute would overwrite an existing entry at \
+         {key:?} — caller must ensure solid_handle is not already a real \
+         attribute key before calling this placeholder-recording helper"
+    );
     table.record(
-        KernelHandle {
-            kernel: kernel_id,
-            id: solid_handle,
-        },
+        key,
         TopologyAttribute {
             feature_id: feature_id.clone(),
             role: Role::Side,
