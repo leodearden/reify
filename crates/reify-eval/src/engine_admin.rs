@@ -3425,6 +3425,84 @@ mod tests {
         );
     }
 
+    /// Cross-check the two INV-BUILD-2 read-API-family members
+    /// (`current_eval_version` in engine_build.rs, `last_allocated_version`
+    /// above) agree once an eval has run, and pin that
+    /// `drain_and_record_warm_pool_events` stamps journal events with that
+    /// SAME version — corroborating the `next_version_id`-derived reader
+    /// against the independent `eval_state.snapshot.version` path. Mirrors
+    /// the driver in `tests/warm_pool_drain_steady_state.rs` (fresh engine,
+    /// 1-byte warm-pool budget, eval, donate x2 to force Donated+Evicted,
+    /// drain).
+    #[test]
+    fn drain_stamps_current_eval_version_and_readers_agree_post_eval() {
+        use crate::cache::NodeId;
+        use crate::warm_pool::WarmStatePool;
+        use reify_constraints::SimpleConstraintChecker;
+        use reify_core::ValueCellId;
+        use reify_ir::OpaqueState;
+        use reify_test_support::parse_and_compile;
+
+        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+
+        // 1-byte budget: the second donate below is guaranteed to evict the
+        // first, producing both a Donated and an Evicted event.
+        *engine.warm_pool_mut() = WarmStatePool::new(1);
+
+        let module = parse_and_compile(
+            r#"structure Bracket {
+    param width: Length = 80mm
+    param height: Length = 100mm
+    param thickness: Length = 5mm
+    constraint thickness > 2mm
+}"#,
+        );
+        engine.eval(&module);
+
+        // The two named INV-BUILD-2 readers must agree post-eval: both
+        // ultimately reflect the version `allocate_snapshot_version` minted
+        // for this eval round, just via independent paths (snapshot.version
+        // vs next_version_id - 1).
+        let expected = engine.current_eval_version();
+        assert_eq!(
+            engine.last_allocated_version(),
+            expected,
+            "last_allocated_version() must agree with current_eval_version() \
+             once an eval has populated eval_state",
+        );
+
+        // Drain any events the eval itself produced so the baseline below is
+        // clean, then force a Donated+Evicted pair via the 1-byte budget.
+        engine.drain_and_record_warm_pool_events();
+        let base = engine.journal().len();
+
+        let node_a = NodeId::Value(ValueCellId::new("Bracket", "width"));
+        let node_b = NodeId::Value(ValueCellId::new("Bracket", "height"));
+        engine
+            .warm_pool_mut()
+            .donate(node_a, OpaqueState::new(1i32, 1));
+        engine
+            .warm_pool_mut()
+            .donate(node_b, OpaqueState::new(2i32, 1));
+        engine.drain_and_record_warm_pool_events();
+
+        let recorded = &engine.journal().all_events()[base..];
+        assert!(
+            !recorded.is_empty(),
+            "donate x2 under a 1-byte budget must produce at least one \
+             drained/recorded warm-pool event (non-vacuous check)",
+        );
+        for event in recorded {
+            assert_eq!(
+                event.version, expected,
+                "every warm-pool event drained after the eval must be stamped \
+                 with the eval's current_eval_version, not some other version; \
+                 event: {:?}",
+                event,
+            );
+        }
+    }
+
     // ── engine_edit.rs migration (task 5041, INV-BUILD-2 β) ───────────────
 
     /// Characterization lock on the OBSERVABLE snapshot/version numbering
