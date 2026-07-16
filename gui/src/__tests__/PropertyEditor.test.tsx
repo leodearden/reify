@@ -1524,6 +1524,30 @@ describe('PropertyEditor per-cell unit picker (task #5199)', () => {
     expect(screen.queryByTestId('unit-edit-hint-c1')).toBeNull();
   });
 
+  it('(h3) the edit-hint is styled distinctly from a plain unit badge so it is not mistaken for one', () => {
+    // Reviewer finding (task #5199 amend, robustness): the hint mitigating
+    // the canonical-vs-picked-unit footgun previously reused the plain
+    // `.unitBadge` style, making it "a small badge that's easy to miss".
+    // Pin that it now carries its own, more visually weighty class.
+    render(() => (
+      <PropertyEditor
+        values={capacityValues()}
+        selectedEntity={null}
+        onSetParameter={vi.fn()}
+        unitLadders={VOLUME_LADDER}
+      />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const select = screen.getByTestId('unit-select-c1') as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: 'L' } });
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+
+    const hint = screen.getByTestId('unit-edit-hint-c1');
+    expect(hint.className).toContain('unitEditHint');
+    expect(hint.className).not.toContain('unitBadge');
+  });
+
   it('(i) typing a NEW value while a non-default unit is picked commits the raw typed number, uninterpreted by the picked unit', () => {
     // Reviewer finding (task #5199 amend, robustness): test (g) only covers
     // the no-op focus+Enter case. This covers the actually-lossy case: the
@@ -1578,5 +1602,39 @@ describe('PropertyEditor per-cell unit picker (task #5199)', () => {
     const input = row.querySelector('input[type="text"]') as HTMLInputElement;
     expect(input.value).toBe('42');
     expect(row.textContent).toContain('mm³');
+  });
+
+  it('(k) a cell removed from props.values (e.g. file reload) has its unit preference pruned, both persisted and in-memory', () => {
+    // Reviewer finding (task #5199 amend, resource_cleanup): both the
+    // in-memory `selectedUnits` record and the persisted localStorage blob
+    // previously accumulated one entry per cell_id ever seen and were never
+    // pruned when a cell disappeared. Guard that a cell's preference is
+    // dropped from BOTH places once it's no longer in props.values — so if
+    // the same cell_id later reappears (e.g. the file is reloaded again) it
+    // does not resurrect a stale pick from before it disappeared.
+    const [values, setValues] = createSignal<Record<string, ValueData>>(capacityValues());
+    render(() => (
+      <PropertyEditor
+        values={values()}
+        selectedEntity={null}
+        onSetParameter={vi.fn()}
+        unitLadders={VOLUME_LADDER}
+      />
+    ));
+
+    fireEvent.change(screen.getByTestId('unit-select-c1'), { target: { value: 'L' } });
+    expect(loadUnitPreference('c1')).toBe('L');
+
+    // Simulate a file reload: c1 disappears, replaced by an unrelated cell.
+    setValues({
+      c2: makeValue({ cell_id: 'c2', name: 'other', entity_path: 'Other.other' }),
+    });
+    expect(screen.queryByTestId('prop-row-c1')).toBeNull();
+    expect(loadUnitPreference('c1')).toBeNull();
+
+    // c1 reappears — it must NOT remember the pruned 'L' choice; it falls
+    // back to the ladder default rather than resurrecting the stale pick.
+    setValues(capacityValues());
+    expect((screen.getByTestId('unit-select-c1') as HTMLSelectElement).value).toBe('mm³');
   });
 });

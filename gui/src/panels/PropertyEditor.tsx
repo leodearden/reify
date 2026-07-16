@@ -1,9 +1,9 @@
-import { type Component, createSignal, createMemo, For, Show } from 'solid-js';
+import { type Component, createSignal, createMemo, createEffect, For, Show } from 'solid-js';
 import type { UnitLadderMap, UnitOption, ValueData } from '../types';
 import styles from './PropertyEditor.module.css';
 import { SelectionBreadcrumb } from './SelectionBreadcrumb';
 import { convertToUnit, formatDisplayNumber, ladderForDimension } from '../stores/unitLadder';
-import { loadAllUnitPreferences, saveUnitPreference } from '../stores/unitPreferences';
+import { loadAllUnitPreferences, pruneUnitPreferences, saveUnitPreference } from '../stores/unitPreferences';
 
 /**
  * Return a short glyph for the non-Final freshness variants.
@@ -195,6 +195,31 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
     setSelectedUnits((prev) => ({ ...prev, [cellId]: label }));
   }
 
+  // Garbage-collect unit preferences for cells no longer present in
+  // props.values — e.g. a file reload, or a member edited/removed (task
+  // #5199 amend, reviewer_comprehensive resource_cleanup finding: both the
+  // in-memory `selectedUnits` record and the persisted localStorage blob
+  // otherwise only ever grow, accumulating one entry per cell_id ever seen
+  // across every file opened in the session). Runs whenever the live
+  // cell_id set changes; a no-op write-wise when nothing is stale.
+  createEffect(() => {
+    const liveCellIds = Object.keys(props.values);
+    pruneUnitPreferences(liveCellIds);
+    const valid = new Set(liveCellIds);
+    setSelectedUnits((prev) => {
+      let changed = false;
+      const next: Record<string, string> = {};
+      for (const [cellId, label] of Object.entries(prev)) {
+        if (valid.has(cellId)) {
+          next[cellId] = label;
+        } else {
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  });
+
   const filteredGroups = createMemo(() => {
     const filter = filterText().toLowerCase();
     const allGroups = groupByEntity(props.values);
@@ -382,11 +407,11 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
                           </Show>
                           <Show when={editingInDifferentUnit(val)}>
                             <span
-                              class={styles.unitBadge}
+                              class={styles.unitEditHint}
                               data-testid={`unit-edit-hint-${val.cell_id}`}
                               title="Editing always uses the canonical unit, regardless of the unit picked for display."
                             >
-                              editing in {defaultUnitLabel(val)}
+                              ⚠ editing in {defaultUnitLabel(val)}
                             </span>
                           </Show>
                           <Show

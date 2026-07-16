@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   UNIT_PREFERENCES_KEY,
   loadAllUnitPreferences,
   loadUnitPreference,
+  pruneUnitPreferences,
   saveUnitPreference,
 } from '../stores/unitPreferences';
 
@@ -86,6 +87,61 @@ describe('unitPreferences', () => {
       expect(all['Tank.capacity']).toBe(loadUnitPreference('Tank.capacity'));
       expect(all['Missing.cell']).toBeUndefined();
       expect(loadUnitPreference('Missing.cell')).toBeNull();
+    });
+  });
+
+  // pruneUnitPreferences (task #5199 amend, reviewer_comprehensive
+  // resource_cleanup finding: the persisted blob is keyed by cell_id and
+  // previously only ever grew across files/sessions).
+  describe('pruneUnitPreferences', () => {
+    it('drops entries whose cell_id is not in the valid set', () => {
+      saveUnitPreference('Tank.capacity', 'L');
+      saveUnitPreference('Tank.height', 'mm');
+      pruneUnitPreferences(['Tank.capacity']);
+      expect(loadAllUnitPreferences()).toEqual({ 'Tank.capacity': 'L' });
+      expect(loadUnitPreference('Tank.height')).toBeNull();
+    });
+
+    it('accepts a Set as well as an array for the valid-id argument', () => {
+      saveUnitPreference('Tank.capacity', 'L');
+      saveUnitPreference('Tank.height', 'mm');
+      pruneUnitPreferences(new Set(['Tank.height']));
+      expect(loadAllUnitPreferences()).toEqual({ 'Tank.height': 'mm' });
+    });
+
+    it('keeps every entry when all cell_ids are still valid', () => {
+      saveUnitPreference('Tank.capacity', 'L');
+      saveUnitPreference('Tank.height', 'mm');
+      pruneUnitPreferences(['Tank.capacity', 'Tank.height', 'Unrelated.cell']);
+      expect(loadAllUnitPreferences()).toEqual({
+        'Tank.capacity': 'L',
+        'Tank.height': 'mm',
+      });
+    });
+
+    it('drops every entry when the valid set is empty', () => {
+      saveUnitPreference('Tank.capacity', 'L');
+      pruneUnitPreferences([]);
+      expect(loadAllUnitPreferences()).toEqual({});
+    });
+
+    it('is a no-op (no localStorage write) when nothing is stale', () => {
+      saveUnitPreference('Tank.capacity', 'L');
+      const setItemSpy = vi.spyOn(Storage.prototype, 'setItem');
+      setItemSpy.mockClear();
+      pruneUnitPreferences(['Tank.capacity']);
+      expect(setItemSpy).not.toHaveBeenCalled();
+      setItemSpy.mockRestore();
+    });
+
+    it('does nothing when the store key is absent', () => {
+      expect(() => pruneUnitPreferences(['Tank.capacity'])).not.toThrow();
+      expect(loadAllUnitPreferences()).toEqual({});
+    });
+
+    it('does not throw for corrupted JSON in the store key', () => {
+      localStorage.setItem(UNIT_PREFERENCES_KEY, '{broken json!!!');
+      expect(() => pruneUnitPreferences(['Tank.capacity'])).not.toThrow();
     });
   });
 });
