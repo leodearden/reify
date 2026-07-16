@@ -23473,6 +23473,150 @@
         }
     }
 
+    // Independently-named siblings of the shared loop above (review
+    // amendment, task #5120 R2c, reviewer_comprehensive suggestion #1 —
+    // test_coverage): `face` alone got its own inline-nested/missing-target/
+    // arity-mismatch tests below, symmetric with how the composition trio
+    // (union/intersect/difference) each got independently-named per-operator
+    // tests. `edge`/`solid_body`/`vertex` previously only had kind-mapping
+    // coverage via the shared `_named_leaf_ctors` loop; a wiring regression
+    // that mapped e.g. `solid_body` to the wrong `SelectorKind` would still
+    // have been caught there, but as one shared-loop failure rather than an
+    // unambiguous, independently-failing test name. These three close that
+    // gap without touching the loop test above.
+
+    /// `edge(body, "tag")` over a SYMBOLIC body handle must yield
+    /// `Some(Value::Selector(Edge))`.
+    #[test]
+    fn try_eval_symbolic_topology_selector_edge_over_symbolic_target() {
+        let entity = "R2cNamedLeafEdge";
+        let mut values = reify_ir::ValueMap::new();
+        let rr = insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0x70u8; 32]);
+
+        let expr = named_selector_call(
+            "edge",
+            entity,
+            "body",
+            reify_core::ty::SelectorKind::Edge,
+            "tag",
+        );
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_symbolic_topology_selector(&expr, &values, &mut diagnostics);
+        let sv = match result {
+            Some(reify_ir::Value::Selector(sv)) => sv,
+            other => panic!(
+                "edge(body, \"tag\") over a symbolic target must yield Some(Value::Selector(..)); \
+                 got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(sv.kind, reify_core::ty::SelectorKind::Edge, "edge() → Edge kind");
+        match &sv.node {
+            reify_ir::value::SelectorNode::Leaf { target, query } => {
+                assert_eq!(
+                    target.kernel_handle, None,
+                    "symbolic target must have kernel_handle == None"
+                );
+                assert_eq!(target.realization_ref, rr, "realization_ref propagated");
+                assert_eq!(query, &reify_ir::value::LeafQuery::Named("tag".to_string()));
+            }
+            other => panic!("must be a Leaf node; got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "construction must emit zero diagnostics; got {:?}",
+            diagnostics
+        );
+    }
+
+    /// `solid_body(body, "tag")` over a SYMBOLIC body handle must yield
+    /// `Some(Value::Selector(Body))`.
+    #[test]
+    fn try_eval_symbolic_topology_selector_solid_body_over_symbolic_target() {
+        let entity = "R2cNamedLeafSolidBody";
+        let mut values = reify_ir::ValueMap::new();
+        let rr = insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0x71u8; 32]);
+
+        let expr = named_selector_call(
+            "solid_body",
+            entity,
+            "body",
+            reify_core::ty::SelectorKind::Body,
+            "tag",
+        );
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_symbolic_topology_selector(&expr, &values, &mut diagnostics);
+        let sv = match result {
+            Some(reify_ir::Value::Selector(sv)) => sv,
+            other => panic!(
+                "solid_body(body, \"tag\") over a symbolic target must yield \
+                 Some(Value::Selector(..)); got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(sv.kind, reify_core::ty::SelectorKind::Body, "solid_body() → Body kind");
+        match &sv.node {
+            reify_ir::value::SelectorNode::Leaf { target, query } => {
+                assert_eq!(
+                    target.kernel_handle, None,
+                    "symbolic target must have kernel_handle == None"
+                );
+                assert_eq!(target.realization_ref, rr, "realization_ref propagated");
+                assert_eq!(query, &reify_ir::value::LeafQuery::Named("tag".to_string()));
+            }
+            other => panic!("must be a Leaf node; got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "construction must emit zero diagnostics; got {:?}",
+            diagnostics
+        );
+    }
+
+    /// `vertex(body, "tag")` over a SYMBOLIC body handle must yield
+    /// `Some(Value::Selector(Vertex))`.
+    #[test]
+    fn try_eval_symbolic_topology_selector_vertex_over_symbolic_target() {
+        let entity = "R2cNamedLeafVertex";
+        let mut values = reify_ir::ValueMap::new();
+        let rr = insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0x72u8; 32]);
+
+        let expr = named_selector_call(
+            "vertex",
+            entity,
+            "body",
+            reify_core::ty::SelectorKind::Vertex,
+            "tag",
+        );
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_symbolic_topology_selector(&expr, &values, &mut diagnostics);
+        let sv = match result {
+            Some(reify_ir::Value::Selector(sv)) => sv,
+            other => panic!(
+                "vertex(body, \"tag\") over a symbolic target must yield Some(Value::Selector(..)); \
+                 got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(sv.kind, reify_core::ty::SelectorKind::Vertex, "vertex() → Vertex kind");
+        match &sv.node {
+            reify_ir::value::SelectorNode::Leaf { target, query } => {
+                assert_eq!(
+                    target.kernel_handle, None,
+                    "symbolic target must have kernel_handle == None"
+                );
+                assert_eq!(target.realization_ref, rr, "realization_ref propagated");
+                assert_eq!(query, &reify_ir::value::LeafQuery::Named("tag".to_string()));
+            }
+            other => panic!("must be a Leaf node; got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "construction must emit zero diagnostics; got {:?}",
+            diagnostics
+        );
+    }
+
     /// `face(mid_surface(bodyref), "r")` — arg0 is an INLINE nested selector
     /// FunctionCall (not a ValueRef) — must resolve via the fallback path
     /// (`resolve_named_leaf_target_symbolic`'s
