@@ -112,15 +112,18 @@ const STRUCTURAL_QUERY_SRC: &str = r#"
 
 /// A `Let` whose default_expr is a self-datum projection (`self.xy_plane`) —
 /// drives the self-datum projection post-pass (engine_eval.rs, ~@3984-3993).
+/// A sibling `let` probes `determined(..)` on it (see the doc comment on
+/// `structural_query_post_pass_cache_skip_audit` for why this probe reads
+/// the PRE-post-pass main-pass state, not the post-pass's own commit).
 /// Kernel-free: `self.xy_plane` resolves to the intrinsic identity-frame
 /// `xy` plane constant with no geometry kernel needed.
 ///
 /// Verified (scratch run, prerequisite pre-1): compiles+evals cleanly with
 /// `p` = a concrete `Value::Plane { .. }` (not `Undef`) and no diagnostics.
-#[allow(dead_code)] // first consumer lands at test-5
 const SELF_DATUM_SRC: &str = r#"
     structure S {
         let p = self.xy_plane
+        let p_det = determined(p)
     }
 "#;
 
@@ -387,6 +390,80 @@ fn structural_query_post_pass_cache_skip_audit() {
         result.values.get(&ms_det_id),
         Some(&Value::Bool(false)),
         "ms_det reads ms's PRE-expansion main-pass state (Undef, Determined), \
+         unrelated to and unaffected by the post-pass migration"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// test-5: self-datum projection post-pass explicit CacheLeg::Skip audit
+// ─────────────────────────────────────────────────────────────────────────
+
+/// RED: self-datum projection post-pass explicit `CacheLeg::Skip` audit.
+/// Mirrors `structural_query_post_pass_cache_skip_audit`'s shape exactly —
+/// same reasoning applies for both `last_started_payload` (the self-datum
+/// post-pass also runs after the main pass's own unmigrated evaluation of
+/// the same Let cell) and `p_det` (also evaluated once, early, against `p`'s
+/// PRE-projection-rewrite state).
+///
+/// RED today: the self-datum post-pass (engine_eval.rs, ~@3984-3993) writes
+/// `values`/`snapshot.values` directly and emits NO journal event of its
+/// own, so the LAST `Started` event recorded for `p` is still the main
+/// pass's `None`-payload one. GREEN after impl-5 migrates the commit onto
+/// `commit_cell_result` with `TraceSource::PostPassOverwrite` and
+/// `CacheLeg::Skip("self-datum projection overwrite")`.
+#[test]
+fn self_datum_projection_post_pass_cache_skip_audit() {
+    let module = parse_and_compile(SELF_DATUM_SRC);
+    let mut engine = make_engine();
+
+    let result = engine.eval(&module);
+
+    let p_id = ValueCellId::new("S", "p");
+    let p_det_id = ValueCellId::new("S", "p_det");
+
+    eprintln!("p last_started_payload = {:?}", last_started_payload(&engine, &p_id));
+    eprintln!("p = {:?}", result.values.get(&p_id));
+    eprintln!("p_det = {:?}", result.values.get(&p_det_id));
+
+    // (1) Provenance + explicit skip marker — RED today.
+    assert_eq!(
+        last_started_payload(&engine, &p_id),
+        Some("post-pass-overwrite|cache-skip=self-datum projection overwrite".to_string()),
+        "the self-datum post-pass's Started event should be the LAST one \
+         recorded for the cell and should carry the 'post-pass-overwrite' \
+         TraceSource slug plus its cache-skip reason once migrated onto \
+         commit_cell_result with CacheLeg::Skip"
+    );
+
+    // (2) The Skip leg must not write/update the cache entry with the
+    // post-pass's fresh value (see the equivalent structural-query comment
+    // above for why a literal is_none() check does not hold here either).
+    match engine.cache_store().get(&NodeId::Value(p_id.clone())) {
+        None => {}
+        Some(entry) => match &entry.result {
+            CachedResult::Value(val, _) => assert!(
+                !matches!(val, Value::Plane { .. }),
+                "the self-datum post-pass's CacheLeg::Skip commit must not \
+                 have written its fresh Plane value into the cache leg, got {val:?}"
+            ),
+            other => panic!("expected CachedResult::Value(_, _), got {other:?}"),
+        },
+    }
+
+    // (3) Value preserved (characterization guard) — the self-datum
+    // projection result is a concrete Plane, unchanged by the migration.
+    assert!(
+        matches!(result.values.get(&p_id), Some(Value::Plane { .. })),
+        "p should evaluate to a concrete Value::Plane (the self-datum \
+         projection result must be unchanged by the migration), got {:?}",
+        result.values.get(&p_id)
+    );
+    // Regression guard on the UNRELATED main-pass short-circuit determinacy
+    // (mirrors ms_det) — must stay false across this migration.
+    assert_eq!(
+        result.values.get(&p_det_id),
+        Some(&Value::Bool(false)),
+        "p_det reads p's PRE-rewrite main-pass state (Undef, Determined), \
          unrelated to and unaffected by the post-pass migration"
     );
 }
