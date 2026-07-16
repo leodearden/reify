@@ -166,11 +166,18 @@ impl Engine {
             values.insert(id.clone(), val.clone());
         }
 
-        // Bump snapshot/version IDs
-        let snapshot_id = self.next_snapshot_id;
-        self.next_snapshot_id += 1;
-        let version_id = self.next_version_id;
-        self.next_version_id += 1;
+        // Clone the remaining state fields (O(1) via PersistentMap) now, ending
+        // `state`'s borrow of `self.eval_state` before the `&mut self` call
+        // below — `allocate_snapshot_version` can't be split-borrowed the way
+        // the raw field bump could.
+        let graph = state.snapshot.graph.clone();
+        let traces = state.trace_map.clone();
+        let reverse_index = state.reverse_index.clone();
+
+        // Allocate the snapshot/version ID pair via the single INV-BUILD-2 API
+        // (Engine::allocate_snapshot_version), instead of bumping the counters
+        // by hand.
+        let (snapshot_id, version_id) = self.allocate_snapshot_version();
 
         // Extract previous content hashes from CacheStore for nodes in eval set
         let mut previous_hashes = HashMap::new();
@@ -188,14 +195,14 @@ impl Engine {
 
         Ok(ConcurrentEditSetup {
             eval_set,
-            graph: state.snapshot.graph.clone(),
+            graph,
             values,
             snapshot_values: new_snapshot_values,
-            traces: state.trace_map.clone(),
-            reverse_index: state.reverse_index.clone(),
+            traces,
+            reverse_index,
             previous_hashes,
-            version: VersionId(version_id),
-            snapshot_id: SnapshotId(snapshot_id),
+            version: version_id,
+            snapshot_id,
             parent_snapshot_id: parent_id,
             changed_cells: changed_set,
             functions: Arc::clone(&self.functions),
@@ -206,10 +213,10 @@ impl Engine {
 
     /// Roll back the Engine state after a failed concurrent evaluation.
     ///
-    /// Restores all eval_set nodes from Pending back to Final and decrements
-    /// the snapshot/version ID counters to avoid gaps in numbering. This
-    /// returns the engine to a consistent state as if prepare_concurrent_edit()
-    /// was never called.
+    /// Restores all eval_set nodes from Pending back to Final and restores
+    /// the snapshot/version ID counters to their pre-prepare values, avoiding
+    /// gaps in numbering. This returns the engine to a consistent state as if
+    /// prepare_concurrent_edit() was never called.
     ///
     /// Called on the error path when ConcurrentScheduler::execute() returns Err
     /// (e.g. TaskPanicked), to prevent nodes from being permanently stuck in
@@ -223,8 +230,8 @@ impl Engine {
         // Roll back the snapshot/version ID bumps done in prepare_concurrent_edit.
         // Safe because no external observer has seen these IDs yet — they only
         // exist in the ConcurrentEditSetup which is being discarded.
-        self.next_snapshot_id = setup.snapshot_id.0;
-        self.next_version_id = setup.version.0;
+        self.next_snapshot_id = setup.snapshot_id.0; // version-id-gate: allow — setup restore, not allocation
+        self.next_version_id = setup.version.0; // version-id-gate: allow — setup restore, not allocation
     }
 
     /// Apply the results of concurrent evaluation back to the Engine.
@@ -656,6 +663,108 @@ mod tests {
         let (snap_val, snap_det) = setup.snapshot_values.get(&width_id).unwrap();
         assert_eq!(snap_val, &new_width, "snapshot_values should match");
         assert_eq!(snap_det, &DeterminacyState::Determined);
+    }
+
+    /// step-1 (task 5044/γ): Characterization lock confirming prepare_concurrent_edit
+    /// routes through the single `Engine::allocate_snapshot_version()` call
+    /// (INV-BUILD-2, engine_admin.rs:399) to mint its snapshot/version pair: the
+    /// setup captures the pre-call counter values and each counter advances by
+    /// exactly one. This complements — not duplicates — engine_admin.rs's
+    /// `allocate_snapshot_version_allocates_pair_and_bumps_both_counters`, which pins
+    /// the allocator's own semantics; this test pins that the call site uses it.
+    /// Deltas are taken from freshly-captured baselines (no hardcoded absolute ids)
+    /// so the test is order-independent.
+    #[test]
+    fn prepare_concurrent_edit_mints_one_snapshot_version_pair() {
+        use reify_test_support::bracket_compiled_module;
+        use reify_test_support::mocks::MockConstraintChecker;
+
+        let module = bracket_compiled_module();
+        let checker = MockConstraintChecker::new();
+        let mut engine = Engine::new(Box::new(checker), None);
+        let _initial = engine.eval(&module);
+
+        let before_snapshot = engine.next_snapshot_id;
+        let before_version = engine.next_version_id;
+
+        let width_id = ValueCellId::new("Bracket", "width");
+        let setup = engine
+            .prepare_concurrent_edit(width_id, Value::length(0.1))
+            .unwrap();
+
+        assert_eq!(
+            setup.snapshot_id,
+            SnapshotId(before_snapshot),
+            "setup.snapshot_id must mint the pre-call next_snapshot_id value"
+        );
+        assert_eq!(
+            setup.version,
+            VersionId(before_version),
+            "setup.version must mint the pre-call next_version_id value"
+        );
+        assert_eq!(
+            engine.next_snapshot_id - before_snapshot,
+            1,
+            "next_snapshot_id must advance by exactly 1 across the call"
+        );
+        assert_eq!(
+            engine.next_version_id - before_version,
+            1,
+            "next_version_id must advance by exactly 1 across the call"
+        );
+        assert_ne!(
+            setup.parent_snapshot_id, setup.snapshot_id,
+            "the freshly-minted snapshot id must differ from its parent — guards against \
+             a future regression that accidentally aliases the two"
+        );
+    }
+
+    /// step-3 companion (task 5044/γ): Round-trip lock confirming
+    /// `rollback_concurrent_edit` restores `next_snapshot_id`/`next_version_id` to
+    /// their pre-prepare values. `prepare_concurrent_edit_mints_one_snapshot_version_pair`
+    /// above pins the forward half of the allocate/rollback cycle (prepare advances
+    /// each counter by exactly one); this test pins the return half — prepare
+    /// followed by rollback must leave both counters exactly as they were, so the
+    /// next real edit sees no gap in snapshot/version numbering.
+    #[test]
+    fn rollback_concurrent_edit_restores_counters_to_pre_prepare_values() {
+        use reify_test_support::bracket_compiled_module;
+        use reify_test_support::mocks::MockConstraintChecker;
+
+        let module = bracket_compiled_module();
+        let checker = MockConstraintChecker::new();
+        let mut engine = Engine::new(Box::new(checker), None);
+        let _initial = engine.eval(&module);
+
+        let before_snapshot = engine.next_snapshot_id;
+        let before_version = engine.next_version_id;
+
+        let width_id = ValueCellId::new("Bracket", "width");
+        let setup = engine
+            .prepare_concurrent_edit(width_id, Value::length(0.1))
+            .unwrap();
+
+        // Sanity: prepare must actually advance the counters, otherwise the
+        // post-rollback equality assertions below would hold vacuously.
+        assert_ne!(
+            engine.next_snapshot_id, before_snapshot,
+            "prepare_concurrent_edit must advance next_snapshot_id (test precondition)"
+        );
+        assert_ne!(
+            engine.next_version_id, before_version,
+            "prepare_concurrent_edit must advance next_version_id (test precondition)"
+        );
+
+        engine.rollback_concurrent_edit(&setup);
+
+        assert_eq!(
+            engine.next_snapshot_id, before_snapshot,
+            "rollback_concurrent_edit must restore next_snapshot_id to its pre-prepare value"
+        );
+        assert_eq!(
+            engine.next_version_id, before_version,
+            "rollback_concurrent_edit must restore next_version_id to its pre-prepare value"
+        );
     }
 
     /// step-7 (revised): When eval_duration is None, apply_concurrent_edit falls
