@@ -5495,6 +5495,31 @@ fn reconstruct_selector_value_symbolic(
 /// kernel-bearing, unbuffered `eval_variadic_composition` re-emits the
 /// specific warning later.
 ///
+/// **Re-reviewed (task #5120 R2c round 3):** a follow-up review suggestion
+/// asked whether draining `scratch` unconditionally (including on the `None`
+/// path) would better serve the kernel-free eval-ONLY surface (`reify-lsp`'s
+/// `AnalysisContext`/`diagnostics.rs` call `Engine::eval` directly and
+/// publish its `EvalResult::diagnostics`, never calling `build()`, so there
+/// is no later unbuffered pass to re-emit a dropped nested warning there).
+/// Tried and reverted: unconditional draining breaks the silent-fall-through
+/// guarantee the PRIOR review round deliberately added and pinned in
+/// `geometry_ops/tests.rs`
+/// (`try_eval_symbolic_topology_selector_union_none_fallthrough_no_diagnostic_leak`,
+/// `..._drops_scratch_after_leading_success`) — both fail if `scratch` is
+/// drained before the `?` short-circuit, because the ONLY way a diagnostic
+/// reaches `scratch` at all in this call chain is via a nested selector
+/// composition that is ITSELF malformed (a kind-closure violation), and that
+/// exact shape is also always caught first at COMPILE time
+/// (`selector_composition_result_type` in `units.rs` emits
+/// `E_SELECTOR_KIND_MISMATCH` unconditionally for any kind mismatch,
+/// including nested call sites) — so on a real compiled program the LSP
+/// surface already gets an equivalent (Error-severity, stronger than this
+/// Warning) diagnostic regardless of what this eval-time buffering does.
+/// Consistent with the reviewer's own framing ("this is correct for the
+/// overload-disambiguation case... an accepted tradeoff rather than a
+/// defect... no change required if the eval-only surface never needs
+/// nested-operand diagnostics"), kept as-is.
+///
 /// The per-call `scratch = Vec::new()` (mirrored in
 /// [`resolve_named_leaf_target_symbolic`]) is deliberately not lazy — an
 /// empty allocation is cheap, and lazy-init would complicate the
@@ -5560,7 +5585,9 @@ fn selector_value_difference_pair(
 /// contract: the fallback reconstruction is buffered into a local `scratch`
 /// and only appended to `diagnostics` once a target actually resolves, so a
 /// `None` return (`first_leaf_target` coming up empty) can't leak a
-/// diagnostic.
+/// diagnostic. Re-reviewed and reaffirmed in task #5120 R2c round 3 — see
+/// [`eval_variadic_composition_symbolic`]'s doc comment for the "tried and
+/// reverted" unconditional-drain analysis, which applies identically here.
 ///
 /// Untested by design: `first_leaf_target` only returns `None` for an empty
 /// `Union`/`Intersect` node, and `SelectorValue`'s validating constructors
