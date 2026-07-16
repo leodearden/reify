@@ -2216,6 +2216,42 @@ fn merged_cluster_left_unresolved_warning(cluster_scope_names: &[&str]) -> Diagn
     ))
 }
 
+/// Cluster-wide non-uniqueness warning for a merged `MergedSolve` solve,
+/// pushed once per free `auto_params` entry in `problem` when `unique` is
+/// `false`. `unique` is a single flag over the WHOLE merged solve, so this
+/// warns on every free auto param across ALL of `problem`'s `auto_params` --
+/// not scoped to whichever member(s) actually caused the non-uniqueness,
+/// unlike the per-template arms (which report per single-scope `problem`). A
+/// merged cluster's autos are jointly solved as one system, so a free auto on
+/// any member can be a contributing degree of freedom for the whole
+/// cluster's solution, not just its own scope's. No-ops when `unique` is
+/// `true`.
+///
+/// Shared by cold `dispatch_merged_cluster_solve` and warm
+/// `dispatch_merged_cluster_solve_cached` (reviewer_comprehensive, task #5118
+/// amendment) so the warning text and the `ap.free` predicate cannot drift
+/// apart by hand between the two dispatchers -- the same extraction already
+/// done for `merged_cluster_left_unresolved_warning` above and
+/// `reeval_downstream_let_cones` below.
+fn push_merged_cluster_nonunique_warnings(
+    diagnostics: &mut Vec<Diagnostic>,
+    problem: &ResolutionProblem,
+    unique: bool,
+) {
+    if unique {
+        return;
+    }
+    for ap in &problem.auto_params {
+        if ap.free {
+            diagnostics.push(Diagnostic::warning(format!(
+                "Parameter `{}` resolved via auto(free) \
+                 -- result is not uniquely determined.",
+                ap.id.member
+            )));
+        }
+    }
+}
+
 /// Effective objective governance for a single template scope, computed once per
 /// `eval()` / `eval_cached()` call and indexed by source order.
 ///
@@ -6101,25 +6137,13 @@ impl Engine {
                 }
 
                 // Non-uniqueness is reported cluster-wide by design (amendment,
-                // task #5014): `unique` is a single flag over the WHOLE merged
-                // solve, so this warns on every free auto param across ALL
-                // `cluster.scopes` -- not scoped to whichever member(s) actually
-                // caused the non-uniqueness, unlike the per-template arm above
-                // (which reports per single-scope `problem`). A merged
-                // cluster's autos are jointly solved as one system, so a free
-                // auto on any member can be a contributing degree of freedom
-                // for the whole cluster's solution, not just its own scope's.
-                if !unique {
-                    for ap in &problem.auto_params {
-                        if ap.free {
-                            diagnostics.push(Diagnostic::warning(format!(
-                                "Parameter `{}` resolved via auto(free) \
-                                 -- result is not uniquely determined.",
-                                ap.id.member
-                            )));
-                        }
-                    }
-                }
+                // task #5014) via the shared `push_merged_cluster_nonunique_warnings`
+                // helper (reviewer_comprehensive, task #5118 amendment) -- see
+                // that function's doc comment for the full "single flag over
+                // the WHOLE merged solve" rationale. Shared with warm
+                // `dispatch_merged_cluster_solve_cached` so the warning text
+                // and the `ap.free` predicate cannot drift apart by hand.
+                push_merged_cluster_nonunique_warnings(diagnostics, &problem, unique);
 
                 // θ (task 4015), generalized to the merged spanning objective
                 // (amendment, task #5014): record REAL ObjectiveProvenance for
@@ -7824,20 +7848,12 @@ impl Engine {
                     );
                 }
 
-                // Cluster-wide non-uniqueness warning (mirrors cold): `unique`
-                // is a single flag over the WHOLE merged solve, so this warns
-                // on every free auto param across ALL `cluster.scopes`.
-                if !unique {
-                    for ap in &problem.auto_params {
-                        if ap.free {
-                            diagnostics.push(Diagnostic::warning(format!(
-                                "Parameter `{}` resolved via auto(free) \
-                                 -- result is not uniquely determined.",
-                                ap.id.member
-                            )));
-                        }
-                    }
-                }
+                // Cluster-wide non-uniqueness warning, shared with cold via
+                // `push_merged_cluster_nonunique_warnings` (reviewer_comprehensive,
+                // task #5118 amendment) -- see that function's doc comment,
+                // and cold `dispatch_merged_cluster_solve`'s call site, for
+                // the full "single flag over the WHOLE merged solve" rationale.
+                push_merged_cluster_nonunique_warnings(diagnostics, &problem, unique);
 
                 // Wave-2 (task #5118, step 6): re-evaluate downstream let
                 // cells that read any of THIS cluster's co-solved autos. The
