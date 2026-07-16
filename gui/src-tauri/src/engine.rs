@@ -6576,3 +6576,82 @@ mod display_style_extract_tests {
     }
 }
 
+// ── Unit tests for format_expr (constraint pretty-printer) ────────────────
+
+#[cfg(test)]
+mod format_expr_tests {
+    //! Unit tests for the private `format_expr` constraint pretty-printer.
+    //!
+    //! DSL-based integration tests (engine_tests.rs) exercise `format_expr`
+    //! only indirectly, through full constraint strings. These inline tests
+    //! build `CompiledExpr` fixtures directly to pin two specific defects:
+    //! (1) member access — lowered to `IndexAccess` with a string-literal
+    //! index — was rendering as `obj[index]` instead of `obj.index`; and
+    //! (2) unit-bearing literals were rendering with no space and the bare
+    //! "SI" fallback instead of a space plus the composed base-unit label.
+
+    use super::format_expr;
+    use reify_core::{DimensionVector, Type, ValueCellId};
+    use reify_ir::{BinOp, CompiledExpr, Value};
+
+    /// Build the `IndexAccess` node member access lowers to: `material.density`.
+    fn material_density_access() -> CompiledExpr {
+        let object = CompiledExpr::value_ref(
+            ValueCellId::new("material_1", "material"),
+            Type::dimensionless_scalar(),
+        );
+        let index = CompiledExpr::literal(Value::String("density".to_string()), Type::String);
+        CompiledExpr::index_access(object, index, Type::dimensionless_scalar())
+    }
+
+    #[test]
+    fn index_access_with_string_literal_index_renders_as_member_access() {
+        assert_eq!(format_expr(&material_density_access()), "material.density");
+    }
+
+    #[test]
+    fn index_access_with_numeric_index_keeps_bracket_form() {
+        let object = CompiledExpr::value_ref(
+            ValueCellId::new("arr_1", "arr"),
+            Type::dimensionless_scalar(),
+        );
+        let index = CompiledExpr::literal(Value::Int(0), Type::Int);
+        let expr = CompiledExpr::index_access(object, index, Type::dimensionless_scalar());
+
+        assert_eq!(format_expr(&expr), "arr[0]");
+    }
+
+    #[test]
+    fn dimensioned_literal_in_binop_renders_space_and_composed_unit() {
+        let right = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::MASS_DENSITY,
+            },
+            Type::Scalar {
+                dimension: DimensionVector::MASS_DENSITY,
+            },
+        );
+        let expr = CompiledExpr::binop(
+            BinOp::Gt,
+            material_density_access(),
+            right,
+            Type::dimensionless_scalar(),
+        );
+
+        assert_eq!(format_expr(&expr), "material.density > 0 kg\u{b7}m^-3");
+    }
+
+    #[test]
+    fn dimensionless_literal_in_binop_has_no_trailing_space() {
+        let left = CompiledExpr::value_ref(
+            ValueCellId::new("x_1", "x"),
+            Type::dimensionless_scalar(),
+        );
+        let right = CompiledExpr::literal(Value::Real(0.0), Type::dimensionless_scalar());
+        let expr = CompiledExpr::binop(BinOp::Gt, left, right, Type::dimensionless_scalar());
+
+        assert_eq!(format_expr(&expr), "x > 0");
+    }
+}
+
