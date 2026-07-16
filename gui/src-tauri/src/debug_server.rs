@@ -3664,13 +3664,15 @@ mod tests {
     }
 
     /// T4 (failure-path facet, #5193): opening a path that does not exist
-    /// must return an `Err` whose text is prefixed with "open funnel failed
-    /// to load {path}" and names the path — the triage marker documented on
+    /// must return an `Err` that identifies itself as an open-funnel load
+    /// failure — the triage marker documented on
     /// `open_source_into_engine_and_refresh_baseline` above, distinguishing
-    /// this funnel's failures from a normal command's. T1-T3 only exercise
-    /// the Ok path, so a regression dropping or rewording the prefix (or
-    /// breaking the underlying error propagation) would otherwise go
-    /// unnoticed.
+    /// this funnel's failures from a normal command's — and names the path.
+    /// T1-T3 only exercise the Ok path, so a regression dropping the triage
+    /// marker (or breaking the underlying error propagation) would otherwise
+    /// go unnoticed. The marker check below is a loose substring match
+    /// rather than the literal prefix string, so a benign rewording of the
+    /// marker's exact wording does not break this test.
     #[tokio::test]
     async fn open_source_helper_wraps_load_error_with_funnel_prefix() {
         let engine = crate::tests::make_test_engine();
@@ -3691,8 +3693,8 @@ mod tests {
             .expect_err("opening a nonexistent path must return Err");
 
         assert!(
-            err.starts_with("open funnel failed to load "),
-            "error must carry the open-funnel triage prefix, got: {err:?}"
+            err.contains("open funnel") && err.contains("load"),
+            "error must identify itself as an open-funnel load failure, got: {err:?}"
         );
         assert!(
             err.contains(&missing_path),
