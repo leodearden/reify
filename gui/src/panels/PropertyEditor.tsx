@@ -134,7 +134,18 @@ export const PropertyEditor: Component<PropertyEditorProps> = (props) => {
   function displayForPicker(val: ValueData, ladder: UnitOption[]): string {
     const chosen = chosenOptionFor(val, ladder);
     if (chosen.is_default) return displayValue(val);
-    return formatDisplayNumber(convertToUnit(val.si_value ?? 0, chosen.si_scale));
+    // `pickerLadder` only ever hands back a ladder when `val.si_value !=
+    // null`, and this function is only called with a ladder it returned —
+    // so si_value is guaranteed non-null here. Assert instead of falling
+    // back to `?? 0`: a `0` fallback would silently render a plausible-looking
+    // value instead of surfacing the bug if that invariant were ever violated
+    // (task #5199 amend, reviewer_comprehensive robustness finding).
+    if (val.si_value == null) {
+      throw new Error(
+        `displayForPicker: cell ${val.cell_id} has an active unit ladder but no si_value`,
+      );
+    }
+    return formatDisplayNumber(convertToUnit(val.si_value, chosen.si_scale));
   }
 
   /**
