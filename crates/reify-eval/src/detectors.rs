@@ -165,24 +165,21 @@ impl DetectorRegistry {
 /// the other by hand, or the two will silently diverge before μ deletes
 /// the inline copy.
 ///
-/// **What is, and isn't, guarded**: `mass_properties_psd_detector_messages_match_characterization_wording`
-/// (below) pins this detector's OWN fixed diagnostic wording as literal
-/// substrings hardcoded in the test. That guard is ONE-DIRECTIONAL, not a
-/// cross-check: the test only calls this detector and asserts on its own
-/// output — it never reads or executes `engine_eval.rs:4662-4762` — so it
-/// fails if this detector's wording drifts from the pinned strings, but a
-/// wording change made ONLY on the `engine_eval.rs` side leaves it green.
-/// A classification-rule change (e.g. the `None | Some(Value::Undef) =>
-/// Skip` predicate, or `psd_tol`'s tolerance formula) or an
-/// Undef-replacement-behavior change on either side is not guarded at
-/// all. The real fix is extracting a shared classify+replace function
-/// (and, for wording, a shared constant) that both this detector and the
-/// `engine_eval.rs:4662-4762` site call — deliberately deferred to task μ
-/// (#5062), since it would require editing `engine_eval.rs`, which is
-/// outside this task's locked modules (`detectors.rs`, `lib.rs`) and is
-/// left untouched by design (see the module doc's "Known scope gaps for
-/// task μ") to avoid same-file contention with the concurrent task γ
-/// `engine_eval.rs` migration.
+/// **Wording is duplicated, not shared**: the diagnostic wording above was
+/// copied from `engine_eval.rs:4662-4762`, not extracted into something
+/// both sides call. `mass_properties_psd_detector_messages_match_characterization_wording`
+/// (below) pins this detector's OWN wording as a plain regression check on
+/// its output — it is not a cross-file check (it never reads or executes
+/// `engine_eval.rs`), so it provides no protection against the two copies
+/// drifting apart, whether in wording, classification rules, or
+/// Undef-replacement behavior. The real fix is extracting a shared
+/// classify+replace function (and, for wording, a shared constant) that
+/// both this detector and the `engine_eval.rs:4662-4762` site call —
+/// deliberately deferred to task μ (#5062), since it would require editing
+/// `engine_eval.rs`, which is outside this task's locked modules
+/// (`detectors.rs`, `lib.rs`) and is left untouched by design (see the
+/// module doc's "Known scope gaps for task μ") to avoid same-file
+/// contention with the concurrent task γ `engine_eval.rs` migration.
 #[allow(dead_code)] // wired in by task μ; exercised by tests until then
 pub(crate) struct MassPropertiesPsdDetector;
 
@@ -777,17 +774,16 @@ mod tests {
         );
     }
 
-    /// Pins this DETECTOR's fixed diagnostic wording (excluding the
+    /// Pins this detector's own fixed diagnostic wording (excluding the
     /// interpolated cell id and the non-PSD message's `{:.3e}`-formatted
-    /// eigenvalue, to avoid a fragile numeric-format premise) — wording
+    /// eigenvalue, to avoid a fragile numeric-format premise) as a plain
+    /// regression check on this module's user-facing output — wording
     /// originally copied from the characterization source it mirrors,
-    /// `engine_eval.rs:4662-4762`. See [`MassPropertiesPsdDetector`]'s
-    /// drift-warning doc comment: this guard is ONE-DIRECTIONAL. It calls
-    /// only this detector and asserts on its own output, never reading or
-    /// executing `engine_eval.rs`, so it catches an accidental wording
-    /// change made HERE but not one made only on the `engine_eval.rs`
-    /// side — that side can drift silently until task μ deletes the
-    /// inline copy.
+    /// `engine_eval.rs:4662-4762`. This test calls only this detector and
+    /// asserts on its own output; it does not read or execute
+    /// `engine_eval.rs`, so it has no way to catch a wording change made
+    /// only on that side. See [`MassPropertiesPsdDetector`]'s doc comment
+    /// for that drift-risk trade-off (deferred to task μ).
     #[test]
     fn mass_properties_psd_detector_messages_match_characterization_wording() {
         let malformed_cell = ValueCellId::new("BodyC", "mass_props");
@@ -819,17 +815,13 @@ mod tests {
             messages
                 .iter()
                 .any(|m| m.contains("inertia field cannot be parsed as a 3×3 numeric matrix")),
-            "detector's malformed-cell wording changed (this pins the \
-             detector's own wording, not a live check against \
-             engine_eval.rs — see this test's doc comment); got {messages:?}"
+            "detector's malformed-cell wording changed; got {messages:?}"
         );
         assert!(
             messages.iter().any(|m| m.contains(
                 "inertia tensor is not positive semi-definite (min eigenvalue ≈ "
             )),
-            "detector's non-PSD wording changed (this pins the detector's \
-             own wording, not a live check against engine_eval.rs — see \
-             this test's doc comment); got {messages:?}"
+            "detector's non-PSD wording changed; got {messages:?}"
         );
     }
 
