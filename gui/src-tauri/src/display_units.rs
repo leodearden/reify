@@ -235,84 +235,47 @@ mod tests {
         }
     }
 
+    /// Collapsed data-driven replacement for five former per-ladder pin
+    /// tests (task #5199 amend, reviewer_comprehensive test_coverage
+    /// finding): each hand-copied the same `si_scale`/`is_default`
+    /// constants the constructor above already contains, and — for the
+    /// `is_default` rungs — duplicated what
+    /// `default_si_scale_matches_to_display_units_numeric_value` below
+    /// already locks against its true source (`to_display_units`). That
+    /// test only exercises each ladder's DEFAULT rung though, so this table
+    /// keeps the non-default-rung coverage (cm/m/in, L, g, g/cm³, …) the
+    /// five tests used to provide, in one loop instead of five
+    /// near-identical functions.
     #[test]
-    fn volume_ladder_pins_mm3_default_and_litre() {
+    fn ladder_units_pin_expected_scale_and_default() {
         let ladders = unit_ladders();
-        let volume = ladder(&ladders, "Volume");
 
-        let mm3 = unit(volume, "mm\u{00B3}");
-        assert_eq!(mm3.si_scale, 1e-9);
-        assert!(mm3.is_default);
+        // (dimension, label, si_scale, is_default)
+        let expected: &[(&str, &str, f64, bool)] = &[
+            ("Volume", "mm\u{00B3}", 1e-9, true),
+            ("Volume", "L", 1e-3, false),
+            ("Length", "mm", 1e-3, true),
+            ("Length", "cm", 1e-2, false),
+            ("Length", "m", 1.0, false),
+            ("Length", "in", 0.0254, false),
+            ("Mass", "g", 1e-3, false),
+            ("Mass", "kg", 1.0, true),
+            ("Pressure", "Pa", 1.0, true),
+            ("Density", "kg/m\u{00B3}", 1.0, true),
+            ("Density", "g/cm\u{00B3}", 1000.0, false),
+        ];
+        for &(dimension, label, si_scale, is_default) in expected {
+            let u = unit(ladder(&ladders, dimension), label);
+            assert_eq!(u.si_scale, si_scale, "{dimension}/{label} si_scale mismatch");
+            assert_eq!(u.is_default, is_default, "{dimension}/{label} is_default mismatch");
+        }
 
-        let l = unit(volume, "L");
-        assert_eq!(l.si_scale, 1e-3);
-        assert!(!l.is_default);
-    }
-
-    #[test]
-    fn length_ladder_pins_mm_default_cm_m_in() {
-        let ladders = unit_ladders();
-        let length = ladder(&ladders, "Length");
-
-        let mm = unit(length, "mm");
-        assert_eq!(mm.si_scale, 1e-3);
-        assert!(mm.is_default);
-
-        let cm = unit(length, "cm");
-        assert_eq!(cm.si_scale, 1e-2);
-        assert!(!cm.is_default);
-
-        let m = unit(length, "m");
-        assert_eq!(m.si_scale, 1.0);
-        assert!(!m.is_default);
-
-        let inch = unit(length, "in");
-        assert_eq!(inch.si_scale, 0.0254);
-        assert!(!inch.is_default);
-    }
-
-    #[test]
-    fn mass_ladder_pins_g_and_kg_default() {
-        let ladders = unit_ladders();
-        let mass = ladder(&ladders, "Mass");
-
-        let g = unit(mass, "g");
-        assert_eq!(g.si_scale, 1e-3);
-        assert!(!g.is_default);
-
-        let kg = unit(mass, "kg");
-        assert_eq!(kg.si_scale, 1.0);
-        assert!(kg.is_default);
-    }
-
-    #[test]
-    fn pressure_ladder_pins_pa_default_and_lists_kpa_mpa_gpa() {
-        let ladders = unit_ladders();
+        // Pressure lists additional rungs above Pa; scales aren't pinned
+        // here — just confirm they exist as selectable rungs on the ladder.
         let pressure = ladder(&ladders, "Pressure");
-
-        let pa = unit(pressure, "Pa");
-        assert_eq!(pa.si_scale, 1.0);
-        assert!(pa.is_default);
-
-        // kPa/MPa/GPa scales aren't pinned here — just confirm they exist as
-        // selectable rungs on the ladder.
-        unit(pressure, "kPa");
-        unit(pressure, "MPa");
-        unit(pressure, "GPa");
-    }
-
-    #[test]
-    fn density_ladder_pins_si_default_and_g_per_cm3() {
-        let ladders = unit_ladders();
-        let density = ladder(&ladders, "Density");
-
-        let si = unit(density, "kg/m\u{00B3}");
-        assert_eq!(si.si_scale, 1.0);
-        assert!(si.is_default);
-
-        let g_cm3 = unit(density, "g/cm\u{00B3}");
-        assert_eq!(g_cm3.si_scale, 1000.0);
-        assert!(!g_cm3.is_default);
+        for label in ["kPa", "MPa", "GPa"] {
+            unit(pressure, label);
+        }
     }
 
     /// Drift guard: every ladder key must be a *real* canonical dimension
@@ -347,12 +310,12 @@ mod tests {
 
     /// Drift guard for the module doc's core invariant: each ladder's
     /// `is_default` entry is "numerically identical" to what
-    /// `DimensionVector::to_display_units` already chooses. The pinned tests
-    /// above (`length_ladder_pins_mm_default_...` etc.) only check the
-    /// ladder's own hand-copied constants against each other; they would
-    /// keep passing even if `to_display_units` itself drifted (e.g. its
-    /// Length default silently changed unit). This test instead runs a known
-    /// SI magnitude through `to_display_units` directly and checks that
+    /// `DimensionVector::to_display_units` already chooses. The pin test
+    /// above (`ladder_units_pin_expected_scale_and_default`) only checks the
+    /// ladder's own hand-copied constants against each other; it would keep
+    /// passing even if `to_display_units` itself drifted (e.g. its Length
+    /// default silently changed unit). This test instead runs a known SI
+    /// magnitude through `to_display_units` directly and checks that
     /// dividing by the ladder's default `si_scale` reproduces its converted
     /// value, locking the invariant to its actual source.
     ///
