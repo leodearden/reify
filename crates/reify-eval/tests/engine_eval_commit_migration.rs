@@ -15,6 +15,7 @@
 //! shared scaffolding only (the `started_payload` provenance-reading helper
 //! and the trigger `.ri` sources); `test-1` onward each add one `#[test]` fn.
 
+use reify_core::DiagnosticCode;
 use reify_core::ValueCellId;
 use reify_core::VersionId;
 use reify_eval::Engine;
@@ -125,6 +126,47 @@ const SELF_DATUM_SRC: &str = r#"
         let p = self.xy_plane
         let p_det = determined(p)
     }
+"#;
+
+/// `@test_eval(2.0 * 1.5)` on `AnnoItem` — drives the annotation-args
+/// materialization post-pass's SUCCESS arm (engine_eval.rs, ~@4926-4936): the
+/// `S.it` cell (a `Value::StructureInstance`) is rebuilt with the
+/// materialized `test_eval` overlay attached and re-committed. `@test_eval`
+/// is a globally-registered test-only annotation schema (one
+/// `AtMaterialization` arg named `value: Real`) — see
+/// `crates/reify-compiler/src/annotations/schema.rs` and the existing
+/// precedent in `tests/annotation_materialization_eval.rs`
+/// (`eval_annotation_smoke_attaches_overlay`).
+///
+/// Verified (scratch run): compiles+evals cleanly; `S.it` is a
+/// `Value::StructureInstance` of type `AnnoItem` whose
+/// `annotation("test_eval").arg_value("value")` overlay is `Real(3.0)`.
+const ANNOTATION_ARGS_SUCCESS_SRC: &str = r#"
+@test_eval(2.0 * 1.5) structure def AnnoItem {
+    param dummy : Real = 0
+}
+structure S {
+    let it = AnnoItem()
+}
+"#;
+
+/// `@test_eval(1.0 > 0.0)` on `BadAnnoItem` — a `Bool` result against the
+/// schema's expected `Real` — drives the annotation-args materialization
+/// post-pass's FAILURE arm (engine_eval.rs, ~@4937-4947): the `BadS.it` cell
+/// is replaced with `Value::Undef` and an `AnnotationEvalFailed` diagnostic
+/// is emitted. Mirrors
+/// `eval_annotation_type_mismatch_emits_failed_diagnostic_and_undef_cell` in
+/// `tests/annotation_materialization_eval.rs`.
+///
+/// Verified (scratch run): compiles+evals cleanly; `BadS.it` is
+/// `Value::Undef` with one `AnnotationEvalFailed` diagnostic.
+const ANNOTATION_ARGS_FAILURE_SRC: &str = r#"
+@test_eval(1.0 > 0.0) structure def BadAnnoItem {
+    param dummy : Real = 0
+}
+structure BadS {
+    let it = BadAnnoItem()
+}
 "#;
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -465,5 +507,159 @@ fn self_datum_projection_post_pass_cache_skip_audit() {
         Some(&Value::Bool(false)),
         "p_det reads p's PRE-rewrite main-pass state (Undef, Determined), \
          unrelated to and unaffected by the post-pass migration"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// test-6: annotation-args materialization post-pass explicit CacheLeg::Skip
+// audit (success + failure arms)
+// ─────────────────────────────────────────────────────────────────────────
+
+/// RED: annotation-args materialization post-pass SUCCESS arm explicit
+/// `CacheLeg::Skip` audit.
+///
+/// RED today: the post-pass's success arm (engine_eval.rs, ~@4926-4936)
+/// writes `values`/`snapshot.values` directly and emits NO journal event of
+/// its own, so the LAST `Started` event recorded for `it` is still the main
+/// pass's (unmigrated, `None`-payload) one. GREEN after impl-6 migrates the
+/// commit onto `commit_cell_result` with `TraceSource::PostPassOverwrite`
+/// and `CacheLeg::Skip("annotation-args materialization overlay")`.
+///
+/// Also pins (characterization guards that must stay green across the
+/// migration boundary): the post-pass's own commit never writes/updates the
+/// cache leg with its fresh (annotation-overlaid) value — checked as "the
+/// cached instance, if any, lacks the test_eval overlay" rather than
+/// "absent", mirroring test-4/5's reasoning (a cache entry already exists
+/// here from the main pass's own unmigrated evaluation of `it`, BEFORE the
+/// overlay is attached) — and the rebuilt instance + its materialized
+/// overlay are preserved (`it` is a `Value::StructureInstance` of type
+/// `AnnoItem` whose `test_eval` overlay is `Real(3.0)`).
+///
+/// No `determined(it)` sibling probe here (see test-4/5's doc comments for
+/// why that pattern can't observe a post-pass's own commit) — the rebuilt
+/// instance + overlay assertions already fully characterize the value.
+#[test]
+fn annotation_args_materialization_success_cache_skip_audit() {
+    let module = parse_and_compile(ANNOTATION_ARGS_SUCCESS_SRC);
+    let mut engine = make_engine();
+
+    let result = engine.eval(&module);
+
+    let it_id = ValueCellId::new("S", "it");
+
+    eprintln!("it last_started_payload = {:?}", last_started_payload(&engine, &it_id));
+    eprintln!("it = {:?}", result.values.get(&it_id));
+
+    // (1) Provenance + explicit skip marker — RED today.
+    assert_eq!(
+        last_started_payload(&engine, &it_id),
+        Some(
+            "post-pass-overwrite|cache-skip=annotation-args materialization overlay"
+                .to_string()
+        ),
+        "the annotation-args post-pass's success-arm Started event should be \
+         the LAST one recorded for the cell and should carry the \
+         'post-pass-overwrite' TraceSource slug plus its cache-skip reason \
+         once migrated onto commit_cell_result with CacheLeg::Skip"
+    );
+
+    // (2) The Skip leg must not write/update the cache entry with the
+    // post-pass's fresh (overlay-attached) value.
+    match engine.cache_store().get(&NodeId::Value(it_id.clone())) {
+        None => {}
+        Some(entry) => match &entry.result {
+            CachedResult::Value(Value::StructureInstance(data), _) => assert!(
+                data.annotation("test_eval").is_none(),
+                "the annotation-args post-pass's CacheLeg::Skip commit must \
+                 not have written its overlay-attached instance into the \
+                 cache leg"
+            ),
+            other => panic!(
+                "expected CachedResult::Value(StructureInstance(_), _), got {other:?}"
+            ),
+        },
+    }
+
+    // (3) Value preserved (characterization guard) — the rebuilt instance +
+    // its materialized overlay are unchanged by the migration.
+    let it_val = result.values.get(&it_id).unwrap_or_else(|| {
+        panic!(
+            "S.it cell not found; available cells: {:?}",
+            result.values.iter().map(|(k, _)| k).collect::<Vec<_>>()
+        )
+    });
+    let data = match it_val {
+        Value::StructureInstance(d) => d,
+        other => panic!("expected S.it to be Value::StructureInstance, got {:?}", other),
+    };
+    assert_eq!(data.type_name, "AnnoItem");
+    let overlay = data
+        .annotation("test_eval")
+        .and_then(|a| a.arg_value("value"))
+        .cloned();
+    assert_eq!(
+        overlay,
+        Some(Value::Real(3.0)),
+        "the test_eval overlay (2.0 * 1.5) must be preserved across the migration"
+    );
+}
+
+/// RED: annotation-args materialization post-pass FAILURE arm explicit
+/// `CacheLeg::Skip` audit.
+///
+/// RED today: the post-pass's failure arm (engine_eval.rs, ~@4937-4947)
+/// writes `values`/`snapshot.values` directly and emits NO journal event of
+/// its own. GREEN after impl-6 migrates the commit onto `commit_cell_result`
+/// with the same `TraceSource::PostPassOverwrite` +
+/// `CacheLeg::Skip("annotation-args materialization overlay")` as the
+/// success arm.
+///
+/// Also pins: an `AnnotationEvalFailed` diagnostic is emitted (unaffected by
+/// this migration — mirrors the existing
+/// `eval_annotation_type_mismatch_emits_failed_diagnostic_and_undef_cell`
+/// precedent in `tests/annotation_materialization_eval.rs`), and the failed
+/// cell's value is replaced with `Value::Undef` (characterization guard).
+#[test]
+fn annotation_args_materialization_failure_cache_skip_audit() {
+    let module = parse_and_compile(ANNOTATION_ARGS_FAILURE_SRC);
+    let mut engine = make_engine();
+
+    let result = engine.eval(&module);
+
+    let it_id = ValueCellId::new("BadS", "it");
+
+    eprintln!("it last_started_payload = {:?}", last_started_payload(&engine, &it_id));
+    eprintln!("it = {:?}", result.values.get(&it_id));
+
+    // (1) Provenance + explicit skip marker — RED today.
+    assert_eq!(
+        last_started_payload(&engine, &it_id),
+        Some(
+            "post-pass-overwrite|cache-skip=annotation-args materialization overlay"
+                .to_string()
+        ),
+        "the annotation-args post-pass's failure-arm Started event should be \
+         the LAST one recorded for the cell and should carry the \
+         'post-pass-overwrite' TraceSource slug plus its cache-skip reason \
+         once migrated onto commit_cell_result with CacheLeg::Skip"
+    );
+
+    // (2) The failure diagnostic is emitted (unaffected by this migration).
+    let has_failed_diag = result
+        .diagnostics
+        .iter()
+        .any(|d| d.code == Some(DiagnosticCode::AnnotationEvalFailed));
+    assert!(
+        has_failed_diag,
+        "expected a DiagnosticCode::AnnotationEvalFailed diagnostic; got: {:?}",
+        result.diagnostics
+    );
+
+    // (3) Value preserved (characterization guard) — the cell is replaced
+    // with Value::Undef on failure, unchanged by the migration.
+    assert_eq!(
+        result.values.get(&it_id),
+        Some(&Value::Undef),
+        "BadS.it must be Value::Undef after the annotation-args materialization failure"
     );
 }
