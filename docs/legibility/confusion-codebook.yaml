@@ -4,17 +4,19 @@
 # entries are never deleted (retire via status: retired); sightings/candidates
 # are appended by the deterministic merger's apply_coding_record(). Hand edits
 # will be normalized/overwritten on the next merge.
-#
-# reify note: reify is a hosted project (dark_factory operates its agent
-# harness), so harness-rooted confusion causes observed in reify sessions
-# carry an `upstream: dark_factory:<entry-id>` link back to the
-# dark_factory codebook entry that actually owns the fix (PRD decision 4,
-# plans/confusion-reduction-prd.md). reify's periodic census may also file
-# remediation tasks directly into dark_factory (same fused-memory
-# instance, different project_root) when a cause's fix lives there.
-#
-# Seeded empty: the nightly trickle (dark_factory ε, deployed by θ′)
-# appends dated sightings and candidates as reify sessions are surveyed.
 version: 2
 entries: []
-candidates: []
+candidates:
+- id: cand-20260715-1
+  title: Autonomous escalation watcher in non-DF project loses script context and env setup
+  cause: Watcher spawned in /home/leo/src/reify (non-dark-factory project) attempts to call scripts/watcher-rearm.sh with improper path resolution and missing DARK_FACTORY_ROOT initialization; watcher re-arms fail sequentially with env-var then timeout-ceiling errors
+  area: escalation-watcher / cross-project orchestration / autonomous agent spawn
+  first_seen: '2026-07-15'
+  disposition: pending
+  sightings:
+  - date: '2026-07-15'
+    project: reify
+    session: be5ec2d3-1780-4d77-a29a-1ccbb9e0cb9f
+    origin_phase: ops
+    manifested_phase: ops
+    evidence_quote: 'Turn 24: ''scripts/watcher-rearm.sh: No such file or directory''; Turn 36: ''DARK_FACTORY_ROOT must be set to a valid directory''; Turns 42,47,52: repeated ''WATCHER_REARM_OUTCOME: CEILING exit=124'' timeouts after env-var fix applied'
