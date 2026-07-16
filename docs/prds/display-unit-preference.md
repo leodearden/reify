@@ -239,3 +239,44 @@ Rationale:
   future ergonomic sugar — a `TypeExpr`-level shorthand that desugars to the same
   `@display` annotation at parse time. Not designed further here and out of scope for
   the leaves filed in §7.
+
+---
+
+## §4 — Derived-unit names — curated vs composed
+
+**Question:** curated derived-unit names (`Pa`, `N`, `J`, `W`, `kg/m³`, …) vs composed
+dimension symbols (`kg·m^-1·s^-2`)?
+
+**DECISION: a single curated derived-unit registry, keyed by canonical
+`DimensionVector`** (via `canonical_name()` / `NAMED_DIMENSIONS`,
+`crates/reify-core/src/dimension.rs:479-560`), reconciling `to_display_units`'s /
+`dimension_unit_label`'s `"SI"` fallback (§2b) with 5199's already-curated `"Pa"` /
+`"kg/m³"` (§2c).
+
+- **(a) The registry IS the 5199 ladder table (`unit_ladders()`), extended** — not a
+  second, freshly invented table. Each `DimensionLadder`'s default `UnitOption`
+  becomes the single source of the curated label for that dimension (§7 leaf L1
+  relocates and extends this table; §6 covers where it must live to be reachable from
+  eval/LSP).
+- **(b) Composed symbols (`DimensionVector::Display`, §2b#1) remain the fallback ONLY
+  for dimensions with no curated registry entry** — so nothing currently working
+  regresses: a dimension the registry hasn't named yet still renders as a real
+  composed-symbol string (today's CLI behavior), never a bare `"SI"` token and never a
+  crash.
+- **(c) All consumers read this ONE registry.** Eval Display (CLI), `format_hover`
+  (LSP), and `format_display_pair` (GUI cell + interpolation) — the three divergent
+  functions in §2b — must all resolve a dimension's label from the shared registry
+  instead of their own independent curated sets. This is what makes Pressure render as
+  `"Pa"` uniformly in eval/hover *and* the GUI cell, closing the §2c divergence where
+  the same value shows `"101325 SI"` in three places and `"101.325 kPa"` only behind
+  the picker.
+- **Initial curated set to seed:** the 7 already-curated ladder dimensions — Length,
+  Area, Volume, Angle, Mass, Pressure, Density — plus **Force → `"N"`, Energy → `"J"`,
+  Power → `"W"`**, named explicitly by the task. All three already exist as
+  `DimensionVector` consts with `NAMED_DIMENSIONS` entries (`dimension.rs:493-495`), so
+  adding ladder rungs for them is additive — no new dimension plumbing, only new
+  `DimensionLadder` table rows (§7 leaf L1).
+- Composed-symbol fallback (b) stays in force for the ~24 other `NAMED_DIMENSIONS`
+  entries not in the initial curated set (Frequency, Voltage, Charge, Stiffness, …) —
+  growing the curated set further is future ladder work, not a blocker for this PRD's
+  leaves.
