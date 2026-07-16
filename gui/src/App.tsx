@@ -1390,26 +1390,36 @@ const App: Component = () => {
 
     if (!alive) return;
 
-    // Fetch the per-dimension display-unit ladders (task #5199). Tolerate
-    // failure: an empty map means every cell keeps its static unit badge.
-    // Surface it as a toast, not just console.warn (task #5199 amend,
+    // Fetch the per-dimension display-unit ladders (task #5199) in the
+    // background. Deliberately NOT awaited (task #5199 amend,
+    // reviewer_comprehensive robustness finding): this used to sit on the
+    // critical init path, ahead of the event-subscription block and the
+    // 'ready' transition below — a slow or hung get_unit_ladders call would
+    // have delayed app readiness and every live-update subscription even
+    // though the ladders are purely cosmetic/best-effort. Firing it off
+    // without awaiting means it can never block init, regardless of how
+    // long it takes.
+    //
+    // Tolerate failure: an empty map means every cell keeps its static unit
+    // badge. Surface it as a toast, not just console.warn (task #5199 amend,
     // reviewer_comprehensive graceful_degradation finding) — the ladders are
     // fetched once on mount with no retry, so a silent console-only failure
     // would leave the picker permanently unavailable for the whole session
     // with no user-visible signal, mirroring how the other best-effort
     // one-time subscriptions below report their own failures.
-    try {
-      const ladders = await bridgeGetUnitLadders();
-      if (!alive) return;
-      const map: UnitLadderMap = {};
-      for (const ladder of ladders) {
-        map[ladder.dimension] = ladder.units;
-      }
-      setUnitLadders(map);
-    } catch (err) {
-      console.warn('[unit-ladders] fetch failed:', err);
-      showToast('Unit ladders unavailable — parameters will show default units only', 'info');
-    }
+    bridgeGetUnitLadders()
+      .then((ladders) => {
+        if (!alive) return;
+        const map: UnitLadderMap = {};
+        for (const ladder of ladders) {
+          map[ladder.dimension] = ladder.units;
+        }
+        setUnitLadders(map);
+      })
+      .catch((err) => {
+        console.warn('[unit-ladders] fetch failed:', err);
+        showToast('Unit ladders unavailable — parameters will show default units only', 'info');
+      });
 
     // Subscribe to events before showing ready state — "ready" means
     // fully initialized including live update subscriptions
