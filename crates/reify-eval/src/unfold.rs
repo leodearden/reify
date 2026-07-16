@@ -26,20 +26,39 @@ use crate::snapshot::Snapshot;
 /// engine_eval.rs.
 ///
 /// Containment is the only one of `cell_eval_ctx`'s three required
-/// capabilities that is a true no-op replica of the pre-migration context.
-/// Determinacy is *not* a stand-in: it is wired to the live
-/// `&snapshot.values`, a capability the old bare `eval_ctx_with_meta` never
-/// had. A child param/let expression containing a `DeterminacyPredicate`
-/// (e.g. `determined(x)`) now resolves against the snapshot instead of
-/// unconditionally degrading to `Value::Undef` — this intentionally matches
-/// the main eval pass, which consistently uses
-/// `.with_determinacy(&snapshot.values)` (engine_eval.rs). The plain
-/// arithmetic param/let expressions this migration's parity fixture
-/// exercises don't observe any difference, but an expression that does
-/// reference a determinacy predicate would now resolve differently than
-/// before this migration. (The third capability, runtime_sink, is wired but
-/// its contents are intentionally discarded — see the comment at its
-/// construction below.)
+/// capabilities that is a true no-op replica of the pre-migration context —
+/// and, more precisely, of *unfold.rs's own* pre-migration context, not of
+/// the main eval pass (see the second paragraph below). Determinacy is *not*
+/// a stand-in: it is wired to the live `&snapshot.values`, a capability the
+/// old bare `eval_ctx_with_meta` never had. This is not limited to the param
+/// default_expr branch: all three `cell_eval_ctx` call sites this migration
+/// introduces observe it identically — the arg branch (`args.iter().find(..)`
+/// arm) and the default_expr branch in `elaborate_child_params_only`, and the
+/// let-binding eval in `elaborate_child_lets_only`. A child param/let
+/// expression containing a `DeterminacyPredicate` (e.g. `determined(x)`) now
+/// resolves against the snapshot instead of unconditionally degrading to
+/// `Value::Undef` — this intentionally matches the main eval pass, which
+/// consistently uses `.with_determinacy(&snapshot.values)` (engine_eval.rs).
+/// The plain arithmetic param/let expressions this migration's parity
+/// fixture exercises don't observe any difference, but an expression that
+/// does reference a determinacy predicate would now resolve differently at
+/// any of the three sites than before this migration. (The third capability,
+/// runtime_sink, is wired but its contents are intentionally discarded — see
+/// the comment at its construction below.)
+///
+/// The "true no-op replica" claim above is narrower than it may read at a
+/// glance: it holds against unfold.rs's *own* pre-migration behaviour, not
+/// against the main eval pass. The main pass wires the live `Engine` as its
+/// `ContainmentQuery` (engine_eval.rs), so a child param/let default or arg
+/// referencing a containment/restrict predicate resolves through real
+/// geometry there; on this recursive-unfold path it always sees `None` (→
+/// `Value::Undef` for a restricted-field sample), both before and after this
+/// migration. `cell_eval_ctx`'s required-capability constructor doesn't
+/// create this divergence from the main pass — it turns unfold.rs's
+/// previously-*implicit* "no containment reaches here" into an explicit,
+/// permanent wire. Closing the gap (wiring the real kernel) would require
+/// threading `&self`/`&Engine` through these free functions; that enrichment
+/// is future work, out of ε's behaviour-preserving scope.
 struct NoContainment;
 
 impl ContainmentQuery for NoContainment {
