@@ -44,9 +44,12 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
-use reify_core::{ModulePath, Type};
+use reify_core::{ModulePath, SourceSpan, Type};
 use reify_eval::primitive_attribute_seed::record_solid_attribute;
-use reify_eval::{Engine, forward_solid_attribute_on_ingest, propagate_via_kernel_attribute_hook};
+use reify_eval::{
+    AttributeQuery, AttributeResolution, Engine, forward_solid_attribute_on_ingest,
+    propagate_via_kernel_attribute_hook, resolve_unique_by_attribute,
+};
 use reify_ir::{
     CapabilityDescriptor, CompiledExpr, ExportFormat, FeatureId, GeometryHandleId, GeometryKernel,
     GeometryOp, KernelAttributeOutcome, KernelHandle, KernelId, Operation, ReprKind, Role,
@@ -579,5 +582,175 @@ fn forwarded_manifold_solid_entries_excluded_from_centroid_and_reassignment_scan
         reassignment_diags.is_empty(),
         "distinct per-handle coordinates must not trip the local-index-reassignment tie \
          detector; got: {reassignment_diags:?}"
+    );
+}
+
+/// Task #4637 (substrate for #4263): a result-face attribute persisted by
+/// `propagate_attributes` into the descriptor-keyed `result_faces` store
+/// carries exactly the fields `resolve_unique_by_attribute` needs, and the
+/// resolver correctly discriminates it from a non-matching distractor
+/// candidate once both are surfaced at face candidate handles — proving the
+/// persisted shape is resolver-consumable, not merely that a lone candidate
+/// trivially matches a query built from its own fields.
+///
+/// `propagate_attributes` itself cannot mint the coalesced per-face
+/// sub-handles `extract_faces` would produce (it takes `&self`, so it
+/// cannot call `&mut extract_faces`) — correlating those coalesced faces
+/// back to a descriptor so the resolver reads them end-to-end is #4263's
+/// `.ri` e2e wiring. This test simulates that bridge: it takes one
+/// persisted `(descriptor, attribute)` pair straight out of
+/// `iter_result_faces()`, records it at a synthetic face candidate handle
+/// alongside a second synthetic candidate carrying a deliberately
+/// different attribute, and asserts the resolver resolves to only the
+/// matching candidate — mirroring what #4263's `extract_faces` correlation
+/// will do, without claiming to exercise that correlation itself (review
+/// follow-up, task #4637 amendment: the original version of this test used
+/// a single candidate, which is tautological — any recorded attribute
+/// trivially satisfies a query built from its own fields).
+///
+/// Reuses the ingest -> `record_solid_attribute` ->
+/// `forward_solid_attribute_on_ingest` -> `execute(Union)` ->
+/// `propagate_via_kernel_attribute_hook` scaffold from
+/// `forward_solid_attribute_on_ingest_enables_propagated_outcome` above.
+#[test]
+fn propagated_result_faces_are_readable_by_resolve_unique_by_attribute() {
+    let mut kernel = ManifoldKernel::new();
+    let mesh_a = unit_cube_mesh([0.0, 0.0, 0.0]);
+    let mesh_b = unit_cube_mesh([0.5, 0.0, 0.0]);
+
+    let handle_a = kernel
+        .ingest_mesh(&mesh_a)
+        .expect("unit_cube_mesh fixture must ingest into a real ManifoldKernel");
+    let handle_b = kernel
+        .ingest_mesh(&mesh_b)
+        .expect("unit_cube_mesh fixture must ingest into a real ManifoldKernel");
+
+    let feature_id = FeatureId::realization("t", 0);
+    let src_a = KernelHandle {
+        kernel: KernelId::Occt,
+        id: GeometryHandleId(9101),
+    };
+    let src_b = KernelHandle {
+        kernel: KernelId::Occt,
+        id: GeometryHandleId(9102),
+    };
+
+    let mut table = TopologyAttributeTable::default();
+    record_solid_attribute(&mut table, src_a.kernel, src_a.id, &feature_id);
+    record_solid_attribute(&mut table, src_b.kernel, src_b.id, &feature_id);
+
+    // The OCCT->Manifold ingest seam under test (task #4636): forward each
+    // source solid's entry onto the handle its mesh was just ingested under.
+    forward_solid_attribute_on_ingest(
+        &mut table,
+        src_a,
+        KernelHandle {
+            kernel: KernelId::Manifold,
+            id: handle_a.id,
+        },
+    );
+    forward_solid_attribute_on_ingest(
+        &mut table,
+        src_b,
+        KernelHandle {
+            kernel: KernelId::Manifold,
+            id: handle_b.id,
+        },
+    );
+
+    let op = GeometryOp::Union {
+        left: handle_a.id,
+        right: handle_b.id,
+    };
+    let result = kernel
+        .execute(&op)
+        .expect("union of two ingested cubes must succeed");
+
+    let outcome = propagate_via_kernel_attribute_hook(
+        &kernel,
+        &mut table,
+        &op,
+        &[handle_a.id, handle_b.id],
+        result.id,
+        &feature_id,
+    );
+    match outcome {
+        Ok(KernelAttributeOutcome::Propagated) => {}
+        other => panic!(
+            "expected Ok(Propagated) after forward_solid_attribute_on_ingest populated the \
+             Manifold-scoped solid entries for both parents; got {other:?}"
+        ),
+    }
+
+    assert!(
+        table.result_face_len() > 0,
+        "propagate_attributes must persist at least one descriptor-keyed result-face entry"
+    );
+
+    // Simulate #4263's extract_faces->descriptor bridge: surface one
+    // persisted result-face attribute at a synthetic face candidate handle.
+    let (_descriptor, attr) = table
+        .iter_result_faces()
+        .next()
+        .map(|(d, a)| (d, a.clone()))
+        .expect("result_face_len() > 0 guarantees at least one entry");
+    let synthetic_face_id = GeometryHandleId(70001);
+    table.record(
+        KernelHandle {
+            kernel: KernelId::Manifold,
+            id: synthetic_face_id,
+        },
+        attr.clone(),
+    );
+
+    // Distractor candidate (review follow-up, task #4637 amendment): a
+    // second synthetic face handle carrying a DIFFERENT attribute (same
+    // feature_id, but a distinct role) so the assertion below exercises
+    // the resolver's actual discrimination between multiple candidates
+    // instead of a lone candidate trivially matching a query built from
+    // its own fields. Placed FIRST in the candidate slice so a resolver
+    // that incorrectly favored positional order would also be caught.
+    assert_ne!(
+        attr.role,
+        Role::NewEdge,
+        "distractor must carry a role distinct from the persisted attribute's role for the \
+         discrimination assertion below to be meaningful"
+    );
+    let distractor_face_id = GeometryHandleId(70002);
+    table.record(
+        KernelHandle {
+            kernel: KernelId::Manifold,
+            id: distractor_face_id,
+        },
+        TopologyAttribute {
+            feature_id: attr.feature_id.clone(),
+            role: Role::NewEdge,
+            local_index: attr.local_index,
+            user_label: None,
+            mod_history: Vec::new(),
+        },
+    );
+
+    let query = AttributeQuery {
+        user_label: None,
+        role_and_index: Some((attr.role, attr.local_index)),
+        feature_id: Some(attr.feature_id.clone()),
+    };
+    let mut diagnostics = Vec::new();
+    let resolution = resolve_unique_by_attribute(
+        &table,
+        &[distractor_face_id, synthetic_face_id],
+        &query,
+        SourceSpan::empty(0),
+        KernelId::Manifold,
+        &mut diagnostics,
+    );
+    assert_eq!(
+        resolution,
+        AttributeResolution::Resolved(synthetic_face_id),
+        "a persisted result-face attribute, once surfaced at a face candidate handle alongside \
+         a non-matching distractor candidate, must resolve specifically to the matching \
+         candidate via resolve_unique_by_attribute (not the distractor, and not Unresolved due \
+         to false ambiguity); diagnostics: {diagnostics:?}"
     );
 }

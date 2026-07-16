@@ -1001,14 +1001,27 @@ impl GeometryKernel for ManifoldKernel {
 ///
 /// # Descriptor-keyed persistence
 ///
-/// The correlation (`Vec<FacetProvenance>`) is computed and validated but
-/// **not** persisted into the full `KernelHandle`-keyed `TopologyAttributeTable`
-/// (re-keyed from a bare `GeometryHandleId` by task #4351) — there is no
-/// per-face/descriptor-keyed store for the RESULT handle's individual facets
-/// until task #4263, and `&self` is immutable.  The engine
+/// The correlation (`Vec<FacetProvenance>`) is walked below: every facet
+/// carrying a trackable `source` is persisted into the separate,
+/// descriptor-keyed `result_faces` store on `table` (task #4637), under key
+/// `ResultFaceDescriptor { handle: {Manifold, result_handle},
+/// run_original_id, face_id }`. This is deliberately NOT the
+/// `KernelHandle`-keyed `entries` map (re-keyed from a bare
+/// `GeometryHandleId` by task #4351): a coarse whole-result `entries` write
+/// would be picked up by the engine's `entries`-only per-realization
+/// diagnostic scan (`engine_build.rs`) and centroid-queried against the
+/// default kernel under a Manifold-only id, spuriously failing. Untracked
+/// facets (`source: None`) are intentionally skipped (lossy-but-valid — a
+/// boolean result may legitimately contain runs from an untracked parent).
+///
+/// Correlating the coalesced per-face handles `extract_faces` mints back to
+/// these descriptors — so a selector's `resolve_unique_by_attribute` call
+/// reads them end-to-end — remains task #4263's `.ri` e2e wiring:
+/// `propagate_attributes` takes `&self` and so cannot call `&mut
+/// extract_faces` to mint those handles itself. The engine
 /// (`engine_build.rs`'s kernel-attribute-hook dispatch site) intentionally
-/// swallows all three `Ok` variants, so returning `Propagated` without
-/// writing the table is safe for the current call graph.
+/// swallows all three `Ok` variants, so returning `Propagated` here is safe
+/// for the current call graph regardless of #4263's bridge status.
 ///
 /// # Coarse solid-level placeholder (review follow-up, task #4636 amendment)
 ///
@@ -1080,14 +1093,57 @@ impl KernelAttributeHook for ManifoldKernel {
         let mg = result_manifold.unwrap().to_meshgl64();
         match crate::provenance::correlate_facets(&mg, &parent_map) {
             Ok(facets) => {
-                let source_count =
-                    facets.iter().filter(|f| f.source.is_some()).count();
+                let total_facets = facets.len();
+                let result_kernel_handle = KernelHandle {
+                    kernel: KernelId::Manifold,
+                    id: result_handle,
+                };
+                // Persist every facet with a trackable source into the
+                // descriptor-keyed result_faces store (task #4637). Untracked
+                // facets (source: None) are intentionally skipped — moving
+                // `source` out of each owned `facet` avoids a clone;
+                // `descriptor` is `Copy` so it stays readable afterward.
+                let mut persisted_count = 0usize;
+                for facet in facets {
+                    if let Some(attr) = facet.source {
+                        let descriptor = reify_ir::ResultFaceDescriptor {
+                            handle: result_kernel_handle,
+                            run_original_id: facet.descriptor.run_original_id,
+                            face_id: facet.descriptor.face_id,
+                        };
+                        // `record_result_face` is last-write-wins, so a genuine
+                        // divergence between two facets sharing `descriptor`
+                        // would silently drop data. That can't happen here:
+                        // `correlate_from_vectors` (provenance.rs) computes
+                        // `source` exactly once per run and clones it onto
+                        // every triangle in that run, so any two facets with
+                        // equal `run_original_id` — the only field `source`
+                        // depends on — are structurally guaranteed identical
+                        // `source` values within a single `propagate_attributes`
+                        // call; `handle` is unique per call (tied to
+                        // `result_handle`), so cross-call collisions on the
+                        // same descriptor are impossible too (review
+                        // follow-up, task #4637 amendment). Tripwire kept in
+                        // case a future change to `correlate_facets` breaks
+                        // that per-run invariant.
+                        debug_assert!(
+                            table
+                                .lookup_result_face(descriptor)
+                                .is_none_or(|existing| *existing == attr),
+                            "descriptor {descriptor:?} already recorded with a different \
+                             TopologyAttribute — correlate_facets' per-run source invariant \
+                             (provenance.rs) has been violated"
+                        );
+                        table.record_result_face(descriptor, attr);
+                        persisted_count += 1;
+                    }
+                }
                 tracing::debug!(
                     target: "reify_kernel_manifold::kernel",
-                    facets = facets.len(),
-                    with_source = source_count,
-                    "Manifold attribute propagation completed — kernel-level walk done; \
-                     descriptor-keyed persistence deferred to task 4262"
+                    facets = total_facets,
+                    persisted = persisted_count,
+                    "Manifold attribute propagation completed — descriptor-keyed result-face \
+                     persistence landed (#4637); untracked facets (source: None) are skipped"
                 );
                 Ok(KernelAttributeOutcome::Propagated)
             }
@@ -1431,7 +1487,9 @@ mod tests {
     /// stored manifolds have a non-negative `original_id()`, or because no
     /// parent has a table entry.  This test exercises the first case (empty
     /// kernel), which is the cheapest fixture that hits the same branch.
-    /// Descriptor-keyed persistence is deferred to task 4262.
+    /// Descriptor-keyed persistence (task #4637) is never reached on this
+    /// path — the degenerate branch returns before any facet correlation
+    /// (and thus before any result-face write) runs.
     ///
     /// Reuses the `CountingSubscriberBuilder` pattern from
     /// `crates/reify-eval/src/kernel_registry.rs:329-353`. Synthetic op +
@@ -2329,18 +2387,43 @@ mod tests {
             ),
         }
 
-        // The table must be unchanged on the Propagated path.  Descriptor-keyed
-        // persistence is deferred to task 4262 (`propagate_attributes` takes `&self`;
-        // there is no descriptor store until 4262 lands).
+        // Descriptor-keyed persistence (task #4637): every surviving facet
+        // with a trackable source is now persisted into the separate
+        // `result_faces` store, keyed under the result's KernelHandle.
         assert!(
-            table
-                .lookup(KernelHandle {
-                    kernel: KernelId::Manifold,
-                    id: result_handle.id,
-                })
-                .is_none(),
-            "propagate_attributes must not write a result-handle entry on the Propagated path \
-             (descriptor-keyed persistence deferred to task 4262)"
+            table.result_face_len() > 0,
+            "propagate_attributes must persist at least one descriptor-keyed result-face entry \
+             on the Propagated path"
+        );
+        let result_kernel_handle = KernelHandle {
+            kernel: KernelId::Manifold,
+            id: result_handle.id,
+        };
+        for (descriptor, attr) in table.iter_result_faces() {
+            assert_eq!(
+                descriptor.handle, result_kernel_handle,
+                "every persisted result-face descriptor must be keyed under the result's \
+                 KernelHandle"
+            );
+            assert!(
+                *attr == make_attr("A") || *attr == make_attr("B"),
+                "persisted result-face attribute must be exactly one parent's TopologyAttribute; \
+                 got {attr:?}"
+            );
+        }
+
+        // Non-pollution guard: result faces live ONLY in the descriptor-keyed
+        // `result_faces` store above, never as a coarse whole-result entry in
+        // `entries` — a coarse entry there would be picked up by the engine's
+        // per-realization `entries`-only diagnostic scan
+        // (`reify_eval::engine_build`) and centroid-queried against the
+        // default kernel under a Manifold-only id, which would spuriously
+        // fail (see the landed 4636 regression test
+        // `forwarded_manifold_solid_entries_excluded_from_centroid_and_reassignment_scan`).
+        assert!(
+            table.lookup(result_kernel_handle).is_none(),
+            "propagate_attributes must not write a coarse result-handle entry into `entries` \
+             (result faces belong in the descriptor-keyed result_faces store only)"
         );
         assert!(
             table

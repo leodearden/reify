@@ -5095,6 +5095,36 @@ impl TopologyAttribute {
     }
 }
 
+/// Kernel-agnostic descriptor key for a single result-face attribute
+/// persisted by a cross-kernel `KernelAttributeHook::propagate_attributes`
+/// (e.g. `ManifoldKernel`'s facet-correlation walk).
+///
+/// Combines two independently-motivated axes:
+///   - `handle` — the whole-result `KernelHandle` (kernel + kernel-local
+///     result id), task #4351's cross-kernel collision fix.
+///   - `run_original_id` / `face_id` — the per-facet descriptor axis from
+///     task #4262's `FacetDescriptor` (Manifold provenance coordinates:
+///     which parent run a result triangle/face came from, plus its
+///     per-triangle face identity).
+///
+/// Declared with primitive fields here rather than reusing
+/// `reify_kernel_manifold::provenance::FacetDescriptor` because `reify-ir`
+/// cannot depend on `reify-kernel-manifold` (the dependency direction is the
+/// reverse) — kernel crates map their own descriptor types onto this one at
+/// the write site (task #4637, substrate for #4263).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ResultFaceDescriptor {
+    /// The whole-result handle (kernel + kernel-local result id) this facet
+    /// was correlated from.
+    pub handle: KernelHandle,
+    /// The `run_original_id` of the parent run containing this facet
+    /// (matches `Manifold::original_id()` of one of the boolean's inputs).
+    pub run_original_id: u32,
+    /// Per-triangle/face identifier from the producing kernel (Manifold:
+    /// `MeshGL64::face_id()`).
+    pub face_id: u64,
+}
+
 /// Runtime table mapping kernel-scoped geometry handles to `TopologyAttribute`s.
 ///
 /// Keyed by the full `KernelHandle` (kernel + kernel-local id) rather than a
@@ -5110,10 +5140,18 @@ impl TopologyAttribute {
 // live attribute table into an owned `OwnedBRepSnapshot` BEFORE a rebuild wipes
 // it, so `morph_eligible` Stage-B can run against the OLD BRep on the next tick.
 // The single `HashMap<KernelHandle, TopologyAttribute>` field is `Clone`
-// (both key and value derive it), so this is a trivial additive derive.
+// (both key and value derive it), so this is a trivial additive derive; the
+// `result_faces` field added by task #4637 is `Clone` for the same reason.
 #[derive(Debug, Default, Clone)]
 pub struct TopologyAttributeTable {
     entries: HashMap<KernelHandle, TopologyAttribute>,
+    /// Descriptor-keyed store for per-result-face attributes persisted by
+    /// cross-kernel `propagate_attributes` (task #4637, substrate for
+    /// #4263). Deliberately SEPARATE from `entries`: `iter()` walks only
+    /// `entries`, so writes here stay invisible to the engine's
+    /// per-realization `entries`-only diagnostic scan
+    /// (`reify_eval::engine_build`) — see `record_result_face`.
+    result_faces: HashMap<ResultFaceDescriptor, TopologyAttribute>,
 }
 
 impl TopologyAttributeTable {
@@ -5170,6 +5208,66 @@ impl TopologyAttributeTable {
     /// (PRD `docs/prds/v0_2/persistent-naming-v2.md` line 72).
     pub fn iter(&self) -> impl Iterator<Item = (KernelHandle, &TopologyAttribute)> {
         self.entries.iter().map(|(k, v)| (*k, v))
+    }
+
+    /// Record that result-face descriptor `desc` carries `attr`.
+    ///
+    /// Overwrites any prior entry for the same descriptor (last-write-wins,
+    /// mirroring `record`'s contract on `entries`). Writes here are stored
+    /// in the separate `result_faces` map — NOT `entries` — so they are
+    /// never observed by `lookup`/`record`/`remove`/`iter`, which keeps
+    /// them invisible to the engine's `entries`-only per-realization
+    /// diagnostic scan (task #4637, substrate for #4263).
+    ///
+    /// # Lifecycle (no dedicated eviction — by design)
+    ///
+    /// Unlike `entries`, `result_faces` has no `remove_result_face`/
+    /// `clear_result_faces` counterpart. This is safe today because
+    /// `reify_eval::engine_build` resets the WHOLE table via
+    /// `self.topology_attribute_table = TopologyAttributeTable::default()`
+    /// at each realization rebuild, which clears `result_faces` along with
+    /// `entries` — both are plain fields on the same `Default`-derived
+    /// struct. So entries recorded here accumulate only across the
+    /// `propagate_attributes` calls WITHIN a single realization, never
+    /// across realizations (review follow-up, task #4637 amendment). If a
+    /// future incremental/reuse path ever retains a `TopologyAttributeTable`
+    /// across realizations instead of resetting it, this no-eviction
+    /// assumption must be revisited — add scoped pruning or a
+    /// `clear_result_faces` at that point.
+    pub fn record_result_face(&mut self, desc: ResultFaceDescriptor, attr: TopologyAttribute) {
+        self.result_faces.insert(desc, attr);
+    }
+
+    /// Look up the attribute for a given result-face descriptor, if any.
+    ///
+    /// Currently exercised only by tests (this reify-ir module's
+    /// independent-key assertions) — the production caller is #4263's
+    /// `extract_faces`->descriptor bridge, which has not landed yet. Kept
+    /// alongside `record_result_face`/`iter_result_faces` rather than
+    /// deferred (review follow-up, task #4637 amendment) because #4263 is
+    /// this task's immediate next link in the decomposition and a point
+    /// lookup is the natural shape for that bridge to consume; revisit if
+    /// #4263 ends up needing a different read shape than a bare descriptor
+    /// lookup.
+    pub fn lookup_result_face(&self, desc: ResultFaceDescriptor) -> Option<&TopologyAttribute> {
+        self.result_faces.get(&desc)
+    }
+
+    /// Iterate over all `(ResultFaceDescriptor, &TopologyAttribute)` pairs
+    /// in the result-face store.
+    ///
+    /// Iteration order is **unspecified** (HashMap-backed), same caveat as
+    /// `iter()`. Callers are expected to be the #4263 resolver bridge
+    /// (correlating coalesced-face handles back to a descriptor) and tests.
+    pub fn iter_result_faces(
+        &self,
+    ) -> impl Iterator<Item = (ResultFaceDescriptor, &TopologyAttribute)> {
+        self.result_faces.iter().map(|(k, v)| (*k, v))
+    }
+
+    /// Number of entries currently in the result-face store.
+    pub fn result_face_len(&self) -> usize {
+        self.result_faces.len()
     }
 }
 
@@ -10623,6 +10721,106 @@ mod tests {
             id: GeometryHandleId(99),
         });
         assert!(removed.is_none(), "remove of absent id must return None");
+    }
+
+    // ── TopologyAttributeTable::result_faces descriptor store (task 4637) ──
+
+    /// A second, distinct `TopologyAttribute` — pairs with
+    /// `make_topology_attribute`'s `Role::Side`/`local_index: 0` so tests can
+    /// tell the two apart.
+    fn make_topology_attribute_b() -> TopologyAttribute {
+        TopologyAttribute {
+            feature_id: FeatureId::realization("test_entity_b", 1),
+            role: Role::NewEdge,
+            local_index: 1,
+            user_label: None,
+            mod_history: Vec::new(),
+        }
+    }
+
+    /// `result_faces` is a separate descriptor-keyed store (task #4637,
+    /// substrate for #4263): independently keyed by `ResultFaceDescriptor`
+    /// (`KernelHandle` + `run_original_id` + `face_id`), last-write-wins on
+    /// `record_result_face`, and orthogonal to the existing `entries` map —
+    /// `record`/`lookup`/`iter` must never observe a `record_result_face`
+    /// write. That orthogonality is load-bearing: the engine's per-
+    /// realization diagnostic scan (`reify_eval::engine_build`) walks
+    /// `entries` via `iter()` only, so keeping result-face writes out of
+    /// `entries` keeps them invisible to that scan.
+    #[test]
+    fn topology_attribute_table_result_face_store_records_and_looks_up() {
+        let handle = KernelHandle {
+            kernel: KernelId::Manifold,
+            id: GeometryHandleId(7),
+        };
+        let d1 = ResultFaceDescriptor {
+            handle,
+            run_original_id: 10,
+            face_id: 100,
+        };
+        // d2 differs only in face_id.
+        let d2 = ResultFaceDescriptor { face_id: 200, ..d1 };
+        // d3 differs only in handle.
+        let d3 = ResultFaceDescriptor {
+            handle: KernelHandle {
+                kernel: KernelId::Manifold,
+                id: GeometryHandleId(8),
+            },
+            ..d1
+        };
+
+        let attr_a = make_topology_attribute();
+        let attr_b = make_topology_attribute_b();
+
+        let mut table = TopologyAttributeTable::default();
+        assert!(
+            table.lookup_result_face(d1).is_none(),
+            "result-face store must start empty"
+        );
+
+        table.record_result_face(d1, attr_a.clone());
+        assert_eq!(
+            table.lookup_result_face(d1),
+            Some(&attr_a),
+            "d1 must resolve to attr_a after record_result_face"
+        );
+        assert!(
+            table.lookup_result_face(d2).is_none(),
+            "d2 (distinct face_id) must remain independent of d1"
+        );
+
+        table.record_result_face(d2, attr_b.clone());
+        table.record_result_face(d3, attr_a.clone());
+        assert_eq!(
+            table.iter_result_faces().count(),
+            3,
+            "three independently-keyed descriptors must yield three entries"
+        );
+        assert_eq!(table.result_face_len(), 3);
+
+        // Last-write-wins on a repeat `record_result_face` for the same key.
+        table.record_result_face(d1, attr_b.clone());
+        assert_eq!(
+            table.lookup_result_face(d1),
+            Some(&attr_b),
+            "record_result_face must overwrite d1's prior entry (last-write-wins)"
+        );
+        assert_eq!(
+            table.result_face_len(),
+            3,
+            "overwriting d1 must not add a fourth entry"
+        );
+
+        // Orthogonal to `entries`: none of the above writes are visible there.
+        assert!(
+            table.lookup(handle).is_none(),
+            "result-face writes must not create an `entries` entry at the same KernelHandle"
+        );
+        assert_eq!(
+            table.iter().count(),
+            0,
+            "result-face writes must not be visible via the `entries`-only iter()"
+        );
     }
 
     /// `GeometryOp::Fillet` records a curated `edges` selection alongside
