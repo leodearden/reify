@@ -25,6 +25,8 @@ structure def Bracket<M: Material> : Rigid {
 }
 ```
 
+> **Note:** `def` is optional. Bare `structure Bracket { ... }` (omitting `def`) is a silently-accepted, equal-status alias — the grammar parses both forms identically. This document uses the canonical `def` spelling, but existing code may use either form.
+
 ## Key Properties
 
 - Structures are immutable within the design system
