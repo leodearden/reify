@@ -243,25 +243,24 @@ mod tests {
     /// `default_si_scale_matches_to_display_units_numeric_value` below
     /// already locks against its true source (`to_display_units`). That
     /// test only exercises each ladder's DEFAULT rung though, so this table
-    /// keeps the non-default-rung coverage (cm/m/in, L, g, g/cm³, …) the
-    /// five tests used to provide, in one loop instead of five
-    /// near-identical functions.
+    /// keeps ONLY the non-default-rung coverage (cm/m/in, L, g, g/cm³, …)
+    /// the five tests used to provide — the default rungs themselves
+    /// (Volume mm³, Length mm, Mass kg, Pressure Pa, Density kg/m³) are
+    /// deliberately omitted here since pinning them would just re-assert
+    /// the constructor's own constants back at itself; their correctness is
+    /// covered, against the real source, by the anchored test below (task
+    /// #5199 amend, reviewer_comprehensive test_coverage finding — round 2).
     #[test]
     fn ladder_units_pin_expected_scale_and_default() {
         let ladders = unit_ladders();
 
         // (dimension, label, si_scale, is_default)
         let expected: &[(&str, &str, f64, bool)] = &[
-            ("Volume", "mm\u{00B3}", 1e-9, true),
             ("Volume", "L", 1e-3, false),
-            ("Length", "mm", 1e-3, true),
             ("Length", "cm", 1e-2, false),
             ("Length", "m", 1.0, false),
             ("Length", "in", 0.0254, false),
             ("Mass", "g", 1e-3, false),
-            ("Mass", "kg", 1.0, true),
-            ("Pressure", "Pa", 1.0, true),
-            ("Density", "kg/m\u{00B3}", 1.0, true),
             ("Density", "g/cm\u{00B3}", 1000.0, false),
         ];
         for &(dimension, label, si_scale, is_default) in expected {
