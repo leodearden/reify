@@ -140,6 +140,7 @@ pub(crate) fn rewrite_port_placeholder(template: &str, sub_name: &str, i: i64) -
 /// The caller is responsible for computing and inserting the guard cell value
 /// itself — this helper takes `guard_val` as input and handles only the member
 /// propagation step.
+#[allow(clippy::too_many_arguments)]
 fn reelaborate_guarded_group(
     graph: &EvaluationGraph,
     group: &GuardedGroupInfo,
