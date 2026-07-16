@@ -4733,11 +4733,27 @@ structure Assembly {
         let ingest_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
         let union_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
 
+        // Stage extract_faces/edges/vertices (all empty — zero-cost; seeding
+        // only needs `Ok` to fall through to `record_solid_attribute`) for the
+        // Box's occt handle (id 2 — Tube executes first and claims id 1, per
+        // `MockGeometryKernel::new()`'s `next_id: 1`). Without this, the Mock
+        // kernel's `extract_faces` returns `Err("no topology extraction
+        // fixture for ...")` for the unstaged handle (mocks.rs), so
+        // `seed_primitive_attributes_for_handle` short-circuits to `Err` and
+        // `record_solid_attribute` is never called for the Box either —
+        // silently defeating this test's positive-contrast assertion.
+        // Mirrors `execute_realization_ops_cache_hit_reforwards_solid_attribute_to_reused_manifold_handle`'s
+        // identical staging for its own occt Box handles.
+        let occt_inner = MockGeometryKernel::new()
+            .with_extracted_faces(GeometryHandleId(2), vec![])
+            .with_extracted_edges(GeometryHandleId(2), vec![])
+            .with_extracted_vertices(GeometryHandleId(2), vec![]);
+
         let mut kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
         kernels.insert(
             "occt".to_string(),
             Box::new(CountingTessellateKernel {
-                inner: MockGeometryKernel::new(),
+                inner: occt_inner,
                 tessellate_count: std::sync::Arc::clone(&tess_count),
             }),
         );
