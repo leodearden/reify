@@ -414,7 +414,7 @@ pub fn save_file_impl(path: &str, content: &str) -> Result<(), String> {
 /// load at the type level, so a future call site cannot return the
 /// unresolved state directly (or forget the rewrite) and silently ship
 /// stem-only paths to the frontend, which is exactly the class of identity
-/// bug task #5193 fixed (task #5193 review).
+/// bug #5193 fixed.
 pub(crate) struct UnresolvedGuiState(GuiState);
 
 impl UnresolvedGuiState {
@@ -426,8 +426,8 @@ impl UnresolvedGuiState {
     /// `"{name}.ri"` (a stem-only key). This gives callers a stable absolute
     /// identity key regardless of how the original input path was spelled.
     ///
-    /// Deliberately a separate step from [`load_file_into_engine`] (task
-    /// #5193 review): it is filesystem I/O that touches no engine state, so
+    /// Deliberately a separate step from [`load_file_into_engine`] (#5193):
+    /// it is filesystem I/O that touches no engine state, so
     /// callers call this AFTER releasing the engine lock that produced
     /// `self`, rather than holding the mutex across N
     /// `std::fs::canonicalize` syscalls.
@@ -481,7 +481,7 @@ fn rewrite_files_to_abs(state: &mut GuiState, canonical: &Path) {
 /// resolution). [`UnresolvedGuiState::resolve`] then runs AFTER the engine
 /// lock is released, so the returned [`GuiState::files`] contains absolute
 /// paths rather than bare module-key filenames without the engine mutex
-/// being held across the canonicalize filesystem calls (task #5193 review).
+/// being held across the canonicalize filesystem calls (#5193).
 pub fn open_file_engine_impl(
     engine: &Mutex<EngineSession>,
     path: &str,

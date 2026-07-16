@@ -1380,7 +1380,7 @@ async fn open_path_into_engine(state: &DebugServerState, raw_path: &str) -> Resu
 /// (the L4 emission choke-point) by construction. The abs-path rewrite runs
 /// AFTER `run_on_engine` returns — i.e. once the engine mutex is released —
 /// so the lock is not held across `std::fs::canonicalize` filesystem I/O
-/// (task #5193 review). On failure, the underlying `load_file_into_engine`
+/// (#5193). On failure, the underlying `load_file_into_engine`
 /// error is wrapped with an "open funnel failed to load {path}" prefix so
 /// debug-harness failure triage can tell the error came from this open
 /// funnel rather than a normal command.
@@ -3331,10 +3331,10 @@ mod tests {
     }
 
     // ── Shared boilerplate for the baseline-refresh test below and the
-    // #5193 open-funnel-identity regression tests (T1/T2/T3) further down
-    // (reviewer_comprehensive test_duplication finding): each of those
-    // tests needs a fixture file written into a tempdir and canonicalized,
-    // and T1/T2/T3 additionally need a launched-on-file-A precondition. ──
+    // #5193 open-funnel-identity regression tests (T1/T2/T3) further down:
+    // each of those tests needs a fixture file written into a tempdir and
+    // canonicalized, and T1/T2/T3 additionally need a launched-on-file-A
+    // precondition. ──
 
     /// Write `src` to `dir.join(name)` and return the canonicalized
     /// absolute path as an owned `String` — the form
@@ -3469,7 +3469,7 @@ mod tests {
     // today, so `any`/`all` coincide — but `any`+`!any` stays correct if
     // either fixture ever grows an `import` and `GuiState::files` gains
     // additional non-deck/non-warn/non-bracket entries, whereas a bare
-    // `all(...)` would then fail spuriously (task #5193 review).
+    // `all(...)` would then fail spuriously (#5193).
 
     /// T1 (open_file variant, files-path facet): launch on bracket.ri, then
     /// open deck.ri through the helper — `GuiState::files[0].path` must
@@ -3522,10 +3522,9 @@ mod tests {
     /// T2 (load_fixture-after-launch variant, diagnostics facet): launch on
     /// bracket.ri, then open warn.ri (reliably emits exactly one Warning)
     /// through the helper — every `compile_diagnostics[].file_path` must
-    /// cite warn.ri, never bracket.ri. Also checks the files-path facet
-    /// (reviewer_comprehensive test_coverage finding): T1 already asserts
-    /// files-path identity, so this closes the gap where a regression
-    /// fixing only one facet could still pass T2 alone.
+    /// cite warn.ri, never bracket.ri. Also checks the files-path facet:
+    /// T1 already asserts files-path identity, so this closes the gap
+    /// where a regression fixing only one facet could still pass T2 alone.
     #[tokio::test]
     async fn load_fixture_after_launch_diagnostics_cite_fixture() {
         use reify_test_support::{bracket_source, warn_source_with_unknown_port_type};
@@ -3600,7 +3599,7 @@ mod tests {
         );
     }
 
-    /// T3 (same-file re-open facet, task #5193 review): launch on warn.ri,
+    /// T3 (same-file re-open facet, #5193): launch on warn.ri,
     /// then re-open warn.ri AGAIN — the SAME file, not a different one —
     /// through the same helper. `GuiState::files[].path` and every
     /// diagnostic's `file_path` must still cite warn.ri.
@@ -3661,6 +3660,43 @@ mod tests {
                 .iter()
                 .map(|d| &d.file_path)
                 .collect::<Vec<_>>()
+        );
+    }
+
+    /// T4 (failure-path facet, #5193): opening a path that does not exist
+    /// must return an `Err` whose text is prefixed with "open funnel failed
+    /// to load {path}" and names the path — the triage marker documented on
+    /// `open_source_into_engine_and_refresh_baseline` above, distinguishing
+    /// this funnel's failures from a normal command's. T1-T3 only exercise
+    /// the Ok path, so a regression dropping or rewording the prefix (or
+    /// breaking the underlying error propagation) would otherwise go
+    /// unnoticed.
+    #[tokio::test]
+    async fn open_source_helper_wraps_load_error_with_funnel_prefix() {
+        let engine = crate::tests::make_test_engine();
+        let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+            std::sync::Mutex::new(None);
+
+        // A path inside a real tempdir that is never written to, so the
+        // underlying `std::fs::read_to_string` inside `load_file` fails.
+        let dir = tempfile::tempdir().unwrap();
+        let missing_path = dir
+            .path()
+            .join("does_not_exist.ri")
+            .to_string_lossy()
+            .into_owned();
+
+        let err = open_source_into_engine_and_refresh_baseline(&engine, &last_state, &missing_path)
+            .await
+            .expect_err("opening a nonexistent path must return Err");
+
+        assert!(
+            err.starts_with("open funnel failed to load "),
+            "error must carry the open-funnel triage prefix, got: {err:?}"
+        );
+        assert!(
+            err.contains(&missing_path),
+            "error must name the path that failed to load, got: {err:?}"
         );
     }
 }
