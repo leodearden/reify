@@ -115,6 +115,21 @@ fn kernel_id_for_registry_name(name: &str) -> KernelId {
 /// forward would have nothing coarser to attach to at this layer). Per-face
 /// result-face persistence is deferred to #4263.
 ///
+/// # Overwrite precondition (review follow-up, task #4636 amendment)
+///
+/// Like [`record_solid_attribute`], this calls [`TopologyAttributeTable::record`],
+/// which is unconditional last-write-wins — but unlike that sibling, a
+/// same-value re-forward onto an already-forwarded `target` is an expected,
+/// benign occurrence here: the realization-cache-hit arm in the `'convert:`
+/// loop below re-forwards the (unchanged, per-build-table-scoped) source
+/// entry onto a `target` handle reused from a prior build's cache, so the
+/// second call legitimately re-records the identical attribute. The
+/// `debug_assert!` below therefore only trips when `target` already holds a
+/// *different* entry — the case a future caller (or a future path that seeds
+/// Manifold-scoped faces) silently clobbering an unrelated real attribute
+/// with the forwarded placeholder — not on the idempotent cache-hit
+/// re-forward.
+///
 /// [`record_solid_attribute`]: crate::primitive_attribute_seed::record_solid_attribute
 pub fn forward_solid_attribute_on_ingest(
     table: &mut TopologyAttributeTable,
@@ -122,6 +137,15 @@ pub fn forward_solid_attribute_on_ingest(
     target: KernelHandle,
 ) -> bool {
     if let Some(attr) = table.lookup(source).cloned() {
+        debug_assert!(
+            table.lookup(target).is_none() || table.lookup(target) == Some(&attr),
+            "forward_solid_attribute_on_ingest would overwrite a DIFFERENT \
+             existing entry at {target:?} with the entry forwarded from \
+             {source:?} — a same-value re-forward (e.g. a realization-cache \
+             hit re-forwarding onto an already-forwarded target within the \
+             same build) is expected and benign, but clobbering an unrelated \
+             attribute is not"
+        );
         table.record(target, attr);
         true
     } else {

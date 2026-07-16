@@ -4685,6 +4685,222 @@ structure Assembly {
         );
     }
 
+    /// Amendment (reviewer_comprehensive test-coverage @ engine_build.rs:7460,
+    /// task #4636): the graceful-degradation path — a non-seeded parent
+    /// flowing through the `'convert:` loop's `forward_and_track` closure so
+    /// `forward_solid_attribute_on_ingest` returns `false` and the target is
+    /// NOT inserted into `solid_attribute_handles` (so no bogus entry exists
+    /// to pollute the diagnostic scan) — was not exercised by any existing
+    /// engine-level test: the `record_solid_attribute` unit test only covers
+    /// it in isolation, and the e2e / cache-hit tests only cover the positive
+    /// (forward succeeds) path. A regression that made `forward_and_track`
+    /// insert unconditionally, or that recorded a bogus entry on a source
+    /// miss, would not be caught by an engine-level test without this.
+    ///
+    /// Uses [`reify_ir::GeometryOp::Tube`] as the non-seeded parent:
+    /// `is_seedable_primitive` (primitive_attribute_seed.rs) recognises only
+    /// Box/Cylinder/Sphere/Cone/Wedge/Torus/HalfSpace — `Tube` is a
+    /// `PrimitiveKind` at the compiler level (composed at the kernel layer as
+    /// `boolean_cut` of two cylinders) but is deliberately excluded from that
+    /// match, so `record_solid_attribute` is never called for its result
+    /// handle. This is a real, already-shipped "non-seeded parent", not a
+    /// synthetic op, and it needs zero extra mock staging:
+    /// `seed_primitive_attributes_for_handle` short-circuits to `Ok(())` for
+    /// a non-seedable op before touching the kernel at all
+    /// (primitive_attribute_seed.rs:144-151).
+    ///
+    /// Unions the unseeded Tube (step0/left) with a normally-seeded Box
+    /// (step1/right) so both the negative and positive forwarding outcomes
+    /// are observed side by side in the same build. `parent_handles_for_op`
+    /// returns `[left, right]` for `Union` (engine_build.rs:1785), and the
+    /// `'convert:` loop walks `parents` in that order, so the Tube converts
+    /// first (→ ingest id 1000) and the Box second (→ ingest id 1001) —
+    /// mirroring the sibling cross-kernel conversion tests' `next_ingest_id:
+    /// 1000` convention.
+    #[test]
+    fn execute_realization_ops_convert_loop_skips_forward_for_non_seeded_parent() {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
+        use reify_core::Type;
+        use reify_ir::{
+            CapabilityDescriptor, CompiledExpr, GeometryHandleId, GeometryKernel, KernelId,
+            Operation, ReprKind,
+        };
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        let tess_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let ingest_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let union_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+
+        let mut kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
+        kernels.insert(
+            "occt".to_string(),
+            Box::new(CountingTessellateKernel {
+                inner: MockGeometryKernel::new(),
+                tessellate_count: std::sync::Arc::clone(&tess_count),
+            }),
+        );
+        kernels.insert(
+            "manifold".to_string(),
+            Box::new(CountingManifoldKernel {
+                inner: MockGeometryKernel::new(),
+                ingest_count: std::sync::Arc::clone(&ingest_count),
+                execute_count: std::sync::Arc::clone(&union_count),
+                next_ingest_id: 1000,
+            }),
+        );
+
+        // occt: (PrimitiveTube, BRep) + (PrimitiveBox, BRep) + (Convert{BRep},
+        // Mesh); manifold: (BooleanUnion, Mesh) — same shape as the sibling
+        // cross-kernel conversion tests, plus PrimitiveTube for the
+        // non-seeded operand.
+        let desc_occt = CapabilityDescriptor {
+            supports: vec![
+                (Operation::PrimitiveTube, ReprKind::BRep),
+                (Operation::PrimitiveBox, ReprKind::BRep),
+                (
+                    Operation::Convert {
+                        from: ReprKind::BRep,
+                    },
+                    ReprKind::Mesh,
+                ),
+            ],
+        };
+        let desc_manifold = CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("occt".to_string(), &desc_occt);
+        registry.insert("manifold".to_string(), &desc_manifold);
+
+        // step0: Tube (non-seeded parent) + step1: Box (normally-seeded
+        // parent) + step2: BooleanUnion consuming both, dispatched to
+        // "manifold" at Mesh — forcing both operands through the `'convert:`
+        // loop.
+        let ops = vec![
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Tube,
+                args: vec![
+                    ("outer_r".into(), mm_lit(10.0)),
+                    ("inner_r".into(), mm_lit(5.0)),
+                    ("height".into(), mm_lit(20.0)),
+                ],
+            },
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Boolean {
+                op: BooleanOp::Union,
+                left: GeomRef::Step(0),
+                right: GeomRef::Step(1),
+            },
+        ];
+
+        let realization_id = RealizationNodeId::new("NonSeededParent", 0);
+        let mut state = DispatchTestState::default();
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "occt",
+            &ops,
+            &realization_id,
+            Some("NonSeeded"),
+            SourceSpan::new(0, 0),
+            ReprKind::Mesh,
+            None,
+            None,
+        );
+
+        // Sanity: the build itself must succeed (no error diagnostics, no
+        // kernel_error_out) — a non-seeded parent degrades gracefully rather
+        // than failing the realization.
+        let errors: Vec<_> = state
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, reify_core::Severity::Error))
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "a non-seeded parent must degrade gracefully, not error: {:?}",
+            errors
+        );
+        assert!(
+            state.kernel_error_out.is_none(),
+            "a non-seeded parent must degrade gracefully, not error: {:?}",
+            state.kernel_error_out
+        );
+        assert_eq!(
+            (
+                *tess_count.lock().unwrap(),
+                *ingest_count.lock().unwrap(),
+                *union_count.lock().unwrap(),
+            ),
+            (2, 2, 1),
+            "both operands must still be tessellated/ingested and the union still run \
+             regardless of the seeding outcome of either operand"
+        );
+
+        // ── The assertion this test exists for: the unseeded Tube's ingested
+        //    target handle ({Manifold, 1000} — converted first, per
+        //    `parent_handles_for_op`'s `[left, right]` order) must have NO
+        //    entry at all — `forward_solid_attribute_on_ingest` returned
+        //    `false` on the source miss, and `forward_and_track` must not
+        //    have inserted anything on that `false`. ──
+        assert!(
+            state
+                .topology_attribute_table
+                .lookup(KernelHandle {
+                    kernel: KernelId::Manifold,
+                    id: GeometryHandleId(1000),
+                })
+                .is_none(),
+            "a non-seeded parent's ingested target handle must have NO forwarded \
+             entry — forward_solid_attribute_on_ingest must no-op on a source miss"
+        );
+
+        // ── Companion (positive contrast): the Box sibling operand IS
+        //    seeded, so its ingested target handle ({Manifold, 1001}) must
+        //    still carry a forwarded entry — this pins that the non-seeded
+        //    operand's skip is targeted, not a global regression in the
+        //    forwarding path. ──
+        assert!(
+            state
+                .topology_attribute_table
+                .lookup(KernelHandle {
+                    kernel: KernelId::Manifold,
+                    id: GeometryHandleId(1001),
+                })
+                .is_some(),
+            "the seeded Box sibling operand's ingested target handle must still \
+             carry a forwarded entry"
+        );
+
+        // ── No diagnostic pollution: since no bogus entry exists for the
+        //    non-seeded parent's target, the post-loop centroid /
+        //    local-index-reassignment scan has nothing spurious to trip on. ──
+        assert!(
+            !state
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("topology-attribute centroid query failed")),
+            "no centroid-query-failed warning expected — the non-seeded parent's \
+             target has no table entry to spuriously scan: {:?}",
+            state.diagnostics
+        );
+        assert!(
+            !state.diagnostics.iter().any(|d| d.code
+                == Some(reify_core::DiagnosticCode::TopologyAttributeLocalIndexReassigned)),
+            "no local-index-reassignment diagnostic expected: {:?}",
+            state.diagnostics
+        );
+    }
+
     /// manifold-like mock whose `ingest_mesh` SUCCEEDS (counting + fresh ids, so
     /// the conversion executor produces and caches intermediates) but whose
     /// `execute` (the final `BooleanUnion`) FAILS — driving the realization into
