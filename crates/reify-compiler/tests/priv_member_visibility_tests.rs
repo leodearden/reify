@@ -906,6 +906,61 @@ fn external_pub_port_member_access_not_yet_supported_unchanged() {
     );
 }
 
+/// Fail-closed regression guard (reviewer_comprehensive suggestion #1): the
+/// new external port-member branch (expr.rs:~4007) explicitly excludes
+/// collection subs via `!scope.collection_sub_names.contains(sub_name)`, so
+/// an indexed access like `bolts[0].secret.main` on a `List<Bolt>` collection
+/// sub structurally never reaches `port_member_is_priv` — the branch only
+/// matches a bare `Ident` inner receiver, and `bolts[0]` is an `IndexAccess`,
+/// so it falls through to the regular indexed-collection-member-access path
+/// instead. That path resolves member names via `sub_member_types` (built
+/// from `value_cells` only — ports are never included), so `secret` is
+/// "unknown" and the access is poisoned there, before `.main` is ever
+/// reached. This is a pre-existing, documented gap that #5171 does not close
+/// (extending collection-sub port-member resolution is out of scope), but it
+/// is NOT a silent leak: the access still fails via a real diagnostic. This
+/// test pins both halves as a trip-wire — if a future change to the
+/// collection-index member path ever made `bolts[0].secret.main` resolve
+/// with zero diagnostics, this would catch the priv leak — mirroring the
+/// existing `external_pub_port_member_access_not_yet_supported_unchanged` pin.
+#[test]
+fn external_priv_port_member_access_via_collection_index_not_yet_gated() {
+    let module = compile_source(
+        r#"
+trait Iface {}
+
+structure def Bolt {
+    port secret : Iface {
+        priv param main : Length = 5mm
+    }
+}
+
+structure def Parent {
+    sub bolts : List<Bolt>
+    constraint bolts.count == 1
+    let touch = bolts[0].secret.main
+}
+"#,
+    );
+
+    assert_eq!(
+        priv_access_errors(&module).len(),
+        0,
+        "external access to `bolts[0].secret.main` (priv port-member on a collection sub) \
+         must NOT emit E_PRIV_MEMBER_ACCESS via this path — collection subs are explicitly \
+         excluded from the new port-member branch, a pre-existing gap #5171 does not close; \
+         all diagnostics: {:?}",
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+    assert!(
+        !module.diagnostics.is_empty(),
+        "external access to `bolts[0].secret.main` must still fail via some diagnostic \
+         (fails closed, e.g. \"unknown member 'secret' on collection sub 'bolts'\"), not \
+         resolve silently with zero diagnostics — a future change that made this resolve \
+         cleanly would silently leak a priv port member"
+    );
+}
+
 /// A default (non-`pub`) `let` nested inside a `port { }` block also
 /// compiles to `Visibility::Private` (entity.rs port-member `Let` arm), but
 /// `let`s are never externally addressable by name, so `port_member_is_priv`
