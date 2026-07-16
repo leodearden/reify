@@ -26,7 +26,10 @@ use crate::deps::{DependencyTrace, extract_realization_dependencies};
 use crate::dispatcher::{DispatchPlan, dispatch, per_stage_tolerance_for_plan};
 use crate::geometry_ops::compile_geometry_op;
 use crate::journal::{EvalEvent, EventJournal, EventKind};
-use crate::primitive_attribute_seed::{parse_bbox_xyz_min, seed_primitive_attributes_for_handle};
+use crate::primitive_attribute_seed::{
+    is_seedable_primitive, parse_bbox_xyz_min, record_solid_attribute,
+    seed_primitive_attributes_for_handle,
+};
 use crate::realization_cache::{NO_OPTIONS, RealizationCache};
 use crate::sweep_classifier::{
     SweptKind, SweptKindTable, classify_swept_body, swept_kind_to_sweep_params,
@@ -81,6 +84,90 @@ use crate::{BuildResult, Engine, EvaluationState, MeshSurface, TessellateResult}
 /// reify-ir / reify-config `KernelId` consolidation.
 fn kernel_id_for_registry_name(name: &str) -> KernelId {
     KernelId::from_registry_name(name).unwrap_or(KernelId::Occt)
+}
+
+/// Forward a solid-level `TopologyAttribute` entry across the OCCT->Manifold
+/// ingest seam (task #4636, LINK1).
+///
+/// A pure table op: `table.lookup(source).cloned()` then, on a hit,
+/// `table.record(target, attr)`. No-op on a source miss (a non-seeded parent
+/// — e.g. a non-primitive result feeding the conversion — degrades
+/// gracefully to the existing `Ok(KernelAttributeOutcome::Discarded)` path
+/// rather than panicking or erroring). Returns whether it recorded an entry,
+/// so callers can track the forwarded TARGET handle alongside the SOURCE
+/// solid handles they already track (task #4636 step-9 — see
+/// `solid_attribute_handles` below) and exclude both from the post-loop
+/// diagnostic scan.
+///
+/// Called from the `'convert:` loop below immediately after a successful
+/// `target_kernel.ingest_mesh(&mesh)`, forwarding `{source_kernel_id, pid}`
+/// (the pre-conversion parent handle, seeded by [`record_solid_attribute`]
+/// at the engine seed site) onto `{target_kernel_id, handle.id}` (the fresh
+/// ingested handle). This is what lets
+/// `ManifoldKernel::propagate_attributes`'s `parent_map` lookup — keyed on
+/// the SOLID parent handle — hit instead of missing.
+///
+/// Deliberately solid-granularity, not per-face: a per-face forward would
+/// need `source_kernel.extract_faces(pid)`, which requires a `&mut` borrow
+/// of the source kernel that conflicts with the concurrent `&mut
+/// target_kernel` borrow already live at the ingest call site, and Manifold's
+/// `parent_map` is keyed by per-solid `original_id()` regardless (a per-face
+/// forward would have nothing coarser to attach to at this layer). Per-face
+/// result-face persistence is deferred to #4263.
+///
+/// # Overwrite precondition (review follow-up, task #4636 amendment)
+///
+/// Like [`record_solid_attribute`], this calls [`TopologyAttributeTable::record`],
+/// which is unconditional last-write-wins — but unlike that sibling, a
+/// same-value re-forward onto an already-forwarded `target` is an expected,
+/// benign occurrence here: the realization-cache-hit arm in the `'convert:`
+/// loop below re-forwards the (unchanged, per-build-table-scoped) source
+/// entry onto a `target` handle reused from a prior build's cache, so the
+/// second call legitimately re-records the identical attribute. The
+/// `debug_assert!` below therefore only trips when `target` already holds a
+/// *different* entry — the case a future caller (or a future path that seeds
+/// Manifold-scoped faces) silently clobbering an unrelated real attribute
+/// with the forwarded placeholder — not on the idempotent cache-hit
+/// re-forward.
+///
+/// # Release-mode signal (review follow-up, task #4636 amendment)
+///
+/// `debug_assert!` compiles out in release builds, so the *different-entry*
+/// clobber above would go unsignaled there. This function's signature is
+/// part of the crate's public API (`reify_eval::forward_solid_attribute_on_ingest`),
+/// so its `bool` return keeps its original pre-amendment meaning ("did this
+/// forward write `target`?") rather than being widened to also carry the
+/// clobber bit. Instead, `forward_and_track` — the sole caller, in the
+/// `'convert:` loop below — re-checks the identical precondition itself
+/// (`source`/`target` are already in scope there) and pushes a warning
+/// [`reify_ir::Diagnostic`] on a violation, so a release build gets the
+/// same signal a debug/test build gets from the assert. This is provably
+/// unreachable at today's call site (see the doc above); the check is a
+/// tripwire against a future regression, not a currently-reachable path.
+///
+/// [`record_solid_attribute`]: crate::primitive_attribute_seed::record_solid_attribute
+pub fn forward_solid_attribute_on_ingest(
+    table: &mut TopologyAttributeTable,
+    source: KernelHandle,
+    target: KernelHandle,
+) -> bool {
+    if let Some(attr) = table.lookup(source).cloned() {
+        debug_assert!(
+            table.lookup(target).is_none() || table.lookup(target) == Some(&attr),
+            "forward_solid_attribute_on_ingest would overwrite a DIFFERENT \
+             existing entry at {target:?} with the entry forwarded from \
+             {source:?} — a same-value re-forward (e.g. a realization-cache \
+             hit re-forwarding onto an already-forwarded target within the \
+             same build) is expected and benign, but clobbering an unrelated \
+             attribute is not"
+        );
+        table.record(target, attr);
+        true
+    } else {
+        false
+    }
+    // TODO(#4263): forward per-face attributes via extract_faces for
+    // descriptor-keyed result-face persistence (LINK3).
 }
 
 /// Per-op kind for `populate_single_parent_sweep_op` — the three single-
@@ -6798,6 +6885,37 @@ impl Engine {
         // every `step_handles.push(...)` below pushes the same `.id` here, so
         // the slice stays in lockstep without re-projecting per op.
         let mut realization_step_ids: Vec<GeometryHandleId> = Vec::with_capacity(operations.len());
+        // Task #4636: handles that `record_solid_attribute` (LINK2) wrote a
+        // per-solid representative entry for, below, PLUS the forwarded
+        // TARGET handles `forward_solid_attribute_on_ingest` (LINK1) writes
+        // at the OCCT->Manifold ingest seam. Both are internal
+        // cross-kernel-forwarding bookkeeping (consumed by
+        // `ManifoldKernel::propagate_attributes` and the OCCT->Manifold
+        // ingest forwarder), not a user-selectable face/edge/vertex
+        // attribute — neither must participate in the post-loop centroid /
+        // local-index-reassignment diagnostic scan
+        // (`collect_centroids_with_failure_summary` /
+        // `detect_local_index_reassignment_diagnostics` below), which walks
+        // `topology_attribute_table` filtered by `feature_id` alone and has
+        // no other way to tell a solid-representative/forwarded entry apart
+        // from a real face entry. Kept distinct from
+        // `realization_step_ids` (which mixes in non-seedable ops too) so
+        // the filter below excludes exactly the entries this task added.
+        //
+        // Holds full `KernelHandle`s (kernel + id), not bare
+        // `GeometryHandleId`s, so the scan filter below matches on the full
+        // key. A bare-id exclusion set would risk excluding a real
+        // `{Occt, X}` face entry that happens to share its id with a
+        // forwarded `{Manifold, X}` entry — the cross-kernel id-collision
+        // class this task's ingest-forwarding path introduces.
+        //
+        // A `HashSet` (not `Vec`): `KernelHandle` already derives `Hash` +
+        // `Eq`, so membership below (`.contains(kernel_handle)`, on the
+        // scan's per-entry hot path) is O(1) instead of a linear scan — cheap
+        // to get right while the code is fresh, per reviewer_comprehensive's
+        // amendment note, even though S (a few solids/realization) keeps the
+        // `Vec` cost negligible at today's scale.
+        let mut solid_attribute_handles: HashSet<KernelHandle> = HashSet::new();
         // Task 4050 step-8: the produced [`ReprKind`] of each step handle,
         // tracked in lockstep with `realization_step_ids`. The per-op
         // `available` set is read from the reprs of the op's resolved input
@@ -7355,6 +7473,126 @@ impl Engine {
                                             pid,
                                             &realization_step_ids,
                                         );
+                                        // Task #4636: forward the source solid's
+                                        // attribute (recorded by
+                                        // `record_solid_attribute` at the seed site
+                                        // above) onto `target` — the post-ingest
+                                        // handle, however it was produced — and,
+                                        // only when a forward actually happened,
+                                        // track `target` in
+                                        // `solid_attribute_handles` (step-9) so the
+                                        // post-loop centroid / local-index-
+                                        // reassignment diagnostic scan excludes it
+                                        // too (see that HashSet's declaration
+                                        // comment above). Shared by the cache-hit and
+                                        // fresh-ingest arms below (reviewer
+                                        // amendment note) so the forward+exclude
+                                        // pairing lives in exactly one place — two
+                                        // independent copies could drift (e.g. a
+                                        // future edit that updates one arm but not
+                                        // the other would silently reintroduce the
+                                        // diagnostic-pollution regression the
+                                        // step-9 fix guards against). A no-op when
+                                        // the source was never seeded (e.g. a
+                                        // non-primitive parent), degrading
+                                        // gracefully to the existing Discarded path.
+                                        //
+                                        // Robustness note (reviewer amendment,
+                                        // task #4636): the source `KernelHandle`
+                                        // built below assumes
+                                        // `kernel_id_for_registry_name(source_name)`
+                                        // equals the `op_kernel` the seed site
+                                        // (above, `record_solid_attribute`)
+                                        // recorded `pid`'s entry under — if
+                                        // those ever disagree for the same
+                                        // `pid`, `forward_solid_attribute_on_ingest`'s
+                                        // `table.lookup` silently misses,
+                                        // indistinguishable from a legitimately
+                                        // non-seeded parent (zero signal either
+                                        // way). `source_name` is always
+                                        // `stage_kernel.as_registry_name()` for
+                                        // a real `KernelId` drawn from
+                                        // `plan.conversions` above (never an
+                                        // arbitrary/unregistered string), and
+                                        // `KernelId::as_registry_name` /
+                                        // `from_registry_name` are documented
+                                        // exact inverses (reify-core
+                                        // `kernel.rs`) — so the debug_assert
+                                        // below pins that
+                                        // `kernel_id_for_registry_name`'s
+                                        // `unwrap_or(KernelId::Occt)` fallback
+                                        // never actually fires here. What it
+                                        // canNOT verify locally is the deeper
+                                        // half of the invariant: that the
+                                        // dispatcher's chosen `stage_kernel`
+                                        // for converting `pid` is the SAME
+                                        // kernel that originally produced/
+                                        // seeded `pid`. That correspondence is
+                                        // a property of the dispatcher's
+                                        // planning logic (`src/dispatcher.rs`),
+                                        // out of this loop's scope to assert —
+                                        // a future dispatcher change that
+                                        // planned a conversion stage against a
+                                        // different source kernel than the one
+                                        // that produced a given parent would
+                                        // still silently degrade this forward.
+                                        debug_assert!(
+                                            KernelId::from_registry_name(source_name).is_some(),
+                                            "conversion source kernel name {source_name:?} is not \
+                                             a registered KernelId — kernel_id_for_registry_name \
+                                             would silently fall back to KernelId::Occt here, \
+                                             degrading attribute forwarding below with zero signal",
+                                        );
+                                        let mut forward_and_track =
+                                            |target: KernelHandle,
+                                             diagnostics: &mut Vec<Diagnostic>| {
+                                                let source = KernelHandle {
+                                                    kernel: kernel_id_for_registry_name(
+                                                        source_name,
+                                                    ),
+                                                    id: pid,
+                                                };
+                                                // Release-mode-visible companion to
+                                                // `forward_solid_attribute_on_ingest`'s
+                                                // internal `debug_assert!` (review
+                                                // follow-up, task #4636 amendment,
+                                                // release_mode_safety): that assert
+                                                // compiles out in release builds, so
+                                                // re-check the identical precondition
+                                                // here — a same-value re-forward onto
+                                                // an already-forwarded `target` (e.g. a
+                                                // realization-cache hit) is expected
+                                                // and benign, but overwriting a
+                                                // DIFFERENT existing entry is not — and
+                                                // surface a violation (unreachable by
+                                                // construction today; every call site's
+                                                // precondition is provably satisfied)
+                                                // as a warning `Diagnostic` instead of
+                                                // a silent release-mode clobber.
+                                                if let Some(new_attr) =
+                                                    topology_attribute_table.lookup(source)
+                                                    && let Some(existing) =
+                                                        topology_attribute_table.lookup(target)
+                                                    && existing != new_attr
+                                                {
+                                                    diagnostics.push(Diagnostic::warning(format!(
+                                                        "internal invariant violated: forwarding \
+                                                         the solid-level topology attribute from \
+                                                         {source:?} onto {target:?} would \
+                                                         overwrite a different existing entry \
+                                                         there (task #4636) — this should be \
+                                                         unreachable by construction; please file \
+                                                         a bug"
+                                                    )));
+                                                }
+                                                if forward_solid_attribute_on_ingest(
+                                                    topology_attribute_table,
+                                                    source,
+                                                    target,
+                                                ) {
+                                                    solid_attribute_handles.insert(target);
+                                                }
+                                            };
                                         // Consult the cache BEFORE any kernel work. A
                                         // hit returns the previously-ingested
                                         // target-kernel handle (Copy); reuse its id
@@ -7365,6 +7603,15 @@ impl Engine {
                                             per_stage_tol,
                                             options_hash,
                                         ) {
+                                            // Task #4636 (LINK1): topology_attribute_table
+                                            // is per-build, unlike realization_cache (which
+                                            // persists the intermediate handle itself
+                                            // across builds) — so a cache hit still needs
+                                            // to (re-)forward the source solid's attribute
+                                            // onto the reused target handle, or this
+                                            // build's table would have no entry at all for
+                                            // it despite the handle being valid.
+                                            forward_and_track(cached, &mut *diagnostics);
                                             substitution.insert(pid, cached.id);
                                             continue;
                                         }
@@ -7488,6 +7735,14 @@ impl Engine {
                                                     per_stage_tol,
                                                     options_hash,
                                                 ));
+                                                // Task #4636 (LINK1): forward the source
+                                                // solid's attribute across the ingest
+                                                // seam onto the fresh target handle (see
+                                                // `forward_and_track` above).
+                                                forward_and_track(
+                                                    intermediate_handle,
+                                                    &mut *diagnostics,
+                                                );
                                                 substitution.insert(pid, handle.id);
                                             }
                                             Err(e) => {
@@ -7672,17 +7927,63 @@ impl Engine {
                             // breaks. Per-task design decision recorded in
                             // .task/plan.json.
                             let feature_id = FeatureId::from(realization_id);
-                            if let Err(e) = seed_primitive_attributes_for_handle(
+                            let seed_result = seed_primitive_attributes_for_handle(
                                 topology_attribute_table,
                                 op_kernel,
                                 kernel,
                                 handle.id,
                                 &feature_id,
                                 &geom_op,
-                            ) {
+                            );
+                            if let Err(e) = &seed_result {
                                 diagnostics.push(Diagnostic::warning(format!(
                                 "topology-attribute seeding failed for {realization_id} op {op_idx}: {e}"
                             )));
+                            }
+                            // Task #4636 (LINK2): on a successful seed of a
+                            // seedable primitive, also record a per-solid
+                            // representative entry — the seed call above only
+                            // writes per-face/edge/vertex entries, never the
+                            // solid handle itself, which is exactly what
+                            // ManifoldKernel::propagate_attributes' parent_map
+                            // lookup (and the OCCT->Manifold ingest forwarder
+                            // below) needs. Gated on the same seedability
+                            // check the seed function itself uses, and on
+                            // `Ok` so a seeding failure never leaves a
+                            // solid-level entry orphaned from its face/edge
+                            // siblings.
+                            if seed_result.is_ok() && is_seedable_primitive(&geom_op) {
+                                let solid_key = KernelHandle {
+                                    kernel: op_kernel,
+                                    id: handle.id,
+                                };
+                                // Release-mode-visible companion to
+                                // `record_solid_attribute`'s internal
+                                // `debug_assert!` (review follow-up, task
+                                // #4636 amendment, release_mode_safety): the
+                                // assert compiles out in release builds, so
+                                // surface a violation of its overwrite
+                                // precondition — `solid_key` must not
+                                // already be a real attribute key — as a
+                                // warning `Diagnostic` there via the `bool`
+                                // return, instead of a silent clobber.
+                                // Unreachable by construction today:
+                                // `handle.id` is freshly minted by this op.
+                                if record_solid_attribute(
+                                    topology_attribute_table,
+                                    op_kernel,
+                                    handle.id,
+                                    &feature_id,
+                                ) {
+                                    diagnostics.push(Diagnostic::warning(format!(
+                                        "internal invariant violated: recording the \
+                                         solid-representative topology attribute at \
+                                         {solid_key:?} overwrote an existing entry there \
+                                         (task #4636) — this should be unreachable by \
+                                         construction; please file a bug"
+                                    )));
+                                }
+                                solid_attribute_handles.insert(solid_key);
                             }
                             // v0.2 persistent-naming-v2 (PRD task 5a, #2573): per-op
                             // attribute population for sweep ops (extrude / revolve).
@@ -7976,14 +8277,30 @@ impl Engine {
             // O(per-feature-entries). Per task #3369 review of #2654.
             // Non-threaded reader (interim single-kernel Occt, #4351): this
             // diagnostic scan is not part of the resolver/selector scoping
-            // this task threads (step-6) — every handle recorded today is
-            // Occt-scoped, so collapsing back to a bare `GeometryHandleId`
-            // here is behavior-preserving. Mixed-kernel-aware diagnostics are
+            // this task threads (step-6) — every SURVIVING handle (i.e. after
+            // the `solid_attribute_handles` exclusion below) is Occt-scoped,
+            // so collapsing to a bare `GeometryHandleId` in the `.map` below
+            // is behavior-preserving. Mixed-kernel-aware diagnostics are
             // downstream work.
+            // Task #4636: also excludes `solid_attribute_handles` — the
+            // per-solid representative entries `record_solid_attribute`
+            // wrote (source, Occt-scoped) and the entries
+            // `forward_solid_attribute_on_ingest` forwarded (target,
+            // Manifold-scoped) share this realization's `feature_id` but are
+            // not real face/edge/vertex attributes, so they must not be
+            // centroid-queried or fed into the local-index-reassignment tie
+            // scan (see the declaration comment above). The filter matches
+            // the FULL `KernelHandle` (kernel + id), not just the bare id, so
+            // excluding a forwarded `{Manifold, X}` entry can never
+            // over-exclude a real `{Occt, X}` face entry that happens to
+            // share id `X`.
             let realization_attrs: Vec<(GeometryHandleId, &TopologyAttribute)> =
                 topology_attribute_table
                     .iter()
-                    .filter(|(_, attr)| attr.feature_id == realization_feature_id)
+                    .filter(|(kernel_handle, attr)| {
+                        attr.feature_id == realization_feature_id
+                            && !solid_attribute_handles.contains(kernel_handle)
+                    })
                     .map(|(kernel_handle, attr)| (kernel_handle.id, attr))
                     .collect();
             if !realization_attrs.is_empty() {

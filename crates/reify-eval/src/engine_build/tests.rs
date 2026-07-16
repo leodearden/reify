@@ -2606,11 +2606,17 @@ structure Assembly {
     // BRep)` fallback, and replaces the `Some(_) =>` deferred-error arm with the
     // tessellate→ingest cross-kernel handoff.
 
-    /// occt-like counting kernel: `execute` / `query` / `export` delegate to an
-    /// inner [`MockGeometryKernel`] (so `PrimitiveBox` → BRep solid handles),
-    /// and `tessellate` bumps a shared counter before returning a trivial
-    /// single-triangle [`Mesh`] — the BRep→Mesh source projection the conversion
-    /// executor drives for each prior-stage input handle.
+    /// occt-like counting kernel: `execute` / `query` / `export` /
+    /// `extract_faces` / `extract_edges` / `extract_vertices` delegate to an
+    /// inner [`MockGeometryKernel`] (so `PrimitiveBox` → BRep solid handles,
+    /// and any `with_extracted_faces`/`with_extracted_edges`/
+    /// `with_extracted_vertices` fixture staged on that inner mock is
+    /// actually consulted by the topology-attribute seeder — task #4636's
+    /// cache-hit-reforwarding test relies on this to reach
+    /// `record_solid_attribute`), and `tessellate` bumps a shared counter
+    /// before returning a trivial single-triangle [`Mesh`] — the BRep→Mesh
+    /// source projection the conversion executor drives for each
+    /// prior-stage input handle.
     struct CountingTessellateKernel {
         inner: reify_test_support::mocks::MockGeometryKernel,
         tessellate_count: std::sync::Arc<std::sync::Mutex<usize>>,
@@ -2651,6 +2657,27 @@ structure Assembly {
                 indices: vec![0, 1, 2],
                 normals: None,
             })
+        }
+
+        fn extract_faces(
+            &mut self,
+            handle: reify_ir::GeometryHandleId,
+        ) -> Result<Vec<reify_ir::GeometryHandleId>, reify_ir::QueryError> {
+            self.inner.extract_faces(handle)
+        }
+
+        fn extract_edges(
+            &mut self,
+            handle: reify_ir::GeometryHandleId,
+        ) -> Result<Vec<reify_ir::GeometryHandleId>, reify_ir::QueryError> {
+            self.inner.extract_edges(handle)
+        }
+
+        fn extract_vertices(
+            &mut self,
+            handle: reify_ir::GeometryHandleId,
+        ) -> Result<Vec<reify_ir::GeometryHandleId>, reify_ir::QueryError> {
+            self.inner.extract_vertices(handle)
         }
     }
 
@@ -2770,6 +2797,64 @@ structure Assembly {
             let id = reify_ir::GeometryHandleId(self.next_ingest_id);
             self.next_ingest_id += 1;
             Ok(reify_ir::GeometryHandle { id, repr: None })
+        }
+    }
+
+    /// Return value of [`cross_kernel_convert_fixture`] — see that fn's
+    /// doc-comment for what is and isn't included.
+    struct CrossKernelConvertFixture {
+        tess_count: std::sync::Arc<std::sync::Mutex<usize>>,
+        ingest_count: std::sync::Arc<std::sync::Mutex<usize>>,
+        union_count: std::sync::Arc<std::sync::Mutex<usize>>,
+        kernels: BTreeMap<String, Box<dyn GeometryKernel>>,
+        desc_manifold: CapabilityDescriptor,
+    }
+
+    /// Shared occt+manifold cross-kernel convert-loop scaffolding (task
+    /// #4636 amendment — reviewer_comprehensive test-duplication finding):
+    /// factors out exactly the pieces that
+    /// `execute_realization_ops_cache_hit_reforwards_solid_attribute_to_reused_manifold_handle`
+    /// and `execute_realization_ops_convert_loop_skips_forward_for_non_seeded_parent`
+    /// build IDENTICALLY, verbatim — three zero-initialized call counters
+    /// (tessellate/ingest/union) plus a `"manifold"` kernel entry wired to
+    /// `next_ingest_id: 1000` and its `BooleanUnion @ Mesh`-only
+    /// `CapabilityDescriptor`. Callers still build their own `occt_inner`
+    /// staging (which handle ids get `extract_faces`/`extract_edges`/
+    /// `extract_vertices` fixtures — this differs per test) and `"occt"`
+    /// `CapabilityDescriptor` (Tube support differs per test), then insert
+    /// their own `"occt"` entry (wrapping the returned `tess_count` in a
+    /// [`CountingTessellateKernel`]) into the returned `kernels` map — kept
+    /// inline at each call site so this fixture doesn't grow test-specific
+    /// branches. Scoped to these two task-#4636 tests only: the older
+    /// sibling cross-kernel conversion tests below predate this task and are
+    /// left as-is (each has its own slightly different descriptor/op shape),
+    /// per the amendment-pass minimal-diff mandate.
+    fn cross_kernel_convert_fixture() -> CrossKernelConvertFixture {
+        let tess_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let ingest_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let union_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+
+        let mut kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
+        kernels.insert(
+            "manifold".to_string(),
+            Box::new(CountingManifoldKernel {
+                inner: reify_test_support::mocks::MockGeometryKernel::new(),
+                ingest_count: std::sync::Arc::clone(&ingest_count),
+                execute_count: std::sync::Arc::clone(&union_count),
+                next_ingest_id: 1000,
+            }),
+        );
+
+        let desc_manifold = CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
+        };
+
+        CrossKernelConvertFixture {
+            tess_count,
+            ingest_count,
+            union_count,
+            kernels,
+            desc_manifold,
         }
     }
 
@@ -4407,6 +4492,464 @@ structure Assembly {
             *ingest_count.lock().unwrap(),
             ingest_after_1,
             "the anonymous re-realization must REUSE cached intermediates — no extra ingest_mesh"
+        );
+    }
+
+    /// Amendment (reviewer_comprehensive test-coverage @ engine_build.rs:7437,
+    /// task #4636): the intermediate-cache-hit branch of the `'convert:` loop
+    /// (the `if let Some(&cached) = realization_cache.lookup(...)` arm) must
+    /// RE-forward the source solid's attribute onto the REUSED target handle
+    /// every time — `topology_attribute_table` is reset per build while
+    /// `realization_cache` persists the intermediate handle itself across
+    /// builds, so a cache hit with no re-forward would leave this build's
+    /// table with no entry at all for an otherwise-valid handle. Mirrors
+    /// `execute_realization_ops_conversion_intermediates_cache_and_reuse`'s
+    /// cold/warm two-realization structure (task 4050) so the SECOND
+    /// `run_demand` call genuinely hits the per-parent intermediate cache
+    /// (asserted via the flat `tess_count`/`ingest_count` counters) instead
+    /// of the fresh-ingest branch, but additionally stages
+    /// `extract_faces`/`extract_edges`/`extract_vertices` (all empty — the
+    /// cheapest `Ok`) for BOTH realizations' occt Box handles (ids 1/2 for
+    /// the cold build, 3/4 for the warm one — the shared `MockGeometryKernel`'s
+    /// `next_id` counter is not reset between the two `run_demand` calls) so
+    /// `record_solid_attribute` actually records a source entry to forward,
+    /// rather than short-circuiting to the `Err`-and-warn path.
+    ///
+    /// Two independent regressions are pinned:
+    /// - Dropping the cache-hit branch's `forward_solid_attribute_on_ingest`
+    ///   call (or its result) entirely → the `lookup(...).is_some()`
+    ///   assertions go `None`.
+    /// - Dropping the cache-hit branch's `solid_attribute_handles.insert(cached)`
+    ///   exclusion tracking (this task's step-9 fix) while leaving the
+    ///   forward itself intact → the re-forwarded `{Manifold, 1000/1001}`
+    ///   entries leak into the post-loop scan, get centroid-queried against
+    ///   the "occt" default kernel (where they don't exist), and produce the
+    ///   "topology-attribute centroid query failed" warning the diagnostic
+    ///   assertions below reject.
+    #[test]
+    fn execute_realization_ops_cache_hit_reforwards_solid_attribute_to_reused_manifold_handle() {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
+        use reify_core::Type;
+        use reify_ir::{
+            CapabilityDescriptor, CompiledExpr, GeometryHandleId, KernelId, Operation, ReprKind,
+        };
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        let CrossKernelConvertFixture {
+            tess_count,
+            ingest_count,
+            union_count,
+            mut kernels,
+            desc_manifold,
+        } = cross_kernel_convert_fixture();
+
+        // Stage extract_faces/edges/vertices (all empty — zero-cost; seeding
+        // only needs `Ok` to fall through to `record_solid_attribute`) for
+        // BOTH realizations' occt Box handles: 1/2 (cold) and 3/4 (warm).
+        let mut occt_inner = MockGeometryKernel::new();
+        for id in [1u64, 2, 3, 4] {
+            occt_inner = occt_inner
+                .with_extracted_faces(GeometryHandleId(id), vec![])
+                .with_extracted_edges(GeometryHandleId(id), vec![])
+                .with_extracted_vertices(GeometryHandleId(id), vec![]);
+        }
+        kernels.insert(
+            "occt".to_string(),
+            Box::new(CountingTessellateKernel {
+                inner: occt_inner,
+                tessellate_count: std::sync::Arc::clone(&tess_count),
+            }),
+        );
+
+        let desc_occt = CapabilityDescriptor {
+            supports: vec![
+                (Operation::PrimitiveBox, ReprKind::BRep),
+                (
+                    Operation::Convert {
+                        from: ReprKind::BRep,
+                    },
+                    ReprKind::Mesh,
+                ),
+            ],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("occt".to_string(), &desc_occt);
+        registry.insert("manifold".to_string(), &desc_manifold);
+
+        let ops = vec![
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Boolean {
+                op: BooleanOp::Union,
+                left: GeomRef::Step(0),
+                right: GeomRef::Step(1),
+            },
+        ];
+
+        let realization_id = RealizationNodeId::new("CrossCacheHit", 0);
+        let tol = 0.001;
+        let mut state = DispatchTestState::default();
+
+        // ── Realization 1: named, cold cache, full cross-kernel conversion. ──
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "occt",
+            &ops,
+            &realization_id,
+            Some("CrossCacheHit"),
+            SourceSpan::new(0, 0),
+            ReprKind::Mesh,
+            Some(tol),
+            None,
+        );
+        let errors: Vec<_> = state
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, reify_core::Severity::Error))
+            .collect();
+        assert!(errors.is_empty(), "realization 1 errors: {:?}", errors);
+        assert_eq!(
+            (
+                *tess_count.lock().unwrap(),
+                *ingest_count.lock().unwrap(),
+                *union_count.lock().unwrap(),
+            ),
+            (2, 2, 1),
+            "realization 1 must tessellate 2 inputs, ingest 2, run 1 union"
+        );
+
+        // Reset only the per-build OUTPUT state, mirroring production's
+        // per-build reset — the shared `realization_cache` is left untouched,
+        // and `diagnostics` is cleared so the assertions below read ONLY
+        // realization 2's diagnostics.
+        state.step_handles.clear();
+        state.named_steps.clear();
+        state.named_step_reprs.clear();
+        state.produced_repr_out = None;
+        state.reset_attribute_tables();
+        state.diagnostics.clear();
+
+        // ── Realization 2: same entity + ops + tol, ANONYMOUS (no name) so
+        //    the whole-realization terminal short-circuit does NOT fire but
+        //    the PER-PARENT intermediate cache (keyed by local step index,
+        //    not raw occt handle id) still hits — driving the cache-hit
+        //    branch inside the `'convert:` loop that this test targets. ──
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "occt",
+            &ops,
+            &realization_id,
+            None,
+            SourceSpan::new(0, 0),
+            ReprKind::Mesh,
+            Some(tol),
+            None,
+        );
+        let errors: Vec<_> = state
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, reify_core::Severity::Error))
+            .collect();
+        assert!(errors.is_empty(), "realization 2 errors: {:?}", errors);
+        assert_eq!(
+            *tess_count.lock().unwrap(),
+            2,
+            "realization 2 must REUSE cached intermediates — no extra tessellate \
+             (otherwise this test is not exercising the cache-hit branch at all)"
+        );
+        assert_eq!(
+            *ingest_count.lock().unwrap(),
+            2,
+            "realization 2 must REUSE cached intermediates — no extra ingest_mesh \
+             (otherwise this test is not exercising the cache-hit branch at all)"
+        );
+
+        // ── The assertion this test exists for: the cache-hit branch must
+        //    RE-forward the source solid's attribute onto the REUSED
+        //    Manifold target handle, even though `topology_attribute_table`
+        //    was just reset for this (second) build. ──
+        assert!(
+            state
+                .topology_attribute_table
+                .lookup(KernelHandle {
+                    kernel: KernelId::Manifold,
+                    id: GeometryHandleId(1000),
+                })
+                .is_some(),
+            "cache-hit branch must re-forward the source solid's attribute \
+             onto the reused {{Manifold, 1000}} handle for this build's table"
+        );
+        assert!(
+            state
+                .topology_attribute_table
+                .lookup(KernelHandle {
+                    kernel: KernelId::Manifold,
+                    id: GeometryHandleId(1001),
+                })
+                .is_some(),
+            "cache-hit branch must re-forward the source solid's attribute \
+             onto the reused {{Manifold, 1001}} handle for this build's table"
+        );
+
+        // ── Regression-guard companion (task #4636 step-9): the re-forwarded
+        //    entries must be EXCLUDED from the post-loop centroid /
+        //    local-index-reassignment diagnostic scan, exactly like the
+        //    fresh-ingest branch's forwarded entries. ──
+        assert!(
+            !state
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("topology-attribute centroid query failed")),
+            "realization 2 diagnostics must not contain a centroid-query-failed \
+             warning — the re-forwarded {{Manifold, ·}} handles must be excluded \
+             from the scan, not queried against the occt default kernel: {:?}",
+            state.diagnostics
+        );
+        assert!(
+            !state.diagnostics.iter().any(|d| d.code
+                == Some(reify_core::DiagnosticCode::TopologyAttributeLocalIndexReassigned)),
+            "realization 2 diagnostics must not contain a local-index-reassignment \
+             warning sourced from the re-forwarded solid-representative entries: {:?}",
+            state.diagnostics
+        );
+    }
+
+    /// Amendment (reviewer_comprehensive test-coverage @ engine_build.rs:7460,
+    /// task #4636): the graceful-degradation path — a non-seeded parent
+    /// flowing through the `'convert:` loop's `forward_and_track` closure so
+    /// `forward_solid_attribute_on_ingest` returns `false` and the target is
+    /// NOT inserted into `solid_attribute_handles` (so no bogus entry exists
+    /// to pollute the diagnostic scan) — was not exercised by any existing
+    /// engine-level test: the `record_solid_attribute` unit test only covers
+    /// it in isolation, and the e2e / cache-hit tests only cover the positive
+    /// (forward succeeds) path. A regression that made `forward_and_track`
+    /// insert unconditionally, or that recorded a bogus entry on a source
+    /// miss, would not be caught by an engine-level test without this.
+    ///
+    /// Uses [`reify_ir::GeometryOp::Tube`] as the non-seeded parent:
+    /// `is_seedable_primitive` (primitive_attribute_seed.rs) recognises only
+    /// Box/Cylinder/Sphere/Cone/Wedge/Torus/HalfSpace — `Tube` is a
+    /// `PrimitiveKind` at the compiler level (composed at the kernel layer as
+    /// `boolean_cut` of two cylinders) but is deliberately excluded from that
+    /// match, so `record_solid_attribute` is never called for its result
+    /// handle. This is a real, already-shipped "non-seeded parent", not a
+    /// synthetic op, and it needs zero extra mock staging:
+    /// `seed_primitive_attributes_for_handle` short-circuits to `Ok(())` for
+    /// a non-seedable op before touching the kernel at all
+    /// (primitive_attribute_seed.rs:144-151).
+    ///
+    /// Unions the unseeded Tube (step0/left) with a normally-seeded Box
+    /// (step1/right) so both the negative and positive forwarding outcomes
+    /// are observed side by side in the same build. `parent_handles_for_op`
+    /// returns `[left, right]` for `Union` (engine_build.rs:1785), and the
+    /// `'convert:` loop walks `parents` in that order, so the Tube converts
+    /// first (→ ingest id 1000) and the Box second (→ ingest id 1001) —
+    /// mirroring the sibling cross-kernel conversion tests' `next_ingest_id:
+    /// 1000` convention.
+    #[test]
+    fn execute_realization_ops_convert_loop_skips_forward_for_non_seeded_parent() {
+        use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
+        use reify_core::Type;
+        use reify_ir::{
+            CapabilityDescriptor, CompiledExpr, GeometryHandleId, KernelId, Operation, ReprKind,
+        };
+        use reify_test_support::mocks::MockGeometryKernel;
+
+        let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
+
+        let CrossKernelConvertFixture {
+            tess_count,
+            ingest_count,
+            union_count,
+            mut kernels,
+            desc_manifold,
+        } = cross_kernel_convert_fixture();
+
+        // Stage extract_faces/edges/vertices (all empty — zero-cost; seeding
+        // only needs `Ok` to fall through to `record_solid_attribute`) for the
+        // Box's occt handle (id 2 — Tube executes first and claims id 1, per
+        // `MockGeometryKernel::new()`'s `next_id: 1`). Without this, the Mock
+        // kernel's `extract_faces` returns `Err("no topology extraction
+        // fixture for ...")` for the unstaged handle (mocks.rs), so
+        // `seed_primitive_attributes_for_handle` short-circuits to `Err` and
+        // `record_solid_attribute` is never called for the Box either —
+        // silently defeating this test's positive-contrast assertion.
+        // Mirrors `execute_realization_ops_cache_hit_reforwards_solid_attribute_to_reused_manifold_handle`'s
+        // identical staging for its own occt Box handles.
+        let occt_inner = MockGeometryKernel::new()
+            .with_extracted_faces(GeometryHandleId(2), vec![])
+            .with_extracted_edges(GeometryHandleId(2), vec![])
+            .with_extracted_vertices(GeometryHandleId(2), vec![]);
+        kernels.insert(
+            "occt".to_string(),
+            Box::new(CountingTessellateKernel {
+                inner: occt_inner,
+                tessellate_count: std::sync::Arc::clone(&tess_count),
+            }),
+        );
+
+        // occt: (PrimitiveTube, BRep) + (PrimitiveBox, BRep) + (Convert{BRep},
+        // Mesh); manifold: (BooleanUnion, Mesh) — same shape as the sibling
+        // cross-kernel conversion tests, plus PrimitiveTube for the
+        // non-seeded operand.
+        let desc_occt = CapabilityDescriptor {
+            supports: vec![
+                (Operation::PrimitiveTube, ReprKind::BRep),
+                (Operation::PrimitiveBox, ReprKind::BRep),
+                (
+                    Operation::Convert {
+                        from: ReprKind::BRep,
+                    },
+                    ReprKind::Mesh,
+                ),
+            ],
+        };
+        let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
+        registry.insert("occt".to_string(), &desc_occt);
+        registry.insert("manifold".to_string(), &desc_manifold);
+
+        // step0: Tube (non-seeded parent) + step1: Box (normally-seeded
+        // parent) + step2: BooleanUnion consuming both, dispatched to
+        // "manifold" at Mesh — forcing both operands through the `'convert:`
+        // loop.
+        let ops = vec![
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Tube,
+                args: vec![
+                    ("outer_r".into(), mm_lit(10.0)),
+                    ("inner_r".into(), mm_lit(5.0)),
+                    ("height".into(), mm_lit(20.0)),
+                ],
+            },
+            CompiledGeometryOp::Primitive {
+                kind: PrimitiveKind::Box,
+                args: vec![
+                    ("width".into(), mm_lit(10.0)),
+                    ("height".into(), mm_lit(20.0)),
+                    ("depth".into(), mm_lit(5.0)),
+                ],
+            },
+            CompiledGeometryOp::Boolean {
+                op: BooleanOp::Union,
+                left: GeomRef::Step(0),
+                right: GeomRef::Step(1),
+            },
+        ];
+
+        let realization_id = RealizationNodeId::new("NonSeededParent", 0);
+        let mut state = DispatchTestState::default();
+        state.run_demand(
+            &mut kernels,
+            &registry,
+            "occt",
+            &ops,
+            &realization_id,
+            Some("NonSeeded"),
+            SourceSpan::new(0, 0),
+            ReprKind::Mesh,
+            None,
+            None,
+        );
+
+        // Sanity: the build itself must succeed (no error diagnostics, no
+        // kernel_error_out) — a non-seeded parent degrades gracefully rather
+        // than failing the realization.
+        let errors: Vec<_> = state
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(d.severity, reify_core::Severity::Error))
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "a non-seeded parent must degrade gracefully, not error: {:?}",
+            errors
+        );
+        assert!(
+            state.kernel_error_out.is_none(),
+            "a non-seeded parent must degrade gracefully, not error: {:?}",
+            state.kernel_error_out
+        );
+        assert_eq!(
+            (
+                *tess_count.lock().unwrap(),
+                *ingest_count.lock().unwrap(),
+                *union_count.lock().unwrap(),
+            ),
+            (2, 2, 1),
+            "both operands must still be tessellated/ingested and the union still run \
+             regardless of the seeding outcome of either operand"
+        );
+
+        // ── The assertion this test exists for: the unseeded Tube's ingested
+        //    target handle ({Manifold, 1000} — converted first, per
+        //    `parent_handles_for_op`'s `[left, right]` order) must have NO
+        //    entry at all — `forward_solid_attribute_on_ingest` returned
+        //    `false` on the source miss, and `forward_and_track` must not
+        //    have inserted anything on that `false`. ──
+        assert!(
+            state
+                .topology_attribute_table
+                .lookup(KernelHandle {
+                    kernel: KernelId::Manifold,
+                    id: GeometryHandleId(1000),
+                })
+                .is_none(),
+            "a non-seeded parent's ingested target handle must have NO forwarded \
+             entry — forward_solid_attribute_on_ingest must no-op on a source miss"
+        );
+
+        // ── Companion (positive contrast): the Box sibling operand IS
+        //    seeded, so its ingested target handle ({Manifold, 1001}) must
+        //    still carry a forwarded entry — this pins that the non-seeded
+        //    operand's skip is targeted, not a global regression in the
+        //    forwarding path. ──
+        assert!(
+            state
+                .topology_attribute_table
+                .lookup(KernelHandle {
+                    kernel: KernelId::Manifold,
+                    id: GeometryHandleId(1001),
+                })
+                .is_some(),
+            "the seeded Box sibling operand's ingested target handle must still \
+             carry a forwarded entry"
+        );
+
+        // ── No diagnostic pollution: since no bogus entry exists for the
+        //    non-seeded parent's target, the post-loop centroid /
+        //    local-index-reassignment scan has nothing spurious to trip on. ──
+        assert!(
+            !state
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("topology-attribute centroid query failed")),
+            "no centroid-query-failed warning expected — the non-seeded parent's \
+             target has no table entry to spuriously scan: {:?}",
+            state.diagnostics
+        );
+        assert!(
+            !state.diagnostics.iter().any(|d| d.code
+                == Some(reify_core::DiagnosticCode::TopologyAttributeLocalIndexReassigned)),
+            "no local-index-reassignment diagnostic expected: {:?}",
+            state.diagnostics
         );
     }
 
