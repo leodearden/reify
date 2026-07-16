@@ -5973,7 +5973,28 @@ TessResult tessellate_shape(const OcctShape& shape, double tolerance) {
                 // `Mesh::check_contract`'s NonDegenerate obligation uses
                 // (`crates/reify-ir/src/geometry.rs:2852-2861`) — so the
                 // producer emits exactly the triangle set `validate(0.0)`
-                // accepts. Threshold is exact zero (squared magnitude <=
+                // accepts.
+                //
+                // MAINTENANCE INVARIANT: that agreement holds only because
+                // this arithmetic is kept bit-identical (same operand order
+                // — (b-a)×(c-a), not (a-b)×(a-c) or any other permutation —
+                // and same f32 precision) to `check_contract`'s. It is an
+                // empirical property, not something shared code enforces:
+                // `check_contract` lives in `reify-ir`, outside this file,
+                // in a different language. If the two implementations ever
+                // diverge (e.g. either side's precision or operation order
+                // changes), the producer could silently emit a triangle
+                // `validate(0.0)` rejects — reintroducing this task's
+                // defect — or drop a triangle `validate(0.0)` would have
+                // accepted, opening an unnecessary hole. Any future edit to
+                // either implementation must keep both in sync; the
+                // producer test in
+                // `tessellate_sphere_nondegenerate_integration.rs` and the
+                // conformance acceptance arm in
+                // `occt_manifold_ingest_conformance.rs` both exercise this
+                // agreement end-to-end and would catch a regression.
+                //
+                // Threshold is exact zero (squared magnitude <=
                 // 0.0f), not a positive epsilon: a positive epsilon could
                 // drop a real thin sliver and open a hole. NOTE: this
                 // producer/validator agreement is scoped to `validate(0.0)`
