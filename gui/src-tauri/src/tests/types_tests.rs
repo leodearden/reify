@@ -94,6 +94,8 @@ fn value_data_serializes_with_expected_fields() {
         freshness: "final".to_string(),
         reason: None,
         last_substantive_value: None,
+        dimension: String::new(),
+        si_value: None,
     };
     let v = serde_json::to_value(&val).unwrap();
     assert_eq!(v["cell_id"], json!("Bracket.width"));
@@ -892,6 +894,8 @@ fn value_data_serializes_with_freshness_field() {
         freshness: "final".to_string(),
         reason: None,
         last_substantive_value: None,
+        dimension: String::new(),
+        si_value: None,
     };
     let v = serde_json::to_value(&val).unwrap();
     assert_eq!(
@@ -2941,6 +2945,8 @@ fn value_data_reason_some_serializes_as_string() {
         freshness: "final".to_string(),
         reason: Some("outer_d unbound".to_string()),
         last_substantive_value: None,
+        dimension: String::new(),
+        si_value: None,
     };
     let v = serde_json::to_value(&val).unwrap();
     assert_eq!(v["reason"], json!("outer_d unbound"));
@@ -2959,6 +2965,8 @@ fn value_data_reason_none_serializes_as_null() {
         freshness: "final".to_string(),
         reason: None,
         last_substantive_value: None,
+        dimension: String::new(),
+        si_value: None,
     };
     let v = serde_json::to_value(&val).unwrap();
     assert!(v["reason"].is_null());
@@ -2998,6 +3006,8 @@ fn value_data_last_substantive_value_some_serializes_and_round_trips() {
         freshness: "pending".to_string(),
         reason: None,
         last_substantive_value: Some("42 mm".to_string()),
+        dimension: String::new(),
+        si_value: None,
     };
     let v = serde_json::to_value(&val).unwrap();
     assert_eq!(v["last_substantive_value"], json!("42 mm"));
@@ -3021,6 +3031,53 @@ fn value_data_last_substantive_value_backward_compat_no_key_deserializes_to_none
     });
     let val: ValueData = serde_json::from_value(json).unwrap();
     assert_eq!(val.last_substantive_value, None);
+}
+
+// --- ValueData::dimension / si_value (per-cell display-unit picker, task #5199) ---
+
+/// A `ValueData` carrying `dimension`/`si_value` serializes both keys and
+/// round-trips back to an equal struct.
+#[test]
+fn value_data_dimension_and_si_value_serialize_and_round_trip() {
+    let val = ValueData {
+        cell_id: "Tank.capacity".to_string(),
+        name: "capacity".to_string(),
+        value: "7045002.24".to_string(),
+        unit: "mm\u{00B3}".to_string(),
+        determinacy: "determined".to_string(),
+        entity_path: "Tank".to_string(),
+        kind: "Let".to_string(),
+        freshness: "final".to_string(),
+        reason: None,
+        last_substantive_value: None,
+        dimension: "Volume".to_string(),
+        si_value: Some(0.00704500224),
+    };
+    let v = serde_json::to_value(&val).unwrap();
+    assert_eq!(v["dimension"], json!("Volume"));
+    assert_eq!(v["si_value"], json!(0.00704500224));
+    let back: ValueData = serde_json::from_value(v).unwrap();
+    assert_eq!(back, val, "ValueData must round-trip with dimension/si_value");
+}
+
+/// Older payload without the `dimension`/`si_value` keys must deserialize
+/// cleanly to `""` / `None` (serde default — mirrors the `reason` and
+/// `last_substantive_value` backward-compat precedent).
+#[test]
+fn value_data_dimension_and_si_value_backward_compat_no_keys_deserialize_to_defaults() {
+    let json = serde_json::json!({
+        "cell_id": "Box.width",
+        "name": "width",
+        "value": "10",
+        "unit": "mm",
+        "determinacy": "determined",
+        "entity_path": "Box",
+        "kind": "Param",
+        "freshness": "final"
+    });
+    let val: ValueData = serde_json::from_value(json).unwrap();
+    assert_eq!(val.dimension, "");
+    assert_eq!(val.si_value, None);
 }
 
 // ── appearance-viewport-egress α: MeshAppearance serde round-trip tests ──────

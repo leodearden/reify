@@ -3624,6 +3624,23 @@ fn cell_kind_tree_str(kind: ValueCellKind) -> &'static str {
 /// `"final"`.  The preview surface only shows values and constraints;
 /// freshness badges are not meaningful for a single-definition preview
 /// evaluated in isolation.
+/// Extract the raw SI magnitude and dimension of a scalar value, for the
+/// per-cell display-unit picker (task #5199). Recurses through
+/// `Value::Option(Some(inner))` (an auto-resolve/optional wrapper) to the
+/// underlying scalar. Returns `None` for anything else — non-scalar values,
+/// `Value::Undef`, `Value::Option(None)` — which surface as `dimension: ""`,
+/// `si_value: None` (no ladder, so the GUI keeps the static unit badge).
+fn display_scalar(v: &reify_ir::Value) -> Option<(f64, DimensionVector)> {
+    match v {
+        reify_ir::Value::Scalar {
+            si_value,
+            dimension,
+        } => Some((*si_value, *dimension)),
+        reify_ir::Value::Option(Some(inner)) => display_scalar(inner),
+        _ => None,
+    }
+}
+
 fn build_values(
     compiled: &reify_compiler::CompiledModule,
     check: &CheckResult,
@@ -3686,6 +3703,17 @@ fn build_values(
                 }),
                 _ => None,
             };
+            // Per-cell canonical dimension + raw SI magnitude (task #5199),
+            // alongside the existing default-unit-formatted `value`/`unit`
+            // pair above — the substrate for the GUI's per-cell display-unit
+            // picker. `dimension` is the empty string for non-scalar values
+            // and for scalar dimensions with no named entry in
+            // `NAMED_DIMENSIONS` (e.g. dimensionless or composed units).
+            let (si_value, dim) = match display_scalar(&val) {
+                Some((s, d)) => (Some(s), Some(d)),
+                None => (None, None),
+            };
+            let dimension = dim.and_then(|d| d.canonical_name()).unwrap_or("").to_string();
             values.push(ValueData {
                 cell_id: cell.id.to_string(),
                 name: cell.id.member.clone(),
@@ -3697,6 +3725,8 @@ fn build_values(
                 freshness,
                 reason,
                 last_substantive_value,
+                dimension,
+                si_value,
             });
         }
     }

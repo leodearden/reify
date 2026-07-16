@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@solidjs/testing-library';
 import { createSignal } from 'solid-js';
 import { PropertyEditor } from '../panels/PropertyEditor';
-import type { ValueData } from '../types';
+import type { UnitLadderMap, ValueData } from '../types';
+import { loadUnitPreference, saveUnitPreference } from '../stores/unitPreferences';
 
 function makeValue(overrides: Partial<ValueData> & { cell_id: string }): ValueData {
   return {
@@ -16,6 +17,8 @@ function makeValue(overrides: Partial<ValueData> & { cell_id: string }): ValueDa
     freshness: overrides.freshness ?? 'final',
     reason: overrides.reason,
     last_substantive_value: overrides.last_substantive_value,
+    dimension: overrides.dimension,
+    si_value: overrides.si_value,
   };
 }
 
@@ -1316,5 +1319,322 @@ describe('PropertyEditor pending last-substantive value (#4739 γ)', () => {
     // The readonly span shows the prior good value, not the stale current one.
     expect(row.textContent).toContain('42');
     expect(row.textContent).not.toContain('99');
+  });
+});
+
+describe('PropertyEditor per-cell unit picker (task #5199)', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  const VOLUME_LADDER: UnitLadderMap = {
+    Volume: [
+      { label: 'mm³', si_scale: 1e-9, is_default: true },
+      { label: 'cm³', si_scale: 1e-6, is_default: false },
+      { label: 'L', si_scale: 1e-3, is_default: false },
+      { label: 'm³', si_scale: 1.0, is_default: false },
+    ],
+  };
+
+  function capacityValues(overrides: Partial<ValueData> = {}): Record<string, ValueData> {
+    return {
+      c1: makeValue({
+        cell_id: 'c1',
+        name: 'capacity',
+        entity_path: 'Tank.capacity',
+        value: '7045002.24',
+        unit: 'mm³',
+        dimension: 'Volume',
+        si_value: 0.00704500224,
+        ...overrides,
+      }),
+    };
+  }
+
+  it('(a) a Volume cell with si_value renders a unit-picker select with the ladder option labels', () => {
+    render(() => (
+      <PropertyEditor
+        values={capacityValues()}
+        selectedEntity={null}
+        onSetParameter={vi.fn()}
+        unitLadders={VOLUME_LADDER}
+      />
+    ));
+    const select = screen.getByTestId('unit-select-c1') as HTMLSelectElement;
+    const labels = Array.from(select.options).map((o) => o.value);
+    expect(labels).toEqual(['mm³', 'cm³', 'L', 'm³']);
+  });
+
+  it('(b) selecting "L" shows the converted displayed value and label, with no duplicate canonical number', () => {
+    render(() => (
+      <PropertyEditor
+        values={capacityValues()}
+        selectedEntity={null}
+        onSetParameter={vi.fn()}
+        unitLadders={VOLUME_LADDER}
+      />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const select = screen.getByTestId('unit-select-c1') as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: 'L' } });
+    expect(select.value).toBe('L');
+    // The PRIMARY value field itself must track the picked unit (task #5199
+    // amend: previously only the badge's secondary number reflected the
+    // pick, so the row showed '7045002.24' in the field and '7.04500224 L'
+    // in the badge for the same cell).
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    expect(input.value).toBe('7.04500224');
+    // The badge/select must carry ONLY the unit label — no second numeric
+    // value living alongside the select.
+    const badge = select.parentElement as HTMLElement;
+    expect(badge.textContent).toBe(select.textContent);
+  });
+
+  it('(c) a cell whose unit is pre-persisted renders that unit + converted value on first render', () => {
+    saveUnitPreference('c1', 'L');
+    render(() => (
+      <PropertyEditor
+        values={capacityValues()}
+        selectedEntity={null}
+        onSetParameter={vi.fn()}
+        unitLadders={VOLUME_LADDER}
+      />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const select = screen.getByTestId('unit-select-c1') as HTMLSelectElement;
+    expect(select.value).toBe('L');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    expect(input.value).toBe('7.04500224');
+  });
+
+  it('(d) changing the select persists the choice via saveUnitPreference', () => {
+    render(() => (
+      <PropertyEditor
+        values={capacityValues()}
+        selectedEntity={null}
+        onSetParameter={vi.fn()}
+        unitLadders={VOLUME_LADDER}
+      />
+    ));
+    const select = screen.getByTestId('unit-select-c1') as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: 'L' } });
+    expect(loadUnitPreference('c1')).toBe('L');
+  });
+
+  it('(e) the default-unit selection shows the backend value verbatim', () => {
+    render(() => (
+      <PropertyEditor
+        values={capacityValues()}
+        selectedEntity={null}
+        onSetParameter={vi.fn()}
+        unitLadders={VOLUME_LADDER}
+      />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const select = screen.getByTestId('unit-select-c1') as HTMLSelectElement;
+    expect(select.value).toBe('mm³');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    expect(input.value).toBe('7045002.24');
+  });
+
+  it('(f) a cell without si_value/dimension still renders the plain static badge, no select', () => {
+    render(() => (
+      <PropertyEditor
+        values={EDITABLE_C1}
+        selectedEntity={null}
+        onSetParameter={vi.fn()}
+        unitLadders={VOLUME_LADDER}
+      />
+    ));
+    expect(screen.queryByTestId('unit-select-c1')).toBeNull();
+    expect(screen.getByTestId('prop-row-c1').textContent).toContain('mm');
+  });
+
+  it('(g) starting to edit while a non-default unit is picked seeds the edit buffer with the canonical value', () => {
+    // Guards the fix that came with driving the primary field from the
+    // picker: editing must stay anchored to the canonical backend magnitude
+    // so an unmodified commit does not silently rewrite the parameter by the
+    // picked unit's conversion factor (task #5199 amend).
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor
+        values={capacityValues()}
+        selectedEntity={null}
+        onSetParameter={onSetParam}
+        unitLadders={VOLUME_LADDER}
+      />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const select = screen.getByTestId('unit-select-c1') as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: 'L' } });
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    expect(input.value).toBe('7.04500224');
+
+    // Focus (no edit) then commit: must submit the CANONICAL mm³ magnitude,
+    // not the displayed 'L' magnitude.
+    fireEvent.focus(input);
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSetParam).toHaveBeenCalledWith('c1', '7045002.24');
+  });
+
+  it('(h) focusing a cell while a non-default unit is picked shows an explicit "editing in <default>" hint', () => {
+    // Reviewer finding (task #5199 amend, robustness): the edit buffer
+    // silently reseeds to the canonical magnitude on focus while the
+    // <select> keeps reading the picked unit — this hint makes that switch
+    // explicit instead of leaving it silent.
+    render(() => (
+      <PropertyEditor
+        values={capacityValues()}
+        selectedEntity={null}
+        onSetParameter={vi.fn()}
+        unitLadders={VOLUME_LADDER}
+      />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const select = screen.getByTestId('unit-select-c1') as HTMLSelectElement;
+
+    // No hint before a non-default unit is even picked.
+    expect(screen.queryByTestId('unit-edit-hint-c1')).toBeNull();
+
+    fireEvent.change(select, { target: { value: 'L' } });
+    // Still no hint at rest — only while actually editing.
+    expect(screen.queryByTestId('unit-edit-hint-c1')).toBeNull();
+
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    expect(screen.getByTestId('unit-edit-hint-c1').textContent).toContain('mm³');
+
+    // Committing ends the edit and the hint disappears again.
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(screen.queryByTestId('unit-edit-hint-c1')).toBeNull();
+  });
+
+  it('(h2) no edit-hint appears when editing while the default unit is selected', () => {
+    render(() => (
+      <PropertyEditor
+        values={capacityValues()}
+        selectedEntity={null}
+        onSetParameter={vi.fn()}
+        unitLadders={VOLUME_LADDER}
+      />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    expect(screen.queryByTestId('unit-edit-hint-c1')).toBeNull();
+  });
+
+  it('(h3) the edit-hint is styled distinctly from a plain unit badge so it is not mistaken for one', () => {
+    // Reviewer finding (task #5199 amend, robustness): the hint mitigating
+    // the canonical-vs-picked-unit footgun previously reused the plain
+    // `.unitBadge` style, making it "a small badge that's easy to miss".
+    // Pin that it now carries its own, more visually weighty class.
+    render(() => (
+      <PropertyEditor
+        values={capacityValues()}
+        selectedEntity={null}
+        onSetParameter={vi.fn()}
+        unitLadders={VOLUME_LADDER}
+      />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const select = screen.getByTestId('unit-select-c1') as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: 'L' } });
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+
+    const hint = screen.getByTestId('unit-edit-hint-c1');
+    expect(hint.className).toContain('unitEditHint');
+    expect(hint.className).not.toContain('unitBadge');
+  });
+
+  it('(i) typing a NEW value while a non-default unit is picked commits the raw typed number, uninterpreted by the picked unit', () => {
+    // Reviewer finding (task #5199 amend, robustness): test (g) only covers
+    // the no-op focus+Enter case. This covers the actually-lossy case: the
+    // user types a fresh number while "L" is selected. onSetParameter must
+    // receive exactly what was typed (submission is never silently
+    // converted by the picked unit) — documented here so a future change to
+    // this contract cannot land unnoticed.
+    const onSetParam = vi.fn();
+    render(() => (
+      <PropertyEditor
+        values={capacityValues()}
+        selectedEntity={null}
+        onSetParameter={onSetParam}
+        unitLadders={VOLUME_LADDER}
+      />
+    ));
+    const row = screen.getByTestId('prop-row-c1');
+    const select = screen.getByTestId('unit-select-c1') as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: 'L' } });
+
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.input(input, { target: { value: '9999' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    expect(onSetParam).toHaveBeenCalledWith('c1', '9999');
+  });
+
+  it('(j) a demand-pruned cell showing last_substantive_value suppresses the picker entirely', () => {
+    // Reviewer finding (task #5199 amend, correctness): the picker's
+    // non-default conversion reads the LIVE (possibly stale) si_value, which
+    // is a different source of truth than the last-good value shown at the
+    // default unit — converting it would flip the displayed magnitude
+    // between the last-good and stale numbers across a single unit change.
+    // The picker must not appear at all for such cells.
+    const values = capacityValues({
+      freshness: 'pending',
+      last_substantive_value: '42',
+    });
+    render(() => (
+      <PropertyEditor
+        values={values}
+        selectedEntity={null}
+        onSetParameter={vi.fn()}
+        unitLadders={VOLUME_LADDER}
+      />
+    ));
+    expect(screen.queryByTestId('unit-select-c1')).toBeNull();
+    const row = screen.getByTestId('prop-row-c1');
+    // The value lives in the input's `value` property, not row.textContent
+    // (an <input>'s value is never part of its element's text content).
+    const input = row.querySelector('input[type="text"]') as HTMLInputElement;
+    expect(input.value).toBe('42');
+    expect(row.textContent).toContain('mm³');
+  });
+
+  it('(k) a cell removed from props.values (e.g. file reload) has its unit preference pruned, both persisted and in-memory', () => {
+    // Reviewer finding (task #5199 amend, resource_cleanup): both the
+    // in-memory `selectedUnits` record and the persisted localStorage blob
+    // previously accumulated one entry per cell_id ever seen and were never
+    // pruned when a cell disappeared. Guard that a cell's preference is
+    // dropped from BOTH places once it's no longer in props.values — so if
+    // the same cell_id later reappears (e.g. the file is reloaded again) it
+    // does not resurrect a stale pick from before it disappeared.
+    const [values, setValues] = createSignal<Record<string, ValueData>>(capacityValues());
+    render(() => (
+      <PropertyEditor
+        values={values()}
+        selectedEntity={null}
+        onSetParameter={vi.fn()}
+        unitLadders={VOLUME_LADDER}
+      />
+    ));
+
+    fireEvent.change(screen.getByTestId('unit-select-c1'), { target: { value: 'L' } });
+    expect(loadUnitPreference('c1')).toBe('L');
+
+    // Simulate a file reload: c1 disappears, replaced by an unrelated cell.
+    setValues({
+      c2: makeValue({ cell_id: 'c2', name: 'other', entity_path: 'Other.other' }),
+    });
+    expect(screen.queryByTestId('prop-row-c1')).toBeNull();
+    expect(loadUnitPreference('c1')).toBeNull();
+
+    // c1 reappears — it must NOT remember the pruned 'L' choice; it falls
+    // back to the ladder default rather than resurrecting the stale pick.
+    setValues(capacityValues());
+    expect((screen.getByTestId('unit-select-c1') as HTMLSelectElement).value).toBe('mm³');
   });
 });

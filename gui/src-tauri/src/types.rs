@@ -1015,6 +1015,26 @@ pub struct ValueData {
     /// `reason`) keeps older payloads without this key deserializing cleanly.
     #[serde(default)]
     pub last_substantive_value: Option<String>,
+    /// Canonical dimension name for this cell's value (e.g. `"Volume"`,
+    /// `"Length"`), from `DimensionVector::canonical_name()`. Empty string
+    /// for non-scalar, dimensionless, or composed-dimension values that
+    /// have no named ladder (task #5199: drives the Parameters panel's
+    /// per-cell unit picker — only cells with a non-empty `dimension` AND a
+    /// ladder of \u{2265}2 units get a `<select>` instead of the static unit
+    /// badge). `#[serde(default)]` (mirroring `reason`/`last_substantive_value`)
+    /// keeps older payloads without this key deserializing cleanly.
+    #[serde(default)]
+    pub dimension: String,
+    /// The cell's raw canonical SI magnitude (e.g. cubic metres for a Volume
+    /// cell), for the GUI to convert into whichever display unit the user
+    /// picks: `displayed = si_value / chosen_unit.si_scale`. `None` for
+    /// non-scalar values (mirrors `dimension == ""`). `#[serde(default)]`
+    /// keeps older payloads without this key deserializing cleanly. This is
+    /// canonical-SI data alongside the existing default-unit-formatted
+    /// `value`/`unit` pair — the unit picker's own selection never crosses
+    /// the IPC wire (task #5199 engine_state decision: additive-only).
+    #[serde(default)]
+    pub si_value: Option<f64>,
 }
 
 /// A constraint with its check status.

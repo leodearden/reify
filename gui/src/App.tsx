@@ -73,8 +73,10 @@ import {
   getEntityAtSourceLocation as bridgeGetEntityAtSourceLocation,
   getDefPreview as bridgeGetDefPreview,
   getMechanismDescriptors as bridgeGetMechanismDescriptors,
+  getUnitLadders as bridgeGetUnitLadders,
   ask as bridgeAsk,
 } from './bridge';
+import type { UnitLadderMap } from './types';
 import {
   navigateToSource,
   navigateToEntity,
@@ -459,6 +461,11 @@ const App: Component = () => {
 
   // Track the currently-open file path so the debounced save effect can key off it.
   const [currentFilePath, setCurrentFilePath] = createSignal<string | null>(null);
+
+  // Per-dimension display-unit ladders for the Parameters panel's unit picker
+  // (task #5199), fetched once on mount. Empty map means every cell falls
+  // back to its static unit badge.
+  const [unitLadders, setUnitLadders] = createSignal<UnitLadderMap>({});
 
   // Fuzzy-rebind toast bookkeeping (see the rebind effect block below).
   //
@@ -1383,6 +1390,48 @@ const App: Component = () => {
 
     if (!alive) return;
 
+    // Fetch the per-dimension display-unit ladders (task #5199) in the
+    // background. Deliberately NOT awaited (task #5199 amend,
+    // reviewer_comprehensive robustness finding): this used to sit on the
+    // critical init path, ahead of the event-subscription block and the
+    // 'ready' transition below — a slow or hung get_unit_ladders call would
+    // have delayed app readiness and every live-update subscription even
+    // though the ladders are purely cosmetic/best-effort. Firing it off
+    // without awaiting means it can never block init, regardless of how
+    // long it takes.
+    //
+    // Tolerate failure: an empty map means every cell keeps its static unit
+    // badge. Surface it as a toast, not just console.warn (task #5199 amend,
+    // reviewer_comprehensive graceful_degradation finding) — the ladders are
+    // fetched once on mount with no retry, so a silent console-only failure
+    // would leave the picker permanently unavailable for the whole session
+    // with no user-visible signal, mirroring how the other best-effort
+    // one-time subscriptions below report their own failures.
+    //
+    // Calling bridgeGetUnitLadders() inside the leading `.then()` (rather
+    // than directly, e.g. `bridgeGetUnitLadders().then(...)`) routes a
+    // SYNCHRONOUS throw from the call itself — not just an async rejection —
+    // into the `.catch()` below. The previous `try { await
+    // bridgeGetUnitLadders() } catch` got this for free from `try`; losing
+    // that wrapper when this became fire-and-forget would otherwise turn a
+    // synchronous throw (e.g. a bridge mock missing this export in a test)
+    // into an unhandled rejection out of `initApp` instead of the intended
+    // graceful degradation.
+    Promise.resolve()
+      .then(() => bridgeGetUnitLadders())
+      .then((ladders) => {
+        if (!alive) return;
+        const map: UnitLadderMap = {};
+        for (const ladder of ladders) {
+          map[ladder.dimension] = ladder.units;
+        }
+        setUnitLadders(map);
+      })
+      .catch((err) => {
+        console.warn('[unit-ladders] fetch failed:', err);
+        showToast('Unit ladders unavailable — parameters will show default units only', 'info');
+      });
+
     // Subscribe to events before showing ready state — "ready" means
     // fully initialized including live update subscriptions
     try {
@@ -2099,6 +2148,7 @@ const App: Component = () => {
                 onSetParameter={handleSetParameter}
                 onGroupDoubleClick={handleGroupDoubleClick}
                 highlightedParams={selectionStore.state.highlightedParams}
+                unitLadders={unitLadders()}
               />
               <Splitter orientation="horizontal" onResize={handleSideResize} data-testid="splitter-side" />
               <ConstraintPanel

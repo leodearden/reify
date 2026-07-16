@@ -145,6 +145,7 @@ vi.mock('../bridge', () => ({
   readViewSidecar: vi.fn().mockResolvedValue(null),
   writeViewSidecar: vi.fn().mockResolvedValue(undefined),
   getMechanismDescriptors: vi.fn().mockResolvedValue([]),
+  getUnitLadders: vi.fn().mockResolvedValue([]),
   subscribeToSidecarCrashed: vi.fn().mockResolvedValue(() => {}),
   onAutoResolveStart: vi.fn().mockResolvedValue(() => {}),
   onAutoResolveIteration: vi.fn().mockResolvedValue(() => {}),
@@ -227,6 +228,7 @@ beforeEach(() => {
   vi.mocked(sidecarPersistence.saveSidecar).mockResolvedValue(undefined);
   vi.mocked(viewPersistence.loadViewPersistence).mockReturnValue(null);
   vi.mocked((bridge as any).getMechanismDescriptors).mockResolvedValue([]);
+  vi.mocked((bridge as any).getUnitLadders).mockResolvedValue([]);
   vi.mocked((bridge as any).onSolverProgress).mockResolvedValue(() => {});
   vi.mocked((bridge as any).cancelSolve).mockResolvedValue(undefined);
   vi.mocked((bridge as any).onWarmPoolEvent).mockResolvedValue(() => {});
@@ -373,6 +375,103 @@ describe('App initial state loading', () => {
     });
 
     expect(bridge.getInitialState).toHaveBeenCalledOnce();
+  });
+});
+
+describe('App unit ladders (task #5199)', () => {
+  it('fetches get_unit_ladders on mount and threads it into PropertyEditor', async () => {
+    const testState: GuiState = { fea_convergence: null,
+      meshes: [],
+      values: [
+        {
+          cell_id: 'Tank.capacity',
+          name: 'capacity',
+          value: '7045002.24',
+          unit: 'mm³',
+          determinacy: 'determined',
+          entity_path: 'Tank.capacity',
+          kind: 'let',
+          freshness: 'final',
+          dimension: 'Volume',
+          si_value: 0.00704500224,
+        },
+      ],
+      constraints: [],
+      files: [],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [],
+      tensegrity_wires: [],
+      tensegrity_surfaces: [],
+      display_panes: [],
+      display_appearance: [],
+      fea_diagnostics: []
+    };
+    vi.mocked(bridge.getInitialState).mockResolvedValue(testState);
+    vi.mocked((bridge as any).getUnitLadders).mockResolvedValue([
+      {
+        dimension: 'Volume',
+        units: [
+          { label: 'mm³', si_scale: 1e-9, is_default: true },
+          { label: 'L', si_scale: 1e-3, is_default: false },
+        ],
+      },
+    ]);
+
+    render(() => <App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('unit-select-Tank.capacity')).toBeTruthy();
+    });
+    expect(bridge.getUnitLadders).toHaveBeenCalledOnce();
+  });
+
+  it('shows an info toast when get_unit_ladders rejects, and cells keep the static badge', async () => {
+    // Reviewer finding (task #5199 amend, graceful_degradation): the ladder
+    // fetch is best-effort with no retry, so a failure previously left the
+    // picker silently unavailable for the whole session with only a
+    // console.warn — no user-visible signal, unlike the app's other
+    // best-effort one-time subscriptions (event/file-change/serialization
+    // monitoring), which all surface their own failures via toast.
+    const testState: GuiState = { fea_convergence: null,
+      meshes: [],
+      values: [
+        {
+          cell_id: 'Tank.capacity',
+          name: 'capacity',
+          value: '7045002.24',
+          unit: 'mm³',
+          determinacy: 'determined',
+          entity_path: 'Tank.capacity',
+          kind: 'let',
+          freshness: 'final',
+          dimension: 'Volume',
+          si_value: 0.00704500224,
+        },
+      ],
+      constraints: [],
+      files: [],
+      tessellation_diagnostics: [],
+      compile_diagnostics: [],
+      tensegrity_wires: [],
+      tensegrity_surfaces: [],
+      display_panes: [],
+      display_appearance: [],
+      fea_diagnostics: []
+    };
+    vi.mocked(bridge.getInitialState).mockResolvedValue(testState);
+    vi.mocked((bridge as any).getUnitLadders).mockRejectedValueOnce(new Error('backend unavailable'));
+
+    render(() => <App />);
+
+    await waitFor(() => {
+      const toasts = screen.getAllByTestId('toast');
+      const infoToast = toasts.find((t) => t.textContent?.includes('Unit ladders unavailable'));
+      expect(infoToast).toBeTruthy();
+      expect(infoToast?.dataset.type).toBe('info');
+    });
+
+    // The cell falls back to the static unit badge — no picker rendered.
+    expect(screen.queryByTestId('unit-select-Tank.capacity')).toBeNull();
   });
 });
 

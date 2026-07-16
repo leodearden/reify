@@ -692,6 +692,14 @@ fn get_kernel_status() -> reify_gui::kernel_status::KernelStatus {
     reify_gui::kernel_status::current_kernel_status()
 }
 
+/// Return the per-dimension display-unit ladders backing the Parameters
+/// panel's per-cell unit picker (task #5199). Pure data table — no engine
+/// state involved, so this command takes no `AppState`.
+#[tauri::command]
+fn get_unit_ladders() -> Vec<reify_gui::display_units::DimensionLadder> {
+    reify_gui::display_units::unit_ladders()
+}
+
 /// Cancel an in-flight FEA solve (GR-016 ζ, PRD §11 Q2).
 ///
 /// Reads `AppState::pending_solve_cancel`, calls `.cancel()` on the handle if
@@ -958,6 +966,7 @@ fn main() {
             is_debug_enabled,
             debug_response,
             get_kernel_status,
+            get_unit_ladders,
             read_view_sidecar,
             write_view_sidecar,
             cancel_solve,

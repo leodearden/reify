@@ -82,6 +82,8 @@ fn sample_value(cell_id: &str, value: &str) -> ValueData {
         freshness: "final".to_string(),
         reason: None,
         last_substantive_value: None,
+        dimension: String::new(),
+        si_value: None,
     }
 }
 
