@@ -5992,7 +5992,12 @@ TessResult tessellate_shape(const OcctShape& shape, double tolerance) {
                 // `tessellate_sphere_nondegenerate_integration.rs` and the
                 // conformance acceptance arm in
                 // `occt_manifold_ingest_conformance.rs` both exercise this
-                // agreement end-to-end and would catch a regression.
+                // agreement end-to-end and would catch a regression. The
+                // `coincident_corners` check below closes the one
+                // divergence risk that was NOT merely hypothetical (see
+                // FMA-CONTRACTION SAFETY) — the residual empirical-agreement
+                // risk described here is now scoped to the general
+                // cross-product path only.
                 //
                 // Threshold is exact zero (squared magnitude <=
                 // 0.0f), not a positive epsilon: a positive epsilon could
@@ -6015,17 +6020,61 @@ TessResult tessellate_shape(const OcctShape& shape, double tolerance) {
                 float cx = result.vertices[base_c];
                 float cy = result.vertices[base_c + 1];
                 float cz = result.vertices[base_c + 2];
+
+                // FMA-CONTRACTION SAFETY (reviewer_comprehensive,
+                // robustness_floating_point): this translation unit is built
+                // by the `cc`/`cxx_build` crate (build.rs) with no explicit
+                // `-ffp-contract` flag, so it inherits the platform
+                // compiler's default (GCC: `-ffp-contract=fast`), which may
+                // fuse a `p*q - r*s` pattern like `aby*acz - abz*acy` below
+                // into a single FMA. That matters for the seam triangle
+                // whose coincident pair is (b, c): `ab == ac` bit-for-bit,
+                // so mathematically `ab×ac == ab×ab == 0`, but a fused
+                // evaluation of that difference-of-products is not
+                // guaranteed to round to exact zero, while the unfused
+                // separate-multiply-then-subtract form always is (IEEE-754
+                // subtraction of two bit-identical rounded products is
+                // exact). `check_contract` has no FMA in its Rust
+                // arithmetic, so a fused producer computation could
+                // disagree with it here — silently emitting a triangle
+                // `validate(0.0)` rejects and reintroducing this task's
+                // defect. (The (a, b) / (a, c) coincident cases were already
+                // safe either way: `ab`/`ac` is then the exact zero vector,
+                // and multiplying by exact `0.0f` is exact whether fused or
+                // not.)
+                //
+                // A plain float equality comparison is never part of a
+                // multiply-add chain, so it can't be fused and is immune to
+                // `-ffp-contract` regardless of compiler/flags/arch. Detect
+                // the coincident-corner case directly instead of relying
+                // solely on the cross product: any triangle with two
+                // bit-identical corners is unconditionally degenerate under
+                // BOTH this producer and `check_contract` (which also
+                // evaluates such a triangle to exactly zero, having no FMA
+                // either), so this check can only ever agree with — never
+                // contradict — `validate(0.0)`; it cannot cause an
+                // over-drop. This makes the pole-defect agreement structural
+                // rather than dependent on default compiler FP-contraction
+                // behavior. (The reviewer's other suggested fix — pinning
+                // `-ffp-contract=off` — belongs in build.rs, outside this
+                // file's change scope.)
+                bool coincident_corners =
+                    (ax == bx && ay == by && az == bz) ||
+                    (ax == cx && ay == cy && az == cz) ||
+                    (bx == cx && by == cy && bz == cz);
+
                 float abx = bx - ax, aby = by - ay, abz = bz - az;
                 float acx = cx - ax, acy = cy - ay, acz = cz - az;
                 float cross_x = aby * acz - abz * acy;
                 float cross_y = abz * acx - abx * acz;
                 float cross_z = abx * acy - aby * acx;
                 float twice_area_sq = cross_x * cross_x + cross_y * cross_y + cross_z * cross_z;
-                if (twice_area_sq <= 0.0f) {
-                    // Degenerate (two coincident corners) — skip emitting
-                    // this triangle's indices. Vertex/normal buffers and
-                    // vertex_offset accounting are untouched: every
-                    // subsequent face's indices remain correct. The
+                if (coincident_corners || twice_area_sq <= 0.0f) {
+                    // Degenerate (two coincident corners, caught directly
+                    // above or via zero cross-product magnitude) — skip
+                    // emitting this triangle's indices. Vertex/normal
+                    // buffers and vertex_offset accounting are untouched:
+                    // every subsequent face's indices remain correct. The
                     // duplicate pole node(s) this triangle would have
                     // referenced stay in `result.vertices`/`result.normals`,
                     // now unreferenced by any index — by design, to keep
