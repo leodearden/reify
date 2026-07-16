@@ -9391,3 +9391,123 @@ mod combined_param_let_graph_geometry_let_tests {
         );
     }
 }
+
+/// RED: `reeval_cone_cell` provenance + `DeriveFromValue` determinacy (task γ
+/// #5053, test-2).
+///
+/// Direct unit-level exercise of `reeval_cone_cell` per its own plan-sanctioned
+/// escape hatch: the cold-eval cone driver (~@4609) only fires downstream of a
+/// guarded-group's multi-phase re-elaboration (Phase 1/wave2/Phase 3), whose
+/// exact timing is not practically reproducible from a targeted black-box
+/// `.ri` fixture. `reeval_cone_cell` is `pub(crate)`, so an in-crate test can
+/// call it directly with crafted `values`/`snapshot_values`/`runtime_sink`,
+/// exactly as the impl-2 plan step's fallback describes.
+///
+/// RED today: `reeval_cone_cell` records ONLY to `self.cache` (@~5346),
+/// emitting NO journal event, so `started_payload` is `None` in both cases
+/// below. GREEN after impl-2 migrates the commit onto `commit_cell_result`
+/// with `TraceSource::ConeReeval`.
+///
+/// Also pins `DeriveFromValue` determinacy (characterization guard, must stay
+/// green across the migration boundary): a re-eval'd cell whose expression
+/// evaluates to `Value::Undef` records `Undetermined`; a non-`Undef` value
+/// records `Determined` — `reeval_cone_cell`'s own doc states a future reader
+/// must NOT collapse this into the main-pass unconditional `Determined` rule.
+#[cfg(test)]
+mod reeval_cone_cell_provenance_and_determinacy_tests {
+    use std::cell::RefCell;
+
+    use reify_core::{Type, ValueCellId};
+    use reify_ir::{CompiledExpr, DeterminacyState, PersistentMap, Value, ValueMap};
+
+    use crate::Engine;
+    use crate::cache::NodeId;
+    use crate::journal::{EventKind, EventPayload};
+    use reify_test_support::mocks::MockConstraintChecker;
+
+    /// Mirrors the integration test file's `started_payload` helper: the
+    /// first `Started` event's `EventPayload::Custom` slug for `id`, or
+    /// `None` if there is no such event or its payload isn't `Custom`.
+    fn started_payload(engine: &Engine, id: &ValueCellId) -> Option<String> {
+        let node_id = NodeId::Value(id.clone());
+        let events = engine.journal().events_for_node(&node_id);
+        let started = events
+            .iter()
+            .find(|event| matches!(event.kind, EventKind::Started))?;
+        match &started.payload {
+            Some(EventPayload::Custom(slug)) => Some(slug.clone()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn reeval_cone_cell_undef_records_undetermined_with_cone_reeval_provenance() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let vcid = ValueCellId::new("S", "cone_cell");
+        let node_id = NodeId::Value(vcid.clone());
+        let expr = CompiledExpr::literal(Value::Undef, Type::dimensionless_scalar());
+        let mut values = ValueMap::new();
+        let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::new();
+        let runtime_sink = RefCell::new(Vec::new());
+
+        engine.reeval_cone_cell(
+            &node_id,
+            &vcid,
+            &expr,
+            &mut values,
+            &mut snapshot_values,
+            &runtime_sink,
+            1,
+        );
+
+        assert_eq!(
+            started_payload(&engine, &vcid),
+            Some("cone-reeval".to_string()),
+            "reeval_cone_cell's Started event should carry the 'cone-reeval' \
+             TraceSource slug once migrated onto commit_cell_result"
+        );
+        assert_eq!(
+            snapshot_values.get(&vcid),
+            Some(&(Value::Undef, DeterminacyState::Undetermined)),
+            "a cone-reeval'd cell whose value is Value::Undef must record \
+             Undetermined (DeriveFromValue rule) — must NOT collapse to the \
+             main-pass UnconditionalDetermined rule"
+        );
+    }
+
+    #[test]
+    fn reeval_cone_cell_non_undef_records_determined_with_cone_reeval_provenance() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let vcid = ValueCellId::new("S", "cone_cell");
+        let node_id = NodeId::Value(vcid.clone());
+        let expr = CompiledExpr::literal(Value::Real(2.5), Type::dimensionless_scalar());
+        let mut values = ValueMap::new();
+        let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::new();
+        let runtime_sink = RefCell::new(Vec::new());
+
+        engine.reeval_cone_cell(
+            &node_id,
+            &vcid,
+            &expr,
+            &mut values,
+            &mut snapshot_values,
+            &runtime_sink,
+            1,
+        );
+
+        assert_eq!(
+            started_payload(&engine, &vcid),
+            Some("cone-reeval".to_string()),
+            "reeval_cone_cell's Started event should carry the 'cone-reeval' \
+             TraceSource slug once migrated onto commit_cell_result"
+        );
+        assert_eq!(
+            snapshot_values.get(&vcid),
+            Some(&(Value::Real(2.5), DeterminacyState::Determined)),
+            "a cone-reeval'd cell whose value is non-Undef must record \
+             Determined (DeriveFromValue rule)"
+        );
+    }
+}
