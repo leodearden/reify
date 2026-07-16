@@ -5939,75 +5939,46 @@ TessResult tessellate_shape(const OcctShape& shape, double tolerance) {
                 int n1, n2, n3;
                 tri->Triangle(i).Get(n1, n2, n3);
 
-                // Debug-only: document and cheaply enforce the node-index
-                // invariant that both the unchecked `result.vertices[...]`
-                // reads in the INV-GEO-1 gate below AND the index emission
-                // further down depend on — OCCT triangle node indices are
-                // 1-based and within [1, nb_nodes]. Not a new trust
-                // boundary: index emission already relied on this same
-                // invariant before the gate existed.
+                // OCCT triangle node indices are 1-based and within
+                // [1, nb_nodes] — index emission below already relies on
+                // this; cheaply enforce it here too (debug-only).
 #ifndef NDEBUG
                 assert(n1 >= 1 && n1 <= nb_nodes);
                 assert(n2 >= 1 && n2 <= nb_nodes);
                 assert(n3 >= 1 && n3 <= nb_nodes);
 #endif
 
-                // INV-GEO-1 (docs/prds/kernel-seam-contracts.md §2 obligation 3,
-                // task #5164): a periodic surface with a pole (e.g. a full
-                // sphere) has BRepMesh_IncrementalMesh emit one raw pole node
-                // per meridian, all at a bit-identical 3D position. The seam
-                // fan triangle whose two non-ring corners are duplicate pole
-                // nodes therefore has two coincident corners — zero area.
-                // Detect it here by reading the corners' positions straight
-                // back out of `result.vertices` at
-                // (vertex_offset + n{1,2,3} - 1) * 3 — the SAME loc-
-                // transformed, float-cast values the vertex-extraction loop
-                // above already wrote — rather than re-fetching via
-                // `tri->Node()` + `Transform()` a second time. This avoids
-                // ~3 redundant Node()/Transform() calls per triangle and,
-                // more importantly, makes the "bit-identical to what
-                // validate sees" guarantee structural: the gate reads the
-                // exact stored bytes validate reads, rather than relying on
-                // a recomputation that merely happens to be deterministic.
-                // The (b-a)×(c-a) cross product is identical to the one
-                // `Mesh::check_contract`'s NonDegenerate obligation uses
+                // INV-GEO-1 (docs/prds/kernel-seam-contracts.md §2
+                // obligation 3, task #5164): a periodic surface's pole
+                // (e.g. a full sphere) gets one raw pole node per meridian
+                // from BRepMesh_IncrementalMesh, all at a bit-identical 3D
+                // position, so the seam fan triangle whose two non-ring
+                // corners are duplicate pole nodes has two coincident
+                // corners — zero area. Detect and skip it below.
+                //
+                // Corners are read back from `result.vertices` — the same
+                // loc-transformed, float-cast values the vertex-extraction
+                // loop above just wrote — rather than re-fetched via
+                // `tri->Node()`/`Transform()`, so "bit-identical to what
+                // validate sees" is structural, not merely deterministic.
+                // The (b-a)×(c-a) cross product mirrors
+                // `Mesh::check_contract`'s NonDegenerate obligation exactly
+                // — same operand order, same f32 precision
                 // (`crates/reify-ir/src/geometry.rs:2852-2861`) — so the
-                // producer emits exactly the triangle set `validate(0.0)`
-                // accepts.
+                // producer emits precisely the triangle set
+                // `validate(0.0)` accepts. That agreement is a
+                // cross-language maintenance invariant, not something
+                // shared code enforces: keep both arithmetic forms in
+                // sync. `tessellate_sphere_nondegenerate_integration.rs`
+                // and the conformance acceptance arm in
+                // `occt_manifold_ingest_conformance.rs` exercise it
+                // end-to-end and would catch a regression.
                 //
-                // MAINTENANCE INVARIANT: that agreement holds only because
-                // this arithmetic is kept bit-identical (same operand order
-                // — (b-a)×(c-a), not (a-b)×(a-c) or any other permutation —
-                // and same f32 precision) to `check_contract`'s. It is an
-                // empirical property, not something shared code enforces:
-                // `check_contract` lives in `reify-ir`, outside this file,
-                // in a different language. If the two implementations ever
-                // diverge (e.g. either side's precision or operation order
-                // changes), the producer could silently emit a triangle
-                // `validate(0.0)` rejects — reintroducing this task's
-                // defect — or drop a triangle `validate(0.0)` would have
-                // accepted, opening an unnecessary hole. Any future edit to
-                // either implementation must keep both in sync; the
-                // producer test in
-                // `tessellate_sphere_nondegenerate_integration.rs` and the
-                // conformance acceptance arm in
-                // `occt_manifold_ingest_conformance.rs` both exercise this
-                // agreement end-to-end and would catch a regression. The
-                // `coincident_corners` check below closes the one
-                // divergence risk that was NOT merely hypothetical (see
-                // FMA-CONTRACTION SAFETY) — the residual empirical-agreement
-                // risk described here is now scoped to the general
-                // cross-product path only.
-                //
-                // Threshold is exact zero (squared magnitude <=
-                // 0.0f), not a positive epsilon: a positive epsilon could
-                // drop a real thin sliver and open a hole. NOTE: this
-                // producer/validator agreement is scoped to `validate(0.0)`
-                // only — `validate(tol)` with tol > 0 gates on
-                // `twice_area <= tol*tol`, so a thin-but-nonzero pole sliver
-                // could still fail a positive-tolerance validate even though
-                // it clears this exact-zero gate; callers must not assume
-                // this gate pre-satisfies a positive-tol validate.
+                // Threshold is exact zero (squared magnitude <= 0.0f), not
+                // a positive epsilon, which could drop a real sliver and
+                // open a hole. Scoped to `validate(0.0)` only — a
+                // positive-tol `validate(tol)` could still reject a
+                // thin-but-nonzero pole sliver that clears this gate.
                 uint32_t base_a = (vertex_offset + static_cast<uint32_t>(n1 - 1)) * 3;
                 uint32_t base_b = (vertex_offset + static_cast<uint32_t>(n2 - 1)) * 3;
                 uint32_t base_c = (vertex_offset + static_cast<uint32_t>(n3 - 1)) * 3;
@@ -6021,43 +5992,20 @@ TessResult tessellate_shape(const OcctShape& shape, double tolerance) {
                 float cy = result.vertices[base_c + 1];
                 float cz = result.vertices[base_c + 2];
 
-                // FMA-CONTRACTION SAFETY (reviewer_comprehensive,
-                // robustness_floating_point): this translation unit is built
-                // by the `cc`/`cxx_build` crate (build.rs) with no explicit
-                // `-ffp-contract` flag, so it inherits the platform
-                // compiler's default (GCC: `-ffp-contract=fast`), which may
-                // fuse a `p*q - r*s` pattern like `aby*acz - abz*acy` below
-                // into a single FMA. That matters for the seam triangle
-                // whose coincident pair is (b, c): `ab == ac` bit-for-bit,
-                // so mathematically `ab×ac == ab×ab == 0`, but a fused
-                // evaluation of that difference-of-products is not
-                // guaranteed to round to exact zero, while the unfused
-                // separate-multiply-then-subtract form always is (IEEE-754
-                // subtraction of two bit-identical rounded products is
-                // exact). `check_contract` has no FMA in its Rust
-                // arithmetic, so a fused producer computation could
-                // disagree with it here — silently emitting a triangle
-                // `validate(0.0)` rejects and reintroducing this task's
-                // defect. (The (a, b) / (a, c) coincident cases were already
-                // safe either way: `ab`/`ac` is then the exact zero vector,
-                // and multiplying by exact `0.0f` is exact whether fused or
-                // not.)
-                //
-                // A plain float equality comparison is never part of a
-                // multiply-add chain, so it can't be fused and is immune to
-                // `-ffp-contract` regardless of compiler/flags/arch. Detect
-                // the coincident-corner case directly instead of relying
-                // solely on the cross product: any triangle with two
-                // bit-identical corners is unconditionally degenerate under
-                // BOTH this producer and `check_contract` (which also
-                // evaluates such a triangle to exactly zero, having no FMA
-                // either), so this check can only ever agree with — never
-                // contradict — `validate(0.0)`; it cannot cause an
-                // over-drop. This makes the pole-defect agreement structural
-                // rather than dependent on default compiler FP-contraction
-                // behavior. (The reviewer's other suggested fix — pinning
-                // `-ffp-contract=off` — belongs in build.rs, outside this
-                // file's change scope.)
+                // FMA safety: this TU builds with the compiler's default
+                // float-contraction (GCC: -ffp-contract=fast; build.rs
+                // sets no override), which may fuse a p*q - r*s pattern
+                // like the cross-product terms below into one FMA. For the
+                // coincident-pair-(b,c) case, ab == ac bit-for-bit so
+                // ab×ac is mathematically exactly zero, but a fused
+                // difference-of-products isn't guaranteed to round to zero
+                // the way the unfused separate-multiply-then-subtract form
+                // always does — and `check_contract`'s Rust arithmetic has
+                // no FMA, so a fused result here could disagree with it.
+                // A plain float equality can't be fused, so this direct
+                // coincident-corner check is immune to `-ffp-contract`
+                // regardless of compiler/flags/arch, and can only ever
+                // agree with — never contradict — `validate(0.0)`.
                 bool coincident_corners =
                     (ax == bx && ay == by && az == bz) ||
                     (ax == cx && ay == cy && az == cz) ||
@@ -6070,18 +6018,22 @@ TessResult tessellate_shape(const OcctShape& shape, double tolerance) {
                 float cross_z = abx * acy - aby * acx;
                 float twice_area_sq = cross_x * cross_x + cross_y * cross_y + cross_z * cross_z;
                 if (coincident_corners || twice_area_sq <= 0.0f) {
-                    // Degenerate (two coincident corners, caught directly
-                    // above or via zero cross-product magnitude) — skip
-                    // emitting this triangle's indices. Vertex/normal
-                    // buffers and vertex_offset accounting are untouched:
-                    // every subsequent face's indices remain correct. The
-                    // duplicate pole node(s) this triangle would have
-                    // referenced stay in `result.vertices`/`result.normals`,
-                    // now unreferenced by any index — by design, to keep
-                    // the vertex_offset accounting above simple. This is
-                    // harmless: no obligation requires every vertex be
-                    // referenced, and the ring/pole nodes stay reachable via
-                    // adjacent real fan triangles.
+                    // Degenerate — skip emitting this triangle's indices.
+                    // Vertex/normal buffers and vertex_offset accounting
+                    // are untouched, so every subsequent face's indices
+                    // stay correct; the pole/ring nodes this triangle
+                    // referenced remain reachable via adjacent real fan
+                    // triangles (Mesh::validate has no orphan-vertex
+                    // obligation).
+                    //
+                    // Applies to every shape, not only spheres: any
+                    // exactly-zero-area triangle from any face is now
+                    // silently dropped. Safe — no consumer maps emitted
+                    // triangle indices back to OCCT face-local triangle
+                    // ordinals: `TessResult`/`Mesh` carry no per-triangle
+                    // face-id field, and GUI picking
+                    // (gui/src/viewport/selection.ts) resolves whole
+                    // objects, not triangles.
                     continue;
                 }
 

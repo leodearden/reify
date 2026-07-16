@@ -45,28 +45,6 @@ fn tessellate_sphere(tol: f64) -> reify_ir::Mesh {
 }
 
 // ---------------------------------------------------------------------------
-// Geometric helper — same (b-a) × (c-a) cross product as
-// `Mesh::check_contract`'s NonDegenerate obligation
-// (`crates/reify-ir/src/geometry.rs:2848-2861`), computed in f32 to
-// exactly mirror that obligation's arithmetic (it operates on
-// `mesh_vertex`'s `[f32; 3]` positions) and the producer's emit-time gate
-// in `occt_wrapper.cpp`. An exact-zero degeneracy check needs bit-identical
-// precision to the contract it verifies — unlike
-// `tessellation_winding_integration.rs`'s `tri_winding_normal`, which only
-// needs a correctly-signed direction and so uses f64.
-// ---------------------------------------------------------------------------
-
-fn tri_cross(pa: [f32; 3], pb: [f32; 3], pc: [f32; 3]) -> [f32; 3] {
-    let ab = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
-    let ac = [pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]];
-    [
-        ab[1] * ac[2] - ab[2] * ac[1],
-        ab[2] * ac[0] - ab[0] * ac[2],
-        ab[0] * ac[1] - ab[1] * ac[0],
-    ]
-}
-
-// ---------------------------------------------------------------------------
 // Test — no zero-area pole-seam triangles, at either deflection (step-1)
 // ---------------------------------------------------------------------------
 
@@ -93,46 +71,5 @@ fn tessellated_sphere_has_no_zero_area_pole_triangles() {
             0,
             "index count must be a multiple of 3 (deflection {deflection})"
         );
-
-        // Belt-and-suspenders: this per-triangle scan recomputes the exact
-        // same f32 (b-a)×(c-a) cross product `Mesh::check_contract`'s
-        // NonDegenerate obligation already evaluated inside `validate(0.0)`
-        // above, so it does not add independent coverage — a triangle fails
-        // here iff `validate(0.0)` would already have returned Err for it.
-        // Its value is a *localized* failure message (which triangle and
-        // which vertex indices are degenerate) instead of just a count.
-        let num_tris = mesh.indices.len() / 3;
-        for t in 0..num_tris {
-            let i0 = mesh.indices[t * 3] as usize;
-            let i1 = mesh.indices[t * 3 + 1] as usize;
-            let i2 = mesh.indices[t * 3 + 2] as usize;
-
-            let pa = [
-                mesh.vertices[i0 * 3],
-                mesh.vertices[i0 * 3 + 1],
-                mesh.vertices[i0 * 3 + 2],
-            ];
-            let pb = [
-                mesh.vertices[i1 * 3],
-                mesh.vertices[i1 * 3 + 1],
-                mesh.vertices[i1 * 3 + 2],
-            ];
-            let pc = [
-                mesh.vertices[i2 * 3],
-                mesh.vertices[i2 * 3 + 1],
-                mesh.vertices[i2 * 3 + 2],
-            ];
-
-            let cross = tri_cross(pa, pb, pc);
-            let twice_area =
-                (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
-
-            assert!(
-                twice_area > 0.0,
-                "triangle {t} (verts {i0},{i1},{i2}) at deflection {deflection} has \
-                 zero twice-area ({twice_area}); pole-seam triangles with coincident \
-                 corners must be dropped by the producer"
-            );
-        }
     }
 }
