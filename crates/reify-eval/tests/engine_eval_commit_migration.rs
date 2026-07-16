@@ -726,6 +726,7 @@ fn annotation_args_materialization_failure_cache_skip_audit() {
 ///   - `dp` (a `DeterminacyPredicate` directly on a defaulted Param) -> `Bool(true)`
 ///   - `s_det` (probe on a plain derived Let) -> `Bool(true)`
 ///   - `ro_det` (probe on a rejected-override, no-default Param) -> `Bool(false)`
+///
 /// This is a characterization guard that must stay green through the whole
 /// migration: cold and warm reach every cell through genuinely different
 /// code (confirmed by reading both call paths), so parity here proves the
