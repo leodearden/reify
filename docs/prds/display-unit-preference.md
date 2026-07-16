@@ -172,3 +172,70 @@ top of it — and **none of the five reads anything from `.ri` source**. The ann
 channel that would let source express a preference exists and is proven (a), but no
 `"display"` schema entry or downstream consumer exists yet. §3–§6 design the missing
 piece and the reconciliation; §7 files the leaves that build it.
+
+---
+
+## §3 — Source-level display-unit preference — surface decision
+
+**Candidates.**
+
+- **(A) `@display("L")` annotation** on `let`/`param`, carried by the existing
+  `Vec<Annotation>` decl channel (§2a) — parses today with zero grammar changes as
+  `Annotation { name: "display", args: [Expr::StringLit("L")], .. }`.
+- **(B) type-level syntax**, e.g. `let capacity : Volume in L` — a new `TypeExpr`
+  production coupling the dimension type to a display concern.
+
+**DECISION: (A), the `@display` annotation, is the primary source surface.**
+
+Rationale:
+- The channel already exists and is proven (§2a) — no parser/grammar change, no new
+  `TypeExpr` variant, no ripple into every place that pattern-matches on `TypeExpr`.
+- Display preference is a *metadata* concern, not a *structural* one. Two bindings
+  that are both `Volume` remain the same type regardless of which unit they render in
+  — keeping that in an annotation means type comparison, unification, and function
+  signatures never have to reason about a caller's display preference. (B) would
+  entangle the two: a `Volume` display-tagged `in L` and a `Volume` display-tagged
+  `in cm³` would need to either be the same `TypeExpr` (so the tag is decorative only,
+  weakening the case for new grammar in the first place) or different ones (so a
+  function accepting `Volume` would need to reconcile mismatched display tags at every
+  call site).
+- The annotation's single string argument matches a ladder rung's `label` (§2c)
+  directly — no new concept, just a new consumer of an existing `UnitOption.label`.
+
+**Annotation contract:**
+
+- **Name & registration:** `display`, registered in `crates/reify-compiler/src/annotations/schema.rs`'s
+  `SCHEMAS` (§2a) — a new `AnnotationSchema` entry alongside `@solver_hint`/`@shell`,
+  following the `reify_core::*_ANNOTATION` naming precedent (`TEST_ANNOTATION`,
+  `SOLVER_HINT_ANNOTATION`, `DEPRECATED_ANNOTATION`).
+- **Valid contexts:** `["param", "let"]` — matches `@solver_hint`'s exact param/let
+  subset (`schema.rs:161-170`); NOT valid on `structure`/`occurrence`/`function`/
+  `constraint_def`, since display preference is a per-binding-*value* concern, not a
+  declaration-kind concern.
+- **Arg shape:** exactly one required positional argument, `ArgType::String`,
+  `EvalTime::CompileConst` (the label is compared against a static registry, not a
+  runtime value). Enforced by a bespoke `arg_check: Some(check_display_args)` following
+  the `check_shell_args` precedent (§2a): match `ann.args.as_slice()`, push a
+  `Diagnostic` on mismatch.
+- **Diagnostics — two independent failure modes**, per the project convention that
+  parser-contract violations produce diagnostics rather than silently misbehaving:
+  1. **Shape violation** (wrong arg count/type, e.g. `@display(5)` or
+     `@display("L", "cm")`) — caught by `arg_check` at schema-validation time.
+     Severity Warning, matching every existing `arg_check` entry's
+     `on_extra: ExtraArgsPolicy::WarnIgnore` convention (a malformed `@display`
+     degrades to "ignored," falling through to the default rung, rather than aborting
+     compilation).
+  2. **Dimension mismatch** (well-formed but semantically wrong — `@display("L")` on a
+     `Length`-typed binding, or a label matching no rung in *any* dimension's ladder)
+     — this cannot be caught by `arg_check` (§2a caveat: no binding-type context
+     there). It is caught once the binding's dimension is resolved
+     (type-checking/dimension-resolution phase), as an **Error**-severity diagnostic —
+     unlike the shape case, there is no sensible "ignore and continue" for a display
+     unit that cannot apply to its own binding's dimension. The message names both the
+     offending label and the binding's actual dimension by name, mirroring
+     `docs/prds/money-dimension.md`'s dimension-mismatch-diagnostic rule (render
+     user-visible names, never raw exponent vectors).
+- **(B) is explicitly declined as the primary surface** but recorded as a possible
+  future ergonomic sugar — a `TypeExpr`-level shorthand that desugars to the same
+  `@display` annotation at parse time. Not designed further here and out of scope for
+  the leaves filed in §7.
