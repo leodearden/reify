@@ -7481,6 +7481,53 @@ impl Engine {
                                         // the source was never seeded (e.g. a
                                         // non-primitive parent), degrading
                                         // gracefully to the existing Discarded path.
+                                        //
+                                        // Robustness note (reviewer amendment,
+                                        // task #4636): the source `KernelHandle`
+                                        // built below assumes
+                                        // `kernel_id_for_registry_name(source_name)`
+                                        // equals the `op_kernel` the seed site
+                                        // (above, `record_solid_attribute`)
+                                        // recorded `pid`'s entry under — if
+                                        // those ever disagree for the same
+                                        // `pid`, `forward_solid_attribute_on_ingest`'s
+                                        // `table.lookup` silently misses,
+                                        // indistinguishable from a legitimately
+                                        // non-seeded parent (zero signal either
+                                        // way). `source_name` is always
+                                        // `stage_kernel.as_registry_name()` for
+                                        // a real `KernelId` drawn from
+                                        // `plan.conversions` above (never an
+                                        // arbitrary/unregistered string), and
+                                        // `KernelId::as_registry_name` /
+                                        // `from_registry_name` are documented
+                                        // exact inverses (reify-core
+                                        // `kernel.rs`) — so the debug_assert
+                                        // below pins that
+                                        // `kernel_id_for_registry_name`'s
+                                        // `unwrap_or(KernelId::Occt)` fallback
+                                        // never actually fires here. What it
+                                        // canNOT verify locally is the deeper
+                                        // half of the invariant: that the
+                                        // dispatcher's chosen `stage_kernel`
+                                        // for converting `pid` is the SAME
+                                        // kernel that originally produced/
+                                        // seeded `pid`. That correspondence is
+                                        // a property of the dispatcher's
+                                        // planning logic (`src/dispatcher.rs`),
+                                        // out of this loop's scope to assert —
+                                        // a future dispatcher change that
+                                        // planned a conversion stage against a
+                                        // different source kernel than the one
+                                        // that produced a given parent would
+                                        // still silently degrade this forward.
+                                        debug_assert!(
+                                            KernelId::from_registry_name(source_name).is_some(),
+                                            "conversion source kernel name {source_name:?} is not \
+                                             a registered KernelId — kernel_id_for_registry_name \
+                                             would silently fall back to KernelId::Occt here, \
+                                             degrading attribute forwarding below with zero signal",
+                                        );
                                         let mut forward_and_track = |target: KernelHandle| {
                                             if forward_solid_attribute_on_ingest(
                                                 topology_attribute_table,
