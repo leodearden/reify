@@ -906,6 +906,43 @@ fn external_pub_port_member_access_not_yet_supported_unchanged() {
     );
 }
 
+/// A default (non-`pub`) `let` nested inside a `port { }` block also
+/// compiles to `Visibility::Private` (entity.rs port-member `Let` arm), but
+/// `let`s are never externally addressable by name, so `port_member_is_priv`
+/// must NOT gate them — its `kind == ValueCellKind::Param` guard is what
+/// excludes them. Regression-guards that load-bearing guard
+/// (reviewer_comprehensive suggestion #1): if a future edit dropped the
+/// `kind == Param` check, this would start failing.
+#[test]
+fn external_priv_let_in_port_not_gated() {
+    let module = compile_source(
+        r#"
+trait Iface {}
+
+structure def PortLetHost {
+    port secret : Iface {
+        let internal : Length = 5mm
+    }
+}
+
+structure def Parent {
+    sub h = PortLetHost()
+    let touch = h.secret.internal
+}
+"#,
+    );
+
+    assert_eq!(
+        priv_access_errors(&module).len(),
+        0,
+        "external access to `h.secret.internal` (default, non-pub `let` inside a port) must \
+         NOT emit E_PRIV_MEMBER_ACCESS — `let`s default to Visibility::Private but are never \
+         externally addressable by name, so `port_member_is_priv`'s `kind == Param` guard must \
+         exclude them; all diagnostics: {:?}",
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
 /// Internal access to a structure's own `priv` port member — the bare
 /// `<port>.<member>` path (task #3978 δ, expr.rs:~3912), NOT
 /// `self.<port>.<member>` — stays ungated: priv hides members from OUTSIDE
@@ -1013,7 +1050,11 @@ fn external_priv_guarded_member_access_emits_error() {
     );
     assert!(priv_errs[0].message.contains("E_PRIV_MEMBER_ACCESS"));
     assert!(
-        priv_errs[0].message.contains('g'),
+        // Quoted full-token form (not a bare `contains('g')` substring check):
+        // a single unquoted character could incidentally match unrelated text
+        // in a reworded diagnostic (e.g. the 'g' in "GuardHost") and would not
+        // meaningfully pin the offending member's identity.
+        priv_errs[0].message.contains("'g'"),
         "diagnostic should name the offending member: {}",
         priv_errs[0].message
     );
@@ -1045,6 +1086,44 @@ fn external_pub_guarded_member_access_not_found_unchanged() {
         "external access to `h.vis` must still fail via E_STRUCTURE_MEMBER_NOT_FOUND \
          (pub guarded-member resolution is unchanged by task #5171); all \
          diagnostics: {:?}",
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+/// A default (non-`pub`) `let` nested inside a block-form `where cond { }`
+/// guarded group also compiles to `Visibility::Private`
+/// (guards.rs `compile_guarded_members`'s `Let` arm), but `let`s are never
+/// externally addressable by name, so `template_member_is_priv`'s
+/// `guarded_groups[].members` scan must NOT gate them — its
+/// `kind == ValueCellKind::Param` guard is what excludes them.
+/// Regression-guards that load-bearing guard (reviewer_comprehensive
+/// suggestion #1): if a future edit dropped the `kind == Param` check, this
+/// would start failing.
+#[test]
+fn external_priv_let_in_guarded_block_not_gated() {
+    let module = compile_source(
+        r#"
+structure def GuardLetHost {
+    param active : Bool = true
+    where active {
+        let internal : Length = 5mm
+    }
+}
+
+structure def Parent {
+    sub h = GuardLetHost()
+    let touch = h.internal
+}
+"#,
+    );
+
+    assert_eq!(
+        priv_access_errors(&module).len(),
+        0,
+        "external access to `h.internal` (default, non-pub `let` inside a guarded block) must \
+         NOT emit E_PRIV_MEMBER_ACCESS — `let`s default to Visibility::Private but are never \
+         externally addressable by name, so `template_member_is_priv`'s guarded_groups scan \
+         must exclude them via the `kind == Param` guard; all diagnostics: {:?}",
         module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
