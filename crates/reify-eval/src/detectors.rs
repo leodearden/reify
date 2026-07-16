@@ -167,8 +167,9 @@ impl DetectorRegistry {
 ///
 /// **Wording is duplicated, not shared**: the diagnostic wording above was
 /// copied from `engine_eval.rs:4662-4762`, not extracted into something
-/// both sides call. `mass_properties_psd_detector_messages_match_characterization_wording`
-/// (below) pins this detector's OWN wording as a plain regression check on
+/// both sides call. The wording-regression assertions folded into
+/// `mass_properties_psd_detector_flags_and_replaces_deterministically`
+/// (below) pin this detector's OWN wording as a plain regression check on
 /// its output — it is not a cross-file check (it never reads or executes
 /// `engine_eval.rs`), so it provides no protection against the two copies
 /// drifting apart, whether in wording, classification rules, or
@@ -670,6 +671,30 @@ mod tests {
             assert_eq!(key.0, Some(DiagnosticCode::DynamicsInertiaNotPSD));
         }
 
+        // Wording regression anchor (folded in from a former standalone
+        // test, per review: the same wording is produced here already, so a
+        // separate test restating it was redundant). Pins the malformed-
+        // and non-PSD-cell message text, originally copied from the
+        // characterization source this detector mirrors,
+        // `engine_eval.rs:4662-4762`. This asserts only on this detector's
+        // own output — it cannot catch a wording change made only on the
+        // `engine_eval.rs` side; see [`MassPropertiesPsdDetector`]'s doc
+        // comment for that drift-risk trade-off (deferred to task μ, #5062).
+        let run1_messages: Vec<&str> =
+            run1.diagnostics.iter().map(|d| d.message.as_str()).collect();
+        assert!(
+            run1_messages
+                .iter()
+                .any(|m| m.contains("inertia field cannot be parsed as a 3×3 numeric matrix")),
+            "detector's malformed-cell wording changed; got {run1_messages:?}"
+        );
+        assert!(
+            run1_messages.iter().any(|m| m.contains(
+                "inertia tensor is not positive semi-definite (min eigenvalue ≈ "
+            )),
+            "detector's non-PSD wording changed; got {run1_messages:?}"
+        );
+
         for run in [&run1, &run2] {
             // (a) identity = PSD → left untouched in both values and snapshot.
             assert_eq!(run.values.get(&identity_cell), Some(&identity_value));
@@ -771,57 +796,6 @@ mod tests {
         assert_eq!(
             state.snapshot_values.get(&plain_cell),
             Some(&(plain_value, DeterminacyState::Determined))
-        );
-    }
-
-    /// Pins this detector's own fixed diagnostic wording (excluding the
-    /// interpolated cell id and the non-PSD message's `{:.3e}`-formatted
-    /// eigenvalue, to avoid a fragile numeric-format premise) as a plain
-    /// regression check on this module's user-facing output — wording
-    /// originally copied from the characterization source it mirrors,
-    /// `engine_eval.rs:4662-4762`. This test calls only this detector and
-    /// asserts on its own output; it does not read or execute
-    /// `engine_eval.rs`, so it has no way to catch a wording change made
-    /// only on that side. See [`MassPropertiesPsdDetector`]'s doc comment
-    /// for that drift-risk trade-off (deferred to task μ).
-    #[test]
-    fn mass_properties_psd_detector_messages_match_characterization_wording() {
-        let malformed_cell = ValueCellId::new("BodyC", "mass_props");
-        let malformed_value = mass_properties(Some(Value::Matrix(vec![
-            vec![Value::Real(1.0), Value::Real(0.0)],
-            vec![Value::Real(0.0), Value::Real(1.0)],
-        ])));
-        let neg_eig_cell = ValueCellId::new("BodyB", "mass_props");
-        let neg_eig_value = mass_properties(Some(matrix3([
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [0.0, 0.0, -1.0],
-        ])));
-
-        let entries = [
-            (malformed_cell, malformed_value),
-            (neg_eig_cell, neg_eig_value),
-        ];
-        let mut state = OwnedState::seeded(&entries);
-        DetectorRegistry::with_builtins().run_all(&mut state.as_state());
-
-        let messages: Vec<&str> = state
-            .diagnostics
-            .iter()
-            .map(|d| d.message.as_str())
-            .collect();
-
-        assert!(
-            messages
-                .iter()
-                .any(|m| m.contains("inertia field cannot be parsed as a 3×3 numeric matrix")),
-            "detector's malformed-cell wording changed; got {messages:?}"
-        );
-        assert!(
-            messages.iter().any(|m| m.contains(
-                "inertia tensor is not positive semi-definite (min eigenvalue ≈ "
-            )),
-            "detector's non-PSD wording changed; got {messages:?}"
         );
     }
 
