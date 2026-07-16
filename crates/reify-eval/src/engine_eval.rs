@@ -4517,10 +4517,13 @@ impl Engine {
             // `eval_cached` driver mirrors this exact precompute + dispatch
             // shape via its own `dispatch_merged_cluster_solve_cached` (see
             // that call site, in the warm solver sub-pass below), closing the
-            // cold/warm fidelity divergence recorded at esc-5014-10 — the two
-            // sites dispatch identically but write back in their respective
-            // cold/warm leg shapes (see `dispatch_merged_cluster_solve_cached`'s
-            // doc for how the warm shape differs).
+            // cold/warm fidelity divergence recorded at esc-5014-10 for
+            // constraint-only clusters — the two sites dispatch identically
+            // but write back in their respective cold/warm leg shapes (see
+            // `dispatch_merged_cluster_solve_cached`'s doc for how the warm
+            // shape differs, and for the documented, permitted
+            // solve()/solve_ranked divergence objective-bearing clusters
+            // retain, design decision #4).
             //
             // Scope decision — W_SCOPE_COUPLING left as-is: the generic cycle
             // warning extended into `diagnostics` below (from
@@ -6378,7 +6381,10 @@ impl Engine {
         // solver sub-pass below can co-solve within-cap `MergedSolve` clusters
         // via `dispatch_merged_cluster_solve_cached` — exactly as the cold
         // `eval()` driver does via `dispatch_merged_cluster_solve` — closing
-        // the cold/warm fidelity divergence recorded at esc-5014-10.
+        // the cold/warm fidelity divergence recorded at esc-5014-10 for
+        // constraint-only clusters (objective-bearing clusters retain a
+        // documented, permitted solve()/solve_ranked divergence — see
+        // `dispatch_merged_cluster_solve_cached`'s doc, design decision #4).
         // `resolve_order_ordering_and_clusters` clears `coupling_diagnostics`
         // unconditionally, so this still never emits W_SCOPE_COUPLING /
         // W_COUPLING_APPROXIMATED (eval() alone owns that emission).
@@ -6392,9 +6398,13 @@ impl Engine {
         // regardless — it adds no new asymptotic cost tier, just extends
         // existing O(templates + read-edges) work already paid per keystroke.
         // Negligible for the single-digit-template modules this path targets
-        // today; if module sizes large enough to matter come into scope,
-        // consider caching the cluster set across cached evaluations keyed by
-        // structural module identity.
+        // today.
+        // TODO(#5224): if module sizes large enough to matter come into
+        // scope, cache the cluster set across cached evaluations keyed by
+        // structural module identity instead of recomputing it every warm
+        // call (tracked alongside that task's reverse-dependency-index
+        // follow-up — both are "warm state recomputed/reset every call
+        // instead of persisted" regressions from this task).
         let ro = crate::resolve_order::resolve_order_ordering_and_clusters(&module.templates);
 
         for template in &module.templates {
@@ -7668,7 +7678,10 @@ impl Engine {
     /// cluster from the `eval_cached` solver sub-pass, at the cluster's
     /// first `ro.order` member — mirrors the cold dispatch's
     /// cluster-precompute contract exactly (task #5118, closing the
-    /// cold/warm fidelity divergence recorded at esc-5014-10).
+    /// cold/warm fidelity divergence recorded at esc-5014-10 for
+    /// constraint-only clusters — see the solve-call comment below for the
+    /// documented, permitted solve()/solve_ranked divergence an
+    /// objective-bearing cluster retains).
     ///
     /// Write-back shape matches the WARM per-template arm above (not
     /// cold's): entries are recorded under the CALLER-supplied `version`

@@ -1472,7 +1472,11 @@ fn merged_cluster_skips_solver_when_every_auto_is_excluded() {
 
 // ---------------------------------------------------------------------------
 // task #5118: warm eval_cached() co-solves within-cap MergedSolve clusters,
-// closing the cold/warm fidelity divergence (esc-5014-10 Option A).
+// closing the cold/warm fidelity divergence (esc-5014-10 Option A) for
+// constraint-only clusters. Objective-bearing clusters retain a documented,
+// permitted solve()/solve_ranked divergence (design decision #4) — see
+// `eval_vs_eval_cached_merged_cluster_objective_cluster_may_diverge_by_solve_entrypoint`
+// further below.
 // ---------------------------------------------------------------------------
 
 /// `eval_cached()` (the warm LSP/GUI incremental path) must now merge the
