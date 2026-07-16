@@ -328,6 +328,17 @@ dimensions?
   `@display("L")`. Even if a later edit changed `length`/`width`/`height` so
   `capacity` became `0.0007 m³` or `0.7 m³`, the cell stays in liters (`"0.7 L"` /
   `"700 L"`) — auto-scaling never overrides an explicit pin to hop it to mL or m³.
+- **(e) The unpinned (rung-3) rule, stated once.** For a cell with no explicit pin
+  (rungs 1–2 both absent, so §6(1) falls through to rung 3), whether auto-scaling
+  actually engages depends on the dimension's default posture from (b) — one rule,
+  not two overlapping ones: a **default-ON** dimension (Length, Area, Volume)
+  rung-hops to keep the mantissa in-band, falling back to engineering notation (c) if
+  no rung fits; a **default-OFF** dimension (Mass, Pressure, Density) does not
+  rung-hop at all — it renders its static default rung's raw magnitude, full stop.
+  Engineering notation (c) does **not** apply to default-OFF dimensions either: (c) is
+  a fallback mode *within* the auto-scaling policy, and default-OFF dimensions have
+  that policy disabled by (b). This is the single rule §6(1)'s "auto-scaling only acts
+  at rung 3" cross-reference resolves to.
 
 ---
 
@@ -353,8 +364,10 @@ different rung in the GUI does not rewrite the `@display("L")` in source. Reload
 the file — or opening it in a different browser profile/machine without that
 `localStorage` entry — reverts the cell to the annotation's rung. If a binding carries
 no `@display`, the picker's own baseline is unchanged from today: the ladder default
-rung (rung 3). **Auto-scaling (§5) only acts at rung 3** — the instant rung 1 or rung
-2 pins an explicit unit, auto-scaling is suppressed (§5d).
+rung (rung 3). **Auto-scaling (§5) only acts at rung 3, and even there only for a
+default-ON dimension** — the instant rung 1 or rung 2 pins an explicit unit,
+auto-scaling is suppressed (§5d); at rung 3 itself, engagement is gated by the
+dimension's default posture (§5b, spelled out as one combined rule in §5e).
 
 ### (2) Formatter ownership
 
