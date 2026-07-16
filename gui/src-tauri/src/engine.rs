@@ -5569,6 +5569,20 @@ pub fn parse_value_string(s: &str) -> Result<Value, String> {
     Err(format!("Cannot parse value '{}'", s))
 }
 
+/// Reports whether `s` looks like a source identifier (`[A-Za-z_][A-Za-z0-9_]*`).
+///
+/// Used only by `format_expr` to decide how to pretty-print a string-literal
+/// `IndexAccess` key — a display heuristic, not a real disambiguation between
+/// member access and `Map<String, _>` lookup (see the `IndexAccess` arm).
+fn is_identifier_like(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 /// Format a compiled expression as a human-readable string.
 fn format_expr(expr: &reify_ir::CompiledExpr) -> String {
     use reify_ir::CompiledExprKind;
@@ -5678,12 +5692,23 @@ fn format_expr(expr: &reify_ir::CompiledExpr) -> String {
         }
         CompiledExprKind::IndexAccess { object, index } => {
             // Member access (`obj.member`) is lowered to `IndexAccess` with a
-            // string-literal index — recover the source-form dotted access.
-            // Real list/array indexing carries a non-string index and keeps
-            // the bracket form.
+            // string-literal index — recover the source-form dotted access,
+            // but only when the key looks like an identifier. A `Map` keyed
+            // by an arbitrary string (e.g. `config["max load"]`) compiles to
+            // the identical IR shape, so a non-identifier key falls back to
+            // the quoted bracket form instead of the syntactically-invalid
+            // `config.max load`. An identifier-shaped map key (e.g.
+            // `config["mode"]`) is still indistinguishable from real member
+            // access at this level and will render as `config.mode` — a
+            // known display-only limitation, not re-parsed.
             match &index.kind {
-                CompiledExprKind::Literal(reify_ir::Value::String(member)) => {
+                CompiledExprKind::Literal(reify_ir::Value::String(member))
+                    if is_identifier_like(member) =>
+                {
                     format!("{}.{}", format_expr(object), member)
+                }
+                CompiledExprKind::Literal(reify_ir::Value::String(member)) => {
+                    format!("{}[\"{}\"]", format_expr(object), member)
                 }
                 _ => format!("{}[{}]", format_expr(object), format_expr(index)),
             }
@@ -6593,11 +6618,14 @@ mod format_expr_tests {
     //!
     //! DSL-based integration tests (engine_tests.rs) exercise `format_expr`
     //! only indirectly, through full constraint strings. These inline tests
-    //! build `CompiledExpr` fixtures directly to pin two specific defects:
+    //! build `CompiledExpr` fixtures directly to pin three specific defects:
     //! (1) member access — lowered to `IndexAccess` with a string-literal
-    //! index — was rendering as `obj[index]` instead of `obj.index`; and
-    //! (2) unit-bearing literals were rendering with no space and the bare
-    //! "SI" fallback instead of a space plus the composed base-unit label.
+    //! index — was rendering as `obj[index]` instead of `obj.index`; (2)
+    //! unit-bearing literals were rendering with no space and the bare "SI"
+    //! fallback instead of a space plus the composed base-unit label; and
+    //! (3) a genuine `Map` lookup keyed by a non-identifier string (which
+    //! lowers to the same `IndexAccess` shape as member access) was
+    //! mis-rendered as invalid dotted syntax instead of a quoted bracket.
 
     use super::format_expr;
     use reify_core::{DimensionVector, Type, ValueCellId};
@@ -6628,6 +6656,33 @@ mod format_expr_tests {
         let expr = CompiledExpr::index_access(object, index, Type::dimensionless_scalar());
 
         assert_eq!(format_expr(&expr), "arr[0]");
+    }
+
+    /// A `Map<String, _>` lookup by a non-identifier key lowers to the same
+    /// `IndexAccess { index: Literal(String(..)) }` shape as member access,
+    /// but must not render as invalid dotted syntax (`config.max load`).
+    #[test]
+    fn index_access_with_non_identifier_string_key_keeps_quoted_bracket_form() {
+        let object = CompiledExpr::value_ref(
+            ValueCellId::new("config_1", "config"),
+            Type::dimensionless_scalar(),
+        );
+        let index = CompiledExpr::literal(Value::String("max load".to_string()), Type::String);
+        let expr = CompiledExpr::index_access(object, index, Type::dimensionless_scalar());
+
+        assert_eq!(format_expr(&expr), "config[\"max load\"]");
+    }
+
+    #[test]
+    fn index_access_with_empty_string_key_keeps_quoted_bracket_form() {
+        let object = CompiledExpr::value_ref(
+            ValueCellId::new("config_1", "config"),
+            Type::dimensionless_scalar(),
+        );
+        let index = CompiledExpr::literal(Value::String(String::new()), Type::String);
+        let expr = CompiledExpr::index_access(object, index, Type::dimensionless_scalar());
+
+        assert_eq!(format_expr(&expr), "config[\"\"]");
     }
 
     #[test]
