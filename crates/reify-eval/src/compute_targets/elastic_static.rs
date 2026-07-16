@@ -497,9 +497,9 @@ pub fn solve_elastic_static_trampoline(
     // fails to match and falls back to its stdlib default. That is a
     // structural, pattern-matching guarantee rather than a best-effort
     // convention, so `supports`/`options` degrade gracefully BY
-    // CONSTRUCTION and correctly sit outside the Result-ified gate; pinned
-    // by `validate_all_inputs_gate_does_not_panic_on_malformed_options_field`
-    // in the test module below.
+    // CONSTRUCTION and correctly sit outside the Result-ified gate; pinned by
+    // `validate_all_inputs_gate_does_not_panic_on_malformed_options_field`
+    // and `..._malformed_supports_field` in the test module below.
     macro_rules! gate_or_fail {
         ($result:expr, $arg:literal) => {
             match $result {
@@ -10223,31 +10223,18 @@ mod tests {
         let _ = anisotropic_material_from_value(&anisotropic_material(fields));
     }
 
-    // ── task 5087 (PRD compute-fea-hardening D9): top-level validate-all-inputs
-    // gate in `solve_elastic_static_trampoline` — replaces the panic-via-
-    // `FeaShimExt::fea_shim` behavior with a real `ComputeOutcome::Failed`
-    // diagnostic naming the offending arg. Each test below takes the
-    // shell9_* valid baseline (material/length/width/height/loads/supports/
-    // options) and swaps exactly one entry for a malformed `Value`, then
-    // calls the trampoline directly (no `catch_unwind`) and asserts it
-    // degrades gracefully instead of panicking.
-    //
-    // The gate (`gate_or_fail!`, defined above in this trampoline) binds each
-    // arg in order — material → length → width → height → loads — and
-    // returns on the first `Err` with an Error diagnostic naming the
-    // offending arg, instead of panicking via the old `.fea_shim()`
-    // (`.unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"))`)
-    // bridge, which no longer exists. ───────────────────────────────────────
+    // ── task 5087 (PRD compute-fea-hardening D9): validate-all-inputs gate ────
+    // tests. Mechanism (check order, no-panic diagnostic) is documented at
+    // the `gate_or_fail!` macro above — not restated here. Each test below
+    // takes the shell9_* valid baseline (material/length/width/height/loads/
+    // supports/options) and swaps exactly one entry for a malformed `Value`,
+    // then calls the trampoline directly (no `catch_unwind`) and asserts it
+    // degrades gracefully instead of panicking. ───────────────────────────
 
-    /// D9 review amendment (task #5087, suggestion 2): shared assertion for
-    /// the five single-malformed-arg tests below — each swaps exactly one
-    /// `value_inputs` slot for a malformed `Value` and expects
-    /// `ComputeOutcome::Failed` with an Error diagnostic naming
-    /// `expected_label`. Collapses what would otherwise be five (six,
-    /// counting the ordering test) copy-pasted trampoline-call + match +
-    /// panic blocks into one definition — mirrors why `gate_or_fail!` above
-    /// exists. Returns the diagnostics so a caller needing an extra pin
-    /// (the ordering test below) can inspect them further.
+    /// Shared assertion for the single-malformed-arg tests below: calls the
+    /// trampoline and expects `ComputeOutcome::Failed` with an Error
+    /// diagnostic naming `expected_label`. Returns the diagnostics so the
+    /// ordering test below can inspect them further.
     fn assert_gate_rejects(value_inputs: [Value; 7], expected_label: &str) -> Vec<Diagnostic> {
         let cancellation = CancellationHandle::new();
         let outcome =
@@ -10311,14 +10298,10 @@ mod tests {
         );
     }
 
-    /// D9 review amendment (task #5087, suggestion 2): `width` and `height`
-    /// are gated by the same `extract_scalar_si` call as `length` (just a
-    /// different `value_inputs` index and arg-label literal), but only
-    /// `length` had a dedicated malformed-input test. Because the gate's
-    /// arms are hand-written per arg, a copy-paste mistake giving the
-    /// `height` arm the string literal `"width"` (or vice versa) would go
-    /// uncaught without a test pinned to each label. [1] and [3] stay
-    /// well-formed scalars so only the `width` arm can fail.
+    /// `width` and `height` share `length`'s `extract_scalar_si` call (only
+    /// the index/label literal differ), so a copy-pasted label swap between
+    /// the two arms would go uncaught without a dedicated pin. [1] and [3]
+    /// stay well-formed scalars so only the `width` arm can fail.
     #[test]
     fn validate_all_inputs_gate_rejects_malformed_width() {
         assert_gate_rejects(
@@ -10335,10 +10318,9 @@ mod tests {
         );
     }
 
-    /// D9 review amendment (task #5087, suggestion 2): see
-    /// `validate_all_inputs_gate_rejects_malformed_width` — same rationale,
-    /// pinning the `height` arm's label. [1] and [2] stay well-formed
-    /// scalars so only the `height` arm can fail.
+    /// See `validate_all_inputs_gate_rejects_malformed_width` — same
+    /// rationale, pinning the `height` arm's label. [1] and [2] stay
+    /// well-formed scalars so only the `height` arm can fail.
     #[test]
     fn validate_all_inputs_gate_rejects_malformed_height() {
         assert_gate_rejects(
@@ -10447,6 +10429,50 @@ mod tests {
                 "a malformed-but-structurally-valid options field must degrade to the \
                  stdlib defaults and complete normally (not panic, not Failed), got \
                  {other:?}"
+            ),
+        }
+    }
+
+    /// Sibling to `..._malformed_options_field`: `supports` ([5]) is also
+    /// outside the gate (see the "Scope" comment above `gate_or_fail!`). A
+    /// `FixedSupport` with a malformed `target` field (`Value::Real`, not
+    /// the `Value::String`/`Value::List` that `any_support_targets` /
+    /// `target_node_set` each pattern-match on) fails both matches and
+    /// falls through to the same untargeted-support path already exercised
+    /// by every other test's no-target `shell9_make_supports()` baseline —
+    /// not a panic.
+    #[test]
+    fn validate_all_inputs_gate_does_not_panic_on_malformed_supports_field() {
+        let malformed_support_fields: PersistentMap<String, Value> =
+            [("target".to_string(), Value::Real(1.0))] // malformed: must be Value::String/List
+                .into_iter()
+                .collect();
+        let malformed_supports = Value::List(vec![Value::StructureInstance(Box::new(
+            StructureInstanceData {
+                type_id: StructureTypeId(u32::MAX),
+                type_name: "FixedSupport".to_string(),
+                version: 1,
+                fields: malformed_support_fields,
+            },
+        ))]);
+        let value_inputs = [
+            shell9_make_isotropic_material(205e9, 0.29),
+            shell9_make_len(0.1),
+            shell9_make_len(0.1),
+            shell9_make_len(0.1),
+            shell9_make_point_loads(1000.0),
+            malformed_supports,
+            shell9_make_options("Off"),
+        ];
+        let cancellation = CancellationHandle::new();
+        let outcome =
+            solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
+        match outcome {
+            ComputeOutcome::Completed { .. } => {}
+            other => panic!(
+                "a malformed-but-structurally-valid supports field must degrade to the \
+                 untargeted-support path and complete normally (not panic, not Failed), \
+                 got {other:?}"
             ),
         }
     }
