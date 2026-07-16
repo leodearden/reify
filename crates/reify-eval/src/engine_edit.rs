@@ -1140,6 +1140,17 @@ impl Engine {
                 // Completed pair now brackets the commit itself rather than the
                 // whole eval+mint walk (telemetry-only shift, not a correctness
                 // signal; see cell_commit.rs's `commit_cell_result` doc).
+                //
+                // Verified (reviewer amend, round 2): a repo-wide grep for
+                // `EventPayload::Duration` / `EventKind::Completed` readers
+                // (crates/ and gui/) found no dashboard, analysis, or
+                // latency-attribution code that consumes a per-node Completed
+                // Duration as an eval-cost signal — only tests assert the
+                // payload's variant, never its magnitude — so this shift has
+                // no live consumer to break today. If a future consumer wants
+                // the pre-commit eval+mint span, it must NOT read this
+                // Duration for that purpose; it would need its own Custom
+                // payload recorded before the commit_cell_result call.
                 let trace = extract_dependency_trace(expr);
                 let commit_outcome = commit_cell_result(
                     CommitLegs {
@@ -1822,6 +1833,34 @@ impl Engine {
                                 // cache leg (U1 in the task's site inventory)
                                 // — preserves the pre-δ behaviour of never
                                 // caching a post-wave2 active-member reseed.
+                                //
+                                // Perf tradeoff (reviewer amend, round 2): U1-U4
+                                // now each pay a Started+Completed journal pair
+                                // (2x Instant::now + 2x EventJournal::record,
+                                // i.e. a BTreeMap<Instant,_> insert plus a
+                                // NodeId clone into a HashMap<NodeId,_>) per
+                                // committed cell, where before there was a bare
+                                // insert at zero journal cost. U2/U4 scale with
+                                // collection/grow size; U1 here is bounded by
+                                // the same demanded dirty cone as the rest of
+                                // edit_param. This stays within the O(cone)/
+                                // O(seed)-not-O(graph), zero-kernel-call class
+                                // `edit_param_p0_latency_gate_bracket_width`
+                                // (unified_dag_edit_path.rs) already polices —
+                                // a larger constant factor per cell, not a new
+                                // complexity class. Suppressing the journal leg
+                                // on Skip was considered and rejected: it would
+                                // reopen the silent-provenance gap INV-EVAL-1 /
+                                // commit_cell_result exists to close, and the
+                                // `cache-skip=<reason>` marker it produces is
+                                // itself a tested, already-landed done-criterion
+                                // of this task (step-5/6's
+                                // `edit_param_unrecorded_sites_skip_cache_via_
+                                // primitive`). A genuine wall-clock regression
+                                // on bulk structural rebuilds would need a
+                                // dedicated edit_param benchmark — none exists
+                                // in-tree today — flagged as a possible
+                                // follow-up, not this migration's scope.
                                 commit_cell_result(
                                     CommitLegs {
                                         values: &mut values,
@@ -2068,6 +2107,10 @@ impl Engine {
                         // `self.cache.invalidate` on the old cells), so
                         // caching here would just go stale on the NEXT
                         // resize; this site has never cached these cells.
+                        // Per-cell journal-write cost: this loop is the
+                        // dominant O(instances × members) driver of the
+                        // perf tradeoff discussed at the U1 site above
+                        // (post-wave2 active-member reseed block).
                         commit_cell_result(
                             CommitLegs {
                                 values: &mut values,
@@ -2105,7 +2148,9 @@ impl Engine {
                     // synthetic aggregate is fully re-derived from the
                     // (already-committed) child cells on every structural
                     // resize, so it has never been an independently cached
-                    // node.
+                    // node. Per-cell journal-write cost: bounded by O(distinct
+                    // member names), not O(instances) — see the perf-tradeoff
+                    // note at the U1 site above for the shared rationale.
                     commit_cell_result(
                         CommitLegs {
                             values: &mut values,
@@ -2496,6 +2541,14 @@ impl Engine {
                             // brand-new to this snapshot generation (never
                             // cached before), and mirrors U1/U2/U3 in never
                             // caching a post-structural-grow reseed.
+                            // Per-cell journal-write cost: this loop scales
+                            // with grown_seed's size (O(grow) — see the
+                            // perf-tradeoff note at the U1 site above), and
+                            // for a demanded collection grow it re-processes
+                            // the SAME cells U2 just created (U4 runs after
+                            // and is the final writer), so its ctx capability
+                            // set (below) is exercised on every collection
+                            // grow, not just non-collection structural growth.
                             commit_cell_result(
                                 CommitLegs {
                                     values: &mut values,
