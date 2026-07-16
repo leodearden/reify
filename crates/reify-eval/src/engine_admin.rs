@@ -2236,8 +2236,11 @@ impl Engine {
     ///
     /// - After this call, `self.warm_pool.drain_events()` returns an empty Vec.
     /// - Each drained event is recorded on the journal with:
-    ///   - `version = VersionId(self.next_version_id.saturating_sub(1))` — the
-    ///     most recently assigned eval version (or 0 before the first eval).
+    ///   - `version = self.last_allocated_version()` — the most recently
+    ///     assigned eval version (`VersionId(0)` before the first eval; see
+    ///     `last_allocated_version()`'s doc for the panic-vs-saturate
+    ///     divergence from `current_eval_version()` that this site
+    ///     deliberately avoids).
     ///   - `timestamp = Instant::now()` at drain time.
     ///
     /// # Drain site
@@ -2250,7 +2253,7 @@ impl Engine {
     // G-allow: task #3541 (done)/#3582 (done) eval-boundary warm-pool→journal drain; consumer EngineSession::drain_and_emit_warm_pool_events (gui/src-tauri/src/engine.rs) landed with #3541 (done); remains an in-scope orphan BY DESIGN (audit scopes to crates/reify-*/src, excludes gui/ + tests/); steady-state pinned by tests/warm_pool_drain_steady_state.rs
     pub fn drain_and_record_warm_pool_events(&mut self) -> Vec<crate::warm_pool::WarmPoolEvent> {
         let events = self.warm_pool.drain_events();
-        let version = reify_core::VersionId(self.next_version_id.saturating_sub(1));
+        let version = self.last_allocated_version();
         let timestamp = std::time::Instant::now();
         for ev in &events {
             let eval_event =

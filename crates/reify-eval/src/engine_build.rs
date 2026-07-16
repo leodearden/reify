@@ -8908,8 +8908,19 @@ impl Engine {
     /// the read here means a future call site cannot accidentally use the wrong
     /// counter.
     ///
+    /// This is the eval-round reader half of the INV-BUILD-2 read-API family
+    /// (`allocate_snapshot_version` in engine_admin.rs is the write half —
+    /// task 5040 / α; [`crate::engine_admin`]'s `last_allocated_version()` is
+    /// the companion last-allocated reader — task 5047 / δ). It PANICS
+    /// before the first eval by design (`eval_state` unset) — it diverges
+    /// from `last_allocated_version()` ONLY pre-eval: that reader saturates
+    /// to `VersionId(0)` instead of panicking; post-eval both return the
+    /// same value (`eval()` stamps `eval_state.snapshot.version` with
+    /// exactly the version `allocate_snapshot_version` most recently
+    /// minted). See `last_allocated_version()` in engine_admin.rs.
+    ///
     /// Panics if `eval_state` is not yet populated.
-    fn current_eval_version(&self) -> VersionId {
+    pub(crate) fn current_eval_version(&self) -> VersionId {
         self.eval_state
             .as_ref()
             .expect("eval_state must be populated before reading current_eval_version")
