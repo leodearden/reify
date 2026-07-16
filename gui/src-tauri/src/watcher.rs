@@ -252,6 +252,20 @@ impl FileWatcher {
                     return;
                 }
 
+                // Only the `callback` invocation further down is isolated
+                // with `catch_unwind`. A hypothetical panic inside
+                // `drain_ready`/`next_wait` here (or in the poison-recovery
+                // closures used throughout this function) would NOT be
+                // caught: it would unwind and terminate this worker thread,
+                // and since nothing else drains the debouncer, every
+                // subsequent event would silently stop being delivered
+                // until `Drop` joins the dead thread and logs the failure.
+                // This asymmetry is accepted rather than also wrapped,
+                // because these are pure, simple operations over an
+                // in-memory map with no I/O (see `Debouncer`'s doc comment)
+                // -- unlike `callback`, which is arbitrary caller-provided
+                // code and is explicitly isolated below because it can do
+                // anything.
                 let now = Instant::now();
                 let ready = guard.drain_ready(now);
 
