@@ -280,3 +280,42 @@ dimension symbols (`kg·m^-1·s^-2`)?
   entries not in the initial curated set (Frequency, Voltage, Charge, Stiffness, …) —
   growing the curated set further is future ladder work, not a blocker for this PRD's
   leaves.
+
+---
+
+## §5 — Magnitude auto-scaling / engineering-notation policy
+
+**Question:** which defaults auto-scale — opt-in or default-on, and for which
+dimensions?
+
+- **(a) Per-dimension policy, sourced from the same registry (§4).** Each ladder
+  entry can declare whether auto-scaling across its rungs is enabled, and the target
+  magnitude band — conventionally `1 ≤ |mantissa| < 1000`, one SI-prefix step.
+- **(b) Default posture — split by whether the dimension's default rung is already
+  scaled:**
+  - **Default-ON** for the length-family dimensions with a full multi-rung ladder
+    already spanning that band: **Length, Area, Volume**. (**Angle is excluded** —
+    deg/rad is a discrete either/or choice, not a magnitude-driven rung ladder, so
+    auto-scaling has nothing to act on.)
+  - **Default-OFF / opt-in** for dimensions whose curated default is the bare SI base
+    unit: **Mass, Pressure, Density**. Auto-scaling these by default would mean a
+    value silently flips units as it crosses a magnitude threshold — e.g. `"2.5 kg"`
+    becoming `"2500 g"`, or a Pressure value hopping Pa→kPa→MPa→GPa — which is a
+    surprise for a value the author is used to seeing in one unit.
+  - This split is not arbitrary: it mirrors the ladder's *existing* default-rung
+    choices (§2c) — Length/Area/Volume already default to a scaled rung (mm/mm²/mm³);
+    Mass/Pressure/Density already default to the raw SI base rung. Auto-scaling's
+    default posture follows the same line the ladder already drew.
+- **(c) Engineering notation** (powers-of-3 exponent, e.g. rendering `4.2e-3` in a
+  `4.2×10⁻³`-style form) is the formatting **mode** used when auto-scaling is enabled
+  for a dimension but no ladder rung keeps the mantissa in-band (e.g. a Length small
+  enough that no rung — mm, cm, m, in — lands in `[1,1000)`). It is a fallback *within*
+  the auto-scaling policy, not a separate feature with its own on/off switch.
+- **(d) Interaction rule: an explicit unit pin suppresses auto-scaling.** Whenever a
+  unit is pinned explicitly — by `@display` (§3) or by the GUI picker (§6) — that pin
+  is authoritative and stable regardless of magnitude; auto-scaling only acts on a cell
+  with **no** explicit pin (i.e. one still showing its ladder's bare default rung).
+  Concrete tie-in to the G1 example (§1): `capacity` is pinned to `"L"` via
+  `@display("L")`. Even if a later edit changed `length`/`width`/`height` so
+  `capacity` became `0.0007 m³` or `0.7 m³`, the cell stays in liters (`"0.7 L"` /
+  `"700 L"`) — auto-scaling never overrides an explicit pin to hop it to mL or m³.
