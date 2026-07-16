@@ -484,6 +484,22 @@ pub fn solve_elastic_static_trampoline(
     // what would otherwise be five copy-pasted match/return arms (one per
     // arg) into a single definition so the arg label can never drift from a
     // copy-paste mistake.
+    //
+    // Scope (review amendment, suggestion 1): this gates exactly the 5 arms
+    // below (value_inputs[0..=4]) — the extractors D2/D7/D8 made `Result`-
+    // returning. `supports` ([5]) and `options` ([6]) are deliberately NOT
+    // run through `gate_or_fail!`: every reader of those two args further
+    // down (`extract_shell_route_params`, `extract_execution_params`,
+    // `extract_adaptive_params`, plus `any_support_targets` and
+    // `target_node_set`) reads each field via `if let Some(Value::X(_)) =
+    // data.fields.get(name)` / `match` / equality — never `.unwrap()` — so a
+    // malformed field VALUE (e.g. a non-`Real` `shell_threshold`) simply
+    // fails to match and falls back to its stdlib default. That is a
+    // structural, pattern-matching guarantee rather than a best-effort
+    // convention, so `supports`/`options` degrade gracefully BY
+    // CONSTRUCTION and correctly sit outside the Result-ified gate; pinned
+    // by `validate_all_inputs_gate_does_not_panic_on_malformed_options_field`
+    // in the test module below.
     macro_rules! gate_or_fail {
         ($result:expr, $arg:literal) => {
             match $result {
@@ -10223,20 +10239,16 @@ mod tests {
     // (`.unwrap_or_else(|e| panic!("solve_elastic_static_trampoline: {e}"))`)
     // bridge, which no longer exists. ───────────────────────────────────────
 
-    /// step-1 RED: a malformed `material` arg ([0] = `Value::Real`, not a
-    /// `StructureInstance`) must produce `ComputeOutcome::Failed` with an
-    /// Error diagnostic naming "material" — not panic.
-    #[test]
-    fn validate_all_inputs_gate_rejects_malformed_material() {
-        let value_inputs = [
-            Value::Real(1.0), // malformed: material must be a StructureInstance
-            shell9_make_len(0.1),
-            shell9_make_len(0.1),
-            shell9_make_len(0.1),
-            shell9_make_point_loads(1000.0),
-            shell9_make_supports(),
-            shell9_make_options("Off"),
-        ];
+    /// D9 review amendment (task #5087, suggestion 2): shared assertion for
+    /// the five single-malformed-arg tests below — each swaps exactly one
+    /// `value_inputs` slot for a malformed `Value` and expects
+    /// `ComputeOutcome::Failed` with an Error diagnostic naming
+    /// `expected_label`. Collapses what would otherwise be five (six,
+    /// counting the ordering test) copy-pasted trampoline-call + match +
+    /// panic blocks into one definition — mirrors why `gate_or_fail!` above
+    /// exists. Returns the diagnostics so a caller needing an extra pin
+    /// (the ordering test below) can inspect them further.
+    fn assert_gate_rejects(value_inputs: [Value; 7], expected_label: &str) -> Vec<Diagnostic> {
         let cancellation = CancellationHandle::new();
         let outcome =
             solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
@@ -10244,17 +10256,38 @@ mod tests {
             ComputeOutcome::Failed { diagnostics, .. } => {
                 assert!(
                     diagnostics.iter().any(|d| {
-                        d.severity == reify_core::Severity::Error && d.message.contains("material")
+                        d.severity == reify_core::Severity::Error
+                            && d.message.contains(expected_label)
                     }),
-                    "a malformed material arg must yield an Error diagnostic naming \
-                     \"material\", got {diagnostics:?}"
+                    "a malformed {expected_label} arg must yield an Error diagnostic \
+                     naming \"{expected_label}\", got {diagnostics:?}"
                 );
+                diagnostics
             }
             other => panic!(
-                "a malformed material arg must yield ComputeOutcome::Failed (not a \
-                 panic), got {other:?}"
+                "a malformed {expected_label} arg must yield ComputeOutcome::Failed (not \
+                 a panic), got {other:?}"
             ),
         }
+    }
+
+    /// step-1 RED: a malformed `material` arg ([0] = `Value::Real`, not a
+    /// `StructureInstance`) must produce `ComputeOutcome::Failed` with an
+    /// Error diagnostic naming "material" — not panic.
+    #[test]
+    fn validate_all_inputs_gate_rejects_malformed_material() {
+        assert_gate_rejects(
+            [
+                Value::Real(1.0), // malformed: material must be a StructureInstance
+                shell9_make_len(0.1),
+                shell9_make_len(0.1),
+                shell9_make_len(0.1),
+                shell9_make_point_loads(1000.0),
+                shell9_make_supports(),
+                shell9_make_options("Off"),
+            ],
+            "material",
+        );
     }
 
     /// step-1 RED: a malformed `length` arg ([1] = `Value::Real`, not a
@@ -10264,33 +10297,18 @@ mod tests {
     /// `Undef` AND [2] being a `List`) is not accidentally triggered.
     #[test]
     fn validate_all_inputs_gate_rejects_malformed_length() {
-        let value_inputs = [
-            shell9_make_isotropic_material(205e9, 0.29),
-            Value::Real(0.1), // malformed: length must be a Value::Scalar
-            shell9_make_len(0.1),
-            shell9_make_len(0.1),
-            shell9_make_point_loads(1000.0),
-            shell9_make_supports(),
-            shell9_make_options("Off"),
-        ];
-        let cancellation = CancellationHandle::new();
-        let outcome =
-            solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
-        match outcome {
-            ComputeOutcome::Failed { diagnostics, .. } => {
-                assert!(
-                    diagnostics.iter().any(|d| {
-                        d.severity == reify_core::Severity::Error && d.message.contains("length")
-                    }),
-                    "a malformed length arg must yield an Error diagnostic naming \
-                     \"length\", got {diagnostics:?}"
-                );
-            }
-            other => panic!(
-                "a malformed length arg must yield ComputeOutcome::Failed (not a \
-                 panic), got {other:?}"
-            ),
-        }
+        assert_gate_rejects(
+            [
+                shell9_make_isotropic_material(205e9, 0.29),
+                Value::Real(0.1), // malformed: length must be a Value::Scalar
+                shell9_make_len(0.1),
+                shell9_make_len(0.1),
+                shell9_make_point_loads(1000.0),
+                shell9_make_supports(),
+                shell9_make_options("Off"),
+            ],
+            "length",
+        );
     }
 
     /// D9 review amendment (task #5087, suggestion 2): `width` and `height`
@@ -10303,33 +10321,18 @@ mod tests {
     /// well-formed scalars so only the `width` arm can fail.
     #[test]
     fn validate_all_inputs_gate_rejects_malformed_width() {
-        let value_inputs = [
-            shell9_make_isotropic_material(205e9, 0.29),
-            shell9_make_len(0.1),
-            Value::Real(0.1), // malformed: width must be a Value::Scalar
-            shell9_make_len(0.1),
-            shell9_make_point_loads(1000.0),
-            shell9_make_supports(),
-            shell9_make_options("Off"),
-        ];
-        let cancellation = CancellationHandle::new();
-        let outcome =
-            solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
-        match outcome {
-            ComputeOutcome::Failed { diagnostics, .. } => {
-                assert!(
-                    diagnostics.iter().any(|d| {
-                        d.severity == reify_core::Severity::Error && d.message.contains("width")
-                    }),
-                    "a malformed width arg must yield an Error diagnostic naming \
-                     \"width\", got {diagnostics:?}"
-                );
-            }
-            other => panic!(
-                "a malformed width arg must yield ComputeOutcome::Failed (not a \
-                 panic), got {other:?}"
-            ),
-        }
+        assert_gate_rejects(
+            [
+                shell9_make_isotropic_material(205e9, 0.29),
+                shell9_make_len(0.1),
+                Value::Real(0.1), // malformed: width must be a Value::Scalar
+                shell9_make_len(0.1),
+                shell9_make_point_loads(1000.0),
+                shell9_make_supports(),
+                shell9_make_options("Off"),
+            ],
+            "width",
+        );
     }
 
     /// D9 review amendment (task #5087, suggestion 2): see
@@ -10338,33 +10341,18 @@ mod tests {
     /// scalars so only the `height` arm can fail.
     #[test]
     fn validate_all_inputs_gate_rejects_malformed_height() {
-        let value_inputs = [
-            shell9_make_isotropic_material(205e9, 0.29),
-            shell9_make_len(0.1),
-            shell9_make_len(0.1),
-            Value::Real(0.1), // malformed: height must be a Value::Scalar
-            shell9_make_point_loads(1000.0),
-            shell9_make_supports(),
-            shell9_make_options("Off"),
-        ];
-        let cancellation = CancellationHandle::new();
-        let outcome =
-            solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
-        match outcome {
-            ComputeOutcome::Failed { diagnostics, .. } => {
-                assert!(
-                    diagnostics.iter().any(|d| {
-                        d.severity == reify_core::Severity::Error && d.message.contains("height")
-                    }),
-                    "a malformed height arg must yield an Error diagnostic naming \
-                     \"height\", got {diagnostics:?}"
-                );
-            }
-            other => panic!(
-                "a malformed height arg must yield ComputeOutcome::Failed (not a \
-                 panic), got {other:?}"
-            ),
-        }
+        assert_gate_rejects(
+            [
+                shell9_make_isotropic_material(205e9, 0.29),
+                shell9_make_len(0.1),
+                shell9_make_len(0.1),
+                Value::Real(0.1), // malformed: height must be a Value::Scalar
+                shell9_make_point_loads(1000.0),
+                shell9_make_supports(),
+                shell9_make_options("Off"),
+            ],
+            "height",
+        );
     }
 
     /// step-1 RED: a malformed `loads` arg ([4] = `Value::Real`, not a
@@ -10372,33 +10360,18 @@ mod tests {
     /// diagnostic naming "loads" — not panic.
     #[test]
     fn validate_all_inputs_gate_rejects_malformed_loads() {
-        let value_inputs = [
-            shell9_make_isotropic_material(205e9, 0.29),
-            shell9_make_len(0.1),
-            shell9_make_len(0.1),
-            shell9_make_len(0.1),
-            Value::Real(1.0), // malformed: loads must be a Value::List
-            shell9_make_supports(),
-            shell9_make_options("Off"),
-        ];
-        let cancellation = CancellationHandle::new();
-        let outcome =
-            solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
-        match outcome {
-            ComputeOutcome::Failed { diagnostics, .. } => {
-                assert!(
-                    diagnostics.iter().any(|d| {
-                        d.severity == reify_core::Severity::Error && d.message.contains("loads")
-                    }),
-                    "a malformed loads arg must yield an Error diagnostic naming \
-                     \"loads\", got {diagnostics:?}"
-                );
-            }
-            other => panic!(
-                "a malformed loads arg must yield ComputeOutcome::Failed (not a \
-                 panic), got {other:?}"
-            ),
-        }
+        assert_gate_rejects(
+            [
+                shell9_make_isotropic_material(205e9, 0.29),
+                shell9_make_len(0.1),
+                shell9_make_len(0.1),
+                shell9_make_len(0.1),
+                Value::Real(1.0), // malformed: loads must be a Value::List
+                shell9_make_supports(),
+                shell9_make_options("Off"),
+            ],
+            "loads",
+        );
     }
 
     /// step-1 RED: when BOTH `material` ([0]) and `length` ([1]) are
@@ -10408,33 +10381,72 @@ mod tests {
     /// width → height → loads).
     #[test]
     fn validate_all_inputs_gate_reports_first_offending_arg_in_order() {
+        let diagnostics = assert_gate_rejects(
+            [
+                Value::Real(1.0), // malformed: material
+                Value::Real(1.0), // malformed: length
+                shell9_make_len(0.1),
+                shell9_make_len(0.1),
+                shell9_make_point_loads(1000.0),
+                shell9_make_supports(),
+                shell9_make_options("Off"),
+            ],
+            "material",
+        );
+        assert!(
+            diagnostics.iter().any(|d| {
+                d.severity == reify_core::Severity::Error
+                    && d.message.contains("material")
+                    && !d.message.contains("length")
+            }),
+            "when both material and length are malformed, the gate must name \
+             \"material\" (checked first) and not \"length\", got {diagnostics:?}"
+        );
+    }
+
+    /// D9 review amendment (task #5087, suggestion 1): the gate above only
+    /// covers material/length/width/height/loads — `options` ([6]) is read
+    /// later by `extract_shell_route_params`/`extract_execution_params`/
+    /// `extract_adaptive_params`, which fall back to stdlib defaults for any
+    /// field that fails to match its expected `Value` variant. Pin that a
+    /// *structurally valid* `ElasticOptions` instance with malformed field
+    /// VALUES (a non-`Enum` `shell_force`, a non-`Real` `shell_threshold` —
+    /// the review's own example) degrades to a normal `Completed` solve
+    /// instead of panicking: the residual hole the review flagged is not
+    /// actually reachable, because these extractors read every field via
+    /// `if let Some(Value::X(_)) = ...`, never `.unwrap()`.
+    #[test]
+    fn validate_all_inputs_gate_does_not_panic_on_malformed_options_field() {
+        let malformed_options_fields: PersistentMap<String, Value> = [
+            ("shell_force".to_string(), Value::Real(1.0)), // malformed: must be Value::Enum
+            ("shell_threshold".to_string(), Value::Bool(true)), // malformed: must be Value::Real
+        ]
+        .into_iter()
+        .collect();
+        let malformed_options = Value::StructureInstance(Box::new(StructureInstanceData {
+            type_id: StructureTypeId(u32::MAX),
+            type_name: "ElasticOptions".to_string(),
+            version: 1,
+            fields: malformed_options_fields,
+        }));
         let value_inputs = [
-            Value::Real(1.0), // malformed: material
-            Value::Real(1.0), // malformed: length
+            shell9_make_isotropic_material(205e9, 0.29),
+            shell9_make_len(0.1),
             shell9_make_len(0.1),
             shell9_make_len(0.1),
             shell9_make_point_loads(1000.0),
             shell9_make_supports(),
-            shell9_make_options("Off"),
+            malformed_options,
         ];
         let cancellation = CancellationHandle::new();
         let outcome =
             solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
         match outcome {
-            ComputeOutcome::Failed { diagnostics, .. } => {
-                assert!(
-                    diagnostics.iter().any(|d| {
-                        d.severity == reify_core::Severity::Error
-                            && d.message.contains("material")
-                            && !d.message.contains("length")
-                    }),
-                    "when both material and length are malformed, the gate must name \
-                     \"material\" (checked first) and not \"length\", got {diagnostics:?}"
-                );
-            }
+            ComputeOutcome::Completed { .. } => {}
             other => panic!(
-                "malformed material+length args must yield ComputeOutcome::Failed (not \
-                 a panic), got {other:?}"
+                "a malformed-but-structurally-valid options field must degrade to the \
+                 stdlib defaults and complete normally (not panic, not Failed), got \
+                 {other:?}"
             ),
         }
     }
