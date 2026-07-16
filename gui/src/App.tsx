@@ -1392,6 +1392,12 @@ const App: Component = () => {
 
     // Fetch the per-dimension display-unit ladders (task #5199). Tolerate
     // failure: an empty map means every cell keeps its static unit badge.
+    // Surface it as a toast, not just console.warn (task #5199 amend,
+    // reviewer_comprehensive graceful_degradation finding) — the ladders are
+    // fetched once on mount with no retry, so a silent console-only failure
+    // would leave the picker permanently unavailable for the whole session
+    // with no user-visible signal, mirroring how the other best-effort
+    // one-time subscriptions below report their own failures.
     try {
       const ladders = await bridgeGetUnitLadders();
       if (!alive) return;
@@ -1402,6 +1408,7 @@ const App: Component = () => {
       setUnitLadders(map);
     } catch (err) {
       console.warn('[unit-ladders] fetch failed:', err);
+      showToast('Unit ladders unavailable — parameters will show default units only', 'info');
     }
 
     // Subscribe to events before showing ready state — "ready" means
