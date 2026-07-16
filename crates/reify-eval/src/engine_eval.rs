@@ -6318,20 +6318,18 @@ impl Engine {
                             stats.cache_misses += 1;
                             self.cache.clear_dirty(&node_id);
 
-                            let start = Instant::now();
-                            self.journal.record(EvalEvent {
-                                timestamp: start,
-                                node_id: node_id.clone(),
-                                kind: EventKind::Started,
-                                version,
-                                payload: None,
-                            });
-
                             // Use cell_eval_ctx so DeterminacyPredicate cells (e.g.
                             // `let r = determined(x)`) see the determinacy map (task 4356).
                             let val = reify_expr::eval_expr(
                                 expr,
-                                &self.cell_eval_ctx(&values, &snapshot_values, &runtime_sink),
+                                &cell_eval_ctx(
+                                    &values,
+                                    &self.functions,
+                                    &self.meta_map,
+                                    &snapshot_values,
+                                    &runtime_sink,
+                                    self,
+                                ),
                             );
 
                             // R3d (#4900): if eval returned Undef, try in-walk symbolic mint
@@ -6374,33 +6372,29 @@ impl Engine {
                                 .cloned()
                                 .expect("sorted_combined ⊆ combined_traces.keys() by construction");
 
-                            let cached_result =
-                                CachedResult::Value(val.clone(), DeterminacyState::Determined);
-                            let outcome = self.cache.record_evaluation(
-                                node_id.clone(),
-                                cached_result,
-                                version,
+                            let commit_outcome = commit_cell_result(
+                                CommitLegs {
+                                    values: &mut values,
+                                    snapshot_values: &mut snapshot_values,
+                                    cache: &mut self.cache,
+                                    journal: &mut self.journal,
+                                },
+                                cell.id.clone(),
+                                val,
+                                DeterminacyRule::UnconditionalDetermined,
+                                TraceSource::CachedServe,
                                 trace,
-                            );
-
-                            self.journal.record(EvalEvent {
-                                timestamp: Instant::now(),
-                                node_id,
-                                kind: EventKind::Completed { outcome },
                                 version,
-                                payload: Some(EventPayload::Duration(start.elapsed())),
-                            });
+                                CacheLeg::Record,
+                            );
+                            let outcome = commit_outcome
+                                .cache_outcome()
+                                .expect("CacheLeg::Record always yields Some(outcome)");
 
                             if outcome == EvalOutcome::Unchanged {
                                 stats.early_cutoffs += 1;
                                 self.cache.clear_dependents_dirty(&cell.id);
                             }
-
-                            snapshot_values.insert(
-                                cell.id.clone(),
-                                (val.clone(), DeterminacyState::Determined),
-                            );
-                            values.insert(cell.id.clone(), val);
                         }
 
                         _ => {}
@@ -6645,27 +6639,33 @@ impl Engine {
                                 for (node_id, expr) in nodes_to_reeval {
                                     let val = reify_expr::eval_expr(
                                         &expr,
-                                        &self.cell_eval_ctx(
+                                        &cell_eval_ctx(
                                             &values,
+                                            &self.functions,
+                                            &self.meta_map,
                                             &snapshot_values,
                                             &runtime_sink,
+                                            self,
                                         ),
                                     );
-                                    if let NodeId::Value(vcid) = &node_id {
-                                        values.insert(vcid.clone(), val.clone());
-                                        snapshot_values.insert(
-                                            vcid.clone(),
-                                            (val.clone(), DeterminacyState::Determined),
-                                        );
-                                    }
+                                    let NodeId::Value(vcid) = &node_id else {
+                                        continue;
+                                    };
                                     let trace = extract_dependency_trace(&expr);
-                                    let cached_result =
-                                        CachedResult::Value(val, DeterminacyState::Determined);
-                                    self.cache.record_evaluation(
-                                        node_id,
-                                        cached_result,
-                                        version,
+                                    commit_cell_result(
+                                        CommitLegs {
+                                            values: &mut values,
+                                            snapshot_values: &mut snapshot_values,
+                                            cache: &mut self.cache,
+                                            journal: &mut self.journal,
+                                        },
+                                        vcid.clone(),
+                                        val,
+                                        DeterminacyRule::UnconditionalDetermined,
+                                        TraceSource::ConeReeval,
                                         trace,
+                                        version,
+                                        CacheLeg::Record,
                                     );
                                 }
                             }
