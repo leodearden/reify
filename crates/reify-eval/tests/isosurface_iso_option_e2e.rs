@@ -6,19 +6,19 @@
 //! measurably changes the surfaced mesh END-TO-END, guarding PRD D4's
 //! options-threading path against the C-10 "declared-but-unexercised" shape.
 //!
-//! Three tests build a narrow-band 20mm-box fixture with distinct `iso:`
-//! values:
+//! Three tests build a narrow-band 20mm-box fixture (via the shared
+//! `iso_source` template, so the fixture shape is single-sourced) with
+//! distinct `iso:` values:
 //!
 //! - `iso_option_changes_surfaced_mesh`: the options-threading proof
 //!   itself. Two IN-BAND, non-empty builds (`iso: 0mm` vs `iso: 3mm`) must
-//!   differ in triangle count or bounding box (see [`ShellStats`] for why
-//!   that's a disjunction, not two hard asserts) — agreement on both would
-//!   mean `iso:` never reached marching cubes. A third leg (`iso:` omitted
-//!   entirely) must match the explicit `iso: 0mm` build's triangle count
-//!   EXACTLY, pinning the "omitted == `iso: 0mm`" equivalence that no other
-//!   test exercises (`voxel_to_mesh_e2e.rs` only ever builds the
-//!   no-argument form). Bbox is intentionally NOT compared there with exact
-//!   equality — see that test's doc comment.
+//!   differ in triangle count — agreement would mean `iso:` never reached
+//!   marching cubes. A third leg (`iso:` omitted entirely) must match the
+//!   explicit `iso: 0mm` build's triangle count EXACTLY, pinning the
+//!   "omitted == `iso: 0mm`" equivalence that no other test exercises
+//!   (`voxel_to_mesh_e2e.rs` only ever builds the no-argument form).
+//!   Triangle count is the only comparison signal in this file — see that
+//!   test's doc comment for why bounding box isn't used.
 //! - `iso_option_out_of_band_surfaces_empty_mesh`: a SEPARATE regression
 //!   guard for `realize_mesh_from_voxel_with_options`'s documented
 //!   `Ok(empty)` no-crossing contract, kept apart so a future legitimate
@@ -66,46 +66,25 @@ extern crate reify_kernel_occt as _;
 extern crate reify_kernel_openvdb as _;
 
 /// Terminal-mesh aggregate signal returned by [`surface_shell_stats`]: a
-/// triangle count plus an axis-aligned bounding box. Triangle count alone is
-/// a PROXY for "the surfaced mesh changed" — two genuinely distinct
-/// isocontours could in principle marching-cubes to the same triangle count
-/// while differing in vertex positions. The bounding box tracks actual
-/// vertex POSITIONS (independent of triangulation structure), so
-/// `iso_option_changes_surfaced_mesh` treats "differs" as EITHER signal
-/// disagreeing (a disjunction, not two independent hard asserts) so a
-/// coincidental equal-triangle-count case still passes via the bbox
-/// fallback instead of flaking.
+/// triangle count. Triangle count is a PROXY for "the surfaced mesh
+/// changed" — two genuinely distinct isocontours could in principle
+/// marching-cubes to the same triangle count while differing in vertex
+/// positions. A bounding-box fallback was considered to close that gap but
+/// deliberately dropped: comparing vertex positions across two
+/// INDEPENDENTLY-CONSTRUCTED engines (as every test in this file does)
+/// would trade that gap for a cross-build floating-point determinism
+/// assumption this file declines to make (see
+/// `iso_option_changes_surfaced_mesh`'s doc comment). Triangle count is
+/// therefore the sole comparison signal throughout this file.
 #[cfg(has_openvdb)]
 #[derive(Debug, Clone)]
 struct ShellStats {
     triangle_count: usize,
-    /// `(min, max)` corner of the mesh's vertex positions, or `None` for an
-    /// empty mesh (no vertices to bound).
-    bbox: Option<([f32; 3], [f32; 3])>,
     /// `message` of each `Severity::Error` diagnostic from the build, if
     /// any. Populated (not asserted on) by `surface_shell_stats` so each
     /// call site can assert with a message tied to its own context — see
     /// `assert_no_build_errors` and `iso_option_out_of_band_surfaces_empty_mesh`.
     error_diagnostics: Vec<String>,
-}
-
-/// Axis-aligned bounding box of a flat `[x0, y0, z0, x1, y1, z1, ...]`
-/// vertex buffer (`Mesh::vertices`'s layout), or `None` if `vertices` is
-/// empty.
-#[cfg(has_openvdb)]
-fn bbox_of(vertices: &[f32]) -> Option<([f32; 3], [f32; 3])> {
-    if vertices.is_empty() {
-        return None;
-    }
-    let mut min = [f32::INFINITY; 3];
-    let mut max = [f32::NEG_INFINITY; 3];
-    for v in vertices.chunks_exact(3) {
-        for (i, &c) in v.iter().enumerate() {
-            min[i] = min[i].min(c);
-            max[i] = max[i].max(c);
-        }
-    }
-    Some((min, max))
 }
 
 /// Returns `true` (and the caller should proceed) if OCCT is available;
@@ -217,7 +196,6 @@ fn surface_shell_stats(source: &str, entity: &str) -> ShellStats {
 
     ShellStats {
         triangle_count: terminal_mesh.mesh.indices.len() / 3,
-        bbox: bbox_of(&terminal_mesh.mesh.vertices),
         error_diagnostics,
     }
 }
@@ -239,26 +217,37 @@ fn assert_no_build_errors(stats: &ShellStats, entity: &str) {
     );
 }
 
-/// Two IN-BAND, non-empty builds (`iso: 0mm` vs `iso: 3mm`, byte-identical
-/// sources otherwise) must differ in triangle count or bounding box (see
-/// [`ShellStats`] for why that's a disjunction). Comparing two non-empty
+/// Builds the shared `IsoKnob` fixture source (`param size: Length = 20mm`,
+/// a `box(size, size, size)` solid, `isosurface(solid<arg>)`), varying only
+/// the `iso:` argument text — e.g. `", iso: 3mm"`, `", iso: 0mm"`, or `""`
+/// to omit `iso:` entirely. Single-sources the fixture shape so a future
+/// edit (e.g. the box size) can't drift out of sync across call sites.
+#[cfg(has_openvdb)]
+fn iso_source(arg: &str) -> String {
+    format!(
+        "structure IsoKnob {{ param size: Length = 20mm  let solid = box(size, size, size)  let shell = isosurface(solid{arg}) }}"
+    )
+}
+
+/// Two IN-BAND, non-empty builds (`iso: 0mm` vs `iso: 3mm`, generated from
+/// the shared [`iso_source`] template so they're identical apart from the
+/// `iso:` argument) must differ in triangle count. Comparing two non-empty
 /// results — rather than non-empty vs empty — is the stronger proof: since
 /// neither can collapse to empty, a difference can only mean `iso:`
 /// genuinely moved the isocontour, not that a build merely fell outside the
-/// narrow band.
+/// narrow band. Triangle count is the only signal compared here: vertex
+/// positions are `f32`s produced by two INDEPENDENTLY-CONSTRUCTED engines,
+/// so comparing them (e.g. a bounding box) would encode a cross-build
+/// floating-point determinism assumption this proof doesn't need to make
+/// (see [`ShellStats`]'s doc comment).
 ///
 /// A third source OMITS `iso:` entirely and must match the explicit
 /// `iso: 0mm` build's triangle count EXACTLY — pinning the "omitted ==
 /// `iso: 0mm`" equivalence, which no other test exercises
-/// (`voxel_to_mesh_e2e.rs` only ever builds the no-argument form). Bbox is
-/// deliberately NOT compared here with exact equality: unlike
-/// `triangle_count` (integer topology), vertex positions are `f32`s
-/// produced by two INDEPENDENTLY-CONSTRUCTED engines, so an exact-equality
-/// assertion would encode a cross-build floating-point determinism
-/// assumption this proof doesn't need — the identical-`GeometryOp`
-/// argument (see the assertion site below) already guarantees both builds
-/// are the same computation, and the triangle-count exact-match alone pins
-/// the equivalence.
+/// (`voxel_to_mesh_e2e.rs` only ever builds the no-argument form). The
+/// identical-`GeometryOp` argument (see the assertion site below) already
+/// guarantees both builds are the same computation, so the triangle-count
+/// exact-match alone pins the equivalence.
 ///
 /// See `iso_option_out_of_band_surfaces_empty_mesh` for the separate
 /// `Ok(empty)` contract guard.
@@ -269,13 +258,13 @@ fn iso_option_changes_surfaced_mesh() {
         return;
     }
 
-    let source_zero = "structure IsoKnob { param size: Length = 20mm  let solid = box(size, size, size)  let shell = isosurface(solid, iso: 0mm) }";
-    let source_inband = "structure IsoKnob { param size: Length = 20mm  let solid = box(size, size, size)  let shell = isosurface(solid, iso: 3mm) }";
-    let source_omitted = "structure IsoKnob { param size: Length = 20mm  let solid = box(size, size, size)  let shell = isosurface(solid) }";
+    let source_zero = iso_source(", iso: 0mm");
+    let source_inband = iso_source(", iso: 3mm");
+    let source_omitted = iso_source("");
 
-    let zero = surface_shell_stats(source_zero, "IsoKnob");
-    let inband = surface_shell_stats(source_inband, "IsoKnob");
-    let omitted = surface_shell_stats(source_omitted, "IsoKnob");
+    let zero = surface_shell_stats(&source_zero, "IsoKnob");
+    let inband = surface_shell_stats(&source_inband, "IsoKnob");
+    let omitted = surface_shell_stats(&source_omitted, "IsoKnob");
     assert_no_build_errors(&zero, "IsoKnob");
     assert_no_build_errors(&inband, "IsoKnob");
     assert_no_build_errors(&omitted, "IsoKnob");
@@ -307,28 +296,15 @@ fn iso_option_changes_surfaced_mesh() {
          got {} (no `iso:` argument) vs {} (`iso: 0mm`)",
         omitted.triangle_count, zero.triangle_count
     );
-    // bbox is deliberately NOT asserted exactly-equal here (unlike
-    // triangle_count above): `omitted` and `zero` come from two
-    // INDEPENDENTLY-CONSTRUCTED engines, so an exact f32 equality across
-    // builds would encode a cross-engine floating-point determinism
-    // assumption this proof doesn't need to make. The triangle-count
-    // exact-match above already pins the "omitted == `iso: 0mm`"
-    // equivalence (see this test's doc comment).
-    // Disjunction, not two independent hard asserts — see ShellStats for why.
-    let triangle_counts_differ = zero.triangle_count != inband.triangle_count;
-    let bboxes_differ = zero.bbox != inband.bbox;
-    assert!(
-        triangle_counts_differ || bboxes_differ,
+    assert_ne!(
+        zero.triangle_count, inband.triangle_count,
         "iso: 0mm and iso: 3mm — both IN-BAND and both non-empty — must \
-         surface a DIFFERENT mesh: either a different triangle count or a \
-         different bounding box. This disjunction IS the options-threading \
+         surface a DIFFERENT triangle count. This IS the options-threading \
          proof, driven by a genuine isocontour shift rather than by either \
          build collapsing to empty, and it holds for ANY live `iso:` \
-         regardless of the exact narrow-band width; agreement on BOTH \
-         signals (triangle counts {} == {}, bboxes {:?} == {:?}) means the \
-         `iso:` option never reached marching cubes (D4 options-threading \
-         collapsed to default)",
-        zero.triangle_count, inband.triangle_count, zero.bbox, inband.bbox
+         regardless of the exact narrow-band width; equal counts would mean \
+         the `iso:` option never reached marching cubes (D4 \
+         options-threading collapsed to default)"
     );
 }
 
@@ -355,8 +331,8 @@ fn iso_option_out_of_band_surfaces_empty_mesh() {
         return;
     }
 
-    let source_outband = "structure IsoKnob { param size: Length = 20mm  let solid = box(size, size, size)  let shell = isosurface(solid, iso: 10m) }";
-    let outband = surface_shell_stats(source_outband, "IsoKnob");
+    let source_outband = iso_source(", iso: 10m");
+    let outband = surface_shell_stats(&source_outband, "IsoKnob");
 
     // Inspected directly here (not via assert_no_build_errors) so that if a
     // future change makes an out-of-band iso: emit an error diagnostic
@@ -380,8 +356,8 @@ fn iso_option_out_of_band_surfaces_empty_mesh() {
     // while still catching a genuine options-threading regression — see the
     // doc comment above.
     if outband.triangle_count != 0 {
-        let source_inband = "structure IsoKnob { param size: Length = 20mm  let solid = box(size, size, size)  let shell = isosurface(solid, iso: 3mm) }";
-        let inband = surface_shell_stats(source_inband, "IsoKnob");
+        let source_inband = iso_source(", iso: 3mm");
+        let inband = surface_shell_stats(&source_inband, "IsoKnob");
         assert!(
             outband.triangle_count < inband.triangle_count,
             "iso: 10m must surface either an EMPTY mesh (the documented \
