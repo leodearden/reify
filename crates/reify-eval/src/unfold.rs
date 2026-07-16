@@ -403,6 +403,18 @@ fn elaborate_child_params_only(
 
         child_values.insert(cell.id.clone(), val.clone());
 
+        // Provenance: `TraceSource::GuardedGroup` is the PRD-ratified tag for
+        // this site, not a placeholder pick. `cell_commit.rs`'s enum doc
+        // glosses the variant as "the GuardedParamCtx family" (engine_eval.rs's
+        // guarded-group param cells, leaf γ) — but the source PRD
+        // (`docs/prds/v0_6/eval-cell-commit-substrate.md` §0 and §8 leaf ε)
+        // names the two paths as one bundle throughout ("...four live eval
+        // paths (eval, eval_cached, edit_param, guarded-group/unfold)"; "ε ...
+        // migrate unfold.rs guarded-group/unfold site"): this recursive-unfold
+        // path IS the guarded-group provenance category by design, sharing the
+        // slug with γ's engine_eval.rs sites rather than needing a dedicated
+        // variant. A future §2.6 divergence audit reading "guarded-group"
+        // should expect commits from both producers.
         commit_cell_result(
             CommitLegs {
                 values,
@@ -647,6 +659,10 @@ fn elaborate_child_lets_only<'t>(
             "child_let_traces",
         );
 
+        // Provenance: same PRD-ratified `TraceSource::GuardedGroup` slug as
+        // the Site 1 commit in `elaborate_child_params_only` above — see the
+        // provenance note there for why this is the intended tag, not a
+        // stand-in for a missing dedicated variant.
         commit_cell_result(
             CommitLegs {
                 values,
