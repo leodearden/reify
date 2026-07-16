@@ -598,6 +598,30 @@ impl OcctKernel {
         }
     }
 
+    /// Debug-only invariant guard shared by `extract_edges`/`extract_faces`/
+    /// `extract_vertices`: asserts that `h`, just returned from
+    /// `store_with_repr`, really did get a strictly fresh id (never reused).
+    ///
+    /// This protects `warm_state()`'s bounded-payload filter (see its
+    /// "Bounded payload" note): the filter treats every `parent_handle` key
+    /// as a derived, rebuildable sub-shape id and drops it from persisted
+    /// state. That's only safe because `store_with_repr` mints ids by
+    /// fetch-and-increment on `next_id` and never reuses one, so a
+    /// root/persistent handle id can never end up back here as `h.id.0`.
+    /// Assert that freshness explicitly so a future change that breaks it
+    /// (e.g. a `store_with_repr` that interns/reuses ids) fails loudly here
+    /// instead of silently making the filter drop real root data.
+    fn debug_assert_fresh_id(&self, h: &GeometryHandle) {
+        debug_assert_eq!(
+            h.id.0,
+            self.next_id - 1,
+            "store_with_repr must mint a strictly fresh id; a non-fresh \
+             id here could alias an existing root/persistent handle and \
+             make warm_state()'s parent_handle filter silently drop real \
+             root data"
+        );
+    }
+
     /// Look up a shape by handle ID.
     fn get_shape(&self, id: GeometryHandleId) -> Result<&ffi::ffi::OcctShape, GeometryError> {
         let ptr = self
@@ -666,6 +690,10 @@ impl OcctKernel {
         let mut ids = Vec::with_capacity(materialized.len());
         for sub in materialized {
             let h = self.store_with_repr(sub, BRepKind::Edge);
+            // Defensive invariant guard; see `debug_assert_fresh_id` doc for
+            // rationale (protects warm_state()'s parent_handle-keyed
+            // bounded-payload filter).
+            self.debug_assert_fresh_id(&h);
             // Record provenance so `OwnerBody(child)` can answer
             // "what body did this edge come from?" without re-extraction.
             self.parent_handle.insert(h.id.0, handle);
@@ -709,6 +737,10 @@ impl OcctKernel {
         let mut ids = Vec::with_capacity(materialized.len());
         for sub in materialized {
             let h = self.store_with_repr(sub, BRepKind::Face);
+            // Defensive invariant guard; see `debug_assert_fresh_id` doc for
+            // rationale (protects warm_state()'s parent_handle-keyed
+            // bounded-payload filter).
+            self.debug_assert_fresh_id(&h);
             // Record provenance — sister to `extract_edges`. See
             // `parent_handle` field doc for the design contract.
             self.parent_handle.insert(h.id.0, handle);
@@ -764,6 +796,10 @@ impl OcctKernel {
         let mut ids = Vec::with_capacity(materialized.len());
         for sub in materialized {
             let h = self.store_with_repr(sub, BRepKind::Vertex);
+            // Defensive invariant guard; see `debug_assert_fresh_id` doc for
+            // rationale (protects warm_state()'s parent_handle-keyed
+            // bounded-payload filter).
+            self.debug_assert_fresh_id(&h);
             // Record provenance so `OwnerBody(child)` can answer
             // "what body did this vertex come from?" without re-extraction.
             self.parent_handle.insert(h.id.0, handle);
@@ -4118,43 +4154,96 @@ impl WarmStartable for OcctKernel {
         // persist/clear/runtime classification here instead of being
         // silently omitted from warm-start state.
         //   PERSIST (serialized into OcctWarmState): shapes, reprs, next_id
+        //     — excluding ids that are keys in parent_handle (see below)
         //   CLEAR-on-restore (derived provenance, rebuilt by extract_*;
         //     see with_warm_state): extracted_edges, extracted_faces,
         //     extracted_vertices, parent_handle
         //   RUNTIME-only (not part of warm-start state): last_warm_start_failures
         //
-        // Accepted bloat: `shapes` is persisted wholesale below, which
-        // includes sub-shape blobs previously minted by extract_edges/
-        // extract_faces/extract_vertices (ids that appear as values in
-        // extracted_* / keys in parent_handle). Since parent_handle and the
-        // extracted_* caches are CLEAR-on-restore, those blobs round-trip as
-        // ordinary shapes/reprs entries but come out orphaned on the
+        // Bounded payload: `shapes` is persisted below, but ids that are
+        // keys in `parent_handle` are skipped. Those ids name sub-shape
+        // blobs previously minted by extract_edges/extract_faces/
+        // extract_vertices; since parent_handle and the extracted_* caches
+        // are CLEAR-on-restore, a serialized sub-shape would round-trip as
+        // an ordinary shapes/reprs entry but come out orphaned on the
         // consumer side: still queryable by id (repr_of, Volume, ...) but
         // unreachable via OwnerBody and never reused by a later extract_*
-        // call, which mints fresh ids against the cleared cache. Across
-        // repeated warm-start cycles this is unbounded, not just
-        // single-cycle bloat: each cycle serializes prior orphans, restores
-        // them, and the next extract_* mints yet more fresh ids on top of
-        // the cleared cache, so the shape table monotonically grows with
-        // phantom, unreachable entries. Pre-existing behavior, not
-        // introduced by the parent_handle clear above; left as-is here
-        // because filtering sub-shape ids out needs parent_handle's key set
-        // threaded into the loop below, which is out of scope for this
-        // task.
-        // TODO(#5162): filter sub-shape ids (parent_handle key set) out of
-        // the serialization loop below so warm-state payload size stays
-        // bounded across repeated warm-start cycles instead of
-        // accumulating orphaned sub-shape entries.
+        // call, which mints fresh ids against the cleared cache. Left
+        // unfiltered, this would be unbounded across repeated warm-start
+        // cycles, not just single-cycle bloat: each cycle would serialize
+        // prior orphans, restore them, and the next extract_* would mint
+        // yet more fresh ids on top of the cleared cache, so the shape
+        // table would monotonically grow with phantom, unreachable
+        // entries. `parent_handle`'s key set is exactly the derived,
+        // rebuildable sub-shape ids — roots created by `execute` (Box,
+        // Cylinder, Union, Sphere, ...) are never keys, so only
+        // root/persistent shapes round-trip.
+        //
+        // `next_id` is not part of this bounded-vs-unbounded concern: it is
+        // persisted verbatim (see the `OcctWarmState` construction below)
+        // and, by design, keeps advancing across warm-start cycles — every
+        // `store_with_repr` call, root or (pre-filter) sub-shape alike,
+        // mints its id via fetch-and-increment and never reuses one, so
+        // `next_id` is monotonic regardless of this filter. That's expected
+        // and harmless: it's a single 8-byte scalar, not a per-entry
+        // collection, so it never contributes to the multi-cycle payload
+        // growth this filter exists to bound.
+        //
+        // Consumer contract: a `GeometryHandleId` returned by extract_edges/
+        // extract_faces/extract_vertices must not be held across a
+        // `with_warm_state()` boundary. After restore, such an id is only
+        // valid again once re-minted by a fresh extract_* call on its root;
+        // querying the old id directly (Volume, OwnerBody, repr_of, ...)
+        // now fails with `QueryError::InvalidHandle` instead of the
+        // pre-filter behavior of returning a stale-but-queryable orphan.
+        // Callers must re-extract sub-shapes from their root after every
+        // warm-start restore (see `warm_state_reextract_cycle` in the test
+        // module below). Verified at the time this filter was added (task
+        // #5162): no in-tree production caller exercises this cycle today.
+        // `OcctKernelHandle` (crates/reify-kernel-occt/src/handle.rs)
+        // forwards `warm_state`/`with_warm_state` over its request channel,
+        // but nothing outside this crate's own tests sends
+        // `OcctRequest::WarmState`/`WithWarmState`; and `reify-eval`'s only
+        // production warm-state wiring (`CacheStore::donate_warm_state`/
+        // `get_warm_state`, driven from `engine_compute.rs`/
+        // `engine_edit.rs`) is scoped to `NodeId::Compute` solver state, not
+        // `OcctKernel`/`OcctKernelHandle` geometry state — `engine_build.rs`
+        // has no `warm_state`/`OpaqueState` reference at all. A future
+        // caller that wires OCCT warm-start into the eval graph must follow
+        // the re-extraction contract above.
         let Self {
             shapes,
             reprs,
             next_id,
-            extracted_edges: _,
-            extracted_faces: _,
-            extracted_vertices: _,
-            parent_handle: _,
+            extracted_edges,
+            extracted_faces,
+            extracted_vertices,
+            parent_handle,
             last_warm_start_failures: _,
         } = self;
+        // Completeness cross-check for the bounded-payload filter below: it is
+        // only correct if every extracted_edges/extracted_faces/
+        // extracted_vertices cached id is also a `parent_handle` key. That
+        // holds today because extract_edges/extract_faces/extract_vertices
+        // insert into `parent_handle` immediately after minting each id (see
+        // their `store_with_repr` call sites), but nothing at the type level
+        // enforces that pairing — `debug_assert_fresh_id` only guards id
+        // freshness, not this coupling. Assert it explicitly (read-only; these
+        // fields are otherwise unused here, not persisted) so a future code
+        // path that repopulates one of the extracted_* caches, or stores a
+        // sub-shape, without a matching `parent_handle` insert fails loudly
+        // here instead of silently re-opening the unbounded multi-cycle
+        // growth this filter exists to prevent.
+        debug_assert!(
+            [extracted_edges, extracted_faces, extracted_vertices]
+                .into_iter()
+                .flat_map(|cache| cache.values().flatten())
+                .all(|id| parent_handle.contains_key(&id.0)),
+            "every extracted_edges/extracted_faces/extracted_vertices cached \
+             id must be a parent_handle key, or warm_state()'s bounded-payload \
+             filter would silently leak an un-filtered orphan back into \
+             persisted warm-start state"
+        );
         if shapes.is_empty() {
             return None;
         }
@@ -4162,6 +4251,12 @@ impl WarmStartable for OcctKernel {
         let mut warm_reprs: HashMap<u64, BRepKind> = HashMap::new();
         let mut total_bytes: usize = 0;
         for (&id, shape) in shapes {
+            if parent_handle.contains_key(&id) {
+                // Derived sub-shape id (rebuildable via extract_*); skip so
+                // it doesn't round-trip as an orphaned entry. See the
+                // "Bounded payload" note above.
+                continue;
+            }
             let Some(shape_ref) = shape.as_ref() else {
                 continue; // Skip null shapes (best-effort, like serialization failures)
             };
@@ -4787,6 +4882,55 @@ mod tests {
         into
     }
 
+    /// Run one warm-start capture/restore/re-extract cycle, shared by
+    /// `warm_state_persisted_shape_count_stays_bounded_across_cycles` and
+    /// `warm_state_persisted_shape_count_bounded_with_post_extraction_root`
+    /// so each test body keeps only its distinct setup and final assertion.
+    ///
+    /// Captures `kernel`'s warm state, records the persisted
+    /// `(shapes.len(), reprs.len())` counts and the persisted `shapes` key
+    /// set (so callers can pin surviving-id identity, not just cardinality),
+    /// restores into a fresh kernel, runs `mid_cycle` on the restored
+    /// (pre-re-extraction) kernel for any cycle-specific checks (e.g.
+    /// asserting root survival) — `mid_cycle` takes `&mut OcctKernel` so a
+    /// caller can also re-extract sub-shapes on a root of its own (e.g. a
+    /// second, post-extraction root) instead of just the box — then
+    /// re-seeds `parent_handle` by re-running extract_faces/extract_edges/
+    /// extract_vertices on `box_root` against the cleared idempotency cache.
+    /// `box_root` is taken as a parameter — the caller's actual box handle
+    /// id, captured from its `execute` return value — instead of this
+    /// helper assuming `GeometryHandleId(1)`, so it stays correct if a
+    /// caller's id-assignment order ever changes. Returns the
+    /// restored+re-extracted kernel plus the counts and id set captured
+    /// before restore.
+    fn warm_state_reextract_cycle(
+        kernel: OcctKernel,
+        box_root: GeometryHandleId,
+        mid_cycle: impl FnOnce(&mut OcctKernel),
+    ) -> (OcctKernel, usize, usize, std::collections::HashSet<u64>) {
+        let state = kernel.warm_state().expect("kernel should have warm state");
+        let warm = state
+            .downcast_ref::<OcctWarmState>()
+            .expect("warm state should downcast_ref to OcctWarmState");
+        let shapes_len = warm.shapes.len();
+        let reprs_len = warm.reprs.len();
+        let shape_ids: std::collections::HashSet<u64> = warm.shapes.keys().copied().collect();
+
+        let mut next = OcctKernel::new();
+        next.with_warm_state(state);
+
+        mid_cycle(&mut next);
+
+        next.extract_faces(box_root)
+            .expect("extract_faces on the restored box should succeed");
+        next.extract_edges(box_root)
+            .expect("extract_edges on the restored box should succeed");
+        next.extract_vertices(box_root)
+            .expect("extract_vertices on the restored box should succeed");
+
+        (next, shapes_len, reprs_len, shape_ids)
+    }
+
     /// RED step-1 (task 4999): `GeometryOp::Surface` is a Mesh-repr terminal
     /// anchor fed by a Voxel→Mesh conversion edge (PRD
     /// docs/prds/v0_3/voxel-to-mesh-surfacing.md C-1) — it must never reach
@@ -4960,8 +5104,20 @@ mod tests {
     #[test]
     fn repr_of_survives_warm_start_round_trip() {
         // Pins the invariant that `repr_of` returns the correct BRepKind after a
-        // warm_state()/with_warm_state() round-trip. Prior to the fix, OcctWarmState
-        // did not persist the `reprs` map, so every restored handle returned None.
+        // warm_state()/with_warm_state() round-trip. Prior to the original fix,
+        // OcctWarmState did not persist the `reprs` map, so every restored handle
+        // returned None.
+        //
+        // Scope note (#5162): repr survival is scoped to root/persistent handles
+        // (those minted by `execute`: Box, Cylinder, Union, ...). Derived
+        // sub-shape handles minted by extract_* are `parent_handle` keys on the
+        // producer and are deliberately filtered out of warm_state() to bound
+        // multi-cycle payload growth (they round-trip as orphaned, unreachable
+        // entries otherwise — see the "Bounded payload" note in warm_state()).
+        // So a previously-extracted face id correctly returns None post-restore;
+        // its repr is no longer persisted. The regression this test guards —
+        // reprs are persisted at all, for persistent handles — is asserted via
+        // the root box handle below.
 
         // 1. Build kernel A with a box → BRepKind::Solid (id 1).
         let mut kernel_a = OcctKernel::new();
@@ -4996,14 +5152,20 @@ mod tests {
         // 4. Round-trip.
         let kernel_b = warm_restore(&kernel_a, OcctKernel::new());
 
-        // 5. Post-warm: face handle must still report BRepKind::Face (the regression).
+        // 5. Post-warm: the extracted-face handle is a derived sub-shape id and is
+        //    deliberately filtered out of warm_state() (#5162), so its repr is not
+        //    persisted and repr_of correctly returns None post-restore. This is the
+        //    same orphaned-but-queryable state #5162 eliminates: pre-#5162 it would
+        //    round-trip as Some(Face) but remain unreachable via OwnerBody and never
+        //    be reused by a later extract_* call.
         assert_eq!(
             kernel_b.repr_of(face_id),
-            Some(BRepKind::Face),
-            "post-warm: face handle should have BRepKind::Face, not None"
+            None,
+            "post-warm: derived sub-shape (face) repr is filtered out of warm-start (#5162)"
         );
 
-        // 6. Post-warm: box handle must still report BRepKind::Solid.
+        // 6. Post-warm: box handle (a persistent root shape) must still report
+        //    BRepKind::Solid — this is the actual regression this test guards.
         assert_eq!(
             kernel_b.repr_of(box_id),
             Some(BRepKind::Solid),
@@ -5280,10 +5442,12 @@ mod tests {
         // uses a *dirty* consumer to get a RED-on-main signal).
         let kernel_b = warm_restore(&kernel_a, OcctKernel::new());
 
-        // faces_a[0]'s underlying shape blob round-trips into kernel_b's
-        // shape table verbatim (extracted sub-shapes are ordinary entries in
-        // `shapes`/`reprs`, PERSIST-classified like any other handle) — but
-        // its provenance link must not have survived. If `warm_state()` ever
+        // faces_a[0]'s id is a `parent_handle` key, so (#5162) `warm_state()`
+        // filters it out entirely — its shape blob is absent from kernel_b's
+        // `shapes`/`reprs` tables, not merely disconnected from its owner.
+        // The assertion below still holds regardless of that filtering: it
+        // depends only on kernel_b's (always-empty-here) `parent_handle`, not
+        // on whether the blob itself round-tripped. If `warm_state()` ever
         // starts serializing `parent_handle`, this fresh kernel_b would
         // silently resolve the owner "correctly" (there is no stale state
         // here to expose the bug the way a dirty consumer would), so this
@@ -5296,6 +5460,252 @@ mod tests {
              (parent_handle); got {:?}",
             result
         );
+    }
+
+    /// RED step-1 (task 5162): `warm_state()` currently persists sub-shape
+    /// blobs minted by `extract_faces`/`extract_edges`/`extract_vertices`
+    /// wholesale, even though those ids are orphaned on restore (their
+    /// `parent_handle` provenance is CLEAR-on-restore). Across repeated
+    /// warm-start cycles — capture, restore into a fresh kernel, re-extract
+    /// to re-seed `parent_handle` against the cleared idempotency cache —
+    /// this is unbounded, not just single-cycle bloat: each cycle's orphans
+    /// round-trip through the next, and the following extraction mints yet
+    /// more fresh ids on top.
+    ///
+    /// A single root box (id 1) has 6 faces + 12 edges + 8 vertices = 26
+    /// sub-shapes, so on current main the persisted count grows
+    /// [1, 27, 53, 79] across 4 cycles — the "stays constant at the root
+    /// count" assertion below trips because cycles after the first (27, 53,
+    /// 79) differ from `counts[0]` (1). After the fix, only the root
+    /// persists every cycle: [1, 1, 1, 1].
+    #[test]
+    fn warm_state_persisted_shape_count_stays_bounded_across_cycles() {
+        let mut kernel = OcctKernel::new();
+        let box_handle = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+        let box_id = box_handle.id;
+
+        let mut counts = Vec::new();
+        let mut repr_counts = Vec::new();
+        for _ in 0..4 {
+            // Re-seeds parent_handle against the cleared idempotency cache,
+            // mirroring the extract-after-restore pattern from
+            // `owner_body_survives_warm_start`; no mid-cycle checks needed here.
+            let (next, shapes_len, reprs_len, _shape_ids) =
+                warm_state_reextract_cycle(kernel, box_id, |_next| {});
+            counts.push(shapes_len);
+            repr_counts.push(reprs_len);
+            kernel = next;
+        }
+
+        // The stronger "stays constant at the root count" assertion below
+        // subsumes a "does not grow cycle-over-cycle" check (windows(2).all(|w|
+        // w[1] <= w[0])) — any growth is itself a violation of all-equal, and
+        // the printed `counts`/`repr_counts` vector already pinpoints where
+        // growth would occur, so only the all-equal assertion is kept here.
+        assert!(
+            counts.iter().all(|&c| c == counts[0]),
+            "persisted shape count must stay constant at the root count across cycles: {counts:?}"
+        );
+        // shapes/reprs are filtered in lock-step (see warm_state()'s "Bounded
+        // payload" note), so reprs must stay just as bounded — guards against
+        // a future change that filters shapes but forgets reprs, which the
+        // consumer-side debug_assert in with_warm_state only catches in debug
+        // builds.
+        assert!(
+            repr_counts.iter().all(|&c| c == repr_counts[0]),
+            "persisted repr count must stay constant at the root count across cycles: {repr_counts:?}"
+        );
+    }
+
+    /// Sibling of `warm_state_persisted_shape_count_stays_bounded_across_cycles`
+    /// covering the scenario its debug_assert-only guarantee doesn't pin
+    /// behaviorally: a *second* root created via `execute` AFTER
+    /// `extract_faces`/`extract_edges`/`extract_vertices` has already
+    /// populated `parent_handle` with the first root's derived sub-shape
+    /// ids. `store_with_repr` mints ids by fetch-and-increment and never
+    /// reuses one, so this post-extraction root's id is always strictly
+    /// greater than every existing `parent_handle` key and can never
+    /// collide with — and must never be caught by — the bounded-payload
+    /// filter (the exact invariant `debug_assert_fresh_id` protects). This
+    /// test pins that both roots survive every warm-start cycle while all
+    /// sub-shapes are filtered, rather than relying solely on the debug
+    /// assertion. The mid-cycle closure re-extracts the cylinder's own
+    /// faces/edges/vertices on every restored kernel (mirroring the shared
+    /// helper's box-only re-extraction), so the filter is exercised against
+    /// a *second* root's derived ids each cycle — not just the box's —
+    /// rather than the two-root count vacuously holding because the
+    /// cylinder never has any sub-shape ids to filter in the first place.
+    #[test]
+    fn warm_state_persisted_shape_count_bounded_with_post_extraction_root() {
+        let mut kernel = OcctKernel::new();
+        let box_handle = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+        let box_id = box_handle.id;
+        kernel
+            .extract_faces(box_id)
+            .expect("extract_faces on the box should succeed");
+        kernel
+            .extract_edges(box_id)
+            .expect("extract_edges on the box should succeed");
+        kernel
+            .extract_vertices(box_id)
+            .expect("extract_vertices on the box should succeed");
+
+        // Second root, created only after parent_handle already holds the
+        // box's derived sub-shape ids above.
+        let cyl = kernel
+            .execute(&GeometryOp::Cylinder {
+                radius: Value::Real(5.0),
+                height: Value::Real(20.0),
+            })
+            .unwrap();
+        let cyl_id = cyl.id;
+        const ROOT_COUNT: usize = 2; // box (id 1) + post-extraction cylinder
+        // Pins *identity*, not just cardinality: a filter that dropped a
+        // root and kept an equal number of unrelated sub-shapes would still
+        // satisfy the `counts == ROOT_COUNT` check below, so also assert
+        // every cycle's persisted `warm.shapes` key set is exactly the two
+        // root ids.
+        let expected_ids: std::collections::HashSet<u64> =
+            [box_id.0, cyl_id.0].into_iter().collect();
+
+        let mut counts = Vec::new();
+        for _ in 0..4 {
+            // Mid-cycle: both roots must resolve after every restore, and the
+            // cylinder's own faces/edges/vertices are re-extracted here (the
+            // shared helper only re-extracts the box root afterward) so the
+            // bounded-payload filter is exercised against a second root's
+            // derived ids too, not just the box's. Re-seeding parent_handle
+            // for the box happens inside the shared helper after this closure.
+            let (next, shapes_len, _, shape_ids) =
+                warm_state_reextract_cycle(kernel, box_id, |next| {
+                    next.query(&GeometryQuery::Volume(box_id))
+                        .expect("box root should survive warm-start round-trip");
+                    next.query(&GeometryQuery::Volume(cyl_id)).expect(
+                        "post-extraction cylinder root should survive warm-start round-trip",
+                    );
+                    next.extract_faces(cyl_id)
+                        .expect("extract_faces on the restored cylinder should succeed");
+                    next.extract_edges(cyl_id)
+                        .expect("extract_edges on the restored cylinder should succeed");
+                    next.extract_vertices(cyl_id)
+                        .expect("extract_vertices on the restored cylinder should succeed");
+                });
+            counts.push(shapes_len);
+            assert_eq!(
+                shape_ids, expected_ids,
+                "persisted shapes key set must be exactly the root ids \
+                 (box={box_id:?}, cylinder={cyl_id:?}), not merely matching \
+                 cardinality: got {shape_ids:?}"
+            );
+            kernel = next;
+        }
+
+        assert!(
+            counts.iter().all(|&c| c == ROOT_COUNT),
+            "persisted shape count must stay pinned at the two-root count \
+             ({ROOT_COUNT}) across cycles — a post-extraction root must never \
+             be dropped, and sub-shapes must stay filtered: {counts:?}"
+        );
+    }
+
+    /// Shared body for the three `warm_state_completeness_debug_assert_fires_
+    /// on_orphaned_extracted_*_entry` tests below: corrupt one `extracted_*`
+    /// cache via `corrupt` with an id that has no matching `parent_handle`
+    /// entry, then invoke `warm_state()` so its completeness cross-check
+    /// panics. Only compiled under `#[cfg(debug_assertions)]` — see the
+    /// firing tests' doc comment for why `#[should_panic]` needs that gate;
+    /// gating the helper the same way avoids an unused-function warning in
+    /// release-mode test builds, where none of its three callers compile.
+    #[cfg(debug_assertions)]
+    fn assert_completeness_guard_fires_on(corrupt: impl FnOnce(&mut OcctKernel)) {
+        let mut kernel = OcctKernel::new();
+        corrupt(&mut kernel);
+        let _ = kernel.warm_state();
+    }
+
+    /// `warm_state()`'s completeness cross-check (see its doc comment) is a
+    /// debug-only guard: every id cached in `extracted_edges`/
+    /// `extracted_faces`/`extracted_vertices` must also be a `parent_handle`
+    /// key, or the bounded-payload filter could silently leak an un-filtered
+    /// orphan back into persisted warm-start state. `extract_edges`/
+    /// `extract_faces`/`extract_vertices` always insert into both caches
+    /// together (see their `store_with_repr` call sites), so this coupling
+    /// never breaks through the public API — each of the three tests below
+    /// reaches past it via one crate-private `extracted_*` field to confirm
+    /// the guard actually fires for that cache, rather than trusting an
+    /// untested assertion to be correct. They are three separate `#[test]`
+    /// functions rather than one loop over the caches because a
+    /// `#[should_panic]` test stops at the first panic — a shared loop body
+    /// would only ever prove the first cache's corruption fires and leave
+    /// the guard's `.flat_map([...])` coverage of the other two caches
+    /// unverified.
+    ///
+    /// `#[cfg(debug_assertions)]` is required because `debug_assert!`
+    /// compiles to a no-op in release builds — `#[should_panic]` would
+    /// falsely "pass" in a release build where the panic never fires (dual-test
+    /// pattern from `crates/reify-eval/src/kernel_registry.rs`'s
+    /// `emit_kernel_selection_panics_when_total_is_zero`). No release-mode
+    /// counterpart is added: `shapes`/`reprs` filtering never consults
+    /// `extracted_*`, so a release build's silently-elided assert has no
+    /// distinct fall-through behavior to pin beyond what the bounded-payload
+    /// tests above already cover. If a future change ever makes the
+    /// bounded-payload filter itself consult `extracted_*` (instead of
+    /// keying solely off `parent_handle`), add a release-mode behavioral
+    /// test alongside that change confirming a coupling violation still
+    /// cannot leak an orphan into persisted state — this debug-only guard
+    /// would no longer be sufficient on its own.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "must be a parent_handle key")]
+    fn warm_state_completeness_debug_assert_fires_on_orphaned_extracted_faces_entry() {
+        // Directly corrupt extracted_faces: cache an id with no matching
+        // parent_handle entry, violating the coupling extract_faces always
+        // maintains through the public API.
+        assert_completeness_guard_fires_on(|kernel| {
+            kernel
+                .extracted_faces
+                .insert(1, vec![GeometryHandleId(9_999)]);
+        });
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "must be a parent_handle key")]
+    fn warm_state_completeness_debug_assert_fires_on_orphaned_extracted_edges_entry() {
+        // Same as the extracted_faces variant above, but corrupts
+        // extracted_edges — proves the completeness guard's iteration over
+        // all three caches actually includes this one too.
+        assert_completeness_guard_fires_on(|kernel| {
+            kernel
+                .extracted_edges
+                .insert(1, vec![GeometryHandleId(9_999)]);
+        });
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "must be a parent_handle key")]
+    fn warm_state_completeness_debug_assert_fires_on_orphaned_extracted_vertices_entry() {
+        // Same as the extracted_faces variant above, but corrupts
+        // extracted_vertices — proves the completeness guard's iteration
+        // over all three caches actually includes this one too.
+        assert_completeness_guard_fires_on(|kernel| {
+            kernel
+                .extracted_vertices
+                .insert(1, vec![GeometryHandleId(9_999)]);
+        });
     }
 
     #[test]
