@@ -3495,6 +3495,26 @@ mod tests {
             "donate x2 under a 1-byte budget must produce at least one \
              drained/recorded warm-pool event (non-vacuous check)",
         );
+        // Pin the doc comment's actual claim: the 1-byte budget guarantees
+        // the second donate evicts the first, so the drained batch must
+        // contain BOTH a Donated and an Evicted event — not just "some"
+        // event. Without this, a regression that stopped emitting Evicted
+        // events (or only ever emitted Donated) would still pass.
+        let donated_count = recorded
+            .iter()
+            .filter(|event| matches!(event.kind, crate::journal::EventKind::Donated { .. }))
+            .count();
+        let evicted_count = recorded
+            .iter()
+            .filter(|event| matches!(event.kind, crate::journal::EventKind::Evicted { .. }))
+            .count();
+        assert!(
+            donated_count >= 1 && evicted_count >= 1,
+            "donate x2 under a 1-byte budget must produce at least one Donated \
+             AND at least one Evicted event (donated={donated_count}, \
+             evicted={evicted_count}); recorded: {:?}",
+            recorded,
+        );
         for event in recorded {
             assert_eq!(
                 event.version, expected,
