@@ -16,7 +16,7 @@
 //!
 //! **Scope of this task**: the registry mechanism only. Wiring it into
 //! `Engine::eval` / `Engine::eval_cached` / `Engine::edit_check`, plus
-//! fast-path diagnostic replay, is task μ (#5044, depends on κ, λ, γ, δ) —
+//! fast-path diagnostic replay, is task μ (#5062, depends on κ, λ, γ, δ) —
 //! explicitly OUT of scope here.
 //!
 //! ## Known scope gaps for task μ
@@ -148,7 +148,7 @@ impl DetectorRegistry {
 /// case. A cell with no `inertia` field (or an already-`Undef` one) is left
 /// untouched — no false positives.
 ///
-/// **Drift warning**: until task μ (#5044) removes the inline copy at
+/// **Drift warning**: until task μ (#5062) removes the inline copy at
 /// `engine_eval.rs:4662-4762` (the "RBD-α (task 3822)" block) and wires
 /// this registry into the eval paths, this is a live second copy of that
 /// logic. The two bodies are deliberately kept semantically/logically
@@ -159,29 +159,30 @@ impl DetectorRegistry {
 /// `diagnostics` locals, and the two use different early-out shapes (a
 /// guarded `if` block there vs. an early `return` here). A byte-for-byte
 /// diff of the two will therefore show mismatches even though they are not
-/// intended to diverge; `mass_properties_psd_detector_messages_match_characterization_wording`
-/// (below) pins the fixed diagnostic wording instead, so a wording change
-/// on either side without updating the other surfaces as a test failure. A
-/// change to the classification rules, diagnostic wording, or
-/// Undef-replacement behavior on either side (this detector, or the
-/// `engine_eval.rs:4662-4762` site it mirrors) must be mirrored on the
-/// other, or the two will silently diverge before μ deletes the inline
-/// copy.
+/// intended to diverge. A change to the classification rules, diagnostic
+/// wording, or Undef-replacement behavior on either side (this detector,
+/// or the `engine_eval.rs:4662-4762` site it mirrors) must be mirrored on
+/// the other by hand, or the two will silently diverge before μ deletes
+/// the inline copy.
 ///
-/// **What is, and isn't, guarded**: only the diagnostic *wording* is
-/// cross-checked by a test
-/// (`mass_properties_psd_detector_messages_match_characterization_wording`).
+/// **What is, and isn't, guarded**: `mass_properties_psd_detector_messages_match_characterization_wording`
+/// (below) pins this detector's OWN fixed diagnostic wording as literal
+/// substrings hardcoded in the test. That guard is ONE-DIRECTIONAL, not a
+/// cross-check: the test only calls this detector and asserts on its own
+/// output — it never reads or executes `engine_eval.rs:4662-4762` — so it
+/// fails if this detector's wording drifts from the pinned strings, but a
+/// wording change made ONLY on the `engine_eval.rs` side leaves it green.
 /// A classification-rule change (e.g. the `None | Some(Value::Undef) =>
 /// Skip` predicate, or `psd_tol`'s tolerance formula) or an
-/// Undef-replacement-behavior change on either side is NOT cross-checked
-/// against the other — this asymmetry is intentionally unguarded for this
-/// task's scope. The real fix is extracting a shared classify+replace
-/// function that both this detector and the `engine_eval.rs:4662-4762`
-/// site call — deliberately deferred to task μ (#5044), since it would
-/// require editing `engine_eval.rs`, which is outside this task's locked
-/// modules (`detectors.rs`, `lib.rs`) and is left untouched by design (see
-/// the module doc's "Known scope gaps for task μ") to avoid same-file
-/// contention with the concurrent task γ `engine_eval.rs` migration.
+/// Undef-replacement-behavior change on either side is not guarded at
+/// all. The real fix is extracting a shared classify+replace function
+/// (and, for wording, a shared constant) that both this detector and the
+/// `engine_eval.rs:4662-4762` site call — deliberately deferred to task μ
+/// (#5062), since it would require editing `engine_eval.rs`, which is
+/// outside this task's locked modules (`detectors.rs`, `lib.rs`) and is
+/// left untouched by design (see the module doc's "Known scope gaps for
+/// task μ") to avoid same-file contention with the concurrent task γ
+/// `engine_eval.rs` migration.
 #[allow(dead_code)] // wired in by task μ; exercised by tests until then
 pub(crate) struct MassPropertiesPsdDetector;
 
@@ -776,13 +777,17 @@ mod tests {
         );
     }
 
-    /// Pins the FIXED diagnostic wording (excluding the interpolated cell
-    /// id and the non-PSD message's `{:.3e}`-formatted eigenvalue, to avoid
-    /// a fragile numeric-format premise) against the characterization
-    /// source it mirrors, `engine_eval.rs:4662-4762` — see
-    /// [`MassPropertiesPsdDetector`]'s drift-warning doc comment. A wording
-    /// change to either message that isn't mirrored on the other side is
-    /// caught here rather than silently drifting.
+    /// Pins this DETECTOR's fixed diagnostic wording (excluding the
+    /// interpolated cell id and the non-PSD message's `{:.3e}`-formatted
+    /// eigenvalue, to avoid a fragile numeric-format premise) — wording
+    /// originally copied from the characterization source it mirrors,
+    /// `engine_eval.rs:4662-4762`. See [`MassPropertiesPsdDetector`]'s
+    /// drift-warning doc comment: this guard is ONE-DIRECTIONAL. It calls
+    /// only this detector and asserts on its own output, never reading or
+    /// executing `engine_eval.rs`, so it catches an accidental wording
+    /// change made HERE but not one made only on the `engine_eval.rs`
+    /// side — that side can drift silently until task μ deletes the
+    /// inline copy.
     #[test]
     fn mass_properties_psd_detector_messages_match_characterization_wording() {
         let malformed_cell = ValueCellId::new("BodyC", "mass_props");
@@ -814,13 +819,17 @@ mod tests {
             messages
                 .iter()
                 .any(|m| m.contains("inertia field cannot be parsed as a 3×3 numeric matrix")),
-            "malformed message wording drifted from engine_eval.rs:4662-4762; got {messages:?}"
+            "detector's malformed-cell wording changed (this pins the \
+             detector's own wording, not a live check against \
+             engine_eval.rs — see this test's doc comment); got {messages:?}"
         );
         assert!(
             messages.iter().any(|m| m.contains(
                 "inertia tensor is not positive semi-definite (min eigenvalue ≈ "
             )),
-            "non-PSD message wording drifted from engine_eval.rs:4662-4762; got {messages:?}"
+            "detector's non-PSD wording changed (this pins the detector's \
+             own wording, not a live check against engine_eval.rs — see \
+             this test's doc comment); got {messages:?}"
         );
     }
 
