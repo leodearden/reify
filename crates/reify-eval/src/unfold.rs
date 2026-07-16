@@ -59,6 +59,39 @@ use crate::snapshot::Snapshot;
 /// permanent wire. Closing the gap (wiring the real kernel) would require
 /// threading `&self`/`&Engine` through these free functions; that enrichment
 /// is future work, out of ε's behaviour-preserving scope.
+///
+/// Confirmation (#5057 reviewer_comprehensive, suggestion #2 —
+/// robustness-behavior-change): the determinacy flip above is a genuine
+/// semantic change on this path, so it was checked against both existing
+/// fixtures and shipped designs before landing. `cargo test -p reify-eval
+/// --test recursive_unfold --test unfold_commit_parity` (the two suites that
+/// exercise this file's param/let elaboration) is green; neither references a
+/// `DeterminacyPredicate` expression (`recursive_unfold.rs` has no "determin"
+/// hits at all, and `unfold_commit_parity.rs`'s "determin" hits are all
+/// `DeterminacyState::{Determined,Undetermined}` — the committed-state enum
+/// this migration's cache/snapshot legs stamp — not the expression-level
+/// predicate this comment is about). A repo-wide grep for `determined(`
+/// across `*.ri` files (examples + fixtures) turns up recursive
+/// (`is_recursive`-eligible) templates that combine recursion with a
+/// determinacy predicate —
+/// `examples/integration_full_v01.ri`'s `RecursiveBeam`,
+/// `examples/m9_combined.ri`'s `BracketTree`, and
+/// `examples/m9_integration.ri`'s `RecursiveChain` — but in every case the
+/// predicate appears as a top-level `constraint determined(x)`, never inside
+/// a child `param` default or `let` binding. Constraints are checked by the
+/// already-determinacy-aware constraint-checking pass (unaffected by this
+/// migration, which only touches value-cell elaboration in this file), so
+/// they never degraded to `Value::Undef` pre-migration and are not touched by
+/// this change. `m9_integration.ri`'s own comment block even notes the
+/// adjacent case that remains unsupported post-migration: `determined()` in
+/// *guard* position still returns `Undef`, because the guard eval (:168,
+/// `unfold_recursive_sub`) is explicitly out of this migration's scope and
+/// stays on the bare `eval_ctx_with_meta` (no determinacy capability) — see
+/// the "Scope boundary" section of the task's plan. So no existing fixture or
+/// shipped design relied on the pre-migration Undef-degradation this
+/// migration changes; the only place that behaviour is now observably
+/// different is the two dedicated divergence tests in this file's `tests`
+/// module below.
 struct NoContainment;
 
 impl ContainmentQuery for NoContainment {
@@ -882,6 +915,68 @@ mod tests {
              snapshot-wired determinacy cell_eval_ctx now threads through the \
              default_expr branch, not degrade to Value::Undef as the \
              pre-migration bare eval_ctx_with_meta context did"
+        );
+    }
+
+    // amend (#5057 reviewer_comprehensive, suggestion #1 — test-coverage-gap):
+    // the test above locks the determinacy-predicate divergence for the PARAM
+    // default_expr branch only. `elaborate_child_lets_only`'s let-eval (:693)
+    // wires the identical live `&snapshot.values` determinacy capability, but
+    // had no site-specific lock — coverage was only transitive via the shared
+    // `eval_child_expr` helper. This fixture mirrors the param test above,
+    // substituting a `let` binding for a param default: `S.n` (the
+    // always-present, always-`Determined` root cell — a stable absolute
+    // reference regardless of recursion depth) is referenced from a
+    // `let ready = determined(S.n)` cell instead of a param default, proving
+    // the let-binding path also resolves `Bool(true)` post-migration rather
+    // than degrading to `Value::Undef` as the pre-migration bare
+    // `eval_ctx_with_meta` context did on this path.
+    #[test]
+    fn elaborate_child_lets_only_let_expr_resolves_determinacy_predicate() {
+        use reify_core::{ModulePath, Type};
+        use reify_ir::{BinOp, DeterminacyPredicateKind};
+        use reify_test_support::mocks::MockConstraintChecker;
+        use reify_test_support::{
+            CompiledModuleBuilder, TopologyTemplateBuilder, binop, gt, literal, value_ref_typed,
+        };
+
+        let guard = gt(value_ref_typed("S", "n", Type::Int), literal(Value::Int(0)));
+        let n_minus_1 = binop(
+            BinOp::Sub,
+            value_ref_typed("S", "n", Type::Int),
+            literal(Value::Int(1)),
+        );
+        let ready_let_expr = reify_ir::CompiledExpr::determinacy_predicate(
+            DeterminacyPredicateKind::Determined,
+            ValueCellId::new("S", "n"),
+        );
+
+        let template = TopologyTemplateBuilder::new("S")
+            .param(
+                "S",
+                "n",
+                Type::Int,
+                Some(reify_ir::CompiledExpr::literal(Value::Int(1), Type::Int)),
+            )
+            .let_binding("S", "ready", Type::Bool, ready_let_expr)
+            .is_recursive(true)
+            .sub_component_with_guard("child", "S", vec![("n".to_string(), n_minus_1)], guard)
+            .build();
+
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(template)
+            .build();
+        let mut engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let result = engine.eval(&module);
+
+        let child_ready = ValueCellId::new("S.child", "ready");
+        assert_eq!(
+            result.values.get(&child_ready),
+            Some(&Value::Bool(true)),
+            "S.child.ready = let ready = determined(S.n) should resolve Bool(true) \
+             via the snapshot-wired determinacy cell_eval_ctx now threads through \
+             the let-binding branch in elaborate_child_lets_only, not degrade to \
+             Value::Undef as the pre-migration bare eval_ctx_with_meta context did"
         );
     }
 }
