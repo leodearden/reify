@@ -614,6 +614,24 @@ fn pack_sign_bits(x: AxisSign, y: AxisSign, z: AxisSign) -> u32 {
 /// `record_solid_attribute_records_only_the_solid_handle` (below) pins the
 /// exact placeholder shape so a drive-by change here is caught.
 ///
+/// This entry stays resident in `TopologyAttributeTable` under the calling
+/// realization's real `feature_id` — it is not tombstoned or otherwise
+/// marked. Today exactly ONE consumer, the engine's post-loop centroid /
+/// local-index-reassignment diagnostic scan
+/// (`Engine::execute_realization_ops`, `crates/reify-eval/src/engine_build.rs`),
+/// knows to skip it, and only by construction: every call site pushes the
+/// same `KernelHandle` this function records into that scan's
+/// `solid_attribute_handles` exclusion list. Any *other* by-`feature_id`
+/// table walk added later (a selector-resolution path, a new diagnostic, a
+/// future export step) would see this entry unless it independently
+/// remembers to consult `solid_attribute_handles` too — the exclusion is
+/// per-consumer opt-in, not a property of the table entry itself. When
+/// #4263 lands, prefer centralizing that exclusion (e.g. a query-side
+/// filter on `TopologyAttributeTable`, or a distinguishable placeholder
+/// `Role` sentinel once `reify-ir`'s `content_hash_bytes` contract can
+/// absorb a new variant) over asking each new consumer to know about
+/// `solid_attribute_handles` by convention.
+///
 /// # Overwrite precondition (review follow-up, task #4636 amendment)
 ///
 /// This calls [`TopologyAttributeTable::record`], which is unconditional
