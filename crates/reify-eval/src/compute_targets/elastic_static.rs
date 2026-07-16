@@ -10358,9 +10358,19 @@ mod tests {
 
     /// step-1 RED: when BOTH `material` ([0]) and `length` ([1]) are
     /// malformed, the gate must name the FIRST offending arg in check order
-    /// (material before length) — not the last, and not both. Pins the
-    /// "collect the first Err" sequencing requirement (material → length →
-    /// width → height → loads).
+    /// (material before length) — not the last, and not both. Also pins the
+    /// middle of the chain: when BOTH `width` ([2]) and `height` ([3]) are
+    /// malformed, "width" (checked first) must be named, not "height" — a
+    /// mis-ordered pair of arms (e.g. height checked before width) would
+    /// otherwise slip past every other test, since each single-malformed-arg
+    /// test above isolates its own arm. Together the two scenarios pin the
+    /// full "collect the first Err" check order (material → length → width →
+    /// height → loads).
+    ///
+    /// Each assertion below checks the diagnostic message's exact prefix
+    /// (`"solve_elastic_static_trampoline: {label}:"`) rather than a broad
+    /// negative substring match, so the test stays decoupled from unrelated
+    /// `FeaValueShapeError` Display wording.
     #[test]
     fn validate_all_inputs_gate_reports_first_offending_arg_in_order() {
         let diagnostics = assert_gate_rejects(
@@ -10378,11 +10388,31 @@ mod tests {
         assert!(
             diagnostics.iter().any(|d| {
                 d.severity == reify_core::Severity::Error
-                    && d.message.contains("material")
-                    && !d.message.contains("length")
+                    && d.message.starts_with("solve_elastic_static_trampoline: material:")
             }),
             "when both material and length are malformed, the gate must name \
-             \"material\" (checked first) and not \"length\", got {diagnostics:?}"
+             \"material\" (checked first), got {diagnostics:?}"
+        );
+
+        let diagnostics = assert_gate_rejects(
+            [
+                shell9_make_isotropic_material(205e9, 0.29),
+                shell9_make_len(0.1),
+                Value::Real(0.1), // malformed: width
+                Value::Real(0.1), // malformed: height
+                shell9_make_point_loads(1000.0),
+                shell9_make_supports(),
+                shell9_make_options("Off"),
+            ],
+            "width",
+        );
+        assert!(
+            diagnostics.iter().any(|d| {
+                d.severity == reify_core::Severity::Error
+                    && d.message.starts_with("solve_elastic_static_trampoline: width:")
+            }),
+            "when both width and height are malformed, the gate must name \
+             \"width\" (checked first), got {diagnostics:?}"
         );
     }
 
