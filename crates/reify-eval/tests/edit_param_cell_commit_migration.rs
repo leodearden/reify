@@ -20,6 +20,17 @@
 //!   reseed) that wires no runtime sink at all — the `W_FIELD_OUT_OF_BOUNDS`
 //!   warning must surface in `edit_param(...).diagnostics`, not be silently
 //!   dropped.
+//!
+//! Fixture C (`warm_collection_grow_commits_identical_determinacy_to_cold_eval`,
+//! reviewer amend round 2 — test-coverage gap): extends the same
+//! identical-to-cold-eval pattern as Fixture A to the collection-resize-child
+//! (U2) and grown-instance-reseed (U4) ctx sites, which step-8 also migrated
+//! onto the required-args free-fn but which had no dedicated behavioral
+//! fixture proving the newly-threaded determinacy (read from the
+//! partially-updated `new_snapshot.values` map, mutated within the same
+//! reseed loop) doesn't diverge from cold eval on a grown collection member.
+//! Already GREEN (step-8 landed before this fixture was added) — a
+//! characterization test pinning the convergence, not a new RED/GREEN pair.
 
 use reify_constraints::{DimensionalSolver, SimpleConstraintChecker};
 use reify_core::{Diagnostic, DiagnosticCode, Severity, ValueCellId};
@@ -190,5 +201,129 @@ fn edit_path_reeval_surfaces_dropped_field_oob_warning() {
         "edit_param must surface the W_FIELD_OUT_OF_BOUNDS warning from the \
          newly-activated guarded member's sample() call, got diagnostics: {:?}",
         result.diagnostics
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Fixture C — collection-resize / grown-instance reseed determinacy parity.
+// ─────────────────────────────────────────────────────────────────────────
+
+/// `Bolt.is_diameter_determined = determined(diameter)` is a
+/// `DeterminacyPredicate` over a plain, always-`Determined` sibling param.
+/// Per `reify_expr::eval_expr`'s `DeterminacyPredicate` arm, `determined(_)`
+/// resolves to `Value::Undef` whenever its `EvalContext` was built WITHOUT
+/// `.with_determinacy` — regardless of whether the referenced cell is
+/// genuinely determined — which makes it a precise probe for the *capability*
+/// threaded into a `cell_eval_ctx` call, not merely the value it produces.
+///
+/// `S.bolts[i].diameter` is committed by the collection-resize-child ctx
+/// (U2, `engine_edit.rs`'s collection create-loop) and then, since a fresh
+/// engine's demand defaults to full-scope (every node demanded), immediately
+/// re-processed by the grown-instance reseed ctx (U4, the post-resize
+/// `grown_seed` pass) — U4 runs after U2 in the same `edit_param` call and is
+/// therefore the final writer for `S.bolts[i].is_diameter_determined`. Both
+/// sites build their `EvalContext` via the identical `cell_eval_ctx(&values,
+/// &functions, &self.meta_map, &new_snapshot.values, &runtime_sink, self)`
+/// free-fn call (post step-8), so this fixture's observed final state is
+/// authoritative for U4's threading and, via the shared call shape,
+/// characterizes U2's identically-built ctx too.
+const COLLECTION_GROW_SRC_N2: &str = r#"structure Bolt {
+    param diameter : Length = 10mm
+    let is_diameter_determined = determined(diameter)
+}
+structure S {
+    param n : Int = 2
+    sub bolts : List<Bolt>
+    constraint bolts.count == n
+}"#;
+
+/// Same module, but starting (and cold-eval'd) at `n = 4` directly — the
+/// warm fixture's target final state, used as the cold reference.
+const COLLECTION_GROW_SRC_N4: &str = r#"structure Bolt {
+    param diameter : Length = 10mm
+    let is_diameter_determined = determined(diameter)
+}
+structure S {
+    param n : Int = 4
+    sub bolts : List<Bolt>
+    constraint bolts.count == n
+}"#;
+
+/// Fixture C (test-coverage amendment, reviewer round 2): pins that growing a
+/// collection via `edit_param` commits the SAME `(value, determinacy)` a cold
+/// `eval()` of the equivalent final state commits, for a grown member's
+/// `DeterminacyPredicate` cell — closing the coverage gap flagged for the
+/// collection-resize-child (U2) and grown-instance-reseed (U4) sites, which
+/// (unlike Fixture A's wave2-reseed site) had no dedicated fixture proving
+/// their newly-threaded determinacy capability doesn't diverge from cold eval.
+///
+/// Before step-8, both U2 and U4 built their ctx via
+/// `eval_ctx_with_meta(..).with_runtime_diagnostics(..)` only (sink-only, no
+/// `.with_determinacy`), so `is_diameter_determined` would have committed
+/// `Value::Undef` instead of `Bool(true)` for a grown instance — silently
+/// diverging from cold eval. GREEN today (step-8 already migrated both
+/// sites onto the free-fn); this is a characterization test guarding that
+/// convergence, not a new RED/GREEN pair.
+#[test]
+fn warm_collection_grow_commits_identical_determinacy_to_cold_eval() {
+    // bolts[3] only exists post-grow (n=2 -> n=4), so it necessarily routes
+    // through U2 (creation) and U4 (grown-instance reseed) on the warm path.
+    let target_id = ValueCellId::new("S.bolts[3]", "is_diameter_determined");
+
+    // Cold reference: a FRESH engine's eval() of the N=4 module directly —
+    // bolts[3] is created and evaluated entirely within engine_eval.rs's
+    // main pass. Ground truth.
+    let cold_compiled = compile_source(COLLECTION_GROW_SRC_N4);
+    let mut cold_engine = make_simple_engine();
+    let cold_result = cold_engine.eval(&cold_compiled);
+    let cold_val = cold_result
+        .values
+        .get(&target_id)
+        .unwrap_or_else(|| panic!("cold eval: bolts[3].is_diameter_determined must be present"));
+    let cold_snapshot = cold_engine
+        .snapshot()
+        .expect("cold engine must have a snapshot after eval");
+    let (_, cold_det) = cold_snapshot
+        .values
+        .get(&target_id)
+        .unwrap_or_else(|| panic!("cold snapshot: bolts[3].is_diameter_determined must be present"));
+    assert_eq!(
+        *cold_val,
+        Value::Bool(true),
+        "precondition: cold eval's is_diameter_determined must be Bool(true) \
+         (diameter is a plain Determined param)"
+    );
+
+    // Warm: a SEPARATE engine evaluated at n=2, then edit_param grows n to 4
+    // — creating bolts[2] and bolts[3] via the collection-resize-child ctx
+    // (U2) and re-processing them via the grown-instance reseed ctx (U4).
+    let warm_compiled = compile_source(COLLECTION_GROW_SRC_N2);
+    let mut warm_engine = make_simple_engine();
+    warm_engine.eval(&warm_compiled);
+    let n_id = ValueCellId::new("S", "n");
+    let warm_result = warm_engine
+        .edit_param(n_id, Value::Int(4))
+        .expect("edit_param(n, 4) must succeed after a cold eval at n=2");
+    let warm_val = warm_result
+        .values
+        .get(&target_id)
+        .unwrap_or_else(|| panic!("warm edit_param: bolts[3].is_diameter_determined must be present"));
+    let warm_snapshot = warm_engine
+        .snapshot()
+        .expect("warm engine must have a snapshot after edit_param");
+    let (_, warm_det) = warm_snapshot
+        .values
+        .get(&target_id)
+        .unwrap_or_else(|| panic!("warm snapshot: bolts[3].is_diameter_determined must be present"));
+
+    assert_eq!(
+        warm_val, cold_val,
+        "warm edit_param's grown bolts[3].is_diameter_determined value must match cold \
+         eval's; warm={warm_val:?}, cold={cold_val:?}"
+    );
+    assert_eq!(
+        *warm_det, *cold_det,
+        "warm edit_param's grown bolts[3].is_diameter_determined determinacy must match \
+         cold eval's; warm={warm_det:?}, cold={cold_det:?}"
     );
 }
