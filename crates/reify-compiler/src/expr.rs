@@ -270,14 +270,18 @@ fn template_member_is_priv(template: &TopologyTemplate, name: &str) -> bool {
 /// `let` members, which default to `Visibility::Private` but are never
 /// externally accessible by name.
 fn port_member_is_priv(template: &TopologyTemplate, port_name: &str, member: &str) -> bool {
-    let composite = format!("{port_name}.{member}");
     template.ports.iter().any(|p| {
-        p.name == port_name
-            && p.members.iter().any(|vc| {
+        // Short-circuit on the name check first so the `format!` allocation
+        // below only happens for an actually-matching port, not on every
+        // port scanned.
+        p.name == port_name && {
+            let composite = format!("{port_name}.{member}");
+            p.members.iter().any(|vc| {
                 vc.id.member == composite
                     && vc.kind == ValueCellKind::Param
                     && vc.visibility == Visibility::Private
             })
+        }
     })
 }
 
@@ -3981,6 +3985,19 @@ pub(crate) fn compile_expr_guarded_with_expected(
             // name) but spelled out to make the internal/external boundary
             // explicit: internal access (bare `port.member`, handled just
             // above) must never be gated here.
+            //
+            // Ordering invariant: this branch sits between the cluster
+            // branch (above) and the keyed-sub branch (below), so it is
+            // only safe to fire on genuinely priv port-member accesses.
+            // That holds because `port_member_is_priv` returns `true` only
+            // when `structure_name`'s template has a REAL port named
+            // `port_name` with a private composite member cell — it cannot
+            // return `true` for a name that is actually a cluster group or
+            // keyed-sub key, so this branch cannot mis-claim those accesses
+            // even if `port_name` happens to collide with one on the same
+            // sub. If a future template representation ever let a single
+            // name denote both a port and a cluster/keyed-sub, this
+            // ordering would need re-examination.
             if let reify_ast::ExprKind::MemberAccess {
                 object: inner_obj,
                 member: port_name,

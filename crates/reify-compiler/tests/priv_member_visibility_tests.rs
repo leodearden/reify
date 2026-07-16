@@ -945,6 +945,40 @@ structure def PortHostSelf {
     );
 }
 
+/// Internal access to a structure's own `priv` port member via the explicit
+/// two-level `self.<port>.<member>` shape — as opposed to the bare
+/// `<port>.<member>` path pinned above — also stays ungated. The new
+/// external-access AST-pattern branch (task #5171) only fires when the
+/// receiver's inner identifier is a *non-`self`* name bound in
+/// `sub_component_types`, so it structurally cannot fire here; this test
+/// pins that specifically for the explicit-`self` shape, so a future change
+/// to how `self.<port>` resolves cannot start silently leaking
+/// E_PRIV_MEMBER_ACCESS gating (or a priv bypass) on this path without a
+/// test noticing.
+#[test]
+fn internal_priv_port_member_access_via_self_ok() {
+    let module = compile_source(
+        r#"
+trait Iface {}
+
+structure def PortHostSelf {
+    port secret : Iface {
+        priv param main : Length = 5mm
+    }
+    let echo = self.secret.main
+}
+"#,
+    );
+
+    assert_eq!(
+        priv_access_errors(&module).len(),
+        0,
+        "internal access to `self.secret.main` (own priv port member, explicit \
+         self.<port>.<member> path) must NOT emit E_PRIV_MEMBER_ACCESS; all diagnostics: {:?}",
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
 /// External dot-access on a `priv param` nested inside a block-form guarded
 /// group now emits E_PRIV_MEMBER_ACCESS (task #5171): `template_member_is_priv`
 /// scans `guarded_groups[].members`, and the E_PRIV_MEMBER_ACCESS check is
