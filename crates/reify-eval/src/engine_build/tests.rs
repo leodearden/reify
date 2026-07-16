@@ -2800,6 +2800,64 @@ structure Assembly {
         }
     }
 
+    /// Return value of [`cross_kernel_convert_fixture`] — see that fn's
+    /// doc-comment for what is and isn't included.
+    struct CrossKernelConvertFixture {
+        tess_count: std::sync::Arc<std::sync::Mutex<usize>>,
+        ingest_count: std::sync::Arc<std::sync::Mutex<usize>>,
+        union_count: std::sync::Arc<std::sync::Mutex<usize>>,
+        kernels: BTreeMap<String, Box<dyn GeometryKernel>>,
+        desc_manifold: CapabilityDescriptor,
+    }
+
+    /// Shared occt+manifold cross-kernel convert-loop scaffolding (task
+    /// #4636 amendment — reviewer_comprehensive test-duplication finding):
+    /// factors out exactly the pieces that
+    /// `execute_realization_ops_cache_hit_reforwards_solid_attribute_to_reused_manifold_handle`
+    /// and `execute_realization_ops_convert_loop_skips_forward_for_non_seeded_parent`
+    /// build IDENTICALLY, verbatim — three zero-initialized call counters
+    /// (tessellate/ingest/union) plus a `"manifold"` kernel entry wired to
+    /// `next_ingest_id: 1000` and its `BooleanUnion @ Mesh`-only
+    /// `CapabilityDescriptor`. Callers still build their own `occt_inner`
+    /// staging (which handle ids get `extract_faces`/`extract_edges`/
+    /// `extract_vertices` fixtures — this differs per test) and `"occt"`
+    /// `CapabilityDescriptor` (Tube support differs per test), then insert
+    /// their own `"occt"` entry (wrapping the returned `tess_count` in a
+    /// [`CountingTessellateKernel`]) into the returned `kernels` map — kept
+    /// inline at each call site so this fixture doesn't grow test-specific
+    /// branches. Scoped to these two task-#4636 tests only: the older
+    /// sibling cross-kernel conversion tests below predate this task and are
+    /// left as-is (each has its own slightly different descriptor/op shape),
+    /// per the amendment-pass minimal-diff mandate.
+    fn cross_kernel_convert_fixture() -> CrossKernelConvertFixture {
+        let tess_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let ingest_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let union_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+
+        let mut kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
+        kernels.insert(
+            "manifold".to_string(),
+            Box::new(CountingManifoldKernel {
+                inner: reify_test_support::mocks::MockGeometryKernel::new(),
+                ingest_count: std::sync::Arc::clone(&ingest_count),
+                execute_count: std::sync::Arc::clone(&union_count),
+                next_ingest_id: 1000,
+            }),
+        );
+
+        let desc_manifold = CapabilityDescriptor {
+            supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
+        };
+
+        CrossKernelConvertFixture {
+            tess_count,
+            ingest_count,
+            union_count,
+            kernels,
+            desc_manifold,
+        }
+    }
+
     /// step-7(A) CONVERSION PATH (RED). With `demanded_repr = Mesh`, the
     /// dispatcher routes the terminal `BooleanUnion` to the Mesh-capable
     /// `"manifold"` kernel, preceded by a single BRep→Mesh conversion stage
@@ -4473,16 +4531,19 @@ structure Assembly {
         use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
         use reify_core::Type;
         use reify_ir::{
-            CapabilityDescriptor, CompiledExpr, GeometryHandleId, GeometryKernel, KernelId,
-            Operation, ReprKind,
+            CapabilityDescriptor, CompiledExpr, GeometryHandleId, KernelId, Operation, ReprKind,
         };
         use reify_test_support::mocks::MockGeometryKernel;
 
         let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
 
-        let tess_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
-        let ingest_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
-        let union_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let CrossKernelConvertFixture {
+            tess_count,
+            ingest_count,
+            union_count,
+            mut kernels,
+            desc_manifold,
+        } = cross_kernel_convert_fixture();
 
         // Stage extract_faces/edges/vertices (all empty — zero-cost; seeding
         // only needs `Ok` to fall through to `record_solid_attribute`) for
@@ -4494,22 +4555,11 @@ structure Assembly {
                 .with_extracted_edges(GeometryHandleId(id), vec![])
                 .with_extracted_vertices(GeometryHandleId(id), vec![]);
         }
-
-        let mut kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
         kernels.insert(
             "occt".to_string(),
             Box::new(CountingTessellateKernel {
                 inner: occt_inner,
                 tessellate_count: std::sync::Arc::clone(&tess_count),
-            }),
-        );
-        kernels.insert(
-            "manifold".to_string(),
-            Box::new(CountingManifoldKernel {
-                inner: MockGeometryKernel::new(),
-                ingest_count: std::sync::Arc::clone(&ingest_count),
-                execute_count: std::sync::Arc::clone(&union_count),
-                next_ingest_id: 1000,
             }),
         );
 
@@ -4523,9 +4573,6 @@ structure Assembly {
                     ReprKind::Mesh,
                 ),
             ],
-        };
-        let desc_manifold = CapabilityDescriptor {
-            supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
         };
         let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
         registry.insert("occt".to_string(), &desc_occt);
@@ -4722,16 +4769,19 @@ structure Assembly {
         use reify_compiler::{BooleanOp, CompiledGeometryOp, GeomRef, PrimitiveKind};
         use reify_core::Type;
         use reify_ir::{
-            CapabilityDescriptor, CompiledExpr, GeometryHandleId, GeometryKernel, KernelId,
-            Operation, ReprKind,
+            CapabilityDescriptor, CompiledExpr, GeometryHandleId, KernelId, Operation, ReprKind,
         };
         use reify_test_support::mocks::MockGeometryKernel;
 
         let mm_lit = |v: f64| CompiledExpr::literal(reify_test_support::mm(v), Type::length());
 
-        let tess_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
-        let ingest_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
-        let union_count = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+        let CrossKernelConvertFixture {
+            tess_count,
+            ingest_count,
+            union_count,
+            mut kernels,
+            desc_manifold,
+        } = cross_kernel_convert_fixture();
 
         // Stage extract_faces/edges/vertices (all empty — zero-cost; seeding
         // only needs `Ok` to fall through to `record_solid_attribute`) for the
@@ -4748,22 +4798,11 @@ structure Assembly {
             .with_extracted_faces(GeometryHandleId(2), vec![])
             .with_extracted_edges(GeometryHandleId(2), vec![])
             .with_extracted_vertices(GeometryHandleId(2), vec![]);
-
-        let mut kernels: BTreeMap<String, Box<dyn GeometryKernel>> = BTreeMap::new();
         kernels.insert(
             "occt".to_string(),
             Box::new(CountingTessellateKernel {
                 inner: occt_inner,
                 tessellate_count: std::sync::Arc::clone(&tess_count),
-            }),
-        );
-        kernels.insert(
-            "manifold".to_string(),
-            Box::new(CountingManifoldKernel {
-                inner: MockGeometryKernel::new(),
-                ingest_count: std::sync::Arc::clone(&ingest_count),
-                execute_count: std::sync::Arc::clone(&union_count),
-                next_ingest_id: 1000,
             }),
         );
 
@@ -4782,9 +4821,6 @@ structure Assembly {
                     ReprKind::Mesh,
                 ),
             ],
-        };
-        let desc_manifold = CapabilityDescriptor {
-            supports: vec![(Operation::BooleanUnion, ReprKind::Mesh)],
         };
         let mut registry: BTreeMap<String, &CapabilityDescriptor> = BTreeMap::new();
         registry.insert("occt".to_string(), &desc_occt);
