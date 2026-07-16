@@ -1407,7 +1407,18 @@ const App: Component = () => {
     // would leave the picker permanently unavailable for the whole session
     // with no user-visible signal, mirroring how the other best-effort
     // one-time subscriptions below report their own failures.
-    bridgeGetUnitLadders()
+    //
+    // Calling bridgeGetUnitLadders() inside the leading `.then()` (rather
+    // than directly, e.g. `bridgeGetUnitLadders().then(...)`) routes a
+    // SYNCHRONOUS throw from the call itself — not just an async rejection —
+    // into the `.catch()` below. The previous `try { await
+    // bridgeGetUnitLadders() } catch` got this for free from `try`; losing
+    // that wrapper when this became fire-and-forget would otherwise turn a
+    // synchronous throw (e.g. a bridge mock missing this export in a test)
+    // into an unhandled rejection out of `initApp` instead of the intended
+    // graceful degradation.
+    Promise.resolve()
+      .then(() => bridgeGetUnitLadders())
       .then((ladders) => {
         if (!alive) return;
         const map: UnitLadderMap = {};
