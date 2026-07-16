@@ -3561,7 +3561,7 @@ mod tests {
             state
                 .compile_diagnostics
                 .iter()
-                .all(|d| d.file_path == "warn.ri"),
+                .all(|d| d.file_path.ends_with("warn.ri")),
             "every diagnostic's file_path must cite warn.ri, got: {:?}",
             state
                 .compile_diagnostics
@@ -3573,7 +3573,7 @@ mod tests {
             !state
                 .compile_diagnostics
                 .iter()
-                .any(|d| d.file_path == "bracket.ri"),
+                .any(|d| d.file_path.ends_with("bracket.ri")),
             "no diagnostic may cite the previously-loaded file's identity \
              (bracket.ri), got: {:?}",
             state
@@ -3653,7 +3653,7 @@ mod tests {
             state
                 .compile_diagnostics
                 .iter()
-                .all(|d| d.file_path == "warn.ri"),
+                .all(|d| d.file_path.ends_with("warn.ri")),
             "every diagnostic's file_path must still cite warn.ri after re-open, got: {:?}",
             state
                 .compile_diagnostics
@@ -3699,6 +3699,58 @@ mod tests {
         assert!(
             err.contains(&missing_path),
             "error must name the path that failed to load, got: {err:?}"
+        );
+    }
+
+    /// T5 (rewrite-failure facet, #5193): `rewrite_files_to_abs`'s `Err` arm
+    /// (commands.rs:464-484) is graceful degradation, not a hard failure —
+    /// when a `files[]` entry can't be canonicalized (e.g. it was removed
+    /// from disk between the engine load and the abs-path rewrite), the
+    /// entry must be left as its stem-only module key rather than panicking,
+    /// erroring the whole open, or silently disappearing from `files[]`.
+    ///
+    /// `source_map` (and so `GuiState::files`) always holds exactly one
+    /// entry: `commit_state` clears and re-inserts a single key per load
+    /// (engine.rs:282-283), and v1 does not add imported modules' content to
+    /// `source_map` either (engine.rs:879-884). So the only way to reach
+    /// this branch is to delete the just-loaded file between
+    /// `load_file_into_engine` (which reads it while it still exists) and
+    /// `resolve` (whose canonicalize call then fails) — exactly what this
+    /// test does, driving the two building blocks `open_file_engine_impl`
+    /// composes directly since neither public entry point offers a hook
+    /// between those two steps.
+    #[test]
+    fn resolve_leaves_stem_only_path_when_canonicalize_fails() {
+        use reify_test_support::bracket_source;
+
+        let dir = tempfile::tempdir().unwrap();
+        let bracket_canonical = write_and_canonicalize(dir.path(), "bracket.ri", bracket_source());
+
+        let engine = crate::tests::make_test_engine();
+
+        let unresolved = crate::engine_lock::with_engine_lock(&engine, |s| {
+            crate::commands::load_file_into_engine(s, std::path::Path::new(&bracket_canonical))
+        })
+        .and_then(std::convert::identity)
+        .expect("load_file_into_engine must succeed while the file still exists");
+
+        // Remove the file so the abs-path rewrite's canonicalize call fails —
+        // the load above already completed successfully, so this isolates
+        // just the rewrite step's failure branch.
+        std::fs::remove_file(&bracket_canonical).unwrap();
+
+        let state = unresolved.resolve(std::path::Path::new(&bracket_canonical));
+
+        assert!(
+            !state.files.is_empty(),
+            "resolve must not drop the files[] entry when canonicalize fails"
+        );
+        assert_eq!(
+            state.files[0].path, "bracket.ri",
+            "when canonicalize fails, files[].path must fall back to the \
+             stem-only module key rather than panicking or erroring the \
+             whole open, got: {:?}",
+            state.files[0].path
         );
     }
 }
