@@ -5579,7 +5579,7 @@ fn format_expr(expr: &reify_ir::CompiledExpr) -> String {
             if unit.is_empty() {
                 val
             } else {
-                format!("{}{}", val, unit)
+                format!("{} {}", val, unit)
             }
         }
         CompiledExprKind::ValueRef(id) | CompiledExprKind::CrossSubGeometryRef(id) => {
@@ -5677,7 +5677,16 @@ fn format_expr(expr: &reify_ir::CompiledExpr) -> String {
             format!("map{{{}}}", entry_strs.join(", "))
         }
         CompiledExprKind::IndexAccess { object, index } => {
-            format!("{}[{}]", format_expr(object), format_expr(index))
+            // Member access (`obj.member`) is lowered to `IndexAccess` with a
+            // string-literal index — recover the source-form dotted access.
+            // Real list/array indexing carries a non-string index and keeps
+            // the bracket form.
+            match &index.kind {
+                CompiledExprKind::Literal(reify_ir::Value::String(member)) => {
+                    format!("{}.{}", format_expr(object), member)
+                }
+                _ => format!("{}[{}]", format_expr(object), format_expr(index)),
+            }
         }
         CompiledExprKind::MethodCall {
             object,
