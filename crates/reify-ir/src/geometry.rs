@@ -10625,6 +10625,109 @@ mod tests {
         assert!(removed.is_none(), "remove of absent id must return None");
     }
 
+    // ── TopologyAttributeTable::result_faces descriptor store (task 4637) ──
+
+    /// A second, distinct `TopologyAttribute` — pairs with
+    /// `make_topology_attribute`'s `Role::Side`/`local_index: 0` so tests can
+    /// tell the two apart.
+    fn make_topology_attribute_b() -> TopologyAttribute {
+        TopologyAttribute {
+            feature_id: FeatureId::realization("test_entity_b", 1),
+            role: Role::NewEdge,
+            local_index: 1,
+            user_label: None,
+            mod_history: Vec::new(),
+        }
+    }
+
+    /// `result_faces` is a separate descriptor-keyed store (task #4637,
+    /// substrate for #4263): independently keyed by `ResultFaceDescriptor`
+    /// (`KernelHandle` + `run_original_id` + `face_id`), last-write-wins on
+    /// `record_result_face`, and orthogonal to the existing `entries` map —
+    /// `record`/`lookup`/`iter` must never observe a `record_result_face`
+    /// write. That orthogonality is load-bearing: the engine's per-
+    /// realization diagnostic scan (`reify_eval::engine_build`) walks
+    /// `entries` via `iter()` only, so keeping result-face writes out of
+    /// `entries` keeps them invisible to that scan.
+    #[test]
+    fn topology_attribute_table_result_face_store_records_and_looks_up() {
+        let handle = KernelHandle {
+            kernel: KernelId::Manifold,
+            id: GeometryHandleId(7),
+        };
+        let d1 = ResultFaceDescriptor {
+            handle,
+            run_original_id: 10,
+            face_id: 100,
+        };
+        // d2 differs only in face_id.
+        let d2 = ResultFaceDescriptor {
+            face_id: 200,
+            ..d1
+        };
+        // d3 differs only in handle.
+        let d3 = ResultFaceDescriptor {
+            handle: KernelHandle {
+                kernel: KernelId::Manifold,
+                id: GeometryHandleId(8),
+            },
+            ..d1
+        };
+
+        let attr_a = make_topology_attribute();
+        let attr_b = make_topology_attribute_b();
+
+        let mut table = TopologyAttributeTable::default();
+        assert!(
+            table.lookup_result_face(d1).is_none(),
+            "result-face store must start empty"
+        );
+
+        table.record_result_face(d1, attr_a.clone());
+        assert_eq!(
+            table.lookup_result_face(d1),
+            Some(&attr_a),
+            "d1 must resolve to attr_a after record_result_face"
+        );
+        assert!(
+            table.lookup_result_face(d2).is_none(),
+            "d2 (distinct face_id) must remain independent of d1"
+        );
+
+        table.record_result_face(d2, attr_b.clone());
+        table.record_result_face(d3, attr_a.clone());
+        assert_eq!(
+            table.iter_result_faces().count(),
+            3,
+            "three independently-keyed descriptors must yield three entries"
+        );
+        assert_eq!(table.result_face_len(), 3);
+
+        // Last-write-wins on a repeat `record_result_face` for the same key.
+        table.record_result_face(d1, attr_b.clone());
+        assert_eq!(
+            table.lookup_result_face(d1),
+            Some(&attr_b),
+            "record_result_face must overwrite d1's prior entry (last-write-wins)"
+        );
+        assert_eq!(
+            table.result_face_len(),
+            3,
+            "overwriting d1 must not add a fourth entry"
+        );
+
+        // Orthogonal to `entries`: none of the above writes are visible there.
+        assert!(
+            table.lookup(handle).is_none(),
+            "result-face writes must not create an `entries` entry at the same KernelHandle"
+        );
+        assert_eq!(
+            table.iter().count(),
+            0,
+            "result-face writes must not be visible via the `entries`-only iter()"
+        );
+    }
+
     /// `GeometryOp::Fillet` records a curated `edges` selection alongside
     /// `target`/`radius`. A non-empty list names the specific edges to round;
     /// an empty list is the all-edges back-compat path (legacy 2-arg fillet).
