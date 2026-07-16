@@ -23,6 +23,7 @@ use reify_ir::{
 };
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
+use crate::cell_commit::{CacheLeg, CommitLegs, DeterminacyRule, TraceSource, commit_cell_result};
 use crate::demand::DemandRegistry;
 use crate::deps::{DependencyTrace, ReverseDependencyIndex, extract_dependency_trace, take_trace};
 use crate::dirty::topological_sort;
@@ -2138,16 +2139,6 @@ fn eval_guarded_group_param_cell(
     diagnostics: &mut Vec<Diagnostic>,
     ctx: &mut GuardedParamCtx<'_>,
 ) {
-    let node_id = NodeId::Value(cell.id.clone());
-    let start = Instant::now();
-    ctx.journal.record(EvalEvent {
-        timestamp: start,
-        node_id: node_id.clone(),
-        kind: EventKind::Started,
-        version: ctx.version,
-        payload: None,
-    });
-
     let override_val = match param_overrides.get(&cell.id) {
         None => {
             // No override stored AND no default_expr: write (Undef, Undetermined)
@@ -2160,18 +2151,20 @@ fn eval_guarded_group_param_cell(
             // behaviour change). Guarded-group cells always write Undef so all
             // cells appear in EvalResult.values regardless of override presence.
             if cell.default_expr.is_none() {
-                values.insert(cell.id.clone(), Value::Undef);
-                snapshot.values.insert(
+                commit_cell_result(
+                    CommitLegs {
+                        values,
+                        snapshot_values: &mut snapshot.values,
+                        cache: ctx.cache,
+                        journal: ctx.journal,
+                    },
                     cell.id.clone(),
-                    (Value::Undef, DeterminacyState::Undetermined),
-                );
-                record_eval_completed(
-                    ctx.journal,
-                    ctx.cache,
-                    node_id,
-                    CachedResult::Value(Value::Undef, DeterminacyState::Undetermined),
+                    Value::Undef,
+                    DeterminacyRule::Undetermined,
+                    TraceSource::GuardedGroup,
+                    DependencyTrace::default(),
                     ctx.version,
-                    start,
+                    CacheLeg::Record,
                 );
                 return;
             }
@@ -2207,34 +2200,39 @@ fn eval_guarded_group_param_cell(
         // Write (Undef, Undetermined) into both maps so external readers of
         // EvalResult.values see a well-defined Undef instead of a missing key.
         // Record in cache + journal — mirrors the top-level S4 arm (task-2195).
-        values.insert(cell.id.clone(), Value::Undef);
-        snapshot.values.insert(
+        commit_cell_result(
+            CommitLegs {
+                values,
+                snapshot_values: &mut snapshot.values,
+                cache: ctx.cache,
+                journal: ctx.journal,
+            },
             cell.id.clone(),
-            (Value::Undef, DeterminacyState::Undetermined),
-        );
-        record_eval_completed(
-            ctx.journal,
-            ctx.cache,
-            node_id,
-            CachedResult::Value(Value::Undef, DeterminacyState::Undetermined),
+            Value::Undef,
+            DeterminacyRule::Undetermined,
+            TraceSource::GuardedGroup,
+            DependencyTrace::default(),
             ctx.version,
-            start,
+            CacheLeg::Record,
         );
         return;
     };
 
     // Override-accepted or default-eval path: write determined value.
-    values.insert(cell.id.clone(), val.clone());
-    snapshot
-        .values
-        .insert(cell.id.clone(), (val.clone(), DeterminacyState::Determined));
-    record_eval_completed(
-        ctx.journal,
-        ctx.cache,
-        node_id,
-        CachedResult::Value(val, DeterminacyState::Determined),
+    commit_cell_result(
+        CommitLegs {
+            values,
+            snapshot_values: &mut snapshot.values,
+            cache: ctx.cache,
+            journal: ctx.journal,
+        },
+        cell.id.clone(),
+        val,
+        DeterminacyRule::UnconditionalDetermined,
+        TraceSource::GuardedGroup,
+        DependencyTrace::default(),
         ctx.version,
-        start,
+        CacheLeg::Record,
     );
 }
 
