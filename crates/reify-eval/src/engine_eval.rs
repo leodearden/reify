@@ -24,6 +24,7 @@ use reify_ir::{
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
 use crate::cell_commit::{CacheLeg, CommitLegs, DeterminacyRule, TraceSource, commit_cell_result};
+use crate::cell_eval_ctx::cell_eval_ctx;
 use crate::demand::DemandRegistry;
 use crate::deps::{DependencyTrace, ReverseDependencyIndex, extract_dependency_trace, take_trace};
 use crate::dirty::topological_sort;
@@ -5322,7 +5323,14 @@ impl Engine {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn reeval_cone_cell(
         &mut self,
-        node: &NodeId,
+        // Superseded by commit_cell_result's own NodeId::Value(vcid.clone())
+        // construction below — every call site passes node == &NodeId::Value(
+        // vcid.clone()) (the cold-eval cone driver and both in-walk-mint
+        // re-eval drivers all derive node/vcid from the same schedule entry),
+        // so threading it through separately is now redundant. Kept in the
+        // signature rather than touching call sites, per this migration's
+        // characterization-only scope.
+        _node: &NodeId,
         vcid: &ValueCellId,
         expr: &CompiledExpr,
         values: &mut ValueMap,
@@ -5332,22 +5340,30 @@ impl Engine {
     ) {
         let val = reify_expr::eval_expr(
             expr,
-            &eval_ctx_with_meta(values, &self.functions, &self.meta_map)
-                .with_determinacy(snapshot_values)
-                .with_runtime_diagnostics(runtime_sink),
+            &cell_eval_ctx(
+                values,
+                &self.functions,
+                &self.meta_map,
+                snapshot_values,
+                runtime_sink,
+                self,
+            ),
         );
-        let det = match &val {
-            Value::Undef => DeterminacyState::Undetermined,
-            _ => DeterminacyState::Determined,
-        };
-        values.insert(vcid.clone(), val.clone());
-        snapshot_values.insert(vcid.clone(), (val.clone(), det));
         let trace = extract_dependency_trace(expr);
-        self.cache.record_evaluation(
-            node.clone(),
-            CachedResult::Value(val, det),
-            VersionId(version_id),
+        commit_cell_result(
+            CommitLegs {
+                values,
+                snapshot_values,
+                cache: &mut self.cache,
+                journal: &mut self.journal,
+            },
+            vcid.clone(),
+            val,
+            DeterminacyRule::DeriveFromValue,
+            TraceSource::ConeReeval,
             trace,
+            VersionId(version_id),
+            CacheLeg::Record,
         );
     }
 
