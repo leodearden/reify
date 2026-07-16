@@ -2329,18 +2329,43 @@ mod tests {
             ),
         }
 
-        // The table must be unchanged on the Propagated path.  Descriptor-keyed
-        // persistence is deferred to task 4262 (`propagate_attributes` takes `&self`;
-        // there is no descriptor store until 4262 lands).
+        // Descriptor-keyed persistence (task #4637): every surviving facet
+        // with a trackable source is now persisted into the separate
+        // `result_faces` store, keyed under the result's KernelHandle.
         assert!(
-            table
-                .lookup(KernelHandle {
-                    kernel: KernelId::Manifold,
-                    id: result_handle.id,
-                })
-                .is_none(),
-            "propagate_attributes must not write a result-handle entry on the Propagated path \
-             (descriptor-keyed persistence deferred to task 4262)"
+            table.result_face_len() > 0,
+            "propagate_attributes must persist at least one descriptor-keyed result-face entry \
+             on the Propagated path"
+        );
+        let result_kernel_handle = KernelHandle {
+            kernel: KernelId::Manifold,
+            id: result_handle.id,
+        };
+        for (descriptor, attr) in table.iter_result_faces() {
+            assert_eq!(
+                descriptor.handle, result_kernel_handle,
+                "every persisted result-face descriptor must be keyed under the result's \
+                 KernelHandle"
+            );
+            assert!(
+                *attr == make_attr("A") || *attr == make_attr("B"),
+                "persisted result-face attribute must be exactly one parent's TopologyAttribute; \
+                 got {attr:?}"
+            );
+        }
+
+        // Non-pollution guard: result faces live ONLY in the descriptor-keyed
+        // `result_faces` store above, never as a coarse whole-result entry in
+        // `entries` — a coarse entry there would be picked up by the engine's
+        // per-realization `entries`-only diagnostic scan
+        // (`reify_eval::engine_build`) and centroid-queried against the
+        // default kernel under a Manifold-only id, which would spuriously
+        // fail (see the landed 4636 regression test
+        // `forwarded_manifold_solid_entries_excluded_from_centroid_and_reassignment_scan`).
+        assert!(
+            table.lookup(result_kernel_handle).is_none(),
+            "propagate_attributes must not write a coarse result-handle entry into `entries` \
+             (result faces belong in the descriptor-keyed result_faces store only)"
         );
         assert!(
             table
