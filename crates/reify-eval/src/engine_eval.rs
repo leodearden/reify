@@ -5967,6 +5967,17 @@ impl Engine {
                     // Check cache reuse (not dirty, no override)
                     // Preserve existing freshness (Failed/Pending) — see the
                     // analogous let-cell block comment for rationale (arch §7.1/§9.2).
+                    //
+                    // task γ (#5053) deferral note: this commit (and its Param/Let
+                    // siblings below, at ~@6183/@6355) calls
+                    // `record_evaluation_with_freshness` directly rather than
+                    // `commit_cell_result` (task α, cell_commit.rs). `CacheLeg::Record`
+                    // always writes `Freshness::Final` and has no path to a preserved
+                    // (carried-over) freshness value — see cell_commit.rs's module doc,
+                    // "Known scope gaps" — so a genuinely preserve-freshness commit like
+                    // this one cannot be represented by `commit_cell_result` as currently
+                    // shaped. Left unmigrated pending a preserve/propagating `CacheLeg`
+                    // variant (PRD docs/prds/v0_6/eval-cell-commit-substrate.md §2.4).
                     if !self.param_overrides.contains_key(&cell.id)
                         && !self.cache.is_dirty(&node_id)
                         && let Some(entry) = self.cache.get(&node_id)
@@ -6169,6 +6180,11 @@ impl Engine {
 
                             // Cache-reuse: not dirty + entry exists (no override).
                             // Preserve existing freshness (Failed/Pending) — arch §7.1/§9.2.
+                            //
+                            // task γ (#5053) deferral note: unmigrated preserve-freshness
+                            // commit — see the Auto-cell pre-seed block's comment above
+                            // (~@5967) for the full rationale (cell_commit.rs "Known scope
+                            // gaps" + PRD §2.4); identical reasoning applies here.
                             if !self.param_overrides.contains_key(&cell.id)
                                 && !self.cache.is_dirty(&node_id)
                                 && let Some(entry) = self.cache.get(&node_id)
@@ -6342,6 +6358,11 @@ impl Engine {
                             // Cache-reuse: not dirty + entry exists.
                             // Preserve existing freshness (Failed/Pending) — arch §7.1/§9.2.
                             // See the detailed rationale in the old second-pass let-cell block.
+                            //
+                            // task γ (#5053) deferral note: unmigrated preserve-freshness
+                            // commit — see the Auto-cell pre-seed block's comment above
+                            // (~@5967) for the full rationale (cell_commit.rs "Known scope
+                            // gaps" + PRD §2.4); identical reasoning applies here.
                             if !self.cache.is_dirty(&node_id)
                                 && let Some(entry) = self.cache.get(&node_id)
                                 && let CachedResult::Value(ref val, det) = entry.result
@@ -7172,6 +7193,20 @@ impl Engine {
     ///
     /// The subsequent passes (guarded groups, sub-component elaboration,
     /// post-solver evaluate_let_bindings) are UNCHANGED.
+    ///
+    /// task γ (#5053) deferral note: the Let arm's three
+    /// `record_evaluation_propagating_freshness` commits (compute-dispatch
+    /// Failed, panic-recovery, and the main success path) are NOT migrated
+    /// onto `commit_cell_result` (task α, cell_commit.rs). `CacheLeg::Record`
+    /// always writes `Freshness::Final` and has no path to the derived,
+    /// input-propagated freshness this function computes per arch §7.2 — see
+    /// cell_commit.rs's module doc, "Known scope gaps". Left unmigrated
+    /// pending a propagating `CacheLeg` variant (PRD
+    /// docs/prds/v0_6/eval-cell-commit-substrate.md §2.4). The Param arm
+    /// above is unaffected (it uses plain `record_evaluation`, Final-only,
+    /// already representable — though still unmigrated in this
+    /// characterization-only task, whose declared scope is the named site
+    /// inventory, not every Final-representable call site).
     #[allow(clippy::too_many_arguments)]
     fn evaluate_params_and_lets_unified(
         &mut self,
@@ -8130,6 +8165,17 @@ impl Engine {
     /// topologically sorts, and evaluates each in order — recording
     /// journal events and cache entries. Used by both the initial eval()
     /// pass and the post-resolution re-evaluation pass.
+    ///
+    /// task γ (#5053) deferral note: this function's three
+    /// `record_evaluation_propagating_freshness` commits (compute-dispatch
+    /// Failed, panic-recovery, and the main success path) are NOT migrated
+    /// onto `commit_cell_result` (task α, cell_commit.rs) — same reasoning as
+    /// `evaluate_params_and_lets_unified`'s Let arm: `CacheLeg::Record` always
+    /// writes `Freshness::Final` and cannot represent the derived,
+    /// input-propagated freshness this function computes per arch §7.2 (see
+    /// cell_commit.rs's module doc, "Known scope gaps"). Left unmigrated
+    /// pending a propagating `CacheLeg` variant (PRD
+    /// docs/prds/v0_6/eval-cell-commit-substrate.md §2.4).
     #[allow(clippy::too_many_arguments)]
     fn evaluate_let_bindings(
         &mut self,
