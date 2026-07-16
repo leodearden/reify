@@ -30,6 +30,21 @@ fn wait_for<T>(
 
 /// Try to create a FileWatcher, returning None if OS resources (e.g. inotify
 /// instances) are exhausted. Tests should skip rather than fail in that case.
+///
+/// Most callers below make a single attempt and silently `return` on `None`
+/// (the `let Some(_watcher) = try_watcher(...) else { return; };` idiom) --
+/// in an environment where that exhaustion is genuine and sustained, such a
+/// test passes vacuously without exercising anything.
+/// `watcher_construct_and_drop_in_a_loop_never_hangs` guards against total,
+/// sustained inotify unavailability as a suite-wide canary (it fails
+/// loudly, rather than skipping, if EVERY one of 20 quick attempts fails).
+/// `watcher_rereads_final_content_after_nonatomic_truncate_then_append`
+/// additionally retries a bounded number of times against transient
+/// contention (concurrent tests racing for a limited number of inotify
+/// instances/watches), since it's the load-bearing regression test for this
+/// file's bug (papercut #11). The remaining single-attempt tests accept the
+/// residual, suggestion-level vacuous-skip risk rather than each carrying
+/// their own retry/canary logic.
 fn try_watcher<F>(
     dir: &std::path::Path,
     target_file: Option<PathBuf>,
@@ -512,19 +527,45 @@ fn watcher_rereads_final_content_after_nonatomic_truncate_then_append() {
     std::fs::write(&target, "module bottom_deck\n\nvalue a = 0\n").unwrap();
 
     let contents: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
-    let contents_clone = contents.clone();
 
-    let Some(_watcher) = try_watcher(
-        dir.path(),
-        Some(PathBuf::from("bottom_deck.ri")),
-        move |event| {
-            if let FileEvent::Changed(path) = event
-                && let Ok(text) = std::fs::read_to_string(&path)
-            {
-                contents_clone.lock().unwrap().push(text);
-            }
-        },
-    ) else {
+    // Unlike the single-attempt `try_watcher` tests elsewhere in this file,
+    // this one retries construction a bounded number of times against
+    // transient OS resource contention (tests run concurrently by default,
+    // so a single attempt can lose a narrow race against sibling tests'
+    // watchers even when the environment is perfectly capable of running
+    // this test) before conceding a skip -- see the note on `try_watcher`
+    // above for how this fits with the other tests' residual vacuous-skip
+    // risk. Genuine, sustained exhaustion still skips gracefully once the
+    // retries are exhausted, exactly like every other test here; this only
+    // shrinks the window, it doesn't change the skip-on-exhaustion
+    // contract.
+    const MAX_ATTEMPTS: u32 = 10;
+    let mut attempts = 0;
+    let watcher = loop {
+        attempts += 1;
+        let contents_clone = contents.clone();
+        let attempt = try_watcher(
+            dir.path(),
+            Some(PathBuf::from("bottom_deck.ri")),
+            move |event| {
+                if let FileEvent::Changed(path) = event
+                    && let Ok(text) = std::fs::read_to_string(&path)
+                {
+                    contents_clone.lock().unwrap().push(text);
+                }
+            },
+        );
+        match attempt {
+            Some(w) => break Some(w),
+            None if attempts < MAX_ATTEMPTS => std::thread::sleep(Duration::from_millis(25)),
+            None => break None,
+        }
+    };
+    let Some(_watcher) = watcher else {
+        eprintln!(
+            "SKIP: watcher_rereads_final_content_after_nonatomic_truncate_then_append \
+             gave up after {attempts} attempts -- see SKIP reason(s) above"
+        );
         return;
     };
 
