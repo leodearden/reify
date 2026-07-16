@@ -319,3 +319,69 @@ dimensions?
   `@display("L")`. Even if a later edit changed `length`/`width`/`height` so
   `capacity` became `0.0007 m³` or `0.7 m³`, the cell stays in liters (`"0.7 L"` /
   `"700 L"`) — auto-scaling never overrides an explicit pin to hop it to mL or m³.
+
+---
+
+## §6 — Precedence order & formatter ownership
+
+### (1) Precedence
+
+**DECISION — total order, highest first:**
+
+1. **Source `@display` annotation** (durable, in-source default — §3).
+2. **GUI picker override** (per-cell, client-local: in-memory this session, else
+   localStorage-persisted prior pick — §2c). **Never written back to source.**
+3. **Ladder default rung** (`is_default` — §2c/§4).
+4. **Curated derived-unit name** (§4) where no ladder rung applies but a curated name
+   exists.
+5. **Composed-symbol fallback** (§2b#1/§4b) — last resort, for a dimension with
+   neither a ladder nor a curated name.
+
+**How annotation and picker interact:** `@display` sets the *default* a cell renders
+at — what loading the file with zero interaction shows (the G1 acceptance bar, §1).
+The GUI picker is a *session/client override* layered on top of it: picking a
+different rung in the GUI does not rewrite the `@display("L")` in source. Reloading
+the file — or opening it in a different browser profile/machine without that
+`localStorage` entry — reverts the cell to the annotation's rung. If a binding carries
+no `@display`, the picker's own baseline is unchanged from today: the ladder default
+rung (rung 3). **Auto-scaling (§5) only acts at rung 3** — the instant rung 1 or rung
+2 pins an explicit unit, auto-scaling is suppressed (§5d).
+
+### (2) Formatter ownership
+
+**DECISION: one shared formatter owns all four surfaces** — CLI/eval `Value` Display,
+the GUI cell (`format_display_pair`), LSP hover (`format_hover`), and
+`__interp_render` — replacing the three divergent functions cataloged in §2b.
+
+**API seam sketch:**
+
+```
+fn resolve_display(
+    si_value: f64,
+    dimension: &DimensionVector,
+    preference: Option<&DisplayPreference>,  // the rung that already won §6(1)'s order
+) -> (String, String)                        // (formatted_magnitude, unit_label)
+```
+
+- **Inputs:** `si_value` + `DimensionVector` (what every current function already
+  takes), plus a resolved `preference` carrying whichever rung won the §6(1)
+  precedence order for this call site. The formatter does not re-run precedence
+  itself — the caller resolves `@display` vs GUI-picker vs "none" and passes the
+  result in; with `preference: None`, the formatter falls through §6(1) rungs 3–5
+  internally (ladder default → curated name → composed symbol).
+- **Output** mirrors `format_display_pair`'s existing `(String, String)` shape, so the
+  GUI and interpolation call sites need no shape change — only the CLI (§2b#1,
+  currently `Display`-trait-based) and LSP hover (§2b#2, currently
+  `format_hover`-based) call sites change to call the shared function instead of their
+  own.
+
+**Named blocker (implementation-leaf concern, not decided here):** `display_units.rs`
+— and the `unit_ladders()` registry this PRD reuses (§2c/§4a) — lives in
+`gui/src-tauri`, which `reify-ir`/`reify-expr`/`reify-lsp` cannot depend on (the GUI is
+a leaf consumer of the compiler/eval stack, not a dependency of it). The registry must
+relocate to a crate all four surfaces can reach. `crates/reify-core` is the natural
+candidate: `DimensionVector`, `to_display_units`, `NAMED_DIMENSIONS`, and
+`canonical_name` already live there, and its own `Cargo.toml` describes it as a "leaf
+crate" with near-zero dependencies (the intentional dependency floor per
+`docs/prds/core-ast-ir-layering.md` task γ). The exact target crate and migration
+shape is left to the owning leaf (§7 L1/L3) — not fixed here.
