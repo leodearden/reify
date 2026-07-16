@@ -687,4 +687,133 @@ mod tests {
             String::new()
         };
     }
+
+    // amend (#5057 reviewer_comprehensive, suggestion #2 — test-coverage-gap):
+    // every existing parity fixture (`tests/unfold_commit_parity.rs`) supplies
+    // an explicit arg for its only param, so only the `args.iter().find(..)`
+    // arm (:380-389) of `elaborate_child_params_only` was ever exercised. This
+    // fixture adds a second param, `m`, that `child`'s args never name — it
+    // must fall back to `default_expr` (:390-399), evaluated against
+    // `&child_values` rather than the parent `values`, under the newly-wired
+    // `cell_eval_ctx`. Locks both the committed value and the migration's
+    // journal-provenance signal for that branch.
+    #[test]
+    fn elaborate_child_params_only_default_expr_branch_commits_via_primitive() {
+        use reify_core::{ModulePath, Type};
+        use reify_ir::BinOp;
+        use reify_test_support::mocks::MockConstraintChecker;
+        use reify_test_support::{
+            CompiledModuleBuilder, TopologyTemplateBuilder, binop, gt, literal, value_ref_typed,
+        };
+
+        use crate::journal::{EventKind, EventPayload};
+
+        let guard = gt(value_ref_typed("S", "n", Type::Int), literal(Value::Int(0)));
+        let n_minus_1 = binop(
+            BinOp::Sub,
+            value_ref_typed("S", "n", Type::Int),
+            literal(Value::Int(1)),
+        );
+
+        // `m` is never named in `child`'s args (only `n` is), so it must take
+        // its default_expr at every recursion level, including S.child.
+        let template = TopologyTemplateBuilder::new("S")
+            .param(
+                "S",
+                "n",
+                Type::Int,
+                Some(reify_ir::CompiledExpr::literal(Value::Int(1), Type::Int)),
+            )
+            .param("S", "m", Type::Int, Some(literal(Value::Int(7))))
+            .is_recursive(true)
+            .sub_component_with_guard("child", "S", vec![("n".to_string(), n_minus_1)], guard)
+            .build();
+
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(template)
+            .build();
+        let mut engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let result = engine.eval(&module);
+
+        let child_m = ValueCellId::new("S.child", "m");
+        assert_eq!(
+            result.values.get(&child_m),
+            Some(&Value::Int(7)),
+            "S.child.m should take its default_expr (7); child never receives an \
+             explicit arg for m"
+        );
+
+        let events = engine
+            .journal()
+            .events_for_node(&NodeId::Value(child_m.clone()));
+        assert!(
+            events.iter().any(|e| {
+                matches!(&e.kind, EventKind::Started)
+                    && matches!(&e.payload, Some(EventPayload::Custom(s)) if s == "guarded-group")
+            }),
+            "expected a Started event for S.child.m carrying \
+             EventPayload::Custom(\"guarded-group\"), got: {:?}",
+            events
+        );
+    }
+
+    // amend (#5057 reviewer_comprehensive, suggestion #1 —
+    // robustness-untested-behavior-change): the migration wires the live
+    // `&snapshot.values` determinacy map into `cell_eval_ctx`, where the
+    // pre-migration bare `eval_ctx_with_meta` had none (see the `NoContainment`
+    // doc comment above) — a real semantic change for any child param/let
+    // expression containing a `DeterminacyPredicate`. This fixture locks the
+    // intentional divergence: `S.child.ready`'s default references the
+    // always-present, always-`Determined` root cell `S.n` (a stable absolute
+    // reference regardless of recursion depth, unlike a recursion-local one),
+    // so it must resolve `Bool(true)` post-migration instead of unconditionally
+    // degrading to `Value::Undef` as it did pre-migration.
+    #[test]
+    fn elaborate_child_params_only_default_expr_resolves_determinacy_predicate() {
+        use reify_core::{ModulePath, Type};
+        use reify_ir::{BinOp, DeterminacyPredicateKind};
+        use reify_test_support::mocks::MockConstraintChecker;
+        use reify_test_support::{
+            CompiledModuleBuilder, TopologyTemplateBuilder, binop, gt, literal, value_ref_typed,
+        };
+
+        let guard = gt(value_ref_typed("S", "n", Type::Int), literal(Value::Int(0)));
+        let n_minus_1 = binop(
+            BinOp::Sub,
+            value_ref_typed("S", "n", Type::Int),
+            literal(Value::Int(1)),
+        );
+        let ready_default = reify_ir::CompiledExpr::determinacy_predicate(
+            DeterminacyPredicateKind::Determined,
+            ValueCellId::new("S", "n"),
+        );
+
+        let template = TopologyTemplateBuilder::new("S")
+            .param(
+                "S",
+                "n",
+                Type::Int,
+                Some(reify_ir::CompiledExpr::literal(Value::Int(1), Type::Int)),
+            )
+            .param("S", "ready", Type::Bool, Some(ready_default))
+            .is_recursive(true)
+            .sub_component_with_guard("child", "S", vec![("n".to_string(), n_minus_1)], guard)
+            .build();
+
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(template)
+            .build();
+        let mut engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let result = engine.eval(&module);
+
+        let child_ready = ValueCellId::new("S.child", "ready");
+        assert_eq!(
+            result.values.get(&child_ready),
+            Some(&Value::Bool(true)),
+            "S.child.ready = determined(S.n) should resolve Bool(true) via the \
+             snapshot-wired determinacy cell_eval_ctx now threads through the \
+             default_expr branch, not degrade to Value::Undef as the \
+             pre-migration bare eval_ctx_with_meta context did"
+        );
+    }
 }
