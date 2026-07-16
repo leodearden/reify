@@ -406,6 +406,16 @@ decisions and are filed in the task store (fused-memory), each depending on task
 just table order) so the scheduler enforces the same build-up §1's G1 scenario needs:
 registry → annotation + formatter → surface routing → auto-scaling → acceptance.
 
+**Traceability — verified, not assumed.** Per this repo's premise-verification
+convention (`docs/prds/prd-gate-executable-substrate-verification.md` §3) and the
+same spirit as the PTODO citation rule (a cite must resolve to a live, tracked task,
+not an orphan), all six task IDs below were independently confirmed via
+`fused-memory get_task` (2026-07-16) to exist in the task store with **exactly** the
+dependency edges shown in the table: 5232→{5199,5200}, 5233→{5200,5232},
+5234→{5200,5232}, 5235→{5200,5233,5234}, 5236→{5199,5200,5232},
+5237→{5200,5232,5233,5234,5235,5236}. None are forward-references to tasks that
+turned out unfiled.
+
 **Coverage per task:**
 
 | § | Leaf | Task | Depends on | Status |
