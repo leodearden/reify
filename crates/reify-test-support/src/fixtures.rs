@@ -11,7 +11,7 @@ use crate::builders::{
 
 /// The canonical bracket source code for end-to-end testing.
 pub fn bracket_source() -> &'static str {
-    r#"structure Bracket {
+    r#"structure def Bracket {
     param width: Length = 80mm
     param height: Length = 100mm
     param thickness: Length = 5mm

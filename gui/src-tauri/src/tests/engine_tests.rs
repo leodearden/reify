@@ -1406,7 +1406,7 @@ fn get_source_location_end_to_end() {
         .expect("should find source location for Bracket.width");
 
     assert_eq!(loc.file_path, "bracket.ri");
-    // width is on line 2 of bracket_source() (line 1 = "structure Bracket {")
+    // width is on line 2 of bracket_source() (line 1 = "structure def Bracket {")
     assert!(
         loc.line >= 2,
         "width should be on line 2 or later, got {}",
@@ -2613,9 +2613,9 @@ fn get_diagnostics_empty_span_has_identical_start_end() {
     assert_eq!(d.column, exp_col as u32, "column mismatch vs reference");
 
     // Absolute coordinate check: 'width' is on line 2 at column 11 of bracket_source.
-    // bracket_source() starts "structure Bracket {\n    param width..."
-    // The 'w' of 'width' is at byte offset 30 (manually verified):
-    //   19 bytes "structure Bracket {" + '\n' (line 2, col 1)
+    // bracket_source() starts "structure def Bracket {\n    param width..."
+    // The 'w' of 'width' is at byte offset 34 (manually verified):
+    //   23 bytes "structure def Bracket {" + '\n' (line 2, col 1)
     //   + 10 bytes "    param " → col 11 when 'w' is reached.
     assert_eq!(d.line, 2, "expected line for 'width' in bracket_source");
     assert_eq!(
