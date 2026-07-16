@@ -3461,6 +3461,15 @@ mod tests {
     // `EngineSession::load_file` (`FilePathUpdate::Set`, via
     // `crate::commands::load_file_into_engine`) instead of `update_source`,
     // so the debug open funnel adopts the newly-opened file's identity.
+    //
+    // Files-path assertions below use `any(...)` (contains the expected
+    // entry) paired with `!any(...)` (excludes the stale entry) rather than
+    // `all(...)` (every entry matches). `bracket_source()` and
+    // `warn_source_with_unknown_port_type()` are single-module fixtures
+    // today, so `any`/`all` coincide — but `any`+`!any` stays correct if
+    // either fixture ever grows an `import` and `GuiState::files` gains
+    // additional non-deck/non-warn/non-bracket entries, whereas a bare
+    // `all(...)` would then fail spuriously (task #5193 review).
 
     /// T1 (open_file variant, files-path facet): launch on bracket.ri, then
     /// open deck.ri through the helper — `GuiState::files[0].path` must
@@ -3498,8 +3507,8 @@ mod tests {
             "GuiState.files must be non-empty after opening deck.ri"
         );
         assert!(
-            state.files.iter().all(|f| f.path.ends_with("deck.ri")),
-            "every files[].path must adopt the newly-opened file's identity (deck.ri), got: {:?}",
+            state.files.iter().any(|f| f.path.ends_with("deck.ri")),
+            "GuiState.files must contain an entry for the newly-opened file's identity (deck.ri), got: {:?}",
             state.files.iter().map(|f| &f.path).collect::<Vec<_>>()
         );
         assert!(
@@ -3579,8 +3588,8 @@ mod tests {
             "GuiState.files must be non-empty after opening warn.ri"
         );
         assert!(
-            state.files.iter().all(|f| f.path.ends_with("warn.ri")),
-            "every files[].path must adopt the newly-opened file's identity (warn.ri), got: {:?}",
+            state.files.iter().any(|f| f.path.ends_with("warn.ri")),
+            "GuiState.files must contain an entry for the newly-opened file's identity (warn.ri), got: {:?}",
             state.files.iter().map(|f| &f.path).collect::<Vec<_>>()
         );
         assert!(
@@ -3633,7 +3642,7 @@ mod tests {
             "GuiState.files must be non-empty after re-opening warn.ri"
         );
         assert!(
-            state.files.iter().all(|f| f.path.ends_with("warn.ri")),
+            state.files.iter().any(|f| f.path.ends_with("warn.ri")),
             "re-opening the SAME file must still cite warn.ri, got: {:?}",
             state.files.iter().map(|f| &f.path).collect::<Vec<_>>()
         );
