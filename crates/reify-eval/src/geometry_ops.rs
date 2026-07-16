@@ -5364,6 +5364,22 @@ fn symbolic_eval_helper_for_name(name: &str) -> Option<TopologySelectorHelper> {
 /// post-eval with all deps resolved is a genuine bug (wrong arity, or a
 /// scheduling miss where its target was not minted in time), which must remain
 /// a violation rather than be silently exempted.
+///
+/// Reviewer follow-up (task #5120 R2c amendment): this predicate is BY NAME
+/// only — it says nothing about whether a *given* composition call's
+/// operands happen to be resolved right now. So a `union`/`intersect`/
+/// `difference` cell whose operand is a cross-cell `ValueRef` into a
+/// still-build-only (kernel-bearing) selector cell is, by this predicate,
+/// just as "not build-only" as the inline-nested-operand shape R2c actually
+/// targets. That is NOT a hole in the α net: `invariants::check_no_stale_undef`
+/// clause 4 (the dependency-resolution exemption) independently exempts the
+/// composition cell the moment ANY of its `reads` is itself unresolved —
+/// which is exactly what happens here, since `reconstruct_selector_value_symbolic`
+/// can only mint the composition once every operand is a resolved
+/// `Value::Selector`. Clause 4 runs (and exempts) BEFORE clause 8 is even
+/// consulted, so clause 8 does not need to chase `ValueRef` operand chains
+/// itself. See `seeded_composition_over_unresolved_cross_cell_operand_is_exempted_by_dependency_clause`
+/// (`tests/no_stale_undef_invariant_gate.rs`) for the seeded proof.
 pub(crate) fn is_symbolic_eval_wired_selector_ctor(expr: &reify_ir::CompiledExpr) -> bool {
     matches!(
         &expr.kind,

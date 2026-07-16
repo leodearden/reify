@@ -356,6 +356,157 @@ fn seeded_solid_boolean_union_undef_is_exempted_by_geometry_clause() {
     );
 }
 
+/// Reviewer follow-up (task #5120 R2c amendment): `is_symbolic_eval_wired_selector_ctor`
+/// classifies `union`/`intersect`/`difference` BY NAME alone, with no regard
+/// for whether a given call's operands are actually resolved. R2c's own
+/// design assumes INLINE nested operands (both resolve within the same mint
+/// pass), but nothing stops a composition from taking a cross-cell
+/// `ValueRef` operand instead — e.g. `let u = union(a, b)` where `a` is
+/// itself a still-build-only (kernel-bearing) selector cell. Since
+/// `expr_requires_build_only_resolution` only walks `u`'s own static expr
+/// tree (a `ValueRef(a)` leaf, never `a`'s definition — see that function's
+/// doc comment), clause 8 alone cannot see that `a` is unresolvable on
+/// `eval()`. This seeds exactly that shape and proves the α net stays sound
+/// anyway, via clause 4 (not clause 8).
+///
+/// `op1` stands in for that build-only cross-cell producer — as with op1/op2
+/// in `seeded_stale_undef_composition_violation_is_reported` above, its own
+/// `default_expr` is irrelevant to this seeded state (a harmless Undef
+/// literal is used); only its `cell_type` (`Selector(Face)`) and its STORED
+/// value (`Undef` — it is never resolved here, exactly as a real build-only
+/// cell would remain until `build()`) matter. `op2` is a fully-resolved
+/// `Selector(Face)` leaf. `u = union(op1, op2)` is left `Undef`, matching
+/// what the real symbolic mint would actually do:
+/// `reconstruct_selector_value_symbolic`'s `ValueRef` arm reads `op1`'s
+/// stored `Undef`, returns `None`, and that `None` short-circuits
+/// `eval_variadic_composition_symbolic`'s `collect::<Option<Vec<_>>>()` for
+/// the whole call.
+///
+/// Asserts the checker does NOT report `u`: clause 4 ("a read that is itself
+/// Undef, makes `c` EXEMPT") fires on `u`'s `op1` read before clause 8 is
+/// ever consulted, independently of clause 8's by-name composition
+/// classification. Clause 4 and clause 8 are complementary, not redundant:
+/// clause 4 asks "is this specific dependency resolved right now", clause 8
+/// asks "can this call EVER resolve on `eval()` at all".
+#[test]
+fn seeded_composition_over_unresolved_cross_cell_operand_is_exempted_by_dependency_clause() {
+    use reify_core::ty::SelectorKind;
+    use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorValue};
+
+    let op1_id = ValueCellId::new("SeededCrossCellComposition", "op1");
+    let op2_id = ValueCellId::new("SeededCrossCellComposition", "op2");
+    let union_id = ValueCellId::new("SeededCrossCellComposition", "u");
+
+    let selector_type = Type::Selector(SelectorKind::Face);
+
+    let mut graph = EvaluationGraph::default();
+
+    // op1: stands in for a build-only (kernel-bearing) selector cell — its
+    // own default_expr is irrelevant to this seeded state (mirrors op1/op2
+    // in seeded_stale_undef_composition_violation_is_reported above); only
+    // its cell_type and its STORED value (Undef, never resolved) matter.
+    graph.value_cells.insert(
+        op1_id.clone(),
+        ValueCellNode {
+            id: op1_id.clone(),
+            kind: reify_compiler::ValueCellKind::Let,
+            cell_type: selector_type.clone(),
+            default_expr: Some(CompiledExpr::literal(Value::Undef, selector_type.clone())),
+            content_hash: ContentHash::of_str("seeded-cross-cell-op1"),
+        },
+    );
+    // op2: a fully-resolved Selector(Face) leaf producer.
+    graph.value_cells.insert(
+        op2_id.clone(),
+        ValueCellNode {
+            id: op2_id.clone(),
+            kind: reify_compiler::ValueCellKind::Let,
+            cell_type: selector_type.clone(),
+            default_expr: Some(CompiledExpr::literal(Value::Undef, selector_type.clone())),
+            content_hash: ContentHash::of_str("seeded-cross-cell-op2"),
+        },
+    );
+
+    // The union cell: default_expr = FunctionCall{"union", [ValueRef(op1),
+    // ValueRef(op2)]} — a cross-cell ValueRef shape, NOT the inline nested
+    // FunctionCall shape R2c's design targets.
+    let union_expr = CompiledExpr {
+        kind: reify_ir::CompiledExprKind::FunctionCall {
+            function: reify_ir::ResolvedFunction {
+                name: "union".to_string(),
+                qualified_name: "std::union".to_string(),
+            },
+            args: vec![
+                CompiledExpr::value_ref(op1_id.clone(), selector_type.clone()),
+                CompiledExpr::value_ref(op2_id.clone(), selector_type.clone()),
+            ],
+        },
+        result_type: selector_type.clone(),
+        content_hash: ContentHash::of_str("seeded-cross-cell-union"),
+    };
+    graph.value_cells.insert(
+        union_id.clone(),
+        ValueCellNode {
+            id: union_id.clone(),
+            kind: reify_compiler::ValueCellKind::Let,
+            cell_type: selector_type,
+            default_expr: Some(union_expr),
+            content_hash: ContentHash::of_str("seeded-cross-cell-union-cell"),
+        },
+    );
+
+    let ghr = GeometryHandleRef {
+        realization_ref: reify_core::identity::RealizationNodeId::new(
+            "SeededCrossCellComposition",
+            0,
+        ),
+        upstream_values_hash: [0x9Eu8; 32],
+        kernel_handle: None,
+    };
+    let leaf_sv = SelectorValue::leaf(SelectorKind::Face, ghr, LeafQuery::All)
+        .expect("Face/All is a valid kind-closure");
+
+    let mut values: PersistentMap<ValueCellId, (Value, DeterminacyState)> = PersistentMap::new();
+    // op1 is NEVER resolved — the build-only cross-cell producer this test
+    // seeds; it stays Undef exactly as a real build-only cell would until
+    // build().
+    values.insert(
+        op1_id.clone(),
+        (Value::Undef, DeterminacyState::Undetermined),
+    );
+    values.insert(
+        op2_id.clone(),
+        (Value::Selector(leaf_sv), DeterminacyState::Determined),
+    );
+    // u is left Undef, matching what the real symbolic mint would do when
+    // one operand cell reads Undef (see doc comment above).
+    values.insert(
+        union_id.clone(),
+        (Value::Undef, DeterminacyState::Undetermined),
+    );
+
+    let mut trace_map: HashMap<NodeId, DependencyTrace> = HashMap::new();
+    trace_map.insert(
+        NodeId::Value(union_id.clone()),
+        DependencyTrace {
+            reads: vec![op1_id.clone(), op2_id.clone()],
+            realization_reads: Vec::new(),
+        },
+    );
+
+    let violations =
+        reify_eval::invariants::check_no_stale_undef(&graph, &values, &trace_map, &[]);
+
+    assert!(
+        !violations.iter().any(|v| v.cell == union_id),
+        "expected the composition cell {:?} to be EXEMPTED by clause 4 (its op1 \
+         read is itself unresolved) regardless of clause 8's by-name eval-wired \
+         classification of `union` — got a reported violation: {:?}",
+        union_id,
+        violations.iter().map(|v| &v.cell).collect::<Vec<_>>()
+    );
+}
+
 // ── Step-7: Engine-path corpus test over the deliberately-undef fixtures ────
 
 /// The four fixtures purpose-built for the undef-self-describing PRD family
