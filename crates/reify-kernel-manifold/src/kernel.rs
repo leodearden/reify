@@ -1001,14 +1001,27 @@ impl GeometryKernel for ManifoldKernel {
 ///
 /// # Descriptor-keyed persistence
 ///
-/// The correlation (`Vec<FacetProvenance>`) is computed and validated but
-/// **not** persisted into the full `KernelHandle`-keyed `TopologyAttributeTable`
-/// (re-keyed from a bare `GeometryHandleId` by task #4351) — there is no
-/// per-face/descriptor-keyed store for the RESULT handle's individual facets
-/// until task #4263, and `&self` is immutable.  The engine
+/// The correlation (`Vec<FacetProvenance>`) is walked below: every facet
+/// carrying a trackable `source` is persisted into the separate,
+/// descriptor-keyed `result_faces` store on `table` (task #4637), under key
+/// `ResultFaceDescriptor { handle: {Manifold, result_handle},
+/// run_original_id, face_id }`. This is deliberately NOT the
+/// `KernelHandle`-keyed `entries` map (re-keyed from a bare
+/// `GeometryHandleId` by task #4351): a coarse whole-result `entries` write
+/// would be picked up by the engine's `entries`-only per-realization
+/// diagnostic scan (`engine_build.rs`) and centroid-queried against the
+/// default kernel under a Manifold-only id, spuriously failing. Untracked
+/// facets (`source: None`) are intentionally skipped (lossy-but-valid — a
+/// boolean result may legitimately contain runs from an untracked parent).
+///
+/// Correlating the coalesced per-face handles `extract_faces` mints back to
+/// these descriptors — so a selector's `resolve_unique_by_attribute` call
+/// reads them end-to-end — remains task #4263's `.ri` e2e wiring:
+/// `propagate_attributes` takes `&self` and so cannot call `&mut
+/// extract_faces` to mint those handles itself. The engine
 /// (`engine_build.rs`'s kernel-attribute-hook dispatch site) intentionally
-/// swallows all three `Ok` variants, so returning `Propagated` without
-/// writing the table is safe for the current call graph.
+/// swallows all three `Ok` variants, so returning `Propagated` here is safe
+/// for the current call graph regardless of #4263's bridge status.
 ///
 /// # Coarse solid-level placeholder (review follow-up, task #4636 amendment)
 ///
@@ -1080,14 +1093,36 @@ impl KernelAttributeHook for ManifoldKernel {
         let mg = result_manifold.unwrap().to_meshgl64();
         match crate::provenance::correlate_facets(&mg, &parent_map) {
             Ok(facets) => {
-                let source_count =
-                    facets.iter().filter(|f| f.source.is_some()).count();
+                let total_facets = facets.len();
+                let result_kernel_handle = KernelHandle {
+                    kernel: KernelId::Manifold,
+                    id: result_handle,
+                };
+                // Persist every facet with a trackable source into the
+                // descriptor-keyed result_faces store (task #4637). Untracked
+                // facets (source: None) are intentionally skipped — moving
+                // `source` out of each owned `facet` avoids a clone;
+                // `descriptor` is `Copy` so it stays readable afterward.
+                let mut persisted_count = 0usize;
+                for facet in facets {
+                    if let Some(attr) = facet.source {
+                        table.record_result_face(
+                            reify_ir::ResultFaceDescriptor {
+                                handle: result_kernel_handle,
+                                run_original_id: facet.descriptor.run_original_id,
+                                face_id: facet.descriptor.face_id,
+                            },
+                            attr,
+                        );
+                        persisted_count += 1;
+                    }
+                }
                 tracing::debug!(
                     target: "reify_kernel_manifold::kernel",
-                    facets = facets.len(),
-                    with_source = source_count,
-                    "Manifold attribute propagation completed — kernel-level walk done; \
-                     descriptor-keyed persistence deferred to task 4262"
+                    facets = total_facets,
+                    persisted = persisted_count,
+                    "Manifold attribute propagation completed — descriptor-keyed result-face \
+                     persistence landed (#4637); untracked facets (source: None) are skipped"
                 );
                 Ok(KernelAttributeOutcome::Propagated)
             }
@@ -1431,7 +1466,9 @@ mod tests {
     /// stored manifolds have a non-negative `original_id()`, or because no
     /// parent has a table entry.  This test exercises the first case (empty
     /// kernel), which is the cheapest fixture that hits the same branch.
-    /// Descriptor-keyed persistence is deferred to task 4262.
+    /// Descriptor-keyed persistence (task #4637) is never reached on this
+    /// path — the degenerate branch returns before any facet correlation
+    /// (and thus before any result-face write) runs.
     ///
     /// Reuses the `CountingSubscriberBuilder` pattern from
     /// `crates/reify-eval/src/kernel_registry.rs:329-353`. Synthetic op +
