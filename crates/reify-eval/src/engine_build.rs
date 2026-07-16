@@ -6898,7 +6898,7 @@ impl Engine {
         // `detect_local_index_reassignment_diagnostics` below), which walks
         // `topology_attribute_table` filtered by `feature_id` alone and has
         // no other way to tell a solid-representative/forwarded entry apart
-        // from a real face entry. Tracked separately from
+        // from a real face entry. Kept distinct from
         // `realization_step_ids` (which mixes in non-seedable ops too) so
         // the filter below excludes exactly the entries this task added.
         //
