@@ -73,7 +73,7 @@ pub use geometry::{
     GeometryKernel, GeometryOp, GeometryQuery, HistoryRecord, KernelAttributeHook,
     KernelAttributeOutcome, KernelHandle, KernelId, KernelRegistration, LocalFeatureOpHistoryRecords,
     LoftOpHistoryRecords, Mesh, ModEntry, Operation, ThreeMfOptions, ThreeMfWarning, write_3mf, write_stl_ascii, write_stl_binary,
-    QueryCapability, QueryError, ReprKind, Role, StepSchema, SweepOpHistoryRecords, TessError,
+    QueryCapability, QueryError, ReprKind, ResultFaceDescriptor, Role, StepSchema, SweepOpHistoryRecords, TessError,
     TopologyAttribute, TopologyAttributeTable, VolumeConnectivity, VolumeMesh, debug_assert_query_many_invariant,
 };
 pub use kernel_validation::{

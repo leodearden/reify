@@ -5095,6 +5095,36 @@ impl TopologyAttribute {
     }
 }
 
+/// Kernel-agnostic descriptor key for a single result-face attribute
+/// persisted by a cross-kernel `KernelAttributeHook::propagate_attributes`
+/// (e.g. `ManifoldKernel`'s facet-correlation walk).
+///
+/// Combines two independently-motivated axes:
+///   - `handle` — the whole-result `KernelHandle` (kernel + kernel-local
+///     result id), task #4351's cross-kernel collision fix.
+///   - `run_original_id` / `face_id` — the per-facet descriptor axis from
+///     task #4262's `FacetDescriptor` (Manifold provenance coordinates:
+///     which parent run a result triangle/face came from, plus its
+///     per-triangle face identity).
+///
+/// Declared with primitive fields here rather than reusing
+/// `reify_kernel_manifold::provenance::FacetDescriptor` because `reify-ir`
+/// cannot depend on `reify-kernel-manifold` (the dependency direction is the
+/// reverse) — kernel crates map their own descriptor types onto this one at
+/// the write site (task #4637, substrate for #4263).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ResultFaceDescriptor {
+    /// The whole-result handle (kernel + kernel-local result id) this facet
+    /// was correlated from.
+    pub handle: KernelHandle,
+    /// The `run_original_id` of the parent run containing this facet
+    /// (matches `Manifold::original_id()` of one of the boolean's inputs).
+    pub run_original_id: u32,
+    /// Per-triangle/face identifier from the producing kernel (Manifold:
+    /// `MeshGL64::face_id()`).
+    pub face_id: u64,
+}
+
 /// Runtime table mapping kernel-scoped geometry handles to `TopologyAttribute`s.
 ///
 /// Keyed by the full `KernelHandle` (kernel + kernel-local id) rather than a
@@ -5110,10 +5140,18 @@ impl TopologyAttribute {
 // live attribute table into an owned `OwnedBRepSnapshot` BEFORE a rebuild wipes
 // it, so `morph_eligible` Stage-B can run against the OLD BRep on the next tick.
 // The single `HashMap<KernelHandle, TopologyAttribute>` field is `Clone`
-// (both key and value derive it), so this is a trivial additive derive.
+// (both key and value derive it), so this is a trivial additive derive; the
+// `result_faces` field added by task #4637 is `Clone` for the same reason.
 #[derive(Debug, Default, Clone)]
 pub struct TopologyAttributeTable {
     entries: HashMap<KernelHandle, TopologyAttribute>,
+    /// Descriptor-keyed store for per-result-face attributes persisted by
+    /// cross-kernel `propagate_attributes` (task #4637, substrate for
+    /// #4263). Deliberately SEPARATE from `entries`: `iter()` walks only
+    /// `entries`, so writes here stay invisible to the engine's
+    /// per-realization `entries`-only diagnostic scan
+    /// (`reify_eval::engine_build`) — see `record_result_face`.
+    result_faces: HashMap<ResultFaceDescriptor, TopologyAttribute>,
 }
 
 impl TopologyAttributeTable {
@@ -5170,6 +5208,40 @@ impl TopologyAttributeTable {
     /// (PRD `docs/prds/v0_2/persistent-naming-v2.md` line 72).
     pub fn iter(&self) -> impl Iterator<Item = (KernelHandle, &TopologyAttribute)> {
         self.entries.iter().map(|(k, v)| (*k, v))
+    }
+
+    /// Record that result-face descriptor `desc` carries `attr`.
+    ///
+    /// Overwrites any prior entry for the same descriptor (last-write-wins,
+    /// mirroring `record`'s contract on `entries`). Writes here are stored
+    /// in the separate `result_faces` map — NOT `entries` — so they are
+    /// never observed by `lookup`/`record`/`remove`/`iter`, which keeps
+    /// them invisible to the engine's `entries`-only per-realization
+    /// diagnostic scan (task #4637, substrate for #4263).
+    pub fn record_result_face(&mut self, desc: ResultFaceDescriptor, attr: TopologyAttribute) {
+        self.result_faces.insert(desc, attr);
+    }
+
+    /// Look up the attribute for a given result-face descriptor, if any.
+    pub fn lookup_result_face(&self, desc: ResultFaceDescriptor) -> Option<&TopologyAttribute> {
+        self.result_faces.get(&desc)
+    }
+
+    /// Iterate over all `(ResultFaceDescriptor, &TopologyAttribute)` pairs
+    /// in the result-face store.
+    ///
+    /// Iteration order is **unspecified** (HashMap-backed), same caveat as
+    /// `iter()`. Callers are expected to be the #4263 resolver bridge
+    /// (correlating coalesced-face handles back to a descriptor) and tests.
+    pub fn iter_result_faces(
+        &self,
+    ) -> impl Iterator<Item = (ResultFaceDescriptor, &TopologyAttribute)> {
+        self.result_faces.iter().map(|(k, v)| (*k, v))
+    }
+
+    /// Number of entries currently in the result-face store.
+    pub fn result_face_len(&self) -> usize {
+        self.result_faces.len()
     }
 }
 
@@ -10661,10 +10733,7 @@ mod tests {
             face_id: 100,
         };
         // d2 differs only in face_id.
-        let d2 = ResultFaceDescriptor {
-            face_id: 200,
-            ..d1
-        };
+        let d2 = ResultFaceDescriptor { face_id: 200, ..d1 };
         // d3 differs only in handle.
         let d3 = ResultFaceDescriptor {
             handle: KernelHandle {
