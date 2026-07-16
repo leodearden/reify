@@ -377,7 +377,12 @@ fn resolve_display(
   precedence order for this call site. The formatter does not re-run precedence
   itself — the caller resolves `@display` vs GUI-picker vs "none" and passes the
   result in; with `preference: None`, the formatter falls through §6(1) rungs 3–5
-  internally (ladder default → curated name → composed symbol).
+  internally (ladder default → curated name → composed symbol). **Rung 2 is
+  GUI-side only:** the picker's state (§2c — `chosenOptionFor`'s in-memory/
+  localStorage lookup) lives entirely in the TypeScript frontend and is invisible to
+  this Rust formatter, so only the GUI call site (§7d) ever populates `preference`
+  with a rung-2 label; CLI, LSP hover, and `__interp_render` have no picker state to
+  consult and can only supply rung 1 (`@display`, if present) or `None`.
 - **Output** mirrors `format_display_pair`'s existing `(String, String)` shape, so the
   GUI and interpolation call sites need no shape change — only the CLI (§2b#1,
   currently `Display`-trait-based) and LSP hover (§2b#2, currently
