@@ -22,19 +22,14 @@ use reify_ir::{CompiledFunction, DeterminacyState, PersistentMap, Value, ValueMa
 /// (E0061).
 ///
 /// Coexists with the pre-existing `Engine::cell_eval_ctx` *method*
-/// (`engine_eval.rs`) until γ/δ/ε (#5053/#5056/#5057) migrate its call
-/// sites onto this free function; transition rationale and review history
-/// live in `docs/prds/v0_6/eval-cell-commit-substrate.md` §8, not here.
+/// (`engine_eval.rs`) until δ/ε (#5056/#5057) migrate their remaining call
+/// sites onto this free function; γ (#5053) has adopted it at its call
+/// sites in `engine_eval.rs`. Transition rationale and review history live
+/// in `docs/prds/v0_6/eval-cell-commit-substrate.md` §8, not here.
 ///
 /// Lifts `functions` / `meta_map` / `containment` out of `&self` into
 /// explicit params. `undef_causes` stays unset — it is wired separately by
 /// `record_op_contract_failures`, not a cell-eval-ctx capability.
-//
-// TODO(#5053, #5056, #5057): only caller today is the test module below
-// (built under `#[cfg(test)]`, so it doesn't count for a normal build) —
-// a real caller lands once tasks γ/δ/ε adopt this constructor at their
-// respective call sites. Drop this `allow` once any of them lands.
-#[allow(dead_code)]
 pub(crate) fn cell_eval_ctx<'a>(
     values: &'a ValueMap,
     functions: &'a [CompiledFunction],
