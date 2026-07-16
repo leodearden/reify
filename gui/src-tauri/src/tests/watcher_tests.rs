@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -645,6 +646,15 @@ fn watcher_rereads_final_content_after_nonatomic_truncate_then_append() {
 /// event twice, both deliveries would observe the first-write content and
 /// panic, and `received` would still end up empty. Only a genuine delivery
 /// of the second write proves the worker kept draining after the panic.
+///
+/// A shared `panicked` flag additionally confirms the panic branch itself
+/// was reached, set immediately before the `panic!` call. Without this, a
+/// run where the first write's `Changed` event is dropped or coalesced
+/// away before ever reaching the callback (e.g. the notify layer only
+/// delivers the second, latest content on a slow host) would still pass
+/// off the second write's delivery alone -- green, but without ever
+/// exercising panic survival at all. Asserting the flag turns that silent,
+/// vacuous pass into a loud failure.
 #[test]
 fn watcher_survives_a_panicking_callback_and_keeps_delivering_later_events() {
     let dir = tempfile::tempdir().unwrap();
@@ -656,6 +666,8 @@ fn watcher_survives_a_panicking_callback_and_keeps_delivering_later_events() {
 
     let received: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
     let received_clone = received.clone();
+    let panicked = Arc::new(AtomicBool::new(false));
+    let panicked_clone = panicked.clone();
 
     let Some(_watcher) = try_watcher(dir.path(), None, move |event| {
         if let FileEvent::Changed(path) = event
@@ -665,6 +677,7 @@ fn watcher_survives_a_panicking_callback_and_keeps_delivering_later_events() {
             // content -- see the doc comment above for why gating on
             // content (not a call counter) matters here.
             if text == first_write_content {
+                panicked_clone.store(true, Ordering::SeqCst);
                 panic!("simulated callback panic on first-write content");
             }
             if text == second_write_content {
@@ -701,6 +714,18 @@ fn watcher_survives_a_panicking_callback_and_keeps_delivering_later_events() {
     assert!(
         found,
         "watcher should keep delivering events after a callback panic, got: {:?}",
+        *texts
+    );
+
+    // Positive confirmation that the panic branch actually fired -- see the
+    // doc comment above for why the `found` assertion alone can't rule out
+    // a vacuous pass (e.g. the first write's event never reaching the
+    // callback at all).
+    assert!(
+        panicked.load(Ordering::SeqCst),
+        "the callback never observed first_write_content and so never hit \
+         the panic branch -- this run wouldn't have exercised panic \
+         survival at all, got: {:?}",
         *texts
     );
 }
