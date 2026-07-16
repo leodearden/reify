@@ -169,6 +169,48 @@ structure BadS {
 }
 "#;
 
+/// Acceptance parity fixture for test-7: a plain defaulted `Length` param
+/// (`x`) with a `DeterminacyPredicate` probe directly on it (`dp`), a plain
+/// derived `let` (`s = x + 1mm`) with its own sibling probe (`s_det`), and a
+/// plain (non-guarded) no-default `Int` param (`x_rejected`) with its own
+/// sibling probe (`ro_det`). A test sets an incompatible-type-kind override
+/// on `x_rejected` (a `Length` `Value::Scalar` against its `Int` cell_type)
+/// BEFORE eval, so the rejected-override-no-default arm fires (`Value::Undef`,
+/// `DeterminacyState::Undetermined`).
+///
+/// `x_rejected` is deliberately NOT placed inside a `where` guard here (unlike
+/// `GUARDED_GROUP_SRC`'s `x_rejected`, which drives the migrated
+/// `eval_guarded_group_param_cell` and is already exhaustively covered,
+/// provenance + determinacy, by `guarded_group_param_provenance_and_determinacy`
+/// / test-1): `template.guarded_groups` is a separate collection from
+/// `template.value_cells` that ONLY `engine.eval()`'s cold "third pass"
+/// iterates (engine_eval.rs ~@3392) — `eval_cached`'s unified Param+Let pass
+/// (`build_combined_param_let_graph`) never visits it at all, so a `where`-
+/// guarded cell referenced by a sibling `determined(..)` probe is simply
+/// absent from `eval_cached`'s determinacy snapshot, panicking
+/// ("not in determinacy snapshot — wiring bug or eval-order violation") — a
+/// genuine, pre-existing eval_cached capability gap unrelated to γ (confirmed
+/// empirically; see the escalate_info filed alongside this task). A plain,
+/// non-guarded rejected-override Param exercises the SAME "rejected-override,
+/// no-default" determinacy outcome (B2's third named cell kind) on both cold
+/// and warm without depending on guarded-group support, which `eval_cached`
+/// does not have.
+///
+/// Verified (scratch run): compiles+evals cleanly under both `engine.eval()`
+/// and a fresh `engine.eval_cached(..., VersionId(1))`, with `dp` =
+/// `Bool(true)`, `s_det` = `Bool(true)`, `ro_det` = `Bool(false)` on both.
+const PARITY_FIXTURE_SRC: &str = r#"
+    structure S {
+        param x : Length = 5mm
+        let dp = determined(x)
+        let s = x + 1mm
+        let s_det = determined(s)
+
+        param x_rejected : Int
+        let ro_det = determined(x_rejected)
+    }
+"#;
+
 // ─────────────────────────────────────────────────────────────────────────
 // test-1: guarded-group Param provenance + determinacy
 // ─────────────────────────────────────────────────────────────────────────
@@ -662,4 +704,176 @@ fn annotation_args_materialization_failure_cache_skip_audit() {
         Some(&Value::Undef),
         "BadS.it must be Value::Undef after the annotation-args materialization failure"
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// test-7: acceptance parity fixture (B2) + consolidated CacheLeg::Skip audit (B3)
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Acceptance parity fixture — the task's named user-observable signal, the
+/// ratified B2/B3 split per esc-5053-2 Option A (B1, cached-path
+/// warning-resurfaces, is out of γ's scope; owned downstream by μ #5062).
+///
+/// B2 — determinacy identical cold-vs-warm: `engine.eval(&m)` (cold — reaches
+/// `dp`/`s`/`s_det` via the unmigrated main-pass Param/Let evaluator and
+/// `x_rejected`/`ro_det` via the migrated `eval_guarded_group_param_cell`,
+/// impl-1) and a FRESH `engine.eval_cached(&m, VersionId(1))` (warm — reaches
+/// ALL FOUR cells via `eval_cached`'s own separately-implemented, unmigrated
+/// unified Param+Let pass — see engine_eval.rs's "Unified single-pass
+/// evaluation of Param+Let cells" doc comment; it never calls
+/// `eval_guarded_group_param_cell`) must compute IDENTICAL determinacy for
+/// all three named cell kinds:
+///   - `dp` (a `DeterminacyPredicate` directly on a defaulted Param) -> `Bool(true)`
+///   - `s_det` (probe on a plain derived Let) -> `Bool(true)`
+///   - `ro_det` (probe on a rejected-override, no-default Param) -> `Bool(false)`
+/// This is a characterization guard that must stay green through the whole
+/// migration: cold and warm reach every cell through genuinely different
+/// code (confirmed by reading both call paths), so parity here proves the
+/// migration changed no externally observable determinacy outcome on
+/// EITHER path.
+///
+/// B3 — consolidated `CacheLeg::Skip` audit: re-asserts, in one place, that
+/// each of the three post-pass sites migrated at impl-4/5/6 (structural-query,
+/// self-datum projection, annotation-args materialization) carries its
+/// `|cache-skip=<reason>` marker on the LAST Started event for its cell, and
+/// that the Skip leg did not overwrite the pre-existing cache entry with its
+/// fresh value. Cold-only (`engine.eval()`) — none of these three post-passes
+/// run during `eval_cached`. Mirrors test-4/5/6's "stale, not absent" cache
+/// check exactly: a cache entry already exists from each cell's own
+/// preceding, unmigrated main-pass evaluation, so "no cache entry exists for
+/// it" does not hold literally — the journal's cache-skip marker is the
+/// authoritative "this commit skipped the cache leg" signal (see those
+/// tests' doc comments for the full reasoning, empirically reconfirmed here).
+#[test]
+fn acceptance_parity_fixture_and_consolidated_cache_skip_audit() {
+    // ── B2: determinacy identical cold-vs-warm ──────────────────────────
+    let module = parse_and_compile(PARITY_FIXTURE_SRC);
+    let x_rejected_id = ValueCellId::new("S", "x_rejected");
+    let dp_id = ValueCellId::new("S", "dp");
+    let s_det_id = ValueCellId::new("S", "s_det");
+    let ro_det_id = ValueCellId::new("S", "ro_det");
+
+    let mut cold_engine = make_engine();
+    cold_engine.set_param_and_invalidate(&x_rejected_id, mm(5.0));
+    let cold_result = cold_engine.eval(&module);
+
+    let mut warm_engine = make_engine();
+    warm_engine.set_param_and_invalidate(&x_rejected_id, mm(5.0));
+    let warm_result = warm_engine.eval_cached(&module, VersionId(1));
+
+    eprintln!(
+        "cold dp/s_det/ro_det = {:?}/{:?}/{:?}",
+        cold_result.values.get(&dp_id),
+        cold_result.values.get(&s_det_id),
+        cold_result.values.get(&ro_det_id)
+    );
+    eprintln!(
+        "warm dp/s_det/ro_det = {:?}/{:?}/{:?}",
+        warm_result.eval_result.values.get(&dp_id),
+        warm_result.eval_result.values.get(&s_det_id),
+        warm_result.eval_result.values.get(&ro_det_id)
+    );
+
+    for (name, id, expected) in [
+        ("dp", &dp_id, Value::Bool(true)),
+        ("s_det", &s_det_id, Value::Bool(true)),
+        ("ro_det", &ro_det_id, Value::Bool(false)),
+    ] {
+        assert_eq!(
+            cold_result.values.get(id),
+            Some(&expected),
+            "{name} should be {expected:?} on cold engine.eval()"
+        );
+        assert_eq!(
+            warm_result.eval_result.values.get(id),
+            Some(&expected),
+            "{name} should be {expected:?} on a FRESH engine.eval_cached() (warm), \
+             identical to the cold result"
+        );
+    }
+
+    // ── B3: consolidated CacheLeg::Skip audit across the 3 post-pass sites ──
+
+    // structural-query post-pass (impl-4).
+    {
+        let module = parse_and_compile(STRUCTURAL_QUERY_SRC);
+        let mut engine = make_engine();
+        engine.eval(&module);
+        let ms_id = ValueCellId::new("S", "ms");
+        assert_eq!(
+            last_started_payload(&engine, &ms_id),
+            Some(
+                "post-pass-overwrite|cache-skip=structural-query post-pass overwrite"
+                    .to_string()
+            ),
+            "structural-query post-pass: LAST Started event for ms should carry its \
+             cache-skip marker"
+        );
+        match engine.cache_store().get(&NodeId::Value(ms_id.clone())) {
+            None => {}
+            Some(entry) => match &entry.result {
+                CachedResult::Value(val, _) => assert_ne!(
+                    *val,
+                    Value::List(vec![]),
+                    "structural-query post-pass's CacheLeg::Skip commit must not have \
+                     written its fresh value into the cache leg"
+                ),
+                other => panic!("expected CachedResult::Value(_, _), got {other:?}"),
+            },
+        }
+    }
+
+    // self-datum projection post-pass (impl-5).
+    {
+        let module = parse_and_compile(SELF_DATUM_SRC);
+        let mut engine = make_engine();
+        engine.eval(&module);
+        let p_id = ValueCellId::new("S", "p");
+        assert_eq!(
+            last_started_payload(&engine, &p_id),
+            Some("post-pass-overwrite|cache-skip=self-datum projection overwrite".to_string()),
+            "self-datum post-pass: LAST Started event for p should carry its cache-skip marker"
+        );
+        match engine.cache_store().get(&NodeId::Value(p_id.clone())) {
+            None => {}
+            Some(entry) => match &entry.result {
+                CachedResult::Value(val, _) => assert!(
+                    !matches!(val, Value::Plane { .. }),
+                    "self-datum post-pass's CacheLeg::Skip commit must not have written \
+                     its fresh Plane value into the cache leg, got {val:?}"
+                ),
+                other => panic!("expected CachedResult::Value(_, _), got {other:?}"),
+            },
+        }
+    }
+
+    // annotation-args materialization post-pass, success arm (impl-6).
+    {
+        let module = parse_and_compile(ANNOTATION_ARGS_SUCCESS_SRC);
+        let mut engine = make_engine();
+        engine.eval(&module);
+        let it_id = ValueCellId::new("S", "it");
+        assert_eq!(
+            last_started_payload(&engine, &it_id),
+            Some(
+                "post-pass-overwrite|cache-skip=annotation-args materialization overlay"
+                    .to_string()
+            ),
+            "annotation-args post-pass: LAST Started event for it should carry its \
+             cache-skip marker"
+        );
+        match engine.cache_store().get(&NodeId::Value(it_id.clone())) {
+            None => {}
+            Some(entry) => match &entry.result {
+                CachedResult::Value(Value::StructureInstance(data), _) => assert!(
+                    data.annotation("test_eval").is_none(),
+                    "annotation-args post-pass's CacheLeg::Skip commit must not have \
+                     written its overlay-attached instance into the cache leg"
+                ),
+                other => panic!(
+                    "expected CachedResult::Value(StructureInstance(_), _), got {other:?}"
+                ),
+            },
+        }
+    }
 }
