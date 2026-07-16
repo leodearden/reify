@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use reify_compiler::{TopologyTemplate, ValueCellKind, find_template};
 use reify_core::{Diagnostic, ValueCellId, VersionId};
 use reify_expr::ContainmentQuery;
-use reify_ir::{CompiledFunction, DeterminacyState, Value, ValueMap};
+use reify_ir::{CompiledFunction, DeterminacyState, PersistentMap, Value, ValueMap};
 
 use crate::cache::{CacheStore, NodeId};
 use crate::cell_commit::{CacheLeg, CommitLegs, DeterminacyRule, TraceSource, commit_cell_result};
@@ -336,6 +336,41 @@ pub(crate) fn elaborate_child_instance(
     );
 }
 
+/// Builds a [`cell_eval_ctx`] from the given capabilities and evaluates
+/// `expr` against it in one step, replacing the `let ctx = cell_eval_ctx(..);
+/// reify_expr::eval_expr(expr, &ctx)` pair that was previously repeated at
+/// each of this migration's three eval-and-commit call sites (both branches
+/// of `elaborate_child_params_only`, plus `elaborate_child_lets_only`'s
+/// let-eval).
+///
+/// Deliberately a plain function, not a closure hoisted above the caller's
+/// loop: a closure capturing `determinacy`/`runtime_sink`/`containment` by
+/// reference would hold its `&snapshot.values` borrow alive for as long as
+/// the closure binding could still be called again — i.e. across the loop's
+/// intervening `commit_cell_result(.., snapshot_values: &mut
+/// snapshot.values, ..)` call, which the borrow checker rejects. A per-call
+/// function borrows its arguments only for that call's duration, so it has
+/// no such lifetime-extension conflict with the interleaved mutable commit.
+fn eval_child_expr(
+    value_map: &ValueMap,
+    expr: &reify_ir::CompiledExpr,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    determinacy: &PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+    runtime_sink: &RefCell<Vec<Diagnostic>>,
+    containment: &dyn ContainmentQuery,
+) -> Value {
+    let ctx = cell_eval_ctx(
+        value_map,
+        functions,
+        meta_map,
+        determinacy,
+        runtime_sink,
+        containment,
+    );
+    reify_expr::eval_expr(expr, &ctx)
+}
+
 /// Phase 1: Evaluate and store only the param cells for a child instance.
 ///
 /// Returns the template-scoped child_values map (params only) for use in phase 2.
@@ -397,25 +432,25 @@ fn elaborate_child_params_only(
         }
 
         let val = if let Some((_name, arg_expr)) = args.iter().find(|(name, _)| name == member) {
-            let ctx = cell_eval_ctx(
+            eval_child_expr(
                 values,
+                arg_expr,
                 functions,
                 meta_map,
                 &snapshot.values,
                 &runtime_sink,
                 &containment,
-            );
-            reify_expr::eval_expr(arg_expr, &ctx)
+            )
         } else if let Some(ref default_expr) = cell.default_expr {
-            let ctx = cell_eval_ctx(
+            eval_child_expr(
                 &child_values,
+                default_expr,
                 functions,
                 meta_map,
                 &snapshot.values,
                 &runtime_sink,
                 &containment,
-            );
-            reify_expr::eval_expr(default_expr, &ctx)
+            )
         } else {
             Value::Undef
         };
@@ -655,17 +690,15 @@ fn elaborate_child_lets_only<'t>(
         };
         let member = &child_cell_id.member;
 
-        let val = {
-            let ctx = cell_eval_ctx(
-                &child_values,
-                functions,
-                meta_map,
-                &snapshot.values,
-                &runtime_sink,
-                &containment,
-            );
-            reify_expr::eval_expr(expr, &ctx)
-        };
+        let val = eval_child_expr(
+            &child_values,
+            expr,
+            functions,
+            meta_map,
+            &snapshot.values,
+            &runtime_sink,
+            &containment,
+        );
         child_values.insert(child_cell_id.clone(), val.clone());
 
         let scoped_id = ValueCellId::new(scoped_entity, member);
