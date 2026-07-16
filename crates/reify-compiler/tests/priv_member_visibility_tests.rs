@@ -821,6 +821,34 @@ structure def PerDeclGuardHost {
 /// "expect 0 E_PRIV_MEMBER_ACCESS" to "expect exactly 1".
 const NOT_YET_PRIV_GATED_FOLLOWUP: &str = "#5222";
 
+/// Shared `PortHost`+`Parent` fixture for the external port-member
+/// enforcement tests below (reviewer_comprehensive suggestion #2): the priv
+/// (`h.secret.main`) and pub (`h.plain.vis`) scenarios previously repeated
+/// this source verbatim except for the trailing access expression, which
+/// made it easy for the two to drift out of lockstep. Parameterizing on
+/// `access_expr` keeps them structurally identical everywhere else.
+fn port_host_external_access_source(access_expr: &str) -> String {
+    format!(
+        r#"
+trait Iface {{}}
+
+structure def PortHost {{
+    port secret : Iface {{
+        priv param main : Length = 5mm
+    }}
+    port plain : Iface {{
+        param vis : Length = 5mm
+    }}
+}}
+
+structure def Parent {{
+    sub h = PortHost()
+    let touch = {access_expr}
+}}
+"#
+    )
+}
+
 /// External dot-access on a `priv param` nested inside a port now emits
 /// E_PRIV_MEMBER_ACCESS (task #5171): a dedicated AST-pattern branch in
 /// `compile_member_access` detects the `<sub>.<port>.<member>` shape before
@@ -829,25 +857,7 @@ const NOT_YET_PRIV_GATED_FOLLOWUP: &str = "#5222";
 /// (`"<port>.<member>"`) is `Visibility::Private`.
 #[test]
 fn external_priv_port_member_access_emits_error() {
-    let module = compile_source(
-        r#"
-trait Iface {}
-
-structure def PortHost {
-    port secret : Iface {
-        priv param main : Length = 5mm
-    }
-    port plain : Iface {
-        param vis : Length = 5mm
-    }
-}
-
-structure def Parent {
-    sub h = PortHost()
-    let touch = h.secret.main
-}
-"#,
-    );
+    let module = compile_source(&port_host_external_access_source("h.secret.main"));
 
     let priv_errs = priv_access_errors(&module);
     assert_eq!(
@@ -873,25 +883,7 @@ structure def Parent {
 /// case).
 #[test]
 fn external_pub_port_member_access_not_yet_supported_unchanged() {
-    let module = compile_source(
-        r#"
-trait Iface {}
-
-structure def PortHost {
-    port secret : Iface {
-        priv param main : Length = 5mm
-    }
-    port plain : Iface {
-        param vis : Length = 5mm
-    }
-}
-
-structure def Parent {
-    sub h = PortHost()
-    let touch = h.plain.vis
-}
-"#,
-    );
+    let module = compile_source(&port_host_external_access_source("h.plain.vis"));
 
     assert_eq!(
         priv_access_errors(&module).len(),
@@ -921,20 +913,29 @@ structure def Parent {
 /// (task #5171) requires a non-`self` sub receiver bound in
 /// `sub_component_types`, so it structurally cannot fire on this
 /// single-level shape; this test pins that with a real diagnostic count.
+/// Shared `PortHostSelf` fixture for the internal port-member access tests
+/// below (reviewer_comprehensive suggestion #2): the bare-`port.member` and
+/// explicit-`self.port.member` scenarios previously repeated this source
+/// verbatim except for the access expression itself. Parameterizing on
+/// `access_expr` keeps them structurally identical everywhere else.
+fn port_host_self_source(access_expr: &str) -> String {
+    format!(
+        r#"
+trait Iface {{}}
+
+structure def PortHostSelf {{
+    port secret : Iface {{
+        priv param main : Length = 5mm
+    }}
+    let echo = {access_expr}
+}}
+"#
+    )
+}
+
 #[test]
 fn internal_priv_port_member_access_ok() {
-    let module = compile_source(
-        r#"
-trait Iface {}
-
-structure def PortHostSelf {
-    port secret : Iface {
-        priv param main : Length = 5mm
-    }
-    let echo = secret.main
-}
-"#,
-    );
+    let module = compile_source(&port_host_self_source("secret.main"));
 
     assert_eq!(
         priv_access_errors(&module).len(),
@@ -957,18 +958,7 @@ structure def PortHostSelf {
 /// test noticing.
 #[test]
 fn internal_priv_port_member_access_via_self_ok() {
-    let module = compile_source(
-        r#"
-trait Iface {}
-
-structure def PortHostSelf {
-    port secret : Iface {
-        priv param main : Length = 5mm
-    }
-    let echo = self.secret.main
-}
-"#,
-    );
+    let module = compile_source(&port_host_self_source("self.secret.main"));
 
     assert_eq!(
         priv_access_errors(&module).len(),
@@ -985,24 +975,33 @@ structure def PortHostSelf {
 /// reordered to run before the StructureMemberNotFound early-return (a priv
 /// guarded-block member is never `member_known`, since `template_has_member`
 /// doesn't scan `guarded_groups`).
-#[test]
-fn external_priv_guarded_member_access_emits_error() {
-    let module = compile_source(
+/// Shared `GuardHost`+`Parent` fixture for the external guarded-block-member
+/// enforcement tests below (reviewer_comprehensive suggestion #2): the priv
+/// (`h.g`) and pub (`h.vis`) scenarios previously repeated this source
+/// verbatim except for the trailing access expression. Parameterizing on
+/// `access_expr` keeps them structurally identical everywhere else.
+fn guard_host_external_access_source(access_expr: &str) -> String {
+    format!(
         r#"
-structure def GuardHost {
+structure def GuardHost {{
     param active : Bool = true
-    where active {
+    where active {{
         priv param g : Length = 5mm
         param vis : Length = 5mm
-    }
+    }}
+}}
+
+structure def Parent {{
+    sub h = GuardHost()
+    let touch = {access_expr}
+}}
+"#
+    )
 }
 
-structure def Parent {
-    sub h = GuardHost()
-    let touch = h.g
-}
-"#,
-    );
+#[test]
+fn external_priv_guarded_member_access_emits_error() {
+    let module = compile_source(&guard_host_external_access_source("h.g"));
 
     let priv_errs = priv_access_errors(&module);
     assert_eq!(
@@ -1027,22 +1026,7 @@ structure def Parent {
 /// still doesn't scan `guarded_groups`).
 #[test]
 fn external_pub_guarded_member_access_not_found_unchanged() {
-    let module = compile_source(
-        r#"
-structure def GuardHost {
-    param active : Bool = true
-    where active {
-        priv param g : Length = 5mm
-        param vis : Length = 5mm
-    }
-}
-
-structure def Parent {
-    sub h = GuardHost()
-    let touch = h.vis
-}
-"#,
-    );
+    let module = compile_source(&guard_host_external_access_source("h.vis"));
 
     assert_eq!(
         priv_access_errors(&module).len(),
