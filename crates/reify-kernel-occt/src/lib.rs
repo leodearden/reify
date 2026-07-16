@@ -5620,6 +5620,21 @@ mod tests {
         );
     }
 
+    /// Shared body for the three `warm_state_completeness_debug_assert_fires_
+    /// on_orphaned_extracted_*_entry` tests below: corrupt one `extracted_*`
+    /// cache via `corrupt` with an id that has no matching `parent_handle`
+    /// entry, then invoke `warm_state()` so its completeness cross-check
+    /// panics. Only compiled under `#[cfg(debug_assertions)]` — see the
+    /// firing tests' doc comment for why `#[should_panic]` needs that gate;
+    /// gating the helper the same way avoids an unused-function warning in
+    /// release-mode test builds, where none of its three callers compile.
+    #[cfg(debug_assertions)]
+    fn assert_completeness_guard_fires_on(corrupt: impl FnOnce(&mut OcctKernel)) {
+        let mut kernel = OcctKernel::new();
+        corrupt(&mut kernel);
+        let _ = kernel.warm_state();
+    }
+
     /// `warm_state()`'s completeness cross-check (see its doc comment) is a
     /// debug-only guard: every id cached in `extracted_edges`/
     /// `extracted_faces`/`extracted_vertices` must also be a `parent_handle`
@@ -5627,10 +5642,15 @@ mod tests {
     /// orphan back into persisted warm-start state. `extract_edges`/
     /// `extract_faces`/`extract_vertices` always insert into both caches
     /// together (see their `store_with_repr` call sites), so this coupling
-    /// never breaks through the public API — this test reaches past it via
-    /// the crate-private `extracted_faces` field to confirm the guard itself
-    /// actually fires when the coupling is violated, rather than trusting an
-    /// untested assertion to be correct.
+    /// never breaks through the public API — each of the three tests below
+    /// reaches past it via one crate-private `extracted_*` field to confirm
+    /// the guard actually fires for that cache, rather than trusting an
+    /// untested assertion to be correct. They are three separate `#[test]`
+    /// functions rather than one loop over the caches because a
+    /// `#[should_panic]` test stops at the first panic — a shared loop body
+    /// would only ever prove the first cache's corruption fires and leave
+    /// the guard's `.flat_map([...])` coverage of the other two caches
+    /// unverified.
     ///
     /// `#[cfg(debug_assertions)]` is required because `debug_assert!`
     /// compiles to a no-op in release builds — `#[should_panic]` would
@@ -5649,15 +5669,43 @@ mod tests {
     #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "must be a parent_handle key")]
-    fn warm_state_completeness_debug_assert_fires_on_orphaned_extracted_cache_entry() {
-        let mut kernel = OcctKernel::new();
+    fn warm_state_completeness_debug_assert_fires_on_orphaned_extracted_faces_entry() {
         // Directly corrupt extracted_faces: cache an id with no matching
         // parent_handle entry, violating the coupling extract_faces always
         // maintains through the public API.
-        kernel
-            .extracted_faces
-            .insert(1, vec![GeometryHandleId(9_999)]);
-        let _ = kernel.warm_state();
+        assert_completeness_guard_fires_on(|kernel| {
+            kernel
+                .extracted_faces
+                .insert(1, vec![GeometryHandleId(9_999)]);
+        });
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "must be a parent_handle key")]
+    fn warm_state_completeness_debug_assert_fires_on_orphaned_extracted_edges_entry() {
+        // Same as the extracted_faces variant above, but corrupts
+        // extracted_edges — proves the completeness guard's iteration over
+        // all three caches actually includes this one too.
+        assert_completeness_guard_fires_on(|kernel| {
+            kernel
+                .extracted_edges
+                .insert(1, vec![GeometryHandleId(9_999)]);
+        });
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "must be a parent_handle key")]
+    fn warm_state_completeness_debug_assert_fires_on_orphaned_extracted_vertices_entry() {
+        // Same as the extracted_faces variant above, but corrupts
+        // extracted_vertices — proves the completeness guard's iteration
+        // over all three caches actually includes this one too.
+        assert_completeness_guard_fires_on(|kernel| {
+            kernel
+                .extracted_vertices
+                .insert(1, vec![GeometryHandleId(9_999)]);
+        });
     }
 
     #[test]
