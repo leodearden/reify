@@ -7434,6 +7434,41 @@ impl Engine {
                                             pid,
                                             &realization_step_ids,
                                         );
+                                        // Task #4636: forward the source solid's
+                                        // attribute (recorded by
+                                        // `record_solid_attribute` at the seed site
+                                        // above) onto `target` — the post-ingest
+                                        // handle, however it was produced — and,
+                                        // only when a forward actually happened,
+                                        // track `target` in
+                                        // `solid_attribute_handles` (step-9) so the
+                                        // post-loop centroid / local-index-
+                                        // reassignment diagnostic scan excludes it
+                                        // too (see that HashSet's declaration
+                                        // comment above). Shared by the cache-hit and
+                                        // fresh-ingest arms below (reviewer
+                                        // amendment note) so the forward+exclude
+                                        // pairing lives in exactly one place — two
+                                        // independent copies could drift (e.g. a
+                                        // future edit that updates one arm but not
+                                        // the other would silently reintroduce the
+                                        // diagnostic-pollution regression the
+                                        // step-9 fix guards against). A no-op when
+                                        // the source was never seeded (e.g. a
+                                        // non-primitive parent), degrading
+                                        // gracefully to the existing Discarded path.
+                                        let mut forward_and_track = |target: KernelHandle| {
+                                            if forward_solid_attribute_on_ingest(
+                                                topology_attribute_table,
+                                                KernelHandle {
+                                                    kernel: kernel_id_for_registry_name(source_name),
+                                                    id: pid,
+                                                },
+                                                target,
+                                            ) {
+                                                solid_attribute_handles.insert(target);
+                                            }
+                                        };
                                         // Consult the cache BEFORE any kernel work. A
                                         // hit returns the previously-ingested
                                         // target-kernel handle (Copy); reuse its id
@@ -7452,20 +7487,7 @@ impl Engine {
                                             // onto the reused target handle, or this
                                             // build's table would have no entry at all for
                                             // it despite the handle being valid.
-                                            if forward_solid_attribute_on_ingest(
-                                                topology_attribute_table,
-                                                KernelHandle {
-                                                    kernel: kernel_id_for_registry_name(source_name),
-                                                    id: pid,
-                                                },
-                                                cached,
-                                            ) {
-                                                // Task #4636 step-9: exclude the forwarded
-                                                // TARGET handle from the post-loop diagnostic
-                                                // scan too (see `solid_attribute_handles`
-                                                // declaration comment above).
-                                                solid_attribute_handles.insert(cached);
-                                            }
+                                            forward_and_track(cached);
                                             substitution.insert(pid, cached.id);
                                             continue;
                                         }
@@ -7590,28 +7612,10 @@ impl Engine {
                                                     options_hash,
                                                 ));
                                                 // Task #4636 (LINK1): forward the source
-                                                // solid's attribute (recorded by
-                                                // record_solid_attribute at the seed site
-                                                // above) across the ingest seam onto the
-                                                // fresh target handle. A no-op when the
-                                                // source was never seeded (e.g. a
-                                                // non-primitive parent), degrading
-                                                // gracefully to the existing Discarded path.
-                                                if forward_solid_attribute_on_ingest(
-                                                    topology_attribute_table,
-                                                    KernelHandle {
-                                                        kernel: kernel_id_for_registry_name(source_name),
-                                                        id: pid,
-                                                    },
-                                                    intermediate_handle,
-                                                ) {
-                                                    // Task #4636 step-9: exclude the
-                                                    // forwarded TARGET handle from the
-                                                    // post-loop diagnostic scan too (see
-                                                    // `solid_attribute_handles` declaration
-                                                    // comment above).
-                                                    solid_attribute_handles.insert(intermediate_handle);
-                                                }
+                                                // solid's attribute across the ingest
+                                                // seam onto the fresh target handle (see
+                                                // `forward_and_track` above).
+                                                forward_and_track(intermediate_handle);
                                                 substitution.insert(pid, handle.id);
                                             }
                                             Err(e) => {
