@@ -404,6 +404,29 @@ impl Engine {
         (snapshot_id, version_id)
     }
 
+    /// Returns the most-recently-allocated eval `VersionId` — the read half
+    /// of the INV-BUILD-2 API family (`allocate_snapshot_version`, above, is
+    /// the write/allocate half — task 5040 / α; this is task 5047 / δ).
+    ///
+    /// **`VersionId(0)` before the first allocation** — this reader
+    /// saturates rather than panics, by design: `next_version_id` starts at
+    /// 0, so `next_version_id.saturating_sub(1)` reads back 0 pre-allocation
+    /// instead of underflowing.
+    ///
+    /// It diverges from [`Engine::current_eval_version`]
+    /// (engine_build.rs) ONLY pre-eval: that reader reads
+    /// `eval_state.snapshot.version` and PANICS before the first eval,
+    /// whereas this one saturates to `VersionId(0)`. Once any eval has run,
+    /// both readers return the same value (`eval()` stamps
+    /// `eval_state.snapshot.version` with exactly the version
+    /// `allocate_snapshot_version` most recently minted). This site
+    /// preserves `drain_and_record_warm_pool_events`'s pre-eval semantics —
+    /// OQ-2 option (i) in `docs/prds/v0_6/engine-build-hardening.md` §9 —
+    /// rather than routing the drain through the panicking reader.
+    pub(crate) fn last_allocated_version(&self) -> VersionId {
+        VersionId(self.next_version_id.saturating_sub(1))
+    }
+
     /// **`#[cfg(any(test, feature = "test-instrumentation"))]`-gated** test
     /// constructor (task 4050): build an `Engine` from a caller-supplied kernel
     /// map AND a caller-supplied dispatch capability registry, bypassing the
