@@ -5589,6 +5589,15 @@ fn format_expr(expr: &reify_ir::CompiledExpr) -> String {
 
     match &expr.kind {
         CompiledExprKind::Literal(v) => {
+            // Unit-bearing literals render "{val} {unit}" (space-separated).
+            // This is deliberately different from AutoResolveParameterValue's
+            // `display` field, built as "{val}{unit}" with no space
+            // (build_parameters_payload above, pinned by the "4.2mm" golden
+            // in tests/engine_tests.rs) — the two are independently-evolved,
+            // known-divergent value+unit display surfaces pending
+            // unification under docs/prds/display-unit-preference.md §7c
+            // (task 5234). Not an oversight; do not "fix" one to match the
+            // other here.
             let (val, unit) = crate::types::format_value(v);
             if unit.is_empty() {
                 val
