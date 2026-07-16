@@ -719,6 +719,54 @@ mod tests {
         );
     }
 
+    /// step-3 companion (task 5044/γ): Round-trip lock confirming
+    /// `rollback_concurrent_edit` restores `next_snapshot_id`/`next_version_id` to
+    /// their pre-prepare values. `prepare_concurrent_edit_mints_one_snapshot_version_pair`
+    /// above pins the forward half of the allocate/rollback cycle (prepare advances
+    /// each counter by exactly one); this test pins the return half — prepare
+    /// followed by rollback must leave both counters exactly as they were, so the
+    /// next real edit sees no gap in snapshot/version numbering.
+    #[test]
+    fn rollback_concurrent_edit_restores_counters_to_pre_prepare_values() {
+        use reify_test_support::bracket_compiled_module;
+        use reify_test_support::mocks::MockConstraintChecker;
+
+        let module = bracket_compiled_module();
+        let checker = MockConstraintChecker::new();
+        let mut engine = Engine::new(Box::new(checker), None);
+        let _initial = engine.eval(&module);
+
+        let before_snapshot = engine.next_snapshot_id;
+        let before_version = engine.next_version_id;
+
+        let width_id = ValueCellId::new("Bracket", "width");
+        let setup = engine
+            .prepare_concurrent_edit(width_id, Value::length(0.1))
+            .unwrap();
+
+        // Sanity: prepare must actually advance the counters, otherwise the
+        // post-rollback equality assertions below would hold vacuously.
+        assert_ne!(
+            engine.next_snapshot_id, before_snapshot,
+            "prepare_concurrent_edit must advance next_snapshot_id (test precondition)"
+        );
+        assert_ne!(
+            engine.next_version_id, before_version,
+            "prepare_concurrent_edit must advance next_version_id (test precondition)"
+        );
+
+        engine.rollback_concurrent_edit(&setup);
+
+        assert_eq!(
+            engine.next_snapshot_id, before_snapshot,
+            "rollback_concurrent_edit must restore next_snapshot_id to its pre-prepare value"
+        );
+        assert_eq!(
+            engine.next_version_id, before_version,
+            "rollback_concurrent_edit must restore next_version_id to its pre-prepare value"
+        );
+    }
+
     /// step-7 (revised): When eval_duration is None, apply_concurrent_edit falls
     /// back to `start.elapsed()` for the journal Completed event's Duration payload.
     ///
