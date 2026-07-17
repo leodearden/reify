@@ -2782,6 +2782,20 @@ pub fn quaternion_is_finite(w: f64, x: f64, y: f64, z: f64) -> bool {
 /// decimal digits, so 12 stays comfortably inside round-trip fidelity.
 const DISPLAY_SIG_FIGS: u32 = 12;
 
+/// Returns `true` iff `v` is an exact whole number below the `1e15` ceiling
+/// that [`format_display_number`] renders via a lossless `i64` cast rather
+/// than `f64` `Display`.
+///
+/// Single-sourced so [`round_to_sig_figs`]'s fast-path exemption (skip
+/// rounding for values `format_display_number` will render as a bare
+/// integer anyway) and `format_display_number`'s own integer-render branch
+/// can never silently diverge — see `round_to_sig_figs`'s doc comment for
+/// why the ceiling must match exactly.
+#[inline]
+fn renders_as_integer(v: f64) -> bool {
+    v == v.trunc() && v.abs() < 1e15
+}
+
 /// Round `v` to `sig` significant figures for display, cleaning up 1-ulp f64
 /// noise without reintroducing float error of its own.
 ///
@@ -2819,7 +2833,7 @@ fn round_to_sig_figs(v: f64, sig: u32) -> f64 {
     // perf win. Noisy near-whole values such as `105.00000000000001` have
     // `v != v.trunc()` and correctly fall through to the round-trip below,
     // as does any whole number at or beyond 1e15.
-    if v == v.trunc() && v.abs() < 1e15 {
+    if renders_as_integer(v) {
         return v;
     }
     format!("{:.*e}", (sig - 1) as usize, v)
@@ -2844,7 +2858,7 @@ fn round_to_sig_figs(v: f64, sig: u32) -> f64 {
 /// the [`DISPLAY_SIG_FIGS`] floor.
 pub fn format_display_number(v: f64) -> String {
     let v = round_to_sig_figs(v, DISPLAY_SIG_FIGS);
-    if v == v.trunc() && v.abs() < 1e15 {
+    if renders_as_integer(v) {
         format!("{}", v as i64)
     } else {
         format!("{}", v)
