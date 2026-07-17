@@ -480,6 +480,17 @@ fn rewrite_files_to_abs(state: &mut GuiState, canonical: &Path) {
                 ),
             }
         }
+    } else {
+        // `canonical.parent()` is `None` only for a root path (e.g. "/") or an
+        // empty path — in practice unreachable, since every caller passes a
+        // `canonicalize_document_key`/`canonicalize_debug_open_path` realpath,
+        // which always has a parent. Warn rather than silently no-op'ing, so a
+        // degenerate input is observable instead of quietly reintroducing the
+        // stem-only `files[].path` identity ambiguity #5193 eliminated.
+        tracing::warn!(
+            canonical = %canonical.display(),
+            "rewrite_files_to_abs: canonical path has no parent directory; leaving all files[].path entries as stem-only keys"
+        );
     }
 }
 
