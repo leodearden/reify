@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -2321,6 +2322,24 @@ impl Value {
     ///
     /// Unlike the [`Display`](std::fmt::Display) impl which shows raw
     /// dimension vectors, this method uses human-readable SI unit labels.
+    ///
+    /// **Known numeric-formatting divergence from the GUI/MCP path:** the
+    /// `Real`/`Scalar`/`Complex` arms below format the raw `f64` directly
+    /// (e.g. `format!("{si_value}")`) and do *not* route through
+    /// [`format_display_number`]'s significant-figure rounding, so a value
+    /// that renders as `"6.4"` via [`Value::format_display`] /
+    /// [`Value::format_display_pair`] (the GUI values panel and debug MCP
+    /// `engine_state` snapshot) can still show 1-ulp noise here, e.g.
+    /// `"6.3999999999999995"`. This is a deliberate scoping decision, not an
+    /// oversight — task #5198's display-formatting fixes were scoped to the
+    /// GUI values panel, debug MCP snapshot, and constraint pretty-printer,
+    /// not LSP hover (see `format_display_number`'s doc comment for the
+    /// full reachability boundary). Unifying every value+unit display
+    /// surface (eval `Display`, GUI cell, LSP hover, string interpolation)
+    /// behind one formatter is tracked by
+    /// `docs/prds/display-unit-preference.md` §7c (shared `resolve_display`
+    /// formatter — task 5234) and §7d (routing hover onto it — task 5235);
+    /// this divergence should close there, not be patched ad hoc here.
     pub fn format_hover(&self) -> String {
         match self {
             Value::Bool(b) => format!("{b}"),
@@ -2687,7 +2706,13 @@ impl Value {
             }
             Value::Complex { re, im, dimension } => {
                 let (display_re, unit) = dimension.to_display_units(*re);
-                let (display_im, _) = dimension.to_display_units(*im);
+                // Only `im`'s scaled magnitude is needed here (the unit label
+                // is shared with `re`), so scale it directly via
+                // `display_scale` instead of a second `to_display_units`
+                // call — for an uncurated (composed-fallback) dimension that
+                // second call would allocate a `String` label via `Display`
+                // only to immediately discard it.
+                let display_im = dimension.display_scale(*im);
                 let formatted = format!(
                     "{} + {}i",
                     format_display_number(display_re),
@@ -2748,10 +2773,92 @@ pub fn quaternion_is_finite(w: f64, x: f64, y: f64, z: f64) -> bool {
     w.is_finite() && x.is_finite() && y.is_finite() && z.is_finite()
 }
 
+/// Number of significant figures values are rounded to before display.
+///
+/// 12 (not 10) cleans every observed 1-ulp f64 artifact from the SI-m
+/// canonical storage round-trip (6.4 / 105 / 475.2 / 247.2) while preserving
+/// legitimately small or high-precision tolerances (e.g. `0.00005`, or a
+/// 12-digit value like `0.000123456789012`). f64 has ~15-17 significant
+/// decimal digits, so 12 stays comfortably inside round-trip fidelity.
+const DISPLAY_SIG_FIGS: u32 = 12;
+
+/// Returns `true` iff `v` is an exact whole number below the `1e15` ceiling
+/// that [`format_display_number`] renders via a lossless `i64` cast rather
+/// than `f64` `Display`.
+///
+/// Single-sourced so [`round_to_sig_figs`]'s fast-path exemption (skip
+/// rounding for values `format_display_number` will render as a bare
+/// integer anyway) and `format_display_number`'s own integer-render branch
+/// can never silently diverge — see `round_to_sig_figs`'s doc comment for
+/// why the ceiling must match exactly.
+#[inline]
+fn renders_as_integer(v: f64) -> bool {
+    v == v.trunc() && v.abs() < 1e15
+}
+
+/// Round `v` to `sig` significant figures for display, cleaning up 1-ulp f64
+/// noise without reintroducing float error of its own.
+///
+/// Rounds via a decimal scientific-notation round-trip —
+/// `format!("{:.*e}", sig - 1, v).parse::<f64>()` — rather than multiplying
+/// and dividing by a power of ten (which would reintroduce its own float
+/// error, since the product/quotient is generally not exactly representable).
+/// Formatting to `sig - 1` fractional digits in scientific notation asks the
+/// standard float formatter for the correctly-rounded decimal at exactly
+/// `sig` significant figures; parsing it back gives the nearest f64 to that
+/// clean decimal.
+///
+/// Returns `v` unchanged for non-finite (`NaN`/`inf`) or zero values, so
+/// callers preserve `"NaN"` / `"inf"` / `"0"` display exactly as before.
+fn round_to_sig_figs(v: f64, sig: u32) -> f64 {
+    if !v.is_finite() || v == 0.0 {
+        return v;
+    }
+    // Fast path: an exact whole number below 1e15 — the same ceiling
+    // `format_display_number` uses to decide whether to render via an
+    // integer cast — passes through unrounded instead of being truncated to
+    // `sig` figures. This is deliberately NOT `10^sig`: an exact large
+    // integer (e.g. a MONEY total or a large count) with more than `sig`
+    // digits, such as `1_000_000_000_001`, previously round-tripped
+    // losslessly (format_display_number rendered it via `{}` on an `i64`
+    // cast with no rounding at all), and truncating it to `sig` figures
+    // would zero out its trailing digits — a real display regression for
+    // exact integers, not just noise cleanup. Bounding the exemption at 1e15
+    // instead keeps that lossless behaviour for every value
+    // format_display_number would render as a bare integer anyway, while
+    // still cleaning up noisy (non-whole) values and whole numbers at or
+    // beyond 1e15. This function also runs once per scalar during recursive
+    // composite rendering (List/Set/Map/Matrix), so skipping the allocating
+    // format!/parse round-trip for already-clean whole values is also a
+    // perf win. Noisy near-whole values such as `105.00000000000001` have
+    // `v != v.trunc()` and correctly fall through to the round-trip below,
+    // as does any whole number at or beyond 1e15.
+    if renders_as_integer(v) {
+        return v;
+    }
+    format!("{:.*e}", (sig - 1) as usize, v)
+        .parse::<f64>()
+        .unwrap_or(v)
+}
+
 /// Format a floating-point number for display: whole numbers render without
-/// decimal points (e.g. `80.0` → `"80"`).
+/// decimal points (e.g. `80.0` → `"80"`), and values are first rounded to
+/// [`DISPLAY_SIG_FIGS`] significant figures to clean up 1-ulp f64 noise
+/// (e.g. `6.3999999999999995` → `"6.4"`).
+///
+/// Reached by [`Value::format_display`], [`Value::format_display_pair`], and
+/// [`Value::format_display_triple`] — i.e. the GUI values panel, the debug
+/// MCP `engine_state` snapshot, the GUI constraint pretty-printer
+/// (`format_expr`), and `reify-expr` string interpolation (`interp_render`
+/// calls `format_display()` directly). It is *not* reached by
+/// [`Value::format_hover`] (LSP hover) or the raw `impl Display for Value`
+/// (used by `reify eval`'s plain `id = value` cell printing and
+/// `reify-cli`'s MCP value-change tracking) — both of those format floats
+/// via Rust's unrounded shortest-round-trip `Display` and are unaffected by
+/// the [`DISPLAY_SIG_FIGS`] floor.
 pub fn format_display_number(v: f64) -> String {
-    if v == v.trunc() && v.abs() < 1e15 {
+    let v = round_to_sig_figs(v, DISPLAY_SIG_FIGS);
+    if renders_as_integer(v) {
         format!("{}", v as i64)
     } else {
         format!("{}", v)
@@ -2761,23 +2868,29 @@ pub fn format_display_number(v: f64) -> String {
 /// Map a DimensionVector to a human-readable SI unit label.
 ///
 /// Used by [`Value::format_hover`] for user-facing display.
-fn dimension_unit_label(dim: &DimensionVector) -> &'static str {
+///
+/// For dimensions without a curated arm, the fallback composes the base-SI
+/// unit label from [`Display`](std::fmt::Display) (e.g. `"kg·m^-3"` for mass
+/// density) rather than a bare placeholder — hence the `Cow` return: known
+/// arms borrow a `'static` string, the composed fallback owns a freshly
+/// formatted one.
+fn dimension_unit_label(dim: &DimensionVector) -> Cow<'static, str> {
     if *dim == DimensionVector::LENGTH {
-        "m"
+        Cow::Borrowed("m")
     } else if *dim == DimensionVector::AREA {
-        "m\u{00B2}"
+        Cow::Borrowed("m\u{00B2}")
     } else if *dim == DimensionVector::VOLUME {
-        "m\u{00B3}"
+        Cow::Borrowed("m\u{00B3}")
     } else if *dim == DimensionVector::MASS {
-        "kg"
+        Cow::Borrowed("kg")
     } else if *dim == DimensionVector::ANGLE {
-        "rad"
+        Cow::Borrowed("rad")
     } else if *dim == DimensionVector::MONEY {
-        "USD"
+        Cow::Borrowed("USD")
     } else if dim.is_dimensionless() {
-        ""
+        Cow::Borrowed("")
     } else {
-        "SI"
+        Cow::Owned(format!("{dim}"))
     }
 }
 
@@ -10202,6 +10315,84 @@ mod tests {
         );
     }
 
+    // ── dimension_unit_label / format_display_pair composed base-unit tests ──
+    // (task 5198 fix b) — MASS_DENSITY has no curated arm in either fallback,
+    // so both must compose from Display ("kg·m^-3") instead of leaking "SI".
+
+    #[test]
+    fn dimension_unit_label_mass_density_composes_base_units() {
+        assert_eq!(
+            dimension_unit_label(&DimensionVector::MASS_DENSITY),
+            "kg\u{b7}m^-3",
+            "dimension_unit_label(MASS_DENSITY) should compose the Display form, not fall through to \"SI\""
+        );
+    }
+
+    #[test]
+    fn format_hover_mass_density_scalar_renders_composed_units() {
+        // body_density-style scalar must render composed base units, never "1270 SI".
+        let v = Value::Scalar {
+            si_value: 1270.0,
+            dimension: DimensionVector::MASS_DENSITY,
+        };
+        assert_eq!(
+            v.format_hover(),
+            "1270 kg\u{b7}m^-3",
+            "format_hover() on a MASS_DENSITY scalar should render composed base units, not \"1270 SI\""
+        );
+    }
+
+    #[test]
+    fn format_display_pair_mass_density_scalar_renders_composed_units() {
+        let v = Value::Scalar {
+            si_value: 1270.0,
+            dimension: DimensionVector::MASS_DENSITY,
+        };
+        assert_eq!(
+            v.format_display_pair(),
+            ("1270".to_string(), "kg\u{b7}m^-3".to_string()),
+            "format_display_pair() on a MASS_DENSITY scalar should return composed base units, not \"SI\""
+        );
+    }
+
+    // ── Value::Complex format_display_pair scaling (task 5198 amend) ─────────
+    // format_display_pair's Complex arm scales `im` via
+    // `DimensionVector::display_scale` instead of a second `to_display_units`
+    // call (reviewer efficiency finding: the discarded second unit label
+    // allocated needlessly for composed-fallback dimensions). These lock
+    // that `im` still receives the correct per-dimension scale factor —
+    // both for a curated scaling arm (LENGTH) and for the composed-fallback
+    // path (MASS_DENSITY) — so the refactor cannot silently leave `im`
+    // unscaled or otherwise diverge from `re`.
+
+    #[test]
+    fn format_display_pair_complex_scales_both_re_and_im_for_length() {
+        let v = Value::Complex {
+            re: 0.005,
+            im: 0.003,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert_eq!(
+            v.format_display_pair(),
+            ("5 + 3i".to_string(), "mm".to_string()),
+            "both re and im must be scaled metres->millimetres, not just re"
+        );
+    }
+
+    #[test]
+    fn format_display_pair_complex_composed_dimension_renders_both_parts() {
+        let v = Value::Complex {
+            re: 1270.0,
+            im: 4.0,
+            dimension: DimensionVector::MASS_DENSITY,
+        };
+        assert_eq!(
+            v.format_display_pair(),
+            ("1270 + 4i".to_string(), "kg\u{b7}m^-3".to_string()),
+            "im must render correctly through the composed-fallback (identity-scale) path too"
+        );
+    }
+
     // --- Freshness::is_final tests (task #2356) ---
 
     #[test]
@@ -10605,6 +10796,188 @@ mod tests {
             Value::Option(None).format_display_triple().is_none(),
             "Option(None) must return None — falls through the `_ => None` arm"
         );
+    }
+
+    // ── format_display_number sig-fig rounding tests (task 5198 fix a) ───────
+    //
+    // format_display_number currently does `format!("{}", v)` with zero
+    // rounding, so Rust's shortest-round-trip printing faithfully renders
+    // 1-ulp f64 noise left over from the SI-m canonical storage round-trip.
+    // These pin both the noisy→clean cleanup and the pass-through invariants
+    // that the eventual rounding helper must not disturb.
+
+    #[test]
+    fn format_display_number_rounds_ulp_noise_fractional() {
+        // Real artifact observed in the GUI values panel.
+        assert_eq!(format_display_number(6.3999999999999995), "6.4");
+    }
+
+    #[test]
+    fn format_display_number_rounds_ulp_noise_whole_number() {
+        // Real artifact observed in the GUI values panel.
+        assert_eq!(format_display_number(105.00000000000001), "105");
+    }
+
+    #[test]
+    fn format_display_number_rounds_ulp_noise_fractional_large() {
+        // Real artifact observed in the GUI values panel.
+        assert_eq!(format_display_number(475.19999999999993), "475.2");
+    }
+
+    #[test]
+    fn format_display_number_rounds_synthetic_ulp_noise() {
+        // Synthesize a 1-ulp perturbation of a clean value the same way the
+        // real artifacts above arise, rather than relying on a hand-picked
+        // noisy literal that might not land on a distinct bit pattern.
+        let clean = 247.2_f64;
+        let noisy = f64::from_bits(clean.to_bits() + 1);
+        assert_ne!(
+            format!("{noisy}"),
+            "247.2",
+            "test precondition: the +1-ulp neighbour must actually print noisy pre-fix"
+        );
+        assert_eq!(format_display_number(noisy), "247.2");
+    }
+
+    #[test]
+    fn format_display_number_preserves_small_tolerance() {
+        // Small-magnitude smoke test for the 12-not-10 sig-fig choice: a
+        // tolerance like 0.00005 must survive unchanged.
+        assert_eq!(format_display_number(0.00005), "0.00005");
+    }
+
+    #[test]
+    fn format_display_number_preserves_twelve_significant_figures() {
+        // Pins DISPLAY_SIG_FIGS = 12, not 10: a legitimate 12-significant-figure
+        // value must round-trip unchanged. At 10 sig figs this would be
+        // rounded away, corrupting a real high-precision tolerance.
+        assert_eq!(
+            format_display_number(0.000123456789012),
+            "0.000123456789012"
+        );
+    }
+
+    #[test]
+    fn format_display_number_zero_unchanged() {
+        assert_eq!(format_display_number(0.0), "0");
+    }
+
+    #[test]
+    fn format_display_number_whole_number_trims_decimal() {
+        assert_eq!(format_display_number(80.0), "80");
+    }
+
+    #[test]
+    fn format_display_number_nan_renders_nan() {
+        assert_eq!(format_display_number(f64::NAN), "NaN");
+    }
+
+    #[test]
+    fn format_display_number_infinity_renders_inf() {
+        assert_eq!(format_display_number(f64::INFINITY), "inf");
+    }
+
+    // ── round_to_sig_figs fast-path boundary (task 5198 amend) ───────────────
+    //
+    // round_to_sig_figs skips the allocating format!/parse round-trip for
+    // exact whole numbers below 1e15 — format_display_number's own
+    // integer-render ceiling, not 10^DISPLAY_SIG_FIGS (an amendment: the
+    // original narrower `10^sig` guard truncated exact large integers, e.g.
+    // MONEY totals, that used to round-trip losslessly). These pin the fast
+    // path's boundary: values below 1e15 must render with full precision
+    // even when they carry more than DISPLAY_SIG_FIGS digits, and only a
+    // whole number at or beyond 1e15 falls through to real rounding.
+
+    #[test]
+    fn format_display_number_fast_path_whole_number_below_threshold_unchanged() {
+        // 999_999_999_999 has exactly 12 significant figures and sits well
+        // below the 1e15 fast-path ceiling — must render unchanged.
+        assert_eq!(format_display_number(999_999_999_999.0), "999999999999");
+    }
+
+    #[test]
+    fn format_display_number_preserves_exact_large_integer_below_1e15() {
+        // 1_234_567_890_123 has 13 significant figures — beyond
+        // DISPLAY_SIG_FIGS — but is still an exact integer below the 1e15
+        // fast-path ceiling, so it must render with full precision instead
+        // of being truncated to 12 sig figs (the regression the narrower
+        // `10^sig` guard introduced: a MONEY total or large count losing its
+        // trailing digits even though it round-tripped losslessly before
+        // the sig-fig rounding fix existed).
+        assert_eq!(
+            format_display_number(1_234_567_890_123.0),
+            "1234567890123"
+        );
+    }
+
+
+    #[test]
+    fn format_display_number_rounds_whole_number_at_1e15_ceiling() {
+        // A whole number at/beyond the 1e15 fast-path ceiling falls through
+        // to the real round-trip and is rounded to DISPLAY_SIG_FIGS, same as
+        // any other value format_display_number can no longer render via
+        // its own integer-cast branch (which is also gated on `< 1e15`).
+        assert_eq!(
+            format_display_number(1_234_567_890_123_456.0),
+            "1234567890120000"
+        );
+    }
+
+    // ── Cross-path sig-fig rounding lock (task 5198 amend) ────────────────────
+    //
+    // format_display_number is a private choke point; these lock rounding at
+    // the public boundaries that other crates/consumers actually call, per
+    // reviewer request, so the guarantee is pinned end-to-end and not just
+    // for the isolated free function above.
+
+    #[test]
+    fn format_display_method_rounds_ulp_noise() {
+        // reify-expr's interp_render (string interpolation, e.g. "{t}" in a
+        // quoted literal) calls `Value::format_display()` directly — lock
+        // rounding at that method boundary.
+        assert_eq!(Value::Real(6.3999999999999995).format_display(), "6.4");
+    }
+
+    #[test]
+    fn format_display_pair_rounds_ulp_noise_for_composed_dimension() {
+        // End-to-end GUI-values-panel / debug-MCP path: Value::Scalar ->
+        // DimensionVector::to_display_units (composed fallback, identity
+        // scale for MASS_DENSITY) -> format_display_number. Locks that the
+        // sig-fig rounding (fix a) and the composed base-unit fallback
+        // (fix b) compose correctly through the same Scalar, not just each
+        // in isolation.
+        let v = Value::Scalar {
+            si_value: 6.3999999999999995,
+            dimension: DimensionVector::MASS_DENSITY,
+        };
+        assert_eq!(
+            v.format_display_pair(),
+            ("6.4".to_string(), "kg\u{b7}m^-3".to_string())
+        );
+    }
+
+    // ── Negative-value sign handling (task 5198 amend) ────────────────────────
+    //
+    // round_to_sig_figs' fast path is guarded by `v.abs() < 1e15`, and its
+    // fallback round-trips through `format!("{:.*e}", ...)`, which Rust
+    // renders with a leading '-' preserved. Coverage above only exercises
+    // positive magnitudes; these lock sign handling through both the
+    // round-trip path (noisy negative fraction) and the negative whole-number
+    // fast path.
+
+    #[test]
+    fn format_display_number_rounds_ulp_noise_fractional_negative() {
+        // Sign mirror of format_display_number_rounds_ulp_noise_fractional:
+        // negative 1-ulp noise must clean up identically, preserving sign.
+        assert_eq!(format_display_number(-6.3999999999999995), "-6.4");
+    }
+
+    #[test]
+    fn format_display_number_whole_number_trims_decimal_negative() {
+        // Sign mirror of format_display_number_whole_number_trims_decimal:
+        // exercises round_to_sig_figs' abs()-guarded fast path for a negative
+        // whole number.
+        assert_eq!(format_display_number(-80.0), "-80");
     }
 
     // ── Value::Selector substrate tests (step-3 RED / task 4116 α) ───────────

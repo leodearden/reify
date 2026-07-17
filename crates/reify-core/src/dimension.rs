@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::fmt;
 use std::ops::{Add, Neg, Sub};
 
@@ -417,25 +418,59 @@ impl DimensionVector {
         DimensionVector(result)
     }
 
+    /// Scale a raw SI value the same way [`to_display_units`](Self::to_display_units)
+    /// would, without computing the (possibly-allocating) unit label.
+    ///
+    /// This is the single source of truth for the per-dimension scale factor;
+    /// `to_display_units` calls it directly, so the two can never drift apart.
+    /// Useful when a caller already has the unit label from a sibling
+    /// `to_display_units` call on the same dimension (e.g. formatting the
+    /// real and imaginary parts of a `Value::Complex`) and only needs the
+    /// scaled magnitude for the second value — skipping a second, possibly
+    /// label-allocating `to_display_units` call whose label would be
+    /// discarded anyway.
+    pub fn display_scale(&self, si_value: f64) -> f64 {
+        if *self == DimensionVector::LENGTH {
+            si_value * 1000.0
+        } else if *self == DimensionVector::ANGLE {
+            si_value * 180.0 / std::f64::consts::PI
+        } else if *self == DimensionVector::AREA {
+            si_value * 1e6
+        } else if *self == DimensionVector::VOLUME {
+            si_value * 1e9
+        } else {
+            // MONEY, dimensionless, and the composed fallback all pass the
+            // value through unscaled.
+            si_value
+        }
+    }
+
     /// Convert an SI value to the standard engineering display unit for this dimension.
     ///
     /// Returns `(converted_value, unit_label)`. For example, LENGTH converts
     /// metres to millimetres: `to_display_units(0.08)` → `(80.0, "mm")`.
-    pub fn to_display_units(&self, si_value: f64) -> (f64, &'static str) {
+    ///
+    /// For dimensions without a curated engineering-unit arm, the fallback
+    /// composes the base-SI unit label from [`Display`](fmt::Display) (e.g.
+    /// `"kg·m^-3"` for mass density) rather than a bare placeholder — hence
+    /// the `Cow` return: known arms borrow a `'static` string, the composed
+    /// fallback owns a freshly formatted one.
+    pub fn to_display_units(&self, si_value: f64) -> (f64, Cow<'static, str>) {
+        let display_value = self.display_scale(si_value);
         if *self == DimensionVector::LENGTH {
-            (si_value * 1000.0, "mm")
+            (display_value, Cow::Borrowed("mm"))
         } else if *self == DimensionVector::ANGLE {
-            (si_value * 180.0 / std::f64::consts::PI, "deg")
+            (display_value, Cow::Borrowed("deg"))
         } else if *self == DimensionVector::AREA {
-            (si_value * 1e6, "mm\u{00B2}")
+            (display_value, Cow::Borrowed("mm\u{00B2}"))
         } else if *self == DimensionVector::VOLUME {
-            (si_value * 1e9, "mm\u{00B3}")
+            (display_value, Cow::Borrowed("mm\u{00B3}"))
         } else if *self == DimensionVector::MONEY {
-            (si_value, "USD")
+            (display_value, Cow::Borrowed("USD"))
         } else if self.is_dimensionless() {
-            (si_value, "")
+            (display_value, Cow::Borrowed(""))
         } else {
-            (si_value, "SI")
+            (display_value, Cow::Owned(format!("{self}")))
         }
     }
 
@@ -1083,6 +1118,34 @@ mod tests {
     }
 
     #[test]
+    fn display_scale_matches_to_display_units_value_for_every_arm() {
+        // display_scale (task 5198 amend: extracted so callers who already
+        // have a unit label from a sibling to_display_units call, e.g.
+        // Value::Complex's im component, can scale a raw value without a
+        // second, possibly-allocating to_display_units call) must produce
+        // exactly the same converted value as to_display_units for every
+        // arm, including the composed fallback — it is to_display_units'
+        // only source of scaling, not an independent copy.
+        let cases: &[(DimensionVector, f64)] = &[
+            (DimensionVector::LENGTH, 0.08),
+            (DimensionVector::ANGLE, std::f64::consts::PI),
+            (DimensionVector::AREA, 0.0004),
+            (DimensionVector::VOLUME, 0.000001),
+            (DimensionVector::MONEY, 25.0),
+            (DimensionVector::DIMENSIONLESS, 3.0),
+            (DimensionVector::MASS_DENSITY, 1270.0),
+        ];
+        for (dim, si_value) in cases {
+            let (expected, _) = dim.to_display_units(*si_value);
+            assert_eq!(
+                dim.display_scale(*si_value),
+                expected,
+                "display_scale diverged from to_display_units for {dim:?}"
+            );
+        }
+    }
+
+    #[test]
     fn to_display_units_recognises_money() {
         let (value, unit) = DimensionVector::MONEY.to_display_units(25.0);
         assert_eq!(value, 25.0, "Money value should pass through unchanged");
@@ -1104,6 +1167,19 @@ mod tests {
         assert_ne!(
             unit, "USD",
             "bare 'USD' label must not appear for a composed Money/Length dimension"
+        );
+    }
+
+    #[test]
+    fn to_display_units_composes_base_units_for_mass_density() {
+        // MASS_DENSITY (kg·m^-3) has no curated LENGTH/ANGLE/AREA/VOLUME/MONEY/
+        // dimensionless arm, so the fallback must compose from Display —
+        // "kg·m^-3" — never the bare literal "SI".
+        let (value, unit) = DimensionVector::MASS_DENSITY.to_display_units(1270.0);
+        assert_eq!(value, 1270.0, "MASS_DENSITY value should pass through unscaled");
+        assert_eq!(
+            unit, "kg·m^-3",
+            "composed fallback must render the Display form, not \"SI\""
         );
     }
 

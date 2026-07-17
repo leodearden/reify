@@ -5569,17 +5569,40 @@ pub fn parse_value_string(s: &str) -> Result<Value, String> {
     Err(format!("Cannot parse value '{}'", s))
 }
 
+/// Reports whether `s` looks like a source identifier (`[A-Za-z_][A-Za-z0-9_]*`).
+///
+/// Used only by `format_expr` to decide how to pretty-print a string-literal
+/// `IndexAccess` key — a display heuristic, not a real disambiguation between
+/// member access and `Map<String, _>` lookup (see the `IndexAccess` arm).
+fn is_identifier_like(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 /// Format a compiled expression as a human-readable string.
 fn format_expr(expr: &reify_ir::CompiledExpr) -> String {
     use reify_ir::CompiledExprKind;
 
     match &expr.kind {
         CompiledExprKind::Literal(v) => {
+            // Unit-bearing literals render "{val} {unit}" (space-separated).
+            // This is deliberately different from AutoResolveParameterValue's
+            // `display` field, built as "{val}{unit}" with no space
+            // (build_parameters_payload above, pinned by the "4.2mm" golden
+            // in tests/engine_tests.rs) — the two are independently-evolved,
+            // known-divergent value+unit display surfaces pending
+            // unification under docs/prds/display-unit-preference.md §7c
+            // (task 5234). Not an oversight; do not "fix" one to match the
+            // other here.
             let (val, unit) = crate::types::format_value(v);
             if unit.is_empty() {
                 val
             } else {
-                format!("{}{}", val, unit)
+                format!("{} {}", val, unit)
             }
         }
         CompiledExprKind::ValueRef(id) | CompiledExprKind::CrossSubGeometryRef(id) => {
@@ -5677,7 +5700,27 @@ fn format_expr(expr: &reify_ir::CompiledExpr) -> String {
             format!("map{{{}}}", entry_strs.join(", "))
         }
         CompiledExprKind::IndexAccess { object, index } => {
-            format!("{}[{}]", format_expr(object), format_expr(index))
+            // Member access (`obj.member`) is lowered to `IndexAccess` with a
+            // string-literal index — recover the source-form dotted access,
+            // but only when the key looks like an identifier. A `Map` keyed
+            // by an arbitrary string (e.g. `config["max load"]`) compiles to
+            // the identical IR shape, so a non-identifier key falls back to
+            // the quoted bracket form instead of the syntactically-invalid
+            // `config.max load`. An identifier-shaped map key (e.g.
+            // `config["mode"]`) is still indistinguishable from real member
+            // access at this level and will render as `config.mode` — a
+            // known display-only limitation, not re-parsed.
+            match &index.kind {
+                CompiledExprKind::Literal(reify_ir::Value::String(member))
+                    if is_identifier_like(member) =>
+                {
+                    format!("{}.{}", format_expr(object), member)
+                }
+                CompiledExprKind::Literal(reify_ir::Value::String(member)) => {
+                    format!("{}[\"{}\"]", format_expr(object), member)
+                }
+                _ => format!("{}[{}]", format_expr(object), format_expr(index)),
+            }
         }
         CompiledExprKind::MethodCall {
             object,
@@ -6573,6 +6616,115 @@ mod display_style_extract_tests {
         );
         assert_eq!(result.finish, 2u8, "Gloss must map to finish==2");
         assert!(!result.wireframe, "wireframe must be false");
+    }
+}
+
+// ── Unit tests for format_expr (constraint pretty-printer) ────────────────
+
+#[cfg(test)]
+mod format_expr_tests {
+    //! Unit tests for the private `format_expr` constraint pretty-printer.
+    //!
+    //! DSL-based integration tests (engine_tests.rs) exercise `format_expr`
+    //! only indirectly, through full constraint strings. These inline tests
+    //! build `CompiledExpr` fixtures directly to pin three specific defects:
+    //! (1) member access — lowered to `IndexAccess` with a string-literal
+    //! index — was rendering as `obj[index]` instead of `obj.index`; (2)
+    //! unit-bearing literals were rendering with no space and the bare "SI"
+    //! fallback instead of a space plus the composed base-unit label; and
+    //! (3) a genuine `Map` lookup keyed by a non-identifier string (which
+    //! lowers to the same `IndexAccess` shape as member access) was
+    //! mis-rendered as invalid dotted syntax instead of a quoted bracket.
+
+    use super::format_expr;
+    use reify_core::{DimensionVector, Type, ValueCellId};
+    use reify_ir::{BinOp, CompiledExpr, Value};
+
+    /// Build the `IndexAccess` node member access lowers to: `material.density`.
+    fn material_density_access() -> CompiledExpr {
+        let object = CompiledExpr::value_ref(
+            ValueCellId::new("material_1", "material"),
+            Type::dimensionless_scalar(),
+        );
+        let index = CompiledExpr::literal(Value::String("density".to_string()), Type::String);
+        CompiledExpr::index_access(object, index, Type::dimensionless_scalar())
+    }
+
+    #[test]
+    fn index_access_with_string_literal_index_renders_as_member_access() {
+        assert_eq!(format_expr(&material_density_access()), "material.density");
+    }
+
+    #[test]
+    fn index_access_with_numeric_index_keeps_bracket_form() {
+        let object = CompiledExpr::value_ref(
+            ValueCellId::new("arr_1", "arr"),
+            Type::dimensionless_scalar(),
+        );
+        let index = CompiledExpr::literal(Value::Int(0), Type::Int);
+        let expr = CompiledExpr::index_access(object, index, Type::dimensionless_scalar());
+
+        assert_eq!(format_expr(&expr), "arr[0]");
+    }
+
+    /// A `Map<String, _>` lookup by a non-identifier key lowers to the same
+    /// `IndexAccess { index: Literal(String(..)) }` shape as member access,
+    /// but must not render as invalid dotted syntax (`config.max load`).
+    #[test]
+    fn index_access_with_non_identifier_string_key_keeps_quoted_bracket_form() {
+        let object = CompiledExpr::value_ref(
+            ValueCellId::new("config_1", "config"),
+            Type::dimensionless_scalar(),
+        );
+        let index = CompiledExpr::literal(Value::String("max load".to_string()), Type::String);
+        let expr = CompiledExpr::index_access(object, index, Type::dimensionless_scalar());
+
+        assert_eq!(format_expr(&expr), "config[\"max load\"]");
+    }
+
+    #[test]
+    fn index_access_with_empty_string_key_keeps_quoted_bracket_form() {
+        let object = CompiledExpr::value_ref(
+            ValueCellId::new("config_1", "config"),
+            Type::dimensionless_scalar(),
+        );
+        let index = CompiledExpr::literal(Value::String(String::new()), Type::String);
+        let expr = CompiledExpr::index_access(object, index, Type::dimensionless_scalar());
+
+        assert_eq!(format_expr(&expr), "config[\"\"]");
+    }
+
+    #[test]
+    fn dimensioned_literal_in_binop_renders_space_and_composed_unit() {
+        let right = CompiledExpr::literal(
+            Value::Scalar {
+                si_value: 0.0,
+                dimension: DimensionVector::MASS_DENSITY,
+            },
+            Type::Scalar {
+                dimension: DimensionVector::MASS_DENSITY,
+            },
+        );
+        let expr = CompiledExpr::binop(
+            BinOp::Gt,
+            material_density_access(),
+            right,
+            Type::dimensionless_scalar(),
+        );
+
+        assert_eq!(format_expr(&expr), "material.density > 0 kg\u{b7}m^-3");
+    }
+
+    #[test]
+    fn dimensionless_literal_in_binop_has_no_trailing_space() {
+        let left = CompiledExpr::value_ref(
+            ValueCellId::new("x_1", "x"),
+            Type::dimensionless_scalar(),
+        );
+        let right = CompiledExpr::literal(Value::Real(0.0), Type::dimensionless_scalar());
+        let expr = CompiledExpr::binop(BinOp::Gt, left, right, Type::dimensionless_scalar());
+
+        assert_eq!(format_expr(&expr), "x > 0");
     }
 }
 
