@@ -27,7 +27,7 @@ Reify is a declarative DSL for parametric engineering design. Source files use t
 - \`connect sub1.port <-> sub2.port\` — port connections between sub-components
 
 ### Expressions
-- Arithmetic: \`+ - * / %\`, comparison: \`== != < > <= >=\`, logical: \`and\`, \`or\`, \`not\`, \`implies\`
+- Arithmetic: \`+ - * / %\`, comparison: \`== != < > <= >=\`, logical: \`and\`, \`or\`, \`not\`, \`implies\` (symbol forms \`&& || !\` also accepted)
 - Conditional: \`if cond { a } else { b }\`
 - Quantity literals with units: \`80mm\`, \`90deg\`, \`2.5kg\`, \`1.5e-3m\`
 - Member access: \`sub_name.param_name\`
