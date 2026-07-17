@@ -219,15 +219,18 @@ fn template_has_member(template: &TopologyTemplate, name: &str) -> bool {
 
 /// Returns `true` if `name` resolves to a `priv` member of `template`: a
 /// `priv param` (a `Param`-kind value cell marked `Visibility::Private`), a
-/// `priv sub` (`Visibility::Private`), or a `priv port` (`is_priv == true`).
-/// Sibling to [`template_has_member`]; gates the E_PRIV_MEMBER_ACCESS check on
-/// the external StructureRef member-access path (task #3978 δ).
+/// `priv sub` (`Visibility::Private`), a `priv port` (`is_priv == true`), or a
+/// `priv param` nested inside a block-form `where` guarded group
+/// (`guarded_groups[].members`, task #5171). Sibling to
+/// [`template_has_member`]; gates the E_PRIV_MEMBER_ACCESS check on the
+/// external StructureRef member-access path (task #3978 δ).
 ///
-/// The `kind == Param` guard is load-bearing: `value_cells` also holds `let`
-/// bindings, and a default (non-`pub`) `let` is `Visibility::Private` too — but
-/// `let`s are never externally accessible by name, so reporting them here would
-/// be an out-of-scope behaviour change. Only a `priv param` carries
-/// `Param` + `Private`.
+/// The `kind == Param` guard is load-bearing: `value_cells` (and
+/// `guarded_groups[].members`) also hold `let` bindings, and a default
+/// (non-`pub`) `let` is `Visibility::Private` too — but `let`s are never
+/// externally accessible by name, so reporting them here would be an
+/// out-of-scope behaviour change. Only a `priv param` carries `Param` +
+/// `Private`.
 fn template_member_is_priv(template: &TopologyTemplate, name: &str) -> bool {
     template.value_cells.iter().any(|vc| {
         vc.id.member == name
@@ -238,6 +241,48 @@ fn template_member_is_priv(template: &TopologyTemplate, name: &str) -> bool {
         .iter()
         .any(|sc| sc.name == name && sc.visibility == Visibility::Private)
         || template.ports.iter().any(|p| p.name == name && p.is_priv)
+        || template.guarded_groups.iter().any(|g| {
+            g.members.iter().any(|vc| {
+                vc.id.member == name
+                    && vc.kind == ValueCellKind::Param
+                    && vc.visibility == Visibility::Private
+            })
+        })
+}
+
+/// Returns `true` if `template` declares a port named `port_name` with a
+/// nested `priv param` member named `member` (task #5171). Companion to
+/// [`template_member_is_priv`], but keyed by the port-qualified composite
+/// name `CompiledPort::members` cells actually carry
+/// (`ValueCellId.member == "<port_name>.<member>"`, set in entity.rs's
+/// port-member compilation), rather than a bare top-level member name.
+///
+/// A separate helper is needed because the two-level `<sub>.<port>.<member>`
+/// access shape never reaches `template_member_is_priv`: the intermediate
+/// `<sub>.<port>` access does not resolve to a `Type::StructureRef` (ports
+/// are absent from `value_cells`), so the `Type::StructureRef` member-access
+/// block's priv gate is never entered for the outer `.<member>`. The
+/// AST-pattern branch in `compile_expr_guarded` (mirroring the cluster /
+/// keyed-sub branches) calls this directly instead.
+///
+/// The `kind == Param` guard mirrors the load-bearing guard on
+/// `template_member_is_priv`'s `value_cells` arm: a port may also declare
+/// `let` members, which default to `Visibility::Private` but are never
+/// externally accessible by name.
+fn port_member_is_priv(template: &TopologyTemplate, port_name: &str, member: &str) -> bool {
+    template.ports.iter().any(|p| {
+        // Short-circuit on the name check first so the `format!` allocation
+        // below only happens for an actually-matching port, not on every
+        // port scanned.
+        p.name == port_name && {
+            let composite = format!("{port_name}.{member}");
+            p.members.iter().any(|vc| {
+                vc.id.member == composite
+                    && vc.kind == ValueCellKind::Param
+                    && vc.visibility == Visibility::Private
+            })
+        }
+    })
 }
 
 /// The Option/Map recovery combinators whose `dflt` argument type must unify
@@ -3917,6 +3962,67 @@ pub(crate) fn compile_expr_guarded_with_expected(
                 }
             }
 
+            // Pattern: <sub>.<port>.<member> — external priv port-member
+            // access (task #5171). `h.secret.main` where `h` is a
+            // (non-collection) sub-component and `secret` is a port
+            // declared on h's structure template. Must fire BEFORE the
+            // inner `h.secret` MemberAccess is compiled through the normal
+            // path: ports are absent from `value_cells`, so `h.secret`
+            // alone resolves to a non-`StructureRef` receiver
+            // (`dimensionless_scalar()`), meaning the outer `.main` would
+            // never reach the `Type::StructureRef` member-access block's
+            // E_PRIV_MEMBER_ACCESS check (~expr.rs:6511). Mirrors the
+            // AST-pattern-matching style (name-keyed lookup, no recursive
+            // `compile_expr_guarded` on `object`) of the cluster (~3957)
+            // and keyed-sub (~4012) branches below.
+            //
+            // Only DETECTS and poisons the *priv* case; a non-priv port
+            // member keeps falling through unchanged to today's generic
+            // "member access not yet supported" diagnostic — full nested
+            // port-member resolution is a separate, pre-existing gap this
+            // task does not close. `sub_name != "self"` is redundant with
+            // the `sub_component_types` lookup (`self` can never be a sub
+            // name) but spelled out to make the internal/external boundary
+            // explicit: internal access (bare `port.member`, handled just
+            // above) must never be gated here.
+            //
+            // Ordering invariant: this branch sits between the cluster
+            // branch (above) and the keyed-sub branch (below), so it is
+            // only safe to fire on genuinely priv port-member accesses.
+            // That holds because `port_member_is_priv` returns `true` only
+            // when `structure_name`'s template has a REAL port named
+            // `port_name` with a private composite member cell — it cannot
+            // return `true` for a name that is actually a cluster group or
+            // keyed-sub key, so this branch cannot mis-claim those accesses
+            // even if `port_name` happens to collide with one on the same
+            // sub. If a future template representation ever let a single
+            // name denote both a port and a cluster/keyed-sub, this
+            // ordering would need re-examination.
+            if let reify_ast::ExprKind::MemberAccess {
+                object: inner_obj,
+                member: port_name,
+            } = &object.kind
+                && let reify_ast::ExprKind::Ident(sub_name) = &inner_obj.kind
+                && sub_name != "self"
+                && !scope.collection_sub_names.contains(sub_name.as_str())
+                && let Some(structure_name) = scope.sub_component_types.get(sub_name.as_str())
+                && let Some(registry) = scope.template_registry
+                && let Some(template) = registry.get(structure_name.as_str())
+                && port_member_is_priv(template, port_name, member)
+            {
+                return make_poison_literal(
+                    diagnostics,
+                    Diagnostic::error(format!(
+                        "E_PRIV_MEMBER_ACCESS: member '{member}' of structure '{structure_name}' is private"
+                    ))
+                    .with_label(DiagnosticLabel::new(
+                        expr.span,
+                        "private member accessed here",
+                    ))
+                    .with_code(DiagnosticCode::PrivMemberAccess),
+                );
+            }
+
             // Pattern: <col_sub>[i].<cluster>.<inner> — task 2871.
             //
             // Cluster-aware lookup for collection subs accessed via literal index.
@@ -6483,29 +6589,21 @@ fn member_access_on_structure_like(
             let key = CompiledExpr::literal(Value::String(member.to_string()), Type::String);
             return CompiledExpr::index_access(compiled_obj, key, datum_type);
         }
-        if !member_known
-            && matches!(&compiled_obj.result_type, Type::StructureRef(_))
-            && struct_name.as_str() != WILDCARD_STRUCTURE_KIND
-            && template.is_some()
-        {
-            return make_poison_literal(
-                diagnostics,
-                Diagnostic::error(format!(
-                    "structure '{struct_name}' has no member '{member}'"
-                ))
-                .with_label(DiagnosticLabel::new(span, "unknown member"))
-                .with_code(DiagnosticCode::StructureMemberNotFound),
-            );
-        }
-
-        // E_PRIV_MEMBER_ACCESS (task #3978 δ): a `priv` member (priv param /
-        // priv sub / priv port) is hidden from external dot-access. Only a
-        // concrete `StructureRef` reaches a known template here; `self.member`
-        // and bare-name internal references are resolved by the earlier
-        // self/entity-scope branch (~:3106) and never reach this point, so this
-        // gates exactly the external `obj.member` access. Mirrors the
-        // StructureMemberNotFound poison above and fires before the permissive
-        // dimensionless fallback so the priv access does not silently resolve.
+        // E_PRIV_MEMBER_ACCESS (task #3978 δ; guarded/port members task #5171):
+        // a `priv` member (priv param / priv sub / priv port, including a priv
+        // param nested in a `guarded_groups[]` block) is hidden from external
+        // dot-access. Only a concrete `StructureRef` reaches a known template
+        // here; `self.member` and bare-name internal references are resolved
+        // by the earlier self/entity-scope branch (~:3106) and never reach
+        // this point, so this gates exactly the external `obj.member` access.
+        // Deliberately placed BEFORE the StructureMemberNotFound check below:
+        // a priv guarded-block member is NOT `member_known` (`template_has_member`
+        // doesn't scan `guarded_groups`), so without this ordering
+        // StructureMemberNotFound would fire first and the priv gate below
+        // would never be reached (task #5171). This is a no-op reorder for
+        // every OTHER priv member kind (top-level param / sub / port): those
+        // are already `member_known`, so StructureMemberNotFound never fired
+        // for them regardless of order.
         if matches!(&compiled_obj.result_type, Type::StructureRef(_))
             && struct_name.as_str() != WILDCARD_STRUCTURE_KIND
             && template.is_some_and(|t| template_member_is_priv(t, member))
@@ -6520,6 +6618,20 @@ fn member_access_on_structure_like(
                     "private member accessed here",
                 ))
                 .with_code(DiagnosticCode::PrivMemberAccess),
+            );
+        }
+        if !member_known
+            && matches!(&compiled_obj.result_type, Type::StructureRef(_))
+            && struct_name.as_str() != WILDCARD_STRUCTURE_KIND
+            && template.is_some()
+        {
+            return make_poison_literal(
+                diagnostics,
+                Diagnostic::error(format!(
+                    "structure '{struct_name}' has no member '{member}'"
+                ))
+                .with_label(DiagnosticLabel::new(span, "unknown member"))
+                .with_code(DiagnosticCode::StructureMemberNotFound),
             );
         }
 
