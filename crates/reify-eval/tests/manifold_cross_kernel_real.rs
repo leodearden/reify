@@ -437,6 +437,21 @@ fn manifold_ingest_contract_violating_mesh_yields_structured_diagnostic() {
 /// `return` inside a helper only exits the helper, not the caller's `#[test]`
 /// body, so the OCCT gate cannot be folded in here and stays at each call
 /// site.
+///
+/// ## Follow-up (reviewed, deliberately deferred)
+///
+/// This helper still duplicates the linker-anchor / registry-contains-both-
+/// kernels / compile / purpose-injection / `eval → activate_purpose → build`
+/// scaffold of `engine_routes_overlapping_box_union_to_manifold_mesh` above
+/// (lines 60-130) — a later review pass flagged this as a DRY observation,
+/// not a defect (three tests in this file now carry near-identical ~40-line
+/// setup). Fully resolving it means generalizing this helper to take
+/// `(fixture_path, entity_name, purpose_ref)` and routing that pre-existing
+/// test through it too. Declined here: that test landed under a different
+/// task (#3437, ζ) before this task began, so refactoring it is outside this
+/// amendment pass's locked-module scope (`manifold_cross_kernel_real.rs` is
+/// locked to *this* task, but rewriting another task's already-landed test
+/// is not a "focused amendment") — left for a follow-up task instead.
 fn build_mixed_kernel_attribute_selectors_fixture() -> (
     reify_compiler::CompiledModule,
     reify_eval::Engine,
