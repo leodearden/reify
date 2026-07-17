@@ -50,9 +50,12 @@ fn tessellate_sphere(tol: f64) -> reify_ir::Mesh {
 
 /// A full sphere is a periodic surface with two poles. Real OCCT
 /// tessellation must not leave zero-area pole-seam triangles behind:
-/// `validate(0.0)` must be Ok, and every emitted triangle must have
-/// strictly-positive twice-area, at BOTH a coarse (1e-3) and fine (1e-4)
-/// deflection — proving the fix is topological, not resolution-dependent.
+/// `validate(0.0)` must be Ok (which transitively requires every emitted
+/// triangle to have strictly-positive twice-area — see
+/// `Mesh::check_contract`'s `NonDegenerate` obligation), and the mesh must
+/// retain a plausible triangle count (see the lower-bound check below), at
+/// BOTH a coarse (1e-3) and fine (1e-4) deflection — proving the fix is
+/// topological, not resolution-dependent.
 #[test]
 fn tessellated_sphere_has_no_zero_area_pole_triangles() {
     for deflection in [1.0e-4, 1.0e-3] {
@@ -70,6 +73,25 @@ fn tessellated_sphere_has_no_zero_area_pole_triangles() {
             mesh.indices.len() % 3,
             0,
             "index count must be a multiple of 3 (deflection {deflection})"
+        );
+
+        // Lower-bound sanity check — closes a vacuous-pass gap: both
+        // assertions above would still hold for an empty or
+        // heavily-decimated index buffer (e.g. an FMA/arithmetic
+        // divergence that misclassifies real slivers as degenerate, or an
+        // off-by-one in the base-index readback dropping valid triangles),
+        // so neither actually proves the producer emitted a real mesh
+        // rather than over-dropping everything. An 8mm-radius sphere
+        // tessellated at either deflection yields hundreds of triangles;
+        // the producer's degeneracy gate should only ever drop the two
+        // pole-seam triangles.
+        let num_tris = mesh.indices.len() / 3;
+        assert!(
+            num_tris > 100,
+            "expected hundreds of triangles for an 8mm-radius sphere at deflection \
+             {deflection}; got {num_tris}, which is consistent with an over-aggressive \
+             degeneracy gate dropping valid (non-pole) triangles rather than just the \
+             two genuinely-degenerate pole-seam ones"
         );
     }
 }
