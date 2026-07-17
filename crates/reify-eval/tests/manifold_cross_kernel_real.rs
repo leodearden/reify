@@ -418,6 +418,92 @@ fn manifold_ingest_contract_violating_mesh_yields_structured_diagnostic() {
 // ── Item 5: engine-build hardening κ — mixed-kernel attribute-resolved ──────
 // selector (task 5071, INV-GEO-2 #4351 engine-build consumer-side boundary)
 
+/// Shared build scaffold for the two `mixed_kernel_attribute_selector*` tests
+/// below (amendment: extracted to remove ~50 lines of setup boilerplate that
+/// both tests duplicated from each other and from
+/// `engine_routes_overlapping_box_union_to_manifold_mesh` above).
+///
+/// Performs, in order: the Manifold linker-anchor assertion, the
+/// registry-contains-both-kernels checks, compiling
+/// `examples/multi_kernel/attribute_selectors.ri`, injecting a
+/// `manufacturing` purpose (`demanded_tol = Some(1e-6)`), and
+/// `eval → activate_purpose → build(ExportFormat::Stl)`. Returns the compiled
+/// module, the (post-build) engine — so callers can still read `snapshot()`,
+/// `test_terminal_handle`, `topology_attribute_table()`, and
+/// `tessellate_realizations` — and the `BuildResult`.
+///
+/// Callers MUST check `reify_kernel_occt::OCCT_AVAILABLE` and skip
+/// (`eprintln!` + early `return`) BEFORE calling this helper: an early
+/// `return` inside a helper only exits the helper, not the caller's `#[test]`
+/// body, so the OCCT gate cannot be folded in here and stays at each call
+/// site.
+fn build_mixed_kernel_attribute_selectors_fixture() -> (
+    reify_compiler::CompiledModule,
+    reify_eval::Engine,
+    reify_eval::BuildResult,
+) {
+    // ── Linker anchor ────────────────────────────────────────────────────
+    let anchor = reify_kernel_manifold::register::manifold_capability_descriptor();
+    assert!(
+        !anchor.supports.is_empty(),
+        "manifold_capability_descriptor() must declare at least one capability \
+         (linker anchor sanity check — if empty the registration is broken)"
+    );
+
+    // ── Registry contains both kernels ──────────────────────────────────
+    let reg = reify_eval::kernel_registry::registry();
+    assert!(
+        reg.contains_key("occt"),
+        "registry must contain \"occt\" after OCCT stub check; found keys: {:?}",
+        reg.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        reg.contains_key("manifold"),
+        "registry must contain \"manifold\" (linker anchor ensures the \
+         inventory::submit! fired); found keys: {:?}",
+        reg.keys().collect::<Vec<_>>()
+    );
+
+    // ── Compile the fixture ──────────────────────────────────────────────
+    // include_str! is a compile-time macro: if the fixture does not exist,
+    // this file fails to compile → RED before step-2 creates it.
+    let mut compiled = parse_and_compile_with_stdlib(include_str!(
+        "../../../examples/multi_kernel/attribute_selectors.ri"
+    ));
+    // Belt-and-suspenders: parse_and_compile_with_stdlib already panics
+    // internally on any error-severity diagnostic (reify-test-support
+    // helpers.rs:390-395), so this can never observe a non-empty result here.
+    // Kept as an explicit, self-documenting guard — matching the convention
+    // at `engine_routes_overlapping_box_union_to_manifold_mesh` above — in
+    // case that internal contract is ever relaxed.
+    assert!(
+        errors_only(&compiled).is_empty(),
+        "attribute_selectors.ri must compile with no error-severity diagnostics; got:\n{:#?}",
+        errors_only(&compiled)
+    );
+
+    // ── Inject manufacturing purpose (demanded_tol = Some(1e-6)) ─────────
+    // The RealizationCache is keyed by (entity, ReprKind, tol) and only
+    // populates when demanded_tol = Some(..); test_terminal_handle needs that
+    // cache entry. Mirrors engine_routes_overlapping_box_union_to_manifold_mesh
+    // above.
+    compiled
+        .compiled_purposes
+        .push(manufacturing_purpose("manufacturing", 1e-6));
+
+    // ── Build with real OCCT + Manifold ──────────────────────────────────
+    let mut engine = reify_eval::Engine::with_registered_kernels(Box::new(SimpleConstraintChecker));
+
+    // eval() → activate_purpose → build() — the canonical pattern (build()'s
+    // internal eval() clears active_purpose_bindings, so activate_purpose
+    // MUST be called after the explicit eval() and before build()).
+    let _eval = engine.eval(&compiled);
+    engine.activate_purpose("manufacturing", "MixedKernelAttributeSelectors");
+    let build = engine.build(&compiled, ExportFormat::Stl);
+
+    (compiled, engine, build)
+}
+
 /// Engine-build CONSUMER-side boundary witness for INV-GEO-2 (#4351): pairs
 /// the producer-facing `cross_kernel_attribute_collision_e2e.rs` tests.
 ///
@@ -451,15 +537,9 @@ fn manifold_ingest_contract_violating_mesh_yields_structured_diagnostic() {
 /// `engine_routes_overlapping_box_union_to_manifold_mesh`, lines 97-98 above).
 #[test]
 fn mixed_kernel_attribute_selectors_builds_renders_and_reads_per_kernel_attributes() {
-    // ── (1) Linker anchor ─────────────────────────────────────────────────
-    let anchor = reify_kernel_manifold::register::manifold_capability_descriptor();
-    assert!(
-        !anchor.supports.is_empty(),
-        "manifold_capability_descriptor() must declare at least one capability \
-         (linker anchor sanity check — if empty the registration is broken)"
-    );
-
-    // ── (2) OCCT gate ─────────────────────────────────────────────────────
+    // ── OCCT gate ─────────────────────────────────────────────────────────
+    // Must run BEFORE calling the shared fixture helper below — see the
+    // helper's doc-comment for why the gate cannot be folded into it.
     if !reify_kernel_occt::OCCT_AVAILABLE {
         eprintln!(
             "skipping mixed_kernel_attribute_selectors_builds_renders_and_reads_per_kernel_attributes: \
@@ -468,51 +548,7 @@ fn mixed_kernel_attribute_selectors_builds_renders_and_reads_per_kernel_attribut
         return;
     }
 
-    // ── (3) Registry contains both kernels ────────────────────────────────
-    let reg = reify_eval::kernel_registry::registry();
-    assert!(
-        reg.contains_key("occt"),
-        "registry must contain \"occt\" after OCCT stub check; found keys: {:?}",
-        reg.keys().collect::<Vec<_>>()
-    );
-    assert!(
-        reg.contains_key("manifold"),
-        "registry must contain \"manifold\" (linker anchor ensures the \
-         inventory::submit! fired); found keys: {:?}",
-        reg.keys().collect::<Vec<_>>()
-    );
-
-    // ── (4) Compile the fixture ───────────────────────────────────────────
-    // include_str! is a compile-time macro: if the fixture does not exist,
-    // this file fails to compile → RED before step-2 creates it.
-    let mut compiled = parse_and_compile_with_stdlib(include_str!(
-        "../../../examples/multi_kernel/attribute_selectors.ri"
-    ));
-    assert!(
-        errors_only(&compiled).is_empty(),
-        "attribute_selectors.ri must compile with no error-severity diagnostics; got:\n{:#?}",
-        errors_only(&compiled)
-    );
-
-    // ── (5) Inject manufacturing purpose (demanded_tol = Some(1e-6)) ──────
-    // The RealizationCache is keyed by (entity, ReprKind, tol) and only
-    // populates when demanded_tol = Some(..); test_terminal_handle below
-    // needs that cache entry. Mirrors
-    // engine_routes_overlapping_box_union_to_manifold_mesh above.
-    compiled
-        .compiled_purposes
-        .push(manufacturing_purpose("manufacturing", 1e-6));
-
-    // ── (6) Build with real OCCT + Manifold ───────────────────────────────
-    let mut engine =
-        reify_eval::Engine::with_registered_kernels(Box::new(SimpleConstraintChecker));
-
-    // eval() → activate_purpose → build() — the canonical pattern (build()'s
-    // internal eval() clears active_purpose_bindings, so activate_purpose
-    // MUST be called after the explicit eval() and before build()).
-    let _eval = engine.eval(&compiled);
-    engine.activate_purpose("manufacturing", "MixedKernelAttributeSelectors");
-    let build = engine.build(&compiled, ExportFormat::Stl);
+    let (compiled, mut engine, build) = build_mixed_kernel_attribute_selectors_fixture();
 
     // ── (a) no error-severity diagnostics anywhere in the build ───────────
     let build_errors: Vec<_> = build
@@ -654,15 +690,9 @@ fn mixed_kernel_attribute_selectors_builds_renders_and_reads_per_kernel_attribut
 /// below panics.
 #[test]
 fn mixed_kernel_attribute_selector_resolves_frame_on_build_path() {
-    // ── (1) Linker anchor ─────────────────────────────────────────────────
-    let anchor = reify_kernel_manifold::register::manifold_capability_descriptor();
-    assert!(
-        !anchor.supports.is_empty(),
-        "manifold_capability_descriptor() must declare at least one capability \
-         (linker anchor sanity check — if empty the registration is broken)"
-    );
-
-    // ── (2) OCCT gate ─────────────────────────────────────────────────────
+    // ── OCCT gate ─────────────────────────────────────────────────────────
+    // Must run BEFORE calling the shared fixture helper below — see the
+    // helper's doc-comment for why the gate cannot be folded into it.
     if !reify_kernel_occt::OCCT_AVAILABLE {
         eprintln!(
             "skipping mixed_kernel_attribute_selector_resolves_frame_on_build_path: \
@@ -671,39 +701,7 @@ fn mixed_kernel_attribute_selector_resolves_frame_on_build_path() {
         return;
     }
 
-    // ── (3) Registry contains both kernels ────────────────────────────────
-    let reg = reify_eval::kernel_registry::registry();
-    assert!(
-        reg.contains_key("occt"),
-        "registry must contain \"occt\" after OCCT stub check; found keys: {:?}",
-        reg.keys().collect::<Vec<_>>()
-    );
-    assert!(
-        reg.contains_key("manifold"),
-        "registry must contain \"manifold\" (linker anchor ensures the \
-         inventory::submit! fired); found keys: {:?}",
-        reg.keys().collect::<Vec<_>>()
-    );
-
-    // ── (4) Compile the fixture ───────────────────────────────────────────
-    let mut compiled = parse_and_compile_with_stdlib(include_str!(
-        "../../../examples/multi_kernel/attribute_selectors.ri"
-    ));
-    assert!(
-        errors_only(&compiled).is_empty(),
-        "attribute_selectors.ri must compile with no error-severity diagnostics; got:\n{:#?}",
-        errors_only(&compiled)
-    );
-
-    // ── (5)/(6) Inject manufacturing purpose, build with real OCCT + Manifold
-    compiled
-        .compiled_purposes
-        .push(manufacturing_purpose("manufacturing", 1e-6));
-    let mut engine =
-        reify_eval::Engine::with_registered_kernels(Box::new(SimpleConstraintChecker));
-    let _eval = engine.eval(&compiled);
-    engine.activate_purpose("manufacturing", "MixedKernelAttributeSelectors");
-    let build = engine.build(&compiled, ExportFormat::Stl);
+    let (_compiled, _engine, build) = build_mixed_kernel_attribute_selectors_fixture();
 
     let build_errors: Vec<_> = build
         .diagnostics
