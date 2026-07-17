@@ -43,6 +43,7 @@ Every `TODO`/`FIXME`/`HACK` comment, `todo!()`/`unimplemented!()` stub, and bloc
 
 - All task operations go through **fused-memory MCP tools** (never the Taskmaster CLI/MCP directly), with `project_root: "/home/leo/src/reify"`. Status transitions trigger reconciliation automatically.
 - Memory writes: prefer `add_memory` (distilled fact) over `add_episode` (full extraction pipeline); always tag `project_id: "reify"` and a descriptive `agent_id`. Write decisions immediately, not at session end; `search` before architectural choices. Session start: `search(query="project overview and current status", project_id="reify")` + `get_tasks`; execute a task's `memory_hints` when present. See `/memory` for detailed guidance.
+- The cargo/rustc test+build output condensation wrapper (skim; the PreToolUse hook that rewrites `cargo test`/`cargo build` to condensed `PASS: N | FAIL: M | SKIP: K` / `BUILD OK | warnings: N | errors: N` output) and its bypasses (`--no-run --message-format=json`, absolute cargo path, `env cargo`, etc.) is a well-established gotcha with a canonical `procedural_knowledge` memory entry — it has been independently rediscovered and re-written as a near-duplicate memory 6 times. Do not cite its Mem0 UUID here; it changes on every consolidation round. Before assuming build/test output is broken or writing a new memory about it, run `search(project_id="reify", categories=["procedural_knowledge"], query="cargo skim output wrapper condensation")`.
 
 ## Vendored sandbox helpers
 
