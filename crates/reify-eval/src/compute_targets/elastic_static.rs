@@ -8701,7 +8701,7 @@ mod tests {
     /// missing `e1` — the arm's first `scalar_si_field` read — so
     /// `classify_material` must surface `Err(FeaValueShapeError::MissingField
     /// { field: "e1", .. })` rather than panicking, proving the arm's 9
-    /// `.fea_shim()` calls were genuinely replaced with `?` and not left as
+    /// field reads genuinely propagate `Err` via `?` and are not left as
     /// disguised `.unwrap()`s.
     ///
     /// Like `classify_material_rejects_non_structure_instance` above, `res`
@@ -8922,9 +8922,9 @@ mod tests {
     }
 
     /// The Ok path: calls the Result-ified function directly (unlike
-    /// `..._returns_heterogeneous` above, which goes through the
-    /// panic-on-Err `.fea_shim()` bridge) and asserts only the
-    /// `Ok(Heterogeneous(_))` shape — spatial wall/infill dispatch is
+    /// `..._returns_heterogeneous` above, which goes through
+    /// `classify_material`'s `?`-propagation into this fn) and asserts only
+    /// the `Ok(Heterogeneous(_))` shape — spatial wall/infill dispatch is
     /// already covered by that sibling test over the same fixture.
     #[test]
     fn classify_material_as_printed_zones_accepts_wellformed_lambda() {
@@ -9263,9 +9263,11 @@ mod tests {
 
     // ── task 5080 (PRD compute-fea-hardening D2): Result-ify SI/Real leaf
     // extractors — each RED test feeds a malformed `Value` and asserts `Err`
-    // instead of a panic. External behavior is unchanged (call sites still
-    // panic via the `FeaShimExt::fea_shim` bridging shim); only the internal
-    // signature becomes `Result`. ─────────────────────────────────────────
+    // instead of a panic. At the time, external behavior was unchanged (call
+    // sites still panicked via the transitional `FeaShimExt::fea_shim`
+    // bridging shim); only the internal signature became `Result`. D9 (task
+    // 5087) later replaced every production call site with the
+    // validate-all-inputs gate and removed the shim. ───────────────────────
 
     /// step-1 RED: `extract_scalar_si` must reject a non-Scalar `Value` with
     /// `Err(FeaValueShapeError::ExpectedScalar { .. })` instead of panicking.
@@ -10233,21 +10235,32 @@ mod tests {
 
     /// Shared assertion for the single-malformed-arg tests below: calls the
     /// trampoline and expects `ComputeOutcome::Failed` with an Error
-    /// diagnostic naming `expected_label`. Returns the diagnostics so the
-    /// ordering test below can inspect them further.
+    /// diagnostic whose message has the exact `"solve_elastic_static_trampoline:
+    /// {expected_label}:"` prefix. Returns the diagnostics so the ordering
+    /// test below can inspect them further.
+    ///
+    /// D9 review amendment (task #5087, suggestion 1): this checks the exact
+    /// prefix rather than a loose `contains(expected_label)` — the latter
+    /// would pass for a mislabeled arm too, since `FeaValueShapeError`'s
+    /// `Display` embeds the extractor's function name (e.g.
+    /// `"...for extract_loads, got..."`) as part of the message, independent
+    /// of the arm's label literal. Hardens all five per-arg tests below at
+    /// once.
     fn assert_gate_rejects(value_inputs: [Value; 7], expected_label: &str) -> Vec<Diagnostic> {
         let cancellation = CancellationHandle::new();
         let outcome =
             solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
         match outcome {
             ComputeOutcome::Failed { diagnostics, .. } => {
+                let expected_prefix =
+                    format!("solve_elastic_static_trampoline: {expected_label}:");
                 assert!(
                     diagnostics.iter().any(|d| {
                         d.severity == reify_core::Severity::Error
-                            && d.message.contains(expected_label)
+                            && d.message.starts_with(&expected_prefix)
                     }),
                     "a malformed {expected_label} arg must yield an Error diagnostic \
-                     naming \"{expected_label}\", got {diagnostics:?}"
+                     whose message starts with \"{expected_prefix}\", got {diagnostics:?}"
                 );
                 diagnostics
             }
