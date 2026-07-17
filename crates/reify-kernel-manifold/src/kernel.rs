@@ -127,6 +127,28 @@ pub struct ManifoldKernel {
     /// given parent handle's mesh is immutable for the kernel's lifetime, so
     /// its coalesced faces never change — caching once is always correct.
     extracted_faces: HashMap<u64, Vec<GeometryHandleId>>,
+    /// Per-parent-handle memoization cache for `extract_edges` results.
+    ///
+    /// Mirrors [`Self::extracted_faces`] above (see its doc for the full
+    /// rationale) and `OcctKernel`'s `extracted_edges` field
+    /// (`crates/reify-kernel-occt/src/lib.rs:460-461` + the cache-first /
+    /// mint-then-insert pattern at `:677-710`).  Maps parent handle id →
+    /// the `Vec<GeometryHandleId>` returned by the first `extract_edges` call
+    /// for that parent; subsequent calls return `cached.clone()` so ids are
+    /// stable across calls (required for `resolve_unique_by_attribute` to
+    /// match seeded attributes to candidate handles).  Landing this field
+    /// fixes a dormant re-instance of the #4262 defect (task η): before this
+    /// cache existed, `extract_edges` minted fresh `store_sub_shape` ids on
+    /// every call.
+    ///
+    /// # No invalidation needed
+    ///
+    /// Unlike OCCT (which invalidates on `with_warm_state` when its shape table
+    /// is swapped), `ManifoldKernel` has no warm-state/reset path and mints
+    /// handle ids monotonically over an **append-only** `shapes` store.  A
+    /// given parent handle's mesh is immutable for the kernel's lifetime, so
+    /// its canonical edges never change — caching once is always correct.
+    extracted_edges: HashMap<u64, Vec<GeometryHandleId>>,
 }
 
 impl ManifoldKernel {
@@ -137,6 +159,7 @@ impl ManifoldKernel {
             sub_shapes: HashMap::new(),
             next_id: 1,
             extracted_faces: HashMap::new(),
+            extracted_edges: HashMap::new(),
         }
     }
 
@@ -876,11 +899,34 @@ impl GeometryKernel for ManifoldKernel {
     /// index space `SharedEdges` reports. The unit cube has 18 such edges
     /// (Euler `V - E + F = 2`: `8 - E + 12 = 2`), matching
     /// `Manifold::num_edge()`. Each edge's two xyz endpoints are stored as a
-    /// [`SubShape::Edge`]. An empty/degenerate mesh yields `Ok(empty vec)`.
+    /// [`SubShape::Edge`].
+    ///
+    /// # Per-parent memoization (idempotency contract)
+    ///
+    /// The first call for a given `handle` mints fresh ids for the canonical
+    /// edges and caches them in [`Self::extracted_edges`].  Subsequent calls
+    /// with the same `handle` return `cached.clone()` immediately — the ids
+    /// and their order are **identical** across calls (same contract as OCCT's
+    /// `extracted_edges` cache, `crates/reify-kernel-occt/src/lib.rs:677-710`,
+    /// and this kernel's own [`Self::extract_faces`]). This stability is
+    /// required for `resolve_unique_by_attribute` to match seeded attributes
+    /// (recorded against the first-call ids) to the candidate ids produced at
+    /// selector-eval time.
+    ///
+    /// No cache invalidation is needed: `ManifoldKernel` has no warm-state
+    /// swap and mints ids monotonically over an append-only `shapes` store, so
+    /// a parent handle's canonical edges never change.
+    ///
+    /// An empty or degenerate mesh yields `Ok(empty vec)`.
     fn extract_edges(
         &mut self,
         handle: GeometryHandleId,
     ) -> Result<Vec<GeometryHandleId>, QueryError> {
+        // Cache-first: return the previously-minted ids if available.
+        if let Some(cached) = self.extracted_edges.get(&handle.0) {
+            return Ok(cached.clone());
+        }
+
         // Read the parent mesh, dropping the immutable borrow before the
         // mutable store_sub_shape calls below.
         let (verts, tris) = {
@@ -890,6 +936,10 @@ impl GeometryKernel for ManifoldKernel {
             crate::queries::mesh_geometry(m)
         };
         if verts.is_empty() || tris.is_empty() {
+            // Memoize the empty result so the cache-first branch covers
+            // this path too, keeping the contract uniform: every code path
+            // through extract_edges inserts into extracted_edges before returning.
+            self.extracted_edges.insert(handle.0, Vec::new());
             return Ok(Vec::new());
         }
         let (_index_pairs, endpoints) = crate::queries::canonical_edges(&verts, &tris);
@@ -897,6 +947,8 @@ impl GeometryKernel for ManifoldKernel {
         for ep in endpoints {
             edges.push(self.store_sub_shape(SubShape::Edge(ep)));
         }
+        // Memoize: subsequent calls return the cached ids unchanged.
+        self.extracted_edges.insert(handle.0, edges.clone());
         Ok(edges)
     }
 
@@ -2651,28 +2703,29 @@ mod tests {
     ///   (`cargo clippy --workspace --all-targets -- -D warnings`) once the
     ///   field IS added to the pattern but not yet passed to [`entry`]
     ///   (forces an actual classification, not just acknowledgment);
-    /// - the fixed-size return type `[(&'static str, StateDisposition); 4]`
+    /// - the fixed-size return type `[(&'static str, StateDisposition); 5]`
     ///   must also grow to match the new element count.
     ///
-    /// # Classification (all four fields → `Persist`)
+    /// # Classification (all five fields → `Persist`)
     ///
     /// `ManifoldKernel` is append-only and has no warm-state/restore path
     /// (see the `extracted_faces` field doc at kernel.rs:111-117: "No
     /// invalidation needed" — a given parent handle's mesh is immutable for
     /// the kernel's lifetime). Handle-id stability requires `shapes`,
-    /// `sub_shapes`, and `extracted_faces` to survive verbatim (rebuilding
-    /// `extracted_faces` would mint fresh child ids and break
-    /// `resolve_unique_by_attribute`), and `next_id` must survive to prevent
-    /// id reuse/aliasing across the shared id space. This deliberately
-    /// diverges from `OcctKernel`, which clears its `extracted_*` caches on
-    /// warm restore.
-    fn manifold_state_inventory(k: &ManifoldKernel) -> [(&'static str, StateDisposition); 4] {
-        let ManifoldKernel { shapes, sub_shapes, next_id, extracted_faces } = k;
+    /// `sub_shapes`, `extracted_faces`, and `extracted_edges` to survive
+    /// verbatim (rebuilding either `extracted_*` cache would mint fresh
+    /// child ids and break `resolve_unique_by_attribute`), and `next_id`
+    /// must survive to prevent id reuse/aliasing across the shared id space.
+    /// This deliberately diverges from `OcctKernel`, which clears its
+    /// `extracted_*` caches on warm restore.
+    fn manifold_state_inventory(k: &ManifoldKernel) -> [(&'static str, StateDisposition); 5] {
+        let ManifoldKernel { shapes, sub_shapes, next_id, extracted_faces, extracted_edges } = k;
         [
             entry(shapes, "shapes", StateDisposition::Persist),
             entry(sub_shapes, "sub_shapes", StateDisposition::Persist),
             entry(next_id, "next_id", StateDisposition::Persist),
             entry(extracted_faces, "extracted_faces", StateDisposition::Persist),
+            entry(extracted_edges, "extracted_edges", StateDisposition::Persist),
         ]
     }
 
@@ -2684,8 +2737,8 @@ mod tests {
     /// `ManifoldKernel` via an exhaustive, no-wildcard struct destructure, so
     /// this test asserts:
     /// (a) completeness — the returned names equal exactly
-    ///     `{"shapes", "sub_shapes", "next_id", "extracted_faces"}`, array
-    ///     length 4, no duplicates;
+    ///     `{"shapes", "sub_shapes", "next_id", "extracted_faces",
+    ///     "extracted_edges"}`, array length 5, no duplicates;
     /// (b) every field's disposition is `StateDisposition::Persist` —
     ///     `ManifoldKernel` is append-only with no invalidation path (see the
     ///     `extracted_faces` field doc at kernel.rs:111-117), so nothing is
@@ -2701,15 +2754,15 @@ mod tests {
         let kernel = ManifoldKernel::new();
         let inventory = manifold_state_inventory(&kernel);
 
-        assert_eq!(inventory.len(), 4, "inventory must classify exactly 4 fields");
+        assert_eq!(inventory.len(), 5, "inventory must classify exactly 5 fields");
 
         let mut names: Vec<&str> = inventory.iter().map(|(name, _)| *name).collect();
         names.sort_unstable();
         names.dedup();
         assert_eq!(
             names,
-            vec!["extracted_faces", "next_id", "shapes", "sub_shapes"],
-            "inventory must cover exactly ManifoldKernel's 4 fields, with no duplicates"
+            vec!["extracted_edges", "extracted_faces", "next_id", "shapes", "sub_shapes"],
+            "inventory must cover exactly ManifoldKernel's 5 fields, with no duplicates"
         );
 
         for (name, disposition) in &inventory {
