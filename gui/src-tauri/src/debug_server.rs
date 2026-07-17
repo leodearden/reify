@@ -1301,7 +1301,22 @@ async fn open_path_into_engine(state: &DebugServerState, raw_path: &str) -> Resu
     // absolute spelling (fixes bug #3892: duplicate tabs via debug bridge).
     let path = crate::path_key::canonicalize_debug_open_path(raw_path);
 
-    // Read file from disk
+    // Read file from disk — this copy is ONLY for the "content" field of the
+    // frontend open_file push below. `open_source_into_engine_and_refresh_baseline`
+    // (below) independently re-reads the same `path` a second time inside
+    // `load_file_into_engine` -> `EngineSession::load_file`. Two reads, not
+    // one, mirrors the normal (non-debug) GUI path exactly: `open_file_impl`
+    // (frontend content fetch) and `open_file_engine_impl` (engine load) each
+    // read the file independently too (commands.rs). A merged single-read
+    // helper would need an engine.rs load-from-source-with-path variant,
+    // which is out of scope for task #5193. This is benign — not a bug — for
+    // the current sole caller (the serial e2e visual-regression harness over
+    // static fixtures: no concurrent writer, so the two reads cannot diverge
+    // in practice); see PRD §4 D7 for the same serial-debug-ops assumption
+    // the baseline-refresh note below relies on. A debug-only canary below
+    // (search "serial-debug-ops assumption was violated") guards this so a
+    // future non-serial caller cannot silently desync without at least
+    // failing debug/test builds.
     let content =
         std::fs::read_to_string(&path).map_err(|e| format!("failed to read {path}: {e}"))?;
 
@@ -1314,8 +1329,27 @@ async fn open_path_into_engine(state: &DebugServerState, raw_path: &str) -> Resu
     // (the e2e visual-regression harness) run serially and never overlap a
     // debug op with a normal command; see PRD §4 D7.
     let gui_state =
-        open_source_into_engine_and_refresh_baseline(&state.engine, &state.last_state, &path, &content)
+        open_source_into_engine_and_refresh_baseline(&state.engine, &state.last_state, &path)
             .await?;
+
+    // Debug-only canary for the serial-debug-ops assumption the double-read
+    // above relies on: if `path`'s contents changed between the `content`
+    // read above and this point, the frontend's `content` and whatever
+    // `open_source_into_engine_and_refresh_baseline` actually loaded into the
+    // engine may have diverged. `debug_assert_eq!` (not a runtime `Err`) so
+    // release builds pay no extra I/O and a real user's debug session never
+    // fails over a benign external edit — it only makes a broken assumption
+    // observable in debug/test builds instead of silently shipping desynced
+    // state to the frontend.
+    #[cfg(debug_assertions)]
+    if let Ok(recheck) = std::fs::read_to_string(&path) {
+        debug_assert_eq!(
+            recheck, content,
+            "open_path_into_engine: {path} changed between the frontend-content read \
+             and the engine load completing — the serial-debug-ops assumption was \
+             violated (see comment above)"
+        );
+    }
 
     // Serialize GUI state for the frontend
     let gui_state_json =
@@ -1354,28 +1388,37 @@ async fn open_path_into_engine(state: &DebugServerState, raw_path: &str) -> Resu
 // `handle_set_fea_case`): the refresh lands before the frontend push, so
 // this assumes debug ops never overlap a normal command.
 
-/// Mirrors `open_path_into_engine`'s engine block (`update_source` +
-/// `build_gui_state` on a real OS thread), then refreshes the delta
-/// baseline — see the INV-GUI-2 note above for why/how. `update_source`
-/// already routes through `post_engine_call_telemetry` (the L4 emission
-/// choke-point) by construction.
+/// Mirrors `open_path_into_engine`'s engine block (`load_file_into_engine`
+/// on a real OS thread; `UnresolvedGuiState::resolve` afterward, once the
+/// lock is released), then refreshes the delta baseline — see the
+/// INV-GUI-2 note above for why/how. Routes through
+/// `crate::commands::load_file_into_engine` and its returned
+/// `UnresolvedGuiState::resolve` — the same `EngineSession::load_file` and
+/// abs-path-rewrite pair the normal `open_file_engine_impl` command uses —
+/// so the debug bridge's open_file/load_fixture funnel ADOPTS the
+/// newly-opened file's identity (`FilePathUpdate::Set`) instead of preserving
+/// whatever file was previously loaded, which `update_source` would do (task
+/// #5193). `load_file` already routes through `post_engine_call_telemetry`
+/// (the L4 emission choke-point) by construction. The abs-path rewrite runs
+/// AFTER `run_on_engine` returns — i.e. once the engine mutex is released —
+/// so the lock is not held across `std::fs::canonicalize` filesystem I/O
+/// (#5193). On failure, the underlying `load_file_into_engine`
+/// error is wrapped with an "open funnel failed to load {path}" prefix so
+/// debug-harness failure triage can tell the error came from this open
+/// funnel rather than a normal command.
 pub async fn open_source_into_engine_and_refresh_baseline(
     engine: &Arc<Mutex<EngineSession>>,
     last_state: &std::sync::Mutex<Option<crate::types::GuiState>>,
     path: &str,
-    content: &str,
 ) -> Result<crate::types::GuiState, String> {
     let path = path.to_owned();
-    let content = content.to_owned();
-    let gui_state = run_on_engine(engine, move |session| {
-        session
-            .update_source(&path, &content)
-            .map_err(|e| format!("update_source failed: {e}"))?;
-        session
-            .build_gui_state()
-            .map_err(|e| format!("build_gui_state failed: {e}"))
+    let load_path = path.clone();
+    let unresolved = run_on_engine(engine, move |session| {
+        crate::commands::load_file_into_engine(session, std::path::Path::new(&load_path))
     })
-    .await?;
+    .await
+    .map_err(|e| format!("open funnel failed to load {path}: {e}"))?;
+    let gui_state = unresolved.resolve(std::path::Path::new(&path));
     crate::diff::compute_delta(last_state, &gui_state);
     Ok(gui_state)
 }
@@ -3309,6 +3352,40 @@ mod tests {
         );
     }
 
+    // ── Shared boilerplate for the baseline-refresh test below and the
+    // #5193 open-funnel-identity regression tests (T1/T2/T3) further down:
+    // each of those tests needs a fixture file written into a tempdir and
+    // canonicalized, and T1/T2/T3 additionally need a launched-on-file-A
+    // precondition. ──
+
+    /// Write `src` to `dir.join(name)` and return the canonicalized
+    /// absolute path as an owned `String` — the form
+    /// `open_source_into_engine_and_refresh_baseline` expects for its
+    /// `path` argument.
+    fn write_and_canonicalize(dir: &std::path::Path, name: &str, src: &str) -> String {
+        let path = dir.join(name);
+        std::fs::write(&path, src).unwrap();
+        std::fs::canonicalize(&path)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    /// Reproduce the launched-on-a-file precondition T1/T2/T3 depend on:
+    /// load `canonical` directly via `EngineSession::load_file` (bypassing
+    /// the open-funnel helper under test), so `self.file_path ==
+    /// Some(canonical)` before the test drives a SECOND open through
+    /// `open_source_into_engine_and_refresh_baseline`. With `file_path ==
+    /// None`, `update_source` would take its single-file branch and never
+    /// exhibit the stale-identity bug (task #5193).
+    fn launch_via_load_file(engine: &Arc<Mutex<EngineSession>>, canonical: &str) {
+        crate::engine_lock::with_engine_lock(engine, |s| {
+            s.load_file(std::path::Path::new(canonical))
+        })
+        .and_then(std::convert::identity)
+        .expect("load_file launch precondition must succeed");
+    }
+
     // ── Task 5035 step-4: RED — open_file/load_fixture baseline refresh must
     // route through compute_delta (INV-GUI-2) ──
     //
@@ -3329,23 +3406,28 @@ mod tests {
         use reify_test_support::bracket_source;
 
         // make_test_engine() pre-loads bracket_source() at module path
-        // "bracket" already; the helper under test re-drives update_source
+        // "bracket" already; the helper under test re-drives load_file
         // (mirroring what open_path_into_engine always does on open/
         // load-fixture), exercising the same code path a debug-driven
         // open_file/load_fixture call would.
         let engine = crate::tests::make_test_engine();
 
+        let dir = tempfile::tempdir().unwrap();
+        let bracket_canonical = write_and_canonicalize(dir.path(), "bracket.ri", bracket_source());
+
         // Pre-debug delta baseline (S0): cold, no command has run yet.
         let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
             std::sync::Mutex::new(None);
 
-        // Debug-driven mutation: open/load bracket_source() via the
-        // NOT-YET-EXISTING refresh helper (S0 -> S1).
-        let content = bracket_source();
-        let s1 =
-            open_source_into_engine_and_refresh_baseline(&engine, &last_state, "bracket", content)
-                .await
-                .expect("open_source_into_engine_and_refresh_baseline must return Ok");
+        // Debug-driven mutation: open/load bracket.ri via the refresh helper
+        // (S0 -> S1).
+        let s1 = open_source_into_engine_and_refresh_baseline(
+            &engine,
+            &last_state,
+            &bracket_canonical,
+        )
+        .await
+        .expect("open_source_into_engine_and_refresh_baseline must return Ok");
         assert!(
             !s1.values.is_empty(),
             "open_source_into_engine_and_refresh_baseline must return GuiState with >= 1 value"
@@ -3376,6 +3458,321 @@ mod tests {
             "fresh-baseline delta must be MINIMAL: it must NOT re-report \
              'Bracket.height', which set_parameter never touched (a stale \
              baseline would incorrectly include it)"
+        );
+    }
+
+    // ── Task 5193 step-1: regression — the debug open funnel must adopt the
+    // newly-opened file's identity, not the previously-loaded file's ──
+    //
+    // `open_source_into_engine_and_refresh_baseline` previously called
+    // `update_source(&path, &content)`. When `self.file_path` was already
+    // `Some` (set by a prior `load_file`), `update_source` derived
+    // `module_name` from the OLD `self.file_path` and committed
+    // `FilePathUpdate::Preserve` — correct for live-buffer edits (task
+    // #3370), but wrong when the caller was opening a DIFFERENT file: the
+    // newly-opened file's content was evaluated under the PREVIOUS file's
+    // identity, so `GuiState::files[].path` and every diagnostic's
+    // `file_path` kept citing the old file.
+    //
+    // Both tests below reproduce the buggy precondition by loading file A
+    // via `load_file` (so `self.file_path = Some`) BEFORE opening file B
+    // through the helper — with `self.file_path == None`, `update_source`
+    // took its single-file branch and would not have exhibited the bug.
+    //
+    // These tests lock in the fix: the helper now routes through
+    // `EngineSession::load_file` (`FilePathUpdate::Set`, via
+    // `crate::commands::load_file_into_engine`) instead of `update_source`,
+    // so the debug open funnel adopts the newly-opened file's identity.
+    //
+    // Files-path assertions below use `any(...)` (contains the expected
+    // entry) paired with `!any(...)` (excludes the stale entry) rather than
+    // `all(...)` (every entry matches). `bracket_source()` and
+    // `warn_source_with_unknown_port_type()` are single-module fixtures
+    // today, so `any`/`all` coincide — but `any`+`!any` stays correct if
+    // either fixture ever grows an `import` and `GuiState::files` gains
+    // additional non-deck/non-warn/non-bracket entries, whereas a bare
+    // `all(...)` would then fail spuriously (#5193).
+
+    /// T1 (open_file variant, files-path facet): launch on bracket.ri, then
+    /// open deck.ri through the helper — `GuiState::files[0].path` must
+    /// adopt deck.ri's identity, never bracket.ri's. Diagnostics-identity
+    /// coverage is intentionally NOT exercised here: deck.ri's content
+    /// (bracket_source) is well-formed and produces zero diagnostics, so a
+    /// `compile_diagnostics` assertion here would be vacuously true and
+    /// could not catch a mis-attribution regression. That facet is covered
+    /// by T2/T3 (warn.ri, which reliably emits a diagnostic).
+    #[tokio::test]
+    async fn open_file_adopts_new_file_identity() {
+        use reify_test_support::bracket_source;
+
+        let dir = tempfile::tempdir().unwrap();
+        let bracket_canonical = write_and_canonicalize(dir.path(), "bracket.ri", bracket_source());
+        let deck_canonical = write_and_canonicalize(dir.path(), "deck.ri", bracket_source());
+
+        let engine = crate::tests::make_test_engine();
+
+        // Reproduce the buggy precondition: launch on bracket.ri via
+        // load_file so self.file_path = Some(bracket.ri).
+        launch_via_load_file(&engine, &bracket_canonical);
+
+        let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+            std::sync::Mutex::new(None);
+
+        // Debug-driven open of a DIFFERENT file (deck.ri) through the helper.
+        let state =
+            open_source_into_engine_and_refresh_baseline(&engine, &last_state, &deck_canonical)
+                .await
+                .expect("open_source_into_engine_and_refresh_baseline must return Ok");
+
+        assert!(
+            !state.files.is_empty(),
+            "GuiState.files must be non-empty after opening deck.ri"
+        );
+        assert!(
+            state.files.iter().any(|f| f.path.ends_with("deck.ri")),
+            "GuiState.files must contain an entry for the newly-opened file's identity (deck.ri), got: {:?}",
+            state.files.iter().map(|f| &f.path).collect::<Vec<_>>()
+        );
+        assert!(
+            !state.files.iter().any(|f| f.path.ends_with("bracket.ri")),
+            "no files[].path may retain the previously-loaded file's \
+             identity (bracket.ri), got: {:?}",
+            state.files.iter().map(|f| &f.path).collect::<Vec<_>>()
+        );
+    }
+
+    /// T2 (load_fixture-after-launch variant, diagnostics facet): launch on
+    /// bracket.ri, then open warn.ri (reliably emits exactly one Warning)
+    /// through the helper — every `compile_diagnostics[].file_path` must
+    /// cite warn.ri, never bracket.ri. Also checks the files-path facet:
+    /// T1 already asserts files-path identity, so this closes the gap
+    /// where a regression fixing only one facet could still pass T2 alone.
+    #[tokio::test]
+    async fn load_fixture_after_launch_diagnostics_cite_fixture() {
+        use reify_test_support::{bracket_source, warn_source_with_unknown_port_type};
+
+        let dir = tempfile::tempdir().unwrap();
+        let bracket_canonical = write_and_canonicalize(dir.path(), "bracket.ri", bracket_source());
+        let warn_canonical = write_and_canonicalize(
+            dir.path(),
+            "warn.ri",
+            warn_source_with_unknown_port_type(),
+        );
+
+        let engine = crate::tests::make_test_engine();
+
+        // Reproduce the buggy precondition: launch on bracket.ri via
+        // load_file so self.file_path = Some(bracket.ri).
+        launch_via_load_file(&engine, &bracket_canonical);
+
+        let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+            std::sync::Mutex::new(None);
+
+        // Debug-driven open of a DIFFERENT file (warn.ri, the
+        // fixture-after-launch variant of load_fixture) through the helper.
+        let state =
+            open_source_into_engine_and_refresh_baseline(&engine, &last_state, &warn_canonical)
+                .await
+                .expect("open_source_into_engine_and_refresh_baseline must return Ok");
+
+        assert!(
+            !state.compile_diagnostics.is_empty(),
+            "warn.ri must produce a non-empty compile_diagnostics (unknown-port-type warning)"
+        );
+        assert!(
+            state
+                .compile_diagnostics
+                .iter()
+                .all(|d| d.file_path.ends_with("warn.ri")),
+            "every diagnostic's file_path must cite warn.ri, got: {:?}",
+            state
+                .compile_diagnostics
+                .iter()
+                .map(|d| &d.file_path)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            !state
+                .compile_diagnostics
+                .iter()
+                .any(|d| d.file_path.ends_with("bracket.ri")),
+            "no diagnostic may cite the previously-loaded file's identity \
+             (bracket.ri), got: {:?}",
+            state
+                .compile_diagnostics
+                .iter()
+                .map(|d| &d.file_path)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            !state.files.is_empty(),
+            "GuiState.files must be non-empty after opening warn.ri"
+        );
+        assert!(
+            state.files.iter().any(|f| f.path.ends_with("warn.ri")),
+            "GuiState.files must contain an entry for the newly-opened file's identity (warn.ri), got: {:?}",
+            state.files.iter().map(|f| &f.path).collect::<Vec<_>>()
+        );
+        assert!(
+            !state.files.iter().any(|f| f.path.ends_with("bracket.ri")),
+            "no files[].path may retain the previously-loaded file's \
+             identity (bracket.ri), got: {:?}",
+            state.files.iter().map(|f| &f.path).collect::<Vec<_>>()
+        );
+    }
+
+    /// T3 (same-file re-open facet, #5193): launch on warn.ri,
+    /// then re-open warn.ri AGAIN — the SAME file, not a different one —
+    /// through the same helper. `GuiState::files[].path` and every
+    /// diagnostic's `file_path` must still cite warn.ri.
+    ///
+    /// T1/T2 lock in that the helper's `load_file` route (`FilePathUpdate::Set`)
+    /// correctly ADOPTS a newly-opened DIFFERENT file's identity instead of
+    /// preserving the previous one. This test guards the other side of that
+    /// change: re-opening the file that is ALREADY loaded must not churn or
+    /// corrupt identity either — i.e. routing the debug open funnel through
+    /// `load_file` instead of `update_source` does not regress the
+    /// same-file re-open/reload path the debug bridge may also exercise.
+    #[tokio::test]
+    async fn open_file_same_file_reopen_keeps_identity() {
+        use reify_test_support::warn_source_with_unknown_port_type;
+
+        let dir = tempfile::tempdir().unwrap();
+        let warn_canonical =
+            write_and_canonicalize(dir.path(), "warn.ri", warn_source_with_unknown_port_type());
+
+        let engine = crate::tests::make_test_engine();
+
+        // Launch on warn.ri via load_file (self.file_path = Some(warn.ri)) —
+        // same launched-file precondition as T1/T2, but here the file being
+        // re-opened through the helper is the SAME file, not a different one.
+        launch_via_load_file(&engine, &warn_canonical);
+
+        let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+            std::sync::Mutex::new(None);
+
+        // Debug-driven RE-open of the SAME file (warn.ri again) through the
+        // helper.
+        let state =
+            open_source_into_engine_and_refresh_baseline(&engine, &last_state, &warn_canonical)
+                .await
+                .expect("open_source_into_engine_and_refresh_baseline must return Ok");
+
+        assert!(
+            !state.files.is_empty(),
+            "GuiState.files must be non-empty after re-opening warn.ri"
+        );
+        assert!(
+            state.files.iter().any(|f| f.path.ends_with("warn.ri")),
+            "re-opening the SAME file must still cite warn.ri, got: {:?}",
+            state.files.iter().map(|f| &f.path).collect::<Vec<_>>()
+        );
+        assert!(
+            !state.compile_diagnostics.is_empty(),
+            "warn.ri must still produce its unknown-port-type warning after re-open"
+        );
+        assert!(
+            state
+                .compile_diagnostics
+                .iter()
+                .all(|d| d.file_path.ends_with("warn.ri")),
+            "every diagnostic's file_path must still cite warn.ri after re-open, got: {:?}",
+            state
+                .compile_diagnostics
+                .iter()
+                .map(|d| &d.file_path)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// T4 (failure-path facet, #5193): opening a path that does not exist
+    /// must return an `Err` that identifies itself as an open-funnel load
+    /// failure — the triage marker documented on
+    /// `open_source_into_engine_and_refresh_baseline` above, distinguishing
+    /// this funnel's failures from a normal command's — and names the path.
+    /// T1-T3 only exercise the Ok path, so a regression dropping the triage
+    /// marker (or breaking the underlying error propagation) would otherwise
+    /// go unnoticed. The marker check below is a loose substring match
+    /// rather than the literal prefix string, so a benign rewording of the
+    /// marker's exact wording does not break this test.
+    #[tokio::test]
+    async fn open_source_helper_wraps_load_error_with_funnel_prefix() {
+        let engine = crate::tests::make_test_engine();
+        let last_state: std::sync::Mutex<Option<crate::types::GuiState>> =
+            std::sync::Mutex::new(None);
+
+        // A path inside a real tempdir that is never written to, so the
+        // underlying `std::fs::read_to_string` inside `load_file` fails.
+        let dir = tempfile::tempdir().unwrap();
+        let missing_path = dir
+            .path()
+            .join("does_not_exist.ri")
+            .to_string_lossy()
+            .into_owned();
+
+        let err = open_source_into_engine_and_refresh_baseline(&engine, &last_state, &missing_path)
+            .await
+            .expect_err("opening a nonexistent path must return Err");
+
+        assert!(
+            err.contains("open funnel") && err.contains("load"),
+            "error must identify itself as an open-funnel load failure, got: {err:?}"
+        );
+        assert!(
+            err.contains(&missing_path),
+            "error must name the path that failed to load, got: {err:?}"
+        );
+    }
+
+    /// T5 (rewrite-failure facet, #5193): `rewrite_files_to_abs`'s `Err` arm
+    /// (commands.rs:464-484) is graceful degradation, not a hard failure —
+    /// when a `files[]` entry can't be canonicalized (e.g. it was removed
+    /// from disk between the engine load and the abs-path rewrite), the
+    /// entry must be left as its stem-only module key rather than panicking,
+    /// erroring the whole open, or silently disappearing from `files[]`.
+    ///
+    /// `source_map` (and so `GuiState::files`) always holds exactly one
+    /// entry: `commit_state` clears and re-inserts a single key per load
+    /// (engine.rs:282-283), and v1 does not add imported modules' content to
+    /// `source_map` either (engine.rs:879-884). So the only way to reach
+    /// this branch is to delete the just-loaded file between
+    /// `load_file_into_engine` (which reads it while it still exists) and
+    /// `resolve` (whose canonicalize call then fails) — exactly what this
+    /// test does, driving the two building blocks `open_file_engine_impl`
+    /// composes directly since neither public entry point offers a hook
+    /// between those two steps.
+    #[test]
+    fn resolve_leaves_stem_only_path_when_canonicalize_fails() {
+        use reify_test_support::bracket_source;
+
+        let dir = tempfile::tempdir().unwrap();
+        let bracket_canonical = write_and_canonicalize(dir.path(), "bracket.ri", bracket_source());
+
+        let engine = crate::tests::make_test_engine();
+
+        let unresolved = crate::engine_lock::with_engine_lock(&engine, |s| {
+            crate::commands::load_file_into_engine(s, std::path::Path::new(&bracket_canonical))
+        })
+        .and_then(std::convert::identity)
+        .expect("load_file_into_engine must succeed while the file still exists");
+
+        // Remove the file so the abs-path rewrite's canonicalize call fails —
+        // the load above already completed successfully, so this isolates
+        // just the rewrite step's failure branch.
+        std::fs::remove_file(&bracket_canonical).unwrap();
+
+        let state = unresolved.resolve(std::path::Path::new(&bracket_canonical));
+
+        assert!(
+            !state.files.is_empty(),
+            "resolve must not drop the files[] entry when canonicalize fails"
+        );
+        assert_eq!(
+            state.files[0].path, "bracket.ri",
+            "when canonicalize fails, files[].path must fall back to the \
+             stem-only module key rather than panicking or erroring the \
+             whole open, got: {:?}",
+            state.files[0].path
         );
     }
 }

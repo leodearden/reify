@@ -407,41 +407,113 @@ pub fn save_file_impl(path: &str, content: &str) -> Result<(), String> {
     std::fs::write(path, content).map_err(|e| format!("Error writing {}: {}", path, e))
 }
 
+/// A [`GuiState`] fresh out of [`load_file_into_engine`], whose `files[].path`
+/// entries are still stem-only module keys rather than canonical absolute
+/// paths. The only way to get a plain [`GuiState`] back out is
+/// [`resolve`](Self::resolve) — that keeps the rewrite step paired with the
+/// load at the type level, so a future call site cannot return the
+/// unresolved state directly (or forget the rewrite) and silently ship
+/// stem-only paths to the frontend, which is exactly the class of identity
+/// bug #5193 fixed.
+pub(crate) struct UnresolvedGuiState(GuiState);
+
+impl UnresolvedGuiState {
+    /// Rewrite each stem-only `files[].path` entry to a canonical absolute
+    /// path, resolved against `canonical`'s parent directory, and unwrap to
+    /// a plain `GuiState`.
+    ///
+    /// Note: `engine.source_map()` stores entries under `module_key(name)` =
+    /// `"{name}.ri"` (a stem-only key). This gives callers a stable absolute
+    /// identity key regardless of how the original input path was spelled.
+    ///
+    /// Deliberately a separate step from [`load_file_into_engine`] (#5193):
+    /// it is filesystem I/O that touches no engine state, so
+    /// callers call this AFTER releasing the engine lock that produced
+    /// `self`, rather than holding the mutex across N
+    /// `std::fs::canonicalize` syscalls.
+    pub(crate) fn resolve(mut self, canonical: &Path) -> GuiState {
+        rewrite_files_to_abs(&mut self.0, canonical);
+        self.0
+    }
+}
+
+/// Load `canonical` into the engine, adopting its identity via
+/// `EngineSession::load_file` (`FilePathUpdate::Set`).
+///
+/// Shared choke-point for both open-file entry points — [`open_file_engine_impl`]
+/// (the normal Tauri command) and `debug_server::open_source_into_engine_and_refresh_baseline`
+/// (the debug bridge's open_file/load_fixture funnel) — so the load_file
+/// call cannot drift between them again (task #5193).
+///
+/// Returns an [`UnresolvedGuiState`]: callers MUST call
+/// [`UnresolvedGuiState::resolve`] to obtain a `GuiState` fit to hand to a
+/// caller. See that method's docs for why the step is separate rather than
+/// inlined here.
+pub(crate) fn load_file_into_engine(
+    session: &mut EngineSession,
+    canonical: &Path,
+) -> Result<UnresolvedGuiState, String> {
+    session.load_file(canonical).map(UnresolvedGuiState)
+}
+
+/// Rewrite each stem-only `GuiState::files[].path` entry to a canonical
+/// absolute path, resolved against `canonical`'s parent directory.
+///
+/// Private implementation detail of [`UnresolvedGuiState::resolve`], the
+/// only caller — kept as a separate function for readability.
+fn rewrite_files_to_abs(state: &mut GuiState, canonical: &Path) {
+    if let Some(entry_dir) = canonical.parent() {
+        for f in &mut state.files {
+            let resolved = entry_dir.join(&f.path);
+            match std::fs::canonicalize(&resolved) {
+                Ok(c) => f.path = c.to_string_lossy().into_owned(),
+                // Leave `f.path` as its stem-only module key (e.g. "bracket.ri")
+                // on failure — still a valid, if ambiguous, identity — rather
+                // than erroring the whole open. Warn so a transient FS failure
+                // here is observable instead of silently reintroducing the
+                // stem-only identity ambiguity #5193 eliminated.
+                Err(error) => tracing::warn!(
+                    path = %resolved.display(),
+                    %error,
+                    "rewrite_files_to_abs: canonicalize failed; leaving files[].path as stem-only key {:?}",
+                    f.path
+                ),
+            }
+        }
+    } else {
+        // `canonical.parent()` is `None` only for a root path (e.g. "/") or an
+        // empty path — in practice unreachable, since every caller passes a
+        // `canonicalize_document_key`/`canonicalize_debug_open_path` realpath,
+        // which always has a parent. Warn rather than silently no-op'ing, so a
+        // degenerate input is observable instead of quietly reintroducing the
+        // stem-only `files[].path` identity ambiguity #5193 eliminated.
+        tracing::warn!(
+            canonical = %canonical.display(),
+            "rewrite_files_to_abs: canonical path has no parent directory; leaving all files[].path entries as stem-only keys"
+        );
+    }
+}
+
 /// Load a file into the engine and return the initial state.
 ///
 /// The input `path` is canonicalised to an absolute realpath via
 /// [`crate::path_key::canonicalize_document_key`] before being passed to
-/// `EngineSession::load_file`.  This propagates the canonical key into the
+/// [`load_file_into_engine`], which propagates the canonical key into the
 /// engine's `file_path` field (used later by `update_source` for import
-/// resolution) and ensures the returned [`GuiState::files`] contains
-/// absolute paths rather than bare module-key filenames.
-///
-/// Note: `engine.source_map()` stores entries under `module_key(name)` =
-/// `"{name}.ri"` (a stem-only key).  After loading, this function rewrites
-/// each `FileData.path` in the returned `GuiState` by resolving it against the
-/// canonical entry path's parent directory, so the frontend receives a stable
-/// absolute identity key regardless of how the caller spelled the input path.
+/// resolution). [`UnresolvedGuiState::resolve`] then runs AFTER the engine
+/// lock is released, so the returned [`GuiState::files`] contains absolute
+/// paths rather than bare module-key filenames without the engine mutex
+/// being held across the canonicalize filesystem calls (#5193).
 pub fn open_file_engine_impl(
     engine: &Mutex<EngineSession>,
     path: &str,
 ) -> Result<GuiState, String> {
     let canonical = crate::path_key::canonicalize_document_key(path);
-    let mut state =
-        crate::engine_lock::with_engine_lock(engine, |s| s.load_file(Path::new(&canonical)))
-            .and_then(std::convert::identity)?;
-
-    // source_map keys are "{name}.ri" (stem-only). Resolve each against the
-    // canonical entry directory so the frontend receives absolute paths.
-    if let Some(entry_dir) = Path::new(&canonical).parent() {
-        for f in &mut state.files {
-            let resolved = entry_dir.join(&f.path);
-            if let Ok(c) = std::fs::canonicalize(&resolved) {
-                f.path = c.to_string_lossy().into_owned();
-            }
-        }
-    }
-
-    Ok(state)
+    let state = crate::engine_lock::with_engine_lock(engine, |s| {
+        load_file_into_engine(s, Path::new(&canonical))
+    })
+    .and_then(std::convert::identity)?;
+    Ok(state.resolve(Path::new(&canonical)))
 }
 
 /// Resolve the CLI argv path to a canonical [`PathBuf`] suitable for
