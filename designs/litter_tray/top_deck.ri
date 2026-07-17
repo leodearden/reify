@@ -1,0 +1,153 @@
+module top_deck
+
+// Two-deck cat litter tray — TOP DECK (sieve tray), first cut.
+//
+// Function: holds the fresh compressed-wood pellets (Ø6mm). Cats use it;
+// shaking the deck drops urine-spent sawdust through the Ø3mm sieve floor
+// into the bottom deck while intact pellets and faeces stay on top.
+//
+// Interface (matches bottom_deck_split.ri as built): drops recess_depth=15mm
+// into the bottom deck's rim recess (opening 475.2 x 255.2, corner r 22.6,
+// upper_wall 2.4); the wall/floor perimeter ring bears on the 5mm ledge seat.
+// fit_clearance 0.4mm/side => outer 474.4 x 254.4, corner r 22.2.
+//
+// Sieve: Ø3mm holes on a 5mm hex pitch (two interleaved rectangular grids,
+// rows staggered by pitch/2 and pitch*0.866) — ~4,600 holes, ~33% open area
+// in the field. Solid features in the field:
+//   - 12mm solid margin ring (floor-wall fillet zone + strength ring)
+//   - two Ø26 solid pads at x = ±120 (bearing spots for optional mid-span
+//     pedestals rising from the bottom deck floor — proposed, not yet added
+//     to the bottom deck; also the wear spots when shaking)
+//
+// Ergonomics: hand slots (60 x 22, rounded ends) through both end walls in
+// the proud zone above the bottom-deck rim, for lifting and shaking.
+//
+// Printing (Snapmaker U1): floor-down, holes print cleanly, no supports.
+// Full tray exceeds the bed in X — same two-part split as the bottom deck
+// (pinwheel scarf through the SOLID seam margin; split file is a follow-up).
+// Cat-load stiffness: 5mm perforated floor + (proposed) pedestal support at
+// the pads; end-wall slots leave a 9mm web below the rim.
+
+structure def TopDeck : Rigid {
+    // ── Interface to the bottom deck ────────────────────────────────────
+    param recess_length : Length = 475.2mm  // bottom deck recess opening (x)
+    param recess_width  : Length = 255.2mm  // bottom deck recess opening (y)
+    param recess_corner : Length = 22.6mm   // bottom deck recess corner radius
+    param fit_clearance : Length = 0.4mm    // per side, PETG-on-PETG slip fit
+
+    // ── Body ────────────────────────────────────────────────────────────
+    param wall_t       : Length = 2.4mm
+    param floor_t      : Length = 5mm       // perforated floor: stiffness matters
+    param deck_height  : Length = 60mm      // 15 in the recess + 45 proud
+    param edge_fillet  : Length = 1.5mm     // rim + base softening
+    param floor_fillet : Length = 4mm       // interior floor-wall junction
+
+    // ── Sieve field ─────────────────────────────────────────────────────
+    param hole_d     : Length = 3mm         // sawdust passes, Ø6 pellets don't
+    param hole_pitch : Length = 5mm         // hex pitch (web = pitch - hole_d)
+    param margin     : Length = 12mm        // solid ring inside the walls
+    param pad_r      : Length = 13mm        // solid pedestal/wear pads
+    param pad_x      : Length = 120mm       // pad centres at (±pad_x, 0)
+
+    // ── Hand slots (through both end walls) ─────────────────────────────
+    param slot_w : Length = 60mm            // total width incl. rounded ends
+    param slot_h : Length = 22mm
+    param slot_z : Length = 40mm            // slot centre height
+
+    param material : Material = Material(name: "PETG", density: 1270kg/m^3, youngs_modulus: 2.1GPa)
+
+    // ── Derived ─────────────────────────────────────────────────────────
+    let outer_length = recess_length - 2 * fit_clearance   // 474.4
+    let outer_width  = recess_width  - 2 * fit_clearance   // 254.4
+    let corner_r     = recess_corner - fit_clearance       // 22.2
+    let inner_length = outer_length - 2 * wall_t
+    let inner_width  = outer_width  - 2 * wall_t
+    let field_x = inner_length - 2 * margin                // ~445.6
+    let field_y = inner_width  - 2 * margin                // ~225.6
+    let row_step = hole_pitch * 0.866                      // hex row spacing
+
+    // Hole counts (kept as literals in the pattern calls below; these lets
+    // document the packing and feed the fit constraints).
+    let nx_a = 89
+    let ny_a = 26
+    let nx_b = 88
+    let ny_b = 26
+    let hole_count = nx_a * ny_a + nx_b * ny_b             // 4602
+
+    // Pattern origin (field centred on the tray)
+    let x0a = 0mm - (hole_pitch * (nx_a - 1)) / 2          // -220
+    let y0a = 0mm - (row_step * (ny_a + ny_b - 1)) / 2     // -110.4 (row 0)
+    let x0b = x0a + hole_pitch / 2
+    let y0b = y0a + row_step
+
+    // ── Constraints ─────────────────────────────────────────────────────
+    let bed_limit = 265mm
+    constraint outer_width <= bed_limit                    // halves print flat
+    constraint outer_length <= 2 * bed_limit               // two-part split in x
+    constraint hole_d < 4mm                                // pellets stay on top
+    constraint hole_d >= 2.5mm                             // sawdust falls through
+    constraint hole_pitch - hole_d >= 1.8mm                // web between holes
+    constraint hole_pitch * (nx_a - 1) + hole_d <= field_x // grid fits the field
+    constraint row_step * (ny_a + ny_b - 1) + hole_d <= field_y
+    constraint margin >= floor_fillet + 6mm                // holes clear the fillet
+    constraint pad_r > hole_pitch                          // pad actually plugs holes
+    constraint fit_clearance >= 0.2mm
+    constraint fit_clearance <= 0.6mm
+    constraint slot_z - slot_h / 2 > 15mm + 5mm            // slot above bottom rim
+    constraint slot_z + slot_h / 2 <= deck_height - 8mm    // web below the rim
+    constraint floor_t >= 4mm                              // cat-load stiffness
+
+    // ── Geometry ────────────────────────────────────────────────────────
+    let cx = outer_length / 2 - corner_r
+    let cy = outer_width / 2 - corner_r
+    let cav_r = corner_r - wall_t
+    let end_x = outer_length / 2                           // end-wall mid-plane
+    let slot_flat = slot_w - slot_h                        // straight part of slot
+
+    // tray shell (rounded prism minus rounded cavity, as bottom_deck.ri)
+    // → punch grid A → punch grid B → union pedestal pads → cut hand slots
+    param geometry : Solid = difference(union_all(
+        difference(
+            difference(
+                // outer rounded prism
+                fillet(union_all(
+                    translate(box(outer_length - 2 * corner_r, outer_width, deck_height), 0mm, 0mm, deck_height / 2),
+                    translate(box(outer_length, outer_width - 2 * corner_r, deck_height), 0mm, 0mm, deck_height / 2),
+                    translate(cylinder(corner_r, deck_height), cx, cy, 0mm),
+                    translate(cylinder(corner_r, deck_height), -cx, cy, 0mm),
+                    translate(cylinder(corner_r, deck_height), -cx, -cy, 0mm),
+                    translate(cylinder(corner_r, deck_height), cx, -cy, 0mm)
+                ), edge_fillet),
+                // interior cavity above the floor
+                fillet(union_all(
+                    translate(box(inner_length - 2 * cav_r, inner_width, deck_height), 0mm, 0mm, floor_t + deck_height / 2),
+                    translate(box(inner_length, inner_width - 2 * cav_r, deck_height), 0mm, 0mm, floor_t + deck_height / 2),
+                    translate(cylinder(cav_r, deck_height), cx, cy, floor_t),
+                    translate(cylinder(cav_r, deck_height), -cx, cy, floor_t),
+                    translate(cylinder(cav_r, deck_height), -cx, -cy, floor_t),
+                    translate(cylinder(cav_r, deck_height), cx, -cy, floor_t)
+                ), floor_fillet)
+            ),
+            // sieve field: two interleaved grids = hex packing
+            union_all(
+                linear_pattern_2d(translate(cylinder(hole_d / 2, floor_t + 2mm), x0a, y0a, -1mm), 1, 0, 0, 89, 5, 0, 1, 0, 26, 8.66),
+                linear_pattern_2d(translate(cylinder(hole_d / 2, floor_t + 2mm), x0b, y0b, -1mm), 1, 0, 0, 88, 5, 0, 1, 0, 26, 8.66)
+            )
+        ),
+        // solid pedestal/wear pads (re-plug the punched holes)
+        translate(cylinder(pad_r, floor_t), pad_x, 0mm, 0mm),
+        translate(cylinder(pad_r, floor_t), 0mm - pad_x, 0mm, 0mm)
+    ),
+        // hand slots through both end walls (rounded ends)
+        union_all(
+            translate(box(4 * wall_t, slot_flat, slot_h), end_x, 0mm, slot_z),
+            translate(rotate(cylinder(slot_h / 2, 4 * wall_t), 0, 1, 0, 90deg), end_x - 2 * wall_t, slot_flat / 2, slot_z),
+            translate(rotate(cylinder(slot_h / 2, 4 * wall_t), 0, 1, 0, 90deg), end_x - 2 * wall_t, 0mm - slot_flat / 2, slot_z),
+            translate(box(4 * wall_t, slot_flat, slot_h), 0mm - end_x, 0mm, slot_z),
+            translate(rotate(cylinder(slot_h / 2, 4 * wall_t), 0, 1, 0, 90deg), 0mm - end_x - 2 * wall_t, slot_flat / 2, slot_z),
+            translate(rotate(cylinder(slot_h / 2, 4 * wall_t), 0, 1, 0, 90deg), 0mm - end_x - 2 * wall_t, 0mm - slot_flat / 2, slot_z)
+        )
+    )
+
+    sub display = DisplayOutput(subject: geometry)
+}

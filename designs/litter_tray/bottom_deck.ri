@@ -1,0 +1,114 @@
+module bottom_deck
+
+// Two-deck cat litter tray — BOTTOM DECK (collection tray), first cut.
+//
+// Concept: compressed wood-pellet litter lives in the top deck (a sieve).
+// Urine-soaked sawdust falls through into this bottom deck; the ledge below
+// the rim locates the top deck positively ("drops down into it slightly").
+//
+// Print plan (Snapmaker U1, 270×270×270, PETG):
+//   - Printed floor-down, walls vertical → no supports.
+//   - The internal ledge is the top of the thicker lower wall, so it is fully
+//     supported material — zero overhang by construction.
+//   - Full tray is 480×260; it exceeds the bed in X, so v1 splits it into two
+//     halves at x=0 with a joining feature (not modelled yet in this cut).
+//
+// Construction notes:
+//   - Plan-view corner rounding comes from the profile (union of 2 boxes +
+//     4 corner cylinders), because only all-edge fillet(solid, r) is wired
+//     today — a single radius can't serve both 25mm plan corners and a
+//     2.4mm-wide rim. Edge softening uses small all-edge fillets applied to
+//     each primitive prism *before* subtraction.
+//   - All three prisms share corner-cylinder centres: offsetting a rounded
+//     rect inward by d shrinks its corner radius by d but keeps the centres.
+
+structure def BottomDeck : Rigid {
+    // ── Overall envelope ────────────────────────────────────────────────
+    param outer_length  : Length = 480mm   // X — split into two prints
+    param outer_width   : Length = 260mm   // Y — fits the bed directly
+    param wall_height   : Length = 80mm    // Z, floor bottom to rim top
+    param corner_radius : Length = 25mm    // plan-view outer corner radius
+
+    // ── Wall / ledge cross-section ──────────────────────────────────────
+    param upper_wall   : Length = 2.4mm    // wall above the ledge
+    param ledge_width  : Length = 4mm      // horizontal seat for the top deck
+    param recess_depth : Length = 15mm     // ledge sits this far below the rim
+    param floor_thickness : Length = 4mm
+
+    // ── Edge softening (all-edge fillets on primitives) ─────────────────
+    param edge_fillet  : Length = 2mm      // outer prism: rim + base edges
+    param floor_fillet : Length = 5mm      // main cavity: floor-wall junction
+    param ledge_fillet : Length = 2mm      // recess cavity: ledge-wall junction
+
+    param material : Material = Material(name: "PETG", density: 1270kg/m^3, youngs_modulus: 2.1GPa)
+
+    // ── Derived section dims ────────────────────────────────────────────
+    let lower_wall = upper_wall + ledge_width        // wall below the ledge
+    let ledge_z    = wall_height - recess_depth      // ledge height above base
+    let inner_length = outer_length - 2 * lower_wall // main cavity plan dims
+    let inner_width  = outer_width  - 2 * lower_wall
+    let recess_length = outer_length - 2 * upper_wall
+    let recess_width  = outer_width  - 2 * upper_wall
+
+    // Sawdust capacity between emptyings (rectangular approximation).
+    let capacity = (ledge_z - floor_thickness) * inner_length * inner_width
+
+    // ── Printability & sanity constraints ───────────────────────────────
+    let bed_limit = 265mm                            // U1 bed 270mm minus margin
+    constraint outer_width <= bed_limit              // each half prints flat
+    constraint outer_length <= 2 * bed_limit         // two-part split in X
+    constraint corner_radius > lower_wall + 2mm      // inner corners stay round
+    constraint corner_radius < outer_width / 4
+    constraint upper_wall >= 1.6mm                   // ≥4 perimeters of PETG
+    constraint ledge_width >= 3mm                    // usable seat for top deck
+    constraint recess_depth >= 8mm                   // positive engagement
+    constraint recess_depth < wall_height / 3
+    constraint floor_thickness >= 2mm
+    constraint edge_fillet < upper_wall              // rim fillet fits the rim
+    constraint floor_fillet < ledge_z / 4
+    constraint ledge_fillet < recess_depth / 2
+
+    // ── Geometry ────────────────────────────────────────────────────────
+    // Shared corner-cylinder centres for all three rounded prisms (scalar
+    // lets only — every geometry-valued let realizes as its own viewport
+    // mesh, so the solid construction is inlined into one expression).
+    let cx = outer_length / 2 - corner_radius
+    let cy = outer_width / 2 - corner_radius
+    let recess_r = corner_radius - upper_wall
+    let recess_h = recess_depth + 20mm               // pokes above the rim
+    let main_r = corner_radius - lower_wall
+
+    // outer envelope minus recess cavity (ledge level up, upper_wall thick)
+    // minus main cavity (floor up, lower_wall thick); each rounded prism is
+    // union_all(2 boxes + 4 corner cylinders) with small all-edge fillets.
+    param geometry : Solid = difference(
+        difference(
+            fillet(union_all(
+                translate(box(outer_length - 2 * corner_radius, outer_width, wall_height), 0mm, 0mm, wall_height / 2),
+                translate(box(outer_length, outer_width - 2 * corner_radius, wall_height), 0mm, 0mm, wall_height / 2),
+                translate(cylinder(corner_radius, wall_height), cx, cy, 0mm),
+                translate(cylinder(corner_radius, wall_height), -cx, cy, 0mm),
+                translate(cylinder(corner_radius, wall_height), -cx, -cy, 0mm),
+                translate(cylinder(corner_radius, wall_height), cx, -cy, 0mm)
+            ), edge_fillet),
+            fillet(union_all(
+                translate(box(recess_length - 2 * recess_r, recess_width, recess_h), 0mm, 0mm, ledge_z + recess_h / 2),
+                translate(box(recess_length, recess_width - 2 * recess_r, recess_h), 0mm, 0mm, ledge_z + recess_h / 2),
+                translate(cylinder(recess_r, recess_h), cx, cy, ledge_z),
+                translate(cylinder(recess_r, recess_h), -cx, cy, ledge_z),
+                translate(cylinder(recess_r, recess_h), -cx, -cy, ledge_z),
+                translate(cylinder(recess_r, recess_h), cx, -cy, ledge_z)
+            ), ledge_fillet)
+        ),
+        fillet(union_all(
+            translate(box(inner_length - 2 * main_r, inner_width, wall_height), 0mm, 0mm, floor_thickness + wall_height / 2),
+            translate(box(inner_length, inner_width - 2 * main_r, wall_height), 0mm, 0mm, floor_thickness + wall_height / 2),
+            translate(cylinder(main_r, wall_height), cx, cy, floor_thickness),
+            translate(cylinder(main_r, wall_height), -cx, cy, floor_thickness),
+            translate(cylinder(main_r, wall_height), -cx, -cy, floor_thickness),
+            translate(cylinder(main_r, wall_height), cx, -cy, floor_thickness)
+        ), floor_fillet)
+    )
+
+    sub display = DisplayOutput(subject: geometry)
+}
