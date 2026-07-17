@@ -239,6 +239,14 @@ impl Default for ManifoldKernel {
 /// winding is preserved because only vertex indices are remapped; corner
 /// order within each triangle is unchanged.
 ///
+/// The `-0.0` → `+0.0` normalization applies to the weld KEY only: each
+/// emitted canonical vertex retains the first-seen RAW coordinate value,
+/// which may itself be `-0.0`. This differs bit-for-bit from an earlier
+/// hand-rolled version of this weld, which stored the normalized value
+/// instead — but is behaviorally equivalent for `from_mesh_f64`, since
+/// `-0.0 == +0.0` under IEEE 754 and the weld already guarantees exactly one
+/// representative per position.
+///
 /// For already-welded input (every position unique) the dedup is a no-op and
 /// the indices are passed through unchanged, so existing well-formed meshes
 /// are unaffected.
