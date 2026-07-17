@@ -187,6 +187,15 @@ pub fn check_no_stale_undef(
             continue;
         }
 
+        // ORDERING INVARIANT: clause 7 must run before clause 8 below. The
+        // overloaded solid-CSG `union`/`intersect`/`difference` booleans stay
+        // out of clause 8's net only because clause 7 catches their
+        // `Type::Geometry` cell first — `is_symbolic_eval_wired_selector_ctor`
+        // is a by-NAME predicate that cannot distinguish that overload from
+        // the selector-composition wiring it targets. Reordering clause 8
+        // ahead of clause 7 would silently open a stale-Undef hole for it;
+        // see `seeded_solid_boolean_union_undef_is_exempted_by_geometry_clause`
+        // (`tests/no_stale_undef_invariant_gate.rs`).
         // Clause 7: `Type::Geometry` (incl. the `DatumRef` alias) cells are
         // hydrated to `Value::GeometryHandle` ONLY inside `build()`'s local
         // `ValueMap` — never written back into the retained `eval_state()`
