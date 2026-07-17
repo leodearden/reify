@@ -3560,6 +3560,72 @@ mod tests {
         }
 
         #[test]
+        fn detect_local_index_reassignment_skips_equal_index_peers() {
+            // L1 guard (task #5196): peers that already share the same
+            // local_index have identity keys — (feature_id, role, local_index)
+            // — that already collide, so there is no enumeration-order
+            // shuffle risk to warn about (union_all legitimately produces
+            // equal indices across per-primitive-relative numbering; PRD
+            // persistent-naming-v2.md line 81 scopes the construction-order
+            // tiebreak to "genuine geometric ties", not group-unique
+            // indices). Equal-index peers must be excluded from the pairwise
+            // tie scan even when their centroids coincide exactly.
+            let attr0 = make_attr("F#realization[0]", Role::Side, 0);
+            let attr1 = make_attr("F#realization[0]", Role::Side, 0);
+            let h0 = GeometryHandleId(1);
+            let h1 = GeometryHandleId(2);
+            let mut centroids: HashMap<GeometryHandleId, [f64; 3]> = HashMap::new();
+            centroids.insert(h0, [1.0, 2.0, 3.0]);
+            centroids.insert(h1, [1.0, 2.0, 3.0]);
+            let mut diagnostics = Vec::new();
+            detect_local_index_reassignment_diagnostics(
+                &[(h0, &attr0), (h1, &attr1)],
+                &centroids,
+                LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M,
+                synthetic_span(),
+                &mut diagnostics,
+            );
+            assert!(
+                diagnostics.is_empty(),
+                "expected no diagnostic for equal-index peers (identity keys already \
+                 collide, no shuffle risk), got: {diagnostics:?}"
+            );
+        }
+
+        #[test]
+        fn detect_local_index_reassignment_still_fires_for_distinct_index_tied_centroids() {
+            // Control paired with `..._skips_equal_index_peers` above: the L1
+            // guard must exclude ONLY equal-index peers, not every
+            // near-coincident pair. A genuine distinct-index tie (0 vs 1)
+            // with identical centroids must still fire — same shape as
+            // `..._emits_diagnostic_when_two_entries_have_tied_centroids`
+            // above (and the hand-built fixture in
+            // `tests/topology_attribute_e2e.rs`), kept as an explicit
+            // adjacent control for the new guard.
+            let attr0 = make_attr("F#realization[0]", Role::Side, 0);
+            let attr1 = make_attr("F#realization[0]", Role::Side, 1);
+            let h0 = GeometryHandleId(1);
+            let h1 = GeometryHandleId(2);
+            let mut centroids: HashMap<GeometryHandleId, [f64; 3]> = HashMap::new();
+            centroids.insert(h0, [1.0, 2.0, 3.0]);
+            centroids.insert(h1, [1.0, 2.0, 3.0]);
+            let mut diagnostics = Vec::new();
+            detect_local_index_reassignment_diagnostics(
+                &[(h0, &attr0), (h1, &attr1)],
+                &centroids,
+                LOCAL_INDEX_REASSIGNMENT_TOLERANCE_M,
+                synthetic_span(),
+                &mut diagnostics,
+            );
+            assert_eq!(
+                diagnostics.len(),
+                1,
+                "expected exactly one diagnostic for distinct-index tied centroids, \
+                 got: {diagnostics:?}"
+            );
+        }
+
+        #[test]
         fn detect_local_index_reassignment_skips_entries_with_non_empty_mod_history() {
             // PRD line 72: "not because of a split — splits are handled by
             // mod_history". Post-split clusters are surfaced via
