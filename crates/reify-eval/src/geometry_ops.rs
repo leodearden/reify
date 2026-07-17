@@ -5591,6 +5591,18 @@ fn resolve_named_leaf_target_symbolic(
 /// the target via [`resolve_named_leaf_target_symbolic`] (symbolic-accepting,
 /// itself scratch-buffered on its fallback path — see its doc comment) and
 /// threads no kernel/named_steps.
+///
+/// Review amendment: target and name resolution are buffered into a shared
+/// local `scratch` and merged into the caller's `diagnostics` only once BOTH
+/// resolve — mirroring [`eval_variadic_composition_symbolic`]'s
+/// scratch-then-merge-on-success-only contract. Previously each call wrote
+/// straight into the caller's `diagnostics`: if the target resolved via the
+/// fallback path (committing whatever it had buffered) but
+/// `resolve_string_literal_arg` then failed on the name arg, the trailing
+/// `?` returned `None` after that call had already pushed its own
+/// ArgRejection diagnostic directly into the caller's `diagnostics` — a leak
+/// that `build()`'s unbuffered, kernel-bearing `eval_named_leaf_selector_ctor`
+/// would later duplicate when it re-resolves the same still-`Undef` cell.
 fn eval_named_leaf_selector_ctor_symbolic(
     kind: reify_core::ty::SelectorKind,
     args: &[reify_ir::CompiledExpr],
@@ -5598,8 +5610,10 @@ fn eval_named_leaf_selector_ctor_symbolic(
     function_name: &str,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<reify_ir::Value> {
-    let target = resolve_named_leaf_target_symbolic(&args[0], values, diagnostics)?;
-    let name = resolve_string_literal_arg(&args[1], values, function_name, "name", diagnostics)?;
+    let mut scratch = Vec::new();
+    let target = resolve_named_leaf_target_symbolic(&args[0], values, &mut scratch)?;
+    let name = resolve_string_literal_arg(&args[1], values, function_name, "name", &mut scratch)?;
+    diagnostics.append(&mut scratch);
     build_leaf_selector(
         kind,
         target,
