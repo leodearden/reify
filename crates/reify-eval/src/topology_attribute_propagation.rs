@@ -1406,6 +1406,11 @@ fn role_sort_key(role: &Role) -> (u32, &'static str) {
 ///   here would double-warn the user about the same fragility.
 /// - Singleton groups (one entry per `(feature_id, role)`) have no pairwise
 ///   comparison and are skipped.
+/// - Peer pairs that already share the same `local_index` are skipped
+///   (task #5196 L1 guard): their identity key `(feature_id, role,
+///   local_index)` already collides, so there is no enumeration-order
+///   shuffle risk to warn about. Only near-coincident pairs with
+///   DISTINCT `local_index` values are reported.
 ///
 /// # Tolerance semantics
 ///
@@ -1474,6 +1479,18 @@ pub fn detect_local_index_reassignment_diagnostics(
                 continue;
             };
             for &(h_j, idx_j) in sorted.iter().skip(i + 1) {
+                // Task #5196 (L1 guard): peers that already share the same
+                // local_index have identity keys — (feature_id, role,
+                // local_index) — that already collide, so there is no
+                // enumeration-order shuffle risk to warn about. union_all
+                // legitimately mass-produces equal indices (they're
+                // per-primitive-relative), so without this guard every
+                // coincident union floods the diagnostic list with
+                // "indices N and N" ties. Only genuinely near-coincident
+                // DISTINCT-index pairs are reported below.
+                if idx_i == idx_j {
+                    continue;
+                }
                 let Some(c_j) = centroids.get(&h_j) else {
                     continue;
                 };

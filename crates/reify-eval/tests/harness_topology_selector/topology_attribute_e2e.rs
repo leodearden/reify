@@ -1098,17 +1098,33 @@ fn engine_with_occt_handle() -> reify_eval::Engine {
 ///
 /// Drives `Engine::build` with a coincident-box union so the per-realization
 /// filter, `kernel.query(GeometryQuery::Centroid)` loop,
-/// `collect_centroids_with_failure_summary`, and
-/// `detect_local_index_reassignment_diagnostics` are all exercised through
-/// `Engine::build` — not just via the synthetic helper-level test below.
+/// `collect_centroids_with_failure_summary` path, and the task #5196 L1
+/// equal-index guard in `detect_local_index_reassignment_diagnostics` are all
+/// exercised through `Engine::build` — not just via the synthetic
+/// helper-level test below.
 ///
 /// The two coincident `box(10mm, 10mm, 10mm)` primitives are placed at the
-/// default origin, so corresponding face centroids coincide exactly. Each box
-/// seeds 6 `Role::Side` face attrs with `local_index` 0..5 under the same
-/// `S#realization[0]` feature_id; the tied-centroid pair triggers
-/// `DiagnosticCode::TopologyAttributeLocalIndexReassigned`.
+/// default origin, so corresponding face/edge/vertex centroids coincide
+/// exactly. Each box independently seeds its Role groups with the same
+/// per-primitive-relative `local_index` sequence (e.g. both boxes' `Side`
+/// faces are indexed 0..5), so every tied pair this fixture produces is an
+/// EQUAL-index pair — exactly what the guard excludes, since
+/// `(feature_id, role, local_index)` identity keys already collide for
+/// equal-index peers (no enumeration-order shuffle risk).
 ///
-/// The auxiliary metadata warning MUST NOT regress the build to Failed.
+/// INVERTED by task #5196 (was: asserted ≥1 warning fires, naming both Side
+/// and NewEdge). Empirically confirmed at L1 GREEN time: every role tied by
+/// this fixture — Side, NewEdge, and all 8 CornerVertex variants alike — is
+/// an equal-index pair, so after the guard zero
+/// `TopologyAttributeLocalIndexReassigned` diagnostics survive (build's
+/// entire diagnostics list is empty). This is now a durable regression guard
+/// mirroring the `process_dfm_e2e.rs:492` "no spurious ties" precedent (task
+/// #4734): it pins that the guard suppresses the litter-tray "indices N and
+/// N" family. Genuine DISTINCT-index ties still fire — see
+/// `detect_local_index_reassignment_still_fires_for_distinct_index_tied_centroids`
+/// in `topology_attribute_propagation.rs` and the B1 regression below.
+///
+/// The auxiliary metadata warning path MUST NOT regress the build to Failed.
 ///
 /// See task #3629 (retroactive engine-wiring coverage for task #2654).
 #[test]
@@ -1136,45 +1152,20 @@ fn engine_build_emits_local_index_reassignment_for_coincident_box_union() {
         errors
     );
 
-    // At least one TopologyAttributeLocalIndexReassigned warning must be emitted.
+    // A coincident-box union ties every role (Side, NewEdge, 8×CornerVertex)
+    // at EQUAL local_index — the task #5196 guard must suppress all of them.
+    // Filtered by code only (not severity) so this assertion is unaffected
+    // by the L3 Warning→Info downgrade.
     let warnings: Vec<_> = build_result
         .diagnostics
         .iter()
-        .filter(|d| {
-            d.code == Some(DiagnosticCode::TopologyAttributeLocalIndexReassigned)
-                && d.severity == Severity::Warning
-        })
+        .filter(|d| d.code == Some(DiagnosticCode::TopologyAttributeLocalIndexReassigned))
         .collect();
     assert!(
-        !warnings.is_empty(),
-        "expected ≥1 TopologyAttributeLocalIndexReassigned warning; all diagnostics: {:?}",
-        build_result.diagnostics
-    );
-
-    // Each warning must name both the realization's feature_id AND the role in
-    // the SAME message — proves the engine's `realization_feature_id` path and
-    // `detect_local_index_reassignment_diagnostics` role formatting together.
-    // Two separate `.any()` checks would pass even if a regression split the
-    // fields across distinct diagnostics; a single combined check prevents that.
-    //
-    // A coincident-box union emits two warnings per realization: one for Role::Side
-    // (tied face centroids) and one for Role::NewEdge (tied seam-edge centroids).
-    // Both are pinned here to match the cross-realization test's per-role coverage.
-    assert!(
+        warnings.is_empty(),
+        "expected ZERO TopologyAttributeLocalIndexReassigned diagnostics for a coincident-box \
+         union (every tie here is equal-index, excluded by the task #5196 guard); got: {:?}",
         warnings
-            .iter()
-            .any(|d| d.message.contains("S#realization[0]") && d.message.contains("Side")),
-        "expected a warning naming both 'S#realization[0]' and 'Side' in the same message; \
-         messages: {:?}",
-        warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-    assert!(
-        warnings
-            .iter()
-            .any(|d| d.message.contains("S#realization[0]") && d.message.contains("NewEdge")),
-        "expected a warning naming both 'S#realization[0]' and 'NewEdge' in the same message; \
-         messages: {:?}",
-        warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
 
@@ -1313,16 +1304,28 @@ fn local_index_reassignment_groups_independently_per_feature_id() {
 /// Engine-wiring coverage: per-realization filter in `execute_realization_ops`.
 ///
 /// Two `let` bindings in the same structure produce two realizations with
-/// distinct feature_ids (`S#realization[0]` and `S#realization[1]`).
-/// Each realization is a coincident-box union, so each yields a
-/// `TopologyAttributeLocalIndexReassigned` warning.
+/// distinct feature_ids (`S#realization[0]` and `S#realization[1]`), each a
+/// coincident-box union.
 ///
-/// The per-realization filter (`.filter(|(_, attr)| attr.feature_id ==
-/// realization_feature_id)` in `execute_realization_ops`) scopes the
-/// detector input to one realization's entries. A broken filter would cause
-/// realization 1's pass to re-see realization 0's still-resident table
-/// entries, emitting a second spurious warning naming `S#realization[0]`
-/// while processing realization 1. This test pins that isolation.
+/// INVERTED by task #5196 (was: asserted exactly 10 warnings per realization
+/// / 20 total, and used that count to prove the per-realization filter in
+/// `execute_realization_ops` — `.filter(|(_, attr)| attr.feature_id ==
+/// realization_feature_id)` — isolates realization 0's table entries from
+/// realization 1's pass, since a broken filter would have made
+/// `r0_count >= 20`). Empirically confirmed at L1 GREEN time: every tie in
+/// this coincident-box-union fixture (Side, NewEdge, 8×CornerVertex, in
+/// BOTH realizations) is an equal-index pair, which the task #5196 guard now
+/// excludes — leaving zero warnings in either realization, so the old
+/// count-based isolation check has nothing left to observe.
+///
+/// Per the task #5196 design decision, the per-realization-isolation
+/// CONTRACT this test used to pin (no cross-feature_id pollution) now lives
+/// on `local_index_reassignment_groups_independently_per_feature_id` above,
+/// which pins the same `(feature_id, role)`-scoped grouping directly against
+/// the helper using a DISTINCT-index fixture unaffected by the guard. This
+/// test's remaining value is engine-level: two realizations sharing one
+/// `topology_attribute_table` must still build cleanly with zero spurious
+/// ties.
 ///
 /// See task #3629 (retroactive engine-wiring coverage for task #2654).
 #[test]
@@ -1341,67 +1344,36 @@ fn engine_build_local_index_reassignment_warning_filters_cross_realization() {
     let mut engine = engine_with_occt_handle();
     let build_result = engine.build(&compiled, ExportFormat::Step);
 
-    // Collect TopologyAttributeLocalIndexReassigned warnings.
+    // Build must not regress to Failed — the tie-detection is auxiliary metadata.
+    let errors: Vec<_> = build_result
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "build must not regress to Failed: {:#?}",
+        errors
+    );
+
+    // Collect TopologyAttributeLocalIndexReassigned diagnostics. Filtered by
+    // code only (not severity) so this assertion is unaffected by the L3
+    // Warning→Info downgrade.
+    //
+    // Note: `FeatureId::from(realization_id)` formats as
+    // `{entity}#realization[{index}]` where the entity is the structure name
+    // "S". Realization 0 is for `foo`, realization 1 is for `bar`.
     let warnings: Vec<_> = build_result
         .diagnostics
         .iter()
-        .filter(|d| {
-            d.code == Some(DiagnosticCode::TopologyAttributeLocalIndexReassigned)
-                && d.severity == Severity::Warning
-        })
+        .filter(|d| d.code == Some(DiagnosticCode::TopologyAttributeLocalIndexReassigned))
         .collect();
-
-    // Ten warnings per realization: 2 for face/edge roles (Side + NewEdge) plus
-    // 8 for the 8 CornerVertex role variants (one per sign-combo corner).
-    // Both boxes in each union are coincident, so each paired (box1,box2)
-    // vertex with the same CornerVertex role is geometrically tied.
-    // Note: `FeatureId::from(realization_id)` formats as `{entity}#realization[{index}]`
-    // where the entity is the structure name "S". Realization 0 is for `foo`,
-    // realization 1 is for `bar` — their feature_ids are S#realization[0] and
-    // S#realization[1] respectively.
-    //
-    // Cross-realization isolation: a broken per-realization filter in
-    // `execute_realization_ops` would cause realization 1's detector pass to
-    // re-see realization 0's still-resident table entries, emitting at least ten
-    // additional warnings naming `S#realization[0]` (one per role), making
-    // r0_count ≥ 20 and tripping the assert below.
-    let r0_count = warnings
-        .iter()
-        .filter(|d| d.message.contains("S#realization[0]"))
-        .count();
-    let r1_count = warnings
-        .iter()
-        .filter(|d| d.message.contains("S#realization[1]"))
-        .count();
-    // Each coincident-box union produces 10 tied-centroid warnings per realization:
-    // 1 for Role::Side, 1 for Role::NewEdge, and 8 for the 8 CornerVertex variants
-    // (one warning per sign-combo since box1/box2 share coincident vertices).
-    // A broken per-realization filter would cause realization 1's detector pass to
-    // re-see realization 0's entries, making r0_count ≥ 20 and tripping the assert.
-    assert_eq!(
-        r0_count,
-        10,
-        "expected exactly 10 warnings naming S#realization[0] \
-         (1×Side + 1×NewEdge + 8×CornerVertex); \
-         broken per-realization filter would yield ≥ 20; \
-         messages: {:?}",
-        warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-    assert_eq!(
-        r1_count,
-        10,
-        "expected exactly 10 warnings naming S#realization[1] \
-         (1×Side + 1×NewEdge + 8×CornerVertex); \
-         messages: {:?}",
-        warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
-    assert_eq!(
-        warnings.len(),
-        20,
-        "expected exactly 20 TopologyAttributeLocalIndexReassigned warnings total \
-         (10 per realization × 2 realizations); \
-         messages: {:?}",
-        warnings.iter().map(|d| &d.message).collect::<Vec<_>>()
+    assert!(
+        warnings.is_empty(),
+        "expected ZERO TopologyAttributeLocalIndexReassigned diagnostics across both \
+         realizations (every tie in this coincident-box-union fixture is equal-index, \
+         excluded by the task #5196 guard); got: {:?}",
+        warnings
     );
 }
 

@@ -678,14 +678,25 @@ pub enum DiagnosticCode {
     /// reading of that prose requires a *prior-vs-current* comparison across two
     /// builds. The current emitter is a forward-looking *risk* detector:
     /// constructed at populator time, it fires when two `(feature_id, role)`-
-    /// peer entries have geometrically tied centroids within a kernel-epsilon
-    /// tolerance — meaning the kernel's enumeration order is the only thing
-    /// disambiguating their `local_index` assignment, and a future edit could
-    /// shuffle them. So the variant currently warns that resolution **may**
-    /// shuffle under a future edit, not that it **did** shuffle since a prior
-    /// build. Cross-build delta comparison is recorded as a deferred follow-up
-    /// (see task #2654 design decisions); this variant doc-comment will be
-    /// updated when that lands.
+    /// peer entries with DISTINCT `local_index` values have geometrically
+    /// tied centroids within a kernel-epsilon tolerance — meaning the
+    /// kernel's enumeration order is the only thing disambiguating which of
+    /// the two distinct indices ends up assigned to which physical face, and
+    /// a future edit could shuffle them. So the variant currently warns that
+    /// resolution **may** shuffle under a future edit, not that it **did**
+    /// shuffle since a prior build. Cross-build delta comparison is recorded
+    /// as a deferred follow-up (see task #2654 design decisions); this
+    /// variant doc-comment will be updated when that lands.
+    ///
+    /// **Equal-index peers are excluded (task #5196).** Peers that already
+    /// share the same `local_index` have an identity key
+    /// `(feature_id, role, local_index)` that already collides, so there is
+    /// no enumeration-order disambiguation happening for them in the first
+    /// place — `union_all` legitimately mass-produces equal indices since
+    /// they are per-primitive-relative (PRD line 81 scopes the
+    /// construction-order tiebreak to genuine geometric ties, not
+    /// group-unique indices). Only near-coincident DISTINCT-index pairs are
+    /// reported.
     ///
     /// Canonical message form (current construction-time emitter):
     ///   `"topology-attribute selector for (feature '<feature_id>', role '<role>') has geometrically tied local_index assignments at indices <i> and <j>; selector resolution may shuffle after edits"`
