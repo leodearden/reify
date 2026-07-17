@@ -425,3 +425,98 @@ fn dimensioned_complex_minus_dimensioned_scalar_emits_arith_operand_kind() {
         w.result_type
     );
 }
+
+// ── Row C: mismatched-dimension Complex ± Complex (RED until step-4) ────────
+
+/// Compile a `structure def P { param len : Length; param mass : Mass =
+/// 1kg; let z = complex(len, len); let zk = complex(mass, mass) ... }` body
+/// containing `extra` and return the compiled module. `z` types as
+/// `Complex<Length>`, `zk` types as `Complex<Mass>` — two DIMENSIONED
+/// `Complex` values with different concrete dimensions (task 5219 row C).
+fn compile_two_complex_module(extra: &str) -> reify_compiler::CompiledModule {
+    let source = format!(
+        r#"
+structure def P {{
+    param len : Length
+    param mass : Mass = 1kg
+    let z = complex(len, len)
+    let zk = complex(mass, mass)
+    {extra}
+}}
+"#
+    );
+    compile_source(&source)
+}
+
+/// `z + zk` (`Complex<Length> + Complex<Mass>`, mismatched dimensions) must
+/// produce exactly ONE `ArithOperandKind` and poison `w`'s result_type to
+/// `Type::Error` — task 5219 row C: the runtime `eval_add`/`eval_sub`
+/// (reify-expr) `(Complex, Complex)` arm returns `Value::Undef` when the two
+/// dimensions differ.
+#[test]
+fn mismatched_dimension_complex_plus_complex_emits_arith_operand_kind() {
+    let module = compile_two_complex_module("let w = z + zk");
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    let flagged: Vec<_> = errors
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ArithOperandKind))
+        .collect();
+    assert_eq!(
+        flagged.len(),
+        1,
+        "`z + zk` (Complex<Length> + Complex<Mass>) must produce exactly ONE \
+         ArithOperandKind; got errors: {errors:?}"
+    );
+    assert!(
+        flagged[0].message.contains("operator `+`"),
+        "`z + zk` error message must name the `+` operator; got: {:?}",
+        flagged[0].message
+    );
+
+    let w = get_let_expr_in(&module, "P", "w");
+    assert_eq!(
+        w.result_type,
+        Type::Error,
+        "`z + zk` must poison `w`'s result_type to Type::Error, got: {:?}",
+        w.result_type
+    );
+}
+
+/// Sub-direction counterpart: `zk - z` must also produce exactly ONE
+/// `ArithOperandKind` and poison `w`'s result_type to `Type::Error`.
+#[test]
+fn mismatched_dimension_complex_minus_complex_emits_arith_operand_kind() {
+    let module = compile_two_complex_module("let w = zk - z");
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    let flagged: Vec<_> = errors
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ArithOperandKind))
+        .collect();
+    assert_eq!(
+        flagged.len(),
+        1,
+        "`zk - z` (Complex<Mass> - Complex<Length>) must produce exactly ONE \
+         ArithOperandKind; got errors: {errors:?}"
+    );
+    assert!(
+        flagged[0].message.contains("operator `-`"),
+        "`zk - z` error message must name the `-` operator; got: {:?}",
+        flagged[0].message
+    );
+
+    let w = get_let_expr_in(&module, "P", "w");
+    assert_eq!(
+        w.result_type,
+        Type::Error,
+        "`zk - z` must poison `w`'s result_type to Type::Error, got: {:?}",
+        w.result_type
+    );
+}

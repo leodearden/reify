@@ -2679,14 +2679,50 @@ mod tests {
         ));
     }
 
-    /// `Complex<Q1> ± Complex<Q2>` dimension-mismatch is a separate, unguarded
-    /// gap (out of scope for task 5163) — this predicate must not touch it.
+    /// `Complex<Length> + Complex<Length>` (SAME dimension on both sides) is
+    /// legitimate Complex arithmetic — the runtime `(Complex,Complex)` arm
+    /// only returns `Value::Undef` when the two dimensions differ (task 5219
+    /// row C, guarded below) — so this must stay FALSE even after the
+    /// mismatched-dimension clause is added.
     #[test]
-    fn add_sub_dimensioned_complex_reject_false_for_complex_plus_complex_out_of_scope() {
+    fn add_sub_dimensioned_complex_reject_false_for_same_dimension_complex_plus_complex() {
         let dimensioned = Type::complex(Type::length());
         assert!(!add_sub_dimensioned_complex_reject(
             &dimensioned,
             &dimensioned
+        ));
+    }
+
+    /// `Complex<Length> ± Complex<Angle>` (mismatched dimensions) — task 5219
+    /// row C: the runtime `eval_add`/`eval_sub` (reify-expr) `(Complex,
+    /// Complex)` arm returns `Value::Undef` when the two dimensions differ.
+    /// Must reject in BOTH operand orders, mirroring the other rows above.
+    #[test]
+    fn add_sub_dimensioned_complex_reject_true_for_mismatched_dimension_complex_plus_complex()
+    {
+        let length_complex = Type::complex(Type::length());
+        let angle_complex = Type::complex(Type::angle());
+        assert!(add_sub_dimensioned_complex_reject(
+            &length_complex,
+            &angle_complex
+        ));
+        assert!(add_sub_dimensioned_complex_reject(
+            &angle_complex,
+            &length_complex
+        ));
+    }
+
+    /// A `Complex` wrapping an unresolved `TypeParam` quantity (rather than a
+    /// concrete `Scalar{dimension}`) must NOT be adjudicated a dimension
+    /// mismatch — gradualism: the row-C helper requires both inner
+    /// quantities to be concrete `Scalar`s before comparing dimensions.
+    #[test]
+    fn add_sub_dimensioned_complex_reject_false_for_complex_typeparam_quantity() {
+        let typeparam_complex = Type::complex(Type::TypeParam("T".into()));
+        let dimensioned_complex = Type::complex(Type::length());
+        assert!(!add_sub_dimensioned_complex_reject(
+            &typeparam_complex,
+            &dimensioned_complex
         ));
     }
 
