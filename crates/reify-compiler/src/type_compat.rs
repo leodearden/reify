@@ -1662,6 +1662,25 @@ fn is_dimensioned_scalar(ty: &Type) -> bool {
     matches!(ty, Type::Scalar { dimension } if !dimension.is_dimensionless())
 }
 
+/// True only when BOTH operands are `Complex` wrapping a concrete `Scalar`
+/// quantity with DIFFERENT dimensions (e.g. `Complex<Length>` vs
+/// `Complex<Mass>`) — used by `add_sub_dimensioned_complex_reject`'s row-C
+/// clause (task 5219), where the runtime `eval_add`/`eval_sub` (reify-expr)
+/// `(Complex, Complex)` arm returns `Value::Undef` when the two dimensions
+/// differ. SAME-dimension `Complex<Q> ± Complex<Q>` is legitimate arithmetic
+/// and must return `false` here. A `Complex` wrapping a non-`Scalar` inner
+/// quantity (e.g. an unresolved `TypeParam`) also returns `false` —
+/// gradualism: an unresolved inner quantity cannot be adjudicated a mismatch.
+fn complex_complex_dimension_mismatch(left: &Type, right: &Type) -> bool {
+    match (left, right) {
+        (Type::Complex(lq), Type::Complex(rq)) => matches!(
+            (lq.as_ref(), rq.as_ref()),
+            (Type::Scalar { dimension: ld }, Type::Scalar { dimension: rd }) if ld != rd
+        ),
+        _ => false,
+    }
+}
+
 /// Canonical rationale for the `+`/`-` dimensioned-Complex-vs-bare-numeric
 /// reject (task 5163) — `expr.rs`'s operand-kind guard and
 /// `DiagnosticCode::ArithOperandKind`'s doc cross-reference here rather
@@ -1693,6 +1712,7 @@ pub(crate) fn add_sub_dimensioned_complex_reject(left: &Type, right: &Type) -> b
         || (is_dimensionless_numeric(left) && is_dimensioned_complex(right))
         || (is_dimensioned_complex(left) && is_dimensioned_scalar(right))
         || (is_dimensioned_scalar(left) && is_dimensioned_complex(right))
+        || complex_complex_dimension_mismatch(left, right)
 }
 
 /// Single source of truth for BOTH the correct static result type of `*`/`/`
