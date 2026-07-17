@@ -2322,6 +2322,24 @@ impl Value {
     ///
     /// Unlike the [`Display`](std::fmt::Display) impl which shows raw
     /// dimension vectors, this method uses human-readable SI unit labels.
+    ///
+    /// **Known numeric-formatting divergence from the GUI/MCP path:** the
+    /// `Real`/`Scalar`/`Complex` arms below format the raw `f64` directly
+    /// (e.g. `format!("{si_value}")`) and do *not* route through
+    /// [`format_display_number`]'s significant-figure rounding, so a value
+    /// that renders as `"6.4"` via [`Value::format_display`] /
+    /// [`Value::format_display_pair`] (the GUI values panel and debug MCP
+    /// `engine_state` snapshot) can still show 1-ulp noise here, e.g.
+    /// `"6.3999999999999995"`. This is a deliberate scoping decision, not an
+    /// oversight — task #5198's display-formatting fixes were scoped to the
+    /// GUI values panel, debug MCP snapshot, and constraint pretty-printer,
+    /// not LSP hover (see `format_display_number`'s doc comment for the
+    /// full reachability boundary). Unifying every value+unit display
+    /// surface (eval `Display`, GUI cell, LSP hover, string interpolation)
+    /// behind one formatter is tracked by
+    /// `docs/prds/display-unit-preference.md` §7c (shared `resolve_display`
+    /// formatter — task 5234) and §7d (routing hover onto it — task 5235);
+    /// this divergence should close there, not be patched ad hoc here.
     pub fn format_hover(&self) -> String {
         match self {
             Value::Bool(b) => format!("{b}"),
