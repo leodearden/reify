@@ -6032,8 +6032,9 @@ TessResult tessellate_shape(const OcctShape& shape, double tolerance) {
                 // sliver, or pinning `-ffp-contract=off` for this
                 // translation unit — the latter belongs in build.rs,
                 // outside this file's/task's locked scope. Not forced here
-                // speculatively; tracked as a follow-up (escalated
-                // alongside this amendment).
+                // speculatively; tracked as follow-up task #5241 (pin
+                // -ffp-contract=off for this TU in build.rs, preferred over
+                // a speculative sliver fixture).
                 float abx = bx - ax, aby = by - ay, abz = bz - az;
                 float acx = cx - ax, acy = cy - ay, acz = cz - az;
                 float cross_x = aby * acz - abz * acy;
