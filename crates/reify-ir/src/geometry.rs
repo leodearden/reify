@@ -11749,6 +11749,17 @@ mod tests {
                 assert_eq!(u1, u2, "witness must name the same edge start");
                 assert_eq!(v1, v2, "witness must name the same edge end");
             }
+            // Same-variant pair that didn't match one of the explicit arms
+            // above: a `MeshWitness` variant added after this function was
+            // written. Fall back to derived `PartialEq` instead of treating
+            // it as a mismatch — safe because the NaN-following pitfall this
+            // function exists to sidestep is specific to `Vertex`'s
+            // `[f32; 3]` coord field, which is already compared bit-exactly
+            // above. Keeps a genuine cross-variant mismatch (different
+            // discriminants) falling through to the panic below.
+            (a, b) if std::mem::discriminant(&a) == std::mem::discriminant(&b) => {
+                assert_eq!(a, b, "witness fields must match for new variant");
+            }
             (a, b) => panic!("witness variant mismatch: {a:?} vs {b:?}"),
         }
     }
