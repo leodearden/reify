@@ -8408,6 +8408,16 @@ impl Engine {
             {
                 swept_kind_table.record(last_id, kind);
             }
+            // task #5196 L2 gate: the tie-scan below is about *selector-
+            // resolution* stability, so it is vacuous work when this module
+            // bound no `Value::Selector` at all (e.g. the litter-tray
+            // multi-boolean model, which binds none). Fail-open GLOBAL check
+            // over `values` (already in scope here — see design decision in
+            // `.task/plan.json`): any selector anywhere runs every
+            // realization's scan, so a diagnostic is never missed; the cost
+            // is occasionally scanning a realization whose own geometry no
+            // selector actually touches.
+            if values_contain_selector(values) {
             // v0.2 persistent-naming-v2 (PRD task 4 / #2654): construction-time
             // fragility detection for local_index reassignment. The
             // topology_attribute_table is fully populated for this realization
@@ -8496,6 +8506,7 @@ impl Engine {
                     diagnostics,
                 );
             }
+            } // task #5196 L2 gate: values_contain_selector(values)
             // ── Task 4743 (α): VolumeMesh realization call edge ───────────────
             //
             // Demand is computed module-statically in `compute_demanded_reprs`
@@ -11673,6 +11684,52 @@ fn collect_centroids_with_failure_summary(
         )));
     }
     (centroids, diags)
+}
+
+// ── L2 selector-presence gate (task #5196 step-8) ────────────────────────────
+
+/// True iff `value` is a [`reify_ir::Value::Selector`], or contains one
+/// nested inside a container variant.
+///
+/// Backs the L2 gate on the per-realization local-index-reassignment
+/// tie-scan in [`Engine::execute_realization_ops`]: that scan exists to warn
+/// about *selector-resolution* stability, so it is vacuous work on a build
+/// that bound no selector at all (e.g. the litter-tray multi-boolean model).
+///
+/// Fail-open: recurses through every container `Value` variant that can
+/// carry a nested value — `List`, `Set`, `Map` (both keys and values),
+/// `Option`, and `Field`'s `lambda` (a `Restricted` field's lambda holds
+/// `Value::List[inner_field, region]`, where `region` can itself be a
+/// selector) — so a selector nested inside any of them is still found.
+/// Mirrors [`crate::invariants::value_is_or_contains_undef`]'s shape;
+/// deliberately does NOT recurse into single-composite variants
+/// (`StructureInstance`, `Tensor`, `Point`, `Frame`, …) for the same reason
+/// that helper doesn't: no corpus fixture forces it, and extending there
+/// would be speculative rather than evidence-driven.
+fn value_contains_selector(value: &reify_ir::Value) -> bool {
+    match value {
+        reify_ir::Value::Selector(_) => true,
+        reify_ir::Value::List(items) => items.iter().any(value_contains_selector),
+        reify_ir::Value::Set(items) => items.iter().any(value_contains_selector),
+        reify_ir::Value::Map(entries) => entries
+            .iter()
+            .any(|(k, v)| value_contains_selector(k) || value_contains_selector(v)),
+        reify_ir::Value::Option(inner) => inner.as_deref().is_some_and(value_contains_selector),
+        reify_ir::Value::Field { lambda, .. } => value_contains_selector(lambda),
+        _ => false,
+    }
+}
+
+/// True iff any value bound in `values` is or contains a
+/// [`reify_ir::Value::Selector`] (see [`value_contains_selector`]).
+///
+/// Global rather than per-realization: a fail-open presence check over the
+/// whole module's `ValueMap` (design decision in `.task/plan.json` —
+/// per-realization precision was judged marginal post-L1-guard, since the
+/// only surviving ties are geometrically-rare distinct-index pairs, and
+/// would add threading churn for negligible benefit).
+fn values_contain_selector(values: &ValueMap) -> bool {
+    values.iter().any(|(_, v)| value_contains_selector(v))
 }
 
 // ── dispatch_volume_mesh ──────────────────────────────────────────────────────
