@@ -830,7 +830,6 @@ pub const GEOMETRY_QUERY_NAMES: &[&str] = &[
     // Registered here (not GEOMETRY_TOPOLOGY_SELECTOR_NAMES) because it
     // returns a VALUE (Type::Feature), not a Selector — PRD D1 OQ#1.
     "feature",
-    "zzz_drift_probe",
 ];
 
 pub(crate) fn is_geometry_query(name: &str) -> bool {

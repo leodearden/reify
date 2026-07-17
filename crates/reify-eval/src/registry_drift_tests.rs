@@ -58,9 +58,49 @@
 //!
 //! ## Negative-test proof recipe
 //!
-//! PLACEHOLDER — replaced in step-8 with the exact reproducible recipe
-//! (which registry to mutate, which named test goes RED, how to revert)
-//! proving this module's assertions are not vacuously true.
+//! Verified by temporary mutation-then-revert (task 5055 γ item 4, step-8);
+//! no mutating test is committed here — the strict-equality / ledgered
+//! assertions below are the permanent regression guards this recipe proves
+//! are not vacuously true.
+//!
+//! **Leg 1 — eval-side oracle, cross-family name.** Add a
+//! `| "body_mass_props"` match arm to `is_geometry_consumer_call`
+//! (`geometry_ops.rs`, in the `matches!` block that ends `| "angle"`) —
+//! `body_mass_props` is a real, already-registered `DYNAMICS_QUERY_NAMES`
+//! member (see the note below on why it must be an already-registered name).
+//! Run `cargo test -p reify-eval --lib registry_drift`; two tests go RED:
+//!   - `geometry_consumer_call_oracle_two_direction_agreement` — fails at its
+//!     leading recognized-set pin (`left` gains `"body_mass_props"`).
+//!   - `non_geometry_families_are_disjoint_from_eval_geometry_oracles` —
+//!     fails naming `DYNAMICS_QUERY_NAMES member(s) {"body_mass_props"}
+//!     recognized by is_geometry_consumer_call`, the direct
+//!     no-silent-`Value::Undef` guard.
+//! Revert: delete the added match arm.
+//!
+//! **Leg 2 — compiler-side registry, family slice.** Add
+//! `"zzz_drift_probe"` as a new element of `GEOMETRY_QUERY_NAMES`
+//! (`reify-compiler/src/units.rs`). Run the same command; three tests go
+//! RED, all naming `"zzz_drift_probe"` as the drifted name:
+//!   - `geometry_query_call_oracle_agrees_with_geometry_query_names_family`
+//!     (the `QUERY_CALL_LEDGER`-adjusted family-agreement assertion)
+//!   - `geometry_consumer_call_oracle_two_direction_agreement` (Direction A)
+//!   - `result_type_maps_agree_with_their_name_families_cross_crate`
+//!     (`reify_compiler::geometry_query_result_type`'s `Some`-set no longer
+//!     matches `GEOMETRY_QUERY_NAMES`)
+//! Revert: delete the added slice element.
+//!
+//! **Why Leg 1 must reuse an already-registered name, not a wholly novel
+//! string:** every test in this module draws its candidate names from
+//! [`all_family_names`] — the union of the *compiler-side* registries only.
+//! A name recognized by an eval-side oracle that is not a member of ANY
+//! compiler family is never even constructed into a probe `CompiledExpr`
+//! (confirmed: adding a fabricated `| "zzz_drift_probe"` arm to
+//! `is_geometry_consumer_call` alone, with no matching compiler-side
+//! registration, leaves all 5 tests GREEN). This module detects drift
+//! **among already-registered names** — an eval oracle recognizing a name
+//! nothing on the compiler side ever registers is a dead-code/typo
+//! question the type checker's unresolved-function-call diagnostics
+//! already answer, not this module's job.
 
 use std::collections::BTreeSet;
 
@@ -167,13 +207,24 @@ fn some_names<T>(f: impl Fn(&str) -> Option<T>, universe: &[&str]) -> BTreeSet<S
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// Divergence ledger
+// Divergence ledger  (PRD docs/prds/v0_6/compiler-type-hygiene.md §7.3)
 //
 // Single consolidated record of every intentional cross-registry naming
 // divergence this module's assertions carve out of what would otherwise be
-// strict equality. Each entry names the (family, oracle) pair, the
-// diverging name(s), and why. Populated incrementally — task 5055 γ steps
-// 2, 4, 6, 8.
+// strict equality, per the two-direction contract: Direction A (compiler ⇒
+// eval) asks whether every compiler-registered name in a family is
+// recognized on the eval side; Direction B (eval ⇒ compiler) asks whether
+// every eval-recognized name is claimed by some compiler family (the core
+// no-silent-`Value::Undef` guard). Each entry below names the (family,
+// oracle) pair, the diverging name(s), and why.
+//
+// Finalized at task 5055 γ step-8; populated across step-2
+// (`QUERY_CALL_LEDGER`), step-4 (the `angle` seed entry +
+// `CONSUMER_DIRECTION_A_LEDGER`), and step-6 (`SELECTOR_BUILD_PATH_ONLY`).
+// Four divergences total. A fifth would only appear alongside a new
+// compiler-side registration or eval-side oracle change — see the
+// "Negative-test proof recipe" above for how to confirm this ledger is
+// exhaustive, not vacuous.
 // ═══════════════════════════════════════════════════════════════════════
 
 /// `GEOMETRY_QUERY_NAMES` members `is_geometry_query_call` intentionally
