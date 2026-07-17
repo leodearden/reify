@@ -29,22 +29,25 @@
 //!   zero `ArithOperandKind`
 //! - `complex(1.0, 1.0) - 1` (dimensionless Complex widening, Sub direction)
 //!   → zero `ArithOperandKind`
-//! - `z + z` (same dimensioned Complex on both sides) → zero
-//!   `ArithOperandKind` (Complex-vs-Complex is out of this guard's scope)
+//! - `z + z` (SAME dimensioned Complex on both sides) → zero
+//!   `ArithOperandKind` (legitimate arithmetic — contrast the
+//!   mismatched-dimension row-C cases below)
 //! - `let w = z + 1` then `let x = w + 1` (anti-cascade) → exactly ONE
 //!   `ArithOperandKind`
 //! - `unknown_var + z` (unresolved-name `Type::Error` operand, gradualism) →
 //!   zero `ArithOperandKind`
 //!
-//! **Documented unguarded gap (out of this task's scope, NOT fixed here):**
-//! - `z + len` (`Complex<Length> + Length` — dimensioned Complex vs a
-//!   dimensioned, non-Int/Real `Scalar`) → zero `ArithOperandKind`. This pins
-//!   CURRENT behavior, not a correctness claim: task 5163 only guards the
-//!   dimensioned-Complex-vs-bare-dimensionless-numeric row (see
-//!   `add_sub_dimensioned_complex_reject`'s doc in `type_compat.rs`); this
-//!   pairing, and mismatched-dimension `Complex<Q1> ± Complex<Q2>` (not
-//!   pinned by any test here — see `z + z` above for the same-dimension,
-//!   forever-legitimate case), are tracked by follow-up TODO(#5219).
+//! **Row B / Row C (task 5219 — dimensioned Complex vs dimensioned Scalar,
+//! and mismatched-dimension Complex vs Complex; guarded here too):**
+//! - `z + len` / `z - len` (`Complex<Length>` vs `Length` — dimensioned
+//!   Complex vs ANY dimensioned, non-Int/Real `Scalar`) → `ArithOperandKind`
+//!   in both operator directions (row B; see
+//!   `add_sub_dimensioned_complex_reject`'s doc in `type_compat.rs`)
+//! - `z + zk` / `zk - z` (`Complex<Length>` vs `Complex<Mass>` — mismatched
+//!   dimensions, via the `compile_two_complex_module` helper) →
+//!   `ArithOperandKind` in both operator directions (row C). SAME-dimension
+//!   Complex-vs-Complex (`z + z` above) remains legitimate arithmetic and
+//!   stays zero-diagnostic.
 
 use reify_core::{DiagnosticCode, Severity, Type};
 use reify_test_support::{compile_source, get_let_expr_in};
@@ -287,11 +290,12 @@ fn dimensionless_complex_minus_int_no_spurious_arith_operand_kind() {
 }
 
 /// Two operands of the SAME dimensioned `Complex` type (`z + z`, both
-/// `Complex<Length>`) is legitimate Complex arithmetic, out of this guard's
-/// scope (`Complex<Q1> ± Complex<Q2>` is a separate, unguarded gap — see the
-/// task analysis). Guards against a future regression that broadens
-/// `add_sub_dimensioned_complex_reject` to also match dimensioned
-/// Complex-vs-Complex pairs.
+/// `Complex<Length>`) is legitimate Complex arithmetic — the runtime
+/// `(Complex, Complex)` arm only returns `Value::Undef` when the two
+/// dimensions differ (task 5219 row C, guarded via the
+/// `mismatched_dimension_complex_*` tests below). Guards against a future
+/// regression that broadens `add_sub_dimensioned_complex_reject`'s row-C
+/// clause to also match same-dimension Complex-vs-Complex pairs.
 #[test]
 fn dimensioned_complex_plus_same_dimensioned_complex_no_spurious_arith_operand_kind() {
     let errors = compile_complex_expr_errors("let w = z + z");
@@ -337,20 +341,16 @@ fn unresolved_name_operand_no_spurious_arith_operand_kind() {
     );
 }
 
-// ── Documented unguarded gap (out of this task's scope) ─────────────────────
+// ── Row B: dimensioned Complex vs dimensioned Scalar (task 5219) ────────────
 
 /// `z + len` (`Complex<Length> + Length`: dimensioned Complex vs a
-/// dimensioned, non-Int/Real `Scalar`) matches neither
-/// `add_sub_dimensioned_complex_reject` (the right operand isn't a bare
-/// dimensionless numeric) nor the pre-existing Scalar/Scalar dimension-compat
-/// block in `expr.rs` (the left operand is `Complex`, not `Scalar`). This
-/// pins CURRENT behavior — zero `ArithOperandKind` — as a documented,
-/// out-of-scope gap alongside `z + z` above, NOT a correctness claim: task
-/// 5163 only guards the dimensioned-Complex-vs-bare-dimensionless-numeric
-/// row (see `add_sub_dimensioned_complex_reject`'s doc in `type_compat.rs`).
-/// TODO(#5219): guard this row (or record a permanent-accept decision),
-/// alongside the sibling mismatched-dimension `Complex<Q1> ± Complex<Q2>`
-/// gap, which is not pinned by any test in this file.
+/// dimensioned, non-Int/Real `Scalar`) must produce exactly ONE
+/// `ArithOperandKind` and poison `w`'s result_type to `Type::Error` — task
+/// 5219 row B: the runtime `eval_add`/`eval_sub` (reify-expr) have NO
+/// `(Complex, Scalar)` arm at all, so a dimensioned `Complex` paired with ANY
+/// dimensioned `Scalar` is a structural `Value::Undef` regardless of whether
+/// the two dimensions match (see `add_sub_dimensioned_complex_reject`'s doc
+/// in `type_compat.rs`).
 #[test]
 fn dimensioned_complex_plus_dimensioned_scalar_emits_arith_operand_kind() {
     let module = compile_complex_expr("let w = z + len");
@@ -426,7 +426,7 @@ fn dimensioned_complex_minus_dimensioned_scalar_emits_arith_operand_kind() {
     );
 }
 
-// ── Row C: mismatched-dimension Complex ± Complex (RED until step-4) ────────
+// ── Row C: mismatched-dimension Complex ± Complex (task 5219) ───────────────
 
 /// Compile a `structure def P { param len : Length; param mass : Mass =
 /// 1kg; let z = complex(len, len); let zk = complex(mass, mass) ... }` body

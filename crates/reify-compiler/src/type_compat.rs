@@ -1681,27 +1681,31 @@ fn complex_complex_dimension_mismatch(left: &Type, right: &Type) -> bool {
     }
 }
 
-/// Canonical rationale for the `+`/`-` dimensioned-Complex-vs-bare-numeric
-/// reject (task 5163) — `expr.rs`'s operand-kind guard and
+/// Canonical rationale for the `+`/`-` dimensioned-Complex operand-kind
+/// reject (tasks 5163, 5219) — `expr.rs`'s operand-kind guard and
 /// `DiagnosticCode::ArithOperandKind`'s doc cross-reference here rather
 /// than restate it.
 ///
-/// `true` when one operand is a DIMENSIONED `Complex` and the other is a
-/// bare dimensionless numeric (`Int`/`Scalar{DIMENSIONLESS}`), in EITHER
-/// order — the exact pairing the runtime `guard_dimensionless_complex`
-/// (reify-expr) evaluates to `Value::Undef` (D3 policy; see
-/// `is_dimensionless_complex`'s doc above). `Type::Error`/`Type::TypeParam`
-/// operands match neither half, so gradualism holds structurally with no
-/// separate skip-set (contrast the broader Mul/Div
-/// `is_mul_div_gradualism_skip`).
+/// `true` for any of THREE pairings, all of which the runtime
+/// `eval_add`/`eval_sub` (reify-expr) evaluate to `Value::Undef` (D3 policy):
 ///
-/// Scope: only the dimensioned-Complex-vs-bare-dimensionless-numeric row.
-/// `Complex<Q> ± Scalar<Q>` (a dimensioned, non-Int/Real `Scalar`) and
-/// `Complex<Q1> ± Complex<Q2>` (mismatched-dimension `Complex` operands) are
-/// both also runtime-`Value::Undef` and both remain unguarded by this
-/// predicate — TODO(#5219): guard those two rows, or record a
-/// permanent-accept decision, and update this doc plus the out-of-scope-gap
-/// tests in `add_sub_operand_guard_tests.rs` accordingly.
+/// - **Row A** — a DIMENSIONED `Complex` and a bare dimensionless numeric
+///   (`Int`/`Scalar{DIMENSIONLESS}`), in EITHER order: the runtime
+///   `guard_dimensionless_complex` only promotes `Value::Real`/`Value::Int`
+///   against a DIMENSIONLESS `Complex` (see `is_dimensionless_complex`'s doc
+///   above).
+/// - **Row B** — a DIMENSIONED `Complex` and ANY dimensioned `Scalar`, in
+///   EITHER order: the runtime has NO `(Complex, Scalar)` arm at all, so the
+///   `Scalar`'s dimension is irrelevant to the reject.
+/// - **Row C** — two `Complex` operands wrapping concrete `Scalar`
+///   quantities with DIFFERENT dimensions: the runtime `(Complex, Complex)`
+///   arm returns `Value::Undef` when the dimensions differ. SAME-dimension
+///   `Complex<Q> ± Complex<Q>` is legitimate arithmetic and stays `false`.
+///
+/// `Type::Error`/`Type::TypeParam` operands, and a `Complex` wrapping a
+/// non-`Scalar` (unresolved) quantity, match none of the three rows above,
+/// so gradualism holds structurally with no separate skip-set (contrast the
+/// broader Mul/Div `is_mul_div_gradualism_skip`).
 ///
 /// Pure and unit-tested below (see the
 /// `add_sub_dimensioned_complex_reject_*`/`is_dimensioned_complex_*` tests);

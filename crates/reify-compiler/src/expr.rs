@@ -1863,14 +1863,16 @@ pub(crate) fn compile_expr_guarded_with_expected(
                     }
 
                     // Operand-kind guard for `+`/`-` on a DIMENSIONED `Complex`
-                    // paired with a bare dimensionless numeric (task
-                    // compiler-type-hygiene follow-up 5163, reusing
-                    // `E_ArithOperandKind` — shares its diagnostic emission,
-                    // via `poison_arith_operand_kind`, with the β2 Mul/Div
-                    // guard further below). See
+                    // paired with a bare dimensionless numeric, ANY
+                    // dimensioned `Scalar`, or a mismatched-dimension
+                    // `Complex` (tasks compiler-type-hygiene follow-up 5163 +
+                    // 5219, reusing `E_ArithOperandKind` — shares its
+                    // diagnostic emission, via `poison_arith_operand_kind`,
+                    // with the β2 Mul/Div guard further below). See
                     // `type_compat::add_sub_dimensioned_complex_reject`'s doc
-                    // for the full rationale (runtime Undef pairing, both
-                    // operand orders, structural gradualism).
+                    // for the full rationale (all three guarded rows, runtime
+                    // Undef pairing, both operand orders, structural
+                    // gradualism).
                     //
                     // `infer_binop_type`'s `Add`/`Sub` arm keeps its
                     // pre-existing placeholder UNCHANGED for this pairing;
