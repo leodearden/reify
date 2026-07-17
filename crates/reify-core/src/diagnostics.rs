@@ -718,7 +718,8 @@ pub enum DiagnosticCode {
     /// The PRD-prose mnemonic for this code is `W_TOPOLOGY_ATTRIBUTE_LOCAL_INDEX_REASSIGNED`.
     TopologyAttributeLocalIndexReassigned,
     /// Origin: `crates/reify-eval/src/engine_build.rs::execute_realization_ops`
-    /// (via `diagnose_topology_correspondence_drops`).
+    /// (accumulated per-op and flushed per-realization via
+    /// `TopologyCorrespondenceDropTally`, task #5196 L4).
     ///
     /// Emitted as `Severity::Info` (task #5196; was `Severity::Warning` under
     /// task #4545) when a kernel history record reports a non-zero
@@ -5896,7 +5897,7 @@ mod tests {
     }
 
     // --- TopologyCorrespondenceDropped tests (task 4545 — W_TOPOLOGY_CORRESPONDENCE_DROPPED) ---
-    // Pairs with diagnose_topology_correspondence_drops in
+    // Pairs with TopologyCorrespondenceDropTally in
     // `crates/reify-eval/src/engine_build.rs` (wired in execute_realization_ops).
     // Variant-agnostic Copy/Clone/PartialEq/Eq/Hash/Debug derives are already
     // covered by `diagnostic_code_derives` above; only the variant-specific
@@ -5908,7 +5909,7 @@ mod tests {
     /// Pins builder mechanics and variant existence only — `.with_code()`
     /// never touches severity, so this is NOT a claim about the production
     /// emit site's severity. The production emitter
-    /// (`diagnose_topology_correspondence_drops`) uses `Diagnostic::info` as
+    /// (`TopologyCorrespondenceDropTally::flush`) uses `Diagnostic::info` as
     /// of task #5196 (was `Diagnostic::warning` under task #4545); see the
     /// sibling round-trip test below.
     #[test]
@@ -5924,7 +5925,7 @@ mod tests {
     }
 
     /// Production emit-site contract (task #5196):
-    /// `diagnose_topology_correspondence_drops` constructs via
+    /// `TopologyCorrespondenceDropTally::flush` constructs via
     /// `Diagnostic::info(...).with_code(...)`, so the code must round-trip
     /// under `Severity::Info` as well — `.with_code()` is independent of
     /// which severity constructor built the `Diagnostic`.

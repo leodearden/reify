@@ -1272,12 +1272,22 @@ fn populate_attribute_history(
     }
 }
 
-/// Emit one `Severity::Info` per non-zero topology-correspondence-loss
-/// counter found in `attribute_history`.
+/// Per-realization accumulator for topology-correspondence-loss counters
+/// (task #5196 L4 summarization).
 ///
-/// Called by `Engine::execute_realization_ops` immediately after
-/// `populate_attribute_history` — both live at the same call site where
-/// `attribute_history` and `diagnostics` are already in scope.
+/// Each op's `AttributeHistory` is folded into the tally via
+/// [`accumulate`](Self::accumulate) instead of emitting a `Diagnostic`
+/// immediately; [`flush`](Self::flush) then emits ONE `Diagnostic::info`
+/// per non-zero `(op_kind, counter)` entry, carrying the SUMMED count
+/// across every op accumulated since the tally was created (or last
+/// flushed) and a realization-scoped context — no per-op suffix.
+///
+/// Motivation: the GUI's `groupDiagnostics` only dedups byte-identical
+/// messages. The prior per-op emission (one diagnostic per op, each
+/// context-suffixed `"{realization_id} op {op_idx}"`) never collapsed, so a
+/// realization with N boolean ops produced N near-identical Info lines.
+/// Accumulating across the whole realization and flushing once yields at
+/// most one line per `(op_kind, counter)` per realization.
 ///
 /// Covers all five unconsumed counters across the three op families:
 /// - `Boolean`: `silent_drop_count`
@@ -1288,8 +1298,9 @@ fn populate_attribute_history(
 /// `Loft` and `None` are explicit no-ops: `LoftOpHistoryRecords` has no
 /// counters by design, and `None` means no history was returned.
 ///
-/// Each diagnostic carries [`reify_core::DiagnosticCode::TopologyCorrespondenceDropped`]
-/// and a message of the form:
+/// Each flushed diagnostic carries
+/// [`reify_core::DiagnosticCode::TopologyCorrespondenceDropped`] and a
+/// message of the form:
 /// `"topology correspondence dropped: {op_kind} {counter_name}={count} context={context}"`.
 ///
 /// The geometry is valid; only persistent-naming correspondence tracking is
@@ -1298,18 +1309,91 @@ fn populate_attribute_history(
 /// Warning-severity diagnostics with routine bookkeeping noise) per the
 /// task-2574 convention that auxiliary-metadata degradation must not regress
 /// the realization to Failed.
-fn diagnose_topology_correspondence_drops(
-    attribute_history: &AttributeHistory,
-    context: &str,
-    diagnostics: &mut Vec<Diagnostic>,
-) {
-    use reify_core::DiagnosticCode;
-    // Single canonical emit path: guarantees every diagnostic uses the same
-    // message format ("topology correspondence dropped: {op_kind}
-    // {counter}={count} context={context}") and the same code, with no risk
-    // of the five call sites drifting from each other.
-    let mut emit = |op_kind: &str, counter: &str, count: u32| {
-        if count > 0 {
+///
+/// `BTreeMap` (not `HashMap`) keeps `flush`'s emission order deterministic.
+#[derive(Default)]
+struct TopologyCorrespondenceDropTally {
+    counts: BTreeMap<(&'static str, &'static str), u32>,
+}
+
+impl TopologyCorrespondenceDropTally {
+    /// Fold `attribute_history`'s non-zero topology-correspondence-loss
+    /// counters into the tally, keyed by `(op_kind, counter_name)`.
+    ///
+    /// Exhaustive over the same three op families / five counters the
+    /// pre-L4 single-shot emitter covered (see the struct doc); the match
+    /// itself is unchanged from that emitter, only the action per non-zero
+    /// counter changes (accumulate instead of push a `Diagnostic`).
+    fn accumulate(&mut self, attribute_history: &AttributeHistory) {
+        let counts = &mut self.counts;
+        let mut add = |op_kind: &'static str, counter: &'static str, count: u32| {
+            if count > 0 {
+                *counts.entry((op_kind, counter)).or_insert(0) += count;
+            }
+        };
+        match attribute_history {
+            AttributeHistory::Boolean(h) => {
+                add("boolean", "silent_drop_count", h.silent_drop_count);
+            }
+            // Each sweep variant gets its own arm so op_kind is determined
+            // exhaustively without a nested re-match or a `_ => "sweep"`
+            // wildcard that would silently mislabel any future
+            // AttributeHistory variant sharing this arm.
+            AttributeHistory::Extrude(h) => {
+                add("extrude", "silent_drop_count", h.silent_drop_count);
+                add(
+                    "extrude",
+                    "unsynthesized_profile_edge_count",
+                    h.unsynthesized_profile_edge_count,
+                );
+                add(
+                    "extrude",
+                    "duplicate_parent_subshape_index_count",
+                    h.duplicate_parent_subshape_index_count,
+                );
+            }
+            AttributeHistory::Revolve(h) => {
+                add("revolve", "silent_drop_count", h.silent_drop_count);
+                add(
+                    "revolve",
+                    "unsynthesized_profile_edge_count",
+                    h.unsynthesized_profile_edge_count,
+                );
+                add(
+                    "revolve",
+                    "duplicate_parent_subshape_index_count",
+                    h.duplicate_parent_subshape_index_count,
+                );
+            }
+            AttributeHistory::Sweep(h) => {
+                add("sweep", "silent_drop_count", h.silent_drop_count);
+                add(
+                    "sweep",
+                    "unsynthesized_profile_edge_count",
+                    h.unsynthesized_profile_edge_count,
+                );
+                add(
+                    "sweep",
+                    "duplicate_parent_subshape_index_count",
+                    h.duplicate_parent_subshape_index_count,
+                );
+            }
+            AttributeHistory::LocalFeature(h) => {
+                add("local_feature", "silent_drop_count", h.silent_drop_count);
+            }
+            AttributeHistory::Loft(_) | AttributeHistory::None => {
+                // No counters in LoftOpHistoryRecords; None means no history returned.
+            }
+        }
+    }
+
+    /// Emit one `Diagnostic::info` per non-zero tally entry — carrying the
+    /// SUMMED count and `context` verbatim (typically `"{realization_id}"`,
+    /// realization-scoped, no per-op suffix) — then clear the tally so a
+    /// stray extra `flush` with no intervening `accumulate` emits nothing.
+    fn flush(&mut self, context: &str, diagnostics: &mut Vec<Diagnostic>) {
+        use reify_core::DiagnosticCode;
+        for (&(op_kind, counter), &count) in self.counts.iter() {
             diagnostics.push(
                 Diagnostic::info(format!(
                     "topology correspondence dropped: {op_kind} {counter}={count} context={context}"
@@ -1317,60 +1401,7 @@ fn diagnose_topology_correspondence_drops(
                 .with_code(DiagnosticCode::TopologyCorrespondenceDropped),
             );
         }
-    };
-    match attribute_history {
-        AttributeHistory::Boolean(h) => {
-            emit("boolean", "silent_drop_count", h.silent_drop_count);
-        }
-        // Each sweep variant gets its own arm so op_kind is determined
-        // exhaustively without a nested re-match or a `_ => "sweep"` wildcard
-        // that would silently mislabel any future AttributeHistory variant
-        // sharing this arm.
-        AttributeHistory::Extrude(h) => {
-            emit("extrude", "silent_drop_count", h.silent_drop_count);
-            emit(
-                "extrude",
-                "unsynthesized_profile_edge_count",
-                h.unsynthesized_profile_edge_count,
-            );
-            emit(
-                "extrude",
-                "duplicate_parent_subshape_index_count",
-                h.duplicate_parent_subshape_index_count,
-            );
-        }
-        AttributeHistory::Revolve(h) => {
-            emit("revolve", "silent_drop_count", h.silent_drop_count);
-            emit(
-                "revolve",
-                "unsynthesized_profile_edge_count",
-                h.unsynthesized_profile_edge_count,
-            );
-            emit(
-                "revolve",
-                "duplicate_parent_subshape_index_count",
-                h.duplicate_parent_subshape_index_count,
-            );
-        }
-        AttributeHistory::Sweep(h) => {
-            emit("sweep", "silent_drop_count", h.silent_drop_count);
-            emit(
-                "sweep",
-                "unsynthesized_profile_edge_count",
-                h.unsynthesized_profile_edge_count,
-            );
-            emit(
-                "sweep",
-                "duplicate_parent_subshape_index_count",
-                h.duplicate_parent_subshape_index_count,
-            );
-        }
-        AttributeHistory::LocalFeature(h) => {
-            emit("local_feature", "silent_drop_count", h.silent_drop_count);
-        }
-        AttributeHistory::Loft(_) | AttributeHistory::None => {
-            // No counters in LoftOpHistoryRecords; None means no history returned.
-        }
+        self.counts.clear();
     }
 }
 
@@ -7049,6 +7080,13 @@ impl Engine {
         // plan is captured by clone into this Option. Used after the loop to
         // emit the at-most-one LongChainRealization diagnostic.
         let mut longest_chain_plan: Option<DispatchPlan> = None;
+        // task #5196 L4: per-realization accumulator for
+        // topology-correspondence-loss counters. Mirrors `longest_chain_plan`
+        // immediately above — accumulated per-op inside the loop, flushed
+        // once after it (see the `topology_drop_tally.flush` call below) —
+        // so a realization with N ops sharing a counter emits ONE summed
+        // diagnostic instead of N near-identical per-op lines.
+        let mut topology_drop_tally = TopologyCorrespondenceDropTally::default();
         for (op_idx, op) in operations.iter().enumerate() {
             let geom_op = compile_geometry_op(
                 op,
@@ -8125,19 +8163,18 @@ impl Engine {
                                 "topology-attribute attribute history population failed for {realization_id} op {op_idx}: {e}"
                             )));
                             }
-                            // task 4545: surface topology-correspondence-loss counters
-                            // from the kernel history record as structured diagnostics.
-                            // Called immediately after `populate_attribute_history`
-                            // (independent of its Result) so the diagnostic is emitted
-                            // even when population also warns. Severity::Info only
-                            // (task #5196; was Severity::Warning) — geometry is valid,
-                            // only persistent-naming tracking is degraded (task-2574
-                            // auxiliary-metadata convention).
-                            diagnose_topology_correspondence_drops(
-                                &attribute_history,
-                                &format!("{realization_id} op {op_idx}"),
-                                diagnostics,
-                            );
+                            // task 4545: accumulate topology-correspondence-loss
+                            // counters from the kernel history record. Called
+                            // immediately after `populate_attribute_history`
+                            // (independent of its Result) so the counters are
+                            // folded in even when population also warns. Flushed
+                            // ONCE per realization (task #5196 L4 summarization,
+                            // see `topology_drop_tally.flush` after the op loop)
+                            // rather than emitted per-op, at Severity::Info
+                            // (task #5196; was Severity::Warning) — geometry is
+                            // valid, only persistent-naming tracking is degraded
+                            // (task-2574 auxiliary-metadata convention).
+                            topology_drop_tally.accumulate(&attribute_history);
                             // v0.2 persistent-naming-v2 (task 2875): kernel-attribute-hook
                             // propagation for non-BRep kernels.  Runs immediately after
                             // `populate_attribute_history` (BRep-first ordering per design
@@ -8298,6 +8335,17 @@ impl Engine {
         {
             diagnostics.push(diag);
         }
+        // task #5196 L4: flush the per-realization silent-drop tally
+        // accumulated during the op loop above into at most one
+        // `Diagnostic::info` per `(op_kind, counter)`, summed across every
+        // op in this realization. Mirrors the long-chain diagnostic
+        // immediately above — flushed unconditionally here, BEFORE the
+        // `rolled_back` determination, so a realization that accumulated
+        // drops on its early (successful) ops still surfaces them even if a
+        // later op in the same realization fails (matching the pre-L4
+        // per-op emission, which was likewise unconditional on eventual
+        // rollback).
+        topology_drop_tally.flush(&format!("{realization_id}"), diagnostics);
         // Discard intermediate handles from partially-failed realizations
         let rolled_back =
             had_failure || step_handles.len().saturating_sub(handle_start) < operations.len();
