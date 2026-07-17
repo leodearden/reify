@@ -10264,7 +10264,7 @@ mod tests {
     /// `"...for extract_loads, got..."`) as part of the message, independent
     /// of the arm's label literal. Hardens all five per-arg tests below at
     /// once.
-    fn assert_gate_rejects(value_inputs: [Value; 7], expected_label: &str) -> Vec<Diagnostic> {
+    fn assert_gate_rejects(value_inputs: [Value; 7], expected_label: &str) {
         let cancellation = CancellationHandle::new();
         let outcome =
             solve_elastic_static_trampoline(&value_inputs, &[], &Value::Undef, None, &cancellation);
@@ -10280,7 +10280,6 @@ mod tests {
                     "a malformed {expected_label} arg must yield an Error diagnostic \
                      whose message starts with \"{expected_prefix}\", got {diagnostics:?}"
                 );
-                diagnostics
             }
             other => panic!(
                 "a malformed {expected_label} arg must yield ComputeOutcome::Failed (not \
@@ -10396,9 +10395,11 @@ mod tests {
     /// `assert_gate_rejects` already asserts the diagnostic's exact
     /// `"solve_elastic_static_trampoline: {label}:"` prefix internally, via
     /// its `expected_label` parameter — so passing "material"/"width" below
-    /// IS the ordering pin, and a further re-assertion on the returned
-    /// diagnostics would just repeat the same check (task #5087 review
-    /// amendment, follow-up round, suggestion 3).
+    /// IS the ordering pin; no further assertion is needed here (task #5087
+    /// review amendment, follow-up round, suggestion 3). Accordingly
+    /// `assert_gate_rejects` returns `()` rather than the diagnostics list —
+    /// no call site (this one included) ever used the returned value (task
+    /// #5087 review amendment, round 2, suggestion 1).
     #[test]
     fn validate_all_inputs_gate_reports_first_offending_arg_in_order() {
         let mut value_inputs = shell9_valid_inputs();
