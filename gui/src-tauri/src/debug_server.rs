@@ -1313,7 +1313,10 @@ async fn open_path_into_engine(state: &DebugServerState, raw_path: &str) -> Resu
     // the current sole caller (the serial e2e visual-regression harness over
     // static fixtures: no concurrent writer, so the two reads cannot diverge
     // in practice); see PRD §4 D7 for the same serial-debug-ops assumption
-    // the baseline-refresh note below relies on.
+    // the baseline-refresh note below relies on. A debug-only canary below
+    // (search "serial-debug-ops assumption was violated") guards this so a
+    // future non-serial caller cannot silently desync without at least
+    // failing debug/test builds.
     let content =
         std::fs::read_to_string(&path).map_err(|e| format!("failed to read {path}: {e}"))?;
 
@@ -1328,6 +1331,25 @@ async fn open_path_into_engine(state: &DebugServerState, raw_path: &str) -> Resu
     let gui_state =
         open_source_into_engine_and_refresh_baseline(&state.engine, &state.last_state, &path)
             .await?;
+
+    // Debug-only canary for the serial-debug-ops assumption the double-read
+    // above relies on: if `path`'s contents changed between the `content`
+    // read above and this point, the frontend's `content` and whatever
+    // `open_source_into_engine_and_refresh_baseline` actually loaded into the
+    // engine may have diverged. `debug_assert_eq!` (not a runtime `Err`) so
+    // release builds pay no extra I/O and a real user's debug session never
+    // fails over a benign external edit — it only makes a broken assumption
+    // observable in debug/test builds instead of silently shipping desynced
+    // state to the frontend.
+    #[cfg(debug_assertions)]
+    if let Ok(recheck) = std::fs::read_to_string(&path) {
+        debug_assert_eq!(
+            recheck, content,
+            "open_path_into_engine: {path} changed between the frontend-content read \
+             and the engine load completing — the serial-debug-ops assumption was \
+             violated (see comment above)"
+        );
+    }
 
     // Serialize GUI state for the frontend
     let gui_state_json =
