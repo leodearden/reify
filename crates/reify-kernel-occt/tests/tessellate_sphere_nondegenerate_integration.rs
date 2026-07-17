@@ -53,12 +53,17 @@ fn tessellate_sphere(tol: f64) -> reify_ir::Mesh {
 /// `validate(0.0)` must be Ok (which transitively requires every emitted
 /// triangle to have strictly-positive twice-area — see
 /// `Mesh::check_contract`'s `NonDegenerate` obligation), and the mesh must
-/// retain a plausible triangle count (see the lower-bound check below), at
-/// BOTH a coarse (1e-3) and fine (1e-4) deflection — proving the fix is
-/// topological, not resolution-dependent.
+/// retain a tight, near-exact expected triangle count (see the band check
+/// below), at BOTH a coarse (1e-3) and fine (1e-4) deflection — proving the
+/// fix is topological, not resolution-dependent.
 #[test]
 fn tessellated_sphere_has_no_zero_area_pole_triangles() {
-    for deflection in [1.0e-4, 1.0e-3] {
+    // Empirically observed against this workspace's pinned real OCCT build:
+    // an 8mm-radius sphere tessellates to 826 triangles at deflection 1e-4
+    // and 304 at deflection 1e-3 (both counts already net of the two
+    // genuinely-degenerate pole-seam triangles this task's gate drops). The
+    // per-deflection minimum below sits ~15% under that observed count.
+    for (deflection, min_expected_tris) in [(1.0e-4, 700_usize), (1.0e-3, 260_usize)] {
         let mesh = tessellate_sphere(deflection);
 
         mesh.validate(0.0).unwrap_or_else(|e| {
@@ -75,23 +80,40 @@ fn tessellated_sphere_has_no_zero_area_pole_triangles() {
             "index count must be a multiple of 3 (deflection {deflection})"
         );
 
-        // Lower-bound sanity check — closes a vacuous-pass gap: both
-        // assertions above would still hold for an empty or
-        // heavily-decimated index buffer (e.g. an FMA/arithmetic
-        // divergence that misclassifies real slivers as degenerate, or an
-        // off-by-one in the base-index readback dropping valid triangles),
-        // so neither actually proves the producer emitted a real mesh
-        // rather than over-dropping everything. An 8mm-radius sphere
-        // tessellated at either deflection yields hundreds of triangles;
-        // the producer's degeneracy gate should only ever drop the two
-        // pole-seam triangles.
+        // Band sanity check — closes a vacuous-pass gap: both assertions
+        // above would still hold for an empty or heavily-decimated index
+        // buffer (e.g. an FMA/arithmetic divergence that misclassifies real
+        // slivers as degenerate, or an off-by-one in the base-index
+        // readback dropping valid triangles), so neither actually proves
+        // the producer emitted a real mesh rather than over-dropping
+        // valid (non-pole) triangles. A loose `num_tris > 100` floor closes
+        // the empty/heavily-decimated extreme but not the moderate range —
+        // e.g. a regression silently dropping 20% of valid triangles would
+        // still clear 100 and pass. `min_expected_tris` is a tight,
+        // deflection-specific floor (~15% under the measured count) that
+        // does catch that: the producer's degeneracy gate should only ever
+        // drop the two genuinely-degenerate pole-seam triangles, so the
+        // real count should sit almost exactly at the measured value, not
+        // just "in the hundreds".
+        //
+        // Deliberately a tight *floor*, not an exact pin or a two-sided
+        // band around it: OCCT's adaptive triangulation could plausibly
+        // emit a handful more/fewer triangles across OCCT versions or
+        // platforms for the same deflection, and this gate can only ever
+        // drop triangles (never add them), so only under-shooting the
+        // expected count is a signal this gate is misbehaving. Pinning an
+        // exact expected drop count of 2 would need OCCT's raw
+        // (pre-drop) triangle count, which is not observable from Rust
+        // without a debug hook through the FFI surface (out of this task's
+        // locked-file scope).
         let num_tris = mesh.indices.len() / 3;
         assert!(
-            num_tris > 100,
-            "expected hundreds of triangles for an 8mm-radius sphere at deflection \
-             {deflection}; got {num_tris}, which is consistent with an over-aggressive \
-             degeneracy gate dropping valid (non-pole) triangles rather than just the \
-             two genuinely-degenerate pole-seam ones"
+            num_tris >= min_expected_tris,
+            "expected at least {min_expected_tris} triangles for an 8mm-radius sphere at \
+             deflection {deflection} (measured baseline: 826 at 1e-4, 304 at 1e-3); got \
+             {num_tris}, which is consistent with an over-aggressive degeneracy gate \
+             dropping valid (non-pole) triangles rather than just the two \
+             genuinely-degenerate pole-seam ones"
         );
     }
 }
