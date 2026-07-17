@@ -81,7 +81,6 @@ use std::collections::BTreeSet;
 /// and `content_hash` are never inspected by them, so both are filled with
 /// placeholder-but-valid values (a real `ContentHash` combine chain;
 /// `Type::Geometry`).
-#[allow(dead_code)]
 fn call_expr(name: &str, arity: usize) -> reify_ir::CompiledExpr {
     let args: Vec<reify_ir::CompiledExpr> = (0..arity)
         .map(|i| {
@@ -114,7 +113,6 @@ fn call_expr(name: &str, arity: usize) -> reify_ir::CompiledExpr {
 /// `String`s (not `&'static str`) so callers can freely set-compare against
 /// `BTreeSet<String>`-shaped compiler-family universes without lifetime
 /// friction.
-#[allow(dead_code)]
 fn recognized(
     oracle: impl Fn(&reify_ir::CompiledExpr) -> bool,
     universe: &[&str],
@@ -131,7 +129,6 @@ fn recognized(
 /// against the eval-side oracles — the "candidate universe" each probing
 /// test draws from. Deduplicated via `BTreeSet` (some families are
 /// pairwise-disjoint by contract, but this helper does not assume it).
-#[allow(dead_code)]
 fn all_family_names() -> Vec<&'static str> {
     let set: BTreeSet<&'static str> = reify_compiler::GEOMETRY_FUNCTION_NAMES
         .iter()
@@ -148,6 +145,13 @@ fn all_family_names() -> Vec<&'static str> {
     set.into_iter().collect()
 }
 
+/// Convert a compiler-side `&[&str]` name-family slice into an owned
+/// `BTreeSet<String>`, so it set-compares directly against [`recognized`]'s
+/// output. Shared by every per-family comparison test (steps 1, 3, 5, 7).
+fn to_set(names: &[&str]) -> BTreeSet<String> {
+    names.iter().map(|s| s.to_string()).collect()
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // Divergence ledger
 //
@@ -157,3 +161,61 @@ fn all_family_names() -> Vec<&'static str> {
 // diverging name(s), and why. Populated incrementally — task 5055 γ steps
 // 2, 4, 6, 8. Empty at scaffold time (pre-2).
 // ═══════════════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════════
+// Tests
+// ═══════════════════════════════════════════════════════════════════════
+
+/// RED until step-2: `is_geometry_query_call` recognizes only the 4
+/// whole-handle scalar/point queries (`area`, `bounding_box`, `centroid`,
+/// `volume`) at arity 1 — a STRICT SUBSET of the compiler's 15-member
+/// `GEOMETRY_QUERY_NAMES` family (`length`/`perimeter`/the rest route via
+/// other paths; see `geometry_ops.rs:3863`). The first three assertions
+/// below hold today; the final "family-agreement direction" assertion is
+/// deliberately naive strict equality between the two sets, which fails
+/// (15 names vs. 4) until step-2 introduces `QUERY_CALL_LEDGER` and relaxes
+/// it to `== (GEOMETRY_QUERY_NAMES minus QUERY_CALL_LEDGER)`.
+#[test]
+fn geometry_query_call_oracle_agrees_with_geometry_query_names_family() {
+    let universe = all_family_names();
+    let geometry_query_names = to_set(reify_compiler::GEOMETRY_QUERY_NAMES);
+
+    // (a) the recognized set at arity 1 is exactly the 4 whole-handle queries.
+    let query_call_set = recognized(crate::geometry_ops::is_geometry_query_call, &universe, 1);
+    let expected = to_set(&["area", "bounding_box", "centroid", "volume"]);
+    assert_eq!(
+        query_call_set, expected,
+        "is_geometry_query_call's recognized name-set changed; update this pin \
+         (and the QUERY_CALL_LEDGER-based assertion below) if the change is intentional"
+    );
+
+    // (b) that set is a subset of the compiler's GEOMETRY_QUERY_NAMES family.
+    assert!(
+        query_call_set.is_subset(&geometry_query_names),
+        "is_geometry_query_call recognizes a name reify_compiler::GEOMETRY_QUERY_NAMES \
+         does not claim: {:?}",
+        query_call_set
+            .difference(&geometry_query_names)
+            .collect::<Vec<_>>()
+    );
+
+    // (c) arity gate: the same 4 names must NOT be recognized at any arity != 1.
+    for name in &expected {
+        for &bad_arity in &[0usize, 2, 3] {
+            assert!(
+                !crate::geometry_ops::is_geometry_query_call(&call_expr(name, bad_arity)),
+                "{name:?} must not be recognized by is_geometry_query_call at arity \
+                 {bad_arity} (only arity 1 is the whole-handle-query shape)"
+            );
+        }
+    }
+
+    // Family-agreement direction — deliberately naive strict equality.
+    // GEOMETRY_QUERY_NAMES has 15 names; the oracle recognizes only 4, so
+    // this is RED until step-2 replaces it with the ledgered comparison.
+    assert_eq!(
+        query_call_set, geometry_query_names,
+        "is_geometry_query_call-set must equal GEOMETRY_QUERY_NAMES minus the \
+         intentional-divergence ledger (QUERY_CALL_LEDGER, added in step-2)"
+    );
+}
