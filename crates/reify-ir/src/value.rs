@@ -2706,7 +2706,13 @@ impl Value {
             }
             Value::Complex { re, im, dimension } => {
                 let (display_re, unit) = dimension.to_display_units(*re);
-                let (display_im, _) = dimension.to_display_units(*im);
+                // Only `im`'s scaled magnitude is needed here (the unit label
+                // is shared with `re`), so scale it directly via
+                // `display_scale` instead of a second `to_display_units`
+                // call — for an uncurated (composed-fallback) dimension that
+                // second call would allocate a `String` label via `Display`
+                // only to immediately discard it.
+                let display_im = dimension.display_scale(*im);
                 let formatted = format!(
                     "{} + {}i",
                     format_display_number(display_re),
@@ -10332,6 +10338,44 @@ mod tests {
             v.format_display_pair(),
             ("1270".to_string(), "kg\u{b7}m^-3".to_string()),
             "format_display_pair() on a MASS_DENSITY scalar should return composed base units, not \"SI\""
+        );
+    }
+
+    // ── Value::Complex format_display_pair scaling (task 5198 amend) ─────────
+    // format_display_pair's Complex arm scales `im` via
+    // `DimensionVector::display_scale` instead of a second `to_display_units`
+    // call (reviewer efficiency finding: the discarded second unit label
+    // allocated needlessly for composed-fallback dimensions). These lock
+    // that `im` still receives the correct per-dimension scale factor —
+    // both for a curated scaling arm (LENGTH) and for the composed-fallback
+    // path (MASS_DENSITY) — so the refactor cannot silently leave `im`
+    // unscaled or otherwise diverge from `re`.
+
+    #[test]
+    fn format_display_pair_complex_scales_both_re_and_im_for_length() {
+        let v = Value::Complex {
+            re: 0.005,
+            im: 0.003,
+            dimension: DimensionVector::LENGTH,
+        };
+        assert_eq!(
+            v.format_display_pair(),
+            ("5 + 3i".to_string(), "mm".to_string()),
+            "both re and im must be scaled metres->millimetres, not just re"
+        );
+    }
+
+    #[test]
+    fn format_display_pair_complex_composed_dimension_renders_both_parts() {
+        let v = Value::Complex {
+            re: 1270.0,
+            im: 4.0,
+            dimension: DimensionVector::MASS_DENSITY,
+        };
+        assert_eq!(
+            v.format_display_pair(),
+            ("1270 + 4i".to_string(), "kg\u{b7}m^-3".to_string()),
+            "im must render correctly through the composed-fallback (identity-scale) path too"
         );
     }
 
