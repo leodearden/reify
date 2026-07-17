@@ -952,12 +952,27 @@ structure def Parent {
          all diagnostics: {:?}",
         module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
+    // Assert the *specific* fail-closed diagnostic (not merely "some diagnostic"): a bare
+    // `!is_empty()` check would stay green even if an unrelated diagnostic elsewhere in the
+    // fixture masked a real priv leak on this path. This diagnostic has no DiagnosticCode
+    // (emitted via a bare `Diagnostic::error(...)` at expr.rs's indexed-collection-member
+    // branch, no `.with_code(...)`), so — mirroring the message-text count used by the
+    // sibling `external_pub_port_member_access_not_yet_supported_unchanged` above — pin the
+    // exact text instead: `bolts[0].secret` resolves through `sub_member_types` (built from
+    // value_cells only; ports are absent), so `secret` is reported unknown before `.main` is
+    // ever reached.
+    let unknown_member_on_collection_sub = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.message.contains("unknown member 'secret' on collection sub 'bolts'"))
+        .count();
     assert!(
-        !module.diagnostics.is_empty(),
-        "external access to `bolts[0].secret.main` must still fail via some diagnostic \
-         (fails closed, e.g. \"unknown member 'secret' on collection sub 'bolts'\"), not \
-         resolve silently with zero diagnostics — a future change that made this resolve \
-         cleanly would silently leak a priv port member"
+        unknown_member_on_collection_sub >= 1,
+        "external access to `bolts[0].secret.main` must still fail via the specific \
+         \"unknown member 'secret' on collection sub 'bolts'\" diagnostic (fails closed), not \
+         resolve silently with zero diagnostics or an unrelated one — a future change that \
+         made this resolve cleanly would silently leak a priv port member; all diagnostics: {:?}",
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
 
