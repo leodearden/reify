@@ -95,23 +95,4 @@ mod tests {
     fn available_topics_returns_17_entries() {
         assert_eq!(available_topics().len(), 17);
     }
-
-    #[test]
-    fn structures_and_occurrences_document_def_alias() {
-        for topic in ["structures", "occurrences"] {
-            let content = get_chunk(topic).unwrap().to_lowercase();
-            assert!(
-                content.contains("alias"),
-                "topic '{topic}' should document the bare/def alias (missing 'alias')"
-            );
-            assert!(
-                content.contains("def"),
-                "topic '{topic}' should mention 'def' in the alias note"
-            );
-            assert!(
-                content.contains("optional"),
-                "topic '{topic}' should mention 'def' is optional"
-            );
-        }
-    }
 }

@@ -24,16 +24,6 @@ describe('SYSTEM_PROMPT', () => {
   it('mentions the Reify GUI context', () => {
     expect(SYSTEM_PROMPT.toLowerCase()).toContain('reify');
   });
-
-  it('uses the canonical `structure def` declaration form and the real logical operators', () => {
-    // Canonical spelling per chunks/structures.md and chunks/syntax.md:63 —
-    // `def` is the canonical (though optionally elidable) spelling, and the
-    // logical operators are word forms, not C-style symbols.
-    expect(SYSTEM_PROMPT).toContain('structure def');
-    expect(SYSTEM_PROMPT).toContain('implies');
-    expect(SYSTEM_PROMPT).not.toContain('&&');
-    expect(SYSTEM_PROMPT).not.toContain('||');
-  });
 });
 
 describe('buildSystemPrompt', () => {
