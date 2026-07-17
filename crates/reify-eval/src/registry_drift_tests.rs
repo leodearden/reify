@@ -267,3 +267,99 @@ fn geometry_query_call_oracle_agrees_with_geometry_query_names_family() {
          drifted out of sync with reify_compiler::GEOMETRY_QUERY_NAMES"
     );
 }
+
+/// `is_geometry_consumer_call` recognizes 22 names — the `is_geometry_query_call`
+/// family plus every kernel-bearing `TopologySelectorHelper` consumer (module
+/// doc above `is_geometry_consumer_call`, `geometry_ops.rs:3877-3902`). Both
+/// directions of the two-direction contract (PRD §7.3) are checked:
+///
+/// - Direction B (eval ⇒ compiler): every name the oracle recognizes must be
+///   claimed by at least one geometry compiler family (`GEOMETRY_QUERY_NAMES`
+///   ∪ `GEOMETRY_TOPOLOGY_SELECTOR_NAMES`) — the core no-silent-`Value::Undef`
+///   guard. Holds today.
+/// - Direction A (compiler ⇒ eval): every `GEOMETRY_QUERY_NAMES` member must
+///   be a recognized consumer. Written as deliberately naive strict equality,
+///   this is RED: `max_deviation` and `feature` are in `GEOMETRY_QUERY_NAMES`
+///   but not recognized (they dispatch via distinct paths — see
+///   [`QUERY_CALL_LEDGER`]'s entries for both). Fixed in step-4 by
+///   `CONSUMER_DIRECTION_A_LEDGER`.
+///
+/// Also probes that `GEOMETRY_FUNCTION_NAMES` constructors (`box`,
+/// `cylinder`, `union`) are never misclassified as consumers.
+#[test]
+fn geometry_consumer_call_oracle_two_direction_agreement() {
+    let universe = all_family_names();
+    let consumer_set = recognized(crate::geometry_ops::is_geometry_consumer_call, &universe, 1);
+
+    // The recognized set is exactly the documented 22 names.
+    let expected = to_set(&[
+        "volume",
+        "area",
+        "centroid",
+        "bounding_box",
+        "adjacent_faces",
+        "normal",
+        "closest_point",
+        "shared_edges",
+        "siblings_of_face",
+        "ancestor_faces_of_edge",
+        "length",
+        "perimeter",
+        "curvature",
+        "center_of_mass",
+        "moment_of_inertia",
+        "distance",
+        "contains",
+        "intersects",
+        "geo_equiv",
+        "is_on",
+        "angle_between_surfaces",
+        "angle",
+    ]);
+    assert_eq!(
+        consumer_set, expected,
+        "is_geometry_consumer_call's recognized name-set changed; update this pin \
+         if the change is intentional"
+    );
+
+    // Direction B (eval => compiler): every recognized name is claimed by
+    // >=1 geometry compiler family. Core no-silent-Undef guard.
+    let geometry_query_names = to_set(reify_compiler::GEOMETRY_QUERY_NAMES);
+    let geometry_selector_names = to_set(reify_compiler::GEOMETRY_TOPOLOGY_SELECTOR_NAMES);
+    let geometry_family_union: BTreeSet<String> = geometry_query_names
+        .union(&geometry_selector_names)
+        .cloned()
+        .collect();
+    assert!(
+        consumer_set.is_subset(&geometry_family_union),
+        "is_geometry_consumer_call recognizes a name no geometry compiler family \
+         (GEOMETRY_QUERY_NAMES union GEOMETRY_TOPOLOGY_SELECTOR_NAMES) claims — \
+         such a call would silently degrade to Value::Undef: {:?}",
+        consumer_set
+            .difference(&geometry_family_union)
+            .collect::<Vec<_>>()
+    );
+
+    // Direction A (compiler => eval), deliberately naive strict equality:
+    // every GEOMETRY_QUERY_NAMES member must be a recognized consumer. RED
+    // until step-4 ledgers max_deviation + feature.
+    let query_consumer_subset: BTreeSet<String> = consumer_set
+        .intersection(&geometry_query_names)
+        .cloned()
+        .collect();
+    assert_eq!(
+        geometry_query_names, query_consumer_subset,
+        "every GEOMETRY_QUERY_NAMES member must be recognized by \
+         is_geometry_consumer_call minus the intentional-divergence ledger \
+         (CONSUMER_DIRECTION_A_LEDGER, added in step-4)"
+    );
+
+    // GEOMETRY_FUNCTION_NAMES constructors are never consumers.
+    for ctor in ["box", "cylinder", "union"] {
+        assert!(
+            !crate::geometry_ops::is_geometry_consumer_call(&call_expr(ctor, 1)),
+            "{ctor:?} is a GEOMETRY_FUNCTION_NAMES constructor and must not be \
+             recognized as a geometry consumer"
+        );
+    }
+}
