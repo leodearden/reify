@@ -10834,10 +10834,7 @@ mod tests {
     fn format_display_number_fast_path_whole_number_below_threshold_unchanged() {
         // 999_999_999_999 has exactly 12 significant figures and sits well
         // below the 1e15 fast-path ceiling — must render unchanged.
-        assert_eq!(
-            format_display_number(999_999_999_999.0),
-            "999999999999"
-        );
+        assert_eq!(format_display_number(999_999_999_999.0), "999999999999");
     }
 
     #[test]
@@ -10854,6 +10851,7 @@ mod tests {
             "1234567890123"
         );
     }
+
 
     #[test]
     fn format_display_number_rounds_whole_number_at_1e15_ceiling() {
