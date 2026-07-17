@@ -1356,7 +1356,7 @@ fn role_sort_key(role: &Role) -> (u32, &'static str) {
     }
 }
 
-/// Emit `TopologyAttributeLocalIndexReassigned` Warnings for groups of
+/// Emit `TopologyAttributeLocalIndexReassigned` Info diagnostics for groups of
 /// topology-attribute entries whose centroids are geometrically tied within
 /// `tol_m`, signalling that the kernel's enumeration order — and therefore
 /// the `local_index` assignment — would arbitrarily shuffle under a future
@@ -1393,9 +1393,9 @@ fn role_sort_key(role: &Role) -> (u32, &'static str) {
 /// # Output
 ///
 /// At most one diagnostic per `(feature_id, role)` group, carrying
-/// `DiagnosticCode::TopologyAttributeLocalIndexReassigned`, severity Warning,
-/// and naming the smallest pair of tied `local_index` values for
-/// reproducible message wording.
+/// `DiagnosticCode::TopologyAttributeLocalIndexReassigned`, severity Info
+/// (task #5196; was Warning under task #2654), and naming the smallest pair
+/// of tied `local_index` values for reproducible message wording.
 ///
 /// # Filter rules
 ///
@@ -1424,8 +1424,9 @@ fn role_sort_key(role: &Role) -> (u32, &'static str) {
 /// # Single-source rule
 ///
 /// This helper does NOT regress the realization to Failed under any condition:
-/// it only appends Warnings. Auxiliary metadata MUST NOT regress to Failed —
-/// the realization is primary, attribute fragility detection is supplementary.
+/// it only appends Info diagnostics. Auxiliary metadata MUST NOT regress to
+/// Failed — the realization is primary, attribute fragility detection is
+/// supplementary.
 pub fn detect_local_index_reassignment_diagnostics(
     handles_with_attrs: &[(GeometryHandleId, &TopologyAttribute)],
     centroids: &HashMap<GeometryHandleId, [f64; 3]>,
@@ -1501,7 +1502,7 @@ pub fn detect_local_index_reassignment_diagnostics(
                 if dist_sq <= tol_sq {
                     let (feature_id, role) = key;
                     diagnostics.push(
-                        Diagnostic::warning(format!(
+                        Diagnostic::info(format!(
                             "topology-attribute selector for (feature '{}', role '{}') has \
                              geometrically tied local_index assignments at indices {} and {}; \
                              selector resolution may shuffle after edits",

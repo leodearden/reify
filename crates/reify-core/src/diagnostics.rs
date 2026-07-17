@@ -720,8 +720,9 @@ pub enum DiagnosticCode {
     /// Origin: `crates/reify-eval/src/engine_build.rs::execute_realization_ops`
     /// (via `diagnose_topology_correspondence_drops`).
     ///
-    /// Emitted as `Severity::Warning` when a kernel history record reports a
-    /// non-zero topology-correspondence-loss counter after a boolean, sweep, or
+    /// Emitted as `Severity::Info` (task #5196; was `Severity::Warning` under
+    /// task #4545) when a kernel history record reports a non-zero
+    /// topology-correspondence-loss counter after a boolean, sweep, or
     /// local-feature operation. The following counters are covered:
     ///
     /// - `BooleanOpHistoryRecords::silent_drop_count` — a child subshape was
@@ -4796,17 +4797,37 @@ mod tests {
     // variant-specific round-trip and serde wire-format tests are added here.
 
     /// `DiagnosticCode::TopologyAttributeLocalIndexReassigned` round-trips through
-    /// `Diagnostic::warning(...).with_code(...)` carrying both the expected
+    /// `Diagnostic::warning(...).with_code(...)`, carrying both the expected
     /// `Severity::Warning` and `Some(DiagnosticCode::TopologyAttributeLocalIndexReassigned)`.
-    /// Pins the warning-severity contract and variant existence for the typed
-    /// disambiguation of the ordering-shuffle rebind outcome (no split, same
-    /// `(feature_id, role, user_label)`, different resolved `local_index`).
+    /// Pins builder mechanics and variant existence only — `.with_code()` never
+    /// touches severity, so this is NOT a claim about the production emit
+    /// site's severity. The production emitter
+    /// (`detect_local_index_reassignment_diagnostics`) uses `Diagnostic::info`
+    /// as of task #5196 (was `Diagnostic::warning` under task #2654); see the
+    /// sibling round-trip test below.
     #[test]
     fn diagnostic_code_topology_attribute_local_index_reassigned_with_code_round_trips() {
         use super::Severity;
         let d = Diagnostic::warning("x")
             .with_code(DiagnosticCode::TopologyAttributeLocalIndexReassigned);
         assert_eq!(d.severity, Severity::Warning);
+        assert_eq!(
+            d.code,
+            Some(DiagnosticCode::TopologyAttributeLocalIndexReassigned)
+        );
+    }
+
+    /// Production emit-site contract (task #5196):
+    /// `detect_local_index_reassignment_diagnostics` constructs via
+    /// `Diagnostic::info(...).with_code(...)`, so the code must round-trip
+    /// under `Severity::Info` as well — `.with_code()` is independent of
+    /// which severity constructor built the `Diagnostic`.
+    #[test]
+    fn diagnostic_code_topology_attribute_local_index_reassigned_with_code_round_trips_at_info() {
+        use super::Severity;
+        let d = Diagnostic::info("x")
+            .with_code(DiagnosticCode::TopologyAttributeLocalIndexReassigned);
+        assert_eq!(d.severity, Severity::Info);
         assert_eq!(
             d.code,
             Some(DiagnosticCode::TopologyAttributeLocalIndexReassigned)
@@ -5882,17 +5903,37 @@ mod tests {
     // round-trip and serde wire-format tests are added here.
 
     /// `DiagnosticCode::TopologyCorrespondenceDropped` round-trips through
-    /// `Diagnostic::warning(...).with_code(...)` carrying both the expected
+    /// `Diagnostic::warning(...).with_code(...)`, carrying both the expected
     /// `Severity::Warning` and `Some(DiagnosticCode::TopologyCorrespondenceDropped)`.
-    /// Pins the warning-severity contract and variant existence for the
-    /// topology-correspondence-drop diagnostic (PRD-prose mnemonic
-    /// W_TOPOLOGY_CORRESPONDENCE_DROPPED).
+    /// Pins builder mechanics and variant existence only — `.with_code()`
+    /// never touches severity, so this is NOT a claim about the production
+    /// emit site's severity. The production emitter
+    /// (`diagnose_topology_correspondence_drops`) uses `Diagnostic::info` as
+    /// of task #5196 (was `Diagnostic::warning` under task #4545); see the
+    /// sibling round-trip test below.
     #[test]
     fn diagnostic_code_topology_correspondence_dropped_with_code_round_trips() {
         use super::Severity;
         let d = Diagnostic::warning("x")
             .with_code(DiagnosticCode::TopologyCorrespondenceDropped);
         assert_eq!(d.severity, Severity::Warning);
+        assert_eq!(
+            d.code,
+            Some(DiagnosticCode::TopologyCorrespondenceDropped)
+        );
+    }
+
+    /// Production emit-site contract (task #5196):
+    /// `diagnose_topology_correspondence_drops` constructs via
+    /// `Diagnostic::info(...).with_code(...)`, so the code must round-trip
+    /// under `Severity::Info` as well — `.with_code()` is independent of
+    /// which severity constructor built the `Diagnostic`.
+    #[test]
+    fn diagnostic_code_topology_correspondence_dropped_with_code_round_trips_at_info() {
+        use super::Severity;
+        let d = Diagnostic::info("x")
+            .with_code(DiagnosticCode::TopologyCorrespondenceDropped);
+        assert_eq!(d.severity, Severity::Info);
         assert_eq!(
             d.code,
             Some(DiagnosticCode::TopologyCorrespondenceDropped)

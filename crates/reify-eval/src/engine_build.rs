@@ -1272,7 +1272,7 @@ fn populate_attribute_history(
     }
 }
 
-/// Emit one `Severity::Warning` per non-zero topology-correspondence-loss
+/// Emit one `Severity::Info` per non-zero topology-correspondence-loss
 /// counter found in `attribute_history`.
 ///
 /// Called by `Engine::execute_realization_ops` immediately after
@@ -1288,27 +1288,30 @@ fn populate_attribute_history(
 /// `Loft` and `None` are explicit no-ops: `LoftOpHistoryRecords` has no
 /// counters by design, and `None` means no history was returned.
 ///
-/// Each warning carries [`reify_core::DiagnosticCode::TopologyCorrespondenceDropped`]
+/// Each diagnostic carries [`reify_core::DiagnosticCode::TopologyCorrespondenceDropped`]
 /// and a message of the form:
 /// `"topology correspondence dropped: {op_kind} {counter_name}={count} context={context}"`.
 ///
 /// The geometry is valid; only persistent-naming correspondence tracking is
-/// degraded. Severity is `Warning` (never `Error`) per the task-2574 convention
-/// that auxiliary-metadata degradation must not regress the realization to Failed.
+/// degraded. Severity is `Info` (never `Error`; downgraded from `Warning` to
+/// `Info` by task #5196 — a healthy multi-boolean model was flooding
+/// Warning-severity diagnostics with routine bookkeeping noise) per the
+/// task-2574 convention that auxiliary-metadata degradation must not regress
+/// the realization to Failed.
 fn diagnose_topology_correspondence_drops(
     attribute_history: &AttributeHistory,
     context: &str,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     use reify_core::DiagnosticCode;
-    // Single canonical emit path: guarantees every warning uses the same
+    // Single canonical emit path: guarantees every diagnostic uses the same
     // message format ("topology correspondence dropped: {op_kind}
     // {counter}={count} context={context}") and the same code, with no risk
     // of the five call sites drifting from each other.
     let mut emit = |op_kind: &str, counter: &str, count: u32| {
         if count > 0 {
             diagnostics.push(
-                Diagnostic::warning(format!(
+                Diagnostic::info(format!(
                     "topology correspondence dropped: {op_kind} {counter}={count} context={context}"
                 ))
                 .with_code(DiagnosticCode::TopologyCorrespondenceDropped),
@@ -8123,12 +8126,13 @@ impl Engine {
                             )));
                             }
                             // task 4545: surface topology-correspondence-loss counters
-                            // from the kernel history record as structured Warnings.
+                            // from the kernel history record as structured diagnostics.
                             // Called immediately after `populate_attribute_history`
-                            // (independent of its Result) so the warning is emitted
-                            // even when population also warns. Severity::Warning only
-                            // — geometry is valid, only persistent-naming tracking
-                            // is degraded (task-2574 auxiliary-metadata convention).
+                            // (independent of its Result) so the diagnostic is emitted
+                            // even when population also warns. Severity::Info only
+                            // (task #5196; was Severity::Warning) — geometry is valid,
+                            // only persistent-naming tracking is degraded (task-2574
+                            // auxiliary-metadata convention).
                             diagnose_topology_correspondence_drops(
                                 &attribute_history,
                                 &format!("{realization_id} op {op_idx}"),
@@ -12305,7 +12309,8 @@ mod post_process_cross_sub_value_cells_tests;
 //
 // RED: `diagnose_topology_correspondence_drops` does not exist yet.
 // These tests drive the pure helper over hand-built AttributeHistory values
-// to verify the expected Warning diagnostics (one per non-zero counter).
+// to verify the expected Info diagnostics (one per non-zero counter; Info as
+// of task #5196, was Warning).
 // No OCCT kernel is required — all counters are plain u32 fields.
 
 #[cfg(test)]
