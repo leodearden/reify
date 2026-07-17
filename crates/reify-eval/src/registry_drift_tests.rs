@@ -152,6 +152,20 @@ fn to_set(names: &[&str]) -> BTreeSet<String> {
     names.iter().map(|s| s.to_string()).collect()
 }
 
+/// The subset of `universe` for which the `fn(name: &str) -> Option<_>`-shaped
+/// compiler-side result-type map `f` returns `Some`. Unlike [`recognized`],
+/// these maps take a bare name (no synthetic `CompiledExpr` needed) — used to
+/// probe `reify_compiler::topology_selector_result_type` /
+/// `geometry_query_result_type` for cross-crate result-type-map parity
+/// (step-7).
+fn some_names<T>(f: impl Fn(&str) -> Option<T>, universe: &[&str]) -> BTreeSet<String> {
+    universe
+        .iter()
+        .filter(|name| f(name).is_some())
+        .map(|name| name.to_string())
+        .collect()
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // Divergence ledger
 //
@@ -530,5 +544,94 @@ fn topology_selector_eval_recognition_agrees_with_selector_names_family() {
          selector consumers) must equal GEOMETRY_TOPOLOGY_SELECTOR_NAMES minus \
          SELECTOR_BUILD_PATH_ONLY — either the oracles' recognized sets or the \
          ledger drifted out of sync"
+    );
+}
+
+/// Cross-crate **disjointness** regression pin — a surface the 32 in-crate
+/// `units.rs` tests do not span (those pin compiler-internal family-vs-family
+/// disjointness only). A member of any non-geometry compiler family
+/// (`DYNAMICS_QUERY_NAMES`, `DYNAMICS_CONSTRUCTOR_NAMES`, `FEA_ENVELOPE_NAMES`,
+/// `FIELD_OP_NAMES`, `GEOMETRY_FUNCTION_NAMES`) must never be recognized by
+/// any of the three eval-side geometry oracles this module probes
+/// (`is_geometry_query_call`, `is_geometry_consumer_call`,
+/// `is_symbolic_eval_wired_selector_ctor`) — a dynamics/FEA/field-op/constructor
+/// name can never masquerade as a geometry query, consumer, or kernel-free
+/// selector ctor. Step-7 (task 5055 γ).
+#[test]
+fn non_geometry_families_are_disjoint_from_eval_geometry_oracles() {
+    let non_geometry_families: [(&str, &[&str]); 5] = [
+        ("DYNAMICS_QUERY_NAMES", reify_compiler::DYNAMICS_QUERY_NAMES),
+        (
+            "DYNAMICS_CONSTRUCTOR_NAMES",
+            reify_compiler::DYNAMICS_CONSTRUCTOR_NAMES,
+        ),
+        ("FEA_ENVELOPE_NAMES", reify_compiler::FEA_ENVELOPE_NAMES),
+        ("FIELD_OP_NAMES", reify_compiler::FIELD_OP_NAMES),
+        (
+            "GEOMETRY_FUNCTION_NAMES",
+            reify_compiler::GEOMETRY_FUNCTION_NAMES,
+        ),
+    ];
+
+    for (family_name, family) in non_geometry_families {
+        let query_hits = recognized(crate::geometry_ops::is_geometry_query_call, family, 1);
+        assert!(
+            query_hits.is_empty(),
+            "{family_name} member(s) {query_hits:?} recognized by is_geometry_query_call \
+             — a {family_name} name must never masquerade as a whole-handle geometry query"
+        );
+
+        let consumer_hits = recognized(crate::geometry_ops::is_geometry_consumer_call, family, 1);
+        assert!(
+            consumer_hits.is_empty(),
+            "{family_name} member(s) {consumer_hits:?} recognized by \
+             is_geometry_consumer_call — a {family_name} name must never masquerade as a \
+             geometry consumer"
+        );
+
+        let selector_ctor_hits = recognized(
+            crate::geometry_ops::is_symbolic_eval_wired_selector_ctor,
+            family,
+            1,
+        );
+        assert!(
+            selector_ctor_hits.is_empty(),
+            "{family_name} member(s) {selector_ctor_hits:?} recognized by \
+             is_symbolic_eval_wired_selector_ctor — a {family_name} name must never \
+             masquerade as a kernel-free selector ctor"
+        );
+    }
+}
+
+/// Cross-crate **result-type-map parity** regression pin — now reachable
+/// post-pre-1's export widening. `topology_selector_result_type` /
+/// `geometry_query_result_type` are the compile-time halves of the >= 7
+/// registration-site contract documented in the module header (sites (1)-(2)
+/// for `closest_point`); this pins that their `Some`-set exactly equals the
+/// corresponding compiler-side name family, from the eval crate's vantage
+/// point — the same parity the 32 in-crate `units.rs` tests already check one
+/// level down (slice-vs-result-type, WITHIN `units.rs`). Step-7 (task 5055 γ).
+#[test]
+fn result_type_maps_agree_with_their_name_families_cross_crate() {
+    let universe = all_family_names();
+
+    let topology_selector_result_set =
+        some_names(reify_compiler::topology_selector_result_type, &universe);
+    let topology_selector_names = to_set(reify_compiler::GEOMETRY_TOPOLOGY_SELECTOR_NAMES);
+    assert_eq!(
+        topology_selector_result_set, topology_selector_names,
+        "reify_compiler::topology_selector_result_type's Some-set must equal \
+         GEOMETRY_TOPOLOGY_SELECTOR_NAMES (31/31) — a name added to one without the \
+         other silently falls through to the first-arg type-inference fallback"
+    );
+
+    let geometry_query_result_set =
+        some_names(reify_compiler::geometry_query_result_type, &universe);
+    let geometry_query_names = to_set(reify_compiler::GEOMETRY_QUERY_NAMES);
+    assert_eq!(
+        geometry_query_result_set, geometry_query_names,
+        "reify_compiler::geometry_query_result_type's Some-set must equal \
+         GEOMETRY_QUERY_NAMES (15/15) — a name added to one without the other \
+         silently falls through to the first-arg type-inference fallback"
     );
 }
