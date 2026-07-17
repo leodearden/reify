@@ -414,3 +414,220 @@ fn manifold_ingest_contract_violating_mesh_yields_structured_diagnostic() {
          Mesh::validate(); got {ok:?}",
     );
 }
+
+// ── Item 5: engine-build hardening κ — mixed-kernel attribute-resolved ──────
+// selector (task 5071, INV-GEO-2 #4351 engine-build consumer-side boundary)
+
+/// Engine-build CONSUMER-side boundary witness for INV-GEO-2 (#4351): pairs
+/// the producer-facing `cross_kernel_attribute_collision_e2e.rs` tests.
+///
+/// Builds `examples/multi_kernel/attribute_selectors.ri` — an OCCT cylinder
+/// (`post`, realization index 0, never terminal) coexisting with a
+/// Mesh-demanded cross-kernel union (`body`, the terminal — highest-index —
+/// realization) in one module — and asserts:
+///
+/// 1. no error-severity diagnostics anywhere in the build;
+/// 2. the terminal union realization records `produced_repr == Mesh` and its
+///    cached terminal handle is tagged `KernelId::Manifold`;
+/// 3. the terminal union renders — `tessellate_realizations().meshes` carries
+///    a non-empty mesh (vertices AND indices) at its entity path;
+/// 4. per-kernel independence — the post-build `topology_attribute_table()`
+///    holds AT LEAST one `KernelId::Occt` entry (seeded by the OCCT cylinder
+///    / boxes) AND at least one `KernelId::Manifold` entry (the union's
+///    ingest-forwarded attributes) — coexisting without one overwriting the
+///    other, the cross-kernel `GeometryHandleId` collision class #4351
+///    eliminates (pre-#4351 both kernels' attributes were addressable only
+///    by a bare numeric id, so a same-numbered pair would collide onto one
+///    table slot).
+///
+/// Does NOT flip the INV-GEO-2 registry row in `docs/invariants.md` — that
+/// row flips only when kernel-seam-contracts lands its conformance property
+/// tests; this test records the engine-build-side consumer share of that
+/// invariant instead.
+///
+/// RED (before step-2 creates the fixture): `include_str!` of the
+/// not-yet-created `examples/multi_kernel/attribute_selectors.ri` fails to
+/// compile this test file (mirrors the RED convention documented at
+/// `engine_routes_overlapping_box_union_to_manifold_mesh`, lines 97-98 above).
+#[test]
+fn mixed_kernel_attribute_selectors_builds_renders_and_reads_per_kernel_attributes() {
+    // ── (1) Linker anchor ─────────────────────────────────────────────────
+    let anchor = reify_kernel_manifold::register::manifold_capability_descriptor();
+    assert!(
+        !anchor.supports.is_empty(),
+        "manifold_capability_descriptor() must declare at least one capability \
+         (linker anchor sanity check — if empty the registration is broken)"
+    );
+
+    // ── (2) OCCT gate ─────────────────────────────────────────────────────
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping mixed_kernel_attribute_selectors_builds_renders_and_reads_per_kernel_attributes: \
+             OCCT not available (cfg(has_occt) not set — stub-mode build)"
+        );
+        return;
+    }
+
+    // ── (3) Registry contains both kernels ────────────────────────────────
+    let reg = reify_eval::kernel_registry::registry();
+    assert!(
+        reg.contains_key("occt"),
+        "registry must contain \"occt\" after OCCT stub check; found keys: {:?}",
+        reg.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        reg.contains_key("manifold"),
+        "registry must contain \"manifold\" (linker anchor ensures the \
+         inventory::submit! fired); found keys: {:?}",
+        reg.keys().collect::<Vec<_>>()
+    );
+
+    // ── (4) Compile the fixture ───────────────────────────────────────────
+    // include_str! is a compile-time macro: if the fixture does not exist,
+    // this file fails to compile → RED before step-2 creates it.
+    let mut compiled = parse_and_compile_with_stdlib(include_str!(
+        "../../../examples/multi_kernel/attribute_selectors.ri"
+    ));
+    assert!(
+        errors_only(&compiled).is_empty(),
+        "attribute_selectors.ri must compile with no error-severity diagnostics; got:\n{:#?}",
+        errors_only(&compiled)
+    );
+
+    // ── (5) Inject manufacturing purpose (demanded_tol = Some(1e-6)) ──────
+    // The RealizationCache is keyed by (entity, ReprKind, tol) and only
+    // populates when demanded_tol = Some(..); test_terminal_handle below
+    // needs that cache entry. Mirrors
+    // engine_routes_overlapping_box_union_to_manifold_mesh above.
+    compiled
+        .compiled_purposes
+        .push(manufacturing_purpose("manufacturing", 1e-6));
+
+    // ── (6) Build with real OCCT + Manifold ───────────────────────────────
+    let mut engine =
+        reify_eval::Engine::with_registered_kernels(Box::new(SimpleConstraintChecker));
+
+    // eval() → activate_purpose → build() — the canonical pattern (build()'s
+    // internal eval() clears active_purpose_bindings, so activate_purpose
+    // MUST be called after the explicit eval() and before build()).
+    let _eval = engine.eval(&compiled);
+    engine.activate_purpose("manufacturing", "MixedKernelAttributeSelectors");
+    let build = engine.build(&compiled, ExportFormat::Stl);
+
+    // ── (a) no error-severity diagnostics anywhere in the build ───────────
+    let build_errors: Vec<_> = build
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.severity, Severity::Error))
+        .collect();
+    assert!(
+        build_errors.is_empty(),
+        "mixed-kernel attribute-selector build must not emit any error-severity \
+         diagnostic; got: {build_errors:?}"
+    );
+
+    // ── (b) terminal union realization: produced_repr == Mesh ─────────────
+    // RealizationNodeId is keyed by (entity, index) in a PersistentMap
+    // (hash-ordered, not insertion-ordered); the terminal "body" binding has
+    // the highest index (declared last in the fixture), so max_by_key(index)
+    // always picks it regardless of map iteration order.
+    let snap = engine
+        .snapshot()
+        .expect("snapshot must be Some after a successful build()");
+    let mut nodes: Vec<_> = snap
+        .graph
+        .realizations
+        .iter()
+        .filter(|(id, _)| id.entity == "MixedKernelAttributeSelectors")
+        .collect();
+    assert!(
+        !nodes.is_empty(),
+        "expected at least one realization node for entity \
+         MixedKernelAttributeSelectors; got none"
+    );
+    nodes.sort_by_key(|(id, _)| id.index);
+    let (terminal_id, terminal_node) = *nodes.last().expect("nodes is non-empty (asserted above)");
+    let terminal_path = terminal_id.to_string();
+    assert_eq!(
+        terminal_node.produced_repr,
+        ReprKind::Mesh,
+        "the terminal (union) realization must record produced_repr == Mesh \
+         (the cross-kernel union resolves to the Mesh-capable Manifold kernel); \
+         got {:?}",
+        terminal_node.produced_repr
+    );
+
+    // ── (b') terminal handle is KernelId::Manifold ─────────────────────────
+    let terminal = engine
+        .test_terminal_handle("MixedKernelAttributeSelectors", ReprKind::Mesh, 1e-6)
+        .expect(
+            "terminal handle must be cached at (MixedKernelAttributeSelectors, Mesh, 1e-6) \
+             after build(ExportFormat::Stl) with a manufacturing purpose active",
+        );
+    assert_eq!(
+        terminal.kernel,
+        KernelId::Manifold,
+        "terminal handle must be tagged KernelId::Manifold (the BooleanUnion \
+         dispatches to the Mesh-capable Manifold kernel, not the BRep-capable \
+         OCCT kernel); got {:?}",
+        terminal.kernel
+    );
+
+    // ── (d) per-kernel independence (INV-GEO-2 consumer witness) ──────────
+    // Read the POST-BUILD table before tessellate_realizations() below resets
+    // it again (tessellate_realizations re-executes the whole module through
+    // its own topology_attribute_table = TopologyAttributeTable::default()
+    // reset — engine_build.rs:5586 — so it must not be read after that call).
+    //
+    // Non-vacuousness: an empty table on EITHER side would vacuously satisfy
+    // the "no collision" claim for the wrong reason (a broken seeding/
+    // forwarding path), not because there is genuinely no collision risk —
+    // hence both counts are asserted >= 1, not just "not colliding".
+    let table = engine.topology_attribute_table();
+    let total_count = table.iter().count();
+    let occt_count = table
+        .iter()
+        .filter(|(h, _)| h.kernel == KernelId::Occt)
+        .count();
+    let manifold_count = table
+        .iter()
+        .filter(|(h, _)| h.kernel == KernelId::Manifold)
+        .count();
+    assert!(
+        occt_count >= 1,
+        "expected topology_attribute_table to hold at least one KernelId::Occt \
+         entry after the mixed-kernel build (seeded by the OCCT cylinder/boxes); \
+         got 0 Occt entries (table len = {total_count})"
+    );
+    assert!(
+        manifold_count >= 1,
+        "expected topology_attribute_table to hold at least one \
+         KernelId::Manifold entry after the mixed-kernel build (the union's \
+         ingest-forwarded attributes); got 0 Manifold entries (table len = \
+         {total_count}) — if Occt entries exist but Manifold doesn't, the \
+         cross-kernel attribute-forwarding substrate (#4637) regressed"
+    );
+
+    // ── (c) renders — terminal mesh is non-empty (binary — no numeric bound)
+    let tess = engine.tessellate_realizations(&compiled);
+    let terminal_mesh = tess
+        .meshes
+        .iter()
+        .find(|m| m.entity_path == terminal_path)
+        .unwrap_or_else(|| {
+            panic!(
+                "tessellate_realizations must surface a MeshSurface at entity_path \
+                 {terminal_path:?}; got paths: {:?}",
+                tess.meshes
+                    .iter()
+                    .map(|m| &m.entity_path)
+                    .collect::<Vec<_>>()
+            )
+        });
+    assert!(
+        !terminal_mesh.mesh.vertices.is_empty() && !terminal_mesh.mesh.indices.is_empty(),
+        "terminal (union) mesh must be non-empty; got {} vertices, {} indices",
+        terminal_mesh.mesh.vertices.len(),
+        terminal_mesh.mesh.indices.len()
+    );
+}
