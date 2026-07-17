@@ -2776,17 +2776,26 @@ fn round_to_sig_figs(v: f64, sig: u32) -> f64 {
     if !v.is_finite() || v == 0.0 {
         return v;
     }
-    // Fast path: an exact whole number with at most `sig` digits already
-    // sits at (or below) the target precision, so rounding is provably a
-    // no-op — skip the allocating format!/parse round-trip. This function
-    // runs once per scalar during recursive composite rendering (List/Set/
-    // Map/Matrix), so avoiding the alloc + float-parse for already-clean
-    // whole values (a common case for engineering quantities like counts or
-    // whole millimetres) is worth it. Noisy near-whole values such as
-    // `105.00000000000001` have `v != v.trunc()` and correctly fall through
-    // to the round-trip below; whole numbers at or beyond `10^sig` carry
-    // more significant figures than the target and must also fall through.
-    if v == v.trunc() && v.abs() < 10f64.powi(sig as i32) {
+    // Fast path: an exact whole number below 1e15 — the same ceiling
+    // `format_display_number` uses to decide whether to render via an
+    // integer cast — passes through unrounded instead of being truncated to
+    // `sig` figures. This is deliberately NOT `10^sig`: an exact large
+    // integer (e.g. a MONEY total or a large count) with more than `sig`
+    // digits, such as `1_000_000_000_001`, previously round-tripped
+    // losslessly (format_display_number rendered it via `{}` on an `i64`
+    // cast with no rounding at all), and truncating it to `sig` figures
+    // would zero out its trailing digits — a real display regression for
+    // exact integers, not just noise cleanup. Bounding the exemption at 1e15
+    // instead keeps that lossless behaviour for every value
+    // format_display_number would render as a bare integer anyway, while
+    // still cleaning up noisy (non-whole) values and whole numbers at or
+    // beyond 1e15. This function also runs once per scalar during recursive
+    // composite rendering (List/Set/Map/Matrix), so skipping the allocating
+    // format!/parse round-trip for already-clean whole values is also a
+    // perf win. Noisy near-whole values such as `105.00000000000001` have
+    // `v != v.trunc()` and correctly fall through to the round-trip below,
+    // as does any whole number at or beyond 1e15.
+    if v == v.trunc() && v.abs() < 1e15 {
         return v;
     }
     format!("{:.*e}", (sig - 1) as usize, v)
@@ -10795,15 +10804,18 @@ mod tests {
     // ── round_to_sig_figs fast-path boundary (task 5198 amend) ───────────────
     //
     // round_to_sig_figs skips the allocating format!/parse round-trip for
-    // exact whole numbers below 10^DISPLAY_SIG_FIGS (an efficiency amendment
-    // to the original fix). These pin the fast path's correctness at its
-    // boundary: values it takes must already be clean, and values just
-    // beyond the threshold must still fall through to real rounding.
+    // exact whole numbers below 1e15 — format_display_number's own
+    // integer-render ceiling, not 10^DISPLAY_SIG_FIGS (an amendment: the
+    // original narrower `10^sig` guard truncated exact large integers, e.g.
+    // MONEY totals, that used to round-trip losslessly). These pin the fast
+    // path's boundary: values below 1e15 must render with full precision
+    // even when they carry more than DISPLAY_SIG_FIGS digits, and only a
+    // whole number at or beyond 1e15 falls through to real rounding.
 
     #[test]
     fn format_display_number_fast_path_whole_number_below_threshold_unchanged() {
-        // 999_999_999_999 has exactly 12 significant figures — sits right at
-        // the fast-path threshold and must render unchanged.
+        // 999_999_999_999 has exactly 12 significant figures and sits well
+        // below the 1e15 fast-path ceiling — must render unchanged.
         assert_eq!(
             format_display_number(999_999_999_999.0),
             "999999999999"
@@ -10811,13 +10823,29 @@ mod tests {
     }
 
     #[test]
-    fn format_display_number_rounds_large_whole_number_beyond_fast_path() {
-        // 1_234_567_890_123 has 13 significant figures — one past the
-        // fast-path threshold — and must still be rounded to 12, not
-        // fast-pathed through unchanged.
+    fn format_display_number_preserves_exact_large_integer_below_1e15() {
+        // 1_234_567_890_123 has 13 significant figures — beyond
+        // DISPLAY_SIG_FIGS — but is still an exact integer below the 1e15
+        // fast-path ceiling, so it must render with full precision instead
+        // of being truncated to 12 sig figs (the regression the narrower
+        // `10^sig` guard introduced: a MONEY total or large count losing its
+        // trailing digits even though it round-tripped losslessly before
+        // the sig-fig rounding fix existed).
         assert_eq!(
             format_display_number(1_234_567_890_123.0),
-            "1234567890120"
+            "1234567890123"
+        );
+    }
+
+    #[test]
+    fn format_display_number_rounds_whole_number_at_1e15_ceiling() {
+        // A whole number at/beyond the 1e15 fast-path ceiling falls through
+        // to the real round-trip and is rounded to DISPLAY_SIG_FIGS, same as
+        // any other value format_display_number can no longer render via
+        // its own integer-cast branch (which is also gated on `< 1e15`).
+        assert_eq!(
+            format_display_number(1_234_567_890_123_456.0),
+            "1234567890120000"
         );
     }
 
@@ -10856,7 +10884,7 @@ mod tests {
 
     // ── Negative-value sign handling (task 5198 amend) ────────────────────────
     //
-    // round_to_sig_figs' fast path is guarded by `v.abs() < 10^sig`, and its
+    // round_to_sig_figs' fast path is guarded by `v.abs() < 1e15`, and its
     // fallback round-trips through `format!("{:.*e}", ...)`, which Rust
     // renders with a leading '-' preserved. Coverage above only exercises
     // positive magnitudes; these lock sign handling through both the
