@@ -9750,3 +9750,82 @@ structure Assembly {
             "expected QueryFailed for missing zmax"
         );
     }
+
+    // ── value_contains_selector / values_contain_selector unit tests (task #5196 L2 gate, step-7) ──
+    //
+    // RED: neither helper exists yet — this module does not compile until
+    // step-8 adds `value_contains_selector(&Value) -> bool` and
+    // `values_contain_selector(&ValueMap) -> bool` to `engine_build.rs`.
+    //
+    // These back the L2 gate (step-8): the per-realization local-index-
+    // reassignment tie-scan (`detect_local_index_reassignment_diagnostics`) is
+    // about *selector-resolution* stability, so it is vacuous work on a build
+    // that produced no `Value::Selector` at all (e.g. the litter-tray
+    // multi-boolean model, which has none). `value_contains_selector` recurses
+    // fail-open through the container `Value` variants — `List`/`Set`/`Map`/
+    // `Option`/`Field` — mirroring `invariants::value_is_or_contains_undef`'s
+    // shape (plus a `Field` arm, since a selector can be carried inside a
+    // `Field`'s `lambda`, e.g. a `Restricted` region).
+
+    /// A top-level `Value::Selector` and one nested one level inside a
+    /// `Value::List` must both be detected; a plain non-selector scalar must
+    /// not be.
+    #[test]
+    fn value_contains_selector_detects_top_level_and_nested_selector() {
+        use reify_core::RealizationNodeId;
+        use reify_core::ty::SelectorKind;
+        use reify_ir::Value;
+        use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorValue};
+
+        let target = GeometryHandleRef {
+            realization_ref: RealizationNodeId::new("TestPart", 0),
+            upstream_values_hash: [0u8; 32],
+            kernel_handle: Some(GeometryHandleId(1)),
+        };
+        let sv = SelectorValue::leaf(SelectorKind::Face, target, LeafQuery::All)
+            .expect("SelectorValue::leaf must succeed for matching kind/query");
+
+        // Top-level selector.
+        assert!(
+            value_contains_selector(&Value::Selector(sv.clone())),
+            "a top-level Value::Selector must be detected"
+        );
+
+        // Selector nested one level inside a Value::List.
+        let nested = Value::List(vec![Value::Int(1), Value::Selector(sv)]);
+        assert!(
+            value_contains_selector(&nested),
+            "a Value::Selector nested inside a Value::List must be detected"
+        );
+
+        // Plain scalar, no selector anywhere → false.
+        assert!(
+            !value_contains_selector(&Value::Int(42)),
+            "a non-selector, non-container Value must not be detected as a selector"
+        );
+    }
+
+    /// A `ValueMap` holding only non-selector values (a scalar, a string, and
+    /// a selector-free nested list) must report `false` — the zero-selector /
+    /// litter-tray case the L2 gate (step-8) fails open to skip.
+    #[test]
+    fn values_contain_selector_false_for_map_of_non_selector_values() {
+        use reify_core::ValueCellId;
+        use reify_ir::Value;
+
+        let mut values = ValueMap::new();
+        values.insert(ValueCellId::new("Design", "w"), Value::Real(1.0));
+        values.insert(
+            ValueCellId::new("Design", "label"),
+            Value::String("box".to_string()),
+        );
+        values.insert(
+            ValueCellId::new("Design", "items"),
+            Value::List(vec![Value::Int(1), Value::Int(2)]),
+        );
+
+        assert!(
+            !values_contain_selector(&values),
+            "a ValueMap of only non-selector values must not trigger the selector gate"
+        );
+    }
