@@ -217,6 +217,53 @@ impl Default for ManifoldKernel {
     }
 }
 
+/// Bit-exact position weld shared by [`manifold_from_reify_mesh`]: maps each
+/// source vertex to a canonical `f64` position and returns the per-source
+/// `old_to_new` remap (canonical index for the i-th source vertex).
+///
+/// Keyed identically to [`Mesh::weld_positions`] — `(c + 0.0_f32).to_bits()`
+/// normalization, first-seen canonical order — which is the bit-exact
+/// equivalence `manifold_from_reify_mesh` relies on when it threads this
+/// remap into `Mesh::check_mesh_contract_welded` instead of letting that call
+/// recompute its own weld. Pulled out to a standalone function (rather than
+/// inlined) so a test can call it directly and pin it against
+/// `Mesh::weld_positions()` — see `kernel_weld_remap_matches_mesh_weld_positions`
+/// in `mod tests` below.
+fn weld_positions_f64(mesh: &Mesh) -> (Vec<f64>, Vec<u32>) {
+    // Map (x.to_bits(), y.to_bits(), z.to_bits()) → canonical vertex index.
+    let mut seen: HashMap<(u32, u32, u32), u32> = HashMap::new();
+    let mut canonical_f64: Vec<f64> = Vec::new();
+    // old_to_new[i] = canonical index for the i-th source vertex. u32 (not
+    // u64): meshes are u32-indexed (`Mesh::indices: Vec<u32>`), this is
+    // exactly the remap type `Mesh::check_mesh_contract_welded` takes below,
+    // and it lets that call borrow `&old_to_new` with zero extra allocation.
+    let mut old_to_new: Vec<u32> = Vec::with_capacity(mesh.vertices.len() / 3);
+
+    for xyz in mesh.vertices.chunks_exact(3) {
+        // Normalise -0.0 → +0.0 before keying so that shared geometric corners
+        // on the origin plane weld correctly even when different per-face paths
+        // produce -0.0 vs +0.0. All other finite values are unchanged by + 0.0.
+        let (x, y, z) = (xyz[0] + 0.0, xyz[1] + 0.0, xyz[2] + 0.0);
+        let key = (x.to_bits(), y.to_bits(), z.to_bits());
+        // Divide before casting: canonical_f64.len() is a usize element
+        // count (3 f64s per vertex), so dividing first keeps the vertex
+        // count itself in usize range before narrowing to u32. Casting
+        // first would truncate the *element* count (not the vertex count)
+        // at u32::MAX, silently wrapping the canonical index for meshes
+        // with > ~1.43B distinct vertices.
+        let next = (canonical_f64.len() / 3) as u32;
+        let canonical_idx = *seen.entry(key).or_insert_with(|| {
+            canonical_f64.push(x as f64);
+            canonical_f64.push(y as f64);
+            canonical_f64.push(z as f64);
+            next
+        });
+        old_to_new.push(canonical_idx);
+    }
+
+    (canonical_f64, old_to_new)
+}
+
 /// Convert a [`Mesh`] into a [`Manifold`] by (1) bit-exact vertex welding,
 /// then (2) flattening f32→f64 / u32→u64 and calling [`Manifold::from_mesh_f64`].
 ///
@@ -275,53 +322,6 @@ impl Default for ManifoldKernel {
 /// of range for the vertex array (weld-time bounds check) or if
 /// `from_mesh_f64` itself rejects the welded mesh after contract validation
 /// passed (e.g. a defect the contract check doesn't check for).
-/// Bit-exact position weld shared by [`manifold_from_reify_mesh`]: maps each
-/// source vertex to a canonical `f64` position and returns the per-source
-/// `old_to_new` remap (canonical index for the i-th source vertex).
-///
-/// Keyed identically to [`Mesh::weld_positions`] — `(c + 0.0_f32).to_bits()`
-/// normalization, first-seen canonical order — which is the bit-exact
-/// equivalence `manifold_from_reify_mesh` relies on when it threads this
-/// remap into `Mesh::check_mesh_contract_welded` instead of letting that call
-/// recompute its own weld. Pulled out to a standalone function (rather than
-/// inlined) so a test can call it directly and pin it against
-/// `Mesh::weld_positions()` — see `kernel_weld_remap_matches_mesh_weld_positions`
-/// in `mod tests` below.
-fn weld_positions_f64(mesh: &Mesh) -> (Vec<f64>, Vec<u32>) {
-    // Map (x.to_bits(), y.to_bits(), z.to_bits()) → canonical vertex index.
-    let mut seen: HashMap<(u32, u32, u32), u32> = HashMap::new();
-    let mut canonical_f64: Vec<f64> = Vec::new();
-    // old_to_new[i] = canonical index for the i-th source vertex. u32 (not
-    // u64): meshes are u32-indexed (`Mesh::indices: Vec<u32>`), this is
-    // exactly the remap type `Mesh::check_mesh_contract_welded` takes below,
-    // and it lets that call borrow `&old_to_new` with zero extra allocation.
-    let mut old_to_new: Vec<u32> = Vec::with_capacity(mesh.vertices.len() / 3);
-
-    for xyz in mesh.vertices.chunks_exact(3) {
-        // Normalise -0.0 → +0.0 before keying so that shared geometric corners
-        // on the origin plane weld correctly even when different per-face paths
-        // produce -0.0 vs +0.0. All other finite values are unchanged by + 0.0.
-        let (x, y, z) = (xyz[0] + 0.0, xyz[1] + 0.0, xyz[2] + 0.0);
-        let key = (x.to_bits(), y.to_bits(), z.to_bits());
-        // Divide before casting: canonical_f64.len() is a usize element
-        // count (3 f64s per vertex), so dividing first keeps the vertex
-        // count itself in usize range before narrowing to u32. Casting
-        // first would truncate the *element* count (not the vertex count)
-        // at u32::MAX, silently wrapping the canonical index for meshes
-        // with > ~1.43B distinct vertices.
-        let next = (canonical_f64.len() / 3) as u32;
-        let canonical_idx = *seen.entry(key).or_insert_with(|| {
-            canonical_f64.push(x as f64);
-            canonical_f64.push(y as f64);
-            canonical_f64.push(z as f64);
-            next
-        });
-        old_to_new.push(canonical_idx);
-    }
-
-    (canonical_f64, old_to_new)
-}
-
 pub(crate) fn manifold_from_reify_mesh(mesh: &Mesh) -> Result<Manifold, GeometryError> {
     // --- bit-exact vertex weld ---
     let (canonical_f64, old_to_new) = weld_positions_f64(mesh);
