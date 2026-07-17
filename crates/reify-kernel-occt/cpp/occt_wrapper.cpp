@@ -6011,6 +6011,29 @@ TessResult tessellate_shape(const OcctShape& shape, double tolerance) {
                     (ax == cx && ay == cy && az == cz) ||
                     (bx == cx && by == cy && bz == cz);
 
+                // RESIDUAL SCOPE (reviewer_comprehensive, robustness): only
+                // `coincident_corners` above is PROVEN FMA-immune. The
+                // `twice_area_sq <= 0.0f` fallback just below carries no
+                // equivalent proof — a genuinely thin, non-coincident-corner
+                // sliver could in principle round differently under this
+                // TU's fused arithmetic than under `check_contract`'s
+                // unfused Rust arithmetic, silently desyncing producer and
+                // validator for that triangle. Every real fixture
+                // (box/cylinder/boolean/fillet/sphere) runs every triangle
+                // through this exact branch and is checked against
+                // `validate(0.0)` end-to-end
+                // (`tessellate_sphere_nondegenerate_integration.rs`,
+                // `occt_manifold_ingest_conformance.rs`), but none of them
+                // is known to contain a near-zero-but-nonzero-area
+                // triangle, so that indirect coverage never actually probes
+                // the numerical boundary where an FMA divergence would
+                // show up. Closing this gap for real needs either a
+                // non-sphere fixture engineered to reliably emit such a
+                // sliver, or pinning `-ffp-contract=off` for this
+                // translation unit — the latter belongs in build.rs,
+                // outside this file's/task's locked scope. Not forced here
+                // speculatively; tracked as a follow-up (escalated
+                // alongside this amendment).
                 float abx = bx - ax, aby = by - ay, abz = bz - az;
                 float acx = cx - ax, acy = cy - ay, acz = cz - az;
                 float cross_x = aby * acz - abz * acy;
