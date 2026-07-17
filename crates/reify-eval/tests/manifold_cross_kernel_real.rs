@@ -684,6 +684,24 @@ fn mixed_kernel_attribute_selectors_builds_renders_and_reads_per_kernel_attribut
 /// read against an OCCT-scoped attribute inside a mixed-kernel build — the
 /// companion assertion family to the dual-kernel/render/routing test above.
 ///
+/// ## Reviewed performance tradeoff (task 5071 amendment pass)
+///
+/// This test pays for its own full call to
+/// `build_mixed_kernel_attribute_selectors_fixture()`, repeating the real
+/// OCCT+Manifold build that
+/// `mixed_kernel_attribute_selectors_builds_renders_and_reads_per_kernel_attributes`
+/// above already performs. Folding this assertion into that test (one build
+/// instead of two) and memoizing the build across both `#[test]` fns were
+/// both considered and declined: folding it in would blur which of two
+/// independently-meaningful boundaries — dual-kernel table/render/routing vs.
+/// selector→Frame resolution — failed on a red run, and cross-test
+/// memoization would require sharing a mutable `Engine`/`CompiledModule`
+/// across independently-scheduled test threads via shared static state, an
+/// anti-pattern this file otherwise avoids. Kept as two atomic,
+/// independently-committable tests per the task plan (steps 1, 3-4); the
+/// extra real-kernel build only runs in the OCCT-gated integration suite
+/// (`OCCT_AVAILABLE`), never in the default stub-mode build/test loop.
+///
 /// RED (before step-4 adds `top_frame = post @ face("top")` to the
 /// fixture): the example has no `top_frame` binding, so the
 /// `BuildResult.values` lookup misses (`None`) and the `.unwrap_or_else`
