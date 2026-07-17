@@ -10854,6 +10854,30 @@ mod tests {
         );
     }
 
+    // ── Negative-value sign handling (task 5198 amend) ────────────────────────
+    //
+    // round_to_sig_figs' fast path is guarded by `v.abs() < 10^sig`, and its
+    // fallback round-trips through `format!("{:.*e}", ...)`, which Rust
+    // renders with a leading '-' preserved. Coverage above only exercises
+    // positive magnitudes; these lock sign handling through both the
+    // round-trip path (noisy negative fraction) and the negative whole-number
+    // fast path.
+
+    #[test]
+    fn format_display_number_rounds_ulp_noise_fractional_negative() {
+        // Sign mirror of format_display_number_rounds_ulp_noise_fractional:
+        // negative 1-ulp noise must clean up identically, preserving sign.
+        assert_eq!(format_display_number(-6.3999999999999995), "-6.4");
+    }
+
+    #[test]
+    fn format_display_number_whole_number_trims_decimal_negative() {
+        // Sign mirror of format_display_number_whole_number_trims_decimal:
+        // exercises round_to_sig_figs' abs()-guarded fast path for a negative
+        // whole number.
+        assert_eq!(format_display_number(-80.0), "-80");
+    }
+
     // ── Value::Selector substrate tests (step-3 RED / task 4116 α) ───────────
     //
     // These tests reference GeometryHandleRef, SelectorValue, LeafQuery, SelectorNode,
