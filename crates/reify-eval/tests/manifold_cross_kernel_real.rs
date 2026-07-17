@@ -35,7 +35,7 @@
 //! - unit_cube_manifold non-degeneracy probe: `crates/reify-kernel-manifold/src/kernel.rs:1686-1695`
 
 use reify_constraints::SimpleConstraintChecker;
-use reify_core::{DiagnosticCode, Severity};
+use reify_core::{DiagnosticCode, Severity, ValueCellId};
 use reify_ir::{ExportFormat, GeometryError, GeometryKernel, GeometryOp, KernelId, ReprKind, Value};
 use reify_kernel_manifold::ManifoldKernel;
 use reify_test_support::{errors_only, manufacturing_purpose, parse_and_compile_with_stdlib};
@@ -629,5 +629,107 @@ fn mixed_kernel_attribute_selectors_builds_renders_and_reads_per_kernel_attribut
         "terminal (union) mesh must be non-empty; got {} vertices, {} indices",
         terminal_mesh.mesh.vertices.len(),
         terminal_mesh.mesh.indices.len()
+    );
+}
+
+/// Companion to
+/// `mixed_kernel_attribute_selectors_builds_renders_and_reads_per_kernel_attributes`:
+/// asserts the `@face("top")` ad-hoc selector against the OCCT cylinder
+/// `post` resolves to `Value::Frame` on the BUILD path, inside the SAME
+/// mixed-kernel module.
+///
+/// `eval_expr`'s `SelectorKind::Face` arm always leaves `top_frame` at
+/// `Value::Undef` at eval time (no kernel is available then — the
+/// documented deferral); resolution happens later, during `engine.build()`'s
+/// `post_process_ad_hoc_selectors` → `try_eval_ad_hoc_selector` pass, which
+/// is exactly what this test drives by reading `BuildResult.values` (mirrors
+/// `engine_build_post_processes_ad_hoc_face_selector_to_frame` in
+/// `ad_hoc_selector_smoke_tests.rs:442-490`). This is the consumer `@face`
+/// read against an OCCT-scoped attribute inside a mixed-kernel build — the
+/// companion assertion family to the dual-kernel/render/routing test above.
+///
+/// RED (before step-4 adds `top_frame = post @ face("top")` to the
+/// fixture): the example has no `top_frame` binding, so the
+/// `BuildResult.values` lookup misses (`None`) and the `.unwrap_or_else`
+/// below panics.
+#[test]
+fn mixed_kernel_attribute_selector_resolves_frame_on_build_path() {
+    // ── (1) Linker anchor ─────────────────────────────────────────────────
+    let anchor = reify_kernel_manifold::register::manifold_capability_descriptor();
+    assert!(
+        !anchor.supports.is_empty(),
+        "manifold_capability_descriptor() must declare at least one capability \
+         (linker anchor sanity check — if empty the registration is broken)"
+    );
+
+    // ── (2) OCCT gate ─────────────────────────────────────────────────────
+    if !reify_kernel_occt::OCCT_AVAILABLE {
+        eprintln!(
+            "skipping mixed_kernel_attribute_selector_resolves_frame_on_build_path: \
+             OCCT not available (cfg(has_occt) not set — stub-mode build)"
+        );
+        return;
+    }
+
+    // ── (3) Registry contains both kernels ────────────────────────────────
+    let reg = reify_eval::kernel_registry::registry();
+    assert!(
+        reg.contains_key("occt"),
+        "registry must contain \"occt\" after OCCT stub check; found keys: {:?}",
+        reg.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        reg.contains_key("manifold"),
+        "registry must contain \"manifold\" (linker anchor ensures the \
+         inventory::submit! fired); found keys: {:?}",
+        reg.keys().collect::<Vec<_>>()
+    );
+
+    // ── (4) Compile the fixture ───────────────────────────────────────────
+    let mut compiled = parse_and_compile_with_stdlib(include_str!(
+        "../../../examples/multi_kernel/attribute_selectors.ri"
+    ));
+    assert!(
+        errors_only(&compiled).is_empty(),
+        "attribute_selectors.ri must compile with no error-severity diagnostics; got:\n{:#?}",
+        errors_only(&compiled)
+    );
+
+    // ── (5)/(6) Inject manufacturing purpose, build with real OCCT + Manifold
+    compiled
+        .compiled_purposes
+        .push(manufacturing_purpose("manufacturing", 1e-6));
+    let mut engine =
+        reify_eval::Engine::with_registered_kernels(Box::new(SimpleConstraintChecker));
+    let _eval = engine.eval(&compiled);
+    engine.activate_purpose("manufacturing", "MixedKernelAttributeSelectors");
+    let build = engine.build(&compiled, ExportFormat::Stl);
+
+    let build_errors: Vec<_> = build
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.severity, Severity::Error))
+        .collect();
+    assert!(
+        build_errors.is_empty(),
+        "mixed-kernel attribute-selector build must not emit any error-severity \
+         diagnostic; got: {build_errors:?}"
+    );
+
+    // ── @face("top") resolves to Value::Frame (non-Undef) on the build path
+    let top_frame_id = ValueCellId::new("MixedKernelAttributeSelectors", "top_frame");
+    let top_frame_val = build.values.get(&top_frame_id).unwrap_or_else(|| {
+        panic!(
+            "MixedKernelAttributeSelectors.top_frame not found in build result \
+             values (looked up {top_frame_id:?}); the fixture must declare \
+             `let top_frame = post @ face(\"top\")` (task 5071 step-4)"
+        )
+    });
+    assert!(
+        matches!(top_frame_val, Value::Frame { .. }),
+        "MixedKernelAttributeSelectors.top_frame should resolve to \
+         Value::Frame {{ .. }} (non-Undef) after post_process_ad_hoc_selectors \
+         wires @face(\"top\") against the OCCT cylinder `post`; got {:?}",
+        top_frame_val
     );
 }
