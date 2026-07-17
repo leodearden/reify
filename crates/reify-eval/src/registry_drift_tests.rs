@@ -405,3 +405,106 @@ fn geometry_consumer_call_oracle_two_direction_agreement() {
         );
     }
 }
+
+/// `is_symbolic_eval_wired_selector_ctor` recognizes the 17 kernel-free leaf
+/// selector ctors (`symbolic_eval_helper_for_name`'s match arms,
+/// `geometry_ops.rs:5318-5344`) — the kernel-free half of the eval-side
+/// selector-recognition surface. The other half is the kernel-bearing
+/// selector names `is_geometry_consumer_call` also recognizes (the subset of
+/// its 22 names — `closest_point`, `is_on`, `angle_between_surfaces`,
+/// `adjacent_faces`, `shared_edges`, `siblings_of_face`,
+/// `ancestor_faces_of_edge`, `center_of_mass`, `moment_of_inertia` — that are
+/// `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` members rather than
+/// `GEOMETRY_QUERY_NAMES` members).
+///
+/// - (a)/(b) Direction B (eval ⇒ compiler): the kernel-free set alone, and
+///   the full eval-side selector-recognition UNION, are both subsets of
+///   `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` — no eval-side selector oracle
+///   recognizes a name the compiler doesn't claim.
+/// - Direction A (compiler ⇒ eval), deliberately naive strict equality: the
+///   union covers only 26 of 31 `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` members —
+///   RED. `face`, `edge`, `solid_body`, `vertex`, `split` are recognized by
+///   NEITHER boolean oracle (they dispatch only via
+///   `try_eval_topology_selector`'s build() path). Fixed in step-6 by
+///   `SELECTOR_BUILD_PATH_ONLY`.
+#[test]
+fn topology_selector_eval_recognition_agrees_with_selector_names_family() {
+    let universe = all_family_names();
+    let selector_names = to_set(reify_compiler::GEOMETRY_TOPOLOGY_SELECTOR_NAMES);
+
+    // The kernel-free leaf-ctor set is exactly the documented 17 names.
+    let kernel_free_ctor_set = recognized(
+        crate::geometry_ops::is_symbolic_eval_wired_selector_ctor,
+        &universe,
+        1,
+    );
+    let expected_kernel_free = to_set(&[
+        "faces",
+        "edges",
+        "mid_surface",
+        "vertices",
+        "edges_by_length",
+        "faces_by_area",
+        "faces_by_normal",
+        "edges_parallel_to",
+        "edges_at_height",
+        "faces_perpendicular_to",
+        "edges_perpendicular_to",
+        "faces_by_surface_kind",
+        "edges_by_curve_kind",
+        "extremal_by_bbox",
+        "extremal_by_centroid",
+        "created_by_feature",
+        "split_by_feature",
+    ]);
+    assert_eq!(
+        kernel_free_ctor_set, expected_kernel_free,
+        "is_symbolic_eval_wired_selector_ctor's recognized name-set changed; \
+         update this pin if the change is intentional"
+    );
+
+    // (a) the kernel-free set is a subset of GEOMETRY_TOPOLOGY_SELECTOR_NAMES.
+    assert!(
+        kernel_free_ctor_set.is_subset(&selector_names),
+        "is_symbolic_eval_wired_selector_ctor recognizes a name \
+         reify_compiler::GEOMETRY_TOPOLOGY_SELECTOR_NAMES does not claim: {:?}",
+        kernel_free_ctor_set
+            .difference(&selector_names)
+            .collect::<Vec<_>>()
+    );
+
+    // The kernel-bearing selector names is_geometry_consumer_call recognizes
+    // — the subset of its 22 names that are selectors, not queries.
+    let consumer_set = recognized(crate::geometry_ops::is_geometry_consumer_call, &universe, 1);
+    let kernel_bearing_selector_subset: BTreeSet<String> = consumer_set
+        .intersection(&selector_names)
+        .cloned()
+        .collect();
+
+    // The eval-side selector-recognition UNION: kernel-free ctors plus
+    // kernel-bearing selector consumers.
+    let eval_selector_union: BTreeSet<String> = kernel_free_ctor_set
+        .union(&kernel_bearing_selector_subset)
+        .cloned()
+        .collect();
+
+    // (b) Direction B (eval => compiler): the full union is a subset too.
+    assert!(
+        eval_selector_union.is_subset(&selector_names),
+        "an eval-side selector oracle recognizes a name \
+         reify_compiler::GEOMETRY_TOPOLOGY_SELECTOR_NAMES does not claim: {:?}",
+        eval_selector_union
+            .difference(&selector_names)
+            .collect::<Vec<_>>()
+    );
+
+    // Direction A (compiler => eval), deliberately naive strict equality:
+    // RED until step-6 ledgers the named-leaf/split build-path-only names.
+    assert_eq!(
+        eval_selector_union, selector_names,
+        "eval-side selector recognition (kernel-free ctors union kernel-bearing \
+         selector consumers) must equal GEOMETRY_TOPOLOGY_SELECTOR_NAMES minus \
+         the intentional-divergence ledger (SELECTOR_BUILD_PATH_ONLY, added in \
+         step-6)"
+    );
+}
