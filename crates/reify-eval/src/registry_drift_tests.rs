@@ -205,6 +205,43 @@ const QUERY_CALL_LEDGER: &[&str] = &[
     "feature",
 ];
 
+// ── Seed entry: the `angle` gap (task 4952 α) ───────────────────────────
+//
+// `angle` IS recognized by `is_geometry_consumer_call` and IS a
+// `GEOMETRY_QUERY_NAMES` member, so it does NOT appear in
+// `CONSUMER_DIRECTION_A_LEDGER` below — Direction A holds for it without
+// relaxation. It is recorded here anyway because the *classification*
+// itself is a known gap, not because any assertion needs it ledgered.
+// Verbatim rationale from `geometry_ops.rs:3942-3950` (comment inside
+// `is_geometry_consumer_call`):
+//
+//   task 3614 (KGQ-ε): dispatched via the same build()-only
+//   TopologySelectorHelper::Angle path as `angle_between_surfaces`
+//   (try_eval_topology_selector) even though its own computation
+//   is pure-math (acos/clamp/dot) — a pre-existing gap in this
+//   allow-list (task 4952 α), not a deliberate exclusion: no
+//   classifier test asserted `angle` == false, and its own
+//   pinning test (`kernel_queries_angle_smoke.rs`) resolves it
+//   via `engine.build()`, not `engine.eval()`.
+//
+// task 5055 γ records the gap rather than silently baking it into a
+// passing assertion; fixing the classification itself is out of scope
+// (PRD §7.3 / Wave-3 bookmark task δ).
+
+/// `GEOMETRY_QUERY_NAMES` members intentionally NOT routed through
+/// `is_geometry_consumer_call` — Direction A (compiler ⇒ eval) divergences.
+/// Step-4 (task 5055 γ).
+const CONSUMER_DIRECTION_A_LEDGER: &[&str] = &[
+    // 2-arg DIRECT dispatch (`actual`, `nominal`) via `try_eval_geometry_query`'s
+    // ζ/C4 case (geometry_ops.rs:3703-3741; task 4479) — a GD&T 2-operand
+    // query, not a name `is_geometry_consumer_call`'s match arms enumerate.
+    "max_deviation",
+    // Returns `Type::Feature`, not a scalar/point/selector consumer result;
+    // dispatched by the dedicated `try_eval_feature_accessor`
+    // (geometry_ops.rs:3842), not the consumer oracle.
+    "feature",
+];
+
 // ═══════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════
@@ -277,12 +314,12 @@ fn geometry_query_call_oracle_agrees_with_geometry_query_names_family() {
 ///   claimed by at least one geometry compiler family (`GEOMETRY_QUERY_NAMES`
 ///   ∪ `GEOMETRY_TOPOLOGY_SELECTOR_NAMES`) — the core no-silent-`Value::Undef`
 ///   guard. Holds today.
-/// - Direction A (compiler ⇒ eval): every `GEOMETRY_QUERY_NAMES` member must
-///   be a recognized consumer. Written as deliberately naive strict equality,
-///   this is RED: `max_deviation` and `feature` are in `GEOMETRY_QUERY_NAMES`
-///   but not recognized (they dispatch via distinct paths — see
-///   [`QUERY_CALL_LEDGER`]'s entries for both). Fixed in step-4 by
-///   `CONSUMER_DIRECTION_A_LEDGER`.
+/// - Direction A (compiler ⇒ eval): every `GEOMETRY_QUERY_NAMES` member
+///   outside [`CONSUMER_DIRECTION_A_LEDGER`] must be a recognized consumer.
+///   `max_deviation` and `feature` are in `GEOMETRY_QUERY_NAMES` but not
+///   recognized — each dispatches via a distinct path (see both the ledger
+///   entries and [`QUERY_CALL_LEDGER`]'s entries for the same two names) —
+///   so they are ledgered rather than asserted equal (step-4).
 ///
 /// Also probes that `GEOMETRY_FUNCTION_NAMES` constructors (`box`,
 /// `cylinder`, `union`) are never misclassified as consumers.
@@ -340,18 +377,23 @@ fn geometry_consumer_call_oracle_two_direction_agreement() {
             .collect::<Vec<_>>()
     );
 
-    // Direction A (compiler => eval), deliberately naive strict equality:
-    // every GEOMETRY_QUERY_NAMES member must be a recognized consumer. RED
-    // until step-4 ledgers max_deviation + feature.
+    // Direction A (compiler => eval), ledgered: every GEOMETRY_QUERY_NAMES
+    // member minus CONSUMER_DIRECTION_A_LEDGER must be a recognized consumer.
+    let consumer_direction_a_ledger = to_set(CONSUMER_DIRECTION_A_LEDGER);
+    let expected_query_consumers: BTreeSet<String> = geometry_query_names
+        .difference(&consumer_direction_a_ledger)
+        .cloned()
+        .collect();
     let query_consumer_subset: BTreeSet<String> = consumer_set
         .intersection(&geometry_query_names)
         .cloned()
         .collect();
     assert_eq!(
-        geometry_query_names, query_consumer_subset,
-        "every GEOMETRY_QUERY_NAMES member must be recognized by \
-         is_geometry_consumer_call minus the intentional-divergence ledger \
-         (CONSUMER_DIRECTION_A_LEDGER, added in step-4)"
+        expected_query_consumers, query_consumer_subset,
+        "every GEOMETRY_QUERY_NAMES member outside CONSUMER_DIRECTION_A_LEDGER \
+         must be recognized by is_geometry_consumer_call — either the oracle's \
+         recognized set or the ledger (CONSUMER_DIRECTION_A_LEDGER) drifted out \
+         of sync"
     );
 
     // GEOMETRY_FUNCTION_NAMES constructors are never consumers.
