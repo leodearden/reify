@@ -23706,3 +23706,96 @@
             result
         );
     }
+
+    // ── Review amendment (task #5120 R2c, reviewer_comprehensive suggestion
+    // #1 — robustness): `eval_named_leaf_selector_ctor_symbolic` now buffers
+    // target- and name-arg resolution into a shared `scratch`, merging into
+    // the caller's `diagnostics` only once BOTH resolve (mirroring
+    // `eval_variadic_composition_symbolic`'s scratch-then-merge contract).
+    // The two tests below pin that a name arg which fails to resolve to a
+    // `String` literal (here: an `Int` literal, which makes
+    // `resolve_string_literal_arg` push its own `ArgRejection` diagnostic
+    // before returning `None`) can't leak that diagnostic into the caller —
+    // over BOTH target-resolution paths (primary direct handle, and the
+    // fallback chained-first-arg form) so a regression on either path is
+    // independently caught.
+
+    /// `face(body, 1)` — target resolves via the PRIMARY path
+    /// (`resolve_symbolic_selector_target` over a direct symbolic handle),
+    /// but the name arg is an `Int`, not a `String` — must yield `None` with
+    /// EMPTY diagnostics (the `ArgRejection` `resolve_string_literal_arg`
+    /// pushes internally must not leak while the cell stays `Undef`;
+    /// `build()`'s unbuffered, kernel-bearing helper re-emits it once the
+    /// cell is actually realized).
+    #[test]
+    fn eval_named_leaf_selector_ctor_symbolic_drops_diagnostics_when_name_arg_unresolvable() {
+        use reify_core::identity::ValueCellId;
+
+        let entity = "R2cNamedLeafBadNamePrimary";
+        let mut values = reify_ir::ValueMap::new();
+        insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0x73u8; 32]);
+        let body_ref = reify_ir::CompiledExpr::value_ref(
+            ValueCellId::new(entity, "body"),
+            reify_core::Type::Geometry,
+        );
+        let bad_name_lit =
+            reify_ir::CompiledExpr::literal(reify_ir::Value::Int(1), reify_core::Type::Int);
+        let expr = mk_symbolic_call_3523("face", vec![body_ref, bad_name_lit]);
+
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_symbolic_topology_selector(&expr, &values, &mut diagnostics);
+        assert!(
+            result.is_none(),
+            "face(body, 1) must yield None — the name arg is not a String; got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "a name-arg resolution failure must not leak resolve_string_literal_arg's own \
+             diagnostic while the cell stays Undef (target resolved via the primary path); \
+             got {:?}",
+            diagnostics
+        );
+    }
+
+    /// `face(mid_surface(body), 1)` — target resolves via the FALLBACK
+    /// chained-first-arg path (`reconstruct_selector_value_symbolic` +
+    /// `first_leaf_target`, the same shape as
+    /// `try_eval_symbolic_topology_selector_face_over_inline_nested_selector`),
+    /// but the name arg is an `Int`, not a `String` — must yield `None` with
+    /// EMPTY diagnostics, exercising the exact sequence the reviewer flagged
+    /// (`resolve_named_leaf_target_symbolic`'s scratch-buffered fallback
+    /// succeeding before `resolve_string_literal_arg` fails).
+    #[test]
+    fn eval_named_leaf_selector_ctor_symbolic_drops_diagnostics_when_name_arg_unresolvable_over_chained_target(
+    ) {
+        let entity = "R2cNamedLeafBadNameChained";
+        let mut values = reify_ir::ValueMap::new();
+        insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0x74u8; 32]);
+
+        let mid_surface_expr = topology_selector_call_one_value_ref(
+            "mid_surface",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            reify_core::Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let bad_name_lit =
+            reify_ir::CompiledExpr::literal(reify_ir::Value::Int(1), reify_core::Type::Int);
+        let expr = topology_selector_composition_call("face", mid_surface_expr, bad_name_lit);
+
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_symbolic_topology_selector(&expr, &values, &mut diagnostics);
+        assert!(
+            result.is_none(),
+            "face(mid_surface(body), 1) must yield None — the name arg is not a String; got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "a name-arg resolution failure must not leak any diagnostic while the cell stays \
+             Undef, even though the chained target resolved first via the fallback path; \
+             got {:?}",
+            diagnostics
+        );
+    }
