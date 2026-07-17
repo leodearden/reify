@@ -5365,21 +5365,14 @@ fn symbolic_eval_helper_for_name(name: &str) -> Option<TopologySelectorHelper> {
 /// scheduling miss where its target was not minted in time), which must remain
 /// a violation rather than be silently exempted.
 ///
-/// Reviewer follow-up (task #5120 R2c amendment): this predicate is BY NAME
-/// only — it says nothing about whether a *given* composition call's
-/// operands happen to be resolved right now. So a `union`/`intersect`/
-/// `difference` cell whose operand is a cross-cell `ValueRef` into a
-/// still-build-only (kernel-bearing) selector cell is, by this predicate,
-/// just as "not build-only" as the inline-nested-operand shape R2c actually
-/// targets. That is NOT a hole in the α net: `invariants::check_no_stale_undef`
-/// clause 4 (the dependency-resolution exemption) independently exempts the
-/// composition cell the moment ANY of its `reads` is itself unresolved —
-/// which is exactly what happens here, since `reconstruct_selector_value_symbolic`
-/// can only mint the composition once every operand is a resolved
-/// `Value::Selector`. Clause 4 runs (and exempts) BEFORE clause 8 is even
-/// consulted, so clause 8 does not need to chase `ValueRef` operand chains
-/// itself. See `seeded_composition_over_unresolved_cross_cell_operand_is_exempted_by_dependency_clause`
-/// (`tests/no_stale_undef_invariant_gate.rs`) for the seeded proof.
+/// BY-NAME only: it does not check whether a *given* call's operands are
+/// resolved yet, so a composition cell reading a still-build-only cross-cell
+/// operand looks identical to the inline-nested-operand shape R2c targets.
+/// That's not a net hole — clause 4 (the dependency-resolution exemption)
+/// runs before clause 8 and independently exempts the cell the moment any
+/// of its `reads` is unresolved. See
+/// `seeded_composition_over_unresolved_cross_cell_operand_is_exempted_by_dependency_clause`
+/// (`tests/no_stale_undef_invariant_gate.rs`).
 pub(crate) fn is_symbolic_eval_wired_selector_ctor(expr: &reify_ir::CompiledExpr) -> bool {
     matches!(
         &expr.kind,
@@ -5495,30 +5488,13 @@ fn reconstruct_selector_value_symbolic(
 /// kernel-bearing, unbuffered `eval_variadic_composition` re-emits the
 /// specific warning later.
 ///
-/// **Re-reviewed (task #5120 R2c round 3):** a follow-up review suggestion
-/// asked whether draining `scratch` unconditionally (including on the `None`
-/// path) would better serve the kernel-free eval-ONLY surface (`reify-lsp`'s
-/// `AnalysisContext`/`diagnostics.rs` call `Engine::eval` directly and
-/// publish its `EvalResult::diagnostics`, never calling `build()`, so there
-/// is no later unbuffered pass to re-emit a dropped nested warning there).
-/// Tried and reverted: unconditional draining breaks the silent-fall-through
-/// guarantee the PRIOR review round deliberately added and pinned in
-/// `geometry_ops/tests.rs`
-/// (`try_eval_symbolic_topology_selector_union_none_fallthrough_no_diagnostic_leak`,
-/// `..._drops_scratch_after_leading_success`) — both fail if `scratch` is
-/// drained before the `?` short-circuit, because the ONLY way a diagnostic
-/// reaches `scratch` at all in this call chain is via a nested selector
-/// composition that is ITSELF malformed (a kind-closure violation), and that
-/// exact shape is also always caught first at COMPILE time
-/// (`selector_composition_result_type` in `units.rs` emits
-/// `E_SELECTOR_KIND_MISMATCH` unconditionally for any kind mismatch,
-/// including nested call sites) — so on a real compiled program the LSP
-/// surface already gets an equivalent (Error-severity, stronger than this
-/// Warning) diagnostic regardless of what this eval-time buffering does.
-/// Consistent with the reviewer's own framing ("this is correct for the
-/// overload-disambiguation case... an accepted tradeoff rather than a
-/// defect... no change required if the eval-only surface never needs
-/// nested-operand diagnostics"), kept as-is.
+/// Malformed nested compositions are also always caught first at COMPILE
+/// time (`E_SELECTOR_KIND_MISMATCH`, `selector_composition_result_type` in
+/// `units.rs`), so no real program depends on this eval-time buffering to
+/// surface a dropped nested diagnostic. Do not drain `scratch`
+/// unconditionally on the `None` path — pinned by
+/// `try_eval_symbolic_topology_selector_union_none_fallthrough_no_diagnostic_leak`
+/// and `..._drops_scratch_after_leading_success` (`geometry_ops/tests.rs`).
 ///
 /// The per-call `scratch = Vec::new()` (mirrored in
 /// [`resolve_named_leaf_target_symbolic`]) is deliberately not lazy — an
@@ -5582,12 +5558,10 @@ fn selector_value_difference_pair(
 /// rooting the Named leaf at the input selector's parent-geometry target.
 ///
 /// Mirrors [`eval_variadic_composition_symbolic`]'s scratch-buffer-then-merge
-/// contract: the fallback reconstruction is buffered into a local `scratch`
-/// and only appended to `diagnostics` once a target actually resolves, so a
-/// `None` return (`first_leaf_target` coming up empty) can't leak a
-/// diagnostic. Re-reviewed and reaffirmed in task #5120 R2c round 3 — see
-/// [`eval_variadic_composition_symbolic`]'s doc comment for the "tried and
-/// reverted" unconditional-drain analysis, which applies identically here.
+/// contract (see its doc comment): the fallback reconstruction is buffered
+/// into a local `scratch` and only appended to `diagnostics` once a target
+/// actually resolves, so a `None` return (`first_leaf_target` coming up
+/// empty) can't leak a diagnostic.
 ///
 /// Untested by design: `first_leaf_target` only returns `None` for an empty
 /// `Union`/`Intersect` node, and `SelectorValue`'s validating constructors
