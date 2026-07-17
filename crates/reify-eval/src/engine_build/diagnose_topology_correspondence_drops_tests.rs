@@ -4,12 +4,21 @@
         LoftOpHistoryRecords, SweepOpHistoryRecords,
     };
 
-    use super::diagnose_topology_correspondence_drops;
+    use super::TopologyCorrespondenceDropTally;
 
-    /// Helper: call the helper and return the collected diagnostics.
+    /// Helper: accumulate `history` into a fresh tally and flush once,
+    /// returning the collected diagnostics. Collapses the intended
+    /// accumulate-then-flush call pattern (one `accumulate` per op, one
+    /// `flush` per realization) to a single op for the single-history tests
+    /// below — a one-op accumulate+flush must still yield the same
+    /// `counter=count` diagnostics the old per-op emission produced.
+    ///
+    /// RED until step-6 adds `TopologyCorrespondenceDropTally`.
     fn run(history: &AttributeHistory) -> Vec<Diagnostic> {
         let mut diags = Vec::new();
-        diagnose_topology_correspondence_drops(history, "test-context", &mut diags);
+        let mut tally = TopologyCorrespondenceDropTally::default();
+        tally.accumulate(history);
+        tally.flush("test-context", &mut diags);
         diags
     }
 
@@ -236,5 +245,68 @@
         assert!(
             diags.is_empty(),
             "expected no diagnostics for None; got: {diags:?}"
+        );
+    }
+
+    /// Task #5196 L4: accumulating TWO ops' histories before a single flush
+    /// must yield exactly ONE diagnostic per (op_kind, counter) with the
+    /// SUMMED count — not one diagnostic per accumulate call — and the
+    /// flushed message must carry the `context` passed to `flush` verbatim
+    /// (realization-scoped, no per-op suffix baked into the tally itself).
+    ///
+    /// RED until step-6 adds `TopologyCorrespondenceDropTally`.
+    #[test]
+    fn accumulating_two_ops_before_one_flush_sums_into_one_diagnostic() {
+        let mut tally = TopologyCorrespondenceDropTally::default();
+        tally.accumulate(&AttributeHistory::Boolean(BooleanOpHistoryRecords {
+            silent_drop_count: 3,
+            ..Default::default()
+        }));
+        tally.accumulate(&AttributeHistory::Boolean(BooleanOpHistoryRecords {
+            silent_drop_count: 4,
+            ..Default::default()
+        }));
+        let mut diags = Vec::new();
+        tally.flush("realization-42", &mut diags);
+
+        assert_eq!(
+            diags.len(),
+            1,
+            "two accumulate calls for the same (op_kind, counter) must flush \
+             to exactly one diagnostic; got: {diags:?}"
+        );
+        let d = &diags[0];
+        assert_eq!(d.severity, Severity::Info);
+        assert_eq!(d.code, Some(DiagnosticCode::TopologyCorrespondenceDropped));
+        assert_eq!(
+            d.message,
+            "topology correspondence dropped: boolean silent_drop_count=7 context=realization-42",
+            "flushed message must carry the SUMMED count and the realization-scoped \
+             context verbatim (no per-op suffix); got: {:?}",
+            d.message
+        );
+    }
+
+    /// A second `flush` with no intervening `accumulate` emits nothing —
+    /// `flush` drains the tally, so a stray extra flush call never
+    /// re-reports already-flushed counts.
+    ///
+    /// RED until step-6 adds `TopologyCorrespondenceDropTally`.
+    #[test]
+    fn flush_drains_the_tally_so_a_second_flush_emits_nothing() {
+        let mut tally = TopologyCorrespondenceDropTally::default();
+        tally.accumulate(&AttributeHistory::Boolean(BooleanOpHistoryRecords {
+            silent_drop_count: 2,
+            ..Default::default()
+        }));
+        let mut diags = Vec::new();
+        tally.flush("first", &mut diags);
+        assert_eq!(diags.len(), 1, "first flush should emit one diagnostic");
+
+        tally.flush("second", &mut diags);
+        assert_eq!(
+            diags.len(),
+            1,
+            "second flush with no intervening accumulate must emit nothing; got: {diags:?}"
         );
     }
