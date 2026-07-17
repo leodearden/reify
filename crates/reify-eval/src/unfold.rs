@@ -17,81 +17,26 @@ use crate::eval_ctx_with_meta;
 use crate::journal::EventJournal;
 use crate::snapshot::Snapshot;
 
-/// No-op [`ContainmentQuery`]: reproduces the pre-migration containment=None
-/// behaviour of the bare `eval_ctx_with_meta` context that the eval-and-commit
-/// sites below used before adopting `cell_eval_ctx`'s required-capability
-/// constructor (task ε, #5057). Passing the live `Engine` instead would
-/// require threading `&self` through these free functions, conflicting with
-/// the already-split `&mut journal`/`&mut cache` borrows at the call sites in
-/// engine_eval.rs.
+/// No-op [`ContainmentQuery`]: containment stays `None` on this
+/// recursive-unfold path, matching its pre-migration behaviour (restricted-
+/// field samples resolve to `Value::Undef`, same as before `cell_eval_ctx`
+/// existed here). Wiring the live `Engine` instead would require threading
+/// `&self` through these free functions, conflicting with the `&mut
+/// journal`/`&mut cache` borrows already split out at the engine_eval.rs
+/// call sites.
 ///
-/// Containment is the only one of `cell_eval_ctx`'s three required
-/// capabilities that is a true no-op replica of the pre-migration context —
-/// and, more precisely, of *unfold.rs's own* pre-migration context, not of
-/// the main eval pass (see the second paragraph below). Determinacy is *not*
-/// a stand-in: it is wired to the live `&snapshot.values`, a capability the
-/// old bare `eval_ctx_with_meta` never had. This is not limited to the param
-/// default_expr branch: all three `cell_eval_ctx` call sites this migration
-/// introduces observe it identically — the arg branch (`args.iter().find(..)`
-/// arm) and the default_expr branch in `elaborate_child_params_only`, and the
-/// let-binding eval in `elaborate_child_lets_only`. A child param/let
-/// expression containing a `DeterminacyPredicate` (e.g. `determined(x)`) now
-/// resolves against the snapshot instead of unconditionally degrading to
-/// `Value::Undef` — this intentionally matches the main eval pass, which
-/// consistently uses `.with_determinacy(&snapshot.values)` (engine_eval.rs).
-/// The plain arithmetic param/let expressions this migration's parity
-/// fixture exercises don't observe any difference, but an expression that
-/// does reference a determinacy predicate would now resolve differently at
-/// any of the three sites than before this migration. (The third capability,
-/// runtime_sink, is wired but its contents are intentionally discarded — see
-/// the comment at its construction below.)
-///
-/// The "true no-op replica" claim above is narrower than it may read at a
-/// glance: it holds against unfold.rs's *own* pre-migration behaviour, not
-/// against the main eval pass. The main pass wires the live `Engine` as its
-/// `ContainmentQuery` (engine_eval.rs), so a child param/let default or arg
-/// referencing a containment/restrict predicate resolves through real
-/// geometry there; on this recursive-unfold path it always sees `None` (→
-/// `Value::Undef` for a restricted-field sample), both before and after this
-/// migration. `cell_eval_ctx`'s required-capability constructor doesn't
-/// create this divergence from the main pass — it turns unfold.rs's
-/// previously-*implicit* "no containment reaches here" into an explicit,
-/// permanent wire. Closing the gap (wiring the real kernel) would require
-/// threading `&self`/`&Engine` through these free functions; that enrichment
-/// is future work, out of ε's behaviour-preserving scope.
-///
-/// Confirmation (#5057 reviewer_comprehensive, suggestion #2 —
-/// robustness-behavior-change): the determinacy flip above is a genuine
-/// semantic change on this path, so it was checked against both existing
-/// fixtures and shipped designs before landing. `cargo test -p reify-eval
-/// --test recursive_unfold --test unfold_commit_parity` (the two suites that
-/// exercise this file's param/let elaboration) is green; neither references a
-/// `DeterminacyPredicate` expression (`recursive_unfold.rs` has no "determin"
-/// hits at all, and `unfold_commit_parity.rs`'s "determin" hits are all
-/// `DeterminacyState::{Determined,Undetermined}` — the committed-state enum
-/// this migration's cache/snapshot legs stamp — not the expression-level
-/// predicate this comment is about). A repo-wide grep for `determined(`
-/// across `*.ri` files (examples + fixtures) turns up recursive
-/// (`is_recursive`-eligible) templates that combine recursion with a
-/// determinacy predicate —
-/// `examples/integration_full_v01.ri`'s `RecursiveBeam`,
-/// `examples/m9_combined.ri`'s `BracketTree`, and
-/// `examples/m9_integration.ri`'s `RecursiveChain` — but in every case the
-/// predicate appears as a top-level `constraint determined(x)`, never inside
-/// a child `param` default or `let` binding. Constraints are checked by the
-/// already-determinacy-aware constraint-checking pass (unaffected by this
-/// migration, which only touches value-cell elaboration in this file), so
-/// they never degraded to `Value::Undef` pre-migration and are not touched by
-/// this change. `m9_integration.ri`'s own comment block even notes the
-/// adjacent case that remains unsupported post-migration: `determined()` in
-/// *guard* position still returns `Undef`, because the guard eval (:168,
-/// `unfold_recursive_sub`) is explicitly out of this migration's scope and
-/// stays on the bare `eval_ctx_with_meta` (no determinacy capability) — see
-/// the "Scope boundary" section of the task's plan. So no existing fixture or
-/// shipped design relied on the pre-migration Undef-degradation this
-/// migration changes; the only place that behaviour is now observably
-/// different is the two dedicated divergence tests in this file's `tests`
-/// module below.
+/// Determinacy is *not* a no-op: `cell_eval_ctx` requires it, so all three
+/// call sites below now wire the live `&snapshot.values`. This is an
+/// intentional semantic change, not pure behaviour-preservation — a child
+/// param/let expression containing a `DeterminacyPredicate` (e.g.
+/// `determined(x)`) now resolves against the snapshot instead of
+/// unconditionally degrading to `Value::Undef`. No existing fixture or
+/// shipped design relies on the old degradation (checked repo-wide; see the
+/// divergence tests in this file's `tests` module, which lock the new
+/// behaviour); guard-position `determined()` is unaffected, since the guard
+/// eval (`unfold_recursive_sub`) stays out of scope on `eval_ctx_with_meta`.
+/// Required-capability rationale: `docs/prds/v0_6/eval-cell-commit-substrate.md`
+/// §2.5.
 struct NoContainment;
 
 impl ContainmentQuery for NoContainment {
@@ -422,14 +367,10 @@ fn elaborate_child_params_only(
     meta_map: &HashMap<String, HashMap<String, String>>,
 ) -> ValueMap {
     let mut child_values = ValueMap::new();
-    // `cell_eval_ctx` requires a runtime_sink argument; diagnostics captured
-    // here are intentionally discarded rather than surfaced. Pre-migration,
-    // this eval ran on the bare `eval_ctx_with_meta` (no sink existed at
-    // all), so nothing was ever surfaced from this path — discarding
-    // preserves that behaviour (task ε, #5057 is a behaviour-preserving
-    // migration; see plan.json design decisions). This function also has no
-    // `diagnostics` parameter to drain into. Surfacing these diagnostics is
-    // deferred to a future task.
+    // runtime_sink is required by `cell_eval_ctx`; its contents are
+    // discarded rather than surfaced — this fn has no `diagnostics` param to
+    // drain into, and pre-migration this path never surfaced eval-time
+    // diagnostics either.
     let runtime_sink = RefCell::new(Vec::new());
     let containment = NoContainment;
 
@@ -490,18 +431,10 @@ fn elaborate_child_params_only(
 
         child_values.insert(cell.id.clone(), val.clone());
 
-        // Provenance: `TraceSource::GuardedGroup` is the PRD-ratified tag for
-        // this site, not a placeholder pick. `cell_commit.rs`'s enum doc
-        // glosses the variant as "the GuardedParamCtx family" (engine_eval.rs's
-        // guarded-group param cells, leaf γ) — but the source PRD
-        // (`docs/prds/v0_6/eval-cell-commit-substrate.md` §0 and §8 leaf ε)
-        // names the two paths as one bundle throughout ("...four live eval
-        // paths (eval, eval_cached, edit_param, guarded-group/unfold)"; "ε ...
-        // migrate unfold.rs guarded-group/unfold site"): this recursive-unfold
-        // path IS the guarded-group provenance category by design, sharing the
-        // slug with γ's engine_eval.rs sites rather than needing a dedicated
-        // variant. A future §2.6 divergence audit reading "guarded-group"
-        // should expect commits from both producers.
+        // TraceSource::GuardedGroup: the PRD (§0, §8) treats this
+        // recursive-unfold path and engine_eval.rs's guarded-group param
+        // cells as one shared provenance category, not two — this is the
+        // intended tag, not a placeholder.
         commit_cell_result(
             CommitLegs {
                 values,
@@ -561,15 +494,10 @@ fn elaborate_child_lets_only<'t>(
     templates: &'t [TopologyTemplate],
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    // `cell_eval_ctx` requires a runtime_sink argument; diagnostics captured
-    // here are intentionally discarded rather than appended to the
-    // `diagnostics` parameter above. Pre-migration, this eval ran on the
-    // bare `eval_ctx_with_meta` (no sink existed at all), so nothing was
-    // ever surfaced from this path — discarding preserves that behaviour
-    // (task ε, #5057 is a behaviour-preserving migration) and keeps this
-    // site consistent with `elaborate_child_params_only`, which has no
-    // `diagnostics` parameter to drain into at all. Surfacing these
-    // diagnostics is deferred to a future task.
+    // runtime_sink is required by `cell_eval_ctx`; its contents are
+    // discarded rather than appended to `diagnostics` above — pre-migration
+    // this path never surfaced eval-time diagnostics either, same as
+    // `elaborate_child_params_only`.
     let runtime_sink = RefCell::new(Vec::new());
     let containment = NoContainment;
 
@@ -744,10 +672,8 @@ fn elaborate_child_lets_only<'t>(
             "child_let_traces",
         );
 
-        // Provenance: same PRD-ratified `TraceSource::GuardedGroup` slug as
-        // the Site 1 commit in `elaborate_child_params_only` above — see the
-        // provenance note there for why this is the intended tag, not a
-        // stand-in for a missing dedicated variant.
+        // Same TraceSource::GuardedGroup provenance as the Site 1 commit
+        // above.
         commit_cell_result(
             CommitLegs {
                 values,
