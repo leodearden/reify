@@ -295,3 +295,58 @@ fn read_counters(engine: &Engine) -> (u64, u64) {
          `engine.`-bound test read) to be ignored, got {violations:?}"
     );
 }
+
+// ── Step-3: real-tree gate ───────────────────────────────────────────────────
+
+/// Recursively collect every `.rs` file under `dir` (including
+/// subdirectories). Unreadable entries/directories are silently skipped —
+/// this only ever walks our own crate's `src/` directory, which is
+/// expected to be readable. Mirrors `no_stale_undef_invariant_gate.rs`'s
+/// `collect_ri_files`, filtering `.rs` instead of `.ri`.
+fn collect_rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_rs_files(&path, out);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+            out.push(path);
+        }
+    }
+}
+
+/// The real-tree debug gate for INV-BUILD-2 (`docs/invariants.md`): every
+/// `.rs` file under `crates/reify-eval/src/` must be free of raw
+/// `self.next_version_id` / `self.next_snapshot_id` uses outside the
+/// allocate/read API family — see the module doc comment.
+#[test]
+fn no_raw_version_id_use_outside_allocator() {
+    let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    collect_rs_files(&src_dir, &mut files);
+
+    let mut violations: Vec<Violation> = Vec::new();
+    for path in &files {
+        let display = path.display().to_string();
+        let source =
+            std::fs::read_to_string(path).unwrap_or_else(|e| panic!("reading {display}: {e}"));
+        violations.extend(scan_source(&display, &source));
+    }
+
+    assert!(
+        violations.is_empty(),
+        "found {} raw next_version_id/next_snapshot_id use(s) outside the \
+         allocate/read API family (docs/invariants.md INV-BUILD-2) — route \
+         through Engine::allocate_snapshot_version, or add a `// \
+         version-id-gate: allow — <reason>` comment if this is a \
+         deliberate, non-allocating exception:\n{}",
+        violations.len(),
+        violations
+            .iter()
+            .map(|v| format!("  {}:{}: {}", v.file, v.line, v.text))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
