@@ -2237,10 +2237,18 @@ impl Engine {
     /// - After this call, `self.warm_pool.drain_events()` returns an empty Vec.
     /// - Each drained event is recorded on the journal with:
     ///   - `version = self.last_allocated_version()` — the most recently
-    ///     assigned eval version (`VersionId(0)` before the first eval; see
-    ///     `last_allocated_version()`'s doc for the panic-vs-saturate
+    ///     *allocated* version (`VersionId(0)` before the first allocation;
+    ///     see `last_allocated_version()`'s doc for the panic-vs-saturate
     ///     divergence from `current_eval_version()` that this site
-    ///     deliberately avoids).
+    ///     deliberately avoids). This equals the *current eval* version in
+    ///     eval-only flows, but the two notions are not the same guarantee:
+    ///     `engine_edit.rs` and `concurrent.rs` still bump `next_version_id`
+    ///     by hand (migration in progress — see `allocate_snapshot_version`'s
+    ///     doc), so a non-eval allocation occurring between an eval and a
+    ///     drain would stamp drained events with a version that does not
+    ///     correspond to that eval. Pre-existing exposure — the prior inline
+    ///     `next_version_id.saturating_sub(1)` formula had the identical
+    ///     coupling — left unchanged by this reader (task 5047 / δ).
     ///   - `timestamp = Instant::now()` at drain time.
     ///
     /// # Drain site
@@ -3520,6 +3528,65 @@ mod tests {
                 event.version, expected,
                 "every warm-pool event drained after the eval must be stamped \
                  with the eval's current_eval_version, not some other version; \
+                 event: {:?}",
+                event,
+            );
+        }
+    }
+
+    /// Locks the OTHER direction of the documented panic-vs-saturate
+    /// divergence: draining warm-pool events BEFORE any eval has run must
+    /// stamp them with `VersionId(0)`, not panic. This is the whole point of
+    /// routing `drain_and_record_warm_pool_events` through
+    /// `last_allocated_version()` (saturates to `VersionId(0)`) rather than
+    /// the panicking `current_eval_version()` — OQ-2 option (i) in
+    /// `docs/prds/v0_6/engine-build-hardening.md` §9.
+    /// `drain_stamps_current_eval_version_and_readers_agree_post_eval` (above)
+    /// only exercises the post-eval path and
+    /// `last_allocated_version_is_zero_pre_allocation_and_tracks_next_version_id`
+    /// only pins the reader in isolation; neither proves the drain path
+    /// itself produces a `VersionId(0)`-stamped event pre-eval end-to-end.
+    #[test]
+    fn drain_stamps_version_zero_pre_eval() {
+        use crate::cache::NodeId;
+        use crate::warm_pool::WarmStatePool;
+        use reify_core::{ValueCellId, VersionId};
+        use reify_ir::OpaqueState;
+        use reify_test_support::mocks::MockConstraintChecker;
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let base = engine.journal().len();
+
+        // 1-byte budget: the second donate below is guaranteed to evict the
+        // first, producing both a Donated and an Evicted event — same
+        // pattern as drain_stamps_current_eval_version_and_readers_agree_post_eval,
+        // but with NO preceding eval() call, so eval_state stays unset.
+        *engine.warm_pool_mut() = WarmStatePool::new(1);
+
+        let node_a = NodeId::Value(ValueCellId::new("Bracket", "width"));
+        let node_b = NodeId::Value(ValueCellId::new("Bracket", "height"));
+        engine
+            .warm_pool_mut()
+            .donate(node_a, OpaqueState::new(1i32, 1));
+        engine
+            .warm_pool_mut()
+            .donate(node_b, OpaqueState::new(2i32, 1));
+        engine.drain_and_record_warm_pool_events();
+
+        let recorded = &engine.journal().all_events()[base..];
+        assert!(
+            !recorded.is_empty(),
+            "donate x2 under a 1-byte budget must produce at least one \
+             drained/recorded warm-pool event pre-eval (non-vacuous check)",
+        );
+        for event in recorded {
+            assert_eq!(
+                event.version,
+                VersionId(0),
+                "pre-eval (no eval_state populated yet), \
+                 drain_and_record_warm_pool_events must stamp events with \
+                 VersionId(0) — last_allocated_version()'s saturate edge — \
+                 rather than panicking via current_eval_version(); \
                  event: {:?}",
                 event,
             );
