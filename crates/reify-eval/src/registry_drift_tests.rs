@@ -242,6 +242,25 @@ const CONSUMER_DIRECTION_A_LEDGER: &[&str] = &[
     "feature",
 ];
 
+/// `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` members recognized by NEITHER
+/// `is_symbolic_eval_wired_selector_ctor` (kernel-free) NOR
+/// `is_geometry_consumer_call` (kernel-bearing) — the named-leaf ctors
+/// (`face`, `edge`, `solid_body`, `vertex`; task 4119 δ / 4368) plus `split`
+/// (task 4190). All five resolve ONLY via `try_eval_topology_selector`'s
+/// build() case (`geometry_ops.rs:6504`), which requires a realized kernel.
+///
+/// They are deliberately NOT probed directly: `try_eval_topology_selector`
+/// returns `Option`, and without a kernel it returns `None` for BOTH an
+/// unrecognized name and a recognized-but-eval-failed call — it cannot
+/// distinguish "name unknown" from "name known, kernel absent", so it is not
+/// a sound name oracle (see the module-level design-decision doc / PRD
+/// §7.3). Their compiler-side presence is instead pinned indirectly via the
+/// result-type-map parity check in step-7
+/// (`reify_compiler::topology_selector_result_type`).
+///
+/// Step-6 (task 5055 γ).
+const SELECTOR_BUILD_PATH_ONLY: &[&str] = &["face", "edge", "solid_body", "vertex", "split"];
+
 // ═══════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════
@@ -421,12 +440,12 @@ fn geometry_consumer_call_oracle_two_direction_agreement() {
 ///   the full eval-side selector-recognition UNION, are both subsets of
 ///   `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` — no eval-side selector oracle
 ///   recognizes a name the compiler doesn't claim.
-/// - Direction A (compiler ⇒ eval), deliberately naive strict equality: the
-///   union covers only 26 of 31 `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` members —
-///   RED. `face`, `edge`, `solid_body`, `vertex`, `split` are recognized by
+/// - Direction A (compiler ⇒ eval): the union covers 26 of 31
+///   `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` members directly; the remaining 5 —
+///   `face`, `edge`, `solid_body`, `vertex`, `split` — are recognized by
 ///   NEITHER boolean oracle (they dispatch only via
-///   `try_eval_topology_selector`'s build() path). Fixed in step-6 by
-///   `SELECTOR_BUILD_PATH_ONLY`.
+///   `try_eval_topology_selector`'s build() path) and are ledgered in
+///   [`SELECTOR_BUILD_PATH_ONLY`] rather than asserted equal (step-6).
 #[test]
 fn topology_selector_eval_recognition_agrees_with_selector_names_family() {
     let universe = all_family_names();
@@ -498,13 +517,18 @@ fn topology_selector_eval_recognition_agrees_with_selector_names_family() {
             .collect::<Vec<_>>()
     );
 
-    // Direction A (compiler => eval), deliberately naive strict equality:
-    // RED until step-6 ledgers the named-leaf/split build-path-only names.
+    // Direction A (compiler => eval), ledgered: the eval-side selector union
+    // must equal GEOMETRY_TOPOLOGY_SELECTOR_NAMES minus SELECTOR_BUILD_PATH_ONLY.
+    let selector_build_path_only = to_set(SELECTOR_BUILD_PATH_ONLY);
+    let expected_selector_family: BTreeSet<String> = selector_names
+        .difference(&selector_build_path_only)
+        .cloned()
+        .collect();
     assert_eq!(
-        eval_selector_union, selector_names,
+        eval_selector_union, expected_selector_family,
         "eval-side selector recognition (kernel-free ctors union kernel-bearing \
          selector consumers) must equal GEOMETRY_TOPOLOGY_SELECTOR_NAMES minus \
-         the intentional-divergence ledger (SELECTOR_BUILD_PATH_ONLY, added in \
-         step-6)"
+         SELECTOR_BUILD_PATH_ONLY — either the oracles' recognized sets or the \
+         ledger drifted out of sync"
     );
 }
