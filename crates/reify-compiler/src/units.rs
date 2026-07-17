@@ -330,7 +330,7 @@ pub(crate) fn is_geometry_topology_selector(name: &str) -> bool {
 ///
 /// Returns `None` for any other name (caller falls through to its default
 /// type-inference path).
-pub(crate) fn topology_selector_result_type(name: &str) -> Option<reify_core::Type> {
+pub fn topology_selector_result_type(name: &str) -> Option<reify_core::Type> {
     use reify_core::Type;
     Some(match name {
         // Task 2324 — eval dispatch fully implemented
@@ -1272,7 +1272,7 @@ pub(crate) fn field_op_result_type(
 /// Returns `None` for any other name (caller falls through to its default
 /// type-inference path). Mirrors the contract of the sibling
 /// [`topology_selector_result_type`].
-pub(crate) fn geometry_query_result_type(name: &str) -> Option<reify_core::Type> {
+pub fn geometry_query_result_type(name: &str) -> Option<reify_core::Type> {
     use reify_core::{DimensionVector, Type};
     Some(match name {
         "volume" => Type::Scalar {
