@@ -6800,8 +6800,8 @@ impl Engine {
         // yet) keep the (Undef, Undetermined/Auto) initialised by
         // Snapshot::from_compiled_module.
         {
-            let snapshot_id = self.next_snapshot_id;
-            self.next_snapshot_id += 1;
+            let snapshot_id = self.next_snapshot_id; // version-id-gate: allow — snapshot-only re-stamp in eval_cached, reuses the caller-supplied `version`
+            self.next_snapshot_id += 1; // version-id-gate: allow — snapshot-only re-stamp in eval_cached; routing through allocate_snapshot_version would spuriously bump next_version_id too
             let mut snapshot = Snapshot::from_compiled_module(module);
             snapshot.id = SnapshotId(snapshot_id);
             snapshot.version = version;
