@@ -966,6 +966,16 @@ mod tests {
     // reference regardless of recursion depth, unlike a recursion-local one),
     // so it must resolve `Bool(true)` post-migration instead of unconditionally
     // degrading to `Value::Undef` as it did pre-migration.
+    //
+    // amend (#5057 reviewer_comprehensive, suggestion #2 —
+    // test-coverage-fragility): the `Bool(true)` assertion below is
+    // load-bearing on an unstated ordering invariant — that root `S.n` is
+    // already committed to `snapshot.values` as `DeterminacyState::Determined`
+    // before `elaborate_child_params_only` runs for `S.child` (true today:
+    // root params are elaborated by the main eval pass before any unfold
+    // recursion begins). If that ordering ever changed, the assertion would
+    // silently flip to `Value::Undef` rather than failing loudly, so the
+    // precondition is asserted explicitly below.
     #[test]
     fn elaborate_child_params_only_default_expr_resolves_determinacy_predicate() {
         use reify_core::{ModulePath, Type};
@@ -1004,6 +1014,18 @@ mod tests {
         let mut engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
         let result = engine.eval(&module);
 
+        let root_n = ValueCellId::new("S", "n");
+        let snap = engine
+            .snapshot()
+            .expect("engine.snapshot() should be populated after eval");
+        assert_eq!(
+            snap.values.get(&root_n).map(|(_, det)| *det),
+            Some(DeterminacyState::Determined),
+            "precondition: S.n must already be committed Determined before \
+             child elaboration runs, or the Bool(true) assertion below would \
+             silently degrade to Value::Undef instead of failing loudly"
+        );
+
         let child_ready = ValueCellId::new("S.child", "ready");
         assert_eq!(
             result.values.get(&child_ready),
@@ -1028,6 +1050,17 @@ mod tests {
     // the let-binding path also resolves `Bool(true)` post-migration rather
     // than degrading to `Value::Undef` as the pre-migration bare
     // `eval_ctx_with_meta` context did on this path.
+    //
+    // amend (#5057 reviewer_comprehensive, suggestion #2 —
+    // test-coverage-fragility): as with the param default_expr fixture above,
+    // the `Bool(true)` assertion below is load-bearing on an unstated
+    // ordering invariant — that root `S.n` is already committed to
+    // `snapshot.values` as `DeterminacyState::Determined` before
+    // `elaborate_child_lets_only` runs for `S.child` (true today: root params
+    // are elaborated by the main eval pass before any unfold recursion
+    // begins). If that ordering ever changed, the assertion would silently
+    // flip to `Value::Undef` rather than failing loudly, so the precondition
+    // is asserted explicitly below.
     #[test]
     fn elaborate_child_lets_only_let_expr_resolves_determinacy_predicate() {
         use reify_core::{ModulePath, Type};
@@ -1065,6 +1098,18 @@ mod tests {
             .build();
         let mut engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
         let result = engine.eval(&module);
+
+        let root_n = ValueCellId::new("S", "n");
+        let snap = engine
+            .snapshot()
+            .expect("engine.snapshot() should be populated after eval");
+        assert_eq!(
+            snap.values.get(&root_n).map(|(_, det)| *det),
+            Some(DeterminacyState::Determined),
+            "precondition: S.n must already be committed Determined before \
+             child elaboration runs, or the Bool(true) assertion below would \
+             silently degrade to Value::Undef instead of failing loudly"
+        );
 
         let child_ready = ValueCellId::new("S.child", "ready");
         assert_eq!(
