@@ -1652,6 +1652,16 @@ fn is_dimensioned_complex(ty: &Type) -> bool {
     matches!(ty, Type::Complex(q) if matches!(q.as_ref(), Type::Scalar { dimension } if !dimension.is_dimensionless()))
 }
 
+/// A DIMENSIONED bare `Scalar` (e.g. `Scalar<Length>`), sibling of
+/// `is_dimensioned_complex`. Direct counterpart of `is_dimensionless_numeric`
+/// restricted to the `Scalar` variant (excludes `Int`) — used by
+/// `add_sub_dimensioned_complex_reject`'s row-B clause (task 5219), where the
+/// runtime `eval_add`/`eval_sub` (reify-expr) have NO `(Complex, Scalar)` arm
+/// at all, so the dimension of the `Scalar` side is irrelevant to the reject.
+fn is_dimensioned_scalar(ty: &Type) -> bool {
+    matches!(ty, Type::Scalar { dimension } if !dimension.is_dimensionless())
+}
+
 /// Canonical rationale for the `+`/`-` dimensioned-Complex-vs-bare-numeric
 /// reject (task 5163) — `expr.rs`'s operand-kind guard and
 /// `DiagnosticCode::ArithOperandKind`'s doc cross-reference here rather
@@ -1681,6 +1691,8 @@ fn is_dimensioned_complex(ty: &Type) -> bool {
 pub(crate) fn add_sub_dimensioned_complex_reject(left: &Type, right: &Type) -> bool {
     (is_dimensioned_complex(left) && is_dimensionless_numeric(right))
         || (is_dimensionless_numeric(left) && is_dimensioned_complex(right))
+        || (is_dimensioned_complex(left) && is_dimensioned_scalar(right))
+        || (is_dimensioned_scalar(left) && is_dimensioned_complex(right))
 }
 
 /// Single source of truth for BOTH the correct static result type of `*`/`/`
