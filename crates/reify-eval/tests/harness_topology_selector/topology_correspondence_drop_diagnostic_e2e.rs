@@ -1,7 +1,7 @@
 //! End-to-end tests for the topology-correspondence-drop diagnostic wiring —
 //! task 4545 (W_TOPOLOGY_CORRESPONDENCE_DROPPED).
 //!
-//! Verifies that `Engine::build` surfaces a `Severity::Warning` with
+//! Verifies that `Engine::build` surfaces a `Severity::Info` with
 //! `DiagnosticCode::TopologyCorrespondenceDropped` when the kernel's
 //! `execute_with_history` returns a history record carrying a non-zero
 //! drop counter.
@@ -185,7 +185,7 @@ fn extrude_with_sweep_drop_module() -> reify_compiler::CompiledModule {
 // ─── tests ───────────────────────────────────────────────────────────────────
 
 /// A boolean union op with `silent_drop_count=7` must surface as a
-/// `Severity::Warning` with `DiagnosticCode::TopologyCorrespondenceDropped`
+/// `Severity::Info` with `DiagnosticCode::TopologyCorrespondenceDropped`
 /// in `build_result.diagnostics`, and the message must contain "7".
 #[test]
 fn boolean_union_drop_produces_warning_diagnostic() {
@@ -210,7 +210,7 @@ fn boolean_union_drop_produces_warning_diagnostic() {
         .diagnostics
         .iter()
         .filter(|d| {
-            d.severity == Severity::Warning
+            d.severity == Severity::Info
                 && d.code == Some(DiagnosticCode::TopologyCorrespondenceDropped)
         })
         .collect();
@@ -267,7 +267,7 @@ fn local_feature_drop_module(kind: ModifyKind) -> reify_compiler::CompiledModule
 }
 
 /// A sweep (extrude) op with `silent_drop_count=3` must surface as a
-/// `Severity::Warning` with `DiagnosticCode::TopologyCorrespondenceDropped`
+/// `Severity::Info` with `DiagnosticCode::TopologyCorrespondenceDropped`
 /// in `build_result.diagnostics`.
 ///
 /// Corroborates that the sweep arm of `diagnose_topology_correspondence_drops`
@@ -294,7 +294,7 @@ fn extrude_drop_produces_warning_diagnostic() {
         .diagnostics
         .iter()
         .filter(|d| {
-            d.severity == Severity::Warning
+            d.severity == Severity::Info
                 && d.code == Some(DiagnosticCode::TopologyCorrespondenceDropped)
         })
         .collect();
@@ -319,7 +319,7 @@ fn extrude_drop_produces_warning_diagnostic() {
 /// `Engine::build` on a `local_feature_drop_module(kind)` fixture, and
 /// asserts:
 ///
-/// 1. At least one `Severity::Warning` with
+/// 1. At least one `Severity::Info` with
 ///    `DiagnosticCode::TopologyCorrespondenceDropped` is emitted.
 /// 2. At least one such warning's message contains
 ///    `"silent_drop_count={drop_count} "` (trailing-space delimiter) to
@@ -347,7 +347,7 @@ fn check_local_feature_drop_warning(kind: ModifyKind, drop_count: u32) {
         .diagnostics
         .iter()
         .filter(|d| {
-            d.severity == Severity::Warning
+            d.severity == Severity::Info
                 && d.code == Some(DiagnosticCode::TopologyCorrespondenceDropped)
         })
         .collect();
@@ -370,7 +370,7 @@ fn check_local_feature_drop_warning(kind: ModifyKind, drop_count: u32) {
 }
 
 /// A fillet op with a non-zero `silent_drop_count` must surface a
-/// `Severity::Warning` with `DiagnosticCode::TopologyCorrespondenceDropped`
+/// `Severity::Info` with `DiagnosticCode::TopologyCorrespondenceDropped`
 /// whose message contains the delimited token `"silent_drop_count={count} "`.
 #[test]
 fn local_feature_fillet_drop_produces_warning_diagnostic() {
@@ -378,7 +378,7 @@ fn local_feature_fillet_drop_produces_warning_diagnostic() {
 }
 
 /// A chamfer op with a non-zero `silent_drop_count` must surface a
-/// `Severity::Warning` with `DiagnosticCode::TopologyCorrespondenceDropped`
+/// `Severity::Info` with `DiagnosticCode::TopologyCorrespondenceDropped`
 /// whose message contains the delimited token `"silent_drop_count={count} "`.
 #[test]
 fn local_feature_chamfer_drop_produces_warning_diagnostic() {
@@ -386,7 +386,7 @@ fn local_feature_chamfer_drop_produces_warning_diagnostic() {
 }
 
 /// A fillet op with `silent_drop_count == 0` (the default) must NOT produce
-/// any `DiagnosticCode::TopologyCorrespondenceDropped` warning.
+/// any `DiagnosticCode::TopologyCorrespondenceDropped` info diagnostic.
 ///
 /// Exercises the `if count > 0` suppression guard in
 /// `diagnose_topology_correspondence_drops` (engine_build.rs) at the e2e level.
@@ -415,7 +415,7 @@ fn clean_local_feature_produces_no_drop_warning() {
         .diagnostics
         .iter()
         .filter(|d| {
-            d.severity == Severity::Warning
+            d.severity == Severity::Info
                 && d.code == Some(DiagnosticCode::TopologyCorrespondenceDropped)
         })
         .collect();

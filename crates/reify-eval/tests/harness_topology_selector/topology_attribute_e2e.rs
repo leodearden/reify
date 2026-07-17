@@ -1041,7 +1041,7 @@ fn local_index_reassignment_diagnostic_fires_for_geometrically_tied_faces() {
         "expected exactly one diagnostic, got: {diagnostics:?}"
     );
     let diag = &diagnostics[0];
-    assert_eq!(diag.severity, Severity::Warning);
+    assert_eq!(diag.severity, Severity::Info);
     assert_eq!(
         diag.code,
         Some(DiagnosticCode::TopologyAttributeLocalIndexReassigned)

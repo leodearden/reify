@@ -30,7 +30,7 @@
             "expected exactly one diagnostic; got: {diags:?}"
         );
         let d = &diags[0];
-        assert_eq!(d.severity, Severity::Warning);
+        assert_eq!(d.severity, Severity::Info);
         assert_eq!(d.code, Some(DiagnosticCode::TopologyCorrespondenceDropped));
         assert!(
             d.message.contains("silent_drop_count=3"),
@@ -78,7 +78,7 @@
         let diags = run(&history);
         assert_eq!(diags.len(), 3, "expected 3 diagnostics; got: {diags:?}");
         for d in &diags {
-            assert_eq!(d.severity, Severity::Warning);
+            assert_eq!(d.severity, Severity::Info);
             assert_eq!(d.code, Some(DiagnosticCode::TopologyCorrespondenceDropped));
         }
         let messages: Vec<&str> = diags.iter().map(|d| d.message.as_str()).collect();
@@ -121,7 +121,7 @@
         let diags = run(&history);
         assert_eq!(diags.len(), 3, "expected 3 diagnostics; got: {diags:?}");
         for d in &diags {
-            assert_eq!(d.severity, Severity::Warning);
+            assert_eq!(d.severity, Severity::Info);
             assert_eq!(d.code, Some(DiagnosticCode::TopologyCorrespondenceDropped));
         }
         let messages: Vec<&str> = diags.iter().map(|d| d.message.as_str()).collect();
@@ -161,7 +161,7 @@
         let diags = run(&history);
         assert_eq!(diags.len(), 3, "expected 3 diagnostics; got: {diags:?}");
         for d in &diags {
-            assert_eq!(d.severity, Severity::Warning);
+            assert_eq!(d.severity, Severity::Info);
             assert_eq!(d.code, Some(DiagnosticCode::TopologyCorrespondenceDropped));
         }
         let messages: Vec<&str> = diags.iter().map(|d| d.message.as_str()).collect();
@@ -204,7 +204,7 @@
             "expected exactly one diagnostic; got: {diags:?}"
         );
         let d = &diags[0];
-        assert_eq!(d.severity, Severity::Warning);
+        assert_eq!(d.severity, Severity::Info);
         assert_eq!(d.code, Some(DiagnosticCode::TopologyCorrespondenceDropped));
         assert!(
             d.message.contains("silent_drop_count=5"),

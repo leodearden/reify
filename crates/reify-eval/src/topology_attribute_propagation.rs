@@ -3539,7 +3539,7 @@ mod tests {
             );
             assert_eq!(diagnostics.len(), 1, "expected exactly one diagnostic");
             let diag = &diagnostics[0];
-            assert_eq!(diag.severity, Severity::Warning);
+            assert_eq!(diag.severity, Severity::Info);
             assert_eq!(
                 diag.code,
                 Some(reify_core::DiagnosticCode::TopologyAttributeLocalIndexReassigned)
