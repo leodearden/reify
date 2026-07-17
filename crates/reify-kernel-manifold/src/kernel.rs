@@ -217,55 +217,9 @@ impl Default for ManifoldKernel {
     }
 }
 
-/// Bit-exact position weld shared by [`manifold_from_reify_mesh`]: maps each
-/// source vertex to a canonical `f64` position and returns the per-source
-/// `old_to_new` remap (canonical index for the i-th source vertex).
-///
-/// Keyed identically to [`Mesh::weld_positions`] — `(c + 0.0_f32).to_bits()`
-/// normalization, first-seen canonical order — which is the bit-exact
-/// equivalence `manifold_from_reify_mesh` relies on when it threads this
-/// remap into `Mesh::check_mesh_contract_welded` instead of letting that call
-/// recompute its own weld. Pulled out to a standalone function (rather than
-/// inlined) so a test can call it directly and pin it against
-/// `Mesh::weld_positions()` — see `kernel_weld_remap_matches_mesh_weld_positions`
-/// in `mod tests` below.
-fn weld_positions_f64(mesh: &Mesh) -> (Vec<f64>, Vec<u32>) {
-    // Map (x.to_bits(), y.to_bits(), z.to_bits()) → canonical vertex index.
-    let mut seen: HashMap<(u32, u32, u32), u32> = HashMap::new();
-    let mut canonical_f64: Vec<f64> = Vec::new();
-    // old_to_new[i] = canonical index for the i-th source vertex. u32 (not
-    // u64): meshes are u32-indexed (`Mesh::indices: Vec<u32>`), this is
-    // exactly the remap type `Mesh::check_mesh_contract_welded` takes below,
-    // and it lets that call borrow `&old_to_new` with zero extra allocation.
-    let mut old_to_new: Vec<u32> = Vec::with_capacity(mesh.vertices.len() / 3);
-
-    for xyz in mesh.vertices.chunks_exact(3) {
-        // Normalise -0.0 → +0.0 before keying so that shared geometric corners
-        // on the origin plane weld correctly even when different per-face paths
-        // produce -0.0 vs +0.0. All other finite values are unchanged by + 0.0.
-        let (x, y, z) = (xyz[0] + 0.0, xyz[1] + 0.0, xyz[2] + 0.0);
-        let key = (x.to_bits(), y.to_bits(), z.to_bits());
-        // Divide before casting: canonical_f64.len() is a usize element
-        // count (3 f64s per vertex), so dividing first keeps the vertex
-        // count itself in usize range before narrowing to u32. Casting
-        // first would truncate the *element* count (not the vertex count)
-        // at u32::MAX, silently wrapping the canonical index for meshes
-        // with > ~1.43B distinct vertices.
-        let next = (canonical_f64.len() / 3) as u32;
-        let canonical_idx = *seen.entry(key).or_insert_with(|| {
-            canonical_f64.push(x as f64);
-            canonical_f64.push(y as f64);
-            canonical_f64.push(z as f64);
-            next
-        });
-        old_to_new.push(canonical_idx);
-    }
-
-    (canonical_f64, old_to_new)
-}
-
-/// Convert a [`Mesh`] into a [`Manifold`] by (1) bit-exact vertex welding,
-/// then (2) flattening f32→f64 / u32→u64 and calling [`Manifold::from_mesh_f64`].
+/// Convert a [`Mesh`] into a [`Manifold`] by (1) bit-exact vertex welding via
+/// [`Mesh::weld_remap`], then (2) flattening f32→f64 / u32→u64 and calling
+/// [`Manifold::from_mesh_f64`].
 ///
 /// # Pre-ingest vertex weld
 ///
@@ -275,26 +229,24 @@ fn weld_positions_f64(mesh: &Mesh) -> (Vec<f64>, Vec<u32>) {
 /// `Manifold::from_mesh_f64` sees open boundary edges and returns
 /// `Err(ManifoldStatus(NotManifold))`.
 ///
-/// The weld keys every xyz triple on its bit pattern
-/// `(x.to_bits(), y.to_bits(), z.to_bits())` (f32 → u32 triple) and replaces
-/// duplicates with the first-seen canonical vertex. Triangle winding is
-/// preserved because only vertex indices are remapped; corner order within
-/// each triangle is unchanged.
+/// The weld is [`Mesh::weld_remap`] — `reify-ir`'s single canonical
+/// bit-exact position weld, keyed on `(x.to_bits(), y.to_bits(), z.to_bits())`
+/// after a `-0.0` → `+0.0` normalization (see [`Mesh::weld_positions`] for the
+/// full keying rationale). Calling it here — rather than a parallel
+/// from-scratch reimplementation — makes this function's weld bit-for-bit
+/// identical to every other `reify-ir` consumer of `weld_positions`/
+/// `weld_remap` by construction, not merely by a pinning test. Triangle
+/// winding is preserved because only vertex indices are remapped; corner
+/// order within each triangle is unchanged.
 ///
 /// For already-welded input (every position unique) the dedup is a no-op and
 /// the indices are passed through unchanged, so existing well-formed meshes
 /// are unaffected.
 ///
-/// # Signed-zero and NaN caveat
-///
-/// Keying on bit patterns means `+0.0` and `-0.0` are treated as **distinct**
-/// vertices (they have different bit representations despite being geometrically
-/// equal). To prevent this, each coordinate is normalised with `x + 0.0` before
-/// keying; IEEE 754 guarantees `-0.0 + 0.0 == +0.0` under default rounding, so
-/// the resulting bit pattern is always canonical `+0.0`. NaN coordinates produce
-/// a stable (per-bit-pattern) key and will weld with other NaN vertices sharing
-/// the same bit pattern; such inputs are geometrically degenerate and will be
-/// rejected by `Manifold::from_mesh_f64` regardless.
+/// NaN coordinates produce a stable (per-bit-pattern) key and weld with
+/// other NaN vertices sharing the same bit pattern; such inputs are
+/// geometrically degenerate and are rejected by `Manifold::from_mesh_f64`
+/// regardless.
 ///
 /// # Callers
 ///
@@ -307,56 +259,61 @@ fn weld_positions_f64(mesh: &Mesh) -> (Vec<f64>, Vec<u32>) {
 ///
 /// Immediately before handing the welded buffers to `Manifold::from_mesh_f64`,
 /// the *original* `mesh` is checked against [`Mesh::check_mesh_contract_welded`],
-/// threading this function's own `old_to_new` weld remap (bit-exact, pinned
-/// to `from_mesh_f64`'s default weld — see
-/// `docs/prds/kernel-seam-contracts.md` §13 Q2) so the closed/consistently-wound
-/// obligations are evaluated against the exact quotient topology this
-/// function welds above, without re-deriving it or cloning the mesh. A
-/// violation short-circuits with `Err(GeometryError::MeshContractViolation {
-/// kernel: "manifold", invariant, counts, witness })` — a structured
-/// diagnostic that surfaces the failing obligation, per-category offender
-/// counts, and a concrete witness *earlier* than (and instead of)
-/// `from_mesh_f64`'s generic `NotManifold` error.
+/// threading this function's own [`WeldRemap`](reify_ir::geometry::WeldRemap)
+/// — minted by the SAME `weld_remap()` call the weld above uses, so there is
+/// no re-derivation, no second weld, and no mesh clone — so the
+/// closed/consistently-wound obligations are evaluated against the exact
+/// quotient topology this function welds above. A violation short-circuits
+/// with `Err(GeometryError::MeshContractViolation { kernel: "manifold",
+/// invariant, counts, witness })` — a structured diagnostic that surfaces
+/// the failing obligation, per-category offender counts, and a concrete
+/// witness *earlier* than (and instead of) `from_mesh_f64`'s generic
+/// `NotManifold` error.
 ///
 /// Returns `Err(GeometryError::OperationFailed(_))` if a triangle index is out
 /// of range for the vertex array (weld-time bounds check) or if
 /// `from_mesh_f64` itself rejects the welded mesh after contract validation
 /// passed (e.g. a defect the contract check doesn't check for).
 pub(crate) fn manifold_from_reify_mesh(mesh: &Mesh) -> Result<Manifold, GeometryError> {
-    // --- bit-exact vertex weld ---
-    let (canonical_f64, old_to_new) = weld_positions_f64(mesh);
+    // --- bit-exact vertex weld (reify-ir's single canonical implementation,
+    // reused rather than reimplemented — see the rustdoc above) ---
+    let (canon_verts, weld_remap) = mesh.weld_remap();
+    // f32 → f64 widening is always exact (`f64: From<f32>`); `flatten()`
+    // walks each `[f32; 3]` corner in x, y, z order, matching the flat
+    // xyz-triple layout `Manifold::from_mesh_f64` expects.
+    let canonical_f64: Vec<f64> = canon_verts.into_iter().flatten().map(f64::from).collect();
 
     // Remap triangle indices through the weld map.
     // Use bounds-checked access so a malformed mesh with an out-of-range index
     // returns Err instead of panicking — preserving the Result<_, GeometryError>
     // contract that callers rely on (previously from_mesh_f64 would return Err
     // for such inputs; the weld must not introduce a new panic path).
+    let weld_indices = weld_remap.as_slice();
     let tri_indices_u64: Vec<u64> = mesh
         .indices
         .iter()
         .map(|&i| {
-            old_to_new
+            weld_indices
                 .get(i as usize)
                 .copied()
                 .map(u64::from)
                 .ok_or_else(|| {
                     GeometryError::OperationFailed(format!(
                         "manifold ingest: triangle index {i} out of range for {} vertices",
-                        old_to_new.len()
+                        weld_indices.len()
                     ))
                 })
         })
         .collect::<Result<_, GeometryError>>()?;
 
     // --- pre-ingest mesh-contract validation (INV-GEO-1) ---
-    // Threads this function's own `old_to_new` weld remap into the contract
-    // check (bit-exact and pinned to from_mesh_f64's default weld, so it
-    // sees the same closed/wound quotient as the weld above) instead of
-    // letting the check recompute its own weld. Front-runs from_mesh_f64's
+    // Threads this function's own `weld_remap` — minted by the SAME
+    // weld_remap() call as the weld above — into the contract check instead
+    // of letting it recompute its own weld. Front-runs from_mesh_f64's
     // generic NotManifold failure with a structured diagnostic; no
     // `ValidatedMesh` witness is minted and no second weld or mesh clone
     // happens on this hot path.
-    mesh.check_mesh_contract_welded(MANIFOLD_INGEST_TOL, &old_to_new)
+    mesh.check_mesh_contract_welded(MANIFOLD_INGEST_TOL, &weld_remap)
         .map_err(|v| v.into_geometry_error("manifold"))?;
 
     Manifold::from_mesh_f64(&canonical_f64, 3, &tri_indices_u64).map_err(|e| {
@@ -1873,7 +1830,7 @@ mod tests {
     /// with one index (`3`) one-past-the-end. `indices.len() == 3` satisfies
     /// `ingest_mesh`'s multiple-of-3 pre-check, so the input reaches
     /// `manifold_from_reify_mesh` and specifically exercises the weld's
-    /// `old_to_new.get(3) == None` bounds-check branch — before
+    /// `weld_indices.get(3) == None` bounds-check branch — before
     /// `mesh.check_mesh_contract_welded(..)` is ever called.
     #[test]
     fn ingest_mesh_out_of_range_triangle_index_returns_operation_failed() {
@@ -1903,9 +1860,9 @@ mod tests {
             other => panic!(
                 "ingest_mesh with an out-of-range triangle index must return \
                  Err(GeometryError::OperationFailed(_)) — the weld-time bounds \
-                 check in manifold_from_reify_mesh runs BEFORE Mesh::validate, \
-                 so this is a distinct error class from MeshContractViolation; \
-                 got {other:?}"
+                 check in manifold_from_reify_mesh runs BEFORE \
+                 check_mesh_contract_welded, so this is a distinct error class \
+                 from MeshContractViolation; got {other:?}"
             ),
         }
     }
@@ -2339,60 +2296,6 @@ mod tests {
                  invariant: Closed, .. }}); got {other:?}"
             ),
         }
-    }
-
-    /// Pins `weld_positions_f64` (the kernel's own weld, extracted from
-    /// `manifold_from_reify_mesh`) bit-exactly equal to
-    /// [`reify_ir::geometry::Mesh::weld_positions`]'s remap — the equivalence
-    /// `check_mesh_contract_welded`'s precondition depends on, per the
-    /// task-5166 design (`docs/prds/kernel-seam-contracts.md` §13 Q2).
-    ///
-    /// Exercises both keying edge cases documented on `weld_positions_f64`:
-    /// a corner encoded as `-0.0` in one triangle vs `+0.0` in another (must
-    /// normalize to the same canonical vertex, mirroring the per-face OCCT
-    /// tessellation skew described on `unwelded_unit_cube_mesh` above), and a
-    /// bit-for-bit duplicate corner (plain shared-vertex welding). Without
-    /// this test, only end-to-end ingest tests exercise the two
-    /// implementations together, so a future divergence in either weld's
-    /// keying (e.g. dropping the `-0.0` normalization) would silently break
-    /// `check_mesh_contract_welded`'s precondition without any test failing
-    /// on the equivalence itself.
-    #[test]
-    fn kernel_weld_remap_matches_mesh_weld_positions() {
-        let mesh = Mesh {
-            vertices: vec![
-                // triangle 0
-                -0.0, 0.0, 0.0, // corner A, encoded as -0.0
-                1.0, 0.0, 0.0, // corner B
-                0.0, 1.0, 0.0, // corner C
-                // triangle 1
-                0.0, 0.0, 0.0, // corner A again, encoded as +0.0 this time
-                1.0, 0.0, 0.0, // corner B again, bit-for-bit duplicate
-                0.0, 0.0, 1.0, // corner D
-            ],
-            indices: vec![0, 1, 2, 3, 4, 5],
-            normals: None,
-        };
-
-        let (_, kernel_remap) = weld_positions_f64(&mesh);
-        let (_, ir_remap) = mesh.weld_positions();
-
-        assert_eq!(
-            kernel_remap,
-            vec![0, 1, 2, 0, 1, 3],
-            "weld_positions_f64 must collapse the -0.0/+0.0 corner pair (idx 0 \
-             and 3) and the bit-exact duplicate (idx 1 and 4) to shared \
-             canonical indices in first-seen order; got {kernel_remap:?}"
-        );
-        assert_eq!(
-            kernel_remap, ir_remap,
-            "manifold_from_reify_mesh's weld loop (weld_positions_f64) must \
-             produce the exact same old→canonical remap as \
-             Mesh::weld_positions() — same -0.0 normalization, same \
-             first-seen canonical order — since check_mesh_contract_welded's \
-             precondition depends on this holding bit-for-bit; got \
-             kernel={kernel_remap:?} ir={ir_remap:?}"
-        );
     }
 
     /// Completion-condition test (task 3525): after a real Manifold union,

@@ -2520,6 +2520,36 @@ impl ValidatedMesh {
     }
 }
 
+/// A position-weld remap proven to come from [`Mesh::weld_remap`] — a
+/// proof-carrying newtype witnessing that the wrapped `Vec<u32>` is exactly
+/// some mesh's bit-exact `weld_positions().1` output, using the identical
+/// keying (never a caller-hand-rolled reimplementation that might, say,
+/// skip the `-0.0` normalization).
+///
+/// Minted only by [`Mesh::weld_remap`]; there is no public constructor, so
+/// an external (cross-crate) caller cannot hand
+/// [`Mesh::check_mesh_contract_welded`] a remap whose *keying* diverges from
+/// `weld_positions`'s — the precondition that method documents becomes
+/// structurally guaranteed rather than merely caller-trusted. This does NOT
+/// prove the remap was computed from *this specific* mesh (a same-length
+/// `WeldRemap` minted for a different mesh can still be threaded in); that
+/// residual case is defended by `check_mesh_contract_welded`'s existing
+/// length/content checks, unchanged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WeldRemap(Vec<u32>);
+
+impl WeldRemap {
+    /// Borrow the underlying old-vertex-index → canonical-vertex-index remap.
+    pub fn as_slice(&self) -> &[u32] {
+        &self.0
+    }
+
+    /// Consume the wrapper and recover the plain `Vec<u32>`.
+    pub fn into_inner(self) -> Vec<u32> {
+        self.0
+    }
+}
+
 /// Consumer-CAPABILITY report: whether a mesh's raw (unwelded) index buffer
 /// already references each distinct vertex position exactly once, as opposed
 /// to per-face vertex blocks (each corner duplicated per incident face).
@@ -2671,6 +2701,24 @@ impl Mesh {
             remap.push(canon_idx);
         }
         (canon_verts, remap)
+    }
+
+    /// Sealed sibling of [`Self::weld_positions`] for cross-crate callers
+    /// that intend to thread the remap into
+    /// [`Self::check_mesh_contract_welded`]: identical computation (calls
+    /// `weld_positions` directly — single source of truth for the keying),
+    /// but wraps the remap in a [`WeldRemap`] witness instead of a bare
+    /// `Vec<u32>` so that method's precondition is structurally guaranteed
+    /// rather than merely documented.
+    ///
+    /// Returns `(canonical_vertices, remap)` — the same first element as
+    /// [`Self::weld_positions`]; use this when a single weld pass needs to
+    /// feed both the canonical positions AND a
+    /// `check_mesh_contract_welded`-ready remap (e.g. a kernel ingest hot
+    /// path that also needs the canonical positions for its own output).
+    pub fn weld_remap(&self) -> (Vec<[f32; 3]>, WeldRemap) {
+        let (canon_verts, remap) = self.weld_positions();
+        (canon_verts, WeldRemap(remap))
     }
 
     /// Report the CONSUMER-CAPABILITY axis: does the raw index buffer
@@ -3109,34 +3157,37 @@ impl Mesh {
     }
 
     /// Weld-threaded sibling of [`Self::check_mesh_contract`], for callers
-    /// that have already position-welded this exact mesh (e.g. via their
-    /// own bit-exact weld pinned to the same keying as
-    /// [`Self::weld_positions`]) and want to avoid a redundant internal
-    /// re-weld inside the Closed/ConsistentWinding obligation.
+    /// that have already position-welded this exact mesh via
+    /// [`Self::weld_remap`] and want to avoid a redundant internal re-weld
+    /// inside the Closed/ConsistentWinding obligation.
     ///
     /// # Precondition
     ///
-    /// `welded_indices` MUST equal `self.weld_positions().1` — the bit-exact
-    /// position-weld remap, indexed by raw vertex index, with length
-    /// `self.vertices.len() / 3`. A length mismatch is defended in ALL
-    /// build modes: debug builds assert it (loudly, during development),
-    /// while release builds silently fall back to an internal reweld
-    /// instead of indexing out of bounds, so this method never panics.
-    /// There is no `MeshContractViolation` shape for "caller passed a
-    /// bogus remap": a mismatched-but-SAME-length remap is checked by
-    /// content against a freshly recomputed `weld_positions().1` via
-    /// `debug_assert_eq!` (loud in debug/test builds), but in release
-    /// builds it is still a silent caller bug (garbage in, garbage out) —
-    /// only the panic-causing length case is defended in release. Callers
-    /// that cannot guarantee the precondition must use
-    /// [`Self::check_mesh_contract`] instead, which recomputes the weld
-    /// internally.
+    /// `welded_indices` MUST have been minted by [`Self::weld_remap`] on
+    /// THIS mesh, with length `self.vertices.len() / 3`. Taking a sealed
+    /// [`WeldRemap`] (rather than a bare `&[u32]`) rules out the *keying*
+    /// half of that precondition structurally: a [`WeldRemap`] cannot be
+    /// hand-rolled by an external caller, so it can never diverge from
+    /// `weld_positions`'s bit-exact `-0.0`-normalizing keying (e.g. by
+    /// skipping that normalization). It does NOT rule out threading a
+    /// same-length [`WeldRemap`] minted for a *different* mesh — that
+    /// residual "right shape, wrong mesh" case is still only a documented
+    /// caller obligation, defended exactly as before: a length mismatch is
+    /// defended in ALL build modes (debug builds assert it loudly; release
+    /// builds silently fall back to an internal reweld instead of indexing
+    /// out of bounds, so this method never panics), while a
+    /// same-length-but-wrong-content remap is checked by content against a
+    /// freshly recomputed `weld_positions().1` via `debug_assert_eq!` (loud
+    /// in debug/test builds) but remains a silent caller bug (garbage in,
+    /// garbage out) in release. Callers that cannot guarantee the
+    /// precondition must use [`Self::check_mesh_contract`] instead, which
+    /// recomputes the weld internally.
     pub fn check_mesh_contract_welded(
         &self,
         tol: f64,
-        welded_indices: &[u32],
+        welded_indices: &WeldRemap,
     ) -> Result<(), MeshContractViolation> {
-        self.check_contract(tol, Some(welded_indices))
+        self.check_contract(tol, Some(welded_indices.as_slice()))
     }
 }
 
@@ -11470,6 +11521,43 @@ mod tests {
         );
     }
 
+    /// Pins [`Mesh::weld_positions`]'s two documented keying edge cases: a
+    /// corner encoded as `-0.0` in one triangle vs `+0.0` in another (must
+    /// normalize to the same canonical vertex) and a bit-for-bit duplicate
+    /// corner (plain shared-vertex welding). Without a direct test of the
+    /// remap's actual content, only end-to-end `validate`/
+    /// `check_mesh_contract*` tests exercise `weld_positions` indirectly —
+    /// those only check the final Ok/Err verdict, so a keying regression
+    /// (e.g. dropping the `-0.0` normalization) could silently produce a
+    /// different-but-still-valid remap without any of them failing.
+    #[test]
+    fn weld_positions_normalizes_signed_zero_and_dedups_bit_exact_duplicates() {
+        let mesh = Mesh {
+            vertices: vec![
+                // triangle 0
+                -0.0, 0.0, 0.0, // corner A, encoded as -0.0
+                1.0, 0.0, 0.0, // corner B
+                0.0, 1.0, 0.0, // corner C
+                // triangle 1
+                0.0, 0.0, 0.0, // corner A again, encoded as +0.0 this time
+                1.0, 0.0, 0.0, // corner B again, bit-for-bit duplicate
+                0.0, 0.0, 1.0, // corner D
+            ],
+            indices: vec![0, 1, 2, 3, 4, 5],
+            normals: None,
+        };
+
+        let (_, remap) = mesh.weld_positions();
+
+        assert_eq!(
+            remap,
+            vec![0, 1, 2, 0, 1, 3],
+            "weld_positions must collapse the -0.0/+0.0 corner pair (idx 0 \
+             and 3) and the bit-exact duplicate (idx 1 and 4) to shared \
+             canonical indices in first-seen order; got {remap:?}"
+        );
+    }
+
     #[test]
     fn validate_rejects_non_finite() {
         // A NaN vertex coordinate on vertex 1 (x-component).
@@ -11877,7 +11965,7 @@ mod tests {
     #[test]
     fn check_mesh_contract_welded_matches_unthreaded() {
         fn assert_welded_matches_unthreaded(mesh: &Mesh, tol: f64) {
-            let remap = mesh.weld_positions().1;
+            let (_, remap) = mesh.weld_remap();
             let via_welded = mesh.check_mesh_contract_welded(tol, &remap);
             let via_unthreaded = mesh.check_mesh_contract(tol);
             assert_verdicts_equivalent(
@@ -11942,6 +12030,14 @@ mod tests {
     /// `Err(Closed)` here therefore distinguishes "consumed" from
     /// "ignored-and-recomputed".
     ///
+    /// Constructs a [`WeldRemap`] directly from a bogus `Vec<u32>` via its
+    /// private tuple field — only possible because this test module is a
+    /// descendant of `geometry` (Rust's module-privacy rules give
+    /// descendants access to a private field), i.e. exactly the kind of
+    /// in-crate access [`WeldRemap`]'s sealing is not meant to stop; it is
+    /// used here purely to drive this negative test of the
+    /// defense-in-depth fallback.
+    ///
     /// `#[cfg(not(debug_assertions))]`: a same-length-but-wrong-content
     /// remap trips the matching-length arm's `debug_assert_eq!` (inside
     /// `check_contract`) against a freshly recomputed `weld_positions().1`
@@ -11968,7 +12064,7 @@ mod tests {
         let identity_remap: Vec<u32> = (0..(mesh.vertices.len() / 3) as u32).collect();
 
         let err = mesh
-            .check_mesh_contract_welded(0.0, &identity_remap)
+            .check_mesh_contract_welded(0.0, &WeldRemap(identity_remap))
             .expect_err(
                 "a bogus identity remap on an unwelded mesh must be reported as \
                  an open mesh if actually consumed — Ok(()) here would mean the \
@@ -12024,8 +12120,14 @@ mod tests {
     #[test]
     fn check_mesh_contract_welded_falls_back_on_length_mismatch() {
         fn assert_fallback_matches(mesh: &Mesh, bogus_remap: &[u32]) {
+            // `WeldRemap`'s field is private (accessible from this
+            // descendant test module, not `pub(crate)`-restricted for
+            // external callers) — see
+            // `check_mesh_contract_welded_consumes_threaded_remap`'s doc
+            // for why constructing one directly here is expected and
+            // doesn't defeat the sealing.
             assert_verdicts_equivalent(
-                mesh.check_mesh_contract_welded(0.0, bogus_remap),
+                mesh.check_mesh_contract_welded(0.0, &WeldRemap(bogus_remap.to_vec())),
                 mesh.check_mesh_contract(0.0),
                 "check_mesh_contract_welded with a length-mismatched remap \
                  (release fallback) and check_mesh_contract",
