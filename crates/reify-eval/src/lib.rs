@@ -9,6 +9,11 @@ pub mod cache;
 // CacheLeg (PRD eval-cell-commit-substrate.md §2.1–2.4). pub(crate) — no
 // external callers yet; migration leaves γ/δ/ε/ι wire it in from within the crate.
 pub(crate) mod cell_commit;
+// Task λ (#5043): shared post-pass detector registry (PRD
+// eval-cell-commit-substrate.md §2.7, INV-EVAL-3). pub(crate) — no external
+// callers yet; task μ wires it into eval/eval_cached/edit_check from within
+// the crate.
+pub(crate) mod detectors;
 pub mod compute_cache_key;
 pub mod compute_targets;
 pub use compute_cache_key::compute_cache_key;
