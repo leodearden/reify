@@ -352,13 +352,76 @@ fn unresolved_name_operand_no_spurious_arith_operand_kind() {
 /// alongside the sibling mismatched-dimension `Complex<Q1> ± Complex<Q2>`
 /// gap, which is not pinned by any test in this file.
 #[test]
-fn dimensioned_complex_plus_dimensioned_scalar_is_documented_unguarded_gap() {
-    let errors = compile_complex_expr_errors("let w = z + len");
+fn dimensioned_complex_plus_dimensioned_scalar_emits_arith_operand_kind() {
+    let module = compile_complex_expr("let w = z + len");
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    let flagged: Vec<_> = errors
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ArithOperandKind))
+        .collect();
     assert_eq!(
-        arith_operand_kind_count(&errors),
-        0,
-        "`z + len` (Complex<Length> + Length) is a documented out-of-scope \
-         gap (dimensioned Complex vs dimensioned Scalar) — task 5163 only \
-         guards the bare-dimensionless-numeric row; got errors: {errors:?}"
+        flagged.len(),
+        1,
+        "`z + len` (Complex<Length> + Length) must produce exactly ONE \
+         ArithOperandKind; got errors: {errors:?}"
+    );
+    assert!(
+        flagged[0].message.contains("operator `+`"),
+        "`z + len` error message must name the `+` operator; got: {:?}",
+        flagged[0].message
+    );
+    let expected_operand_kind = Type::complex(Type::length()).to_string();
+    assert!(
+        flagged[0].message.contains(&expected_operand_kind),
+        "`z + len` error message must name the {expected_operand_kind} \
+         operand kind; got: {:?}",
+        flagged[0].message
+    );
+
+    let w = get_let_expr_in(&module, "P", "w");
+    assert_eq!(
+        w.result_type,
+        Type::Error,
+        "`z + len` must poison `w`'s result_type to Type::Error, got: {:?}",
+        w.result_type
+    );
+}
+
+/// Sub-direction counterpart: `z - len` must also produce `ArithOperandKind`
+/// and poison `w`'s result_type to `Type::Error`.
+#[test]
+fn dimensioned_complex_minus_dimensioned_scalar_emits_arith_operand_kind() {
+    let module = compile_complex_expr("let w = z - len");
+    let errors: Vec<_> = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    let flagged: Vec<_> = errors
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::ArithOperandKind))
+        .collect();
+    assert_eq!(
+        flagged.len(),
+        1,
+        "`z - len` (Complex<Length> - Length) must produce exactly ONE \
+         ArithOperandKind; got errors: {errors:?}"
+    );
+    assert!(
+        flagged[0].message.contains("operator `-`"),
+        "`z - len` error message must name the `-` operator; got: {:?}",
+        flagged[0].message
+    );
+
+    let w = get_let_expr_in(&module, "P", "w");
+    assert_eq!(
+        w.result_type,
+        Type::Error,
+        "`z - len` must poison `w`'s result_type to Type::Error, got: {:?}",
+        w.result_type
     );
 }

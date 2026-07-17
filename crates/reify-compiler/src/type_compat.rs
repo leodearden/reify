@@ -2679,19 +2679,23 @@ mod tests {
     }
 
     /// `Complex<Length> + Length` (dimensioned Complex + dimensioned, non-Int
-    /// `Scalar`) matches neither this predicate (the `Scalar` side isn't a
-    /// bare dimensionless numeric) nor the `expr.rs` Scalar/Scalar
-    /// dimension-compat block (the `Complex` side isn't a bare `Scalar`) — a
-    /// separate, unguarded gap analogous to the Complex-vs-Complex case
-    /// above, also out of scope for task 5163. Pins CURRENT (unguarded)
-    /// behavior, not a correctness claim.
+    /// `Scalar`) — task 5219 row B: the runtime `eval_add`/`eval_sub`
+    /// (reify-expr) have NO `(Complex, Scalar)` arm at all, so a dimensioned
+    /// `Complex` paired with ANY dimensioned `Scalar` is a structural
+    /// `Value::Undef` regardless of whether the two dimensions match. Must
+    /// reject in BOTH operand orders, mirroring the bare-dimensionless-numeric
+    /// row above.
     #[test]
-    fn add_sub_dimensioned_complex_reject_false_for_dimensioned_complex_plus_dimensioned_scalar_out_of_scope()
-     {
+    fn add_sub_dimensioned_complex_reject_true_for_dimensioned_complex_plus_dimensioned_scalar()
+    {
         let dimensioned_complex = Type::complex(Type::length());
-        assert!(!add_sub_dimensioned_complex_reject(
+        assert!(add_sub_dimensioned_complex_reject(
             &dimensioned_complex,
             &Type::length()
+        ));
+        assert!(add_sub_dimensioned_complex_reject(
+            &Type::length(),
+            &dimensioned_complex
         ));
     }
 
