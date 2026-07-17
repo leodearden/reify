@@ -159,22 +159,64 @@ fn to_set(names: &[&str]) -> BTreeSet<String> {
 // divergence this module's assertions carve out of what would otherwise be
 // strict equality. Each entry names the (family, oracle) pair, the
 // diverging name(s), and why. Populated incrementally — task 5055 γ steps
-// 2, 4, 6, 8. Empty at scaffold time (pre-2).
+// 2, 4, 6, 8.
 // ═══════════════════════════════════════════════════════════════════════
+
+/// `GEOMETRY_QUERY_NAMES` members `is_geometry_query_call` intentionally
+/// does NOT recognize — it matches only the 4-name, 1-arg whole-handle-query
+/// shape (`volume`/`area`/`centroid`/`bounding_box`, `geometry_ops.rs:3865`).
+/// Each of the 11 names below reaches its result through a different
+/// eval-time path. Step-2 (task 5055 γ).
+const QUERY_CALL_LEDGER: &[&str] = &[
+    // ── Kernel-bearing `TopologySelectorHelper` consumer path instead
+    //    (name map at geometry_ops.rs:5314-5352, dispatched via
+    //    `try_eval_topology_selector`'s build() case) ──────────────────────
+    // `length` / `perimeter`: delivered via `dispatch_edge_length` /
+    // `dispatch_perimeter` on the edge/face topology-selector path;
+    // `GeometryQuery` has no whole-handle variant for either (module note
+    // above `try_eval_geometry_query`, geometry_ops.rs:3626-3630).
+    "length",
+    "perimeter",
+    // `distance` / `contains` / `intersects` / `geo_equiv` / `curvature` /
+    // `normal`: each is a `TopologySelectorHelper` kernel-bearing consumer
+    // name (`is_geometry_consumer_call`'s match arms, geometry_ops.rs:3915),
+    // not a whole-handle 1-arg query.
+    "distance",
+    "contains",
+    "intersects",
+    "geo_equiv",
+    "curvature",
+    "normal",
+    // `angle`: also dispatched via the build()-only `TopologySelectorHelper`
+    // path despite being pure-math (acos/clamp/dot) — a pre-existing gap in
+    // the consumer allow-list, not a deliberate exclusion (task 4952 α;
+    // verbatim rationale at geometry_ops.rs:3942-3950). Re-ledgered in
+    // step-4 as the seed entry for the consumer-oracle direction.
+    "angle",
+    // ── Distinct dispatch shapes, not `TopologySelectorHelper` routing ────
+    // `max_deviation`: 2-arg DIRECT dispatch (`actual`, `nominal`) via
+    // `try_eval_geometry_query`'s ζ/C4 case (geometry_ops.rs:3703-3741;
+    // task 4479) — kept separate from the 1-arg `is_geometry_query_call`
+    // invariant by design.
+    "max_deviation",
+    // `feature`: returns `Type::Feature`, not a scalar/point query result;
+    // dispatched by the dedicated `try_eval_feature_accessor`
+    // (geometry_ops.rs:3842), not the query-call oracle.
+    "feature",
+];
 
 // ═══════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════
 
-/// RED until step-2: `is_geometry_query_call` recognizes only the 4
-/// whole-handle scalar/point queries (`area`, `bounding_box`, `centroid`,
-/// `volume`) at arity 1 — a STRICT SUBSET of the compiler's 15-member
-/// `GEOMETRY_QUERY_NAMES` family (`length`/`perimeter`/the rest route via
-/// other paths; see `geometry_ops.rs:3863`). The first three assertions
-/// below hold today; the final "family-agreement direction" assertion is
-/// deliberately naive strict equality between the two sets, which fails
-/// (15 names vs. 4) until step-2 introduces `QUERY_CALL_LEDGER` and relaxes
-/// it to `== (GEOMETRY_QUERY_NAMES minus QUERY_CALL_LEDGER)`.
+/// `is_geometry_query_call` recognizes only the 4 whole-handle scalar/point
+/// queries (`area`, `bounding_box`, `centroid`, `volume`) at arity 1 — a
+/// STRICT SUBSET of the compiler's 15-member `GEOMETRY_QUERY_NAMES` family.
+/// The remaining 11 members reach their result through other eval-time
+/// paths, recorded in [`QUERY_CALL_LEDGER`]. The final "family-agreement
+/// direction" assertion holds against `GEOMETRY_QUERY_NAMES minus
+/// QUERY_CALL_LEDGER`, not raw `GEOMETRY_QUERY_NAMES` — the ledger is what
+/// keeps this a real drift guard rather than a vacuous pass (step-2).
 #[test]
 fn geometry_query_call_oracle_agrees_with_geometry_query_names_family() {
     let universe = all_family_names();
@@ -210,12 +252,18 @@ fn geometry_query_call_oracle_agrees_with_geometry_query_names_family() {
         }
     }
 
-    // Family-agreement direction — deliberately naive strict equality.
-    // GEOMETRY_QUERY_NAMES has 15 names; the oracle recognizes only 4, so
-    // this is RED until step-2 replaces it with the ledgered comparison.
+    // Family-agreement direction, ledgered: is_geometry_query_call-set must
+    // equal GEOMETRY_QUERY_NAMES minus the 11 intentionally-excluded names
+    // in QUERY_CALL_LEDGER (each with its own routing rationale above).
+    let ledger = to_set(QUERY_CALL_LEDGER);
+    let expected_family: BTreeSet<String> = geometry_query_names
+        .difference(&ledger)
+        .cloned()
+        .collect();
     assert_eq!(
-        query_call_set, geometry_query_names,
-        "is_geometry_query_call-set must equal GEOMETRY_QUERY_NAMES minus the \
-         intentional-divergence ledger (QUERY_CALL_LEDGER, added in step-2)"
+        query_call_set, expected_family,
+        "is_geometry_query_call-set must equal GEOMETRY_QUERY_NAMES minus \
+         QUERY_CALL_LEDGER — either the oracle's recognized set or the ledger \
+         drifted out of sync with reify_compiler::GEOMETRY_QUERY_NAMES"
     );
 }
