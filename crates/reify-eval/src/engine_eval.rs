@@ -5358,6 +5358,24 @@ impl Engine {
     /// correct annotation.  A future reader should NOT change this to match the
     /// main-pass unconditional `Determined` rule.
     ///
+    /// # Journal events (task γ #5053)
+    ///
+    /// Since the `commit_cell_result` migration, every invocation now emits a
+    /// `Started`/`Completed` journal pair (`TraceSource::ConeReeval`) in
+    /// addition to the pre-existing cache write — previously this function
+    /// recorded ONLY to `self.cache` and emitted no journal event at all.
+    /// Because both call sites (the cold downstream-cone pass here and the
+    /// θ2 Option-B relaxed reseed in `engine_edit.rs`) may invoke this per
+    /// cell more than once per re-eval, this is an additive increase in
+    /// per-cell journal volume. Confirmed (task γ amendment pass) that no
+    /// journal-consuming code or test in this crate asserts on the prior
+    /// no-journal behaviour for cone / in-walk-mint cells — event-journal
+    /// tests either check totals unrelated to cone re-eval (`tests/journal.rs`,
+    /// `tests/concurrent.rs`) or inspect specific non-cone nodes; the full
+    /// branch-scope suite (`scripts/verify.sh test --scope branch
+    /// --include-infra`) is green with these events present. The new events
+    /// are intended, additive observability, not a regression.
+    ///
     /// # `version_id` — MUST be the owning snapshot's FINAL (post-solver) version
     ///
     /// Callers **must** pass `snapshot.version.0` (or `new_snapshot.version.0` in
@@ -5394,16 +5412,31 @@ impl Engine {
         runtime_sink: &RefCell<Vec<Diagnostic>>,
         version_id: u64,
     ) {
+        // Ctx reverted to the pre-migration hand-built chain (task γ #5053
+        // amendment — review finding on containment scope-creep). impl-2
+        // originally switched this site onto the free `cell_eval_ctx`
+        // constructor; being a required-args builder, that necessarily also
+        // wires `.with_containment(self)`. Unlike the eval_cached Let-miss /
+        // wave-2 sites below (which already routed through the
+        // containment-wired `Engine::cell_eval_ctx` METHOD pre-migration, so
+        // adopting the free fn there is a like-for-like swap), this cell-eval
+        // site never carried containment before — so that was a genuine new
+        // capability, not a typing-only change: a cone cell whose expr uses a
+        // containment-dependent field op (`sample(restrict(field, region),
+        // pt)`) would newly resolve via the kernel instead of degrading to
+        // `Value::Undef`, silently flipping its recorded determinacy under
+        // `DeriveFromValue`. That is exactly the class of change
+        // (B1/4356-class) this task deliberately withholds at the
+        // guarded-group and post-pass COMMIT-ONLY sites (see their own
+        // "left as-is" comments) — withheld here too, to keep this site
+        // behaviour-preserving. Only the `commit_cell_result` migration
+        // (INV-EVAL-1) below applies; the ctx capability set (INV-EVAL-2) is
+        // unchanged from pre-migration.
         let val = reify_expr::eval_expr(
             expr,
-            &cell_eval_ctx(
-                values,
-                &self.functions,
-                &self.meta_map,
-                snapshot_values,
-                runtime_sink,
-                self,
-            ),
+            &eval_ctx_with_meta(values, &self.functions, &self.meta_map)
+                .with_determinacy(snapshot_values)
+                .with_runtime_diagnostics(runtime_sink),
         );
         let trace = extract_dependency_trace(expr);
         commit_cell_result(
