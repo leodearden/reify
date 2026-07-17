@@ -858,6 +858,103 @@ mod tests {
         );
     }
 
+    // amend (#5057 reviewer_comprehensive, suggestion #1 — test-coverage-gap):
+    // the `NoContainment` doc comment above (and the two fixtures below this
+    // one) document that all three `cell_eval_ctx` call sites this migration
+    // introduces observe the determinacy-map flip identically: the arg
+    // branch (`args.iter().find(..)` arm), the param default_expr branch,
+    // and the let-binding eval. Only the latter two had a direct lock.
+    //
+    // Locking the arg branch through a *recursive* sub (as the other two
+    // fixtures do for their branches) would not actually exercise this
+    // migration: `unfold_recursive_sub` pre-evaluates `sub.args` against the
+    // old `eval_ctx_with_meta` context (:206-213 — the out-of-scope "arg
+    // pre-eval" called out in plan.json's "Scope boundary" section) before
+    // `elaborate_child_params_only` ever sees them, collapsing any
+    // determinacy predicate in a *recursive* sub's arg to `Value::Undef`
+    // before the arg branch runs, regardless of this migration. A plain
+    // (non-recursive, non-guarded) sub-component instead reaches
+    // `elaborate_child_params_only` via `elaborate_child_instance` with
+    // `sub.args` forwarded raw (engine_eval.rs :3745-3757), so its arg
+    // expression is exactly what the arg branch's newly-wired
+    // `cell_eval_ctx` evaluates. This fixture uses that path: `S.child` is a
+    // plain sub of `C`, supplying `determined(S.n)` as C's explicit `ready`
+    // arg.
+    //
+    // amend (#5057 reviewer_comprehensive, suggestion #2 —
+    // test-coverage-fragility): like the two divergence fixtures below, this
+    // is load-bearing on an unstated ordering invariant — that root `S.n` is
+    // already committed to `snapshot.values` as `DeterminacyState::Determined`
+    // before `S`'s Phase 2 (sub-component elaboration) runs. That's true
+    // today because Phase 1 param elaboration precedes Phase 2 within a
+    // template's own root-frame evaluation (see
+    // `non_recursive_top_level_guarded_sub_not_unfolded` in
+    // `tests/recursive_unfold.rs`, whose assertion (a) locks the same
+    // ordering). If that ordering ever changed, the `Bool(true)` assertion
+    // below would silently flip to `Value::Undef` instead of failing loudly,
+    // so the precondition is asserted explicitly first.
+    #[test]
+    fn elaborate_child_params_only_arg_branch_resolves_determinacy_predicate() {
+        use reify_core::{ModulePath, Type};
+        use reify_ir::DeterminacyPredicateKind;
+        use reify_test_support::mocks::MockConstraintChecker;
+        use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, literal};
+
+        let ready_arg = reify_ir::CompiledExpr::determinacy_predicate(
+            DeterminacyPredicateKind::Determined,
+            ValueCellId::new("S", "n"),
+        );
+
+        // Plain (non-guarded, non-recursive) sub: reaches
+        // `elaborate_child_params_only` via `elaborate_child_instance` with
+        // `sub.args` forwarded raw — the arg branch under test.
+        let template_s = TopologyTemplateBuilder::new("S")
+            .param(
+                "S",
+                "n",
+                Type::Int,
+                Some(reify_ir::CompiledExpr::literal(Value::Int(1), Type::Int)),
+            )
+            .sub_component("child", "C", vec![("ready".to_string(), ready_arg)])
+            .build();
+
+        let template_c = TopologyTemplateBuilder::new("C")
+            .param("C", "ready", Type::Bool, Some(literal(Value::Bool(false))))
+            .build();
+
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(template_s)
+            .template(template_c)
+            .build();
+        let mut engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let result = engine.eval(&module);
+
+        let root_n = ValueCellId::new("S", "n");
+        let snap = engine
+            .snapshot()
+            .expect("engine.snapshot() should be populated after eval");
+        assert_eq!(
+            snap.values.get(&root_n).map(|(_, det)| *det),
+            Some(DeterminacyState::Determined),
+            "precondition: S.n must already be committed Determined before \
+             S's Phase 2 sub-component elaboration runs, or the Bool(true) \
+             assertion below would silently degrade to Value::Undef instead \
+             of failing loudly"
+        );
+
+        let child_ready = ValueCellId::new("S.child", "ready");
+        assert_eq!(
+            result.values.get(&child_ready),
+            Some(&Value::Bool(true)),
+            "S.child.ready, given explicit arg `ready: determined(S.n)` on a \
+             plain (non-recursive) sub-component, should resolve Bool(true) \
+             via the snapshot-wired determinacy cell_eval_ctx that now \
+             threads through the args.iter().find(..) arm, not degrade to \
+             Value::Undef as the pre-migration bare eval_ctx_with_meta \
+             context did"
+        );
+    }
+
     // amend (#5057 reviewer_comprehensive, suggestion #1 —
     // robustness-untested-behavior-change): the migration wires the live
     // `&snapshot.values` determinacy map into `cell_eval_ctx`, where the
