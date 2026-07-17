@@ -12,11 +12,11 @@
 //! carrying an explicit `// version-id-gate: allow — <reason>` escape
 //! comment is exempted (same grammar as the `ptodo:allow` precedent).
 //!
-//! Step-1 (RED): anti-vacuous unit self-tests over the not-yet-implemented
-//! `scan_source` matcher — mirrors the seeded-violation self-test pattern in
-//! `no_stale_undef_invariant_gate.rs::seeded_stale_undef_violation_is_reported`.
-//! `scan_source`/`Violation` do not exist yet, so this file does not
-//! compile: that failure to compile IS the RED signal for this step.
+//! Step-1 laid down anti-vacuous unit self-tests over `scan_source` before
+//! it existed (mirroring the seeded-violation self-test pattern in
+//! `no_stale_undef_invariant_gate.rs::seeded_stale_undef_violation_is_reported`);
+//! step-2 (below) implements the matcher so they pass. Step-3 adds the
+//! real-tree gate test that walks `crates/reify-eval/src/` itself.
 
 /// One raw, non-exempt `self.next_version_id` / `self.next_snapshot_id` use
 /// found outside the allocator/reader API family.
@@ -31,8 +31,137 @@ struct Violation {
     text: String,
 }
 
-// ── Step-1 self-tests (RED: `scan_source` doesn't exist yet — this whole
-//    file fails to compile until step-2 implements it) ─────────────────────
+// ── Step-2: the matcher ──────────────────────────────────────────────────────
+
+/// Escape-hatch comment token (same grammar as the `ptodo:allow`
+/// precedent) that exempts a line from the gate regardless of its
+/// enclosing fn. Matched against the RAW line, before comment-stripping —
+/// the token itself lives inside a `//` comment.
+const ALLOW_COMMENT: &str = "version-id-gate: allow";
+
+/// Raw `self.`-scoped counter tokens the gate bans outside the allocate/read
+/// API family's own definitions.
+const TOKENS: &[&str] = &["self.next_version_id", "self.next_snapshot_id"];
+
+/// The only (file basename, fn name) pairs where a raw `self.next_*_id` use
+/// IS the allocate/read API's own definition: the allocator
+/// (`allocate_snapshot_version`) and the two named readers
+/// (`last_allocated_version`, `current_eval_version`) — see `docs/invariants.md`
+/// INV-BUILD-2. Allowlisting by enclosing fn (not whole file) means a new
+/// raw bump added anywhere ELSE in engine_admin.rs/engine_build.rs is still
+/// caught.
+const ALLOWED_FNS: &[(&str, &str)] = &[
+    ("engine_admin.rs", "allocate_snapshot_version"),
+    ("engine_admin.rs", "last_allocated_version"),
+    ("engine_build.rs", "current_eval_version"),
+];
+
+/// Naively strips a `//` line comment: cuts at the first `//`, keeping only
+/// what precedes it. Documented limitation: this doesn't understand
+/// string/char literals, so a `//` inside one would be (incorrectly)
+/// treated as a comment start — acceptable for a source-text lint gate,
+/// not a full Rust parser; none of the scanned production call sites embed
+/// `//` inside a same-line string literal alongside a counter token.
+fn strip_line_comment(line: &str) -> &str {
+    match line.find("//") {
+        Some(idx) => &line[..idx],
+        None => line,
+    }
+}
+
+/// Parses the fn name out of a (trimmed) line that looks like a fn
+/// signature, stripping leading `pub`/`pub(...)`/`async`/`unsafe`
+/// modifiers first. Returns `None` if the line isn't a fn signature.
+fn parse_fn_name(trimmed: &str) -> Option<String> {
+    let mut rest = trimmed;
+    loop {
+        if let Some(r) = rest.strip_prefix("pub(") {
+            match r.find(')') {
+                Some(idx) => {
+                    rest = r[idx + 1..].trim_start();
+                    continue;
+                }
+                None => return None,
+            }
+        }
+        if let Some(r) = rest.strip_prefix("pub ") {
+            rest = r.trim_start();
+            continue;
+        }
+        if let Some(r) = rest.strip_prefix("async ") {
+            rest = r.trim_start();
+            continue;
+        }
+        if let Some(r) = rest.strip_prefix("unsafe ") {
+            rest = r.trim_start();
+            continue;
+        }
+        break;
+    }
+    let rest = rest.strip_prefix("fn ")?;
+    let rest = rest.trim_start();
+    let end = rest
+        .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .unwrap_or(rest.len());
+    if end == 0 {
+        return None;
+    }
+    Some(rest[..end].to_string())
+}
+
+/// Returns the basename component of `label` (e.g. `"engine_admin.rs"` out
+/// of a full path) for the `ALLOWED_FNS` lookup. `label` itself (not the
+/// extracted basename) is stored verbatim in `Violation::file`, so
+/// real-tree scans can pass a full display path for useful diagnostics.
+fn basename(label: &str) -> &str {
+    std::path::Path::new(label)
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or(label)
+}
+
+/// Scans `source` (the contents of a file identified by `label`) for raw
+/// `self.next_version_id` / `self.next_snapshot_id` uses outside the
+/// allocate/read API family (`ALLOWED_FNS`), honouring the
+/// `// version-id-gate: allow` escape comment and ignoring comment-only
+/// mentions. See the module doc comment for the full contract.
+fn scan_source(label: &str, source: &str) -> Vec<Violation> {
+    let base = basename(label);
+    let mut current_fn: Option<String> = None;
+    let mut violations = Vec::new();
+
+    for (idx, raw_line) in source.lines().enumerate() {
+        let line_no = idx + 1;
+
+        if let Some(name) = parse_fn_name(raw_line.trim()) {
+            current_fn = Some(name);
+        }
+
+        // Checked against the RAW line (pre-strip): the allow token lives
+        // inside the very comment `strip_line_comment` would remove.
+        if raw_line.contains(ALLOW_COMMENT) {
+            continue;
+        }
+
+        let stripped = strip_line_comment(raw_line);
+        if TOKENS.iter().any(|tok| stripped.contains(tok)) {
+            let allowed = current_fn
+                .as_deref()
+                .is_some_and(|f| ALLOWED_FNS.contains(&(base, f)));
+            if !allowed {
+                violations.push(Violation {
+                    file: label.to_string(),
+                    line: line_no,
+                    text: raw_line.trim().to_string(),
+                });
+            }
+        }
+    }
+
+    violations
+}
+
+// ── Step-1 self-tests (now GREEN) ────────────────────────────────────────────
 
 /// (a) A synthetic raw bump inside a non-allowlisted fn body is reported —
 /// the permanent "demonstrably RED if reintroduced" proof, mirroring
@@ -54,6 +183,11 @@ impl Engine {
          non-allowlisted fn, got {violations:?}"
     );
     assert_eq!(violations[0].file, "engine_eval.rs");
+    assert_eq!(
+        violations[0].line, 3,
+        "violation should point at the `self.next_version_id += 1;` line, got {:?}",
+        violations[0]
+    );
     assert!(
         violations[0].text.contains("next_version_id"),
         "violation text should quote the offending line, got {:?}",
