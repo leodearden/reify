@@ -4,13 +4,19 @@
 //! through exactly one API each") self-enforcing.
 //!
 //! Scans `crates/reify-eval/src/**/*.rs` for raw `self.next_version_id` /
-//! `self.next_snapshot_id` arithmetic or reads outside the allocator
-//! (`Engine::allocate_snapshot_version`, engine_admin.rs) and the two named
-//! readers (`Engine::last_allocated_version`, engine_admin.rs;
-//! `Engine::current_eval_version`, engine_build.rs) — the only fns where
-//! bumping/reading the raw counters IS the API's own definition. A line
-//! carrying an explicit `// version-id-gate: allow — <reason>` escape
-//! comment is exempted (same grammar as the `ptodo:allow` precedent).
+//! `self.next_snapshot_id` arithmetic or reads outside the INV-BUILD-2
+//! version-id API family: the allocator `Engine::allocate_snapshot_version`
+//! (engine_admin.rs — the sole writer; it bumps both raw counters) and the
+//! raw-counter reader `Engine::last_allocated_version` (engine_admin.rs).
+//! `Engine::current_eval_version` (engine_build.rs) is allowlisted too — per
+//! the task spec, as the family's eval-round reader — but it reads
+//! `eval_state.snapshot.version` (the version stamped on the current
+//! snapshot), NOT the raw `next_version_id` counter, so its allowlist entry
+//! is deliberately defensive: no live counter token matches inside its body
+//! today (a future raw counter read there should route through
+//! `last_allocated_version` instead). A line carrying an explicit
+//! `// version-id-gate: allow — <reason>` escape comment is exempted (same
+//! grammar as the `ptodo:allow` precedent).
 //!
 //! Step-1 laid down anti-vacuous unit self-tests over `scan_source` before
 //! it existed (mirroring the seeded-violation self-test pattern in
@@ -53,13 +59,16 @@ const ALLOW_COMMENT: &str = "version-id-gate: allow";
 /// API family's own definitions.
 const TOKENS: &[&str] = &["self.next_version_id", "self.next_snapshot_id"];
 
-/// The only (file basename, fn name) pairs where a raw `self.next_*_id` use
-/// IS the allocate/read API's own definition: the allocator
-/// (`allocate_snapshot_version`) and the two named readers
-/// (`last_allocated_version`, `current_eval_version`) — see `docs/invariants.md`
-/// INV-BUILD-2. Allowlisting by enclosing fn (not whole file) means a new
-/// raw bump added anywhere ELSE in engine_admin.rs/engine_build.rs is still
-/// caught.
+/// The (file basename, fn name) pairs where a raw `self.next_*_id` use is
+/// exempt because it IS the version-id API's own definition (see
+/// `docs/invariants.md` INV-BUILD-2): the allocator `allocate_snapshot_version`
+/// (bumps both raw counters) and the raw-counter reader
+/// `last_allocated_version`. `current_eval_version` is listed too — per the
+/// task spec, as the family's eval-round reader — but it reads
+/// `snapshot.version`, not the raw counter, so that entry exempts no live
+/// token today (a deliberate, defensive listing). Allowlisting by enclosing
+/// fn (not whole file) means a new raw bump added anywhere ELSE in
+/// engine_admin.rs/engine_build.rs is still caught.
 const ALLOWED_FNS: &[(&str, &str)] = &[
     ("engine_admin.rs", "allocate_snapshot_version"),
     ("engine_admin.rs", "last_allocated_version"),
