@@ -2744,7 +2744,7 @@ impl EngineSession {
         // build_preview_gui_state) so both paths stay in sync.  Scoped block so
         // the immutable borrows on `compiled` and `check` are released before the
         // mutable engine borrow in the tessellation step below.
-        let (values, constraints) = {
+        let (mut values, mut constraints) = {
             let compiled = self.core.compiled().unwrap();
             let check = self.core.last_check().unwrap();
             (
@@ -2763,6 +2763,28 @@ impl EngineSession {
             let (compiled, engine) = self.core.split_compiled_and_engine_mut();
             compiled.and_then(|c| engine.tessellate_snapshot(c))
         };
+
+        // ── Task 5194: surface kernel-derived geometry/mass-property cells ──────
+        //
+        // `build_values` / `build_constraints` above read the kernel-LESS
+        // `check.values` (the `eval` / warm `edit_param` result), so a `: Rigid`
+        // body's auto-derived mass-property cells (mass / centroid /
+        // moment_of_inertia / moi_principal) read `Undef` and the
+        // `moi_principal[0] > 0` PD constraint is Indeterminate there. Surface the
+        // kernel-derived cells / re-checked constraints from the kernel-bearing
+        // `tessellate_snapshot` result via a single helper, invoked ONCE here so
+        // every entry point that rebuilds GuiState (load_file, update_source,
+        // set_parameter) surfaces them identically and the load / warm-edit paths
+        // cannot diverge (the helper keys on `ValueCellId`, not the reallocated
+        // kernel handle).
+        if let Some(result) = &tess_result {
+            surface_geometry_derived_cells(
+                self.core.engine(),
+                &mut values,
+                &mut constraints,
+                result,
+            );
+        }
 
         let (meshes, tessellation_diagnostics, display_panes, display_appearance) = match tess_result {
             Some(result) => {
@@ -3641,6 +3663,27 @@ fn display_scalar(v: &reify_ir::Value) -> Option<(f64, DimensionVector)> {
     }
 }
 
+/// Format the four display fields a `ValueData` cell derives directly from its
+/// `Value`: the default-unit `value` / `unit` pair (`format_value`) plus the
+/// per-cell canonical `si_value` + `dimension` name (`display_scalar`, task
+/// #5199). Returns `(value, unit, si_value, dimension)`.
+///
+/// Shared by `build_values` (every cell) and `surface_geometry_derived_cells`
+/// (each cell surfaced from `Undef` → Determined) so the two sites cannot drift
+/// if the formatting rules change (e.g. dimension naming). For a non-scalar or
+/// `Undef` value, `display_scalar` yields `None`, so `si_value` is `None` and
+/// `dimension` is `""` — the GUI keeps the static unit badge with no ladder,
+/// exactly as `format_value` renders the value itself.
+fn format_determined_cell(val: &Value) -> (String, String, Option<f64>, String) {
+    let (value, unit) = format_value(val);
+    let (si_value, dim) = match display_scalar(val) {
+        Some((s, d)) => (Some(s), Some(d)),
+        None => (None, None),
+    };
+    let dimension = dim.and_then(|d| d.canonical_name()).unwrap_or("").to_string();
+    (value, unit, si_value, dimension)
+}
+
 fn build_values(
     compiled: &reify_compiler::CompiledModule,
     check: &CheckResult,
@@ -3650,7 +3693,7 @@ fn build_values(
     for template in &compiled.templates {
         for cell in &template.value_cells {
             let val = check.values.get_or_undef(&cell.id);
-            let (formatted_value, unit) = format_value(&val);
+            let (formatted_value, unit, si_value, dimension) = format_determined_cell(&val);
             let determinacy = match &val {
                 reify_ir::Value::Undef => {
                     if cell.kind.is_auto() {
@@ -3703,17 +3746,9 @@ fn build_values(
                 }),
                 _ => None,
             };
-            // Per-cell canonical dimension + raw SI magnitude (task #5199),
-            // alongside the existing default-unit-formatted `value`/`unit`
-            // pair above — the substrate for the GUI's per-cell display-unit
-            // picker. `dimension` is the empty string for non-scalar values
-            // and for scalar dimensions with no named entry in
-            // `NAMED_DIMENSIONS` (e.g. dimensionless or composed units).
-            let (si_value, dim) = match display_scalar(&val) {
-                Some((s, d)) => (Some(s), Some(d)),
-                None => (None, None),
-            };
-            let dimension = dim.and_then(|d| d.canonical_name()).unwrap_or("").to_string();
+            // `si_value` / `dimension` (task #5199, the substrate for the GUI's
+            // per-cell display-unit picker) are computed once alongside
+            // `value` / `unit` by `format_determined_cell` above.
             values.push(ValueData {
                 cell_id: cell.id.to_string(),
                 name: cell.id.member.clone(),
@@ -3785,6 +3820,121 @@ pub(crate) fn build_constraints(
     // the GUI constraint-panel use case is not sensitive to numeric index order.
     constraints.sort_by(|a, b| a.node_id.cmp(&b.node_id));
     constraints
+}
+
+/// Task 5194: surface the kernel-derived geometry / mass-property cells and the
+/// post-geometry constraint verdicts from a `tessellate_snapshot` `result` onto
+/// the panel `values` / `constraints`.
+///
+/// `build_values` / `build_constraints` read the kernel-LESS `check.values` (the
+/// `eval` / warm `edit_param` result), where the geometry-query post-processes
+/// never ran. A `: Rigid` body's auto-derived `mass = volume(geometry) *
+/// material.density`, `centroid`, `moment_of_inertia`, and `moi_principal` cells
+/// therefore read `Undef` there, and the `moi_principal[0] > 0` PD constraint reads
+/// Indeterminate. The kernel-bearing `tessellate_snapshot` DID run
+/// `run_post_processes`, so `result.values` already carries those computed cells
+/// (the same values CLI `reify eval` reads from `build().values`).
+///
+/// This helper is invoked ONCE from `build_gui_state`, the shared rebuild path for
+/// EVERY GuiState entry point (load_file, update_source, set_parameter), so the
+/// load and warm-edit paths cannot diverge. It keys on `ValueCellId`
+/// (entity+member), which is stable across rebuilds, so a warm edit that clears the
+/// realization cache and re-executes geometry under a fresh `GeometryHandleId`
+/// still re-surfaces the same cells. It adds no kernel query — the constraint
+/// re-check runs the kernel-less checker against the already-resolved
+/// `result.values` — so the P0 kernel-less edit-latency gate is untouched.
+///
+/// Value overlay: for each cell the kernel-less pass left `Undef`
+/// (`determinacy != "determined"`) that `result.values` resolves to a non-`Undef`
+/// value, recompute `value` / `unit` / `determinacy` / `reason` / `si_value` /
+/// `dimension` from the surfaced value (mirroring `build_values`' determined-cell
+/// path). Already-`determined` cells keep their eval-computed values.
+///
+/// Constraint re-check: `tessellate_snapshot`'s own `result.constraint_results`
+/// were checked BEFORE `run_post_processes` patched the mass-property cells, so a
+/// constraint over such a cell still reads Indeterminate there. Re-check the
+/// active constraints against the now-complete `result.values` and adopt any
+/// verdict that resolved from Indeterminate → Satisfied / Violated. This mirrors
+/// the post-geometry constraint re-check in `Engine::build` (engine_build.rs): a
+/// previously Satisfied/Violated constraint cannot regress because the re-check
+/// only ADDS now-resolved geometry cells, so only Indeterminate entries are
+/// touched. Skipped entirely when this pass surfaced no cell, or when nothing is
+/// Indeterminate (the common cases). Narrowing the dispatch further — to only the
+/// constraints that reference a cell surfaced this pass — would need a subset-checking
+/// `Engine` API in reify-eval (out of this task's scope); for a `: Rigid` body the
+/// `moi_principal[0] > 0` PD constraint references a surfaced cell, so its re-check is
+/// inherently required on every warm edit regardless.
+fn surface_geometry_derived_cells(
+    engine: &Engine,
+    values: &mut [ValueData],
+    constraints: &mut [ConstraintData],
+    result: &reify_eval::TessellateResult,
+) {
+    // Track whether this pass surfaced any cell from Undef → Determined. If it
+    // did not, `result.values` resolved nothing the kernel-less panel was
+    // missing, so the constraint re-check below cannot flip any verdict (every
+    // constraint input is a panel cell, and an Indeterminate constraint only
+    // resolves once one of its Undef inputs is surfaced here) — skip it and
+    // spare the full active-constraint dispatch on every warm rebuild.
+    let mut surfaced_any = false;
+    for cell in values.iter_mut() {
+        // Leave already-resolved cells untouched; only surface the ones the
+        // kernel-less panel left Undef (undetermined / auto).
+        if cell.determinacy == "determined" {
+            continue;
+        }
+        let id = ValueCellId::new(&cell.entity_path, &cell.name);
+        let Some(val) = result.values.get(&id) else {
+            continue;
+        };
+        if matches!(val, Value::Undef) {
+            continue;
+        }
+        let (value, unit, si_value, dimension) = format_determined_cell(val);
+        cell.value = value;
+        cell.unit = unit;
+        cell.determinacy = format_determinacy(DeterminacyState::Determined);
+        cell.reason = None;
+        cell.dimension = dimension;
+        cell.si_value = si_value;
+        // The kernel-bearing build resolved this cell to a real, FINAL value —
+        // not a demand-pruned "pending" one. `build_values` sourced `freshness`
+        // (and any `last_substantive_value`) from the kernel-less snapshot, where
+        // an auto-derived geometry cell can read `"pending"` with a stale prior
+        // value; left as-is, the panel would show a Determined value under a
+        // "pending" badge with a stale prior-value surface. Reset both so the
+        // freshness badge and prior-value surface match the surfaced value.
+        cell.freshness = "final".to_string();
+        cell.last_substantive_value = None;
+        surfaced_any = true;
+    }
+
+    if surfaced_any
+        && constraints.iter().any(|c| c.status == "Indeterminate")
+        && let Ok((recheck, _diags)) = engine.check_constraints_with_values(&result.values)
+    {
+        for c in constraints.iter_mut() {
+            if c.status != "Indeterminate" {
+                continue;
+            }
+            let Some(new_sat) = recheck
+                .iter()
+                .find(|e| e.id.to_string() == c.node_id)
+                .map(|e| e.satisfaction)
+            else {
+                continue;
+            };
+            if new_sat == Satisfaction::Indeterminate {
+                continue;
+            }
+            c.status = match new_sat {
+                Satisfaction::Satisfied => "Satisfied",
+                Satisfaction::Violated => "Violated",
+                Satisfaction::Indeterminate => "Indeterminate",
+            }
+            .to_string();
+        }
+    }
 }
 
 // ── PRD-3 γ: DisplayOutput occurrence walk → display_panes ────────────────────

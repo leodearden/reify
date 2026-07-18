@@ -16739,3 +16739,213 @@ fn dock_pickup_mechanism_exposes_scrubbable_literal_bound_slider_smoke() {
     );
 }
 
+// ── Task 5194: Rigid auto-derived mass-property cells surface in the GUI panel ──
+//
+// A `structure def X : Rigid` auto-derives four geometry-query lets via the
+// stdlib `Rigid : Physical` traits (crates/reify-compiler/stdlib/structural_physical.ri):
+//   mass              = volume(geometry) * material.density
+//   centroid          = centroid(geometry)
+//   moment_of_inertia = moment_of_inertia(geometry, body_density)
+//   moi_principal     = eigenvalues(moment_of_inertia)   (+ PD constraint [0] > 0)
+//
+// These are populated ONLY by the kernel-bearing build's `run_post_processes`
+// (mass/centroid via geometry queries; moment_of_inertia via the topology-selector
+// pass; moi_principal via the derived-let pass). The GUI property panel, however,
+// sources cell values from the kernel-LESS `check.values` (eval / warm edit_param),
+// so all four read `undetermined` and the `moi_principal[0] > 0` PD constraint reads
+// `Indeterminate`. The fix overlays the kernel-derived `tessellate_snapshot`
+// `result.values` / `result.constraint_results` onto the panel in `build_gui_state`.
+
+/// Shared harness for the task-5194 GUI tests: an `EngineSession` whose
+/// `MockGeometryKernel` is pre-seeded with volume / centroid / inertia-tensor
+/// replies for `GeometryHandleId` 1..=4.
+///
+/// The id RANGE (not just id 1) covers the post-edit rebuild handle drift: the
+/// mock's `next_id` is monotonic and NOT reset between builds, so the initial
+/// load realizes the box to id 1 but a subsequent `set_parameter` rebuild
+/// re-executes the box and allocates a fresh id (2, 3, …). Seeding 1..=4 keeps
+/// the geometry queries answered across both the load and warm-edit rebuilds.
+///
+/// The inertia tensor is diagonal `diag(1, 2, 3)` (positive) so `moi_principal`
+/// eigenvalues are `[1, 2, 3]` and the PD constraint `moi_principal[0] > 0` is
+/// satisfiable. Seeded magnitudes are arbitrary stand-ins — the tests assert on
+/// determinacy / constraint status, not analytic values (the OCCT-gated
+/// crates/reify-eval/tests/rigid_moment_of_inertia_autoderive_smoke.rs owns the
+/// exact-magnitude checks).
+fn rigid_mass_props_session() -> EngineSession {
+    use reify_ir::{GeometryHandleId, Value};
+    let checker = SimpleConstraintChecker;
+    let mut kernel = MockGeometryKernel::new();
+    for id in 1..=4u64 {
+        let h = GeometryHandleId(id);
+        kernel = kernel
+            .with_volume_result(h, Value::Real(0.003))
+            .with_centroid_result(
+                h,
+                Value::String("{\"x\":0.05,\"y\":0.05,\"z\":0.15}".to_string()),
+            )
+            .with_inertia_tensor_result(
+                h,
+                7850.0,
+                Value::List(vec![
+                    Value::List(vec![Value::Real(1.0), Value::Real(0.0), Value::Real(0.0)]),
+                    Value::List(vec![Value::Real(0.0), Value::Real(2.0), Value::Real(0.0)]),
+                    Value::List(vec![Value::Real(0.0), Value::Real(0.0), Value::Real(3.0)]),
+                ]),
+            );
+    }
+    EngineSession::new(Box::new(checker), Some(Box::new(kernel)))
+}
+
+/// Absolute path to the committed `examples/rigid_mass_props_smoke.ri` fixture,
+/// resolved from this crate's manifest dir (two levels up → workspace root),
+/// mirroring `load_file_returns_gui_state`.
+fn rigid_mass_props_fixture_path() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("examples/rigid_mass_props_smoke.ri")
+}
+
+/// Locate the `moi_principal[0] > 0` positive-definiteness constraint injected by
+/// the stdlib `Rigid` trait, matching on either its formatted expression or its
+/// collected `parameter_ids` (both carry the `moi_principal` cell name).
+fn find_moi_principal_constraint(state: &crate::types::GuiState) -> &crate::types::ConstraintData {
+    state
+        .constraints
+        .iter()
+        .find(|c| {
+            c.expression.contains("moi_principal")
+                || c.parameter_ids.iter().any(|p| p.contains("moi_principal"))
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected the Rigid `moi_principal[0] > 0` PD constraint; have: {:?}",
+                state
+                    .constraints
+                    .iter()
+                    .map(|c| (c.expression.as_str(), &c.parameter_ids, c.status.as_str()))
+                    .collect::<Vec<_>>()
+            )
+        })
+}
+
+/// Task 5194 (step-1, RED): on GUI **load**, a `: Rigid` body's auto-derived
+/// mass-property cells must surface as `determined` in the property panel, and
+/// the `moi_principal[0] > 0` PD constraint must be `Satisfied`.
+///
+/// RED against the pre-fix panel: the four cells read `undetermined` (they are
+/// sourced from the kernel-less `check.values`, where the geometry-query
+/// post-processes never ran) and the PD constraint reads `Indeterminate`.
+#[test]
+fn rigid_mass_props_surface_as_determined_on_load() {
+    let mut session = rigid_mass_props_session();
+
+    let state = session
+        .load_file(&rigid_mass_props_fixture_path())
+        .expect("load_file should succeed for the rigid_mass_props_smoke fixture");
+
+    for name in ["mass", "centroid", "moment_of_inertia", "moi_principal"] {
+        let cell = state
+            .values
+            .iter()
+            .find(|v| v.name == name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected a `{name}` value cell on load; have: {:?}",
+                    state.values.iter().map(|v| v.name.as_str()).collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(
+            cell.determinacy, "determined",
+            "`{name}` must be `determined` on load (auto-derived from geometry + \
+             material.density); got determinacy={:?}, reason={:?}",
+            cell.determinacy, cell.reason
+        );
+        assert!(
+            cell.reason.is_none(),
+            "`{name}` must carry no undef-cause `reason` once surfaced; got {:?}",
+            cell.reason
+        );
+    }
+
+    let pd = find_moi_principal_constraint(&state);
+    assert_eq!(
+        pd.status, "Satisfied",
+        "the `moi_principal[0] > 0` PD constraint must be Satisfied once \
+         moi_principal resolves; got status={:?}",
+        pd.status
+    );
+}
+
+/// Task 5194 (step-3): after a warm `set_parameter` edit, the `: Rigid` body's
+/// auto-derived mass-property cells must STAY `determined` (and the PD constraint
+/// Satisfied) — the surfacing fix must be path-agnostic across load and warm edit.
+///
+/// `set_parameter` → `edit_check` (kernel-less) → `build_gui_state` →
+/// `tessellate_snapshot` clears the realization cache and re-executes the box,
+/// allocating a FRESH `GeometryHandleId` (the mock's `next_id` is monotonic and
+/// not reset between builds). The overlay keys on `ValueCellId`, not the kernel
+/// handle, so the cells must re-surface from the fresh `result.values` and must
+/// NOT degrade back to Undef after the edit.
+#[test]
+fn rigid_mass_props_stay_determined_after_warm_edit() {
+    let mut session = rigid_mass_props_session();
+
+    session
+        .load_file(&rigid_mass_props_fixture_path())
+        .expect("load_file should succeed for the rigid_mass_props_smoke fixture");
+
+    // Warm edit: perturb the box depth. This clears the realization cache, so the
+    // subsequent build re-executes the box under a fresh kernel handle.
+    let state = session
+        .set_parameter("RigidMassSmoke.depth", "250mm")
+        .expect("set_parameter(RigidMassSmoke.depth, 250mm) should succeed");
+
+    // The edit must have taken effect (depth == 250mm), proving we rebuilt.
+    let depth = state
+        .values
+        .iter()
+        .find(|v| v.name == "depth")
+        .expect("expected a `depth` value cell after the warm edit");
+    assert_eq!(
+        depth.value, "250",
+        "depth must read 250 (mm) after the warm edit; got {:?}",
+        depth.value
+    );
+
+    for name in ["mass", "centroid", "moment_of_inertia", "moi_principal"] {
+        let cell = state
+            .values
+            .iter()
+            .find(|v| v.name == name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected a `{name}` value cell after the warm edit; have: {:?}",
+                    state.values.iter().map(|v| v.name.as_str()).collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(
+            cell.determinacy, "determined",
+            "`{name}` must remain `determined` after a warm set_parameter edit \
+             (re-surfaced from the fresh-handle rebuild); got determinacy={:?}, reason={:?}",
+            cell.determinacy, cell.reason
+        );
+        assert!(
+            cell.reason.is_none(),
+            "`{name}` must carry no undef-cause `reason` after the warm edit; got {:?}",
+            cell.reason
+        );
+    }
+
+    let pd = find_moi_principal_constraint(&state);
+    assert_eq!(
+        pd.status, "Satisfied",
+        "the `moi_principal[0] > 0` PD constraint must stay Satisfied after the \
+         warm edit; got status={:?}",
+        pd.status
+    );
+}
+
