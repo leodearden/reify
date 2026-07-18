@@ -309,22 +309,26 @@ const CONSUMER_DIRECTION_A_LEDGER: &[&str] = &[
 
 /// `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` members recognized by NEITHER
 /// `is_symbolic_eval_wired_selector_ctor` (kernel-free) NOR
-/// `is_geometry_consumer_call` (kernel-bearing) — the named-leaf ctors
-/// (`face`, `edge`, `solid_body`, `vertex`; task 4119 δ / 4368) plus `split`
-/// (task 4190). All five resolve ONLY via `try_eval_topology_selector`'s
-/// build() case (`geometry_ops.rs:6504`), which requires a realized kernel.
+/// `is_geometry_consumer_call` (kernel-bearing) — now just `split`
+/// (task 4190), which resolves ONLY via `try_eval_topology_selector`'s
+/// build() case (`geometry_ops.rs:6504`), requiring a realized kernel.
 ///
-/// They are deliberately NOT probed directly: `try_eval_topology_selector`
+/// `split` is deliberately NOT probed directly: `try_eval_topology_selector`
 /// returns `Option`, and without a kernel it returns `None` for BOTH an
 /// unrecognized name and a recognized-but-eval-failed call — it cannot
 /// distinguish "name unknown" from "name known, kernel absent", so it is not
 /// a sound name oracle (see the module-level design-decision doc / PRD
-/// §7.3). Their compiler-side presence is instead pinned indirectly via the
+/// §7.3). Its compiler-side presence is instead pinned indirectly via the
 /// result-type-map parity check in step-7
 /// (`reify_compiler::topology_selector_result_type`).
 ///
-/// Step-6 (task 5055 γ).
-const SELECTOR_BUILD_PATH_ONLY: &[&str] = &["face", "edge", "solid_body", "vertex", "split"];
+/// task 4370: the four named-leaf ctors (`face`, `edge`, `solid_body`,
+/// `vertex`; formerly build-path-only, task 4119 δ / 4368 / 5055 γ step-6)
+/// gained a kernel-free symbolic-eval stand-in (`symbolic_eval_helper_for_name`
+/// / `try_build_kernel_free_leaf_selector` named-leaf arms), so they are now
+/// recognized by `is_symbolic_eval_wired_selector_ctor` and live in the
+/// kernel-free ctor set below — no longer in this build-path-only ledger.
+const SELECTOR_BUILD_PATH_ONLY: &[&str] = &["split"];
 
 // ═══════════════════════════════════════════════════════════════════════
 // Tests
@@ -490,9 +494,10 @@ fn geometry_consumer_call_oracle_two_direction_agreement() {
     }
 }
 
-/// `is_symbolic_eval_wired_selector_ctor` recognizes the 17 kernel-free leaf
-/// selector ctors (`symbolic_eval_helper_for_name`'s match arms,
-/// `geometry_ops.rs:5318-5344`) — the kernel-free half of the eval-side
+/// `is_symbolic_eval_wired_selector_ctor` recognizes the 21 kernel-free leaf
+/// selector ctors (`symbolic_eval_helper_for_name`'s match arms) — the 17
+/// generic kernel-free ctors plus the 4 named-leaf ctors that gained a
+/// symbolic-eval stand-in in task 4370 — the kernel-free half of the eval-side
 /// selector-recognition surface. The other half is the kernel-bearing
 /// selector names `is_geometry_consumer_call` also recognizes (the subset of
 /// its 22 names — `closest_point`, `is_on`, `angle_between_surfaces`,
@@ -505,18 +510,20 @@ fn geometry_consumer_call_oracle_two_direction_agreement() {
 ///   the full eval-side selector-recognition UNION, are both subsets of
 ///   `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` — no eval-side selector oracle
 ///   recognizes a name the compiler doesn't claim.
-/// - Direction A (compiler ⇒ eval): the union covers 26 of 31
-///   `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` members directly; the remaining 5 —
-///   `face`, `edge`, `solid_body`, `vertex`, `split` — are recognized by
-///   NEITHER boolean oracle (they dispatch only via
-///   `try_eval_topology_selector`'s build() path) and are ledgered in
-///   [`SELECTOR_BUILD_PATH_ONLY`] rather than asserted equal (step-6).
+/// - Direction A (compiler ⇒ eval): the union covers 30 of 31
+///   `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` members directly; the remaining 1 —
+///   `split` — is recognized by NEITHER boolean oracle (it dispatches only via
+///   `try_eval_topology_selector`'s build() path) and is ledgered in
+///   [`SELECTOR_BUILD_PATH_ONLY`] rather than asserted equal (step-6). The
+///   named-leaf ctors `face`/`edge`/`solid_body`/`vertex` left this ledger in
+///   task 4370 when they gained a kernel-free symbolic-eval stand-in.
 #[test]
 fn topology_selector_eval_recognition_agrees_with_selector_names_family() {
     let universe = all_family_names();
     let selector_names = to_set(reify_compiler::GEOMETRY_TOPOLOGY_SELECTOR_NAMES);
 
-    // The kernel-free leaf-ctor set is exactly the documented 17 names.
+    // The kernel-free leaf-ctor set is exactly the documented 21 names
+    // (17 generic kernel-free ctors + 4 named-leaf ctors, task 4370).
     let kernel_free_ctor_set = recognized(
         crate::geometry_ops::is_symbolic_eval_wired_selector_ctor,
         &universe,
@@ -540,6 +547,14 @@ fn topology_selector_eval_recognition_agrees_with_selector_names_family() {
         "extremal_by_centroid",
         "created_by_feature",
         "split_by_feature",
+        // task 4370: named-leaf ctors gained a kernel-free symbolic-eval
+        // stand-in (`symbolic_eval_helper_for_name` / the named-leaf arms in
+        // `try_build_kernel_free_leaf_selector`), so they are now recognized
+        // by `is_symbolic_eval_wired_selector_ctor`.
+        "face",
+        "edge",
+        "vertex",
+        "solid_body",
     ]);
     assert_eq!(
         kernel_free_ctor_set, expected_kernel_free,
