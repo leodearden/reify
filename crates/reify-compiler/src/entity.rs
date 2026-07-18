@@ -5905,6 +5905,55 @@ pub(crate) fn expand_constraint_inst(
     }
 }
 
+/// Lower a nested `priv`-aware `Param` (declared inside a `port { }` block or a
+/// block-form `where { }` guarded group) to a lightweight skeleton value cell.
+///
+/// [`build_structure_def_skeleton`] populates the transient template's `ports`
+/// and `guarded_groups` with just enough shape for the function-body priv gate
+/// to fire (`template_member_is_priv` / `port_member_is_priv` in `expr.rs`),
+/// which read only `id.member`, `kind == Param`, and `visibility`. `cell_type`
+/// gets the same resolved-or-dimensionless fallback as the top-level param loop;
+/// `default_expr` is omitted — the gate never evaluates these nested defaults
+/// during fn-body member access. `member_name` is the composite `"<port>.<param>"`
+/// for a port member (matching `port_member_is_priv`'s composite lookup) and the
+/// bare param name for a guarded-block member (matching `template_member_is_priv`'s
+/// `guarded_groups` scan).
+fn skeleton_nested_param_cell(
+    entity_name: &str,
+    member_name: &str,
+    param: &reify_ast::ParamDecl,
+    type_param_names: &HashSet<String>,
+    alias_registry: &TypeAliasRegistry,
+    structure_names: &HashSet<String>,
+    trait_names: &HashSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> ValueCellDecl {
+    let cell_type = param
+        .type_expr
+        .as_ref()
+        .and_then(|te| {
+            resolve_type_expr_with_aliases(
+                te,
+                type_param_names,
+                alias_registry,
+                diagnostics,
+                structure_names,
+                trait_names,
+            )
+        })
+        .unwrap_or(Type::dimensionless_scalar());
+    ValueCellDecl {
+        id: ValueCellId::new(entity_name, member_name),
+        kind: ValueCellKind::Param,
+        visibility: priv_flag_to_visibility(param.is_priv),
+        is_aux: false,
+        cell_type,
+        default_expr: None,
+        solver_hints: vec![],
+        span: param.span,
+    }
+}
+
 /// Build a skeleton [`TopologyTemplate`] for a `structure_def` that appears in
 /// the same module as a compiled function.
 ///
@@ -6089,10 +6138,10 @@ pub(crate) fn build_structure_def_skeleton(
                 // member access (functions_phase merged_registry), so this
                 // TOP-LEVEL param site MUST mirror the authoritative compile_entity
                 // param site (via priv_flag_to_visibility) or a `priv` member leaks
-                // through a function body. Port-members and guarded-block members
-                // are a separate case: the skeleton omits them entirely rather than
-                // lowering them Public — see the `ports`/`guarded_groups` fields
-                // below, where that omission is confirmed harmless.
+                // through a function body. Nested `priv` members are carried the
+                // same way: guarded-block members by the skeleton's `guarded_groups`
+                // pass below (so `m.g` is priv-gated), and port-members alongside the
+                // paired expr.rs receiver-resolution change (so `m.secret.main` is too).
                 visibility: priv_flag_to_visibility(param.is_priv),
                 is_aux: false,
                 cell_type,
@@ -6217,6 +6266,69 @@ pub(crate) fn build_structure_def_skeleton(
         }
     }
 
+    // ── Lightweight guarded-block member population (function-body priv gate) ──
+    // The skeleton is the template consulted while type-checking function BODIES
+    // (phase_functions merged_registry). Populate `guarded_groups` with each
+    // block-form `where { }` group's `priv`-aware members so a fn body reading a
+    // `priv` guarded member (`m.g`) is priv-gated: the SIR-α StructureRef
+    // member-access block's E_PRIV gate (`template_member_is_priv`, expr.rs) scans
+    // `guarded_groups[].members` and is deliberately ordered BEFORE the
+    // member-not-found check — so populating this vec is sufficient, with no
+    // expr.rs change for the guarded case. Only the priv-gate-relevant fields are
+    // built (see `skeleton_nested_param_cell`); the authoritative guard compilation
+    // (guards.rs) — which needs the alias registry / trait names / diagnostic
+    // machinery that phase_functions runs without — is intentionally NOT invoked.
+    // One-level nesting only: guards-in-guards (and ports-in-guards) stay a
+    // documented lightweight-skeleton limitation, covering the test fixtures and
+    // task #5171's external coverage (all one level deep).
+    let mut guarded_groups: Vec<CompiledGuardedGroup> = Vec::new();
+    for member in &structure.members {
+        if let reify_ast::MemberDecl::GuardedGroup(group) = member {
+            let mut members: Vec<ValueCellDecl> = Vec::new();
+            for gm in &group.members {
+                if let reify_ast::MemberDecl::Param(param) = gm {
+                    members.push(skeleton_nested_param_cell(
+                        &structure.name,
+                        &param.name,
+                        param,
+                        &type_param_names,
+                        alias_registry,
+                        structure_names,
+                        trait_names,
+                        &mut throwaway_diags,
+                    ));
+                }
+            }
+            let mut else_members: Vec<ValueCellDecl> = Vec::new();
+            for gm in &group.else_members {
+                if let reify_ast::MemberDecl::Param(param) = gm {
+                    else_members.push(skeleton_nested_param_cell(
+                        &structure.name,
+                        &param.name,
+                        param,
+                        &type_param_names,
+                        alias_registry,
+                        structure_names,
+                        trait_names,
+                        &mut throwaway_diags,
+                    ));
+                }
+            }
+            guarded_groups.push(CompiledGuardedGroup {
+                // The priv gate reads only `members` / `else_members`; guard_expr,
+                // guard_value_cell, and constraints are throwaway placeholders
+                // (mirrors the idiomatic skeleton guard literal used elsewhere).
+                guard_expr: CompiledExpr::literal(Value::Bool(true), Type::Bool),
+                guard_value_cell: ValueCellId::new(&structure.name, "__skeleton_guard"),
+                members,
+                constraints: vec![],
+                else_members,
+                else_constraints: vec![],
+                parent_guard: None,
+            });
+        }
+    }
+
     TopologyTemplate {
         name: structure.name.to_string(),
         doc: structure.doc.clone(),
@@ -6231,28 +6343,19 @@ pub(crate) fn build_structure_def_skeleton(
         realizations: vec![],
         sub_components: vec![],
         relations: vec![],
-        // Unconditionally empty — the member loop above only lowers top-level
-        // `MemberDecl::Param`/`Let`; it has no arm for `MemberDecl::Port` or
-        // `MemberDecl::GuardedGroup`, so port-members and guarded-block members
-        // never reach this skeleton, priv or not (task #5161 review:
-        // architecture_coherence). Confirmed harmless, not just assumed: an
-        // empty `ports`/`guarded_groups` means the port (or guarded member)
-        // itself is unresolved during function-body member access, so lookup
-        // fails closed with E_STRUCTURE_MEMBER_NOT_FOUND before any visibility
-        // check runs — it does not fall open to a Public-like default. See
-        // `function_body_priv_port_member_access_not_yet_priv_gated` /
-        // `function_body_priv_guarded_member_access_not_yet_priv_gated` in
-        // priv_member_visibility_tests.rs (Part D coda, function-body variant),
-        // which pin this empirically. Same gap and same root cause as the
-        // external-access enforcement seam that task #5171 closed for
-        // `obj.member` access (both port-member and guarded-block priv
-        // params) — but this skeleton is untouched by that fix, since
-        // function bodies never reach a real per-structure template at all.
-        // Extending the skeleton to carry these members (so function-body
-        // access can be priv-gated too) is tracked by follow-up #5222.
+        // Ports remain empty at this step. A nested port member (`m.secret.main`)
+        // needs BOTH this vec populated AND an expr.rs receiver-resolution change
+        // to be priv-gated from a function body (ports are absent from
+        // `value_cells`, so `m.secret` never types as a `StructureRef` and the
+        // outer `.main` is caught only by the AST-pattern branch); both are wired
+        // together next.
         ports: vec![],
         connections: vec![],
-        guarded_groups: vec![],
+        // Guarded-block members ARE carried (see the population pass above), so a
+        // function body reading a `priv` guarded member (`m.g`) is priv-gated via
+        // the SIR-α `StructureRef` E_PRIV gate — closing the guarded half of the
+        // function-body gap left by task #5171's external-only enforcement.
+        guarded_groups,
         structure_controlling: HashSet::new(),
         objective: None,
         meta: HashMap::new(),
