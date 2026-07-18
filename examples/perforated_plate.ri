@@ -1,0 +1,45 @@
+// Perforated plate / sieve — the bread-and-butter pattern-boolean workload.
+//
+// A rectangular plate with two interleaved grids of circular through-holes,
+// modelled as `difference(plate, union_all(linear_pattern_2d, linear_pattern_2d))`.
+// This is the composed shape task 5213 targets: the pattern replication now fuses
+// every hole instance in a SINGLE n-ary boolean pass (was O(N²) pairwise), so dense
+// sieves realize without the former super-linear blow-up. See §3.8 of
+// docs/reify-stdlib-reference.md and crates/reify-eval/tests/pattern_single_pass_e2e.rs.
+//
+// Geometry notes:
+//   - `box(w, h, d)` is centred at the origin, so the plate spans z ∈ [-t/2, t/2].
+//   - `cylinder(r, h)` rises from z = 0 to z = h along +Z; each hole cylinder is
+//     made 3× the plate thickness and shifted down by 1.5× the thickness so it
+//     fully pierces the plate (a genuine through-hole) regardless of `thickness`.
+//   - Grid A is a 3×3 lattice on a 10 mm pitch centred on the plate; grid B is a
+//     2×2 lattice offset by half a pitch, dropping a hole into each of grid A's
+//     interior gaps. The two grids are mutually disjoint (nearest centre spacing
+//     √2·5 mm > the Ø4 mm holes), so the union is a clean set of separate holes.
+//
+// The hole lattice (offsets, pitch, counts) is sized for the default 40 mm plate;
+// scale them alongside `plate_size` when re-parameterising.
+
+structure def PerforatedPlate {
+    param plate_size  : Length = 40mm   // square plate footprint
+    param thickness   : Length = 4mm    // plate thickness
+    param hole_radius : Length = 2mm    // radius of each perforation
+
+    let plate = difference(
+        box(plate_size, plate_size, thickness),
+        union_all(
+            // Grid A — 3×3 through-holes, base instance at (-10 mm, -10 mm).
+            linear_pattern_2d(
+                translate(cylinder(hole_radius, thickness * 3.0), -10mm, -10mm, thickness * -1.5),
+                1, 0, 0, 3, 10mm,
+                0, 1, 0, 3, 10mm
+            ),
+            // Grid B — 2×2 through-holes interleaved into grid A's gaps.
+            linear_pattern_2d(
+                translate(cylinder(hole_radius, thickness * 3.0), -5mm, -5mm, thickness * -1.5),
+                1, 0, 0, 2, 10mm,
+                0, 1, 0, 2, 10mm
+            )
+        )
+    )
+}
