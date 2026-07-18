@@ -84,6 +84,7 @@ python3 scripts/prd-capability-check.py --json tests/prd-gate/example-probe-set.
 |---|---|
 | `example-probe-set.json` | Example showing all three probe kinds (used in README and docs) |
 | `corpus-probe-set.json` | δ historical-false-premise regression corpus — 3 rows, all FAIL |
+| `compiler-type-hygiene-probe-set.json` | §8 boundary-table integration gate (task λ/5070) — 7 rows, **all PASS**: grammar (`SpecLike<Foo>` parses) + 3 flipped POST-state rejections (`E_TYPE_ARG_ON_TRAIT` / `is undefined for operand kinds` / `must be a comparable kind`) + 3 end-to-end integration-fixture rows. Gated by `tests/infra/test_prd_gate_compiler_type_hygiene.sh` (all-PASS, tree-sitter skip-guarded). |
 
 ## `match` predicate semantics
 
