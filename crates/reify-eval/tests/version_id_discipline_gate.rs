@@ -17,6 +17,16 @@
 //! `no_stale_undef_invariant_gate.rs::seeded_stale_undef_violation_is_reported`);
 //! step-2 (below) implements the matcher so they pass. Step-3 adds the
 //! real-tree gate test that walks `crates/reify-eval/src/` itself.
+//!
+//! **Line-oriented matching (accepted limitation).** The scan keys on the
+//! literal `self.next_version_id` / `self.next_snapshot_id` tokens one line
+//! at a time, so a use that reflows the receiver away from the field across
+//! lines (`self\n    .next_version_id`) — or aliases `self` first
+//! (`let p = &mut *self; p.next_version_id += 1;`) — would evade it. Neither
+//! shape appears in the scanned tree, neither is a realistic copy-paste
+//! reintroduction, and rustfmt keeps `self.field` on one line; the gate
+//! deliberately accepts that residual blind spot in exchange for a matcher
+//! with no Rust parser (see also the `strip_line_comment` caveat below).
 
 /// One raw, non-exempt `self.next_version_id` / `self.next_snapshot_id` use
 /// found outside the allocator/reader API family.
