@@ -54,9 +54,10 @@ pub struct DimensionLadder {
 ///
 /// Each dimension's `is_default` entry is numerically identical to the unit
 /// `DimensionVector::to_display_units` already chooses for that dimension
-/// (Length→mm, Area→mm², Volume→mm³, Angle→deg; Mass/Pressure/Density fall
-/// through `to_display_units`'s `"SI"` fallback branch, so their defaults are
-/// the raw SI base unit — kg, Pa, kg/m³ — at `si_scale: 1.0`).
+/// (Length→mm, Area→mm², Volume→mm³, Angle→deg; Mass/Pressure/Density and the
+/// single-rung Force/Energy/Power ladders fall through `to_display_units`'s
+/// unscaled fallback branch, so their defaults are the coherent-SI base unit
+/// — kg, Pa, kg/m³, N, J, W — at `si_scale: 1.0`).
 pub fn unit_ladders() -> Vec<DimensionLadder> {
     vec![
         DimensionLadder {
@@ -205,6 +206,38 @@ pub fn unit_ladders() -> Vec<DimensionLadder> {
                     is_default: false,
                 },
             ],
+        },
+        // Single-rung coherent-SI ladders (PRD display-unit-preference §4):
+        // seed the curated derived-unit name over the existing
+        // DimensionVector::FORCE/ENERGY/POWER consts. One is_default rung
+        // satisfies the every_ladder_has_exactly_one_default guard; §5
+        // assigns them no auto-scale posture (auto_scale = None).
+        DimensionLadder {
+            dimension: "Force".to_string(),
+            derived_unit_name: "N".to_string(),
+            units: vec![UnitOption {
+                label: "N".to_string(),
+                si_scale: 1.0,
+                is_default: true,
+            }],
+        },
+        DimensionLadder {
+            dimension: "Energy".to_string(),
+            derived_unit_name: "J".to_string(),
+            units: vec![UnitOption {
+                label: "J".to_string(),
+                si_scale: 1.0,
+                is_default: true,
+            }],
+        },
+        DimensionLadder {
+            dimension: "Power".to_string(),
+            derived_unit_name: "W".to_string(),
+            units: vec![UnitOption {
+                label: "W".to_string(),
+                si_scale: 1.0,
+                is_default: true,
+            }],
         },
     ]
 }
