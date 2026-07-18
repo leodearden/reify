@@ -2744,7 +2744,7 @@ impl EngineSession {
         // build_preview_gui_state) so both paths stay in sync.  Scoped block so
         // the immutable borrows on `compiled` and `check` are released before the
         // mutable engine borrow in the tessellation step below.
-        let (values, constraints) = {
+        let (mut values, mut constraints) = {
             let compiled = self.core.compiled().unwrap();
             let check = self.core.last_check().unwrap();
             (
@@ -2763,6 +2763,99 @@ impl EngineSession {
             let (compiled, engine) = self.core.split_compiled_and_engine_mut();
             compiled.and_then(|c| engine.tessellate_snapshot(c))
         };
+
+        // ── Task 5194: surface kernel-derived geometry/mass-property cells ──────
+        //
+        // `build_values` / `build_constraints` above read the kernel-LESS
+        // `check.values` (the `eval` / warm `edit_param` result). The warm edit
+        // re-eval is deliberately kernel-less — a P0 latency gate asserts zero
+        // kernel ops — so a `: Rigid` body's auto-derived geometry-query lets
+        // (`mass = volume(geometry) * material.density`, `centroid`,
+        // `moment_of_inertia`, `moi_principal`) are never populated there and read
+        // `Undef`, with the `moi_principal[0] > 0` PD constraint left Indeterminate.
+        //
+        // The kernel-bearing `tessellate_snapshot` above DID run
+        // `run_post_processes`, so `result.values` / `result.constraint_results`
+        // already carry those computed cells (the same values CLI `reify eval`
+        // reads from `build().values`). Overlay them onto the panel for any cell
+        // the kernel-less pass left undetermined, and lift any Indeterminate
+        // constraint the kernel recheck resolved. Already-`determined` cells and
+        // Satisfied/Violated constraints are left untouched, so non-geometry cells
+        // keep their eval-computed values. Keyed on `ValueCellId` (entity+member),
+        // this is independent of the reallocated kernel handle, so it surfaces the
+        // cells identically on BOTH the initial load and every warm edit rebuild
+        // (both funnel through `build_gui_state`) without adding any kernel query
+        // to the P0 kernel-less edit path.
+        if let Some(result) = &tess_result {
+            for cell in values.iter_mut() {
+                // Leave already-resolved cells untouched; only surface the ones
+                // the kernel-less panel left Undef (undetermined / auto).
+                if cell.determinacy == "determined" {
+                    continue;
+                }
+                let id = ValueCellId::new(&cell.entity_path, &cell.name);
+                let Some(val) = result.values.get(&id) else {
+                    continue;
+                };
+                if matches!(val, Value::Undef) {
+                    continue;
+                }
+                // Recompute the display fields from the kernel-derived value,
+                // mirroring `build_values`' determined-cell path.
+                let (formatted_value, unit) = format_value(val);
+                cell.value = formatted_value;
+                cell.unit = unit;
+                cell.determinacy = format_determinacy(DeterminacyState::Determined);
+                cell.reason = None;
+                let (si_value, dim) = match display_scalar(val) {
+                    Some((s, d)) => (Some(s), Some(d)),
+                    None => (None, None),
+                };
+                cell.dimension = dim.and_then(|d| d.canonical_name()).unwrap_or("").to_string();
+                cell.si_value = si_value;
+            }
+            // Constraint re-check against the post-geometry value map.
+            //
+            // `tessellate_snapshot`'s own `result.constraint_results` were checked
+            // BEFORE `run_post_processes` patched the geometry-derived cells into
+            // `result.values`, so a constraint over a mass-property cell (e.g. the
+            // Rigid `moi_principal[0] > 0` PD constraint) still reads Indeterminate
+            // there. Re-check the constraints against the now-complete `result.values`
+            // and adopt any verdict that resolved from Indeterminate → Satisfied /
+            // Violated. This mirrors the post-geometry constraint re-check in
+            // `Engine::build` (engine_build.rs) — a previously Satisfied/Violated
+            // constraint cannot regress because the re-check only ADDS now-resolved
+            // geometry cells, so only Indeterminate entries are touched. Skipped
+            // entirely when nothing is Indeterminate (the common case).
+            if constraints.iter().any(|c| c.status == "Indeterminate")
+                && let Ok((recheck, _diags)) = self
+                    .core
+                    .engine()
+                    .check_constraints_with_values(&result.values)
+            {
+                for c in constraints.iter_mut() {
+                    if c.status != "Indeterminate" {
+                        continue;
+                    }
+                    let Some(new_sat) = recheck
+                        .iter()
+                        .find(|e| e.id.to_string() == c.node_id)
+                        .map(|e| e.satisfaction)
+                    else {
+                        continue;
+                    };
+                    if new_sat == Satisfaction::Indeterminate {
+                        continue;
+                    }
+                    c.status = match new_sat {
+                        Satisfaction::Satisfied => "Satisfied",
+                        Satisfaction::Violated => "Violated",
+                        Satisfaction::Indeterminate => "Indeterminate",
+                    }
+                    .to_string();
+                }
+            }
+        }
 
         let (meshes, tessellation_diagnostics, display_panes, display_appearance) = match tess_result {
             Some(result) => {
