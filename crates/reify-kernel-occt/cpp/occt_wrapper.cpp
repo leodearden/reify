@@ -166,6 +166,7 @@
 #include <fstream>
 #include <cstdio>
 #include <cmath>
+#include <atomic>
 #include <mutex>
 #include <stdexcept>
 
@@ -433,6 +434,26 @@ std::unique_ptr<OcctShape> make_half_space(double px, double py, double pz,
     });
 }
 
+// --- Boolean-op-pass counter (task 5213) ---
+
+// Process-global count of completed OCCT boolean passes, incremented once per
+// successful Build() in boolean_fuse/boolean_cut/boolean_common and once in the
+// single-pass fuse_shape_list.  Deterministic (an exact integer, not a
+// tolerance) and non-flaky: it lets tests assert that a K-instance pattern
+// performs exactly ONE boolean pass rather than K−1.  Also a first
+// instrumentation seed for future long-boolean progress reporting (Lever 4).
+// memory_order_relaxed is sufficient: tests reset/read under a mutex, so there
+// is no cross-thread ordering dependency to establish.
+static std::atomic<uint64_t> g_boolean_pass_count{0};
+
+void reset_boolean_pass_count() {
+    g_boolean_pass_count.store(0, std::memory_order_relaxed);
+}
+
+uint64_t boolean_pass_count() {
+    return g_boolean_pass_count.load(std::memory_order_relaxed);
+}
+
 // --- Compound assembly ---
 
 std::unique_ptr<OcctShape> make_compound(const OcctShapeVec& shapes) {
@@ -509,6 +530,8 @@ TopoDS_Shape fuse_shape_list(const TopTools_ListOfShape& shapes) {
     if (!fuse.IsDone()) {
         throw std::runtime_error("fuse_shape_list: BRepAlgoAPI_Fuse failed (IsDone=false)");
     }
+    // One completed boolean pass, regardless of instance count (task 5213).
+    g_boolean_pass_count.fetch_add(1, std::memory_order_relaxed);
     TopoDS_Shape result = fuse.Shape();
     // Rewrap a disjoint COMPOUND-of-solids as a COMPSOLID so the multi-body
     // union is watertight-queryable and reports the correct component count.
@@ -552,6 +575,7 @@ std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& 
         if (!fuse.IsDone()) {
             throw std::runtime_error("BRepAlgoAPI_Fuse failed");
         }
+        g_boolean_pass_count.fetch_add(1, std::memory_order_relaxed);
         auto result = std::make_unique<OcctShape>();
         result->shape = fuse.Shape();
         return result;
@@ -565,6 +589,7 @@ std::unique_ptr<OcctShape> boolean_cut(const OcctShape& left, const OcctShape& r
         if (!cut.IsDone()) {
             throw std::runtime_error("BRepAlgoAPI_Cut failed");
         }
+        g_boolean_pass_count.fetch_add(1, std::memory_order_relaxed);
         auto result = std::make_unique<OcctShape>();
         result->shape = cut.Shape();
         return result;
@@ -578,6 +603,7 @@ std::unique_ptr<OcctShape> boolean_common(const OcctShape& left, const OcctShape
         if (!common.IsDone()) {
             throw std::runtime_error("BRepAlgoAPI_Common failed");
         }
+        g_boolean_pass_count.fetch_add(1, std::memory_order_relaxed);
         auto result = std::make_unique<OcctShape>();
         result->shape = common.Shape();
         return result;

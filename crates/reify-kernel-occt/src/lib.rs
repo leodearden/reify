@@ -30,6 +30,40 @@ pub use register::OCCT_KERNEL_VERSION;
 mod ffi;
 #[cfg(has_occt)]
 pub use ffi::ffi::TopologyCacheBuildCounts;
+
+/// Zero the process-global boolean-op-pass counter (task 5213).
+///
+/// Incremented once per completed OCCT boolean `Build()` (the binary
+/// fuse/cut/common ops and the single-pass `fuse_shape_list`).  Exposed so
+/// tests can assert that a K-instance pattern performs exactly ONE boolean
+/// pass rather than K−1 — a deterministic, non-flaky signal for the O(N²)→
+/// single-pass change (and a seed for future long-boolean progress reporting).
+///
+/// The counter is process-global; callers reading it must serialize their
+/// reset→operate→read windows (see `tests/pattern_single_pass_counter.rs`).
+#[cfg(has_occt)]
+pub fn reset_boolean_pass_count() {
+    ffi::ffi::reset_boolean_pass_count();
+}
+
+/// Read the process-global count of completed OCCT boolean passes.
+///
+/// See [`reset_boolean_pass_count`] for the increment contract and
+/// serialization requirement.
+#[cfg(has_occt)]
+pub fn boolean_pass_count() -> u64 {
+    ffi::ffi::boolean_pass_count()
+}
+
+/// Stub boolean-op-pass counter reset (OCCT not available) — no-op.
+#[cfg(not(has_occt))]
+pub fn reset_boolean_pass_count() {}
+
+/// Stub boolean-op-pass counter read (OCCT not available) — always 0.
+#[cfg(not(has_occt))]
+pub fn boolean_pass_count() -> u64 {
+    0
+}
 // Re-export the result type so callers using the test-fixture wrapper below
 // can name it without reaching into the private bridge module.
 #[cfg(has_occt)]

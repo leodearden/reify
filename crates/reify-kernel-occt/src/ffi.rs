@@ -1132,6 +1132,13 @@ pub mod ffi {
         /// COMPSOLID of the separate solids.
         fn fuse_all(shapes: &OcctShapeVec) -> Result<UniquePtr<OcctShape>>;
 
+        /// Zero the process-global boolean-op-pass counter (task 5213).
+        fn reset_boolean_pass_count();
+
+        /// Read the process-global count of completed OCCT boolean passes —
+        /// one per boolean_fuse/cut/common Build() and one per fuse_shape_list.
+        fn boolean_pass_count() -> u64;
+
         fn get_edges(shape: &OcctShape) -> Result<UniquePtr<OcctShapeVec>>;
 
         /// Materialize the unique faces of `shape` into an OcctShapeVec

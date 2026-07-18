@@ -172,6 +172,17 @@ std::unique_ptr<OcctShape> make_compound(const OcctShapeVec& shapes);
 /// count).  Source shapes in the vec remain valid after the call.
 std::unique_ptr<OcctShape> fuse_all(const OcctShapeVec& shapes);
 
+// --- Boolean-op-pass counter (task 5213) ---
+
+/// Zero the process-global boolean-op-pass counter.
+void reset_boolean_pass_count();
+
+/// Read the process-global count of completed OCCT boolean passes.  Incremented
+/// once per successful Build() in boolean_fuse/boolean_cut/boolean_common and
+/// once per single-pass fuse_shape_list — so a K-instance pattern reads as
+/// exactly 1, not K−1.
+uint64_t boolean_pass_count();
+
 // --- Boolean operations ---
 
 std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& right);
