@@ -9,6 +9,11 @@
 //! choice — this keeps the picker's default selection numerically identical
 //! to the canonical backend-formatted `value`.
 //!
+//! Each ladder also carries a curated `derived_unit_name` (PRD
+//! display-unit-preference §4) — the single per-dimension label, held
+//! invariant-equal to the `is_default` rung's label (§4a) so downstream
+//! eval/hover surfaces can unify on one string per dimension.
+//!
 //! Exposed to the frontend via the `get_unit_ladders` Tauri command
 //! (`main.rs`). Doubles as the future substrate for auto-scaling defaults
 //! and the DSL `@display` annotation follow-up (task #5200).
@@ -32,6 +37,15 @@ pub struct UnitOption {
 pub struct DimensionLadder {
     /// Canonical dimension name (`DimensionVector::canonical_name()`, e.g. `"Volume"`).
     pub dimension: String,
+    /// The single curated derived-unit label for this dimension (PRD
+    /// display-unit-preference §4). Invariant: always equals the label of
+    /// this ladder's `is_default` rung — the default [`UnitOption`] is the
+    /// single source of the curated per-dimension name (§4a). Stored as an
+    /// explicit denormalized field (rather than re-derived from the rungs)
+    /// so a dimension→name lookup is direct and independent of rung
+    /// order/count; the equality is pinned by
+    /// `every_ladder_exposes_curated_derived_unit_name`.
+    pub derived_unit_name: String,
     /// Selectable units, in picker display order.
     pub units: Vec<UnitOption>,
 }
@@ -47,6 +61,7 @@ pub fn unit_ladders() -> Vec<DimensionLadder> {
     vec![
         DimensionLadder {
             dimension: "Length".to_string(),
+            derived_unit_name: "mm".to_string(),
             units: vec![
                 UnitOption {
                     label: "mm".to_string(),
@@ -72,6 +87,7 @@ pub fn unit_ladders() -> Vec<DimensionLadder> {
         },
         DimensionLadder {
             dimension: "Area".to_string(),
+            derived_unit_name: "mm\u{00B2}".to_string(),
             units: vec![
                 UnitOption {
                     label: "mm\u{00B2}".to_string(),
@@ -92,6 +108,7 @@ pub fn unit_ladders() -> Vec<DimensionLadder> {
         },
         DimensionLadder {
             dimension: "Volume".to_string(),
+            derived_unit_name: "mm\u{00B3}".to_string(),
             units: vec![
                 UnitOption {
                     label: "mm\u{00B3}".to_string(),
@@ -117,6 +134,7 @@ pub fn unit_ladders() -> Vec<DimensionLadder> {
         },
         DimensionLadder {
             dimension: "Angle".to_string(),
+            derived_unit_name: "deg".to_string(),
             units: vec![
                 UnitOption {
                     label: "deg".to_string(),
@@ -132,6 +150,7 @@ pub fn unit_ladders() -> Vec<DimensionLadder> {
         },
         DimensionLadder {
             dimension: "Mass".to_string(),
+            derived_unit_name: "kg".to_string(),
             units: vec![
                 UnitOption {
                     label: "g".to_string(),
@@ -147,6 +166,7 @@ pub fn unit_ladders() -> Vec<DimensionLadder> {
         },
         DimensionLadder {
             dimension: "Pressure".to_string(),
+            derived_unit_name: "Pa".to_string(),
             units: vec![
                 UnitOption {
                     label: "Pa".to_string(),
@@ -172,6 +192,7 @@ pub fn unit_ladders() -> Vec<DimensionLadder> {
         },
         DimensionLadder {
             dimension: "Density".to_string(),
+            derived_unit_name: "kg/m\u{00B3}".to_string(),
             units: vec![
                 UnitOption {
                     label: "kg/m\u{00B3}".to_string(),
