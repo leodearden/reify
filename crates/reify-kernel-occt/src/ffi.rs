@@ -1125,6 +1125,13 @@ pub mod ffi {
         /// `make_nonmanifold_compound_for_test`. Throws on empty input.
         fn make_compound(shapes: &OcctShapeVec) -> Result<UniquePtr<OcctShape>>;
 
+        /// Fuse all shapes in `shapes` into a single result in ONE
+        /// `BRepAlgoAPI_Fuse` (SetArguments/SetTools) pass — the single-pass
+        /// n-ary fuse that replaces the O(N²) pairwise pattern loop (task 5213).
+        /// Throws on empty input; a fully-disjoint result is a watertight
+        /// COMPSOLID of the separate solids.
+        fn fuse_all(shapes: &OcctShapeVec) -> Result<UniquePtr<OcctShape>>;
+
         fn get_edges(shape: &OcctShape) -> Result<UniquePtr<OcctShapeVec>>;
 
         /// Materialize the unique faces of `shape` into an OcctShapeVec

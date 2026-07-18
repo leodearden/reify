@@ -907,6 +907,43 @@ impl OcctKernel {
         Ok(self.store_with_repr(compound_result, BRepKind::Compound))
     }
 
+    /// Fuse N shapes into a single body in ONE OCCT boolean pass (task 5213,
+    /// Lever 1 — the single-pass n-ary fuse).
+    ///
+    /// Resolves each `GeometryHandleId` to its `OcctShape`, builds an
+    /// `OcctShapeVec`, and calls `ffi::ffi::fuse_all`, which fuses the whole
+    /// list in one `BRepAlgoAPI_Fuse` (SetArguments/SetTools) pass instead of
+    /// the O(N²) pairwise-accumulator loop.  Union semantics are preserved
+    /// exactly: overlapping inputs merge (no internal walls / double-counted
+    /// volume), disjoint inputs come back as a watertight multi-solid.  Source
+    /// handles remain valid after the call.
+    ///
+    /// Returns `Err(GeometryError::OperationFailed)` when:
+    /// - `handles` is empty, or
+    /// - any handle is unknown, or
+    /// - the underlying OCCT fuse fails.
+    pub fn fuse_all(
+        &mut self,
+        handles: &[GeometryHandleId],
+    ) -> Result<GeometryHandle, GeometryError> {
+        if handles.is_empty() {
+            return Err(GeometryError::OperationFailed(
+                "fuse_all: handles slice must not be empty".into(),
+            ));
+        }
+        // Gather the argument shapes into a fresh OcctShapeVec while holding the
+        // immutable borrow on self.shapes; the borrow ends before we store.
+        let fused = {
+            let mut vec = ffi::ffi::new_shape_vec();
+            for &id in handles {
+                let shape = self.get_shape(id)?;
+                ffi::ffi::shape_vec_push(vec.pin_mut(), shape);
+            }
+            ffi::ffi::fuse_all(&vec).map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+        };
+        Ok(self.store_with_repr(fused, BRepKind::Solid))
+    }
+
     /// Test whether two shapes are intersecting (non-positive minimum distance).
     ///
     /// Uses `BRepExtrema_DistShapeShape` — same primitive as `min_clearance` —

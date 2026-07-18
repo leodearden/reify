@@ -162,6 +162,16 @@ std::unique_ptr<OcctShape> make_half_space(double px, double py, double pz,
 /// `BRepBuilderAPI_Copy` fails.
 std::unique_ptr<OcctShape> make_compound(const OcctShapeVec& shapes);
 
+// --- Single-pass n-ary fuse (task 5213, Lever 1) ---
+
+/// Fuse every shape in `shapes` into a single result in ONE BRepAlgoAPI_Fuse
+/// pass (SetArguments/SetTools), replacing the O(N²) pairwise-accumulator loop
+/// the pattern realizers used.  Empty input throws; a single element is
+/// returned unchanged; a fully-disjoint result is rewrapped as a watertight
+/// TopoDS_CompSolid of the separate solids (preserving volume and component
+/// count).  Source shapes in the vec remain valid after the call.
+std::unique_ptr<OcctShape> fuse_all(const OcctShapeVec& shapes);
+
 // --- Boolean operations ---
 
 std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& right);

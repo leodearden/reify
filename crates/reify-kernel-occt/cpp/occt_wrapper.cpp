@@ -465,6 +465,84 @@ std::unique_ptr<OcctShape> make_compound(const OcctShapeVec& shapes) {
     });
 }
 
+// --- Single-pass n-ary fuse (task 5213, Lever 1) ---
+
+// Fuse every member of `shapes` into a single result in ONE BOP pass.
+//
+// Mirrors the BRepAlgoAPI_Splitter SetArguments/SetTools idiom (see
+// `split_shape`): the first shape becomes the sole argument and the rest become
+// the tools, so `BRepAlgoAPI_Fuse::Build()` arranges all of them in a single
+// OCCT boolean pass (≈O(N log N) bbox interference + irreducible face work)
+// instead of the O(N²) pairwise-accumulator loop the pattern realizers used.
+//
+//   - empty list → std::runtime_error (nonsensical)
+//   - 1 element  → returned as-is (no BOP; identity)
+//   - N elements → single-pass fuse
+//
+// Fully-DISJOINT inputs make BRepAlgoAPI_Fuse emit a TopoDS_COMPOUND of the
+// separate solids.  A bare compound is not watertight-queryable
+// (`is_watertight` excludes COMPOUND), so a solid-bearing compound result is
+// rewrapped as a TopoDS_COMPSOLID: this preserves total volume and per-solid
+// component count while passing the SOLID|COMPSOLID|SHELL type guard.  A
+// connected (overlapping) fuse already yields a single SOLID and is returned
+// untouched.  Defined here — ahead of the four pattern realizers below — so
+// they can share this one helper.
+TopoDS_Shape fuse_shape_list(const TopTools_ListOfShape& shapes) {
+    if (shapes.IsEmpty()) {
+        throw std::runtime_error("fuse_shape_list: input shape list must not be empty");
+    }
+    if (shapes.Extent() == 1) {
+        // Single instance: no boolean pass, return it unchanged.
+        return shapes.First();
+    }
+    TopTools_ListOfShape args, tools;
+    TopTools_ListIteratorOfListOfShape it(shapes);
+    args.Append(it.Value());
+    it.Next();
+    for (; it.More(); it.Next()) {
+        tools.Append(it.Value());
+    }
+    BRepAlgoAPI_Fuse fuse;
+    fuse.SetArguments(args);
+    fuse.SetTools(tools);
+    fuse.Build();
+    if (!fuse.IsDone()) {
+        throw std::runtime_error("fuse_shape_list: BRepAlgoAPI_Fuse failed (IsDone=false)");
+    }
+    TopoDS_Shape result = fuse.Shape();
+    // Rewrap a disjoint COMPOUND-of-solids as a COMPSOLID so the multi-body
+    // union is watertight-queryable and reports the correct component count.
+    if (result.ShapeType() == TopAbs_COMPOUND) {
+        TopoDS_CompSolid cs;
+        BRep_Builder builder;
+        builder.MakeCompSolid(cs);
+        int nsolids = 0;
+        for (TopExp_Explorer ex(result, TopAbs_SOLID); ex.More(); ex.Next()) {
+            builder.Add(cs, TopoDS::Solid(ex.Current()));
+            ++nsolids;
+        }
+        if (nsolids > 0) {
+            return cs;
+        }
+    }
+    return result;
+}
+
+std::unique_ptr<OcctShape> fuse_all(const OcctShapeVec& shapes) {
+    return wrap_occt_call("fuse_all", [&]() {
+        if (shapes.shapes.empty()) {
+            throw std::runtime_error("fuse_all: input shape list must not be empty");
+        }
+        TopTools_ListOfShape list;
+        for (const auto& shape : shapes.shapes) {
+            list.Append(shape);
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = fuse_shape_list(list);
+        return result;
+    });
+}
+
 // --- Boolean operations ---
 
 std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& right) {
