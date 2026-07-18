@@ -16880,3 +16880,72 @@ fn rigid_mass_props_surface_as_determined_on_load() {
     );
 }
 
+/// Task 5194 (step-3): after a warm `set_parameter` edit, the `: Rigid` body's
+/// auto-derived mass-property cells must STAY `determined` (and the PD constraint
+/// Satisfied) — the surfacing fix must be path-agnostic across load and warm edit.
+///
+/// `set_parameter` → `edit_check` (kernel-less) → `build_gui_state` →
+/// `tessellate_snapshot` clears the realization cache and re-executes the box,
+/// allocating a FRESH `GeometryHandleId` (the mock's `next_id` is monotonic and
+/// not reset between builds). The overlay keys on `ValueCellId`, not the kernel
+/// handle, so the cells must re-surface from the fresh `result.values` and must
+/// NOT degrade back to Undef after the edit.
+#[test]
+fn rigid_mass_props_stay_determined_after_warm_edit() {
+    let mut session = rigid_mass_props_session();
+
+    session
+        .load_file(&rigid_mass_props_fixture_path())
+        .expect("load_file should succeed for the rigid_mass_props_smoke fixture");
+
+    // Warm edit: perturb the box depth. This clears the realization cache, so the
+    // subsequent build re-executes the box under a fresh kernel handle.
+    let state = session
+        .set_parameter("RigidMassSmoke.depth", "250mm")
+        .expect("set_parameter(RigidMassSmoke.depth, 250mm) should succeed");
+
+    // The edit must have taken effect (depth == 250mm), proving we rebuilt.
+    let depth = state
+        .values
+        .iter()
+        .find(|v| v.name == "depth")
+        .expect("expected a `depth` value cell after the warm edit");
+    assert_eq!(
+        depth.value, "250",
+        "depth must read 250 (mm) after the warm edit; got {:?}",
+        depth.value
+    );
+
+    for name in ["mass", "centroid", "moment_of_inertia", "moi_principal"] {
+        let cell = state
+            .values
+            .iter()
+            .find(|v| v.name == name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected a `{name}` value cell after the warm edit; have: {:?}",
+                    state.values.iter().map(|v| v.name.as_str()).collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(
+            cell.determinacy, "determined",
+            "`{name}` must remain `determined` after a warm set_parameter edit \
+             (re-surfaced from the fresh-handle rebuild); got determinacy={:?}, reason={:?}",
+            cell.determinacy, cell.reason
+        );
+        assert!(
+            cell.reason.is_none(),
+            "`{name}` must carry no undef-cause `reason` after the warm edit; got {:?}",
+            cell.reason
+        );
+    }
+
+    let pd = find_moi_principal_constraint(&state);
+    assert_eq!(
+        pd.status, "Satisfied",
+        "the `moi_principal[0] > 0` PD constraint must stay Satisfied after the \
+         warm edit; got status={:?}",
+        pd.status
+    );
+}
+
