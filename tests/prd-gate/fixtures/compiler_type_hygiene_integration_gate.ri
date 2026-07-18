@@ -1,0 +1,43 @@
+// PRD integration-gate fixture — docs/prds/v0_6/compiler-type-hygiene.md §8 boundary table / task λ (5070).
+//
+// MUST NOT COMPILE. This is the end-to-end integration gate: it exercises all three landed
+// compiler-type-hygiene rejections together, each in an INDEPENDENT structure so that
+// poison-and-continue surfaces all three diagnostics in a single `reify check` run:
+//   (A) StructA — `param m : SpecLike<Foo>`            → E_TYPE_ARG_ON_TRAIT           (task α / 5049)
+//   (B) StructB — `let v = a * a` on Vector3<Length>   → E_ArithOperandKind
+//                 ("operator `*` is undefined for operand kinds `Vector3<Scalar[m]>` and ...")  (task β2 / 5055)
+//   (C) StructC — `constraint s > 0` with `s = b * 2.0` → 4490 CmpOperandKind
+//                 ("comparison `>` left operand must be a comparable kind, got `Vector3<Scalar[m]>`")  (task β2 / 5055)
+//
+// It lives under tests/prd-gate/fixtures/ — NOT examples/ — precisely because it must FAIL
+// compilation: examples/ files must all compile clean or the §8 row-12 examples-corpus
+// byte-identical-diagnostics gate breaks. Asserted by the 3 integration rows in
+// compiler-type-hygiene-probe-set.json (task λ / 5070).
+module compiler_type_hygiene_integration_gate
+
+trait SpecLike {
+    param density : Real = 1.0
+}
+
+structure def Foo {
+    param x : Real = 1.0
+}
+
+// (A) trait type-argument → E_TYPE_ARG_ON_TRAIT
+structure def StructA {
+    param m : SpecLike<Foo>
+    let y = 2.0
+}
+
+// (B) Vector * Vector → E_ArithOperandKind ("is undefined for operand kinds")
+structure def StructB {
+    param a : Vector3<Length> = vec3(1.0m, 2.0m, 3.0m)
+    let v = a * a
+}
+
+// (C) scale-mistyped comparison → 4490 CmpOperandKind ("must be a comparable kind")
+structure def StructC {
+    param b : Vector3<Length> = vec3(1.0m, 2.0m, 3.0m)
+    let s = b * 2.0
+    constraint s > 0
+}

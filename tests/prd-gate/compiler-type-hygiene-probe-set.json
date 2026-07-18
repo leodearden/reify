@@ -9,38 +9,74 @@
       }
     },
     {
-      "capability": "pre-state (G6 branch-4, task alpha): trait type-args are SILENTLY ACCEPTED today — reify check exits 0 with 'All constraints satisfied.' and no rejection diagnostic; alpha's rejection mechanism is the NEW work",
+      "capability": "POST (task alpha / 5049 landed): trait type-args are now REJECTED at compile time — reify check exits 1 with E_TYPE_ARG_ON_TRAIT naming the trait and its type argument; the silent-accept fallthrough (bare Type::TraitObject) is gone",
       "probe_kind": "check",
       "fixture": "tests/prd-gate/fixtures/compiler_type_hygiene_trait_args_silent_accept.ri",
       "expected": {
         "observation": "present",
         "match": {
-          "exit_code": 0,
-          "stdout_contains": "All constraints satisfied."
+          "exit_code": 1,
+          "stderr_contains": "E_TYPE_ARG_ON_TRAIT"
         }
       }
     },
     {
-      "capability": "pre-state (G6 branch-4, task beta2): Vector*Vector / Vector/Vector compile SILENTLY today (static Type::Int fallthrough) — beta2's E_ArithOperandKind is the NEW work",
+      "capability": "POST (task beta2 / 5055 landed): Vector*Vector / Vector/Vector are now REJECTED at compile time — E_ArithOperandKind fires (reify check exits 1, 'operator `*`/`/` is undefined for operand kinds'); the static Type::Int fallthrough is gone",
       "probe_kind": "check",
       "fixture": "tests/prd-gate/fixtures/compiler_type_hygiene_mul_vec_silent_int.ri",
       "expected": {
         "observation": "present",
         "match": {
-          "exit_code": 0,
-          "stdout_contains": "All constraints satisfied."
+          "exit_code": 1,
+          "stderr_contains": "is undefined for operand kinds"
         }
       }
     },
     {
-      "capability": "pre-state (G6, task beta2 boundary row 5): Vector-scale mistyping defeats the 4490 comparison guard — 'constraint s > 0' compiles and is permanently INDETERMINATE today",
+      "capability": "POST (task beta2 / 5055 landed, boundary row 5): Vector-scale mistyping no longer defeats the 4490 comparison guard — 'constraint s > 0' is now a compile-time CmpOperandKind error (reify check exits 1, 'must be a comparable kind') rather than silently compiling to a permanently INDETERMINATE constraint",
       "probe_kind": "check",
       "fixture": "tests/prd-gate/fixtures/compiler_type_hygiene_mul_scale_guard_defeat.ri",
       "expected": {
         "observation": "present",
         "match": {
-          "exit_code": 0,
-          "stdout_contains": "INDETERMINATE"
+          "exit_code": 1,
+          "stderr_contains": "must be a comparable kind"
+        }
+      }
+    },
+    {
+      "capability": "integration gate (task lambda / 5070): end-to-end fixture rejects trait type-args — independent structure A (param m : SpecLike<Foo>) fires E_TYPE_ARG_ON_TRAIT at exit 1 in the same reify check run",
+      "probe_kind": "check",
+      "fixture": "tests/prd-gate/fixtures/compiler_type_hygiene_integration_gate.ri",
+      "expected": {
+        "observation": "present",
+        "match": {
+          "exit_code": 1,
+          "stderr_contains": "E_TYPE_ARG_ON_TRAIT"
+        }
+      }
+    },
+    {
+      "capability": "integration gate (task lambda / 5070): end-to-end fixture rejects Vector arithmetic — independent structure B (let v = a * a on Vector3<Length>) fires E_ArithOperandKind ('is undefined for operand kinds') at exit 1 in the same reify check run",
+      "probe_kind": "check",
+      "fixture": "tests/prd-gate/fixtures/compiler_type_hygiene_integration_gate.ri",
+      "expected": {
+        "observation": "present",
+        "match": {
+          "exit_code": 1,
+          "stderr_contains": "is undefined for operand kinds"
+        }
+      }
+    },
+    {
+      "capability": "integration gate (task lambda / 5070): end-to-end fixture rejects scale-mistyped comparison — independent structure C (constraint s > 0 with s = b * 2.0) fires 4490 CmpOperandKind ('must be a comparable kind') at exit 1 in the same reify check run",
+      "probe_kind": "check",
+      "fixture": "tests/prd-gate/fixtures/compiler_type_hygiene_integration_gate.ri",
+      "expected": {
+        "observation": "present",
+        "match": {
+          "exit_code": 1,
+          "stderr_contains": "must be a comparable kind"
         }
       }
     }

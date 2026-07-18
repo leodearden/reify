@@ -4,8 +4,10 @@
 // vec(2m, 4m, 6m) — so `constraint s > 0` compiles SILENTLY (defeating the 4490
 // CmpOperandKind guard) and is permanently indeterminate:
 //   "constraint P#constraint[0] indeterminate: operator undefined for these operand kinds: Vector".
-// POST (task β2): s : Vector3<Length>; `s > 0` becomes a compile-time CmpOperandKind
-// error with the 4490 eigenvalues/trace fixit; the runtime-legal scale itself stays legal.
+// POST-LANDED (task β2 / 5055, main c277691a7d): rejection now fires — `reify check` exits 1 with
+// "error: comparison `>` left operand must be a comparable kind, got `Vector3<Scalar[m]>`" (4490
+// CmpOperandKind); the runtime-legal scale itself stays legal. The probe matches on the substring
+// "must be a comparable kind" (task λ/5070).
 module compiler_type_hygiene_mul_scale_guard_defeat
 
 structure def P {
