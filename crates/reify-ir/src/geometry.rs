@@ -11839,14 +11839,18 @@ mod tests {
             }
             // Same-variant pair that didn't match one of the explicit arms
             // above: a `MeshWitness` variant added after this function was
-            // written. Fall back to derived `PartialEq` instead of treating
-            // it as a mismatch — safe because the NaN-following pitfall this
-            // function exists to sidestep is specific to `Vertex`'s
-            // `[f32; 3]` coord field, which is already compared bit-exactly
-            // above. Keeps a genuine cross-variant mismatch (different
-            // discriminants) falling through to the panic below.
+            // written. Panic instead of silently falling back to derived
+            // `PartialEq` — the whole reason this function exists is that
+            // derived `PartialEq` mishandles NaN in `f32` fields (as
+            // `Vertex`'s `[f32; 3]` coord does today), so a new variant
+            // carrying its own float field would reintroduce that exact
+            // pitfall and could let a genuine mismatch pass. Forcing a panic
+            // here means adding a variant requires consciously adding an
+            // explicit bit-exact arm above, not just falling through. A
+            // genuine cross-variant mismatch (different discriminants)
+            // still falls through to the panic below.
             (a, b) if std::mem::discriminant(&a) == std::mem::discriminant(&b) => {
-                assert_eq!(a, b, "witness fields must match for new variant");
+                panic!("unhandled MeshWitness variant {a:?} vs {b:?} — add an explicit bit-exact comparison arm")
             }
             (a, b) => panic!("witness variant mismatch: {a:?} vs {b:?}"),
         }
