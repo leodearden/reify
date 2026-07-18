@@ -32,7 +32,10 @@
 //! shape appears in the scanned tree, neither is a realistic copy-paste
 //! reintroduction, and rustfmt keeps `self.field` on one line; the gate
 //! deliberately accepts that residual blind spot in exchange for a matcher
-//! with no Rust parser (see also the `strip_line_comment` caveat below).
+//! with no Rust parser. Locating the line comment for the token match IS
+//! string-literal aware, though (see `code_portion`), so a `//` inside a
+//! same-line string — e.g. a `"https://…"` URL literal — cannot be mistaken
+//! for a comment start and mask a real counter mutation after it.
 
 /// One raw, non-exempt `self.next_version_id` / `self.next_snapshot_id` use
 /// found outside the allocator/reader API family.
@@ -75,17 +78,60 @@ const ALLOWED_FNS: &[(&str, &str)] = &[
     ("engine_build.rs", "current_eval_version"),
 ];
 
-/// Naively strips a `//` line comment: cuts at the first `//`, keeping only
-/// what precedes it. Documented limitation: this doesn't understand
-/// string/char literals, so a `//` inside one would be (incorrectly)
-/// treated as a comment start — acceptable for a source-text lint gate,
-/// not a full Rust parser; none of the scanned production call sites embed
-/// `//` inside a same-line string literal alongside a counter token.
+/// Naively strips a `//` line comment for the `{`/`}` brace-depth tally: cuts
+/// at the first `//`, keeping only what precedes it. It does NOT understand
+/// string/char literals, so a `//` inside a string would be (incorrectly)
+/// treated as a comment start — adequate for the depth tally (which already
+/// miscounts braces inside string literals either way, and no scanned line
+/// puts a `//`-bearing string next to an unbalanced brace), but NOT for the
+/// counter-token match, which uses the string-literal-aware `code_portion`
+/// below instead.
 fn strip_line_comment(line: &str) -> &str {
     match line.find("//") {
         Some(idx) => &line[..idx],
         None => line,
     }
+}
+
+/// Returns the code portion of `line`: everything before the first `//`
+/// line-comment start that is NOT inside a `"…"` string literal. Unlike the
+/// naive `strip_line_comment`, this skips over double-quoted string literals
+/// (honouring `\` escapes) so a `//` inside one — e.g. the `"https://…"` in a
+/// URL literal — is not mistaken for a comment start, and a real counter
+/// mutation *after* such a string on the same line is still seen. Used for
+/// the counter-token match (not the brace tally).
+///
+/// Deliberately not a full Rust lexer: it tracks only `"` string literals —
+/// the sole literal that can contain a `//`, since a `char` literal holds
+/// exactly one character (`'//'` is impossible). Raw strings (`r"…"`,
+/// `r#"…"#`) and the pathological `'"'` char literal (a lone quote that would
+/// desync the `"` scan) are not special-cased; neither occurs beside a
+/// counter token in the scanned tree, and the only residual failure is a loud
+/// false *positive* — cleared with a `// version-id-gate: allow` comment —
+/// never a silent miss.
+fn code_portion(line: &str) -> &str {
+    let mut in_string = false;
+    let mut chars = line.char_indices().peekable();
+    while let Some((idx, c)) = chars.next() {
+        if in_string {
+            match c {
+                // Skip the escaped char so an escaped quote (`\"`) does not
+                // close the string.
+                '\\' => {
+                    chars.next();
+                }
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match c {
+            '"' => in_string = true,
+            '/' if matches!(chars.peek(), Some(&(_, '/'))) => return &line[..idx],
+            _ => {}
+        }
+    }
+    line
 }
 
 /// Parses the fn name out of a (trimmed) line that looks like a fn
@@ -174,8 +220,12 @@ fn scan_source(label: &str, source: &str) -> Vec<Violation> {
         }
 
         // The allow token is matched against the RAW line (pre-strip): it
-        // lives inside the very `//` comment `strip_line_comment` removes.
-        if !raw_line.contains(ALLOW_COMMENT) && TOKENS.iter().any(|tok| stripped.contains(tok)) {
+        // lives inside the very `//` comment the comment-strippers remove. The
+        // counter token is matched against `code_portion` (string-literal
+        // aware), so a `//` inside a same-line string cannot mask it.
+        if !raw_line.contains(ALLOW_COMMENT)
+            && TOKENS.iter().any(|tok| code_portion(raw_line).contains(tok))
+        {
             let allowed = current_fn
                 .as_deref()
                 .is_some_and(|f| ALLOWED_FNS.contains(&(base, f)));
@@ -381,6 +431,34 @@ impl Engine {
     assert!(
         violations[0].text.contains("next_version_id"),
         "the reported violation should quote the sneaky raw bump, got {:?}",
+        violations[0]
+    );
+}
+
+/// (g) A `//` inside a same-line string literal (e.g. a URL) must NOT be
+/// mistaken for a comment start and mask a real counter mutation after it on
+/// the same line. The naive first-`//` cut would drop the trailing token and
+/// pass silently; `code_portion` skips string literals when locating the
+/// comment, so the violation is still reported.
+#[test]
+fn slashes_inside_a_string_literal_do_not_mask_a_same_line_violation() {
+    let source = "\
+impl Engine {
+    fn sneaky(&mut self) {
+        let _u = \"https://example.com\"; self.next_version_id += 1;
+    }
+}
+";
+    let violations = scan_source("engine_eval.rs", source);
+    assert_eq!(
+        violations.len(),
+        1,
+        "a `//` inside a string literal must not mask the counter mutation \
+         after it on the same line, got {violations:?}"
+    );
+    assert!(
+        violations[0].text.contains("next_version_id"),
+        "the reported violation should quote the masked raw bump, got {:?}",
         violations[0]
     );
 }
