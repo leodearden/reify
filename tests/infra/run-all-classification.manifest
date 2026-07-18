@@ -107,6 +107,7 @@ test_project_checks_typecheck.sh pool
 test_provision_warm_lane_fs.sh pool
 test_pycache_gitignored.sh pool
 test_queue_db_gitignored.sh pool
+test_reconciliation_db_gitignored.sh pool
 test_reference_transaction_gate.sh pool
 test_refresh_warm_base.sh pool
 test_reify_audit_freshness.sh pool
