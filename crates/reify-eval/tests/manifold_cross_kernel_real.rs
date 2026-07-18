@@ -419,9 +419,7 @@ fn manifold_ingest_contract_violating_mesh_yields_structured_diagnostic() {
 // selector (task 5071, INV-GEO-2 #4351 engine-build consumer-side boundary)
 
 /// Shared build scaffold for the two `mixed_kernel_attribute_selector*` tests
-/// below (amendment: extracted to remove ~50 lines of setup boilerplate that
-/// both tests duplicated from each other and from
-/// `engine_routes_overlapping_box_union_to_manifold_mesh` above).
+/// below.
 ///
 /// Performs, in order: the Manifold linker-anchor assertion, the
 /// registry-contains-both-kernels checks, compiling
@@ -438,20 +436,11 @@ fn manifold_ingest_contract_violating_mesh_yields_structured_diagnostic() {
 /// body, so the OCCT gate cannot be folded in here and stays at each call
 /// site.
 ///
-/// ## Follow-up (reviewed, deliberately deferred)
-///
-/// This helper still duplicates the linker-anchor / registry-contains-both-
-/// kernels / compile / purpose-injection / `eval → activate_purpose → build`
-/// scaffold of `engine_routes_overlapping_box_union_to_manifold_mesh` above
-/// (lines 60-130) — a later review pass flagged this as a DRY observation,
-/// not a defect (three tests in this file now carry near-identical ~40-line
-/// setup). Fully resolving it means generalizing this helper to take
-/// `(fixture_path, entity_name, purpose_ref)` and routing that pre-existing
-/// test through it too. Declined here: that test landed under a different
-/// task (#3437, ζ) before this task began, so refactoring it is outside this
-/// amendment pass's locked-module scope (`manifold_cross_kernel_real.rs` is
-/// locked to *this* task, but rewriting another task's already-landed test
-/// is not a "focused amendment") — left for a follow-up task instead.
+/// This still duplicates part of the scaffold in
+/// `engine_routes_overlapping_box_union_to_manifold_mesh` above (lines
+/// 60-130); generalizing that pre-existing test (landed under a different
+/// task, #3437 ζ) to share this helper is out of this task's locked-module
+/// scope and left for a follow-up.
 fn build_mixed_kernel_attribute_selectors_fixture() -> (
     reify_compiler::CompiledModule,
     reify_eval::Engine,
@@ -699,39 +688,16 @@ fn mixed_kernel_attribute_selectors_builds_renders_and_reads_per_kernel_attribut
 /// read against an OCCT-scoped attribute inside a mixed-kernel build — the
 /// companion assertion family to the dual-kernel/render/routing test above.
 ///
-/// ## Reviewed performance tradeoff (task 5071 amendment pass)
-///
 /// This test pays for its own full call to
-/// `build_mixed_kernel_attribute_selectors_fixture()`, repeating the real
+/// `build_mixed_kernel_attribute_selectors_fixture()`, duplicating the real
 /// OCCT+Manifold build that
 /// `mixed_kernel_attribute_selectors_builds_renders_and_reads_per_kernel_attributes`
-/// above already performs. Folding this assertion into that test (one build
-/// instead of two) and memoizing the build across both `#[test]` fns were
-/// both considered and declined: folding it in would blur which of two
-/// independently-meaningful boundaries — dual-kernel table/render/routing vs.
-/// selector→Frame resolution — failed on a red run, and cross-test
-/// memoization would require sharing a mutable `Engine`/`CompiledModule`
-/// across independently-scheduled test threads via shared static state, an
-/// anti-pattern this file otherwise avoids. Kept as two atomic,
-/// independently-committable tests per the task plan (steps 1, 3-4); the
-/// extra real-kernel build only runs in the OCCT-gated integration suite
-/// (`OCCT_AVAILABLE`), never in the default stub-mode build/test loop.
-///
-/// ### Re-confirmed on re-review (task 5071 amendment pass 2)
-///
-/// A subsequent review pass re-flagged the same double-build cost after
-/// seeing the tradeoff recorded above, and marked it "acceptable as-is" /
-/// "surfaced for completeness only" — no code change requested. It named
-/// two concrete options for an eventual follow-up if the OCCT-gated
-/// suite's wall-clock cost becomes a real concern, neither previously
-/// spelled out here: (1) a `once_cell`/`std::sync::OnceLock`-guarded
-/// module-level fixture so both `#[test]` fns share one cached build, or
-/// (2) collapsing back to a single `#[test]` that performs one build and
-/// asserts both boundaries behind distinct `assert!`/`panic!` messages —
-/// accepting that `cargo test`'s per-test pass/fail line would then cover
-/// both boundaries under one test name, unlike today's two independently-
-/// reporting tests. Neither is applied here; both remain optional,
-/// deferred work.
+/// above already performs — deliberate, so each boundary (dual-kernel
+/// table/render/routing vs. selector→Frame resolution) reports as its own
+/// atomic, independently-committable `#[test]`. The extra build only runs in
+/// the OCCT-gated integration suite (`OCCT_AVAILABLE`), never in the default
+/// stub-mode build/test loop. A `OnceLock`-cached shared fixture would halve
+/// the build cost if that suite's wall-clock ever becomes a concern.
 ///
 /// RED (before step-4 adds `top_frame = post @ face("top")` to the
 /// fixture): the example has no `top_frame` binding, so the
