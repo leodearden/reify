@@ -2204,8 +2204,10 @@ std::unique_ptr<OcctShape> linear_pattern(const OcctShape& shape,
         }
         double ndx = dx / mag, ndy = dy / mag, ndz = dz / mag;
 
-        // Start with the original shape
-        TopoDS_Shape accumulated = shape.shape;
+        // Build every instance (original at index 0, then each translated copy)
+        // into one list and fuse them in a single pass (task 5213).
+        TopTools_ListOfShape instances;
+        instances.Append(shape.shape);
 
         for (uint32_t i = 1; i < count; ++i) {
             double dist = spacing * static_cast<double>(i);
@@ -2216,16 +2218,11 @@ std::unique_ptr<OcctShape> linear_pattern(const OcctShape& shape,
             if (!transform.IsDone()) {
                 throw std::runtime_error("linear_pattern: transform failed");
             }
-            BRepAlgoAPI_Fuse fuse(accumulated, transform.Shape());
-            fuse.Build();
-            if (!fuse.IsDone()) {
-                throw std::runtime_error("linear_pattern: fuse failed");
-            }
-            accumulated = fuse.Shape();
+            instances.Append(transform.Shape());
         }
 
         auto result = std::make_unique<OcctShape>();
-        result->shape = accumulated;
+        result->shape = fuse_shape_list(instances);
         return result;
     });
 }
@@ -2256,12 +2253,14 @@ std::unique_ptr<OcctShape> linear_pattern_2d(const OcctShape& shape,
         }
         double ndx2 = dx2 / mag2, ndy2 = dy2 / mag2, ndz2 = dz2 / mag2;
 
-        // Start with the original shape
-        TopoDS_Shape accumulated = shape.shape;
+        // Build every grid instance (original at index 0, then each translated
+        // copy) into one list and fuse them in a single pass (task 5213).
+        TopTools_ListOfShape instances;
+        instances.Append(shape.shape);
 
         for (uint32_t i = 0; i < count1; ++i) {
             for (uint32_t j = 0; j < count2; ++j) {
-                if (i == 0 && j == 0) continue; // skip the original
+                if (i == 0 && j == 0) continue; // original already appended
                 double tx = static_cast<double>(i) * spacing1 * ndx1
                           + static_cast<double>(j) * spacing2 * ndx2;
                 double ty = static_cast<double>(i) * spacing1 * ndy1
@@ -2275,17 +2274,12 @@ std::unique_ptr<OcctShape> linear_pattern_2d(const OcctShape& shape,
                 if (!transform.IsDone()) {
                     throw std::runtime_error("linear_pattern_2d: transform failed");
                 }
-                BRepAlgoAPI_Fuse fuse(accumulated, transform.Shape());
-                fuse.Build();
-                if (!fuse.IsDone()) {
-                    throw std::runtime_error("linear_pattern_2d: fuse failed");
-                }
-                accumulated = fuse.Shape();
+                instances.Append(transform.Shape());
             }
         }
 
         auto result = std::make_unique<OcctShape>();
-        result->shape = accumulated;
+        result->shape = fuse_shape_list(instances);
         return result;
     });
 }
@@ -2300,7 +2294,10 @@ std::unique_ptr<OcctShape> circular_pattern(const OcctShape& shape,
         }
         gp_Ax1 axis(gp_Pnt(ox, oy, oz), gp_Dir(ax, ay, az));
 
-        TopoDS_Shape accumulated = shape.shape;
+        // Build every instance (original at index 0, then each rotated copy)
+        // into one list and fuse them in a single pass (task 5213).
+        TopTools_ListOfShape instances;
+        instances.Append(shape.shape);
 
         for (uint32_t i = 1; i < count; ++i) {
             double angle_i = total_angle * static_cast<double>(i) / static_cast<double>(count);
@@ -2311,16 +2308,11 @@ std::unique_ptr<OcctShape> circular_pattern(const OcctShape& shape,
             if (!transform.IsDone()) {
                 throw std::runtime_error("circular_pattern: transform failed");
             }
-            BRepAlgoAPI_Fuse fuse(accumulated, transform.Shape());
-            fuse.Build();
-            if (!fuse.IsDone()) {
-                throw std::runtime_error("circular_pattern: fuse failed");
-            }
-            accumulated = fuse.Shape();
+            instances.Append(transform.Shape());
         }
 
         auto result = std::make_unique<OcctShape>();
-        result->shape = accumulated;
+        result->shape = fuse_shape_list(instances);
         return result;
     });
 }
@@ -2341,8 +2333,10 @@ std::unique_ptr<OcctShape> arbitrary_pattern(const OcctShape& shape,
             throw std::runtime_error("arbitrary_pattern: flat_transforms.size() != num_transforms * 7");
         }
 
-        // Start with the original shape
-        TopoDS_Shape accumulated = shape.shape;
+        // Build every instance (original at index 0, then each transformed
+        // copy) into one list and fuse them in a single pass (task 5213).
+        TopTools_ListOfShape instances;
+        instances.Append(shape.shape);
 
         for (uint32_t i = 0; i < num_transforms; ++i) {
             // Stride-7 per-instance rigid transform: [qw,qx,qy,qz,tx,ty,tz]
@@ -2362,16 +2356,11 @@ std::unique_ptr<OcctShape> arbitrary_pattern(const OcctShape& shape,
             if (!transform.IsDone()) {
                 throw std::runtime_error("arbitrary_pattern: transform failed");
             }
-            BRepAlgoAPI_Fuse fuse(accumulated, transform.Shape());
-            fuse.Build();
-            if (!fuse.IsDone()) {
-                throw std::runtime_error("arbitrary_pattern: fuse failed");
-            }
-            accumulated = fuse.Shape();
+            instances.Append(transform.Shape());
         }
 
         auto result = std::make_unique<OcctShape>();
-        result->shape = accumulated;
+        result->shape = fuse_shape_list(instances);
         return result;
     });
 }
