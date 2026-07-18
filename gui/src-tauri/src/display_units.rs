@@ -7,4 +7,4 @@
 //! resolving unchanged for `main.rs`'s `get_unit_ladders` Tauri command and
 //! the Parameters panel's unit picker.
 
-pub use reify_core::display_units::{DimensionLadder, UnitOption, unit_ladders};
+pub use reify_core::display_units::{AutoScale, DimensionLadder, UnitOption, unit_ladders};

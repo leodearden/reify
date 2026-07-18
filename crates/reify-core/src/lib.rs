@@ -43,7 +43,7 @@ pub use diagnostics::{
     SourceSpan,
 };
 pub use dimension::{DimensionVector, NAMED_DIMENSIONS, Rational};
-pub use display_units::{DimensionLadder, UnitOption, unit_ladders};
+pub use display_units::{AutoScale, DimensionLadder, UnitOption, unit_ladders};
 pub use field_calculus::{DifferentialOp, differential_codomain};
 pub use hash::ContentHash;
 pub use identity::{

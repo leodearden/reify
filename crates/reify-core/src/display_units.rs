@@ -31,6 +31,28 @@ pub struct UnitOption {
     pub is_default: bool,
 }
 
+/// Per-dimension auto-scaling policy (PRD display-unit-preference §5).
+///
+/// When present on a [`DimensionLadder`] it describes whether the display
+/// formatter may hop rungs to keep a magnitude inside a readable target band,
+/// plus the band itself. `enabled: false` is the opt-in/default-OFF posture
+/// (the policy exists but is not applied until the user turns it on). A
+/// `None` `auto_scale` on the ladder means the dimension is structurally
+/// *excluded* from auto-scaling (e.g. Angle's discrete deg/rad, or a
+/// single-rung ladder with no rung to hop across).
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct AutoScale {
+    /// Default posture: `true` = auto-scaling applied by default; `false` =
+    /// present but opt-in (off until enabled).
+    pub enabled: bool,
+    /// Inclusive lower bound of the target mantissa band — `1.0` per §5a
+    /// (`1 ≤ |mantissa| < 1000`).
+    pub band_lo: f64,
+    /// Exclusive upper bound of the target mantissa band — `1000.0` per §5a.
+    pub band_hi: f64,
+}
+
 /// The ordered set of display-unit options for one canonical dimension.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -48,6 +70,10 @@ pub struct DimensionLadder {
     pub derived_unit_name: String,
     /// Selectable units, in picker display order.
     pub units: Vec<UnitOption>,
+    /// Auto-scaling policy for this dimension (PRD §5), or `None` when the
+    /// dimension is *excluded* from auto-scaling (Angle's discrete deg/rad;
+    /// the single-rung Force/Energy/Power ladders have no rung to hop).
+    pub auto_scale: Option<AutoScale>,
 }
 
 /// Return the full set of per-dimension unit ladders.
@@ -63,6 +89,11 @@ pub fn unit_ladders() -> Vec<DimensionLadder> {
         DimensionLadder {
             dimension: "Length".to_string(),
             derived_unit_name: "mm".to_string(),
+            auto_scale: Some(AutoScale {
+                enabled: true,
+                band_lo: 1.0,
+                band_hi: 1000.0,
+            }),
             units: vec![
                 UnitOption {
                     label: "mm".to_string(),
@@ -89,6 +120,11 @@ pub fn unit_ladders() -> Vec<DimensionLadder> {
         DimensionLadder {
             dimension: "Area".to_string(),
             derived_unit_name: "mm\u{00B2}".to_string(),
+            auto_scale: Some(AutoScale {
+                enabled: true,
+                band_lo: 1.0,
+                band_hi: 1000.0,
+            }),
             units: vec![
                 UnitOption {
                     label: "mm\u{00B2}".to_string(),
@@ -110,6 +146,11 @@ pub fn unit_ladders() -> Vec<DimensionLadder> {
         DimensionLadder {
             dimension: "Volume".to_string(),
             derived_unit_name: "mm\u{00B3}".to_string(),
+            auto_scale: Some(AutoScale {
+                enabled: true,
+                band_lo: 1.0,
+                band_hi: 1000.0,
+            }),
             units: vec![
                 UnitOption {
                     label: "mm\u{00B3}".to_string(),
@@ -136,6 +177,7 @@ pub fn unit_ladders() -> Vec<DimensionLadder> {
         DimensionLadder {
             dimension: "Angle".to_string(),
             derived_unit_name: "deg".to_string(),
+            auto_scale: None,
             units: vec![
                 UnitOption {
                     label: "deg".to_string(),
@@ -152,6 +194,11 @@ pub fn unit_ladders() -> Vec<DimensionLadder> {
         DimensionLadder {
             dimension: "Mass".to_string(),
             derived_unit_name: "kg".to_string(),
+            auto_scale: Some(AutoScale {
+                enabled: false,
+                band_lo: 1.0,
+                band_hi: 1000.0,
+            }),
             units: vec![
                 UnitOption {
                     label: "g".to_string(),
@@ -168,6 +215,11 @@ pub fn unit_ladders() -> Vec<DimensionLadder> {
         DimensionLadder {
             dimension: "Pressure".to_string(),
             derived_unit_name: "Pa".to_string(),
+            auto_scale: Some(AutoScale {
+                enabled: false,
+                band_lo: 1.0,
+                band_hi: 1000.0,
+            }),
             units: vec![
                 UnitOption {
                     label: "Pa".to_string(),
@@ -194,6 +246,11 @@ pub fn unit_ladders() -> Vec<DimensionLadder> {
         DimensionLadder {
             dimension: "Density".to_string(),
             derived_unit_name: "kg/m\u{00B3}".to_string(),
+            auto_scale: Some(AutoScale {
+                enabled: false,
+                band_lo: 1.0,
+                band_hi: 1000.0,
+            }),
             units: vec![
                 UnitOption {
                     label: "kg/m\u{00B3}".to_string(),
@@ -215,6 +272,7 @@ pub fn unit_ladders() -> Vec<DimensionLadder> {
         DimensionLadder {
             dimension: "Force".to_string(),
             derived_unit_name: "N".to_string(),
+            auto_scale: None,
             units: vec![UnitOption {
                 label: "N".to_string(),
                 si_scale: 1.0,
@@ -224,6 +282,7 @@ pub fn unit_ladders() -> Vec<DimensionLadder> {
         DimensionLadder {
             dimension: "Energy".to_string(),
             derived_unit_name: "J".to_string(),
+            auto_scale: None,
             units: vec![UnitOption {
                 label: "J".to_string(),
                 si_scale: 1.0,
@@ -233,6 +292,7 @@ pub fn unit_ladders() -> Vec<DimensionLadder> {
         DimensionLadder {
             dimension: "Power".to_string(),
             derived_unit_name: "W".to_string(),
+            auto_scale: None,
             units: vec![UnitOption {
                 label: "W".to_string(),
                 si_scale: 1.0,
