@@ -5,8 +5,9 @@
  * converting a canonical SI magnitude into a chosen display unit, formatting
  * the result without float noise, and looking up the selectable unit ladder
  * for a cell's dimension. The ladder data itself is authoritative in Rust
- * (`gui/src-tauri/src/display_units.rs`) and fetched once via the
- * `get_unit_ladders` Tauri command — these helpers only consume it.
+ * (`reify_core::display_units`, re-exported through
+ * `reify_gui::display_units`) and fetched once via the `get_unit_ladders`
+ * Tauri command — these helpers only consume it.
  */
 
 import type { UnitLadderMap, UnitOption } from '../types';
