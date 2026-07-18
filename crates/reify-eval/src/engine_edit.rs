@@ -1302,6 +1302,12 @@ impl Engine {
             // `CacheStore::invalidate_dependents` (cache.rs) would see an
             // empty `reads` set on the rebuilt entry and silently skip
             // propagation when one of the field's actual deps later changes.
+            // Per-cell journal-write cost: this composed-field commit
+            // previously recorded zero journal events (pre-δ, only T2
+            // journaled) and is bounded by the dirty cone of composed
+            // fields, not collection/grow size — see the perf-tradeoff
+            // note at the U1 site above for the shared accepted-tradeoff
+            // rationale (reviewer amend, round 3).
             commit_cell_result(
                 CommitLegs {
                     values: &mut values,
