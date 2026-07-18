@@ -283,6 +283,33 @@ mod tests {
         }
     }
 
+    /// PRD display-unit-preference §4: Force/Energy/Power are seeded as
+    /// single-rung ladders (coherent-SI N/J/W @ `si_scale: 1.0`,
+    /// `is_default: true`) supplying the curated derived-unit name. A single
+    /// `is_default` rung satisfies `every_ladder_has_exactly_one_default`,
+    /// and the names round-trip through `canonical_name` (they are
+    /// `NAMED_DIMENSIONS` keys — see the round-trip guard below).
+    #[test]
+    fn force_energy_power_ladders_seeded() {
+        let ladders = unit_ladders();
+        for (dimension, label) in [("Force", "N"), ("Energy", "J"), ("Power", "W")] {
+            let l = ladder(&ladders, dimension);
+            assert_eq!(
+                l.units.len(),
+                1,
+                "ladder {dimension:?} should have exactly one rung"
+            );
+            let rung = &l.units[0];
+            assert_eq!(rung.label, label, "{dimension:?} rung label mismatch");
+            assert_eq!(rung.si_scale, 1.0, "{dimension:?} rung si_scale must be 1.0");
+            assert!(rung.is_default, "{dimension:?} rung must be is_default");
+            assert_eq!(
+                l.derived_unit_name, label,
+                "{dimension:?} derived_unit_name mismatch"
+            );
+        }
+    }
+
     /// Collapsed data-driven replacement for five former per-ladder pin
     /// tests (task #5199 amend, reviewer_comprehensive test_coverage
     /// finding): each hand-copied the same `si_scale`/`is_default`
@@ -382,6 +409,11 @@ mod tests {
             (crate::DimensionVector::MASS, 2.5),
             (crate::DimensionVector::PRESSURE, 101_325.0),
             (crate::DimensionVector::MASS_DENSITY, 7850.0),
+            // Single-rung coherent-SI ladders (§4): to_display_units passes
+            // them through unscaled, so their default si_scale must be 1.0.
+            (crate::DimensionVector::FORCE, 250.0),
+            (crate::DimensionVector::ENERGY, 1500.0),
+            (crate::DimensionVector::POWER, 750.0),
         ];
 
         for &(dim, si_value) in cases {
