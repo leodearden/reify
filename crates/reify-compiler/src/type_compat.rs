@@ -1652,27 +1652,60 @@ fn is_dimensioned_complex(ty: &Type) -> bool {
     matches!(ty, Type::Complex(q) if matches!(q.as_ref(), Type::Scalar { dimension } if !dimension.is_dimensionless()))
 }
 
-/// Canonical rationale for the `+`/`-` dimensioned-Complex-vs-bare-numeric
-/// reject (task 5163) — `expr.rs`'s operand-kind guard and
+/// A DIMENSIONED bare `Scalar` (e.g. `Scalar<Length>`), sibling of
+/// `is_dimensioned_complex`. Direct counterpart of `is_dimensionless_numeric`
+/// restricted to the `Scalar` variant (excludes `Int`) — used by
+/// `add_sub_dimensioned_complex_reject`'s row-B clause (task 5219), where the
+/// runtime `eval_add`/`eval_sub` (reify-expr) have NO `(Complex, Scalar)` arm
+/// at all, so the dimension of the `Scalar` side is irrelevant to the reject.
+fn is_dimensioned_scalar(ty: &Type) -> bool {
+    matches!(ty, Type::Scalar { dimension } if !dimension.is_dimensionless())
+}
+
+/// True only when BOTH operands are `Complex` wrapping a concrete `Scalar`
+/// quantity with DIFFERENT dimensions (e.g. `Complex<Length>` vs
+/// `Complex<Mass>`) — used by `add_sub_dimensioned_complex_reject`'s row-C
+/// clause (task 5219), where the runtime `eval_add`/`eval_sub` (reify-expr)
+/// `(Complex, Complex)` arm returns `Value::Undef` when the two dimensions
+/// differ. SAME-dimension `Complex<Q> ± Complex<Q>` is legitimate arithmetic
+/// and must return `false` here. A `Complex` wrapping a non-`Scalar` inner
+/// quantity (e.g. an unresolved `TypeParam`) also returns `false` —
+/// gradualism: an unresolved inner quantity cannot be adjudicated a mismatch.
+fn complex_complex_dimension_mismatch(left: &Type, right: &Type) -> bool {
+    match (left, right) {
+        (Type::Complex(lq), Type::Complex(rq)) => matches!(
+            (lq.as_ref(), rq.as_ref()),
+            (Type::Scalar { dimension: ld }, Type::Scalar { dimension: rd }) if ld != rd
+        ),
+        _ => false,
+    }
+}
+
+/// Canonical rationale for the `+`/`-` dimensioned-Complex operand-kind
+/// reject (tasks 5163, 5219) — `expr.rs`'s operand-kind guard and
 /// `DiagnosticCode::ArithOperandKind`'s doc cross-reference here rather
 /// than restate it.
 ///
-/// `true` when one operand is a DIMENSIONED `Complex` and the other is a
-/// bare dimensionless numeric (`Int`/`Scalar{DIMENSIONLESS}`), in EITHER
-/// order — the exact pairing the runtime `guard_dimensionless_complex`
-/// (reify-expr) evaluates to `Value::Undef` (D3 policy; see
-/// `is_dimensionless_complex`'s doc above). `Type::Error`/`Type::TypeParam`
-/// operands match neither half, so gradualism holds structurally with no
-/// separate skip-set (contrast the broader Mul/Div
-/// `is_mul_div_gradualism_skip`).
+/// `true` for any of THREE pairings, all of which the runtime
+/// `eval_add`/`eval_sub` (reify-expr) evaluate to `Value::Undef` (D3 policy):
 ///
-/// Scope: only the dimensioned-Complex-vs-bare-dimensionless-numeric row.
-/// `Complex<Q> ± Scalar<Q>` (a dimensioned, non-Int/Real `Scalar`) and
-/// `Complex<Q1> ± Complex<Q2>` (mismatched-dimension `Complex` operands) are
-/// both also runtime-`Value::Undef` and both remain unguarded by this
-/// predicate — TODO(#5219): guard those two rows, or record a
-/// permanent-accept decision, and update this doc plus the out-of-scope-gap
-/// tests in `add_sub_operand_guard_tests.rs` accordingly.
+/// - **Row A** — a DIMENSIONED `Complex` and a bare dimensionless numeric
+///   (`Int`/`Scalar{DIMENSIONLESS}`), in EITHER order: the runtime
+///   `guard_dimensionless_complex` only promotes `Value::Real`/`Value::Int`
+///   against a DIMENSIONLESS `Complex` (see `is_dimensionless_complex`'s doc
+///   above).
+/// - **Row B** — a DIMENSIONED `Complex` and ANY dimensioned `Scalar`, in
+///   EITHER order: the runtime has NO `(Complex, Scalar)` arm at all, so the
+///   `Scalar`'s dimension is irrelevant to the reject.
+/// - **Row C** — two `Complex` operands wrapping concrete `Scalar`
+///   quantities with DIFFERENT dimensions: the runtime `(Complex, Complex)`
+///   arm returns `Value::Undef` when the dimensions differ. SAME-dimension
+///   `Complex<Q> ± Complex<Q>` is legitimate arithmetic and stays `false`.
+///
+/// `Type::Error`/`Type::TypeParam` operands, and a `Complex` wrapping a
+/// non-`Scalar` (unresolved) quantity, match none of the three rows above,
+/// so gradualism holds structurally with no separate skip-set (contrast the
+/// broader Mul/Div `is_mul_div_gradualism_skip`).
 ///
 /// Pure and unit-tested below (see the
 /// `add_sub_dimensioned_complex_reject_*`/`is_dimensioned_complex_*` tests);
@@ -1681,6 +1714,9 @@ fn is_dimensioned_complex(ty: &Type) -> bool {
 pub(crate) fn add_sub_dimensioned_complex_reject(left: &Type, right: &Type) -> bool {
     (is_dimensioned_complex(left) && is_dimensionless_numeric(right))
         || (is_dimensionless_numeric(left) && is_dimensioned_complex(right))
+        || (is_dimensioned_complex(left) && is_dimensioned_scalar(right))
+        || (is_dimensioned_scalar(left) && is_dimensioned_complex(right))
+        || complex_complex_dimension_mismatch(left, right)
 }
 
 /// Single source of truth for BOTH the correct static result type of `*`/`/`
@@ -2667,10 +2703,13 @@ mod tests {
         ));
     }
 
-    /// `Complex<Q1> ± Complex<Q2>` dimension-mismatch is a separate, unguarded
-    /// gap (out of scope for task 5163) — this predicate must not touch it.
+    /// `Complex<Length> + Complex<Length>` (SAME dimension on both sides) is
+    /// legitimate Complex arithmetic — the runtime `(Complex,Complex)` arm
+    /// only returns `Value::Undef` when the two dimensions differ (task 5219
+    /// row C, guarded below) — so this must stay FALSE even after the
+    /// mismatched-dimension clause is added.
     #[test]
-    fn add_sub_dimensioned_complex_reject_false_for_complex_plus_complex_out_of_scope() {
+    fn add_sub_dimensioned_complex_reject_false_for_same_dimension_complex_plus_complex() {
         let dimensioned = Type::complex(Type::length());
         assert!(!add_sub_dimensioned_complex_reject(
             &dimensioned,
@@ -2678,20 +2717,57 @@ mod tests {
         ));
     }
 
-    /// `Complex<Length> + Length` (dimensioned Complex + dimensioned, non-Int
-    /// `Scalar`) matches neither this predicate (the `Scalar` side isn't a
-    /// bare dimensionless numeric) nor the `expr.rs` Scalar/Scalar
-    /// dimension-compat block (the `Complex` side isn't a bare `Scalar`) — a
-    /// separate, unguarded gap analogous to the Complex-vs-Complex case
-    /// above, also out of scope for task 5163. Pins CURRENT (unguarded)
-    /// behavior, not a correctness claim.
+    /// `Complex<Length> ± Complex<Angle>` (mismatched dimensions) — task 5219
+    /// row C: the runtime `eval_add`/`eval_sub` (reify-expr) `(Complex,
+    /// Complex)` arm returns `Value::Undef` when the two dimensions differ.
+    /// Must reject in BOTH operand orders, mirroring the other rows above.
     #[test]
-    fn add_sub_dimensioned_complex_reject_false_for_dimensioned_complex_plus_dimensioned_scalar_out_of_scope()
-     {
+    fn add_sub_dimensioned_complex_reject_true_for_mismatched_dimension_complex_plus_complex()
+    {
+        let length_complex = Type::complex(Type::length());
+        let angle_complex = Type::complex(Type::angle());
+        assert!(add_sub_dimensioned_complex_reject(
+            &length_complex,
+            &angle_complex
+        ));
+        assert!(add_sub_dimensioned_complex_reject(
+            &angle_complex,
+            &length_complex
+        ));
+    }
+
+    /// A `Complex` wrapping an unresolved `TypeParam` quantity (rather than a
+    /// concrete `Scalar{dimension}`) must NOT be adjudicated a dimension
+    /// mismatch — gradualism: the row-C helper requires both inner
+    /// quantities to be concrete `Scalar`s before comparing dimensions.
+    #[test]
+    fn add_sub_dimensioned_complex_reject_false_for_complex_typeparam_quantity() {
+        let typeparam_complex = Type::complex(Type::TypeParam("T".into()));
         let dimensioned_complex = Type::complex(Type::length());
         assert!(!add_sub_dimensioned_complex_reject(
+            &typeparam_complex,
+            &dimensioned_complex
+        ));
+    }
+
+    /// `Complex<Length> + Length` (dimensioned Complex + dimensioned, non-Int
+    /// `Scalar`) — task 5219 row B: the runtime `eval_add`/`eval_sub`
+    /// (reify-expr) have NO `(Complex, Scalar)` arm at all, so a dimensioned
+    /// `Complex` paired with ANY dimensioned `Scalar` is a structural
+    /// `Value::Undef` regardless of whether the two dimensions match. Must
+    /// reject in BOTH operand orders, mirroring the bare-dimensionless-numeric
+    /// row above.
+    #[test]
+    fn add_sub_dimensioned_complex_reject_true_for_dimensioned_complex_plus_dimensioned_scalar()
+    {
+        let dimensioned_complex = Type::complex(Type::length());
+        assert!(add_sub_dimensioned_complex_reject(
             &dimensioned_complex,
             &Type::length()
+        ));
+        assert!(add_sub_dimensioned_complex_reject(
+            &Type::length(),
+            &dimensioned_complex
         ));
     }
 
