@@ -64,3 +64,7 @@ __pycache__/
 
 # orchestrator runtime queue DB (live SQLite, not version-controlled) — re #5178/#5169
 data/queue/*.db*
+
+# orchestrator runtime reconciliation DB (live SQLite, not version-controlled) — re #5248
+data/reconciliation/*.db*
+data/.orchestrator/reconciliation/*.db*
