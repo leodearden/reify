@@ -19,8 +19,6 @@ pub(crate) mod detectors;
 pub mod compute_cache_key;
 pub mod compute_targets;
 pub use compute_cache_key::compute_cache_key;
-mod concurrent;
-pub use concurrent::{ConcurrentEditResult, ConcurrentEditSetup, ConcurrentNodeResult};
 pub mod demand;
 pub mod observed_demand;
 pub use observed_demand::{DemandPruneMeasurement, WouldPruneByKind};
@@ -1278,8 +1276,6 @@ pub struct TessellateResult {
     pub resolved_params: HashMap<ValueCellId, reify_ir::Value>,
 }
 
-// Concurrent edit structs and Engine methods live in concurrent.rs.
-
 /// Controls how `guard_state_fingerprint` handles guard cells absent from the value map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GuardLookup {
@@ -1327,7 +1323,6 @@ fn guard_state_fingerprint(
 //   engine_eval.rs      — eval, eval_cached, evaluate_let_bindings
 //   engine_edit.rs      — set_param_and_invalidate, edit_param, edit_check
 //   engine_build.rs     — build, build_snapshot, tessellate_*, execute_realization_ops
-//   concurrent.rs       — prepare_concurrent_edit, apply_concurrent_edit, …
 
 /// Canonical construction point for an [`reify_expr::EvalContext`] with meta-map binding.
 ///
