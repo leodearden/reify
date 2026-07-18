@@ -89,6 +89,8 @@ mod engine_purposes;
 pub(crate) mod structural_query;
 mod engine_tolerance;
 mod geometry_ops;
+#[cfg(test)]
+mod registry_drift_tests;
 // Task #4673 (geom-dispatch-registry L4): cfg-gated cross-crate test seam exposing
 // a 1:1 delegate to the `pub(crate)` `geometry_ops::compile_geometry_op` for the
 // characterization/golden harness in `tests/compile_geometry_op_characterization.rs`.

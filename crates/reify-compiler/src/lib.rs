@@ -108,8 +108,19 @@ pub(crate) use traits::*;
 pub(crate) use type_compat::*;
 pub(crate) use type_resolution::*;
 pub(crate) use units::*;
+// The cross-crate re-exports below (8 name families + 2 result-type fns,
+// widened from `pub(crate)`) exist so `reify-eval`'s
+// `registry_drift_tests` module can compare the compiler-side builtin-name
+// registries against the eval-side dispatch oracles directly, instead of
+// hand-duplicating name lists (task 5055 γ; see
+// `reify-eval/src/invariants.rs`'s `DYNAMICS_QUERY_NAMES`/
+// `KINEMATIC_QUERY_NAMES` local literals for the drift this closes).
 pub use units::{
-    GEOMETRY_FUNCTION_NAMES, UnitEntry, UnitRegistry, UnitResolveError, resolve_unit_expr,
+    DYNAMICS_CONSTRUCTOR_NAMES, DYNAMICS_QUERY_NAMES, FEA_ENVELOPE_NAMES, FIELD_OP_NAMES,
+    GEOMETRY_FUNCTION_NAMES, GEOMETRY_KINEMATIC_QUERY_NAMES, GEOMETRY_QUERY_HELPER_NAMES,
+    GEOMETRY_QUERY_NAMES, GEOMETRY_TOPOLOGY_SELECTOR_NAMES, UnitEntry, UnitRegistry,
+    UnitResolveError, geometry_query_result_type, resolve_unit_expr,
+    topology_selector_result_type,
 };
 
 use std::collections::{HashMap, HashSet};
