@@ -12011,6 +12011,51 @@ mod tests {
         assert_welded_matches_unthreaded(&reversed_winding_mesh, 0.0);
     }
 
+    /// Debug-buildable happy-path smoke test for
+    /// [`Mesh::check_mesh_contract_welded`]: threads a genuinely
+    /// non-identity [`WeldRemap`] — minted by [`Mesh::weld_remap`] on
+    /// `per_face_block_tetra_mesh()`, whose 12 raw per-face-block vertices
+    /// collapse to 4 canonical corners — and asserts the call is accepted.
+    ///
+    /// The two tests below (`check_mesh_contract_welded_consumes_threaded_remap`
+    /// and `check_mesh_contract_welded_falls_back_on_length_mismatch`) are
+    /// `#[cfg(not(debug_assertions))]` because they deliberately feed a
+    /// *bogus* remap to observe release-only fallback behavior that a debug
+    /// `debug_assert_eq!` would otherwise trip — so neither runs under a
+    /// plain `cargo test` / task-role debug verify (see their docs). This
+    /// test threads a *correct* remap instead, so it has nothing to elide
+    /// and runs in every build profile, giving debug builds at least one
+    /// signal that `check_mesh_contract_welded`'s happy-path plumbing —
+    /// mint a real `WeldRemap`, thread it through, get `Ok(())` back —
+    /// hasn't broken. It cannot, on its own, distinguish "consumed" from
+    /// "ignored-and-recomputed" (see `check_mesh_contract_welded_matches_unthreaded`
+    /// above and `check_mesh_contract_welded_consumes_threaded_remap` below
+    /// for that guarantee).
+    #[test]
+    fn check_mesh_contract_welded_accepts_correct_non_identity_remap() {
+        let mesh = per_face_block_tetra_mesh();
+        let (_, remap) = mesh.weld_remap();
+
+        // Confirm the remap is genuinely non-identity (welds 12 raw
+        // vertices down to 4 canonical corners) so this smoke test can't
+        // silently degenerate into a vacuous already-welded check.
+        let mut canonical_indices = remap.as_slice().to_vec();
+        canonical_indices.sort_unstable();
+        canonical_indices.dedup();
+        assert_eq!(
+            canonical_indices.len(),
+            4,
+            "per_face_block_tetra_mesh's weld remap must collapse 12 raw \
+             vertices to 4 canonical corners; got {:?}",
+            remap.as_slice()
+        );
+
+        mesh.check_mesh_contract_welded(0.0, &remap).expect(
+            "a correct non-identity weld remap on a valid (if unwelded) mesh \
+             must be accepted",
+        );
+    }
+
     /// [`Mesh::check_mesh_contract_welded`] must actually CONSUME the
     /// threaded remap rather than silently ignoring it and recomputing its
     /// own weld. `check_mesh_contract_welded_matches_unthreaded` above
