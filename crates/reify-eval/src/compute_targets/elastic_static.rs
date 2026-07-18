@@ -6220,7 +6220,7 @@ mod tests {
         );
 
         // (b) extract_loads — the combined production path (density unused here).
-        let (_tip_force, pressures, _body_force) = extract_loads(&loads, 0.0);
+        let (_tip_force, pressures, _body_force) = extract_loads(&loads, 0.0).unwrap();
         assert_eq!(
             pressures.len(),
             1,
