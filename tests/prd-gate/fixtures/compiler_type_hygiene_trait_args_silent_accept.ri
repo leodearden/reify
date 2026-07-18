@@ -2,7 +2,9 @@
 // PRE (2026-07-06, main 4d696e63cb): `reify check` exits 0, "All constraints satisfied.",
 // zero diagnostics — `Foo` in `SpecLike<Foo>` is SILENTLY DROPPED (bare Type::TraitObject,
 // type_resolution.rs:1728 fallthrough → :658-662).
-// POST (task α): E_TYPE_ARG_ON_TRAIT error naming the trait and its type argument; exit != 0.
+// POST-LANDED (task α / 5049, main c277691a7d): rejection now fires — `reify check` exits 1 with
+// "error: E_TYPE_ARG_ON_TRAIT: trait 'SpecLike' does not accept type arguments (given 'Foo'); trait
+// type-arguments are not yet supported". Asserted by compiler-type-hygiene-probe-set.json (task λ/5070).
 module compiler_type_hygiene_trait_args_silent_accept
 
 trait SpecLike {
