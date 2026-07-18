@@ -116,6 +116,27 @@ fn is_connected(kernel: &OcctKernel, id: GeometryHandleId) -> bool {
     }
 }
 
+/// Assert the fused result is manifold and consistently oriented.
+///
+/// These are the topology invariants a valid single-pass fuse must carry over
+/// from the previous pairwise-accumulator output: every edge borders ≤ 2 faces,
+/// and every shell is consistently oriented.  They hold for both the overlapping
+/// single-SOLID results and the disjoint COMPSOLID results (a disjoint fuse
+/// shares no edges between instances, so each stays manifold/oriented) — and the
+/// COMPSOLID case matches the `IsManifold`/`IsOrientable == true` behaviour
+/// already pinned in `conformance_integration.rs` (only the version-dependent
+/// `IsWatertight` closedness bool is left unpinned there).
+fn assert_manifold_and_orientable(kernel: &OcctKernel, id: GeometryHandleId, ctx: &str) {
+    match kernel.query(&GeometryQuery::IsManifold(id)) {
+        Ok(Value::Bool(true)) => {}
+        other => panic!("{ctx}: IsManifold should be Ok(Bool(true)), got {other:?}"),
+    }
+    match kernel.query(&GeometryQuery::IsOrientable(id)) {
+        Ok(Value::Bool(true)) => {}
+        other => panic!("{ctx}: IsOrientable should be Ok(Bool(true)), got {other:?}"),
+    }
+}
+
 /// Build an independent reference for a `direction1=+X`, `direction2=+Y` grid by
 /// placing a fresh unit box at each grid position (i·s1, j·s2, 0) — matching
 /// `linear_pattern_2d`'s placement, original at (0, 0) — and chain-fusing them
@@ -190,6 +211,7 @@ fn linear_pattern_2d_disjoint_3x3_volume_area_watertight() {
         is_watertight(&kernel, grid),
         "the disjoint multi-solid grid result must be watertight"
     );
+    assert_manifold_and_orientable(&kernel, grid, "disjoint 3x3 grid");
 }
 
 /// OVERLAPPING 3×3 grid (spacing 0.5 m < 1 m box): watertight single component,
@@ -231,6 +253,7 @@ fn linear_pattern_2d_overlapping_matches_chained_reference_single_component() {
         is_connected(&kernel, grid),
         "overlapping instances must fuse into ONE connected component, not a compound"
     );
+    assert_manifold_and_orientable(&kernel, grid, "overlapping 3x3 grid");
 }
 
 // ── arbitrary_pattern ──────────────────────────────────────────────────────────
@@ -267,6 +290,7 @@ fn arbitrary_pattern_disjoint_volume_area_watertight() {
         is_watertight(&kernel, pat),
         "the disjoint arbitrary_pattern result must be watertight"
     );
+    assert_manifold_and_orientable(&kernel, pat, "disjoint arbitrary_pattern");
 }
 
 /// OVERLAPPING arbitrary_pattern: original [-0.5,0.5] + copies @0.5 ([0,1]) and
@@ -301,6 +325,7 @@ fn arbitrary_pattern_overlapping_merges_single_component() {
         is_connected(&kernel, pat),
         "overlapping copies must fuse into ONE connected component"
     );
+    assert_manifold_and_orientable(&kernel, pat, "overlapping arbitrary_pattern");
 }
 
 // ── linear_pattern (1-D) ───────────────────────────────────────────────────────
@@ -336,6 +361,7 @@ fn linear_pattern_1d_disjoint_volume_area_watertight() {
         is_watertight(&kernel, row),
         "the disjoint 1-D row result must be watertight"
     );
+    assert_manifold_and_orientable(&kernel, row, "disjoint 1-D row");
 }
 
 /// OVERLAPPING 1-D row: count 2, spacing 0.5 m along +X ⇒ box [-0.5,0.5] ∪
@@ -369,4 +395,5 @@ fn linear_pattern_1d_overlapping_merges_single_component() {
         is_connected(&kernel, row),
         "overlapping instances must fuse into ONE connected component"
     );
+    assert_manifold_and_orientable(&kernel, row, "overlapping 1-D row");
 }
