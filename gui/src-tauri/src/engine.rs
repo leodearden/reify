@@ -3663,6 +3663,27 @@ fn display_scalar(v: &reify_ir::Value) -> Option<(f64, DimensionVector)> {
     }
 }
 
+/// Format the four display fields a `ValueData` cell derives directly from its
+/// `Value`: the default-unit `value` / `unit` pair (`format_value`) plus the
+/// per-cell canonical `si_value` + `dimension` name (`display_scalar`, task
+/// #5199). Returns `(value, unit, si_value, dimension)`.
+///
+/// Shared by `build_values` (every cell) and `surface_geometry_derived_cells`
+/// (each cell surfaced from `Undef` → Determined) so the two sites cannot drift
+/// if the formatting rules change (e.g. dimension naming). For a non-scalar or
+/// `Undef` value, `display_scalar` yields `None`, so `si_value` is `None` and
+/// `dimension` is `""` — the GUI keeps the static unit badge with no ladder,
+/// exactly as `format_value` renders the value itself.
+fn format_determined_cell(val: &Value) -> (String, String, Option<f64>, String) {
+    let (value, unit) = format_value(val);
+    let (si_value, dim) = match display_scalar(val) {
+        Some((s, d)) => (Some(s), Some(d)),
+        None => (None, None),
+    };
+    let dimension = dim.and_then(|d| d.canonical_name()).unwrap_or("").to_string();
+    (value, unit, si_value, dimension)
+}
+
 fn build_values(
     compiled: &reify_compiler::CompiledModule,
     check: &CheckResult,
@@ -3672,7 +3693,7 @@ fn build_values(
     for template in &compiled.templates {
         for cell in &template.value_cells {
             let val = check.values.get_or_undef(&cell.id);
-            let (formatted_value, unit) = format_value(&val);
+            let (formatted_value, unit, si_value, dimension) = format_determined_cell(&val);
             let determinacy = match &val {
                 reify_ir::Value::Undef => {
                     if cell.kind.is_auto() {
@@ -3725,17 +3746,9 @@ fn build_values(
                 }),
                 _ => None,
             };
-            // Per-cell canonical dimension + raw SI magnitude (task #5199),
-            // alongside the existing default-unit-formatted `value`/`unit`
-            // pair above — the substrate for the GUI's per-cell display-unit
-            // picker. `dimension` is the empty string for non-scalar values
-            // and for scalar dimensions with no named entry in
-            // `NAMED_DIMENSIONS` (e.g. dimensionless or composed units).
-            let (si_value, dim) = match display_scalar(&val) {
-                Some((s, d)) => (Some(s), Some(d)),
-                None => (None, None),
-            };
-            let dimension = dim.and_then(|d| d.canonical_name()).unwrap_or("").to_string();
+            // `si_value` / `dimension` (task #5199, the substrate for the GUI's
+            // per-cell display-unit picker) are computed once alongside
+            // `value` / `unit` by `format_determined_cell` above.
             values.push(ValueData {
                 cell_id: cell.id.to_string(),
                 name: cell.id.member.clone(),
@@ -3845,13 +3858,25 @@ pub(crate) fn build_constraints(
 /// the post-geometry constraint re-check in `Engine::build` (engine_build.rs): a
 /// previously Satisfied/Violated constraint cannot regress because the re-check
 /// only ADDS now-resolved geometry cells, so only Indeterminate entries are
-/// touched. Skipped entirely when nothing is Indeterminate (the common case).
+/// touched. Skipped entirely when this pass surfaced no cell, or when nothing is
+/// Indeterminate (the common cases). Narrowing the dispatch further — to only the
+/// constraints that reference a cell surfaced this pass — would need a subset-checking
+/// `Engine` API in reify-eval (out of this task's scope); for a `: Rigid` body the
+/// `moi_principal[0] > 0` PD constraint references a surfaced cell, so its re-check is
+/// inherently required on every warm edit regardless.
 fn surface_geometry_derived_cells(
     engine: &Engine,
     values: &mut [ValueData],
     constraints: &mut [ConstraintData],
     result: &reify_eval::TessellateResult,
 ) {
+    // Track whether this pass surfaced any cell from Undef → Determined. If it
+    // did not, `result.values` resolved nothing the kernel-less panel was
+    // missing, so the constraint re-check below cannot flip any verdict (every
+    // constraint input is a panel cell, and an Indeterminate constraint only
+    // resolves once one of its Undef inputs is surfaced here) — skip it and
+    // spare the full active-constraint dispatch on every warm rebuild.
+    let mut surfaced_any = false;
     for cell in values.iter_mut() {
         // Leave already-resolved cells untouched; only surface the ones the
         // kernel-less panel left Undef (undetermined / auto).
@@ -3865,20 +3890,27 @@ fn surface_geometry_derived_cells(
         if matches!(val, Value::Undef) {
             continue;
         }
-        let (formatted_value, unit) = format_value(val);
-        cell.value = formatted_value;
+        let (value, unit, si_value, dimension) = format_determined_cell(val);
+        cell.value = value;
         cell.unit = unit;
         cell.determinacy = format_determinacy(DeterminacyState::Determined);
         cell.reason = None;
-        let (si_value, dim) = match display_scalar(val) {
-            Some((s, d)) => (Some(s), Some(d)),
-            None => (None, None),
-        };
-        cell.dimension = dim.and_then(|d| d.canonical_name()).unwrap_or("").to_string();
+        cell.dimension = dimension;
         cell.si_value = si_value;
+        // The kernel-bearing build resolved this cell to a real, FINAL value —
+        // not a demand-pruned "pending" one. `build_values` sourced `freshness`
+        // (and any `last_substantive_value`) from the kernel-less snapshot, where
+        // an auto-derived geometry cell can read `"pending"` with a stale prior
+        // value; left as-is, the panel would show a Determined value under a
+        // "pending" badge with a stale prior-value surface. Reset both so the
+        // freshness badge and prior-value surface match the surfaced value.
+        cell.freshness = "final".to_string();
+        cell.last_substantive_value = None;
+        surfaced_any = true;
     }
 
-    if constraints.iter().any(|c| c.status == "Indeterminate")
+    if surfaced_any
+        && constraints.iter().any(|c| c.status == "Indeterminate")
         && let Ok((recheck, _diags)) = engine.check_constraints_with_values(&result.values)
     {
         for c in constraints.iter_mut() {
