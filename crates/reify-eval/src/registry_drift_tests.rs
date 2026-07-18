@@ -75,7 +75,7 @@
 //!     fails naming `DYNAMICS_QUERY_NAMES member(s) {"body_mass_props"}
 //!     recognized by is_geometry_consumer_call`, the direct
 //!     no-silent-`Value::Undef` guard.
-//! Revert: delete the added match arm.
+//!     Revert: delete the added match arm.
 //!
 //! **Leg 2 — compiler-side registry, family slice.** Add
 //! `"zzz_drift_probe"` as a new element of `GEOMETRY_QUERY_NAMES`
@@ -87,7 +87,7 @@
 //!   - `result_type_maps_agree_with_their_name_families_cross_crate`
 //!     (`reify_compiler::geometry_query_result_type`'s `Some`-set no longer
 //!     matches `GEOMETRY_QUERY_NAMES`)
-//! Revert: delete the added slice element.
+//!     Revert: delete the added slice element.
 //!
 //! **Why Leg 1 must reuse an already-registered name, not a wholly novel
 //! string:** every test in this module draws its candidate names from
