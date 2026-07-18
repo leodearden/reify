@@ -235,6 +235,33 @@ mod tests {
         }
     }
 
+    /// §4a curated-name invariant: every ladder exposes a non-empty
+    /// `derived_unit_name`, and it is exactly the label of that ladder's
+    /// single `is_default` rung — the default [`UnitOption`] is the single
+    /// source of the curated per-dimension label. Pins the denormalized
+    /// field to its authoritative source so it cannot drift from the
+    /// default rung.
+    #[test]
+    fn every_ladder_exposes_curated_derived_unit_name() {
+        for l in &unit_ladders() {
+            assert!(
+                !l.derived_unit_name.is_empty(),
+                "ladder {:?} has an empty derived_unit_name",
+                l.dimension
+            );
+            let default_rung = l
+                .units
+                .iter()
+                .find(|u| u.is_default)
+                .unwrap_or_else(|| panic!("ladder {:?} has no is_default unit", l.dimension));
+            assert_eq!(
+                l.derived_unit_name, default_rung.label,
+                "ladder {:?} derived_unit_name must equal its is_default rung label",
+                l.dimension
+            );
+        }
+    }
+
     /// Collapsed data-driven replacement for five former per-ladder pin
     /// tests (task #5199 amend, reviewer_comprehensive test_coverage
     /// finding): each hand-copied the same `si_scale`/`is_default`
