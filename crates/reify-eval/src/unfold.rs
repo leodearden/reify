@@ -37,6 +37,18 @@ use crate::snapshot::Snapshot;
 /// eval (`unfold_recursive_sub`) stays out of scope on `eval_ctx_with_meta`.
 /// Required-capability rationale: `docs/prds/v0_6/eval-cell-commit-substrate.md`
 /// §2.5.
+///
+/// Scope caveat (param `default_expr`, let-binding call sites — see
+/// `eval_child_expr`): there, `value_map` is the recursion-local
+/// `child_values` while `determinacy` stays the globally-scoped
+/// `&snapshot.values`, so a compound expression mixing a plain reference and
+/// a `determined()` predicate on the same recursion-local name (e.g. `n`)
+/// resolves them against different cells — only absolute-root references
+/// (e.g. `S.n`) are guaranteed consistent. The arg branch is unaffected
+/// (`value_map` is already the global `values` there). Fixing this would
+/// mean projecting a template-scoped determinacy view alongside
+/// `child_values` instead of the global snapshot — future work, out of
+/// scope here.
 struct NoContainment;
 
 impl ContainmentQuery for NoContainment {
@@ -329,6 +341,9 @@ pub(crate) fn elaborate_child_instance(
 /// snapshot.values, ..)` call, which the borrow checker rejects. A per-call
 /// function borrows its arguments only for that call's duration, so it has
 /// no such lifetime-extension conflict with the interleaved mutable commit.
+///
+/// `value_map` and `determinacy` are not always same-scoped across callers —
+/// see the scope caveat in the `NoContainment` doc comment above.
 fn eval_child_expr(
     value_map: &ValueMap,
     expr: &reify_ir::CompiledExpr,
