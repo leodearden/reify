@@ -19,7 +19,7 @@ gui = ["dep:tauri", "dep:reify-kernel-occt", "dep:tauri-plugin-dialog", "dep:tau
 
 [dependencies]
 reify-ast.workspace = true
-reify-core.workspace = true
+reify-core = { workspace = true, features = ["serde"] }
 reify-ir.workspace = true
 reify-mesh-morph = { workspace = true, optional = true }
 reify-syntax.workspace = true
