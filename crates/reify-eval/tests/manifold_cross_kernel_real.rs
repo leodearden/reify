@@ -717,6 +717,22 @@ fn mixed_kernel_attribute_selectors_builds_renders_and_reads_per_kernel_attribut
 /// extra real-kernel build only runs in the OCCT-gated integration suite
 /// (`OCCT_AVAILABLE`), never in the default stub-mode build/test loop.
 ///
+/// ### Re-confirmed on re-review (task 5071 amendment pass 2)
+///
+/// A subsequent review pass re-flagged the same double-build cost after
+/// seeing the tradeoff recorded above, and marked it "acceptable as-is" /
+/// "surfaced for completeness only" — no code change requested. It named
+/// two concrete options for an eventual follow-up if the OCCT-gated
+/// suite's wall-clock cost becomes a real concern, neither previously
+/// spelled out here: (1) a `once_cell`/`std::sync::OnceLock`-guarded
+/// module-level fixture so both `#[test]` fns share one cached build, or
+/// (2) collapsing back to a single `#[test]` that performs one build and
+/// asserts both boundaries behind distinct `assert!`/`panic!` messages —
+/// accepting that `cargo test`'s per-test pass/fail line would then cover
+/// both boundaries under one test name, unlike today's two independently-
+/// reporting tests. Neither is applied here; both remain optional,
+/// deferred work.
+///
 /// RED (before step-4 adds `top_frame = post @ face("top")` to the
 /// fixture): the example has no `top_frame` binding, so the
 /// `BuildResult.values` lookup misses (`None`) and the `.unwrap_or_else`
