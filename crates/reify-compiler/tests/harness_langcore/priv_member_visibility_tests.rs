@@ -1261,12 +1261,15 @@ fn leak(m : PortHost) -> Length { m.secret.main }
     );
 }
 
-/// A function body cannot reach a `priv` param nested inside a block-form
-/// `where cond { }` guarded group via the skeleton registry — the skeleton's
-/// `guarded_groups` vec is always empty, so the member is unresolved
-/// (E_STRUCTURE_MEMBER_NOT_FOUND), not silently granted access.
+/// A function body accessing a `priv` param nested inside a block-form
+/// `where cond { }` guarded group is now priv-gated:
+/// `build_structure_def_skeleton` populates the skeleton template's
+/// `guarded_groups`, so the SIR-α `StructureRef` member-access block's
+/// pre-ordered E_PRIV gate (`template_member_is_priv`'s `guarded_groups` scan)
+/// fires exactly one E_PRIV_MEMBER_ACCESS on `m.g`. No expr.rs change is
+/// needed for the guarded-member case — populating the skeleton is sufficient.
 #[test]
-fn function_body_priv_guarded_member_access_not_yet_priv_gated() {
+fn function_body_priv_guarded_member_access_priv_gated() {
     let module = compile_source(
         r#"
 structure def GuardHost {
@@ -1280,33 +1283,16 @@ fn leak(m : GuardHost) -> Length { m.g }
 "#,
     );
 
+    let priv_errs = priv_access_errors(&module);
     assert_eq!(
-        priv_access_errors(&module).len(),
-        0,
-        "function-body access to a priv guarded-block member must not emit \
-         E_PRIV_MEMBER_ACCESS today — the skeleton template never carries \
-         guarded-group members (tracked by {NOT_YET_PRIV_GATED_FOLLOWUP}); all \
-         diagnostics: {:?}",
+        priv_errs.len(),
+        1,
+        "function-body access to a priv guarded-block member (`m.g`) must emit \
+         exactly one E_PRIV_MEMBER_ACCESS — the skeleton template now carries the \
+         guarded group's members so the priv gate fires; all diagnostics: {:?}",
         module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
-    let not_found = module
-        .diagnostics
-        .iter()
-        .filter(|d| d.code == Some(DiagnosticCode::StructureMemberNotFound))
-        .count();
-    // `>= 1` rather than `== 1`: the load-bearing claim is that access fails
-    // closed (via E_STRUCTURE_MEMBER_NOT_FOUND, not silently), not that the
-    // compiler emits precisely one such diagnostic for this path. An
-    // unrelated future change adding a second, legitimately different
-    // member-resolution diagnostic on this fixture shouldn't fail this test.
-    assert!(
-        not_found >= 1,
-        "function-body access to `m.g` must fail with at least one \
-         E_STRUCTURE_MEMBER_NOT_FOUND (the skeleton's empty `guarded_groups` \
-         vec means the member is unresolved) — this pins that the access fails \
-         closed, not open; all diagnostics: {:?}",
-        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
+    assert!(priv_errs[0].message.contains("E_PRIV_MEMBER_ACCESS"));
 }
 
 // ── Part C: deep-chain enforcement + the `self.<sub>.<member>` bypass ─────────
