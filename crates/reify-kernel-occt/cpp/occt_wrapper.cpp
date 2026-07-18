@@ -5938,6 +5938,76 @@ TessResult tessellate_shape(const OcctShape& shape, double tolerance) {
             for (int i = 1; i <= nb_tris; ++i) {
                 int n1, n2, n3;
                 tri->Triangle(i).Get(n1, n2, n3);
+
+                // OCCT triangle node indices are 1-based and within
+                // [1, nb_nodes] — index emission below already relies on
+                // this; cheaply enforce it here too (debug-only).
+#ifndef NDEBUG
+                assert(n1 >= 1 && n1 <= nb_nodes);
+                assert(n2 >= 1 && n2 <= nb_nodes);
+                assert(n3 >= 1 && n3 <= nb_nodes);
+#endif
+
+                // INV-GEO-1 (docs/prds/kernel-seam-contracts.md §2
+                // obligation 3, task #5164): a periodic surface's pole (e.g.
+                // a full sphere) gets one bit-identical raw pole node per
+                // meridian from BRepMesh_IncrementalMesh, so the seam fan
+                // triangle with two duplicate pole corners has zero area.
+                // Read the corners back from `result.vertices` (the same
+                // loc-transformed float-cast values written above) and skip
+                // the triangle when its (b-a)×(c-a) cross product is zero.
+                // This mirrors `Mesh::check_contract`'s NonDegenerate math
+                // bit-for-bit (`crates/reify-ir/src/geometry.rs:2852-2861`),
+                // so the producer emits exactly the triangle set
+                // `validate(0.0)` accepts — keep the two forms in sync.
+                // Threshold is exact zero (an epsilon could drop a real
+                // sliver and open a hole), scoped to `validate(0.0)`.
+                uint32_t base_a = (vertex_offset + static_cast<uint32_t>(n1 - 1)) * 3;
+                uint32_t base_b = (vertex_offset + static_cast<uint32_t>(n2 - 1)) * 3;
+                uint32_t base_c = (vertex_offset + static_cast<uint32_t>(n3 - 1)) * 3;
+                float ax = result.vertices[base_a];
+                float ay = result.vertices[base_a + 1];
+                float az = result.vertices[base_a + 2];
+                float bx = result.vertices[base_b];
+                float by = result.vertices[base_b + 1];
+                float bz = result.vertices[base_b + 2];
+                float cx = result.vertices[base_c];
+                float cy = result.vertices[base_c + 1];
+                float cz = result.vertices[base_c + 2];
+
+                // A plain float equality cannot be fused by -ffp-contract,
+                // so this exact coincident-corner check is FMA-immune and
+                // can only ever agree with `validate(0.0)`.
+                bool coincident_corners =
+                    (ax == bx && ay == by && az == bz) ||
+                    (ax == cx && ay == cy && az == cz) ||
+                    (bx == cx && by == cy && bz == cz);
+
+                // Fallback for non-coincident degenerates. Unlike the
+                // equality check above this is NOT proven FMA-immune (this
+                // TU's default -ffp-contract=fast vs check_contract's
+                // unfused Rust), but only a thin non-coincident sliver —
+                // which no current fixture emits — could diverge. Pinning
+                // -ffp-contract=off (build.rs, outside this task's locked
+                // scope) is tracked as follow-up #5241.
+                float abx = bx - ax, aby = by - ay, abz = bz - az;
+                float acx = cx - ax, acy = cy - ay, acz = cz - az;
+                float cross_x = aby * acz - abz * acy;
+                float cross_y = abz * acx - abx * acz;
+                float cross_z = abx * acy - aby * acx;
+                float twice_area_sq = cross_x * cross_x + cross_y * cross_y + cross_z * cross_z;
+                if (coincident_corners || twice_area_sq <= 0.0f) {
+                    // Degenerate — skip only this triangle's index emission.
+                    // Vertex/normal buffers and vertex_offset are untouched,
+                    // so subsequent faces' indices stay correct and the
+                    // pole/ring nodes stay reachable via adjacent real
+                    // triangles (validate has no orphan-vertex obligation).
+                    // Applies to any exactly-zero-area triangle from any
+                    // face — safe, since no consumer maps emitted indices
+                    // back to OCCT face-local triangle ordinals.
+                    continue;
+                }
+
                 result.indices.push_back(vertex_offset + static_cast<uint32_t>(n1 - 1));
                 if (reversed) {
                     result.indices.push_back(vertex_offset + static_cast<uint32_t>(n3 - 1));
