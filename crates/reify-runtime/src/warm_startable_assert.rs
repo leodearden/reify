@@ -3,9 +3,8 @@
 //! [`WarmStartableRegistry`](reify_types::WarmStartableRegistry) — PRD §5 B5
 //! / §6 I-3 (M-013 fix).
 //!
-//! Wired into the scheduler init path via
-//! [`crate::concurrent::SchedulerConfig`]'s `warm_startable_registry: Option<…>`
-//! field. The check uses `debug_assert_eq!` so release builds compile to a
+//! Invoked once a `WarmStartableRegistry` has been assembled (debug builds
+//! only). The check uses `debug_assert_eq!` so release builds compile to a
 //! no-op.
 
 use reify_ir::{NodeKind, NodeTraits, WarmStartableRegistry};
