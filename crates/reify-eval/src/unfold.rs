@@ -1,18 +1,61 @@
 // Recursive sub-component unfolding — unfold_recursive_sub and elaborate_child_* functions.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::time::Instant;
 
 use reify_compiler::{TopologyTemplate, ValueCellKind, find_template};
 use reify_core::{Diagnostic, ValueCellId, VersionId};
-use reify_ir::{CompiledFunction, DeterminacyState, Value, ValueMap};
+use reify_expr::ContainmentQuery;
+use reify_ir::{CompiledFunction, DeterminacyState, PersistentMap, Value, ValueMap};
 
-use crate::cache::{CacheStore, CachedResult, NodeId};
+use crate::cache::{CacheStore, NodeId};
+use crate::cell_commit::{CacheLeg, CommitLegs, DeterminacyRule, TraceSource, commit_cell_result};
+use crate::cell_eval_ctx::cell_eval_ctx;
 use crate::deps::{DependencyTrace, extract_dependency_trace, take_trace};
 use crate::dirty::topological_sort;
 use crate::eval_ctx_with_meta;
-use crate::journal::{EvalEvent, EventJournal, EventKind, EventPayload};
+use crate::journal::EventJournal;
 use crate::snapshot::Snapshot;
+
+/// No-op [`ContainmentQuery`]: containment stays `None` on this
+/// recursive-unfold path, matching its pre-migration behaviour (restricted-
+/// field samples resolve to `Value::Undef`, same as before `cell_eval_ctx`
+/// existed here). Wiring the live `Engine` instead would require threading
+/// `&self` through these free functions, conflicting with the `&mut
+/// journal`/`&mut cache` borrows already split out at the engine_eval.rs
+/// call sites.
+///
+/// Determinacy is *not* a no-op: `cell_eval_ctx` requires it, so all three
+/// call sites below now wire the live `&snapshot.values`. This is an
+/// intentional semantic change, not pure behaviour-preservation — a child
+/// param/let expression containing a `DeterminacyPredicate` (e.g.
+/// `determined(x)`) now resolves against the snapshot instead of
+/// unconditionally degrading to `Value::Undef`. No existing fixture or
+/// shipped design relies on the old degradation (checked repo-wide; see the
+/// divergence tests in this file's `tests` module, which lock the new
+/// behaviour); guard-position `determined()` is unaffected, since the guard
+/// eval (`unfold_recursive_sub`) stays out of scope on `eval_ctx_with_meta`.
+/// Required-capability rationale: `docs/prds/v0_6/eval-cell-commit-substrate.md`
+/// §2.5.
+///
+/// Scope caveat (param `default_expr`, let-binding call sites — see
+/// `eval_child_expr`): there, `value_map` is the recursion-local
+/// `child_values` while `determinacy` stays the globally-scoped
+/// `&snapshot.values`, so a compound expression mixing a plain reference and
+/// a `determined()` predicate on the same recursion-local name (e.g. `n`)
+/// resolves them against different cells — only absolute-root references
+/// (e.g. `S.n`) are guaranteed consistent. The arg branch is unaffected
+/// (`value_map` is already the global `values` there). Fixing this would
+/// mean projecting a template-scoped determinacy view alongside
+/// `child_values` instead of the global snapshot — future work, out of
+/// scope here.
+struct NoContainment;
+
+impl ContainmentQuery for NoContainment {
+    fn contains(&self, _region: &Value, _point: &Value) -> Option<bool> {
+        None
+    }
+}
 
 /// Recursively unfold a recursive sub-component until the guard evaluates to false
 /// or the depth limit is reached.
@@ -283,6 +326,44 @@ pub(crate) fn elaborate_child_instance(
     );
 }
 
+/// Builds a [`cell_eval_ctx`] from the given capabilities and evaluates
+/// `expr` against it in one step, replacing the `let ctx = cell_eval_ctx(..);
+/// reify_expr::eval_expr(expr, &ctx)` pair that was previously repeated at
+/// each of this migration's three eval-and-commit call sites (both branches
+/// of `elaborate_child_params_only`, plus `elaborate_child_lets_only`'s
+/// let-eval).
+///
+/// Deliberately a plain function, not a closure hoisted above the caller's
+/// loop: a closure capturing `determinacy`/`runtime_sink`/`containment` by
+/// reference would hold its `&snapshot.values` borrow alive for as long as
+/// the closure binding could still be called again — i.e. across the loop's
+/// intervening `commit_cell_result(.., snapshot_values: &mut
+/// snapshot.values, ..)` call, which the borrow checker rejects. A per-call
+/// function borrows its arguments only for that call's duration, so it has
+/// no such lifetime-extension conflict with the interleaved mutable commit.
+///
+/// `value_map` and `determinacy` are not always same-scoped across callers —
+/// see the scope caveat in the `NoContainment` doc comment above.
+fn eval_child_expr(
+    value_map: &ValueMap,
+    expr: &reify_ir::CompiledExpr,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    determinacy: &PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+    runtime_sink: &RefCell<Vec<Diagnostic>>,
+    containment: &dyn ContainmentQuery,
+) -> Value {
+    let ctx = cell_eval_ctx(
+        value_map,
+        functions,
+        meta_map,
+        determinacy,
+        runtime_sink,
+        containment,
+    );
+    reify_expr::eval_expr(expr, &ctx)
+}
+
 /// Phase 1: Evaluate and store only the param cells for a child instance.
 ///
 /// Returns the template-scoped child_values map (params only) for use in phase 2.
@@ -301,6 +382,12 @@ fn elaborate_child_params_only(
     meta_map: &HashMap<String, HashMap<String, String>>,
 ) -> ValueMap {
     let mut child_values = ValueMap::new();
+    // runtime_sink is required by `cell_eval_ctx`; its contents are
+    // discarded rather than surfaced — this fn has no `diagnostics` param to
+    // drain into, and pre-migration this path never surfaced eval-time
+    // diagnostics either.
+    let runtime_sink = RefCell::new(Vec::new());
+    let containment = NoContainment;
 
     for cell in &child_template.value_cells {
         if cell.kind != ValueCellKind::Param {
@@ -334,45 +421,50 @@ fn elaborate_child_params_only(
         }
 
         let val = if let Some((_name, arg_expr)) = args.iter().find(|(name, _)| name == member) {
-            reify_expr::eval_expr(arg_expr, &eval_ctx_with_meta(values, functions, meta_map))
+            eval_child_expr(
+                values,
+                arg_expr,
+                functions,
+                meta_map,
+                &snapshot.values,
+                &runtime_sink,
+                &containment,
+            )
         } else if let Some(ref default_expr) = cell.default_expr {
-            reify_expr::eval_expr(
+            eval_child_expr(
+                &child_values,
                 default_expr,
-                &eval_ctx_with_meta(&child_values, functions, meta_map),
+                functions,
+                meta_map,
+                &snapshot.values,
+                &runtime_sink,
+                &containment,
             )
         } else {
             Value::Undef
         };
 
         child_values.insert(cell.id.clone(), val.clone());
-        let node_id = NodeId::Value(scoped_id.clone());
-        let start = Instant::now();
-        journal.record(EvalEvent {
-            timestamp: start,
-            node_id: node_id.clone(),
-            kind: EventKind::Started,
-            version: VersionId(version_id),
-            payload: None,
-        });
 
-        values.insert(scoped_id.clone(), val.clone());
-        snapshot.values.insert(
+        // TraceSource::GuardedGroup: the PRD (§0, §8) treats this
+        // recursive-unfold path and engine_eval.rs's guarded-group param
+        // cells as one shared provenance category, not two — this is the
+        // intended tag, not a placeholder.
+        commit_cell_result(
+            CommitLegs {
+                values,
+                snapshot_values: &mut snapshot.values,
+                cache,
+                journal,
+            },
             scoped_id.clone(),
-            (val.clone(), DeterminacyState::Determined),
+            val,
+            DeterminacyRule::UnconditionalDetermined,
+            TraceSource::GuardedGroup,
+            DependencyTrace::default(),
+            VersionId(version_id),
+            CacheLeg::Record,
         );
-
-        let trace = DependencyTrace::default();
-        let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
-        let outcome =
-            cache.record_evaluation(node_id.clone(), cached_result, VersionId(version_id), trace);
-
-        journal.record(EvalEvent {
-            timestamp: Instant::now(),
-            node_id,
-            kind: EventKind::Completed { outcome },
-            version: VersionId(version_id),
-            payload: Some(EventPayload::Duration(start.elapsed())),
-        });
     }
 
     child_values
@@ -417,6 +509,13 @@ fn elaborate_child_lets_only<'t>(
     templates: &'t [TopologyTemplate],
     diagnostics: &mut Vec<Diagnostic>,
 ) {
+    // runtime_sink is required by `cell_eval_ctx`; its contents are
+    // discarded rather than appended to `diagnostics` above — pre-migration
+    // this path never surfaced eval-time diagnostics either, same as
+    // `elaborate_child_params_only`.
+    let runtime_sink = RefCell::new(Vec::new());
+    let containment = NoContainment;
+
     // Enrich child_values with sub-component values projected from the global map.
     // Only needed for recursive subs where deeper levels have already been elaborated
     // (leaves-first ordering).
@@ -567,28 +666,18 @@ fn elaborate_child_lets_only<'t>(
         };
         let member = &child_cell_id.member;
 
-        let val = reify_expr::eval_expr(
+        let val = eval_child_expr(
+            &child_values,
             expr,
-            &eval_ctx_with_meta(&child_values, functions, meta_map),
+            functions,
+            meta_map,
+            &snapshot.values,
+            &runtime_sink,
+            &containment,
         );
         child_values.insert(child_cell_id.clone(), val.clone());
 
         let scoped_id = ValueCellId::new(scoped_entity, member);
-        let node_id = NodeId::Value(scoped_id.clone());
-        let start = Instant::now();
-        journal.record(EvalEvent {
-            timestamp: start,
-            node_id: node_id.clone(),
-            kind: EventKind::Started,
-            version: VersionId(version_id),
-            payload: None,
-        });
-
-        values.insert(scoped_id.clone(), val.clone());
-        snapshot.values.insert(
-            scoped_id.clone(),
-            (val.clone(), DeterminacyState::Determined),
-        );
 
         // sorted_child_lets and child_let_traces are built from the same key set, so remove() cannot fail.
         let trace = take_trace(
@@ -597,17 +686,24 @@ fn elaborate_child_lets_only<'t>(
             "sorted_child_lets",
             "child_let_traces",
         );
-        let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
-        let outcome =
-            cache.record_evaluation(node_id.clone(), cached_result, VersionId(version_id), trace);
 
-        journal.record(EvalEvent {
-            timestamp: Instant::now(),
-            node_id,
-            kind: EventKind::Completed { outcome },
-            version: VersionId(version_id),
-            payload: Some(EventPayload::Duration(start.elapsed())),
-        });
+        // Same TraceSource::GuardedGroup provenance as the Site 1 commit
+        // above.
+        commit_cell_result(
+            CommitLegs {
+                values,
+                snapshot_values: &mut snapshot.values,
+                cache,
+                journal,
+            },
+            scoped_id,
+            val,
+            DeterminacyRule::UnconditionalDetermined,
+            TraceSource::GuardedGroup,
+            trace,
+            VersionId(version_id),
+            CacheLeg::Record,
+        );
     }
 }
 
@@ -632,5 +728,338 @@ mod tests {
             let _ = unfold_recursive_sub as fn(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _);
             String::new()
         };
+    }
+
+    // amend (#5057 reviewer_comprehensive, suggestion #2 — test-coverage-gap):
+    // every existing parity fixture (`tests/unfold_commit_parity.rs`) supplies
+    // an explicit arg for its only param, so only the `args.iter().find(..)`
+    // arm (:380-389) of `elaborate_child_params_only` was ever exercised. This
+    // fixture adds a second param, `m`, that `child`'s args never name — it
+    // must fall back to `default_expr` (:390-399), evaluated against
+    // `&child_values` rather than the parent `values`, under the newly-wired
+    // `cell_eval_ctx`. Locks both the committed value and the migration's
+    // journal-provenance signal for that branch.
+    #[test]
+    fn elaborate_child_params_only_default_expr_branch_commits_via_primitive() {
+        use reify_core::{ModulePath, Type};
+        use reify_ir::BinOp;
+        use reify_test_support::mocks::MockConstraintChecker;
+        use reify_test_support::{
+            CompiledModuleBuilder, TopologyTemplateBuilder, binop, gt, literal, value_ref_typed,
+        };
+
+        use crate::journal::{EventKind, EventPayload};
+
+        let guard = gt(value_ref_typed("S", "n", Type::Int), literal(Value::Int(0)));
+        let n_minus_1 = binop(
+            BinOp::Sub,
+            value_ref_typed("S", "n", Type::Int),
+            literal(Value::Int(1)),
+        );
+
+        // `m` is never named in `child`'s args (only `n` is), so it must take
+        // its default_expr at every recursion level, including S.child.
+        let template = TopologyTemplateBuilder::new("S")
+            .param(
+                "S",
+                "n",
+                Type::Int,
+                Some(reify_ir::CompiledExpr::literal(Value::Int(1), Type::Int)),
+            )
+            .param("S", "m", Type::Int, Some(literal(Value::Int(7))))
+            .is_recursive(true)
+            .sub_component_with_guard("child", "S", vec![("n".to_string(), n_minus_1)], guard)
+            .build();
+
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(template)
+            .build();
+        let mut engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let result = engine.eval(&module);
+
+        let child_m = ValueCellId::new("S.child", "m");
+        assert_eq!(
+            result.values.get(&child_m),
+            Some(&Value::Int(7)),
+            "S.child.m should take its default_expr (7); child never receives an \
+             explicit arg for m"
+        );
+
+        let events = engine
+            .journal()
+            .events_for_node(&NodeId::Value(child_m.clone()));
+        assert!(
+            events.iter().any(|e| {
+                matches!(&e.kind, EventKind::Started)
+                    && matches!(&e.payload, Some(EventPayload::Custom(s)) if s == "guarded-group")
+            }),
+            "expected a Started event for S.child.m carrying \
+             EventPayload::Custom(\"guarded-group\"), got: {:?}",
+            events
+        );
+    }
+
+    // amend (#5057 reviewer_comprehensive, suggestion #1 — test-coverage-gap):
+    // the `NoContainment` doc comment above (and the two fixtures below this
+    // one) document that all three `cell_eval_ctx` call sites this migration
+    // introduces observe the determinacy-map flip identically: the arg
+    // branch (`args.iter().find(..)` arm), the param default_expr branch,
+    // and the let-binding eval. Only the latter two had a direct lock.
+    //
+    // Locking the arg branch through a *recursive* sub (as the other two
+    // fixtures do for their branches) would not actually exercise this
+    // migration: `unfold_recursive_sub` pre-evaluates `sub.args` against the
+    // old `eval_ctx_with_meta` context (:206-213 — the out-of-scope "arg
+    // pre-eval" called out in plan.json's "Scope boundary" section) before
+    // `elaborate_child_params_only` ever sees them, collapsing any
+    // determinacy predicate in a *recursive* sub's arg to `Value::Undef`
+    // before the arg branch runs, regardless of this migration. A plain
+    // (non-recursive, non-guarded) sub-component instead reaches
+    // `elaborate_child_params_only` via `elaborate_child_instance` with
+    // `sub.args` forwarded raw (engine_eval.rs :3745-3757), so its arg
+    // expression is exactly what the arg branch's newly-wired
+    // `cell_eval_ctx` evaluates. This fixture uses that path: `S.child` is a
+    // plain sub of `C`, supplying `determined(S.n)` as C's explicit `ready`
+    // arg.
+    //
+    // amend (#5057 reviewer_comprehensive, suggestion #2 —
+    // test-coverage-fragility): like the two divergence fixtures below, this
+    // is load-bearing on an unstated ordering invariant — that root `S.n` is
+    // already committed to `snapshot.values` as `DeterminacyState::Determined`
+    // before `S`'s Phase 2 (sub-component elaboration) runs. That's true
+    // today because Phase 1 param elaboration precedes Phase 2 within a
+    // template's own root-frame evaluation (see
+    // `non_recursive_top_level_guarded_sub_not_unfolded` in
+    // `tests/recursive_unfold.rs`, whose assertion (a) locks the same
+    // ordering). If that ordering ever changed, the `Bool(true)` assertion
+    // below would silently flip to `Value::Undef` instead of failing loudly,
+    // so the precondition is asserted explicitly first.
+    #[test]
+    fn elaborate_child_params_only_arg_branch_resolves_determinacy_predicate() {
+        use reify_core::{ModulePath, Type};
+        use reify_ir::DeterminacyPredicateKind;
+        use reify_test_support::mocks::MockConstraintChecker;
+        use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder, literal};
+
+        let ready_arg = reify_ir::CompiledExpr::determinacy_predicate(
+            DeterminacyPredicateKind::Determined,
+            ValueCellId::new("S", "n"),
+        );
+
+        // Plain (non-guarded, non-recursive) sub: reaches
+        // `elaborate_child_params_only` via `elaborate_child_instance` with
+        // `sub.args` forwarded raw — the arg branch under test.
+        let template_s = TopologyTemplateBuilder::new("S")
+            .param(
+                "S",
+                "n",
+                Type::Int,
+                Some(reify_ir::CompiledExpr::literal(Value::Int(1), Type::Int)),
+            )
+            .sub_component("child", "C", vec![("ready".to_string(), ready_arg)])
+            .build();
+
+        let template_c = TopologyTemplateBuilder::new("C")
+            .param("C", "ready", Type::Bool, Some(literal(Value::Bool(false))))
+            .build();
+
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(template_s)
+            .template(template_c)
+            .build();
+        let mut engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let result = engine.eval(&module);
+
+        let root_n = ValueCellId::new("S", "n");
+        let snap = engine
+            .snapshot()
+            .expect("engine.snapshot() should be populated after eval");
+        assert_eq!(
+            snap.values.get(&root_n).map(|(_, det)| *det),
+            Some(DeterminacyState::Determined),
+            "precondition: S.n must already be committed Determined before \
+             S's Phase 2 sub-component elaboration runs, or the Bool(true) \
+             assertion below would silently degrade to Value::Undef instead \
+             of failing loudly"
+        );
+
+        let child_ready = ValueCellId::new("S.child", "ready");
+        assert_eq!(
+            result.values.get(&child_ready),
+            Some(&Value::Bool(true)),
+            "S.child.ready, given explicit arg `ready: determined(S.n)` on a \
+             plain (non-recursive) sub-component, should resolve Bool(true) \
+             via the snapshot-wired determinacy cell_eval_ctx that now \
+             threads through the args.iter().find(..) arm, not degrade to \
+             Value::Undef as the pre-migration bare eval_ctx_with_meta \
+             context did"
+        );
+    }
+
+    // amend (#5057 reviewer_comprehensive, suggestion #1 —
+    // robustness-untested-behavior-change): the migration wires the live
+    // `&snapshot.values` determinacy map into `cell_eval_ctx`, where the
+    // pre-migration bare `eval_ctx_with_meta` had none (see the `NoContainment`
+    // doc comment above) — a real semantic change for any child param/let
+    // expression containing a `DeterminacyPredicate`. This fixture locks the
+    // intentional divergence: `S.child.ready`'s default references the
+    // always-present, always-`Determined` root cell `S.n` (a stable absolute
+    // reference regardless of recursion depth, unlike a recursion-local one),
+    // so it must resolve `Bool(true)` post-migration instead of unconditionally
+    // degrading to `Value::Undef` as it did pre-migration.
+    //
+    // amend (#5057 reviewer_comprehensive, suggestion #2 —
+    // test-coverage-fragility): the `Bool(true)` assertion below is
+    // load-bearing on an unstated ordering invariant — that root `S.n` is
+    // already committed to `snapshot.values` as `DeterminacyState::Determined`
+    // before `elaborate_child_params_only` runs for `S.child` (true today:
+    // root params are elaborated by the main eval pass before any unfold
+    // recursion begins). If that ordering ever changed, the assertion would
+    // silently flip to `Value::Undef` rather than failing loudly, so the
+    // precondition is asserted explicitly below.
+    #[test]
+    fn elaborate_child_params_only_default_expr_resolves_determinacy_predicate() {
+        use reify_core::{ModulePath, Type};
+        use reify_ir::{BinOp, DeterminacyPredicateKind};
+        use reify_test_support::mocks::MockConstraintChecker;
+        use reify_test_support::{
+            CompiledModuleBuilder, TopologyTemplateBuilder, binop, gt, literal, value_ref_typed,
+        };
+
+        let guard = gt(value_ref_typed("S", "n", Type::Int), literal(Value::Int(0)));
+        let n_minus_1 = binop(
+            BinOp::Sub,
+            value_ref_typed("S", "n", Type::Int),
+            literal(Value::Int(1)),
+        );
+        let ready_default = reify_ir::CompiledExpr::determinacy_predicate(
+            DeterminacyPredicateKind::Determined,
+            ValueCellId::new("S", "n"),
+        );
+
+        let template = TopologyTemplateBuilder::new("S")
+            .param(
+                "S",
+                "n",
+                Type::Int,
+                Some(reify_ir::CompiledExpr::literal(Value::Int(1), Type::Int)),
+            )
+            .param("S", "ready", Type::Bool, Some(ready_default))
+            .is_recursive(true)
+            .sub_component_with_guard("child", "S", vec![("n".to_string(), n_minus_1)], guard)
+            .build();
+
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(template)
+            .build();
+        let mut engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let result = engine.eval(&module);
+
+        let root_n = ValueCellId::new("S", "n");
+        let snap = engine
+            .snapshot()
+            .expect("engine.snapshot() should be populated after eval");
+        assert_eq!(
+            snap.values.get(&root_n).map(|(_, det)| *det),
+            Some(DeterminacyState::Determined),
+            "precondition: S.n must already be committed Determined before \
+             child elaboration runs, or the Bool(true) assertion below would \
+             silently degrade to Value::Undef instead of failing loudly"
+        );
+
+        let child_ready = ValueCellId::new("S.child", "ready");
+        assert_eq!(
+            result.values.get(&child_ready),
+            Some(&Value::Bool(true)),
+            "S.child.ready = determined(S.n) should resolve Bool(true) via the \
+             snapshot-wired determinacy cell_eval_ctx now threads through the \
+             default_expr branch, not degrade to Value::Undef as the \
+             pre-migration bare eval_ctx_with_meta context did"
+        );
+    }
+
+    // amend (#5057 reviewer_comprehensive, suggestion #1 — test-coverage-gap):
+    // the test above locks the determinacy-predicate divergence for the PARAM
+    // default_expr branch only. `elaborate_child_lets_only`'s let-eval (:693)
+    // wires the identical live `&snapshot.values` determinacy capability, but
+    // had no site-specific lock — coverage was only transitive via the shared
+    // `eval_child_expr` helper. This fixture mirrors the param test above,
+    // substituting a `let` binding for a param default: `S.n` (the
+    // always-present, always-`Determined` root cell — a stable absolute
+    // reference regardless of recursion depth) is referenced from a
+    // `let ready = determined(S.n)` cell instead of a param default, proving
+    // the let-binding path also resolves `Bool(true)` post-migration rather
+    // than degrading to `Value::Undef` as the pre-migration bare
+    // `eval_ctx_with_meta` context did on this path.
+    //
+    // amend (#5057 reviewer_comprehensive, suggestion #2 —
+    // test-coverage-fragility): as with the param default_expr fixture above,
+    // the `Bool(true)` assertion below is load-bearing on an unstated
+    // ordering invariant — that root `S.n` is already committed to
+    // `snapshot.values` as `DeterminacyState::Determined` before
+    // `elaborate_child_lets_only` runs for `S.child` (true today: root params
+    // are elaborated by the main eval pass before any unfold recursion
+    // begins). If that ordering ever changed, the assertion would silently
+    // flip to `Value::Undef` rather than failing loudly, so the precondition
+    // is asserted explicitly below.
+    #[test]
+    fn elaborate_child_lets_only_let_expr_resolves_determinacy_predicate() {
+        use reify_core::{ModulePath, Type};
+        use reify_ir::{BinOp, DeterminacyPredicateKind};
+        use reify_test_support::mocks::MockConstraintChecker;
+        use reify_test_support::{
+            CompiledModuleBuilder, TopologyTemplateBuilder, binop, gt, literal, value_ref_typed,
+        };
+
+        let guard = gt(value_ref_typed("S", "n", Type::Int), literal(Value::Int(0)));
+        let n_minus_1 = binop(
+            BinOp::Sub,
+            value_ref_typed("S", "n", Type::Int),
+            literal(Value::Int(1)),
+        );
+        let ready_let_expr = reify_ir::CompiledExpr::determinacy_predicate(
+            DeterminacyPredicateKind::Determined,
+            ValueCellId::new("S", "n"),
+        );
+
+        let template = TopologyTemplateBuilder::new("S")
+            .param(
+                "S",
+                "n",
+                Type::Int,
+                Some(reify_ir::CompiledExpr::literal(Value::Int(1), Type::Int)),
+            )
+            .let_binding("S", "ready", Type::Bool, ready_let_expr)
+            .is_recursive(true)
+            .sub_component_with_guard("child", "S", vec![("n".to_string(), n_minus_1)], guard)
+            .build();
+
+        let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(template)
+            .build();
+        let mut engine = crate::Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let result = engine.eval(&module);
+
+        let root_n = ValueCellId::new("S", "n");
+        let snap = engine
+            .snapshot()
+            .expect("engine.snapshot() should be populated after eval");
+        assert_eq!(
+            snap.values.get(&root_n).map(|(_, det)| *det),
+            Some(DeterminacyState::Determined),
+            "precondition: S.n must already be committed Determined before \
+             child elaboration runs, or the Bool(true) assertion below would \
+             silently degrade to Value::Undef instead of failing loudly"
+        );
+
+        let child_ready = ValueCellId::new("S.child", "ready");
+        assert_eq!(
+            result.values.get(&child_ready),
+            Some(&Value::Bool(true)),
+            "S.child.ready = let ready = determined(S.n) should resolve Bool(true) \
+             via the snapshot-wired determinacy cell_eval_ctx now threads through \
+             the let-binding branch in elaborate_child_lets_only, not degrade to \
+             Value::Undef as the pre-migration bare eval_ctx_with_meta context did"
+        );
     }
 }

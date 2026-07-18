@@ -219,10 +219,10 @@ impl CommitOutcome {
 /// `engine_eval.rs`. `values`/`snapshot_values` are eval-pass locals
 /// threaded by migration call sites; `cache`/`journal` are Engine fields.
 pub(crate) struct CommitLegs<'a> {
-    values: &'a mut ValueMap,
-    snapshot_values: &'a mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
-    cache: &'a mut CacheStore,
-    journal: &'a mut EventJournal,
+    pub(crate) values: &'a mut ValueMap,
+    pub(crate) snapshot_values: &'a mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+    pub(crate) cache: &'a mut CacheStore,
+    pub(crate) journal: &'a mut EventJournal,
 }
 
 /// Performs the four legs of a per-cell eval commit — values, snapshot,
