@@ -415,6 +415,57 @@ mod tests {
         }
     }
 
+    /// PRD display-unit-preference §5: per-dimension auto-scale posture.
+    /// Three postures — default-ON (Length/Area/Volume), opt-in/default-OFF
+    /// (Mass/Pressure/Density), and excluded/`None` (Angle is discrete
+    /// deg/rad; the single-rung Force/Energy/Power ladders have no rung to
+    /// hop). The `1 ≤ |mantissa| < 1000` target band (§5a) is stored
+    /// per-entry as `band_lo == 1.0`, `band_hi == 1000.0`.
+    #[test]
+    fn auto_scale_metadata_matches_prd_section5() {
+        let ladders = unit_ladders();
+
+        let on = Some(AutoScale {
+            enabled: true,
+            band_lo: 1.0,
+            band_hi: 1000.0,
+        });
+        let off = Some(AutoScale {
+            enabled: false,
+            band_lo: 1.0,
+            band_hi: 1000.0,
+        });
+
+        // (dimension, expected auto_scale posture)
+        let expected: &[(&str, Option<AutoScale>)] = &[
+            ("Length", on.clone()),
+            ("Area", on.clone()),
+            ("Volume", on.clone()),
+            ("Mass", off.clone()),
+            ("Pressure", off.clone()),
+            ("Density", off.clone()),
+            ("Angle", None),
+            ("Force", None),
+            ("Energy", None),
+            ("Power", None),
+        ];
+        for (dimension, want) in expected {
+            let l = ladder(&ladders, dimension);
+            assert_eq!(
+                &l.auto_scale, want,
+                "ladder {dimension:?} auto_scale posture mismatch"
+            );
+        }
+
+        // §5a: every Some(AutoScale) uses the 1 ≤ |mantissa| < 1000 band.
+        for l in &ladders {
+            if let Some(a) = &l.auto_scale {
+                assert_eq!(a.band_lo, 1.0, "ladder {:?} band_lo mismatch", l.dimension);
+                assert_eq!(a.band_hi, 1000.0, "ladder {:?} band_hi mismatch", l.dimension);
+            }
+        }
+    }
+
     /// Drift guard for the module doc's core invariant: each ladder's
     /// `is_default` entry is "numerically identical" to what
     /// `DimensionVector::to_display_units` already chooses. The pin test
