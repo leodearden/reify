@@ -111,3 +111,137 @@ fn fuse_all_of_five_is_one_boolean_pass() {
         );
     });
 }
+
+/// A 3×3 `LinearPattern2D` (9 instances) must perform exactly ONE boolean pass,
+/// not the 8 pairwise fuses the accumulator loop did.
+#[test]
+fn linear_pattern_2d_3x3_is_one_pass() {
+    with_counter_lock(|| {
+        let mut kernel = OcctKernel::new();
+        let b = unit_box(&mut kernel);
+
+        reset_boolean_pass_count();
+        kernel
+            .execute(&GeometryOp::LinearPattern2D {
+                target: b,
+                direction1: [1.0, 0.0, 0.0],
+                count1: 3,
+                spacing1: Value::Real(2.0),
+                direction2: [0.0, 1.0, 0.0],
+                count2: 3,
+                spacing2: Value::Real(2.0),
+            })
+            .expect("3x3 linear_pattern_2d must succeed");
+        assert_eq!(
+            boolean_pass_count(),
+            1,
+            "a 9-instance LinearPattern2D must be exactly 1 boolean pass, not 8"
+        );
+    });
+}
+
+/// A 1×1 `LinearPattern2D` is a single instance: NO boolean pass at all.
+#[test]
+fn linear_pattern_2d_1x1_is_zero_passes() {
+    with_counter_lock(|| {
+        let mut kernel = OcctKernel::new();
+        let b = unit_box(&mut kernel);
+
+        reset_boolean_pass_count();
+        kernel
+            .execute(&GeometryOp::LinearPattern2D {
+                target: b,
+                direction1: [1.0, 0.0, 0.0],
+                count1: 1,
+                spacing1: Value::Real(2.0),
+                direction2: [0.0, 1.0, 0.0],
+                count2: 1,
+                spacing2: Value::Real(2.0),
+            })
+            .expect("1x1 linear_pattern_2d must succeed");
+        assert_eq!(
+            boolean_pass_count(),
+            0,
+            "a single-instance pattern must perform 0 boolean passes (short-circuit)"
+        );
+    });
+}
+
+/// A 1-D `LinearPattern` of count 3 (≥2 instances) must be exactly ONE pass.
+#[test]
+fn linear_pattern_1d_is_one_pass() {
+    with_counter_lock(|| {
+        let mut kernel = OcctKernel::new();
+        let b = unit_box(&mut kernel);
+
+        reset_boolean_pass_count();
+        kernel
+            .execute(&GeometryOp::LinearPattern {
+                target: b,
+                direction: [1.0, 0.0, 0.0],
+                count: 3,
+                spacing: Value::Real(2.0),
+            })
+            .expect("linear_pattern of count 3 must succeed");
+        assert_eq!(
+            boolean_pass_count(),
+            1,
+            "a 3-instance LinearPattern must be exactly 1 boolean pass, not 2"
+        );
+    });
+}
+
+/// A `CircularPattern` of count 4 (≥2 instances) must be exactly ONE pass.
+#[test]
+fn circular_pattern_is_one_pass() {
+    with_counter_lock(|| {
+        let mut kernel = OcctKernel::new();
+        // Offset the box from the Z axis so the four rotations are disjoint,
+        // distinct instances (a centred cube has 90° symmetry).
+        let b = unit_box(&mut kernel);
+        let b_off = translated_x(&mut kernel, b, 3.0);
+
+        reset_boolean_pass_count();
+        kernel
+            .execute(&GeometryOp::CircularPattern {
+                target: b_off,
+                axis_origin: [0.0, 0.0, 0.0],
+                axis_dir: [0.0, 0.0, 1.0],
+                count: 4,
+                angle: Value::Real(std::f64::consts::TAU),
+            })
+            .expect("circular_pattern of count 4 must succeed");
+        assert_eq!(
+            boolean_pass_count(),
+            1,
+            "a 4-instance CircularPattern must be exactly 1 boolean pass, not 3"
+        );
+    });
+}
+
+/// An `ArbitraryPattern` with 2 transforms (≥2 instances) must be ONE pass.
+#[test]
+fn arbitrary_pattern_is_one_pass() {
+    with_counter_lock(|| {
+        let mut kernel = OcctKernel::new();
+        let b = unit_box(&mut kernel);
+
+        // Two pure translations (identity quaternion), both away from origin,
+        // so instances are distinct: original ∪ copy@3 ∪ copy@6.
+        reset_boolean_pass_count();
+        kernel
+            .execute(&GeometryOp::ArbitraryPattern {
+                target: b,
+                transforms: vec![
+                    ([1.0, 0.0, 0.0, 0.0], [3.0, 0.0, 0.0]),
+                    ([1.0, 0.0, 0.0, 0.0], [6.0, 0.0, 0.0]),
+                ],
+            })
+            .expect("arbitrary_pattern of 2 transforms must succeed");
+        assert_eq!(
+            boolean_pass_count(),
+            1,
+            "a ≥2-instance ArbitraryPattern must be exactly 1 boolean pass"
+        );
+    });
+}
