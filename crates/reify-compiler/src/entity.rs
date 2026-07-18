@@ -6139,9 +6139,9 @@ pub(crate) fn build_structure_def_skeleton(
                 // TOP-LEVEL param site MUST mirror the authoritative compile_entity
                 // param site (via priv_flag_to_visibility) or a `priv` member leaks
                 // through a function body. Nested `priv` members are carried the
-                // same way: guarded-block members by the skeleton's `guarded_groups`
-                // pass below (so `m.g` is priv-gated), and port-members alongside the
-                // paired expr.rs receiver-resolution change (so `m.secret.main` is too).
+                // same way by the skeleton's `ports`/`guarded_groups` passes below,
+                // so they are priv-gated on function-body access too (`m.g`;
+                // `m.secret.main` paired with the expr.rs receiver-resolution branch).
                 visibility: priv_flag_to_visibility(param.is_priv),
                 is_aux: false,
                 cell_type,
@@ -6266,6 +6266,49 @@ pub(crate) fn build_structure_def_skeleton(
         }
     }
 
+    // ── Lightweight port-member population (function-body priv gate) ──
+    // Mirror the guarded-block population below, for `port { }` members: a fn body
+    // reading a `priv` port member (`m.secret.main`) is priv-gated via the expr.rs
+    // `<sub>.<port>.<member>` branch, which calls `port_member_is_priv` on the
+    // receiver structure's template. That helper matches the composite
+    // `"<port>.<member>"` ValueCellId the authoritative port-member compilation
+    // uses (entity.rs port arm), so build the skeleton members with the SAME
+    // composite name. Only the priv-gate-relevant fields are set; direction /
+    // type_name / constraints / frame_expr get defaults (the gate never reads
+    // them). Unlike the guarded case, ports also need the expr.rs receiver-
+    // resolution change to fire for fn-body receivers. One-level nesting only.
+    let mut ports: Vec<CompiledPort> = Vec::new();
+    for member in &structure.members {
+        if let reify_ast::MemberDecl::Port(port_decl) = member {
+            let mut members: Vec<ValueCellDecl> = Vec::new();
+            for pm in &port_decl.members {
+                if let reify_ast::MemberDecl::Param(param) = pm {
+                    members.push(skeleton_nested_param_cell(
+                        &structure.name,
+                        &format!("{}.{}", port_decl.name, param.name),
+                        param,
+                        &type_param_names,
+                        alias_registry,
+                        structure_names,
+                        trait_names,
+                        &mut throwaway_diags,
+                    ));
+                }
+            }
+            ports.push(CompiledPort {
+                name: port_decl.name.clone(),
+                direction: port_decl
+                    .direction
+                    .unwrap_or(reify_core::PortDirection::Bidi),
+                type_name: port_decl.type_name.clone(),
+                members,
+                constraints: vec![],
+                frame_expr: None,
+                is_priv: port_decl.is_priv,
+            });
+        }
+    }
+
     // ── Lightweight guarded-block member population (function-body priv gate) ──
     // The skeleton is the template consulted while type-checking function BODIES
     // (phase_functions merged_registry). Populate `guarded_groups` with each
@@ -6343,13 +6386,13 @@ pub(crate) fn build_structure_def_skeleton(
         realizations: vec![],
         sub_components: vec![],
         relations: vec![],
-        // Ports remain empty at this step. A nested port member (`m.secret.main`)
-        // needs BOTH this vec populated AND an expr.rs receiver-resolution change
-        // to be priv-gated from a function body (ports are absent from
-        // `value_cells`, so `m.secret` never types as a `StructureRef` and the
-        // outer `.main` is caught only by the AST-pattern branch); both are wired
-        // together next.
-        ports: vec![],
+        // Port members ARE carried (see the port pass above), so a function body
+        // reading a `priv` port member (`m.secret.main`) is priv-gated. Ports are
+        // absent from `value_cells`, so `m.secret` never types as a `StructureRef`
+        // and the outer `.main` is caught only by the expr.rs `<sub>.<port>.<member>`
+        // AST-pattern branch — which this task also extends to resolve a fn-body
+        // `StructureRef` receiver, completing the port half of the gap.
+        ports,
         connections: vec![],
         // Guarded-block members ARE carried (see the population pass above), so a
         // function body reading a `priv` guarded member (`m.g`) is priv-gated via
