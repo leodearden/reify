@@ -125,26 +125,38 @@ fn basename(label: &str) -> &str {
 /// allocate/read API family (`ALLOWED_FNS`), honouring the
 /// `// version-id-gate: allow` escape comment and ignoring comment-only
 /// mentions. See the module doc comment for the full contract.
+///
+/// The enclosing-fn allowlist is scoped by brace depth: `current_fn` is
+/// cleared once we leave its body (the net `{`/`}` depth returns to the
+/// signature's level after having entered it), so an allowlisted fn's
+/// exemption cannot leak onto a later raw use that merely precedes the next
+/// `fn` name `parse_fn_name` recovers (e.g. a signature whose `fn` keyword
+/// and name are split across lines).
 fn scan_source(label: &str, source: &str) -> Vec<Violation> {
     let base = basename(label);
     let mut current_fn: Option<String> = None;
+    // Net `{`-minus-`}` depth at which `current_fn`'s signature appeared, and
+    // whether we have since descended into its body. Together they let us
+    // clear the exemption on leaving the body rather than leaving it sticky
+    // until the next parsed signature.
+    let mut fn_depth: usize = 0;
+    let mut in_body = false;
+    let mut depth: usize = 0;
     let mut violations = Vec::new();
 
     for (idx, raw_line) in source.lines().enumerate() {
         let line_no = idx + 1;
+        let stripped = strip_line_comment(raw_line);
 
         if let Some(name) = parse_fn_name(raw_line.trim()) {
             current_fn = Some(name);
+            fn_depth = depth;
+            in_body = false;
         }
 
-        // Checked against the RAW line (pre-strip): the allow token lives
-        // inside the very comment `strip_line_comment` would remove.
-        if raw_line.contains(ALLOW_COMMENT) {
-            continue;
-        }
-
-        let stripped = strip_line_comment(raw_line);
-        if TOKENS.iter().any(|tok| stripped.contains(tok)) {
+        // The allow token is matched against the RAW line (pre-strip): it
+        // lives inside the very `//` comment `strip_line_comment` removes.
+        if !raw_line.contains(ALLOW_COMMENT) && TOKENS.iter().any(|tok| stripped.contains(tok)) {
             let allowed = current_fn
                 .as_deref()
                 .is_some_and(|f| ALLOWED_FNS.contains(&(base, f)));
@@ -154,6 +166,27 @@ fn scan_source(label: &str, source: &str) -> Vec<Violation> {
                     line: line_no,
                     text: raw_line.trim().to_string(),
                 });
+            }
+        }
+
+        // Advance brace depth on the comment-stripped line, then clear the
+        // enclosing-fn exemption once we return to its signature depth after
+        // having descended into the body. Handling entry separately keeps a
+        // split signature (whose `{` lands on a later line than the name)
+        // from clearing the fn before its body is even reached.
+        for c in stripped.chars() {
+            match c {
+                '{' => depth += 1,
+                '}' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+        if current_fn.is_some() {
+            if depth > fn_depth {
+                in_body = true;
+            } else if in_body {
+                current_fn = None;
+                in_body = false;
             }
         }
     }
@@ -293,6 +326,43 @@ fn read_counters(engine: &Engine) -> (u64, u64) {
         violations.is_empty(),
         "expected non-`self.`-scoped uses (constructor initialiser, \
          `engine.`-bound test read) to be ignored, got {violations:?}"
+    );
+}
+
+/// (f) Regression guard for enclosing-fn exemption leakage: a raw bump
+/// placed after an allowlisted fn's body — but before the next fn whose name
+/// `parse_fn_name` can recover (here the `fn` keyword and the name are split
+/// across lines) — must NOT inherit the preceding fn's exemption. Before
+/// `scan_source` scoped the allowlist by brace depth this slipped through as
+/// a silent false negative inside `engine_admin.rs` / `engine_build.rs`.
+#[test]
+fn allowlisted_fn_exemption_does_not_leak_past_its_body() {
+    let source = "\
+impl Engine {
+    pub(crate) fn allocate_snapshot_version(&mut self) -> (SnapshotId, VersionId) {
+        self.next_snapshot_id += 1;
+        self.next_version_id += 1;
+        (SnapshotId(self.next_snapshot_id), VersionId(self.next_version_id))
+    }
+
+    pub(crate) fn
+        sneaky_reintroduction(&mut self) {
+        self.next_version_id += 1;
+    }
+}
+";
+    let violations = scan_source("engine_admin.rs", source);
+    assert_eq!(
+        violations.len(),
+        1,
+        "the raw bump in `sneaky_reintroduction` must not inherit \
+         `allocate_snapshot_version`'s exemption once its body has closed, \
+         got {violations:?}"
+    );
+    assert!(
+        violations[0].text.contains("next_version_id"),
+        "the reported violation should quote the sneaky raw bump, got {:?}",
+        violations[0]
     );
 }
 
