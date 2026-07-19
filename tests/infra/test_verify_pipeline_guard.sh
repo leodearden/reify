@@ -289,4 +289,75 @@ assert_exit "PRECISION: docs/zzz-not-registered.md NOT in synthetic manifest -> 
     bash -c 'REIFY_VERIFY_PIPELINE_GUARD_DOC_SYNC_PATHS="$1" bash "$2" requires-full-gate docs/zzz-not-registered.md' \
     _ "$_SYNTH_DOC_SYNC_MANIFEST" "$GUARD_SH"
 
+# ---------------------------------------------------------------------------
+# Pair D — infra-test glob clause (task 5256)
+# ---------------------------------------------------------------------------
+#
+# Recurrence prevention for the 2026-07-19 incident (tasks 5247/5249, PRD
+# docs/prds/merge-gate-health.md W3a): unregistered NEW tests/infra/*.sh files
+# landed via the dark-factory merge-worker trivial-pass fast-path (only the
+# two explicitly-listed infra entries in verify-pipeline-paths.txt --
+# tests/infra/run_all.sh and tests/infra/run-all-ambient-vars.manifest -- were
+# load-bearing), skipping the full gate and deterministically redding main. A
+# literal-per-file manifest line cannot cover not-yet-existent infra tests, so
+# ANY tests/infra/*.sh path must be treated as load-bearing via an open-ended
+# glob clause in the guard itself. Neither manifest entry is used as a
+# positive below -- every positive here is a genuine RED against the
+# pre-task-5256 guard.
+
+echo ""
+echo "-- Pair D: infra-test glob clause --"
+
+# (a) POSITIVE: an existing infra test file (this file itself).
+assert_exit "POSITIVE: tests/infra/test_verify_pipeline_guard.sh is load-bearing (exit 0)" 0 \
+    run_guard requires-full-gate tests/infra/test_verify_pipeline_guard.sh
+
+# (b) INCIDENT SIGNAL: the 5247/5249 incident shape -- a brand-new infra test
+# path that need not exist on disk (this is a pure path classifier).
+assert_exit "INCIDENT SIGNAL: tests/infra/test_anything.sh is load-bearing (exit 0)" 0 \
+    run_guard requires-full-gate tests/infra/test_anything.sh
+
+# (c) PRD SIGNAL: the exact example path from merge-gate-health.md W3a.
+assert_exit "PRD SIGNAL: tests/infra/test_x.sh is load-bearing (exit 0)" 0 \
+    run_guard requires-full-gate tests/infra/test_x.sh
+
+# (d) BREADTH: a non-test_-prefixed .sh proves the rule is *.sh, not
+# test_*.sh (e.g. test_helpers.sh, sourced by every test, must be covered
+# too).
+assert_exit "BREADTH: tests/infra/zzz_helper.sh (non-test_-prefixed) is load-bearing (exit 0)" 0 \
+    run_guard requires-full-gate tests/infra/zzz_helper.sh
+
+# (e) MIXED: the incident shape -- a config-only file alongside a new infra
+# test in the same diff must still force the full gate.
+assert_exit "MIXED: docs/note.md + tests/infra/test_new.sh -> full gate required (exit 0)" 0 \
+    run_guard requires-full-gate docs/note.md tests/infra/test_new.sh
+
+# (f) STDIN form: pipe paths to 'requires-full-gate' (no args) -- supports
+# large diffs that would exceed ARG_MAX if passed as positional args.
+assert_exit "STDIN: infra test piped in -> full gate required (exit 0)" 0 \
+    bash -c 'printf "docs/x.md\ntests/infra/test_new.sh\n" | bash "$1" requires-full-gate' \
+    _ "$GUARD_SH"
+
+# (g) NORMALIZE: a leading './' is stripped defensively before the glob
+# match runs, so a caller-prefixed './tests/infra/test_new.sh' still routes
+# to the full gate.
+assert_exit "NORMALIZE: ./tests/infra/test_new.sh stripped then glob-matched (exit 0)" 0 \
+    run_guard requires-full-gate ./tests/infra/test_new.sh
+
+# (h) PRECISION: a non-.sh file under tests/infra stays fast-path-safe -- the
+# glob is surgical to .sh, not a blanket route for all of tests/infra/.
+assert_exit "PRECISION: tests/infra/zzz-not-a-script.txt NOT .sh -> fast-path-safe (exit 1)" 1 \
+    run_guard requires-full-gate tests/infra/zzz-not-a-script.txt
+
+# (i) PRECISION: a .sh file OUTSIDE tests/infra is not caught by this clause
+# (proves the tests/infra/ prefix requirement).
+assert_exit "PRECISION: scripts/zzz-not-infra.sh OUTSIDE tests/infra -> fast-path-safe (exit 1)" 1 \
+    run_guard requires-full-gate scripts/zzz-not-infra.sh
+
+# (j) PRECISION: an unanchored substring path is not caught (proves ^
+# anchoring to the repo-relative form, not a 'contains tests/infra/'
+# substring match).
+assert_exit "PRECISION: other/tests/infra/test_z.sh unanchored -> fast-path-safe (exit 1)" 1 \
+    run_guard requires-full-gate other/tests/infra/test_z.sh
+
 test_summary
