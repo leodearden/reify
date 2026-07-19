@@ -6380,6 +6380,67 @@ mod tests {
         }
     }
 
+    /// Structural boundary guard: a NON-null `OcctShape` wrapping null (IsNull)
+    /// topology must be rejected at `get_shape`, and every production query
+    /// path that flows through `get_shape` must therefore return `Err` — never
+    /// a hardware SIGSEGV.
+    ///
+    /// The input is `make_null_shape_for_test()` — a default-constructed
+    /// `OcctShape` whose `.shape` is a null `TopoDS_Shape`. It passes
+    /// `get_shape`'s existing null-`UniquePtr` check (the pointer is non-null)
+    /// but, pre-fix, dereferences to null topology: `query_volume`'s
+    /// `ShapeType()` fallback then SIGSEGVs.
+    ///
+    /// RED (pre-fix): `get_shape` returns `Ok(&null_shape)`, so the assertion
+    /// below fails on the `Ok(_)` arm. GREEN (after the get_shape IsNull
+    /// guard): `get_shape` returns `Err(OperationFailed)` and all four queries
+    /// return `Err`.
+    ///
+    /// MUST run under `cargo nextest run` (process-per-test isolation) so any
+    /// pre-fix crash is contained as a single failing test, not a suite abort.
+    #[test]
+    fn get_shape_rejects_null_topology_and_queries_return_err() {
+        let mut kernel = OcctKernel::new();
+        let h = kernel.store_raw(ffi::ffi::make_null_shape_for_test());
+
+        // Structural chokepoint: get_shape refuses null/empty topology loudly.
+        match kernel.get_shape(h) {
+            Err(GeometryError::OperationFailed(msg)) => {
+                let low = msg.to_lowercase();
+                assert!(
+                    low.contains("null") || low.contains("empty"),
+                    "error should mention null/empty topology, got: {msg}"
+                );
+            }
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for null-topology shape, got Ok"),
+        }
+
+        // Every production query path routes through get_shape, so each must
+        // now return Err (never SIGSEGV). Volume is the guaranteed crash vector.
+        assert!(
+            kernel.query(&GeometryQuery::Volume(h)).is_err(),
+            "Volume query on null-topology shape must return Err, not crash/Ok"
+        );
+        assert!(
+            kernel.query(&GeometryQuery::Centroid(h)).is_err(),
+            "Centroid query on null-topology shape must return Err"
+        );
+        assert!(
+            kernel.query(&GeometryQuery::BoundingBox(h)).is_err(),
+            "BoundingBox query on null-topology shape must return Err"
+        );
+        assert!(
+            kernel
+                .query(&GeometryQuery::InertiaTensor {
+                    handle: h,
+                    density: 1000.0,
+                })
+                .is_err(),
+            "InertiaTensor query on null-topology shape must return Err"
+        );
+    }
+
     #[test]
     fn warm_state_skips_null_shapes() {
         let mut kernel = OcctKernel::new();
