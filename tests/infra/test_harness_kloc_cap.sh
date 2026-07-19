@@ -169,6 +169,14 @@ harness_layout_violations() {
         done < <(grep -vE '^[[:space:]]*#' "$baseline_file" | grep -vE '^[[:space:]]*$')
     fi
 
+    # The 7 override binaries (I1) are allow-listed by file stem — never
+    # re-accretion violations. Build the lookup set once per call.
+    local -A _override_set=()
+    local _ov
+    for _ov in "${OVERRIDE_BINARIES[@]}"; do
+        _override_set["$_ov"]=1
+    done
+
     for f in "$tests_dir"/*.rs; do
         [ -f "$f" ] || continue          # skip a literal no-match glob
 
@@ -188,10 +196,13 @@ harness_layout_violations() {
                 ;;
         esac
 
-        # rule (b): re-accretion. A non-harness standalone is sanctioned iff its
+        # rule (b): re-accretion. A non-harness standalone is sanctioned iff it
+        # is one of the 7 override binaries (I1, never consolidated) OR its
         # canonical repo-relative path crates/<crate>/tests/<base> is
-        # grandfathered in the baseline. (Overrides are NOT special-cased yet —
-        # deliberately, to pin the step-5 precision self-check RED.)
+        # grandfathered in the baseline.
+        if [ -n "${_override_set[${base%.rs}]:-}" ]; then
+            continue
+        fi
         key="crates/$crate/tests/$base"
         if [ -z "${_baseline_set[$key]:-}" ]; then
             printf 'HARNESS_KLOC_CAP FAIL crate=%s file=%s reason=unsanctioned-standalone\n' \
@@ -203,6 +214,7 @@ harness_layout_violations() {
     if [ "$violations" -gt 0 ]; then
         return 1
     fi
+    printf 'HARNESS_KLOC_CAP PASS crate=%s\n' "$crate"
     return 0
 }
 
