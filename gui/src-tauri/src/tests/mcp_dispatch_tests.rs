@@ -41,7 +41,7 @@ fn dispatch_get_source_returns_bracket_content() {
         result["content"]
             .as_str()
             .unwrap()
-            .contains("structure Bracket"),
+            .contains("structure def Bracket"),
         "should contain bracket source"
     );
 }

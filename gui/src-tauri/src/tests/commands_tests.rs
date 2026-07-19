@@ -94,7 +94,7 @@ fn save_and_open_file_roundtrip() {
     // Open
     let file_data = open_file_impl(path.to_str().unwrap()).expect("open should succeed");
     assert_eq!(file_data.path, path.to_str().unwrap());
-    assert!(file_data.content.contains("structure Bracket"));
+    assert!(file_data.content.contains("structure def Bracket"));
 }
 
 #[test]
@@ -307,7 +307,7 @@ fn get_containing_definition_impl_returns_ok_on_healthy_mutex() {
     let session = make_loaded_session();
     let engine = Mutex::new(session);
 
-    // bracket_source() starts with "structure Bracket {" on line 1.
+    // bracket_source() starts with "structure def Bracket {" on line 1.
     // Position (1, 1) is the first character of that declaration → inside Bracket.
     let result = get_containing_definition_impl(&engine, 1, 1);
     let def_info = result

@@ -159,7 +159,7 @@ fn operator_precedence_in_ast() {
 #[test]
 fn bracket_source_round_trip() {
     let source = bracket_source();
-    assert!(source.contains("structure Bracket"));
+    assert!(source.contains("structure def Bracket"));
     assert!(source.contains("param width: Length = 80mm"));
     assert!(source.contains("constraint thickness > 2mm"));
     assert!(source.contains("let volume = width * height * thickness"));

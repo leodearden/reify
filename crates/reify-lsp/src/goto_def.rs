@@ -437,8 +437,8 @@ mod tests {
     #[test]
     fn goto_def_structure_name_returns_none() {
         let source = reify_test_support::bracket_source();
-        // 'Bracket' on line 0
-        let position = Position::new(0, 12);
+        // 'Bracket' on line 0: "structure def Bracket {"
+        let position = Position::new(0, 16);
         assert!(
             compute_goto_definition(source, &test_uri(), position).is_none(),
             "goto-def on structure name should return None"
