@@ -127,3 +127,42 @@ occt_wait_until_slot_held() {
 # Exported so the bounds-file negative unit test (`bash -c "! occt_wait_...")
 # runs the REAL helper in the child shell (else it is a vacuous command-not-found).
 export -f occt_wait_until_slot_held
+
+# occt_plan_grep_or_dump PATTERN PLAN ERRFILE
+# Plan-grep with an on-no-match child-stderr dump (task 5258, PRD
+# docs/prds/merge-gate-health.md W4d tail).
+#
+# Greps the captured --print-plan PLAN string for the ERE PATTERN.  On a MATCH:
+# returns 0 and emits NOTHING (an all-green run stays byte-for-byte unchanged).
+# On NO-MATCH: echoes the captured verify.sh child-plan stderr (ERRFILE) to
+# STDOUT between delimiters, then returns non-zero.
+#
+# WHY STDOUT: the six _T*_PLAN captures in test_occt_flock_gate.sh formerly
+# redirected verify.sh stderr to /dev/null, swallowing --print-plan diagnostics
+# (incl. the nextest-probe hard-fail) when a plan-string assert failed.  By
+# capturing that stderr to a file and echoing it here on no-match, the existing
+# assert() on-FAIL capture-dump (test_helpers.sh:42-57, esc-4959-57) surfaces it
+# verbatim in the archived verify log — with ZERO changes to assert().
+#
+#   PATTERN  ERE fed to `grep -qE`.
+#   PLAN     the multi-line captured plan string (from `--print-plan`).
+#   ERRFILE  the captured verify.sh stderr (a file path; may be empty).
+occt_plan_grep_or_dump() {
+    local pattern="$1"
+    local plan="$2"
+    local errfile="$3"
+    if printf '%s\n' "$plan" | grep -qE "$pattern"; then
+        return 0
+    fi
+    echo "---- verify.sh --print-plan stderr (child plan capture) ----"
+    if [ -s "$errfile" ]; then
+        cat "$errfile"
+    else
+        echo "(child stderr was empty)"
+    fi
+    echo "---- end verify.sh --print-plan stderr ----"
+    return 1
+}
+# Exported so the bounds-file negative unit test runs the real helper in its
+# `bash -c` child shell (matching occt_wait_until_slot_held above).
+export -f occt_plan_grep_or_dump
