@@ -337,17 +337,6 @@ merge_train_former_enabled: true
 merge_train_coalesce_enabled: true  # dark_factory:1722; user-authorized 2026-06-10
 merge_train_max_members: 3  # already the default; explicit per GO-N3
 
-# Review-amendment stopgap (task 5246, 2026-07-18, Leo approved): suggestion-tier
-# review findings each cost a full EXECUTE→VERIFY→REVIEW lap (15-40 min verify + up
-# to an 8h dispatch window), and the amendment counter is a per-dispatch local that
-# resets on every redispatch, so the designed one-round cap is unbounded in practice
-# (reify 5166: ~17 amend commits over 6 days). 0 = suggestions-only verdicts route
-# their suggestions to the curator intake and the task proceeds to DONE.
-# Deferred alternatives: persisted tree-hash-keyed review state (dark_factory:2749)
-# and delta-scoped post-amendment re-review (dark_factory:2750). Capstone task 5247
-# removes this override once both land.
-max_amendment_rounds: 0
-
 # Per-role turn budgets. Raising the architect budget is a direct response to
 # silent max_turns exits on large-scope tasks (e.g. reify 1749): the architect
 # now has headroom to verify premises and produce a plan without the CLI
