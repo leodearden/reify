@@ -137,4 +137,38 @@ BASELINE="$SCRIPT_DIR/harness-layout-baseline.manifest"
 
 echo "=== Harness-layout contract + anti-re-accretion kLOC-cap drift guard ==="
 
+# Collect every mktemp -d / mktemp path for a SINGLE EXIT cleanup (the
+# test_no_new_wallclock_upper_bounds.sh idiom): individual `trap ... EXIT`
+# calls replace one another, so one handler over an array removes every
+# fixture regardless of which section runs last. `rm -rf` covers both the
+# tmpdirs and the tmpfiles collected below.
+_TMPDIRS=()
+trap '[ "${#_TMPDIRS[@]}" -gt 0 ] && rm -rf "${_TMPDIRS[@]}"' EXIT
+
+# ===========================================================================
+# Section 1: rule (a) — the kLOC cap fires on an over-cap harness_*.rs.
+# ===========================================================================
+echo ""
+echo "--- Section 1: kLOC cap fires on a 21k-line harness ---"
+
+_s1_dir="$(mktemp -d)"; _TMPDIRS+=("$_s1_dir")
+_s1_baseline="$(mktemp)"; _TMPDIRS+=("$_s1_baseline")
+: > "$_s1_baseline"   # empty fixture baseline (nothing grandfathered)
+
+# Generate EXACTLY 21000 lines (21000 > CAP 20000 by construction). awk (not
+# `yes | head`): under `set -o pipefail` a `head` that closes the pipe SIGPIPEs
+# the still-writing `yes` (141), aborting the script under `set -e` — the
+# esc-5172-1 hazard. awk runs to completion, no pipe, no SIGPIPE.
+awk 'BEGIN { for (i = 0; i < 21000; i++) print "// x" }' > "$_s1_dir/harness_big.rs"
+
+_s1_out="$(mktemp)"; _TMPDIRS+=("$_s1_out")
+_s1_rc=0
+harness_layout_violations synthcrate "$_s1_dir" "$_s1_baseline" 20000 \
+    > "$_s1_out" 2>/dev/null || _s1_rc=$?
+
+assert "1: over-cap harness_big.rs fires the kLOC cap (returns 1)" \
+    test "$_s1_rc" -eq 1
+assert "1: cap violation emitted as a structured FAIL line (exceeds-cap, lines=21000 cap=20000)" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate file=.*harness_big\.rs reason=exceeds-cap lines=21000 cap=20000' "$_s1_out"
+
 test_summary
