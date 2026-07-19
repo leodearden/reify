@@ -136,4 +136,64 @@ assert "gate exits NON-zero when RUN_ALL_CLASSIFICATION_MANIFEST points at a dri
 assert "gate output NAMES the offending undeclared file ('$_DROPPED')" \
     bash -c 'out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$3" bash "$1" 2>&1 || true)"; printf "%s" "$out" | grep -qF -- "$2"' _ "$GATE" "$_DROPPED" "$_DRIFT_MANIFEST"
 
+# ---------------------------------------------------------------------------
+# (e) plan-shape: verify.sh emits the gate EARLY, before the expensive poles.
+# Hermetic --print-plan oracle + `grep -n` relative-index technique
+# (test_verify_failfast_order.sh:29-58; never runs cargo/npm). RED until
+# step-4 wires build_plan().
+#
+# Two plan captures are needed because the two "expensive pole" anchors live in
+# different tiers: the role=task `all --scope all` plan carries the psi-gate and
+# check-manifold-deps.sh poles but NOT run_all.sh (the wholesale pool suite
+# moved to the merge tier — test_verify_failfast_order.sh Test 6e), while the
+# merge-tier plan carries run_all.sh. So the check-manifold/psi-gate anchors
+# read the task plan and the run_all.sh anchor reads the merge plan. Both tiers
+# run at RUN_RUST=1, where the gate is emitted.
+#
+# The NEGATIVE invariant — docs-only / gui-src-only diffs (RUN_RUST=0) must NOT
+# emit the gate line — is deliberately NOT re-encoded here: it is delegated to
+# and enforced by test_verify_scope.sh's existing `plan_cmdcount -eq 0`
+# assertions (docs-only + branch/docs "zero command leaves"). The RUN_RUST=1
+# gating in verify.sh preserves those: were the gate line to leak into a
+# RUN_RUST=0 plan, those counts would become non-zero and test_verify_scope.sh
+# would go RED.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- (e) verify.sh emits the gate early, before the expensive poles (plan-shape) ---"
+
+GATE_LINE='./scripts/check-infra-classification-manifest.sh'
+TASK_ALL_PLAN="$(bash "$REPO_ROOT/scripts/verify.sh" all --scope all --print-plan | grep -v '^#')"
+MERGE_ALL_PLAN="$(DF_VERIFY_ROLE=merge bash "$REPO_ROOT/scripts/verify.sh" all --scope all --print-plan | grep -v '^#')"
+export GATE_LINE TASK_ALL_PLAN MERGE_ALL_PLAN
+
+assert "task all plan: contains the gate line ($GATE_LINE)" \
+    bash -c 'printf "%s\n" "$2" | grep -qF -- "$1"' _ "$GATE_LINE" "$TASK_ALL_PLAN"
+
+assert "merge all plan: contains the gate line ($GATE_LINE)" \
+    bash -c 'printf "%s\n" "$2" | grep -qF -- "$1"' _ "$GATE_LINE" "$MERGE_ALL_PLAN"
+
+# gate index < check-manifold-deps.sh index — the gate is the FIRST plan entry.
+assert "task all plan: gate index < check-manifold-deps.sh index (gate emitted first)" \
+    bash -c '
+        G=$(printf "%s\n" "$2" | grep -nF -- "$1" | head -1 | cut -d: -f1)
+        M=$(printf "%s\n" "$2" | grep -n "check-manifold-deps\.sh" | head -1 | cut -d: -f1)
+        [ -n "$G" ] && [ -n "$M" ] && [ "$G" -lt "$M" ]
+    ' _ "$GATE_LINE" "$TASK_ALL_PLAN"
+
+# gate index < psi-gate index — before the expensive rust pole.
+assert "task all plan: gate index < psi-gate index (before the expensive pole)" \
+    bash -c '
+        G=$(printf "%s\n" "$2" | grep -nF -- "$1" | head -1 | cut -d: -f1)
+        P=$(printf "%s\n" "$2" | grep -n "\./scripts/verify\.sh psi-gate" | head -1 | cut -d: -f1)
+        [ -n "$G" ] && [ -n "$P" ] && [ "$G" -lt "$P" ]
+    ' _ "$GATE_LINE" "$TASK_ALL_PLAN"
+
+# gate index < run_all.sh index — before the wholesale pool suite (merge tier).
+assert "merge all plan: gate index < run_all.sh index (before the wholesale pool suite)" \
+    bash -c '
+        G=$(printf "%s\n" "$2" | grep -nF -- "$1" | head -1 | cut -d: -f1)
+        R=$(printf "%s\n" "$2" | grep -n "run_all\.sh" | head -1 | cut -d: -f1)
+        [ -n "$G" ] && [ -n "$R" ] && [ "$G" -lt "$R" ]
+    ' _ "$GATE_LINE" "$MERGE_ALL_PLAN"
+
 test_summary
