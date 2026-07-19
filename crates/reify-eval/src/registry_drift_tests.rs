@@ -330,6 +330,26 @@ const CONSUMER_DIRECTION_A_LEDGER: &[&str] = &[
 /// kernel-free ctor set below — no longer in this build-path-only ledger.
 const SELECTOR_BUILD_PATH_ONLY: &[&str] = &["split"];
 
+/// Selector-COMPOSITION operators that task #5120 R2c made eval-wired selector
+/// ctors (`is_symbolic_eval_wired_selector_ctor` ⇒ `true`, so they leave
+/// clause-8's build-only exemption) yet which live in
+/// `GEOMETRY_FUNCTION_NAMES` (the CSG-boolean family), NOT
+/// `GEOMETRY_TOPOLOGY_SELECTOR_NAMES`. The name is deliberately overloaded:
+/// with `Value::Selector` operands the symbolic reconstruct
+/// (`reconstruct_selector_value_symbolic`) mints a composed `Value::Selector`;
+/// with `Value::GeometryHandle` operands it returns `None` and the call stays
+/// the solid-CSG boolean resolved on `build()`. So these names are a DOCUMENTED
+/// exception to "eval-wired selector ctor ⊆ topology-selector family": the
+/// family-agreement checks below subtract them before comparing against
+/// `GEOMETRY_TOPOLOGY_SELECTOR_NAMES`, and the non-geometry-family disjointness
+/// check excepts them for `GEOMETRY_FUNCTION_NAMES` only.
+///
+/// `intersect` is the selector-map spelling of the third composition op, but
+/// `GEOMETRY_FUNCTION_NAMES` spells the CSG boolean `intersection` — the two
+/// names never collide, so `intersect` is absent from every family universe
+/// and needs no carve-out here.
+const SELECTOR_COMPOSITION_OVERLOAD: &[&str] = &["union", "difference"];
+
 // ═══════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════
@@ -555,6 +575,14 @@ fn topology_selector_eval_recognition_agrees_with_selector_names_family() {
         "edge",
         "vertex",
         "solid_body",
+        // task #5120 R2c: the selector-COMPOSITION operators `union`/`difference`
+        // are now eval-wired selector ctors too (see [`SELECTOR_COMPOSITION_OVERLOAD`]).
+        // They belong to GEOMETRY_FUNCTION_NAMES, NOT the topology-selector family,
+        // so they are subtracted from the family-agreement checks below — but the
+        // raw recognized-name pin must still list them. (`intersect` is absent:
+        // the CSG family spells it `intersection`.)
+        "union",
+        "difference",
     ]);
     assert_eq!(
         kernel_free_ctor_set, expected_kernel_free,
@@ -562,12 +590,25 @@ fn topology_selector_eval_recognition_agrees_with_selector_names_family() {
          update this pin if the change is intentional"
     );
 
-    // (a) the kernel-free set is a subset of GEOMETRY_TOPOLOGY_SELECTOR_NAMES.
+    // The kernel-free ctors that genuinely belong to the topology-selector
+    // family — i.e. the recognized set MINUS the task-#5120-R2c composition
+    // overload (`union`/`difference`), which are eval-wired selector ctors but
+    // members of GEOMETRY_FUNCTION_NAMES, not GEOMETRY_TOPOLOGY_SELECTOR_NAMES
+    // (see [`SELECTOR_COMPOSITION_OVERLOAD`]). The family-agreement checks below
+    // are about that family membership, so they run against this subtracted set.
+    let composition_overload = to_set(SELECTOR_COMPOSITION_OVERLOAD);
+    let kernel_free_topology_only: BTreeSet<String> = kernel_free_ctor_set
+        .difference(&composition_overload)
+        .cloned()
+        .collect();
+
+    // (a) the kernel-free set (minus the composition overload) is a subset of
+    // GEOMETRY_TOPOLOGY_SELECTOR_NAMES.
     assert!(
-        kernel_free_ctor_set.is_subset(&selector_names),
-        "is_symbolic_eval_wired_selector_ctor recognizes a name \
+        kernel_free_topology_only.is_subset(&selector_names),
+        "is_symbolic_eval_wired_selector_ctor recognizes a non-composition name \
          reify_compiler::GEOMETRY_TOPOLOGY_SELECTOR_NAMES does not claim: {:?}",
-        kernel_free_ctor_set
+        kernel_free_topology_only
             .difference(&selector_names)
             .collect::<Vec<_>>()
     );
@@ -580,9 +621,10 @@ fn topology_selector_eval_recognition_agrees_with_selector_names_family() {
         .cloned()
         .collect();
 
-    // The eval-side selector-recognition UNION: kernel-free ctors plus
-    // kernel-bearing selector consumers.
-    let eval_selector_union: BTreeSet<String> = kernel_free_ctor_set
+    // The eval-side selector-recognition UNION: kernel-free ctors (topology-family
+    // only; the composition overload is subtracted per SELECTOR_COMPOSITION_OVERLOAD)
+    // plus kernel-bearing selector consumers.
+    let eval_selector_union: BTreeSet<String> = kernel_free_topology_only
         .union(&kernel_bearing_selector_subset)
         .cloned()
         .collect();
@@ -660,11 +702,30 @@ fn non_geometry_families_are_disjoint_from_eval_geometry_oracles() {
             family,
             1,
         );
+        // task #5120 R2c carve-out: `union`/`difference` are intentionally
+        // dual-purpose — CSG booleans in GEOMETRY_FUNCTION_NAMES AND eval-wired
+        // selector-COMPOSITION ctors, disambiguated by operand type at eval time
+        // (see [`SELECTOR_COMPOSITION_OVERLOAD`]). So the selector-ctor oracle
+        // legitimately recognizes them for GEOMETRY_FUNCTION_NAMES only; every
+        // OTHER family must still be fully disjoint. The query/consumer
+        // disjointness assertions above stay intact for ALL families —
+        // union/difference must never masquerade as a geometry query or consumer.
+        let tolerated_selector_ctor_hits: BTreeSet<String> =
+            if family_name == "GEOMETRY_FUNCTION_NAMES" {
+                to_set(SELECTOR_COMPOSITION_OVERLOAD)
+            } else {
+                BTreeSet::new()
+            };
+        let unexpected_selector_ctor_hits: BTreeSet<String> = selector_ctor_hits
+            .difference(&tolerated_selector_ctor_hits)
+            .cloned()
+            .collect();
         assert!(
-            selector_ctor_hits.is_empty(),
-            "{family_name} member(s) {selector_ctor_hits:?} recognized by \
+            unexpected_selector_ctor_hits.is_empty(),
+            "{family_name} member(s) {unexpected_selector_ctor_hits:?} recognized by \
              is_symbolic_eval_wired_selector_ctor — a {family_name} name must never \
-             masquerade as a kernel-free selector ctor"
+             masquerade as a kernel-free selector ctor (task 5120 R2c composition \
+             overload {SELECTOR_COMPOSITION_OVERLOAD:?} excepted for GEOMETRY_FUNCTION_NAMES)"
         );
     }
 }
