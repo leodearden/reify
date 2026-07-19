@@ -2037,14 +2037,18 @@ impl Engine {
 
     /// GHR-δ §5: reset the geometry-handle revalidation slow-path counter to 0.
     ///
-    /// Called at the start of every `build()` / `build_snapshot()` (alongside
-    /// clearing `realization_handles`), so the count reported afterwards
-    /// reflects only the revalidation reads since the most recent build —
-    /// mirroring the reset-at-operation-start discipline of the `last_*`
-    /// counters. Takes `&self` because the counter is an `AtomicUsize`
-    /// (interior mutability); the reader below observes it. Always available
-    /// (NOT test-gated) since the reset site in `engine_build.rs` is production
-    /// code.
+    /// The counter is reset at the start of every build/tessellate surface so
+    /// the count reported afterwards reflects only the revalidation reads since
+    /// the most recent build — mirroring the reset-at-operation-start discipline
+    /// of the `last_*` counters. Takes `&self` because the counter is an
+    /// `AtomicUsize` (interior mutability); the reader below observes it.
+    ///
+    /// As of #5069 this reset is inlined directly into
+    /// `Engine::reset_per_build_state` (engine_build.rs — production code), the
+    /// single per-build choke-point, so this standalone helper has no remaining
+    /// call sites. It is retained — `#[allow(dead_code)]` — for its GHR-δ §5
+    /// reset-discipline documentation and symmetry with the paired reader below.
+    #[allow(dead_code)]
     pub(crate) fn reset_geometry_revalidation_slow_path_count(&self) {
         self.geometry_revalidation_slow_path
             .store(0, std::sync::atomic::Ordering::Relaxed);
