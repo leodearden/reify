@@ -1497,6 +1497,24 @@ fn expand_solver_position_expr(
     crate::structural_query::apply_cost_aggregation(expr, all_templates, trait_registry);
 }
 
+/// True iff `expr` is an `@optimized` `UserFunctionCall` — it resolves via
+/// `find_matching_compiled_function` to a `CompiledFunction` whose
+/// `optimized_target` is `Some(_)`. The compute-dispatch-bypass predicate (same
+/// shape as the reeval-cone `@optimized` exclusion elsewhere in this file):
+/// such a cell's value comes from the compute-dispatch registry, so it must NOT
+/// be re-folded through plain `reify_expr::eval_expr` (which carries no registry)
+/// in the post-solve write-back or β's per-trial fold — doing so would clobber
+/// the dispatched result with the inline-fallback/Undef.
+fn is_optimized_userfn_cell(expr: &CompiledExpr, functions: &[CompiledFunction]) -> bool {
+    matches!(
+        &expr.kind,
+        CompiledExprKind::UserFunctionCall { function_name, args }
+            if reify_expr::find_matching_compiled_function(functions, function_name, args)
+                .and_then(|f| f.optimized_target.as_ref())
+                .is_some()
+    )
+}
+
 /// Build the authoritative, topologically-ordered list of coupled non-auto
 /// value cells to re-materialize after a solve — the single cross-scope
 /// authority both the post-solve write-back (task #5188 step-8) and β's
@@ -1515,16 +1533,28 @@ fn expand_solver_position_expr(
 /// * `auto_ids` — the problem's `auto_param` ids (this scope's regular autos for
 ///   the single-scope builder; the cluster-wide union for the merged builder);
 ///   the reachability target for membership rule (b).
+/// * `functions` — the problem's `CompiledFunction` table; used to resolve
+///   `@optimized` `UserFunctionCall` cells (via `is_optimized_userfn_cell`) so
+///   they can be excluded from the surviving set.
 ///
 /// Membership: a cell survives iff it (a) transitively feeds the objective/
 /// constraints (is in the seed closure) AND (b) transitively reads ≥1 `auto_id`
-/// AND is non-auto AND carries a plain foldable `default_expr`. ComputeNode-
-/// produced cells (no plain default_expr) are excluded by construction; the
-/// `@optimized` exclusion is layered on in task #5188 step-6.
+/// AND is non-auto AND carries a plain foldable `default_expr` AND is NOT an
+/// `@optimized` cell. ComputeNode-produced cells (no plain `default_expr`) are
+/// excluded by construction (the map only holds cells with a `default_expr`);
+/// `@optimized` `UserFunctionCall` cells are excluded by `is_optimized_userfn_cell`
+/// in step (e) — they must stay FROZEN (their value came from the compute-dispatch
+/// registry; re-folding them through plain `eval_expr` would clobber it). PRD
+/// design-decision 5's known limitation: an `@optimized` coupled cell is not
+/// joint-driven; it is re-materialized only by its own dispatch. Such cells
+/// REMAIN in the closure/reachability computation (so their transitive
+/// auto-reachability still propagates to genuine downstream coupled cells); only
+/// the FINAL surviving node set drops them.
 fn build_dependent_cells(
     seed_exprs: &[&CompiledExpr],
     all_templates: &[TopologyTemplate],
     auto_ids: &HashSet<ValueCellId>,
+    functions: &[CompiledFunction],
 ) -> Vec<(ValueCellId, CompiledExpr)> {
     // (a) Cross-template map: every non-auto cell that carries a plain
     //     default_expr, keyed by id. Autos have no default_expr and are skipped;
@@ -1603,6 +1633,16 @@ fn build_dependent_cells(
             continue;
         }
         if let Some(expr) = cell_map.get(id) {
+            // @optimized exclusion (task #5188 step-6): drop a cell whose
+            // default_expr is an @optimized UserFunctionCall from the SURVIVING
+            // set. It stayed in `cell_map`/closure/`reaches_auto` above so its
+            // transitive auto-reachability still propagates to genuine downstream
+            // coupled cells, but it must NOT itself be re-folded in the write-back
+            // / β's per-trial fold — its value comes from the compute-dispatch
+            // registry (PRD design-decision 5's known limitation).
+            if is_optimized_userfn_cell(expr, functions) {
+                continue;
+            }
             let node = NodeId::Value(id.clone());
             traces.insert(node.clone(), extract_dependency_trace(expr));
             nodes.insert(node);
@@ -1752,7 +1792,7 @@ fn build_solver_problem(
         }
         let dep_auto_ids: HashSet<ValueCellId> =
             regular_auto_cells.iter().map(|c| c.id.clone()).collect();
-        build_dependent_cells(&seed_exprs, all_templates, &dep_auto_ids)
+        build_dependent_cells(&seed_exprs, all_templates, &dep_auto_ids, &functions)
     };
 
     // Pre-populate current_values with pinned connector values so any remaining
@@ -2089,7 +2129,7 @@ fn build_merged_solver_problem(
         }
         let dep_auto_ids: HashSet<ValueCellId> =
             auto_cells.iter().map(|c| c.id.clone()).collect();
-        build_dependent_cells(&seed_exprs, templates, &dep_auto_ids)
+        build_dependent_cells(&seed_exprs, templates, &dep_auto_ids, &functions)
     };
 
     ResolutionProblem {
