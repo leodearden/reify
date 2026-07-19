@@ -65,6 +65,13 @@ lock_depth: 10
 # (5400) is now < this warm budget; if cold-cache verifies under saturation start hitting exit-124,
 # add verify_cold_command_timeout_secs >= 7200.
 verify_command_timeout_secs: 7200
+# Verify kill-tree hardening (merge-gate-health W1b, 2026-07-19 survey): run each verify
+# in a systemd df-verify-*.scope so the whole subtree is enumerable/killable — eliminates
+# the GNU-timeout setpgid pgroup-escape strands that gut the _merge-verify worktree after
+# restarts (44/48 restart-collateral instances; DF verify.py:2846-2849 documents the escape).
+# Mechanism shipped DF-side (verify.py:2890-2911); default was False for reify only by config.
+# Companion DF startup scope-sweep: dark_factory task 2829.
+verify_use_cgroup_scope: true
 # Clock-stop seam — ACTIVATED 2026-06-26 via task 4838.
 # dark_factory:1916 deployed; @@REIFY_CLOCK_*@@ span excluded from
 # verify_command_timeout_secs (continuous wait no longer counts against this budget).
@@ -157,6 +164,11 @@ concurrent_verify: false
 verify_env:
   REIFY_RUN_ALL_EXCLUDE_HOST_INFRA: "1"
   REIFY_GATE_EXCLUDE_HEAVY: "1"
+  # Durable FLAKY-ledger path (merge-gate-health W5a, 2026-07-19). Without this the
+  # Phase-2.5 ledger defaults to the RUNNING checkout's data/verify-logs/ — i.e. the
+  # _merge-verify lane, wiped by git clean on every reseed, so the ledger (and DF 2358's
+  # chronic-flake auto-filer) could never accumulate at the tier where flakes matter.
+  REIFY_RUN_ALL_FLAKY_LEDGER: "/home/leo/src/reify/data/verify-logs/flaky-ledger.jsonl"
   RUSTC_WRAPPER: sccache
   CARGO_INCREMENTAL: "0"
   # CARGO_MAKEFLAGS is owned solely by scripts/verify.sh apply_env() (single source,
@@ -530,6 +542,15 @@ git:
   # compare test-level vs the warm result; divergence fires a born-at-L2 alarm naming the
   # commit + diverging tests. Cadence left at dark-factory defaults (every 40 lands OR nightly).
   warm_verify_shadow_compare: true
+  # Offline deep-test lane (coverage-gap closure, 2026-07-19 merge-verify CPU survey —
+  # docs/notes/merge-verify-cpu-survey-2026-07.md §Coverage gaps; PRD docs/prds/merge-gate-health.md
+  # context). Before this the offline worker (DF offline_lane.py) had NEVER run: unconditionally-
+  # #[ignore]d convergence tests ran NOWHERE and the host-infra cold lane (run_all --scope
+  # host-infra, 4 tests) never executed. Post-merge-triggered, single-flight, idle-priority
+  # (scripts/run-offline-deep.sh). Trivially revertible (set false / remove keys).
+  persistent_offline_deep_worktree: true
+  offline_lane_enabled: true
+  offline_lane_infra_enabled: true
   # Main-gate sanction handshake (task 4367 step 1; dark_factory:1678 wired the
   # orchestrator side). advance_main runs main_gate_mark_command BEFORE its CAS
   # update-ref, so the reify reference-transaction hook records the orchestrator
