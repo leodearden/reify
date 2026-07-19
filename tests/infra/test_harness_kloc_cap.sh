@@ -266,4 +266,33 @@ assert "2: unsanctioned stray.rs fires (returns 1)" \
 assert "2: stray flagged with a structured unsanctioned-standalone FAIL line" \
     grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate file=.*stray\.rs reason=unsanctioned-standalone' "$_s2_out"
 
+# ===========================================================================
+# Section 3: precision / non-vacuity — a sanctioned under-cap harness, an
+# override binary, AND a grandfathered file are all correctly NOT flagged, and
+# a clean crate emits a PASS line. Proves the guard is green-on-truth, not
+# vacuously red.
+# ===========================================================================
+echo ""
+echo "--- Section 3: precision (sanctioned harness/override/baseline not flagged) ---"
+
+_s3_dir="$(mktemp -d)"; _TMPDIRS+=("$_s3_dir")
+awk 'BEGIN { for (i = 0; i < 100; i++) print "// ok" }' > "$_s3_dir/harness_ok.rs"  # under cap
+printf 'fn main() {}\n' > "$_s3_dir/tensegrity_t0a.rs"   # one of the 7 overrides
+printf 'fn main() {}\n' > "$_s3_dir/grand.rs"            # grandfathered below
+
+_s3_baseline="$(mktemp)"; _TMPDIRS+=("$_s3_baseline")
+printf 'crates/synthcrate/tests/grand.rs\n' > "$_s3_baseline"
+
+_s3_out="$(mktemp)"; _TMPDIRS+=("$_s3_out")
+_s3_rc=0
+harness_layout_violations synthcrate "$_s3_dir" "$_s3_baseline" 20000 \
+    > "$_s3_out" 2>/dev/null || _s3_rc=$?
+
+assert "3: sanctioned harness/override/grandfathered files are NOT flagged (returns 0)" \
+    test "$_s3_rc" -eq 0
+assert "3: a clean crate emits a structured PASS line" \
+    grep -Eq '^HARNESS_KLOC_CAP PASS crate=synthcrate' "$_s3_out"
+assert "3: no FAIL line is emitted for a clean crate (precision)" \
+    bash -c '! grep -qE "^HARNESS_KLOC_CAP FAIL" "$1"' _ "$_s3_out"
+
 test_summary
