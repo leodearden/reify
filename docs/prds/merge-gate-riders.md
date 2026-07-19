@@ -177,3 +177,7 @@ G7 note (design-invariants walk; `docs/legibility/design-invariants.md` absent o
 4. **δ measurement source** — runs.db duration delta vs archived-log wall lines. Decide in δ.
 5. **Initial closure-manifest coverage** — which of the ~117 members get rows in γ vs follow-up accretion (start with the biggest wall contributors; unmapped members simply keep running).
 6. **DF knob spelling** (`sequential_lint_first` module-config bool vs role-list) — α's implementer follows DF config conventions.
+
+## 12. Decomposition record (2026-07-19)
+
+Filed: reify **5271** (β), **5273** (γ), **5276** (δ), **5279** (ε), **5280** (ζ); dark-factory **2832** (α). Edges: 5271→dark_factory:2832; 5276→5273; 5280→{5279, dark_factory:2821, dark_factory:2831}; milestone 5254→{5271, 5276, 5280, dark_factory:2832}. Capability manifest: `merge-gate-riders.capability-manifest.{md,yaml}` (all bindings PASS). Yaml line-anchors in §3 re-based after config batch `bc235a616a` (test/lint commands ~:138-159, `concurrent_verify` ~:166, verify_env ~:164).

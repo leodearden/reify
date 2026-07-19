@@ -1,0 +1,28 @@
+# Machine-readable twin of merge-gate-riders.capability-manifest.md (hand-stamped, interim per overlay)
+prd: docs/prds/merge-gate-riders.md
+program_milestone: "5254"
+batches:
+  reify: ["5271", "5273", "5276", "5279", "5280"]
+  dark_factory: ["2832"]
+external_precondition_deps:
+  - {capability: "sweep honest categorization (positive-anchor classifier)", task: "dark_factory:2821"}
+  - {capability: "sweep ENV_TRANSIENT collateral-shape extension", task: "dark_factory:2831"}
+bindings:
+  - task: "5271"
+    label: "beta"
+    delivered_check: "grep -q 'sequential_lint_first' dark-factory-orchestrator.yaml"
+  - task: "5273"
+    label: "gamma"
+    delivered_check: "grep -q 'SKIP (content-clean)' tests/infra/run_all.sh && test -f tests/infra/run-all-skip-closures.manifest && grep -q 'REIFY_RUN_ALL_CONTENT_SKIP' scripts/verify.sh && grep -q 'INV-5' docs/prds/run-all-pool-contention-tiering-fix.md"
+  - task: "5276"
+    label: "delta"
+    delivered_check: "grep -q 'REIFY_RUN_ALL_SKIP_STATE' dark-factory-orchestrator.yaml"
+  - task: "5279"
+    label: "epsilon"
+    delivered_check: "grep -q 'RELEASE-PASS: skipped (delta-clean)' scripts/verify.sh && test -f tests/infra/test_verify_release_delta_skip.sh && grep -q 'test_verify_release_delta_skip.sh' tests/infra/run-all-classification.manifest"
+  - task: "5280"
+    label: "zeta"
+    delivered_check: "grep -q 'REIFY_RELEASE_DELTA_SKIP' dark-factory-orchestrator.yaml"
+  - task: "dark_factory:2832"
+    label: "alpha"
+    delivered_check: "manual: DF-side — sequential_lint_first knob + merge-role lint-first short-circuit unit tests in dark-factory repo"
