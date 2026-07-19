@@ -47,6 +47,15 @@
 #                                     declared union (from manifest [m]) and
 #                                     the discovered set (from dir [d])
 #                                     (empty = no drift).
+#   classification_undeclared [m] [d]  prints discovered test_*.sh basenames
+#                                     (from dir [d]) with NO row in manifest
+#                                     [m] — the "missing manifest row" set
+#                                     (empty = every discovered file is
+#                                     declared).
+#   classification_orphaned [m] [d]  prints declared basenames (from manifest
+#                                     [m]) with NO discovered file (in dir
+#                                     [d]) — the "stale row" set (empty = no
+#                                     orphaned rows).
 #   classification_overlap [m]       prints any test basename declared in
 #                                     more than one bucket in manifest [m]
 #                                     (default: the real manifest) (empty =
@@ -188,6 +197,35 @@ classification_coverage_diff() {
     _diff_out="$(diff "$_declared_tmp" "$_discovered_tmp" 2>&1 || true)"
     rm -f "$_declared_tmp" "$_discovered_tmp"
     printf '%s' "$_diff_out"
+}
+
+# classification_undeclared [manifest] [dir] — the "missing manifest row" set:
+# discovered test_*.sh basenames (from [dir]) that are NOT in the declared
+# union (from [manifest]) — i.e. a test file exists on disk with no manifest
+# row. Derives SOLELY from the two set accessors, so a file flagged here is
+# exactly a `>` line in classification_coverage_diff (the shared derivation).
+# Both accessors emit sorted output (declared_union: `sort -u`; discovered_set:
+# `sort`), so a plain `comm -13` (lines only in the discovered file) yields the
+# set difference. Empty output = every discovered file is declared.
+classification_undeclared() {
+    local _manifest="${1:-$(classification_manifest_path)}"
+    local _dir="${2:-$(classification_infra_dir)}"
+    [ -f "$_manifest" ] || return 0
+    comm -13 <(classification_declared_union "$_manifest") \
+             <(classification_discovered_set "$_dir")
+}
+
+# classification_orphaned [manifest] [dir] — the "stale row" set: declared
+# basenames (from [manifest]) that have NO discovered file (in [dir]) — i.e. a
+# manifest row whose test_*.sh no longer exists. `comm -23` (lines only in the
+# declared file) yields the set difference; same shared derivation as above.
+# Empty output = no orphaned rows.
+classification_orphaned() {
+    local _manifest="${1:-$(classification_manifest_path)}"
+    local _dir="${2:-$(classification_infra_dir)}"
+    [ -f "$_manifest" ] || return 0
+    comm -23 <(classification_declared_union "$_manifest") \
+             <(classification_discovered_set "$_dir")
 }
 
 # classification_overlap [manifest] — any test basename declared in MORE

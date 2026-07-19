@@ -71,6 +71,16 @@ tests/infra/run-all-classification.manifest    tests/infra/test_run_all_classifi
 tests/infra/run-all-classification-lib.sh      tests/infra/test_run_all_classification.sh
 tests/infra/test_run_all_classification.sh     tests/infra/test_run_all_classification.sh
 
+# Task 5252 mechanical early gate: fail verify (naming the offending file) when
+# a tests/infra/test_*.sh has no run-all-classification.manifest row (or a row
+# has no file). scripts/check-infra-classification-manifest.sh is
+# emitted-not-sourced by verify.sh (like scripts/check-manifold-deps.sh), so it
+# is intentionally absent from scripts/verify-pipeline-paths.txt; per-task
+# fail-fast coverage comes from these rows. The 2nd row (the lib) is the
+# one-artifact-multiple-rows pattern (like scripts/seed-warm-lane.sh above).
+scripts/check-infra-classification-manifest.sh    tests/infra/test_infra_classification_manifest_gate.sh
+tests/infra/run-all-classification-lib.sh         tests/infra/test_infra_classification_manifest_gate.sh
+
 # Task 4917 (A6) offline/gate heavy-test partition drift-guard.
 # .config/nextest.toml carries the heavy binaries' LPT priority overrides;
 # scripts/heavy-test-filter-lib.sh is the partition's single source of truth
