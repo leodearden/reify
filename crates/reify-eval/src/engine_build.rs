@@ -12310,3 +12310,179 @@ mod post_process_cross_sub_value_cells_tests;
 
 #[cfg(test)]
 mod diagnose_topology_correspondence_drops_tests;
+
+// ── reset_per_build_state per-surface classification unit tests (task ι, #5069) ─
+//
+// White-box pin (direct private-field access from this submodule of the crate
+// root) for `Engine::reset_per_build_state(BuildSurface)`. Seeds every reset
+// CLASS and representative must-survive fields, then asserts the per-surface
+// classification for each `BuildSurface` variant:
+//   - reset-EVERY-surface   → cleared on all 4 surfaces.
+//   - reset-on-BUILD        → `realization_handles` cleared ONLY on Build*/
+//     preserved on Tessellate* (the load-bearing asymmetry, leaf d).
+//   - reset-on-TESSELLATE    → `achieved_repr_tol` cleared ONLY on Tessellate*/
+//     preserved on Build*.
+//   - MUST-SURVIVE          → untouched on all 4 (regression if swept).
+//
+// RED until step-3: `BuildSurface` and `reset_per_build_state` do not exist.
+#[cfg(test)]
+mod reset_per_build_state_tests {
+    use super::*;
+    use reify_constraints::SimpleConstraintChecker;
+    use std::sync::atomic::Ordering;
+
+    /// A fresh kernel-less `Engine` with one seeded entry in every per-build
+    /// reset class plus representative must-survive fields.
+    fn seeded_engine() -> Engine {
+        let mut engine = Engine::new(Box::new(SimpleConstraintChecker), None);
+        let rid = RealizationNodeId::new("Seed", 0);
+
+        // ── reset-EVERY-surface ───────────────────────────────────────────
+        engine.last_dispatch_count = 7;
+        engine
+            .last_dispatch_count_by_realization
+            .insert(rid.clone(), 3);
+        engine
+            .geometry_revalidation_slow_path
+            .store(5, Ordering::Relaxed);
+        engine.topology_attribute_table.record(
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: GeometryHandleId(1),
+            },
+            TopologyAttribute {
+                feature_id: FeatureId::Realization(rid.clone()),
+                role: Role::Side,
+                local_index: 0,
+                user_label: None,
+                mod_history: Vec::new(),
+            },
+        );
+        engine.swept_kind_table.record(
+            GeometryHandleId(2),
+            SweptKind::Revolve {
+                axis_origin: [0.0, 0.0, 0.0],
+                axis_dir: [0.0, 0.0, 1.0],
+                angle_rad: 1.0,
+            },
+        );
+
+        // ── reset-on-BUILD-surface ────────────────────────────────────────
+        engine.realization_handles.insert(rid.clone(), GeometryHandleId(9));
+
+        // ── reset-on-TESSELLATE-surface ───────────────────────────────────
+        engine
+            .achieved_repr_tol
+            .insert("Seed#realization[0]".to_string(), 1.5);
+
+        // ── MUST-SURVIVE (regression if swept) ────────────────────────────
+        engine.realization_cache.insert(
+            &rid.entity,
+            ReprKind::BRep,
+            1e-6,
+            NO_OPTIONS,
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: GeometryHandleId(1),
+            },
+        );
+        engine.next_snapshot_id = 42;
+        engine.persistent_hit_count = 9;
+        engine.capture_repr_tol = true;
+
+        engine
+    }
+
+    /// The reset-EVERY-surface class must be empty/zero after any surface.
+    fn assert_every_surface_cleared(engine: &Engine, surface: BuildSurface) {
+        assert_eq!(
+            engine.last_dispatch_count, 0,
+            "last_dispatch_count is reset-EVERY-surface ({surface:?})"
+        );
+        assert!(
+            engine.last_dispatch_count_by_realization.is_empty(),
+            "last_dispatch_count_by_realization is reset-EVERY-surface ({surface:?})"
+        );
+        assert_eq!(
+            engine.geometry_revalidation_slow_path.load(Ordering::Relaxed),
+            0,
+            "geometry_revalidation_slow_path is reset-EVERY-surface ({surface:?})"
+        );
+        assert!(
+            engine.topology_attribute_table.is_empty(),
+            "topology_attribute_table is reset-EVERY-surface ({surface:?})"
+        );
+        assert!(
+            engine.swept_kind_table.is_empty(),
+            "swept_kind_table is reset-EVERY-surface ({surface:?})"
+        );
+    }
+
+    /// Representative must-survive fields are untouched on every surface.
+    fn assert_must_survive(engine: &Engine, surface: BuildSurface) {
+        assert_eq!(
+            engine.realization_cache.len(),
+            1,
+            "realization_cache (task 2874) MUST survive ({surface:?})"
+        );
+        assert_eq!(
+            engine.next_snapshot_id, 42,
+            "next_snapshot_id MUST survive ({surface:?})"
+        );
+        assert_eq!(
+            engine.persistent_hit_count, 9,
+            "persistent_hit_count MUST survive ({surface:?})"
+        );
+        assert!(
+            engine.capture_repr_tol,
+            "capture_repr_tol MUST survive ({surface:?})"
+        );
+    }
+
+    /// Build surfaces clear `realization_handles` and PRESERVE `achieved_repr_tol`.
+    #[test]
+    fn build_surfaces_clear_handles_preserve_repr_tol() {
+        for surface in [BuildSurface::Build, BuildSurface::BuildSnapshot] {
+            let mut engine = seeded_engine();
+            engine.reset_per_build_state(surface);
+
+            assert_every_surface_cleared(&engine, surface);
+            assert!(
+                engine.realization_handles.is_empty(),
+                "realization_handles is reset-on-BUILD → cleared on {surface:?}"
+            );
+            assert_eq!(
+                engine.achieved_repr_tol.len(),
+                1,
+                "achieved_repr_tol is reset-on-TESSELLATE → PRESERVED on build surface {surface:?}"
+            );
+            assert_must_survive(&engine, surface);
+        }
+    }
+
+    /// Tessellate surfaces clear `achieved_repr_tol` and PRESERVE
+    /// `realization_handles` — the load-bearing asymmetry (leaf d).
+    #[test]
+    fn tessellate_surfaces_clear_repr_tol_preserve_handles() {
+        for surface in [
+            BuildSurface::TessellateRealizations,
+            BuildSurface::TessellateSnapshot,
+        ] {
+            let mut engine = seeded_engine();
+            engine.reset_per_build_state(surface);
+
+            assert_every_surface_cleared(&engine, surface);
+            assert!(
+                engine.achieved_repr_tol.is_empty(),
+                "achieved_repr_tol is reset-on-TESSELLATE → cleared on {surface:?}"
+            );
+            assert_eq!(
+                engine.realization_handles.len(),
+                1,
+                "realization_handles is reset-on-BUILD → PRESERVED on tessellate surface \
+                 {surface:?} (load-bearing build↔tessellate asymmetry, leaf d)"
+            );
+            assert_must_survive(&engine, surface);
+        }
+    }
+}
