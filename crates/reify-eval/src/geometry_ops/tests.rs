@@ -22472,3 +22472,1330 @@
         assert_eq!(diagnostics[0].code, Some(DiagnosticCode::QueryNotSupportedOnRepr));
         assert_eq!(diagnostics[0].severity, Severity::Error);
     }
+
+    // ── Task #5120 R2c: composition (union/intersect/difference) wired onto
+    // the kernel-free symbolic-eval surface ──────────────────────────────────
+    //
+    // Sibling to the R2b leaf-ctor tests above (tests.rs:20630+): pins
+    // `try_eval_symbolic_topology_selector`'s NEW composition arms over
+    // INLINE nested leaf-ctor operands (the bt2/bt3 shape —
+    // `union(faces_by_normal(b,up,tol), faces_by_normal(b,down,tol))`),
+    // resolving within the single kernel-free mint pass (no cross-cell
+    // chaining), plus the union/intersect/difference overload
+    // disambiguation against the solid-CSG boolean (non-Selector operands).
+    //
+    // **RED** until step-2 adds the `union`/`intersect`/`difference` arms to
+    // `symbolic_eval_helper_for_name` + `try_eval_symbolic_topology_selector`
+    // (via the new kernel-free `eval_variadic_composition_symbolic` /
+    // `reconstruct_selector_value_symbolic` siblings).
+    //
+    // NOTE (amendment review, round 2): the None-overload, arity-gate, and
+    // kind-mismatch cases below are triplicated per-operator on purpose, not
+    // an oversight — a table-driven `for op in ["union","intersect",
+    // "difference"]` helper was considered and declined. Each operator gets
+    // its own independently-named `#[test]` so a regression in exactly one
+    // operator's guard fails with an unambiguous test name instead of a
+    // shared-helper assertion that requires reading output to learn which
+    // operator broke; per-test doc-comments above each case already record
+    // why that operator's coverage can't be inferred from its siblings
+    // (union/intersect share the `< 2` variadic gate, difference has a
+    // distinct exact-arity-2 gate; solid-CSG overload examples differ per
+    // op — `manifold_boolean` vs `m5_geometry_flange`). Keep new operators
+    // added to this trio symmetric with the existing three rather than
+    // collapsing them.
+
+    /// Test-setup helper (review amendment, task #5120 R2c,
+    /// reviewer_comprehensive suggestion #2 — test-duplication): every
+    /// composition/named-leaf test below hand-rolls the same symbolic
+    /// (`kernel_handle == None`) `Value::GeometryHandle` insertion — same
+    /// `RealizationNodeId::new(entity, index)` + `upstream_values_hash` +
+    /// `kernel_handle: None` shape, varying only `entity`/`cell_name`/
+    /// `index`/hash. Factored here so the ValueMap/handle boilerplate lives
+    /// in one place while every operator/case keeps its own independently-
+    /// named `#[test]` and assertions (per the NOTE above — this helper only
+    /// dedupes SETUP, it does not collapse the tests). Returns the
+    /// `RealizationNodeId` for the tests that assert `target.realization_ref`
+    /// against it later.
+    fn insert_symbolic_geometry_handle(
+        values: &mut reify_ir::ValueMap,
+        entity: &str,
+        cell_name: &str,
+        realization_index: u32,
+        uvh: [u8; 32],
+    ) -> reify_core::identity::RealizationNodeId {
+        use reify_core::identity::{RealizationNodeId, ValueCellId};
+        let rr = RealizationNodeId::new(entity, realization_index);
+        values.insert(
+            ValueCellId::new(entity, cell_name),
+            reify_ir::Value::GeometryHandle {
+                realization_ref: rr.clone(),
+                upstream_values_hash: uvh,
+                kernel_handle: None,
+            },
+        );
+        rr
+    }
+
+    /// `union(faces_by_normal(b,up,tol), faces_by_normal(b,down,tol))` over a
+    /// SYMBOLIC body handle (`kernel_handle == None`) must yield
+    /// `Some(Value::Selector(Face))` with a `SelectorNode::Union` of two Leaf
+    /// children, each with a symbolic (`kernel_handle == None`) target.
+    /// Mirrors BT2 (`bt2_same_kind_union.ri`).
+    #[test]
+    fn try_eval_symbolic_topology_selector_union_of_inline_nested_leaves() {
+        use reify_core::identity::ValueCellId;
+        use reify_core::DimensionVector;
+        use reify_ir::value::{LeafQuery, SelectorNode};
+
+        let entity = "R2cUnion";
+        let tol_rad = std::f64::consts::PI / 180.0;
+
+        let mut values = reify_ir::ValueMap::new();
+        let rr = insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0x5Cu8; 32]);
+        values.insert(
+            ValueCellId::new(entity, "up"),
+            reify_ir::Value::Vector(vec![
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(1.0),
+            ]),
+        );
+        values.insert(
+            ValueCellId::new(entity, "down"),
+            reify_ir::Value::Vector(vec![
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(-1.0),
+            ]),
+        );
+        values.insert(
+            ValueCellId::new(entity, "tol"),
+            reify_ir::Value::Scalar {
+                si_value: tol_rad,
+                dimension: DimensionVector::ANGLE,
+            },
+        );
+
+        let vec3_ty = reify_core::Type::vec3(reify_core::Type::dimensionless_scalar());
+        let angle_ty = reify_core::Type::angle();
+
+        let up_leaf = symbolic_selector_call_three_value_refs(
+            "faces_by_normal",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            "up",
+            vec3_ty.clone(),
+            "tol",
+            angle_ty.clone(),
+        );
+        let down_leaf = symbolic_selector_call_three_value_refs(
+            "faces_by_normal",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            "down",
+            vec3_ty,
+            "tol",
+            angle_ty,
+        );
+        let union_expr = mk_symbolic_call_3523("union", vec![up_leaf, down_leaf]);
+
+        let mut diagnostics = Vec::new();
+        let result =
+            super::try_eval_symbolic_topology_selector(&union_expr, &values, &mut diagnostics);
+
+        let sv = match result {
+            Some(reify_ir::Value::Selector(sv)) => sv,
+            other => panic!(
+                "union(faces_by_normal(b,up,tol), faces_by_normal(b,down,tol)) over a \
+                 symbolic target must yield Some(Value::Selector(..)); got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(
+            sv.kind,
+            reify_core::ty::SelectorKind::Face,
+            "union of Face selectors → Face kind"
+        );
+        match &sv.node {
+            SelectorNode::Union(children) => {
+                assert_eq!(children.len(), 2, "union of 2 operands → 2 children");
+                for (i, child) in children.iter().enumerate() {
+                    match &child.node {
+                        SelectorNode::Leaf { target, query } => {
+                            assert_eq!(
+                                target.kernel_handle, None,
+                                "child[{i}] target must be symbolic"
+                            );
+                            assert_eq!(
+                                target.realization_ref, rr,
+                                "child[{i}] realization_ref propagated"
+                            );
+                            assert!(
+                                matches!(query, LeafQuery::ByNormal { .. }),
+                                "child[{i}] must be a ByNormal leaf; got {:?}",
+                                query
+                            );
+                        }
+                        other => panic!("child[{i}] must be a Leaf, got {:?}", other),
+                    }
+                }
+            }
+            other => panic!("expected SelectorNode::Union, got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "clean symbolic composition must emit no diagnostics; got {:?}",
+            diagnostics
+        );
+    }
+
+    /// `intersect(faces_by_normal(b,up,tol), faces_by_normal(b,down,tol))`
+    /// over a symbolic body handle must yield `Some(Value::Selector(Face))`
+    /// with a `SelectorNode::Intersect` of two symbolic Leaf children.
+    /// Mirrors BT3's intersect half (`bt3_difference_intersect.ri`).
+    #[test]
+    fn try_eval_symbolic_topology_selector_intersect_of_inline_nested_leaves() {
+        use reify_core::identity::ValueCellId;
+        use reify_core::DimensionVector;
+        use reify_ir::value::{LeafQuery, SelectorNode};
+
+        let entity = "R2cIntersect";
+        let tol_rad = std::f64::consts::PI / 180.0;
+
+        let mut values = reify_ir::ValueMap::new();
+        insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0x5Du8; 32]);
+        values.insert(
+            ValueCellId::new(entity, "up"),
+            reify_ir::Value::Vector(vec![
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(1.0),
+            ]),
+        );
+        values.insert(
+            ValueCellId::new(entity, "down"),
+            reify_ir::Value::Vector(vec![
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(-1.0),
+            ]),
+        );
+        values.insert(
+            ValueCellId::new(entity, "tol"),
+            reify_ir::Value::Scalar {
+                si_value: tol_rad,
+                dimension: DimensionVector::ANGLE,
+            },
+        );
+
+        let vec3_ty = reify_core::Type::vec3(reify_core::Type::dimensionless_scalar());
+        let angle_ty = reify_core::Type::angle();
+
+        let up_leaf = symbolic_selector_call_three_value_refs(
+            "faces_by_normal",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            "up",
+            vec3_ty.clone(),
+            "tol",
+            angle_ty.clone(),
+        );
+        let down_leaf = symbolic_selector_call_three_value_refs(
+            "faces_by_normal",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            "down",
+            vec3_ty,
+            "tol",
+            angle_ty,
+        );
+        let intersect_expr = mk_symbolic_call_3523("intersect", vec![up_leaf, down_leaf]);
+
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_symbolic_topology_selector(
+            &intersect_expr,
+            &values,
+            &mut diagnostics,
+        );
+
+        let sv = match result {
+            Some(reify_ir::Value::Selector(sv)) => sv,
+            other => panic!(
+                "intersect(faces_by_normal(b,up,tol), faces_by_normal(b,down,tol)) over a \
+                 symbolic target must yield Some(Value::Selector(..)); got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(sv.kind, reify_core::ty::SelectorKind::Face);
+        match &sv.node {
+            SelectorNode::Intersect(children) => {
+                assert_eq!(children.len(), 2, "intersect of 2 operands → 2 children");
+                for (i, child) in children.iter().enumerate() {
+                    match &child.node {
+                        SelectorNode::Leaf { target, query } => {
+                            assert_eq!(
+                                target.kernel_handle, None,
+                                "child[{i}] target must be symbolic"
+                            );
+                            assert!(
+                                matches!(query, LeafQuery::ByNormal { .. }),
+                                "child[{i}] must be a ByNormal leaf; got {:?}",
+                                query
+                            );
+                        }
+                        other => panic!("child[{i}] must be a Leaf, got {:?}", other),
+                    }
+                }
+            }
+            other => panic!("expected SelectorNode::Intersect, got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "clean symbolic composition must emit no diagnostics; got {:?}",
+            diagnostics
+        );
+    }
+
+    /// `difference(faces(b), faces_by_normal(b,up,tol))` over a symbolic body
+    /// handle must yield `Some(Value::Selector(Face))` with a
+    /// `SelectorNode::Difference(a, b)` whose minuend/subtrahend are both
+    /// symbolic Leaf nodes. Mirrors BT3's difference half.
+    #[test]
+    fn try_eval_symbolic_topology_selector_difference_of_inline_nested_leaves() {
+        use reify_core::identity::ValueCellId;
+        use reify_core::DimensionVector;
+        use reify_ir::value::SelectorNode;
+
+        let entity = "R2cDifference";
+        let tol_rad = std::f64::consts::PI / 180.0;
+
+        let mut values = reify_ir::ValueMap::new();
+        insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0x5Eu8; 32]);
+        values.insert(
+            ValueCellId::new(entity, "up"),
+            reify_ir::Value::Vector(vec![
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(0.0),
+                reify_ir::Value::Real(1.0),
+            ]),
+        );
+        values.insert(
+            ValueCellId::new(entity, "tol"),
+            reify_ir::Value::Scalar {
+                si_value: tol_rad,
+                dimension: DimensionVector::ANGLE,
+            },
+        );
+
+        let faces_expr = topology_selector_call_one_value_ref(
+            "faces",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            reify_core::Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let fbn_expr = symbolic_selector_call_three_value_refs(
+            "faces_by_normal",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            "up",
+            reify_core::Type::vec3(reify_core::Type::dimensionless_scalar()),
+            "tol",
+            reify_core::Type::angle(),
+        );
+        let diff_expr = topology_selector_composition_call("difference", faces_expr, fbn_expr);
+
+        let mut diagnostics = Vec::new();
+        let result =
+            super::try_eval_symbolic_topology_selector(&diff_expr, &values, &mut diagnostics);
+
+        let sv = match result {
+            Some(reify_ir::Value::Selector(sv)) => sv,
+            other => panic!(
+                "difference(faces(b), faces_by_normal(b,up,tol)) over a symbolic target must \
+                 yield Some(Value::Selector(..)); got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(sv.kind, reify_core::ty::SelectorKind::Face);
+        match &sv.node {
+            SelectorNode::Difference(a, b) => {
+                match &a.node {
+                    SelectorNode::Leaf { target, .. } => {
+                        assert_eq!(target.kernel_handle, None, "minuend target must be symbolic")
+                    }
+                    other => panic!("minuend must be a Leaf, got {:?}", other),
+                }
+                match &b.node {
+                    SelectorNode::Leaf { target, .. } => {
+                        assert_eq!(
+                            target.kernel_handle, None,
+                            "subtrahend target must be symbolic"
+                        )
+                    }
+                    other => panic!("subtrahend must be a Leaf, got {:?}", other),
+                }
+            }
+            other => panic!("expected SelectorNode::Difference, got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "clean symbolic composition must emit no diagnostics; got {:?}",
+            diagnostics
+        );
+    }
+
+    /// Overload disambiguation: `union(box_a, box_b)` where BOTH operands are
+    /// `Value::GeometryHandle` (NOT `Value::Selector`) — the solid-CSG-boolean
+    /// overload shape (e.g. `manifold_boolean`'s `union(box_a,box_b):Solid`) —
+    /// must yield `None` so the mint falls through and the cell stays
+    /// `Value::Undef` (`Type::Geometry`-exempt via clause 7), NOT a
+    /// mis-constructed selector.
+    #[test]
+    fn try_eval_symbolic_topology_selector_union_returns_none_for_non_selector_operands() {
+        use reify_core::identity::ValueCellId;
+
+        let entity = "R2cSolidBoolean";
+        let mut values = reify_ir::ValueMap::new();
+        insert_symbolic_geometry_handle(&mut values, entity, "box_a", 0, [0x01u8; 32]);
+        insert_symbolic_geometry_handle(&mut values, entity, "box_b", 1, [0x02u8; 32]);
+
+        let arg_a = reify_ir::CompiledExpr::value_ref(
+            ValueCellId::new(entity, "box_a"),
+            reify_core::Type::Geometry,
+        );
+        let arg_b = reify_ir::CompiledExpr::value_ref(
+            ValueCellId::new(entity, "box_b"),
+            reify_core::Type::Geometry,
+        );
+        let union_expr = mk_symbolic_call_3523("union", vec![arg_a, arg_b]);
+
+        let mut diagnostics = Vec::new();
+        let result =
+            super::try_eval_symbolic_topology_selector(&union_expr, &values, &mut diagnostics);
+        assert!(
+            result.is_none(),
+            "union(geometry, geometry) is the solid-CSG-boolean overload, not selector \
+             composition — must yield None; got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "overload fallthrough must emit no diagnostics; got {:?}",
+            diagnostics
+        );
+    }
+
+    /// Symmetric overload-disambiguation coverage (review amendment, task
+    /// #5120 R2c): `intersect` shares the same solid-CSG-boolean-overloaded
+    /// name as `union` (e.g. `manifold_boolean`'s `intersect(a,b):Solid`), so
+    /// `intersect(box_a, box_b)` over two `Value::GeometryHandle` operands
+    /// must ALSO fall through to `None` — pinned separately from `union`
+    /// above so a future refactor cannot special-case one operator's
+    /// fall-through without the other.
+    #[test]
+    fn try_eval_symbolic_topology_selector_intersect_returns_none_for_non_selector_operands() {
+        use reify_core::identity::ValueCellId;
+
+        let entity = "R2cSolidBooleanIntersect";
+        let mut values = reify_ir::ValueMap::new();
+        insert_symbolic_geometry_handle(&mut values, entity, "box_a", 0, [0x01u8; 32]);
+        insert_symbolic_geometry_handle(&mut values, entity, "box_b", 1, [0x02u8; 32]);
+
+        let arg_a = reify_ir::CompiledExpr::value_ref(
+            ValueCellId::new(entity, "box_a"),
+            reify_core::Type::Geometry,
+        );
+        let arg_b = reify_ir::CompiledExpr::value_ref(
+            ValueCellId::new(entity, "box_b"),
+            reify_core::Type::Geometry,
+        );
+        let intersect_expr = mk_symbolic_call_3523("intersect", vec![arg_a, arg_b]);
+
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_symbolic_topology_selector(
+            &intersect_expr,
+            &values,
+            &mut diagnostics,
+        );
+        assert!(
+            result.is_none(),
+            "intersect(geometry, geometry) is the solid-CSG-boolean overload, not selector \
+             composition — must yield None; got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "overload fallthrough must emit no diagnostics; got {:?}",
+            diagnostics
+        );
+    }
+
+    /// Symmetric overload-disambiguation coverage (review amendment, task
+    /// #5120 R2c): `difference` shares the same solid-CSG-boolean-overloaded
+    /// name (e.g. `m5_geometry_flange`'s `difference(body,holes):Solid`), so
+    /// `difference(box_a, box_b)` over two `Value::GeometryHandle` operands
+    /// must ALSO fall through to `None`.
+    #[test]
+    fn try_eval_symbolic_topology_selector_difference_returns_none_for_non_selector_operands() {
+        use reify_core::identity::ValueCellId;
+
+        let entity = "R2cSolidBooleanDifference";
+        let mut values = reify_ir::ValueMap::new();
+        insert_symbolic_geometry_handle(&mut values, entity, "box_a", 0, [0x01u8; 32]);
+        insert_symbolic_geometry_handle(&mut values, entity, "box_b", 1, [0x02u8; 32]);
+
+        let arg_a = reify_ir::CompiledExpr::value_ref(
+            ValueCellId::new(entity, "box_a"),
+            reify_core::Type::Geometry,
+        );
+        let arg_b = reify_ir::CompiledExpr::value_ref(
+            ValueCellId::new(entity, "box_b"),
+            reify_core::Type::Geometry,
+        );
+        let difference_expr = mk_symbolic_call_3523("difference", vec![arg_a, arg_b]);
+
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_symbolic_topology_selector(
+            &difference_expr,
+            &values,
+            &mut diagnostics,
+        );
+        assert!(
+            result.is_none(),
+            "difference(geometry, geometry) is the solid-CSG-boolean overload, not selector \
+             composition — must yield None; got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "overload fallthrough must emit no diagnostics; got {:?}",
+            diagnostics
+        );
+    }
+
+    /// Arity guard: `union` with a single operand (< 2, below the variadic
+    /// minimum) must yield `None`.
+    #[test]
+    fn try_eval_symbolic_topology_selector_union_arity_below_two_returns_none() {
+        let entity = "R2cUnionArity";
+        let mut values = reify_ir::ValueMap::new();
+        insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0x03u8; 32]);
+        let faces_expr = topology_selector_call_one_value_ref(
+            "faces",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            reify_core::Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let union_expr = mk_symbolic_call_3523("union", vec![faces_expr]);
+
+        let mut diagnostics = Vec::new();
+        let result =
+            super::try_eval_symbolic_topology_selector(&union_expr, &values, &mut diagnostics);
+        assert!(
+            result.is_none(),
+            "union with < 2 args must yield None (arity gate); got {:?}",
+            result
+        );
+    }
+
+    /// Arity guard, symmetric coverage (review amendment, task #5120 R2c):
+    /// `intersect` with a single operand (< 2) must ALSO yield `None` —
+    /// pinned separately from `union` above so a future refactor cannot
+    /// special-case one operator's arity gate without the other.
+    #[test]
+    fn try_eval_symbolic_topology_selector_intersect_arity_below_two_returns_none() {
+        let entity = "R2cIntersectArity";
+        let mut values = reify_ir::ValueMap::new();
+        insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0x04u8; 32]);
+        let faces_expr = topology_selector_call_one_value_ref(
+            "faces",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            reify_core::Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let intersect_expr = mk_symbolic_call_3523("intersect", vec![faces_expr]);
+
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_symbolic_topology_selector(
+            &intersect_expr,
+            &values,
+            &mut diagnostics,
+        );
+        assert!(
+            result.is_none(),
+            "intersect with < 2 args must yield None (arity gate); got {:?}",
+            result
+        );
+    }
+
+    /// Arity guard (review amendment, task #5120 R2c): `difference` is gated
+    /// to EXACTLY 2 operands via the `_ => args.len() != helper.expected_arity()`
+    /// branch — a distinct rejection path from union/intersect's `< 2`
+    /// variadic gate above. Both a 1-arg and a 3-arg `difference(...)` must
+    /// yield `None` before ever reaching `selector_value_difference_pair`
+    /// (whose `debug_assert_eq!` assumes exactly 2 children); pinning this
+    /// guards against a future refactor accidentally routing `difference`
+    /// through the variadic `>= 2` gate instead of the exact-arity one.
+    #[test]
+    fn try_eval_symbolic_topology_selector_difference_arity_not_two_returns_none() {
+        let entity = "R2cDifferenceArity";
+        let mut values = reify_ir::ValueMap::new();
+        insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0x05u8; 32]);
+        let faces_expr = topology_selector_call_one_value_ref(
+            "faces",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            reify_core::Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+
+        // 1 operand — below expected_arity() == 2.
+        let difference_expr_one = mk_symbolic_call_3523("difference", vec![faces_expr.clone()]);
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_symbolic_topology_selector(
+            &difference_expr_one,
+            &values,
+            &mut diagnostics,
+        );
+        assert!(
+            result.is_none(),
+            "difference with 1 arg must yield None (arity gate); got {:?}",
+            result
+        );
+
+        // 3 operands — above expected_arity() == 2.
+        let difference_expr_three = mk_symbolic_call_3523(
+            "difference",
+            vec![faces_expr.clone(), faces_expr.clone(), faces_expr],
+        );
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_symbolic_topology_selector(
+            &difference_expr_three,
+            &values,
+            &mut diagnostics,
+        );
+        assert!(
+            result.is_none(),
+            "difference with 3 args must yield None (arity gate); got {:?}",
+            result
+        );
+    }
+
+    // ── Task #5120 R2c amendment: kind-closure-violation (`Err`) coverage for
+    // ALL THREE composition operators ─────────────────────────────────────────
+    //
+    // The clean (`Ok`) path and the `None` arity/overload fall-throughs are
+    // pinned above; the defensive `SelectorError::KindMismatch` backstop —
+    // `Some(Value::Undef)` + a Warning diagnostic, mirroring the build-path
+    // `eval_variadic_composition_kind_mismatch_yields_undef_with_warning`
+    // test at :12710 — was previously untested on the symbolic-eval surface.
+
+    /// `union(faces(b), edges(b))` over a SYMBOLIC body handle mixes Face and
+    /// Edge kinds (hand-crafted IR, bypassing the compiler's
+    /// `E_SELECTOR_KIND_MISMATCH`): `SelectorValue::union` must return
+    /// `SelectorError::KindMismatch`, minting `Some(Value::Undef)` + exactly
+    /// one Warning diagnostic naming the kind-closure violation.
+    #[test]
+    fn try_eval_symbolic_topology_selector_union_kind_mismatch_yields_undef_with_warning() {
+        let entity = "R2cUnionKindMismatch";
+        let mut values = reify_ir::ValueMap::new();
+        insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0xC0u8; 32]);
+        let faces_expr = topology_selector_call_one_value_ref(
+            "faces",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            reify_core::Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let edges_expr = topology_selector_call_one_value_ref(
+            "edges",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            reify_core::Type::Selector(reify_core::ty::SelectorKind::Edge),
+        );
+        let union_expr = mk_symbolic_call_3523("union", vec![faces_expr, edges_expr]);
+
+        let mut diagnostics = Vec::new();
+        let result =
+            super::try_eval_symbolic_topology_selector(&union_expr, &values, &mut diagnostics);
+
+        assert!(
+            matches!(result, Some(reify_ir::Value::Undef)),
+            "union(faces(b), edges(b)) kind-mismatch must yield Some(Value::Undef); got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "kind-mismatch must emit exactly 1 Warning diagnostic; got {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_core::Severity::Warning,
+            "backstop diagnostic must be Warning severity"
+        );
+        assert!(
+            diagnostics[0].message.contains("kind-closure violation"),
+            "backstop diagnostic must name the kind-closure violation; got {:?}",
+            diagnostics[0].message
+        );
+    }
+
+    /// `intersect(faces(b), edges(b))` — same kind-mismatch backstop as
+    /// `union` above, pinned separately for `intersect`.
+    #[test]
+    fn try_eval_symbolic_topology_selector_intersect_kind_mismatch_yields_undef_with_warning() {
+        let entity = "R2cIntersectKindMismatch";
+        let mut values = reify_ir::ValueMap::new();
+        insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0xC1u8; 32]);
+        let faces_expr = topology_selector_call_one_value_ref(
+            "faces",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            reify_core::Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let edges_expr = topology_selector_call_one_value_ref(
+            "edges",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            reify_core::Type::Selector(reify_core::ty::SelectorKind::Edge),
+        );
+        let intersect_expr = mk_symbolic_call_3523("intersect", vec![faces_expr, edges_expr]);
+
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_symbolic_topology_selector(
+            &intersect_expr,
+            &values,
+            &mut diagnostics,
+        );
+
+        assert!(
+            matches!(result, Some(reify_ir::Value::Undef)),
+            "intersect(faces(b), edges(b)) kind-mismatch must yield Some(Value::Undef); \
+             got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "kind-mismatch must emit exactly 1 Warning diagnostic; got {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_core::Severity::Warning,
+            "backstop diagnostic must be Warning severity"
+        );
+        assert!(
+            diagnostics[0].message.contains("kind-closure violation"),
+            "backstop diagnostic must name the kind-closure violation; got {:?}",
+            diagnostics[0].message
+        );
+    }
+
+    /// `difference(faces(b), edges(b))` — same kind-mismatch backstop,
+    /// pinned for the binary `difference` operator.
+    #[test]
+    fn try_eval_symbolic_topology_selector_difference_kind_mismatch_yields_undef_with_warning() {
+        let entity = "R2cDifferenceKindMismatch";
+        let mut values = reify_ir::ValueMap::new();
+        insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0xC2u8; 32]);
+        let faces_expr = topology_selector_call_one_value_ref(
+            "faces",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            reify_core::Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let edges_expr = topology_selector_call_one_value_ref(
+            "edges",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            reify_core::Type::Selector(reify_core::ty::SelectorKind::Edge),
+        );
+        let difference_expr =
+            topology_selector_composition_call("difference", faces_expr, edges_expr);
+
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_symbolic_topology_selector(
+            &difference_expr,
+            &values,
+            &mut diagnostics,
+        );
+
+        assert!(
+            matches!(result, Some(reify_ir::Value::Undef)),
+            "difference(faces(b), edges(b)) kind-mismatch must yield Some(Value::Undef); \
+             got {:?}",
+            result
+        );
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "kind-mismatch must emit exactly 1 Warning diagnostic; got {:?}",
+            diagnostics
+        );
+        assert_eq!(
+            diagnostics[0].severity,
+            reify_core::Severity::Warning,
+            "backstop diagnostic must be Warning severity"
+        );
+        assert!(
+            diagnostics[0].message.contains("kind-closure violation"),
+            "backstop diagnostic must name the kind-closure violation; got {:?}",
+            diagnostics[0].message
+        );
+    }
+
+    /// Robustness (review amendment, task #5120 R2c): a `None` return from
+    /// the composition mint must be a SILENT fall-through, per the
+    /// overload-disambiguation contract — a solid-CSG-boolean operand is
+    /// `Value::GeometryHandle`, not `Value::Selector`, so the composition
+    /// mint returns `None` and the cell stays `Undef`, `Type::Geometry`-
+    /// exempt via clause 7. `union(union(faces(b), edges(b)), box_a)`: the
+    /// INNER `union` is Face/Edge-kind-mismatched (hand-crafted IR) and
+    /// resolves to `Some(Value::Undef)` + a Warning; back in the OUTER
+    /// `union`'s operand reconstruction, `Value::Undef` is not a
+    /// `Value::Selector`, so that operand fails to reconstruct and the
+    /// OUTER `union` must fall through to `None` — with the inner Warning
+    /// NOT leaked into the caller's `diagnostics`.
+    #[test]
+    fn try_eval_symbolic_topology_selector_union_none_fallthrough_no_diagnostic_leak() {
+        use reify_core::identity::ValueCellId;
+
+        let entity = "R2cUnionDiagLeak";
+        let mut values = reify_ir::ValueMap::new();
+        insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0xD0u8; 32]);
+        insert_symbolic_geometry_handle(&mut values, entity, "box_a", 1, [0xD1u8; 32]);
+
+        let faces_expr = topology_selector_call_one_value_ref(
+            "faces",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            reify_core::Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let edges_expr = topology_selector_call_one_value_ref(
+            "edges",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            reify_core::Type::Selector(reify_core::ty::SelectorKind::Edge),
+        );
+        // Malformed nested selector (kind-mismatched union), hand-crafted IR.
+        let nested_union = mk_symbolic_call_3523("union", vec![faces_expr, edges_expr]);
+
+        let box_a_ref = reify_ir::CompiledExpr::value_ref(
+            ValueCellId::new(entity, "box_a"),
+            reify_core::Type::Geometry,
+        );
+        // Outer op shares the `union` name with the malformed nested
+        // selector, but its second operand is a plain GeometryHandle — the
+        // overload-disambiguation shape.
+        let outer_union = mk_symbolic_call_3523("union", vec![nested_union, box_a_ref]);
+
+        let mut diagnostics = Vec::new();
+        let result =
+            super::try_eval_symbolic_topology_selector(&outer_union, &values, &mut diagnostics);
+
+        assert!(
+            result.is_none(),
+            "not every operand resolved to a Selector (inner union hit a kind-closure \
+             violation) — outer union must fall through to None; got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "a None fall-through must be silent — the inner union's kind-closure warning must \
+             not leak into the caller's diagnostics; got {:?}",
+            diagnostics
+        );
+    }
+
+    /// Complementary coverage for the drop above (review amendment, task
+    /// #5120 R2c, reviewer_comprehensive suggestion #1 — robustness): the
+    /// leaked-diagnostic risk isn't limited to the failing operand itself —
+    /// it must also hold once `scratch` has ALREADY accumulated a clean,
+    /// fully-reconstructed nested selector from an EARLIER operand before a
+    /// later operand pushes a warning and fails.
+    ///
+    /// `union(faces(b), union(faces(b), edges(b)))`: operand[0] (`faces(b)`)
+    /// resolves via the `FunctionCall` arm of
+    /// `reconstruct_selector_value_symbolic` to `Some(Value::Selector(Face))`
+    /// with NO diagnostic — a real success, not just a `ValueRef` fall-
+    /// through. Operand[1] is the same Face/Edge-kind-mismatched nested
+    /// `union` as the test above, which pushes its kind-closure Warning into
+    /// the SAME `scratch` buffer before resolving to `Value::Undef` (i.e.
+    /// `None` to the outer `collect`). The outer `union` must still fall
+    /// through to `None` with `diagnostics` left EMPTY, proving `scratch` is
+    /// discarded wholesale on the `?` short-circuit regardless of how many
+    /// operands — successful or not — contributed to it first.
+    ///
+    /// (A literal "operand[0] warns-but-succeeds, independent sibling fails"
+    /// shape is not constructible here: every diagnostic-push in this
+    /// composition machinery is paired 1:1 with that same call resolving to
+    /// `Some(Value::Undef)` — i.e. `None` from `reconstruct_selector_value_
+    /// symbolic`'s point of view — so a warning-emitting operand always IS
+    /// the one `collect` short-circuits on. This test instead pins the
+    /// realistic form of the same risk: multiple operands feeding `scratch`
+    /// before the drop.)
+    #[test]
+    fn try_eval_symbolic_topology_selector_union_drops_scratch_after_leading_success() {
+        let entity = "R2cUnionDiagLeakAfterSuccess";
+        let mut values = reify_ir::ValueMap::new();
+        insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0xD2u8; 32]);
+
+        let leading_faces_expr = topology_selector_call_one_value_ref(
+            "faces",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            reify_core::Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let faces_expr = topology_selector_call_one_value_ref(
+            "faces",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            reify_core::Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let edges_expr = topology_selector_call_one_value_ref(
+            "edges",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            reify_core::Type::Selector(reify_core::ty::SelectorKind::Edge),
+        );
+        // Malformed nested selector (kind-mismatched union), hand-crafted IR —
+        // processed SECOND, after a leading operand that resolves cleanly.
+        let nested_union = mk_symbolic_call_3523("union", vec![faces_expr, edges_expr]);
+        let outer_union = mk_symbolic_call_3523("union", vec![leading_faces_expr, nested_union]);
+
+        let mut diagnostics = Vec::new();
+        let result =
+            super::try_eval_symbolic_topology_selector(&outer_union, &values, &mut diagnostics);
+
+        assert!(
+            result.is_none(),
+            "operand[1]'s kind-closure violation must still fail the outer union even though \
+             operand[0] resolved cleanly first; got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "a leading successful operand must not cause operand[1]'s dropped warning to leak; \
+             got {:?}",
+            diagnostics
+        );
+    }
+
+    // ── Task #5120 R2c: named-leaf (face/edge/solid_body/vertex) wired onto
+    // the kernel-free symbolic-eval surface ──────────────────────────────────
+    //
+    // Sibling to the composition tests above: pins
+    // `try_eval_symbolic_topology_selector`'s NEW named-leaf arms over a
+    // symbolic body handle, the 4583 chained-first-arg fallback (rooting a
+    // Named leaf at an inline nested selector's parent GHR), and the
+    // missing-target / arity-mismatch fallthroughs.
+    //
+    // **RED** until step-4 adds the `face`/`edge`/`solid_body`/`vertex` arms to
+    // `symbolic_eval_helper_for_name` + `try_eval_symbolic_topology_selector`
+    // (via the new kernel-free `eval_named_leaf_selector_ctor_symbolic` /
+    // `resolve_named_leaf_target_symbolic` siblings).
+
+    /// `face`/`edge`/`solid_body`/`vertex` (Named-leaf ctors, task 4119 δ)
+    /// over a SYMBOLIC body handle (`kernel_handle == None`) must mint
+    /// `Value::Selector(kind)` with `SelectorNode::Leaf { query:
+    /// LeafQuery::Named(tag), .. }` and a symbolic target.
+    #[test]
+    fn try_eval_symbolic_topology_selector_named_leaf_ctors() {
+        let entity = "R2cNamedLeaf";
+        let mut values = reify_ir::ValueMap::new();
+        let rr = insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0x6Du8; 32]);
+
+        let cases = [
+            ("face", reify_core::ty::SelectorKind::Face),
+            ("edge", reify_core::ty::SelectorKind::Edge),
+            ("solid_body", reify_core::ty::SelectorKind::Body),
+            ("vertex", reify_core::ty::SelectorKind::Vertex),
+        ];
+
+        for (name, want_kind) in cases {
+            let expr = named_selector_call(name, entity, "body", want_kind, "tag");
+            let mut diagnostics = Vec::new();
+            let result =
+                super::try_eval_symbolic_topology_selector(&expr, &values, &mut diagnostics);
+            let sv = match result {
+                Some(reify_ir::Value::Selector(sv)) => sv,
+                other => panic!(
+                    "{name}(body, \"tag\") over a symbolic target must yield \
+                     Some(Value::Selector(..)); got {:?}; diags: {:?}",
+                    other, diagnostics
+                ),
+            };
+            assert_eq!(sv.kind, want_kind, "{name} selector kind");
+            match &sv.node {
+                reify_ir::value::SelectorNode::Leaf { target, query } => {
+                    assert_eq!(
+                        target.kernel_handle, None,
+                        "{name}: symbolic target must have kernel_handle == None"
+                    );
+                    assert_eq!(
+                        target.realization_ref, rr,
+                        "{name}: realization_ref propagated"
+                    );
+                    assert_eq!(
+                        query,
+                        &reify_ir::value::LeafQuery::Named("tag".to_string()),
+                        "{name}: Named(\"tag\") leaf"
+                    );
+                }
+                other => panic!("{name}: must be a Leaf node; got {:?}", other),
+            }
+            assert!(
+                diagnostics.is_empty(),
+                "{name}: construction must emit zero diagnostics; got {:?}",
+                diagnostics
+            );
+        }
+    }
+
+    // Independently-named siblings of the shared loop above (review
+    // amendment, task #5120 R2c, reviewer_comprehensive suggestion #1 —
+    // test_coverage): `face` alone got its own inline-nested/missing-target/
+    // arity-mismatch tests below, symmetric with how the composition trio
+    // (union/intersect/difference) each got independently-named per-operator
+    // tests. `edge`/`solid_body`/`vertex` previously only had kind-mapping
+    // coverage via the shared `_named_leaf_ctors` loop; a wiring regression
+    // that mapped e.g. `solid_body` to the wrong `SelectorKind` would still
+    // have been caught there, but as one shared-loop failure rather than an
+    // unambiguous, independently-failing test name. These three close that
+    // gap without touching the loop test above.
+
+    /// `edge(body, "tag")` over a SYMBOLIC body handle must yield
+    /// `Some(Value::Selector(Edge))`.
+    #[test]
+    fn try_eval_symbolic_topology_selector_edge_over_symbolic_target() {
+        let entity = "R2cNamedLeafEdge";
+        let mut values = reify_ir::ValueMap::new();
+        let rr = insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0x70u8; 32]);
+
+        let expr = named_selector_call(
+            "edge",
+            entity,
+            "body",
+            reify_core::ty::SelectorKind::Edge,
+            "tag",
+        );
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_symbolic_topology_selector(&expr, &values, &mut diagnostics);
+        let sv = match result {
+            Some(reify_ir::Value::Selector(sv)) => sv,
+            other => panic!(
+                "edge(body, \"tag\") over a symbolic target must yield Some(Value::Selector(..)); \
+                 got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(sv.kind, reify_core::ty::SelectorKind::Edge, "edge() → Edge kind");
+        match &sv.node {
+            reify_ir::value::SelectorNode::Leaf { target, query } => {
+                assert_eq!(
+                    target.kernel_handle, None,
+                    "symbolic target must have kernel_handle == None"
+                );
+                assert_eq!(target.realization_ref, rr, "realization_ref propagated");
+                assert_eq!(query, &reify_ir::value::LeafQuery::Named("tag".to_string()));
+            }
+            other => panic!("must be a Leaf node; got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "construction must emit zero diagnostics; got {:?}",
+            diagnostics
+        );
+    }
+
+    /// `solid_body(body, "tag")` over a SYMBOLIC body handle must yield
+    /// `Some(Value::Selector(Body))`.
+    #[test]
+    fn try_eval_symbolic_topology_selector_solid_body_over_symbolic_target() {
+        let entity = "R2cNamedLeafSolidBody";
+        let mut values = reify_ir::ValueMap::new();
+        let rr = insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0x71u8; 32]);
+
+        let expr = named_selector_call(
+            "solid_body",
+            entity,
+            "body",
+            reify_core::ty::SelectorKind::Body,
+            "tag",
+        );
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_symbolic_topology_selector(&expr, &values, &mut diagnostics);
+        let sv = match result {
+            Some(reify_ir::Value::Selector(sv)) => sv,
+            other => panic!(
+                "solid_body(body, \"tag\") over a symbolic target must yield \
+                 Some(Value::Selector(..)); got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(sv.kind, reify_core::ty::SelectorKind::Body, "solid_body() → Body kind");
+        match &sv.node {
+            reify_ir::value::SelectorNode::Leaf { target, query } => {
+                assert_eq!(
+                    target.kernel_handle, None,
+                    "symbolic target must have kernel_handle == None"
+                );
+                assert_eq!(target.realization_ref, rr, "realization_ref propagated");
+                assert_eq!(query, &reify_ir::value::LeafQuery::Named("tag".to_string()));
+            }
+            other => panic!("must be a Leaf node; got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "construction must emit zero diagnostics; got {:?}",
+            diagnostics
+        );
+    }
+
+    /// `vertex(body, "tag")` over a SYMBOLIC body handle must yield
+    /// `Some(Value::Selector(Vertex))`.
+    #[test]
+    fn try_eval_symbolic_topology_selector_vertex_over_symbolic_target() {
+        let entity = "R2cNamedLeafVertex";
+        let mut values = reify_ir::ValueMap::new();
+        let rr = insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0x72u8; 32]);
+
+        let expr = named_selector_call(
+            "vertex",
+            entity,
+            "body",
+            reify_core::ty::SelectorKind::Vertex,
+            "tag",
+        );
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_symbolic_topology_selector(&expr, &values, &mut diagnostics);
+        let sv = match result {
+            Some(reify_ir::Value::Selector(sv)) => sv,
+            other => panic!(
+                "vertex(body, \"tag\") over a symbolic target must yield Some(Value::Selector(..)); \
+                 got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(sv.kind, reify_core::ty::SelectorKind::Vertex, "vertex() → Vertex kind");
+        match &sv.node {
+            reify_ir::value::SelectorNode::Leaf { target, query } => {
+                assert_eq!(
+                    target.kernel_handle, None,
+                    "symbolic target must have kernel_handle == None"
+                );
+                assert_eq!(target.realization_ref, rr, "realization_ref propagated");
+                assert_eq!(query, &reify_ir::value::LeafQuery::Named("tag".to_string()));
+            }
+            other => panic!("must be a Leaf node; got {:?}", other),
+        }
+        assert!(
+            diagnostics.is_empty(),
+            "construction must emit zero diagnostics; got {:?}",
+            diagnostics
+        );
+    }
+
+    /// `face(mid_surface(bodyref), "r")` — arg0 is an INLINE nested selector
+    /// FunctionCall (not a ValueRef) — must resolve via the fallback path
+    /// (`resolve_named_leaf_target_symbolic`'s
+    /// `reconstruct_selector_value_symbolic` + `first_leaf_target`), rooting
+    /// the Named leaf at body's GHR. Task #5120 R2c / the 4583
+    /// chained-first-arg form.
+    #[test]
+    fn try_eval_symbolic_topology_selector_face_over_inline_nested_selector() {
+        let entity = "R2cChainedFace";
+        let mut values = reify_ir::ValueMap::new();
+        let rr = insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0x6Eu8; 32]);
+
+        let mid_surface_expr = topology_selector_call_one_value_ref(
+            "mid_surface",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            reify_core::Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let name_lit = reify_ir::CompiledExpr::literal(
+            reify_ir::Value::String("r".to_string()),
+            reify_core::Type::String,
+        );
+        let expr = topology_selector_composition_call("face", mid_surface_expr, name_lit);
+
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_symbolic_topology_selector(&expr, &values, &mut diagnostics);
+        let sv = match result {
+            Some(reify_ir::Value::Selector(sv)) => sv,
+            other => panic!(
+                "face(mid_surface(body), \"r\") must yield Some(Value::Selector(..)) via the \
+                 fallback chained-first-arg path; got {:?}; diags: {:?}",
+                other, diagnostics
+            ),
+        };
+        assert_eq!(sv.kind, reify_core::ty::SelectorKind::Face);
+        match &sv.node {
+            reify_ir::value::SelectorNode::Leaf { target, query } => {
+                assert_eq!(target.kernel_handle, None, "chained target must be symbolic");
+                assert_eq!(target.realization_ref, rr, "leaf rooted at body's GHR");
+                assert_eq!(query, &reify_ir::value::LeafQuery::Named("r".to_string()));
+            }
+            other => panic!("must be a Leaf node; got {:?}", other),
+        }
+    }
+
+    /// `face` over a missing target cell (no entry in `values`) must yield
+    /// `None` (PRD invariant #2: never partially-construct a selector).
+    #[test]
+    fn try_eval_symbolic_topology_selector_face_returns_none_for_missing_target() {
+        let values = reify_ir::ValueMap::new(); // empty — "body" cell absent
+        let expr = named_selector_call(
+            "face",
+            "R2cMissing",
+            "body",
+            reify_core::ty::SelectorKind::Face,
+            "tag",
+        );
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_symbolic_topology_selector(&expr, &values, &mut diagnostics);
+        assert!(
+            result.is_none(),
+            "face over a missing target cell must yield None; got {:?}",
+            result
+        );
+    }
+
+    /// Arity guard: `face(body)` (1 arg, expects 2: geometry + name) → None.
+    #[test]
+    fn try_eval_symbolic_topology_selector_face_arity_mismatch_returns_none() {
+        use reify_core::identity::ValueCellId;
+
+        let entity = "R2cFaceArity";
+        let mut values = reify_ir::ValueMap::new();
+        insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0x6Fu8; 32]);
+        let body_ref = reify_ir::CompiledExpr::value_ref(
+            ValueCellId::new(entity, "body"),
+            reify_core::Type::Geometry,
+        );
+        let expr = mk_symbolic_call_3523("face", vec![body_ref]);
+
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_symbolic_topology_selector(&expr, &values, &mut diagnostics);
+        assert!(
+            result.is_none(),
+            "face with arity 1 (expects 2) must yield None; got {:?}",
+            result
+        );
+    }
+
+    // ── Review amendment (task #5120 R2c, reviewer_comprehensive suggestion
+    // #1 — robustness): `eval_named_leaf_selector_ctor_symbolic` now buffers
+    // target- and name-arg resolution into a shared `scratch`, merging into
+    // the caller's `diagnostics` only once BOTH resolve (mirroring
+    // `eval_variadic_composition_symbolic`'s scratch-then-merge contract).
+    // The two tests below pin that a name arg which fails to resolve to a
+    // `String` literal (here: an `Int` literal, which makes
+    // `resolve_string_literal_arg` push its own `ArgRejection` diagnostic
+    // before returning `None`) can't leak that diagnostic into the caller —
+    // over BOTH target-resolution paths (primary direct handle, and the
+    // fallback chained-first-arg form) so a regression on either path is
+    // independently caught.
+
+    /// `face(body, 1)` — target resolves via the PRIMARY path
+    /// (`resolve_symbolic_selector_target` over a direct symbolic handle),
+    /// but the name arg is an `Int`, not a `String` — must yield `None` with
+    /// EMPTY diagnostics (the `ArgRejection` `resolve_string_literal_arg`
+    /// pushes internally must not leak while the cell stays `Undef`;
+    /// `build()`'s unbuffered, kernel-bearing helper re-emits it once the
+    /// cell is actually realized).
+    #[test]
+    fn eval_named_leaf_selector_ctor_symbolic_drops_diagnostics_when_name_arg_unresolvable() {
+        use reify_core::identity::ValueCellId;
+
+        let entity = "R2cNamedLeafBadNamePrimary";
+        let mut values = reify_ir::ValueMap::new();
+        insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0x73u8; 32]);
+        let body_ref = reify_ir::CompiledExpr::value_ref(
+            ValueCellId::new(entity, "body"),
+            reify_core::Type::Geometry,
+        );
+        let bad_name_lit =
+            reify_ir::CompiledExpr::literal(reify_ir::Value::Int(1), reify_core::Type::Int);
+        let expr = mk_symbolic_call_3523("face", vec![body_ref, bad_name_lit]);
+
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_symbolic_topology_selector(&expr, &values, &mut diagnostics);
+        assert!(
+            result.is_none(),
+            "face(body, 1) must yield None — the name arg is not a String; got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "a name-arg resolution failure must not leak resolve_string_literal_arg's own \
+             diagnostic while the cell stays Undef (target resolved via the primary path); \
+             got {:?}",
+            diagnostics
+        );
+    }
+
+    /// `face(mid_surface(body), 1)` — target resolves via the FALLBACK
+    /// chained-first-arg path (`reconstruct_selector_value_symbolic` +
+    /// `first_leaf_target`, the same shape as
+    /// `try_eval_symbolic_topology_selector_face_over_inline_nested_selector`),
+    /// but the name arg is an `Int`, not a `String` — must yield `None` with
+    /// EMPTY diagnostics, exercising the exact sequence the reviewer flagged
+    /// (`resolve_named_leaf_target_symbolic`'s scratch-buffered fallback
+    /// succeeding before `resolve_string_literal_arg` fails).
+    #[test]
+    fn eval_named_leaf_selector_ctor_symbolic_drops_diagnostics_when_name_arg_unresolvable_over_chained_target(
+    ) {
+        let entity = "R2cNamedLeafBadNameChained";
+        let mut values = reify_ir::ValueMap::new();
+        insert_symbolic_geometry_handle(&mut values, entity, "body", 0, [0x74u8; 32]);
+
+        let mid_surface_expr = topology_selector_call_one_value_ref(
+            "mid_surface",
+            entity,
+            "body",
+            reify_core::Type::Geometry,
+            reify_core::Type::Selector(reify_core::ty::SelectorKind::Face),
+        );
+        let bad_name_lit =
+            reify_ir::CompiledExpr::literal(reify_ir::Value::Int(1), reify_core::Type::Int);
+        let expr = topology_selector_composition_call("face", mid_surface_expr, bad_name_lit);
+
+        let mut diagnostics = Vec::new();
+        let result = super::try_eval_symbolic_topology_selector(&expr, &values, &mut diagnostics);
+        assert!(
+            result.is_none(),
+            "face(mid_surface(body), 1) must yield None — the name arg is not a String; got {:?}",
+            result
+        );
+        assert!(
+            diagnostics.is_empty(),
+            "a name-arg resolution failure must not leak any diagnostic while the cell stays \
+             Undef, even though the chained target resolved first via the fallback path; \
+             got {:?}",
+            diagnostics
+        );
+    }

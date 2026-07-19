@@ -187,6 +187,15 @@ pub fn check_no_stale_undef(
             continue;
         }
 
+        // ORDERING INVARIANT: clause 7 must run before clause 8 below. The
+        // overloaded solid-CSG `union`/`intersect`/`difference` booleans stay
+        // out of clause 8's net only because clause 7 catches their
+        // `Type::Geometry` cell first — `is_symbolic_eval_wired_selector_ctor`
+        // is a by-NAME predicate that cannot distinguish that overload from
+        // the selector-composition wiring it targets. Reordering clause 8
+        // ahead of clause 7 would silently open a stale-Undef hole for it;
+        // see `seeded_solid_boolean_union_undef_is_exempted_by_geometry_clause`
+        // (`tests/no_stale_undef_invariant_gate.rs`).
         // Clause 7: `Type::Geometry` (incl. the `DatumRef` alias) cells are
         // hydrated to `Value::GeometryHandle` ONLY inside `build()`'s local
         // `ValueMap` — never written back into the retained `eval_state()`
@@ -365,6 +374,21 @@ fn is_build_only_dispatch_call(expr: &reify_ir::CompiledExpr) -> bool {
 /// (mutually) recursive function bodies; reify functions are not expected
 /// to recurse, but this is a cheap defensive bound rather than an
 /// assumption baked into the traversal.
+///
+/// Deliberately does NOT chase a `ValueRef` operand across cells to inspect
+/// the referenced cell's OWN `default_expr` (task #5120 R2c amendment,
+/// reviewer follow-up) — e.g. for `let u = union(a, b)`, this only ever sees
+/// the `ValueRef(a)` leaf node, never `a`'s definition. That is fine: this
+/// function answers "can this call EVER resolve on `eval()`", not "are its
+/// operands resolved right now" — the latter is clause 4's job
+/// (`check_no_stale_undef`, above), which independently exempts `u` the
+/// moment `a`'s cell is itself unresolved (a `reads` entry that is missing or
+/// `Undef`). So a composition over a cross-cell `ValueRef` into a
+/// still-build-only (kernel-bearing) selector cell can never spuriously
+/// violate the α net even though [`is_build_only_dispatch_call`] classifies
+/// the composition call itself as eval-wired by name alone — see
+/// `seeded_composition_over_unresolved_cross_cell_operand_is_exempted_by_dependency_clause`
+/// (`tests/no_stale_undef_invariant_gate.rs`).
 fn expr_requires_build_only_resolution(
     expr: &reify_ir::CompiledExpr,
     functions: &[CompiledFunction],
@@ -926,11 +950,6 @@ mod tests {
             "geo_equiv",
             "is_on",
             "angle_between_surfaces",
-            // named-leaf ctors (the interim WIP name list — now structural)
-            "face",
-            "edge",
-            "solid_body",
-            "vertex",
             // GD&T + set-ops + conformance the name lists never covered
             "max_deviation",
             "split",
@@ -945,13 +964,6 @@ mod tests {
             assert!(
                 is_build_only_dispatch_call(&fn_call(name, std::slice::from_ref(&geom))),
                 "{name}(geometry) must classify build-only (structural rule)"
-            );
-        }
-        // (2) STRUCTURAL — composition selectors, keyed by selector-typed args.
-        for name in ["union", "intersect", "difference"] {
-            assert!(
-                is_build_only_dispatch_call(&fn_call(name, &[sel.clone(), sel.clone()])),
-                "{name}(selector, selector) must classify build-only (structural)"
             );
         }
 
@@ -984,10 +996,25 @@ mod tests {
             "vertices",
             "mid_surface",
             "created_by_feature",
+            // task #5120 R2c: named-leaf ctors are now eval-wired.
+            "face",
+            "edge",
+            "solid_body",
+            "vertex",
         ] {
             assert!(
                 !is_build_only_dispatch_call(&fn_call(name, std::slice::from_ref(&geom))),
                 "{name}(geometry) is eval-wired — must NOT be exempted"
+            );
+        }
+        // task #5120 R2c: composition selectors are now eval-wired too — kept
+        // in their own loop with selector-typed args (the shape these
+        // operators actually consume), mirroring the STRUCTURAL composition
+        // loop's arg shape this replaces.
+        for name in ["union", "intersect", "difference"] {
+            assert!(
+                !is_build_only_dispatch_call(&fn_call(name, &[sel.clone(), sel.clone()])),
+                "{name}(selector, selector) is eval-wired — must NOT be exempted"
             );
         }
 

@@ -5303,8 +5303,8 @@ fn build_leaf_selector(
 /// name→helper map. A `Some(helper)` result means the named ctor is wired into
 /// the `eval()`/`eval_cached()` surface (via [`try_eval_symbolic_topology_selector`])
 /// and is EXPECTED to mint a `Value::Selector` there without a kernel; `None`
-/// means the name is kernel-bearing / composition / named-leaf / unknown and
-/// resolves only on the `build()` path.
+/// means the name is kernel-bearing / unknown and resolves only on the
+/// `build()` path.
 ///
 /// Both the dispatcher ([`try_eval_symbolic_topology_selector`]) and clause-8's
 /// "still in the α net" guard ([`is_symbolic_eval_wired_selector_ctor`]) read
@@ -5337,6 +5337,19 @@ fn symbolic_eval_helper_for_name(name: &str) -> Option<TopologySelectorHelper> {
         // task 4831 (P3β): feature-provenance leaf ctors (kernel-free).
         "created_by_feature" => TopologySelectorHelper::CreatedByFeature,
         "split_by_feature" => TopologySelectorHelper::SplitByFeature,
+        // task #5120 R2c: selector-composition algebra. Pure reconstruct over
+        // already-minted Value::Selector operands (no kernel query) — see
+        // reconstruct_selector_value_symbolic / eval_variadic_composition_symbolic.
+        "union" => TopologySelectorHelper::Union,
+        "intersect" => TopologySelectorHelper::Intersect,
+        "difference" => TopologySelectorHelper::Difference,
+        // task #5120 R2c: named-leaf ctors. Pure reconstruct (target resolved
+        // symbolically, tag resolved kernel-free) — see
+        // resolve_named_leaf_target_symbolic / eval_named_leaf_selector_ctor_symbolic.
+        "face" => TopologySelectorHelper::Face,
+        "edge" => TopologySelectorHelper::Edge,
+        "solid_body" => TopologySelectorHelper::SolidBody,
+        "vertex" => TopologySelectorHelper::Vertex,
         _ => return None,
     })
 }
@@ -5351,6 +5364,15 @@ fn symbolic_eval_helper_for_name(name: &str) -> Option<TopologySelectorHelper> {
 /// post-eval with all deps resolved is a genuine bug (wrong arity, or a
 /// scheduling miss where its target was not minted in time), which must remain
 /// a violation rather than be silently exempted.
+///
+/// BY-NAME only: it does not check whether a *given* call's operands are
+/// resolved yet, so a composition cell reading a still-build-only cross-cell
+/// operand looks identical to the inline-nested-operand shape R2c targets.
+/// That's not a net hole — clause 4 (the dependency-resolution exemption)
+/// runs before clause 8 and independently exempts the cell the moment any
+/// of its `reads` is unresolved. See
+/// `seeded_composition_over_unresolved_cross_cell_operand_is_exempted_by_dependency_clause`
+/// (`tests/no_stale_undef_invariant_gate.rs`).
 pub(crate) fn is_symbolic_eval_wired_selector_ctor(expr: &reify_ir::CompiledExpr) -> bool {
     matches!(
         &expr.kind,
@@ -5369,10 +5391,19 @@ pub(crate) fn is_symbolic_eval_wired_selector_ctor(expr: &reify_ir::CompiledExpr
 /// resolve against a realized kernel on the `build()`/`tessellate()` path.
 /// Keyed on argument *types* (which the compiler has already resolved), it
 /// CLOSES the open-ended geometry-consumer class the former clause-8 name
-/// lists kept missing — the `face`/`edge`/`solid_body`/`vertex` named-leaf
-/// ctors, composition `union`/`intersect`/`difference`, GD&T `max_deviation`,
-/// `split`, `feature`, the conformance queries, and any future geometry-arg
-/// consumer — with no per-name upkeep.
+/// lists kept missing — GD&T `max_deviation`, `split`, `feature`, the
+/// conformance queries, and any future geometry-arg consumer — with no
+/// per-name upkeep.
+///
+/// The `face`/`edge`/`solid_body`/`vertex` named-leaf ctors and composition
+/// `union`/`intersect`/`difference` also satisfy this predicate, but since
+/// task #5120 R2c they are ALSO [`is_symbolic_eval_wired_selector_ctor`], so
+/// clause 8's AND-rule no longer classifies them as build-only. Exception:
+/// the overloaded solid-CSG `union`/`intersect`/`difference` booleans take
+/// `Value::GeometryHandle` operands, not `Value::Selector`, so the symbolic
+/// reconstruct returns `None` and those calls stay `Undef` until `build()` —
+/// exempted by clause 7's `Type::Geometry` carve-out, not clause 8, as the
+/// R2c tests assert.
 ///
 /// It does NOT cover build-only queries that consume ABSTRACTED handles
 /// rather than a geometry-typed arg — the kernel geometry-query family's
@@ -5402,14 +5433,212 @@ pub(crate) fn consumes_geometry_or_selector(expr: &reify_ir::CompiledExpr) -> bo
     }
 }
 
-/// Kernel-FREE eval-path dispatch for the leaf selector constructors over a
-/// SYMBOLIC target (R2b, task #4653).
+/// Kernel-FREE sibling of [`reconstruct_selector_value`] for the symbolic
+/// eval-path composition arms (task #5120 R2c). Same PREFERRED/fallback
+/// shape — inline reconstruction from a nested selector `FunctionCall` (via
+/// the kernel-free [`try_eval_symbolic_topology_selector`], NOT the
+/// kernel-bearing [`try_eval_topology_selector`]) or a `ValueRef` to an
+/// already-patched `Value::Selector` cell — but with no kernel and no
+/// `named_steps` in scope.
+///
+/// Returns `None` for any other expr shape OR a non-`Selector` resolved
+/// value — this doubles as the OVERLOAD DISAMBIGUATION for the solid-CSG
+/// booleans that share the `union`/`intersect`/`difference` names: a solid
+/// boolean's operands are `Value::GeometryHandle`, not `Value::Selector`, so
+/// this returns `None` and the caller's composition mint falls through
+/// (leaving the cell `Undef`, `Type::Geometry`-exempt via clause 7).
+fn reconstruct_selector_value_symbolic(
+    arg: &reify_ir::CompiledExpr,
+    values: &reify_ir::ValueMap,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::value::SelectorValue> {
+    match &arg.kind {
+        reify_ir::CompiledExprKind::FunctionCall { .. } => {
+            match try_eval_symbolic_topology_selector(arg, values, diagnostics)? {
+                reify_ir::Value::Selector(sv) => Some(sv),
+                // FunctionCall resolved to a non-selector (e.g. Undef) —
+                // not ours to wrap.
+                _ => None,
+            }
+        }
+        reify_ir::CompiledExprKind::ValueRef(id) => match values.get(id) {
+            Some(reify_ir::Value::Selector(sv)) => Some(sv.clone()),
+            // Cell not yet patched to a selector / not a selector — skip.
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Kernel-FREE sibling of [`eval_variadic_composition`] for the symbolic
+/// eval-path `union`/`intersect`/`difference` arms (task #5120 R2c; binary
+/// `difference` is adapted onto this shared path via
+/// [`selector_value_difference_pair`] rather than duplicating the
+/// kind-closure diagnostic text in its own inline arm).
+///
+/// Contract: operands are reconstructed into a local `scratch` buffer and
+/// only merged into the caller's `diagnostics` once every operand resolves.
+/// This keeps a `None` return silent for the overload-disambiguation case (a
+/// solid-CSG-boolean operand is a `Value::GeometryHandle`, not a
+/// `Value::Selector`, so it never resolves) even when a NESTED selector
+/// operand pushed its own diagnostic (e.g. a kind-closure warning) before
+/// itself failing to resolve. Dropping that nested diagnostic on this eval
+/// pass is not a hole in the no-stale-Undef net: the outer cell still stays
+/// `Value::Undef` and is still reported by `invariants.rs`; `build()`'s
+/// kernel-bearing, unbuffered `eval_variadic_composition` re-emits the
+/// specific warning later.
+///
+/// Malformed nested compositions are also always caught first at COMPILE
+/// time (`E_SELECTOR_KIND_MISMATCH`, `selector_composition_result_type` in
+/// `units.rs`), so no real program depends on this eval-time buffering to
+/// surface a dropped nested diagnostic. Do not drain `scratch`
+/// unconditionally on the `None` path — pinned by
+/// `try_eval_symbolic_topology_selector_union_none_fallthrough_no_diagnostic_leak`
+/// and `..._drops_scratch_after_leading_success` (`geometry_ops/tests.rs`).
+///
+/// The per-call `scratch = Vec::new()` (mirrored in
+/// [`resolve_named_leaf_target_symbolic`]) is deliberately not lazy — an
+/// empty allocation is cheap, and lazy-init would complicate the
+/// buffer-then-merge contract above for no measurable gain.
+fn eval_variadic_composition_symbolic(
+    op_name: &str,
+    args: &[reify_ir::CompiledExpr],
+    values: &reify_ir::ValueMap,
+    diagnostics: &mut Vec<Diagnostic>,
+    constructor: fn(
+        Vec<reify_ir::value::SelectorValue>,
+    ) -> Result<reify_ir::value::SelectorValue, reify_ir::value::SelectorError>,
+) -> Option<reify_ir::Value> {
+    let mut scratch = Vec::new();
+    let children: Vec<reify_ir::value::SelectorValue> = args
+        .iter()
+        .map(|arg| reconstruct_selector_value_symbolic(arg, values, &mut scratch))
+        .collect::<Option<Vec<_>>>()?;
+    diagnostics.append(&mut scratch);
+    match constructor(children) {
+        Ok(sv) => Some(reify_ir::Value::Selector(sv)),
+        Err(err) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "{op_name}: selector kind-closure violation ({err:?}); cell left at Undef"
+            )));
+            Some(reify_ir::Value::Undef)
+        }
+    }
+}
+
+/// Adapts [`reify_ir::value::SelectorValue::difference`]'s binary signature
+/// to the `Vec`-based constructor shape [`eval_variadic_composition_symbolic`]
+/// expects, so `difference` shares that collect+construct+warning path
+/// instead of duplicating it inline (task #5120 R2c). Only ever invoked with
+/// exactly 2 elements — guaranteed by the `== 2` arity gate in
+/// [`try_eval_symbolic_topology_selector`] before this is reached.
+fn selector_value_difference_pair(
+    children: Vec<reify_ir::value::SelectorValue>,
+) -> Result<reify_ir::value::SelectorValue, reify_ir::value::SelectorError> {
+    debug_assert_eq!(
+        children.len(),
+        2,
+        "difference arity is gated to exactly 2 upstream"
+    );
+    let mut children = children.into_iter();
+    let a = children
+        .next()
+        .expect("difference: exactly 2 operands (arity-gated)");
+    let b = children
+        .next()
+        .expect("difference: exactly 2 operands (arity-gated)");
+    reify_ir::value::SelectorValue::difference(a, b)
+}
+
+/// Kernel-FREE sibling of [`resolve_named_leaf_target`] for the symbolic
+/// eval-path named-leaf ctors (task #5120 R2c). Primary path: the R2b
+/// [`resolve_symbolic_selector_target`] (accepts `kernel_handle=None`).
+/// Fallback: [`reconstruct_selector_value_symbolic`] + [`first_leaf_target`]
+/// (the 4583 chained-first-arg form, e.g. `face(mid_surface(body),"r")`),
+/// rooting the Named leaf at the input selector's parent-geometry target.
+///
+/// Mirrors [`eval_variadic_composition_symbolic`]'s scratch-buffer-then-merge
+/// contract (see its doc comment): the fallback reconstruction is buffered
+/// into a local `scratch` and only appended to `diagnostics` once a target
+/// actually resolves, so a `None` return (`first_leaf_target` coming up
+/// empty) can't leak a diagnostic.
+///
+/// Untested by design: `first_leaf_target` only returns `None` for an empty
+/// `Union`/`Intersect` node, and `SelectorValue`'s validating constructors
+/// (`union`/`intersect` reject empty children; the cached `hash` field is
+/// private with no `Deserialize` impl) make that impossible to construct
+/// through the public API. The buffering is kept for symmetry with the
+/// composition path and as a guard should that invariant ever change.
+fn resolve_named_leaf_target_symbolic(
+    arg: &reify_ir::CompiledExpr,
+    values: &reify_ir::ValueMap,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::value::GeometryHandleRef> {
+    if let Some(ghr) = resolve_symbolic_selector_target(arg, values) {
+        return Some(ghr);
+    }
+    let mut scratch = Vec::new();
+    let sv = reconstruct_selector_value_symbolic(arg, values, &mut scratch)?;
+    let target = first_leaf_target(&sv).cloned();
+    if target.is_some() {
+        diagnostics.append(&mut scratch);
+    }
+    target
+}
+
+/// Kernel-FREE sibling of [`eval_named_leaf_selector_ctor`] for the symbolic
+/// eval-path (task #5120 R2c). Same two-arg shape (target, name) but resolves
+/// the target via [`resolve_named_leaf_target_symbolic`] (symbolic-accepting,
+/// itself scratch-buffered on its fallback path — see its doc comment) and
+/// threads no kernel/named_steps.
+///
+/// Review amendment: target and name resolution are buffered into a shared
+/// local `scratch` and merged into the caller's `diagnostics` only once BOTH
+/// resolve — mirroring [`eval_variadic_composition_symbolic`]'s
+/// scratch-then-merge-on-success-only contract. Previously each call wrote
+/// straight into the caller's `diagnostics`: if the target resolved via the
+/// fallback path (committing whatever it had buffered) but
+/// `resolve_string_literal_arg` then failed on the name arg, the trailing
+/// `?` returned `None` after that call had already pushed its own
+/// ArgRejection diagnostic directly into the caller's `diagnostics` — a leak
+/// that `build()`'s unbuffered, kernel-bearing `eval_named_leaf_selector_ctor`
+/// would later duplicate when it re-resolves the same still-`Undef` cell.
+fn eval_named_leaf_selector_ctor_symbolic(
+    kind: reify_core::ty::SelectorKind,
+    args: &[reify_ir::CompiledExpr],
+    values: &reify_ir::ValueMap,
+    function_name: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<reify_ir::Value> {
+    let mut scratch = Vec::new();
+    let target = resolve_named_leaf_target_symbolic(&args[0], values, &mut scratch)?;
+    let name = resolve_string_literal_arg(&args[1], values, function_name, "name", &mut scratch)?;
+    diagnostics.append(&mut scratch);
+    build_leaf_selector(
+        kind,
+        target,
+        reify_ir::value::LeafQuery::Named(name),
+        function_name,
+        diagnostics,
+    )
+}
+
+/// Kernel-FREE eval-path dispatch for the leaf, composition, and named-leaf
+/// selector constructors over a SYMBOLIC target (R2b, task #4653; composition
+/// + named-leaf added by R2c, task #5120).
 ///
 /// Maps the function name to a [`TopologySelectorHelper`] via
-/// [`symbolic_eval_helper_for_name`], runs the per-helper arity check (via
-/// `helper.expected_arity()`), and delegates construction to the shared
-/// [`try_build_kernel_free_leaf_selector`] helper. Returns `None` for every
-/// kernel-bearing / composition / named-leaf ctor and for any
+/// [`symbolic_eval_helper_for_name`], runs the per-helper arity check
+/// (variadic ≥2 for `union`/`intersect`, exact `helper.expected_arity()` for
+/// everything else — mirroring [`try_eval_topology_selector`]'s gate), then
+/// dispatches: `union`/`intersect`/`difference` recurse through THIS
+/// kernel-free dispatcher (via [`eval_variadic_composition_symbolic`] /
+/// [`reconstruct_selector_value_symbolic`]) so an inline nested-leaf operand
+/// (`union(faces_by_normal(b,up,tol), ...)`) resolves within the single mint
+/// pass; `face`/`edge`/`solid_body`/`vertex` dispatch to
+/// [`eval_named_leaf_selector_ctor_symbolic`]; every other (leaf) ctor falls
+/// through to the shared [`try_build_kernel_free_leaf_selector`], unchanged
+/// from R2b. Returns `None` for every kernel-bearing ctor and for any
 /// non-`FunctionCall` expr shape — the cell stays at `Value::Undef` (R1a /
 /// deferred to R3).
 pub(crate) fn try_eval_symbolic_topology_selector(
@@ -5423,17 +5652,78 @@ pub(crate) fn try_eval_symbolic_topology_selector(
         _ => return None,
     };
 
-    // Kernel-free leaf ctor name→helper (single source of truth). All other
-    // helpers (kernel-bearing, composition, named-leaf, unknown) → None.
+    // Kernel-free ctor name→helper (single source of truth). All other
+    // helpers (kernel-bearing, named-leaf, unknown) → None.
     let helper = symbolic_eval_helper_for_name(&function.name)?;
 
-    // Per-helper arity check (same contract as try_eval_topology_selector).
-    let expected_arity = helper.expected_arity();
-    if args.len() != expected_arity {
-        return None;
+    // Per-helper arity check (same contract as try_eval_topology_selector):
+    // task #5120 R2c — union/intersect are variadic (≥ 2); every other
+    // helper (difference included) uses the exact expected_arity() check.
+    match helper {
+        TopologySelectorHelper::Union | TopologySelectorHelper::Intersect => {
+            if args.len() < 2 {
+                return None;
+            }
+        }
+        _ => {
+            if args.len() != helper.expected_arity() {
+                return None;
+            }
+        }
     }
 
-    try_build_kernel_free_leaf_selector(helper, args, values, &function.name, diagnostics)
+    match helper {
+        TopologySelectorHelper::Union => eval_variadic_composition_symbolic(
+            "union",
+            args,
+            values,
+            diagnostics,
+            reify_ir::value::SelectorValue::union,
+        ),
+        TopologySelectorHelper::Intersect => eval_variadic_composition_symbolic(
+            "intersect",
+            args,
+            values,
+            diagnostics,
+            reify_ir::value::SelectorValue::intersect,
+        ),
+        TopologySelectorHelper::Difference => eval_variadic_composition_symbolic(
+            "difference",
+            args,
+            values,
+            diagnostics,
+            selector_value_difference_pair,
+        ),
+        TopologySelectorHelper::Face => eval_named_leaf_selector_ctor_symbolic(
+            reify_core::ty::SelectorKind::Face,
+            args,
+            values,
+            &function.name,
+            diagnostics,
+        ),
+        TopologySelectorHelper::Edge => eval_named_leaf_selector_ctor_symbolic(
+            reify_core::ty::SelectorKind::Edge,
+            args,
+            values,
+            &function.name,
+            diagnostics,
+        ),
+        TopologySelectorHelper::SolidBody => eval_named_leaf_selector_ctor_symbolic(
+            reify_core::ty::SelectorKind::Body,
+            args,
+            values,
+            &function.name,
+            diagnostics,
+        ),
+        TopologySelectorHelper::Vertex => eval_named_leaf_selector_ctor_symbolic(
+            reify_core::ty::SelectorKind::Vertex,
+            args,
+            values,
+            &function.name,
+            diagnostics,
+        ),
+        _ => try_build_kernel_free_leaf_selector(helper, args, values, &function.name, diagnostics),
+    }
 }
 
 
