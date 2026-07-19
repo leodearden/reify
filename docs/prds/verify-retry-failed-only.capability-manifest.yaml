@@ -1,0 +1,175 @@
+prd: docs/prds/verify-retry-failed-only.md
+schema_version: 1
+tasks:
+- label: α
+  task_id: 5287
+  title: 'verify.sh: nextest retry-subset consumption (REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE)
+    + tree-OID sidecar guard + loud full-fallback'
+  capabilities:
+  - name: nextest-filter-file-consumption
+    binding: 'capability→producer (this leaf) — seam verified on main: emit_nextest_pass
+      verify.sh:1138, -E construction :1161; -E is the nextest-plan feature :1078'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE
+      paths:
+      - scripts/verify.sh
+      expect: present
+  - name: tree-oid-sidecar-guard-and-loud-full-fallback
+    binding: rejection-mechanism (G6 branch 4 / INV-4) — refuse subset run unless
+      sidecar tree_oid == REIFY_VERIFY_RETRY_TREE_OID; loud full-fallback on absent/empty/over-ceiling;
+      RED-first in δ (B2/B3)
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: REIFY_VERIFY_RETRY_SCOPE
+      paths:
+      - scripts/verify.sh
+      expect: present
+- label: β
+  task_id: 5288
+  title: 'run_all.sh: REIFY_RUN_ALL_MEMBER_SUBSET member-subset knob (reuse Phase-2.5
+    per-member invoke)'
+  capabilities:
+  - name: run-all-member-subset-knob
+    binding: 'capability→producer (this leaf) — seam verified on main: run_all Phase-2.5
+      per-member serial-retry invoke path + FLAKY ledger (~:1030-1049); subset={failed
+      members} complete by construction (runs to completion, hermetic members H2/4924)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: REIFY_RUN_ALL_MEMBER_SUBSET
+      paths:
+      - tests/infra/run_all.sh
+      expect: present
+- label: γ
+  task_id: 5289
+  title: 'verify.sh gui block: REIFY_GUI_RETRY_SPECS failed-spec forwarding (gui-test.sh
+    -- <specs>)'
+  capabilities:
+  - name: gui-failed-spec-forwarding
+    binding: 'capability→producer (this leaf) — seam verified on main: gui-test.sh
+      forwards args after -- to vitest run (:8,42,90); verify.sh gui block runs npm
+      test (:1346); subset={failed spec files} complete by construction'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: REIFY_GUI_RETRY_SPECS
+      paths:
+      - scripts/verify.sh
+      - scripts/gui-test.sh
+      expect: present
+- label: δ
+  task_id: 5290
+  title: 'INTEGRATION-GATE: tests/infra/test_verify_retry_failed_only.sh boundary
+    test + @@REIFY_RETRY_SCOPE@@ honest marker + same-diff drift-guard registrations'
+  capabilities:
+  - name: boundary-test-b1-b6-and-honest-marker
+    binding: capability→producer (this leaf) — reify terminal; α/β/γ upstream (wired);
+      marker joins the clock-stop emitter family (verify.sh:178-196, lib_clock_stop.sh);
+      INV-2 structured-facts-at-failure
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: REIFY_RETRY_SCOPE=failed_only
+      paths:
+      - scripts/verify.sh
+      expect: present
+  - name: same-diff-drift-guard-registration
+    binding: gate-test registration rule (overlay; esc-4914-162 A3-before-A6) — new
+      tests/infra/test_*.sh's run-all-classification.manifest row + test_no_new_wallclock_upper_bounds.sh
+      registration land SAME diff (PRD §6.6), not a downstream sibling
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: test_verify_retry_failed_only
+      paths:
+      - tests/infra/run-all-classification.manifest
+      expect: present
+- label: ε
+  task_id: 5291
+  title: 'e2e demo: deliberately-flaked merge gate retried via merge_request(retry_failed_only=True)
+    lands with retry_scope=failed_only in runs.db'
+  capabilities:
+  - name: operator-observable-e2e-retry-lands
+    binding: 'premise-soundness (G6 branch 3) — ε''s signal produced entirely by its
+      dep set: δ(marker)+D1-D5+dark_factory:2821(classifier gate)+reify:5261(durable
+      FLAKY ledger); no capability demanded that a dependency doesn''t produce'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'operational e2e (execution_class=operational, always_escalates): a
+        deliberately-flaked gate resubmitted via merge_request(retry_failed_only=True),
+        observed against the live orchestrator + runs.db row — an operator observation,
+        not a grep'
+- label: D1
+  task_id: 2833
+  title: 'merge_request retry_failed_only: bool arg + MergeRequest threading (verified_green
+    precedent)'
+  capabilities:
+  - name: merge-request-retry-failed-only-arg-and-threading
+    binding: capability→producer (dark_factory) — verified_green:bool=False caller-vouched-bool
+      precedent server.py:1099; consumed by ε (operator resubmit) + D2
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: delivered in the dark-factory repo — reify-side git grep cannot observe
+        it; the DF unit test (arg reaches worker retry path; default False no-op)
+        is the mechanical check
+- label: D2
+  task_id: 2834
+  title: 'worker retry-set construction: {did-not-pass} nextest subset + filter-file/env
+    population in verify_env + tree-OID gate'
+  capabilities:
+  - name: sound-subset-construction-and-verify-env-wiring
+    binding: capability→producer (dark_factory) — parse_per_test_results merge_shadow.py:171
+      + M4 _reverify_rebased_tree merge_queue.py:79,1685; nextest subset={failed ∪
+      not-started} (failed-only UNSOUND under fail-fast); INV-3 tree-OID gate; D1
+      upstream
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: DF-side; the DF unit test (fail-fast map ⇒ {failed ∪ not-started}; reify
+        envs+filter files populated; rebased tree ⇒ full verify) is the mechanical
+        check
+- label: D3
+  task_id: 2835
+  title: retry budget policy + M1-autonomous narrowed retry, category-gated on 2821
+  capabilities:
+  - name: m1-autonomous-retry-category-gated-and-budgeted
+    binding: capability→producer (dark_factory) — M1 bounded infra-transient retry
+      seam merge_queue.py:1787-1902, CategoryPolicy.is_infra_transient; gated on dark_factory:2821
+      (done); INV-4 (deterministic red never enters retry path); D2 upstream
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: DF-side; the DF unit test (retryable-class ⇒ narrowed M1 retry; deterministic-red
+        ⇒ none) is the mechanical check
+- label: D4
+  task_id: 2836
+  title: 'shadow-baseline map merge: attempt-0 ∪ retry per-test maps before storing
+    warm baseline'
+  capabilities:
+  - name: shadow-baseline-partial-map-merge
+    binding: capability→producer (dark_factory) — on_result callback merge_queue.py:1556,1583-1587
+      → merge_shadow.py; INV-2 (merge attempt-0 ∪ retry before storage ⇒ no phantom
+      cold-shadow divergence); D2 upstream
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: DF-side; the DF unit test (partial map merged before storage; no phantom
+        divergence) is the mechanical check
+- label: D5
+  task_id: 2837
+  title: 'merge_verify event marker: retry_scope=failed_only + subset sizes → runs.db'
+  capabilities:
+  - name: honest-retry-scope-event-marker
+    binding: capability→producer (dark_factory) — merge_verify event + runs.db row
+      emission; source = reify @@REIFY_RETRY_SCOPE@@ marker (δ); INV-2 (narrowed retry
+      never mis-mined as full green gate); D2 upstream
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: 'DF-side; the DF check (runs.db row carries retry_scope: failed_only
+        + subset sizes) is the mechanical check'
