@@ -870,6 +870,18 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
         [ -n "$_h2_name" ] && _h2_is_pool["$_h2_name"]=1
     done < <(classification_bucket pool)
 
+    # W5b (task #5261): membership map for the `intra-run-serial` bucket,
+    # mirroring the _h2_is_pool idiom above. Used to extend Phase 2.5's
+    # deflake retry to intra-run-serial members (they already run serially
+    # in Phase 2, so a same-mode serial re-run is cheap and sound) and to
+    # pick Phase 3's truthful attempt-1 label -- see both below. Deliberately
+    # NOT used to change the Phase 1/2 partition itself (still driven solely
+    # by _h2_is_pool, unchanged).
+    declare -A _h2_is_intra_serial=()
+    while IFS= read -r _h2_name; do
+        [ -n "$_h2_name" ] && _h2_is_intra_serial["$_h2_name"]=1
+    done < <(classification_bucket intra-run-serial)
+
     _h2_pool_members=()
     _h2_serial_members=()
     for _h2_name in "${_h2_discovered_list[@]}"; do
@@ -1106,18 +1118,29 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
         echo "$_h2_rc" > "$_H2_WORKDIR/${_h2_i}.rc"
     done
 
-    # -- Phase 2.5: serial retry-once of failed pool members (deflake) -----------
-    # Re-run each FAILED pool-bucket member ONCE, serially, in the foreground,
-    # AFTER both the concurrent pool (Phase 1) and serial (Phase 2) phases have
-    # finished -- the quietest point of the run for host load. Pool members are
-    # hermetic by classification (H2/4924), so re-running one is side-effect-
-    # free. A member that passes on retry is NOT counted as a failure
-    # (flaky_names, not failed_names/failures) -- see Phase 3 below; a member
-    # that fails twice keeps the exact existing FAILED contract. Exactly ONE
-    # retry per failed pool member; no slot_acquire/PSI gate (already serial).
+    # -- Phase 2.5: serial retry-once of failed pool/intra-run-serial members
+    # (deflake) --------------------------------------------------------------
+    # Re-run each FAILED pool-OR-intra-run-serial member ONCE, serially, in
+    # the foreground, AFTER both the concurrent pool (Phase 1) and serial
+    # (Phase 2) phases have finished -- the quietest point of the run for
+    # host load. Pool members are hermetic by classification (H2/4924), so
+    # re-running one is side-effect-free; intra-run-serial members already
+    # run serially in Phase 2 (task #5261, W5b), so a same-mode serial
+    # re-run is likewise cheap and side-effect-free by classification.
+    # host-exclusive members (real burn/cgroup/reflink work, non-hermetic)
+    # and any UNCLASSIFIED fail-safe-serial member are deliberately EXCLUDED
+    # -- re-running either risks host side effects or has unknown re-run
+    # safety, so they keep the single-attempt contract. A member that passes
+    # on retry is NOT counted as a failure (flaky_names, not
+    # failed_names/failures) -- see Phase 3 below; a member that fails twice
+    # keeps the exact existing FAILED contract. Exactly ONE retry per failed
+    # eligible member; no slot_acquire/PSI gate (already serial).
     declare -A _h2_retried=()
     declare -A _h2_retry_rc=()
-    for _h2_name in "${_h2_pool_members[@]}"; do
+    for _h2_name in "${_h2_discovered_list[@]}"; do
+        if [ "${_h2_is_pool[$_h2_name]:-0}" != "1" ] && [ "${_h2_is_intra_serial[$_h2_name]:-0}" != "1" ]; then
+            continue
+        fi
         _h2_i="${_h2_index_of[$_h2_name]}"
         _h2_first_rc="$(cat "$_H2_WORKDIR/${_h2_i}.rc" 2>/dev/null || echo 1)"
         [ "$_h2_first_rc" -eq 0 ] && continue
@@ -1135,11 +1158,19 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
         echo ""
         echo "--- Running: $_h2_name ---"
         if [ "${_h2_retried[$_h2_name]:-0}" = "1" ]; then
-            # Retried pool member: archive BOTH attempts under this SAME
-            # header, using attempt-delimiter lines that do NOT match
+            # Retried member: archive BOTH attempts under this SAME header,
+            # using attempt-delimiter lines that do NOT match
             # `^--- Running: ` so the discovered-order header-list contract
-            # (one header per discovered test) is unaffected.
-            echo "--- attempt 1 (concurrent pool) ---"
+            # (one header per discovered test) is unaffected. The attempt-1
+            # label is conditional (task #5261, W5b): a retried
+            # intra-run-serial member's FIRST attempt ran serially in
+            # Phase 2, not in the concurrent pool, so "concurrent pool" would
+            # be a lie for it -- key the label on _h2_is_pool instead.
+            if [ "${_h2_is_pool[$_h2_name]:-0}" = "1" ]; then
+                echo "--- attempt 1 (concurrent pool) ---"
+            else
+                echo "--- attempt 1 (serial) ---"
+            fi
             _ra_emit_sanitized "$_H2_WORKDIR/${_h2_i}.out"
             echo "--- attempt 2 (serial retry) ---"
             _ra_emit_sanitized "$_H2_WORKDIR/${_h2_i}.retry.out"
