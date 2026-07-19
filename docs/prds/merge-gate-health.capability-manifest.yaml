@@ -1,0 +1,27 @@
+# Machine-readable twin of merge-gate-health.capability-manifest.md (hand-stamped, interim per overlay)
+prd: docs/prds/merge-gate-health.md
+program_milestone: "5254"
+batches:
+  reify: ["5256", "5257", "5258", "5259", "5260", "5261"]
+  dark_factory: ["2828", "2829", "2830", "2831"]
+folded_into_existing:
+  - {capability: "W2a+W2c classifier positive-anchor + deterministic discriminator", task: "dark_factory:2821"}
+  - {capability: "W3b landing-discipline closure (remote narrow-verify limb)", task: "dark_factory:2822"}
+  - {capability: "trivial-pass red-main precheck", task: "dark_factory:2823"}
+  - {capability: "manifest-row mechanical gate", task: "reify:5252"}
+config_batch_2026_07_19:
+  - "dark-factory-orchestrator.yaml: verify_use_cgroup_scope: true (W1b-reify)"
+  - "dark-factory-orchestrator.yaml verify_env: REIFY_RUN_ALL_FLAKY_LEDGER durable path (W5a)"
+bindings:
+  - task: "5256"
+    delivered_check: "bash scripts/verify-pipeline-guard.sh requires-full-gate tests/infra/test_probe_nonexistent.sh; test $? -eq 0"
+  - task: "5257"
+    delivered_check: "bash tests/infra/test_no_new_wallclock_upper_bounds.sh"
+  - task: "5258"
+    delivered_check: "grep -q 'flock -n' tests/infra/test_occt_flock_gate.sh && ! grep -q 'sleep 0.2  # give both holders time' tests/infra/test_occt_flock_gate.sh"
+  - task: "5259"
+    delivered_check: "grep -q 'baseline test_run_all.sh already red' tests/infra/test_run_all_ambient_isolation.sh"
+  - task: "5260"
+    delivered_check: "grep -q 'capture_print_plan' tests/infra/test_tree_sitter_pipeline.sh && grep -q 'NEW_IN_LIVE' tests/infra/test_reify_audit_ptodo.sh"
+  - task: "5261"
+    delivered_check: "grep -q 'INTERRUPTED (worktree removed)' tests/infra/run_all.sh"

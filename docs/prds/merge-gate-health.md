@@ -94,3 +94,7 @@ DF-side leaves filed with `project_root=/home/leo/src/dark-factory`; reify leave
 - W2c signature store: reuse shadow-baseline storage or a small sidecar table?
 - W3b needs its own mini-RCA of the three landing paths before the fix leaf is final — keep as investigate-then-fix pair.
 - W4a lexeme spec: exact operand grammar (reuse `_wc_var_sfx` branch) — settle in-leaf.
+
+## 10. Decomposition record (2026-07-19)
+
+Filed: reify 5256 (W3a), 5257 (W4a), 5258 (W4b), 5259 (W4c), 5260 (W4d), 5261 (W4e+W5b); dark-factory 2828 (W1a+W1c), 2829 (W1b-DF), 2830 (W1d), 2831 (W2b, dep DF 2821). Folded into existing tasks instead of new filings: W2a/W2c → DF 2821; W3b → DF 2822 (evidence appended — its narrow remote verify is the leading suspect for the guard-red landing path); trivial-pass red-main precheck → DF 2823; manifest-row gate → reify 5252. W1b-reify + W5a landed directly as the 2026-07-19 operator config batch (verify_use_cgroup_scope, REIFY_RUN_ALL_FLAKY_LEDGER). 5251 cancelled independently (false premise confirmed by census). Capability manifest: merge-gate-health.capability-manifest.{md,yaml}.
