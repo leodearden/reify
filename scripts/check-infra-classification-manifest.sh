@@ -39,6 +39,24 @@ fi
 # shellcheck source=tests/infra/run-all-classification-lib.sh
 source "$LIB"
 
+# Refuse to run against a MISSING manifest instead of passing vacuously. The
+# lib's accessors gracefully degrade to empty output when the manifest is absent
+# (`[ -f ] || return 0`), so a DELETED or renamed manifest would make BOTH
+# classification_undeclared and classification_orphaned empty — the gate would
+# report "clean" precisely when EVERY discovered tests/infra/test_*.sh is
+# undeclared (the single largest drift this gate exists to catch). Resolve the
+# path THROUGH the lib (classification_manifest_path) so the
+# RUN_ALL_CLASSIFICATION_MANIFEST override is honored — the check then targets
+# the exact file the accessors will read, closing the hole under the override
+# too, not only for the default path.
+manifest_path="$(classification_manifest_path)"
+if [ ! -f "$manifest_path" ]; then
+    err "infra-classification gate: manifest not found at $manifest_path"
+    err "  a deleted/renamed $MANIFEST_REL would let every tests/infra/test_*.sh"
+    err "  pass this gate vacuously — refusing to run without the manifest."
+    exit 1
+fi
+
 undeclared="$(classification_undeclared)"
 orphaned="$(classification_orphaned)"
 
