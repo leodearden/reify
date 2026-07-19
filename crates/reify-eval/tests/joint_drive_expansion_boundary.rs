@@ -18,10 +18,16 @@
 //! the stdlib `Costed` trait, and descendants enumeration — only the real
 //! compile path produces those.
 
-use reify_core::{DimensionVector, ValueCellId};
+use std::collections::HashMap;
+
+use reify_compiler::CompiledModule;
+use reify_core::{DimensionVector, ModulePath, Type, ValueCellId};
 use reify_eval::Engine;
-use reify_ir::{CompiledExpr, CompiledExprKind, Value};
-use reify_test_support::{MockConstraintChecker, SpyConstraintSolver, parse_and_compile_with_stdlib};
+use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, ObjectiveSense, ObjectiveSet, Value};
+use reify_test_support::{
+    CompiledModuleBuilder, MockConstraintChecker, SpyConstraintSolver, TopologyTemplateBuilder,
+    binop, gt, literal, mm, parse_and_compile_with_stdlib, value_ref, value_ref_typed,
+};
 
 // ---------------------------------------------------------------------------
 // Shared CompiledExpr structural walkers.
@@ -249,4 +255,145 @@ structure Rig {{
         problem.constraints.len(),
     );
     assert_cost_expanded(&problem.constraints[0].1, "constraint expr");
+}
+
+// ---------------------------------------------------------------------------
+// step-3: dependent_cells population + membership + topological order.
+// ---------------------------------------------------------------------------
+
+/// A single uncoupled scope `S` with:
+///   * auto  `k`                     (the solved trial variable),
+///   * param `unit`                  (a dimensionless constant coefficient;
+///                                     reads NO auto),
+///   * Let   `line_cost = unit * k`  (reads the auto `k`),
+///   * Let   `total = line_cost`     (reads `line_cost`, transitively the auto),
+///   * a self-constraint `k > 0`     (guarantees the auto-bearing scope
+///                                     dispatches a single-scope solve so the
+///                                     problem is captured), and
+///   * objective `minimize total`.
+///
+/// `S` has no cross-scope reads, so it is solved on the single-scope
+/// `build_solver_problem` path. Its `dependent_cells` must therefore be
+/// exactly the coupled Let cells `{line_cost, total}` — the non-auto,
+/// non-`@optimized` cells that (a) transitively feed the objective AND (b)
+/// transitively read the auto `k` — in a topological order where `line_cost`
+/// precedes `total`. The auto `k` (membership excludes autos) and the param
+/// `unit` (reads no auto) must both be absent.
+fn single_scope_coupled_let_module() -> CompiledModule {
+    let s = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "k", Type::length())
+        .param(
+            "S",
+            "unit",
+            Type::dimensionless_scalar(),
+            Some(literal(Value::Real(2.0))),
+        )
+        // line_cost = unit * k  (dimensionless * length = length)
+        .let_binding(
+            "S",
+            "line_cost",
+            Type::length(),
+            binop(
+                BinOp::Mul,
+                value_ref_typed("S", "unit", Type::dimensionless_scalar()),
+                value_ref("S", "k"),
+            ),
+        )
+        // total = line_cost
+        .let_binding("S", "total", Type::length(), value_ref("S", "line_cost"))
+        // A self-constraint reading the auto guarantees a single-scope solve is
+        // dispatched (and captured); it introduces no new coupled cells.
+        .constraint("S", 0, None, gt(value_ref("S", "k"), literal(mm(0.0))))
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            value_ref("S", "total"),
+        ))
+        .build();
+
+    CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(s)
+        .build()
+}
+
+/// step-3: the captured `ResolutionProblem.dependent_cells` must hold exactly
+/// the coupled Let cells `{line_cost, total}`, exclude the auto `k` and the
+/// non-auto-reading param `unit`, and be topologically ordered
+/// (`line_cost` before `total`, since `total`'s default_expr reads
+/// `line_cost`).
+///
+/// RED today: `dependent_cells` is `Vec::new()` (empty from pre-1); the
+/// authoritative cross-scope-order helper that populates it lands in step-4.
+#[test]
+fn dependent_cells_holds_coupled_lets_excludes_auto_and_is_topologically_ordered() {
+    let module = single_scope_coupled_let_module();
+
+    let k = ValueCellId::new("S", "k");
+    let mut solved = HashMap::new();
+    solved.insert(k.clone(), mm(3.0));
+
+    let spy = SpyConstraintSolver::new_solved(solved);
+    let captured = spy.captured_problem();
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+    let _result = engine.eval(&module);
+
+    let problem = captured.lock().unwrap().clone().expect(
+        "S (the auto-bearing scope) must dispatch a single-scope solve, \
+         capturing its problem",
+    );
+
+    let line_cost = ValueCellId::new("S", "line_cost");
+    let total = ValueCellId::new("S", "total");
+    let unit = ValueCellId::new("S", "unit");
+
+    let ids: Vec<ValueCellId> = problem
+        .dependent_cells
+        .iter()
+        .map(|(id, _)| id.clone())
+        .collect();
+
+    // (a) membership: exactly the two coupled Let cells.
+    assert!(
+        ids.contains(&line_cost),
+        "dependent_cells must contain the coupled Let cell `line_cost` \
+         (reads the auto `k` and feeds the objective); got {ids:?}",
+    );
+    assert!(
+        ids.contains(&total),
+        "dependent_cells must contain the coupled Let cell `total` \
+         (transitively reads the auto `k` and IS the objective seed); got {ids:?}",
+    );
+    assert!(
+        !ids.contains(&k),
+        "dependent_cells must EXCLUDE the auto `k` (membership excludes \
+         auto_params); got {ids:?}",
+    );
+    assert!(
+        !ids.contains(&unit),
+        "dependent_cells must EXCLUDE the param `unit` — it feeds the \
+         objective but reads NO auto, so it fails membership rule (b); got {ids:?}",
+    );
+    assert_eq!(
+        ids.len(),
+        2,
+        "dependent_cells must be EXACTLY the two coupled Let cells \
+         {{line_cost, total}}; got {ids:?}",
+    );
+
+    // (b) topological order: line_cost precedes total (total reads line_cost).
+    let pos_line_cost = ids
+        .iter()
+        .position(|id| id == &line_cost)
+        .expect("line_cost present (asserted above)");
+    let pos_total = ids
+        .iter()
+        .position(|id| id == &total)
+        .expect("total present (asserted above)");
+    assert!(
+        pos_line_cost < pos_total,
+        "dependent_cells must be topologically ordered: `line_cost` must \
+         precede `total` because `total`'s default_expr reads `line_cost`; \
+         got order {ids:?}",
+    );
 }
