@@ -2521,5 +2521,135 @@ else
     assert "T25h: GREEN regression -- normal path exits 0 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
 fi
 
+# -- Test 26: REIFY_RUN_ALL_MEMBER_SUBSET member-subset knob (task #5288; PRD
+# docs/prds/verify-retry-failed-only.md task beta, Sec 4.2/8) ------------------
+# On a merge-gate retry, dark-factory names the FAILED members via
+# REIFY_RUN_ALL_MEMBER_SUBSET="<space-delimited test_*.sh basenames>" so
+# run_all.sh runs ONLY those, reusing the Phase-2.5 per-member serial invoke
+# shape via a dedicated branch (mirrors --scope host-infra: sets counters,
+# falls through to the shared Summary/FAILED/exit tail). Every other
+# discovered member is reported skipped -- acknowledged, never dropped from
+# discovery, and never counted as a failure. No classification-substrate
+# dependency (plain glob discovery), so these fixtures need no manifest and
+# no pool lock. Sentinel files (not just RESULT lines) prove a skipped
+# member was genuinely never invoked.
+echo ""
+echo "--- Test 26: REIFY_RUN_ALL_MEMBER_SUBSET member-subset knob ---"
+
+if [ -f "$RUN_ALL" ]; then
+    # -- 26a: subset="test_alpha.sh" -- alpha runs, beta reported skipped -------
+    TMPDIR_T26A="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T26A")
+    printf '#!/usr/bin/env bash\ntouch "%s/ran_alpha"\nexit 0\n' "$TMPDIR_T26A" > "$TMPDIR_T26A/test_alpha.sh"
+    printf '#!/usr/bin/env bash\ntouch "%s/ran_beta"\nexit 1\n' "$TMPDIR_T26A" > "$TMPDIR_T26A/test_beta.sh"
+    chmod +x "$TMPDIR_T26A/test_alpha.sh" "$TMPDIR_T26A/test_beta.sh"
+
+    t26a_rc=0
+    t26a_out="$(REIFY_RUN_ALL_MEMBER_SUBSET="test_alpha.sh" bash "$RUN_ALL" "$TMPDIR_T26A" 2>&1)" || t26a_rc=$?
+
+    assert "T26a: alpha (named in subset) was actually invoked (sentinel exists)" \
+        test -f "$TMPDIR_T26A/ran_alpha"
+
+    assert "T26a: beta (not named) was NOT invoked (sentinel absent)" \
+        test ! -f "$TMPDIR_T26A/ran_beta"
+
+    if [[ "$t26a_out" == *"--- Running: test_alpha.sh ---"* ]]; then
+        assert "T26a: output has a Running header for alpha" true
+    else
+        assert "T26a: output has a Running header for alpha (got: $t26a_out)" false
+    fi
+
+    if [[ "$t26a_out" == *"  RESULT: PASS (test_alpha.sh)"* ]]; then
+        assert "T26a: alpha reported PASS" true
+    else
+        assert "T26a: alpha reported PASS (got: $t26a_out)" false
+    fi
+
+    if [[ "$t26a_out" == *"  RESULT: SKIP (test_beta.sh)"* ]]; then
+        assert "T26a: beta reported SKIP" true
+    else
+        assert "T26a: beta reported SKIP (got: $t26a_out)" false
+    fi
+
+    if [[ "$t26a_out" != *"--- Running: test_beta.sh ---"* ]]; then
+        assert "T26a: output has NO Running header for beta (never invoked)" true
+    else
+        assert "T26a: output has NO Running header for beta (never invoked) (got: $t26a_out)" false
+    fi
+
+    assert "T26a: run_all.sh exits 0 (skipped failing beta does not sink the run)" \
+        test "$t26a_rc" -eq 0
+
+    if [[ "$t26a_out" == *"=== Summary: 2 discovered, 0 failed, 1 member-subset-skipped ==="* ]]; then
+        assert "T26a: Summary reports the member-subset-skipped count" true
+    else
+        assert "T26a: Summary reports the member-subset-skipped count (got: $t26a_out)" false
+    fi
+
+    # -- 26b: unmatched subset member -- loud stderr WARNING, not a failure -----
+    TMPDIR_T26B="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T26B")
+    printf '#!/usr/bin/env bash\ntouch "%s/ran_alpha"\nexit 0\n' "$TMPDIR_T26B" > "$TMPDIR_T26B/test_alpha.sh"
+    printf '#!/usr/bin/env bash\ntouch "%s/ran_beta"\nexit 1\n' "$TMPDIR_T26B" > "$TMPDIR_T26B/test_beta.sh"
+    chmod +x "$TMPDIR_T26B/test_alpha.sh" "$TMPDIR_T26B/test_beta.sh"
+
+    T26B_STDERR="$TMPDIR_T26B/stderr.txt"
+    t26b_rc=0
+    REIFY_RUN_ALL_MEMBER_SUBSET="test_alpha.sh test_ghost.sh" \
+        bash "$RUN_ALL" "$TMPDIR_T26B" >/dev/null 2>"$T26B_STDERR" || t26b_rc=$?
+
+    if grep -q 'WARNING' "$T26B_STDERR" && grep -q 'test_ghost.sh' "$T26B_STDERR"; then
+        assert "T26b: unmatched subset member 'test_ghost.sh' emits a stderr WARNING" true
+    else
+        assert "T26b: unmatched subset member 'test_ghost.sh' emits a stderr WARNING (got stderr: $(cat "$T26B_STDERR"))" false
+    fi
+
+    assert "T26b: unmatched subset member does not sink the run (exits 0)" \
+        test "$t26b_rc" -eq 0
+
+    # -- 26c: knob UNSET -- additive-default guard: branch is inert -------------
+    TMPDIR_T26C="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T26C")
+    printf '#!/usr/bin/env bash\ntouch "%s/ran_alpha"\nexit 0\n' "$TMPDIR_T26C" > "$TMPDIR_T26C/test_alpha.sh"
+    printf '#!/usr/bin/env bash\ntouch "%s/ran_beta"\nexit 1\n' "$TMPDIR_T26C" > "$TMPDIR_T26C/test_beta.sh"
+    chmod +x "$TMPDIR_T26C/test_alpha.sh" "$TMPDIR_T26C/test_beta.sh"
+
+    t26c_rc=0
+    t26c_out="$(env -u REIFY_RUN_ALL_MEMBER_SUBSET \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T26C/pool.lock" \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        bash "$RUN_ALL" "$TMPDIR_T26C" 2>&1)" || t26c_rc=$?
+
+    assert "T26c: knob unset -- alpha invoked (sentinel exists)" \
+        test -f "$TMPDIR_T26C/ran_alpha"
+
+    assert "T26c: knob unset -- beta invoked too (sentinel exists, branch inert)" \
+        test -f "$TMPDIR_T26C/ran_beta"
+
+    if [[ "$t26c_out" != *"RESULT: SKIP"* ]]; then
+        assert "T26c: knob unset -- no SKIP line anywhere" true
+    else
+        assert "T26c: knob unset -- no SKIP line anywhere (got: $t26c_out)" false
+    fi
+
+    assert "T26c: knob unset -- exit reflects beta's failure (nonzero)" \
+        test "$t26c_rc" -ne 0
+else
+    assert "T26a: alpha (named in subset) was actually invoked (sentinel exists) (skipped - run_all.sh missing)" false
+    assert "T26a: beta (not named) was NOT invoked (sentinel absent) (skipped - run_all.sh missing)" false
+    assert "T26a: output has a Running header for alpha (skipped - run_all.sh missing)" false
+    assert "T26a: alpha reported PASS (skipped - run_all.sh missing)" false
+    assert "T26a: beta reported SKIP (skipped - run_all.sh missing)" false
+    assert "T26a: output has NO Running header for beta (never invoked) (skipped - run_all.sh missing)" false
+    assert "T26a: run_all.sh exits 0 (skipped failing beta does not sink the run) (skipped - run_all.sh missing)" false
+    assert "T26a: Summary reports the member-subset-skipped count (skipped - run_all.sh missing)" false
+    assert "T26b: unmatched subset member 'test_ghost.sh' emits a stderr WARNING (skipped - run_all.sh missing)" false
+    assert "T26b: unmatched subset member does not sink the run (exits 0) (skipped - run_all.sh missing)" false
+    assert "T26c: knob unset -- alpha invoked (sentinel exists) (skipped - run_all.sh missing)" false
+    assert "T26c: knob unset -- beta invoked too (sentinel exists, branch inert) (skipped - run_all.sh missing)" false
+    assert "T26c: knob unset -- no SKIP line anywhere (skipped - run_all.sh missing)" false
+    assert "T26c: knob unset -- exit reflects beta's failure (nonzero) (skipped - run_all.sh missing)" false
+fi
+
 # -- Summary --------------------------------------------------------------------
 test_summary
