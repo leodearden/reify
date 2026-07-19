@@ -475,49 +475,49 @@ mod tests {
         }
     }
 
-    /// PRD display-unit-preference §5: per-dimension auto-scale posture.
-    /// Three postures — default-ON (Length/Area/Volume), opt-in/default-OFF
-    /// (Mass/Pressure/Density), and excluded/`None` (Angle is discrete
-    /// deg/rad; the single-rung Force/Energy/Power ladders have no rung to
-    /// hop). The `1 ≤ |mantissa| < 1000` target band (§5a) is stored
-    /// per-entry as `band_lo == 1.0`, `band_hi == 1000.0`.
+    /// PRD display-unit-preference §5: structural auto-scale posture.
+    ///
+    /// Auto-scaling has no consumer yet — the `enabled` flag is documented as
+    /// applied by no formatter until §5 rung-hopping lands — so this test pins
+    /// only the structural invariants that are NOT a tautological echo of the
+    /// constructor's own policy literals:
+    ///   * the dimensions structurally *excluded* from auto-scaling
+    ///     (`auto_scale == None`) are exactly Angle (discrete deg/rad) and the
+    ///     single-rung Force/Energy/Power ladders (no rung to hop) — guarded in
+    ///     both directions (named set + count) so a dimension can't silently
+    ///     drop out of, or into, auto-scaling;
+    ///   * every *included* dimension carries the §5a `1 ≤ |mantissa| < 1000`
+    ///     target band (`band_lo == 1.0`, `band_hi == 1000.0`).
+    ///
+    /// The per-dimension default-ON/OFF `enabled` literal is deliberately NOT
+    /// re-asserted here: with no auto-scaling consumer to anchor the posture
+    /// against, pinning it would only re-state the constructor's own constants
+    /// back at itself (same rationale as the sibling
+    /// `ladder_units_pin_expected_scale_and_default` amend). Restore that pin
+    /// in the follow-up that implements §5 rung-hopping (task #5200), which
+    /// gives a real consumer to anchor the `enabled` posture against.
     #[test]
     fn auto_scale_metadata_matches_prd_section5() {
         let ladders = unit_ladders();
 
-        let on = Some(AutoScale {
-            enabled: true,
-            band_lo: 1.0,
-            band_hi: 1000.0,
-        });
-        let off = Some(AutoScale {
-            enabled: false,
-            band_lo: 1.0,
-            band_hi: 1000.0,
-        });
-
-        // (dimension, expected auto_scale posture)
-        let expected: &[(&str, Option<AutoScale>)] = &[
-            ("Length", on.clone()),
-            ("Area", on.clone()),
-            ("Volume", on.clone()),
-            ("Mass", off.clone()),
-            ("Pressure", off.clone()),
-            ("Density", off.clone()),
-            ("Angle", None),
-            ("Force", None),
-            ("Energy", None),
-            ("Power", None),
-        ];
-        for (dimension, want) in expected {
-            let l = ladder(&ladders, dimension);
+        // Structural include/exclude partition: exactly these four dimensions
+        // are excluded from auto-scaling (auto_scale == None). Pinning the
+        // count alongside the named set closes both directions without
+        // coupling to constructor order.
+        let excluded_count = ladders.iter().filter(|l| l.auto_scale.is_none()).count();
+        assert_eq!(
+            excluded_count, 4,
+            "exactly four ladders should be excluded from auto-scaling (auto_scale == None)"
+        );
+        for dimension in ["Angle", "Force", "Energy", "Power"] {
             assert_eq!(
-                &l.auto_scale, want,
-                "ladder {dimension:?} auto_scale posture mismatch"
+                ladder(&ladders, dimension).auto_scale,
+                None,
+                "ladder {dimension:?} must be excluded from auto-scaling (auto_scale == None)"
             );
         }
 
-        // §5a: every Some(AutoScale) uses the 1 ≤ |mantissa| < 1000 band.
+        // §5a: every included (Some) dimension uses the 1 ≤ |mantissa| < 1000 band.
         for l in &ladders {
             if let Some(a) = &l.auto_scale {
                 assert_eq!(a.band_lo, 1.0, "ladder {:?} band_lo mismatch", l.dimension);
