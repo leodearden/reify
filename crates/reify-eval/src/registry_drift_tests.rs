@@ -221,10 +221,13 @@ fn some_names<T>(f: impl Fn(&str) -> Option<T>, universe: &[&str]) -> BTreeSet<S
 // Finalized at task 5055 γ step-8; populated across step-2
 // (`QUERY_CALL_LEDGER`), step-4 (the `angle` seed entry +
 // `CONSUMER_DIRECTION_A_LEDGER`), and step-6 (`SELECTOR_BUILD_PATH_ONLY`).
-// Four divergences total. A fifth would only appear alongside a new
-// compiler-side registration or eval-side oracle change — see the
-// "Negative-test proof recipe" above for how to confirm this ledger is
-// exhaustive, not vacuous.
+// Extended at task #5120 R2c (`SOLID_CSG_SELECTOR_COMPOSITION_OVERLOAD`) —
+// exactly the anticipated "fifth divergence alongside an eval-side oracle
+// change" (R2c widened `symbolic_eval_helper_for_name`, and with it
+// `is_symbolic_eval_wired_selector_ctor`). Five divergences total. A sixth
+// would only appear alongside a new compiler-side registration or eval-side
+// oracle change — see the "Negative-test proof recipe" above for how to
+// confirm this ledger is exhaustive, not vacuous.
 // ═══════════════════════════════════════════════════════════════════════
 
 /// `GEOMETRY_QUERY_NAMES` members `is_geometry_query_call` intentionally
@@ -309,22 +312,58 @@ const CONSUMER_DIRECTION_A_LEDGER: &[&str] = &[
 
 /// `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` members recognized by NEITHER
 /// `is_symbolic_eval_wired_selector_ctor` (kernel-free) NOR
-/// `is_geometry_consumer_call` (kernel-bearing) — the named-leaf ctors
-/// (`face`, `edge`, `solid_body`, `vertex`; task 4119 δ / 4368) plus `split`
-/// (task 4190). All five resolve ONLY via `try_eval_topology_selector`'s
+/// `is_geometry_consumer_call` (kernel-bearing) — now `split` alone
+/// (task 4190). It resolves ONLY via `try_eval_topology_selector`'s
 /// build() case (`geometry_ops.rs:6504`), which requires a realized kernel.
 ///
-/// They are deliberately NOT probed directly: `try_eval_topology_selector`
+/// The named-leaf ctors (`face`, `edge`, `solid_body`, `vertex`; task 4119 δ
+/// / 4368) were ledgered here too until task #5120 R2c wired them into the
+/// kernel-free symbolic-eval surface (`symbolic_eval_helper_for_name`'s
+/// named-leaf arms, `geometry_ops.rs:5346-5352`); they are now pinned as
+/// recognized in the kernel-free ctor pin
+/// (`topology_selector_eval_recognition_agrees_with_selector_names_family`)
+/// instead.
+///
+/// `split` is deliberately NOT probed directly: `try_eval_topology_selector`
 /// returns `Option`, and without a kernel it returns `None` for BOTH an
 /// unrecognized name and a recognized-but-eval-failed call — it cannot
 /// distinguish "name unknown" from "name known, kernel absent", so it is not
 /// a sound name oracle (see the module-level design-decision doc / PRD
-/// §7.3). Their compiler-side presence is instead pinned indirectly via the
+/// §7.3). Its compiler-side presence is instead pinned indirectly via the
 /// result-type-map parity check in step-7
 /// (`reify_compiler::topology_selector_result_type`).
 ///
-/// Step-6 (task 5055 γ).
-const SELECTOR_BUILD_PATH_ONLY: &[&str] = &["face", "edge", "solid_body", "vertex", "split"];
+/// Step-6 (task 5055 γ); named-leaf ctors removed at task #5120 R2c.
+const SELECTOR_BUILD_PATH_ONLY: &[&str] = &["split"];
+
+/// `GEOMETRY_FUNCTION_NAMES` members that `is_symbolic_eval_wired_selector_ctor`
+/// ALSO recognizes — the intentional solid-CSG / selector-composition
+/// **by-name overload** (task #5120 R2c).
+///
+/// R2c added the selector-composition algebra `union`/`intersect`/`difference`
+/// to `symbolic_eval_helper_for_name` (`geometry_ops.rs:5340-5345`), so the
+/// two of those names that are also solid-CSG boolean members of
+/// `GEOMETRY_FUNCTION_NAMES` (`union`, `difference`; the third CSG boolean is
+/// spelled `intersection`, and `intersect` belongs to no compiler family, so
+/// neither of those two ever collides in this module's probe universe) are
+/// now recognized by the kernel-free selector-ctor oracle too.
+///
+/// The overlap is NAME-level only, by design — the oracle is deliberately
+/// by-name (doc on `is_symbolic_eval_wired_selector_ctor` /
+/// `consumes_geometry_or_selector`, `geometry_ops.rs:5357-5418`).
+/// Disambiguation happens at operand-VALUE level: the solid-CSG overload's
+/// operands are `Value::GeometryHandle`, not `Value::Selector`, so the
+/// symbolic reconstruct returns `None`, the cell takes the task #4652 R2a
+/// symbolic-placeholder mint, and it resolves on `build()` — pinned
+/// end-to-end by
+/// `solid_csg_boolean_union_is_not_stale_undef_on_eval_and_resolves_on_build`
+/// (`tests/symbolic_selector_composition_eval.rs`) plus the per-operator
+/// unit-level `None`-return tests in `geometry_ops/tests.rs`. A solid-CSG
+/// boolean call therefore never *behaves* as a kernel-free selector ctor;
+/// only its name matches.
+///
+/// Task #5120 R2c (round-2 review amendment).
+const SOLID_CSG_SELECTOR_COMPOSITION_OVERLOAD: &[&str] = &["union", "difference"];
 
 // ═══════════════════════════════════════════════════════════════════════
 // Tests
@@ -490,33 +529,40 @@ fn geometry_consumer_call_oracle_two_direction_agreement() {
     }
 }
 
-/// `is_symbolic_eval_wired_selector_ctor` recognizes the 17 kernel-free leaf
-/// selector ctors (`symbolic_eval_helper_for_name`'s match arms,
-/// `geometry_ops.rs:5318-5344`) — the kernel-free half of the eval-side
-/// selector-recognition surface. The other half is the kernel-bearing
-/// selector names `is_geometry_consumer_call` also recognizes (the subset of
-/// its 22 names — `closest_point`, `is_on`, `angle_between_surfaces`,
-/// `adjacent_faces`, `shared_edges`, `siblings_of_face`,
-/// `ancestor_faces_of_edge`, `center_of_mass`, `moment_of_inertia` — that are
-/// `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` members rather than
-/// `GEOMETRY_QUERY_NAMES` members).
+/// `is_symbolic_eval_wired_selector_ctor` recognizes the 23 kernel-free
+/// selector-ctor names visible in this module's probe universe
+/// (`symbolic_eval_helper_for_name`'s match arms, `geometry_ops.rs:5318-5355`;
+/// the 24th arm, `intersect`, belongs to no compiler family and is never
+/// probed) — the kernel-free half of the eval-side selector-recognition
+/// surface: the original 17 leaf ctors, the task #5120 R2c named-leaf ctors
+/// (`face`/`edge`/`solid_body`/`vertex`), and the two R2c composition names
+/// that by-name overload solid-CSG booleans (`union`/`difference`,
+/// [`SOLID_CSG_SELECTOR_COMPOSITION_OVERLOAD`]). The other half is the
+/// kernel-bearing selector names `is_geometry_consumer_call` also recognizes
+/// (the subset of its 22 names — `closest_point`, `is_on`,
+/// `angle_between_surfaces`, `adjacent_faces`, `shared_edges`,
+/// `siblings_of_face`, `ancestor_faces_of_edge`, `center_of_mass`,
+/// `moment_of_inertia` — that are `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` members
+/// rather than `GEOMETRY_QUERY_NAMES` members).
 ///
 /// - (a)/(b) Direction B (eval ⇒ compiler): the kernel-free set alone, and
-///   the full eval-side selector-recognition UNION, are both subsets of
-///   `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` — no eval-side selector oracle
-///   recognizes a name the compiler doesn't claim.
-/// - Direction A (compiler ⇒ eval): the union covers 26 of 31
-///   `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` members directly; the remaining 5 —
-///   `face`, `edge`, `solid_body`, `vertex`, `split` — are recognized by
-///   NEITHER boolean oracle (they dispatch only via
-///   `try_eval_topology_selector`'s build() path) and are ledgered in
+///   the full eval-side selector-recognition UNION — each MINUS the ledgered
+///   CSG by-name overload, which `GEOMETRY_FUNCTION_NAMES` claims instead —
+///   are both subsets of `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` — no eval-side
+///   selector oracle recognizes a name no compiler family claims.
+/// - Direction A (compiler ⇒ eval): the union covers 30 of 31
+///   `GEOMETRY_TOPOLOGY_SELECTOR_NAMES` members directly; the remaining 1 —
+///   `split` — is recognized by NEITHER boolean oracle (it dispatches only
+///   via `try_eval_topology_selector`'s build() path) and is ledgered in
 ///   [`SELECTOR_BUILD_PATH_ONLY`] rather than asserted equal (step-6).
 #[test]
 fn topology_selector_eval_recognition_agrees_with_selector_names_family() {
     let universe = all_family_names();
     let selector_names = to_set(reify_compiler::GEOMETRY_TOPOLOGY_SELECTOR_NAMES);
 
-    // The kernel-free leaf-ctor set is exactly the documented 17 names.
+    // The kernel-free ctor set is exactly the documented 23 names (17
+    // original leaf ctors + the 6 probe-universe-visible task #5120 R2c
+    // additions).
     let kernel_free_ctor_set = recognized(
         crate::geometry_ops::is_symbolic_eval_wired_selector_ctor,
         &universe,
@@ -540,6 +586,18 @@ fn topology_selector_eval_recognition_agrees_with_selector_names_family() {
         "extremal_by_centroid",
         "created_by_feature",
         "split_by_feature",
+        // task #5120 R2c: selector-composition algebra — the two members of
+        // [`SOLID_CSG_SELECTOR_COMPOSITION_OVERLOAD`]. (`intersect` is also
+        // wired eval-side but belongs to no compiler family, so it never
+        // enters this module's probe universe — see module doc, "Why Leg 1
+        // must reuse an already-registered name".)
+        "union",
+        "difference",
+        // task #5120 R2c: named-leaf ctors (formerly SELECTOR_BUILD_PATH_ONLY).
+        "face",
+        "edge",
+        "solid_body",
+        "vertex",
     ]);
     assert_eq!(
         kernel_free_ctor_set, expected_kernel_free,
@@ -547,12 +605,25 @@ fn topology_selector_eval_recognition_agrees_with_selector_names_family() {
          update this pin if the change is intentional"
     );
 
-    // (a) the kernel-free set is a subset of GEOMETRY_TOPOLOGY_SELECTOR_NAMES.
+    // The by-name solid-CSG overload (`union`/`difference`) is claimed by
+    // GEOMETRY_FUNCTION_NAMES, not the selector family — strip it before the
+    // selector-family set relations below. Ledger rationale (and the
+    // value-level disambiguation evidence) at
+    // SOLID_CSG_SELECTOR_COMPOSITION_OVERLOAD (task #5120 R2c).
+    let solid_csg_overload = to_set(SOLID_CSG_SELECTOR_COMPOSITION_OVERLOAD);
+    let kernel_free_selector_claimed: BTreeSet<String> = kernel_free_ctor_set
+        .difference(&solid_csg_overload)
+        .cloned()
+        .collect();
+
+    // (a) the kernel-free set, minus the ledgered CSG overload, is a subset
+    // of GEOMETRY_TOPOLOGY_SELECTOR_NAMES.
     assert!(
-        kernel_free_ctor_set.is_subset(&selector_names),
-        "is_symbolic_eval_wired_selector_ctor recognizes a name \
-         reify_compiler::GEOMETRY_TOPOLOGY_SELECTOR_NAMES does not claim: {:?}",
-        kernel_free_ctor_set
+        kernel_free_selector_claimed.is_subset(&selector_names),
+        "is_symbolic_eval_wired_selector_ctor recognizes a name that neither \
+         reify_compiler::GEOMETRY_TOPOLOGY_SELECTOR_NAMES nor the ledgered \
+         SOLID_CSG_SELECTOR_COMPOSITION_OVERLOAD claims: {:?}",
+        kernel_free_selector_claimed
             .difference(&selector_names)
             .collect::<Vec<_>>()
     );
@@ -565,9 +636,9 @@ fn topology_selector_eval_recognition_agrees_with_selector_names_family() {
         .cloned()
         .collect();
 
-    // The eval-side selector-recognition UNION: kernel-free ctors plus
-    // kernel-bearing selector consumers.
-    let eval_selector_union: BTreeSet<String> = kernel_free_ctor_set
+    // The eval-side selector-recognition UNION: kernel-free ctors (minus the
+    // ledgered CSG overload) plus kernel-bearing selector consumers.
+    let eval_selector_union: BTreeSet<String> = kernel_free_selector_claimed
         .union(&kernel_bearing_selector_subset)
         .cloned()
         .collect();
@@ -608,6 +679,14 @@ fn topology_selector_eval_recognition_agrees_with_selector_names_family() {
 /// `is_symbolic_eval_wired_selector_ctor`) — a dynamics/FEA/field-op/constructor
 /// name can never masquerade as a geometry query, consumer, or kernel-free
 /// selector ctor. Step-7 (task 5055 γ).
+///
+/// ONE ledgered exception (task #5120 R2c): the solid-CSG booleans
+/// `union`/`difference` in `GEOMETRY_FUNCTION_NAMES` are intentionally
+/// by-name overloaded with the R2c selector-composition algebra, so the
+/// by-name `is_symbolic_eval_wired_selector_ctor` oracle recognizes exactly
+/// those two — pinned as strict EQUALITY against
+/// [`SOLID_CSG_SELECTOR_COMPOSITION_OVERLOAD`] (where the value-level
+/// disambiguation evidence lives), never a broader carve-out.
 #[test]
 fn non_geometry_families_are_disjoint_from_eval_geometry_oracles() {
     let non_geometry_families: [(&str, &[&str]); 5] = [
@@ -645,11 +724,26 @@ fn non_geometry_families_are_disjoint_from_eval_geometry_oracles() {
             family,
             1,
         );
-        assert!(
-            selector_ctor_hits.is_empty(),
-            "{family_name} member(s) {selector_ctor_hits:?} recognized by \
-             is_symbolic_eval_wired_selector_ctor — a {family_name} name must never \
-             masquerade as a kernel-free selector ctor"
+        // task #5120 R2c: GEOMETRY_FUNCTION_NAMES alone carries an
+        // intentional, ledgered exception — its solid-CSG booleans
+        // `union`/`difference` are by-name overloaded with the R2c
+        // selector-composition algebra, so the (deliberately by-name) ctor
+        // oracle recognizes them; disambiguation is at operand-VALUE level
+        // (full rationale + covering-test citations on
+        // SOLID_CSG_SELECTOR_COMPOSITION_OVERLOAD). Pinned as exact EQUALITY,
+        // not an is-empty-after-subtraction relaxation, so the ledger can
+        // never go vacuous: removing the R2c arms turns this red again.
+        let expected_selector_ctor_hits = if family_name == "GEOMETRY_FUNCTION_NAMES" {
+            to_set(SOLID_CSG_SELECTOR_COMPOSITION_OVERLOAD)
+        } else {
+            BTreeSet::new()
+        };
+        assert_eq!(
+            selector_ctor_hits, expected_selector_ctor_hits,
+            "{family_name} member(s) recognized by is_symbolic_eval_wired_selector_ctor \
+             diverge from the ledgered set — beyond the task #5120 R2c solid-CSG \
+             by-name overload (SOLID_CSG_SELECTOR_COMPOSITION_OVERLOAD), a \
+             {family_name} name must never masquerade as a kernel-free selector ctor"
         );
     }
 }
