@@ -1497,6 +1497,128 @@ fn expand_solver_position_expr(
     crate::structural_query::apply_cost_aggregation(expr, all_templates, trait_registry);
 }
 
+/// Build the authoritative, topologically-ordered list of coupled non-auto
+/// value cells to re-materialize after a solve — the single cross-scope
+/// authority both the post-solve write-back (task #5188 step-8) and β's
+/// per-trial fold consume, so the two cannot diverge (PRD
+/// `docs/prds/v0_6/whole-model-joint-drive-seam.md` §6.1/§6.3).
+///
+/// Reuses the primitives the engine already trusts for ordering
+/// (`extract_value_deps` for transitive-closure edges; `extract_dependency_trace`
+/// plus `topological_sort` for the induced sub-DAG) rather than extending
+/// `detect_let_cycle`, whose single-template contract must stay intact while the
+/// joint-drive order is inherently cross-template (PRD §12 open-Q1).
+///
+/// * `seed_exprs` — the ALREADY-EXPANDED objective term exprs + constraint exprs
+///   (so `cost(self.descendants)` is already `[ValueRef(line_cost) ...].sum`).
+/// * `all_templates` — supplies every non-auto cell's `default_expr`, cross-scope.
+/// * `auto_ids` — the problem's `auto_param` ids (this scope's regular autos for
+///   the single-scope builder; the cluster-wide union for the merged builder);
+///   the reachability target for membership rule (b).
+///
+/// Membership: a cell survives iff it (a) transitively feeds the objective/
+/// constraints (is in the seed closure) AND (b) transitively reads ≥1 `auto_id`
+/// AND is non-auto AND carries a plain foldable `default_expr`. ComputeNode-
+/// produced cells (no plain default_expr) are excluded by construction; the
+/// `@optimized` exclusion is layered on in task #5188 step-6.
+fn build_dependent_cells(
+    seed_exprs: &[&CompiledExpr],
+    all_templates: &[TopologyTemplate],
+    auto_ids: &HashSet<ValueCellId>,
+) -> Vec<(ValueCellId, CompiledExpr)> {
+    // (a) Cross-template map: every non-auto cell that carries a plain
+    //     default_expr, keyed by id. Autos have no default_expr and are skipped;
+    //     ComputeNode-produced cells without a foldable default_expr never enter.
+    let mut cell_map: HashMap<ValueCellId, &CompiledExpr> = HashMap::new();
+    for template in all_templates {
+        for cell in &template.value_cells {
+            if cell.kind.is_auto() {
+                continue;
+            }
+            if let Some(expr) = cell.default_expr.as_ref() {
+                cell_map.entry(cell.id.clone()).or_insert(expr);
+            }
+        }
+    }
+
+    // (b) Seed the closure with the DIRECT reads of every expanded objective
+    //     term / constraint expr, then (c) take the transitive closure by
+    //     following each in-map cell's default_expr reads.
+    let mut closure: HashSet<ValueCellId> = HashSet::new();
+    let mut frontier: Vec<ValueCellId> = Vec::new();
+    for expr in seed_exprs {
+        for id in crate::deps::extract_value_deps(expr) {
+            if closure.insert(id.clone()) {
+                frontier.push(id);
+            }
+        }
+    }
+    while let Some(id) = frontier.pop() {
+        if let Some(expr) = cell_map.get(&id) {
+            for dep in crate::deps::extract_value_deps(expr) {
+                if closure.insert(dep.clone()) {
+                    frontier.push(dep);
+                }
+            }
+        }
+    }
+
+    // (d) Auto-reachability over the closure: reverse-propagate "transitively
+    //     reads an auto" from `auto_ids` up through reader edges.
+    //     `reverse[d]` = cells whose default_expr reads `d`.
+    let mut reverse: HashMap<ValueCellId, Vec<ValueCellId>> = HashMap::new();
+    for id in &closure {
+        if let Some(expr) = cell_map.get(id) {
+            for dep in crate::deps::extract_value_deps(expr) {
+                reverse.entry(dep).or_default().push(id.clone());
+            }
+        }
+    }
+    let mut reaches_auto: HashSet<ValueCellId> = HashSet::new();
+    let mut ra_frontier: Vec<ValueCellId> = Vec::new();
+    for id in &closure {
+        if auto_ids.contains(id) && reaches_auto.insert(id.clone()) {
+            ra_frontier.push(id.clone());
+        }
+    }
+    while let Some(id) = ra_frontier.pop() {
+        if let Some(readers) = reverse.get(&id) {
+            for reader in readers {
+                if reaches_auto.insert(reader.clone()) {
+                    ra_frontier.push(reader.clone());
+                }
+            }
+        }
+    }
+
+    // (e) Restrict to surviving cells (non-auto, in-map, transitively reads an
+    //     auto) and topologically sort the induced sub-DAG via the same
+    //     primitive `detect_let_cycle` uses (in-set edges only; deps precede
+    //     readers). Cells dropped by a cycle are simply absent — cycle
+    //     diagnostics remain `detect_let_cycle`'s single-template job.
+    let mut nodes: HashSet<NodeId> = HashSet::new();
+    let mut traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
+    for id in &closure {
+        if auto_ids.contains(id) || !reaches_auto.contains(id) {
+            continue;
+        }
+        if let Some(expr) = cell_map.get(id) {
+            let node = NodeId::Value(id.clone());
+            traces.insert(node.clone(), extract_dependency_trace(expr));
+            nodes.insert(node);
+        }
+    }
+
+    // (f) Pair each surviving id with a clone of its default_expr, in topo order.
+    topological_sort(&nodes, &traces)
+        .into_iter()
+        .filter_map(|node| match node {
+            NodeId::Value(id) => cell_map.get(&id).map(|expr| (id.clone(), (*expr).clone())),
+            _ => None,
+        })
+        .collect()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_solver_problem(
     template: &reify_compiler::TopologyTemplate,
@@ -1619,6 +1741,20 @@ fn build_solver_problem(
         obj
     });
 
+    // α (task #5188 step-4): build the authoritative dependent-cell order from
+    // the EXPANDED objective/constraint exprs (seeds), over this scope's regular
+    // autos. Inert until the step-8 write-back consumes it; empty ⇒ legacy.
+    let dependent_cells = {
+        let mut seed_exprs: Vec<&CompiledExpr> =
+            filtered_constraints.iter().map(|(_, e)| e).collect();
+        if let Some(obj) = objective.as_ref() {
+            seed_exprs.extend(obj.terms.iter().map(|t| &t.expr));
+        }
+        let dep_auto_ids: HashSet<ValueCellId> =
+            regular_auto_cells.iter().map(|c| c.id.clone()).collect();
+        build_dependent_cells(&seed_exprs, all_templates, &dep_auto_ids)
+    };
+
     // Pre-populate current_values with pinned connector values so any remaining
     // constraint that transitively reads a pinned cell sees the correct value.
     let mut current_values = values.clone();
@@ -1628,7 +1764,7 @@ fn build_solver_problem(
 
     Some((
         ResolutionProblem {
-            dependent_cells: Vec::new(),
+            dependent_cells,
             auto_params: auto_param_list,
             constraints: filtered_constraints,
             current_values,
@@ -1942,8 +2078,22 @@ fn build_merged_solver_problem(
         })
     };
 
+    // α (task #5188 step-4): authoritative CROSS-SCOPE dependent-cell order from
+    // the EXPANDED spanning objective + merged constraint exprs (seeds), over the
+    // cluster-wide auto union. Inert until the step-8 write-back; empty ⇒ legacy.
+    let dependent_cells = {
+        let mut seed_exprs: Vec<&CompiledExpr> =
+            filtered_constraints.iter().map(|(_, e)| e).collect();
+        if let Some(obj) = objective.as_ref() {
+            seed_exprs.extend(obj.terms.iter().map(|t| &t.expr));
+        }
+        let dep_auto_ids: HashSet<ValueCellId> =
+            auto_cells.iter().map(|c| c.id.clone()).collect();
+        build_dependent_cells(&seed_exprs, templates, &dep_auto_ids)
+    };
+
     ResolutionProblem {
-        dependent_cells: Vec::new(),
+        dependent_cells,
         auto_params: auto_param_list,
         constraints: filtered_constraints,
         current_values: values.clone(),

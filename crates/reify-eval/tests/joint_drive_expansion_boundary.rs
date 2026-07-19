@@ -262,15 +262,14 @@ structure Rig {{
 // ---------------------------------------------------------------------------
 
 /// A single uncoupled scope `S` with:
-///   * auto  `k`                     (the solved trial variable),
-///   * param `unit`                  (a dimensionless constant coefficient;
-///                                     reads NO auto),
-///   * Let   `line_cost = unit * k`  (reads the auto `k`),
-///   * Let   `total = line_cost`     (reads `line_cost`, transitively the auto),
-///   * a self-constraint `k > 0`     (guarantees the auto-bearing scope
-///                                     dispatches a single-scope solve so the
-///                                     problem is captured), and
-///   * objective `minimize total`.
+///
+/// * auto `k` (the solved trial variable);
+/// * param `unit` (a dimensionless constant coefficient; reads NO auto);
+/// * Let `line_cost = unit * k` (reads the auto `k`);
+/// * Let `total = line_cost` (reads `line_cost`, transitively the auto);
+/// * a self-constraint `k > 0` (guarantees the auto-bearing scope dispatches a
+///   single-scope solve so the problem is captured); and
+/// * objective `minimize total`.
 ///
 /// `S` has no cross-scope reads, so it is solved on the single-scope
 /// `build_solver_problem` path. Its `dependent_cells` must therefore be
