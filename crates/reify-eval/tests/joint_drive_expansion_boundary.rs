@@ -21,9 +21,12 @@
 use std::collections::HashMap;
 
 use reify_compiler::CompiledModule;
-use reify_core::{DimensionVector, ModulePath, Type, ValueCellId};
+use reify_core::{ContentHash, DimensionVector, ModulePath, Type, ValueCellId};
 use reify_eval::Engine;
-use reify_ir::{BinOp, CompiledExpr, CompiledExprKind, ObjectiveSense, ObjectiveSet, Value};
+use reify_ir::{
+    BinOp, CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, ObjectiveSense,
+    ObjectiveSet, Value,
+};
 use reify_test_support::{
     CompiledModuleBuilder, MockConstraintChecker, SpyConstraintSolver, TopologyTemplateBuilder,
     binop, gt, literal, mm, parse_and_compile_with_stdlib, value_ref, value_ref_typed,
@@ -394,5 +397,209 @@ fn dependent_cells_holds_coupled_lets_excludes_auto_and_is_topologically_ordered
         "dependent_cells must be topologically ordered: `line_cost` must \
          precede `total` because `total`'s default_expr reads `line_cost`; \
          got order {ids:?}",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// step-5: @optimized / ComputeNode exclusion from dependent_cells.
+// ---------------------------------------------------------------------------
+
+/// A `CompiledFunction` named `name` with one `length` param, carrying
+/// `optimized_target = Some(target)` — the static marker
+/// `find_matching_compiled_function(..).optimized_target` reads to identify an
+/// `@optimized` call (the compute-dispatch-bypass precedent at
+/// `engine_eval.rs:8204`, mirrored from `invariants.rs`'s
+/// `zero_arg_optimized_function`). Its body is an inert `length(0)` literal;
+/// the test never depends on the call's runtime value (an unregistered target
+/// inlines/falls back, it does not abort eval).
+fn optimized_length_fn(name: &str, target: &str) -> CompiledFunction {
+    CompiledFunction {
+        name: name.to_string(),
+        doc: None,
+        is_pub: false,
+        params: vec![("x".to_string(), Type::length())],
+        param_defaults: vec![None],
+        return_type: Type::length(),
+        body: CompiledFnBody {
+            let_bindings: vec![],
+            result_expr: CompiledExpr::literal(Value::length(0.0), Type::length()),
+        },
+        content_hash: ContentHash::of_str(name),
+        annotations: vec![],
+        optimized_target: Some(target.to_string()),
+        type_params: vec![],
+    }
+}
+
+/// A `UserFunctionCall(function_name, [arg])` `CompiledExpr` with a `length`
+/// result type — the default_expr shape of an `@optimized` coupled cell. The
+/// single `arg` (a `ValueRef` to the auto) is what makes the cell transitively
+/// read the auto: `extract_value_deps` walks `UserFunctionCall` args.
+fn user_call(function_name: &str, arg: CompiledExpr) -> CompiledExpr {
+    CompiledExpr {
+        kind: CompiledExprKind::UserFunctionCall {
+            function_name: function_name.to_string(),
+            args: vec![arg],
+        },
+        result_type: Type::length(),
+        content_hash: ContentHash::of_str("opt-cost-call"),
+    }
+}
+
+/// A single scope `S` extending `single_scope_coupled_let_module` with an
+/// `@optimized` coupled cell:
+///
+/// * auto `k`;
+/// * param `unit` (constant coefficient; reads NO auto);
+/// * Let `line_cost = unit * k` — a plain non-`@optimized` coupled cell;
+/// * Let `opt_cost = opt_fn(k)` — an `@optimized` `UserFunctionCall`
+///   (`opt_fn.optimized_target = Some(..)`) that transitively reads the auto
+///   `k` (through its arg) and feeds the objective (through `total`);
+/// * Let `total = line_cost + opt_cost` — a plain non-`@optimized` coupled
+///   cell and the objective seed;
+/// * self-constraint `k > 0` (guarantees a single-scope solve is dispatched
+///   and its problem captured); and
+/// * objective `minimize total`.
+///
+/// After the step-6 membership filter, `dependent_cells` must be EXACTLY the
+/// two non-`@optimized` coupled cells `{line_cost, total}` — the `@optimized`
+/// `opt_cost` is excluded (it must stay frozen: re-running it through plain
+/// `eval_expr` in the post-solve write-back would bypass the compute-dispatch
+/// registry). The `opt_fn` `CompiledFunction` is registered on the module so
+/// `find_matching_compiled_function` resolves the call to its `optimized_target`.
+fn single_scope_optimized_coupled_module() -> CompiledModule {
+    let s = TopologyTemplateBuilder::new("S")
+        .auto_param("S", "k", Type::length())
+        .param(
+            "S",
+            "unit",
+            Type::dimensionless_scalar(),
+            Some(literal(Value::Real(2.0))),
+        )
+        // line_cost = unit * k — non-@optimized coupled cell (must REMAIN).
+        .let_binding(
+            "S",
+            "line_cost",
+            Type::length(),
+            binop(
+                BinOp::Mul,
+                value_ref_typed("S", "unit", Type::dimensionless_scalar()),
+                value_ref("S", "k"),
+            ),
+        )
+        // opt_cost = opt_fn(k) — @optimized UserFunctionCall (must be EXCLUDED).
+        .let_binding(
+            "S",
+            "opt_cost",
+            Type::length(),
+            user_call("opt_fn", value_ref("S", "k")),
+        )
+        // total = line_cost + opt_cost — non-@optimized; opt_cost feeds the
+        // objective THROUGH total (must REMAIN, and IS the objective seed).
+        .let_binding(
+            "S",
+            "total",
+            Type::length(),
+            binop(
+                BinOp::Add,
+                value_ref("S", "line_cost"),
+                value_ref("S", "opt_cost"),
+            ),
+        )
+        .constraint("S", 0, None, gt(value_ref("S", "k"), literal(mm(0.0))))
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            value_ref("S", "total"),
+        ))
+        .build();
+
+    CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(s)
+        .function(optimized_length_fn("opt_fn", "test::opt_cost"))
+        .build()
+}
+
+/// step-5: the captured `ResolutionProblem.dependent_cells` must EXCLUDE the
+/// `@optimized` `UserFunctionCall` cell `opt_cost` (it must stay frozen), while
+/// the plain non-`@optimized` coupled cells `line_cost` and `total` remain
+/// present and topologically ordered.
+///
+/// RED today: the step-4 membership filter keeps ANY non-auto cell that (a)
+/// feeds the objective and (b) transitively reads an auto — including
+/// `opt_cost`, whose `@optimized` status is not yet consulted. The exclusion
+/// lands in step-6.
+#[test]
+fn dependent_cells_excludes_optimized_userfunctioncall_cell() {
+    let module = single_scope_optimized_coupled_module();
+
+    let k = ValueCellId::new("S", "k");
+    let mut solved = HashMap::new();
+    solved.insert(k.clone(), mm(3.0));
+
+    let spy = SpyConstraintSolver::new_solved(solved);
+    let captured = spy.captured_problem();
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+    let _result = engine.eval(&module);
+
+    let problem = captured.lock().unwrap().clone().expect(
+        "S (the auto-bearing scope) must dispatch a single-scope solve, \
+         capturing its problem",
+    );
+
+    let line_cost = ValueCellId::new("S", "line_cost");
+    let opt_cost = ValueCellId::new("S", "opt_cost");
+    let total = ValueCellId::new("S", "total");
+
+    let ids: Vec<ValueCellId> = problem
+        .dependent_cells
+        .iter()
+        .map(|(id, _)| id.clone())
+        .collect();
+
+    // (a) core exclusion: the @optimized cell must be ABSENT. Re-running it
+    // through plain eval_expr in the write-back would bypass the
+    // compute-dispatch registry and clobber its dispatched result.
+    assert!(
+        !ids.contains(&opt_cost),
+        "dependent_cells must EXCLUDE the @optimized UserFunctionCall cell \
+         `opt_cost` (its optimized_target is Some ⇒ it must stay frozen, not \
+         be re-folded through plain eval_expr); got {ids:?}",
+    );
+
+    // (b) non-@optimized coupled cells remain present.
+    assert!(
+        ids.contains(&line_cost),
+        "dependent_cells must still contain the non-@optimized coupled cell \
+         `line_cost`; got {ids:?}",
+    );
+    assert!(
+        ids.contains(&total),
+        "dependent_cells must still contain the non-@optimized coupled cell \
+         `total` (the objective seed); got {ids:?}",
+    );
+
+    // (c) exactly the two non-@optimized coupled cells survive.
+    assert_eq!(
+        ids.len(),
+        2,
+        "dependent_cells must be EXACTLY {{line_cost, total}} — the @optimized \
+         `opt_cost` excluded; got {ids:?}",
+    );
+
+    // (d) topological order preserved: line_cost precedes total.
+    let pos_line_cost = ids
+        .iter()
+        .position(|id| id == &line_cost)
+        .expect("line_cost present (asserted above)");
+    let pos_total = ids
+        .iter()
+        .position(|id| id == &total)
+        .expect("total present (asserted above)");
+    assert!(
+        pos_line_cost < pos_total,
+        "dependent_cells must stay topologically ordered: `line_cost` before \
+         `total` (total reads line_cost); got {ids:?}",
     );
 }
