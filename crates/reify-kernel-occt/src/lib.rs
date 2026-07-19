@@ -6457,6 +6457,45 @@ mod tests {
         );
     }
 
+    /// Defense-in-depth: each of the four OCCT geometry-query FFI entry points
+    /// must reject a null-topology shape with a catchable `Err` — never a
+    /// hardware SIGSEGV — even when called DIRECTLY, bypassing the `get_shape`
+    /// boundary guard. This pins the C++ IsNull guards independently of the
+    /// Rust chokepoint, so any future or direct-FFI path that skips `get_shape`
+    /// still fails safely.
+    ///
+    /// RED (pre-fix): `query_volume` dereferences `ShapeType()` on null
+    /// topology → SIGSEGV (the guaranteed crash vector), and `query_centroid`
+    /// returns `Ok(origin)` (so its `is_err()` assertion would fail). GREEN
+    /// (after the C++ guards): each throws `std::runtime_error`, mapped by cxx
+    /// to a catchable `Err`.
+    ///
+    /// MUST run under `cargo nextest run` (process-per-test isolation) so the
+    /// pre-fix crash is contained as one failing test, not a suite abort.
+    #[test]
+    fn occt_query_ffi_rejects_null_topology_shape() {
+        let null_shape = ffi::ffi::make_null_shape_for_test();
+
+        // query_volume is the guaranteed crash vector pre-fix (ShapeType()
+        // fallback over null topology).
+        assert!(
+            ffi::ffi::query_volume(&null_shape).is_err(),
+            "query_volume on null-topology shape must return Err, not crash"
+        );
+        assert!(
+            ffi::ffi::query_centroid(&null_shape).is_err(),
+            "query_centroid on null-topology shape must return Err"
+        );
+        assert!(
+            ffi::ffi::query_bbox(&null_shape).is_err(),
+            "query_bbox on null-topology shape must return Err"
+        );
+        assert!(
+            ffi::ffi::query_inertia_tensor(&null_shape, 1000.0).is_err(),
+            "query_inertia_tensor on null-topology shape must return Err"
+        );
+    }
+
     #[test]
     fn warm_state_skips_null_shapes() {
         let mut kernel = OcctKernel::new();
