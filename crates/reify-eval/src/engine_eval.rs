@@ -1659,6 +1659,53 @@ fn build_dependent_cells(
         .collect()
 }
 
+/// Post-solve write-back of the coupled non-auto value-cells in the SINGLE
+/// authoritative cross-scope order `problem.dependent_cells` carries (task #5188
+/// step-8, PRD `docs/prds/v0_6/whole-model-joint-drive-seam.md` §6.3 PRIMARY
+/// INVARIANT). Folds `dependent_cells` IN STORED ORDER, evaluating each cell's
+/// `default_expr` against the running `values` and recording the result as
+/// `Determined` in both `values` and `snapshot_values`.
+///
+/// `dependent_cells` is the one list `build_dependent_cells` produced — the same
+/// authority β's per-trial fold consumes — so materializing the coupled cells
+/// here (rather than re-deriving a per-member order) makes the write-back and
+/// β's fold structurally incapable of diverging. A cross-scope Let coupling
+/// (`A.total = A.line_cost + B.total`) resolves correctly because the
+/// topological order places every producer before its reader ACROSS scopes,
+/// which the per-member `evaluate_let_bindings` loop (`detect_let_cycle`,
+/// single-template) cannot honour when it visits the reader's scope first.
+///
+/// Membership already excludes auto params and `@optimized` cells
+/// (`build_dependent_cells`), so this never overwrites a solver-resolved auto
+/// nor re-folds a compute-dispatched cell through plain `eval_expr`. An empty
+/// `dependent_cells` makes this a no-op ⇒ byte-identical to the pre-joint-drive
+/// write-back. Mirrors `reeval_cone_cell`'s eval-context shape
+/// (`eval_ctx_with_meta` + `with_determinacy` + `with_runtime_diagnostics`).
+fn materialize_dependent_cells(
+    dependent_cells: &[(ValueCellId, CompiledExpr)],
+    values: &mut ValueMap,
+    snapshot_values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    runtime_sink: &RefCell<Vec<Diagnostic>>,
+) {
+    for (id, expr) in dependent_cells {
+        // The context is rebuilt per cell so each fold step reads the values
+        // (and determinacy) the PRIOR steps just wrote — the running fold that
+        // makes producer-before-reader ordering meaningful. The immutable
+        // borrows of `values`/`snapshot_values` end at the `;` (the temporary
+        // ctx is dropped), so the inserts below are unconflicted.
+        let value = reify_expr::eval_expr(
+            expr,
+            &eval_ctx_with_meta(values, functions, meta_map)
+                .with_determinacy(snapshot_values)
+                .with_runtime_diagnostics(runtime_sink),
+        );
+        values.insert(id.clone(), value.clone());
+        snapshot_values.insert(id.clone(), (value, DeterminacyState::Determined));
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_solver_problem(
     template: &reify_compiler::TopologyTemplate,
@@ -4742,6 +4789,20 @@ impl Engine {
                             &mut structured_detail,
                             &runtime_sink,
                         );
+
+                        // α (task #5188 step-8): materialize the coupled cells in
+                        // the SINGLE authoritative cross-scope order
+                        // `problem.dependent_cells` carries (PRD §6.3), after the
+                        // per-template Let re-eval. Empty ⇒ no-op ⇒ byte-identical
+                        // to the pre-joint-drive write-back.
+                        materialize_dependent_cells(
+                            &problem.dependent_cells,
+                            &mut values,
+                            &mut snapshot.values,
+                            &problem.functions,
+                            &meta_map,
+                            &runtime_sink,
+                        );
                     }
                     SolveResult::Infeasible {
                         diagnostics: solver_diags,
@@ -6221,6 +6282,22 @@ impl Engine {
                         runtime_sink,
                     );
                 }
+
+                // α (task #5188 step-8): after the per-member Let re-eval,
+                // materialize the coupled cells in the SINGLE authoritative
+                // CROSS-SCOPE order `problem.dependent_cells` carries (PRD §6.3),
+                // so a cross-scope Let coupling (e.g. `A.total` reading `B.total`)
+                // resolves producer-before-reader regardless of `cluster.scopes`
+                // iteration order — the per-member `detect_let_cycle` loop above
+                // orders only WITHIN a template. Empty ⇒ no-op ⇒ byte-identical.
+                materialize_dependent_cells(
+                    &problem.dependent_cells,
+                    values,
+                    &mut snapshot.values,
+                    &problem.functions,
+                    &meta_map,
+                    runtime_sink,
+                );
             }
             SolveResult::Infeasible {
                 diagnostics: solver_diags,
