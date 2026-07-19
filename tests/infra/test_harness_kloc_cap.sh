@@ -172,6 +172,14 @@ harness_layout_violations() {
     local violations=0
     local f base lines key
 
+    # Graceful degradation: a missing crate tests dir is an explicit FAIL, never
+    # a silent pass — a non-existent dir would otherwise glob to zero files and
+    # masquerade as a clean crate.
+    if [ ! -d "$tests_dir" ]; then
+        _emit FAIL "crate=$crate" "dir=$tests_dir" "reason=missing-tests-dir"
+        return 1
+    fi
+
     # Load the grandfather baseline (comment/blank-line stripped, matching the
     # run-all-classification-lib.sh accessor style) into a set for O(1) rule-(b)
     # membership tests — read once per crate, not once per file.
@@ -410,10 +418,15 @@ assert "5: grandfather baseline exists (guard integrity)" \
 assert "5: grandfather baseline is non-empty after comment/blank stripping (guard integrity)" \
     test -n "$_baseline_data"
 
-# The live scan is wired here in step-10; until then these "not run" defaults
-# keep the two assertions below RED.
-_live_rc=1
-_live_out=""
+# Wire the live scan over the 5 consolidatable crates' real tests dirs. A
+# missing crate dir surfaces as an explicit missing-tests-dir FAIL from the
+# detector (graceful degradation, never a silent pass).
+_live_args=()
+for _c in "${CONSOLIDATABLE_CRATES[@]}"; do
+    _live_args+=("$_c:$REPO_ROOT/crates/$_c/tests")
+done
+_live_rc=0
+_live_out="$(run_harness_layout_scan "$BASELINE" "$CAP_LINES" "${_live_args[@]}")" || _live_rc=$?
 
 _live_summary="$(printf '%s\n' "$_live_out" | grep -E '^HARNESS_KLOC_CAP SUMMARY ' || true)"
 assert "5: live scan is green on the current tree (rc 0, zero violations)" \
