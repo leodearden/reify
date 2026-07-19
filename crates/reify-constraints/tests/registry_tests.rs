@@ -20,6 +20,7 @@ fn registry_matches_dimensional_solver_simple_feasibility() {
     let lt_expr = lt(thickness_ref, literal(mm(20.0)));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: thickness_id.clone(),
             param_type: Type::length(),
@@ -66,6 +67,7 @@ fn registry_solves_independent_subproblems() {
     let c2 = gt(value_ref("Part", "b"), literal(mm(10.0)));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: a_id.clone(),
@@ -114,6 +116,7 @@ fn registry_uses_fallback_for_all_domains() {
     let c2 = lt(value_ref("Part", "x"), literal(mm(50.0)));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: x_id.clone(),
             param_type: Type::length(),
@@ -152,6 +155,7 @@ fn cross_domain_shared_param_solved_via_fallback() {
     let c3 = lt(value_ref("Part", "a"), literal(mm(50.0)));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: a_id.clone(),
@@ -205,6 +209,7 @@ fn registry_backward_compat_compound_constraint() {
     );
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: x_id.clone(),
             param_type: Type::length(),
@@ -251,6 +256,7 @@ fn registry_compat_infeasible_bounds() {
     );
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: x_id.clone(),
             param_type: Type::length(),
@@ -297,6 +303,7 @@ fn registry_compat_false_negative_small_violation() {
     );
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: x_id.clone(),
             param_type: Type::length(),
@@ -329,6 +336,7 @@ fn registry_compat_maximize_objective() {
     let objective = ObjectiveSet::single(ObjectiveSense::Maximize, thickness_ref);
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: thickness_id.clone(),
             param_type: Type::length(),
@@ -386,6 +394,7 @@ fn solve_ranked_values_are_byte_identical_to_solve() {
     let objective = ObjectiveSet::single(ObjectiveSense::Maximize, thickness_ref);
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: thickness_id.clone(),
             param_type: Type::length(),
@@ -447,6 +456,7 @@ fn registry_compat_empty_problem() {
     let registry = SolverRegistry::new(Box::new(DimensionalSolver));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![],
         constraints: vec![],
         current_values: ValueMap::new(),
@@ -503,6 +513,7 @@ fn objective_spanning_independent_components_merges_them() {
     let objective = ObjectiveSet::single(ObjectiveSense::Maximize, obj_expr);
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: a_id.clone(),
@@ -599,6 +610,7 @@ fn two_param_interior_quadratic_problem_via_registry()
     current.insert(y_id.clone(), mm(90.0));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: x_id.clone(),
@@ -846,6 +858,7 @@ fn solve_ranked_registry_dim1_objective_returns_exactly_one_candidate() {
     let objective = ObjectiveSet::single(ObjectiveSense::Minimize, dx2);
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: x_id,
             param_type: Type::length(),
@@ -892,6 +905,7 @@ fn solve_ranked_registry_infeasible_maps_through_unchanged() {
     );
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: x_id,
             param_type: Type::length(),
@@ -923,6 +937,7 @@ fn solve_ranked_registry_empty_problem_maps_through_unchanged() {
     let registry = SolverRegistry::new(Box::new(DimensionalSolver));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![],
         constraints: vec![],
         current_values: ValueMap::new(),
@@ -1002,6 +1017,7 @@ fn pt_pt_distance_problem() -> (reify_core::ValueCellId, reify_core::ValueCellId
     let constraint_expr = eq(dist_call, literal(mm(10.0)));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: x_id.clone(),
@@ -1128,6 +1144,7 @@ fn registry_mixed_dimensional_and_geometric() {
     let geo_expr = eq(dist_call, literal(mm(15.0)));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: thickness_id.clone(),
@@ -1202,6 +1219,7 @@ fn registry_merges_unique_flag() {
     let c2 = gt(value_ref("Part", "b"), literal(mm(10.0)));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: a_id.clone(),
@@ -1333,6 +1351,7 @@ fn lexicographic_stages_by_descending_priority() {
     let registry = SolverRegistry::new(Box::new(spy));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam { id: x_id.clone(), param_type: Type::length(), bounds: Some((0.001, 0.1)), free: true },
             AutoParam { id: y_id.clone(), param_type: Type::length(), bounds: Some((0.001, 0.1)), free: true },
@@ -1446,6 +1465,7 @@ fn lexicographic_freezes_earlier_rank_as_epsilon_band() {
     let registry = SolverRegistry::new(Box::new(spy));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: x_id.clone(),
@@ -1574,6 +1594,7 @@ fn lexicographic_ties_fold_as_weighted_sum_within_rank() {
     let registry = SolverRegistry::new(Box::new(spy));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam { id: x_id.clone(), param_type: Type::length(), bounds: Some((0.001, 0.1)), free: true },
             AutoParam { id: y_id.clone(), param_type: Type::length(), bounds: Some((0.001, 0.1)), free: true },
@@ -1662,6 +1683,7 @@ fn lexicographic_single_rank_degenerates_to_weighted_sum() {
 
     // free: true — we are testing the delegation path, not uniqueness.
     let make_problem = |obj: ObjectiveSet| ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam { id: x_id.clone(), param_type: Type::length(), bounds: Some((0.001, 0.1)), free: true },
             AutoParam { id: y_id.clone(), param_type: Type::length(), bounds: Some((0.001, 0.1)), free: true },
@@ -1764,6 +1786,7 @@ fn lexicographic_preserves_rank1_within_epsilon_and_improves_rank2() {
     // reduced-iteration warm-start that can collapse the Nelder-Mead simplex
     // before it explores the constraint boundary at x=3mm.
     let make_problem = |obj: ObjectiveSet| ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam { id: x_id.clone(), param_type: Type::length(), bounds: Some((0.0, 0.1)), free: true },
             AutoParam { id: y_id.clone(), param_type: Type::length(), bounds: Some((0.0, 0.1)), free: true },

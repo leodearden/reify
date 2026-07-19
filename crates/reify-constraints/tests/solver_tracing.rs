@@ -95,6 +95,7 @@ fn consolidated_debug_event_on_max_iters_reached() {
     }
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: ids
             .iter()
             .map(|id| AutoParam {
@@ -143,6 +144,7 @@ fn normal_solve_emits_zero_warns() {
     let lt_expr = lt(x_ref, literal(mm(20.0)));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: x_id.clone(),
             param_type: Type::length(),
@@ -196,6 +198,7 @@ fn no_best_param_returns_no_progress_with_reason() {
     current.insert(x_id.clone(), mm(0.05));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: x_id.clone(),
             param_type: Type::length(),
@@ -283,6 +286,7 @@ fn executor_error_returns_no_progress_with_reason() {
     );
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: x_id.clone(),
             param_type: Type::length(),

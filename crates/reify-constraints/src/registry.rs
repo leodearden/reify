@@ -241,6 +241,7 @@ impl SolverRegistry {
             };
 
             let sub_problem = ResolutionProblem {
+                dependent_cells: Vec::new(),
                 auto_params: sub_auto_params,
                 constraints: component.constraints.clone(),
                 current_values: sub_values,
@@ -557,6 +558,7 @@ fn solve_lexicographic(solver: &dyn ConstraintSolver, base: &ResolutionProblem) 
             .collect();
 
         let stage_problem = ResolutionProblem {
+            dependent_cells: Vec::new(),
             auto_params: free_auto_params,
             constraints: accumulated_constraints.clone(),
             current_values: current_values.clone(),

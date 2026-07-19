@@ -377,6 +377,23 @@ pub struct ResolutionProblem {
     /// so the table lives in a single Arc-owned heap buffer — one pointer hop
     /// instead of Arc → Vec header → heap (task #2413).
     pub functions: Arc<[CompiledFunction]>,
+    /// Coupled non-auto value-cells to re-materialize after the solve, in a
+    /// single authoritative cross-scope topological order (PRD §6.1/§6.3).
+    ///
+    /// Each entry pairs a [`ValueCellId`] with the [`CompiledExpr`] that
+    /// recomputes it. Invariants:
+    ///
+    /// * **Ordering** — evaluating these expressions sequentially against a
+    ///   [`ValueMap`](crate::value::ValueMap) seeded with the solved trial-auto
+    ///   values yields exactly the same cell values the post-solve write-back
+    ///   produces. The per-trial fold (β) and the write-back consume this one
+    ///   list, so they cannot diverge.
+    /// * **Membership** — exactly the non-auto, non-`@optimized` value-cells
+    ///   that (a) transitively feed the expanded objective/constraint
+    ///   expressions AND (b) transitively read ≥1 `auto_param`.
+    /// * **Empty ⇒ legacy** — an empty vector makes the write-back fold a
+    ///   no-op, preserving byte-identical pre-joint-drive behaviour.
+    pub dependent_cells: Vec<(ValueCellId, CompiledExpr)>,
 }
 
 /// Trait for constraint checking. Lives in reify-types for dependency inversion —
@@ -662,6 +679,7 @@ mod tests {
     #[test]
     fn resolution_problem_empty() {
         let problem = ResolutionProblem {
+            dependent_cells: Vec::new(),
             auto_params: vec![],
             constraints: vec![],
             current_values: crate::value::ValueMap::new(),
@@ -684,6 +702,7 @@ mod tests {
         );
 
         let problem = ResolutionProblem {
+            dependent_cells: Vec::new(),
             auto_params: vec![AutoParam {
                 id: ValueCellId::new("Bracket", "width"),
                 param_type: Type::length(),
@@ -810,6 +829,7 @@ mod tests {
     fn constraint_solver_trait_call() {
         let solver = MockSolver;
         let problem = ResolutionProblem {
+            dependent_cells: Vec::new(),
             auto_params: vec![],
             constraints: vec![],
             current_values: crate::value::ValueMap::new(),
@@ -943,6 +963,7 @@ mod tests {
 
         let solver = MockSolvedSolver { values: solved_values.clone(), unique: true };
         let problem = ResolutionProblem {
+            dependent_cells: Vec::new(),
             auto_params: vec![],
             constraints: vec![],
             current_values: ValueMap::new(),
@@ -978,6 +999,7 @@ mod tests {
 
         let solver = MockSolvedSolver { values: solved_values.clone(), unique: false };
         let problem = ResolutionProblem {
+            dependent_cells: Vec::new(),
             auto_params: vec![],
             constraints: vec![],
             current_values: ValueMap::new(),
@@ -1020,6 +1042,7 @@ mod tests {
             ],
         };
         let problem = ResolutionProblem {
+            dependent_cells: Vec::new(),
             auto_params: vec![],
             constraints: vec![],
             current_values: ValueMap::new(),
@@ -1045,6 +1068,7 @@ mod tests {
             reason: "iteration limit, no feasible point".to_string(),
         };
         let problem = ResolutionProblem {
+            dependent_cells: Vec::new(),
             auto_params: vec![],
             constraints: vec![],
             current_values: ValueMap::new(),

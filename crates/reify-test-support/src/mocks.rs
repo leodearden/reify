@@ -9,6 +9,7 @@ use reify_ir::{AutoParam, BRepKind, ConstraintChecker, ConstraintDiagnostics, Co
 /// Create an empty `ResolutionProblem` with all fields set to empty/default values.
 pub fn empty_problem() -> ResolutionProblem {
     ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![],
         constraints: vec![],
         current_values: ValueMap::new(),
@@ -3975,6 +3976,7 @@ mod tests {
 
         // First call
         let problem1 = ResolutionProblem {
+            dependent_cells: Vec::new(),
             auto_params: vec![single_auto_param(ValueCellId::new("A", "x"))],
             constraints: vec![],
             current_values: ValueMap::new(),
@@ -3989,6 +3991,7 @@ mod tests {
 
         // Second call
         let problem2 = ResolutionProblem {
+            dependent_cells: Vec::new(),
             auto_params: vec![single_auto_param(ValueCellId::new("B", "y"))],
             constraints: vec![],
             current_values: ValueMap::new(),

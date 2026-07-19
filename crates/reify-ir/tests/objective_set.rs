@@ -188,6 +188,7 @@ fn single_term_objective_set_threads_through_resolution_problem_minimize() {
     let set = ObjectiveSet::single(ObjectiveSense::Minimize, expr);
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![],
         constraints: vec![],
         current_values: ValueMap::new(),
@@ -213,6 +214,7 @@ fn single_term_objective_set_threads_through_resolution_problem_maximize() {
     let set = ObjectiveSet::single(ObjectiveSense::Maximize, expr);
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![],
         constraints: vec![],
         current_values: ValueMap::new(),

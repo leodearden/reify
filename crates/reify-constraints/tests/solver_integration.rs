@@ -35,6 +35,7 @@ fn single_param_feasibility_via_trait_object() {
     let lt_expr = lt(thickness_ref, literal(mm(20.0)));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: thickness_id.clone(),
             param_type: Type::length(),
@@ -78,6 +79,7 @@ fn maximize_objective() {
     let objective = ObjectiveSet::single(ObjectiveSense::Maximize, thickness_ref);
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: thickness_id.clone(),
             param_type: Type::length(),
@@ -120,6 +122,7 @@ fn send_sync_verification() {
     // Verify it works as a trait object behind Box
     let solver: Box<dyn ConstraintSolver> = Box::new(DimensionalSolver);
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![],
         constraints: vec![],
         current_values: ValueMap::new(),
@@ -149,6 +152,7 @@ fn false_negative_small_violation() {
     current.insert(x_id.clone(), meters(1.9999999));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: x_id.clone(),
             param_type: Type::length(),
@@ -188,6 +192,7 @@ fn false_negative_multiple_small_violations() {
     current.insert(y_id.clone(), meters(0.9999999));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: x_id.clone(),
@@ -250,6 +255,7 @@ fn false_negative_mixed_scale() {
     );
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: x_id.clone(),
@@ -290,6 +296,7 @@ fn bounds_dont_hide_infeasibility() {
     let constraint = gt(x_ref, literal(mm(15.0)));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: x_id.clone(),
             param_type: Type::length(),
@@ -334,6 +341,7 @@ fn compound_and_constraint() {
     );
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: x_id.clone(),
             param_type: Type::length(),
@@ -379,6 +387,7 @@ fn minimize_undef_objective_returns_no_progress() {
     let objective = ObjectiveSet::single(ObjectiveSense::Minimize, div_by_zero);
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: x_id.clone(),
             param_type: Type::length(),
@@ -417,6 +426,7 @@ fn maximize_undef_objective_returns_no_progress() {
     let objective = ObjectiveSet::single(ObjectiveSense::Maximize, div_by_zero);
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: x_id.clone(),
             param_type: Type::length(),
@@ -451,6 +461,7 @@ fn nelder_mead_tolerance_config_does_not_degenerate() {
     let lt_expr = lt(x_ref, literal(mm(50.0)));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: x_id.clone(),
             param_type: Type::length(),
@@ -503,6 +514,7 @@ fn optimize_with_feasible_initial_point() {
     current.insert(thickness_id.clone(), mm(25.0));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: thickness_id.clone(),
             param_type: Type::length(),
@@ -554,6 +566,7 @@ fn maximize_with_feasible_initial_point() {
     current.insert(x_id.clone(), mm(10.0));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: x_id.clone(),
             param_type: Type::length(),
@@ -620,6 +633,7 @@ fn warm_start_falls_back_to_initial_when_optimizer_drifts_infeasible() {
     current.insert(x_id.clone(), mm(5.5));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: x_id.clone(),
             param_type: Type::length(),
@@ -672,6 +686,7 @@ fn infeasible_with_objective_still_detected() {
     let objective = ObjectiveSet::single(ObjectiveSense::Maximize, x_ref);
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: x_id.clone(),
             param_type: Type::length(),
@@ -729,6 +744,7 @@ fn warm_start_optimizes_when_possible() {
     current.insert(x_id.clone(), mm(25.0));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: x_id.clone(),
             param_type: Type::length(),
@@ -811,6 +827,7 @@ fn warm_start_scales_iterations_with_dimension() {
         .collect();
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params,
         constraints,
         current_values: current,
@@ -901,6 +918,7 @@ fn warm_start_budget_exhaustion_stays_feasible() {
     }
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: ids
             .iter()
             .map(|id| AutoParam {
@@ -988,6 +1006,7 @@ fn warm_start_feasible_no_objective_early_exit() {
     current.insert(z_id.clone(), mm(15.0));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: x_id.clone(),
@@ -1058,6 +1077,7 @@ fn infeasible_initial_not_rescued_by_fallback() {
     current.insert(x_id.clone(), mm(5.0));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: x_id.clone(),
             param_type: Type::length(),
@@ -1130,6 +1150,7 @@ fn multi_param_warm_start_with_objective() {
     }
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: p0_id.clone(),
@@ -1227,6 +1248,7 @@ fn partial_feasibility_infeasible_when_unreachable() {
     current.insert(p1_id.clone(), mm(10.0));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: p0_id.clone(),
@@ -1308,6 +1330,7 @@ fn partial_feasibility_solved_when_close_to_boundary() {
     current.insert(p1_id.clone(), mm(19.5));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: p0_id.clone(),
@@ -1385,6 +1408,7 @@ fn warm_start_budget_requires_objective_invariant() {
 
     // (a) With objective: warm-start budget path runs, optimizer pushes x toward lower bound
     let problem_with_obj = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: auto_params.clone(),
         constraints: constraints.clone(),
         current_values: current.clone(),
@@ -1414,6 +1438,7 @@ fn warm_start_budget_requires_objective_invariant() {
     // After η, inequality constraints trigger a synthetic Maximize(min-slack) objective
     // so the warm-start budget path runs and the solver converges to the midpoint.
     let problem_no_obj = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params,
         constraints,
         current_values: current,
@@ -1487,6 +1512,7 @@ fn warm_start_fallback_returns_exact_initial_values() {
     }
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: p0_id.clone(),
@@ -1556,6 +1582,7 @@ fn strict_auto_unique_solution_returns_unique_true() {
     let lt_expr = lt(x_ref, literal(mm(51.0)));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: x_id.clone(),
             param_type: Type::length(),
@@ -1598,6 +1625,7 @@ fn free_auto_skips_uniqueness_returns_unique_false() {
     let lt_expr = lt(x_ref, literal(mm(51.0)));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: x_id.clone(),
             param_type: Type::length(),
@@ -1645,6 +1673,7 @@ fn strict_auto_non_unique_returns_infeasible() {
     let gt_y = gt(y_ref, literal(mm(10.0)));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: x_id,
@@ -1699,6 +1728,7 @@ fn free_auto_resolves_underdetermined_system() {
     let gt_y = gt(y_ref, literal(mm(10.0)));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: x_id.clone(),
@@ -1749,6 +1779,7 @@ fn infeasible_diagnostic_carries_constraint_unsatisfiable_code() {
     let constraint = gt(x_ref, literal(mm(15.0)));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: x_id.clone(),
             param_type: Type::length(),
@@ -1804,6 +1835,7 @@ fn infeasible_residual_diagnostic_carries_constraint_unsatisfiable_code() {
     let c2 = eq(x_ref2, literal(mm(2.0)));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: x_id.clone(),
             param_type: Type::length(),
@@ -2174,6 +2206,7 @@ fn multi_term_weighted_sum_objective() {
     };
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: a_id.clone(),
@@ -2237,6 +2270,7 @@ fn maximize_via_objectiveset_i2() {
     let objective = ObjectiveSet::single(ObjectiveSense::Maximize, thickness_ref);
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: thickness_id.clone(),
             param_type: Type::length(),
@@ -2305,6 +2339,7 @@ fn weighted_objective_weight_factor_applied() {
     };
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: x_id.clone(),
             param_type: Type::length(),
@@ -2365,6 +2400,7 @@ fn solve_ranked_override_objective_score_is_some() {
     let objective = ObjectiveSet::single(ObjectiveSense::Minimize, quad_expr);
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: thickness_id.clone(),
             param_type: Type::length(),
@@ -2422,6 +2458,7 @@ fn solve_ranked_override_no_objective_feasibility_only() {
     let lt_expr = lt(thickness_ref, literal(mm(20.0)));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: thickness_id.clone(),
             param_type: Type::length(),
@@ -2510,6 +2547,7 @@ fn two_param_interior_quadratic_problem()
     current.insert(y_id.clone(), mm(90.0));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: x_id.clone(),
@@ -2728,6 +2766,7 @@ fn solve_ranked_multistart_ties_broken_by_ascending_start_index() {
     current.insert(y_id.clone(), mm(seed_y_mm));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: x_id.clone(),
@@ -2856,6 +2895,7 @@ fn solve_ranked_multistart_escapes_worse_local_optimum() {
     current.insert(y_id.clone(), mm(30.0));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: x_id.clone(),
@@ -2986,6 +3026,7 @@ fn solve_ranked_multistart_maximize_sense_picks_maximizing_point() {
     current.insert(y_id.clone(), mm(90.0));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: x_id.clone(),
@@ -3107,6 +3148,7 @@ fn solve_ranked_gate_dim1_objective_single_candidate() {
     let objective = ObjectiveSet::single(ObjectiveSense::Minimize, quad_expr);
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: thickness_id,
             param_type: Type::length(),
@@ -3152,6 +3194,7 @@ fn solve_ranked_gate_dim2_no_objective_feasibility_only() {
     let lt_y = lt(value_ref("GateNoObjective", "y"), literal(mm(50.0)));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: x_id.clone(),
@@ -3231,6 +3274,7 @@ fn solve_ranked_gate_dim2_cost_robustness_tradeoff_single_candidate() {
     let objective = ObjectiveSet::cost_robustness_tradeoff(cost_expr, 0.5);
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: t_id,
@@ -3310,6 +3354,7 @@ fn solve_ranked_multistart_inherits_money_robustness_floor() {
     let objective = ObjectiveSet::single(ObjectiveSense::Minimize, money_cost_expr(&x_id));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: x_id.clone(),
@@ -3429,6 +3474,7 @@ fn solve_ranked_multistart_k_scales_linearly_with_dim_high_dim_regression() {
         .collect();
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params,
         constraints: vec![],
         current_values: current,
@@ -3509,6 +3555,7 @@ fn solve_ranked_multistart_winner_non_unique_demotes_to_infeasible() {
     let objective = ObjectiveSet::single(ObjectiveSense::Minimize, literal(mm(1.0)));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: x_id,
@@ -3584,6 +3631,7 @@ fn solve_ranked_multistart_all_starts_infeasible_falls_back_to_infeasible() {
     let objective = ObjectiveSet::single(ObjectiveSense::Maximize, x_ref);
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: x_id,

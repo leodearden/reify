@@ -1537,6 +1537,7 @@ fn build_solver_problem(
 
     Some((
         ResolutionProblem {
+            dependent_cells: Vec::new(),
             auto_params: auto_param_list,
             constraints: filtered_constraints,
             current_values,
@@ -1802,6 +1803,7 @@ fn build_merged_solver_problem(
     };
 
     ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: auto_param_list,
         constraints: filtered_constraints,
         current_values: values.clone(),

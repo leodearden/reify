@@ -191,6 +191,7 @@ fn money_objective_floor_holds_value_off_boundary() {
     );
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: x_id.clone(),
             param_type: Type::Scalar { dimension: DimensionVector::LENGTH },
@@ -286,6 +287,7 @@ fn non_money_objective_unchanged() {
     let objective = ObjectiveSet::single(ObjectiveSense::Minimize, obj_expr);
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam { id: a_id.clone(), param_type: Type::Scalar { dimension: length_dim }, bounds: Some((0.0, 0.1)), free: false },
             AutoParam { id: b_id.clone(), param_type: Type::Scalar { dimension: length_dim }, bounds: Some((0.0, 0.1)), free: false },
@@ -364,6 +366,7 @@ fn floor_infeasible_emits_distinct_diagnostic() {
     );
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![length_auto_param(x_id.clone())],
         constraints: vec![
             (constraint_id("FloorInfeasible", 0), gt),
@@ -405,6 +408,7 @@ fn non_money_infeasible_keeps_constraint_unsatisfiable() {
 
     // No objective (no floor should be synthesised)
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![length_auto_param(x_id.clone())],
         constraints: vec![
             (constraint_id("NonMoneyInfeasible", 0), gt),

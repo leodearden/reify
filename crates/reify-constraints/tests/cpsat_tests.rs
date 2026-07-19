@@ -27,6 +27,7 @@ fn boolean_sat_3_params() {
     let constraint_expr = and(a_ref, or(b_ref, not(c_ref)));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: a_id.clone(),
@@ -83,6 +84,7 @@ fn boolean_infeasible_contradiction() {
     let constraint_expr = and(a_ref.clone(), not(a_ref));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: a_id.clone(),
             param_type: Type::Bool,
@@ -130,6 +132,7 @@ fn implication_if_a_then_b() {
     let constraint_expr = or(not(a_ref), b_ref);
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: a_id.clone(),
@@ -177,6 +180,7 @@ fn implication_forced_a_true_implies_b_true() {
     let c2 = or(not(a_ref), b_ref);
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: a_id.clone(),
@@ -233,6 +237,7 @@ fn cardinality_at_most_2_of_4() {
     let c4 = not(and(b_ref.clone(), and(c_ref.clone(), d_ref.clone())));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: a_id.clone(),
@@ -328,6 +333,7 @@ fn enum_constraint_excludes_one_variant() {
     let c2 = or(eq(x_ref.clone(), enum_b), eq(x_ref.clone(), enum_c));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: x_id.clone(),
             param_type: Type::Enum("Material".into()),
@@ -388,6 +394,7 @@ fn integer_constraint_sum_equals_10() {
     let c5 = le(y_ref, literal(Value::Int(10)));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: x_id.clone(),
@@ -456,6 +463,7 @@ fn all_different_3_ints() {
     let c3 = ne(y_ref, z_ref);
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: x_id.clone(),
@@ -525,6 +533,7 @@ fn empty_problem_returns_solved_empty() {
     let solver = CpSatSolver;
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![],
         constraints: vec![],
         current_values: ValueMap::new(),
@@ -552,6 +561,7 @@ fn make_int_problem_with_bounds(lo: f64, hi: f64) -> ResolutionProblem {
     // Trivial constraint: x >= 0 (just needs to be non-empty)
     let constraint = ge(x_ref, literal(Value::Int(0)));
     ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: x_id,
             param_type: Type::Int,
@@ -671,6 +681,7 @@ fn registry_integration_logical_solver() {
     let constraint_expr = and(a_ref, b_ref);
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: a_id.clone(),

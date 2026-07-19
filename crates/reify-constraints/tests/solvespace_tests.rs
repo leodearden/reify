@@ -77,6 +77,7 @@ fn solve_simple_point_distance_constraint() {
     let constraint_expr = eq(dist_call, ten_mm);
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: x_id.clone(),
@@ -194,6 +195,7 @@ fn solve_angle_constraint() {
     );
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: x2_id.clone(),
@@ -323,6 +325,7 @@ fn solve_parallel_constraint() {
     );
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: x2_id.clone(),
@@ -434,6 +437,7 @@ fn solve_coincident_constraint() {
     );
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: x1_id.clone(),
@@ -527,6 +531,7 @@ fn solve_overconstrained_returns_infeasible() {
     let c2 = eq(dist2, literal(mm(20.0)));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: x_id.clone(),
@@ -592,6 +597,7 @@ fn solve_underconstrained_solves_with_dof() {
     let constraint_expr = eq(dist, literal(mm(15.0)));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: x_id.clone(),
@@ -672,6 +678,7 @@ fn solve_never_panics_on_valid_input() {
         let constraint_expr = eq(dist, literal(mm(10.0)));
 
         let problem = ResolutionProblem {
+            dependent_cells: Vec::new(),
             auto_params: vec![
                 AutoParam {
                     id: x_id,
@@ -735,6 +742,7 @@ fn solve_unrecognized_pattern_falls_through() {
     let constraint_expr = gt(unknown_fn, literal(Value::Real(5.0)));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: x_id,
             param_type: Type::length(),
@@ -804,6 +812,7 @@ fn non_numeric_coord_returns_none() {
     let constraint_expr = eq(dist_call, ten_mm);
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: x_id,
             param_type: Type::length(),
@@ -882,6 +891,7 @@ fn solve_returns_no_progress_for_missing_non_auto_value() {
 
     // fixed_y_id is intentionally absent from both auto_params and current_values.
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![AutoParam {
             id: x_id.clone(),
             param_type: Type::length(),
@@ -960,6 +970,7 @@ fn inconsistent_geometric_diagnostic_carries_constraint_unsatisfiable_code() {
     let c2 = eq(dist2, literal(mm(20.0)));
 
     let problem = ResolutionProblem {
+        dependent_cells: Vec::new(),
         auto_params: vec![
             AutoParam {
                 id: x_id.clone(),
