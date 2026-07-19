@@ -35,6 +35,13 @@
 #             TRADEOFF BREADCRUMB: exit-0 here is the safe-default full-gate
 #             route; a cheaper citing-test-subset alternative is supplied
 #             separately via scripts/verify-pipeline-infra-tests.txt)
+#   infra-tests: ANY tests/infra/*.sh path (open-ended glob, matched in code —
+#             not enumerable in --list; not a manifest line, since the
+#             literal-per-file manifest cannot cover not-yet-existent infra
+#             tests). A new/renamed infra test changes the merge-gate suite
+#             itself, so it is definitionally never config-only (task 5256;
+#             recurrence prevention for the 2026-07-19 5247/5249 incident,
+#             PRD docs/prds/merge-gate-health.md W3a).
 #
 # Environment knobs:
 #   REIFY_VERIFY_PIPELINE_GUARD_VERIFY_SH — override path to verify.sh used for
@@ -147,6 +154,18 @@ case "$_subcmd" in
                  || true)
         if [ -n "$_match" ]; then
             echo "$_match"
+            exit 0
+        fi
+        # Infra-test glob clause (task 5256; PRD merge-gate-health.md W3a):
+        # ANY tests/infra/*.sh path is definitionally load-bearing — a new/renamed
+        # infra test changes the merge-gate suite itself, so an infra-test diff is
+        # never config-only. Open-ended glob (matches infra tests that don't exist
+        # yet), hence a special-case here rather than a fixed-string manifest line.
+        _infra_match=$(printf '%s\n' "$_normalized" \
+                       | grep -m1 -E '^tests/infra/[^/]*\.sh$' 2>/dev/null \
+                       || true)
+        if [ -n "$_infra_match" ]; then
+            echo "$_infra_match"
             exit 0
         fi
         exit 1

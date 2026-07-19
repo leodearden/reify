@@ -165,7 +165,14 @@ _ERR14="$(mktemp)"
 # target the slot file to actually block the wrapper.
 ( flock -x 9; sleep 10 ) 9>>"${_LOCK14}.slot-1" &
 _HOLDER14=$!
-sleep 0.2  # give the holder time to acquire before we proceed
+# Causal flock-probe barrier (task 5258, PRD merge-gate-health W4b): block until
+# the holder actually holds slot-1, instead of a fixed `sleep 0.2` grace that a
+# saturated host can outrun (holder unscheduled ⇒ wrapper finds slot FREE ⇒
+# acquires instantly ⇒ got 0 instead of the expected exit 75).  Wrapped in
+# `assert` so a transient confirm-failure yields a clear FAIL naming the root
+# cause instead of tripping `set -e` and aborting the whole suite.
+assert "Test 14: background holder confirmed holding slot-1 (causal flock-probe barrier)" \
+    occt_wait_until_slot_held "${_LOCK14}.slot-1"
 
 _START14="$(date +%s)"
 _EXIT14=0
@@ -203,16 +210,20 @@ echo "--- Test 15: REIFY_OCCT_TEST_TIMEOUT measured post-lock, not from wrapper 
 
 _LOCK15="$(mktemp)"
 
-# Spawn a holder that holds slot-1 for 4 seconds.
+# Spawn a holder that holds slot-1 for 6 seconds.
 # The wrapper uses ${LOCK}.slot-1 (not $LOCK directly), so the holder must
 # target the slot file to actually block the wrapper.
-# _START15 is recorded ~0.2s after holder spawn, so the effective wait from
-# _START15's perspective is ~3.8s; adding 1s command gives ~4.8s, which
-# truncates to 4 (satisfying the lower bound ≥ 4).  With 3s holder the
-# wait is ~2.8s, total ~3.8s → truncates to 3 → spurious failure on CI.
-( flock -x 9; sleep 4 ) 9>>"${_LOCK15}.slot-1" &
+# The causal flock-probe barrier below records _START15 at HOLDER-CONFIRMED
+# time, so the `elapsed >= 4` assert measures (remaining_hold − confirm_latency
+# + 1s command).  Hold bumped 4s→6s for margin: with a bounded confirm latency
+# (≤~2s under load) remaining_hold is ≥4s ⇒ elapsed ≥5s ⇒ truncates to ≥4 with
+# ≥1s margin; 6s < LOCK_WAIT(10s) leaves headroom so no spurious exit-75.
+( flock -x 9; sleep 6 ) 9>>"${_LOCK15}.slot-1" &
 _HOLDER15=$!
-sleep 0.2  # give holder time to acquire
+# Causal flock-probe barrier (task 5258): block until the holder holds slot-1.
+# Wrapped in `assert` so a transient confirm-failure cannot trip `set -e`.
+assert "Test 15: background holder confirmed holding slot-1 (causal flock-probe barrier)" \
+    occt_wait_until_slot_held "${_LOCK15}.slot-1"
 
 _START15="$(date +%s)"
 _EXIT15=0
@@ -312,13 +323,15 @@ echo "--- Tests T1–T7 (task 4621): host-relative compile timeout knobs ---"
 # T1: REIFY_VERIFY_TEST_TIMEOUT=90m → both debug (--workspace) and release
 #     nextest passes render `timeout --kill-after=60 90m`.
 #     RED: current code always emits 60m regardless of this env.
+_T1_ERR="$(mktemp)"
 _T1_PLAN="$(REIFY_VERIFY_TEST_TIMEOUT=90m bash "$REPO_ROOT/scripts/verify.sh" test \
-    --profile both --scope all --print-plan 2>/dev/null | grep -v '^#')"
+    --profile both --scope all --print-plan 2>"$_T1_ERR" | grep -v '^#')"
 export _T1_PLAN
 assert "T1: REIFY_VERIFY_TEST_TIMEOUT=90m: debug nextest pass uses 90m outer timeout" \
-    bash -c "printf '%s\n' \"\$_T1_PLAN\" | grep -qE 'timeout --kill-after=60 90m .*cargo nextest run --workspace'"
+    occt_plan_grep_or_dump 'timeout --kill-after=60 90m .*cargo nextest run --workspace' "$_T1_PLAN" "$_T1_ERR"
 assert "T1: REIFY_VERIFY_TEST_TIMEOUT=90m: release nextest pass uses 90m outer timeout" \
-    bash -c "printf '%s\n' \"\$_T1_PLAN\" | grep -qE 'timeout --kill-after=60 90m .*cargo nextest run .*--release'"
+    occt_plan_grep_or_dump 'timeout --kill-after=60 90m .*cargo nextest run .*--release' "$_T1_PLAN" "$_T1_ERR"
+rm -f "$_T1_ERR"
 
 # T2: REIFY_VERIFY_TEST_TIMEOUT unset → both passes use 60m (workstation default preserved).
 #     Guard: Tests 17/17b already check this via TEST_PLAN_SEGS; this is a direct re-check.
@@ -328,45 +341,55 @@ assert "T2: REIFY_VERIFY_TEST_TIMEOUT unset: release nextest pass uses default 6
     bash -c "printf '%s\n' \"\$TEST_PLAN_SEGS\" | grep -qE 'timeout --kill-after=60 60m .*cargo nextest run .*--release'"
 
 # T3: Malformed REIFY_VERIFY_TEST_TIMEOUT=banana → falls back to 60m (validation guard).
+_T3_ERR="$(mktemp)"
 _T3_PLAN="$(REIFY_VERIFY_TEST_TIMEOUT=banana bash "$REPO_ROOT/scripts/verify.sh" test \
-    --profile both --scope all --print-plan 2>/dev/null | grep -v '^#')"
+    --profile both --scope all --print-plan 2>"$_T3_ERR" | grep -v '^#')"
 export _T3_PLAN
 assert "T3: REIFY_VERIFY_TEST_TIMEOUT=banana (malformed): falls back to 60m default" \
-    bash -c "printf '%s\n' \"\$_T3_PLAN\" | grep -qE 'timeout --kill-after=60 60m .*cargo nextest run --workspace'"
+    occt_plan_grep_or_dump 'timeout --kill-after=60 60m .*cargo nextest run --workspace' "$_T3_PLAN" "$_T3_ERR"
+rm -f "$_T3_ERR"
 
 # T4: REIFY_VERIFY_CLIPPY_TIMEOUT=70m → cargo clippy AND gui-feature cargo check
 #     both render `timeout --kill-after=60 70m` in verify.sh lint --print-plan.
 #     RED: current code always emits 45m.
+_T4_ERR="$(mktemp)"
 _T4_PLAN="$(REIFY_VERIFY_CLIPPY_TIMEOUT=70m bash "$REPO_ROOT/scripts/verify.sh" lint \
-    --print-plan 2>/dev/null | grep -v '^#')"
+    --print-plan 2>"$_T4_ERR" | grep -v '^#')"
 export _T4_PLAN
 assert "T4: REIFY_VERIFY_CLIPPY_TIMEOUT=70m: clippy pass uses 70m outer timeout" \
-    bash -c "printf '%s\n' \"\$_T4_PLAN\" | grep -qE 'timeout --kill-after=60 70m .*cargo clippy'"
+    occt_plan_grep_or_dump 'timeout --kill-after=60 70m .*cargo clippy' "$_T4_PLAN" "$_T4_ERR"
 assert "T4: REIFY_VERIFY_CLIPPY_TIMEOUT=70m: gui-feature cargo check uses 70m outer timeout" \
-    bash -c "printf '%s\n' \"\$_T4_PLAN\" | grep -qE 'timeout --kill-after=60 70m .*cargo check -p reify-gui'"
+    occt_plan_grep_or_dump 'timeout --kill-after=60 70m .*cargo check -p reify-gui' "$_T4_PLAN" "$_T4_ERR"
+rm -f "$_T4_ERR"
 
 # T5: REIFY_VERIFY_CLIPPY_TIMEOUT unset → clippy uses 45m (workstation default preserved).
+_T5_ERR="$(mktemp)"
 _T5_PLAN="$(env -u REIFY_VERIFY_CLIPPY_TIMEOUT bash "$REPO_ROOT/scripts/verify.sh" lint \
-    --print-plan 2>/dev/null | grep -v '^#')"
+    --print-plan 2>"$_T5_ERR" | grep -v '^#')"
 export _T5_PLAN
 assert "T5: REIFY_VERIFY_CLIPPY_TIMEOUT unset: clippy pass uses default 45m" \
-    bash -c "printf '%s\n' \"\$_T5_PLAN\" | grep -qE 'timeout --kill-after=60 45m .*cargo clippy'"
+    occt_plan_grep_or_dump 'timeout --kill-after=60 45m .*cargo clippy' "$_T5_PLAN" "$_T5_ERR"
+rm -f "$_T5_ERR"
 
 # T6: REIFY_VERIFY_CHECK_TIMEOUT=50m → cargo check --workspace --tests renders
 #     `timeout --kill-after=60 50m` in verify.sh typecheck --print-plan.
 #     RED: current code always emits 30m.
+_T6_ERR="$(mktemp)"
 _T6_PLAN="$(REIFY_VERIFY_CHECK_TIMEOUT=50m bash "$REPO_ROOT/scripts/verify.sh" typecheck \
-    --print-plan 2>/dev/null | grep -v '^#')"
+    --print-plan 2>"$_T6_ERR" | grep -v '^#')"
 export _T6_PLAN
 assert "T6: REIFY_VERIFY_CHECK_TIMEOUT=50m: cargo check --workspace --tests uses 50m outer timeout" \
-    bash -c "printf '%s\n' \"\$_T6_PLAN\" | grep -qE 'timeout --kill-after=60 50m .*cargo check --workspace'"
+    occt_plan_grep_or_dump 'timeout --kill-after=60 50m .*cargo check --workspace' "$_T6_PLAN" "$_T6_ERR"
+rm -f "$_T6_ERR"
 
 # T7: REIFY_VERIFY_CHECK_TIMEOUT unset → check uses 30m (workstation default preserved).
+_T7_ERR="$(mktemp)"
 _T7_PLAN="$(env -u REIFY_VERIFY_CHECK_TIMEOUT bash "$REPO_ROOT/scripts/verify.sh" typecheck \
-    --print-plan 2>/dev/null | grep -v '^#')"
+    --print-plan 2>"$_T7_ERR" | grep -v '^#')"
 export _T7_PLAN
 assert "T7: REIFY_VERIFY_CHECK_TIMEOUT unset: cargo check --workspace --tests uses default 30m" \
-    bash -c "printf '%s\n' \"\$_T7_PLAN\" | grep -qE 'timeout --kill-after=60 30m .*cargo check --workspace'"
+    occt_plan_grep_or_dump 'timeout --kill-after=60 30m .*cargo check --workspace' "$_T7_PLAN" "$_T7_ERR"
+rm -f "$_T7_ERR"
 
 # -- Test 18: wrapper does not leak the lock fd into background daemons --------
 # Regression test for the 2026-04-20 merge-queue wedge: sccache (spawned as a
@@ -602,7 +625,14 @@ _ERR22="$(mktemp)"
 _HOLDER22A=$!
 ( flock -x 9; sleep 10 ) 9>>"${_LOCK22}.slot-2" &
 _HOLDER22B=$!
-sleep 0.2  # give both holders time to acquire before we proceed
+# Causal flock-probe barrier (task 5258, PRD merge-gate-health W4b): block until
+# BOTH holders hold their slots, instead of a fixed `sleep 0.2` grace a saturated
+# host can outrun.  Two calls reuse the single-slot helper (one per slot); each
+# is wrapped in `assert` so a transient confirm-failure cannot trip `set -e`.
+assert "Test 22: background holder confirmed holding slot-1 (causal flock-probe barrier)" \
+    occt_wait_until_slot_held "${_LOCK22}.slot-1"
+assert "Test 22: background holder confirmed holding slot-2 (causal flock-probe barrier)" \
+    occt_wait_until_slot_held "${_LOCK22}.slot-2"
 
 _START22="$(date +%s)"
 _EXIT22=0

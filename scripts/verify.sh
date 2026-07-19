@@ -1258,6 +1258,18 @@ add_test_passes() {
 }
 
 build_plan() {
+    # tests/infra classification-manifest drift guard (task 5252): fail fast —
+    # naming the offending file — when a tests/infra/test_*.sh exists with no
+    # run-all-classification.manifest row (or a manifest row has no file). Cheap
+    # (pure bash + filesystem, no cargo), so it is the FIRST plan entry, before
+    # check-manifold-deps.sh and every compile/test pole. RUN_RUST=1 fires it
+    # whenever tests/infra/*.sh changes (decide_scope's `*)` catch-all -> rust=1)
+    # and always at the merge/scope=all tier, while keeping docs-only /
+    # gui-src-only plans (RUN_RUST=0) at zero command leaves.
+    if [ "$RUN_RUST" -eq 1 ]; then
+        add "./scripts/check-infra-classification-manifest.sh"
+    fi
+
     # manifold prebuilt guard: fail fast (with a clear "run the deps script"
     # message) if the prebuilt manifold libs that .cargo/config.toml's
     # [target.*.manifold] override links are missing or version-drifted —
