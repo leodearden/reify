@@ -4673,7 +4673,7 @@ fn get_entity_tree_panics_on_duplicate_template_names_in_debug() {
 /// Compare with the sibling debug-mode test
 /// `get_entity_tree_panics_on_duplicate_template_names_in_debug` which pins the
 /// debug_assert panic.  The orchestrator runs both `cargo test` and
-/// `cargo test --release` (orchestrator.yaml), so both modes are exercised in CI —
+/// `cargo test --release` (dark-factory-orchestrator.yaml), so both modes are exercised in CI —
 /// following the precedent at `crates/reify-expr/tests/field_eval_tests.rs:1066-1126`.
 #[cfg(not(debug_assertions))]
 #[test]

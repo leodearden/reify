@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Regression guard for task 4966: knob-sensitive tests/infra self-suites must
-# behave identically under the production orchestrator.yaml verify_env
+# behave identically under the production dark-factory-orchestrator.yaml verify_env
 # ambient, not just in a clean default shell.
 #
-# Root cause this guards against: orchestrator.yaml's verify_env block
+# Root cause this guards against: dark-factory-orchestrator.yaml's verify_env block
 # exports REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 and REIFY_GATE_EXCLUDE_HEAVY=1
 # (plus sccache/incremental/semaphore/PSI knobs) into the whole verify.sh
 # process tree by design. Deploy 65b8412206 flipped both knobs to "1" and
@@ -14,7 +14,7 @@
 # (test_run_all_ambient_isolation.sh). Task 4965 fixed the resulting
 # shell-quoting bug in test_occt_flock_gate.sh's T1/T3-T7 asserts
 # (5af93e53c0). This file is the general drift-guard: it extracts the FULL
-# verify_env export set directly from orchestrator.yaml -- the single source
+# verify_env export set directly from dark-factory-orchestrator.yaml -- the single source
 # the orchestrator itself injects from, so there is no second manifest to
 # drift out of sync -- and re-runs a knob-sensitive suite once under that
 # exact ambient, so a FUTURE knob flip that breaks ANY suite is caught here
@@ -22,7 +22,7 @@
 #
 # This file cannot live inside test_occt_flock_gate.sh itself: it drives the
 # REAL suite exactly once, as a subprocess, under a hostile ambient export --
-# the same shape orchestrator.yaml's verify_env produces -- and asserts the
+# the same shape dark-factory-orchestrator.yaml's verify_env produces -- and asserts the
 # nested suite still exits 0 with 0 failed. Mirrors the run-the-real-suite-
 # once idiom from test_run_all_ambient_isolation.sh (task 4961).
 
@@ -34,14 +34,14 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 [ -f "$SCRIPT_DIR/test_helpers.sh" ] || { echo "ERROR: test_helpers.sh not found at $SCRIPT_DIR/test_helpers.sh"; exit 1; }
 source "$SCRIPT_DIR/test_helpers.sh"
 
-[ -f "$REPO_ROOT/orchestrator.yaml" ] || { echo "ERROR: orchestrator.yaml not found at $REPO_ROOT/orchestrator.yaml"; exit 1; }
+[ -f "$REPO_ROOT/dark-factory-orchestrator.yaml" ] || { echo "ERROR: dark-factory-orchestrator.yaml not found at $REPO_ROOT/dark-factory-orchestrator.yaml"; exit 1; }
 
 echo "=== verify_env ambient-isolation drift-guard (task 4966) ==="
 
 # ---------------------------------------------------------------------------
 # verify_env_exports <yaml_file>
 #
-# Extracts orchestrator.yaml's `verify_env:` block as a stream of
+# Extracts dark-factory-orchestrator.yaml's `verify_env:` block as a stream of
 # `KEY=VALUE` lines (one per line). Values are simple tokens
 # (0/1/2/sccache/unlimited), so callers can `export "KEY=VALUE"` each
 # emitted line directly with no further quoting/escaping.
@@ -49,7 +49,7 @@ echo "=== verify_env ambient-isolation drift-guard (task 4966) ==="
 # Single awk pass: enter the block on a top-level `verify_env:` line; a
 # later top-level, non-comment line (anything NOT starting with whitespace
 # or `#`) ends the block, so trailing top-level `#` comments (e.g. the
-# jobserver-wiring note preceding orchestrator.yaml's `jobserver:` block)
+# jobserver-wiring note preceding dark-factory-orchestrator.yaml's `jobserver:` block)
 # do not end it early. While in-block, blank lines and `#` comment lines
 # (indented or not) are skipped. Each `  KEY: VALUE` line emits `KEY=VALUE`:
 # a double-quoted value is captured verbatim between the first pair of
@@ -88,7 +88,7 @@ verify_env_exports() {
 # Extractor correctness (a): synthetic fixture.
 #
 # Exercises block-entry, block-exit, quoted values, bare values, an in-block
-# comment, and a blank line -- independent of whatever orchestrator.yaml
+# comment, and a blank line -- independent of whatever dark-factory-orchestrator.yaml
 # happens to contain today.
 # ---------------------------------------------------------------------------
 echo ""
@@ -124,28 +124,28 @@ assert "fixture: verify_env_exports does not leak the in-block comment line" \
     bash -c '! printf "%s\n" "$1" | grep -qF "in-block comment"' _ "$_FIXTURE_ACTUAL"
 
 # ---------------------------------------------------------------------------
-# Extractor correctness (b): real orchestrator.yaml.
+# Extractor correctness (b): real dark-factory-orchestrator.yaml.
 #
 # Non-vacuity: proves the emitted set actually carries the two knobs that
 # caused the escapes, and that block-exit correctly stops before the
 # following `jobserver:` block's `enabled: true` (a real adjacent top-level
-# key in orchestrator.yaml today).
+# key in dark-factory-orchestrator.yaml today).
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Extractor correctness (b): real orchestrator.yaml ---"
+echo "--- Extractor correctness (b): real dark-factory-orchestrator.yaml ---"
 
-_REAL_ACTUAL="$(verify_env_exports "$REPO_ROOT/orchestrator.yaml")"
+_REAL_ACTUAL="$(verify_env_exports "$REPO_ROOT/dark-factory-orchestrator.yaml")"
 
-assert "orchestrator.yaml: verify_env_exports output contains REIFY_GATE_EXCLUDE_HEAVY=1" \
+assert "dark-factory-orchestrator.yaml: verify_env_exports output contains REIFY_GATE_EXCLUDE_HEAVY=1" \
     bash -c 'printf "%s\n" "$1" | grep -qxF "REIFY_GATE_EXCLUDE_HEAVY=1"' _ "$_REAL_ACTUAL"
 
-assert "orchestrator.yaml: verify_env_exports output contains REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1" \
+assert "dark-factory-orchestrator.yaml: verify_env_exports output contains REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1" \
     bash -c 'printf "%s\n" "$1" | grep -qxF "REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1"' _ "$_REAL_ACTUAL"
 
-assert "orchestrator.yaml: verify_env_exports output does not leak jobserver's enabled=true (block-end guard)" \
+assert "dark-factory-orchestrator.yaml: verify_env_exports output does not leak jobserver's enabled=true (block-end guard)" \
     bash -c '! printf "%s\n" "$1" | grep -qxF "enabled=true"' _ "$_REAL_ACTUAL"
 
-assert "orchestrator.yaml: verify_env_exports output is non-empty and every line is well-formed KEY=... " \
+assert "dark-factory-orchestrator.yaml: verify_env_exports output is non-empty and every line is well-formed KEY=... " \
     bash -c '[ -n "$1" ] && ! printf "%s\n" "$1" | grep -vE "^[A-Za-z_][A-Za-z0-9_]*="' _ "$_REAL_ACTUAL"
 
 # ---------------------------------------------------------------------------
@@ -172,7 +172,7 @@ amb_rc=0
 amb_out="$(
     while IFS= read -r _kv; do
         export "$_kv"
-    done < <(verify_env_exports "$REPO_ROOT/orchestrator.yaml")
+    done < <(verify_env_exports "$REPO_ROOT/dark-factory-orchestrator.yaml")
     [ "${REIFY_GATE_EXCLUDE_HEAVY:-}" = "1" ] || { echo "AMBIENT-NOT-APPLIED"; exit 99; }
     bash "$SCRIPT_DIR/test_occt_flock_gate.sh" 2>&1
 )" || amb_rc=$?

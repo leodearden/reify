@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Infrastructure tests for npm ci hardening (task 816).
 # Validates that test_pm_standardization.sh lives in scripts/ and that
-# orchestrator.yaml uses if/then/fi guards instead of || true for npm ci.
+# dark-factory-orchestrator.yaml uses if/then/fi guards instead of || true for npm ci.
 
 set -euo pipefail
 
@@ -66,7 +66,7 @@ SCRIPT="$REPO_ROOT/scripts/test_pm_standardization.sh"
 assert "script has no grep calls referencing hooks/project-checks" \
     bash -c "! grep -qE 'grep.*hooks/project-checks|hooks/project-checks.*grep' '$SCRIPT'"
 
-assert "script has no grep calls referencing orchestrator.yaml" \
+assert "script has no grep calls referencing dark-factory-orchestrator.yaml" \
     bash -c "! grep -qE 'grep.*orchestrator|orchestrator.*grep' '$SCRIPT'"
 
 assert "script has exactly 4 'Check N:' echo statements" \
@@ -78,7 +78,7 @@ echo "--- Test 3: if/then/fi guards for npm ci in the verify.sh plan ---"
 
 # The npm-ci hardening now lives in scripts/verify.sh (called by the orchestrator
 # since task 3766), so assert against verify.sh --print-plan rather than
-# orchestrator.yaml. --include-infra so the infra leaves appear; --scope all for
+# dark-factory-orchestrator.yaml. --include-infra so the infra leaves appear; --scope all for
 # a full, index-independent plan; env lines stripped via `grep -v '^#'`.
 TEST_PLAN_SEGS="$(bash "$REPO_ROOT/scripts/verify.sh" test --profile both --scope all --include-infra --print-plan | grep -v '^#')"
 LINT_PLAN_SEGS="$(bash "$REPO_ROOT/scripts/verify.sh" lint --scope all --include-infra --print-plan | grep -v '^#')"

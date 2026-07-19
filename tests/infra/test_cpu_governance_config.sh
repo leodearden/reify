@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Infrastructure test for task 4633.
-# Validates the cpu_governance block config contract in orchestrator.yaml:
+# Validates the cpu_governance block config contract in dark-factory-orchestrator.yaml:
 #   (A) STRUCTURE — top-level 'cpu_governance' key exists; values match the
 #       canonical shape (weights.task==100, weights.merge==300,
 #       agent_admit.threshold==50, agent_admit enabled, DF_AGENT_CPU_GOVERN
@@ -12,7 +12,7 @@
 #         REIFY_CPU_GOVERN_W_MERGE  YAML vs scripts/lib_cgroup.sh :- default
 #         REIFY_CPU_ADMIT_AGENT_THRESHOLD YAML vs scripts/agent-bin/cargo :- default
 #   (B) KNOB-NAME CROSS-CHECK — each REIFY_* knob cited by name in
-#       orchestrator.yaml MUST also appear in its owning script, so config↔script
+#       dark-factory-orchestrator.yaml MUST also appear in its owning script, so config↔script
 #       names cannot drift silently.
 #       Checked:
 #         REIFY_CPU_GOVERN_W_TASK   — scripts/cpu-governed-exec.sh
@@ -35,7 +35,7 @@ source "$SCRIPT_DIR/test_helpers.sh"
 
 echo "=== cpu_governance config contract tests ==="
 
-ORCH_YAML="$REPO_ROOT/orchestrator.yaml"
+ORCH_YAML="$REPO_ROOT/dark-factory-orchestrator.yaml"
 CPU_GOV="$REPO_ROOT/scripts/cpu-governed-exec.sh"
 LIB_CGROUP="$REPO_ROOT/scripts/lib_cgroup.sh"      # actual home of W_TASK/W_MERGE :-fallbacks
 AGENT_CARGO="$REPO_ROOT/scripts/agent-bin/cargo"
@@ -55,7 +55,7 @@ else
     trap 'rm -f "$_PARSE_PY"' EXIT
 
     cat > "$_PARSE_PY" << 'PYEOF'
-"""Validate orchestrator.yaml cpu_governance block.
+"""Validate dark-factory-orchestrator.yaml cpu_governance block.
 Usage:
   python3 <script> <orch_yaml> <check> [<script_path>]
 Checks (no <script_path>):
@@ -154,7 +154,7 @@ print(f"unknown check: {check}", file=sys.stderr)
 sys.exit(2)
 PYEOF
 
-    assert "orchestrator.yaml parses as valid YAML" \
+    assert "dark-factory-orchestrator.yaml parses as valid YAML" \
         python3 "$_PARSE_PY" "$ORCH_YAML" parse_ok
 
     assert "top-level 'cpu_governance' key exists" \
@@ -199,19 +199,19 @@ fi
 # ---------------------------------------------------------------------------
 echo "--- (B) knob-name cross-check (config↔script) ---"
 
-assert "REIFY_CPU_GOVERN_W_TASK cited in orchestrator.yaml" \
+assert "REIFY_CPU_GOVERN_W_TASK cited in dark-factory-orchestrator.yaml" \
     grep -q "REIFY_CPU_GOVERN_W_TASK" "$ORCH_YAML"
 
 assert "REIFY_CPU_GOVERN_W_TASK referenced in scripts/cpu-governed-exec.sh" \
     grep -q "REIFY_CPU_GOVERN_W_TASK" "$CPU_GOV"
 
-assert "REIFY_CPU_GOVERN_W_MERGE cited in orchestrator.yaml" \
+assert "REIFY_CPU_GOVERN_W_MERGE cited in dark-factory-orchestrator.yaml" \
     grep -q "REIFY_CPU_GOVERN_W_MERGE" "$ORCH_YAML"
 
 assert "REIFY_CPU_GOVERN_W_MERGE referenced in scripts/cpu-governed-exec.sh" \
     grep -q "REIFY_CPU_GOVERN_W_MERGE" "$CPU_GOV"
 
-assert "REIFY_CPU_ADMIT_AGENT_THRESHOLD cited in orchestrator.yaml" \
+assert "REIFY_CPU_ADMIT_AGENT_THRESHOLD cited in dark-factory-orchestrator.yaml" \
     grep -q "REIFY_CPU_ADMIT_AGENT_THRESHOLD" "$ORCH_YAML"
 
 assert "REIFY_CPU_ADMIT_AGENT_THRESHOLD referenced in scripts/agent-bin/cargo" \

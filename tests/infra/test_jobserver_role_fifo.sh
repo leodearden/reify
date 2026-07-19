@@ -7,7 +7,7 @@
 #   (c) merge role + merge FIFO absent  → CARGO_MAKEFLAGS left unset (no export)
 #   (d) ISOLATION: merge role + only task FIFO present → left unset
 #       (proves the guard checks the role's OWN FIFO, not 'any FIFO present')
-#   (e) orchestrator.yaml has NO active CARGO_MAKEFLAGS: key (ownership move C3)
+#   (e) dark-factory-orchestrator.yaml has NO active CARGO_MAKEFLAGS: key (ownership move C3)
 #
 # Hermetic: mktemp FIFOs at random paths; real /tmp/reify-jobserver-* NEVER touched.
 # DF_VERIFY_ROLE is set INLINE per verify.sh invocation (run_all.sh exports role=task
@@ -118,17 +118,17 @@ assert "(d) isolation: merge role + only task FIFO present: no active 'export CA
     bash -c '! printf "%s\n" "$_PLAN_D" | grep -q "export CARGO_MAKEFLAGS"'
 
 # ---------------------------------------------------------------------------
-# (e) orchestrator.yaml has NO active CARGO_MAKEFLAGS: key (ownership move C3)
+# (e) dark-factory-orchestrator.yaml has NO active CARGO_MAKEFLAGS: key (ownership move C3)
 #     verify.sh apply_env is now the SINGLE source of CARGO_MAKEFLAGS.
 #     Matches only a real YAML key line (^\s*CARGO_MAKEFLAGS\s*:); ignores
 #     comment prose that mentions CARGO_MAKEFLAGS.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- (e) orchestrator.yaml: no active CARGO_MAKEFLAGS: key (ownership move C3) ---"
-ORCHESTRATOR_YAML="$REPO_ROOT/orchestrator.yaml"
+echo "--- (e) dark-factory-orchestrator.yaml: no active CARGO_MAKEFLAGS: key (ownership move C3) ---"
+ORCHESTRATOR_YAML="$REPO_ROOT/dark-factory-orchestrator.yaml"
 export ORCHESTRATOR_YAML
 
-assert "(e) orchestrator.yaml has NO active CARGO_MAKEFLAGS: YAML key line" \
+assert "(e) dark-factory-orchestrator.yaml has NO active CARGO_MAKEFLAGS: YAML key line" \
     bash -c '! grep -E "^[[:space:]]*CARGO_MAKEFLAGS[[:space:]]*:" "$ORCHESTRATOR_YAML"'
 
 # ---------------------------------------------------------------------------

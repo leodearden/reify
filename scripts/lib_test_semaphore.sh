@@ -28,7 +28,7 @@
 #                                     continuous blocking wait with no deadline (clock-stop
 #                                     mode, PRD §3 option c).  GATED DORMANT (PRD §5 D5):
 #                                     keep FINITE (< verify_command_timeout_secs 7200) in
-#                                     orchestrator.yaml; do NOT flip to unlimited until
+#                                     dark-factory-orchestrator.yaml; do NOT flip to unlimited until
 #                                     dark_factory:1916 deploys (task 4838).
 #   REIFY_CLOCK_HEARTBEAT_SECS        interval between @@REIFY_CLOCK_HEARTBEAT@@ emissions
 #                                     (default 30s; set to a small value in tests)

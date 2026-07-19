@@ -51,7 +51,7 @@ test_cpu_load_governance.sh host-exclusive
 test_cpu_load_governance_deflake.sh host-exclusive
 test_warm_lane_pool.sh host-exclusive
 
-# --- pool (113, the hermetic majority incl. this drift-guard itself) -------
+# --- pool (114, the hermetic majority incl. this drift-guard itself) -------
 test_affected_crates_lib.sh pool
 test_agent_cargo_shim.sh pool
 test_audit_orphan_producers.sh pool
@@ -93,6 +93,7 @@ test_npm_ci_hardening.sh pool
 test_occt_flock_gate_bounds.sh pool
 test_occt_flock_gate.sh pool
 test_occt_gated_scope.sh pool
+test_orchestrator_config_canonical_path.sh pool
 test_orchestrator_redeploy_restart.sh pool
 test_plan_capture_lib.sh pool
 test_portable_mtime.sh pool

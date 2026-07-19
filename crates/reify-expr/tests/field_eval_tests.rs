@@ -1072,7 +1072,7 @@ fn gradient_of_field_with_non_numeric_lambda() {
 ///
 /// NOTE: This test is gated on `#[cfg(not(debug_assertions))]` and is therefore
 /// **excluded from `cargo test`** (which compiles with debug_assertions enabled).
-/// It only runs under `cargo test --release`. The orchestrator (`orchestrator.yaml`)
+/// It only runs under `cargo test --release`. The orchestrator (`dark-factory-orchestrator.yaml`)
 /// always runs both a debug pass and a release pass, so CI coverage for this test
 /// is preserved. The sibling debug-mode test is
 /// `gradient_of_field_with_non_numeric_lambda_sampling_panics_in_debug`.
@@ -1113,7 +1113,7 @@ fn gradient_of_field_with_non_numeric_lambda_sampling_returns_undef() {
 ///
 /// NOTE: This test is gated on `#[cfg(debug_assertions)]` and is therefore
 /// **excluded from `cargo test --release`**. It only runs under `cargo test`
-/// (debug mode). The orchestrator (`orchestrator.yaml`) always runs both a debug
+/// (debug mode). The orchestrator (`dark-factory-orchestrator.yaml`) always runs both a debug
 /// pass and a release pass, so CI coverage for this test is preserved. The sibling
 /// release-mode test is
 /// `gradient_of_field_with_non_numeric_lambda_sampling_returns_undef`.

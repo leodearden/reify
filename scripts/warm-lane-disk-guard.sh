@@ -24,16 +24,16 @@
 # Options (env defaults shown):
 #   --mount DIR            Warm-lane mount point  (env: REIFY_WARM_LANE_MOUNT)
 #   --min-free-gib N       Minimum free GiB required (env: REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_GIB;
-#                          default: 50; maps to orchestrator.yaml warm_lane_pool.min_free_gib)
+#                          default: 50; maps to dark-factory-orchestrator.yaml warm_lane_pool.min_free_gib)
 #   --min-free-inodes N    Minimum free inodes required (env: REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_INODES;
-#                          default: 500000; maps to orchestrator.yaml warm_lane_pool.min_free_inodes)
+#                          default: 500000; maps to dark-factory-orchestrator.yaml warm_lane_pool.min_free_inodes)
 #   --soft                 Enable the soft-floor throttle check (see Exit codes: 3).
 #   --soft-free-gib N      Soft free-GiB floor; must exceed --min-free-gib (env:
 #                          REIFY_WARM_LANE_DISK_GUARD_SOFT_FREE_GIB; default: 500;
-#                          maps to orchestrator.yaml warm_lane_pool.soft_free_gib)
+#                          maps to dark-factory-orchestrator.yaml warm_lane_pool.soft_free_gib)
 #   --soft-free-inodes N   Soft free-inodes floor; must exceed --min-free-inodes (env:
 #                          REIFY_WARM_LANE_DISK_GUARD_SOFT_FREE_INODES; default: 5000000;
-#                          maps to orchestrator.yaml warm_lane_pool.soft_free_inodes)
+#                          maps to dark-factory-orchestrator.yaml warm_lane_pool.soft_free_inodes)
 #   -h, --help             Print this message and exit.
 #
 # Exit codes:
@@ -99,17 +99,17 @@ Usage: $(basename "$0") check [--mount DIR] [--min-free-gib N] [--min-free-inode
     --mount DIR            Warm-lane mount point (default: \$REIFY_WARM_LANE_MOUNT)
     --min-free-gib N       Minimum free GiB required
                            (default: \$REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_GIB or 50)
-                           Maps to: orchestrator.yaml warm_lane_pool.min_free_gib
+                           Maps to: dark-factory-orchestrator.yaml warm_lane_pool.min_free_gib
     --min-free-inodes N    Minimum free inodes required
                            (default: \$REIFY_WARM_LANE_DISK_GUARD_MIN_FREE_INODES or 500000)
-                           Maps to: orchestrator.yaml warm_lane_pool.min_free_inodes
+                           Maps to: dark-factory-orchestrator.yaml warm_lane_pool.min_free_inodes
     --soft                 Enable the soft-floor throttle check (exit 3).
     --soft-free-gib N      Soft free-GiB floor; must exceed --min-free-gib
                            (default: \$REIFY_WARM_LANE_DISK_GUARD_SOFT_FREE_GIB or 500)
-                           Maps to: orchestrator.yaml warm_lane_pool.soft_free_gib
+                           Maps to: dark-factory-orchestrator.yaml warm_lane_pool.soft_free_gib
     --soft-free-inodes N   Soft free-inodes floor; must exceed --min-free-inodes
                            (default: \$REIFY_WARM_LANE_DISK_GUARD_SOFT_FREE_INODES or 5000000)
-                           Maps to: orchestrator.yaml warm_lane_pool.soft_free_inodes
+                           Maps to: dark-factory-orchestrator.yaml warm_lane_pool.soft_free_inodes
     -h, --help             Print this message and exit.
 
   Exit codes:

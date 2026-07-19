@@ -260,7 +260,7 @@ cpu_governance:
   # against a reify script, exactly like DF_AGENT_CPU_GOVERN above) — dark-
   # factory L3b (out of scope for reify; docs/prds/run-all-pool-contention-
   # tiering-fix.md §9) reads this block to wire the periodic invocation +
-  # dispatch-admission cap/escalation action. orchestrator.yaml loads once at
+  # dispatch-admission cap/escalation action. dark-factory-orchestrator.yaml loads once at
   # startup, so a config edit needs commit-then-restart to take effect on the
   # DF side (deploy-time concern, not verified here).
   fleet_load_detector:
@@ -397,7 +397,7 @@ max_turns:
 #     max_turns.architect=120 above. Revisit if architect sessions start
 #     showing the same 0-turn misreported-kill signature.
 #
-# Load-once config (orchestrator.yaml has no hot-reload): takes effect at
+# Load-once config (dark-factory-orchestrator.yaml has no hot-reload): takes effect at
 # the next orchestrator restart. Do NOT restart mid-flight — land for the
 # next quiet window, the same restart that activates the
 # verify_clock_stop_heartbeat_idle_max bump (task 5156).
@@ -421,7 +421,7 @@ fairness:
 # Firing an INFO/L2 starvation escalation that fast is noise; a genuine wedge shows as
 # 24h+ continuous eligibility. enabled/skip_threshold kept explicit so a shallow config
 # merge can't silently disable the watchdog or reset the count threshold. Loads at next
-# orchestrator restart (orchestrator.yaml is load-once, no hot-reload).
+# orchestrator restart (dark-factory-orchestrator.yaml is load-once, no hot-reload).
 starvation_watchdog:
   enabled: true
   skip_threshold: 50

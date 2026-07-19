@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Infrastructure test for task 3766.
-# Verifies that the git hooks and orchestrator.yaml delegate to scripts/verify.sh
+# Verifies that the git hooks and dark-factory-orchestrator.yaml delegate to scripts/verify.sh
 # with the expected arguments — the structural wiring of the unification. This is
 # the counterpart to the --print-plan content tests: it pins HOW verify.sh is
 # invoked, while the others pin WHAT the plan contains.
@@ -16,7 +16,7 @@ source "$SCRIPT_DIR/test_helpers.sh"
 PROJECT_CHECKS="$REPO_ROOT/hooks/project-checks"
 PRE_MERGE="$REPO_ROOT/hooks/pre-merge-commit"
 VERIFY="$REPO_ROOT/scripts/verify.sh"
-ORCH="$REPO_ROOT/orchestrator.yaml"
+ORCH="$REPO_ROOT/dark-factory-orchestrator.yaml"
 
 echo "=== hooks + orchestrator call verify.sh ==="
 
@@ -49,9 +49,9 @@ assert "pre-merge-commit execs verify.sh all --profile both --scope all" \
 assert "pre-merge-commit gates main only (branch != main -> exit 0)" \
     bash -c "grep -q 'branch' '$PRE_MERGE' && grep -q '!= \"main\"' '$PRE_MERGE'"
 
-# -- orchestrator.yaml ---------------------------------------------------------
+# -- dark-factory-orchestrator.yaml ---------------------------------------------------------
 echo ""
-echo "--- orchestrator.yaml command keys delegate to verify.sh ---"
+echo "--- dark-factory-orchestrator.yaml command keys delegate to verify.sh ---"
 assert "test_command calls ./scripts/verify.sh test" \
     bash -c "grep '^test_command:' '$ORCH' | grep -qF './scripts/verify.sh test'"
 # The orchestrator merge path runs test_command verbatim with DF_VERIFY_ROLE=merge
@@ -69,7 +69,7 @@ assert "lint_command calls ./scripts/verify.sh lint" \
 assert "type_check_command is the passing no-op 'true' (redundant cargo check dropped; clippy supersets it)" \
     bash -c "grep -qE '^type_check_command:[[:space:]]+\"?true\"?[[:space:]]*(#.*)?$' '$ORCH'"
 # verify_env must remain (verify.sh re-bakes it, but the orchestrator still injects it).
-assert "orchestrator.yaml still defines verify_env" \
+assert "dark-factory-orchestrator.yaml still defines verify_env" \
     bash -c "grep -q '^verify_env:' '$ORCH'"
 
 # -- Fix 2 (main-gate-hardening): exec -> '|| exit $?' + post-success mark -------

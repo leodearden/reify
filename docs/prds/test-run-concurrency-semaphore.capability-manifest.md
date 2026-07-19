@@ -29,9 +29,9 @@ not accuracy bounds; the one numeric premise is the RSS headroom inequality).
 - **Wired-on-main:** `.config/nextest.toml` + the `--config` flag in verify.sh's emitted plan. **PASS.**
 - **Coupling guard:** γ carries a dependency on β (cap raise unsafe until the hard run-bound is live). **PASS.**
 
-### δ — contract surfacing (orchestrator.yaml + CLAUDE.md)
+### δ — contract surfacing (dark-factory-orchestrator.yaml + CLAUDE.md)
 - **Capability:** the semaphore's env/exemption/exit-75 contract is documented; confirms no functional orchestrator change.
-- **Substrate (G3):** the contracts being documented already hold (verify.sh:161/228; orchestrator.yaml:31-37). **PASS.**
+- **Substrate (G3):** the contracts being documented already hold (verify.sh:161/228; dark-factory-orchestrator.yaml:31-37). **PASS.**
 - **Wired-on-main / grammar / numeric:** docs leaf — evidence is the committed doc diff. **PASS.**
 
 ### ε — integration gate (critical leaf)

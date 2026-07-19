@@ -43,7 +43,7 @@ that per-test `exec_time` can miss (see Caveats).
 
 The **OCCT-gated crate set** — `{reify-kernel-occt, reify-eval, reify-cli,
 reify-config}` (`scripts/occt-touching-crates.txt`, the single source of
-truth also consumed by `orchestrator.yaml`'s gated test invocation) — run
+truth also consumed by `dark-factory-orchestrator.yaml`'s gated test invocation) — run
 under the **debug** profile. A change to `reify-kernel-occt` reverse-selects
 exactly this set under `scripts/verify.sh --scope branch` (see
 `affected-crates-lib.sh`), so measuring these four crates together **is** a

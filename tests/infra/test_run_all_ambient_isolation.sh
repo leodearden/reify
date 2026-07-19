@@ -6,8 +6,8 @@
 #
 # Root cause this guards against: scripts/verify.sh's run_all.sh plan line
 # (verify.sh:1430) carries a prefix env (currently REIFY_AUDIT_NO_COLD_BUILD=1
-# REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1), and orchestrator.yaml's verify_env
-# block (orchestrator.yaml:148-152) exports more vars (REIFY_GATE_EXCLUDE_HEAVY,
+# REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1), and dark-factory-orchestrator.yaml's verify_env
+# block (dark-factory-orchestrator.yaml:148-152) exports more vars (REIFY_GATE_EXCLUDE_HEAVY,
 # RUSTC_WRAPPER, CARGO_INCREMENTAL, REIFY_RUN_ALL_EXCLUDE_HOST_INFRA) into the
 # whole verify.sh process tree by design. Both sets are inherited AMBIENTLY by
 # every one of run_all.sh's ~103 pool tests. test_run_all.sh's own
@@ -24,7 +24,7 @@
 # recurse infinitely (test_run_all.sh IS the discovery runner's test
 # subject). Instead it drives the REAL test_run_all.sh exactly once per
 # ledger var, as a subprocess, under a hostile ambient export -- the same
-# shape orchestrator.yaml's verify_env / the run_all.sh plan line's prefix
+# shape dark-factory-orchestrator.yaml's verify_env / the run_all.sh plan line's prefix
 # env produce -- and asserts the nested suite still exits 0. test_run_all.sh
 # never invokes run_all.sh against the real tests/infra/ directory (all of
 # its sub-cases use temp-dir fixtures), so these direct invocations do not
@@ -78,7 +78,7 @@ TARGET="$SCRIPT_DIR/test_run_all.sh"
 MANIFEST="$SCRIPT_DIR/run-all-ambient-vars.manifest"
 [ -f "$MANIFEST" ] || { echo "ERROR: run-all-ambient-vars.manifest not found at $MANIFEST (task 5152 ledger of every env var ambiently injected into the run_all.sh pool)"; exit 1; }
 
-[ -f "$REPO_ROOT/orchestrator.yaml" ] || { echo "ERROR: orchestrator.yaml not found at $REPO_ROOT/orchestrator.yaml"; exit 1; }
+[ -f "$REPO_ROOT/dark-factory-orchestrator.yaml" ] || { echo "ERROR: dark-factory-orchestrator.yaml not found at $REPO_ROOT/dark-factory-orchestrator.yaml"; exit 1; }
 
 echo "=== run_all.sh ambient-isolation regression guard (task 4961 / esc-4906-45; manifest-driven, task 5152) ==="
 
@@ -178,7 +178,7 @@ while IFS= read -r _kv; do
 done <<< "$PLAN_LINE_KV"
 
 # ---------------------------------------------------------------------------
-# Derivation (source 2 of 2): orchestrator.yaml's verify_env block.
+# Derivation (source 2 of 2): dark-factory-orchestrator.yaml's verify_env block.
 #
 # verify_env_exports is mirrored VERBATIM (reuse-note, not extracted to a
 # shared lib) from tests/infra/test_verify_env_ambient_isolation.sh:59-85
@@ -187,7 +187,7 @@ done <<< "$PLAN_LINE_KV"
 # the awk logic ever changes.
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Derivation (2/2): orchestrator.yaml verify_env block (verify_env_exports) ---"
+echo "--- Derivation (2/2): dark-factory-orchestrator.yaml verify_env block (verify_env_exports) ---"
 
 verify_env_exports() {
     local yaml_file="$1"
@@ -217,9 +217,9 @@ verify_env_exports() {
     ' "$yaml_file"
 }
 
-VERIFY_ENV_KV="$(verify_env_exports "$REPO_ROOT/orchestrator.yaml")"
+VERIFY_ENV_KV="$(verify_env_exports "$REPO_ROOT/dark-factory-orchestrator.yaml")"
 
-assert "orchestrator.yaml verify_env block parse is non-empty" \
+assert "dark-factory-orchestrator.yaml verify_env block parse is non-empty" \
     test -n "$VERIFY_ENV_KV"
 
 assert "verify_env block contains REIFY_RUN_ALL_EXCLUDE_HOST_INFRA (block-parse sanity)" \
@@ -312,7 +312,7 @@ done <<< "$HOSTILE_LOOP_KEYS"
 # ---------------------------------------------------------------------------
 # Hostile-ambient RE-RUN loop: for each allow-listed var, run the REAL
 # test_run_all.sh once with every ledger var unset and just that one var
-# exported to its live value -- the same shape orchestrator.yaml's
+# exported to its live value -- the same shape dark-factory-orchestrator.yaml's
 # verify_env / the run_all.sh plan line's prefix env produce. `unset` +
 # `export` + the nested `bash "$TARGET"` all run inside the `$( ... )`
 # command-substitution subshell, so none of it leaks back out to this
