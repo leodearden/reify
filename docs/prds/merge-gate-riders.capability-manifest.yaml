@@ -1,28 +1,132 @@
-# Machine-readable twin of merge-gate-riders.capability-manifest.md (hand-stamped, interim per overlay)
+# Machine-readable twin of merge-gate-riders.capability-manifest.md
+# Canonical CapabilityManifestDoc schema (shared/src/shared/capability_manifest.py, schema_version 1).
+# task_id values hand-stamped at decompose (batch flipped before this rewrite; the
+# commit_planning stamper validated against this schema — first write used the older
+# hand-rolled shape and was rejected, corrected here).
+# Program record (milestone 5254 wiring, external precondition deps dark_factory:2821/2831):
+# see the .md twin.
 prd: docs/prds/merge-gate-riders.md
-program_milestone: "5254"
-batches:
-  reify: ["5271", "5273", "5276", "5279", "5280"]
-  dark_factory: ["2832"]
-external_precondition_deps:
-  - {capability: "sweep honest categorization (positive-anchor classifier)", task: "dark_factory:2821"}
-  - {capability: "sweep ENV_TRANSIENT collateral-shape extension", task: "dark_factory:2831"}
-bindings:
-  - task: "5271"
-    label: "beta"
-    delivered_check: "grep -q 'sequential_lint_first' dark-factory-orchestrator.yaml"
-  - task: "5273"
-    label: "gamma"
-    delivered_check: "grep -q 'SKIP (content-clean)' tests/infra/run_all.sh && test -f tests/infra/run-all-skip-closures.manifest && grep -q 'REIFY_RUN_ALL_CONTENT_SKIP' scripts/verify.sh && grep -q 'INV-5' docs/prds/run-all-pool-contention-tiering-fix.md"
-  - task: "5276"
-    label: "delta"
-    delivered_check: "grep -q 'REIFY_RUN_ALL_SKIP_STATE' dark-factory-orchestrator.yaml"
-  - task: "5279"
-    label: "epsilon"
-    delivered_check: "grep -q 'RELEASE-PASS: skipped (delta-clean)' scripts/verify.sh && test -f tests/infra/test_verify_release_delta_skip.sh && grep -q 'test_verify_release_delta_skip.sh' tests/infra/run-all-classification.manifest"
-  - task: "5280"
-    label: "zeta"
-    delivered_check: "grep -q 'REIFY_RELEASE_DELTA_SKIP' dark-factory-orchestrator.yaml"
-  - task: "dark_factory:2832"
-    label: "alpha"
-    delivered_check: "manual: DF-side — sequential_lint_first knob + merge-role lint-first short-circuit unit tests in dark-factory repo"
+schema_version: 1
+tasks:
+  - label: "α"
+    task_id: 2832
+    title: "DF verify: sequential_lint_first knob — merge-role lint-first phase order + lint-red short-circuit"
+    capabilities:
+      - name: "sequential-lint-first-knob-and-short-circuit"
+        binding: "capability→producer — DF-side (orchestrator/src/orchestrator/verify.py sequential branch ~:3713-3722; config.py module-config precedent :1893/:2355)"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: "delivered in the dark-factory repo — reify-side git grep cannot observe it; DF unit tests are the mechanical check"
+  - label: "β"
+    task_id: 5271
+    title: "Activate merge-role lint-first: yaml sequential_lint_first + seam drift guard + restart"
+    capabilities:
+      - name: "lint-first-activated-in-reify-yaml"
+        binding: "capability→producer — dark_factory:2832 upstream (wired); yaml seam anchors verified (lint_command ~:143, concurrent_verify ~:166)"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "sequential_lint_first"
+          paths: ["dark-factory-orchestrator.yaml"]
+          expect: present
+      - name: "yaml-seam-drift-guard"
+        binding: "contracts-machine-checked — host file is Open Q3 (extend test_release_mode_in_test_command.sh vs new registered file)"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: "guard-host file chosen in-leaf (PRD Open Q3); mechanical once landed"
+  - label: "γ"
+    task_id: 5273
+    title: "run_all content-addressed member skip (merge tier): closure manifest + skip engine + INV-5' contracts"
+    capabilities:
+      - name: "per-member-content-skip-logged"
+        binding: "capability→producer — run_all.sh member loop + verify.sh merge-tier plan-line idiom (~:1575-1605), both verified wired"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "content-clean"
+          paths: ["tests/infra/run_all.sh"]
+          expect: present
+      - name: "two-key-narrow-flag-on-merge-plan-line"
+        binding: "capability→producer — REIFY_AUDIT_NO_COLD_BUILD narrow-env precedent at verify.sh:1575-1605"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "REIFY_RUN_ALL_CONTENT_SKIP"
+          paths: ["scripts/verify.sh"]
+          expect: present
+      - name: "closure-manifest-committed"
+        binding: "capability→producer — NEW complete-closure manifest (inclusion map verify-pipeline-infra-tests.txt documented unsound for skipping, PRD §4.1)"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "run-all-skip-closures"
+          paths: ["tests/infra/"]
+          expect: present
+      - name: "inv5-prime-restated-in-tiering-prd"
+        binding: "contracts-machine-checked — INV-5 anchor docs/prds/run-all-pool-contention-tiering-fix.md:126 amended same-diff"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "content-addressed"
+          paths: ["docs/prds/run-all-pool-contention-tiering-fix.md"]
+          expect: present
+  - label: "δ"
+    task_id: 5276
+    title: "Activate run_all content skip: wire REIFY_RUN_ALL_SKIP_STATE durable path + restart + live observation"
+    capabilities:
+      - name: "durable-state-path-wired"
+        binding: "capability→producer — reify:5273 upstream (wired); REIFY_RUN_ALL_FLAKY_LEDGER durable-path precedent (yaml, landed bc235a616a)"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "REIFY_RUN_ALL_SKIP_STATE"
+          paths: ["dark-factory-orchestrator.yaml"]
+          expect: present
+  - label: "ε"
+    task_id: 5279
+    title: "Delta-conditional release-pass skip: reverse-closure predicate + plan marker + C2 profile-axis carve-out (knob off)"
+    capabilities:
+      - name: "release-skip-marker-emission"
+        binding: "capability→producer — verify.sh release emission ~:1218-1252 + release-scope-lib.sh + shared _reify_compile_closure (occt-scope-lib.sh:63), all verified wired"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "RELEASE-PASS: skipped"
+          paths: ["scripts/verify.sh"]
+          expect: present
+      - name: "new-drift-test-registered"
+        binding: "gate-test registration rule — run-all-classification.manifest row same-diff"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "test_verify_release_delta_skip"
+          paths: ["tests/infra/run-all-classification.manifest"]
+          expect: present
+      - name: "c2-profile-axis-carve-out-documented"
+        binding: "contracts-machine-checked — verify-scope-contract.md C2 (:37) amended same-diff with sweep-conditionality"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "profile-axis"
+          paths: ["docs/prds/verify-scope-contract.md"]
+          expect: present
+  - label: "ζ"
+    task_id: 5280
+    title: "Sweep-gated activation of the release-pass delta skip (REIFY_RELEASE_DELTA_SKIP=1) — verify sweep health first"
+    capabilities:
+      - name: "release-skip-activated-sweep-gated"
+        binding: "capability→producer — reify:5279 + dark_factory:2821 + dark_factory:2831 all upstream (wired); sweep exists (verify.sh:564-567, task 5210)"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "REIFY_RELEASE_DELTA_SKIP"
+          paths: ["dark-factory-orchestrator.yaml"]
+          expect: present
+      - name: "sweep-health-verification-protocol"
+        binding: "premise-conditionality (G6) — coverage claim conditional on sweep backstop; escalates instead of activating if alerting absent"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: "trailing-window runs.db evidence + alert-behavior observation are judgment calls recorded on the task, not a grep"
