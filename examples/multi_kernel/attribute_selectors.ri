@@ -1,0 +1,84 @@
+// Task 5071 (κ) — engine-build hardening PRD §8 leaf κ, INV-GEO-2 (#4351)
+// engine-build CONSUMER-side boundary test.
+//
+// Fixture for
+// mixed_kernel_attribute_selectors_builds_renders_and_reads_per_kernel_attributes
+// and mixed_kernel_attribute_selector_resolves_frame_on_build_path in
+// crates/reify-eval/tests/manifold_cross_kernel_real.rs.
+//
+// A mixed-kernel module: an OCCT-resident cylinder ("post", realization
+// index 0) coexists with a cross-kernel Mesh-demanded box union ("body",
+// the terminal — highest-index — realization). No #kernel(...) pragma —
+// Manifold routing is demanded-repr-driven: build(ExportFormat::Stl) causes
+// compute_demanded_reprs to mark the terminal realization Mesh, which makes
+// the dispatcher route the union to Manifold (Mesh-capable), preceded by an
+// OCCT BRep→Mesh tessellation stage for its box operands, while "post"
+// stays a plain OCCT BRep solid.
+//
+// Terminal-realization invariant (load-bearing): "body" MUST be declared
+// LAST (so it has the highest realization index) and "post" declared
+// BEFORE it. topology_attribute_table is reset once at the start of each
+// top-level build()/tessellate_*() call, so this ordering keeps the union
+// as this module's terminal realization; its op cone [box_a, box_b, union]
+// seeds box_a/box_b on OCCT ({Occt,·} face entries) and those attributes
+// are forwarded onto {Manifold,·} ingest handles during the
+// convert-to-Manifold step, so a post-build topology_attribute_table holds
+// BOTH kernels' entries side by side without one overwriting the other
+// under the same numeric id — the class of collision task #4351 eliminates
+// by re-keying the table on the full KernelHandle rather than a bare
+// GeometryHandleId.
+//
+// Box geometry (mirrors examples/multi_kernel/manifold_boolean.ri):
+//   box_a = box(10mm, 10mm, 10mm) — first box at origin.
+//   box_b_raw = box(10mm, 10mm, 10mm) — second box before translation.
+//   box_b = translate(box_b_raw, offset, 0mm, 0mm) — shifted `offset` (5mm)
+//   in X (50% overlap with box_a along X, common slab x∈[0,5]mm).
+//   body = union(box_a, box_b) — the terminal Mesh-demanded realization.
+//
+// Named bindings are required so compute_demanded_reprs can resolve the
+// sub-refs (GeomRef::Sub) in the union op via name_to_idx — see
+// manifold_boolean.ri's header for the full rationale.
+//
+// Attribute-resolved selector (per examples/ad_hoc_face_selector.ri's
+// production chain): `top_frame = post @ face("top")` reads the cylinder
+// "post"'s auto-seeded `Role::Cap(CapKind::Top)` face attribute. `eval_expr`
+// leaves it `Value::Undef` at eval time (no kernel is available then — the
+// documented deferral); it resolves to `Value::Frame` later, during
+// `engine.build()`'s `post_process_ad_hoc_selectors` →
+// `try_eval_ad_hoc_selector` pass. Declared as a value cell only (no new
+// geometry realization), so it does not disturb the terminal-realization
+// invariant above — "body" stays the highest-index realization.
+//
+// Syntax sources:
+//   examples/multi_kernel/manifold_boolean.ri  (cross-kernel union core)
+//   examples/ad_hoc_face_selector.ri           (@face attribute selector)
+//   tests/prd-gate/fixtures/engine_build_hardening_kappa_mixed_kernel_selector.ri
+//     (the PRD-gate probe that compile-pinned this exact combination,
+//      2026-07-06, scripts/prd-capability-check.py exit 0)
+//
+// Entity name: MixedKernelAttributeSelectors
+// Terminal realization let: body (highest realization index)
+
+structure MixedKernelAttributeSelectors {
+    // A named param is required so the eval-state value-cell graph has an
+    // entry for entity "MixedKernelAttributeSelectors". Without at least
+    // one param, propagate_subject_to_descendants returns [] →
+    // active_tolerance_scope stays empty → demanded_tol = None →
+    // RealizationCache insert is skipped → test_terminal_handle returns
+    // None (mirrors manifold_boolean.ri's OverlapUnion param rationale).
+    param offset : Length = 5mm
+
+    // OCCT-resident primitive — realization index 0, declared FIRST so it
+    // is never the terminal (highest-index) realization.
+    let post = cylinder(4mm, 12mm)
+
+    // Attribute-resolved ad-hoc selector against "post"'s seeded top-cap
+    // face. A value-cell binding only — adds no geometry realization, so
+    // "body" below remains the terminal (highest-index) realization.
+    let top_frame = post @ face("top")
+
+    let box_a = box(10mm, 10mm, 10mm)
+    let box_b_raw = box(10mm, 10mm, 10mm)
+    let box_b = translate(box_b_raw, offset, 0mm, 0mm)
+    let body = union(box_a, box_b)
+}
