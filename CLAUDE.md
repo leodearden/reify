@@ -39,6 +39,10 @@ Every `TODO`/`FIXME`/`HACK` comment, `todo!()`/`unimplemented!()` stub, and bloc
 - `scripts/run-gui.sh <file.ri>` — release-mode build+launch (what end users run). `scripts/run-gui-dev.sh <file.ri>` — vite dev server + debug binary with `REIFY_DEBUG=1`, which opens an MCP debug listener on `127.0.0.1:${REIFY_DEBUG_PORT:-3939}`; set `REIFY_DEBUG_PORT` per worktree to avoid collisions. Both export OCCT's `LD_LIBRARY_PATH` automatically.
 - With a built binary: `reify gui --debug <file.ri>` (`--mcp` is an alias) or `reify gui-debug <file.ri>`.
 
+## GUI tests
+
+- `scripts/gui-test.sh` — canonical **self-provisioning** runner for the frontend (vitest) suites; the command to use at a **frontend checkpoint**. It runs `npm ci --prefer-offline` FIRST, so it works in any warm-lane / task worktree even though `gui/node_modules` is absent there (lanes are seeded tracked-files-only + `git clean -xfd -e target`; `node_modules` is gitignored, and the shared `~/.npm` cache makes the reinstall ~1s offline). `--no-typecheck` for vitest-only; `-- <vitest args>` forwards to `vitest run` (e.g. `-- src/__tests__/unitLadder.test.ts`). A bare `cd gui && npm test` FAILS in a fresh lane at the `pretest`→`build:grammar` hook (lezer-generator lives in `node_modules/.bin`) — that gap was esc-5232-3. The merge gate runs the equivalent inline in `verify.sh`'s gui block; this script is deliberately standalone (not a verify-pipeline artifact). Contract guard: `tests/infra/test_gui_test_script.sh`.
+
 ## Memory & tasks
 
 - All task operations go through **fused-memory MCP tools** (never the Taskmaster CLI/MCP directly), with `project_root: "/home/leo/src/reify"`. Status transitions trigger reconciliation automatically.
