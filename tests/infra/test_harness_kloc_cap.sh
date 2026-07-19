@@ -366,6 +366,31 @@ assert "3: no FAIL line is emitted for a clean crate (precision)" \
     bash -c '! grep -qE "^HARNESS_KLOC_CAP FAIL" "$1"' _ "$_s3_out"
 
 # ===========================================================================
+# Section 3b: graceful degradation — a MISSING tests dir is an explicit FAIL,
+# never a silent pass. A non-existent dir globs to zero files and would
+# otherwise masquerade as a clean crate; this pins the detector's early-return
+# FAIL branch against a regression (e.g. flipping it to `continue`/`return 0`),
+# exactly as Sections 1/2/3 pin rules (a)/(b) and precision.
+# ===========================================================================
+echo ""
+echo "--- Section 3b: missing tests dir surfaces an explicit FAIL ---"
+
+_s3b_base="$(mktemp -d)"; _TMPDIRS+=("$_s3b_base")
+_s3b_missing="$_s3b_base/does-not-exist"   # deliberately NEVER created
+_s3b_baseline="$(mktemp)"; _TMPDIRS+=("$_s3b_baseline")
+: > "$_s3b_baseline"   # empty baseline: isolates the test to the missing-dir path
+
+_s3b_out="$(mktemp)"; _TMPDIRS+=("$_s3b_out")
+_s3b_rc=0
+harness_layout_violations synthcrate "$_s3b_missing" "$_s3b_baseline" 20000 \
+    > "$_s3b_out" 2>/dev/null || _s3b_rc=$?
+
+assert "3b: a missing tests dir fires (returns 1, never a silent pass)" \
+    test "$_s3b_rc" -eq 1
+assert "3b: missing dir emitted as a structured FAIL line (reason=missing-tests-dir)" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate dir=.*does-not-exist reason=missing-tests-dir' "$_s3b_out"
+
+# ===========================================================================
 # Section 4: rule (c) — the aggregate SUMMARY line is machine-parseable, and
 # EVERY emitted line obeys the canonical grammar (not a log-scrape). Drive TWO
 # synthetic crates (one clean, one with a violation) through the aggregating
