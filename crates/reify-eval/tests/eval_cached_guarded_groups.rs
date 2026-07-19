@@ -119,3 +119,93 @@ fn eval_cached_supports_or_signals_guarded_groups_and_does_not_panic_on_determin
         result.eval_result.values.get(&probe_id),
     );
 }
+
+/// Cross-guard-state value-parity lock: `eval_cached`'s guarded-cell values
+/// for the guard=false / else-branch-active state must equal a cold
+/// `eval()` engine's, and the fallback warning must be present.
+///
+/// Build (shape mirrors guard_eval.rs's `eval_guard_false_includes_else`):
+/// Bool param `active` default FALSE; guarded_group with member param `x`
+/// (default 5mm, active when the guard is true) and else_member param `y`
+/// (default 10mm, active when the guard is false).
+#[test]
+fn eval_cached_guarded_module_matches_cold_eval_values_for_guard_false() {
+    let guard_id = ValueCellId::new("S", "__guard_0");
+    let x_id = ValueCellId::new("S", "x");
+    let y_id = ValueCellId::new("S", "y");
+
+    let guard_expr = value_ref_typed("S", "active", Type::Bool);
+    let x_decl = make_param_decl("S", "x", Type::length(), Value::length(0.005));
+    let y_decl = make_param_decl("S", "y", Type::length(), Value::length(0.01));
+
+    let template = TopologyTemplateBuilder::new("S")
+        .param(
+            "S",
+            "active",
+            Type::Bool,
+            Some(CompiledExpr::literal(Value::Bool(false), Type::Bool)),
+        )
+        .guarded_group(
+            guard_expr,
+            guard_id.clone(),
+            vec![x_decl], // members (active when guard is true)
+            vec![],       // constraints
+            vec![y_decl], // else_members (active when guard is false)
+            vec![],       // else_constraints
+        )
+        .build();
+
+    let module = CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(template)
+        .build();
+
+    // Engine A: eval() path (the reference / known-good side).
+    let mut engine_a = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    let result_a = engine_a.eval(&module);
+
+    // Engine B: eval_cached() path (the side under fix).
+    let mut engine_b = Engine::with_prelude(Box::new(MockConstraintChecker::new()), None, &[]);
+    let result_b = engine_b.eval_cached(&module, VersionId(1));
+
+    // The fallback warning must be present.
+    assert!(
+        result_b
+            .eval_result
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("guarded groups") && d.message.contains("incremental")),
+        "expected a diagnostic naming the guarded-groups/incremental fallback; got: {:?}",
+        result_b.eval_result.diagnostics,
+    );
+
+    // Cross-engine value parity for every guarded-specific cell.
+    for (label, id) in [
+        ("guard cell", &guard_id),
+        ("member x", &x_id),
+        ("else_member y", &y_id),
+    ] {
+        assert_eq!(
+            result_b.eval_result.values.get(id),
+            result_a.values.get(id),
+            "{label} ({id:?}): eval_cached value must match cold eval() value",
+        );
+    }
+
+    // Pin the concrete expected values too (guards against both engines
+    // being wrong in the same way).
+    assert_eq!(
+        result_a.values.get(&guard_id),
+        Some(&Value::Bool(false)),
+        "guard cell should evaluate to false"
+    );
+    assert_eq!(
+        result_a.values.get(&x_id),
+        Some(&Value::Undef),
+        "guarded member x should be Undef when guard is false"
+    );
+    assert_eq!(
+        result_a.values.get(&y_id),
+        Some(&Value::length(0.01)),
+        "else member y should be 0.01 (10mm SI) when guard is false"
+    );
+}
