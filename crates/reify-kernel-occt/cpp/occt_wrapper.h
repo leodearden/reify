@@ -1454,6 +1454,10 @@ bool is_connected(const OcctShape& shape);
 ///  && !IsOpenYmax() && !IsOpenZmin() && !IsOpenZmax()`.
 bool is_bounded(const OcctShape& shape);
 
+/// True iff `shape` wraps a null (`IsNull() == true`) TopoDS_Shape.
+/// A trivial inline null-handle check that cannot throw (no wrap_occt_call).
+bool shape_is_null(const OcctShape& shape);
+
 // --- Test fixture helpers ---
 // These functions build deliberately malformed or exotic shapes that are only
 // useful for conformance integration tests. They are gated by `#[cfg(has_occt)]`

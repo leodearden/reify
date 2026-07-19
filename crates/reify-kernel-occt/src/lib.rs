@@ -685,8 +685,24 @@ impl OcctKernel {
             .shapes
             .get(&id.0)
             .ok_or(GeometryError::InvalidReference(id))?;
-        ptr.as_ref()
-            .ok_or_else(|| GeometryError::OperationFailed("shape handle is null".into()))
+        let shape = ptr
+            .as_ref()
+            .ok_or_else(|| GeometryError::OperationFailed("shape handle is null".into()))?;
+        // Reject a NON-null wrapper around null (IsNull) topology. Such a shape
+        // passes the null-UniquePtr check above yet dereferences to a null
+        // TShape, which crashes the unguarded OCCT geometry-query FFI (e.g.
+        // query_volume's ShapeType() fallback -> hardware SIGSEGV). This single
+        // chokepoint covers all four mass-property queries plus every other
+        // shape.shape deref reached via get_shape (query_area,
+        // query_edge_length, ...). Refuse loudly — no silent zero/origin
+        // fallback (aligns with sibling 5197's mass-properties policy).
+        if ffi::ffi::shape_is_null(shape) {
+            return Err(GeometryError::OperationFailed(format!(
+                "shape handle {:?} wraps null/empty topology (IsNull)",
+                id
+            )));
+        }
+        Ok(shape)
     }
 
     /// Return the topology-map cache build counts for the shape identified by

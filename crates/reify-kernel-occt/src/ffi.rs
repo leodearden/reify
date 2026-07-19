@@ -1207,6 +1207,14 @@ pub mod ffi {
         /// !IsVoid && !IsOpenX/Y/Z{min,max}.
         fn is_bounded(shape: &OcctShape) -> Result<bool>;
 
+        /// True iff `shape` wraps a null (`IsNull() == true`) `TopoDS_Shape`.
+        /// A trivial inline null-handle check that cannot throw, so this returns
+        /// a plain `bool` (no `Result`/wrap_occt_call). Used by `get_shape` to
+        /// reject a non-null wrapper around null topology before it reaches the
+        /// geometry-query FFI, where dereferencing the null TShape (e.g.
+        /// `query_volume`'s `ShapeType()` fallback) would SIGSEGV.
+        fn shape_is_null(shape: &OcctShape) -> bool;
+
         // --- Test fixture helpers ---
         // Exposed (not gated on cfg(test)) so integration-test crates can call them
         // via OcctKernel::store_*_for_test helpers in lib.rs.

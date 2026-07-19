@@ -4766,6 +4766,15 @@ static void collect_compound_leaves(
     }
 }
 
+bool shape_is_null(const OcctShape& shape) {
+    // Trivial inline null-handle check: TopoDS_Shape::IsNull() reads the TShape
+    // handle and cannot throw, so no wrap_occt_call/Result is needed. Used by
+    // the Rust get_shape boundary to reject a non-null OcctShape wrapping null
+    // topology before it reaches the geometry-query FFI, where dereferencing
+    // the null TShape (e.g. query_volume's ShapeType() fallback) would SIGSEGV.
+    return shape.shape.IsNull();
+}
+
 bool is_connected(const OcctShape& shape) {
     return wrap_occt_call("is_connected", [&]() {
         TopAbs_ShapeEnum type = shape.shape.ShapeType();
