@@ -136,7 +136,7 @@ fn hoist_field(
     counter: &mut usize,
     minted: &mut Vec<ValueCellDecl>,
 ) {
-    let id = ValueCellId::new(template_name, &format!("__sel_{}", *counter));
+    let id = ValueCellId::new(template_name, format!("__sel_{}", *counter));
     *counter += 1;
     let result_type = field.result_type.clone();
     // Move the ctor into the synthetic cell; leave a ValueRef in its place.
