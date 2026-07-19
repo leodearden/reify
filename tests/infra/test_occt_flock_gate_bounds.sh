@@ -1,10 +1,18 @@
 #!/usr/bin/env bash
-# Deterministic unit tests for the occt_flock_gate_lib.sh bounds predicate.
-# Tests the occt_serial3_n2_within_bounds predicate with SYNTHETIC elapsed
-# values only — no real wrapper invocations, no sleeps, cannot flake under load.
+# Deterministic unit tests for the occt_flock_gate_lib.sh helpers.
+# The bounds / event-log predicates (occt_serial3_n2_within_bounds,
+# occt_max_concurrent_holders) run on SYNTHETIC inputs only — no real wrapper
+# invocations, no sleeps, cannot flake under load.
 #
-# See tests/infra/occt_flock_gate_lib.sh for the bounds constants and rationale
-# (esc-3939-94: upper bound raised 1200->2000->5000ms for load tolerance).
+# The occt_wait_until_slot_held barrier test (task 5258) DOES spawn a real
+# background `flock` holder, but it asserts only a CAUSAL OUTCOME — the helper
+# returns 0 once a holder holds the slot, non-zero when a free slot is never
+# held within a tiny bound — NEVER an elapsed-time magnitude, so it too cannot
+# flake under load.
+#
+# See tests/infra/occt_flock_gate_lib.sh for the helpers and their rationale
+# (esc-3939-94: bounds upper edge raised 1200->2000->5000ms for load tolerance;
+# task 5258: the causal flock-probe barrier + plan-grep-or-dump helpers).
 
 set -euo pipefail
 
@@ -112,5 +120,41 @@ _f_empty="$(mktemp)"
 assert "max_concurrent_holders: EMPTY log → 0" \
     test "$(occt_max_concurrent_holders "$_f_empty")" -eq 0
 rm -f "$_f_empty"
+
+# ============================================================================
+# Unit tests for occt_wait_until_slot_held (causal flock-probe barrier)
+# PRD docs/prds/merge-gate-health.md W4b (task 5258).
+#
+# UNLIKE the purely-synthetic predicates above, this barrier spawns a REAL
+# background `flock` holder — but it asserts only the CAUSAL OUTCOME (the helper
+# returns 0 once a holder holds the slot / non-zero when a free slot is never
+# held within the bound), NEVER an elapsed magnitude.  Poll count varies with
+# host load; the 0/non-zero outcome is deterministic, so this cannot flake.
+# ============================================================================
+echo ""
+echo "--- occt_wait_until_slot_held: causal flock-probe barrier ---"
+
+# POSITIVE: a live holder actually holds the slot → barrier confirms (returns 0).
+# Spawn a real background flock holder on a dedicated slot file (${base}.slot-*
+# idiom from the main suite's holders), then assert the barrier detects the held
+# lock.  The barrier's `9>>"$slot"` open self-heals a probe that races ahead of
+# the holder (both converge on the same inode).
+_s_held="$(mktemp)"
+( flock -x 9; sleep 5 ) 9>>"${_s_held}.slot-probe" &
+_HOLDER_PROBE=$!
+assert "occt_wait_until_slot_held: confirms a live holder (returns 0)" \
+    occt_wait_until_slot_held "${_s_held}.slot-probe"
+kill "$_HOLDER_PROBE" 2>/dev/null || true
+wait "$_HOLDER_PROBE" 2>/dev/null || true
+rm -f "$_s_held" "${_s_held}.slot-probe"
+
+# NEGATIVE: a fresh FREE slot is never held → barrier exhausts its (tiny) bound
+# and returns non-zero.  max_iters=2 (~0.4s) keeps the negative case fast.  The
+# `bash -c "! ..."` form runs the EXPORTED helper (export -f in the lib), so the
+# negation reflects the helper's REAL timeout return — not a command-not-found.
+_s_free="$(mktemp)"
+assert "occt_wait_until_slot_held: free slot times out within bound (non-zero)" \
+    bash -c "! occt_wait_until_slot_held '${_s_free}.slot-freeprobe' 2"
+rm -f "$_s_free" "${_s_free}.slot-freeprobe"
 
 test_summary
