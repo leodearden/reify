@@ -23,9 +23,10 @@ use std::collections::HashMap;
 use reify_compiler::CompiledModule;
 use reify_core::{ContentHash, DimensionVector, ModulePath, Type, ValueCellId};
 use reify_eval::Engine;
+use reify_expr::{EvalContext, eval_expr};
 use reify_ir::{
     BinOp, CompiledExpr, CompiledExprKind, CompiledFnBody, CompiledFunction, ObjectiveSense,
-    ObjectiveSet, Value,
+    ObjectiveSet, Value, ValueMap,
 };
 use reify_test_support::{
     CompiledModuleBuilder, MockConstraintChecker, SpyConstraintSolver, TopologyTemplateBuilder,
@@ -602,4 +603,239 @@ fn dependent_cells_excludes_optimized_userfunctioncall_cell() {
         "dependent_cells must stay topologically ordered: `line_cost` before \
          `total` (total reads line_cost); got {ids:?}",
     );
+}
+
+// ---------------------------------------------------------------------------
+// BT-4 (step-7): dependent_cells is the SINGLE cross-scope authority the
+// post-solve write-back materializes coupled cells in.
+// ---------------------------------------------------------------------------
+
+/// A two-cycle `MergedSolve` cluster `{A, B}` (A reads `B.m`, B reads `A.k` ⇒
+/// irreducible SCC ⇒ guaranteed `MergedSolve`, per `merged_cluster_solve.rs`'s
+/// `two_cycle_cluster_module` idiom) with a CROSS-SCOPE Let coupling:
+///
+/// * `A` (idx0): auto `k`; param `unit = 2`; Let `line_cost = unit * k`;
+///   Let `total = line_cost + B.total` — reads the OTHER (later-indexed) scope's
+///   Let cell; a 2-cycle constraint `B.m > 0`; and the spanning objective
+///   `minimize A.total + B.total`.
+/// * `B` (idx1): auto `m`; param `unit = 2`; Let `line_cost = unit * m`;
+///   Let `total = line_cost`; a 2-cycle constraint `A.k > 0`.
+///
+/// The cross-scope Let read is what makes the authoritative order OBSERVABLE:
+/// `cluster.scopes` is ascending source index `[A, B]`, so the merged
+/// write-back's per-member `evaluate_let_bindings` loop processes `A` BEFORE
+/// `B`. `A.total`'s expr reads `B.total`, which — during A's per-member pass —
+/// is still the STALE value from B's pre-solve main pass (`m` undetermined ⇒
+/// `Undef`). Only re-materializing the coupled cells in the cross-scope
+/// authoritative order (`B.total` before `A.total`) yields the correct
+/// `A.total`. The four coupled Let cells all transitively read a cluster auto
+/// and feed the spanning objective, so they are exactly `dependent_cells`; the
+/// two `unit` params read no auto and are excluded.
+fn two_cycle_cross_scope_coupled_module() -> CompiledModule {
+    let a = TopologyTemplateBuilder::new("A")
+        .auto_param("A", "k", Type::length())
+        .param(
+            "A",
+            "unit",
+            Type::dimensionless_scalar(),
+            Some(literal(Value::Real(2.0))),
+        )
+        // line_cost_A = unit_A * k  (own-scope; reads auto k).
+        .let_binding(
+            "A",
+            "line_cost",
+            Type::length(),
+            binop(
+                BinOp::Mul,
+                value_ref_typed("A", "unit", Type::dimensionless_scalar()),
+                value_ref("A", "k"),
+            ),
+        )
+        // total_A = line_cost_A + B.total  — CROSS-SCOPE read of the LATER
+        // scope's Let cell: the write-back order is what determines whether
+        // B.total is fresh or stale when this is materialized.
+        .let_binding(
+            "A",
+            "total",
+            Type::length(),
+            binop(
+                BinOp::Add,
+                value_ref("A", "line_cost"),
+                value_ref("B", "total"),
+            ),
+        )
+        // 2-cycle edge: A reads B.m (guarantees the {A,B} MergedSolve cluster).
+        .constraint("A", 0, None, gt(value_ref("B", "m"), literal(mm(0.0))))
+        // Spanning objective reading BOTH scopes' totals.
+        .objective(ObjectiveSet::single(
+            ObjectiveSense::Minimize,
+            binop(
+                BinOp::Add,
+                value_ref("A", "total"),
+                value_ref("B", "total"),
+            ),
+        ))
+        .build();
+
+    let b = TopologyTemplateBuilder::new("B")
+        .auto_param("B", "m", Type::length())
+        .param(
+            "B",
+            "unit",
+            Type::dimensionless_scalar(),
+            Some(literal(Value::Real(2.0))),
+        )
+        // line_cost_B = unit_B * m  (own-scope; reads auto m).
+        .let_binding(
+            "B",
+            "line_cost",
+            Type::length(),
+            binop(
+                BinOp::Mul,
+                value_ref_typed("B", "unit", Type::dimensionless_scalar()),
+                value_ref("B", "m"),
+            ),
+        )
+        // total_B = line_cost_B  (own-scope).
+        .let_binding("B", "total", Type::length(), value_ref("B", "line_cost"))
+        // 2-cycle edge: B reads A.k → cycle → guaranteed MergedSolve.
+        .constraint("B", 0, None, gt(value_ref("A", "k"), literal(mm(0.0))))
+        .build();
+
+    CompiledModuleBuilder::new(ModulePath::single("test"))
+        .template(a)
+        .template(b)
+        .build()
+}
+
+/// BT-4: the captured merged `problem.dependent_cells` must be (i) a valid
+/// CROSS-SCOPE topological order over the four coupled Let cells spanning both
+/// scopes, and (ii) the SINGLE authority the post-solve write-back materializes
+/// those cells in — verified by comparing the `EvalResult`'s final coupled-cell
+/// values to a reference fold that seeds the spy-returned autos + `unit`
+/// constants and evaluates `problem.dependent_cells` in stored order.
+///
+/// RED today: the merged write-back re-evaluates each cluster member's Let cone
+/// in per-member `detect_let_cycle` order (A before B, `cluster.scopes` order),
+/// so `A.total` reads a STALE `B.total` and lands as `Undef` — diverging from
+/// the cross-scope-ordered reference fold (which yields `A.total = 6mm + 14mm =
+/// 20mm`). `dependent_cells` is not yet the write-back's authority.
+#[test]
+fn bt4_dependent_cells_is_cross_scope_topo_order_and_writeback_authority() {
+    let module = two_cycle_cross_scope_coupled_module();
+
+    let a_k = ValueCellId::new("A", "k");
+    let b_m = ValueCellId::new("B", "m");
+    let mut solved = HashMap::new();
+    solved.insert(a_k.clone(), mm(3.0));
+    solved.insert(b_m.clone(), mm(7.0));
+
+    let spy = SpyConstraintSolver::new_solved(solved);
+    let captured = spy.captured_problem();
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+    let result = engine.eval(&module);
+
+    let problem = captured.lock().unwrap().clone().expect(
+        "the two-cycle {A,B} SCC must dispatch ONE merged solve, capturing its \
+         problem",
+    );
+
+    let line_cost_a = ValueCellId::new("A", "line_cost");
+    let total_a = ValueCellId::new("A", "total");
+    let line_cost_b = ValueCellId::new("B", "line_cost");
+    let total_b = ValueCellId::new("B", "total");
+
+    let ids: Vec<ValueCellId> = problem
+        .dependent_cells
+        .iter()
+        .map(|(id, _)| id.clone())
+        .collect();
+
+    // ---- (i) valid CROSS-SCOPE topological order spanning both scopes. ----
+
+    // membership: exactly the four coupled Let cells, autos excluded.
+    for want in [&line_cost_a, &total_a, &line_cost_b, &total_b] {
+        assert!(
+            ids.contains(want),
+            "dependent_cells must contain the coupled Let cell {want:?} (reads a \
+             cluster auto and feeds the spanning objective); got {ids:?}",
+        );
+    }
+    assert!(
+        !ids.contains(&a_k) && !ids.contains(&b_m),
+        "dependent_cells must EXCLUDE the cluster autos {a_k:?}/{b_m:?}; got {ids:?}",
+    );
+    assert_eq!(
+        ids.len(),
+        4,
+        "dependent_cells must be EXACTLY the four coupled Let cells \
+         {{A.line_cost, A.total, B.line_cost, B.total}} (the `unit` params read \
+         no auto ⇒ excluded); got {ids:?}",
+    );
+
+    // spanning both scopes.
+    assert!(
+        ids.iter().any(|id| id.entity == "A") && ids.iter().any(|id| id.entity == "B"),
+        "dependent_cells must span BOTH cluster scopes A and B; got {ids:?}",
+    );
+
+    // ordering: each cell after all its in-set deps, INCLUDING the cross-scope
+    // edge B.total → A.total.
+    let pos = |id: &ValueCellId| -> usize {
+        ids.iter()
+            .position(|x| x == id)
+            .unwrap_or_else(|| panic!("dependent_cells missing {id:?}; got {ids:?}"))
+    };
+    assert!(
+        pos(&line_cost_a) < pos(&total_a),
+        "within-scope order: A.line_cost must precede A.total (A.total reads \
+         A.line_cost); got {ids:?}",
+    );
+    assert!(
+        pos(&line_cost_b) < pos(&total_b),
+        "within-scope order: B.line_cost must precede B.total (B.total reads \
+         B.line_cost); got {ids:?}",
+    );
+    assert!(
+        pos(&total_b) < pos(&total_a),
+        "CROSS-SCOPE order: B.total must precede A.total (A.total reads B.total \
+         across scopes) — this is the edge a per-member detect_let_cycle order \
+         cannot honour; got {ids:?}",
+    );
+
+    // ---- (ii) EvalResult coupled-cell values == reference fold of the SAME
+    // dependent_cells list, in stored order (single authority). ----
+
+    // Reference fold: seed the spy-returned autos + the `unit` param constants
+    // (the only reads the coupled exprs make that are NOT themselves in
+    // dependent_cells), then evaluate problem.dependent_cells IN STORED ORDER
+    // via the same evaluator the write-back uses. If the write-back consumed a
+    // DIFFERENT order (or a different list), the materialized A.total diverges.
+    let functions: &[CompiledFunction] = &problem.functions;
+    let mut fold_values = ValueMap::new();
+    fold_values.insert(a_k.clone(), mm(3.0));
+    fold_values.insert(b_m.clone(), mm(7.0));
+    fold_values.insert(ValueCellId::new("A", "unit"), Value::Real(2.0));
+    fold_values.insert(ValueCellId::new("B", "unit"), Value::Real(2.0));
+    for (id, expr) in &problem.dependent_cells {
+        let v = eval_expr(expr, &EvalContext::new(&fold_values, functions));
+        fold_values.insert(id.clone(), v);
+    }
+
+    for id in [&line_cost_a, &total_a, &line_cost_b, &total_b] {
+        let expected = fold_values.get_or_undef(id);
+        let actual = result.values.get(id).cloned().unwrap_or(Value::Undef);
+        assert_eq!(
+            actual, expected,
+            "coupled cell {id:?}: the post-solve write-back must materialize it \
+             in the SAME authoritative cross-scope order as \
+             problem.dependent_cells (single authority). Expected the \
+             dependent_cells fold value {expected:?}, got {actual:?}. RED today: \
+             the write-back re-evaluates each cluster member's Let cone in \
+             per-member detect_let_cycle order, so A.total reads a STALE B.total \
+             (B is processed after A) instead of the cross-scope-ordered value.",
+        );
+    }
 }
