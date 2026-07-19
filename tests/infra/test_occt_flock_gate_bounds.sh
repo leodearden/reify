@@ -157,4 +157,43 @@ assert "occt_wait_until_slot_held: free slot times out within bound (non-zero)" 
     bash -c "! occt_wait_until_slot_held '${_s_free}.slot-freeprobe' 2"
 rm -f "$_s_free" "${_s_free}.slot-freeprobe"
 
+# ============================================================================
+# Unit tests for occt_plan_grep_or_dump (plan grep with on-no-match stderr dump)
+# PRD docs/prds/merge-gate-health.md W4d tail (task 5258).
+#
+# Purely synthetic — no flock, no verify.sh, no sleeps.  Greps a plan string for
+# an ERE pattern; on NO-MATCH it echoes the captured child-plan stderr (errfile)
+# to STDOUT so the assert() on-FAIL capture-dump (test_helpers.sh, esc-4959-57)
+# surfaces the otherwise-swallowed --print-plan diagnostics, and returns non-zero.
+# ============================================================================
+echo ""
+echo "--- occt_plan_grep_or_dump: plan grep with on-no-match stderr dump ---"
+
+# (a) pattern present in the plan → returns 0 (no dump).
+assert "occt_plan_grep_or_dump: pattern present => returns 0" \
+    occt_plan_grep_or_dump 'nextest run --workspace' 'x timeout 60m cargo nextest run --workspace y' /dev/null
+
+# (b) pattern absent → non-zero.  `bash -c "! ..."` runs the EXPORTED helper so
+#     the negation reflects the real return, not a vacuous command-not-found.
+assert "occt_plan_grep_or_dump: pattern absent => non-zero" \
+    bash -c "! occt_plan_grep_or_dump 'ABSENT_XYZ' 'some plan text' /dev/null"
+
+# (c) DUMP proof: on no-match the captured child stderr (errfile) is echoed to
+#     stdout, so a real assert failure would surface it via the on-FAIL dump.
+_errf="$(mktemp)"
+printf 'SENTINEL_DIAG_XYZ\n' > "$_errf"
+_dumpf="$(mktemp)"
+occt_plan_grep_or_dump 'ABSENT_XYZ' 'some plan text' "$_errf" > "$_dumpf" 2>&1 || true
+assert "occt_plan_grep_or_dump: no-match dumps captured child stderr (sentinel present)" \
+    grep -q SENTINEL_DIAG_XYZ "$_dumpf"
+
+# (d) NO spurious dump: on a MATCH the errfile is NOT echoed (sentinel absent),
+#     so an all-green run stays byte-for-byte unchanged.
+_dumpf2="$(mktemp)"
+occt_plan_grep_or_dump 'plan' 'some plan text' "$_errf" > "$_dumpf2" 2>&1 || true
+assert "occt_plan_grep_or_dump: match => no stderr dump (sentinel absent)" \
+    bash -c "! grep -q SENTINEL_DIAG_XYZ '$_dumpf2'"
+
+rm -f "$_errf" "$_dumpf" "$_dumpf2"
+
 test_summary
