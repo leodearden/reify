@@ -1,27 +1,130 @@
-# Machine-readable twin of merge-gate-health.capability-manifest.md (hand-stamped, interim per overlay)
+# Machine-readable twin of merge-gate-health.capability-manifest.md
+# Canonical CapabilityManifestDoc schema (shared/src/shared/capability_manifest.py, schema_version 1).
+# Rewritten 2026-07-19 from the initial hand-rolled shape (which the commit_planning stamper's
+# strict schema would reject — caught during the sibling merge-gate-riders decompose).
+# task_id values hand-stamped (batch flipped before this rewrite).
+# Program record: milestone 5254; folded-into-existing capabilities (W2a/W2c→dark_factory:2821,
+# W3b→dark_factory:2822, trivial-pass red-main precheck→dark_factory:2823, manifest-row
+# gate→reify:5252) and the 2026-07-19 operator config batch (verify_use_cgroup_scope,
+# REIFY_RUN_ALL_FLAKY_LEDGER — landed bc235a616a): see the .md twin.
 prd: docs/prds/merge-gate-health.md
-program_milestone: "5254"
-batches:
-  reify: ["5256", "5257", "5258", "5259", "5260", "5261"]
-  dark_factory: ["2828", "2829", "2830", "2831"]
-folded_into_existing:
-  - {capability: "W2a+W2c classifier positive-anchor + deterministic discriminator", task: "dark_factory:2821"}
-  - {capability: "W3b landing-discipline closure (remote narrow-verify limb)", task: "dark_factory:2822"}
-  - {capability: "trivial-pass red-main precheck", task: "dark_factory:2823"}
-  - {capability: "manifest-row mechanical gate", task: "reify:5252"}
-config_batch_2026_07_19:
-  - "dark-factory-orchestrator.yaml: verify_use_cgroup_scope: true (W1b-reify)"
-  - "dark-factory-orchestrator.yaml verify_env: REIFY_RUN_ALL_FLAKY_LEDGER durable path (W5a)"
-bindings:
-  - task: "5256"
-    delivered_check: "bash scripts/verify-pipeline-guard.sh requires-full-gate tests/infra/test_probe_nonexistent.sh; test $? -eq 0"
-  - task: "5257"
-    delivered_check: "bash tests/infra/test_no_new_wallclock_upper_bounds.sh"
-  - task: "5258"
-    delivered_check: "grep -q 'flock -n' tests/infra/test_occt_flock_gate.sh && ! grep -q 'sleep 0.2  # give both holders time' tests/infra/test_occt_flock_gate.sh"
-  - task: "5259"
-    delivered_check: "grep -q 'baseline test_run_all.sh already red' tests/infra/test_run_all_ambient_isolation.sh"
-  - task: "5260"
-    delivered_check: "grep -q 'capture_print_plan' tests/infra/test_tree_sitter_pipeline.sh && grep -q 'NEW_IN_LIVE' tests/infra/test_reify_audit_ptodo.sh"
-  - task: "5261"
-    delivered_check: "grep -q 'INTERRUPTED (worktree removed)' tests/infra/run_all.sh"
+schema_version: 1
+tasks:
+  - label: "W3a"
+    task_id: 5256
+    title: "verify-pipeline-guard: any tests/infra/test_*.sh change always requires the full gate"
+    capabilities:
+      - name: "infra-tests-never-config-only"
+        binding: "capability→producer — guard oracle + manifest exist on main (scripts/verify-pipeline-guard.sh, scripts/verify-pipeline-paths.txt); rc=1 hole reproduced 2026-07-19"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "tests/infra/"
+          paths: ["scripts/verify-pipeline-paths.txt", "scripts/verify-pipeline-guard.sh"]
+          expect: present
+  - label: "W4a"
+    task_id: 5257
+    title: "wallclock-bounds guard precision: require a time-measurement signal"
+    capabilities:
+      - name: "config-constant-comparisons-unmatched"
+        binding: "capability→producer — detector + _wc_var_sfx branch exist (test_no_new_wallclock_upper_bounds.sh:60-228); ep3 false-positive corpus preserved in survey"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: "precision change is assertion-behavioral — the leaf's own regression fixtures (false-positive passes, true-positive still fails) are the mechanical check"
+  - label: "W4b"
+    task_id: 5258
+    title: "test_occt_flock_gate: causal flock-probe barriers for Tests 14/15/22 + _T*_PLAN stderr"
+    capabilities:
+      - name: "holder-race-eliminated-causally"
+        binding: "capability→producer — causal-barrier technique already in-tree (Tests 19/21A); live-flake repro 2026-07-19 FLAKY-ledger event"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "flock -n"
+          paths: ["tests/infra/test_occt_flock_gate.sh"]
+          expect: present
+  - label: "W4c"
+    task_id: 5259
+    title: "test_run_all_ambient_isolation: distinct SKIP when baseline test_run_all is already red"
+    capabilities:
+      - name: "derivative-failure-decoupled"
+        binding: "capability→producer — re-invocation seam confirmed (test_run_all_ambient_isolation.sh:344); 7/7 historical failures derivative"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "baseline test_run_all.sh already red"
+          paths: ["tests/infra/test_run_all_ambient_isolation.sh"]
+          expect: present
+  - label: "W4d"
+    task_id: 5260
+    title: "Infra-test hermeticity bundle: tree-sitter plan-capture, proc_reaper vectors, PTODO diagnosability"
+    capabilities:
+      - name: "plan-capture-lib-adopted"
+        binding: "capability→producer — plan_capture_lib.sh on main (task 4866); single-shot capture sites at test_tree_sitter_pipeline.sh:359,:382"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "capture_print_plan"
+          paths: ["tests/infra/test_tree_sitter_pipeline.sh"]
+          expect: present
+      - name: "ptodo-failure-prints-fingerprints"
+        binding: "capability→producer — NEW_IN_LIVE computed but unprinted (test_reify_audit_ptodo.sh:249-252)"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "NEW_IN_LIVE"
+          paths: ["tests/infra/test_reify_audit_ptodo.sh"]
+          expect: present
+  - label: "W4e+W5b"
+    task_id: 5261
+    title: "run_all: INTERRUPTED-worktree marker + Phase-2.5 serial-member ledger extension"
+    capabilities:
+      - name: "interrupted-marker-emitted"
+        binding: "capability→producer — Phase-2.5 + ledger mechanics on main (run_all.sh:121-154,323-418,1043); DF consumer done (dark_factory:2358)"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "INTERRUPTED (worktree removed)"
+          paths: ["tests/infra/run_all.sh"]
+          expect: present
+  - label: "W1a+W1c"
+    task_id: 2828
+    title: "DF: _merge-verify startup survivor barrier + contended-lease defer"
+    capabilities:
+      - name: "restart-collateral-limb-closed"
+        binding: "capability→producer — DF-side (git_ops.py:7737 reset, :1902-1911 fail-open, merge_liveness.py:715); 96.9% restart-window failure stat"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: "delivered in the dark-factory repo — reify-side grep cannot observe it; DF harness restart test + runs.db restart-window rate are the checks"
+  - label: "W1b-DF"
+    task_id: 2829
+    title: "DF: startup sweep of leftover df-verify-*.scope units"
+    capabilities:
+      - name: "stranded-scope-sweep"
+        binding: "capability→producer — DF-side (verify.py:2890-2911 mechanism; reify yaml flip landed bc235a616a)"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: "delivered in the dark-factory repo; DF harness test is the mechanical check"
+  - label: "W1d"
+    task_id: 2830
+    title: "DF: converge laptop verify-merge CLI span onto lane_lock_path"
+    capabilities:
+      - name: "remote-lane-lock-convergence"
+        binding: "capability→producer — DF-side (cli.py:495-503 vs git_ops.py:1890-1895); remote twins reify 5034/5187"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: "delivered in the dark-factory repo; DF lock-path pin test is the mechanical check"
+  - label: "W2b"
+    task_id: 2831
+    title: "DF: extend ENV_TRANSIENT broken-worktree patterns to _merge-verify collateral shapes"
+    capabilities:
+      - name: "collateral-shapes-classified-env-transient"
+        binding: "capability→producer — DF-side (verify_classify.py:160-163); replay corpus archived (reify data/verify-logs/{5164,5071}); hard dep on dark_factory:2821 (wired)"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: "delivered in the dark-factory repo; replayed 5164/5071 classification tests are the mechanical check"
