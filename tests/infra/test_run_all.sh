@@ -2521,5 +2521,129 @@ else
     assert "T25h: GREEN regression -- normal path exits 0 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
 fi
 
+# -- Test 26: INTERRUPTED-worktree marker (task #5261, PRD merge-gate-health.md W4e) --
+# Proves run_all.sh detects its OWN worktree (INFRA_DIR) being removed out
+# from under it mid-run -- e.g. the _merge-verify worktree gutted by a
+# restart -- and reclassifies that as ONE line-anchored
+# `=== INTERRUPTED (worktree removed) ===` marker + a distinct exit code
+# (99), instead of letting Phase 2/2.5/3 emit N per-member
+# "No such file or directory" (rc 127) failures that dark-factory would
+# otherwise misclassify as N genuine test_failure results. The self-check is
+# only "armed" when INFRA_DIR held a `run_all.sh` sentinel at startup --
+# every fixture below deliberately plants a dummy `run_all.sh` file in its
+# temp INFRA_DIR to arm it (a real merge-tier invocation runs `bash
+# run_all.sh` with no arg, so INFRA_DIR == SCRIPT_DIR naturally satisfies
+# this). `run_all.sh` never matches the `test_*.sh` discovery glob, so
+# planting the sentinel is inert to discovery/partition/Summary counts.
+echo ""
+echo "--- Test 26: INTERRUPTED-worktree marker ---"
+
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+    # -- 26a: POOL path -- the sole pool member nukes its own INFRA_DIR ------
+    # Deterministic (no wall-clock/race): with exactly one pool member, the
+    # Phase-1 `wait` join always completes only after this member (and its
+    # rm -rf) has finished, so the post-join self-check fires reliably.
+    TMPDIR_T26A="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T26A")
+    touch "$TMPDIR_T26A/run_all.sh"
+
+    MANIFEST_T26A="$TMPDIR_T26A/classification.manifest"
+    printf 'test_nuke_pool.sh pool\n' > "$MANIFEST_T26A"
+    cat > "$TMPDIR_T26A/test_nuke_pool.sh" <<'MOCKBODY'
+#!/usr/bin/env bash
+rm -rf "$NUKE_DIR"
+exit 0
+MOCKBODY
+    chmod +x "$TMPDIR_T26A/test_nuke_pool.sh"
+
+    t26a_rc=0
+    t26a_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T26A" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T26A/pool.lock" \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        NUKE_DIR="$TMPDIR_T26A" \
+        bash "$RUN_ALL" "$TMPDIR_T26A" 2>&1)" || t26a_rc=$?
+
+    if grep -qE '^=== INTERRUPTED \(worktree removed\) ===$' <<<"$t26a_out"; then
+        assert "T26a: POOL path -- worktree removal emits the line-anchored INTERRUPTED marker" true
+    else
+        assert "T26a: POOL path -- worktree removal emits the line-anchored INTERRUPTED marker (got: $t26a_out)" false
+    fi
+
+    assert "T26a: POOL path -- worktree removal exits 99" \
+        test "$t26a_rc" -eq 99
+
+    # -- 26b: LEGACY path (REIFY_RUN_ALL_POOL_DISABLE=1) -- first of two
+    # members nukes INFRA_DIR; the between-members top-of-loop check must
+    # catch it before the second member's `[ -f ]` discovery guard would
+    # otherwise silently `continue` right past it (a silent false success,
+    # not even a 127) ---------------------------------------------------
+    TMPDIR_T26B="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T26B")
+    touch "$TMPDIR_T26B/run_all.sh"
+
+    cat > "$TMPDIR_T26B/test_a_nuke.sh" <<'MOCKBODY'
+#!/usr/bin/env bash
+rm -rf "$NUKE_DIR"
+exit 0
+MOCKBODY
+    chmod +x "$TMPDIR_T26B/test_a_nuke.sh"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T26B/test_b_second.sh"
+    chmod +x "$TMPDIR_T26B/test_b_second.sh"
+
+    t26b_rc=0
+    t26b_out="$(REIFY_RUN_ALL_POOL_DISABLE=1 \
+        NUKE_DIR="$TMPDIR_T26B" \
+        bash "$RUN_ALL" "$TMPDIR_T26B" 2>&1)" || t26b_rc=$?
+
+    if grep -qE '^=== INTERRUPTED \(worktree removed\) ===$' <<<"$t26b_out"; then
+        assert "T26b: LEGACY path -- worktree removal between members emits the INTERRUPTED marker" true
+    else
+        assert "T26b: LEGACY path -- worktree removal between members emits the INTERRUPTED marker (got: $t26b_out)" false
+    fi
+
+    assert "T26b: LEGACY path -- worktree removal exits 99" \
+        test "$t26b_rc" -eq 99
+
+    # -- 26c: GREEN regression -- armed sentinel present but NEVER nuked must
+    # never false-fire: no INTERRUPTED marker, exit 0, byte-exact Summary --
+    TMPDIR_T26C="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T26C")
+    touch "$TMPDIR_T26C/run_all.sh"
+
+    MANIFEST_T26C="$TMPDIR_T26C/classification.manifest"
+    printf 'test_pool_ok.sh pool\n' > "$MANIFEST_T26C"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T26C/test_pool_ok.sh"
+    chmod +x "$TMPDIR_T26C/test_pool_ok.sh"
+
+    t26c_rc=0
+    t26c_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T26C" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T26C/pool.lock" \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        bash "$RUN_ALL" "$TMPDIR_T26C" 2>&1)" || t26c_rc=$?
+
+    if [[ "$t26c_out" != *"INTERRUPTED"* ]]; then
+        assert "T26c: GREEN regression -- armed-but-intact run emits no INTERRUPTED marker" true
+    else
+        assert "T26c: GREEN regression -- armed-but-intact run emits no INTERRUPTED marker (got: $t26c_out)" false
+    fi
+
+    if [[ "$t26c_out" == *"=== Summary: 1 discovered, 0 failed ==="* ]]; then
+        assert "T26c: GREEN regression -- byte-exact Summary line when armed but intact" true
+    else
+        assert "T26c: GREEN regression -- byte-exact Summary line when armed but intact (got: $t26c_out)" false
+    fi
+
+    assert "T26c: GREEN regression -- armed-but-intact run exits 0" \
+        test "$t26c_rc" -eq 0
+else
+    assert "T26a: POOL path -- worktree removal emits the line-anchored INTERRUPTED marker (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T26a: POOL path -- worktree removal exits 99 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T26b: LEGACY path -- worktree removal between members emits the INTERRUPTED marker (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T26b: LEGACY path -- worktree removal exits 99 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T26c: GREEN regression -- armed-but-intact run emits no INTERRUPTED marker (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T26c: GREEN regression -- byte-exact Summary line when armed but intact (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T26c: GREEN regression -- armed-but-intact run exits 0 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+fi
+
 # -- Summary --------------------------------------------------------------------
 test_summary
