@@ -271,14 +271,23 @@ mod tests {
         let _ = byte_offset_to_line_col("ab", 100);
     }
 
-    #[cfg(not(debug_assertions))]
     #[test]
-    fn byte_offset_to_line_col_offset_beyond_len_release() {
-        // In release builds, debug_assert is a no-op, so passing an offset beyond
-        // source.len() silently clamps: the loop exhausts all characters and returns
-        // the position after the last character.
+    fn byte_offset_to_line_col_offset_at_len_returns_eof_position() {
+        // offset == source.len() is in-range, so it satisfies
+        // debug_assert!(offset <= source.len()) and passes identically in debug
+        // and release builds. It exercises the SAME loop-exhaustion code path
+        // that an out-of-range offset relies on in release builds (where the
+        // debug_assert is a no-op): every char_indices() index is < source.len(),
+        // so `i >= offset` never fires, the loop exhausts, and the position after
+        // the last character is returned.
         // "ab" → 'a' col→2, 'b' col→3; loop ends → (1, 3).
-        assert_eq!(byte_offset_to_line_col("ab", 100), (1, 3));
+        //
+        // This is the profile-invariant re-expression of the release-only clamp
+        // this module used to pin with an out-of-range offset (100) under
+        // #[cfg(not(debug_assertions))]. The debug-side loud-panic contract for a
+        // genuinely out-of-range offset is pinned separately by the sibling
+        // #[should_panic] test above.
+        assert_eq!(byte_offset_to_line_col("ab", 2), (1, 3));
     }
 
     #[test]
