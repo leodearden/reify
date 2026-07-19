@@ -393,4 +393,32 @@ _s4_bad="$(grep -vE '^[[:space:]]*$' "$_s4_out" | grep -vE '^HARNESS_KLOC_CAP (P
 assert "4: every emitted non-empty line matches the canonical HARNESS_KLOC_CAP grammar" \
     test -z "$_s4_bad"
 
+# ===========================================================================
+# Section 5: LIVE scan — the guard is GREEN on the real pre-consolidation tree
+# (the headline user-observable signal). Also guard integrity: a missing/empty
+# baseline must never let the scan vacuously pass.
+# ===========================================================================
+echo ""
+echo "--- Section 5: live scan of the real 5 consolidatable crates ---"
+
+# Guard integrity: a missing / empty baseline is never a silent pass. (An empty
+# baseline would also flag all 867 grandfathered files -> a loud RED below —
+# these explicit asserts state the intent regardless.)
+_baseline_data="$(grep -vE '^[[:space:]]*#' "$BASELINE" 2>/dev/null | grep -vE '^[[:space:]]*$' || true)"
+assert "5: grandfather baseline exists (guard integrity)" \
+    test -f "$BASELINE"
+assert "5: grandfather baseline is non-empty after comment/blank stripping (guard integrity)" \
+    test -n "$_baseline_data"
+
+# The live scan is wired here in step-10; until then these "not run" defaults
+# keep the two assertions below RED.
+_live_rc=1
+_live_out=""
+
+_live_summary="$(printf '%s\n' "$_live_out" | grep -E '^HARNESS_KLOC_CAP SUMMARY ' || true)"
+assert "5: live scan is green on the current tree (rc 0, zero violations)" \
+    test "$_live_rc" -eq 0
+assert "5: live SUMMARY line reads exactly crates=5 violations=0" \
+    test "$_live_summary" = "HARNESS_KLOC_CAP SUMMARY crates=5 violations=0"
+
 test_summary
