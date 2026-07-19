@@ -1980,6 +1980,27 @@ impl Engine {
         self.last_dispatch_count
     }
 
+    /// Returns the number of geometry-backed realizations currently tracked in
+    /// `realization_handles` — the GHR-δ validity oracle populated by `build()`
+    /// / `build_snapshot()` (via `post_process_geometry_handle_cells`) and,
+    /// per the load-bearing build↔tessellate asymmetry that
+    /// `reset_per_build_state` preserves (task ι, #5069), left INTACT across
+    /// `tessellate_realizations()` / `tessellate_snapshot()`.
+    ///
+    /// Lets an out-of-crate integration test observe build-surface population
+    /// (`> 0` after a geometry-bearing `build`) versus tessellate-surface
+    /// preservation (unchanged after a following `tessellate_realizations`)
+    /// hermetically, without an OCCT kernel. Mirrors the gated
+    /// `last_dispatch_count()` reader convention.
+    ///
+    /// Only available under `#[cfg(any(test, feature = "test-instrumentation"))]`.
+    /// Integration tests reach this method via the self-dev-dep with the
+    /// `test-instrumentation` feature enabled (see `crates/reify-eval/Cargo.toml`).
+    #[cfg(any(test, feature = "test-instrumentation"))]
+    pub fn realization_handles_len(&self) -> usize {
+        self.realization_handles.len()
+    }
+
     /// **Test-instrumentation only — not a stable public surface.**
     ///
     /// Force the build-time [`crate::BuildScheduler`] selection, bypassing
