@@ -50,7 +50,7 @@ shippable** fix; the one cross-repo item (L3b dispatch-admission) is flagged, no
 (`verify.sh:1350`) **only when `INCLUDE_INFRA=1`**, which is set **only** by the `--include-infra` flag
 (`verify.sh:442`; default `0` at `:420` — never forced by `role=merge`, `scope=all`, or `MERGE_HEAD`, which forces
 only `--scope`). `--include-infra` appears **only** on the per-task `test_command`/`lint_command`
-(`orchestrator.yaml:122-123`); `hooks/pre-merge-commit` runs `verify.sh all --scope all` with **no** `--include-infra`.
+(`dark-factory-orchestrator.yaml:122-123`); `hooks/pre-merge-commit` runs `verify.sh all --scope all` with **no** `--include-infra`.
 
 **⇒ Tiering inversion:** the full suite runs on **every per-task lane (×M concurrent)** and on **no merge**. Across
 M lanes this is **M × 103 test-executions draining through a 16-slot (`nproc/2`) host-global semaphore**

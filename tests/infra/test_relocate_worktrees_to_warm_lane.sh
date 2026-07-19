@@ -17,7 +17,7 @@
 #   D — Idempotency: symlink already correct → no-op; wrong target → refuses
 #   E — Migration: real directory with contents → mv to mount, symlink created
 #   F — Real-git end-to-end acceptance (user-observable signal)
-#   H — orchestrator.yaml config contract (PyYAML-guarded)
+#   H — dark-factory-orchestrator.yaml config contract (PyYAML-guarded)
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -455,16 +455,16 @@ assert "G3: .worktrees symlink target resolves into default mount for --repo" \
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Block H — orchestrator.yaml config contract (PyYAML-guarded)
+# Block H — dark-factory-orchestrator.yaml config contract (PyYAML-guarded)
 # Asserts: git.warm_lane_base_target_dir is set correctly; git.warm_lane_pool is ON
 # (enabled 2026-06-20 by the #4665 deploy); the top-level warm_lane_pool.enabled
 # regression guard (a DISTINCT key) stays OFF until DF ζ task-dispatch wiring lands.
 # Mirrors the PyYAML-with-SKIP-guard idiom from test_warm_lane_pool_config.sh.
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""
-echo "--- Block H: orchestrator.yaml config contract ---"
+echo "--- Block H: dark-factory-orchestrator.yaml config contract ---"
 
-ORCH_YAML="$REPO_ROOT/orchestrator.yaml"
+ORCH_YAML="$REPO_ROOT/dark-factory-orchestrator.yaml"
 EXPECTED_BASE_TARGET_DIR="/home/leo/src/warm-lanes/base/target"
 
 # SKIP guard: require python3 + PyYAML
@@ -475,7 +475,7 @@ else
     _TMPDIRS+=("$_H_PARSE_PY")
 
     cat > "$_H_PARSE_PY" << 'PYEOF'
-"""Validate orchestrator.yaml for task 4696 (warm-lane R3).
+"""Validate dark-factory-orchestrator.yaml for task 4696 (warm-lane R3).
 Usage:
   python3 <script> <orch_yaml> <check> [<expected_value>]
 Checks:
@@ -525,12 +525,12 @@ print(f"unknown check: {check}", file=sys.stderr)
 sys.exit(2)
 PYEOF
 
-    # H1: orchestrator.yaml parses as valid YAML
-    assert "H1: orchestrator.yaml parses as valid YAML" \
+    # H1: dark-factory-orchestrator.yaml parses as valid YAML
+    assert "H1: dark-factory-orchestrator.yaml parses as valid YAML" \
         python3 "$_H_PARSE_PY" "$ORCH_YAML" parse_ok
 
     # H2: git.warm_lane_base_target_dir == expected path
-    # RED until step-12 adds the knob to orchestrator.yaml
+    # RED until step-12 adds the knob to dark-factory-orchestrator.yaml
     assert "H2: git.warm_lane_base_target_dir == $EXPECTED_BASE_TARGET_DIR" \
         python3 "$_H_PARSE_PY" "$ORCH_YAML" base_target_dir_set "$EXPECTED_BASE_TARGET_DIR"
 

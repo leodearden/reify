@@ -390,7 +390,7 @@ assert "G4: loadavg unreadable + healthy avg10 emits no oversubscribed marker" \
     bash -c '! printf "%s\n" "$1" | grep -q "@@REIFY_FLEET_OVERSUBSCRIBED@@"' _ "$ERR_OUT"
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Block I — orchestrator.yaml config-drift cross-check. Self-contained (does
+# Block I — dark-factory-orchestrator.yaml config-drift cross-check. Self-contained (does
 # NOT enlarge tests/infra/test_cpu_governance_config.sh): mirrors that test's
 # (A2) PyYAML-guarded value-drift check + (B) always-run plain-grep knob-name
 # check, scoped to the new cpu_governance.fleet_load_detector sub-block.
@@ -398,20 +398,20 @@ assert "G4: loadavg unreadable + healthy avg10 emits no oversubscribed marker" \
 # like DF_AGENT_CPU_GOVERN) — only its presence/truthiness is asserted here.
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""
-echo "--- Block I: orchestrator.yaml config-drift cross-check ---"
+echo "--- Block I: dark-factory-orchestrator.yaml config-drift cross-check ---"
 
-ORCH_YAML="$REPO_ROOT/orchestrator.yaml"
+ORCH_YAML="$REPO_ROOT/dark-factory-orchestrator.yaml"
 
 # (I-B) KNOB-NAME CROSS-CHECK — always runs (bash grep, no python needed)
 echo "--- (I-B) knob-name cross-check (config <-> script) ---"
 
-assert "REIFY_FLEET_LOAD_RATIO_THRESHOLD cited in orchestrator.yaml" \
+assert "REIFY_FLEET_LOAD_RATIO_THRESHOLD cited in dark-factory-orchestrator.yaml" \
     grep -q "REIFY_FLEET_LOAD_RATIO_THRESHOLD" "$ORCH_YAML"
 
 assert "REIFY_FLEET_LOAD_RATIO_THRESHOLD referenced in scripts/fleet-load-detector.sh" \
     grep -q "REIFY_FLEET_LOAD_RATIO_THRESHOLD" "$SCRIPT"
 
-assert "REIFY_FLEET_LOAD_AVG10_THRESHOLD cited in orchestrator.yaml" \
+assert "REIFY_FLEET_LOAD_AVG10_THRESHOLD cited in dark-factory-orchestrator.yaml" \
     grep -q "REIFY_FLEET_LOAD_AVG10_THRESHOLD" "$ORCH_YAML"
 
 assert "REIFY_FLEET_LOAD_AVG10_THRESHOLD referenced in scripts/fleet-load-detector.sh" \
@@ -428,7 +428,7 @@ else
     _TMPDIRS+=("$_FLD_PARSE_PY")
 
     cat > "$_FLD_PARSE_PY" << 'PYEOF'
-"""Validate orchestrator.yaml cpu_governance.fleet_load_detector block (task 5135).
+"""Validate dark-factory-orchestrator.yaml cpu_governance.fleet_load_detector block (task 5135).
 Usage:
   python3 <script> <orch_yaml> <check> [<script_path>]
 Checks (no <script_path>):
@@ -508,7 +508,7 @@ print(f"unknown check: {check}", file=sys.stderr)
 sys.exit(2)
 PYEOF
 
-    assert "orchestrator.yaml parses as valid YAML" \
+    assert "dark-factory-orchestrator.yaml parses as valid YAML" \
         python3 "$_FLD_PARSE_PY" "$ORCH_YAML" parse_ok
 
     assert "cpu_governance.fleet_load_detector block exists" \

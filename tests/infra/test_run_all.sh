@@ -2,7 +2,7 @@
 # Tests for tests/infra/run_all.sh discovery runner.
 # Verifies: existence, executability, exclusion of test_helpers.sh,
 # discovery of test_*.sh files, exit-code aggregation, and
-# orchestrator.yaml wiring.
+# dark-factory-orchestrator.yaml wiring.
 #
 # IMPORTANT: All tests that exercise run_all.sh use temp dirs with mock
 # scripts to avoid infinite recursion (this file is itself auto-discovered
@@ -17,7 +17,7 @@ trap cleanup EXIT
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 RUN_ALL="$SCRIPT_DIR/run_all.sh"
-ORCHESTRATOR_YAML="$REPO_ROOT/orchestrator.yaml"
+ORCHESTRATOR_YAML="$REPO_ROOT/dark-factory-orchestrator.yaml"
 
 # Harness-global default (task #5142 review remediation): isolate the ENTIRE
 # meta-suite from the real git-ignored default ledger
@@ -177,7 +177,7 @@ echo ""
 echo "--- Test 5: verify.sh plan wiring — run_all.sh gated to the merge tier ---"
 
 # Since task 3766 the orchestrator runs scripts/verify.sh; run_all.sh is wired
-# into the test-side infra of the verify.sh plan, not orchestrator.yaml directly.
+# into the test-side infra of the verify.sh plan, not dark-factory-orchestrator.yaml directly.
 #
 # task 5125: the wholesale run_all.sh pool (103 tests) moved from the
 # per-task INCLUDE_INFRA tier to the DF_VERIFY_ROLE=merge tier, fixing M-way

@@ -31,7 +31,7 @@ excluded from the shared module.
 
 ## CI wiring
 
-`run_all.sh` is wired into `orchestrator.yaml`'s `test_command` via:
+`run_all.sh` is wired into `dark-factory-orchestrator.yaml`'s `test_command` via:
 
 ```
 if test -f tests/infra/run_all.sh; then bash tests/infra/run_all.sh; fi
@@ -84,10 +84,10 @@ auditable.
 | `run_all.sh` | Discovery runner — runs all `test_*.sh` files |
 | `test_helpers.sh` | Shared library: `assert()` and `test_summary()` |
 | `test_no_new_wallclock_upper_bounds.sh` | Regression guard: static-grep for new wall-clock upper-bound asserts |
-| `test_npm_ci_hardening.sh` | Tests npm ci guard conventions in orchestrator.yaml |
+| `test_npm_ci_hardening.sh` | Tests npm ci guard conventions in dark-factory-orchestrator.yaml |
 | `test_portable_sha256.sh` | Tests `portable_sha256()` from `scripts/lib_portable.sh` |
 | `test_portable_timeout.sh` | Tests `portable_timeout()` from `scripts/lib_portable.sh` |
-| `test_release_mode_in_test_command.sh` | Tests orchestrator.yaml runs cargo test --release for release-only tests |
+| `test_release_mode_in_test_command.sh` | Tests dark-factory-orchestrator.yaml runs cargo test --release for release-only tests |
 | `test_run_all.sh` | Tests this `run_all.sh` discovery runner |
 | `test_setup_worktree_debug_port.sh` | Tests `allocate_free_port()` and `scripts/setup-worktree-debug-port.sh` |
 | `test_sync_comments_grep.sh` | Tests sync_comments grep pattern correctness |

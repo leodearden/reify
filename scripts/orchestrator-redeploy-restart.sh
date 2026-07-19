@@ -2,7 +2,7 @@
 # scripts/orchestrator-redeploy-restart.sh
 # Safe detached orchestrator redeploy+restart mechanism (task 4620).
 #
-# The orchestrator loads orchestrator.yaml ONCE at startup and refuses to
+# The orchestrator loads dark-factory-orchestrator.yaml ONCE at startup and refuses to
 # start with uncommitted tracked changes in project_root (dirty-start guard).
 # A task UNDER the orchestrator cannot do `systemctl restart` — that
 # SIGTERM-kills its own agent mid-run.

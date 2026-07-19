@@ -2,7 +2,7 @@
 #
 # Purpose:
 #   This file is the single source of truth for which crates require the OCCT
-#   serialization gate when running tests.  orchestrator.yaml's test_command
+#   serialization gate when running tests.  dark-factory-orchestrator.yaml's test_command
 #   passes exactly these crates to the gated invocation via -p flags, and
 #   excludes them from the ungated workspace-wide pass via --exclude flags.
 #
@@ -18,7 +18,7 @@
 # Cross-references:
 #   scripts/cargo-test-occt-gated.sh — the flock wrapper used for gated passes
 #   tests/infra/test_occt_gated_scope.sh — drift catcher: asserts this list
-#     equals the cargo-tree-derived touching set and that orchestrator.yaml's
+#     equals the cargo-tree-derived touching set and that dark-factory-orchestrator.yaml's
 #     -p/-exclude flags are in sync
 #
 # When to update:

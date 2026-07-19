@@ -1,6 +1,6 @@
 ; NOTE: This corpus is developer documentation for the CST shape of the
 ; specialization-body sub_declaration grammar (task 3569). The expected
-; S-expressions below are NOT validated by CI (orchestrator.yaml does not run
+; S-expressions below are NOT validated by CI (dark-factory-orchestrator.yaml does not run
 ; `tree-sitter test`). The canonical CI regression signal is the Rust integration
 ; test `sub_decl_specialization_body_parses_from_source` in
 ; crates/reify-syntax/tests/sub_decl_specialization_body_parser_tests.rs.

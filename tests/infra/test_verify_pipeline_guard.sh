@@ -75,8 +75,8 @@ assert_exit "POSITIVE: scripts/occt-touching-crates.txt is load-bearing (exit 0)
 assert_exit "NEGATIVE: docs/note.md is fast-path-safe (exit 1)" 1 \
     run_guard requires-full-gate docs/note.md
 
-assert_exit "NEGATIVE: orchestrator.yaml is fast-path-safe (exit 1)" 1 \
-    run_guard requires-full-gate orchestrator.yaml
+assert_exit "NEGATIVE: dark-factory-orchestrator.yaml is fast-path-safe (exit 1)" 1 \
+    run_guard requires-full-gate dark-factory-orchestrator.yaml
 
 assert_exit "NEGATIVE: README.md is fast-path-safe (exit 1)" 1 \
     run_guard requires-full-gate README.md

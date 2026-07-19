@@ -23,7 +23,7 @@ their real edit footprint. A four-line investigation established the mechanics
 (`reference_orchestrator_module_lock_semantics_dir_overgreed`):
 
 - Lock conflict is pure path-prefix math (`shared/locking.py:20-27 modules_conflict`);
-  `normalize_lock(depth)` truncates to `lock_depth` components (`orchestrator.yaml:13`
+  `normalize_lock(depth)` truncates to `lock_depth` components (`dark-factory-orchestrator.yaml:13`
   `lock_depth: 4`, `max_per_module: 1`).
 - The over-wide dirs are written at **creation time** (PRD decompose / human-decompose
   authored `metadata.modules` = crate-coarse prose, migrated verbatim into
@@ -261,7 +261,7 @@ them would spurious-block; G3/G6 are done by direct code-trace, per the
 
 | Capability | Status | Evidence (jun18 trace) |
 |---|---|---|
-| Lock conflict = path-prefix; `normalize_lock(depth)`; `lock_depth:4`, `max_per_module:1` | ✅ | `shared/locking.py:20-27,30-38`; `orchestrator.yaml:13` |
+| Lock conflict = path-prefix; `normalize_lock(depth)`; `lock_depth:4`, `max_per_module:1` | ✅ | `shared/locking.py:20-27,30-38`; `dark-factory-orchestrator.yaml:13` |
 | BRE acquire exists (`plan ∖ held`) | ✅ | `scheduler.py` `handle_blast_radius_expansion` (~:3395), the requeue branch |
 | In-memory release half (`held ∖ plan`) **already exists** (δ corrected to store-writeback + observability) | ✅ corrected 2026-06-18 | `scheduler.py:3418 handle_blast_radius_expansion` (`stale = current ∖ needed` → `release_subset` + `lock_released`/`plan_refinement`, `6f29517823` 2026-04-21); called from `workflow.py:2448/2560/2720` on any `plan_modules != self.modules`. **Residual:** success path is in-memory only — only the requeue branch (`scheduler.py:3466-3469`) writes `metadata.files` back, so tightening is lost on restart |
 | Task-creation path = `submit_task`/`commit_planning`; `modules→files` migration | ✅ | fused-memory `task_interceptor` / `commit_planning`; `fabfa367f5` + `migrate_metadata_modules_to_files.py` |

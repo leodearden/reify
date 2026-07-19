@@ -4,7 +4,7 @@
 
 ## 0. Context & supersession
 
-`scripts/verify.sh` is the single source of truth for verification, shared by `orchestrator.yaml` (per-task `test`/`lint`/`typecheck`) and the git hooks (`hooks/project-checks`, `hooks/pre-merge-commit`). Today the orchestrator runs **`--scope all`** for every task — full-workspace clippy + nextest + OCCT gated pass + GUI, regardless of what the task changed. Verification wall-clock is the dominant throughput bottleneck for the orchestrator.
+`scripts/verify.sh` is the single source of truth for verification, shared by `dark-factory-orchestrator.yaml` (per-task `test`/`lint`/`typecheck`) and the git hooks (`hooks/project-checks`, `hooks/pre-merge-commit`). Today the orchestrator runs **`--scope all`** for every task — full-workspace clippy + nextest + OCCT gated pass + GUI, regardless of what the task changed. Verification wall-clock is the dominant throughput bottleneck for the orchestrator.
 
 This PRD is the **design-first half** of the verify-throughput program (points 2 + 4 of the 2026-05-28 investigation). The **low-risk half** — heavy-test relocation (A), two-tier debug/release by role (1), and command fusion (3) — is being implemented directly in a separate session and **must land on main first** (see §5). This PRD assumes that post-A/1/3 `verify.sh`.
 
@@ -12,7 +12,7 @@ It introduces a deliberate change to the **per-task vs merge-gate correctness co
 
 ## 1. Consumer & user-observable surface (G1)
 
-- **Named consumer:** `orchestrator.yaml`'s three per-task verify commands (`test_command` / `lint_command` / `type_check_command`), realized through `scripts/verify.sh`. The mode and its consumer are wired in the **same task** (T1) — no producer-orphan.
+- **Named consumer:** `dark-factory-orchestrator.yaml`'s three per-task verify commands (`test_command` / `lint_command` / `type_check_command`), realized through `scripts/verify.sh`. The mode and its consumer are wired in the **same task** (T1) — no producer-orphan.
 - **User-observable surface:**
   - `scripts/verify.sh --print-plan` — the existing faithful oracle of what runs. The narrowed plan for a given branch/staged diff is deterministic and directly assertable (this is the leaf signal for most tasks, via the existing `tests/infra/test_verify_scope.sh` harness).
   - Orchestrator task throughput (recorded as before/after actuals on representative branch shapes — §7 / T6).
@@ -24,7 +24,7 @@ It introduces a deliberate change to the **per-task vs merge-gate correctness co
 - changed-file set = `git diff --name-only --diff-filter=ACMR <merge-base>` where `<merge-base> = git merge-base main HEAD` — diffing the **fork point against the working tree** captures committed *and* uncommitted task work (the orchestrator commits before verifying, but this is conservative). Filtered through the existing `grep -v '^\.task/'`.
 - routed through `decide_scope`'s existing `case` arms → `RUN_RUST` / `RUN_GUI` / `RUN_OCCT_GATE`. A docs-only branch → empty plan; a non-OCCT crate branch → no OCCT gated pass; a `gui/src` branch → no Rust.
 - the existing `MERGE_HEAD` guard (`verify.sh:145-149`) still forces `--scope all`.
-- `orchestrator.yaml`'s three commands switch `--scope all` → `--scope branch`.
+- `dark-factory-orchestrator.yaml`'s three commands switch `--scope all` → `--scope branch`.
 
 **Phase 2 — affected-crate reverse-dependency narrowing.** `decide_scope` gains a fourth output: the **affected-crate set** = *changed crates ∪ their reverse-dependency closure* (every workspace crate that transitively depends on a changed crate, so anything that could break is rebuilt/retested). Computed by a new `scripts/affected-crates-lib.sh` reusing the `cargo metadata` resolve-graph technique already in `scripts/occt-scope-lib.sh:occt_touching_set` (which walks *forward* closure; this walks the *reverse* adjacency). When the set is a bounded list (≠ `ALL`), the test passes, the OCCT gated pass, **and** clippy + `cargo check` run with `-p <crate>...` instead of `--workspace`/`--exclude`. Workspace-global changes (`Cargo.toml`, `Cargo.lock`, `.cargo/*`, `tree-sitter-reify/*`, toolchain) → `ALL` sentinel → no narrowing.
 
@@ -84,7 +84,7 @@ The integration-gate task (T5) names **B4 + B5** as its observable signal — cl
 
 ## 5. Pre-conditions for activating
 
-- **HARD: A/1/3 landed on main.** The forked low-risk session edits `verify.sh` (two-tier role + command fusion + heavy-test relocation) and `orchestrator.yaml`. This PRD edits the same files. Its tasks must not run until A/1/3 is on main, or they will conflict and be authored against the wrong baseline. Tracked as a §6 seam; the batch stays `deferred` until A/1/3 lands (activation decided at decompose time).
+- **HARD: A/1/3 landed on main.** The forked low-risk session edits `verify.sh` (two-tier role + command fusion + heavy-test relocation) and `dark-factory-orchestrator.yaml`. This PRD edits the same files. Its tasks must not run until A/1/3 is on main, or they will conflict and be authored against the wrong baseline. Tracked as a §6 seam; the batch stays `deferred` until A/1/3 lands (activation decided at decompose time).
 - Substrate (all verified 2026-05-29, G3): `git merge-base main HEAD` resolves in orchestrator task worktrees (local `main` ref present); `decide_scope` is structured to extend; `cargo metadata` resolve graph is available; `cargo nextest`/`clippy`/`check` accept `-p`; `--print-plan` oracle exists; `tests/infra/test_verify_scope.sh` + `run_all.sh` auto-discovery exist.
 
 ## 6. Cross-PRD relationship & seam ownership (G4)
@@ -93,7 +93,7 @@ No Reify *feature*-PRD seams (this is orthogonal build infra). The one coordinat
 
 | Other work | Direction | Seam mechanism | Owner | Status |
 |---|---|---|---|---|
-| Forked **A/1/3** (heavy-test relocation, two-tier role, command fusion) | this PRD consumes its result | `scripts/verify.sh` baseline + `orchestrator.yaml` per-task commands + `DF_VERIFY_ROLE` role plumbing | **A/1/3** owns the role/profile/fusion changes; **this PRD** owns the `--scope branch` mode + affected-crate narrowing | blocked-on-A/1/3 (must land first) |
+| Forked **A/1/3** (heavy-test relocation, two-tier role, command fusion) | this PRD consumes its result | `scripts/verify.sh` baseline + `dark-factory-orchestrator.yaml` per-task commands + `DF_VERIFY_ROLE` role plumbing | **A/1/3** owns the role/profile/fusion changes; **this PRD** owns the `--scope branch` mode + affected-crate narrowing | blocked-on-A/1/3 (must land first) |
 
 This PRD's C2 role-guard is **independent** of A/1/3's role-driven *profile* default — it adds only a defensive `merge ⇒ all` scope force, so the merge gate is safe even if A/1/3's role semantics change.
 
@@ -103,7 +103,7 @@ Two phases; Phase 2 depends on Phase 1's branch-diff plumbing. Every leaf names 
 
 **Phase 1 — `--scope branch` family gating**
 
-- **T1 (leaf)** — Add `--scope branch` to `verify.sh` (merge-base diff → existing `decide_scope`; `MERGE_HEAD` still forces `all`; fail-wide on detached/no-main per C5) **and** switch `orchestrator.yaml`'s `test`/`lint`/`typecheck` commands to `--scope branch`. *Signal:* new `test_verify_scope.sh` scenarios B1–B3 pass (docs-only → empty plan; non-OCCT crate → no gated pass; gui-only → no Rust); `orchestrator.yaml` commands read `--scope branch`. *Consumer wired in-task (G1).*
+- **T1 (leaf)** — Add `--scope branch` to `verify.sh` (merge-base diff → existing `decide_scope`; `MERGE_HEAD` still forces `all`; fail-wide on detached/no-main per C5) **and** switch `dark-factory-orchestrator.yaml`'s `test`/`lint`/`typecheck` commands to `--scope branch`. *Signal:* new `test_verify_scope.sh` scenarios B1–B3 pass (docs-only → empty plan; non-OCCT crate → no gated pass; gui-only → no Rust); `dark-factory-orchestrator.yaml` commands read `--scope branch`. *Consumer wired in-task (G1).*
 - **T2 (leaf)** — Merge-gate contract guard: add the C2 defensive `DF_VERIFY_ROLE=merge ⇒ force SCOPE=all` in `verify.sh`, and an infra drift test asserting B5 + B6 (merge gate / role=merge produce a full `--workspace` plan with zero `-p`) and that `hooks/pre-merge-commit` still passes `--scope all`. *Signal:* the guard test fails if anyone narrows the merge gate; passes today. *Depends: T1.*
 
 **Phase 2 — affected-crate reverse-dependency narrowing**

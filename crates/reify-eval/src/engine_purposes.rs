@@ -1302,7 +1302,7 @@ mod tests {
     ///
     /// **Dual-mode coverage:** the release-only structural assertions below
     /// (the `#[cfg(not(debug_assertions))]` block) are exercised in CI by
-    /// the `cargo test -p reify-eval --release` pass in `orchestrator.yaml`'s
+    /// the `cargo test -p reify-eval --release` pass in `dark-factory-orchestrator.yaml`'s
     /// `test_command` (second invocation in the two-pass debug+release pattern).
     /// The *debug-mode posture* (panic + no expr mutation) is pinned by the
     /// sibling test `expand_missing_cell_debug_mode_halts_via_debug_assert`,
@@ -1355,7 +1355,7 @@ mod tests {
         //
         // CI dependency: this block executes only in release builds; it is
         // exercised by the `cargo test -p reify-eval --release` pass in
-        // `orchestrator.yaml`'s `test_command` (second invocation in the
+        // `dark-factory-orchestrator.yaml`'s `test_command` (second invocation in the
         // two-pass debug+release pattern). The *debug-mode posture* (panic +
         // no expr mutation + warn fires first) is pinned by the sibling test
         // `expand_missing_cell_debug_mode_halts_via_debug_assert`, which runs
@@ -1402,7 +1402,7 @@ mod tests {
     /// That sibling test asserts the WARN counter unconditionally and gates its
     /// structural (anti-cascade) assertions behind `#[cfg(not(debug_assertions))]`
     /// — those run in CI via the `cargo test -p reify-eval --release` pass in
-    /// `orchestrator.yaml`'s `test_command` (second invocation in the two-pass
+    /// `dark-factory-orchestrator.yaml`'s `test_command` (second invocation in the two-pass
     /// debug+release pattern).
     ///
     /// This test pins the *debug-mode posture* explicitly:

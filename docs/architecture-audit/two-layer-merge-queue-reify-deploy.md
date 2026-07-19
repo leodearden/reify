@@ -16,7 +16,7 @@ Design: `docs/prds/two-layer-merge-queue.md` (ξ CAPSTONE)
 `1aa4f640b5`) ON TOP of ν's already-deployed two-layer pipeline.
 
 `orchestrator-reify.service` is a **long-lived process**: it loads
-`orchestrator.yaml` once at startup. Landing κ/4750 on `main` does **not**
+`dark-factory-orchestrator.yaml` once at startup. Landing κ/4750 on `main` does **not**
 activate the detector — "merged ≠ deployed." A single orchestrator restart is
 required for ν's `register_for_reify()` startup call (dark_factory:1897) to wire
 the `CrateGraphOverlapDetector` under project id `"reify"`.

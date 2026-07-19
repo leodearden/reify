@@ -25,7 +25,7 @@ All disk/footprint figures below are **measured, never frozen** into RED-test th
 
 A live audit of the pool (`lslocks`, per-lane git state, GC journal history, `df`) established the accretion mechanism precisely — and corrected two premises in the brief:
 
-- **The "N=24" baseline is stale.** `orchestrator.yaml` is now `max_concurrent_tasks: 48` + `spare_warm_lanes: 8` ⇒ **effective N = 56** task lanes + K merge-spec. Resident = 47 `_lane-*` (< 56) — the pool is **not over the count cap**. The binding constraint is **disk**: `56 × ~122 GB mean-divergent ≈ 6.8 TB > 6.0 TB`. 6 TB is *ample* for the ~15-lane working set (~1.8 TB + a ~108 GB base); the leak is that FREE lanes keep their divergent targets.
+- **The "N=24" baseline is stale.** `dark-factory-orchestrator.yaml` is now `max_concurrent_tasks: 48` + `spare_warm_lanes: 8` ⇒ **effective N = 56** task lanes + K merge-spec. Resident = 47 `_lane-*` (< 56) — the pool is **not over the count cap**. The binding constraint is **disk**: `56 × ~122 GB mean-divergent ≈ 6.8 TB > 6.0 TB`. 6 TB is *ample* for the ~15-lane working set (~1.8 TB + a ~108 GB base); the leak is that FREE lanes keep their divergent targets.
 - **Only ~1 of 47 lanes was actually building** (a single live `cargo` lock, on `_lane-22`). The working set (mtime < 60 min) was ~12; the other ~35 lanes were **FREE-but-pinned**.
 - **GC preserves released lanes as if they were live.** `scripts/warm-lane-gc.sh` `_is_reclaimable` preserves on `flock-held ∨ dirty-tracked ∨ ahead-of-*local*-main`, and **never consults dark-factory's FREE/ASSIGNED state** — so a *released* dirty/ahead lane is indistinguishable from a live one. GC resets clean-FREE lanes fine (`reset=8–17`/run historically) but `removed=0` **always** and `preserved` never shrinks (latest run: `reset=0 removed=0 preserved=53`). The preserved set *is* the accretion.
 
@@ -58,7 +58,7 @@ Three preserve failure modes, and where each is (or is not) already handled:
 
 | Side | Deliverables |
 |---|---|
-| **reify** (this batch) | α audit/telemetry script · β sizing-budget formula + `provision-warm-lane-fs.sh` online-grow · γ `write_queue.db` untrack (fast-fix, filed ahead of batch) · δ `thin-warm-lane.sh` free-first target-reclaim primitive · ε soft-floor headroom oracle + `orchestrator.yaml warm_lane_pool` admission knobs · ζ the integration gate · ι doc corrections |
+| **reify** (this batch) | α audit/telemetry script · β sizing-budget formula + `provision-warm-lane-fs.sh` online-grow · γ `write_queue.db` untrack (fast-fix, filed ahead of batch) · δ `thin-warm-lane.sh` free-first target-reclaim primitive · ε soft-floor headroom oracle + `dark-factory-orchestrator.yaml warm_lane_pool` admission knobs · ζ the integration gate · ι doc corrections |
 | **dark-factory** (`dark_factory:` tasks, cross-project edges to reify's ε/δ contract) | η wire `thin-warm-lane.sh` into `release_lane` (eager release-thin) · θ consult ε's soft-floor oracle in the dispatch/acquire loop and throttle new-lane allocation (prefer reclaim/reuse) before the hard floor |
 
 ## 4. Resolved design decisions
@@ -148,7 +148,7 @@ provision-warm-lane-fs.sh --grow --size-gib <N> [--img <path>] [--mount <dir>]
   IDEMPOTENT: if the FS is already ≥ <N> GiB → print <mount>, exit 0 (no-op).
   Guards: refuse if <N> < current size (P3 no-shrink); refuse if <img> not the mounted backing file.
   STDOUT: the resolved mount dir. STDERR: diagnostics.
-budget formula (documented in orchestrator.yaml + β doc, recomputed from LIVE measurement — NOT frozen):
+budget formula (documented in dark-factory-orchestrator.yaml + β doc, recomputed from LIVE measurement — NOT frozen):
   resident_divergent_budget_gib = floor( (image_free_gib − base_gib − 2×base_gib_flip_reserve) / safety )
     image_free_gib, base_gib, base_gib_flip_reserve : GiB (live `df`/`du` measurements, never frozen)
       base_gib_flip_reserve ≈ one base generation's footprint; the leading 2× reserves old+new
@@ -167,7 +167,7 @@ budget formula (documented in orchestrator.yaml + β doc, recomputed from LIVE m
 ```
 *Invariant P3:* grow is monotone (never shrinks a populated image). *Invariant P4:* the budget is a *derived, recomputed* quantity, never a hardcoded lane-count or GB constant frozen into a test (G6).
 
-Status: `--grow` is implemented in `scripts/provision-warm-lane-fs.sh`; the formula's declared inputs (`safety_divisor`, and the pre-existing `spare_warm_lanes`/`merge_spec_pool_size_source`) are declared in `orchestrator.yaml` under `warm_lane_pool.sizing` (config contract: `tests/infra/test_warm_lane_pool_config.sh`). These are currently staged/declarative only — no landed code computes `resident_divergent_budget_gib` or reads `safety_divisor` yet; the ADVISORY relation is meant to be asserted by ζ (the end-to-end integration gate, §5).
+Status: `--grow` is implemented in `scripts/provision-warm-lane-fs.sh`; the formula's declared inputs (`safety_divisor`, and the pre-existing `spare_warm_lanes`/`merge_spec_pool_size_source`) are declared in `dark-factory-orchestrator.yaml` under `warm_lane_pool.sizing` (config contract: `tests/infra/test_warm_lane_pool_config.sh`). These are currently staged/declarative only — no landed code computes `resident_divergent_budget_gib` or reads `safety_divisor` yet; the ADVISORY relation is meant to be asserted by ζ (the end-to-end integration gate, §5).
 
 ### 9.3 Free-first target-reclaim primitive — `scripts/thin-warm-lane.sh` (δ)
 
@@ -192,7 +192,7 @@ warm-lane-disk-guard.sh check [--soft]           (extends the existing hard-floo
     (3 is the pinned cross-repo contract value — distinct from the hard-floor 75 (EX_TEMPFAIL)
      AND the E1 config-error 2; mirrors fleet-load-detector.sh's exit-3 "oversubscribed"
      convention, so DF's admission loop can treat 3 as one shared throttle-not-requeue signal)
-orchestrator.yaml warm_lane_pool: (DECLARE the currently-missing knobs; config-test asserts presence)
+dark-factory-orchestrator.yaml warm_lane_pool: (DECLARE the currently-missing knobs; config-test asserts presence)
   min_free_gib, min_free_inodes            (hard floor — today only defaulted in the script)
   soft_free_gib, soft_free_inodes          (NEW — the proactive throttle floor; soft > hard)
 ```
@@ -228,7 +228,7 @@ dispatch/acquire admission                               (θ — new soft-floor 
 | B5 | Thin never touches assigned/source | ASSIGNED lane (flock held) OR a lane with uncommitted source WIP | δ refuses the assigned lane (T3); on a FREE lane it removes only `target/`, leaving uncommitted source WIP intact (T1) | reify (δ) |
 | B6 | Soft floor fires above hard floor | free between soft and hard floors | `check --soft` emits the soft sentinel + distinct exit; `check` (hard) still exits 0; below hard floor both trip 75 | reify (ε) |
 | B6b | Soft-floor guard fails closed on a measurement error | `df` invocation fails / emits unparseable output (fixture stubs `REIFY_WARM_LANE_DISK_GUARD_DF`) | both `check` and `check --soft` exit 75 (the hard path) — never exit 0 and never emit the soft sentinel; a measurement failure never reads as healthy (E3) | reify (ε) |
-| B7 | Config knobs declared | orchestrator.yaml | `test_warm_lane_pool_config.sh` asserts `min_free_gib/inodes` + `soft_free_gib/inodes` present + soft>hard | reify (ε) |
+| B7 | Config knobs declared | dark-factory-orchestrator.yaml | `test_warm_lane_pool_config.sh` asserts `min_free_gib/inodes` + `soft_free_gib/inodes` present + soft>hard | reify (ε) |
 | B8 | **Integration: release-thin bounds resident-divergent** | seed 3 lanes divergent, release 2 | after release, resident-divergent ≈ the 1 still-assigned (freed ≈ 2× footprint); audit headroom reflects it | reify (ζ) |
 | B9 | Eager release-thin in the pool | DF releases a lane after a dispatched agent finishes | orchestrator journal shows the released lane's target thinned promptly; next acquire re-seeds warm (delta vs cold) | dark-factory (η) |
 | B10 | Soft-floor dispatch throttle | pool free between soft and hard floors, a new dispatch arrives | DF prefers a FREE-lane reclaim/reuse or defers; it does **not** allocate a new divergent lane toward the hard floor; no ENOSPC | dark-factory (θ) |
@@ -241,9 +241,9 @@ Greek labels; task IDs assigned at decompose. All disk/footprint signals are *me
 
 - **γ — reify · untrack `data/queue/write_queue.db*` (the fast-fix).** ALREADY FILED as a standalone high-priority task (ticket `tkt_0RR4NPSDRP7X9CFWQY7DRY8091`, 2026-07-11) so relief lands ahead of the batch. **Signal:** `git ls-files data/queue/` empty; `git check-ignore data/queue/write_queue.db` prints the path; a lane `git status` no longer shows the DB triple as dirty tracked → a subsequent `warm-lane-gc.sh reclaim` resets the previously-pinned pending-task landed lanes (reset↑, preserved↓). *Referenced here; not re-filed in this batch.*
 - **α — reify · `scripts/warm-lane-audit.sh` (audit & telemetry).** Per §9.1, reusing the 4749 status seam (D6). *Intermediate.* **Signal:** on the live pool prints the assigned/free/reclaimable/leaked/stale table + headroom line; `tests/infra/test_warm_lane_audit.sh` asserts correct classification of a seeded fixture (B1/B2). *Modules:* `scripts/`, `tests/infra/`.
-- **β — reify · sizing-budget formula + `provision-warm-lane-fs.sh --grow`.** Per §9.2. *Intermediate.* **Signal:** `--grow --size-gib 8192` grows the mounted image online (`df` shows the new ceiling), idempotent + no-shrink (B3); the budget formula + knobs documented (`orchestrator.yaml`, β doc). *Modules:* `scripts/`, `orchestrator.yaml`, `docs/`.
+- **β — reify · sizing-budget formula + `provision-warm-lane-fs.sh --grow`.** Per §9.2. *Intermediate.* **Signal:** `--grow --size-gib 8192` grows the mounted image online (`df` shows the new ceiling), idempotent + no-shrink (B3); the budget formula + knobs documented (`dark-factory-orchestrator.yaml`, β doc). *Modules:* `scripts/`, `dark-factory-orchestrator.yaml`, `docs/`.
 - **δ — reify · `scripts/thin-warm-lane.sh` (free-first target reclaim primitive).** Per §9.3. *Intermediate* (unlocks DF η). **Signal:** `tests/infra/test_thin_warm_lane.sh` — frees a divergent FREE lane's target (`df` recovers ≈ its footprint) with no reseed staged; refuses an assigned lane; leaves source WIP intact (B4/B5). *Modules:* `scripts/`, `tests/infra/`.
-- **ε — reify · soft-floor headroom oracle + `orchestrator.yaml` admission knobs.** Per §9.4. *Intermediate* (the DF-facing contract; unlocks DF θ). **Signal:** `check --soft` emits the soft sentinel between the floors while hard `check` stays green (B6); a stubbed `df` failure fail-closes both `check` and `check --soft` to exit 75, never a false-healthy 0 (B6b, E3); `test_warm_lane_pool_config.sh` asserts the declared `min_free_*`/`soft_free_*` knobs + soft>hard (B7). *Modules:* `scripts/`, `orchestrator.yaml`, `tests/infra/`.
+- **ε — reify · soft-floor headroom oracle + `dark-factory-orchestrator.yaml` admission knobs.** Per §9.4. *Intermediate* (the DF-facing contract; unlocks DF θ). **Signal:** `check --soft` emits the soft sentinel between the floors while hard `check` stays green (B6); a stubbed `df` failure fail-closes both `check` and `check --soft` to exit 75, never a false-healthy 0 (B6b, E3); `test_warm_lane_pool_config.sh` asserts the declared `min_free_*`/`soft_free_*` knobs + soft>hard (B7). *Modules:* `scripts/`, `dark-factory-orchestrator.yaml`, `tests/infra/`.
 - **ζ — reify · END-TO-END INTEGRATION GATE (the C-as-integration-gate leaf).** `tests/infra/test_warm_lane_sizing_lifecycle.sh`: seed divergent lanes → thin-on-release → assert resident-divergent tracks the assigned set + audit headroom reflects it (B8), and the soft floor fires before the hard floor on a shrinking-free fixture (B6 end-to-end). *Leaf.* *(depends_on α, β, δ, ε; soft-dep on γ for the residue-clean baseline.)* **Signal:** the harness runs green in CI and records the measured free-recovered-on-release delta. *Modules:* `tests/infra/`, `scripts/`.
 - **ι — reify · companion doc corrections.** Amend `warm-lane-pool-cow-seeding.md` (N=24→56; §9.5 release now thins) + `warm-lane-pool-space-safety.md` (§11 capacity in-scope here; §12 release-thin resolved; ε soft-floor extension) + CLAUDE.md warm-lane invariants (audit + soft-floor admission) + a `docs/notes` audit runbook. *Leaf.* *(depends_on ζ — prove before recording.)* **Signal:** the record reflects the landed pillars; the "N=24" references are corrected. *Modules:* `docs/`, `CLAUDE.md`.
 - **η — dark-factory · wire eager release-thin into `release_lane`.** Call `thin-warm-lane.sh` on release (free-first), per §9.5. *Leaf (DF-side).* *(depends_on δ + ε contract, cross-project.)* **Signal:** orchestrator journal shows a released lane's target thinned promptly + resident-divergent bounded to the assigned set; next acquire re-seeds warm (B9). *Repo:* dark-factory.

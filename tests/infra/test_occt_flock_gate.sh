@@ -2,7 +2,7 @@
 # Infrastructure test for task 1992.
 # Validates that scripts/cargo-test-occt-gated.sh exists with the correct
 # structure, serializes OCCT-touching test processes via flock, and that
-# orchestrator.yaml routes all cargo test --workspace invocations through it.
+# dark-factory-orchestrator.yaml routes all cargo test --workspace invocations through it.
 
 set -euo pipefail
 
@@ -111,7 +111,7 @@ assert "wrapper exit code is 42 (got $_EC)" \
 
 
 # -- verify.sh plan integration tests ------------------------------------------
-# These formerly grepped orchestrator.yaml's test_command. Since task 3766 the
+# These formerly grepped dark-factory-orchestrator.yaml's test_command. Since task 3766 the
 # orchestrator calls scripts/verify.sh, so the canonical command list is taken
 # from verify.sh --print-plan (--scope all → full plan, index-independent; env
 # lines stripped via `grep -v '^#'`). The gated passes are plain `cargo test`

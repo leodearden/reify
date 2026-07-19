@@ -16,7 +16,7 @@
 set -euo pipefail
 
 # Ensure Cargo-installed tools (e.g. tree-sitter-cli) are on PATH.
-# Mirrors the '. ~/.cargo/env' prefix used in orchestrator.yaml verify commands.
+# Mirrors the '. ~/.cargo/env' prefix used in dark-factory-orchestrator.yaml verify commands.
 [ -f "${HOME:-~}/.cargo/env" ] && . "${HOME:-~}/.cargo/env" || true
 
 # --- Paths ---
@@ -346,7 +346,7 @@ test_generated_files_not_tracked() {
 
 test_orchestrator_includes_generation() {
     # Since task 3766 the orchestrator runs scripts/verify.sh, so each verify
-    # action's plan (not orchestrator.yaml literals) must include tree-sitter
+    # action's plan (not dark-factory-orchestrator.yaml literals) must include tree-sitter
     # generation. --scope all forces the full plan; env lines are '# ' comments.
     local verify="$REPO_ROOT/scripts/verify.sh"
     assert_file_exists "$verify" || return 1

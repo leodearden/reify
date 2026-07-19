@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Infrastructure test for task 4663.
-# Validates the warm_lane_pool block config contract in orchestrator.yaml:
+# Validates the warm_lane_pool block config contract in dark-factory-orchestrator.yaml:
 #   (A) STRUCTURE — top-level 'warm_lane_pool' key exists; shape/type assertions
 #       (task_pool_size_source=="max_concurrent_tasks" — semantic contract;
 #       merge_spec_pool_size_source=="_MERGE_AHEAD_BOUND" — semantic contract;
@@ -15,7 +15,7 @@
 #         substrate.size_gib      YAML vs scripts/provision-warm-lane-fs.sh SIZE_GIB=
 #         defrag_extent_threshold YAML vs scripts/refresh-warm-base.sh FRAG_THRESHOLD=
 #   (B) KNOB-NAME CROSS-CHECK — each REIFY_* knob cited by name in
-#       orchestrator.yaml MUST also appear in its owning script, so config↔script
+#       dark-factory-orchestrator.yaml MUST also appear in its owning script, so config↔script
 #       names cannot drift silently.
 #       Checked:
 #         REIFY_WARM_LANE_MOUNT — scripts/provision-warm-lane-fs.sh
@@ -32,7 +32,7 @@
 #                     default (A2 pattern, PyYAML-gated)
 #         name      — each REIFY_WARM_LANE_DISK_GUARD_{MIN,SOFT}_FREE_{GIB,
 #                     INODES} name is referenced in warm-lane-disk-guard.sh
-#                     (B, plain grep, always runs). The orchestrator.yaml side
+#                     (B, plain grep, always runs). The dark-factory-orchestrator.yaml side
 #                     of the contract is the real YAML key (min_free_gib,
 #                     soft_free_gib, ...), already covered by the presence/
 #                     relation/drift checks above — not re-pinned via a
@@ -52,7 +52,7 @@ source "$SCRIPT_DIR/test_helpers.sh"
 
 echo "=== warm_lane_pool config contract tests ==="
 
-ORCH_YAML="$REPO_ROOT/orchestrator.yaml"
+ORCH_YAML="$REPO_ROOT/dark-factory-orchestrator.yaml"
 PROVISION_SH="$REPO_ROOT/scripts/provision-warm-lane-fs.sh"
 REFRESH_SH="$REPO_ROOT/scripts/refresh-warm-base.sh"
 INSTALLER_SH="$REPO_ROOT/scripts/install-warm-lane-units.sh"
@@ -73,7 +73,7 @@ else
     trap 'rm -f "$_PARSE_PY"' EXIT
 
     cat > "$_PARSE_PY" << 'PYEOF'
-"""Validate orchestrator.yaml warm_lane_pool block.
+"""Validate dark-factory-orchestrator.yaml warm_lane_pool block.
 Usage:
   python3 <script> <orch_yaml> <check> [<script_path>]
 Checks (no <script_path>):
@@ -380,7 +380,7 @@ print(f"unknown check: {check}", file=sys.stderr)
 sys.exit(2)
 PYEOF
 
-    assert "orchestrator.yaml parses as valid YAML" \
+    assert "dark-factory-orchestrator.yaml parses as valid YAML" \
         python3 "$_PARSE_PY" "$ORCH_YAML" parse_ok
 
     assert "top-level 'warm_lane_pool' key exists" \
@@ -409,7 +409,7 @@ PYEOF
 
     # (A1b) SIZING BUDGET CONFIG CONTRACT (β, task #5173) — structural/type
     # assertions only. The resident-divergent budget formula is documented
-    # in orchestrator.yaml as a comment + recomputed from LIVE df/du
+    # in dark-factory-orchestrator.yaml as a comment + recomputed from LIVE df/du
     # measurement (P4/D8) — NEVER a frozen GB/lane-count value, so no such
     # number is asserted here (rule 5); only the declared INPUTS are checked.
     echo "--- (A1b) sizing budget config contract (β) ---"
@@ -482,7 +482,7 @@ PYEOF
         python3 "$_PARSE_PY" "$ORCH_YAML" soft_free_inodes_yaml_vs_guard "$GUARD_SH"
 
     # (A3) PINNED VALUES — assert the literal new canonical defaults are in place.
-    # These fail RED until both provision-warm-lane-fs.sh and orchestrator.yaml are
+    # These fail RED until both provision-warm-lane-fs.sh and dark-factory-orchestrator.yaml are
     # updated together (step-2, task #4720).
     echo "--- (A3) pinned values: new canonical defaults ---"
 
@@ -494,7 +494,7 @@ PYEOF
 
     # (A4) INSTALLER-YAML CONSTANT CONSISTENCY — the installer hardcodes the canonical
     # values in WARM_LANE_IMG/WARM_LANE_SIZE_GIB to decouple the deployed boot unit from
-    # script-default drift.  These values are intentionally the same as orchestrator.yaml's
+    # script-default drift.  These values are intentionally the same as dark-factory-orchestrator.yaml's
     # substrate block today; this cross-check catches an accidental one-sided edit.
     echo "--- (A4) installer-YAML constant consistency ---"
 
@@ -510,14 +510,14 @@ fi
 # ---------------------------------------------------------------------------
 echo "--- (B) knob-name cross-check (config↔script) ---"
 
-assert "REIFY_WARM_LANE_MOUNT cited in orchestrator.yaml" \
+assert "REIFY_WARM_LANE_MOUNT cited in dark-factory-orchestrator.yaml" \
     grep -q "REIFY_WARM_LANE_MOUNT" "$ORCH_YAML"
 
 assert "REIFY_WARM_LANE_MOUNT referenced in scripts/provision-warm-lane-fs.sh" \
     grep -q "REIFY_WARM_LANE_MOUNT" "$PROVISION_SH"
 
 # (B7) disk-guard admission knobs (task 5175): each REIFY_* env-var name must
-# be referenced in its owning script (no python needed). The orchestrator.yaml
+# be referenced in its owning script (no python needed). The dark-factory-orchestrator.yaml
 # side of the contract is the real YAML key, not the env-var name — already
 # covered by the presence/relation/drift PyYAML checks above, so it is not
 # re-pinned here via a grep for the env-var name in a YAML comment (that would

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Infrastructure test for task 2000.
 # Validates that the OCCT-touching crate list is correct and that
-# orchestrator.yaml routes exactly those crates through the flock gate.
+# dark-factory-orchestrator.yaml routes exactly those crates through the flock gate.
 #
 # Assertions:
 #   1. scripts/occt-touching-crates.txt exists and is non-empty (after stripping comments/blanks).

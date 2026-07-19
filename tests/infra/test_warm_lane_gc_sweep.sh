@@ -14,7 +14,7 @@
 #   V — part-1 verification / green-on-arrival regression guards:
 #         warm-lane-disk-guard.sh --help mentions --mount/--min-free-gib/--min-free-inodes
 #           (tests --help text only; acceptance via help prose, not live flag invocation)
-#         orchestrator.yaml contains warm_lane_pool: true
+#         dark-factory-orchestrator.yaml contains warm_lane_pool: true
 #   W — cross-script --mount seam (green-on-arrival regression guard):
 #         single DF value (worktrees-dir), agreeing semantics across gc.sh + disk-guard.sh
 #         pins: exit 1 on unresolvable base-target (not exit 2); stderr names correct
@@ -352,9 +352,9 @@ assert "V2: warm-lane-disk-guard.sh --help mentions --min-free-gib" \
 assert "V3: warm-lane-disk-guard.sh --help mentions --min-free-inodes" \
     bash -c 'bash "$1" --help 2>&1 | grep -q -- "--min-free-inodes"' _ "$DISK_GUARD"
 
-# V4: orchestrator.yaml contains warm_lane_pool: true (pool master-enable)
-ORCH_YAML="$REPO_ROOT/orchestrator.yaml"
-assert "V4: orchestrator.yaml contains warm_lane_pool: true" \
+# V4: dark-factory-orchestrator.yaml contains warm_lane_pool: true (pool master-enable)
+ORCH_YAML="$REPO_ROOT/dark-factory-orchestrator.yaml"
+assert "V4: dark-factory-orchestrator.yaml contains warm_lane_pool: true" \
     bash -c 'grep -q "warm_lane_pool:.*true" "$1"' _ "$ORCH_YAML"
 
 # ──────────────────────────────────────────────────────────────────────────────

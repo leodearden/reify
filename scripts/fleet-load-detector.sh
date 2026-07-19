@@ -63,9 +63,9 @@
 #   REIFY_FLEET_LOAD_PSI_PATH          /proc/pressure/cpu source override (test seam)
 #   REIFY_FLEET_LOAD_NPROC             nproc override (test seam)
 #
-# Config: orchestrator.yaml cpu_governance.fleet_load_detector documents these
+# Config: dark-factory-orchestrator.yaml cpu_governance.fleet_load_detector documents these
 # defaults (values MUST byte-match the :- fallbacks below); DF L3b consumes it.
-# orchestrator.yaml loads once at startup — DF runtime consumption of a config
+# dark-factory-orchestrator.yaml loads once at startup — DF runtime consumption of a config
 # edit needs commit-then-restart (deploy-time DF concern, not verified here).
 
 set -euo pipefail

@@ -3,7 +3,7 @@
 # Validates that a release-mode cargo test pass exists so tests gated on
 # #[cfg(not(debug_assertions))] (and the heavy release-only tests gated behind
 # #[cfg_attr(debug_assertions, ignore)]) are exercised. Release coverage now
-# lives at the MERGE GATE: per-task verify (orchestrator.yaml) runs --profile
+# lives at the MERGE GATE: per-task verify (dark-factory-orchestrator.yaml) runs --profile
 # debug for fast feedback, while hooks/pre-merge-commit runs --profile both.
 # Tests 1-5 below pin the release passes that `verify.sh … --profile both`
 # emits (the profile the merge gate uses); Test 8 pins that the merge gate is
@@ -20,7 +20,7 @@ source "$SCRIPT_DIR/test_helpers.sh"
 echo "=== release-mode test_command tests ==="
 
 # Canonical command lists from verify.sh --print-plan (the oracle the
-# orchestrator calls since task 3766), not orchestrator.yaml directly. --scope
+# orchestrator calls since task 3766), not dark-factory-orchestrator.yaml directly. --scope
 # all forces the full plan; env lines are stripped via `grep -v '^#'`. Both
 # runner spellings (cargo test / cargo nextest run) are accepted — under nextest
 # the UNGATED tail drops `-- --test-threads=1` (nextest isolates per test), while

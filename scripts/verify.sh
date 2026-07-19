@@ -2,7 +2,7 @@
 # scripts/verify.sh — unified verification entrypoint for Reify.
 #
 # Single source of truth shared by BOTH:
-#   - orchestrator.yaml  (test_command / lint_command / type_check_command)
+#   - dark-factory-orchestrator.yaml  (test_command / lint_command / type_check_command)
 #   - hooks/project-checks + hooks/pre-merge-commit  (main-branch git gate)
 # so the two can no longer drift apart.
 #
@@ -44,7 +44,7 @@
 #                                  step (print vs eval) branches on --print-plan.
 #   -h|--help                      Show usage.
 #
-# Environment baked in (mirrors orchestrator.yaml verify_env + .cargo/run-with-occt.sh):
+# Environment baked in (mirrors dark-factory-orchestrator.yaml verify_env + .cargo/run-with-occt.sh):
 #   - . ~/.cargo/env
 #   - RUSTC_WRAPPER=sccache, CARGO_INCREMENTAL=0  (sccache cache shared across worktrees)
 #   - CARGO_MAKEFLAGS=--jobserver-auth=fifo:<role-fifo>  ONLY when the role's FIFO exists
@@ -184,7 +184,7 @@ source "$SCRIPT_DIR/affected-crates-lib.sh"
 #   REIFY_TEST_SEMAPHORE_WAIT=unlimited  — continuous blocking wait on the semaphore;
 #                                          never exits 75 (EX_TEMPFAIL). Activates
 #                                          clock-stop marker emission. Keep FINITE in
-#                                          orchestrator.yaml until task 4838 deploys DF.
+#                                          dark-factory-orchestrator.yaml until task 4838 deploys DF.
 #   REIFY_CLOCK_HEARTBEAT_SECS           — interval (s) between @@REIFY_CLOCK_HEARTBEAT@@
 #                                          emissions inside the semaphore poll loop.
 #                                          Default 30.  Reduce in tests for faster runs.
@@ -552,7 +552,7 @@ esac
 # future `offline` role (A2, which applies the POSITIVE heavy filter) can
 # never have this negation misfire against it. Part B (dark-factory
 # flip-gate-exclude-heavy) flips this by setting the env var to "1" in
-# orchestrator.yaml's verify env, with zero reify code change.
+# dark-factory-orchestrator.yaml's verify env, with zero reify code change.
 #
 # Sequencing precondition (operational, NOT enforced by this script — it has
 # no visibility into A2/A6 landing/scheduling state): Part B must not set

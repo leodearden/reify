@@ -1,6 +1,6 @@
 # Reify
 
-Parametric engineering-design DSL (`.ri` files): Rust workspace (`crates/`) + Tauri GUI (`gui/`). Dev setup: `scripts/setup-dev.sh` (builds prebuilt native deps, wires git hooks); the verify pipeline requires `sccache` on PATH (`orchestrator.yaml` sets `RUSTC_WRAPPER=sccache`, `CARGO_INCREMENTAL=0` to share a rustc cache across worktrees).
+Parametric engineering-design DSL (`.ri` files): Rust workspace (`crates/`) + Tauri GUI (`gui/`). Dev setup: `scripts/setup-dev.sh` (builds prebuilt native deps, wires git hooks); the verify pipeline requires `sccache` on PATH (`dark-factory-orchestrator.yaml` sets `RUSTC_WRAPPER=sccache`, `CARGO_INCREMENTAL=0` to share a rustc cache across worktrees).
 
 This file holds **invariants and pointers only**. Mechanism detail lives in the canonical docs/scripts in the Pointers table — read those before working on a subsystem.
 
@@ -13,7 +13,7 @@ This file holds **invariants and pointers only**. Mechanism detail lives in the 
 - Claude Code's worktree feature clobbers the shared `core.hooksPath` on every worktree enter. `setup-dev.sh` wires two defenses so the gate stays live: a `<common-git-dir>/hooks → ../hooks` symlink, and per-worktree `config.worktree` overrides via `scripts/setup-main-gate-worktree-config.sh`.
 
 ### Deploying the orchestrator
-- `orchestrator.yaml` loads **once at startup** (no hot-reload) and a dirty-start guard refuses uncommitted tracked changes in project_root (= `/home/leo/src/reify`, the MAIN checkout — not the task worktree). **Commit/land first, then restart**; a dirty restart is a crash-loop outage.
+- `dark-factory-orchestrator.yaml` loads **once at startup** (no hot-reload) and a dirty-start guard refuses uncommitted tracked changes in project_root (= `/home/leo/src/reify`, the MAIN checkout — not the task worktree). **Commit/land first, then restart**; a dirty restart is a crash-loop outage.
 - A task running under the orchestrator must **not** `systemctl restart orchestrator-reify.service` (SIGTERMs its own agent). Use `scripts/orchestrator-redeploy-restart.sh`: schedules a detached transient unit that re-checks cleanliness and does stop-then-start after the agent exits. Never `systemctl restart` even manually — the `TimeoutStopSec=90` stop window cancels restart's start half. Modes and `ORCH_*` knobs: script header.
 - Config-only changes land fast via the merge worker's trivial-pass, **but verify-pipeline files are never trivially config-only**. Consult the oracle: `bash scripts/verify-pipeline-guard.sh requires-full-gate <changed-files...>` — exit 0 means the full `--scope all` gate is required (manifest: `scripts/verify-pipeline-paths.txt`).
 

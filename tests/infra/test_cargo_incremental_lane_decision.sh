@@ -3,7 +3,7 @@
 # Validates the CARGO_INCREMENTAL global-forbid config contract (outcome-independent):
 #   (a) GLOBAL-FORBID — CARGO_INCREMENTAL is NEVER enabled globally (PRD §11):
 #       scripts/verify.sh exports CARGO_INCREMENTAL=0 and never sets CARGO_INCREMENTAL=1;
-#       orchestrator.yaml verify_env sets CARGO_INCREMENTAL: "0";
+#       dark-factory-orchestrator.yaml verify_env sets CARGO_INCREMENTAL: "0";
 #       .cargo/config.toml has no global incremental=true in [build] or any
 #       [target.*] rustflags.
 #   (b) DELIVERABLE — docs/notes/cargo-incremental-persistent-lane-bench.md exists.
@@ -29,7 +29,7 @@ python3 -c 'import tomllib' 2>/dev/null || {
 
 CONFIG="$REPO_ROOT/.cargo/config.toml"
 VERIFY_SH="$REPO_ROOT/scripts/verify.sh"
-ORCH_YAML="$REPO_ROOT/orchestrator.yaml"
+ORCH_YAML="$REPO_ROOT/dark-factory-orchestrator.yaml"
 BENCH_DOC="$REPO_ROOT/docs/notes/cargo-incremental-persistent-lane-bench.md"
 
 # Write a Python helper to a temp file so each assert() call can invoke it
@@ -96,11 +96,11 @@ assert "scripts/verify.sh contains 'export CARGO_INCREMENTAL=0'" \
 assert "scripts/verify.sh does not set CARGO_INCREMENTAL=1 anywhere" \
     bash -c "! grep -q 'CARGO_INCREMENTAL=1' \"$VERIFY_SH\""
 
-# -- Test 2 (a): GLOBAL-FORBID — orchestrator.yaml ----------------------------
+# -- Test 2 (a): GLOBAL-FORBID — dark-factory-orchestrator.yaml ----------------------------
 echo ""
-echo "--- Test 2 (a): orchestrator.yaml verify_env sets CARGO_INCREMENTAL: \"0\" ---"
+echo "--- Test 2 (a): dark-factory-orchestrator.yaml verify_env sets CARGO_INCREMENTAL: \"0\" ---"
 
-assert "orchestrator.yaml verify_env contains CARGO_INCREMENTAL: \"0\"" \
+assert "dark-factory-orchestrator.yaml verify_env contains CARGO_INCREMENTAL: \"0\"" \
     grep -q 'CARGO_INCREMENTAL:.*"0"' "$ORCH_YAML"
 
 # -- Test 3 (a): GLOBAL-FORBID — .cargo/config.toml --------------------------

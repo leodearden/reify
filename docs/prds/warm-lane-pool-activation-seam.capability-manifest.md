@@ -2,7 +2,7 @@
 
 Mechanizes G3 + G6 for `docs/prds/warm-lane-pool-activation-seam.md` (decompose 2026-06-19).
 One block per **leaf**, binding each capability the task's user-observable signal asserts to
-evidence. Any FAIL value blocks the batch. **Substrate is shell / orchestrator.yaml / systemd /
+evidence. Any FAIL value blocks the batch. **Substrate is shell / dark-factory-orchestrator.yaml / systemd /
 cross-repo — the `.ri` grammar/semantic gate is N/A** (host-checks only, same as the parent
 `warm-lane-pool-cow-seeding.md`). All evidence was re-verified against live source on 2026-06-19.
 
@@ -59,7 +59,7 @@ clean-tree gate still operate against the relocated path.
 | `git.warm_lane_base_target_dir` config knob (set to `<mount>/base/target`, pool still OFF) | `grep:orchestrator/src/orchestrator/config.py warm_lane_base_target_dir wired` (GitConfig field, PRD §3 verified-present) | PASS |
 | `setup-worktree-debug-port.sh` + `land.sh` operate against the relocated `.worktrees` path string (preserved by the symlink — DA2) | `grep:scripts/setup-worktree-debug-port.sh wired`, `grep:scripts/land.sh wired` (both present; DA2 keeps `<repo>/.worktrees` path string stable) | PASS |
 
-No FAIL. **Consumer:** R6. `metadata.files: ["scripts/relocate-worktrees-to-warm-lane.sh", "orchestrator.yaml"]` (lock-charter-guard exit 0; the new relocation script + the single config file R3 writes).
+No FAIL. **Consumer:** R6. `metadata.files: ["scripts/relocate-worktrees-to-warm-lane.sh", "dark-factory-orchestrator.yaml"]` (lock-charter-guard exit 0; the new relocation script + the single config file R3 writes).
 
 ---
 
@@ -116,7 +116,7 @@ No FAIL. **Consumer:** #4665 (out-of-batch live-deploy capstone). `metadata.file
 |---|---|---|---|
 | R1 (dark_factory) | 4 | 0 | `[]` (git_ops.py + new DF integration test — DF architect acquires) |
 | R2 | 3 | 0 | `[]` |
-| R3 | 3 | 0 | `scripts/relocate-worktrees-to-warm-lane.sh`, `orchestrator.yaml` |
+| R3 | 3 | 0 | `scripts/relocate-worktrees-to-warm-lane.sh`, `dark-factory-orchestrator.yaml` |
 | R4 | 4 | 0 | `[]` |
 | R5 | 4 | 0 | `tests/infra/test_warm_base_coherence.sh` |
 | R6 | 3 | 0 | `docs/prds/warm-lane-pool-cow-seeding.md` |

@@ -177,7 +177,7 @@ proactive soft floor (ε). See the amendment notes in §8.3, §11, and §12 belo
 ### 8.3 Disk guard — `warm-lane-disk-guard.sh` (γ)
 - `check` → exit 0 if `free_bytes ≥ min_free_gib` **and** `free_inodes ≥ min_free_inodes`; else a
   backpressure exit code. PSI/df source overridable for testability. Knobs documented for
-  `orchestrator.yaml warm_lane_pool` (`min_free_gib`, `min_free_inodes`).
+  `dark-factory-orchestrator.yaml warm_lane_pool` (`min_free_gib`, `min_free_inodes`).
 
   > **Extended 2026-07-12 (task 5177):** the hard-floor guard above is now complemented by a
   > proactive **soft floor** — `warm-lane-disk-guard.sh check --soft` (`warm-lane-pool-sizing-lifecycle.md`
@@ -187,7 +187,7 @@ proactive soft floor (ε). See the amendment notes in §8.3, §11, and §12 belo
   > reclaiming/reusing a FREE lane, or defers dispatch — it never requeues or escalates; this
   > section's hard-floor `check → reclaim → requeue exit-75` contract is unchanged and remains the
   > last-ditch backstop. `soft_free_gib`/`soft_free_inodes` are declared alongside `min_free_gib`/
-  > `min_free_inodes` in `orchestrator.yaml warm_lane_pool` (soft > hard on both axes is a hard
+  > `min_free_inodes` in `dark-factory-orchestrator.yaml warm_lane_pool` (soft > hard on both axes is a hard
   > invariant, enforced by `check --soft` itself).
 
 ### 8.4 GC — `warm-lane-gc.sh` (δ)

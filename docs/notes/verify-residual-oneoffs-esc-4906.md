@@ -37,7 +37,7 @@ Not concurrency, not load: a **deterministic shell-quoting bug** in
 `verify.sh test --profile both --scope all --print-plan` into
 `_T1_PLAN`/`_T3_PLAN` and interpolate them **unescaped** into a
 double-quoted `bash -c` string. Since deploy `65b8412206` (2026-07-02
-13:35) exports `REIFY_GATE_EXCLUDE_HEAVY=1` in `orchestrator.yaml`'s
+13:35) exports `REIFY_GATE_EXCLUDE_HEAVY=1` in `dark-factory-orchestrator.yaml`'s
 `verify_env`, the captured test-phase plan lines carry the heavy-exclusion
 fragment `-E "not ((package(...) & binary(...)) | ...)"` — its embedded
 double quotes/parens/`&` terminate the `printf` argument early and hit the

@@ -23,7 +23,7 @@ Legend: PASS evidence per binding; a FAIL value (`producer-absent`, `declared-on
 | cargo freshness hash is path-independent (warmth transfers across the path boundary) | memo §4/§6.1 decisive control: 383==383 Fresh, identical unit hashes in-place vs renamed clone | PASS (spike-proven) — **the load-bearing G6 premise** |
 | mtime normalization makes a fresh-checkout lane skip the rebuild | memo §2/§5 | PASS (spike-proven) |
 | RUSTFLAGS-mismatch guard fires (fail-closed) | β implements the assert; rejection-mechanism is **this task's own deliverable** (B5), verified by the δ gate observing a non-zero exit on mismatch | PASS (rejection-mechanism built+observed in δ) |
-| seed source (Phase-1 warm base) exists | `orchestrator.yaml:234` + `dark_factory:1692` landed; `_merge-verify` on disk | PASS (host-check) |
+| seed source (Phase-1 warm base) exists | `dark-factory-orchestrator.yaml:234` + `dark_factory:1692` landed; `_merge-verify` on disk | PASS (host-check) |
 
 ## γ — base refresh + defrag signal + preflight guard *(intermediate)*
 
@@ -48,7 +48,7 @@ Legend: PASS evidence per binding; a FAIL value (`producer-absent`, `declared-on
 
 | Capability asserted | Evidence | Verdict |
 |---|---|---|
-| `max_concurrent_tasks` + `spare_warm_lanes` readable to size the pool (D9, corrected 2026-07-12 — task 5177) | `orchestrator.yaml` `max_concurrent_tasks`=48 + `spare_warm_lanes`=8 ⇒ effective N=56 (tunable; see sizing-lifecycle §2) | PASS (host-check) |
+| `max_concurrent_tasks` + `spare_warm_lanes` readable to size the pool (D9, corrected 2026-07-12 — task 5177) | `dark-factory-orchestrator.yaml` `max_concurrent_tasks`=48 + `spare_warm_lanes`=8 ⇒ effective N=56 (tunable; see sizing-lifecycle §2) | PASS (host-check) |
 | the §9.5 lifecycle contract is implementable by DF | §9.5 gives acquire/reset/release signatures + 7 invariants | PASS (contract specified) |
 | consumer: ζ/η implement against this contract | ζ/η depend_on ε cross-project | PASS |
 

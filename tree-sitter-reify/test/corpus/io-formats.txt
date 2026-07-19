@@ -1,5 +1,5 @@
 ; NOTE: This corpus is developer documentation for the CST shape of the
-; std.io.formats occurrence surface added in task 4284.  orchestrator.yaml does
+; std.io.formats occurrence surface added in task 4284.  dark-factory-orchestrator.yaml does
 ; not run `tree-sitter test`, so these tests are NOT validated by CI.  The
 ; canonical CI regression signal is:
 ;   - crates/reify-cli/tests/cli_check.rs::check_io_formats_exits_success_no_unresolved
