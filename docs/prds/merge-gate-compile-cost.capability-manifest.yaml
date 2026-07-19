@@ -1,0 +1,48 @@
+# Machine-readable twin of merge-gate-compile-cost.capability-manifest.md (hand-stamped, interim per overlay).
+# Path is PRD-derived (<prd-stem>.capability-manifest.yaml) so a downstream stamper locates it from metadata.prd_path.
+prd: docs/prds/merge-gate-compile-cost.md
+program_milestone: "5254"
+batches:
+  reify: ["5265", "5266", "5267", "5268", "5269", "5270", "5272", "5274", "5275", "5277", "5278", "5281", "5282", "5283", "5284", "5285", "5286"]
+revived_re_premised:
+  - {capability: "D-B reify-eval-fea compile-unit isolation (was reify-eval-fea-decomposition task B)", task: "4935"}
+  - {capability: "D-D relink-wave-shrink + OCCT-skip proof (was reify-eval-fea-decomposition task D)", task: "4936"}
+cross_prd_deps:
+  - {task: "4935", depends_on: "5072", note: "register_production_compute_fns bundler (compute-fea-hardening A1, pending) — the one live unmet upstream dep of D-B"}
+manual_checks:
+  - {task: "5286", reason: "F1 no-code operational aggregation gate; completion is the single edge into milestone 5254"}
+  - {task: "4935", reason: "D-B delivered via `cargo build --workspace` + `cargo tree -p reify-eval-fea -e no-dev` OCCT-free — heavy, checked in-verify not by a dispatch grep"}
+  - {task: "4936", reason: "D-D relink-wave-shrink is a measured docs/measurements/ artifact — qualitative, not a dispatch grep"}
+bindings:
+  - task: "5265"   # B1 — harness contract + kLOC-cap drift guard
+    delivered_check: "bash tests/infra/test_harness_kloc_cap.sh"
+  - task: "5266"   # A1 — reify-core exits release-sensitive list
+    delivered_check: "bash tests/infra/test_release_scoped_scope.sh && ! grep -qxF 'reify-core' scripts/release-sensitive-crates.txt"
+  - task: "5267"   # A2 — reify-stdlib
+    delivered_check: "bash tests/infra/test_release_scoped_scope.sh && ! grep -qxF 'reify-stdlib' scripts/release-sensitive-crates.txt"
+  - task: "5268"   # A3 — reify-runtime
+    delivered_check: "bash tests/infra/test_release_scoped_scope.sh && ! grep -qxF 'reify-runtime' scripts/release-sensitive-crates.txt"
+  - task: "5269"   # A4 — reify-expr
+    delivered_check: "bash tests/infra/test_release_scoped_scope.sh && ! grep -qxF 'reify-expr' scripts/release-sensitive-crates.txt"
+  - task: "5270"   # A5 — reify-mesh-morph
+    delivered_check: "bash tests/infra/test_release_scoped_scope.sh && ! grep -qxF 'reify-mesh-morph' scripts/release-sensitive-crates.txt"
+  - task: "5272"   # A6 — ENGINE_VERSION_HASH closure narrowing + drift guard
+    delivered_check: "bash tests/infra/test_engine_hash_closure.sh"
+  - task: "5274"   # C-cli — 73 binaries -> 1 harness
+    delivered_check: "test $(ls crates/reify-cli/tests/*.rs | wc -l) -lt 10 && bash tests/infra/test_harness_kloc_cap.sh"
+  - task: "5275"   # C-syntax — 61 -> 1
+    delivered_check: "test $(ls crates/reify-syntax/tests/*.rs | wc -l) -lt 10 && bash tests/infra/test_harness_kloc_cap.sh"
+  - task: "5277"   # C-occt — 48 -> 1 (name-resolving guards must stay green)
+    delivered_check: "test $(ls crates/reify-kernel-occt/tests/*.rs | wc -l) -lt 10 && bash tests/infra/test_harness_kloc_cap.sh"
+  - task: "5278"   # EVAL-1 — geometry/kernel/realization subsystem harnesses
+    delivered_check: "bash tests/infra/test_harness_kloc_cap.sh"
+  - task: "5281"   # EVAL-2 — topology-selectors / FEA-solver-e2e
+    delivered_check: "bash tests/infra/test_harness_kloc_cap.sh"
+  - task: "5282"   # EVAL-3 — engine/tolerance/dynamics/cache + common dedup; 4 release-sensitive tests stay standalone
+    delivered_check: "bash tests/infra/test_harness_kloc_cap.sh && for f in warm_state_donation zv_shaped_ramp_db_reduction input_shape_tots_compute_node cross_sub_geometry_e2e; do test -f crates/reify-eval/tests/$f.rs || exit 1; done"
+  - task: "5283"   # CMP-1 — language-core / traits / auto-binding
+    delivered_check: "bash tests/infra/test_harness_kloc_cap.sh"
+  - task: "5284"   # CMP-2 — units-materials / geometry-solver / result-annotation (final compiler count)
+    delivered_check: "test $(ls crates/reify-compiler/tests/*.rs | wc -l) -le 15 && bash tests/infra/test_harness_kloc_cap.sh"
+  - task: "5285"   # E1 — reify-eval-release-tests leaf crate; reify-eval exits list, leaf enters
+    delivered_check: "bash tests/infra/test_release_scoped_scope.sh && ! grep -qxF 'reify-eval' scripts/release-sensitive-crates.txt && grep -qxF 'reify-eval-release-tests' scripts/release-sensitive-crates.txt"
