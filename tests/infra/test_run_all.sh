@@ -2645,5 +2645,281 @@ else
     assert "T26c: GREEN regression -- armed-but-intact run exits 0 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
 fi
 
+# -- Test 27: Phase-2.5 serial-retry + FLAKY ledger extended to
+# intra-run-serial members (task #5261, PRD merge-gate-health.md W5b) ----------
+# Phase 2.5 previously retried ONLY `pool`-bucket members, so an
+# intra-run-serial member (e.g. test_verify_semaphore_e2e.sh) that
+# transiently failed could never be exonerated as flaky -- it went straight
+# to failed_names/^FAILED. Proves retry now also covers intra-run-serial
+# members (same-mode serial re-run -- cheap and sound, they already ran
+# serially in Phase 2), while a deterministic fail-twice member still fails
+# the run (but IS still retried, proving the loop actually covers it), and
+# retry stays scoped to pool UNION intra-run-serial only -- a host-exclusive
+# member (real burn/cgroup/reflink work, non-hermetic) is deliberately NOT
+# retried.
+echo ""
+echo "--- Test 27: intra-run-serial serial-retry + FLAKY ledger ---"
+
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+    # Each sub-case below gets its OWN temp INFRA_DIR (TMPDIR_T27A/B/D, mirroring
+    # Test 23's per-sub-case isolation) -- discovery is a filesystem glob over
+    # test_*.sh in INFRA_DIR, INDEPENDENT of which names a given injected
+    # manifest declares, so sharing one dir across sub-cases with different
+    # intended member sets would let an earlier sub-case's leftover mock get
+    # silently rediscovered (and UNCLASSIFIED-serial) by a later sub-case.
+
+    # -- 27a: FLAKY direction -- Test 18a's tmpfile-counter mock (fails
+    # invocation 1, passes invocation 2+), but declared intra-run-serial ---
+    TMPDIR_T27A="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T27A")
+
+    MANIFEST_T27A="$TMPDIR_T27A/classification-flaky-serial.manifest"
+    printf 'test_flaky_serial.sh intra-run-serial\n' > "$MANIFEST_T27A"
+
+    cat > "$TMPDIR_T27A/test_flaky_serial.sh" <<'MOCKBODY'
+#!/usr/bin/env bash
+set -euo pipefail
+counter_file="$FLAKY_SERIAL_COUNTER_FILE"
+count=$(( $(cat "$counter_file" 2>/dev/null || echo 0) + 1 ))
+echo "$count" > "$counter_file"
+echo "test_flaky_serial.sh invocation $count"
+if [ "$count" -eq 1 ]; then
+    exit 1
+else
+    exit 0
+fi
+MOCKBODY
+    chmod +x "$TMPDIR_T27A/test_flaky_serial.sh"
+
+    t27a_rc=0
+    t27a_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T27A" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T27A/pool-flaky-serial.lock" \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        FLAKY_SERIAL_COUNTER_FILE="$TMPDIR_T27A/flaky-serial-counter" \
+        REIFY_RUN_ALL_FLAKY_LEDGER="$TMPDIR_T27A/flaky-ledger-27a.jsonl" \
+        bash "$RUN_ALL" "$TMPDIR_T27A" 2>&1)" || t27a_rc=$?
+
+    assert "T27a: run_all.sh exits 0 when an intra-run-serial member passes on serial retry" \
+        test "$t27a_rc" -eq 0
+
+    if [[ "$t27a_out" == *"=== FLAKY (passed on serial retry):"*"test_flaky_serial.sh"* ]]; then
+        assert "T27a: FLAKY line names test_flaky_serial.sh" true
+    else
+        assert "T27a: FLAKY line names test_flaky_serial.sh (got: $t27a_out)" false
+    fi
+
+    if [[ "$t27a_out" == *"--- attempt 1 (serial) ---"* ]] && [[ "$t27a_out" == *"--- attempt 2 (serial retry) ---"* ]]; then
+        assert "T27a: both attempt markers are present, labeled serial (not concurrent pool)" true
+    else
+        assert "T27a: both attempt markers are present, labeled serial (not concurrent pool) (got: $t27a_out)" false
+    fi
+
+    if [[ "$t27a_out" != *"--- attempt 1 (concurrent pool) ---"* ]]; then
+        assert "T27a: attempt-1 label is truthful -- NOT 'concurrent pool' for an intra-run-serial member" true
+    else
+        assert "T27a: attempt-1 label is truthful -- NOT 'concurrent pool' for an intra-run-serial member (got: $t27a_out)" false
+    fi
+
+    t27a_headers="$(echo "$t27a_out" | grep -E '^--- Running: ' | sed -E 's/^--- Running: (.*) ---$/\1/')" || true
+    if [ "$t27a_headers" = "test_flaky_serial.sh" ]; then
+        assert "T27a: exactly one discovered-order header for the retried member" true
+    else
+        assert "T27a: exactly one discovered-order header for the retried member (got: $t27a_headers)" false
+    fi
+
+    if ! echo "$t27a_out" | grep -qE '^FAILED[[:space:]]'; then
+        assert "T27a: no ^FAILED classifier marker (flake is not misclassified as test_failure)" true
+    else
+        assert "T27a: no ^FAILED classifier marker (got: $t27a_out)" false
+    fi
+
+    if [[ "$t27a_out" == *"=== Summary: 1 discovered, 0 failed, 1 flaky-retried ==="* ]]; then
+        assert "T27a: Summary line carries the flaky-retried count (byte-exact)" true
+    else
+        assert "T27a: Summary line carries the flaky-retried count (byte-exact) (got: $t27a_out)" false
+    fi
+
+    # -- 27b: determinism/non-vacuity -- an intra-run-serial member that
+    # fails BOTH attempts still fails the run, with no FLAKY
+    # misclassification, but IS still retried (both attempt markers
+    # archived, proving the retry loop actually covers it rather than
+    # silently skipping it) -------------------------------------------------
+    TMPDIR_T27B="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T27B")
+
+    MANIFEST_T27B="$TMPDIR_T27B/classification-boom-serial.manifest"
+    printf 'test_boom_serial.sh intra-run-serial\n' > "$MANIFEST_T27B"
+    printf '#!/usr/bin/env bash\nexit 1\n' > "$TMPDIR_T27B/test_boom_serial.sh"
+    chmod +x "$TMPDIR_T27B/test_boom_serial.sh"
+
+    t27b_rc=0
+    t27b_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T27B" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T27B/pool-boom-serial.lock" \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        bash "$RUN_ALL" "$TMPDIR_T27B" 2>&1)" || t27b_rc=$?
+
+    assert "T27b: deterministic fail-twice intra-run-serial member exits 1" \
+        test "$t27b_rc" -eq 1
+
+    if echo "$t27b_out" | grep -qE '^FAILED[[:space:]].*test_boom_serial\.sh'; then
+        assert "T27b: deterministic fail-twice still emits the ^FAILED classifier" true
+    else
+        assert "T27b: deterministic fail-twice still emits the ^FAILED classifier (got: $t27b_out)" false
+    fi
+
+    if [[ "$t27b_out" != *"=== FLAKY"* ]]; then
+        assert "T27b: deterministic fail-twice emits NO === FLAKY line" true
+    else
+        assert "T27b: deterministic fail-twice emits NO === FLAKY line (got: $t27b_out)" false
+    fi
+
+    if [[ "$t27b_out" != *"flaky-retried"* ]]; then
+        assert "T27b: deterministic fail-twice Summary carries NO flaky-retried clause" true
+    else
+        assert "T27b: deterministic fail-twice Summary carries NO flaky-retried clause (got: $t27b_out)" false
+    fi
+
+    if [[ "$t27b_out" == *"--- attempt 1 (serial) ---"* ]] && [[ "$t27b_out" == *"--- attempt 2 (serial retry) ---"* ]]; then
+        assert "T27b: deterministic fail-twice still archives both attempt markers (proves it WAS retried)" true
+    else
+        assert "T27b: deterministic fail-twice still archives both attempt markers (proves it WAS retried) (got: $t27b_out)" false
+    fi
+
+    # -- 27d: scope guard -- a FAILING host-exclusive member is NOT retried
+    # (retry stays scoped to pool UNION intra-run-serial only) --------------
+    TMPDIR_T27D="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T27D")
+
+    MANIFEST_T27D="$TMPDIR_T27D/classification-hostx-boom.manifest"
+    printf 'test_hostx_boom.sh host-exclusive\n' > "$MANIFEST_T27D"
+    printf '#!/usr/bin/env bash\nexit 1\n' > "$TMPDIR_T27D/test_hostx_boom.sh"
+    chmod +x "$TMPDIR_T27D/test_hostx_boom.sh"
+
+    t27d_rc=0
+    t27d_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+        RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T27D" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T27D/pool-hostx-boom.lock" \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        bash "$RUN_ALL" "$TMPDIR_T27D" 2>&1)" || t27d_rc=$?
+
+    assert "T27d: FAILING host-exclusive member run_all.sh exits 1" \
+        test "$t27d_rc" -eq 1
+
+    if echo "$t27d_out" | grep -qE '^FAILED[[:space:]].*test_hostx_boom\.sh'; then
+        assert "T27d: FAILING host-exclusive member still emits the ^FAILED classifier" true
+    else
+        assert "T27d: FAILING host-exclusive member still emits the ^FAILED classifier (got: $t27d_out)" false
+    fi
+
+    if [[ "$t27d_out" != *"--- attempt 2"* ]]; then
+        assert "T27d: FAILING host-exclusive member is NOT retried (no attempt-2 archival)" true
+    else
+        assert "T27d: FAILING host-exclusive member is NOT retried (no attempt-2 archival) (got: $t27d_out)" false
+    fi
+
+    if [[ "$t27d_out" != *"=== FLAKY"* ]] && [[ "$t27d_out" != *"flaky-retried"* ]]; then
+        assert "T27d: FAILING host-exclusive member triggers no FLAKY/flaky-retried misclassification" true
+    else
+        assert "T27d: FAILING host-exclusive member triggers no FLAKY/flaky-retried misclassification (got: $t27d_out)" false
+    fi
+else
+    assert "T27a: run_all.sh exits 0 when an intra-run-serial member passes on serial retry (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T27a: FLAKY line names test_flaky_serial.sh (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T27a: both attempt markers are present, labeled serial (not concurrent pool) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T27a: attempt-1 label is truthful -- NOT 'concurrent pool' for an intra-run-serial member (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T27a: exactly one discovered-order header for the retried member (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T27a: no ^FAILED classifier marker (flake is not misclassified as test_failure) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T27a: Summary line carries the flaky-retried count (byte-exact) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T27b: deterministic fail-twice intra-run-serial member exits 1 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T27b: deterministic fail-twice still emits the ^FAILED classifier (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T27b: deterministic fail-twice emits NO === FLAKY line (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T27b: deterministic fail-twice Summary carries NO flaky-retried clause (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T27b: deterministic fail-twice still archives both attempt markers (proves it WAS retried) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T27d: FAILING host-exclusive member run_all.sh exits 1 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T27d: FAILING host-exclusive member still emits the ^FAILED classifier (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T27d: FAILING host-exclusive member is NOT retried (no attempt-2 archival) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T27d: FAILING host-exclusive member triggers no FLAKY/flaky-retried misclassification (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+fi
+
+# -- Test 27 (continued): ledger persistence for a flaky intra-run-serial
+# member (task #5261, W5b) -- jq-gated ------------------------------------
+# Mirrors Test 23's exact jq-presence SKIP-guard idiom: run_all.sh's ledger
+# writer/chronic-scan is itself jq-gated and fails open without jq, so these
+# JSON-shape assertions would false-fail (not exercise a real defect)
+# without it -- genuinely SKIP instead.
+echo ""
+echo "--- Test 27 (continued): FLAKY ledger persistence for an intra-run-serial member ---"
+
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ] && command -v jq >/dev/null 2>&1; then
+    TMPDIR_T27C="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T27C")
+
+    MANIFEST_T27C="$TMPDIR_T27C/classification-flaky-serial.manifest"
+    printf 'test_flaky_serial.sh intra-run-serial\n' > "$MANIFEST_T27C"
+
+    cat > "$TMPDIR_T27C/test_flaky_serial.sh" <<'MOCKBODY'
+#!/usr/bin/env bash
+set -euo pipefail
+counter_file="$FLAKY_SERIAL_COUNTER_FILE"
+count=$(( $(cat "$counter_file" 2>/dev/null || echo 0) + 1 ))
+echo "$count" > "$counter_file"
+echo "test_flaky_serial.sh invocation $count"
+if [ "$count" -eq 1 ]; then
+    exit 1
+else
+    exit 0
+fi
+MOCKBODY
+    chmod +x "$TMPDIR_T27C/test_flaky_serial.sh"
+
+    LEDGER_T27C="$TMPDIR_T27C/flaky-ledger.jsonl"
+
+    t27c_rc=0
+    t27c_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T27C" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T27C/pool-flaky-serial.lock" \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        FLAKY_SERIAL_COUNTER_FILE="$TMPDIR_T27C/flaky-serial-counter" \
+        REIFY_RUN_ALL_FLAKY_LEDGER="$LEDGER_T27C" \
+        bash "$RUN_ALL" "$TMPDIR_T27C" 2>&1)" || t27c_rc=$?
+
+    assert "T27c: run_all.sh exits 0 when an intra-run-serial member passes on serial retry" \
+        test "$t27c_rc" -eq 0
+
+    assert "T27c: ledger file exists after a flaky-pass run" \
+        test -f "$LEDGER_T27C"
+
+    if [ -f "$LEDGER_T27C" ]; then
+        t27c_lines="$(wc -l < "$LEDGER_T27C" 2>/dev/null | tr -d ' ' || true)"
+    else
+        t27c_lines=""
+    fi
+    if [ "$t27c_lines" = "1" ]; then
+        assert "T27c: ledger has exactly 1 line" true
+    else
+        assert "T27c: ledger has exactly 1 line (got: '$t27c_lines' lines; content: $(cat "$LEDGER_T27C" 2>/dev/null || true))" false
+    fi
+
+    if [ -f "$LEDGER_T27C" ] && jq -e . "$LEDGER_T27C" >/dev/null 2>&1; then
+        assert "T27c: ledger line is valid JSON" true
+    else
+        assert "T27c: ledger line is valid JSON (got: $(cat "$LEDGER_T27C" 2>/dev/null || true))" false
+    fi
+
+    t27c_test_field="$(jq -r '.test' "$LEDGER_T27C" 2>/dev/null || true)"
+    if [ "$t27c_test_field" = "test_flaky_serial.sh" ]; then
+        assert "T27c: ledger .test field names test_flaky_serial.sh" true
+    else
+        assert "T27c: ledger .test field names test_flaky_serial.sh (got: '$t27c_test_field')" false
+    fi
+elif [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+    echo "  SKIP: T27c (FLAKY ledger persistence for intra-run-serial member) - jq not on PATH; run_all.sh's ledger writer fails open without jq"
+else
+    assert "T27c: run_all.sh exits 0 when an intra-run-serial member passes on serial retry (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T27c: ledger file exists after a flaky-pass run (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T27c: ledger has exactly 1 line (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T27c: ledger line is valid JSON (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T27c: ledger .test field names test_flaky_serial.sh (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+fi
+
 # -- Summary --------------------------------------------------------------------
 test_summary
