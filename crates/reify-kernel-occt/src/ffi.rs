@@ -1248,6 +1248,18 @@ pub mod ffi {
         /// CompSolid wrapping one 10×10×10 mm box → TopAbs_COMPSOLID; type-guard passes.
         fn make_compsolid_for_test() -> Result<UniquePtr<OcctShape>>;
 
+        /// Default-constructed `OcctShape` whose `.shape` member is a null
+        /// (`IsNull() == true`) `TopoDS_Shape` — i.e. a NON-null `UniquePtr`
+        /// wrapping null topology. Supplies the exact crash input for the
+        /// geometry-query FFI hardening (get_shape boundary +
+        /// query_volume/centroid/bbox/inertia_tensor): such a shape passes
+        /// `get_shape`'s null-`UniquePtr` check yet dereferences to a null
+        /// TShape. It cannot be built from Rust because `OcctShape` is opaque,
+        /// and the sibling `insert_null_shape` only injects a null `UniquePtr`
+        /// (already caught by `get_shape`). Default construction cannot throw,
+        /// so this returns a plain `UniquePtr` (no `Result`).
+        fn make_null_shape_for_test() -> UniquePtr<OcctShape>;
+
         /// Apply rotation+translation using `BRepBuilderAPI_Transform(..., Copy=false)`,
         /// encoding the transform into `TopLoc_Location` rather than baking it into
         /// geometry. Used by placed-face integration tests to exercise the non-identity

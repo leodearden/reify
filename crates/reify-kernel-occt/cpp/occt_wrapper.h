@@ -1508,6 +1508,14 @@ std::unique_ptr<OcctShape> make_vertex_at_for_test(double x, double y, double z)
 /// The returned shape has TopAbs_ShapeType() == TopAbs_COMPSOLID.
 std::unique_ptr<OcctShape> make_compsolid_for_test();
 
+/// Build a default-constructed OcctShape whose `.shape` member is a null
+/// (`IsNull() == true`) TopoDS_Shape — a NON-null unique_ptr wrapping null
+/// topology. Supplies the exact crash input for the geometry-query FFI
+/// hardening tests (get_shape boundary + query_volume/centroid/bbox/
+/// inertia_tensor); such a shape cannot be constructed from Rust because
+/// `OcctShape` is opaque. Default construction cannot throw.
+std::unique_ptr<OcctShape> make_null_shape_for_test();
+
 /// Apply a rotation+translation placement using `BRepBuilderAPI_Transform`
 /// with `Copy=Standard_False` — encoding the transform into `TopLoc_Location`
 /// rather than baking it into geometry (unlike `translate_shape`/`rotate_shape`

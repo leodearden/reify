@@ -5149,6 +5149,21 @@ std::unique_ptr<OcctShape> make_vertex_at_for_test(double x, double y, double z)
     });
 }
 
+std::unique_ptr<OcctShape> make_null_shape_for_test() {
+    // A default-constructed OcctShape whose `.shape` member is a null
+    // (IsNull()==true) TopoDS_Shape — a NON-null unique_ptr wrapping null
+    // topology. This is the exact crash input for the geometry-query FFI: it
+    // passes get_shape's null-UniquePtr check (the pointer is non-null) yet
+    // dereferences to a null TShape, so e.g. query_volume's ShapeType()
+    // fallback would SIGSEGV without the null/empty-topology guards. Such a
+    // shape cannot be constructed from Rust (OcctShape is opaque); the sibling
+    // insert_null_shape only injects a null UniquePtr, which get_shape already
+    // rejects via ptr.as_ref(). Default construction of TopoDS_Shape cannot
+    // throw, so no wrap_occt_call is needed and the bridge fn returns a plain
+    // UniquePtr (no Result).
+    return std::make_unique<OcctShape>();
+}
+
 std::unique_ptr<OcctShape> make_edge_for_test() {
     // A simple straight edge along the X axis: (0,0,0) → (10mm,0,0).
     // ShapeType() == TopAbs_EDGE; no face incidence → manifold trivially true;
