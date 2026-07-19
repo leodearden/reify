@@ -135,6 +135,55 @@ CAP_LINES=20000
 # The checked-in grandfather-baseline ratchet.
 BASELINE="$SCRIPT_DIR/harness-layout-baseline.manifest"
 
+# ---------------------------------------------------------------------------
+# harness_layout_violations <crate> <tests_dir> <baseline_file> <cap_lines>
+#
+# Enumerate the top-level *.rs compile units in <tests_dir>, classify each
+# against the C1/C2 contract, and print a structured verdict line per
+# violation to stdout. Returns 1 if <crate> has any violation, else 0.
+#
+# Parameterized on (tests_dir, baseline_file, cap_lines) so the hermetic
+# seeded-fixture self-checks drive synthetic dirs/baselines/caps exactly as the
+# live driver drives the real crate tests dirs.
+#
+# rule (a) — kLOC cap: for each harness_<subsystem>.rs, take the raw `wc -l`
+# line count and flag it if it exceeds <cap_lines>.
+# ---------------------------------------------------------------------------
+harness_layout_violations() {
+    local crate="$1"
+    local tests_dir="$2"
+    local baseline_file="$3"
+    local cap_lines="$4"
+
+    local violations=0
+    local f base lines
+
+    for f in "$tests_dir"/*.rs; do
+        [ -f "$f" ] || continue          # skip a literal no-match glob
+
+        base="$(basename "$f")"
+
+        # rule (a): kLOC cap governs the harness_<subsystem>.rs compile units.
+        case "$base" in
+            harness_*.rs)
+                lines="$(wc -l < "$f")"
+                lines="${lines//[[:space:]]/}"   # portable: strip any wc padding
+                if [ "$lines" -gt "$cap_lines" ]; then
+                    printf 'HARNESS_KLOC_CAP FAIL crate=%s file=%s reason=exceeds-cap lines=%s cap=%s\n' \
+                        "$crate" "$f" "$lines" "$cap_lines"
+                    violations=$((violations + 1))
+                fi
+                continue
+                ;;
+        esac
+    done
+
+    if [ "$violations" -gt 0 ]; then
+        return 1
+    fi
+    return 0
+}
+
 echo "=== Harness-layout contract + anti-re-accretion kLOC-cap drift guard ==="
 
 # Collect every mktemp -d / mktemp path for a SINGLE EXIT cleanup (the
