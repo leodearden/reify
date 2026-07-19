@@ -220,4 +220,28 @@ assert "1: over-cap harness_big.rs fires the kLOC cap (returns 1)" \
 assert "1: cap violation emitted as a structured FAIL line (exceeds-cap, lines=21000 cap=20000)" \
     grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate file=.*harness_big\.rs reason=exceeds-cap lines=21000 cap=20000' "$_s1_out"
 
+# ===========================================================================
+# Section 2: rule (b) — an unsanctioned standalone tests/*.rs fires.
+# ===========================================================================
+echo ""
+echo "--- Section 2: unsanctioned standalone (stray.rs) fires ---"
+
+_s2_dir="$(mktemp -d)"; _TMPDIRS+=("$_s2_dir")
+printf 'fn main() {}\n' > "$_s2_dir/stray.rs"   # small, non-harness, non-override
+
+_s2_baseline="$(mktemp)"; _TMPDIRS+=("$_s2_baseline")
+# Grandfather only an UNRELATED file: the key for stray.rs is
+# crates/synthcrate/tests/stray.rs, which is NOT in this baseline -> flagged.
+printf 'crates/synthcrate/tests/other.rs\n' > "$_s2_baseline"
+
+_s2_out="$(mktemp)"; _TMPDIRS+=("$_s2_out")
+_s2_rc=0
+harness_layout_violations synthcrate "$_s2_dir" "$_s2_baseline" 20000 \
+    > "$_s2_out" 2>/dev/null || _s2_rc=$?
+
+assert "2: unsanctioned stray.rs fires (returns 1)" \
+    test "$_s2_rc" -eq 1
+assert "2: stray flagged with a structured unsanctioned-standalone FAIL line" \
+    grep -Eq '^HARNESS_KLOC_CAP FAIL crate=synthcrate file=.*stray\.rs reason=unsanctioned-standalone' "$_s2_out"
+
 test_summary
