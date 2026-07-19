@@ -7557,6 +7557,33 @@ impl Engine {
     /// On calls with a new version after invalidation, re-evaluates dirty nodes
     /// and uses early cutoff to avoid propagating unchanged results.
     pub fn eval_cached(&mut self, module: &CompiledModule, version: VersionId) -> CachedEvalResult {
+        // Task 5240: guarded groups (`where`-blocks) are not supported on the
+        // incremental eval_cached path. Its unified Param+Let pass builds its
+        // dependency graph via `build_combined_param_let_graph` below, which
+        // iterates ONLY `template.value_cells` — `template.guarded_groups`
+        // members are never visited, never written to `values` or the
+        // determinacy snapshot. Proceeding anyway would silently drop every
+        // guarded cell, and a sibling `determined(x)` DeterminacyPredicate
+        // probe reading one would trip the "not in determinacy snapshot"
+        // debug_assert in reify-expr (the esc-5053-5 panic). Fall through to
+        // a full cold `eval()` instead: it already implements the entire
+        // guarded pipeline correctly (guard evaluation, member/else_member
+        // activation, determinacy-snapshot population), so this reuses that
+        // proven path rather than duplicating guard logic on the warm path.
+        // The pushed Warning makes the incremental-path bypass observable to
+        // any caller instead of silently returning wrong/missing values.
+        if module.templates.iter().any(|t| !t.guarded_groups.is_empty()) {
+            let mut er = self.eval(module);
+            er.diagnostics.push(Diagnostic::warning(
+                "guarded groups (where-blocks) are not supported on the incremental \
+                 eval_cached path; falling back to a full cold eval",
+            ));
+            return CachedEvalResult {
+                eval_result: er,
+                stats: CacheStats::default(),
+            };
+        }
+
         let mut values = ValueMap::new();
         let mut diagnostics: Vec<Diagnostic> = Vec::new();
         // R3b-1/#4802: structured-detail accumulator — extended at each dispatch
