@@ -165,7 +165,14 @@ _ERR14="$(mktemp)"
 # target the slot file to actually block the wrapper.
 ( flock -x 9; sleep 10 ) 9>>"${_LOCK14}.slot-1" &
 _HOLDER14=$!
-sleep 0.2  # give the holder time to acquire before we proceed
+# Causal flock-probe barrier (task 5258, PRD merge-gate-health W4b): block until
+# the holder actually holds slot-1, instead of a fixed `sleep 0.2` grace that a
+# saturated host can outrun (holder unscheduled ⇒ wrapper finds slot FREE ⇒
+# acquires instantly ⇒ got 0 instead of the expected exit 75).  Wrapped in
+# `assert` so a transient confirm-failure yields a clear FAIL naming the root
+# cause instead of tripping `set -e` and aborting the whole suite.
+assert "Test 14: background holder confirmed holding slot-1 (causal flock-probe barrier)" \
+    occt_wait_until_slot_held "${_LOCK14}.slot-1"
 
 _START14="$(date +%s)"
 _EXIT14=0
@@ -203,16 +210,20 @@ echo "--- Test 15: REIFY_OCCT_TEST_TIMEOUT measured post-lock, not from wrapper 
 
 _LOCK15="$(mktemp)"
 
-# Spawn a holder that holds slot-1 for 4 seconds.
+# Spawn a holder that holds slot-1 for 6 seconds.
 # The wrapper uses ${LOCK}.slot-1 (not $LOCK directly), so the holder must
 # target the slot file to actually block the wrapper.
-# _START15 is recorded ~0.2s after holder spawn, so the effective wait from
-# _START15's perspective is ~3.8s; adding 1s command gives ~4.8s, which
-# truncates to 4 (satisfying the lower bound ≥ 4).  With 3s holder the
-# wait is ~2.8s, total ~3.8s → truncates to 3 → spurious failure on CI.
-( flock -x 9; sleep 4 ) 9>>"${_LOCK15}.slot-1" &
+# The causal flock-probe barrier below records _START15 at HOLDER-CONFIRMED
+# time, so the `elapsed >= 4` assert measures (remaining_hold − confirm_latency
+# + 1s command).  Hold bumped 4s→6s for margin: with a bounded confirm latency
+# (≤~2s under load) remaining_hold is ≥4s ⇒ elapsed ≥5s ⇒ truncates to ≥4 with
+# ≥1s margin; 6s < LOCK_WAIT(10s) leaves headroom so no spurious exit-75.
+( flock -x 9; sleep 6 ) 9>>"${_LOCK15}.slot-1" &
 _HOLDER15=$!
-sleep 0.2  # give holder time to acquire
+# Causal flock-probe barrier (task 5258): block until the holder holds slot-1.
+# Wrapped in `assert` so a transient confirm-failure cannot trip `set -e`.
+assert "Test 15: background holder confirmed holding slot-1 (causal flock-probe barrier)" \
+    occt_wait_until_slot_held "${_LOCK15}.slot-1"
 
 _START15="$(date +%s)"
 _EXIT15=0
@@ -602,7 +613,14 @@ _ERR22="$(mktemp)"
 _HOLDER22A=$!
 ( flock -x 9; sleep 10 ) 9>>"${_LOCK22}.slot-2" &
 _HOLDER22B=$!
-sleep 0.2  # give both holders time to acquire before we proceed
+# Causal flock-probe barrier (task 5258, PRD merge-gate-health W4b): block until
+# BOTH holders hold their slots, instead of a fixed `sleep 0.2` grace a saturated
+# host can outrun.  Two calls reuse the single-slot helper (one per slot); each
+# is wrapped in `assert` so a transient confirm-failure cannot trip `set -e`.
+assert "Test 22: background holder confirmed holding slot-1 (causal flock-probe barrier)" \
+    occt_wait_until_slot_held "${_LOCK22}.slot-1"
+assert "Test 22: background holder confirmed holding slot-2 (causal flock-probe barrier)" \
+    occt_wait_until_slot_held "${_LOCK22}.slot-2"
 
 _START22="$(date +%s)"
 _EXIT22=0
