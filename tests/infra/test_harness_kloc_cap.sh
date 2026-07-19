@@ -136,6 +136,20 @@ CAP_LINES=20000
 BASELINE="$SCRIPT_DIR/harness-layout-baseline.manifest"
 
 # ---------------------------------------------------------------------------
+# _emit <VERDICT> <field>... — emit one canonical structured verdict line.
+#
+# Centralizes the `HARNESS_KLOC_CAP <VERDICT> <fields...>` grammar (rule c) so
+# every PASS / FAIL / SUMMARY line is produced in exactly ONE place — a
+# consumer parses `HARNESS_KLOC_CAP <VERDICT> key=value...` without regexing
+# prose.
+# ---------------------------------------------------------------------------
+_emit() {
+    local verdict="$1"
+    shift
+    printf 'HARNESS_KLOC_CAP %s %s\n' "$verdict" "$*"
+}
+
+# ---------------------------------------------------------------------------
 # harness_layout_violations <crate> <tests_dir> <baseline_file> <cap_lines>
 #
 # Enumerate the top-level *.rs compile units in <tests_dir>, classify each
@@ -188,8 +202,8 @@ harness_layout_violations() {
                 lines="$(wc -l < "$f")"
                 lines="${lines//[[:space:]]/}"   # portable: strip any wc padding
                 if [ "$lines" -gt "$cap_lines" ]; then
-                    printf 'HARNESS_KLOC_CAP FAIL crate=%s file=%s reason=exceeds-cap lines=%s cap=%s\n' \
-                        "$crate" "$f" "$lines" "$cap_lines"
+                    _emit FAIL "crate=$crate" "file=$f" "reason=exceeds-cap" \
+                        "lines=$lines" "cap=$cap_lines"
                     violations=$((violations + 1))
                 fi
                 continue
@@ -205,8 +219,7 @@ harness_layout_violations() {
         fi
         key="crates/$crate/tests/$base"
         if [ -z "${_baseline_set[$key]:-}" ]; then
-            printf 'HARNESS_KLOC_CAP FAIL crate=%s file=%s reason=unsanctioned-standalone\n' \
-                "$crate" "$f"
+            _emit FAIL "crate=$crate" "file=$f" "reason=unsanctioned-standalone"
             violations=$((violations + 1))
         fi
     done
@@ -214,8 +227,45 @@ harness_layout_violations() {
     if [ "$violations" -gt 0 ]; then
         return 1
     fi
-    printf 'HARNESS_KLOC_CAP PASS crate=%s\n' "$crate"
+    _emit PASS "crate=$crate"
     return 0
+}
+
+# ---------------------------------------------------------------------------
+# run_harness_layout_scan <baseline_file> <cap_lines> <crate:dir>...
+#
+# Aggregating driver: run harness_layout_violations over each `crate:dir` pair,
+# pass its structured verdict lines through, tally the TOTAL FAIL verdicts
+# across all crates, and emit a single `HARNESS_KLOC_CAP SUMMARY crates=<N>
+# violations=<V>` line. Returns non-zero iff V > 0.
+#
+# The total is counted from the detector's own FAIL verdict lines (the
+# structured output is the contract), so V is the true number of violating
+# files, not merely the number of violating crates.
+# ---------------------------------------------------------------------------
+run_harness_layout_scan() {
+    local baseline="$1"
+    local cap="$2"
+    shift 2
+
+    local crate_count=0 total_violations=0
+    local pair crate dir crate_out n
+
+    for pair in "$@"; do
+        crate="${pair%%:*}"
+        dir="${pair#*:}"
+        crate_count=$((crate_count + 1))
+        # Capture the crate's verdict lines (|| true: the detector returns 1 on
+        # a violation, which must not abort the driver under `set -e`), count
+        # its FAIL verdicts, then pass the lines through unchanged.
+        crate_out="$(harness_layout_violations "$crate" "$dir" "$baseline" "$cap")" || true
+        n="$(printf '%s\n' "$crate_out" | grep -cE '^HARNESS_KLOC_CAP FAIL ' || true)"
+        total_violations=$((total_violations + n))
+        printf '%s\n' "$crate_out"
+    done
+
+    _emit SUMMARY "crates=$crate_count" "violations=$total_violations"
+    [ "$total_violations" -eq 0 ]
 }
 
 echo "=== Harness-layout contract + anti-re-accretion kLOC-cap drift guard ==="
