@@ -307,4 +307,40 @@ assert "3: a clean crate emits a structured PASS line" \
 assert "3: no FAIL line is emitted for a clean crate (precision)" \
     bash -c '! grep -qE "^HARNESS_KLOC_CAP FAIL" "$1"' _ "$_s3_out"
 
+# ===========================================================================
+# Section 4: rule (c) — the aggregate SUMMARY line is machine-parseable, and
+# EVERY emitted line obeys the canonical grammar (not a log-scrape). Drive TWO
+# synthetic crates (one clean, one with a violation) through the aggregating
+# driver run_harness_layout_scan <baseline> <cap> <crate:dir>...
+# ===========================================================================
+echo ""
+echo "--- Section 4: aggregate SUMMARY grammar (rule c) ---"
+
+_s4_clean_dir="$(mktemp -d)"; _TMPDIRS+=("$_s4_clean_dir")
+printf 'fn main() {}\n' > "$_s4_clean_dir/grand.rs"      # grandfathered below
+
+_s4_dirty_dir="$(mktemp -d)"; _TMPDIRS+=("$_s4_dirty_dir")
+printf 'fn main() {}\n' > "$_s4_dirty_dir/stray.rs"      # NOT grandfathered -> 1 violation
+
+_s4_baseline="$(mktemp)"; _TMPDIRS+=("$_s4_baseline")
+printf 'crates/cleancrate/tests/grand.rs\n' > "$_s4_baseline"
+
+_s4_out="$(mktemp)"; _TMPDIRS+=("$_s4_out")
+_s4_rc=0
+run_harness_layout_scan "$_s4_baseline" 20000 \
+    "cleancrate:$_s4_clean_dir" "dirtycrate:$_s4_dirty_dir" \
+    > "$_s4_out" 2>/dev/null || _s4_rc=$?
+
+_s4_summary_count="$(grep -cE '^HARNESS_KLOC_CAP SUMMARY crates=2 violations=1$' "$_s4_out" || true)"
+assert "4: exactly one structured SUMMARY crates=2 violations=1 line" \
+    test "$_s4_summary_count" -eq 1
+assert "4: aggregate scan returns non-zero when any crate has a violation (rc 1)" \
+    test "$_s4_rc" -eq 1
+
+# Non-blank lines that do NOT match the canonical grammar (`|| true`: the
+# clean case is the grep-no-match exit 1).
+_s4_bad="$(grep -vE '^[[:space:]]*$' "$_s4_out" | grep -vE '^HARNESS_KLOC_CAP (PASS|FAIL|SUMMARY) ' || true)"
+assert "4: every emitted non-empty line matches the canonical HARNESS_KLOC_CAP grammar" \
+    test -z "$_s4_bad"
+
 test_summary
