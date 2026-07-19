@@ -1450,6 +1450,54 @@ fn build_auto_param_list(cells: &[&ValueCellDecl]) -> Vec<AutoParam> {
 /// child template (task #4710): these are excluded from `auto_params` (and hence
 /// from strict-uniqueness verification) and must be written as `Determined` by the
 /// caller alongside the solver-resolved autos.
+/// Run the SAME three structural-query passes as the Let-cell expansion loop
+/// (`expand_structural_query` → `apply_trait_filters` → `apply_cost_aggregation`)
+/// over an objective-term or constraint expression IN PLACE, against its OWNING
+/// `template`, before it enters a [`ResolutionProblem`] (task #5188 α, PRD
+/// `docs/prds/v0_6/whole-model-joint-drive-seam.md` §4/§5).
+///
+/// Without this, `minimize cost(self.descendants)` /
+/// `constraint _ > cost(self.descendants)` reach the solver as a raw `cost`
+/// `FunctionCall` → `eval_objective_set` returns `None` →
+/// `UNDEF_OBJECTIVE_PENALTY` (a flat, zero-gradient objective). Mirrors the
+/// Let-cell loop's contract exactly (engine_eval.rs), INCLUDING the
+/// `contains_structural_query` fast-path that preserves empty-case identity: an
+/// expression with no `self.children`/`.members`/`.descendants` placeholder is
+/// left byte-identical, so a plain `minimize x` objective / non-structural
+/// constraint is untouched (`dependent_cells`-empty ⇒ legacy behaviour).
+#[allow(clippy::too_many_arguments)]
+fn expand_solver_position_expr(
+    expr: &mut CompiledExpr,
+    template: &TopologyTemplate,
+    all_templates: &[TopologyTemplate],
+    values: &ValueMap,
+    max_unfold_depth: usize,
+    max_unfold_nodes: usize,
+    trait_registry: &HashMap<String, &reify_compiler::CompiledTrait>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if !crate::structural_query::contains_structural_query(expr) {
+        return;
+    }
+    let mut node_budget = max_unfold_nodes;
+    crate::structural_query::expand_structural_query(
+        expr,
+        template,
+        all_templates,
+        values,
+        max_unfold_depth,
+        &mut node_budget,
+        diagnostics,
+    );
+    // δ: rewrite filter(list_literal, TraitObject) nodes to filtered subsets.
+    crate::structural_query::apply_trait_filters(expr, all_templates, trait_registry);
+    // γ (task 5015): rewrite cost(list_literal) → [ValueRef(line_cost) ...].sum.
+    // MUST run after apply_trait_filters so self.descendants / any explicit
+    // filter(...) is already a list_literal of entity-refs.
+    crate::structural_query::apply_cost_aggregation(expr, all_templates, trait_registry);
+}
+
+#[allow(clippy::too_many_arguments)]
 fn build_solver_problem(
     template: &reify_compiler::TopologyTemplate,
     objective: Option<&ObjectiveSet>,
@@ -1457,6 +1505,10 @@ fn build_solver_problem(
     functions: Arc<[CompiledFunction]>,
     all_templates: &[reify_compiler::TopologyTemplate],
     snap_values: &PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+    max_unfold_depth: usize,
+    max_unfold_nodes: usize,
+    trait_registry: &HashMap<String, &reify_compiler::CompiledTrait>,
+    diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<(ResolutionProblem, Vec<(ValueCellId, Value)>)> {
     // Collect auto cells once; derive both the id-set (for constraint
     // filtering) and the AutoParam list from the same filtered slice to
@@ -1525,8 +1577,47 @@ fn build_solver_problem(
     let auto_ids: HashSet<&ValueCellId> =
         regular_auto_cells.iter().map(|cell| &cell.id).collect();
 
-    let filtered_constraints = filter_constraints_reading_autos(&template.constraints, &auto_ids);
+    let mut filtered_constraints =
+        filter_constraints_reading_autos(&template.constraints, &auto_ids);
     let auto_param_list = build_auto_param_list(&regular_auto_cells);
+
+    // α (task #5188): expand objective/constraint-position structural queries
+    // (`cost(self.descendants)`, `self.members`, …) against the OWNING
+    // `template` BEFORE the exprs enter the ResolutionProblem, so the solver
+    // sees `[ValueRef(line_cost) ...].sum` instead of a raw `cost` FunctionCall
+    // (which `eval_objective_set` can't read → UNDEF_OBJECTIVE_PENALTY, a flat
+    // zero-gradient objective). The ε constraint pass rewrites
+    // `snapshot.graph.constraints`, NOT `template.constraints`, so the exprs
+    // filtered here are still unexpanded. The `contains_structural_query`
+    // fast-path inside the helper keeps structural-query-free exprs
+    // byte-identical (empty-case identity).
+    for (_id, cexpr) in &mut filtered_constraints {
+        expand_solver_position_expr(
+            cexpr,
+            template,
+            all_templates,
+            values,
+            max_unfold_depth,
+            max_unfold_nodes,
+            trait_registry,
+            diagnostics,
+        );
+    }
+    let objective = objective.cloned().map(|mut obj| {
+        for term in &mut obj.terms {
+            expand_solver_position_expr(
+                &mut term.expr,
+                template,
+                all_templates,
+                values,
+                max_unfold_depth,
+                max_unfold_nodes,
+                trait_registry,
+                diagnostics,
+            );
+        }
+        obj
+    });
 
     // Pre-populate current_values with pinned connector values so any remaining
     // constraint that transitively reads a pinned cell sees the correct value.
@@ -1541,7 +1632,7 @@ fn build_solver_problem(
             auto_params: auto_param_list,
             constraints: filtered_constraints,
             current_values,
-            objective: objective.cloned(),
+            objective,
             // Moved in by value — callers pass Arc::clone, so this is O(1).
             // The merged table is shared with Engine.functions (tasks #1997, #2286).
             functions,
@@ -1614,6 +1705,7 @@ fn build_solver_problem(
 /// no memoization. This mirrors the existing per-template cost, and cluster
 /// size is capped at `WHOLE_MODEL_CLUSTER_DIM_CAP` (12), so the constant
 /// factor stays small; memoize the trace if profiling ever shows otherwise.
+#[allow(clippy::too_many_arguments)]
 fn build_merged_solver_problem(
     cluster: &crate::resolve_order::Cluster,
     templates: &[TopologyTemplate],
@@ -1621,6 +1713,9 @@ fn build_merged_solver_problem(
     values: &ValueMap,
     functions: Arc<[CompiledFunction]>,
     diagnostics: &mut Vec<Diagnostic>,
+    max_unfold_depth: usize,
+    max_unfold_nodes: usize,
+    trait_registry: &HashMap<String, &reify_compiler::CompiledTrait>,
 ) -> ResolutionProblem {
     // Union each member's auto cells, in cluster.scopes (ascending source
     // index) × value_cells declaration order — a pure function of stable Vec
@@ -1670,8 +1765,26 @@ fn build_merged_solver_problem(
     // constraint reading a co-solved sibling member's auto is still picked up.
     let mut filtered_constraints = Vec::new();
     for &idx in &cluster.scopes {
-        filtered_constraints
-            .extend(filter_constraints_reading_autos(&templates[idx].constraints, &auto_ids));
+        let mut member_constraints =
+            filter_constraints_reading_autos(&templates[idx].constraints, &auto_ids);
+        // α (task #5188): expand each member's constraint-position structural
+        // queries against its OWN template (`self.descendants`/`.members` is
+        // relative to the member's own scope), BEFORE they enter the merged
+        // problem — mirrors `build_solver_problem`. The fast-path keeps
+        // structural-query-free constraints byte-identical.
+        for (_id, cexpr) in &mut member_constraints {
+            expand_solver_position_expr(
+                cexpr,
+                &templates[idx],
+                templates,
+                values,
+                max_unfold_depth,
+                max_unfold_nodes,
+                trait_registry,
+                diagnostics,
+            );
+        }
+        filtered_constraints.extend(member_constraints);
     }
 
     let auto_param_list = build_auto_param_list(&auto_cells);
@@ -1728,7 +1841,34 @@ fn build_merged_solver_problem(
                 // earlier sibling that inherits the same objective.
                 continue;
             }
-            spanning_terms.extend(obj.terms.iter().cloned());
+            // α (task #5188): expand each contributing term's structural query
+            // against its OWNING template BEFORE folding into `spanning_terms`.
+            // `self.descendants`/`.members` is relative to the objective's
+            // DECLARING scope, so owner = the member's own template, or the
+            // inherited container template when this objective was inherited
+            // (§6.1). The opaque per-owner fold below erases per-term ownership,
+            // so expansion MUST happen here while the owner is still in scope
+            // (else `self` would resolve against the wrong template).
+            let owner_template = match governance[idx].inherited_from.as_deref() {
+                Some(container_name) => templates
+                    .iter()
+                    .find(|t| t.name == container_name)
+                    .unwrap_or(&templates[idx]),
+                None => &templates[idx],
+            };
+            for mut term in obj.terms.iter().cloned() {
+                expand_solver_position_expr(
+                    &mut term.expr,
+                    owner_template,
+                    templates,
+                    values,
+                    max_unfold_depth,
+                    max_unfold_nodes,
+                    trait_registry,
+                    diagnostics,
+                );
+                spanning_terms.push(term);
+            }
             // `combination` carries through from the first distinct
             // contributing member (amendment, task #5014) instead of being
             // hardcoded to `WeightedSum`: the common single-objective-owner
@@ -4196,6 +4336,14 @@ impl Engine {
                     Arc::clone(&functions),
                     &module.templates,
                     &snapshot.values,
+                    // α (task #5188): objective/constraint-position expansion
+                    // context. `sq_trait_registry` (built above for the Let-cell
+                    // pass) borrows only &'static prelude + &module — never self
+                    // — so reusing it here is free of a &mut self borrow clash.
+                    self.max_unfold_depth,
+                    self.max_unfold_nodes,
+                    &sq_trait_registry,
+                    &mut diagnostics,
                 ) else {
                     continue;
                 };
@@ -5527,6 +5675,16 @@ impl Engine {
         structured_detail: &mut Vec<crate::engine_compute::StructuredComputeDetail>,
         runtime_sink: &RefCell<Vec<Diagnostic>>,
     ) {
+        // α (task #5188): trait registry for objective/constraint-position
+        // structural-query expansion inside build_merged_solver_problem.
+        // `self.prelude` is &'static and `module` is a param, so this borrows
+        // neither self nor conflicts with the &mut self write-back below.
+        let expansion_trait_registry = crate::structural_query::build_trait_registry(
+            self.prelude
+                .iter()
+                .flat_map(|m| m.trait_defs.iter())
+                .chain(module.trait_defs.iter()),
+        );
         let problem = build_merged_solver_problem(
             cluster,
             &module.templates,
@@ -5534,6 +5692,9 @@ impl Engine {
             values,
             Arc::clone(&functions),
             diagnostics,
+            self.max_unfold_depth,
+            self.max_unfold_nodes,
+            &expansion_trait_registry,
         );
 
         // Amendment, task #5014: mirror `build_solver_problem`'s `None`-means-
@@ -6615,6 +6776,18 @@ impl Engine {
             let containment =
                 crate::scope_containment::ContainmentIndex::new(&module.templates);
             let governance = governing_objective(&module.templates, &containment);
+            // α (task #5188): objective/constraint-position structural-query
+            // expansion registry — built identically to eval()'s
+            // `sq_trait_registry` (prelude first so module traits shadow) so
+            // both paths hand the solver byte-identical expanded exprs. Borrows
+            // only &'static prelude + &module, never self, so it lives across
+            // the &mut self resolution loop below without a borrow clash.
+            let expansion_trait_registry = crate::structural_query::build_trait_registry(
+                self.prelude
+                    .iter()
+                    .flat_map(|m| m.trait_defs.iter())
+                    .chain(module.trait_defs.iter()),
+            );
 
             for &idx in &ro.order {
                 let template = &module.templates[idx];
@@ -6634,6 +6807,10 @@ impl Engine {
                     Arc::clone(&self.functions),
                     &module.templates,
                     &snapshot_values,
+                    self.max_unfold_depth,
+                    self.max_unfold_nodes,
+                    &expansion_trait_registry,
+                    &mut diagnostics,
                 ) {
                     // Per-iteration cost of `lookup_solver_for_module`: one
                     // `solver_pragma.as_ref()` match plus at most one
