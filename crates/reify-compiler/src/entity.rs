@@ -5918,6 +5918,7 @@ pub(crate) fn expand_constraint_inst(
 /// for a port member (matching `port_member_is_priv`'s composite lookup) and the
 /// bare param name for a guarded-block member (matching `template_member_is_priv`'s
 /// `guarded_groups` scan).
+#[allow(clippy::too_many_arguments)]
 fn skeleton_nested_param_cell(
     entity_name: &str,
     member_name: &str,
