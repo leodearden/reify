@@ -9,9 +9,12 @@
 #
 # Allowlist mechanism (three composable filters):
 #   (1) Operator:     only -le / -lt upper bounds are flagged (-ge / -gt ignored).
-#   (2) Wall-clock lexeme: only lines whose description or compared variable
-#       carries a time signal (elapsed | within [0-9]+s | [0-9]+ms | seconds |
-#       wall | duration | var matching ELAPSED/_S/_MS/_NS/SECONDS).
+#   (2) Time-measurement signal: only lines whose description or compared
+#       variable carries a genuine time-MEASUREMENT signal — a description
+#       lexeme (elapsed | within [0-9]+[ms]s? | duration) OR a time-suffixed
+#       variable operand (var matching ELAPSED/_S/_MS/_NS/SECONDS).  Bare
+#       prose `wall`/`seconds` with a literal/config-constant operand does
+#       NOT match (task #5257).
 #   (3) Inline escape: `# wallclock:allow` on the assert line opts it out.
 #
 # SELF-MATCH SAFETY: this file must not contain any literal flaggable construct
@@ -44,9 +47,12 @@ echo "=== Wall-clock upper-bound regression guard ==="
 # via awk) is a violation iff ALL of:
 #   (1) assert-wired: the word "assert" appears on the line
 #   (2) upper-bound:  line contains `-le <int>` or `-lt <int>`
-#   (3) wall-clock:   description or compared var carries a time lexeme:
-#                     elapsed | within [0-9]+[ms]s? | seconds | wall |
-#                     duration | ELAPSED/_S/_MS/_NS/SECONDS suffix
+#   (3) time-measurement: description or compared var carries a genuine
+#                     time-MEASUREMENT signal — a time-suffixed variable
+#                     operand (ELAPSED/_S/_MS/_NS/SECONDS suffix) OR a
+#                     description lexeme (elapsed | within [0-9]+[ms]s? |
+#                     duration).  Bare prose `wall`/`seconds` alongside a
+#                     literal/config-constant operand no longer matches (#5257).
 #   (4) NOT escaped:  line does NOT contain `wallclock:allow`
 #
 # Prints each violation as "file:lineno: <content>" to stderr.
@@ -73,7 +79,14 @@ _detect_wallclock_upper_bound() {
     local _ass_re; _ass_re='asse''rt'
     local _esc_re; _esc_re='wallcl''ock:allow'
     local _wc_re
-    _wc_re='elap''sed|with''in[[:space:]]+[0-9]+[ms]s?|second''s|wall|durat''ion'
+    # Free-prose description lexemes.  Task #5257 dropped the bare `wall` and
+    # lowercase `seconds` alternatives: they matched config-constant ceilings
+    # whose description merely mentioned "wall"/"seconds" without any genuine
+    # time-MEASUREMENT signal (the ep3 false positives).  A time-suffixed
+    # variable operand is still a legitimate signal — see `_wc_var_sfx` below,
+    # which is composed in UNCHANGED (its uppercase SECONDS suffix is a
+    # case-sensitive, independent matcher from the removed lowercase prose).
+    _wc_re='elap''sed|with''in[[:space:]]+[0-9]+[ms]s?|durat''ion'
     # Variable-name suffixes: single-quoted so '' splits work correctly.
     local _wc_var_sfx
     _wc_var_sfx='ELAP''SED|_M?S([^A-Za-z0-9_]|$)|_NS([^A-Za-z0-9_]|$)|SECOND''S([^A-Za-z0-9_]|$)'
@@ -211,7 +224,7 @@ _detect_wallclock_upper_bound() {
             if ! [[ "$logical" =~ $_ass_re ]]; then continue; fi
             # (2) Upper-bound operator: -le <int> or -lt <int>
             if ! [[ "$logical" =~ $_op_re ]]; then continue; fi
-            # (3) Wall-clock lexeme
+            # (3) Time-measurement signal (description lexeme OR var-suffix)
             if ! [[ "$logical" =~ $_wc_re ]]; then continue; fi
             # Violation: all four conditions met
             echo "${f}:${lineno}: ${logical}" >> "$_viof"
