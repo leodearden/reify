@@ -2123,14 +2123,28 @@ fn emit_param_override_rejection_warning(
 /// one place — the triple-copy divergence that produced the guarded-group
 /// override bug (task 2154) cannot recur.
 ///
-/// **Cache / journal**: every value-write path in this helper records a
-/// `Started` event before resolution and a `Completed { outcome }` event after
-/// calling `cache.record_evaluation`, mirroring the top-level Param branch in
-/// `Engine::eval`'s first pass — the symmetric S4 arm is tagged
-/// `REJECTED-OVERRIDE-NO-DEFAULT`, and both sites funnel through the shared
-/// `record_eval_completed` helper. Task-2195 added journal+cache recording
-/// here to make guarded-group Param evals fully visible to tooling that joins
-/// journal events against cache state.
+/// **Cache / journal**: every value-write path in this helper funnels through
+/// [`commit_cell_result`] (task γ #5053), which writes the values/snapshot/
+/// cache/journal legs atomically and tags the `Started` event with the
+/// `guarded-group` [`TraceSource`] slug. Task-2195 first added journal+cache
+/// recording here — mirroring the top-level Param branch in `Engine::eval`'s
+/// first pass, including the symmetric `REJECTED-OVERRIDE-NO-DEFAULT` arm — to
+/// make guarded-group Param evals visible to tooling that joins journal events
+/// against cache state; the γ migration preserves that visibility (identical
+/// values/snapshot/cache writes) while making the provenance slug explicit.
+///
+/// **Journal-timing delta (γ #5053, non-load-bearing).** The pre-migration
+/// contract emitted the `Started` event *before* resolution and computed the
+/// paired `Completed`'s `Duration` payload as `start.elapsed()`, so on the
+/// default-eval path (below) that `Duration` spanned the `default_expr`
+/// evaluation. `commit_cell_result` captures its own `start = Instant::now()`
+/// at the *top of the commit* — i.e. *after* that eval — so the `Started`
+/// timestamp is now post-eval and the `Completed` `Duration` measures only the
+/// four-leg commit, not the eval. This ordering/duration shift is an accepted
+/// consequence of routing through the α primitive: no journal-latency
+/// assertion consumes this `Duration`'s magnitude (every consumer matches
+/// `Duration(_)` for presence only), so it is observationally inert for
+/// current tooling.
 fn eval_guarded_group_param_cell(
     cell: &ValueCellDecl,
     param_overrides: &HashMap<ValueCellId, Value>,
@@ -6482,6 +6496,15 @@ impl Engine {
                                 .cloned()
                                 .expect("sorted_combined ⊆ combined_traces.keys() by construction");
 
+                            // Journal-timing delta (γ #5053, non-load-bearing): pre-migration
+                            // this miss arm emitted its `Started` event (payload `None`) BEFORE
+                            // the `eval_expr` above and set the paired `Completed`'s `Duration`
+                            // to `start.elapsed()`, spanning the eval. `commit_cell_result`
+                            // captures its own `start` at the top of the commit — after the eval
+                            // — so `Started` is now post-eval and the `Completed` `Duration`
+                            // covers only the four-leg commit. The added `cached-serve` slug is
+                            // additive; the `Duration` magnitude is unconsumed (all journal
+                            // consumers match `Duration(_)` for presence only).
                             let commit_outcome = commit_cell_result(
                                 CommitLegs {
                                     values: &mut values,
@@ -6492,6 +6515,16 @@ impl Engine {
                                 cell.id.clone(),
                                 val,
                                 DeterminacyRule::UnconditionalDetermined,
+                                // `CachedServe` denotes eval_cached-PASS provenance, not a cache
+                                // hit: this is the cache-MISS arm (`stats.cache_misses` above) —
+                                // a cold eval within the cached-serve pass. The genuine cache-hit
+                                // reuse arm (~@6399) does NOT route through commit_cell_result
+                                // (it is the deferred preserve-freshness path), so this slug has a
+                                // single emitter and never collides; a §2.6 divergence audit that
+                                // keys on it reads "produced by the eval_cached pass". Kept as
+                                // CachedServe (not ColdEval) per the frozen γ plan — the test that
+                                // pins the "cached-serve" slug lives in the sibling test module,
+                                // outside this amendment's edit scope.
                                 TraceSource::CachedServe,
                                 trace,
                                 version,
