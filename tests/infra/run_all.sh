@@ -37,6 +37,22 @@
 #
 # Exits 0 if all discovered tests pass (or none are found), 1 if any fail.
 #
+# Worktree-removal interruption (task #5261, W4e): if this suite's own
+# INFRA_DIR is removed out from under it mid-run (e.g. the _merge-verify
+# worktree gutted by a restart), run_all.sh emits a SINGLE line-anchored
+# "=== INTERRUPTED (worktree removed) ===" marker to stdout and exits 99
+# instead of letting each already-discovered member fail individually with
+# "No such file or directory" (rc 127). 99 is distinct from every other
+# exit code this script/its envelope uses (0 pass, 1 fail, 64 usage, 75 H9
+# flock contention, 124 timeout, 127 not-found, 128+n signals) so
+# dark-factory's ENV_TRANSIENT classifier can key off it directly instead of
+# misreading a gutted worktree as N test failures. This self-check is
+# strictly additive: it is only "armed" (able to fire at all) when
+# INFRA_DIR held this script's own run_all.sh at STARTUP -- true only for a
+# real no-arg `bash run_all.sh` invocation, never for a test fixture whose
+# INFRA_DIR points at a synthetic temp dir. See _ra_interrupt_if_worktree_gone
+# below.
+#
 # Concurrent hermetic pool (H2, task 4924): the `pool`-bucket tests (as
 # classified by tests/infra/run-all-classification.manifest, H1 task 4921)
 # run concurrently under a host-global counting semaphore + a soft PSI gate.
@@ -229,6 +245,24 @@ esac
 # meaningful merge-vs-task/branch signal for ledger triage only exists here.
 _RA_INBOUND_ROLE="${DF_VERIFY_ROLE:-unknown}"
 export DF_VERIFY_ROLE=task
+
+# Worktree-removal self-check "armed" gate (task #5261, W4e). The merge
+# suite runs `bash run_all.sh` with NO positional arg, so INFRA_DIR ==
+# SCRIPT_DIR and $INFRA_DIR/run_all.sh IS the running script -- present at
+# startup, gone if the worktree is later removed mid-run. Capturing presence
+# ONCE, here, makes the check strictly additive: every existing/other test
+# fixture points INFRA_DIR at a temp dir that never contained run_all.sh, so
+# those runs are NEVER armed and _ra_worktree_gone (below) stays completely
+# inert for them -- only a run whose INFRA_DIR held run_all.sh at start and
+# lost it mid-run can ever trip it.
+_RA_SELFCHECK_SENTINEL="$INFRA_DIR/run_all.sh"
+_RA_SELFCHECK_ARMED=0
+[ -e "$_RA_SELFCHECK_SENTINEL" ] && _RA_SELFCHECK_ARMED=1
+# Distinct from every exit code run_all.sh/its envelope already uses (0
+# pass, 1 any-fail, 64 usage, 75 H9 flock contention, 124 GNU-timeout, 127
+# command-not-found, 128+n signals incl. 143 SIGTERM) -- gives dark-factory's
+# ENV_TRANSIENT classifier a clean numeric anchor alongside the marker line.
+_RA_INTERRUPTED_EXIT_CODE=99
 
 # ---------------------------------------------------------------------------
 # Clock-marker sanitizer for re-emitted infra-test output (task 4998, esc-4791-52).
@@ -525,6 +559,39 @@ _ra_on_term() {
 
     trap - TERM
     kill -TERM $$
+}
+
+# ---------------------------------------------------------------------------
+# _ra_worktree_gone / _ra_interrupt_if_worktree_gone  (task #5261, W4e)
+#
+# _ra_worktree_gone: true (rc 0) only when the startup self-check was ARMED
+# (_RA_SELFCHECK_ARMED=1) AND the sentinel is now missing -- see the "armed"
+# gate comment above _RA_SELFCHECK_SENTINEL. Never true for any run that was
+# not armed at startup (INV: strictly additive -- every existing fixture is
+# unaffected).
+#
+# _ra_interrupt_if_worktree_gone: no-op unless _ra_worktree_gone; otherwise
+# emits a line-anchored "=== INTERRUPTED (worktree removed) ===" marker to
+# STDOUT (the same stream dark-factory's classifier reads) and exits
+# _RA_INTERRUPTED_EXIT_CODE (99), bypassing the normal Summary/FAILED block
+# entirely. The existing _H2_WORKDIR EXIT trap (pool path) still runs on
+# this exit, cleaning up /tmp state and stopping the progress printer.
+#
+# MUST be called only from the MAIN shell (never inside a `( ) &` worker,
+# where `exit` would only terminate the subshell, leaving the main shell
+# none the wiser) -- see call sites below.
+# ---------------------------------------------------------------------------
+_ra_worktree_gone() {
+    [ "$_RA_SELFCHECK_ARMED" = "1" ] || return 1
+    [ -e "$_RA_SELFCHECK_SENTINEL" ] && return 1
+    return 0
+}
+
+_ra_interrupt_if_worktree_gone() {
+    _ra_worktree_gone || return 0
+    echo ""
+    echo "=== INTERRUPTED (worktree removed) ==="
+    exit "${_RA_INTERRUPTED_EXIT_CODE:-99}"
 }
 
 failures=0
@@ -1307,6 +1374,15 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     if [ "${#_h2_pids[@]}" -gt 0 ]; then
         wait "${_h2_pids[@]}" 2>/dev/null || true
     fi
+
+    # W4e primary check point (task #5261): _H2_WORKDIR lives under TMPDIR
+    # (/tmp), so it survives an INFRA_DIR deletion and the Phase-1 join above
+    # always completes even when the worktree was gutted mid-pool -- this is
+    # the first point after that join where we can tell. Checking here emits
+    # ONE marker instead of letting Phase 2/2.5/3 emit N per-member FAILED
+    # lines. See _ra_interrupt_if_worktree_gone above.
+    _ra_interrupt_if_worktree_gone
+
     # Stop the single-writer progress printer now that Phase 1 has joined --
     # disowned above, so it is invisible to `jobs -rp`/`wait` and must be
     # stopped explicitly via its saved PID (task #5130). This is the primary
@@ -1319,6 +1395,7 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
 
     # -- Phase 2: serial (foreground, one at a time, discovered order) -----------
     for _h2_name in "${_h2_serial_members[@]}"; do
+        _ra_interrupt_if_worktree_gone
         _h2_i="${_h2_index_of[$_h2_name]}"
         _h2_rc=0
         bash "$INFRA_DIR/$_h2_name" > "$_H2_WORKDIR/${_h2_i}.out" 2>&1 || _h2_rc=$?
@@ -1349,6 +1426,7 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
 
     # -- Phase 3: emit (discovered/sorted order -- preserves the output contract) --
     for _h2_name in "${_h2_discovered_list[@]}"; do
+        _ra_interrupt_if_worktree_gone
         _h2_i="${_h2_index_of[$_h2_name]}"
         echo ""
         echo "--- Running: $_h2_name ---"
@@ -1387,6 +1465,13 @@ else
     # Legacy all-serial fallback (byte-identical to the pre-H2 behavior).
     # -------------------------------------------------------------------------
     for test_file in "$INFRA_DIR"/test_*.sh; do
+        # W4e between-members check (task #5261): this loop's iteration list
+        # was captured ONCE at glob-expansion time, so a member removed
+        # mid-loop by an earlier member just makes `[ -f ]` below silently
+        # `continue` past every remaining entry (a silent false success, not
+        # even a 127) -- checking here, before that guard, catches it instead.
+        _ra_interrupt_if_worktree_gone
+
         # If glob matches nothing, the literal pattern string is returned — skip it.
         [ -f "$test_file" ] || continue
 
@@ -1403,15 +1488,27 @@ else
         discovered=$((discovered + 1))
         echo ""
         echo "--- Running: $basename ---"
-        if bash "$test_file"; then
+        _ra_legacy_rc=0
+        bash "$test_file" || _ra_legacy_rc=$?
+        if [ "$_ra_legacy_rc" -eq 0 ]; then
             echo "  RESULT: PASS ($basename)"
         else
+            # W4e on-127 check (task #5261): a "No such file or directory"
+            # exit from bash itself is the direct symptom of the worktree
+            # having vanished out from under this member's own invocation.
+            [ "$_ra_legacy_rc" -eq 127 ] && _ra_interrupt_if_worktree_gone
             echo "  RESULT: FAIL ($basename)"
             failures=$((failures + 1))
             failed_names+=("$basename")
         fi
     done
 fi
+
+# W4e final backstop (task #5261): covers a nuke on the very last member,
+# which no subsequent loop iteration would otherwise catch (there is no
+# "next" top-of-loop check to fire). Common to both the pool and legacy
+# paths -- placed once, here, immediately before the Summary block.
+_ra_interrupt_if_worktree_gone
 
 echo ""
 if [ "${#flaky_names[@]}" -gt 0 ]; then
