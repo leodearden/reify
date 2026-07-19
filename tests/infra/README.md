@@ -52,9 +52,18 @@ assert "... within Ns ..." test "$elapsed_var" -le N
 ```
 
 A line is flagged iff all of: (1) `assert`-wired, (2) upper-bound operator
-(`-le` / `-lt`), (3) wall-clock lexeme in description or variable name
-(`elapsed`, `within Ns`, `ELAPSED`, `_MS`, `_NS`, `SECONDS`, etc.),
-(4) no inline `wallclock:allow` escape.
+(`-le` / `-lt`), (3) a genuine **time-measurement signal** — a time-suffixed
+variable operand (`ELAPSED` / `_S` / `_MS` / `_NS` / `SECONDS`) **or** a
+description lexeme (`elapsed`, `within Ns`, `duration`), (4) no inline
+`wallclock:allow` escape.
+
+Task #5257 tightened condition (3): bare description prose `wall` or `seconds`
+alongside a literal or config-constant operand (e.g. a `-lt 3600` pass-level
+ceiling extracted from `nextest.toml`) no longer matches — such a line carries
+no time-measurement signal.  Only the lowercase `seconds` free-prose lexeme was
+dropped; because bash `[[ =~ ]]` is case-sensitive the uppercase `SECONDS`
+*variable suffix* is independent and retained, so a `$wait_SECONDS -le 30`
+operand is still flagged.
 
 ### Opting out: `wallclock:allow`
 
@@ -73,9 +82,17 @@ tells the guard to skip it.  The reason should cite WHY the wall-clock
 magnitude is load-safe (exit code, marker, etc.) so the exemption is
 auditable.
 
-**Current blessed survivors** (as of task #4848):
-- `test_occt_flock_gate.sh` Tests 14 & 22: exit-75 + stderr pattern
-- `test_find_uses_smoke_runner.sh` liveness guard: rc!=0 + launcher-death message
+**Current blessed survivors** (as of task #5257):
+- `test_occt_flock_gate.sh` Tests 14 & 22: exit-75 + stderr pattern (`_ELAPSED*` operand)
+- `test_find_uses_smoke_runner.sh` liveness guard: rc!=0 + launcher-death message (`_t4_elapsed` operand)
+- `test_lane_x_flock.sh` flock-timing guard (`_ELAPSED18_MS` operand)
+
+These four retain their `wallclock:allow` escapes: each carries a real
+`elapsed` / `ELAPSED` / `_MS` time-measurement signal and is still (correctly)
+flagged.  The six `nextest` / `occt` config-constant `-lt 3600` pass-level
+ceilings that task #5257 de-annotated are **not** survivors — after the
+condition-(3) tightening they carry no time-measurement signal and pass
+un-flagged without an escape.
 
 ## Files
 
