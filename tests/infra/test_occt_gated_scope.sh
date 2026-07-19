@@ -515,7 +515,7 @@ _DEFAULT_ST_PERIOD="$(awk "$_DEFAULT_ST_PERIOD_AWK" "$NEXTEST_TOML")"
 _DEFAULT_ST_TERM="$(awk "$_DEFAULT_ST_TERM_AWK" "$NEXTEST_TOML")"
 
 assert "default slow-timeout ceiling (period=${_DEFAULT_ST_PERIOD:-unset}s * terminate-after=${_DEFAULT_ST_TERM:-unset}, both extracted from nextest.toml) is strictly less than the 3600s (60m) pass-level wall" \
-    bash -c "[ -n '${_DEFAULT_ST_PERIOD:-}' ] && [ -n '${_DEFAULT_ST_TERM:-}' ] && [ \$(( ${_DEFAULT_ST_PERIOD:-0} * ${_DEFAULT_ST_TERM:-0} )) -lt 3600 ]"  # wallclock:allow
+    bash -c "[ -n '${_DEFAULT_ST_PERIOD:-}' ] && [ -n '${_DEFAULT_ST_TERM:-}' ] && [ \$(( ${_DEFAULT_ST_PERIOD:-0} * ${_DEFAULT_ST_TERM:-0} )) -lt 3600 ]"
 
 # Test 16d: REGRESSION GUARD (green-on-arrival) — no `retries` key anywhere in
 # nextest.toml or the generated config. A retry would re-run and mask the very

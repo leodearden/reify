@@ -437,18 +437,18 @@ assert "determinism heavy ceiling (${HS_DET}s = period ${SP_DET:-unset}s * termi
     bash -c "[ -n '${HS_DET:-}' ] && [ -n '${DEFAULT_SECONDS:-}' ] && [ '${HS_DET:-0}' -gt '${DEFAULT_SECONDS:-0}' ]"
 
 assert "tensegrity_t0a heavy ceiling (${HS_T0A}s, extracted from nextest.toml) is strictly less than the 3600s (60m) pass-level wall" \
-    bash -c "[ -n '${HS_T0A:-}' ] && [ '${HS_T0A:-0}' -lt 3600 ]"  # wallclock:allow
+    bash -c "[ -n '${HS_T0A:-}' ] && [ '${HS_T0A:-0}' -lt 3600 ]"
 
 assert "fea_diagnostics_e2e heavy ceiling (${HS_FEA}s, extracted from nextest.toml) is strictly less than the 3600s (60m) pass-level wall" \
-    bash -c "[ -n '${HS_FEA:-}' ] && [ '${HS_FEA:-0}' -lt 3600 ]"  # wallclock:allow
+    bash -c "[ -n '${HS_FEA:-}' ] && [ '${HS_FEA:-0}' -lt 3600 ]"
 
 assert "representation_within_assertion heavy ceiling (${HS_REPR}s, extracted from nextest.toml) is strictly less than the 3600s (60m) pass-level wall" \
-    bash -c "[ -n '${HS_REPR:-}' ] && [ '${HS_REPR:-0}' -lt 3600 ]"  # wallclock:allow
+    bash -c "[ -n '${HS_REPR:-}' ] && [ '${HS_REPR:-0}' -lt 3600 ]"
 
 assert "analytical_validation heavy ceiling (${HS_ANAL}s, extracted from nextest.toml) is strictly less than the 3600s (60m) pass-level wall" \
-    bash -c "[ -n '${HS_ANAL:-}' ] && [ '${HS_ANAL:-0}' -lt 3600 ]"  # wallclock:allow
+    bash -c "[ -n '${HS_ANAL:-}' ] && [ '${HS_ANAL:-0}' -lt 3600 ]"
 
 assert "determinism heavy ceiling (${HS_DET}s, extracted from nextest.toml) is strictly less than the 3600s (60m) pass-level wall" \
-    bash -c "[ -n '${HS_DET:-}' ] && [ '${HS_DET:-0}' -lt 3600 ]"  # wallclock:allow
+    bash -c "[ -n '${HS_DET:-}' ] && [ '${HS_DET:-0}' -lt 3600 ]"
 
 test_summary
