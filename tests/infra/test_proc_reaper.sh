@@ -928,6 +928,23 @@ assert "hermetic regression lock: condition-polled survivor check tolerates a tr
         exit "$_alive_rc"
     '
 
+# ITEM 2a fixture (task 5260): a FOREIGN-run e2e marker used to prove the Part-5
+# pre-clean below does NOT collateral-kill a concurrent run_all instance's
+# suffixed marker. The foreign sentinel is chosen so THIS run's own marker suffix
+# (_SENT_FAKE = $$*10+7) is NOT a substring of the foreign suffix ($$*10+1) —
+# otherwise the suffixed grep (step-4 GREEN) would still substring-match and kill
+# the foreign marker, making GREEN unreachable (see plan design decision).
+_SENT_FAKE_FOREIGN=$(($$ * 10 + 1))
+_FOREIGN_DIR="$(mktemp -d)"
+_TMPDIRS+=("$_FOREIGN_DIR")
+_FOREIGN_BIN="$_FOREIGN_DIR/reify_faketest_e2e_${_SENT_FAKE_FOREIGN}"
+cp "$(command -v sleep)" "$_FOREIGN_BIN"
+chmod +x "$_FOREIGN_BIN"
+"$_FOREIGN_BIN" "$_SENTINEL_SLEEP_SECS" </dev/null >/dev/null 2>&1 &
+_FOREIGN_PID=$!
+assert "foreign-run e2e marker launched alive (precondition, task 5260)" \
+    _poll_survivor_alive "$_FOREIGN_PID" 3
+
 assert "reap-orphaned-test-binaries.sh reaps an orphaned test binary after parent SIGKILL" \
     env _WRAPPER="$_WRAPPER" _E2E_FAKE="$_E2E_FAKE" _E2E_DIR="$_E2E_DIR" \
         _SENT_FAKE="$_SENT_FAKE" _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" \
@@ -979,6 +996,17 @@ assert "reap-orphaned-test-binaries.sh reaps an orphaned test binary after paren
         # Poll until the fake binary is gone (zombie-aware; bumped budget base 20).
         _poll_pid_gone "$_fake_pid" "$_POLL_ATTEMPTS_ORPHAN"; exit $?
     '
+
+# ITEM 2a assertion (task 5260): the Part-5 pre-clean (:945) must scope its
+# host-wide `kill -9` to THIS run's suffixed marker (reify_faketest_e2e_${_SENT_FAKE}),
+# NOT the unsuffixed host-wide `reify_faketest_e2e` — otherwise a CONCURRENT
+# run_all instance's live fixture is collateral-killed. The foreign marker
+# launched before the Part-5 assertion above must have SURVIVED that assertion's
+# pre-clean. RED with the unsuffixed grep (foreign marker killed → poll exhausts);
+# GREEN once :945 is suffixed. Then reap the foreign marker.
+assert "e2e pre-clean spares a FOREIGN-suffixed marker — no cross-run collateral (task 5260)" \
+    _poll_survivor_alive "$_FOREIGN_PID" 3
+kill -9 "$_FOREIGN_PID" 2>/dev/null || true
 
 # ===========================================================================
 # Part 6 — zombie-aware orphan-reap poll helper
