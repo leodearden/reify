@@ -25,7 +25,7 @@
 
 #![cfg(has_occt)]
 
-use reify_ir::{GeometryHandleId, GeometryOp, GeometryQuery, Value};
+use reify_ir::{BRepKind, GeometryHandleId, GeometryOp, GeometryQuery, Value};
 use reify_kernel_occt::OcctKernel;
 
 /// Relative tolerance for volume comparisons.  OCCT boolean volume numerics
@@ -156,6 +156,61 @@ fn fuse_all_three_overlapping_boxes_matches_chained_reference() {
     assert!(
         is_watertight(&kernel, fused.id),
         "the overlapping single-solid fuse result must be watertight"
+    );
+}
+
+/// REPR COHERENCE (task 5213 amendment): `fuse_all` must stamp the stored
+/// `BRepKind` from the ACTUAL result shape type, not a hardcoded `Solid`.
+/// `fuse_shape_list` returns a single `SOLID` for an overlapping fuse
+/// (→ `BRepKind::Solid`), a `COMPSOLID` for a disjoint one (→ the multi-body
+/// `BRepKind::Compound`), and the sole input unchanged for a 1-element identity
+/// fuse (repr preserved from the input). A wrong repr would mislead any future
+/// `repr_of()` consumer that trusts it to distinguish a single solid from a
+/// multi-body compound/compsolid.
+#[test]
+fn fuse_all_stores_repr_matching_result_type() {
+    let mut kernel = OcctKernel::new();
+
+    // IDENTITY: single solid box → repr preserved as Solid.
+    let b = unit_box(&mut kernel);
+    let identity = kernel
+        .fuse_all(&[b])
+        .expect("single-box fuse_all must succeed");
+    assert_eq!(
+        identity.repr,
+        Some(BRepKind::Solid),
+        "single-element identity fuse of a solid must preserve BRepKind::Solid"
+    );
+    assert_eq!(
+        kernel.repr_of(identity.id),
+        Some(BRepKind::Solid),
+        "repr_of must agree with the returned handle's repr"
+    );
+
+    // DISJOINT: rewrapped as a COMPSOLID multi-body aggregate → Compound.
+    let d0 = unit_box(&mut kernel);
+    let d2 = translated_x(&mut kernel, d0, 2.0);
+    let d4 = translated_x(&mut kernel, d0, 4.0);
+    let disjoint = kernel
+        .fuse_all(&[d0, d2, d4])
+        .expect("disjoint fuse_all must succeed");
+    assert_eq!(
+        disjoint.repr,
+        Some(BRepKind::Compound),
+        "a disjoint multi-solid fuse (COMPSOLID) must classify as BRepKind::Compound, not Solid"
+    );
+
+    // OVERLAPPING: merges to a single SOLID → Solid.
+    let o0 = unit_box(&mut kernel);
+    let o_half = translated_x(&mut kernel, o0, 0.5);
+    let o_one = translated_x(&mut kernel, o0, 1.0);
+    let overlapping = kernel
+        .fuse_all(&[o0, o_half, o_one])
+        .expect("overlapping fuse_all must succeed");
+    assert_eq!(
+        overlapping.repr,
+        Some(BRepKind::Solid),
+        "an overlapping fuse that merges to one solid must classify as BRepKind::Solid"
     );
 }
 

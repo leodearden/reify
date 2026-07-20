@@ -1139,6 +1139,14 @@ pub mod ffi {
         /// one per boolean_fuse/cut/common Build() and one per fuse_shape_list.
         fn boolean_pass_count() -> u64;
 
+        /// Return the canonical name of `shape`'s top-level TopAbs shape type
+        /// ("Solid", "CompSolid", "Compound", "Shell", "Face", "Wire", "Edge",
+        /// "Vertex", or "Shape"). Lets `OcctKernel::fuse_all` classify a
+        /// single-pass fuse result — SOLID (overlapping), COMPSOLID (disjoint),
+        /// or the sole input's kind (identity) — into the right BRepKind
+        /// instead of assuming Solid (task 5213 amendment).
+        fn shape_type_name(shape: &OcctShape) -> Result<String>;
+
         fn get_edges(shape: &OcctShape) -> Result<UniquePtr<OcctShapeVec>>;
 
         /// Materialize the unique faces of `shape` into an OcctShapeVec

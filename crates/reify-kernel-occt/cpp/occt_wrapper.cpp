@@ -566,6 +566,29 @@ std::unique_ptr<OcctShape> fuse_all(const OcctShapeVec& shapes) {
     });
 }
 
+// Classify `shape` by its top-level TopAbs_ShapeEnum, returning the canonical
+// name ("Solid", "CompSolid", "Compound", "Shell", "Face", "Wire", "Edge",
+// "Vertex", or "Shape" for the abstract fallback).  Lets the Rust side stamp
+// the correct BRepKind on a fuse/pattern result instead of assuming Solid: a
+// single-pass fuse yields a SOLID (overlapping inputs), a COMPSOLID (disjoint
+// inputs, rewrapped by fuse_shape_list), or — in the 1-element identity path —
+// the sole input shape unchanged, which may be any kind (task 5213 amendment).
+rust::String shape_type_name(const OcctShape& shape) {
+    return wrap_occt_call("shape_type_name", [&]() -> rust::String {
+        switch (shape.shape.ShapeType()) {
+            case TopAbs_COMPOUND:  return rust::String("Compound");
+            case TopAbs_COMPSOLID: return rust::String("CompSolid");
+            case TopAbs_SOLID:     return rust::String("Solid");
+            case TopAbs_SHELL:     return rust::String("Shell");
+            case TopAbs_FACE:      return rust::String("Face");
+            case TopAbs_WIRE:      return rust::String("Wire");
+            case TopAbs_EDGE:      return rust::String("Edge");
+            case TopAbs_VERTEX:    return rust::String("Vertex");
+            default:               return rust::String("Shape");
+        }
+    });
+}
+
 // --- Boolean operations ---
 
 std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& right) {

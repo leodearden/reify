@@ -561,6 +561,29 @@ pub struct OcctKernel {
 // Use OcctKernelHandle for cross-thread usage — it communicates with a dedicated
 // OS thread that owns the kernel.
 
+/// Map a single-pass fuse result `OcctShape` to the [`BRepKind`] matching its
+/// actual top-level TopAbs type. `fuse_shape_list` yields a `SOLID` for an
+/// overlapping fuse and a `COMPSOLID` for a disjoint one; both `COMPSOLID` and
+/// `COMPOUND` are multi-body aggregates and classify as [`BRepKind::Compound`].
+/// Used by [`OcctKernel::fuse_all`] so the stored repr never claims a
+/// multi-body result is a single `Solid`. Any unrecognized type falls back to
+/// [`BRepKind::Solid`] (matches `store`'s implicit default).
+#[cfg(has_occt)]
+fn brep_kind_of_fused(shape: &ffi::ffi::OcctShape) -> Result<BRepKind, GeometryError> {
+    let name = ffi::ffi::shape_type_name(shape)
+        .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+    Ok(match name.as_str() {
+        "Solid" => BRepKind::Solid,
+        "CompSolid" | "Compound" => BRepKind::Compound,
+        "Shell" => BRepKind::Shell,
+        "Wire" => BRepKind::Wire,
+        "Face" => BRepKind::Face,
+        "Edge" => BRepKind::Edge,
+        "Vertex" => BRepKind::Vertex,
+        _ => BRepKind::Solid,
+    })
+}
+
 #[cfg(has_occt)]
 impl OcctKernel {
     pub fn new() -> Self {
@@ -975,7 +998,19 @@ impl OcctKernel {
             }
             ffi::ffi::fuse_all(&vec).map_err(|e| GeometryError::OperationFailed(e.to_string()))?
         };
-        Ok(self.store_with_repr(fused, BRepKind::Solid))
+        // Stamp the repr from the ACTUAL result type rather than assuming
+        // Solid: `fuse_shape_list` returns a SOLID for an overlapping fuse, a
+        // COMPSOLID for a disjoint one, and — in the single-element identity
+        // path — the sole input shape unchanged (any kind). A hardcoded Solid
+        // would mislead future `repr_of()` consumers that trust it to tell a
+        // single solid from a multi-body compound/compsolid.
+        let repr = if handles.len() == 1 {
+            // Identity passthrough: preserve the sole input's classification.
+            self.repr_of(handles[0]).unwrap_or(BRepKind::Solid)
+        } else {
+            brep_kind_of_fused(&fused)?
+        };
+        Ok(self.store_with_repr(fused, repr))
     }
 
     /// Test whether two shapes are intersecting (non-positive minimum distance).

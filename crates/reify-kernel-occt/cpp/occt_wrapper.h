@@ -183,6 +183,12 @@ void reset_boolean_pass_count();
 /// exactly 1, not K−1.
 uint64_t boolean_pass_count();
 
+/// Classify `shape` by its top-level TopAbs_ShapeEnum, returning the canonical
+/// name ("Solid", "CompSolid", "Compound", "Shell", "Face", "Wire", "Edge",
+/// "Vertex", or "Shape").  Lets the Rust side stamp the BRepKind matching a
+/// fuse/pattern result's real type rather than assuming Solid (task 5213).
+rust::String shape_type_name(const OcctShape& shape);
+
 // --- Boolean operations ---
 
 std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& right);
