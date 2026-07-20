@@ -271,4 +271,62 @@ assert "ceiling (2 IDs <= 3): STDERR has NO 'retry refused: subset too large' li
     bash -c '! printf "%s\n" "$1" | grep -qF -- "retry refused: subset too large"' \
     _ "$ERR_SMALL"
 
+# ---------------------------------------------------------------------------
+# Test 5: PER-PROFILE filter precedence (_DEBUG / _RELEASE) with base fallback.
+# Each profile's nextest pass resolves its own subset, so a --profile both retry
+# must apply the debug-specific IDs to the debug pass and the release-specific
+# IDs to the release pass — with the base var as the fallback when a per-profile
+# var is unset. The debug pass is the `cargo nextest run` line WITHOUT the
+# ` --release` token; the release pass is the one WITH it. NEXTEST-guarded
+# (command shape).
+# RED after impl-ceiling: only the base var is honored, so the _DEBUG/_RELEASE
+# files are ignored (debug line lacks test(=alpha::a)).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Test 5: per-profile _DEBUG/_RELEASE filter precedence (+ base-var fallback) ---"
+
+DBGID="alpha::a"
+RELID="beta::b"
+FDEBUG="$_TMP/fdebug.txt";   printf '%s\n' "$DBGID" > "$FDEBUG"
+FRELEASE="$_TMP/frelease.txt"; printf '%s\n' "$RELID" > "$FRELEASE"
+
+# (a) per-profile vars set (no base): debug pass ⇒ alpha::a, release ⇒ beta::b.
+PLAN_PP="$(REIFY_VERIFY_RETRY_SCOPE=failed_only REIFY_VERIFY_RETRY_TREE_OID=deadbeef \
+    REIFY_VERIFY_ATTEMPT_SIDECAR="$SIDECAR" \
+    REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE_DEBUG="$FDEBUG" \
+    REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE_RELEASE="$FRELEASE" \
+    bash "$VERIFY" test --profile both --scope all --print-plan 2>/dev/null)" || true
+
+if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+    assert "per-profile: DEBUG nextest line (no --release) carries test(=$DBGID)" \
+        bash -c 'printf "%s\n" "$1" | grep -E "(^| )cargo nextest run " | grep -v -- " --release" | grep -qF -- "test(=$2)"' \
+        _ "$PLAN_PP" "$DBGID"
+    assert "per-profile: DEBUG nextest line does NOT carry the release id test(=$RELID)" \
+        bash -c '! printf "%s\n" "$1" | grep -E "(^| )cargo nextest run " | grep -v -- " --release" | grep -qF -- "test(=$2)"' \
+        _ "$PLAN_PP" "$RELID"
+    assert "per-profile: RELEASE nextest line (--release) carries test(=$RELID)" \
+        bash -c 'printf "%s\n" "$1" | grep -E "(^| )cargo nextest run " | grep -- " --release" | grep -qF -- "test(=$2)"' \
+        _ "$PLAN_PP" "$RELID"
+    assert "per-profile: RELEASE nextest line does NOT carry the debug id test(=$DBGID)" \
+        bash -c '! printf "%s\n" "$1" | grep -E "(^| )cargo nextest run " | grep -- " --release" | grep -qF -- "test(=$2)"' \
+        _ "$PLAN_PP" "$DBGID"
+fi
+
+# (b) base var only (no per-profile): BOTH passes use the base file's IDs.
+PLAN_BASE_BOTH="$(env -u REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE_DEBUG \
+    -u REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE_RELEASE \
+    REIFY_VERIFY_RETRY_SCOPE=failed_only REIFY_VERIFY_RETRY_TREE_OID=deadbeef \
+    REIFY_VERIFY_ATTEMPT_SIDECAR="$SIDECAR" \
+    REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE="$FILTER" \
+    bash "$VERIFY" test --profile both --scope all --print-plan 2>/dev/null)" || true
+
+if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+    assert "base fallback: DEBUG nextest line carries base test(=$ID1)" \
+        bash -c 'printf "%s\n" "$1" | grep -E "(^| )cargo nextest run " | grep -v -- " --release" | grep -qF -- "test(=$2)"' \
+        _ "$PLAN_BASE_BOTH" "$ID1"
+    assert "base fallback: RELEASE nextest line carries base test(=$ID1)" \
+        bash -c 'printf "%s\n" "$1" | grep -E "(^| )cargo nextest run " | grep -- " --release" | grep -qF -- "test(=$2)"' \
+        _ "$PLAN_BASE_BOTH" "$ID1"
+fi
+
 test_summary
