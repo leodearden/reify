@@ -46,9 +46,15 @@ compute_closure() {
         | awk '{print $1}' | sort -u
 }
 
-# Manifest data lines (drop #-comment and blank lines) — NOT sorted here.
+# Manifest data lines: drop #-comment and blank lines, then trim leading/trailing
+# whitespace on each name so this shell parser matches parse_closure_manifest's
+# per-line `.trim()` in src/engine_hash_algo.rs exactly (keeps the two closure
+# parsers byte-consistent — otherwise a stray-whitespace name line would make the
+# guard compare an untrimmed name against cargo tree's trimmed output and report
+# spurious drift). NOT sorted here.
 manifest_data() {
-    grep -v '^[[:space:]]*#' "$MANIFEST" | sed '/^[[:space:]]*$/d'
+    grep -v '^[[:space:]]*#' "$MANIFEST" | sed '/^[[:space:]]*$/d' \
+        | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
 }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/engine-hash-closure.XXXXXX")"
