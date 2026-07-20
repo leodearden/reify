@@ -269,6 +269,21 @@ export interface DimensionLadder {
   dimension: string;
   /** Selectable units, in picker display order. */
   units: UnitOption[];
+  /**
+   * Curated derived-unit label for this dimension (PRD
+   * display-unit-preference §4) — equals the `is_default` rung's label.
+   * Optional/additive: mirrors the `derived_unit_name` serde field from
+   * `reify_core::display_units` for forthcoming L4/L5 consumers; existing
+   * picker consumers ignore it (task #5232).
+   */
+  derived_unit_name?: string;
+  /**
+   * Per-dimension auto-scaling policy (PRD display-unit-preference §5), or
+   * `null`/absent when the dimension is excluded from auto-scaling.
+   * Optional/additive: mirrors the `auto_scale` serde field; existing
+   * consumers ignore it (task #5232).
+   */
+  auto_scale?: { enabled: boolean; band_lo: number; band_hi: number } | null;
 }
 
 /** Canonical dimension name -> its selectable unit ladder, as returned by `get_unit_ladders`. */

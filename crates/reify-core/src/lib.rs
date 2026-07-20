@@ -20,6 +20,7 @@
 
 pub mod diagnostics;
 pub mod dimension;
+pub mod display_units;
 pub mod field_calculus;
 pub mod kernel;
 pub mod hash;
@@ -42,6 +43,7 @@ pub use diagnostics::{
     SourceSpan,
 };
 pub use dimension::{DimensionVector, NAMED_DIMENSIONS, Rational};
+pub use display_units::{AutoScale, DimensionLadder, UnitOption, unit_ladders};
 pub use field_calculus::{DifferentialOp, differential_codomain};
 pub use hash::ContentHash;
 pub use identity::{
