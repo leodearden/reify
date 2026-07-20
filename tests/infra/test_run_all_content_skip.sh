@@ -271,4 +271,77 @@ assert "S3b: emits RUN (no-baseline) for the mapped member absent from the ledge
 assert "S3b: the no-baseline member IS executed" \
     out_has "$RUN_OUT" "--- Running: test_alpha.sh ---"
 
+# ===========================================================================
+# Section 4 (step-7): RUN (backstop-due) — an otherwise-clean member is forced
+#   to run at least once per MAX_AGE_HOURS / MAX_MERGES. Fixtures are clean
+#   (green == HEAD) so ONLY the backstop can trigger the run; premises are
+#   deterministic (fixed old epoch / fixed counter delta / tiny knob) — no
+#   wall-clock flakiness. RED until step-8 (clean tree currently ⇒ SKIP).
+# ===========================================================================
+
+# make_clean_backstop_fixture VARPREFIX — a clean mapped-member fixture
+# (green == HEAD). Sets <VARPREFIX>_DIR / _GREEN / _CLOSURES / _STATE; the
+# caller writes the state ledger to encode the specific staleness under test.
+make_clean_backstop_fixture() {
+    local _pfx="$1" _dir
+    _dir="$(mktemp -d)"; _TMPDIRS+=("$_dir")
+    git_init_fixture "$_dir"
+    mk_member "$_dir" test_alpha.sh 0
+    printf 'stable\n' > "$_dir/alpha_dep.txt"
+    git -C "$_dir" add -A
+    git -C "$_dir" commit -q -m "base"
+    printf -v "${_pfx}_DIR" '%s' "$_dir"
+    printf -v "${_pfx}_GREEN" '%s' "$(git -C "$_dir" rev-parse HEAD)"
+    printf -v "${_pfx}_CLOSURES" '%s' "$_dir/_meta_closures.manifest"
+    printf -v "${_pfx}_STATE" '%s' "$_dir/_meta_state.ledger"
+    printf 'test_alpha.sh alpha_dep.txt\n' > "$_dir/_meta_closures.manifest"
+}
+
+# -- 4a: age backstop (last_executed_at far in the past) ----------------------
+echo ""
+echo "--- Section 4a (step-7): RUN (backstop-due), age exceeds MAX_AGE_HOURS ---"
+
+make_clean_backstop_fixture S4A
+# last_executed_at = 1000 (epoch ~1970) ⇒ age >> 24h; merges_since = 0.
+{ printf '__MERGES__ 5\n'; printf 'test_alpha.sh %s 1000 5\n' "$S4A_GREEN"; } > "$S4A_STATE"
+
+run_skip "$S4A_STATE" "$S4A_CLOSURES" "$S4A_DIR"
+
+assert "S4a: emits RUN (backstop-due) when last exec is older than MAX_AGE_HOURS" \
+    out_has "$RUN_OUT" "RUN (backstop-due): test_alpha.sh"
+assert "S4a: the age-backstop member IS executed (not skipped)" \
+    out_has "$RUN_OUT" "--- Running: test_alpha.sh ---"
+
+# -- 4b: merges backstop (merge-counter delta >= MAX_MERGES) ------------------
+echo ""
+echo "--- Section 4b (step-7): RUN (backstop-due), merges since last exec >= MAX_MERGES ---"
+
+make_clean_backstop_fixture S4B
+# Fresh timestamp (no age backstop) but merges_since = 30 - 2 = 28 >= 25.
+{ printf '__MERGES__ 30\n'; printf 'test_alpha.sh %s %s 2\n' "$S4B_GREEN" "$(date +%s)"; } > "$S4B_STATE"
+
+run_skip "$S4B_STATE" "$S4B_CLOSURES" "$S4B_DIR"
+
+assert "S4b: emits RUN (backstop-due) when merges since last exec >= MAX_MERGES" \
+    out_has "$RUN_OUT" "RUN (backstop-due): test_alpha.sh"
+assert "S4b: the merges-backstop member IS executed (not skipped)" \
+    out_has "$RUN_OUT" "--- Running: test_alpha.sh ---"
+
+# -- 4c: knob tunability (tiny MAX_AGE_HOURS forces backstop deterministically) --
+echo ""
+echo "--- Section 4c (step-7): RUN (backstop-due) forced via REIFY_RUN_ALL_SKIP_MAX_AGE_HOURS=0 ---"
+
+make_clean_backstop_fixture S4C
+# Fresh state that would SKIP under defaults; MAX_AGE_HOURS=0 ⇒ age(>=0)>=0.
+{ printf '__MERGES__ 3\n'; printf 'test_alpha.sh %s %s 3\n' "$S4C_GREEN" "$(date +%s)"; } > "$S4C_STATE"
+
+RUN_SKIP_ENV=(REIFY_RUN_ALL_SKIP_MAX_AGE_HOURS=0)
+run_skip "$S4C_STATE" "$S4C_CLOSURES" "$S4C_DIR"
+RUN_SKIP_ENV=()
+
+assert "S4c: MAX_AGE_HOURS=0 forces RUN (backstop-due) on an otherwise-clean member" \
+    out_has "$RUN_OUT" "RUN (backstop-due): test_alpha.sh"
+assert "S4c: the knob-forced backstop member IS executed" \
+    out_has "$RUN_OUT" "--- Running: test_alpha.sh ---"
+
 test_summary
