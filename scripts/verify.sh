@@ -605,6 +605,28 @@ if [ "$DF_VERIFY_ROLE" = "offline" ]; then
     _OFFLINE_HEAVY_SELECT=" -E \"(${REIFY_HEAVY_NEXTEST_FILTER})\" --run-ignored all"
 fi
 
+# retry_failed_only (task 5287, PRD verify-retry-failed-only §4/§6, task α):
+# consume a dark-factory-supplied "failed-only" retry subset so a merge-gate
+# retry re-runs ONLY the did-not-pass tests against the warm _merge-verify
+# target/, instead of a full recompile + full ~20,280-test run. reify ships the
+# PRIMITIVE (the exact-match nextest filterset + tree-OID guard + loud
+# full-fallback + size ceiling); DF (D2) owns the subset CONTENT via the
+# newline-delimited exact-id filter file and sets the consumed envs (INV-5,
+# single construction site in emit_nextest_pass). Default (all retry envs
+# unset) → every fragment empty → plan byte-for-byte identical to today.
+#
+# Path of the attempt-0 sidecar (written on a full merge run, read here to
+# tree-pin the retry). Overridable for hermetic tests. Relative default is
+# resolved against REPO_ROOT (verify.sh cds there before build_plan/execute).
+_ATTEMPT_SIDECAR_PATH="${REIFY_VERIFY_ATTEMPT_SIDECAR:-target/reify-verify-attempt.json}"
+# Precomputed once in add_test_passes (before the profile loop); initialized
+# here so emit_nextest_pass stays nounset-safe (set -u) on any call path.
+# _RETRY_ACTIVE: the caller asked for the narrowed retry scope (failed_only).
+# _RETRY_SUBSET_ELIGIBLE: AND the on-disk attempt-0 sidecar tree_oid matches the
+# tree DF intends to retry — i.e. the warm target/ provably corresponds to it.
+_RETRY_ACTIVE=0
+_RETRY_SUBSET_ELIGIBLE=0
+
 # psi-gate is dispatched EARLY — before MERGE_HEAD check / cd / apply_env —
 # so the integration test can drive it without triggering the cargo pipeline.
 # Note: psi-gate is execute-only; --print-plan is intentionally ignored here.
@@ -1259,7 +1281,31 @@ emit_nextest_pass() {
             fi
             _cfg_path="$_NEXTEST_CONFIG_FILE"
         fi
-        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel}${_GATE_HEAVY_EXCLUDE}${_OFFLINE_HEAVY_SELECT}${_tt_flag} --config-file ${_cfg_path}"
+        # retry_failed_only (task 5287): when the subset is eligible, build ONE
+        # exact-match nextest filterset from the DF-written filter file at this
+        # SINGLE construction site (INV-5). EXACT `test(=<id>)` ONLY — never the
+        # substring form `test(<id>)` — so the subset can never silently pull in
+        # an unintended test (PRD §6.3 / D3 soundness). File-sourced so the
+        # expression is ARG_MAX-safe. Empty when inactive → byte-identical
+        # default. Per-profile filter precedence and the loud absent/empty and
+        # size-ceiling full-fallbacks are layered on by later steps.
+        local _retry_filter_frag=""
+        if [ "$_RETRY_SUBSET_ELIGIBLE" -eq 1 ]; then
+            local _retry_filter_file="${REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE:-}"
+            if [ -n "$_retry_filter_file" ] && [ -r "$_retry_filter_file" ]; then
+                local _retry_expr="" _line
+                while IFS= read -r _line || [ -n "$_line" ]; do
+                    [ -n "$_line" ] || continue
+                    if [ -z "$_retry_expr" ]; then
+                        _retry_expr="test(=${_line})"
+                    else
+                        _retry_expr="${_retry_expr} | test(=${_line})"
+                    fi
+                done < "$_retry_filter_file"
+                [ -n "$_retry_expr" ] && _retry_filter_frag=" -E '${_retry_expr}'"
+            fi
+        fi
+        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel}${_GATE_HEAVY_EXCLUDE}${_OFFLINE_HEAVY_SELECT}${_tt_flag}${_retry_filter_frag} --config-file ${_cfg_path}"
     else
         # Fallback (no nextest): the nextest occt test-group that serializes
         # OCCT's thread-unsafe tests is unavailable here, so the ONLY OCCT guard
@@ -1325,6 +1371,34 @@ add_test_passes() {
     # (Test 17 — debug pass, Test 17b — release pass) — keep in sync.
     local _profile _rel
     local _outer_timeout="${_VERIFY_TEST_TIMEOUT}"  # identical for all profiles
+
+    # retry_failed_only (task 5287) — precompute subset eligibility ONCE, before
+    # the profile loop, so emit_nextest_pass just consumes the decision.
+    #   _RETRY_ACTIVE          — the caller asked for scope=failed_only.
+    #   _RETRY_SUBSET_ELIGIBLE — AND the on-disk attempt-0 sidecar's tree_oid
+    #     equals the (non-empty) tree DF intends to retry
+    #     (REIFY_VERIFY_RETRY_TREE_OID). Equality proves the warm target/
+    #     corresponds to the retried tree (PRD §5 INV-1 tree-pin soundness); a
+    #     rebase makes DF pass a new OID that mismatches the surviving sidecar
+    #     → fallback (DF also full-verifies on rebase independently, M4). A
+    #     mismatched/absent sidecar leaves it 0 → all profiles run FULL (the
+    #     loud "tree drift" diagnostic is emitted by a later step).
+    _RETRY_ACTIVE=0
+    _RETRY_SUBSET_ELIGIBLE=0
+    if [ "${REIFY_VERIFY_RETRY_SCOPE:-}" = "failed_only" ]; then
+        _RETRY_ACTIVE=1
+        local _sidecar_tree_oid=""
+        if [ -f "$_ATTEMPT_SIDECAR_PATH" ]; then
+            # Tolerant extractor: pull the "tree_oid":"<x>" value without a JSON
+            # parser (the sidecar is verify.sh's own single-line stamp).
+            _sidecar_tree_oid="$(sed -n 's/.*"tree_oid"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$_ATTEMPT_SIDECAR_PATH" 2>/dev/null | head -n1)"
+        fi
+        local _want_tree_oid="${REIFY_VERIFY_RETRY_TREE_OID:-}"
+        if [ -n "$_want_tree_oid" ] && [ -n "$_sidecar_tree_oid" ] && [ "$_sidecar_tree_oid" = "$_want_tree_oid" ]; then
+            _RETRY_SUBSET_ELIGIBLE=1
+        fi
+    fi
+
     for _profile in "${PROFILES[@]}"; do
         if [ "$_profile" = "release" ]; then
             # Delta-conditional release-pass skip (task 5279 / merge-gate-riders ε
