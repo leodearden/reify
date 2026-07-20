@@ -145,6 +145,46 @@
 #   Unset → identical render on the workstation (no-op). The leo-laptop verify-only
 #   host (16t) may widen these via its dispatch env for per-host-measured budgets.
 #
+# retry_failed_only (PRD docs/prds/verify-retry-failed-only.md §4, task α):
+#   A merge-gate retry can re-run ONLY the did-not-pass tests against the warm
+#   _merge-verify target/ instead of a full recompile + full ~20,280-test run.
+#   reify ships the PRIMITIVE (the exact-match nextest filterset + tree-OID guard
+#   + loud full-fallback + size ceiling), built at ONE construction site in
+#   emit_nextest_pass (INV-5); dark-factory (D2) owns the subset CONTENT via the
+#   newline-delimited exact-id filter file and sets these envs. All unset →
+#   plan byte-for-byte identical to today.
+#   REIFY_VERIFY_RETRY_SCOPE            — set to `failed_only` to activate the
+#                                  narrowed retry. Any other value / unset → full.
+#   REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE       — newline-delimited EXACT nextest
+#                                  test IDs; each becomes a `test(=<id>)` term in
+#                                  ONE `-E 'test(=…) | …'` filterset. EXACT match
+#                                  ONLY (never substring) so the subset can never
+#                                  silently pull in an unintended test (§6.3).
+#   …_FILTER_FILE_DEBUG / …_FILTER_FILE_RELEASE  — per-profile overrides; the
+#                                  profile's own var wins when non-empty, else the
+#                                  base var is used (so --profile both can carry a
+#                                  different subset per profile).
+#   REIFY_VERIFY_RETRY_TREE_OID         — the tree DF intends to retry (a `git
+#                                  rev-parse HEAD:` TREE OID). Must equal the
+#                                  attempt-0 sidecar's tree_oid, else the subset is
+#                                  refused (tree-pin soundness, §5 INV-1).
+#   REIFY_VERIFY_ATTEMPT_SIDECAR        — attempt-0 sidecar path (default
+#                                  target/reify-verify-attempt.json). Stamped as the
+#                                  final plan line on a full DF_VERIFY_ROLE=merge
+#                                  attempt-0 (NOT on a failed_only retry); records
+#                                  {tree_oid, profiles, timestamp} of the tree that
+#                                  passed the whole gate. Survives a warm-lane reseed.
+#   REIFY_VERIFY_RETRY_MAX_SUBSET       — tunable subset-size ceiling (default 5000,
+#                                  a heuristic comfortably below the full-suite size,
+#                                  §11): a subset larger than this is refused as a
+#                                  likely construction bug (INV-4 storm escape).
+#   Three LOUD full-fallback reasons (build-time `echo … >&2`, visible in both
+#   --print-plan stderr and a real run, never silent — §4.3): `retry refused: tree
+#   drift` (sidecar absent / tree_oid mismatch), `retry refused: no subset` (filter
+#   file absent/empty/unreadable), `retry refused: subset too large` (> ceiling).
+#   Out of α's scope: the @@REIFY_RETRY_SCOPE=failed_only@@ honest marker is
+#   emitted by sibling task δ (tests/infra/test_verify_retry_failed_only.sh).
+#
 # OCCT safety (task 4451):
 #   OCCT C++ globals are PER-PROCESS; cross-process isolation is already provided by
 #   cargo's per-test-binary process model (nextest). Intra-run concurrency is bounded
