@@ -505,3 +505,44 @@ pub fn parse_closure_manifest(text: &str) -> Vec<String> {
         .map(|line| line.to_string())
         .collect()
 }
+
+/// Filter parsed Cargo.lock packages down to reify-eval's closure and return
+/// their `(name, version)` pins, sorted canonically by `(name, version)`.
+///
+/// `closure` is the list of crate NAMES from `engine_hash_closure.txt` (see
+/// [`parse_closure_manifest`]). Filtering is by NAME: a closure name absent
+/// from the lock contributes nothing, and two same-named stanzas at different
+/// versions BOTH survive (the over-approximating, safe-to-over-invalidate
+/// direction). Sorting makes the result order-INDEPENDENT of stanza order in
+/// the lock; lexicographic tuple order is sufficient (only determinism is
+/// required, not semver ordering).
+#[allow(dead_code)]
+pub fn cargo_lock_closure_pins(lock_text: &str, closure: &[&str]) -> Vec<(String, String)> {
+    use std::collections::HashSet;
+    let wanted: HashSet<&str> = closure.iter().copied().collect();
+    let mut pins: Vec<(String, String)> = parse_cargo_lock_packages(lock_text)
+        .into_iter()
+        .filter(|(name, _)| wanted.contains(name.as_str()))
+        .collect();
+    pins.sort();
+    pins
+}
+
+/// Frame reify-eval's closure pins as hash byte parts: for each pin, in
+/// `(name, version)`-sorted order, push the `name` bytes then the `version`
+/// bytes as two separate parts.
+///
+/// Two parts per pin leverages the existing u64-LE length-prefix framing in
+/// [`compose_engine_version_hash`], which already prevents the concat-collision
+/// class — so no custom separator between the name and version is needed.
+/// `build.rs` extends its `all_parts` with the result, replacing the removed
+/// whole-file Cargo.lock walk.
+#[allow(dead_code)]
+pub fn cargo_lock_closure_parts(lock_text: &str, closure: &[&str]) -> Vec<Vec<u8>> {
+    let mut parts: Vec<Vec<u8>> = Vec::new();
+    for (name, version) in cargo_lock_closure_pins(lock_text, closure) {
+        parts.push(name.into_bytes());
+        parts.push(version.into_bytes());
+    }
+    parts
+}
