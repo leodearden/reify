@@ -1,23 +1,35 @@
 #!/usr/bin/env bash
 # tests/infra/test_cpu_load_governance_deflake.sh — meta-test for PRD T7 (task 4846).
 #
-# Proves that test_cpu_load_governance.sh does NOT gate verdict cycles on a
-# wall-clock budget.  Spawns the SUT as a subprocess with BUDGET_S=0 +
-# QUIET_CEILING=0 and asserts no "live section budget" skip marker appears.
+# Proves that test_cpu_load_governance.sh's live cgroup-governance cycles
+# skip cleanly and hermetically. Spawns the SUT as a subprocess with
+# REIFY_CPU_GOVERN_DISABLE=1 and asserts the SUT emits its
+# host-does-not-support-governance SKIP markers instead of running real
+# CPU-governance burns.
 #
 # Assertions:
-#   A1 (RED→GREEN driver): SUT output contains NO "live section budget" skip marker.
-#   A2 (guard): SUT subprocess exits 0 under cheap-skip config.
+#   A1 (permanent-green regression guard): SUT output contains NO "live
+#     section budget" skip marker — task 4846 removed the wall-clock budget
+#     gate entirely, so "live section budget" no longer exists anywhere in
+#     the SUT; this assertion now guards against its reintroduction.
+#   A2 (guard): SUT subprocess exits 0 under the governance-disabled config.
 #   A3 (NON-VACUOUS): share_ge_proportional discriminator — broken->False, healthy->True.
+#   A4 (RED→GREEN driver): SUT output contains the ROW4 and ROW2_3
+#     host_supports_governance SKIP markers, proving no real cgroup-governance
+#     burns ran.
 #
 # Technique:
-#   REIFY_CPU_GOV_TEST_BUDGET_S=0 → _live_budget_expired() fires at elapsed>=0
-#     (pre-fix: all 3 ROWs emit the budget-skip line — host-independent since the
-#     budget check precedes the host/PSI checks).
-#   REIFY_CPU_GOV_TEST_QUIET_CEILING=0 → quiet-box gate fires on any numeric avg10
-#     post-fix (any avg10 >= 0), so no actual CPU burns run; inner run stays cheap.
+#   REIFY_CPU_GOVERN_DISABLE=1 → cgroup_governance_supported() (scripts/lib_cgroup.sh)
+#     break-glass check fires → host_supports_governance() returns false in the
+#     SUT → every host-gated live cycle (ROW1-1, ROW2_3, ROW4, ROW1-2, FIXTURE-6,
+#     CONFINE-APPLIED) SKIPs unconditionally, independent of actual host cgroup
+#     support. Only SELF checks, small FIXTURE-1..5 smoke (bounded workers/
+#     seconds, load-robust), and the hermetic *-VACUITY/NAMING/CONFINE/BYPASS
+#     assertions run.
 #
-# Hermetic: no real CPU load, no cgroup substrate, no PSI required for A1/A2/A3.
+# Hermetic: no real cgroup-governance CPU load, no systemd scope creation, no
+# PSI required for A1/A2/A4. FIXTURE-3/4/5 still run small bounded real CPU
+# burns (a few workers for a few seconds each) — load-robust, not host-gated.
 # Auto-discovered by tests/infra/run_all.sh (glob test_*.sh).
 #
 # esc-4906-52 cross-reference: a one-off failure of this meta-test surfaced
@@ -101,16 +113,14 @@ assert "SUT exists at $SUT" \
 _SUT_OUT="$(mktemp)"
 _SUT_RC=0
 timeout 120 env \
-    REIFY_CPU_GOV_TEST_BUDGET_S=0 \
-    REIFY_CPU_GOV_TEST_QUIET_CEILING=0 \
+    REIFY_CPU_GOVERN_DISABLE=1 \
     bash "$SUT" >"$_SUT_OUT" 2>&1 || _SUT_RC=$?
 
 # A1: No "live section budget" skip marker in output.
-# Pre-fix: BUDGET_S=0 → _live_budget_expired returns 0 (elapsed>=0) before
-# host/PSI checks → all 3 ROWs emit "live section budget (0s) expired" →
-# grep finds it → bash -c exits 1 → assert FAIL (RED).
-# Post-fix: gate removed → no such line → grep finds nothing → bash -c exits 0
-# → assert PASS (GREEN).
+# Permanent-green regression guard: task 4846 removed the wall-clock budget
+# gate entirely, so "live section budget" no longer exists anywhere in the
+# SUT — grep always finds nothing → bash -c exits 0 → assert PASS. Guards
+# against the gate's reintroduction.
 assert "A1: SUT output contains NO 'live section budget' skip marker" \
     bash -c '! grep -q "live section budget" "$1"' _ "$_SUT_OUT"
 
