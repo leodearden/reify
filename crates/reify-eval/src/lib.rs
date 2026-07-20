@@ -683,9 +683,10 @@ pub struct Engine {
     /// User-defined functions from the last eval() call.
     /// Stored so that edit_param() and other incremental paths can evaluate
     /// expressions containing UserFunctionCall nodes.
-    /// Wrapped in Arc so per-call clones in eval(), edit_param(), and
-    /// prepare_concurrent_edit() become O(1) refcount bumps rather than deep
-    /// copies of the entire compiled function tree (task #1997).
+    /// Wrapped in Arc so per-call clones in eval() and edit_param() become
+    /// O(1) refcount bumps rather than deep copies of the entire compiled
+    /// function tree (task #1997). (The concurrent-edit path that also shared
+    /// this Arc was removed with the dead concurrent stack, task ο.)
     functions: Arc<[CompiledFunction]>,
     /// Compiled purpose declarations from the last eval() call.
     /// Stored so activate_purpose/deactivate_purpose can look up purposes by name.
@@ -1349,8 +1350,8 @@ pub(crate) fn eval_ctx_with_meta<'a>(
 ///
 /// Filters out templates with empty `meta` blocks and clones each
 /// non-empty entry into the returned `Arc`-wrapped HashMap so the result
-/// can be cheaply shared (Arc::clone) with `ConcurrentEditSetup` and
-/// other consumers without deep-copying the inner string maps.
+/// can be cheaply shared (Arc::clone) with its consumers without
+/// deep-copying the inner string maps.
 ///
 /// Centralised in `lib.rs` so future shape changes (interning, additional
 /// filter rules) land in exactly one place — see task 2216 / esc-397-72
@@ -1397,7 +1398,7 @@ pub(crate) fn build_meta_map(
 /// # Performance
 /// The merged table is built once per `eval()`/`edit_source()` call into a
 /// local `Vec`, then sealed by `.into()`. Subsequent clones (e.g. in
-/// `prepare_concurrent_edit`, `edit_param`) are O(1) refcount bumps.
+/// `edit_param`) are O(1) refcount bumps.
 pub(crate) fn merge_functions(
     module: &CompiledModule,
     prelude: &[CompiledFunction],
