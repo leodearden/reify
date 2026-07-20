@@ -76,6 +76,22 @@ use xxhash_rust::xxh3::xxh3_128;
 /// `docs/prds/merge-gate-compile-cost.md` §3 W4 / §5 C4;
 /// `docs/prds/v0_3/persistent-fea-cache.md` §"Cache invalidation on engine
 /// version".
+///
+/// # Soundness assumption: registry-sourced deps
+///
+/// The narrowed contribution keys ONLY on each package's resolved
+/// `(name, version)` — it deliberately drops the `source` / `checksum` lines the
+/// former whole-`Cargo.lock` walk captured.  For a **registry** crate
+/// (`source = "registry+…"`) the version fully determines the content, so this
+/// is exact (no false negatives).  It would be under-tight only for a
+/// `git`-pinned or `[patch]`-overridden dependency whose git rev / source
+/// changes WITHOUT a version bump — such a change would not perturb the hash.
+/// reify-eval's closure is currently all-registry (verified: no `git` / `[patch]`
+/// sources in it), so there is no live gap.  If a git/patch source is ever added
+/// to the closure, extend [`cargo_lock_closure_pins`] to fold in that stanza's
+/// `source`/`checksum` too.  NB: the drift guard checks closure MEMBERSHIP (⊇),
+/// not source kind, so it will NOT flag such an addition — this note is the
+/// standing reminder.
 // The non-test library build never references CONTRIBUTORS_RELATIVE — only
 // the build.rs binary (via `include!()`) and `#[cfg(test)]` code in
 // `persistent_cache.rs` do.  Without the attribute, `cargo build` of the

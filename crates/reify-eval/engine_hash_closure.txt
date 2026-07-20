@@ -16,6 +16,16 @@
 #   engine hash. The drift guard tests/infra/test_engine_hash_closure.sh asserts
 #   this manifest ⊇ the freshly-recomputed closure (any missing member FAILs).
 #
+# Soundness assumption: registry-sourced deps only
+#   The narrowed hash keys only on each package's (name, version) — it drops the
+#   Cargo.lock `source`/`checksum` lines. For registry crates the version fully
+#   determines content, so this is exact. A git-pinned or [patch]-overridden dep
+#   whose git rev changes WITHOUT a version bump would NOT invalidate the cache.
+#   This closure is currently all-registry (no git/[patch] sources); if one is
+#   ever added, fold its source/checksum into cargo_lock_closure_pins (see the
+#   CONTRIBUTORS_RELATIVE doc-comment in src/engine_hash_algo.rs). The drift
+#   guard checks membership (⊇) only, not source kind, so it won't flag this.
+#
 # Canonical regeneration command (MUST stay byte-identical to the drift guard):
 #   cargo tree -p reify-eval -e no-dev --prefix none \
 #     --target x86_64-unknown-linux-gnu --frozen -f '{p}' \
