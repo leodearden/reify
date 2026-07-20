@@ -383,4 +383,116 @@ assert "task plan: NO reify-verify-attempt.json stamp line (per-task plans uncha
     bash -c '! printf "%s\n" "$1" | grep -qF "reify-verify-attempt.json"' \
     _ "$TASK_PLAN"
 
+# ---------------------------------------------------------------------------
+# Test 7: retry-subset × heavy-exclude COMPOSITION (reviewer_comprehensive).
+# The retry fragment ` -E 'test(=…)'` is emitted next to the gate fragment
+# `_GATE_HEAVY_EXCLUDE` ` -E "not (heavy)"`. nextest 0.9.136 combines multiple
+# `-E`/--filterset expressions with a set UNION (OR), NOT an intersection — so
+# on merge+REIFY_GATE_EXCLUDE_HEAVY=1 the emitted `(not heavy) OR {subset}`
+# degrades to the whole non-heavy suite, silently defeating the "re-run ONLY
+# the did-not-pass tests" contract in exactly its target configuration (the
+# gate-exclude knob and the failed-only retry co-occur on merge by design).
+# The fix folds both filtersets into a SINGLE `-E '(not (heavy)) & {subset}'`
+# term; a single-`-E` invariant (count==1) structurally prevents the union
+# from recurring. The real heavy atom is drawn from the single source of truth
+# (scripts/heavy-test-filter-lib.sh, mirroring test_verify_gate_exclude_heavy)
+# so the fixture cannot silently drift.
+# RED at current HEAD (after impl-doc-envs): emit_nextest_pass appends
+# `${_GATE_HEAVY_EXCLUDE}` and `${_retry_filter_frag}` as TWO separate `-E`
+# fragments, so (a) finds 2 and (c) still sees the standalone `-E "not (`.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Test 7: retry subset folds into a SINGLE -E with the heavy filter (never a 2nd -E union) ---"
+
+# Real heavy atom from the single source of truth — the fixture cannot drift.
+HEAVY_LIB="$REPO_ROOT/scripts/heavy-test-filter-lib.sh"
+[ -f "$HEAVY_LIB" ] || { echo "ERROR: $HEAVY_LIB not found (task 4912/A1 not landed?)"; exit 1; }
+# shellcheck source=scripts/heavy-test-filter-lib.sh
+source "$HEAVY_LIB"
+HEAVY_ATOM="binary(determinism)"
+case "${REIFY_HEAVY_NEXTEST_FILTER:-}" in
+    *"$HEAVY_ATOM"*) ;;
+    *) echo "ERROR: fixture atom '$HEAVY_ATOM' not in REIFY_HEAVY_NEXTEST_FILTER — drifted from $HEAVY_LIB"; exit 1 ;;
+esac
+# The OLD (pre-fold) standalone gate fragment: a double-quoted `-E "not (`.
+# After the fold the heavy negation lives INSIDE a single-quoted combined term,
+# so this exact literal must be ABSENT on the folded line (but PRESENT on the
+# retry-inactive regression line). Defined as a literal (real double-quote) and
+# passed as an arg, mirroring test_verify_gate_exclude_heavy.sh's NOT_PATTERN.
+NOT_DQ='-E "not ('
+
+# The single config where the union bug bites: merge + heavy-exclude + an
+# eligible retry (matching sidecar tree_oid + within-ceiling 2-line subset).
+PLAN_FOLD="$(REIFY_VERIFY_RETRY_SCOPE=failed_only \
+    REIFY_VERIFY_RETRY_TREE_OID=deadbeef \
+    REIFY_VERIFY_ATTEMPT_SIDECAR="$SIDECAR" \
+    REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE="$FILTER" \
+    DF_VERIFY_ROLE=merge REIFY_GATE_EXCLUDE_HEAVY=1 \
+    bash "$VERIFY" test --scope all --print-plan 2>/dev/null)" || true
+NLINE_FOLD="$(printf '%s\n' "$PLAN_FOLD" | grep -E "(^| )cargo nextest run " | grep -v -- " --release" | head -1)"
+
+if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+    # (a) ANTI-UNION CRUX: exactly ONE ` -E ` on the folded line, never two.
+    assert "fold: merge+heavy+retry debug nextest line has EXACTLY ONE ' -E ' (no 2nd -E union)" \
+        bash -c '[ "$(printf "%s\n" "$1" | grep -oF -- " -E " | wc -l)" -eq 1 ]' \
+        _ "$NLINE_FOLD"
+
+    # (b) the single -E term intersects BOTH groups (gate `not (heavy)` & subset).
+    assert "fold: single -E term carries the heavy negation 'not (' AND the real heavy atom ($HEAVY_ATOM)" \
+        bash -c 'printf "%s\n" "$1" | grep -qF -- "not (" && printf "%s\n" "$1" | grep -qF -- "$2"' \
+        _ "$NLINE_FOLD" "$HEAVY_ATOM"
+    assert "fold: single -E term carries BOTH exact retry ids test(=$ID1) and test(=$ID2)" \
+        bash -c 'printf "%s\n" "$1" | grep -qF -- "test(=$2)" && printf "%s\n" "$1" | grep -qF -- "test(=$3)"' \
+        _ "$NLINE_FOLD" "$ID1" "$ID2"
+    assert "fold: gate and retry are INTERSECTED (a '& (test(=' join is present, not a union)" \
+        bash -c 'printf "%s\n" "$1" | grep -qF -- "& (test(="' \
+        _ "$NLINE_FOLD"
+
+    # (c) OLD broken shape absent: the heavy negation must NOT survive as its own
+    #     double-quoted `-E "not (` fragment (that WAS the union-bug second -E).
+    assert "fold: OLD standalone double-quote fragment ($NOT_DQ) is ABSENT (heavy negation folded in)" \
+        bash -c '! printf "%s\n" "$1" | grep -qF -- "$2"' \
+        _ "$NLINE_FOLD" "$NOT_DQ"
+fi
+
+# (d) REGRESSION / byte-identical: merge+heavy with retry INACTIVE (no
+# REIFY_VERIFY_RETRY_SCOPE) must be untouched — the standalone double-quoted
+# `-E "not (` fragment stays, and there is exactly one ` -E ` (the non-retry
+# gate path is not folded).
+PLAN_INACTIVE="$(DF_VERIFY_ROLE=merge REIFY_GATE_EXCLUDE_HEAVY=1 \
+    bash "$VERIFY" test --scope all --print-plan 2>/dev/null)" || true
+NLINE_INACTIVE="$(printf '%s\n' "$PLAN_INACTIVE" | grep -E "(^| )cargo nextest run " | grep -v -- " --release" | head -1)"
+
+if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+    assert "regression: merge+heavy, retry INACTIVE — line keeps standalone $NOT_DQ fragment" \
+        bash -c 'printf "%s\n" "$1" | grep -qF -- "$2"' \
+        _ "$NLINE_INACTIVE" "$NOT_DQ"
+    assert "regression: merge+heavy, retry INACTIVE — line has EXACTLY ONE ' -E ' (untouched)" \
+        bash -c '[ "$(printf "%s\n" "$1" | grep -oF -- " -E " | wc -l)" -eq 1 ]' \
+        _ "$NLINE_INACTIVE"
+fi
+
+# Secondary robustness: offline role + eligible retry folds the POSITIVE heavy
+# select `(heavy)` with the subset while PRESERVING the non-filterset
+# `--run-ignored all` flag. Offline emits a single (release) nextest line.
+PLAN_OFFLINE="$(REIFY_VERIFY_RETRY_SCOPE=failed_only \
+    REIFY_VERIFY_RETRY_TREE_OID=deadbeef \
+    REIFY_VERIFY_ATTEMPT_SIDECAR="$SIDECAR" \
+    REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE="$FILTER" \
+    DF_VERIFY_ROLE=offline \
+    bash "$VERIFY" test --scope all --print-plan 2>/dev/null)" || true
+NLINE_OFFLINE="$(printf '%s\n' "$PLAN_OFFLINE" | grep -E "(^| )cargo nextest run " | head -1)"
+
+if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+    assert "offline fold: nextest line has EXACTLY ONE ' -E ' (positive heavy select folded with subset)" \
+        bash -c '[ "$(printf "%s\n" "$1" | grep -oF -- " -E " | wc -l)" -eq 1 ]' \
+        _ "$NLINE_OFFLINE"
+    assert "offline fold: gate & retry intersected ('& (test(=' present)" \
+        bash -c 'printf "%s\n" "$1" | grep -qF -- "& (test(="' \
+        _ "$NLINE_OFFLINE"
+    assert "offline fold: non-filterset flag --run-ignored all PRESERVED" \
+        bash -c 'printf "%s\n" "$1" | grep -qF -- "--run-ignored all"' \
+        _ "$NLINE_OFFLINE"
+fi
+
 test_summary
