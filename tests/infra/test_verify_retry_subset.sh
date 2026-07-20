@@ -329,4 +329,58 @@ if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
         _ "$PLAN_BASE_BOTH" "$ID1"
 fi
 
+# ---------------------------------------------------------------------------
+# Test 6: attempt-0 sidecar STAMP (plan-shape, mirroring test_reify_bin_freshness
+# Check 18). On a full attempt-0 merge run the plan must emit a line writing the
+# reify-verify-attempt.json sidecar (tree_oid via `git rev-parse HEAD:`,
+# profiles, timestamp), ordered AFTER the nextest passes so it records only a
+# tree that passed the whole gate. A retry (scope=failed_only) must NOT
+# re-stamp; a per-task plan must be unchanged. Comment lines are stripped
+# (grep -v '^#') so indices count command leaves only, per the Check-18 idiom.
+# This asserts plan SHAPE only — the writer executes at run time; sibling task
+# δ's e2e boundary test exercises the real write.
+# RED at this point (steps 1-10 done): no sidecar-stamp line exists yet.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Test 6: attempt-0 merge plan stamps reify-verify-attempt.json after the passes; retry & task do not ---"
+
+MERGE_PLAN="$(DF_VERIFY_ROLE=merge bash "$VERIFY" all --scope all --print-plan 2>/dev/null | grep -v '^#')" || true
+
+assert "merge attempt-0: a plan line writes reify-verify-attempt.json via 'git rev-parse HEAD:'" \
+    bash -c 'printf "%s\n" "$1" | grep -F "reify-verify-attempt.json" | grep -qF "git rev-parse HEAD:"' \
+    _ "$MERGE_PLAN"
+
+assert "merge attempt-0: sidecar stamp line references tree_oid, profiles, timestamp" \
+    bash -c '
+        L=$(printf "%s\n" "$1" | grep -F "reify-verify-attempt.json" | head -1)
+        printf "%s\n" "$L" | grep -qF "tree_oid" && \
+        printf "%s\n" "$L" | grep -qF "profiles" && \
+        printf "%s\n" "$L" | grep -qF "timestamp"
+    ' _ "$MERGE_PLAN"
+
+if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+    assert "merge attempt-0: sidecar stamp index > last cargo nextest run index (stamp after the passes)" \
+        bash -c '
+            STAMP_IDX=$(printf "%s\n" "$1" | grep -nF "reify-verify-attempt.json" | tail -1 | cut -d: -f1)
+            NEXTEST_IDX=$(printf "%s\n" "$1" | grep -nE "(^| )cargo nextest run " | tail -1 | cut -d: -f1)
+            [ -n "$STAMP_IDX" ] && [ -n "$NEXTEST_IDX" ] && [ "$STAMP_IDX" -gt "$NEXTEST_IDX" ]
+        ' _ "$MERGE_PLAN"
+fi
+
+# (b) A retry (scope=failed_only) merge run must NOT re-stamp (DF re-runs a full
+# attempt-0 for a new tree; a full-fallback retry deliberately does not stamp).
+MERGE_RETRY_PLAN="$(REIFY_VERIFY_RETRY_SCOPE=failed_only \
+    DF_VERIFY_ROLE=merge bash "$VERIFY" all --scope all --print-plan 2>/dev/null | grep -v '^#')" || true
+
+assert "merge retry (scope=failed_only): NO reify-verify-attempt.json stamp line" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "reify-verify-attempt.json"' \
+    _ "$MERGE_RETRY_PLAN"
+
+# (c) A per-task plan (role=task) must be byte-unchanged — no stamp line.
+TASK_PLAN="$(bash "$VERIFY" test --scope all --print-plan 2>/dev/null | grep -v '^#')" || true
+
+assert "task plan: NO reify-verify-attempt.json stamp line (per-task plans unchanged)" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "reify-verify-attempt.json"' \
+    _ "$TASK_PLAN"
+
 test_summary
