@@ -626,6 +626,13 @@ _ATTEMPT_SIDECAR_PATH="${REIFY_VERIFY_ATTEMPT_SIDECAR:-target/reify-verify-attem
 # tree DF intends to retry — i.e. the warm target/ provably corresponds to it.
 _RETRY_ACTIVE=0
 _RETRY_SUBSET_ELIGIBLE=0
+# Subset-size ceiling (INV-4 retry-storm escape / PRD §4.3): a subset that
+# approaches the whole ~20,280-test suite means DF built a bad subset (a
+# construction bug), so refuse it and run FULL rather than dressing a full run
+# up as a subset. The default is a tunable HEURISTIC (PRD §11 open question),
+# NOT a first-principles number — chosen comfortably below the full-suite size.
+# Overridable via REIFY_VERIFY_RETRY_MAX_SUBSET.
+_RETRY_MAX_SUBSET="${REIFY_VERIFY_RETRY_MAX_SUBSET:-5000}"
 
 # psi-gate is dispatched EARLY — before MERGE_HEAD check / cd / apply_env —
 # so the integration test can drive it without triggering the cargo pipeline.
@@ -1302,20 +1309,18 @@ emit_nextest_pass() {
             # point (the absent/empty/unreadable + ceiling guards operate on
             # whatever RESOLVED path this yields, unchanged).
             local _retry_filter_file="${REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE:-}"
-            local _retry_expr="" _line
+            # Collect the non-blank exact test IDs so the size ceiling can be
+            # applied BEFORE the expression is built.
+            local -a _retry_ids=()
+            local _line
             if [ -n "$_retry_filter_file" ] && [ -r "$_retry_filter_file" ]; then
                 while IFS= read -r _line || [ -n "$_line" ]; do
                     [ -n "$_line" ] || continue
-                    if [ -z "$_retry_expr" ]; then
-                        _retry_expr="test(=${_line})"
-                    else
-                        _retry_expr="${_retry_expr} | test(=${_line})"
-                    fi
+                    _retry_ids+=("$_line")
                 done < "$_retry_filter_file"
             fi
-            if [ -n "$_retry_expr" ]; then
-                _retry_filter_frag=" -E '${_retry_expr}'"
-            else
+            local _retry_n="${#_retry_ids[@]}"
+            if [ "$_retry_n" -eq 0 ]; then
                 # LOUD no-subset full-fallback (PRD §4.3): eligible, but the
                 # resolved filter file is absent / unreadable / empty (no
                 # non-blank lines) — run THIS profile FULL and say so. Per-profile
@@ -1323,6 +1328,22 @@ emit_nextest_pass() {
                 # than in the add_test_passes precompute. Guarded inside the
                 # eligible (⇒ scope=failed_only) branch → default byte-identical.
                 echo "verify.sh: retry refused: no subset — filter file ${_retry_filter_file:-<unset>} absent/empty/unreadable (profile=${_retry_profile}, full verify)" >&2
+            elif [ "$_retry_n" -gt "$_RETRY_MAX_SUBSET" ]; then
+                # LOUD subset-too-large full-fallback (INV-4 storm escape): a
+                # subset ≈ the whole suite means DF built a bad subset, so run
+                # THIS profile FULL rather than dress a full run up as a subset.
+                echo "verify.sh: retry refused: subset too large — ${_retry_n} > ceiling ${_RETRY_MAX_SUBSET} (profile=${_retry_profile}, full verify)" >&2
+            else
+                # Build ONE exact-match filterset from the collected IDs.
+                local _retry_expr="" _id
+                for _id in "${_retry_ids[@]}"; do
+                    if [ -z "$_retry_expr" ]; then
+                        _retry_expr="test(=${_id})"
+                    else
+                        _retry_expr="${_retry_expr} | test(=${_id})"
+                    fi
+                done
+                _retry_filter_frag=" -E '${_retry_expr}'"
             fi
         fi
         cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel}${_GATE_HEAVY_EXCLUDE}${_OFFLINE_HEAVY_SELECT}${_tt_flag}${_retry_filter_frag} --config-file ${_cfg_path}"
