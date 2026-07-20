@@ -251,14 +251,26 @@ const DIVERGENCE_LIMIT: usize = 3;
 /// trailing partial chunk is split by index — first 3 entries contribute to
 /// the angular norm, remaining ≤2 to the linear norm.  This is a degraded
 /// best-effort guard so a caller bug doesn't panic in release; in dev a
-/// `debug_assert!` will catch the misuse loudly.  Pinned by
-/// `position_rotation_norms_partial_chunk_partitions_by_index` below.
+/// `debug_assert!` will catch the misuse loudly.  The guard-free summation
+/// itself lives in [`position_rotation_norms_by_index`] so the malformed-
+/// input fallback can be pinned by a test that runs in both profiles;
+/// pinned by `position_rotation_norms_partial_chunk_partitions_by_index`
+/// below.
 fn position_rotation_norms(r: &[f64]) -> (f64, f64) {
     debug_assert!(
         r.len().is_multiple_of(6),
         "residual length {} is not a multiple of 6 — caller is misusing the stacked-twist contract",
         r.len()
     );
+    position_rotation_norms_by_index(r)
+}
+
+/// Assertion-free core of [`position_rotation_norms`]: sums a stacked-twist
+/// residual into `(angular_norm, linear_norm)` by chunking into groups of 6
+/// and partitioning each chunk by index (first 3 → angular, remaining ≤2 →
+/// linear). No `debug_assert!` on `r.len()`, so malformed (non-multiple-of-6)
+/// input is exercised directly here rather than through the guarded wrapper.
+fn position_rotation_norms_by_index(r: &[f64]) -> (f64, f64) {
     let mut ang2 = 0.0;
     let mut lin2 = 0.0;
     for chunk in r.chunks(6) {
