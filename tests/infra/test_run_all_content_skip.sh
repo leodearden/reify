@@ -620,10 +620,23 @@ _udg_tokens() {
         | sed -E 's#[./,:;)]+$##' | sort -u | sed '/^$/d'
 }
 
-# _udg_covered TOKEN CLOSURE... — STUB (step-13). Finalized in step-14 to a
-# glob/dir-aware coverage test. Until then it claims every token is covered,
-# so udg_uncovered reports nothing and Section 7b is RED.
-_udg_covered() { return 0; }
+# _udg_covered TOKEN CLOSURE... — 0 iff TOKEN is covered by some closure path
+# P: exact/glob match (`*` spans `/`, per the manifest), TOKEN under directory
+# P, or P under directory TOKEN (a directory reference covering a declared
+# file). Both sides have a trailing slash stripped so `gui/dist/` ≡ `gui/dist`.
+_udg_covered() {
+    local t="${1%/}"; shift
+    local p
+    for p in "$@"; do
+        p="${p%/}"
+        [ -n "$p" ] || continue
+        # shellcheck disable=SC2053  -- $p is an intentional glob pattern.
+        if [[ "$t" == $p ]] || [[ "$t" == $p/* ]] || [[ "$p" == $t/* ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
 
 # udg_uncovered MANIFEST INFRA_DIR — echo `<member> <token>` for every source
 # path token NOT covered by that member's declared closure ∪ the six implicit
