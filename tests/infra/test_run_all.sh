@@ -2651,5 +2651,63 @@ else
     assert "T26c: knob unset -- exit reflects beta's failure (nonzero) (skipped - run_all.sh missing)" false
 fi
 
+# -- Test 27: subset branch clock-marker sanitization (task #5288 pair 2; task
+# 4998 / esc-4791-52 class) -----------------------------------------------------
+# The REIFY_RUN_ALL_MEMBER_SUBSET branch runs ON dark-factory's clock-stop-
+# parsed verify stream (it IS a merge-gate retry), unlike --scope host-infra
+# or the legacy fallback. A named member's re-emitted output must therefore
+# be neutralized through _ra_emit_sanitized exactly like the concurrent-pool
+# Phase-3 replay -- otherwise a quoted clock-marker token in a retried
+# member's own assertion text (e.g. a clock-stop test) could false-trigger a
+# STOP/START transition in dark-factory's parser. The marker prefix is
+# assembled at runtime (mirrors test_run_all_clock_marker_sanitize.sh's
+# CP/QP idiom) so THIS file's own stdout never becomes a leak source when
+# the real outer run_all.sh re-emits test_run_all.sh's own captured output.
+echo ""
+echo "--- Test 27: subset branch clock-marker sanitization ---"
+
+if [ -f "$RUN_ALL" ]; then
+    T27_CP='@@REIFY_CLOCK_'
+    T27_QP='@@REIFY_QUOTED_CLOCK_'
+
+    TMPDIR_T27="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T27")
+    cat > "$TMPDIR_T27/test_marker.sh" <<MARKEREOF
+#!/usr/bin/env bash
+echo "  PASS: fixture: stderr contains ${T27_CP}STOP@@ reason=fixture (hold entered)"
+exit 0
+MARKEREOF
+    chmod +x "$TMPDIR_T27/test_marker.sh"
+
+    t27_rc=0
+    t27_out="$(REIFY_RUN_ALL_MEMBER_SUBSET="test_marker.sh" bash "$RUN_ALL" "$TMPDIR_T27" 2>&1)" || t27_rc=$?
+
+    if [[ "$t27_out" == *"${T27_QP}STOP@@"* ]]; then
+        assert "T27a: subset branch output contains the sanitized QUOTED_CLOCK form" true
+    else
+        assert "T27a: subset branch output contains the sanitized QUOTED_CLOCK form (got: $t27_out)" false
+    fi
+
+    if [[ "$t27_out" != *"${T27_CP}STOP@@"* ]]; then
+        assert "T27b: subset branch output contains NO live CLOCK_STOP token" true
+    else
+        assert "T27b: subset branch output contains NO live CLOCK_STOP token (got: $t27_out)" false
+    fi
+
+    if [[ "$t27_out" == *"  RESULT: PASS (test_marker.sh)"* ]]; then
+        assert "T27c: the member still ran and passed" true
+    else
+        assert "T27c: the member still ran and passed (got: $t27_out)" false
+    fi
+
+    assert "T27c: run_all.sh exits 0" \
+        test "$t27_rc" -eq 0
+else
+    assert "T27a: subset branch output contains the sanitized QUOTED_CLOCK form (skipped - run_all.sh missing)" false
+    assert "T27b: subset branch output contains NO live CLOCK_STOP token (skipped - run_all.sh missing)" false
+    assert "T27c: the member still ran and passed (skipped - run_all.sh missing)" false
+    assert "T27c: run_all.sh exits 0 (skipped - run_all.sh missing)" false
+fi
+
 # -- Summary --------------------------------------------------------------------
 test_summary
