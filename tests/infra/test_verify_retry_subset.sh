@@ -165,4 +165,59 @@ assert "absent sidecar under scope=failed_only: STDERR carries 'retry refused: t
     bash -c 'printf "%s\n" "$1" | grep -qF -- "retry refused: tree drift"' \
     _ "$STDERR_ABSENT"
 
+# ---------------------------------------------------------------------------
+# Test 3: LOUD no-subset full-fallback. Under scope=failed_only with a MATCHING
+# sidecar (so the tree-OID gate is satisfied), a filter file that is absent /
+# empty / unset must ALSO refuse the subset loudly (distinct 'retry refused: no
+# subset' substring) and run FULL — never a silent whole-suite run masquerading
+# as a subset. Fragment-absence is NEXTEST-guarded (command shape); the loud
+# line is host-independent (unconditional).
+# RED after impl-tree-drift-loud: an absent/empty/unset filter already yields no
+# fragment, but no loud line.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Test 3: absent/empty/unset filter file emits a LOUD 'retry refused: no subset' line ---"
+
+# DRY assertion helper: a refused (eligible-but-no-usable-subset) run must have
+# no fragment on the debug nextest line AND a loud 'no subset' STDERR line.
+_assert_no_subset_loud() {
+    local _label="$1" _plan="$2" _err="$3"
+    if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+        assert "no-subset ($_label): debug nextest line has NO test(= fragment (full pass)" \
+            bash -c '! printf "%s\n" "$1" | grep -E "(^| )cargo nextest run " | grep -qF -- "test(="' \
+            _ "$_plan"
+    fi
+    assert "no-subset ($_label): STDERR carries 'retry refused: no subset'" \
+        bash -c 'printf "%s\n" "$1" | grep -qF -- "retry refused: no subset"' \
+        _ "$_err"
+}
+
+_ERR="$_TMP/err.txt"
+
+# (i) filter env → a nonexistent path.
+PLAN_NF="$(REIFY_VERIFY_RETRY_SCOPE=failed_only REIFY_VERIFY_RETRY_TREE_OID=deadbeef \
+    REIFY_VERIFY_ATTEMPT_SIDECAR="$SIDECAR" \
+    REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE="$_TMP/nonexistent-filter.txt" \
+    bash "$VERIFY" test --scope all --print-plan 2>"$_ERR")" || true
+_assert_no_subset_loud "nonexistent filter file" "$PLAN_NF" "$(cat "$_ERR")"
+
+# (ii) filter env → an existing but EMPTY file (no non-blank lines).
+EMPTY_FILTER="$_TMP/empty-filter.txt"
+: > "$EMPTY_FILTER"
+PLAN_EF="$(REIFY_VERIFY_RETRY_SCOPE=failed_only REIFY_VERIFY_RETRY_TREE_OID=deadbeef \
+    REIFY_VERIFY_ATTEMPT_SIDECAR="$SIDECAR" \
+    REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE="$EMPTY_FILTER" \
+    bash "$VERIFY" test --scope all --print-plan 2>"$_ERR")" || true
+_assert_no_subset_loud "empty filter file" "$PLAN_EF" "$(cat "$_ERR")"
+
+# (iii) filter env unset entirely (base + both per-profile variants) — matching
+# sidecar, so eligibility holds, but there is no subset to run.
+PLAN_UF="$(env -u REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE \
+    -u REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE_DEBUG \
+    -u REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE_RELEASE \
+    REIFY_VERIFY_RETRY_SCOPE=failed_only REIFY_VERIFY_RETRY_TREE_OID=deadbeef \
+    REIFY_VERIFY_ATTEMPT_SIDECAR="$SIDECAR" \
+    bash "$VERIFY" test --scope all --print-plan 2>"$_ERR")" || true
+_assert_no_subset_loud "filter env unset" "$PLAN_UF" "$(cat "$_ERR")"
+
 test_summary
