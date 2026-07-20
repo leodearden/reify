@@ -190,6 +190,27 @@ const SCHEMAS: &[AnnotationSchema] = &[
         on_extra: ExtraArgsPolicy::WarnIgnore,
         arg_check: Some(check_solid_args),
     },
+    // @display("unit") — valid on param, let (the param/let subset of
+    // @solver_hint's contexts). One required string-literal unit label,
+    // evaluated at compile time. `check_display_args` validates the arg SHAPE
+    // (Warning severity, matching on_extra: WarnIgnore); the separate
+    // dimension-mismatch pass (annotations/display.rs) validates that the label
+    // is a rung in the binding dimension's ladder (Error severity).
+    AnnotationSchema {
+        name: reify_core::DISPLAY_ANNOTATION,
+        label: "@display",
+        valid_contexts: &["param", "let"],
+        args: &[ArgSchema {
+            name: "unit",
+            positional_index: 0,
+            required: true,
+            ty: ArgType::String,
+            eval_time: EvalTime::CompileConst,
+        }],
+        flag_set: None,
+        on_extra: ExtraArgsPolicy::WarnIgnore,
+        arg_check: Some(check_display_args),
+    },
     // @test_eval(value) — test-only annotation for annotation-args ε (#3556).
     // One `AtMaterialization` arg named "value" of type Real at positional_index 0.
     // `arg_check: None` so any arg shape validates cleanly at compile time; the
@@ -297,6 +318,13 @@ fn check_shell_args(ann: &Annotation, _context: &str, diagnostics: &mut Vec<Diag
         }
     }
 }
+
+/// Check @display arg shape. Full slice-match logic lands in step-4 (task 5233);
+/// this no-op stub keeps the `display` schema entry compiling so the
+/// registration/context tests (step-1) pass. Only called when context is valid
+/// (param/let); the caller's `else` branch enforces the short-circuit so this
+/// never fires on wrong-context.
+fn check_display_args(_ann: &Annotation, _context: &str, _diagnostics: &mut Vec<Diagnostic>) {}
 
 /// Check `@version(N)` shape AND context (task 3540 SIR-α). The schema lists
 /// `@version` as valid in all contexts so the generic context-mismatch warning
