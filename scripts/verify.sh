@@ -1143,6 +1143,13 @@ trap '_verify_cleanup; exit 129' HUP
 emit_nextest_pass() {
     local selector="$1" rel="$2" outer_timeout="$3"
     local cmd
+    # --test-threads=N (task 5264): test-execution parallelism cap wired by the
+    # dark-factory offline deep-test lane. Empty when the flag is unset, so the
+    # emitted command is byte-for-byte identical to today — the same
+    # empty-or-leading-space idiom as the adjacent _GATE_HEAVY_EXCLUDE /
+    # _OFFLINE_HEAVY_SELECT fragments.
+    local _tt_flag=""
+    [ -n "$TEST_THREADS" ] && _tt_flag=" --test-threads=${TEST_THREADS}"
     if [ "$NEXTEST" -eq 1 ]; then
         local _cfg_path
         if [ "$PRINT_PLAN" -eq 1 ]; then
@@ -1163,11 +1170,11 @@ emit_nextest_pass() {
             fi
             _cfg_path="$_NEXTEST_CONFIG_FILE"
         fi
-        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel}${_GATE_HEAVY_EXCLUDE}${_OFFLINE_HEAVY_SELECT} --config-file ${_cfg_path}"
+        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel}${_GATE_HEAVY_EXCLUDE}${_OFFLINE_HEAVY_SELECT}${_tt_flag} --config-file ${_cfg_path}"
     else
         # Fallback: single-threaded (OCCT serialization via the nextest occt group is
         # unavailable without nextest; use --test-threads=1 as the whole-workspace guard).
-        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo test ${selector}${rel} -- --test-threads=1"
+        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo test ${selector}${rel} -- --test-threads=${TEST_THREADS:-1}"
     fi
     # FD 9 is the held semaphore slot; close it for each gated child so daemon
     # processes (sccache/rustc) cannot inadvertently inherit the lock fd and
