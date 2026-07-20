@@ -500,14 +500,16 @@ std::unique_ptr<OcctShape> make_compound(const OcctShapeVec& shapes) {
 //   - 1 element  → returned as-is (no BOP; identity)
 //   - N elements → single-pass fuse
 //
-// Fully-DISJOINT inputs make BRepAlgoAPI_Fuse emit a TopoDS_COMPOUND of the
-// separate solids.  A bare compound is not watertight-queryable
-// (`is_watertight` excludes COMPOUND), so a solid-bearing compound result is
-// rewrapped as a TopoDS_COMPSOLID: this preserves total volume and per-solid
-// component count while passing the SOLID|COMPSOLID|SHELL type guard.  A
-// connected (overlapping) fuse already yields a single SOLID and is returned
-// untouched.  Defined here — ahead of the four pattern realizers below — so
-// they can share this one helper.
+// The general BOP path (SetArguments/SetTools) always wraps its output in a
+// TopoDS_COMPOUND, regardless of whether the inputs merged.  We normalize that
+// wrapper to the tightest topology-preserving type: a COMPOUND holding one
+// solid (overlapping inputs merged into a single body) is unwrapped to that
+// bare SOLID, while a COMPOUND holding multiple solids (fully-DISJOINT inputs)
+// is rewrapped as a TopoDS_COMPSOLID — a bare compound is not
+// watertight-queryable (`is_watertight` excludes COMPOUND), whereas a COMPSOLID
+// preserves total volume and per-solid component count while passing the
+// SOLID|COMPSOLID|SHELL type guard.  Defined here — ahead of the four pattern
+// realizers below — so they can share this one helper.
 TopoDS_Shape fuse_shape_list(const TopTools_ListOfShape& shapes) {
     if (shapes.IsEmpty()) {
         throw std::runtime_error("fuse_shape_list: input shape list must not be empty");
@@ -533,18 +535,32 @@ TopoDS_Shape fuse_shape_list(const TopTools_ListOfShape& shapes) {
     // One completed boolean pass, regardless of instance count (task 5213).
     g_boolean_pass_count.fetch_add(1, std::memory_order_relaxed);
     TopoDS_Shape result = fuse.Shape();
-    // Rewrap a disjoint COMPOUND-of-solids as a COMPSOLID so the multi-body
-    // union is watertight-queryable and reports the correct component count.
+    // The general BOP path (SetArguments/SetTools) always wraps its output in a
+    // TopoDS_COMPOUND.  Normalize that wrapper to the tightest type that
+    // preserves the union's topology so downstream repr/query code sees the
+    // true kind:
+    //   - exactly one solid  → the bare SOLID (overlapping inputs merged into a
+    //     single body).  Returning a COMPSOLID here would misclassify one solid
+    //     as a multi-body aggregate (task 5213 repr-coherence amendment).
+    //   - two or more solids → a COMPSOLID (disjoint multi-body union) which,
+    //     unlike a bare COMPOUND, passes the is_watertight SOLID|COMPSOLID|SHELL
+    //     guard and reports the correct per-solid component count.
+    //   - no solids          → leave the compound untouched.
     if (result.ShapeType() == TopAbs_COMPOUND) {
-        TopoDS_CompSolid cs;
-        BRep_Builder builder;
-        builder.MakeCompSolid(cs);
-        int nsolids = 0;
+        TopTools_ListOfShape solids;
         for (TopExp_Explorer ex(result, TopAbs_SOLID); ex.More(); ex.Next()) {
-            builder.Add(cs, TopoDS::Solid(ex.Current()));
-            ++nsolids;
+            solids.Append(ex.Current());
         }
-        if (nsolids > 0) {
+        if (solids.Extent() == 1) {
+            return TopoDS::Solid(solids.First());
+        }
+        if (solids.Extent() > 1) {
+            TopoDS_CompSolid cs;
+            BRep_Builder builder;
+            builder.MakeCompSolid(cs);
+            for (TopTools_ListIteratorOfListOfShape sit(solids); sit.More(); sit.Next()) {
+                builder.Add(cs, TopoDS::Solid(sit.Value()));
+            }
             return cs;
         }
     }
