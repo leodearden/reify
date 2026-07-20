@@ -427,6 +427,7 @@ NARROW=0             # --narrow: opt-in to affected-crate narrowing for --scope 
 INCLUDE_INFRA=0
 PRINT_PLAN=0
 TEST_THREADS=""      # --test-threads=N: test-execution parallelism cap (offline lane, task 5264). Empty = unset → plan unchanged.
+TEST_THREADS_SET=0   # 1 once --test-threads is seen; lets validation reject an explicit empty value ('--test-threads=') while an UNSET flag stays valid.
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -451,9 +452,9 @@ while [ "$#" -gt 0 ]; do
         --print-plan)
             PRINT_PLAN=1; shift ;;
         --test-threads)
-            TEST_THREADS="${2:?--test-threads requires an argument}"; shift 2 ;;
+            TEST_THREADS="${2:?--test-threads requires an argument}"; TEST_THREADS_SET=1; shift 2 ;;
         --test-threads=*)
-            TEST_THREADS="${1#*=}"; shift ;;
+            TEST_THREADS="${1#*=}"; TEST_THREADS_SET=1; shift ;;
         -h|--help)
             usage; exit 0 ;;
         *)
@@ -474,6 +475,17 @@ esac
 case "$SCOPE" in all|staged|branch) ;; *)
     echo "verify.sh: ERROR — invalid --scope '$SCOPE' (want all|staged|branch)" >&2; exit 64 ;;
 esac
+# --test-threads=N (task 5264): positive-integer validation, mirroring the
+# --profile/--scope invalid-value exit-64 convention. Guard on TEST_THREADS_SET
+# (not `[ -n ]`) so an explicit empty value ('--test-threads=') is rejected
+# while an UNSET flag stays valid and leaves the default plan byte-identical.
+# The '*[!0-9]*' arm rejects any non-digit (incl. '-' and '.'); the '' and '0'
+# arms reject empty and zero — net effect ^[1-9][0-9]*$.
+if [ "$TEST_THREADS_SET" -eq 1 ]; then
+    case "$TEST_THREADS" in ''|*[!0-9]*|0)
+        echo "verify.sh: ERROR — invalid --test-threads '$TEST_THREADS' (want positive integer)" >&2; exit 64 ;;
+    esac
+fi
 DF_VERIFY_ROLE="${DF_VERIFY_ROLE:-task}"
 # Role-based PROFILE default: when no explicit --profile was given and the
 # orchestrator merge path stamps DF_VERIFY_ROLE=merge, default to 'both' so
