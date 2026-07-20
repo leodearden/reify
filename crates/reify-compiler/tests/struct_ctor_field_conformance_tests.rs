@@ -572,3 +572,88 @@ fn bare_selector_param_given_pose_transform_warns_with_pose_hint() {
         diags[0].message
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Step-7 probes: param-default extension (D8, §7 row 10).
+//
+// A struct `param`'s DEFAULT expression is checked by
+// `check_param_default_conformance` (conformance/mod.rs) — a distinct ctor-
+// conformance entry from the call-site arg walker. On main it covers only
+// `StructureRef` and `Geometry` param defaults (a `_ => continue` skips every
+// other cell type), so a `String` param with an `Int` default is SILENT. Step-8
+// routes every concrete param default through the shared walker at ctx.severity,
+// so a String←Int default warns `ArgTypeMismatch` (Warning at α) — the same code
+// and message shape the call-site probes assert (context independence: a bad
+// default and a bad explicit arg diagnose identically).
+//
+// A lone `structure def` (no instantiation) is enough: the check runs over every
+// template unconditionally (see `solid_param_with_non_geometry_default_rejected`
+// in solid_param_tests.rs, which pins `structure def W3 { param g : Solid = 42 }`
+// with no call site).
+//
+// RED on this branch: the String-default warning assertion fails (silent before
+// step-8). The valid-default guard (Int=3, Real=1) is clean before AND after.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── §7 row 10: param default String ← Int literal → one ArgTypeMismatch Warning ──
+const SOURCE_PARAM_DEFAULT_STRING_GIVEN_INT: &str = r#"module test.pd_string
+structure def LabelHolder { param label : String = 42 }
+"#;
+
+#[test]
+fn param_default_string_given_int_warns_arg_type_mismatch() {
+    let module = compile_source_with_stdlib(SOURCE_PARAM_DEFAULT_STRING_GIVEN_INT);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "String param with an Int default must emit exactly one ctor-conformance \
+         diagnostic (param-default path, D8), got: {diags:#?}"
+    );
+    assert_eq!(
+        diags[0].severity,
+        Severity::Warning,
+        "α: param-default conformance is knob-governed (Warning), got: {:?}",
+        diags[0]
+    );
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::ArgTypeMismatch),
+        "concrete param-default mismatch must carry ArgTypeMismatch (same code as the \
+         call-site leaf), got: {:?}",
+        diags[0].code
+    );
+    for needle in ["label", "String", "Int"] {
+        assert!(
+            diags[0].message.contains(needle),
+            "message must name {needle:?}, got: {:?}",
+            diags[0].message
+        );
+    }
+}
+
+// ── valid param defaults (Int←Int, dimensionless Real←Int) → 0 (guard) ──
+// `param n : Int = 3` is trivially compatible; `param mag : Real = 1` is the
+// C1.2 Int→dimensionless-Real coercion — both must stay clean before AND after
+// step-8 so the extension does not over-warn on legal defaults.
+const SOURCE_PARAM_DEFAULT_VALID: &str = r#"module test.pd_valid
+structure def Config {
+    param n : Int = 3
+    param mag : Real = 1
+}
+"#;
+
+#[test]
+fn param_default_valid_int_and_real_is_clean() {
+    let module = compile_source_with_stdlib(SOURCE_PARAM_DEFAULT_VALID);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "valid Int←Int and dimensionless Real←Int param defaults must be clean, got: {diags:#?}"
+    );
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must not produce compile errors, got: {:?}",
+        errors_only(&module)
+    );
+}
