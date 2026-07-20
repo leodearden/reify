@@ -170,7 +170,7 @@ pub fn __validate_annotations_for_parity_test(
 /// `cfg(test)` for in-crate tests); not part of the released public API.
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
-// G-allow: task #5063 — test-support-gated parity shim, consumed by
+// G-allow: task #5063 (done) — test-support-gated parity shim, consumed by
 // tests/mul_div_static_runtime_parity.rs (static-vs-runtime Mul/Div parity,
 // INV-COMP-3 enforcement).
 pub fn __infer_mul_div_result_for_parity_test(
