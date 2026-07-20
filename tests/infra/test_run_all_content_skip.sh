@@ -217,4 +217,58 @@ assert "S2c: RUN (delta) names the touched own file" \
 assert "S2c: the own-file-changed member IS executed" \
     out_has "$RUN_OUT" "--- Running: test_alpha.sh ---"
 
+# ===========================================================================
+# Section 3 (step-5): RUN (unmapped) and RUN (no-baseline).
+#   Every discovered member gets a per-member decision line when the engine is
+#   active (no silent caps): a member with no closure row ⇒ RUN (unmapped); a
+#   mapped member with no state baseline ⇒ a RUN line (cannot prove
+#   content-clean without a green). Both still execute. RED until step-6.
+# ===========================================================================
+
+# -- 3a: unmapped member (no closure row) always runs, even on a clean tree ---
+echo ""
+echo "--- Section 3a (step-5): RUN (unmapped), member has no closure row ---"
+
+S3A_DIR="$(mktemp -d)"; _TMPDIRS+=("$S3A_DIR")
+git_init_fixture "$S3A_DIR"
+mk_member "$S3A_DIR" test_gamma.sh 0
+git -C "$S3A_DIR" add -A
+git -C "$S3A_DIR" commit -q -m "base"
+# Closures manifest exists but declares only an unrelated member, so
+# test_gamma.sh is UNMAPPED (fail-open ⇒ must run, never skip).
+S3A_CLOSURES="$S3A_DIR/_meta_closures.manifest"
+printf '# fixture closures\ntest_delta.sh some_dep.txt\n' > "$S3A_CLOSURES"
+S3A_STATE="$S3A_DIR/_meta_state.ledger"
+printf '__MERGES__ 4\n' > "$S3A_STATE"
+
+run_skip "$S3A_STATE" "$S3A_CLOSURES" "$S3A_DIR"
+
+assert "S3a: emits RUN (unmapped) for the member with no closure row" \
+    out_has "$RUN_OUT" "RUN (unmapped): test_gamma.sh"
+assert "S3a: the unmapped member IS executed" \
+    out_has "$RUN_OUT" "--- Running: test_gamma.sh ---"
+
+# -- 3b: mapped member with no state baseline runs (cannot prove clean) -------
+echo ""
+echo "--- Section 3b (step-5): RUN (no-baseline), mapped member absent from the ledger ---"
+
+S3B_DIR="$(mktemp -d)"; _TMPDIRS+=("$S3B_DIR")
+git_init_fixture "$S3B_DIR"
+mk_member "$S3B_DIR" test_alpha.sh 0
+printf 'stable\n' > "$S3B_DIR/alpha_dep.txt"
+git -C "$S3B_DIR" add -A
+git -C "$S3B_DIR" commit -q -m "base"
+S3B_CLOSURES="$S3B_DIR/_meta_closures.manifest"
+printf 'test_alpha.sh alpha_dep.txt\n' > "$S3B_CLOSURES"
+# State has the global counter but NO entry for test_alpha ⇒ no green baseline.
+S3B_STATE="$S3B_DIR/_meta_state.ledger"
+printf '__MERGES__ 4\n' > "$S3B_STATE"
+
+run_skip "$S3B_STATE" "$S3B_CLOSURES" "$S3B_DIR"
+
+assert "S3b: emits RUN (no-baseline) for the mapped member absent from the ledger" \
+    out_has "$RUN_OUT" "RUN (no-baseline): test_alpha.sh"
+assert "S3b: the no-baseline member IS executed" \
+    out_has "$RUN_OUT" "--- Running: test_alpha.sh ---"
+
 test_summary
