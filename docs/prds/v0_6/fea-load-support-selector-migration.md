@@ -1,6 +1,24 @@
 # PRD — FEA Load/Support String→Selector Migration
 
-**Status:** **deferred → ready to activate** after the topology-selector constructors (tasks **4118 / 4119 / 4120**) **and** the selector→node-set resolver (task **4092**) land on main. **Approach B + H** (FEA is a G5 load-bearing seam; contract + two-way boundary tests below). Authored 2026-06-08.
+**Status:** **ACTIVE** (2026-07-20) — all hard gates (4118/4119/4120/4092/4368/4369) **landed**. **Approach B + H** (FEA is a G5 load-bearing seam; contract + two-way boundary tests below). Authored 2026-06-08; re-gated 2026-07-20.
+
+> **⟢ 2026-07-20 re-gate (design session Leo + escalation-watcher).** Reconciles this PRD with the true
+> post-4370 state and Leo's "complete work, source-breaking, disallow-string, truly-consume" ruling:
+> 1. **Bmig (4370) landed NARROWED** (esc-4370-24): only `PressureLoad.face → Option<FaceSelector> = none`,
+>    and it kept a **legacy `String` transition arm** (`extract_pressure_face_name`'s `Value::String`
+>    branch) for non-breaking migration. The other 5 fields (§4.3) are still `String` on main and are owned
+>    by no landed/pending task. **This re-gate adds a `Bmig2` leaf** (§9) that completes them.
+> 2. **Disallow string (Leo).** Source-breaking is now accepted (before external users). Bmig2 **removes**
+>    the `String` transition arms and migrates **all** bare-string call sites (~159 sites / ~60 files) to
+>    typed ctors. Enforcement rides on the general **struct-ctor field-type conformance chokepoint**
+>    (`docs/prds/struct-ctor-field-type-conformance.md`) — a NEW cross-PRD dependency (§8); this PRD does
+>    not build the enforcement, it consumes it.
+> 3. **Truly consume (Leo).** The migrated selectors must actually drive the solver's FE node-sets (resolve
+>    `vertex()/face()/...` → node-set → applied load/BC), not the current coordinate heuristics. Today
+>    `extract_loads` ignores `PointLoad.point` entirely and `FixedSupport.target` flows two String/handle
+>    paths. Bmig2 wires 4092's selector→node-set into `extract_loads`/`extract_supports` — a real
+>    solver-integration deliverable, split into its own leaf if scope warrants (§9).
+> 4. **A1/A2 landed** as tasks **4368/4369** — §4.1/§4.2 are now *landed substrate*, not "this PRD adds."
 
 **Origin.** Interactive `/unblock` of task **4093** (2026-06-08, escalation `esc-4093-148`). 4093 bundled two pieces; its **PART 2** — "retire the `String` placeholder selector fields on `PointLoad`/`FixedSupport`/`PressureLoad` in favor of typed selectors" — was dropped as a **false premise** (no `.ri`-facing selector constructor exists *yet*; the placeholders were shipped deliberately by tasks 2881/2882) and 4093 was re-scoped to PART 1 (the `List<Real>`→`List<Load>`/`List<Support>` signature tightening). **This PRD owns the dropped PART 2 work, done properly as a gated consumer.**
 
@@ -63,6 +81,10 @@ let mount    = FixedSupport(target: "root")             // "root" = a named face
 | **D5** | **Migrate `examples/fea_cantilever_smoke.ri` + `fea_multi_case.ri` worked examples** to the typed constructors in the same batch as the field-type change (no stale uncompilable example). `LoadCase` bundling is orthogonal and owned by 4093 PART 1. | A field-type change that left the canonical example uncompilable would fail the example's own CI check (the C-07 fake-done trap). |
 | **D6** | **Gated, not blocked.** This PRD assumes the constructors (4118/4119) + `resolve()` + `ResolveSelector` (4118) + selector→node-set (4092) and **depends on them**; it builds none of them. Until they merge, it stays `deferred`. | Honest G3/G6: the real precondition is "constructors/resolver pending," not "substrate absent." |
 | **D7** | **Named-leaf resolution is delegated** (inherits topology-selector D8): `face(b,"root")` / `vertex(b,"tip")` build `Named` leaves; name→sub-shape handle resolution is owned by `persistent-naming-v2` (soft seam; interim `resolve_unique_by_tag`, else `W_TOPOLOGY_TAG_STALE` + `[]`). | The construct-time kind-safety win does not depend on full named resolution; the cantilever's `"tip"`/`"root"` are the unique-tag interim case. |
+| **D8** *(2026-07-20)* | **Disallow string — source-breaking.** Bmig2 **removes** the legacy `String` transition arms (4370 kept `extract_pressure_face_name`'s `Value::String` branch; the same pattern must NOT be reintroduced for the other fields) and migrates **every** bare-string call site (`PointLoad(point:"tip")` ×67, `FixedSupport(target:"root")` ×85, + Traction/BodyForce/Pinned — ~159 sites / ~60 files) to typed ctors (`vertex()/face()/edge()/body()`). A bare string in a selector field is a **compile error**, emitted by the general struct-ctor conformance chokepoint (D-new-11). | Leo, 2026-07-20: get the breakage out before external users. A retained String arm is exactly the silent-accept the migration exists to kill. |
+| **D9** *(2026-07-20)* | **Truly consume — the solver resolves the selector to its FE node-set.** Bmig2 wires 4092's `selector → Vec<GeometryHandleId> → FE node/element set` into `extract_loads`/`extract_supports` (`crates/reify-eval/src/compute_targets/elastic_static.rs`), replacing today's coordinate heuristics: `PointLoad.point` (currently **unread** — `extract_loads` :4028-4052 consumes only `force`/`direction`) applies the tip force at the resolved vertex node-set; `FixedSupport.target` (currently a kernel-less `Value::String` match `any_support_targets` :345 **and** a resolved-handle path :1705) reads the `Value::Selector`. **Split-leaf allowed:** if the kernel-less-vs-kernel resolution question (the trampoline resolves only the 6 named box faces today) warrants its own design, the true-consume wiring is a sibling leaf `Bmig2-consume` gated on Bmig2's field typing. | Leo, 2026-07-20: "anything less is a broken feature chain." Typing the field without consuming it is a phantom-green — the 4370 trap at the solver layer. |
+| **D10** *(2026-07-20)* | **Field typing: required selectors where a target is mandatory; keep `PressureLoad.face` `Option`.** `PointLoad.point : VertexSelector`, `FixedSupport.target`/`PinnedSupport.target : Selector` (kind-agnostic), `TractionLoad.face : FaceSelector`, `BodyForce.body : BodySelector` are **required** (no default — a load/support with no target is meaningless; source-breaking on bare `Ctor()` is accepted). `PressureLoad.face` **stays `Option<FaceSelector> = none`** (a faceless pressure = no traction is a valid state; 4370's choice preserved). **⟢ CONFIRM WITH LEO** — the alternative (all `Option` for ctor ergonomics) is a one-line-per-field change. Either way the chokepoint (with its new `Option`-unwrap arm) enforces both. | v0.6 §4.3 already intended "no `String=""` default → required"; 4370 deviated only for `face`. Required matches the honest-target intent; `face` is the genuine nullable case. |
+| **D11** *(2026-07-20)* | **Enforcement is the general struct-ctor conformance chokepoint, not built here.** This PRD types the fields + migrates call sites; the compile-time rejection of wrong-kind / non-selector / string / pose args at those fields is delivered by `docs/prds/struct-ctor-field-type-conformance.md` (hard cross-PRD dep, §8). **Sequencing: the chokepoint lands first** (green on the pre-migration corpus); Bmig2 lands on top, enforced by the then-live chokepoint. | Reachable, general wire-site (the `validate_selector_target` plan was a false premise). Avoids duplicating enforcement in the FEA trampoline (INV-5). |
 
 ---
 
@@ -147,10 +169,11 @@ No unverified assumed substrate remains: every capability either exists, is a na
 
 ## 7. Pre-conditions for activating
 
-- **Hard gates (decompose only after these merge to main):** tasks **4118** (predicate constructors + `resolve()` + `ResolveSelector`), **4119** (composition + `face()/edge()/body()` named constructors), **4120** (boundary-test gate), and **4092** (selector → FE node-set). Until all four land, this PRD is `deferred`.
+- **~~Hard gates~~ — ALL LANDED (2026-07-20):** tasks **4118**/**4119** (constructors + `resolve()` + `ResolveSelector`), **4120** (BT gate), **4092** (selector → FE node-set), **4368**/**4369** (A1/A2). This PRD is no longer `deferred` — it is **active** and ready to decompose the residual `Bmig2` + true-consume work (§9).
+- **NEW hard dep (2026-07-20):** the general **struct-ctor field-type conformance chokepoint** (`docs/prds/struct-ctor-field-type-conformance.md`) must land its Error-flip (δ) **before** Bmig2's disallow-string enforcement is observable. Bmig2's field typing can proceed in parallel; the *rejection* signal (BT1/BT4 negatives) is gated on the chokepoint. Sequence: chokepoint δ → Bmig2 enforcement.
 - **Soft seam:** full `Named`-leaf resolution depends on `persistent-naming-v2` (D7) — interim behavior is specified; not a hard gate.
 - **No grammar change** — G3 grammar-gate N/A (§6).
-- **Coordinate with 4093 PART 1** (the `List<Real>`→`List<Load>`/`List<Support>` tightening + `LoadCase` retirement): orthogonal (signature vs. field types) but touches the same `fea_multi_case.ri` / `solver_elastic.ri` files — sequence after 4093 lands to avoid a merge collision, or rebase.
+- **4093 PART 1 landed** (the `List<Real>`→`List<Load>`/`List<Support>` tightening) — no longer a sequencing concern; re-verify no residual `LoadCase` collision at Bmig2 dispatch.
 
 ---
 
@@ -175,16 +198,23 @@ If you prefer the alternative, A1/A2 move out of this PRD's decomposition and be
 
 ---
 
-## 9. Decomposition plan (one bullet per task; **decompose deferred until §7 gates land**)
+## 9. Decomposition plan (one bullet per task; **ready to decompose — 2026-07-20 re-gate**)
 
-> **Do not queue yet.** Gates 4118/4119/4120 + 4092 are pending and the TaskCurator dedupe is degraded. Re-run `/prd` decompose mode when the gates merge; author the capability manifest then.
+> **Ready to queue the residual (Bmig2 + Bmig2-consume + re-dep BT/4371)** once (a) Leo confirms D10
+> field-typing and (b) the struct-ctor conformance chokepoint (`struct-ctor-field-type-conformance.md`)
+> is filed so Bmig2 can `depends_on` its δ. A1/A2/Bmig already landed (4368/4369/4370). Re-run `/prd`
+> decompose mode; author the capability manifest for the residual leaves only.
 
-Approach **B + H** (FEA seam + a selector-type-system extension). Suggested DAG: **A1 → A2 → Bmig → BT(gate)**; A1/A2 are the substrate extensions (or move to topology-selector PRD per §8), Bmig is the field+example migration, BT is the integration gate.
+Approach **B + H**. **Landed DAG:** `4368(A1) → 4369(A2) → 4370(Bmig, narrowed)`. **Residual DAG (2026-07-20):**
+`struct-ctor-chokepoint(δ) → Bmig2 → Bmig2-consume → 4371(BT)`; Bmig2 completes the field migration +
+disallow-string, Bmig2-consume wires true node-set consumption, 4371 is the re-dep'd integration gate.
 
-- **A1 — `SelectorKind::Vertex` extension.** Add the `Vertex` enum variant (dim 0, `Display`→`"VertexSelector"`); `vertex()/vertices()` constructors; `extract_vertices` + `resolve()` vertex arm; K1/K2/K3 for the new kind. *Modules:* `reify-core/src/ty.rs`, `reify-ir/src/value.rs`, `reify-eval/src/topology_selectors.rs`, constructor wiring (mirrors 4118/4119). *Signal:* **intermediate** — `vertex(b,"tip")` type-checks as `VertexSelector`; unit-covers K1 rejection + kernel-free construction (BT3/BT7 substrate). *grammar_confirmed: true.*
-- **A2 — kind-agnostic selector param acceptance.** Add the kind-agnostic selector type-name + `type_compatible` "any-kind" acceptance (one-directional); leave single-kind exact-equality unchanged. *Modules:* `reify-compiler/src/type_compat.rs`, type-name resolver, `reify-eval` `value_type_kind_matches`. *Signal:* **intermediate** — a kind-agnostic param accepts `face()/edge()/vertex()/body()` and rejects non-selectors (BT4 substrate). *grammar_confirmed: true.*
-- **Bmig — FEA field migration + example migration.** Change the five fields (§4.3) from `String` to their selector types; update `validate_selector_target` accept set; migrate `examples/fea_cantilever_smoke.ri` + `fea_multi_case.ri` worked examples to typed constructors. *Modules:* `crates/reify-compiler/stdlib/fea_multi_case.ri`, `examples/fea_cantilever_smoke.ri`, `crates/reify-stdlib/src/loads.rs` + `supports.rs`. *Signal:* **leaf** — `PressureLoad(face: faces_by_normal(...))` compiles; wrong-kind → `E_SELECTOR_KIND_MISMATCH`; migrated cantilever `reify check`s clean (BT1/BT2/BT5). *Prereq:* A1, A2, 4118/4119, 4092. *grammar_confirmed: true.*
-- **BT — boundary-test integration gate.** Implement §5 BT1–BT7 facing both sides (compile-fail fixtures + resolving `.ri` examples + the migrated cantilever end-to-end). *Modules:* `crates/reify-eval/tests/` (+ `.ri` fixture dir), `examples/`. *Signal:* **leaf / integration-gate** — the §5 table is green end-to-end. *Prereq:* Bmig. *grammar_confirmed: true.*
+- **A1 — `SelectorKind::Vertex` extension. ✅ LANDED as task 4368.** (`vertex()/vertices()`, `extract_vertices`, `resolve()` vertex arm; `type_resolution.rs:560`.)
+- **A2 — kind-agnostic selector param acceptance. ✅ LANDED as task 4369.** (bare `Selector` → `Type::AnySelector`; `type_resolution.rs:567`; compatible with `Selector(k)` ∀k.)
+- **Bmig — FEA field migration + example migration. ✅ LANDED as task 4370 — but NARROWED** (esc-4370-24) to **`PressureLoad.face → Option<FaceSelector> = none` ONLY**, riding a new generic `hoist_nested_selectors.rs` compiler phase, and keeping a legacy `String` transition arm. The other 5 §4.3 fields did **not** migrate. *(Merged `1d886f3f45`.)*
+- **Bmig2 — Complete the residual field migration + disallow string (NEW leaf, source-breaking).** Flip the remaining fields (§4.3 + `PinnedSupport.target`) to their selector types per D10: `PointLoad.point → VertexSelector`, `FixedSupport.target`/`PinnedSupport.target → Selector` (kind-agnostic), `TractionLoad.face → FaceSelector`, `BodyForce.body → BodySelector`; **remove** all legacy `String` transition arms (D8, incl. 4370's `extract_pressure_face_name` `Value::String` branch); migrate **all** bare-string call sites (~159 / ~60 files) to typed ctors incl. `examples/fea_cantilever_smoke.ri` + `fea_multi_case.ri` worked examples. *Modules:* `crates/reify-compiler/stdlib/fea_multi_case.ri`, `examples/**`, `crates/reify-*/tests/**` fixtures, `crates/reify-eval/src/compute_targets/elastic_static.rs` (extractor String-arm removal). *Signal:* **leaf** — `PointLoad(point: vertex(b,"tip"))` compiles; wrong-kind → `E_SELECTOR_KIND_MISMATCH`; a bare string at any selector field → compile error; migrated cantilever `reify check`s clean (BT3/BT4/BT5). *Prereq:* the **struct-ctor conformance chokepoint (δ)** for the reject signal (§7/§8); D10 field-typing confirmed. *grammar_confirmed: true.*
+- **Bmig2-consume — Truly consume selectors in the solver (NEW leaf; D9).** Wire 4092's `selector → node/element set` into `extract_loads`/`extract_supports` (`elastic_static.rs`): `PointLoad.point` applies the tip force at the resolved vertex node-set (currently **unread**); `FixedSupport.target` reads `Value::Selector` on both the kernel-less (`any_support_targets`) and handle paths. Resolve the kernel-less-vs-kernel resolution question (trampoline resolves only 6 named box faces today) — may fold into Bmig2 or stay a sibling. *Signal:* **leaf** — a migrated FEA solve applies the BC/load at the *typed-selected* node-set; cantilever tip-deflection within existing tolerance (BT5 true-consume half). *Prereq:* Bmig2 (typed fields), 4092. *grammar_confirmed: true.*
+- **BT — boundary-test integration gate. (= task 4371, re-dep.)** Implement §5 BT1–BT7 facing both sides. **Re-dep on Bmig2 + Bmig2-consume + the chokepoint (δ)** (BT3/BT4/BT5 were un-authorable on narrowed-4370 main; BT1/BT4 negatives need the chokepoint). *Modules:* `crates/reify-eval/tests/` (+ `.ri` fixture dir), `examples/`. *Signal:* **leaf / integration-gate** — the §5 table is green end-to-end. *Prereq:* Bmig2, Bmig2-consume, chokepoint δ. *grammar_confirmed: true.*
 
 ---
 

@@ -8,11 +8,25 @@
 > `/prd` session (Leo + Claude). Substrate **G3-verified against current `main`** this session (§3).
 >
 > **Status:** active — **thin convergence delta**. The FEA String→region-reference *bridge itself* is
-> already owned + filed by the in-flight **v0.6 FEA-selector migration** (`docs/prds/v0_6/fea-load-support-selector-migration.md`):
+> owned by the **v0.6 FEA-selector migration** (`docs/prds/v0_6/fea-load-support-selector-migration.md`):
 > field migration **4370 (Bmig)**, two-way boundary test **4371 (BT)**, selector→node-set **4092**, with
 > type-substrate **4368/4369 done**. **P4 does NOT re-file any of that** (command + P0 §8). P4 owns the
 > one P0-delegated piece v0.6 never addressed: the **pose-vs-set boundary** (a `Value::Frame` is **not**
-> an FEA region target) + the coherence record. One leaf, dependency-gated on **4370 + 4811**.
+> an FEA region target) + the coherence record. One leaf (task **4833 / P4-π**), dependency-gated.
+>
+> **⟢ 2026-07-20 revision (design session Leo + escalation-watcher).** Two facts below went stale and
+> the reject-side *mechanism* changed — corrected in-place (§2 table, §3 rows, §4 D3, §5 π):
+> 1. **Bmig/4370 landed narrowed** (Leo's ruling esc-4370-24): only `PressureLoad.face → Option<FaceSelector>`
+>    migrated; `PointLoad.point`/`FixedSupport.target`/`TractionLoad.face`/`BodyForce.body`/`PinnedSupport.target`
+>    remain `String` — now owned by a **v0.6 Bmig2** leaf (see that PRD's revision). "5 fields migrated" is false on main.
+> 2. **The pose-vs-set reject is NOT wired at `validate_selector_target`** (that function is a red herring —
+>    unreachable from the `structure def` ctor path; its `None→Value::Undef` has no diagnostic channel).
+>    The reject *mechanism* is now delivered by the general **struct-ctor field-type conformance** chokepoint
+>    (`docs/prds/struct-ctor-field-type-conformance.md`, committed `af8c26ed96`): its C1-row-12 pose-vs-set
+>    diagnostic (`a coordinate pose is not a region target; select a face/edge/vertex instead`). **P4-π (4833)
+>    is re-scoped to a *consumer/verifier*** of that chokepoint (commit the pose fixtures; assert its
+>    diagnostic), not the owner of a `validate_selector_target` reject arm. D1/D2 policy (set-only; coordinate
+>    loads are a named future follow-up) is **unchanged**.
 >
 > **Do NOT touch task 3523 or esc-3523-75/76.** Line numbers below are **snapshots at time of writing**
 > — verify against `main` at dispatch.
@@ -54,12 +68,12 @@ the v0.6 FEA-selector migration was already decomposed and partly executed.** Ve
 the brief's deliverables 1–4 are **already owned and filed** by the v0.6 chain — P4 must not re-file
 them:
 
-| Brief deliverable | Already owned + filed by | Status (main, 2026-06-24) |
+| Brief deliverable | Already owned + filed by | Status (main, **2026-07-20**) |
 |---|---|---|
-| 3. FEA field migration (`String → Selector`, 5 fields) + worked-example migration | **4370** (v0.6 Bmig) | pending |
-| 1. `validate_selector_target` **accept-set** (add `Value::Selector`) | **4370** (v0.6 Bmig) | pending |
-| 2. region-reference → FE node/element-set resolution (selector → handle-set → DOF) | **4092** (structural-analysis-fea P2) | pending |
-| 4. two-way boundary test (selector producer ↔ FEA consumer), BT1–BT7 | **4371** (v0.6 BT) | pending |
+| 3. FEA field migration (`String → Selector`, 5 fields) + worked-example migration | **4370** (v0.6 Bmig) + **Bmig2** (new v0.6 leaf) | **4370 done — `PressureLoad.face` ONLY** (narrowed, esc-4370-24); other 5 fields → Bmig2, pending |
+| 1. `validate_selector_target` **accept-set** (add `Value::Selector`) | **4370** (v0.6 Bmig) — *but this is the red-herring site* | done (4370 added `Value::Selector`), **but irrelevant**: unreachable from ctor fields — enforcement is the struct-ctor chokepoint, not this fn |
+| 2. region-reference → FE node/element-set resolution (selector → handle-set → DOF) | **4092** (structural-analysis-fea P2) | **done**; "truly consume" wiring into the solver → v0.6 Bmig2/true-consume leaf |
+| 4. two-way boundary test (selector producer ↔ FEA consumer), BT1–BT7 | **4371** (v0.6 BT) | blocked (BT3/4/5 need Bmig2; BT1/4 need the struct-ctor chokepoint) |
 | type substrate (`SelectorKind::Vertex`; kind-agnostic param acceptance) | **4368 / 4369** | **done** |
 
 Because `Value::Selector` **is** the canonical `RegionRef` post-P0, **4370 accepting `Value::Selector`
@@ -69,27 +83,33 @@ kind error) is satisfied by **4371 BT1/BT2**.
 
 **What is genuinely left for P4** (neither v0.6 nor P0 delivers it):
 
-- **The pose-vs-set boundary.** v0.6 4371 BT4 tests *"a non-selector target (e.g. a `Real`) rejected"*
-  for the kind-agnostic `FixedSupport` only; **nothing tests a `Value::Frame` (a *pose*) rejected at the
-  single-kind LOAD fields** (`PointLoad.point`, `PressureLoad.face`, …), and — critically — **today it
-  is a silent accept** (§3, the negative-sentinel finding). P4 owns making the pose-vs-set rejection
-  *fire, with a clear diagnostic* (the explicit reject side of `validate_selector_target`, whose reject
-  arm is presently an opaque `_ => None`), and a committed fixture proving it.
+- **The pose-vs-set boundary, as a committed verification** — but the *reject mechanism* now lives in the
+  general **struct-ctor field-type conformance** chokepoint (`docs/prds/struct-ctor-field-type-conformance.md`),
+  not in P4. That chokepoint's C1-row-12 delivers the pose-vs-set diagnostic (`a coordinate pose is not a
+  region target; select a face/edge/vertex instead`) at every selector-typed ctor field, closing the §3
+  silent-accept once it lands (staged warn→error). **P4-π (4833) owns committing the negative fixtures**
+  — a `Value::Frame` at `PressureLoad(face:)`, `PointLoad(point:)`, and `FixedSupport(target:)` — and
+  **asserting that chokepoint diagnostic fires**. (Nuance for `point`/`target`: pre-Bmig2 those fields are
+  still `String`, so a Frame there is a String-mismatch error from the chokepoint; post-Bmig2 they are
+  selector-typed and it becomes the kind-specific pose-vs-set diagnostic. Either way the silent accept dies.)
 - **The coherence record + the brief's `r3b` false-premise correction** (§3): the brief's deliverable-4
   *"flip the `r3b_displacement_at_selector_grammar.ri` negative fixture"* rests on a fixture that **does
-  not exist on main** — P4 *creates* a real pose-vs-set guard instead of "flipping" a phantom.
+  not exist on main** — P4 asserts a *real* pose-vs-set guard (delivered by the chokepoint) instead of
+  "flipping" a phantom.
 
-**Clean split (no contested seam):** v0.6 4370 owns the **accept-side** of `validate_selector_target`
-(`String → Selector`); P4 owns the **reject-side** (explicit `Value::Frame`-reject + pose-vs-set
-diagnostic), **landing after 4370** (hard dep) so the two never touch the function concurrently —
-the same land-after-the-prereq churn-avoidance pattern P2 Thread C uses against P0 β.
+**Clean split (no contested seam):** the struct-ctor conformance chokepoint owns the **general reject
+mechanism** (any concrete field-type mismatch, incl. pose-vs-set); the v0.6 migration owns **typing the
+FEA fields** (Bmig/4370 done for `face`; Bmig2 for the rest); **P4-π owns the FEA-target *verification***
+(pose fixtures + diagnostic assertion). Three owners, no shared edit site — superseding the original
+"4370 accept-side / P4 reject-side at `validate_selector_target`" split, which rested on the now-corrected
+false premise that `validate_selector_target` guards the ctor fields (it does not — §3).
 
 ## 3. Substrate verification (G3) — verified against `main`, 2026-06-24
 
 | Assumed capability | Verdict | Evidence (snapshot) |
 |---|---|---|
-| `validate_selector_target` accepts only `Map`/`String`; **rejects `Value::Selector` AND `Value::Frame`** | **TRUE** | `crates/reify-stdlib/src/helpers.rs:214-219`: `match v { Value::Map(_) \| Value::String(_) => Some(()), _ => None }`. Callers: `supports.rs:120,138` (`DisplacementSupport`/`RollerSupport`); the load fields don't call it (retired). The reject side is an **opaque `_ => None`** (no pose-specific diagnostic). |
-| FEA target fields are still `String = ""` placeholders | **TRUE** | `fea_multi_case.ri`: `PointLoad.point` (`:315`-area), `FixedSupport.target` (`:354`), `PressureLoad.face` (`:412`), `TractionLoad.face` (`:440`), `BodyForce.body` (`:470`) — all `param … : String = ""`. (4370/Bmig pending; the migration is **not** on main yet.) |
+| ~~`validate_selector_target` rejects `Value::Selector` AND `Value::Frame`~~ **STALE / RED HERRING (2026-07-20)** | **now MISLEADING** | Post-4370 the fn accepts `Value::Selector` too (`helpers.rs:218`: `Value::Selector(_) \| Value::Map(_) \| Value::String(_) => Some(())`). More importantly it is **NOT the ctor-field guard**: its only callers are `supports.rs:120,138` (`DisplacementSupport`/`RollerSupport` native builtins, **zero call sites in the corpus**); the `structure def` load/support ctors never reach it, and its `None→Value::Undef` has no diagnostic channel. The real guard is the struct-ctor chokepoint (`struct-ctor-field-type-conformance.md`). |
+| FEA target fields are still `String = ""` placeholders | **PARTIALLY STALE (2026-07-20)** | `PressureLoad.face` is now `Option<FaceSelector> = none` (4370). Still `String = ""`: `PointLoad.point` (`fea_multi_case.ri:316`), `FixedSupport.target` (`:355`), `TractionLoad.face` (`:447`), `BodyForce.body` (`:477`), `PinnedSupport.target` (`:380`) — owned by **v0.6 Bmig2** (pending). Re-locate at dispatch. |
 | `SelectorKind::Vertex` exists (dim 0, `Display→"VertexSelector"`) | **TRUE** | `crates/reify-core/src/ty.rs:39-79` `{Face,Edge,Body,Vertex}`; `dimensionality()` 2/1/3/0 (task **4368 done**). |
 | `Value::Frame` exists; `@point(x,y,z) → Value::Frame` eager/kernel-free | **TRUE** | `crates/reify-ir/src/value.rs:970-973` `Frame{origin,basis}`; `crates/reify-expr/src/lib.rs:1194-1228` builds `Value::Frame{…, basis: identity-quaternion}`. (P0 invariant 4 / P2 §2.) |
 | **NEGATIVE-SENTINEL: a `Value::Frame` at an FEA target is *silently accepted* today** | **TRUE (the gap P4 closes)** | `reify check` on `structure G { let pose = frame3(point3(0mm,0mm,0mm), orient_identity()); let s = FixedSupport(target: pose) }` exits **0 + "All constraints satisfied."** with **no diagnostic** (this session). The `String`-typed field does **no** nominal arg-vs-param rejection of a `Frame` (same silent-accept class as task **4575** — overlay G3 §2). Rejection capability is **absent** today. |
@@ -106,7 +126,7 @@ No unverified substrate remains. The one **false premise** (`r3b`) is corrected 
 |---|---|---|
 | **D1** | **FEA region targets are region-references only — set-only.** A `Value::Frame` (a coordinate *pose*: `@point`/`frame3(…)`) is **not** an FEA load/support target. Targets are `RegionRef`s named by intent (`vertex()/face()/edge()/body()`/predicate). | Leo, 2026-06-24. Honors P0 §6.2 / invariant 4 (pose ≠ region-set, distinct types) and v0.6 D2 (named-target idiom, not coordinate entry). A point load is a *located feature on the realized body*, named by a vertex selector — not a free coordinate. |
 | **D2** | **Coordinate/`Frame` loads are a *named future follow-up*, not built here** (no consumer today). If a consumer for "load at an arbitrary coordinate" is ever demonstrated, it returns as a separate PRD: it needs a `frame → FE-node` resolver (nearest/coincident — **unimplemented**, unowned; 4092 is selector→node only) **and** a parseable frame-target surface — both currently absent. | Leo, 2026-06-24 (Q1 answer). Avoids a G3/G6-blocked, premature build that overlaps 4092's domain. Recorded in §6 / §7, not filed (no consumer ⇒ not runnable). |
-| **D3** | **P4 owns the *reject-side* pose-vs-set guard; v0.6 4370 owns the *accept-side*.** The rejection of a `Value::Frame` at any FEA region-target **must fire with a structured pose-vs-set diagnostic** (closing the §3 silent-accept) — *verify-or-wire*: confirm the post-4370 selector-typed fields' type-conformance rejects a non-selector `Frame`, and if any field does not (the single-kind load fields are the risk — 4371 BT4 only covers `FixedSupport`), wire the explicit reject + diagnostic at `validate_selector_target` (replacing the opaque `_ => None`) and ensure it guards every target field. | The §3 live finding: today it is a silent accept (4575 class). 4370 widens the accept-set; the *explicit, diagnosable* reject of a *pose* is the complementary discipline P0 §6.2 names as "P4 must satisfy." Lands **after 4370** (hard dep) — same function, sequential, no churn. |
+| **D3** *(2026-07-20 re-point)* | **The reject *mechanism* is the general struct-ctor conformance chokepoint (`struct-ctor-field-type-conformance.md`); P4-π is its FEA-target *verifier*.** The rejection of a `Value::Frame` at any FEA region-target **fires with a structured pose-vs-set diagnostic** (closing the §3 silent-accept) via that chokepoint's C1-row-12 — **not** by wiring `validate_selector_target` (the corrected false premise: that fn is unreachable from the `structure def` ctor fields, §3). P4-π commits the negative fixtures (Frame at `face`/`point`/`target`) and **asserts** the chokepoint diagnostic fires. | The §3 live finding: today it is a silent accept — the *general* unenforced-struct-ctor-conformance class (the "same silent-accept class as 4575" the negative-sentinel row names), **not** the retired `validate_selector_target`. The general chokepoint is the honest, reachable wire-site; the *explicit, diagnosable* reject of a *pose* is the discipline P0 §6.2 names as "P4 must satisfy." **P4-π depends_on the chokepoint's Error-flip (δ) + 4811**; FEA field typing itself is v0.6 (Bmig/Bmig2). |
 | **D4** | **Correct the brief's `r3b` false premise: *create* a real guard, don't "flip" a phantom.** The negative fixture asserting the pose-vs-set boundary is a **new** committed `.ri` + a `reify check`/`eval` diagnostic; it does not depend on the non-existent `r3b` fixture. | §3 substrate: `r3b…ri` does not exist on main. (`feedback_verify_todo_premise_before_reopen` — grep the named site before trusting the citation.) |
 
 ## 5. Decomposition plan (G2 signal drafted; hard check at decompose)
@@ -117,33 +137,39 @@ Approach **B** (single guard leaf — **not** B+H): the FEA seam is a G5 load-be
 + the coherence record. Active blast radius ≤ ~2 crates (`reify-stdlib` helpers + an `examples/`-or-
 `tests/` fixture). No new integration seam.
 
-- **P4-π — Pose-vs-set FEA-target boundary guard** *(leaf / `depends_on` 4370, 4811).*
+- **P4-π (task 4833) — Pose-vs-set FEA-target boundary VERIFIER** *(leaf / `depends_on` the struct-ctor
+  chokepoint's Error-flip δ, + 4811).* *(2026-07-20 re-scope: consumer/verifier of the chokepoint, not
+  the owner of a `validate_selector_target` reject arm.)*
   *Scope:* a committed negative fixture passing a `Value::Frame` (the parseable `frame3(point3(…),
   orient_identity())` pose) to FEA region-target fields — at minimum a single-kind **load** field
   (`PressureLoad(face: <pose>)` and `PointLoad(point: <pose>)`) **and** the kind-agnostic
-  `FixedSupport(target: <pose>)` — and the assertion that `reify check`/`eval` emits a **structured
-  pose-vs-set diagnostic** (a `Frame`/pose is not a region target; name a vertex/face/edge), **not** the
-  current silent accept. **Verify-or-wire (D3):** confirm the post-4370 selector-typed-field
-  type-conformance rejects the non-selector `Frame`; if any target field does not, wire the explicit
-  `Value::Frame`-reject + diagnostic at `validate_selector_target` (`helpers.rs`, replacing `_ => None`)
-  and ensure it guards every region-target field. Keep the v0.6-migrated region-target examples
-  (`fea_cantilever_smoke.ri`, `fea_multi_case.ri`) checking clean (no regression).
-  *Modules:* `crates/reify-stdlib/src/helpers.rs` (+ `loads.rs`/`supports.rs` wiring iff needed); a
-  committed fixture under `crates/reify-stdlib/tests/` **or** `tests/prd-gate/fixtures/` (architect's
-  call — `metadata.files = []`, footprint acquired at edit time after 4370 lands).
-  *User-observable signal (leaf, CLI diagnostic):* the committed fixture makes `reify check` (or `eval`,
-  if the guard is the runtime trampoline) emit the pose-vs-set diagnostic on a `Frame`-targeted load
-  **and** support — where today it exits 0 / "All constraints satisfied." with no diagnostic — and the
-  migrated region-target examples still check clean.
+  `FixedSupport(target: <pose>)` — and the assertion that `reify check` emits the **structured
+  pose-vs-set diagnostic** delivered by the general struct-ctor conformance chokepoint (C1-row-12:
+  `a coordinate pose is not a region target; select a face/edge/vertex instead`), **not** the current
+  silent accept. **No wiring in P4:** the reject mechanism is the chokepoint (the `validate_selector_target`
+  "verify-or-wire" plan was a false premise — §3; that fn does not guard ctor fields). P4-π only commits
+  fixtures + asserts. Keep the v0.6-migrated region-target examples (`fea_cantilever_smoke.ri`,
+  `fea_multi_case.ri`, and post-Bmig2 the migrated cantilever) checking clean (no regression).
+  *Note on field kinds:* pre-Bmig2, `point`/`target` are still `String`, so a Frame there is a
+  `String`-mismatch diagnostic; post-Bmig2 they are selector-typed and it is the kind-specific pose-vs-set
+  message. `face` is selector-typed today (4370) → pose-vs-set message immediately once the chokepoint lands.
+  *Modules:* committed fixtures only, under `crates/reify-stdlib/tests/` **or** `tests/prd-gate/fixtures/`
+  (architect's call — `metadata.files = []`, footprint acquired at edit time after the chokepoint's δ lands).
+  *User-observable signal (leaf, CLI diagnostic):* the committed fixture makes `reify check` emit the
+  pose-vs-set diagnostic on a `Frame`-targeted load **and** support — where today it exits 0 / "All
+  constraints satisfied." with no diagnostic — and the migrated region-target examples still check clean.
   *Consumer:* the converged FEA target surface + the single region resolver (P0 invariant 5).
-  *G6 (branch 4 — rejection-mechanism):* the rejection is **delivered by 4370** (selector-typed fields)
-  **+ this task's verify-or-wire**; today's behaviour is a **silent accept** (§3) — the binding's
-  rejection-observation is **deferred to post-4370 dispatch** (it cannot be observed pre-migration);
-  the task **owns** closing any extent gap, so it is never `producer-extent-short`. *grammar_confirmed:
+  *G6 (branch 4 — rejection-mechanism):* the rejection is **delivered by the struct-ctor conformance
+  chokepoint** (`struct-ctor-field-type-conformance.md` δ) — verified live for allowlisted types there;
+  today's behaviour is a **silent accept** (§3) — the rejection-observation is **deferred to post-chokepoint
+  dispatch** (it cannot be observed pre-enforcement); the task **owns** asserting the diagnostic on the FEA
+  fields, so it is never `producer-extent-short`. *grammar_confirmed:
   true* (no novel syntax; §3 gate PASS).
 
 **The coherence record is the PRD + §2 G4 table itself** (committed) — no separate prose task (P0 ε /
-4815 already did the spec §6.1.3/§8.12 reframe). **DAG:** `4370 → P4-π ← 4811`.
+4815 already did the spec §6.1.3/§8.12 reframe). **DAG (2026-07-20):** `struct-ctor-chokepoint(δ) → P4-π(4833) ← 4811`
+(supersedes `4370 → P4-π`: the chokepoint, not 4370, delivers the reject P4-π asserts; Bmig2 typing is a
+soft ordering preference for the kind-specific message, not a hard dep).
 
 ## 6. Out of scope (owned elsewhere — do NOT re-file)
 
