@@ -7,9 +7,10 @@
 //! `tracing` event, a `snapshot()` accessor for the downstream debug RPC, and
 //! a `format_summary()` renderer for the `--verbose` exit line.
 //!
-//! Engine call-site wiring is deferred (see the `// G-allow:` markers on the
-//! recorder functions); the events fire from the engine integration in
-//! `reify-eval`'s `engine_build.rs` (PRD task #10).
+//! The recorder functions are wired into the morph pipeline: `compose_morph`
+//! (crates/reify-mesh-morph/src/lib.rs) fires them on the matching outcome, and
+//! the events surface through the engine integration in `reify-eval`'s
+//! `engine_build.rs` (PRD task #10).
 
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -163,7 +164,6 @@ fn counter(outcome: MorphOutcome) -> &'static AtomicU64 {
 // this module path (`reify_mesh_morph::diagnostics`).
 
 /// Record a successful morph.
-// G-allow: live wiring owner: task #4744 (volume-mesh-realization-and-morph-wiring §8 task β — morph arm in dispatch_volume_mesh, engine_build.rs); debug-RPC snapshot consumer #2949 (done); re-homed from cancelled #3429
 pub fn record_morphed() {
     tracing::trace!("mesh morph: morphed");
     counter(MorphOutcome::Morphed).fetch_add(1, Ordering::Relaxed);
@@ -174,7 +174,6 @@ pub fn record_morphed() {
 /// [`QualityVerdict::Pass`] is not a remesh trigger — the engine only calls this
 /// on a fail verdict — so it is a no-op here. The `debug_assert!` makes that
 /// contract loud in debug builds at no release-build cost.
-// G-allow: live wiring owner: task #4744 (volume-mesh-realization-and-morph-wiring §8 task β — morph arm in dispatch_volume_mesh, engine_build.rs); debug-RPC snapshot consumer #2949 (done); re-homed from cancelled #3429
 pub fn record_quality_remesh(verdict: &QualityVerdict) {
     let outcome = match verdict {
         QualityVerdict::HardFail(details) => {
@@ -212,7 +211,6 @@ pub fn record_quality_remesh(verdict: &QualityVerdict) {
 }
 
 /// Record an ineligible edit, bucketed by reject category.
-// G-allow: live wiring owner: task #4744 (volume-mesh-realization-and-morph-wiring §8 task β — morph arm in dispatch_volume_mesh, engine_build.rs); debug-RPC snapshot consumer #2949 (done); re-homed from cancelled #3429
 pub fn record_ineligible(reason: &Reason) {
     tracing::trace!(reason = ?reason, "mesh morph: ineligible edit");
     let outcome = match reason {
@@ -224,7 +222,6 @@ pub fn record_ineligible(reason: &Reason) {
 }
 
 /// Record a caught morph panic; `detail` is surfaced in the ERROR log message.
-// G-allow: live wiring owner: task #4744 (volume-mesh-realization-and-morph-wiring §8 task β — morph arm in dispatch_volume_mesh, engine_build.rs); debug-RPC snapshot consumer #2949 (done); re-homed from cancelled #3429
 pub fn record_panicked(detail: &str) {
     tracing::error!("mesh morph panicked: {detail}");
     counter(MorphOutcome::Panicked).fetch_add(1, Ordering::Relaxed);
