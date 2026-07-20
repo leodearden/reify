@@ -1338,6 +1338,15 @@ impl Engine {
             let has_dirty_guards = graph.structure_controlling.iter().any(|sc_id| {
                 dirty_cone.contains(&NodeId::Value(sc_id.clone())) || changed_set.contains(sc_id)
             });
+            if std::env::var("SCRATCH_DEBUG").is_ok() {
+                eprintln!(
+                    "DEBUG structure_controlling={:?} dirty_cone_has={:?} changed_set={:?} has_dirty_guards={}",
+                    graph.structure_controlling,
+                    graph.structure_controlling.iter().map(|sc| dirty_cone.contains(&NodeId::Value(sc.clone()))).collect::<Vec<_>>(),
+                    changed_set,
+                    has_dirty_guards
+                );
+            }
 
             if has_dirty_guards {
                 let mut set = HashMap::new();
@@ -1381,6 +1390,19 @@ impl Engine {
                     new_snapshot
                         .values
                         .insert(group.guard_cell.clone(), (guard_val.clone(), guard_det));
+                    if std::env::var("SCRATCH_DEBUG").is_ok() {
+                        eprintln!(
+                            "DEBUG group.guard_cell={:?} guard_val={:?} old_snapshot_val={:?} unchanged={}",
+                            group.guard_cell,
+                            guard_val,
+                            self.eval_state.as_ref().and_then(|s| s.snapshot.values.get(&group.guard_cell)),
+                            guard_value_unchanged(
+                                self.eval_state.as_ref().map(|s| &s.snapshot.values),
+                                &group.guard_cell,
+                                &guard_val,
+                            )
+                        );
+                    }
                     if guard_value_unchanged(
                         self.eval_state.as_ref().map(|s| &s.snapshot.values),
                         &group.guard_cell,
@@ -6706,5 +6728,314 @@ structure GrowColl {
                 "expected Started payload Custom(\"edit-reeval|cache-skip=<reason>\"), got {other:?}"
             ),
         }
+    }
+
+    /// Task δ (#5056) reviewer round 4 (`reviewer_comprehensive` /
+    /// `test-coverage`): the fixture above pins ONLY U2 (collection-resize
+    /// child); U1/U3/U4 each carry a distinct `CacheLeg::Skip(reason)`
+    /// string, loop, and determinacy source, so a regression that swapped
+    /// ONE of them to `CacheLeg::Record`, picked the wrong
+    /// `DeterminacyRule`, or dropped the journal leg would not be caught by
+    /// any test in this diff. This fixture isolates U1 (post-wave2
+    /// active-member reseed): a guarded group with no field/collection
+    /// involvement, so U1 is the ONLY unrecorded site the edit can reach.
+    ///
+    /// Mirrors the integration fixture
+    /// `edit_path_reeval_surfaces_dropped_field_oob_warning`'s
+    /// `OOB_GUARD_SRC` shape (same "directly-edited bool guard activates a
+    /// member" pattern, minus the field sampling — that fixture proves the
+    /// runtime-sink leg; this one proves the cache-skip leg with U1's own
+    /// exact reason string, checked via equality rather than the shared
+    /// prefix `edit_param_unrecorded_sites_skip_cache_via_primitive` uses).
+    #[test]
+    fn edit_param_u1_guard_member_reseed_skips_cache_via_primitive() {
+        use reify_constraints::SimpleConstraintChecker;
+        use reify_core::ValueCellId;
+        use reify_ir::{DeterminacyState, Value};
+        use reify_test_support::compile_source;
+
+        use crate::cache::NodeId;
+        use crate::cell_commit::TraceSource;
+        use crate::journal::{EventKind, EventPayload};
+
+        const SRC: &str = r#"structure GuardU1 {
+    param cond : Bool = false
+    where cond {
+        let m = 5mm
+    }
+}"#;
+
+        let compiled = compile_source(SRC);
+        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None);
+        engine.eval(&compiled);
+
+        let cond_id = ValueCellId::new("GuardU1", "cond");
+        let m_id = ValueCellId::new("GuardU1", "m");
+        let result = engine
+            .edit_param(cond_id, Value::Bool(true))
+            .expect("edit_param(cond, true) must succeed after a cold eval");
+
+        let node = NodeId::Value(m_id.clone());
+
+        // (a) values + snapshot legs.
+        let result_val = result
+            .values
+            .get(&m_id)
+            .expect("m must be in result.values after activation");
+        assert_scalar_si_approx_eq(result_val, 0.005, 1e-9, "result.values[m]");
+
+        let snapshot = engine
+            .snapshot()
+            .expect("snapshot must exist after edit_param");
+        let (snap_v, snap_det) = snapshot
+            .values
+            .get(&m_id)
+            .expect("m must be in snapshot.values after activation");
+        assert_eq!(
+            *snap_det,
+            DeterminacyState::Determined,
+            "snapshot.values[m] must be Determined"
+        );
+        assert_scalar_si_approx_eq(snap_v, 0.005, 1e-9, "snapshot.values[m]");
+
+        // (b) NO cache entry — U1 deliberately skips the cache leg.
+        assert!(
+            engine.cache_store().get(&node).is_none(),
+            "m must have NO cache entry (U1 is an unrecorded site)"
+        );
+
+        // (c) journal Started payload carries U1's OWN cache-skip reason,
+        // checked by exact equality (not just the shared prefix) so a
+        // regression that mixed up U1's reason with another site's is caught.
+        let events = engine.journal().events_for_node(&node);
+        assert!(
+            events.len() >= 2,
+            "expected at least a Started+Completed pair for m, got {events:?}"
+        );
+        let started = events[events.len() - 2];
+        assert!(
+            matches!(started.kind, EventKind::Started),
+            "expected the second-to-last event to be Started, got {:?}",
+            started.kind
+        );
+        let expected_slug = format!(
+            "{}|cache-skip=post-wave2 guard-member reseed",
+            TraceSource::EditReeval.as_str()
+        );
+        match &started.payload {
+            Some(EventPayload::Custom(slug)) => assert_eq!(
+                slug, &expected_slug,
+                "Started payload must carry U1's exact cache-skip reason"
+            ),
+            other => panic!("expected Started payload Custom({expected_slug:?}), got {other:?}"),
+        }
+    }
+
+    /// Task δ (#5056) reviewer round 4 (`reviewer_comprehensive` /
+    /// `test-coverage`): extends the U1 fixture above's coverage to U3
+    /// (synthetic per-member aggregate list `__list_<sub>__<member>`).  U3
+    /// fires from the SAME collection-resize block as U2 (whenever a
+    /// collection's count changes, once per distinct member name, after the
+    /// per-instance child-cell loop) but commits a DIFFERENT cell with its
+    /// OWN `CacheLeg::Skip("synthetic member-list aggregate")` reason —
+    /// distinct from U2's `"collection-resize child re-recorded by
+    /// structural rebuild"`. Reuses the `GrowColl` shape from the U2
+    /// fixture (n: 2 -> 3) but targets the aggregate cell instead of a
+    /// per-instance child cell.
+    #[test]
+    fn edit_param_u3_synthetic_member_list_skips_cache_via_primitive() {
+        use reify_constraints::SimpleConstraintChecker;
+        use reify_core::ValueCellId;
+        use reify_ir::{DeterminacyState, Value};
+        use reify_test_support::compile_source;
+
+        use crate::cache::NodeId;
+        use crate::cell_commit::TraceSource;
+        use crate::journal::{EventKind, EventPayload};
+
+        const SRC: &str = r#"structure BoltPart {
+    param diameter : Length = 5mm
+}
+structure GrowColl {
+    param n : Int = 2
+    sub bolts : List<BoltPart>
+    constraint bolts.count == n
+}"#;
+
+        let compiled = compile_source(SRC);
+        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None);
+        engine.eval(&compiled);
+
+        let n_id = ValueCellId::new("GrowColl", "n");
+        let result = engine
+            .edit_param(n_id, Value::Int(3))
+            .expect("edit_param(n, 3) must succeed after a cold eval");
+
+        // The synthetic per-member aggregate — committed once per distinct
+        // member name (not once per instance) after the child-cell loop.
+        let list_id = ValueCellId::new("GrowColl", "__list_bolts__diameter");
+        let node = NodeId::Value(list_id.clone());
+
+        // (a) values + snapshot legs. A List value (not a scalar), so this
+        // fixture confirms presence + Determined rather than a numeric
+        // tolerance check — the per-element values are the U2 fixture's job.
+        assert!(
+            result.values.get(&list_id).is_some(),
+            "__list_bolts__diameter must be in result.values after the grow"
+        );
+        let snapshot = engine
+            .snapshot()
+            .expect("snapshot must exist after edit_param");
+        let (_, snap_det) = snapshot
+            .values
+            .get(&list_id)
+            .expect("__list_bolts__diameter must be in snapshot.values after the grow");
+        assert_eq!(
+            *snap_det,
+            DeterminacyState::Determined,
+            "snapshot.values[__list_bolts__diameter] must be Determined"
+        );
+
+        // (b) NO cache entry — U3 deliberately skips the cache leg.
+        assert!(
+            engine.cache_store().get(&node).is_none(),
+            "__list_bolts__diameter must have NO cache entry (U3 is an unrecorded site)"
+        );
+
+        // (c) journal Started payload carries U3's OWN cache-skip reason,
+        // checked by exact equality (not just the shared prefix).
+        let events = engine.journal().events_for_node(&node);
+        assert!(
+            events.len() >= 2,
+            "expected at least a Started+Completed pair for __list_bolts__diameter, got {events:?}"
+        );
+        let started = events[events.len() - 2];
+        assert!(
+            matches!(started.kind, EventKind::Started),
+            "expected the second-to-last event to be Started, got {:?}",
+            started.kind
+        );
+        let expected_slug = format!(
+            "{}|cache-skip=synthetic member-list aggregate",
+            TraceSource::EditReeval.as_str()
+        );
+        match &started.payload {
+            Some(EventPayload::Custom(slug)) => assert_eq!(
+                slug, &expected_slug,
+                "Started payload must carry U3's exact cache-skip reason"
+            ),
+            other => panic!("expected Started payload Custom({expected_slug:?}), got {other:?}"),
+        }
+    }
+
+    /// Task δ (#5056) reviewer round 4 (`reviewer_comprehensive` /
+    /// `test-coverage`): extends the U1/U3 fixtures above's coverage to U4
+    /// (θ2 grown-instance reseed). Reuses the identical `GrowColl` shape
+    /// AND target cell (`bolts[2].diameter`) as the U2 fixture above:
+    /// `bolts[2]` is a genuinely NEW instance (absent from the pre-edit
+    /// graph, since old_count was 2), so per U4's own documented contract it
+    /// is committed TWICE within the same `edit_param` call — once by U2's
+    /// child-creation loop, then again by U4's grown-instance reseed, which
+    /// runs after and is the final writer (same U2-then-U4 relationship the
+    /// integration fixture
+    /// `warm_collection_grow_commits_identical_determinacy_to_cold_eval`
+    /// documents). This fixture checks the journal's LAST Started/Completed
+    /// pair for the node — the final, persisted commit — and pins it to
+    /// U4's OWN `CacheLeg::Skip("grown-instance reseed after structural
+    /// grow (θ2)")` reason specifically (exact equality, not the shared
+    /// prefix), so a regression isolated to U4's reason/rule/journal leg
+    /// (while leaving U2's untouched) is caught here even though it would
+    /// slip past the U2-only fixture above.
+    #[test]
+    fn edit_param_u4_grown_instance_reseed_skips_cache_via_primitive() {
+        use reify_constraints::SimpleConstraintChecker;
+        use reify_core::ValueCellId;
+        use reify_ir::Value;
+        use reify_test_support::compile_source;
+
+        use crate::cache::NodeId;
+        use crate::cell_commit::TraceSource;
+        use crate::journal::{EventKind, EventPayload};
+
+        const SRC: &str = r#"structure BoltPart {
+    param diameter : Length = 5mm
+}
+structure GrowColl {
+    param n : Int = 2
+    sub bolts : List<BoltPart>
+    constraint bolts.count == n
+}"#;
+
+        let compiled = compile_source(SRC);
+        let mut engine = crate::Engine::new(Box::new(SimpleConstraintChecker), None);
+        engine.eval(&compiled);
+
+        let n_id = ValueCellId::new("GrowColl", "n");
+        engine
+            .edit_param(n_id, Value::Int(3))
+            .expect("edit_param(n, 3) must succeed after a cold eval");
+
+        let child_id = ValueCellId::new("GrowColl.bolts[2]", "diameter");
+        let node = NodeId::Value(child_id.clone());
+
+        // U2 (creation) AND U4 (grown-instance reseed) both commit this
+        // node in this call, so the journal must carry (at least) two
+        // Started+Completed pairs for it.
+        let events = engine.journal().events_for_node(&node);
+        assert!(
+            events.len() >= 4,
+            "expected at least two Started+Completed pairs for bolts[2].diameter \
+             (U2 then U4), got {events:?}"
+        );
+        let started = events[events.len() - 2];
+        assert!(
+            matches!(started.kind, EventKind::Started),
+            "expected the second-to-last event to be Started, got {:?}",
+            started.kind
+        );
+        let expected_slug = format!(
+            "{}|cache-skip=grown-instance reseed after structural grow (θ2)",
+            TraceSource::EditReeval.as_str()
+        );
+        match &started.payload {
+            Some(EventPayload::Custom(slug)) => assert_eq!(
+                slug, &expected_slug,
+                "the FINAL Started payload for bolts[2].diameter must carry U4's \
+                 exact cache-skip reason (U4 is the last writer)"
+            ),
+            other => panic!("expected Started payload Custom({expected_slug:?}), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn scratch_probe_case_a_double_eval() {
+        use reify_core::ValueCellId;
+        use reify_ir::Value;
+        use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
+
+        const SRC: &str = r#"
+field def f : Real -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(1.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [0.0, 1.0] } }
+
+structure GuardCaseA {
+    param x : Length = -1mm
+    where x > 0mm {
+        let oob = sample(f, 5.0m)
+    }
+}
+"#;
+
+        let compiled = parse_and_compile_with_stdlib(SRC);
+        let mut engine = make_simple_engine();
+        engine.eval(&compiled);
+
+        let x_id = ValueCellId::new("GuardCaseA", "x");
+        let result = engine
+            .edit_param(x_id, Value::length(0.01))
+            .expect("edit_param must succeed");
+
+        panic!(
+            "diagnostics after activating oob via edit_param(x, 10mm): {:#?}",
+            result.diagnostics
+        );
     }
 }
