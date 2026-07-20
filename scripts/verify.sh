@@ -1521,6 +1521,24 @@ add_test_passes() {
     # The slot is also freed automatically on any verify.sh exit (FD 9 closes),
     # so the failure path needs no explicit release sentinel.
     add "@@SEMAPHORE_RELEASE@@"
+
+    # retry_failed_only (task 5287): attempt-0 sidecar stamp. On a FULL merge
+    # gate (DF_VERIFY_ROLE=merge AND NOT a failed_only retry), record the tree
+    # that just passed so a later retry can tree-pin its narrowed subset against
+    # the warm _merge-verify target/. Emitted as the FINAL plan line — after
+    # @@SEMAPHORE_RELEASE@@, and add_test_passes is build_plan's last
+    # contributor — so, the plan being sequential with the executor exiting on
+    # first failure, it writes ONLY once the whole attempt-0 gate (run_all + gui
+    # + every pass, all emitted earlier) has already passed. tree_oid (git
+    # rev-parse HEAD: = the TREE OID) and timestamp are computed at RUN time;
+    # ${PROFILES[*]} is baked at build time. Guarded on `test -d target` and
+    # tolerant of git failure (|| echo unknown) and write failure (|| true),
+    # mirroring the target/.reify-bin-sha stamp (task 5133). Survives a warm-lane
+    # reseed (under target/, git clean -xfd -e target). A retry (scope=failed_only)
+    # deliberately does NOT re-stamp — DF re-runs a full attempt-0 for a new tree.
+    if [ "$DF_VERIFY_ROLE" = "merge" ] && [ "${REIFY_VERIFY_RETRY_SCOPE:-}" != "failed_only" ]; then
+        add "if test -d target; then printf '{\"tree_oid\":\"%s\",\"profiles\":\"%s\",\"timestamp\":\"%s\"}\\n' \"\$(git rev-parse HEAD: 2>/dev/null || echo unknown)\" \"${PROFILES[*]}\" \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" > \"${_ATTEMPT_SIDECAR_PATH}\" 2>/dev/null || true; fi"
+    fi
 }
 
 build_plan() {
