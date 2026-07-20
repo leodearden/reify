@@ -118,6 +118,14 @@ assert "A1: SUT output contains NO 'live section budget' skip marker" \
 assert "A2: SUT exits 0 under cheap-skip config (rc=${_SUT_RC})" \
     test "${_SUT_RC}" -eq 0
 
+# A4: SUT output contains the host_supports_governance SKIP markers for
+# ROW4 and ROW2_3, proving no real cgroup-governance burns ran.
+assert "A4: SUT output contains ROW4 and ROW2_3 host-governance SKIP markers" \
+    bash -c '
+        grep -q "SKIP ROW4: host does not support cgroup governance" "$1" &&
+        grep -q "SKIP ROW2_3: host does not support cgroup governance" "$1"
+    ' _ "$_SUT_OUT"
+
 rm -f "$_SUT_OUT"
 
 # ── Final summary ──────────────────────────────────────────────────────────────
