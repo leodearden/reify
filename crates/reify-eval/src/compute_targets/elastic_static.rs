@@ -4051,24 +4051,9 @@ fn extract_loads(val: &Value, density: f64) -> Result<ExtractedLoads, FeaValueSh
                     }
                 }
             } else if data.type_name == "PressureLoad" {
-                let magnitude = match data.fields.get("magnitude") {
-                    Some(Value::Real(m)) => *m,
-                    Some(Value::Scalar { si_value, .. }) => *si_value,
-                    _ => continue,
-                };
-                let face = match data.fields.get("face").and_then(extract_pressure_face_name) {
-                    Some(f) => f,
-                    None => continue,
-                };
-                let direction = match data.fields.get("direction") {
-                    Some(Value::String(s)) => s.clone(),
-                    _ => "normal".to_string(),
-                };
-                pressures.push(PressureSpec {
-                    magnitude,
-                    face,
-                    direction,
-                });
+                if let Some(spec) = parse_pressure_spec(data) {
+                    pressures.push(spec);
+                }
             } else if data.type_name == "Gravity" {
                 // body_force_axis = ρ · magnitude · direction[axis]  (N·m⁻³)
                 let magnitude = match data.fields.get("magnitude") {
@@ -4145,6 +4130,67 @@ fn extract_pressure_face_name(v: &Value) -> Option<String> {
     }
 }
 
+/// Parse a single `PressureLoad` `StructureInstance` into a [`PressureSpec`], or
+/// `None` when the load should be skipped.
+///
+/// Factored out of the production [`extract_loads`] pass and the test-only
+/// [`extract_pressure_loads`] so the two extractors share one copy of the
+/// per-field (magnitude/face/direction) shape logic and cannot drift.
+///
+/// Returns `None` (skips the load) when:
+/// - `magnitude` is absent or is neither `Value::Real` nor `Value::Scalar`;
+/// - `face` is absent, or is the `= none` default (`Value::Option(None)`): a
+///   `PressureLoad` with no face applies no traction, and this is skipped
+///   *quietly* — it is the field's post-migration default, not an error;
+/// - `face` carries a value that [`extract_pressure_face_name`] cannot map to one
+///   of the six named box faces — a non-`Named` selector leaf (e.g. `faces(b)`)
+///   or a composed Union/Intersect/Difference. Because the field is now typed
+///   `Option<FaceSelector>` a user can readily write such a selector, so rather
+///   than dropping the load silently a `tracing::warn!` is emitted naming the
+///   offending shape.
+///
+/// `direction` defaults to `"normal"` when absent or non-`String` (the only
+/// supported value in v1).
+fn parse_pressure_spec(data: &StructureInstanceData) -> Option<PressureSpec> {
+    let magnitude = match data.fields.get("magnitude") {
+        Some(Value::Real(m)) => *m,
+        Some(Value::Scalar { si_value, .. }) => *si_value,
+        _ => return None,
+    };
+    let face = match data.fields.get("face") {
+        Some(face_val) => match extract_pressure_face_name(face_val) {
+            Some(name) => name,
+            None => {
+                // The `= none` default materialises as `Value::Option(None)` and
+                // means "no face specified" → skip quietly. Any *other*
+                // unresolvable shape is a face the author did specify but which
+                // `box_face_plane` cannot map to a named box face → surface it
+                // instead of dropping traction with no trace.
+                if !matches!(face_val, Value::Option(None)) {
+                    tracing::warn!(
+                        magnitude,
+                        face = ?face_val,
+                        "PressureLoad.face does not resolve to one of the six named \
+                         box faces (x_min/x_max/y_min/y_max/z_min/z_max); dropping \
+                         this pressure load",
+                    );
+                }
+                return None;
+            }
+        },
+        None => return None,
+    };
+    let direction = match data.fields.get("direction") {
+        Some(Value::String(s)) => s.clone(),
+        _ => "normal".to_string(),
+    };
+    Some(PressureSpec {
+        magnitude,
+        face,
+        direction,
+    })
+}
+
 /// Extract all `PressureLoad` StructureInstances from a `Value::List`.
 ///
 /// Items that are not `PressureLoad` (e.g. `PointLoad`, `FixedSupport`) are
@@ -4165,25 +4211,9 @@ pub(crate) fn extract_pressure_loads(val: &Value) -> Vec<PressureSpec> {
     for item in items.iter() {
         if let Value::StructureInstance(data) = item
             && data.type_name == "PressureLoad"
+            && let Some(spec) = parse_pressure_spec(data)
         {
-            let magnitude = match data.fields.get("magnitude") {
-                Some(Value::Real(m)) => *m,
-                Some(Value::Scalar { si_value, .. }) => *si_value,
-                _ => continue,
-            };
-            let face = match data.fields.get("face").and_then(extract_pressure_face_name) {
-                Some(f) => f,
-                None => continue,
-            };
-            let direction = match data.fields.get("direction") {
-                Some(Value::String(s)) => s.clone(),
-                _ => "normal".to_string(),
-            };
-            result.push(PressureSpec {
-                magnitude,
-                face,
-                direction,
-            });
+            result.push(spec);
         }
     }
     result
@@ -6229,6 +6259,85 @@ mod tests {
         );
         assert_eq!(pressures[0].magnitude, 1.0e6);
         assert_eq!(pressures[0].face, "x_max");
+    }
+
+    /// amend (task 4370): directly pin the two `Value::Option` arms that the
+    /// `PressureLoad.face : String → Option<FaceSelector>` migration added to
+    /// `extract_pressure_face_name`. The bare-`Value::Selector` test above
+    /// exercises the leaf arm but not these, and after migration the *production*
+    /// runtime shape is `Value::Option(Some(Value::Selector(..)))` (the field is
+    /// `Option`-typed), with `Value::Option(None)` the `= none` default.
+    ///
+    /// - `Value::Option(Some(Value::Selector(Named)))` → recurse+unwrap → 1 spec.
+    /// - `Value::Option(None)` (the `= none` default) → skipped → 0 specs (never a
+    ///   spurious empty-face load).
+    #[test]
+    fn extract_pressure_face_name_handles_option_arms() {
+        use reify_core::identity::RealizationNodeId;
+        use reify_core::ty::SelectorKind;
+        use reify_ir::value::{GeometryHandleRef, LeafQuery, SelectorValue};
+        use reify_ir::{PersistentMap, StructureInstanceData, StructureTypeId};
+
+        let named_face_selector = |name: &str| {
+            let target = GeometryHandleRef {
+                realization_ref: RealizationNodeId::new("TestBody", 0),
+                upstream_values_hash: [0u8; 32],
+                kernel_handle: None,
+            };
+            Value::Selector(
+                SelectorValue::leaf(SelectorKind::Face, target, LeafQuery::Named(name.to_string()))
+                    .expect("LeafQuery::Named accepts any SelectorKind"),
+            )
+        };
+        let make_pressure_list = |face_val: Value| {
+            let fields: PersistentMap<String, Value> = [
+                ("magnitude".to_string(), Value::Real(1.0e6)),
+                ("face".to_string(), face_val),
+                ("direction".to_string(), Value::String("normal".to_string())),
+            ]
+            .into_iter()
+            .collect();
+            Value::List(vec![Value::StructureInstance(Box::new(
+                StructureInstanceData {
+                    type_name: "PressureLoad".to_string(),
+                    type_id: StructureTypeId(u32::MAX),
+                    version: 0,
+                    fields,
+                },
+            ))])
+        };
+
+        // (a) Value::Option(Some(Value::Selector(Named))) — the wrapped, migrated
+        // production shape — must unwrap to exactly one spec naming the leaf.
+        let wrapped = Value::Option(Some(Box::new(named_face_selector("x_max"))));
+        assert_eq!(
+            extract_pressure_face_name(&wrapped).as_deref(),
+            Some("x_max"),
+            "Option(Some(Selector(Named))) must recurse+unwrap to the face name"
+        );
+        let specs = extract_pressure_loads(&make_pressure_list(wrapped));
+        assert_eq!(
+            specs.len(),
+            1,
+            "Option(Some(Selector(Named))) face must yield exactly 1 PressureSpec, got {}",
+            specs.len()
+        );
+        assert_eq!(specs[0].face, "x_max");
+        assert_eq!(specs[0].magnitude, 1.0e6);
+
+        // (b) Value::Option(None) — the `= none` default — must be skipped, both at
+        // the pure-helper level (None) and end-to-end (0 specs, no empty-face load).
+        assert_eq!(
+            extract_pressure_face_name(&Value::Option(None)),
+            None,
+            "Option(None) is the `= none` default → no face name"
+        );
+        let none_specs = extract_pressure_loads(&make_pressure_list(Value::Option(None)));
+        assert!(
+            none_specs.is_empty(),
+            "Option(None) face (the `= none` default) must skip the load, got {} spec(s)",
+            none_specs.len()
+        );
     }
 
     /// step-9 RED (task 2926): extract_execution_params reads `deterministic`
