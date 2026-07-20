@@ -319,12 +319,59 @@ fn check_shell_args(ann: &Annotation, _context: &str, diagnostics: &mut Vec<Diag
     }
 }
 
-/// Check @display arg shape. Full slice-match logic lands in step-4 (task 5233);
-/// this no-op stub keeps the `display` schema entry compiling so the
-/// registration/context tests (step-1) pass. Only called when context is valid
-/// (param/let); the caller's `else` branch enforces the short-circuit so this
-/// never fires on wrong-context.
-fn check_display_args(_ann: &Annotation, _context: &str, _diagnostics: &mut Vec<Diagnostic>) {}
+/// Check @display arg shape (task 5233). Mirrors `check_shell_args`: match the
+/// arg slice and push a Warning for any shape other than a single string
+/// literal. All warnings (matching `on_extra: WarnIgnore`) — a malformed
+/// `@display` degrades to ignored. The semantic "does this label fit the
+/// binding's dimension?" check is a SEPARATE Error-severity pass
+/// (`annotations/display.rs`), because `arg_check` has no binding-type context.
+///
+/// Only called when context is valid (param/let); the caller's `else` branch
+/// enforces the short-circuit so this never fires on wrong-context.
+///
+/// `_context` is unused but required for the uniform fn-pointer signature
+/// `fn(&Annotation, &str, &mut Vec<Diagnostic>)`.
+fn check_display_args(ann: &Annotation, _context: &str, diagnostics: &mut Vec<Diagnostic>) {
+    match ann.args.as_slice() {
+        // Well-formed: exactly one string-literal unit label.
+        [
+            reify_ir::AnnotationArg {
+                value: reify_ir::AnnotationArgValue::String(_),
+                ..
+            },
+        ] => {}
+        [] => {
+            diagnostics.push(
+                Diagnostic::warning(
+                    "@display requires exactly one string-literal unit label, \
+                     e.g. @display(\"L\")"
+                        .to_string(),
+                )
+                .with_label(DiagnosticLabel::new(ann.span, "missing unit label")),
+            );
+        }
+        [_] => {
+            diagnostics.push(
+                Diagnostic::warning(
+                    "@display unit label must be a string literal, \
+                     e.g. @display(\"L\")"
+                        .to_string(),
+                )
+                .with_label(DiagnosticLabel::new(ann.span, "non-string unit label")),
+            );
+        }
+        _ => {
+            diagnostics.push(
+                Diagnostic::warning(
+                    "@display accepts exactly one argument (unit label); \
+                     extra arguments will be ignored"
+                        .to_string(),
+                )
+                .with_label(DiagnosticLabel::new(ann.span, "too many arguments")),
+            );
+        }
+    }
+}
 
 /// Check `@version(N)` shape AND context (task 3540 SIR-α). The schema lists
 /// `@version` as valid in all contexts so the generic context-mismatch warning
