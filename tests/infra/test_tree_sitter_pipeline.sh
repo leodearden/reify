@@ -389,6 +389,57 @@ test_hooks_include_generation() {
     fi
 }
 
+test_print_plan_capture_retries_on_truncation() {
+    # ITEM 1 (task 5260): prove capture_print_plan retries a truncated/SIGPIPE-class
+    # --print-plan capture to completion. A deterministic fake emitter, backed by an
+    # mktemp counter file, returns a TRUNCATED dump (only the '# verify.sh plan'
+    # header, missing the '# --- commands' marker) on invocation #1 and a COMPLETE
+    # dump (both structural markers verify.sh unconditionally emits) on invocation
+    # #2+, so capture_print_plan must retry past the truncated first attempt.
+    #
+    # RED before plan_capture_lib.sh is sourced at file-top (capture_print_plan is
+    # undefined, so the capture call fails and this test FAILS); GREEN once step-2
+    # sources the lib.
+    local counter
+    counter=$(mktemp)
+    CLEANUP_ACTIONS+=("rm -f '$counter'")
+    printf '0' > "$counter"
+
+    # Deterministic fake plan emitter (global once defined; inherited by the
+    # command-substitution subshell capture_print_plan runs it in). The counter
+    # file path is passed as an explicit arg — no reliance on dynamic-scope leak.
+    _fake_plan_emit() {
+        local _cf="$1" _n
+        _n=$(cat "$_cf")
+        _n=$((_n + 1))
+        printf '%s' "$_n" > "$_cf"
+        echo "# verify.sh plan"
+        if [ "$_n" -ge 2 ]; then
+            echo "./scripts/tree-sitter-generate.sh"
+            echo "# --- commands"
+        fi
+    }
+
+    local out="" rc=0
+    capture_print_plan out 3 _fake_plan_emit "$counter" || rc=$?
+
+    if [ "$rc" -ne 0 ]; then
+        echo ""
+        echo "  ASSERTION FAILED: capture_print_plan returned $rc (expected 0 — retry to a complete capture)"
+        return 1
+    fi
+    if ! plan_capture_complete "$out"; then
+        echo ""
+        echo "  ASSERTION FAILED: capture is not complete after retries: <<<$out>>>"
+        return 1
+    fi
+    if [[ "$out" != *"# verify.sh plan"* ]] || [[ "$out" != *"# --- commands"* ]]; then
+        echo ""
+        echo "  ASSERTION FAILED: capture missing a structural marker: <<<$out>>>"
+        return 1
+    fi
+}
+
 test_timeout_guard_skips_on_exit_124() {
     # Regression guard: confirms run_guarded_cargo_check returns tri-state 2
     # (SKIP) when the command exits 124 (timeout kill). Uses `timeout 0.1 sleep 5`
