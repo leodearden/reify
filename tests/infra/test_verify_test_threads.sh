@@ -64,4 +64,73 @@ bash "$VERIFY" test --scope all --print-plan --test-threads 4 >/dev/null 2>&1 ||
 assert "verify.sh test --print-plan --test-threads 4 (space form) exits 0" \
     test "$SPACE_RC" -eq 0
 
+# ---------------------------------------------------------------------------
+# Test 2: THREADING + DEFAULT-INVARIANT. --test-threads=N must reach the
+# emitted cargo command; the no-flag default plan must stay byte-identical to
+# today. The command shape depends on whether nextest is installed on this
+# host, so those assertions are guarded on a NEXTEST_AVAILABLE probe of the
+# plan header's `nextest=` token (sibling idiom, test_run_offline_deep.sh).
+# RED (step-2 only parses): emit_nextest_pass does not yet thread the value,
+# so the '=4 reaches the plan' assertion fails; the default-invariant
+# assertion is already green (it guards step-4 against regressing the default).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Test 2: --test-threads=N threads into the plan; default plan unchanged ---"
+
+PLAN_TT4="$(bash "$VERIFY" test --scope all --print-plan --test-threads=4 2>/dev/null)" || true
+PLAN_DEFAULT="$(bash "$VERIFY" test --scope all --print-plan 2>/dev/null)" || true
+
+# nextest availability probe — `|| true` so an empty plan (RED) yields
+# NEXTEST_AVAILABLE=0 rather than aborting under pipefail.
+_HEADER="$(printf '%s\n' "$PLAN_DEFAULT" | grep '^# verify.sh plan' || true)"
+NEXTEST_AVAILABLE=0
+case "$_HEADER" in
+    *"nextest=1"*) NEXTEST_AVAILABLE=1 ;;
+esac
+echo "(nextest available on this host: $NEXTEST_AVAILABLE)"
+
+if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+    assert "nextest: --test-threads=4 threads into the cargo nextest run line" \
+        bash -c 'printf "%s\n" "$1" | grep -E "(^| )cargo nextest run " | grep -qF -- "--test-threads=4"' \
+        _ "$PLAN_TT4"
+
+    assert "nextest: DEFAULT plan (no flag) has NO --test-threads= token on any cargo line (byte-identical default)" \
+        bash -c '! printf "%s\n" "$1" | grep -E "(^| )cargo " | grep -qF -- "--test-threads="' \
+        _ "$PLAN_DEFAULT"
+else
+    assert "fallback: --test-threads=4 threads into the cargo test line" \
+        bash -c 'printf "%s\n" "$1" | grep -E "(^| )cargo test " | grep -qF -- "--test-threads=4"' \
+        _ "$PLAN_TT4"
+
+    assert "fallback: --test-threads=4 replaces the default (no residual --test-threads=1 on the cargo test line)" \
+        bash -c '! printf "%s\n" "$1" | grep -E "(^| )cargo test " | grep -qF -- "--test-threads=1"' \
+        _ "$PLAN_TT4"
+
+    assert "fallback: DEFAULT plan (no flag) still carries -- --test-threads=1 (byte-identical default)" \
+        bash -c 'printf "%s\n" "$1" | grep -E "(^| )cargo test " | grep -qF -- "-- --test-threads=1"' \
+        _ "$PLAN_DEFAULT"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 3: E2E — faithful β3 repro through the run-offline-deep.sh wrapper,
+# which forwards args verbatim to `verify.sh test`. The forwarded
+# --test-threads=2 must reach the offline plan's cargo line. Host-independent
+# (nextest -> `cargo nextest run … --test-threads=2 …`; fallback ->
+# `cargo test … -- --test-threads=2`), so asserted unconditionally.
+# RED (step-2 only parses): the value is accepted (exit 0) but not threaded,
+# so the 'carries --test-threads=2' assertion fails.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Test 3: E2E run-offline-deep.sh --test-threads=2 --print-plan (β3 repro) ---"
+
+E2E_RC=0
+PLAN_E2E="$(bash "$RUN_OFFLINE_DEEP" --test-threads=2 --print-plan 2>/dev/null)" || E2E_RC=$?
+
+assert "run-offline-deep.sh --test-threads=2 --print-plan exits 0" \
+    test "$E2E_RC" -eq 0
+
+assert "run-offline-deep.sh --test-threads=2 plan carries --test-threads=2 on a cargo line" \
+    bash -c 'printf "%s\n" "$1" | grep -E "(^| )cargo " | grep -qF -- "--test-threads=2"' \
+    _ "$PLAN_E2E"
+
 test_summary
