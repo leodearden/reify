@@ -1,20 +1,35 @@
-//! Enforcement guard: all owner cites in the engine-seam G-allow allowlist
-//! must remain non-terminal.
+//! Enforcement guard for the §3.2 engine-seam G-allow allowlist.
+//!
+//! **Seam status (task #5255): fully graduated.** All three seam owners —
+//! #4743 (α, VolumeMesh realization), #4744 (β, morph arm), and #5007
+//! (quality hardening) — are now terminal, and the morph seam has no live
+//! successor. Every remaining engine-seam `// G-allow:` cite is therefore
+//! provenance-exempt (`(done)` / `re-homed` / `formerly`), so the live scan
+//! extracts ZERO owner cites. The repo-wide hard gate
+//! (`g_allow_repo_wide_hard_gate_live`) is now the drift backstop for any
+//! future terminal-cite regression in these files; this test's has-teeth is
+//! carried structurally (marker-line presence + a synthetic control) rather
+//! than by a live-owner cite, because no live owner remains to point at.
 //!
 //! User-observable signal:
 //!   `cargo test -p reify-audit --test engine_seam_g_allow_cites_live`
 //!
 //! Two tests:
-//! - **Test A** (hermetic, always runs): in-memory DB seeded with current
-//!   statuses. Real scanned cites → ZERO g-allow-orphaned. Synthetic done-
-//!   cite control → exactly one g-allow-orphaned (test-has-teeth). Also
-//!   guards that the scan actually found the expected cites.
+//! - **Test A** (hermetic, always runs): in-memory DB seeded with the REAL
+//!   terminal statuses of the (now-graduated) seam owners. Real scanned cites
+//!   → ZERO g-allow-orphaned (post-graduation the scan is empty; a residual
+//!   bare terminal cite would resolve as orphaned and fail). Test-has-teeth is
+//!   carried by (1) a marker-line-presence guard over the two still-orphan
+//!   pinned functions (a file move/rename/deletion still fails — anti-vacuous-
+//!   green) and (2) a synthetic `done`-cite control that must yield exactly one
+//!   g-allow-orphaned.
 //! - **Test B** (live anti-drift guard): open the real .taskmaster/tasks/
-//!   tasks.db read-only; graceful-skip when absent (mirroring PTODO §6.7);
-//!   assert ZERO g-allow-orphaned. Fires during `/audit` sweeps to catch
-//!   real status drift.
+//!   tasks.db read-only; graceful-skip when absent (mirroring PTODO §6.7) OR
+//!   when the scan yields no cites (the graduated steady state); assert ZERO
+//!   g-allow-orphaned when cites are present. Fires during `/audit` sweeps to
+//!   catch real status drift.
 //!
-//! Scan scope: `// G-allow:` lines in the 7 source files pinned by
+//! Scan scope: `// G-allow:` lines in the source files pinned by
 //! `engine_seam_orphans_g_allow.rs` PLUS the PINS array per-entry `//`
 //! comment blocks (module doc excluded — contains only origin/provenance refs).
 
@@ -36,7 +51,11 @@ use std::path::Path;
 // (crates/reify-eval/src/engine_build.rs) and `mesh_surface_to_volume_with_diagnostics`
 // (crates/reify-kernel-gmsh/src/mesh_volume.rs) — so those two files no longer
 // carry a `// G-allow:` cite and drop out of this scan scope. The remaining
-// entries are the #4744 (β) morph-arm producers in reify-mesh-morph.
+// entries were the #4744 (β) morph-arm producers in reify-mesh-morph; task
+// #5255 graduated #4744 too (all seam owners terminal), deleting the now-wired
+// markers and done-annotating the two still-orphan ones
+// (elasticity_morph_with_cg_opts, eligible), so every cite these files now
+// carry is provenance-exempt and the scan yields no owner.
 // -----------------------------------------------------------------------
 const SOURCE_FILES: &[&str] = &[
     "crates/reify-mesh-morph/src/boundary.rs",
@@ -163,6 +182,42 @@ fn scan_pins_blocks(ws_root: &Path) -> Vec<(String, usize, Vec<u32>, String)> {
     tuples
 }
 
+/// Anti-vacuous-green / anti-file-move guard for the graduated seam.
+///
+/// Post-graduation every engine-seam owner cite is provenance-exempt, so the
+/// live scan extracts ZERO owners and the "zero orphaned" assertion can no
+/// longer prove the scan actually ran over real markers. This structural check
+/// asserts that a STILL-ORPHAN marker is physically present on the `// G-allow:`
+/// line immediately above `pub fn <fn_name>(` in `rel_path`. A file
+/// move/rename/deletion that drops the marker fails here — the same event would
+/// also un-pin the orphan-producer audit in `engine_seam_orphans_g_allow.rs`.
+fn assert_g_allow_marker_above_fn(ws_root: &Path, rel_path: &str, fn_name: &str) {
+    let full = ws_root.join(rel_path);
+    let content = std::fs::read_to_string(&full)
+        .unwrap_or_else(|e| panic!("read {rel_path} for still-orphan marker guard: {e}"));
+    let lines: Vec<&str> = content.lines().collect();
+    let sig = format!("pub fn {fn_name}(");
+    let fn_idx = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with(&sig))
+        .unwrap_or_else(|| {
+            panic!(
+                "expected `pub fn {fn_name}(` in {rel_path} (still-orphan marker guard); \
+                 a move/rename/deletion would remove it — if the seam legitimately \
+                 changed, update SOURCE_FILES/PINS and this guard together"
+            )
+        });
+    let marker_ok = fn_idx >= 1 && g_allow_marker_body(lines[fn_idx - 1]).is_some();
+    assert!(
+        marker_ok,
+        "expected a `// G-allow:` marker on the line immediately above \
+         `pub fn {fn_name}(` in {rel_path} (fn at line {}); the still-orphan marker \
+         must remain to suppress the orphan-producer audit. Line above was: {:?}",
+        fn_idx + 1,
+        fn_idx.checked_sub(1).and_then(|i| lines.get(i)),
+    );
+}
+
 // -----------------------------------------------------------------------
 // Test A: hermetic, always runs — real markers + synthetic done-cite control.
 // -----------------------------------------------------------------------
@@ -178,41 +233,39 @@ fn engine_seam_g_allow_owner_cites_resolve_live_hermetic() {
     }
     all_cites.extend(scan_pins_blocks(&ws_root));
 
-    // Guard: ensure the scan actually found expected owners; a rename/move
-    // causing all files to be absent would make the "no orphaned" assertion
-    // vacuously green.  At minimum one cite for #4744 must be present.
+    // Anti-vacuous-green / anti-file-move guard. Post-graduation (task #5255)
+    // every engine-seam owner cite is provenance-exempt, so `all_cites` is empty
+    // in the steady state and the "zero orphaned" assertion below can no longer
+    // prove the scan ran. Instead assert the two STILL-ORPHAN markers are
+    // physically present on the line immediately above their `pub fn`: a file
+    // move/rename/deletion that drops these markers still fails (and would also
+    // un-pin the orphan-producer audit in engine_seam_orphans_g_allow.rs).
     //
-    // #4743 (α) was dropped from this guard: it graduated both its §3.2
-    // VolumeMesh-seam markers to real consumers (the execute_realization_ops →
-    // dispatch_volume_mesh tet-path call edge and the gmsh mesh_surface_to_volume
-    // trait method's delegation to mesh_surface_to_volume_with_diagnostics), so
-    // no #4743 G-allow cite remains to scan. #4744 (β, morph arm) is still
-    // pending with its markers in place.
-    let all_owner_ids: std::collections::HashSet<u32> = all_cites
-        .iter()
-        .flat_map(|(_, _, ids, _)| ids.iter().copied())
-        .collect();
-    assert!(
-        all_owner_ids.contains(&4744),
-        "expected at least one scanned owner cite for #4744 but found none; \
-         two possible causes: (1) the source files moved — update SOURCE_FILES \
-         in this test; (2) the G-allow markers were re-pointed to a new live \
-         owner task — update this expected-id list to the new owner id(s). \
-         Found owners: {all_owner_ids:?}"
+    // A live-owner-cite guard (formerly `all_owner_ids.contains(&4744)`) is no
+    // longer possible: `extract_g_allow_owner_cites` skips exempt cites, so a
+    // still-extractable cite and a non-orphaned cite are mutually exclusive once
+    // the owner is terminal — and all three seam owners (#4743/#4744/#5007) are
+    // terminal with no live successor to repoint to. Precedent: feat(4743)
+    // 0487726b18 dropped #4743 from this same guard when it graduated.
+    assert_g_allow_marker_above_fn(
+        &ws_root,
+        "crates/reify-mesh-morph/src/elasticity.rs",
+        "elasticity_morph_with_cg_opts",
     );
-    assert!(
-        !all_cites.is_empty(),
-        "expected at least one owner-cite tuple from scan"
-    );
+    assert_g_allow_marker_above_fn(&ws_root, "crates/reify-mesh-morph/src/lib.rs", "eligible");
 
-    // Hermetic in-memory DB seeded with current known statuses.
-    // 4744 = pending (live owner; the remaining β morph-arm seam). #4743 (α) is
-    // no longer seeded here — it graduated both its §3.2 VolumeMesh markers to
-    // real consumers, so no #4743 cite is scanned and its status is irrelevant.
-    // 3429/2947 = cancelled, 2949 = done (provenance, exempt by grammar rules).
+    // Hermetic in-memory DB seeded with the REAL terminal statuses of the
+    // now-graduated seam owners (task #5255): #4744 (β morph arm), #4743 (α),
+    // and #5007 (quality) are all done; 3429/2947 = cancelled; 2949 = done
+    // (debug-RPC provenance). Every scanned cite is provenance-exempt, so in the
+    // graduated steady state no owner resolves — but a residual bare terminal
+    // cite (e.g. a regression re-adding `#4744` without a `(done)` annotation)
+    // WOULD resolve as orphaned and fail assertion (a) below.
     // 9999 = done (synthetic control — must NOT appear in real scanned cites).
     let conn = seed_tasks_db();
-    insert_task(&conn, "master", 4744, "pending");
+    insert_task(&conn, "master", 4744, "done");
+    insert_task(&conn, "master", 4743, "done");
+    insert_task(&conn, "master", 5007, "done");
     insert_task(&conn, "master", 3429, "cancelled");
     insert_task(&conn, "master", 2947, "cancelled");
     insert_task(&conn, "master", 2949, "done");
@@ -227,8 +280,11 @@ fn engine_seam_g_allow_owner_cites_resolve_live_hermetic() {
         .collect();
     assert!(
         orphaned.is_empty(),
-        "ZERO g-allow-orphaned expected for real engine-seam markers \
-         (owner #4744 is pending); found {} orphaned:\n{}",
+        "ZERO g-allow-orphaned expected for the graduated engine-seam markers \
+         (all owners terminal → every cite provenance-exempt → empty scan). A \
+         non-empty result means a residual BARE terminal cite regressed into a \
+         SOURCE_FILES marker or a PINS comment block — annotate it `(done)` or \
+         re-home it. Found {} orphaned:\n{}",
         orphaned.len(),
         orphaned
             .iter()
@@ -269,6 +325,18 @@ fn engine_seam_g_allow_owner_cites_resolve_live_hermetic() {
 // Test B: live anti-drift guard — real tasks.db.
 // -----------------------------------------------------------------------
 
+/// Live anti-drift guard: resolve the real scanned engine-seam cites against
+/// the real `.taskmaster/tasks/tasks.db` and assert ZERO g-allow-orphaned.
+///
+/// Post-graduation (task #5255) every engine-seam cite is provenance-exempt, so
+/// the scan yields no cites and this test graceful-skips — the repo-wide
+/// `g_allow_repo_wide_hard_gate_live` is the live drift backstop in this steady
+/// state. The guard still has teeth: a future regression that re-adds a bare
+/// terminal owner cite to a SOURCE_FILES marker or a PINS comment block makes
+/// `all_cites` non-empty again, and — if that owner is terminal in the live DB
+/// — fails here. Also graceful-skips when the DB is absent (task worktrees,
+/// mirroring PTODO §6.7); the live guard fires in the `/audit` sweep where the
+/// main-checkout DB is present.
 #[test]
 fn engine_seam_g_allow_owner_cites_resolve_live_real_db() {
     let ws_root = workspace_root();
@@ -281,7 +349,11 @@ fn engine_seam_g_allow_owner_cites_resolve_live_real_db() {
     all_cites.extend(scan_pins_blocks(&ws_root));
 
     if all_cites.is_empty() {
-        eprintln!("engine_seam_g_allow_cites_live Test B: no cites scanned — skip");
+        eprintln!(
+            "engine_seam_g_allow_cites_live Test B: no engine-seam cites scanned \
+             (graduated steady state — all owners terminal, cites provenance-exempt); \
+             repo-wide g_allow_repo_wide_hard_gate_live is the live drift backstop — skip"
+        );
         return;
     }
 
