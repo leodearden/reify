@@ -46,3 +46,11 @@ CARGO_INCREMENTAL
 REIFY_TEST_SEMAPHORE_CONCURRENCY
 REIFY_TEST_SEMAPHORE_WAIT
 REIFY_PSI_GATE_MAX_WAIT
+
+# Added by bc235a616a (merge-gate-health W5a, 2026-07-19): durable FLAKY-ledger
+# path exported into verify_env so the Phase-2.5 ledger survives lane reseeds and
+# accumulates at the merge tier (DF 2358's chronic-flake auto-filer). That commit
+# added it to the verify_env injection source but not to this ledger, tripping the
+# set-equality guard deterministically on every task's full verify — declared here
+# to close that drift.
+REIFY_RUN_ALL_FLAKY_LEDGER

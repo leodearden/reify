@@ -46,10 +46,10 @@ below and replacing the counts; then re-run the test to confirm it passes.
 <!-- THROUGHPUT-COUNTS:BEGIN -->
 | shape | all | branch |
 |-------|-----|--------|
-| docs-only  | 14 |  0 |
-| reify-doc  | 14 | 14 |
-| reify-eval | 14 | 14 |
-| gui-only   | 14 |  3 |
+| docs-only  | 15 |  0 |
+| reify-doc  | 15 | 15 |
+| reify-eval | 15 | 15 |
+| gui-only   | 15 |  3 |
 <!-- THROUGHPUT-COUNTS:END -->
 
 _Counts bumped 2026-06-25 (task 4839): `add_test_passes()` emitted one
