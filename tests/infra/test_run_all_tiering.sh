@@ -1,10 +1,22 @@
 #!/usr/bin/env bash
 # Infrastructure test for task 5125.
 #
-# Drift-guard (INV-5): the full tests/infra/run_all.sh pool suite must run at
-# the MERGE tier ONLY; every per-task verify must run the cheap selective-infra
-# subset instead. This encodes the "exactly-one" invariant — {full pool,
-# selective infra} — never both, never neither — keyed on DF_VERIFY_ROLE.
+# Drift-guard (INV-5 / INV-5′): the full tests/infra/run_all.sh pool suite must
+# run at the MERGE tier ONLY; every per-task verify must run the cheap
+# selective-infra subset instead. This encodes the "exactly-one" invariant —
+# {full pool, selective infra} — never both, never neither — keyed on
+# DF_VERIFY_ROLE.
+#
+# INV-5′ (task 5273, merge-gate-riders γ): the full pool stays merge-tier-
+# resident and this guard's tier assertions are unchanged, but the MERGE-tier
+# run_all.sh line now ALSO carries REIFY_RUN_ALL_CONTENT_SKIP=1, arming a
+# content-addressed per-member skip engine WITHIN the merge invocation (a member
+# whose declared closure is byte-identical to its last green sha is not re-run;
+# closure deltas / unmapped / own-file changes / the MAX_MERGES|MAX_AGE_HOURS
+# backstop still force a run; fail-open, role-gated, ships production-inert until
+# task δ wires the state path). The MERGE-tier scenario below asserts that flag
+# token on the run_all.sh line. Full contract:
+# docs/prds/run-all-pool-contention-tiering-fix.md INV-5′.
 #
 # Root cause this guards against (task 5125 analysis): the merge seam
 # (hooks/pre-merge-commit:39) runs `DF_VERIFY_ROLE=merge verify.sh all

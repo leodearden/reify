@@ -1597,6 +1597,24 @@ build_plan() {
         # REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 (task 5125): host-exclusive tests
         # (declared in tests/infra/run-all-classification.manifest) stay on their
         # cold `--scope host-infra` lane instead of double-running here.
+        # REIFY_RUN_ALL_CONTENT_SKIP=1 (task 5273, merge-gate-riders γ): arms the
+        # merge-tier content-addressed per-member skip engine in run_all.sh — a
+        # drift-guard pool member whose declared tracked-file closure
+        # (run-all-skip-closures.manifest) is byte-identical (git tree compare)
+        # to its last-executed-green main sha is not re-run every merge. The
+        # engine is a two-key + state-path INERT no-op unless run_all.sh ALSO
+        # observes the inbound role == merge (_RA_INBOUND_ROLE snapshotted at
+        # run_all.sh:230 — NOT the normalized DF_VERIFY_ROLE, which is forced to
+        # `task` there) AND a non-empty REIFY_RUN_ALL_SKIP_STATE path. That
+        # durable state path is wired in dark-factory-orchestrator.yaml verify_env
+        # by the sibling activation task (δ / 5276); until then this flag is a
+        # silent no-op and ships PRODUCTION-INERT. Fail-open by construction:
+        # unmapped members, closure deltas, own-file changes, the
+        # MAX_MERGES/MAX_AGE_HOURS backstop, and a corrupt/absent state file all
+        # force a full run (the last emits one loud line). It rides BOTH this
+        # merge line and the background line (below); background never skips
+        # (role gate), a second backstop. Contract: INV-5′,
+        # docs/prds/run-all-pool-contention-tiering-fix.md.
         # NB: this line must NOT export REIFY_INFRA_SUITE_ACTIVE (the re-entrancy
         # sentinel). run_all.sh runs ~103 tests; a broad ambient export leaks
         # into every one and (a) suppresses run_all in the plan captured by the
@@ -1618,7 +1636,7 @@ build_plan() {
         # made: atomicity holds because each marker is a single write() call;
         # regression-guarded by tests/infra/test_run_all.sh Tests 7 and 8a
         # (source of truth for marker text/locations — not restated here).
-        add "if test -f tests/infra/run_all.sh; then REIFY_AUDIT_NO_COLD_BUILD=1 REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 timeout --kill-after=60 30m bash tests/infra/run_all.sh 2>&1; fi"
+        add "if test -f tests/infra/run_all.sh; then REIFY_AUDIT_NO_COLD_BUILD=1 REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 REIFY_RUN_ALL_CONTENT_SKIP=1 timeout --kill-after=60 30m bash tests/infra/run_all.sh 2>&1; fi"
     fi
 
     # Selective infra injection (task 4523): task-level path runs the infra
