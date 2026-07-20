@@ -2432,6 +2432,154 @@ version = "9.9.9"
         );
     }
 
+    /// Helper: hash a set of framed byte parts through the canonical composer.
+    fn compose_parts(parts: &[Vec<u8>]) -> String {
+        let refs: Vec<&[u8]> = parts.iter().map(|p| p.as_slice()).collect();
+        compose_engine_version_hash(&refs)
+    }
+
+    /// (a) pins = only packages whose name ∈ closure, sorted canonically by
+    /// (name, version) — independent of the closure's own order; out-of-closure
+    /// packages are excluded.
+    #[test]
+    fn cargo_lock_closure_pins_filters_to_closure_and_sorts_by_name_version() {
+        let lock = concat!(
+            "version = 3\n\n",
+            "[[package]]\nname = \"foo\"\nversion = \"2.0.0\"\n\n",
+            "[[package]]\nname = \"bar\"\nversion = \"1.0.0\"\n\n",
+            "[[package]]\nname = \"baz-out\"\nversion = \"0.5.0\"\n",
+        );
+        // closure passed in non-sorted order; baz-out omitted.
+        let pins = crate::engine_hash_algo::cargo_lock_closure_pins(lock, &["foo", "bar"]);
+        assert_eq!(
+            pins,
+            vec![
+                ("bar".to_string(), "1.0.0".to_string()),
+                ("foo".to_string(), "2.0.0".to_string()),
+            ],
+            "pins must include only closure members, sorted by (name, version); \
+             out-of-closure baz-out excluded"
+        );
+    }
+
+    /// `cargo_lock_closure_parts` frames each sorted pin as two byte parts
+    /// (name bytes, then version bytes).
+    #[test]
+    fn cargo_lock_closure_parts_frames_sorted_pins_as_name_then_version_bytes() {
+        let lock = concat!(
+            "[[package]]\nname = \"foo\"\nversion = \"2.0.0\"\n\n",
+            "[[package]]\nname = \"bar\"\nversion = \"1.0.0\"\n",
+        );
+        let parts = crate::engine_hash_algo::cargo_lock_closure_parts(lock, &["foo", "bar"]);
+        let expected: Vec<Vec<u8>> = vec![
+            b"bar".to_vec(),
+            b"1.0.0".to_vec(),
+            b"foo".to_vec(),
+            b"2.0.0".to_vec(),
+        ];
+        assert_eq!(
+            parts, expected,
+            "parts must be [name, version] byte pairs in (name, version)-sorted order"
+        );
+    }
+
+    /// (b) ORDER-INDEPENDENCE: two locks with the same closure packages in
+    /// different stanza order produce identical pins, parts, AND compose hash.
+    #[test]
+    fn cargo_lock_closure_is_independent_of_stanza_order() {
+        let lock_fwd = concat!(
+            "[[package]]\nname = \"foo\"\nversion = \"2.0.0\"\n\n",
+            "[[package]]\nname = \"bar\"\nversion = \"1.0.0\"\n",
+        );
+        let lock_rev = concat!(
+            "[[package]]\nname = \"bar\"\nversion = \"1.0.0\"\n\n",
+            "[[package]]\nname = \"foo\"\nversion = \"2.0.0\"\n",
+        );
+        let closure = &["foo", "bar"];
+        assert_eq!(
+            crate::engine_hash_algo::cargo_lock_closure_pins(lock_fwd, closure),
+            crate::engine_hash_algo::cargo_lock_closure_pins(lock_rev, closure),
+            "pins must not depend on stanza order in the lock"
+        );
+        let parts_fwd = crate::engine_hash_algo::cargo_lock_closure_parts(lock_fwd, closure);
+        let parts_rev = crate::engine_hash_algo::cargo_lock_closure_parts(lock_rev, closure);
+        assert_eq!(parts_fwd, parts_rev, "parts must be stanza-order-independent");
+        assert_eq!(
+            compose_parts(&parts_fwd),
+            compose_parts(&parts_rev),
+            "compose hash must be stanza-order-independent"
+        );
+    }
+
+    /// (c) BT-6: two locks differing ONLY in an OUT-OF-closure package's version
+    /// produce identical parts AND identical compose hash — the persistent FEA
+    /// cache survives an unrelated dep bump.
+    #[test]
+    fn cargo_lock_closure_out_of_closure_version_bump_leaves_parts_and_hash_unchanged() {
+        let closure = &["foo"];
+        let lock_a = concat!(
+            "[[package]]\nname = \"foo\"\nversion = \"1.0.0\"\n\n",
+            "[[package]]\nname = \"other-out\"\nversion = \"1.0.0\"\n",
+        );
+        let lock_b = concat!(
+            "[[package]]\nname = \"foo\"\nversion = \"1.0.0\"\n\n",
+            "[[package]]\nname = \"other-out\"\nversion = \"9.9.9\"\n",
+        );
+        let parts_a = crate::engine_hash_algo::cargo_lock_closure_parts(lock_a, closure);
+        let parts_b = crate::engine_hash_algo::cargo_lock_closure_parts(lock_b, closure);
+        assert_eq!(
+            parts_a, parts_b,
+            "BT-6: an out-of-closure version bump must not change the parts"
+        );
+        assert_eq!(
+            compose_parts(&parts_a),
+            compose_parts(&parts_b),
+            "BT-6: an out-of-closure version bump must not change the compose hash"
+        );
+    }
+
+    /// (d) BT-7: two locks differing in an IN-closure package's version produce
+    /// different parts AND different compose hash — sound invalidation.
+    #[test]
+    fn cargo_lock_closure_in_closure_version_bump_changes_parts_and_hash() {
+        let closure = &["foo"];
+        let lock_a = "[[package]]\nname = \"foo\"\nversion = \"1.0.0\"\n";
+        let lock_b = "[[package]]\nname = \"foo\"\nversion = \"1.0.1\"\n";
+        let parts_a = crate::engine_hash_algo::cargo_lock_closure_parts(lock_a, closure);
+        let parts_b = crate::engine_hash_algo::cargo_lock_closure_parts(lock_b, closure);
+        assert_ne!(
+            parts_a, parts_b,
+            "BT-7: an in-closure version bump must change the parts"
+        );
+        assert_ne!(
+            compose_parts(&parts_a),
+            compose_parts(&parts_b),
+            "BT-7: an in-closure version bump must change the compose hash"
+        );
+    }
+
+    /// (e) a closure name absent from the lock contributes nothing (silently
+    /// skipped), and two same-named stanzas at different versions BOTH appear
+    /// (the filter is name-based, over-approximating in the safe direction).
+    #[test]
+    fn cargo_lock_closure_pins_skips_absent_names_and_keeps_duplicate_named_versions() {
+        let lock = concat!(
+            "[[package]]\nname = \"foo\"\nversion = \"2.0.0\"\n\n",
+            "[[package]]\nname = \"foo\"\nversion = \"1.0.0\"\n",
+        );
+        let pins =
+            crate::engine_hash_algo::cargo_lock_closure_pins(lock, &["foo", "absent-crate"]);
+        assert_eq!(
+            pins,
+            vec![
+                ("foo".to_string(), "1.0.0".to_string()),
+                ("foo".to_string(), "2.0.0".to_string()),
+            ],
+            "both same-named foo stanzas must appear (sorted by version); the \
+             closure name 'absent-crate' absent from the lock contributes nothing"
+        );
+    }
+
     /// Behavioral regression guard: verifies that a one-byte mutation in the
     /// workspace `Cargo.lock` produces a different `compose_engine_version_hash`
     /// output when processed through the same `walk_contributor` path that
