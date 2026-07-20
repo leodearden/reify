@@ -1299,6 +1299,122 @@ mod tests {
         }
     }
 
+    // ── @display arg-shape tests (task 5233, mirrors @shell block) ────────────
+
+    /// @display("L") on "param" → 0 diagnostics (well-formed single string label).
+    #[test]
+    fn validate_display_well_formed_on_param_produces_no_diagnostics() {
+        let a = display_ann("L");
+        let mut diags: Vec<reify_core::Diagnostic> = vec![];
+        validate_via_schema(std::slice::from_ref(&a), "param", &mut diags);
+        assert!(diags.is_empty(), "expected no diags, got: {:?}", diags);
+    }
+
+    /// @display() (no args) on "param" → 1 Warning flagging the missing required label.
+    #[test]
+    fn validate_display_no_args_on_param_warns() {
+        let a = ann(reify_core::DISPLAY_ANNOTATION, vec![]);
+        let mut diags: Vec<reify_core::Diagnostic> = vec![];
+        validate_via_schema(std::slice::from_ref(&a), "param", &mut diags);
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly 1 diagnostic, got: {:?}",
+            diags
+        );
+        assert_eq!(diags[0].severity, reify_core::Severity::Warning);
+        assert!(
+            diags[0]
+                .message
+                .contains("requires exactly one string-literal unit label"),
+            "unexpected message: {}",
+            diags[0].message
+        );
+        assert_eq!(diags[0].labels[0].message, "missing unit label");
+    }
+
+    /// @display(5) (Int arg) on "param" → 1 Warning flagging the non-string label.
+    #[test]
+    fn validate_display_non_string_arg_on_param_warns() {
+        let a = ann(
+            reify_core::DISPLAY_ANNOTATION,
+            vec![reify_ir::AnnotationArg::positional(
+                reify_ir::AnnotationArgValue::Int(5),
+            )],
+        );
+        let mut diags: Vec<reify_core::Diagnostic> = vec![];
+        validate_via_schema(std::slice::from_ref(&a), "param", &mut diags);
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly 1 diagnostic, got: {:?}",
+            diags
+        );
+        assert_eq!(diags[0].severity, reify_core::Severity::Warning);
+        assert!(
+            diags[0].message.contains("must be a string literal"),
+            "unexpected message: {}",
+            diags[0].message
+        );
+        assert_eq!(diags[0].labels[0].message, "non-string unit label");
+    }
+
+    /// @display("L","cm") (two args) on "param" → 1 Warning flagging too-many args.
+    #[test]
+    fn validate_display_extra_args_on_param_warns() {
+        let a = ann(
+            reify_core::DISPLAY_ANNOTATION,
+            vec![
+                reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::String(
+                    "L".to_string(),
+                )),
+                reify_ir::AnnotationArg::positional(reify_ir::AnnotationArgValue::String(
+                    "cm".to_string(),
+                )),
+            ],
+        );
+        let mut diags: Vec<reify_core::Diagnostic> = vec![];
+        validate_via_schema(std::slice::from_ref(&a), "param", &mut diags);
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly 1 diagnostic, got: {:?}",
+            diags
+        );
+        assert_eq!(diags[0].severity, reify_core::Severity::Warning);
+        assert!(
+            diags[0].message.contains("exactly one argument"),
+            "unexpected message: {}",
+            diags[0].message
+        );
+        assert_eq!(diags[0].labels[0].message, "too many arguments");
+    }
+
+    /// Short-circuit: @display(5) on "function" (wrong context) → exactly 1
+    /// diagnostic (context-mismatch ONLY; the shape check must not also fire).
+    #[test]
+    fn validate_display_malformed_on_invalid_context_emits_only_context_mismatch() {
+        let a = ann(
+            reify_core::DISPLAY_ANNOTATION,
+            vec![reify_ir::AnnotationArg::positional(
+                reify_ir::AnnotationArgValue::Int(5),
+            )],
+        );
+        let mut diags: Vec<reify_core::Diagnostic> = vec![];
+        validate_via_schema(std::slice::from_ref(&a), "function", &mut diags);
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly 1 diagnostic (context-mismatch only), got: {:?}",
+            diags
+        );
+        assert!(
+            diags[0].message.contains("@display is not valid on function"),
+            "expected context-mismatch message, got: {}",
+            diags[0].message
+        );
+    }
+
     // ── label-name parity invariant ──────────────────────────────────────────
 
     /// Every SCHEMAS entry must satisfy `label == "@" + name`.
