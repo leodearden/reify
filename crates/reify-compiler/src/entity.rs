@@ -6343,6 +6343,15 @@ pub(crate) fn build_structure_def_skeleton(
                     ));
                 }
             }
+            // `else_members` is carried for shape-parity with the authoritative
+            // CompiledGuardedGroup (which populates them too); it is NOT read by
+            // the priv gate. `template_member_is_priv` (expr.rs) scans only
+            // `members`, never `else_members` — so a `priv param` declared in a
+            // `where cond { } else { … }` else-branch is NOT fn-body priv-gated,
+            // exactly as it is NOT gated on the external-access path (the
+            // real-template gate ignores `else_members` too). Closing that
+            // symmetric gap would span both the external and fn-body paths and is
+            // out of scope here.
             let mut else_members: Vec<ValueCellDecl> = Vec::new();
             for gm in &group.else_members {
                 if let reify_ast::MemberDecl::Param(param) = gm {

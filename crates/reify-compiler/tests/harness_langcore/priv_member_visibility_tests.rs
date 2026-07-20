@@ -1239,6 +1239,57 @@ fn leak(m : PortHost) -> Length { m.secret.main }
     assert!(priv_errs[0].message.contains("E_PRIV_MEMBER_ACCESS"));
 }
 
+/// A function body reading a *bare, non-priv* port (`m.secret`, where `secret`
+/// is a default-visible `port { }`) is NOT priv-gated, and — now that the
+/// skeleton populates `ports` — is treated as a KNOWN member: it resolves to the
+/// permissive dimensionless-scalar fallback rather than failing with
+/// E_STRUCTURE_MEMBER_NOT_FOUND. This pins the (intended) blast radius of the
+/// skeleton `ports` population: `template_has_member` now sees the port name, so
+/// a bare non-priv port access from a fn body aligns with the authoritative
+/// `StructureRef` path (which already treats port names as known members)
+/// instead of the pre-change member-not-found behaviour. It also guards the
+/// symmetric non-priv counterpart of the priv-port gate above: populating `ports`
+/// must not over-fire E_PRIV_MEMBER_ACCESS on a default-visible port.
+#[test]
+fn function_body_pub_port_access_resolves_not_priv_gated() {
+    let module = compile_source(
+        r#"
+trait Iface {}
+
+structure def PortHost {
+    port secret : Iface {
+        param main : Length = 5mm
+    }
+}
+
+fn ok(m : PortHost) -> Real { m.secret }
+"#,
+    );
+
+    assert_eq!(
+        priv_access_errors(&module).len(),
+        0,
+        "function-body access to a bare non-priv port (`m.secret`) must NOT emit \
+         E_PRIV_MEMBER_ACCESS — the port is default-visible; all diagnostics: {:?}",
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+
+    let not_found = module
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::StructureMemberNotFound))
+        .count();
+    assert_eq!(
+        not_found, 0,
+        "function-body access to a bare non-priv port (`m.secret`) must NOT emit \
+         E_STRUCTURE_MEMBER_NOT_FOUND — populating the skeleton's `ports` makes the \
+         port name a KNOWN member (template_has_member scans ports), so the access \
+         resolves to the dimensionless fallback instead of failing not-found; all \
+         diagnostics: {:?}",
+        module.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
 /// A function body accessing a `priv` param nested inside a block-form
 /// `where cond { }` guarded group is now priv-gated:
 /// `build_structure_def_skeleton` populates the skeleton template's
