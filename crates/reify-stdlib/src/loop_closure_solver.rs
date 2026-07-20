@@ -1508,15 +1508,16 @@ mod tests {
 
     /// Documented best-effort behavior on malformed input: the trailing
     /// partial chunk is split by index — first 3 entries contribute to
-    /// `ang2`, remaining (up to 2) to `lin2`.  Test runs only in release
-    /// since debug_assert! would panic on the misuse.
-    #[cfg(not(debug_assertions))]
+    /// `ang2`, remaining (up to 2) to `lin2`.  Exercises the assertion-free
+    /// `position_rotation_norms_by_index` core directly (rather than the
+    /// `debug_assert!`-guarded `position_rotation_norms` wrapper) so this
+    /// coverage is profile-invariant instead of release-only.
     #[test]
     fn position_rotation_norms_partial_chunk_partitions_by_index() {
         // 8-element residual: full 6-chunk + 2-element partial.  The
         // partial's indices 0..2 are angular, so both go to ang2.
         let r = [3.0_f64, 4.0, 0.0, 0.0, 0.0, 0.0, 5.0, 12.0];
-        let (ang, lin) = super::position_rotation_norms(&r);
+        let (ang, lin) = super::position_rotation_norms_by_index(&r);
         // ang2 = 3² + 4² + 5² + 12² = 9 + 16 + 25 + 144 = 194 → sqrt ≈ 13.9284
         assert!((ang - 194.0_f64.sqrt()).abs() < 1e-12);
         // lin2 = 0 → 0
@@ -1529,7 +1530,7 @@ mod tests {
             .copied()
             .chain([1.0, 2.0, 3.0, 4.0])
             .collect::<Vec<f64>>();
-        let (ang2, lin2) = super::position_rotation_norms(&r2);
+        let (ang2, lin2) = super::position_rotation_norms_by_index(&r2);
         // ang² = 1 + 4 + 9 = 14 → sqrt ≈ 3.7417
         assert!((ang2 - 14.0_f64.sqrt()).abs() < 1e-12);
         // lin² = 16 → 4
