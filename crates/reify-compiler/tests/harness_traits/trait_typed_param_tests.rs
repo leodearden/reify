@@ -1244,16 +1244,18 @@ fn nested_wrapper_type_level_list_option_accepts_valueref_of_conforming_subtrait
 // All four cases below exercise the `walk_param_against_arg_type` fallback `_`
 // arm that currently silently drops wrapper-shape mismatches.
 
-/// Negative test: passing `Steel()` (a bare FunctionCall, not wrapped in `some()`)
-/// to an `Option<MaterialSpec>` param must produce a wrapper-shape-mismatch error.
+/// Implicit-Some legality (task 5302 α, PRD §4 D3): passing a bare *conforming*
+/// struct `Steel()` (`Steel : MaterialSpec`) to an `Option<MaterialSpec>` param is
+/// LEGAL — the new Option-unwrap arm recurses `(MaterialSpec, Steel)`, Steel
+/// conforms, so the arg auto-wraps (`some(Steel())` need not be written).
 ///
-/// Walk sequence:
-/// 1. `walk_param_against_arg(Option<MaterialSpec>, FunctionCall{Steel})` →
-///    `(Type::Option, FunctionCall)` — no literal-walker match → fallback →
-/// 2. `walk_param_against_arg_type(Option<MaterialSpec>, Real)` →
-///    `(Option<MaterialSpec>, Real)` — no match → fallback `_` → emits.
+/// This REVERSES the pre-5302 task-2281 behavior, which rejected bare→Option as a
+/// wrapper-shape mismatch. It is one of the error→clean transitions α introduces —
+/// the same live hole probes 3/5 close for selectors (`FaceSelector →
+/// Option<FaceSelector>`). A List/Map arg is NOT a valid single-value
+/// implicit-Some and still mismatches (see the two sibling tests below).
 #[test]
-fn bare_struct_call_passed_to_option_trait_param_emits_shape_mismatch() {
+fn bare_conforming_struct_to_option_trait_param_is_implicit_some_clean() {
     let source = r#"
         structure def Steel : MaterialSpec {
             param density : Density = 7850kg/m^3
@@ -1266,52 +1268,36 @@ fn bare_struct_call_passed_to_option_trait_param_emits_shape_mismatch() {
     "#;
     let module = compile_source_with_stdlib(source);
 
-    let errors: Vec<_> = module
+    // Zero ctor-conformance diagnostics at ANY severity: implicit-Some of a
+    // conforming struct is clean (no error, no warning).
+    let ctor_conf: Vec<_> = module
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-
-    let matching: Vec<_> = errors
-        .iter()
         .filter(|d| {
-            d.code == Some(DiagnosticCode::TypeNotConformingToTrait)
-                && d.message.contains("does not match")
-                && d.message.contains("Option")
-                && d.message.contains("Steel")
+            matches!(
+                d.code,
+                Some(
+                    DiagnosticCode::TypeNotConformingToTrait
+                        | DiagnosticCode::TypeNotConformingToStructureRef
+                        | DiagnosticCode::ArgTypeMismatch
+                )
+            )
         })
         .collect();
-    assert_eq!(
-        matching.len(),
-        1,
-        "expected exactly one wrapper-shape diagnostic, got {:?}",
-        matching
-    );
-    // Pin that the anti-cascade guard in walk_param_against_arg_type prevents
-    // secondary TypeNotConformingToTrait diagnostics from piling on top of the
-    // wrapper-shape mismatch. If this count exceeds 1, the guard is not working.
-    assert_eq!(
-        errors
-            .iter()
-            .filter(|d| d.code == Some(DiagnosticCode::TypeNotConformingToTrait))
-            .count(),
-        1,
-        "expected exactly one TypeNotConformingToTrait diagnostic total (anti-cascade guard), got {:?}",
-        errors
-            .iter()
-            .filter(|d| d.code == Some(DiagnosticCode::TypeNotConformingToTrait))
-            .collect::<Vec<_>>()
+    assert!(
+        ctor_conf.is_empty(),
+        "bare conforming struct → Option<trait> is legal implicit-Some (5302 α); \
+         expected zero ctor-conformance diagnostics, got {:?}",
+        ctor_conf
     );
 }
 
-/// Negative test: passing `[Steel()]` (a list literal) to an `Option<MaterialSpec>`
-/// param must produce a wrapper-shape-mismatch error.
-///
-/// Walk sequence:
-/// 1. `walk_param_against_arg(Option<MaterialSpec>, ListLiteral([Steel()]))` →
-///    `(Type::Option, ListLiteral)` — no literal-walker match → fallback →
-/// 2. `walk_param_against_arg_type(Option<MaterialSpec>, List<…>)` →
-///    `(Option, List)` — no match → fallback `_` → emits.
+/// Negative test (task 2281; reshaped by task 5302 α): passing `[Steel()]` (a
+/// list literal) to an `Option<MaterialSpec>` param is still a mismatch — a list
+/// is not a valid single-value implicit-Some. The Option-unwrap arm recurses
+/// `(MaterialSpec, List<Steel>)`, so it is now coded `TypeNotConformingToTrait`
+/// ("List<Steel> does not conform to trait 'MaterialSpec'") at Warning (the α
+/// knob), NOT the old "does not match" Option wrapper-shape Error.
 #[test]
 fn list_literal_passed_to_option_trait_param_emits_shape_mismatch() {
     let source = r#"
@@ -1326,25 +1312,25 @@ fn list_literal_passed_to_option_trait_param_emits_shape_mismatch() {
     "#;
     let module = compile_source_with_stdlib(source);
 
-    let errors: Vec<_> = module
+    let warnings: Vec<_> = module
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Error)
+        .filter(|d| d.severity == Severity::Warning)
         .collect();
 
-    let matching: Vec<_> = errors
+    let matching: Vec<_> = warnings
         .iter()
         .filter(|d| {
             d.code == Some(DiagnosticCode::TypeNotConformingToTrait)
-                && d.message.contains("does not match")
-                && d.message.contains("Option")
+                && d.message.contains("does not conform to trait")
+                && d.message.contains("MaterialSpec")
                 && d.message.contains("List")
         })
         .collect();
     assert_eq!(
         matching.len(),
         1,
-        "expected exactly one wrapper-shape diagnostic, got {:?}",
+        "expected exactly one trait-conformance mismatch for a List arg to Option<trait>, got {:?}",
         matching
     );
 }
@@ -1416,25 +1402,32 @@ fn valueref_of_list_passed_to_option_slot_emits_shape_mismatch() {
     "#;
     let module = compile_source(source);
 
-    let errors: Vec<_> = module
+    // Reshaped by task 5302 α: a `List<Material>` ValueRef is not a valid
+    // single-value implicit-Some for `Option<Material>`. The Option-unwrap arm
+    // recurses `(Material, List<Material>)`; the inline `trait Material {}`
+    // resolves the inner target as a trait object, so the mismatch is coded
+    // `TypeNotConformingToTrait` ("List<Material> does not conform to trait
+    // 'Material'") at Warning (the α knob), NOT the old "does not match" Option
+    // wrapper-shape Error.
+    let warnings: Vec<_> = module
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Error)
+        .filter(|d| d.severity == Severity::Warning)
         .collect();
 
-    let matching: Vec<_> = errors
+    let matching: Vec<_> = warnings
         .iter()
         .filter(|d| {
             d.code == Some(DiagnosticCode::TypeNotConformingToTrait)
-                && d.message.contains("does not match")
-                && d.message.contains("Option")
+                && d.message.contains("does not conform to trait")
                 && d.message.contains("List<Material>")
+                && d.message.contains("Material")
         })
         .collect();
     assert_eq!(
         matching.len(),
         1,
-        "expected exactly one wrapper-shape diagnostic, got {:?}",
+        "expected exactly one trait-conformance mismatch for a List<Material> ValueRef to Option<Material>, got {:?}",
         matching
     );
 }
