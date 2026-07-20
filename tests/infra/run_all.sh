@@ -674,6 +674,18 @@ _ra_skip_engine() {
     _ra_skip_read_closures
     _ra_skip_read_state
 
+    # Storm-escape (fail-open, LOUD): the engine is ACTIVE (state path set) but
+    # the state file is absent or contains a malformed line. Never guess or skip
+    # on unknown state — emit exactly ONE loud line and run the FULL pool this
+    # run (discovered list untouched, no per-member decision lines). This is the
+    # flaky-ledger amnesia lesson: degrade loudly, not silently. An unset/empty
+    # state path is a DIFFERENT case (feature simply off) already handled by the
+    # inert gate above, which returns before this point.
+    if [ "$_RA_SKIP_STATE_MISSING" = "1" ] || [ "$_RA_SKIP_STATE_BAD" = "1" ]; then
+        echo "WARNING: run_all.sh content-skip: state '${REIFY_RUN_ALL_SKIP_STATE:-}' absent or unparseable — running full pool (no skips this run)"
+        return 0
+    fi
+
     # Backstop thresholds (PRD §4.2(5)): fail-open to the default on a
     # malformed value (mirrors the _ra_chronic_n idiom). 0 is a legal value
     # (forces a backstop every run — used to tune/deactivate skipping).
