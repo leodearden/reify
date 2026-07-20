@@ -1,0 +1,173 @@
+# engine_hash_closure.txt — reify-eval's build+normal (exclude-dev) dependency closure.
+#
+# Purpose
+#   ENGINE_VERSION_HASH narrows its Cargo.lock contribution to ONLY the resolved
+#   (name, version) pins of the crate NAMES listed below — reify-eval's own
+#   build + normal (dev-EXCLUDED) transitive closure. This stops an unrelated
+#   dep bump elsewhere in the 716-package workspace lockfile from invalidating
+#   the persistent FEA cache, while still invalidating on any bump that can
+#   change shipped-engine semantics. See docs/prds/merge-gate-compile-cost.md
+#   §3 W4 / §5 C4.
+#
+# Soundness (must OVER-APPROXIMATE the true closure — ⊇)
+#   Excluding dev-only deps (e.g. the gmsh-sys FFI, linked only in reify-eval's
+#   #[cfg(has_gmsh)] test binaries) is sound: those never run in the persisted
+#   engine, and mesh-input changes are captured by the FEA INPUT hash, not the
+#   engine hash. The drift guard tests/infra/test_engine_hash_closure.sh asserts
+#   this manifest ⊇ the freshly-recomputed closure (any missing member FAILs).
+#
+# Canonical regeneration command (MUST stay byte-identical to the drift guard):
+#   cargo tree -p reify-eval -e no-dev --prefix none \
+#     --target x86_64-unknown-linux-gnu --frozen -f '{p}' \
+#     | awk '{print $1}' | sort -u
+#
+# One name per line, sorted-unique. Lines beginning with '#' and blank lines
+# are ignored by parse_closure_manifest (crates/reify-eval/src/engine_hash_algo.rs).
+aho-corasick
+anyhow
+approx
+argmin
+argmin-math
+autocfg
+bincode
+bitflags
+bitmaps
+bytemuck
+cc
+cfg-if
+codespan-reporting
+crc32fast
+cxx
+cxxbridge-flags
+cxxbridge-macro
+cxx-build
+defer
+displaydoc
+dyn-stack
+dyn-stack-macros
+equator
+equator-macro
+equivalent
+faer
+faer-traits
+fastrand
+find-msvc-tools
+foldhash
+gemm
+gemm-c32
+gemm-c64
+gemm-common
+gemm-f32
+gemm-f64
+generativity
+getrandom
+hashbrown
+heck
+im
+indexmap
+instant
+interpol
+inventory
+jobserver
+libc
+libm
+link-cplusplus
+linux-raw-sys
+matrixmultiply
+memchr
+nalgebra
+nalgebra-macros
+nano-gemm
+nano-gemm-c32
+nano-gemm-c64
+nano-gemm-codegen
+nano-gemm-core
+nano-gemm-f32
+nano-gemm-f64
+ndarray
+num-complex
+num_cpus
+num-integer
+num-rational
+num-traits
+once_cell
+paste
+pin-project-lite
+pkg-config
+ppv-lite86
+private-gemm-x86
+proc-macro2
+pulp
+pulp-wasm-simd-flag
+qd
+quote
+rand
+rand_chacha
+rand_core
+rand_xoshiro
+raw-cpuid
+rawpointer
+reborrow
+regex
+regex-automata
+regex-syntax
+reify-ast
+reify-build-utils
+reify-compiler
+reify-compute-contract
+reify-config
+reify-constraints
+reify-core
+reify-eval
+reify-expr
+reify-fdm
+reify-gcode
+reify-ir
+reify-kernel-gmsh
+reify-kernel-openvdb
+reify-shell-extract
+reify-solver-elastic
+reify-stdlib
+reify-syntax
+rustc-hash
+rustix
+rustversion
+safe_arch
+scratch
+seq-macro
+serde
+serde_core
+serde_derive
+serde_spanned
+shlex
+simba
+sized-chunks
+streaming-iterator
+strum
+strum_macros
+syn
+tempfile
+termcolor
+thiserror
+thiserror-impl
+toml
+toml_datetime
+toml_edit
+tracing
+tracing-attributes
+tracing-core
+tree-sitter
+tree-sitter-language
+tree-sitter-reify
+typenum
+unicode-ident
+unicode-width
+version_check
+wide
+winnow
+xxhash-rust
+zerocopy
+zip
+zstd
+zstd-safe
+zstd-sys
