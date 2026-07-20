@@ -539,6 +539,181 @@ trap _ra_on_term TERM
 
 echo "=== Running all infra tests in: $INFRA_DIR ==="
 
+# ===========================================================================
+# Content-addressed per-member SKIP engine (task 5273, merge-gate-riders PRD
+# §4 rider γ). Drops a mapped drift-guard pool member from the merge-tier run
+# when its declared tracked-file closure (run-all-skip-closures.manifest) is
+# byte-identical (git tree compare + worktree-clean) to its last-executed-
+# green main sha, so an unchanged member is not re-run every merge.
+#
+# PRODUCTION-INERT two-key + state-path gate: the engine does NOTHING (no
+# decision lines, discovered list untouched) unless ALL of
+#   REIFY_RUN_ALL_CONTENT_SKIP=1
+#   AND _RA_INBOUND_ROLE == merge   (the INBOUND role snapshot at :230 — NOT
+#                                    the normalized DF_VERIFY_ROLE, which is
+#                                    always "task" from :231 onward)
+#   AND REIFY_RUN_ALL_SKIP_STATE non-empty
+# hold. So every existing run_all invocation / fixture (none set these) is a
+# silent no-op, and activation is left to sibling task 5276 wiring the durable
+# state path. Integrated in the POOL path only (the merge tier runs the pool);
+# legacy/H9 paths and the background role never skip.
+# ===========================================================================
+declare -A _RA_SKIP_DECL=()      # member basename -> declared closure paths (space-sep)
+declare -A _RA_STATE_GREEN=()    # member -> last-executed-green main sha
+declare -A _RA_STATE_AT=()       # member -> last_executed_at (epoch seconds)
+declare -A _RA_STATE_MERGES=()   # member -> merges_at_last_exec
+declare -A _RA_SKIP_SKIPPED=()   # member -> 1 iff skipped this run
+declare -A _RA_SKIP_MAPPED=()    # member -> 1 iff it has a closure row (discovered this run)
+_RA_STATE_NAMES=()               # every member name present in the state ledger
+_RA_SKIP_ACTIVE=0                # 1 iff the two-key + state-path gate is satisfied
+_RA_SKIP_GLOBAL_MERGES=0         # global merge counter read from the ledger
+_RA_SKIP_STATE_MISSING=0         # 1 iff the state path is set but the file is absent
+_RA_SKIP_STATE_BAD=0             # 1 iff the state file contains a malformed line
+_RA_SKIP_TOPLEVEL=""             # repo toplevel resolved from INFRA_DIR
+_RA_SKIP_INFRA_REL=""            # INFRA_DIR path relative to toplevel (trailing slash, or "")
+_RA_SKIP_SPECS=()                # scratch: closure pathspecs for one member
+
+# _ra_skip_read_closures — populate _RA_SKIP_DECL from the closures manifest
+# (RUN_ALL_SKIP_CLOSURES_MANIFEST override, default beside this script).
+# Comment/blank lines stripped; graceful-degrade to empty (⇒ every member
+# unmapped ⇒ full run) when the manifest is absent. Mirrors
+# run-all-classification-lib.sh's manifest-reading convention.
+_ra_skip_read_closures() {
+    _RA_SKIP_DECL=()
+    local _m="${RUN_ALL_SKIP_CLOSURES_MANIFEST:-$SCRIPT_DIR/run-all-skip-closures.manifest}"
+    [ -f "$_m" ] || return 0
+    local _key _rest
+    while read -r _key _rest; do
+        [ -n "$_key" ] || continue
+        _RA_SKIP_DECL["$_key"]="$_rest"
+    done < <(grep -v '^[[:space:]]*#' "$_m" | grep -v '^[[:space:]]*$')
+    return 0
+}
+
+# _ra_skip_read_state — parse the REIFY_RUN_ALL_SKIP_STATE ledger into the
+# _RA_STATE_* maps + the global merge counter. Line format (whitespace-
+# delimited, no jq dependency on the read path):
+#   __MERGES__ <int>                          the global merge counter
+#   <member> <green_sha> <at_epoch> <merges>  one per mapped member
+# Comment (^#) / blank lines ignored. Sets _RA_SKIP_STATE_MISSING when the
+# path is set but the file is absent; sets _RA_SKIP_STATE_BAD on any
+# non-conforming line (the storm-escape signal, acted on in the engine).
+_ra_skip_read_state() {
+    _RA_STATE_GREEN=(); _RA_STATE_AT=(); _RA_STATE_MERGES=()
+    _RA_STATE_NAMES=()
+    _RA_SKIP_GLOBAL_MERGES=0
+    _RA_SKIP_STATE_MISSING=0
+    _RA_SKIP_STATE_BAD=0
+    local _s="${REIFY_RUN_ALL_SKIP_STATE:-}"
+    if [ -z "$_s" ] || [ ! -f "$_s" ]; then
+        _RA_SKIP_STATE_MISSING=1
+        return 0
+    fi
+    local _f1 _f2 _f3 _f4 _extra
+    while read -r _f1 _f2 _f3 _f4 _extra || [ -n "$_f1" ]; do
+        [ -n "$_f1" ] || continue
+        case "$_f1" in '#'*) continue ;; esac
+        if [ "$_f1" = "__MERGES__" ]; then
+            case "$_f2" in ''|*[!0-9]*) _RA_SKIP_STATE_BAD=1; continue ;; esac
+            [ -z "$_f3" ] || { _RA_SKIP_STATE_BAD=1; continue; }
+            _RA_SKIP_GLOBAL_MERGES="$_f2"
+            continue
+        fi
+        # per-member: exactly 4 fields, fields 3 & 4 are epoch integers.
+        if [ -z "$_f4" ] || [ -n "$_extra" ]; then _RA_SKIP_STATE_BAD=1; continue; fi
+        case "$_f3" in ''|*[!0-9]*) _RA_SKIP_STATE_BAD=1; continue ;; esac
+        case "$_f4" in ''|*[!0-9]*) _RA_SKIP_STATE_BAD=1; continue ;; esac
+        _RA_STATE_GREEN["$_f1"]="$_f2"
+        _RA_STATE_AT["$_f1"]="$_f3"
+        _RA_STATE_MERGES["$_f1"]="$_f4"
+        _RA_STATE_NAMES+=("$_f1")
+    done < "$_s"
+    return 0
+}
+
+# _ra_skip_closure_specs <member> — build _RA_SKIP_SPECS = declared closure
+# paths ∪ the six IMPLICIT closure members, all repo-relative (via the
+# INFRA_DIR-relative prefix, so a hermetic fixture whose infra dir IS the
+# toplevel and the real merge both resolve correctly). Own-file is implicit,
+# so any change to the member's own source always invalidates its skip (K3).
+_ra_skip_closure_specs() {
+    local _name="$1" _rel="$_RA_SKIP_INFRA_REL" _p
+    _RA_SKIP_SPECS=()
+    for _p in ${_RA_SKIP_DECL[$_name]}; do
+        _RA_SKIP_SPECS+=("$_p")
+    done
+    _RA_SKIP_SPECS+=(
+        "${_rel}${_name}"
+        "${_rel}test_helpers.sh"
+        "${_rel}run_all.sh"
+        "${_rel}run-all-classification-lib.sh"
+        "${_rel}load_tolerance_lib.sh"
+        "${_rel}run-all-classification.manifest"
+        "${_rel}run-all-ambient-vars.manifest"
+    )
+}
+
+# _ra_skip_engine — the driver. Called from the POOL path AFTER the H3
+# exclusion filter and BEFORE the pool/serial partition (mirroring H3's own
+# filter of _h2_discovered_list). Emits a per-member SKIP decision line for a
+# byte-identical mapped member and drops it from _h2_discovered_list so
+# `discovered` counts only executed members (exactly like H3 exclusion).
+_ra_skip_engine() {
+    _RA_SKIP_ACTIVE=0
+    _RA_SKIP_SKIPPED=()
+    _RA_SKIP_MAPPED=()
+
+    # Two-key + state-path inert gate. Any miss ⇒ silent no-op (feature off).
+    [ "${REIFY_RUN_ALL_CONTENT_SKIP:-}" = "1" ] || return 0
+    [ "$_RA_INBOUND_ROLE" = "merge" ] || return 0
+    [ -n "${REIFY_RUN_ALL_SKIP_STATE:-}" ] || return 0
+    _RA_SKIP_ACTIVE=1
+
+    _RA_SKIP_TOPLEVEL="$(git -C "$INFRA_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+    _RA_SKIP_INFRA_REL="$(git -C "$INFRA_DIR" rev-parse --show-prefix 2>/dev/null || true)"
+    _ra_skip_read_closures
+    _ra_skip_read_state
+
+    local _name _green _rc _wt
+    declare -A _skip_set=()
+    local _skipped_any=0
+    for _name in "${_h2_discovered_list[@]+${_h2_discovered_list[@]}}"; do
+        # Unmapped: no closure row ⇒ never skips (fail-open).
+        [ -n "${_RA_SKIP_DECL[$_name]+x}" ] || continue
+        _RA_SKIP_MAPPED["$_name"]=1
+        # No green baseline ⇒ cannot prove content-clean ⇒ runs.
+        _green="${_RA_STATE_GREEN[$_name]:-}"
+        [ -n "$_green" ] || continue
+        _ra_skip_closure_specs "$_name"
+        # Committed delta over the closure (green..HEAD): non-zero rc (a diff,
+        # or a git error such as a bad sha) ⇒ run.
+        _rc=0
+        git -C "$_RA_SKIP_TOPLEVEL" diff --quiet "$_green" HEAD -- "${_RA_SKIP_SPECS[@]}" 2>/dev/null || _rc=$?
+        [ "$_rc" -eq 0 ] || continue
+        # Worktree delta over the closure (staged/unstaged/untracked) ⇒ run.
+        _wt="$(git -C "$_RA_SKIP_TOPLEVEL" status --porcelain -- "${_RA_SKIP_SPECS[@]}" 2>/dev/null || true)"
+        [ -n "$_wt" ] && continue
+        # Content-clean ⇒ SKIP.
+        echo "SKIP (content-clean): $_name green=$_green"
+        _skip_set["$_name"]=1
+        _skipped_any=1
+    done
+
+    for _name in "${!_skip_set[@]}"; do _RA_SKIP_SKIPPED["$_name"]=1; done
+
+    # Rebuild _h2_discovered_list without skipped members (H3-analogous; same
+    # portable empty-array guard as the H3 filter above).
+    if [ "$_skipped_any" -eq 1 ]; then
+        local _kept=()
+        for _name in "${_h2_discovered_list[@]+${_h2_discovered_list[@]}}"; do
+            [ "${_skip_set[$_name]:-0}" = "1" ] || _kept+=("$_name")
+        done
+        _h2_discovered_list=()
+        [ "${#_kept[@]}" -gt 0 ] && _h2_discovered_list=("${_kept[@]}")
+    fi
+    return 0
+}
+
 # ---------------------------------------------------------------------------
 # H2 concurrent-pool substrate detection. The pool activates only when every
 # lib below is present AND flock is on PATH AND REIFY_RUN_ALL_POOL_DISABLE is
@@ -797,6 +972,13 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
         _h2_discovered_list=()
         [ "${#_h3_kept[@]}" -gt 0 ] && _h2_discovered_list=("${_h3_kept[@]}")
     fi
+
+    # Content-addressed SKIP engine (task 5273): drop byte-identical mapped
+    # members from _h2_discovered_list here -- after the H3 exclusion filter,
+    # before the pool/serial partition -- so `discovered` and the pool/serial
+    # sets below all reflect only the members actually executed this run.
+    # Fully inert unless the two-key + state-path gate is satisfied.
+    _ra_skip_engine
 
     declare -A _h2_is_pool=()
     while IFS= read -r _h2_name; do
