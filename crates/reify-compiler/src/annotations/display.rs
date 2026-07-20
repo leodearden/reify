@@ -13,15 +13,86 @@
 //! are reported as Warnings by `check_display_args`; a malformed `@display` has
 //! no well-formed label and is skipped here.
 
-use reify_core::Diagnostic;
+use reify_core::{Diagnostic, DiagnosticLabel};
 
-/// STEP-5 STUB — empty body so the unit tests below compile and RED-fail; the
-/// real implementation lands in step-6.
+/// Extract the well-formed single string-literal label from a `@display`
+/// annotation. Returns `Some(label)` ONLY for exactly one `String` argument;
+/// any other shape (no args, a non-string arg, or extra args) returns `None`
+/// and is left to `schema::check_display_args` to report as a Warning. Mirrors
+/// `super::is_valid_optimized`'s well-formedness gate, but requires EXACTLY one
+/// argument so a shape violation is not silently treated as a valid label.
+fn display_label(ann: &reify_ir::Annotation) -> Option<&str> {
+    match ann.args.as_slice() {
+        [
+            reify_ir::AnnotationArg {
+                value: reify_ir::AnnotationArgValue::String(label),
+                ..
+            },
+        ] => Some(label.as_str()),
+        _ => None,
+    }
+}
+
+/// Validate that each well-formed `@display("<label>")` names a rung in the
+/// binding dimension's unit ladder (`reify_core::unit_ladders`).
+///
+/// For every `@display` annotation with a well-formed single string label:
+/// - skip non-scalar bindings and dimensionless scalars (no ladder concept —
+///   deferred, see the module header);
+/// - resolve the ladder for the binding dimension via `canonical_name()`;
+/// - if the label is not a rung in that ladder (or the dimension has no
+///   ladder at all), push an Error naming both the label and the binding's
+///   dimension.
+///
+/// Malformed `@display` shapes are skipped here (they have no well-formed label
+/// via `display_label`); their Warning is emitted by `check_display_args`.
 pub(crate) fn validate_display_dimension(
-    _annotations: &[reify_ir::Annotation],
-    _cell_type: &reify_core::Type,
-    _diagnostics: &mut Vec<Diagnostic>,
+    annotations: &[reify_ir::Annotation],
+    cell_type: &reify_core::Type,
+    diagnostics: &mut Vec<Diagnostic>,
 ) {
+    for ann in annotations {
+        if ann.name != reify_core::DISPLAY_ANNOTATION {
+            continue;
+        }
+        // Only a well-formed single-string label is checked here; malformed
+        // shapes are reported (as Warnings) by check_display_args.
+        let Some(label) = display_label(ann) else {
+            continue;
+        };
+        // A display-unit preference is only meaningful for a dimensioned
+        // scalar. Non-scalar and dimensionless bindings have no ladder concept
+        // and are deferred.
+        let dimension = match cell_type {
+            reify_core::Type::Scalar { dimension } if !dimension.is_dimensionless() => *dimension,
+            _ => continue,
+        };
+        // Valid iff the binding dimension's ladder exists AND lists the label.
+        let is_valid_rung = reify_core::unit_ladders()
+            .iter()
+            .find(|l| Some(l.dimension.as_str()) == dimension.canonical_name())
+            .map(|l| l.units.iter().any(|u| u.label == label))
+            .unwrap_or(false);
+        if !is_valid_rung {
+            // Name the binding's dimension user-visibly: canonical_name when
+            // present, else the composed base-SI Display fallback (never a raw
+            // exponent vector — per money-dimension.md's mismatch rule). The
+            // dimensionless case is already filtered out above.
+            let dim_name = dimension
+                .canonical_name()
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("{dimension}"));
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "@display(\"{label}\") is not a valid display unit for dimension {dim_name}"
+                ))
+                .with_label(DiagnosticLabel::new(
+                    ann.span,
+                    "display unit does not match binding dimension",
+                )),
+            );
+        }
+    }
 }
 
 #[cfg(test)]
