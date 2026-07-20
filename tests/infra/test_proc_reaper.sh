@@ -1389,7 +1389,7 @@ assert "reap-orphans kills the SAME run_all-topology child once ORPHAN_PPIDS mat
     env LIB_REAPER="$LIB_REAPER" _RUNALL_BIN="$_RUNALL_BIN" _SENT_RUNALL="$_SENT_RUNALL" \
         _P9_DIR="$_P9_DIR" _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" \
         _POLL_ATTEMPTS_ORPHAN="$_POLL_ATTEMPTS_ORPHAN" bash -c '
-        [ -f "$LIB_REAPER" ] || exit 1
+        [ -f "$LIB_REAPER" ] || { echo "FAIL: LIB_REAPER not found at $LIB_REAPER" >&2; exit 1; }
         _abs_sleep=$(command -v sleep)
         _abs_ps=$(command -v ps)
 
@@ -1421,7 +1421,7 @@ assert "reap-orphans kills the SAME run_all-topology child once ORPHAN_PPIDS mat
 assert "reap-orphans (non-dry-run) does not emit the spared/non-orphan diagnostic (esc-5020)" \
     env LIB_REAPER="$LIB_REAPER" _RUNALL_BIN="$_RUNALL_BIN" _SENT_RUNALL="$_SENT_RUNALL" \
         _P9_DIR="$_P9_DIR" _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" bash -c '
-        [ -f "$LIB_REAPER" ] || exit 1
+        [ -f "$LIB_REAPER" ] || { echo "FAIL: LIB_REAPER not found at $LIB_REAPER" >&2; exit 1; }
         _abs_sleep=$(command -v sleep)
         _abs_kill=$(command -v kill)
         _abs_grep=$(command -v grep)
