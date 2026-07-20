@@ -133,4 +133,26 @@ assert "run-offline-deep.sh --test-threads=2 plan carries --test-threads=2 on a 
     bash -c 'printf "%s\n" "$1" | grep -E "(^| )cargo " | grep -qF -- "--test-threads=2"' \
     _ "$PLAN_E2E"
 
+# ---------------------------------------------------------------------------
+# Test 4: VALIDATION — N must be a positive integer. Reject zero, negative,
+# non-numeric, float, and the explicit empty-value form '--test-threads=' with
+# exit 64 (the same invalid-value convention as --profile / --scope). The
+# explicit empty value ('--test-threads=') is an ERROR distinct from an UNSET
+# flag (no --test-threads at all, which stays exit 0 / default plan — asserted
+# in Test 2); telling them apart requires a "flag-was-seen" sentinel, since
+# both leave TEST_THREADS empty after parsing. The bare no-value '--test-threads'
+# form is deliberately NOT asserted here: it exits 1 via bash ${2:?}, the same
+# as the bare '--profile' / '--scope' forms.
+# RED (step-4): values are stored/threaded without validation, so they exit 0.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Test 4: invalid --test-threads values exit 64 (parse-time validation) ---"
+
+for _v in 0 -1 abc 2.5 ""; do
+    _rc=0
+    bash "$VERIFY" test --scope all --print-plan --test-threads="$_v" >/dev/null 2>&1 || _rc=$?
+    assert "invalid --test-threads='$_v' exits 64 (want positive integer)" \
+        test "$_rc" -eq 64
+done
+
 test_summary
