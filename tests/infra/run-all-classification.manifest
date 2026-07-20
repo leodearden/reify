@@ -162,6 +162,7 @@ test_verify_nextest_probe.sh pool
 test_verify_offline_partition.sh pool
 test_verify_pipeline_guard.sh pool
 test_verify_release_delta_skip.sh pool
+test_verify_retry_subset.sh pool
 test_verify_role_prio.sh pool
 test_verify_scope.sh pool
 test_verify_semaphore_wiring.sh pool
