@@ -42,6 +42,14 @@
 #                                  This is a faithful oracle of what a real run executes:
 #                                  the command list is built once and only the leaf
 #                                  step (print vs eval) branches on --print-plan.
+#   --test-threads=N               Cap test-execution parallelism at N (a positive
+#                                  integer). Threaded into `cargo nextest run
+#                                  --test-threads=N`, or the libtest
+#                                  `-- --test-threads=N` fallback when nextest is
+#                                  absent. Default: UNSET — the emitted plan stays
+#                                  byte-identical to today. Primarily the offline
+#                                  deep-test lane's parallelism knob (task 5264;
+#                                  docs/design/offline-deep-test-lane.md §6).
 #   -h|--help                      Show usage.
 #
 # Environment baked in (mirrors dark-factory-orchestrator.yaml verify_env + .cargo/run-with-occt.sh):
@@ -284,7 +292,7 @@ _VERIFY_CLIPPY_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_CLIPPY_TIMEOUT 45m)
 _VERIFY_CHECK_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_CHECK_TIMEOUT 30m)"
 
 usage() {
-    sed -n '2,51p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,59p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 # ---------------------------------------------------------------------------
@@ -426,6 +434,8 @@ SCOPE="all"
 NARROW=0             # --narrow: opt-in to affected-crate narrowing for --scope staged
 INCLUDE_INFRA=0
 PRINT_PLAN=0
+TEST_THREADS=""      # --test-threads=N: test-execution parallelism cap (offline lane, task 5264). Empty = unset → plan unchanged.
+TEST_THREADS_SET=0   # 1 once --test-threads is seen; lets validation reject an explicit empty value ('--test-threads=') while an UNSET flag stays valid.
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -449,6 +459,10 @@ while [ "$#" -gt 0 ]; do
             INCLUDE_INFRA=1; shift ;;
         --print-plan)
             PRINT_PLAN=1; shift ;;
+        --test-threads)
+            TEST_THREADS="${2:?--test-threads requires an argument}"; TEST_THREADS_SET=1; shift 2 ;;
+        --test-threads=*)
+            TEST_THREADS="${1#*=}"; TEST_THREADS_SET=1; shift ;;
         -h|--help)
             usage; exit 0 ;;
         *)
@@ -469,6 +483,20 @@ esac
 case "$SCOPE" in all|staged|branch) ;; *)
     echo "verify.sh: ERROR — invalid --scope '$SCOPE' (want all|staged|branch)" >&2; exit 64 ;;
 esac
+# --test-threads=N (task 5264): positive-integer validation, mirroring the
+# --profile/--scope invalid-value exit-64 convention. Guard on TEST_THREADS_SET
+# (not `[ -n ]`) so an explicit empty value ('--test-threads=') is rejected
+# while an UNSET flag stays valid and leaves the default plan byte-identical.
+# The '*[!0-9]*' arm rejects any non-digit (incl. '-' and '.'); '' rejects the
+# empty value; '0*' rejects zero AND every leading-zero form ('0', '00', '007')
+# — a leading zero would otherwise reach cargo/nextest as e.g. '--test-threads=00',
+# which they parse as 0 and reject only at runtime, AFTER build work has started,
+# defeating this parse-time fail-fast. Net effect: exactly ^[1-9][0-9]*$.
+if [ "$TEST_THREADS_SET" -eq 1 ]; then
+    case "$TEST_THREADS" in ''|*[!0-9]*|0*)
+        echo "verify.sh: ERROR — invalid --test-threads '$TEST_THREADS' (want positive integer)" >&2; exit 64 ;;
+    esac
+fi
 DF_VERIFY_ROLE="${DF_VERIFY_ROLE:-task}"
 # Role-based PROFILE default: when no explicit --profile was given and the
 # orchestrator merge path stamps DF_VERIFY_ROLE=merge, default to 'both' so
@@ -1138,6 +1166,13 @@ trap '_verify_cleanup; exit 129' HUP
 emit_nextest_pass() {
     local selector="$1" rel="$2" outer_timeout="$3"
     local cmd
+    # --test-threads=N (task 5264): test-execution parallelism cap wired by the
+    # dark-factory offline deep-test lane. Empty when the flag is unset, so the
+    # emitted command is byte-for-byte identical to today — the same
+    # empty-or-leading-space idiom as the adjacent _GATE_HEAVY_EXCLUDE /
+    # _OFFLINE_HEAVY_SELECT fragments.
+    local _tt_flag=""
+    [ -n "$TEST_THREADS" ] && _tt_flag=" --test-threads=${TEST_THREADS}"
     if [ "$NEXTEST" -eq 1 ]; then
         local _cfg_path
         if [ "$PRINT_PLAN" -eq 1 ]; then
@@ -1158,11 +1193,19 @@ emit_nextest_pass() {
             fi
             _cfg_path="$_NEXTEST_CONFIG_FILE"
         fi
-        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel}${_GATE_HEAVY_EXCLUDE}${_OFFLINE_HEAVY_SELECT} --config-file ${_cfg_path}"
+        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel}${_GATE_HEAVY_EXCLUDE}${_OFFLINE_HEAVY_SELECT}${_tt_flag} --config-file ${_cfg_path}"
     else
-        # Fallback: single-threaded (OCCT serialization via the nextest occt group is
-        # unavailable without nextest; use --test-threads=1 as the whole-workspace guard).
-        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo test ${selector}${rel} -- --test-threads=1"
+        # Fallback (no nextest): the nextest occt test-group that serializes
+        # OCCT's thread-unsafe tests is unavailable here, so the ONLY OCCT guard
+        # is process-wide single-threading. When --test-threads is UNSET we
+        # therefore default to 1 (${TEST_THREADS:-1}), preserving the historical
+        # whole-workspace serial guard byte-for-byte. When the caller passes an
+        # explicit --test-threads=N>1 it is honored verbatim, which BYPASSES the
+        # OCCT serialization the nextest path would provide: on a nextest-less
+        # host the caller must then guarantee no OCCT tests run concurrently.
+        # (The offline deep-test lane — the sole N-setting consumer — runs with
+        # nextest present and N=1, so this footgun is not reachable in practice.)
+        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo test ${selector}${rel} -- --test-threads=${TEST_THREADS:-1}"
     fi
     # FD 9 is the held semaphore slot; close it for each gated child so daemon
     # processes (sccache/rustc) cannot inadvertently inherit the lock fd and
