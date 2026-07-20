@@ -61,6 +61,7 @@ _SENTINEL_SLEEP_SECS="${_SENTINEL_SLEEP_SECS:-600}"
 _POLL_ATTEMPTS=$(load_tolerant_attempts 30)   # reaper_kill_pgroup poll budget
 _POLL_ATTEMPTS_5=$(load_tolerant_attempts 5)  # (legacy; kept for any future callers)
 _POLL_ATTEMPTS_ORPHAN=$(load_tolerant_attempts 20)  # post-SIGKILL orphan-reap budget
+_POLL_ATTEMPTS_PIDFILE=$(load_tolerant_attempts 20)  # pid-file handshake budget (base 20 = historical 6s window)
 
 # ---------------------------------------------------------------------------
 # Zombie-aware "effectively gone" helpers.
@@ -819,7 +820,8 @@ chmod +x "$_E2E_FAKE"
 assert "SIGKILL to parent does NOT reap the backgrounded test binary (survivor exists)" \
     env _E2E_FAKE="$_E2E_FAKE" _SENT_FAKE="$_SENT_FAKE" \
         _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" \
-        _POLL_ATTEMPTS_ORPHAN="$_POLL_ATTEMPTS_ORPHAN" bash -c '
+        _POLL_ATTEMPTS_ORPHAN="$_POLL_ATTEMPTS_ORPHAN" \
+        _POLL_ATTEMPTS_PIDFILE="$_POLL_ATTEMPTS_PIDFILE" bash -c '
         _abs_sleep=$(command -v sleep)
         _abs_kill=$(command -v kill)
         _abs_bash=$(command -v bash)
@@ -833,7 +835,7 @@ assert "SIGKILL to parent does NOT reap the backgrounded test binary (survivor e
         "$_abs_bash" -c "\"$_E2E_FAKE\" \"$_SENTINEL_SLEEP_SECS\" </dev/null >/dev/null 2>&1 & echo \$! > \"$_pid_file\"; wait" &
         _parent_pid=$!
         # Wait for the fake binary to start (poll for PID file).
-        for ((_t=1; _t<=20; _t++)); do
+        for ((_t=1; _t<=_POLL_ATTEMPTS_PIDFILE; _t++)); do
             [ -s "$_pid_file" ] && break
             "$_abs_sleep" 0.3
         done
@@ -894,6 +896,7 @@ assert "hermetic regression lock: condition-polled survivor check tolerates a tr
     env _E2E_FAKE="$_E2E_FAKE" _SENT_FAKE="$_SENT_FAKE" \
         _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" \
         _POLL_ATTEMPTS_ORPHAN="$_POLL_ATTEMPTS_ORPHAN" \
+        _POLL_ATTEMPTS_PIDFILE="$_POLL_ATTEMPTS_PIDFILE" \
         PATH="$_P5_STUB_DIR:$PATH" bash -c '
         _abs_sleep=$(command -v sleep)
         _abs_kill=$(command -v kill)
@@ -903,7 +906,7 @@ assert "hermetic regression lock: condition-polled survivor check tolerates a tr
 
         "$_abs_bash" -c "\"$_E2E_FAKE\" \"$_SENTINEL_SLEEP_SECS\" </dev/null >/dev/null 2>&1 & echo \$! > \"$_pid_file\"; wait" &
         _parent_pid=$!
-        for ((_t=1; _t<=20; _t++)); do
+        for ((_t=1; _t<=_POLL_ATTEMPTS_PIDFILE; _t++)); do
             [ -s "$_pid_file" ] && break
             "$_abs_sleep" 0.3
         done
@@ -948,7 +951,8 @@ assert "foreign-run e2e marker launched alive (precondition, task 5260)" \
 assert "reap-orphaned-test-binaries.sh reaps an orphaned test binary after parent SIGKILL" \
     env _WRAPPER="$_WRAPPER" _E2E_FAKE="$_E2E_FAKE" _E2E_DIR="$_E2E_DIR" \
         _SENT_FAKE="$_SENT_FAKE" _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" \
-        _POLL_ATTEMPTS_ORPHAN="$_POLL_ATTEMPTS_ORPHAN" bash -c '
+        _POLL_ATTEMPTS_ORPHAN="$_POLL_ATTEMPTS_ORPHAN" \
+        _POLL_ATTEMPTS_PIDFILE="$_POLL_ATTEMPTS_PIDFILE" bash -c '
         [ -x "$_WRAPPER" ] || exit 1
         _abs_sleep=$(command -v sleep)
         _abs_ps=$(command -v ps)
@@ -971,7 +975,7 @@ assert "reap-orphaned-test-binaries.sh reaps an orphaned test binary after paren
         # Self-expiring duration — see the sibling E2E assertion above.
         "$_abs_bash" -c "\"$_E2E_FAKE\" \"$_SENTINEL_SLEEP_SECS\" </dev/null >/dev/null 2>&1 & echo \$! > \"$_pid_file\"; wait" &
         _parent_pid=$!
-        for ((_t=1; _t<=20; _t++)); do
+        for ((_t=1; _t<=_POLL_ATTEMPTS_PIDFILE; _t++)); do
             [ -s "$_pid_file" ] && break
             "$_abs_sleep" 0.3
         done
