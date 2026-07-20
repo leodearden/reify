@@ -272,25 +272,6 @@ mod tests {
     }
 
     #[test]
-    fn byte_offset_to_line_col_offset_at_len_returns_eof_position() {
-        // offset == source.len() is in-range, so it satisfies
-        // debug_assert!(offset <= source.len()) and passes identically in debug
-        // and release builds. It exercises the SAME loop-exhaustion code path
-        // that an out-of-range offset relies on in release builds (where the
-        // debug_assert is a no-op): every char_indices() index is < source.len(),
-        // so `i >= offset` never fires, the loop exhausts, and the position after
-        // the last character is returned.
-        // "ab" → 'a' col→2, 'b' col→3; loop ends → (1, 3).
-        //
-        // This is the profile-invariant re-expression of the release-only clamp
-        // this module used to pin with an out-of-range offset (100) under
-        // #[cfg(not(debug_assertions))]. The debug-side loud-panic contract for a
-        // genuinely out-of-range offset is pinned separately by the sibling
-        // #[should_panic] test above.
-        assert_eq!(byte_offset_to_line_col("ab", 2), (1, 3));
-    }
-
-    #[test]
     fn byte_offset_to_line_col_multibyte_chars() {
         // Source: "αβ\nγ"
         // α = U+03B1, 2 bytes (UTF-8: 0xCE 0xB1), byte offset 0
@@ -329,6 +310,17 @@ mod tests {
         );
     }
 
+    /// Also the profile-invariant re-expression of the release-only clamp
+    /// this module used to pin with an out-of-range offset (100) under
+    /// `#[cfg(not(debug_assertions))]`: offset == source.len() is in-range,
+    /// so it satisfies `debug_assert!(offset <= source.len())` and passes
+    /// identically in debug and release builds, while exercising the SAME
+    /// loop-exhaustion code path an out-of-range offset relies on in release
+    /// builds (where the debug_assert is a no-op) — every char_indices()
+    /// index is < source.len(), so `i >= offset` never fires, the loop
+    /// exhausts, and the position after the last character is returned. The
+    /// debug-side loud-panic contract for a genuinely out-of-range offset is
+    /// pinned separately by the sibling `#[should_panic]` test above.
     #[test]
     fn byte_offset_to_line_col_at_source_len() {
         // Source "abc\ndef" has byte length 7.
@@ -339,6 +331,10 @@ mod tests {
         let source = "abc\ndef";
         assert_eq!(source.len(), 7, "sanity-check byte length");
         assert_eq!(byte_offset_to_line_col(source, 7), (2, 4));
+
+        // Smaller fixture pinning the same EOF/clamp behavior: "ab" →
+        // 'a' col→2, 'b' col→3; loop ends → (1, 3).
+        assert_eq!(byte_offset_to_line_col("ab", 2), (1, 3));
     }
 
     /// Explicitly verify that byte_offset_to_line_col returns 1-based (line, col)
