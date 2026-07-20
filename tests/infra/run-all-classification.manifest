@@ -81,6 +81,7 @@ test_jobserver_canary.sh pool
 test_jobserver_role_fifo.sh pool
 test_jobserver_tuning_harness.sh pool
 test_land_script.sh pool
+test_lane_task_status.sh pool
 test_lane_x_flock.sh pool
 test_lean_debuginfo_profile.sh pool
 test_linker_config.sh pool
