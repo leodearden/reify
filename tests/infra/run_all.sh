@@ -678,12 +678,18 @@ _ra_skip_engine() {
     declare -A _skip_set=()
     local _skipped_any=0
     for _name in "${_h2_discovered_list[@]+${_h2_discovered_list[@]}}"; do
-        # Unmapped: no closure row ⇒ never skips (fail-open).
-        [ -n "${_RA_SKIP_DECL[$_name]+x}" ] || continue
+        # Unmapped: no closure row ⇒ never skips (fail-open) ⇒ RUN (unmapped).
+        if [ -z "${_RA_SKIP_DECL[$_name]+x}" ]; then
+            echo "RUN (unmapped): $_name"
+            continue
+        fi
         _RA_SKIP_MAPPED["$_name"]=1
-        # No green baseline ⇒ cannot prove content-clean ⇒ runs.
+        # No green baseline ⇒ cannot prove content-clean ⇒ RUN (no-baseline).
         _green="${_RA_STATE_GREEN[$_name]:-}"
-        [ -n "$_green" ] || continue
+        if [ -z "$_green" ]; then
+            echo "RUN (no-baseline): $_name"
+            continue
+        fi
         _ra_skip_closure_specs "$_name"
         # Committed delta over the closure (green..HEAD): non-zero rc (a diff,
         # or a git error such as a bad sha) ⇒ RUN (delta). Capture a
