@@ -661,10 +661,12 @@ fi
 _ATTEMPT_SIDECAR_PATH="${REIFY_VERIFY_ATTEMPT_SIDECAR:-target/reify-verify-attempt.json}"
 # Precomputed once in add_test_passes (before the profile loop); initialized
 # here so emit_nextest_pass stays nounset-safe (set -u) on any call path.
-# _RETRY_ACTIVE: the caller asked for the narrowed retry scope (failed_only).
-# _RETRY_SUBSET_ELIGIBLE: AND the on-disk attempt-0 sidecar tree_oid matches the
-# tree DF intends to retry — i.e. the warm target/ provably corresponds to it.
-_RETRY_ACTIVE=0
+# _RETRY_SUBSET_ELIGIBLE: the caller asked for the narrowed retry scope
+# (failed_only) AND the on-disk attempt-0 sidecar tree_oid matches the tree DF
+# intends to retry — i.e. the warm target/ provably corresponds to it. The
+# scope=failed_only decision is re-read directly from REIFY_VERIFY_RETRY_SCOPE
+# where it is independently needed (the sidecar-stamp guard at the tail of
+# add_test_passes), so no separate "retry active" flag is carried.
 _RETRY_SUBSET_ELIGIBLE=0
 # Subset-size ceiling (INV-4 retry-storm escape / PRD §4.3): a subset that
 # approaches the whole ~20,280-test suite means DF built a bad subset (a
@@ -1375,6 +1377,15 @@ emit_nextest_pass() {
             local _line
             if [ -n "$_retry_filter_file" ] && [ -r "$_retry_filter_file" ]; then
                 while IFS= read -r _line || [ -n "$_line" ]; do
+                    # Trim leading/trailing whitespace, then skip a now-empty
+                    # line. This drops blank AND whitespace-only lines (a stray
+                    # "   " would otherwise become a malformed, unmatchable
+                    # test(=   ) term) and normalizes any accidental surrounding
+                    # whitespace on a real id. DF owns the file content so this
+                    # is belt-and-suspenders; a well-formed id (no surrounding
+                    # whitespace) is unchanged, keeping the fragment identical.
+                    _line="${_line#"${_line%%[![:space:]]*}"}"
+                    _line="${_line%"${_line##*[![:space:]]}"}"
                     [ -n "$_line" ] || continue
                     _retry_ids+=("$_line")
                 done < "$_retry_filter_file"
@@ -1439,6 +1450,20 @@ emit_nextest_pass() {
         fi
         cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel}${_eff_gate_exclude}${_eff_offline_select}${_tt_flag}${_retry_filter_frag} --config-file ${_cfg_path}"
     else
+        # LOUD no-nextest full-fallback (never-silent invariant, PRD §4.3): the
+        # cargo-test fallback plan has no `-E` filterset support, so an eligible
+        # retry subset cannot be applied and this profile runs FULL. Say so —
+        # every other retry refusal (tree drift / no subset / subset too large)
+        # is loud, so this path must not be the one silent exception. Gated on
+        # _RETRY_SUBSET_ELIGIBLE (a subset WOULD have applied on the nextest
+        # path), so a tree-drift/ineligible retry — already announced once in
+        # add_test_passes — is not re-diagnosed here. In practice unreachable on
+        # a merge host: the NEXTEST probe above hard-fails rather than fall back
+        # while cargo-nextest is installed, so NEXTEST=0 means it is genuinely
+        # absent from PATH (no retry consumer runs there).
+        if [ "$_RETRY_SUBSET_ELIGIBLE" -eq 1 ]; then
+            echo "verify.sh: retry refused: no nextest — cargo-test fallback has no -E filterset support (full verify)" >&2
+        fi
         # Fallback (no nextest): the nextest occt test-group that serializes
         # OCCT's thread-unsafe tests is unavailable here, so the ONLY OCCT guard
         # is process-wide single-threading. When --test-threads is UNSET we
@@ -1506,19 +1531,16 @@ add_test_passes() {
 
     # retry_failed_only (task 5287) — precompute subset eligibility ONCE, before
     # the profile loop, so emit_nextest_pass just consumes the decision.
-    #   _RETRY_ACTIVE          — the caller asked for scope=failed_only.
-    #   _RETRY_SUBSET_ELIGIBLE — AND the on-disk attempt-0 sidecar's tree_oid
-    #     equals the (non-empty) tree DF intends to retry
-    #     (REIFY_VERIFY_RETRY_TREE_OID). Equality proves the warm target/
-    #     corresponds to the retried tree (PRD §5 INV-1 tree-pin soundness); a
-    #     rebase makes DF pass a new OID that mismatches the surviving sidecar
-    #     → fallback (DF also full-verifies on rebase independently, M4). A
-    #     mismatched/absent sidecar leaves it 0 → all profiles run FULL (the
-    #     loud "tree drift" diagnostic is emitted by a later step).
-    _RETRY_ACTIVE=0
+    #   _RETRY_SUBSET_ELIGIBLE — the caller asked for scope=failed_only AND the
+    #     on-disk attempt-0 sidecar's tree_oid equals the (non-empty) tree DF
+    #     intends to retry (REIFY_VERIFY_RETRY_TREE_OID). Equality proves the
+    #     warm target/ corresponds to the retried tree (PRD §5 INV-1 tree-pin
+    #     soundness); a rebase makes DF pass a new OID that mismatches the
+    #     surviving sidecar → fallback (DF also full-verifies on rebase
+    #     independently, M4). A mismatched/absent sidecar leaves it 0 → all
+    #     profiles run FULL (the loud "tree drift" diagnostic is emitted below).
     _RETRY_SUBSET_ELIGIBLE=0
     if [ "${REIFY_VERIFY_RETRY_SCOPE:-}" = "failed_only" ]; then
-        _RETRY_ACTIVE=1
         local _sidecar_tree_oid=""
         if [ -f "$_ATTEMPT_SIDECAR_PATH" ]; then
             # Tolerant extractor: pull the "tree_oid":"<x>" value without a JSON
