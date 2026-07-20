@@ -63,6 +63,22 @@ done
 echo "=== PTODO detector infra gate ==="
 
 # -----------------------------------------------------------------------
+# ITEM 3 meta-test (task 5260): _ratchet_check_subset must NAME the offending
+# live fingerprints on stderr so a ratchet regression lands actionable output in
+# assert()'s on-FAIL captured-output dump (the 4636 failure produced zero
+# fingerprints — esc-4959-57). Unconditional + hermetic: runs before binary
+# resolution and independent of RATCHET_SKIP, driven by a synthetic fingerprint
+# set (a command-substitution subshell inherits the shell function).
+# -----------------------------------------------------------------------
+_FAKE_FP=$'crates/foo/src/a.rs:42:PTODO-untracked\ncrates/foo/src/b.rs:7:PTODO-orphaned'
+_DIAG="$(_ratchet_check_subset "$_FAKE_FP" 2>&1 1>/dev/null || true)"
+assert "ratchet regression diagnostic names the offending fingerprints (4636 actionability)" \
+    bash -c 'case "$1" in *a.rs:42:PTODO-untracked*b.rs:7:PTODO-orphaned*) exit 0;; *) exit 1;; esac' -- "$_DIAG"
+_EMPTY="$(_ratchet_check_subset "" 2>&1 || true)"
+assert "ratchet check is silent + rc0 when live set is empty" \
+    bash -c '[ -z "$1" ]' -- "$_EMPTY"
+
+# -----------------------------------------------------------------------
 # Resolve ptodo-baseline-gen binary (ride freshness guard).
 # The freshness guard rebuilds target/release/reify-audit (and all crate
 # bins, incl. ptodo-baseline-gen) when the binary predates the last
