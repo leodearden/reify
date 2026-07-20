@@ -169,6 +169,17 @@ verify_env:
   # _merge-verify lane, wiped by git clean on every reseed, so the ledger (and DF 2358's
   # chronic-flake auto-filer) could never accumulate at the tier where flakes matter.
   REIFY_RUN_ALL_FLAKY_LEDGER: "/home/leo/src/reify/data/verify-logs/flaky-ledger.jsonl"
+  # Durable content-skip state-ledger path (merge-gate-riders δ / task 5276, PRD
+  # docs/prds/merge-gate-riders.md §4.3). Activates the merge-tier content-addressed
+  # per-member SKIP engine landed INERT by γ (task 5273): run_all.sh's _ra_skip_engine
+  # stays a no-op until this names a state file (two-key + state-path gate). MUST be an
+  # absolute MAIN-checkout path (not an in-lane relative default) for the SAME amnesia
+  # reason as the FLAKY_LEDGER above — an in-lane path lives in the _merge-verify warm
+  # lane, wiped by git clean on every reseed, so the keys-only ledger could never
+  # accumulate the per-member green shas across merges. The .json extension is cosmetic:
+  # γ's on-disk schema is whitespace-delimited plain text (_ra_skip_read_state), never
+  # JSON-parsed, and the file is git-ignored (data/verify-logs/) so it is never tracked.
+  REIFY_RUN_ALL_SKIP_STATE: "/home/leo/src/reify/data/verify-logs/run-all-skip-state.json"
   RUSTC_WRAPPER: sccache
   CARGO_INCREMENTAL: "0"
   # CARGO_MAKEFLAGS is owned solely by scripts/verify.sh apply_env() (single source,
