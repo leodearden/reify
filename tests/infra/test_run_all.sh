@@ -2521,7 +2521,407 @@ else
     assert "T25h: GREEN regression -- normal path exits 0 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
 fi
 
-# -- Test 26: REIFY_RUN_ALL_MEMBER_SUBSET member-subset knob (task #5288; PRD
+# -- Test 26: INTERRUPTED-worktree marker (task #5261, PRD merge-gate-health.md W4e) --
+# Proves run_all.sh detects its OWN worktree (INFRA_DIR) being removed out
+# from under it mid-run -- e.g. the _merge-verify worktree gutted by a
+# restart -- and reclassifies that as ONE line-anchored
+# `=== INTERRUPTED (worktree removed) ===` marker + a distinct exit code
+# (99), instead of letting Phase 2/2.5/3 emit N per-member
+# "No such file or directory" (rc 127) failures that dark-factory would
+# otherwise misclassify as N genuine test_failure results. The self-check is
+# only "armed" when INFRA_DIR held a `run_all.sh` sentinel at startup --
+# every fixture below deliberately plants a dummy `run_all.sh` file in its
+# temp INFRA_DIR to arm it (a real merge-tier invocation runs `bash
+# run_all.sh` with no arg, so INFRA_DIR == SCRIPT_DIR naturally satisfies
+# this). `run_all.sh` never matches the `test_*.sh` discovery glob, so
+# planting the sentinel is inert to discovery/partition/Summary counts.
+echo ""
+echo "--- Test 26: INTERRUPTED-worktree marker ---"
+
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+    # -- 26a: POOL path -- the sole pool member nukes its own INFRA_DIR ------
+    # Deterministic (no wall-clock/race): with exactly one pool member, the
+    # Phase-1 `wait` join always completes only after this member (and its
+    # rm -rf) has finished, so the post-join self-check fires reliably.
+    TMPDIR_T26A="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T26A")
+    touch "$TMPDIR_T26A/run_all.sh"
+
+    MANIFEST_T26A="$TMPDIR_T26A/classification.manifest"
+    printf 'test_nuke_pool.sh pool\n' > "$MANIFEST_T26A"
+    cat > "$TMPDIR_T26A/test_nuke_pool.sh" <<'MOCKBODY'
+#!/usr/bin/env bash
+rm -rf "$NUKE_DIR"
+exit 0
+MOCKBODY
+    chmod +x "$TMPDIR_T26A/test_nuke_pool.sh"
+
+    t26a_rc=0
+    t26a_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T26A" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T26A/pool.lock" \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        NUKE_DIR="$TMPDIR_T26A" \
+        bash "$RUN_ALL" "$TMPDIR_T26A" 2>&1)" || t26a_rc=$?
+
+    if grep -qE '^=== INTERRUPTED \(worktree removed\) ===$' <<<"$t26a_out"; then
+        assert "T26a: POOL path -- worktree removal emits the line-anchored INTERRUPTED marker" true
+    else
+        assert "T26a: POOL path -- worktree removal emits the line-anchored INTERRUPTED marker (got: $t26a_out)" false
+    fi
+
+    assert "T26a: POOL path -- worktree removal exits 99" \
+        test "$t26a_rc" -eq 99
+
+    # -- 26b: LEGACY path (REIFY_RUN_ALL_POOL_DISABLE=1) -- first of two
+    # members nukes INFRA_DIR; the between-members top-of-loop check must
+    # catch it before the second member's `[ -f ]` discovery guard would
+    # otherwise silently `continue` right past it (a silent false success,
+    # not even a 127) ---------------------------------------------------
+    TMPDIR_T26B="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T26B")
+    touch "$TMPDIR_T26B/run_all.sh"
+
+    cat > "$TMPDIR_T26B/test_a_nuke.sh" <<'MOCKBODY'
+#!/usr/bin/env bash
+rm -rf "$NUKE_DIR"
+exit 0
+MOCKBODY
+    chmod +x "$TMPDIR_T26B/test_a_nuke.sh"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T26B/test_b_second.sh"
+    chmod +x "$TMPDIR_T26B/test_b_second.sh"
+
+    t26b_rc=0
+    t26b_out="$(REIFY_RUN_ALL_POOL_DISABLE=1 \
+        NUKE_DIR="$TMPDIR_T26B" \
+        bash "$RUN_ALL" "$TMPDIR_T26B" 2>&1)" || t26b_rc=$?
+
+    if grep -qE '^=== INTERRUPTED \(worktree removed\) ===$' <<<"$t26b_out"; then
+        assert "T26b: LEGACY path -- worktree removal between members emits the INTERRUPTED marker" true
+    else
+        assert "T26b: LEGACY path -- worktree removal between members emits the INTERRUPTED marker (got: $t26b_out)" false
+    fi
+
+    assert "T26b: LEGACY path -- worktree removal exits 99" \
+        test "$t26b_rc" -eq 99
+
+    # -- 26c: GREEN regression -- armed sentinel present but NEVER nuked must
+    # never false-fire: no INTERRUPTED marker, exit 0, byte-exact Summary --
+    TMPDIR_T26C="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T26C")
+    touch "$TMPDIR_T26C/run_all.sh"
+
+    MANIFEST_T26C="$TMPDIR_T26C/classification.manifest"
+    printf 'test_pool_ok.sh pool\n' > "$MANIFEST_T26C"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T26C/test_pool_ok.sh"
+    chmod +x "$TMPDIR_T26C/test_pool_ok.sh"
+
+    t26c_rc=0
+    t26c_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T26C" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T26C/pool.lock" \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        bash "$RUN_ALL" "$TMPDIR_T26C" 2>&1)" || t26c_rc=$?
+
+    if [[ "$t26c_out" != *"INTERRUPTED"* ]]; then
+        assert "T26c: GREEN regression -- armed-but-intact run emits no INTERRUPTED marker" true
+    else
+        assert "T26c: GREEN regression -- armed-but-intact run emits no INTERRUPTED marker (got: $t26c_out)" false
+    fi
+
+    if [[ "$t26c_out" == *"=== Summary: 1 discovered, 0 failed ==="* ]]; then
+        assert "T26c: GREEN regression -- byte-exact Summary line when armed but intact" true
+    else
+        assert "T26c: GREEN regression -- byte-exact Summary line when armed but intact (got: $t26c_out)" false
+    fi
+
+    assert "T26c: GREEN regression -- armed-but-intact run exits 0" \
+        test "$t26c_rc" -eq 0
+else
+    assert "T26a: POOL path -- worktree removal emits the line-anchored INTERRUPTED marker (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T26a: POOL path -- worktree removal exits 99 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T26b: LEGACY path -- worktree removal between members emits the INTERRUPTED marker (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T26b: LEGACY path -- worktree removal exits 99 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T26c: GREEN regression -- armed-but-intact run emits no INTERRUPTED marker (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T26c: GREEN regression -- byte-exact Summary line when armed but intact (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T26c: GREEN regression -- armed-but-intact run exits 0 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+fi
+
+# -- Test 27: Phase-2.5 serial-retry + FLAKY ledger extended to
+# intra-run-serial members (task #5261, PRD merge-gate-health.md W5b) ----------
+# Phase 2.5 previously retried ONLY `pool`-bucket members, so an
+# intra-run-serial member (e.g. test_verify_semaphore_e2e.sh) that
+# transiently failed could never be exonerated as flaky -- it went straight
+# to failed_names/^FAILED. Proves retry now also covers intra-run-serial
+# members (same-mode serial re-run -- cheap and sound, they already ran
+# serially in Phase 2), while a deterministic fail-twice member still fails
+# the run (but IS still retried, proving the loop actually covers it), and
+# retry stays scoped to pool UNION intra-run-serial only -- a host-exclusive
+# member (real burn/cgroup/reflink work, non-hermetic) is deliberately NOT
+# retried.
+echo ""
+echo "--- Test 27: intra-run-serial serial-retry + FLAKY ledger ---"
+
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+    # Each sub-case below gets its OWN temp INFRA_DIR (TMPDIR_T27A/B/D, mirroring
+    # Test 23's per-sub-case isolation) -- discovery is a filesystem glob over
+    # test_*.sh in INFRA_DIR, INDEPENDENT of which names a given injected
+    # manifest declares, so sharing one dir across sub-cases with different
+    # intended member sets would let an earlier sub-case's leftover mock get
+    # silently rediscovered (and UNCLASSIFIED-serial) by a later sub-case.
+
+    # -- 27a: FLAKY direction -- Test 18a's tmpfile-counter mock (fails
+    # invocation 1, passes invocation 2+), but declared intra-run-serial ---
+    TMPDIR_T27A="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T27A")
+
+    MANIFEST_T27A="$TMPDIR_T27A/classification-flaky-serial.manifest"
+    printf 'test_flaky_serial.sh intra-run-serial\n' > "$MANIFEST_T27A"
+
+    cat > "$TMPDIR_T27A/test_flaky_serial.sh" <<'MOCKBODY'
+#!/usr/bin/env bash
+set -euo pipefail
+counter_file="$FLAKY_SERIAL_COUNTER_FILE"
+count=$(( $(cat "$counter_file" 2>/dev/null || echo 0) + 1 ))
+echo "$count" > "$counter_file"
+echo "test_flaky_serial.sh invocation $count"
+if [ "$count" -eq 1 ]; then
+    exit 1
+else
+    exit 0
+fi
+MOCKBODY
+    chmod +x "$TMPDIR_T27A/test_flaky_serial.sh"
+
+    t27a_rc=0
+    t27a_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T27A" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T27A/pool-flaky-serial.lock" \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        FLAKY_SERIAL_COUNTER_FILE="$TMPDIR_T27A/flaky-serial-counter" \
+        REIFY_RUN_ALL_FLAKY_LEDGER="$TMPDIR_T27A/flaky-ledger-27a.jsonl" \
+        bash "$RUN_ALL" "$TMPDIR_T27A" 2>&1)" || t27a_rc=$?
+
+    assert "T27a: run_all.sh exits 0 when an intra-run-serial member passes on serial retry" \
+        test "$t27a_rc" -eq 0
+
+    if [[ "$t27a_out" == *"=== FLAKY (passed on serial retry):"*"test_flaky_serial.sh"* ]]; then
+        assert "T27a: FLAKY line names test_flaky_serial.sh" true
+    else
+        assert "T27a: FLAKY line names test_flaky_serial.sh (got: $t27a_out)" false
+    fi
+
+    if [[ "$t27a_out" == *"--- attempt 1 (serial) ---"* ]] && [[ "$t27a_out" == *"--- attempt 2 (serial retry) ---"* ]]; then
+        assert "T27a: both attempt markers are present, labeled serial (not concurrent pool)" true
+    else
+        assert "T27a: both attempt markers are present, labeled serial (not concurrent pool) (got: $t27a_out)" false
+    fi
+
+    if [[ "$t27a_out" != *"--- attempt 1 (concurrent pool) ---"* ]]; then
+        assert "T27a: attempt-1 label is truthful -- NOT 'concurrent pool' for an intra-run-serial member" true
+    else
+        assert "T27a: attempt-1 label is truthful -- NOT 'concurrent pool' for an intra-run-serial member (got: $t27a_out)" false
+    fi
+
+    t27a_headers="$(echo "$t27a_out" | grep -E '^--- Running: ' | sed -E 's/^--- Running: (.*) ---$/\1/')" || true
+    if [ "$t27a_headers" = "test_flaky_serial.sh" ]; then
+        assert "T27a: exactly one discovered-order header for the retried member" true
+    else
+        assert "T27a: exactly one discovered-order header for the retried member (got: $t27a_headers)" false
+    fi
+
+    if ! echo "$t27a_out" | grep -qE '^FAILED[[:space:]]'; then
+        assert "T27a: no ^FAILED classifier marker (flake is not misclassified as test_failure)" true
+    else
+        assert "T27a: no ^FAILED classifier marker (got: $t27a_out)" false
+    fi
+
+    if [[ "$t27a_out" == *"=== Summary: 1 discovered, 0 failed, 1 flaky-retried ==="* ]]; then
+        assert "T27a: Summary line carries the flaky-retried count (byte-exact)" true
+    else
+        assert "T27a: Summary line carries the flaky-retried count (byte-exact) (got: $t27a_out)" false
+    fi
+
+    # -- 27b: determinism/non-vacuity -- an intra-run-serial member that
+    # fails BOTH attempts still fails the run, with no FLAKY
+    # misclassification, but IS still retried (both attempt markers
+    # archived, proving the retry loop actually covers it rather than
+    # silently skipping it) -------------------------------------------------
+    TMPDIR_T27B="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T27B")
+
+    MANIFEST_T27B="$TMPDIR_T27B/classification-boom-serial.manifest"
+    printf 'test_boom_serial.sh intra-run-serial\n' > "$MANIFEST_T27B"
+    printf '#!/usr/bin/env bash\nexit 1\n' > "$TMPDIR_T27B/test_boom_serial.sh"
+    chmod +x "$TMPDIR_T27B/test_boom_serial.sh"
+
+    t27b_rc=0
+    t27b_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T27B" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T27B/pool-boom-serial.lock" \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        bash "$RUN_ALL" "$TMPDIR_T27B" 2>&1)" || t27b_rc=$?
+
+    assert "T27b: deterministic fail-twice intra-run-serial member exits 1" \
+        test "$t27b_rc" -eq 1
+
+    if echo "$t27b_out" | grep -qE '^FAILED[[:space:]].*test_boom_serial\.sh'; then
+        assert "T27b: deterministic fail-twice still emits the ^FAILED classifier" true
+    else
+        assert "T27b: deterministic fail-twice still emits the ^FAILED classifier (got: $t27b_out)" false
+    fi
+
+    if [[ "$t27b_out" != *"=== FLAKY"* ]]; then
+        assert "T27b: deterministic fail-twice emits NO === FLAKY line" true
+    else
+        assert "T27b: deterministic fail-twice emits NO === FLAKY line (got: $t27b_out)" false
+    fi
+
+    if [[ "$t27b_out" != *"flaky-retried"* ]]; then
+        assert "T27b: deterministic fail-twice Summary carries NO flaky-retried clause" true
+    else
+        assert "T27b: deterministic fail-twice Summary carries NO flaky-retried clause (got: $t27b_out)" false
+    fi
+
+    if [[ "$t27b_out" == *"--- attempt 1 (serial) ---"* ]] && [[ "$t27b_out" == *"--- attempt 2 (serial retry) ---"* ]]; then
+        assert "T27b: deterministic fail-twice still archives both attempt markers (proves it WAS retried)" true
+    else
+        assert "T27b: deterministic fail-twice still archives both attempt markers (proves it WAS retried) (got: $t27b_out)" false
+    fi
+
+    # -- 27d: scope guard -- a FAILING host-exclusive member is NOT retried
+    # (retry stays scoped to pool UNION intra-run-serial only) --------------
+    TMPDIR_T27D="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T27D")
+
+    MANIFEST_T27D="$TMPDIR_T27D/classification-hostx-boom.manifest"
+    printf 'test_hostx_boom.sh host-exclusive\n' > "$MANIFEST_T27D"
+    printf '#!/usr/bin/env bash\nexit 1\n' > "$TMPDIR_T27D/test_hostx_boom.sh"
+    chmod +x "$TMPDIR_T27D/test_hostx_boom.sh"
+
+    t27d_rc=0
+    t27d_out="$(env -u REIFY_RUN_ALL_EXCLUDE_HOST_INFRA \
+        RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T27D" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T27D/pool-hostx-boom.lock" \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        bash "$RUN_ALL" "$TMPDIR_T27D" 2>&1)" || t27d_rc=$?
+
+    assert "T27d: FAILING host-exclusive member run_all.sh exits 1" \
+        test "$t27d_rc" -eq 1
+
+    if echo "$t27d_out" | grep -qE '^FAILED[[:space:]].*test_hostx_boom\.sh'; then
+        assert "T27d: FAILING host-exclusive member still emits the ^FAILED classifier" true
+    else
+        assert "T27d: FAILING host-exclusive member still emits the ^FAILED classifier (got: $t27d_out)" false
+    fi
+
+    if [[ "$t27d_out" != *"--- attempt 2"* ]]; then
+        assert "T27d: FAILING host-exclusive member is NOT retried (no attempt-2 archival)" true
+    else
+        assert "T27d: FAILING host-exclusive member is NOT retried (no attempt-2 archival) (got: $t27d_out)" false
+    fi
+
+    if [[ "$t27d_out" != *"=== FLAKY"* ]] && [[ "$t27d_out" != *"flaky-retried"* ]]; then
+        assert "T27d: FAILING host-exclusive member triggers no FLAKY/flaky-retried misclassification" true
+    else
+        assert "T27d: FAILING host-exclusive member triggers no FLAKY/flaky-retried misclassification (got: $t27d_out)" false
+    fi
+else
+    assert "T27a: run_all.sh exits 0 when an intra-run-serial member passes on serial retry (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T27a: FLAKY line names test_flaky_serial.sh (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T27a: both attempt markers are present, labeled serial (not concurrent pool) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T27a: attempt-1 label is truthful -- NOT 'concurrent pool' for an intra-run-serial member (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T27a: exactly one discovered-order header for the retried member (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T27a: no ^FAILED classifier marker (flake is not misclassified as test_failure) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T27a: Summary line carries the flaky-retried count (byte-exact) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T27b: deterministic fail-twice intra-run-serial member exits 1 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T27b: deterministic fail-twice still emits the ^FAILED classifier (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T27b: deterministic fail-twice emits NO === FLAKY line (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T27b: deterministic fail-twice Summary carries NO flaky-retried clause (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T27b: deterministic fail-twice still archives both attempt markers (proves it WAS retried) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T27d: FAILING host-exclusive member run_all.sh exits 1 (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T27d: FAILING host-exclusive member still emits the ^FAILED classifier (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T27d: FAILING host-exclusive member is NOT retried (no attempt-2 archival) (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T27d: FAILING host-exclusive member triggers no FLAKY/flaky-retried misclassification (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+fi
+
+# -- Test 27 (continued): ledger persistence for a flaky intra-run-serial
+# member (task #5261, W5b) -- jq-gated ------------------------------------
+# Mirrors Test 23's exact jq-presence SKIP-guard idiom: run_all.sh's ledger
+# writer/chronic-scan is itself jq-gated and fails open without jq, so these
+# JSON-shape assertions would false-fail (not exercise a real defect)
+# without it -- genuinely SKIP instead.
+echo ""
+echo "--- Test 27 (continued): FLAKY ledger persistence for an intra-run-serial member ---"
+
+if [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ] && command -v jq >/dev/null 2>&1; then
+    TMPDIR_T27C="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T27C")
+
+    MANIFEST_T27C="$TMPDIR_T27C/classification-flaky-serial.manifest"
+    printf 'test_flaky_serial.sh intra-run-serial\n' > "$MANIFEST_T27C"
+
+    cat > "$TMPDIR_T27C/test_flaky_serial.sh" <<'MOCKBODY'
+#!/usr/bin/env bash
+set -euo pipefail
+counter_file="$FLAKY_SERIAL_COUNTER_FILE"
+count=$(( $(cat "$counter_file" 2>/dev/null || echo 0) + 1 ))
+echo "$count" > "$counter_file"
+echo "test_flaky_serial.sh invocation $count"
+if [ "$count" -eq 1 ]; then
+    exit 1
+else
+    exit 0
+fi
+MOCKBODY
+    chmod +x "$TMPDIR_T27C/test_flaky_serial.sh"
+
+    LEDGER_T27C="$TMPDIR_T27C/flaky-ledger.jsonl"
+
+    t27c_rc=0
+    t27c_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T27C" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T27C/pool-flaky-serial.lock" \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        FLAKY_SERIAL_COUNTER_FILE="$TMPDIR_T27C/flaky-serial-counter" \
+        REIFY_RUN_ALL_FLAKY_LEDGER="$LEDGER_T27C" \
+        bash "$RUN_ALL" "$TMPDIR_T27C" 2>&1)" || t27c_rc=$?
+
+    assert "T27c: run_all.sh exits 0 when an intra-run-serial member passes on serial retry" \
+        test "$t27c_rc" -eq 0
+
+    assert "T27c: ledger file exists after a flaky-pass run" \
+        test -f "$LEDGER_T27C"
+
+    if [ -f "$LEDGER_T27C" ]; then
+        t27c_lines="$(wc -l < "$LEDGER_T27C" 2>/dev/null | tr -d ' ' || true)"
+    else
+        t27c_lines=""
+    fi
+    if [ "$t27c_lines" = "1" ]; then
+        assert "T27c: ledger has exactly 1 line" true
+    else
+        assert "T27c: ledger has exactly 1 line (got: '$t27c_lines' lines; content: $(cat "$LEDGER_T27C" 2>/dev/null || true))" false
+    fi
+
+    if [ -f "$LEDGER_T27C" ] && jq -e . "$LEDGER_T27C" >/dev/null 2>&1; then
+        assert "T27c: ledger line is valid JSON" true
+    else
+        assert "T27c: ledger line is valid JSON (got: $(cat "$LEDGER_T27C" 2>/dev/null || true))" false
+    fi
+
+    t27c_test_field="$(jq -r '.test' "$LEDGER_T27C" 2>/dev/null || true)"
+    if [ "$t27c_test_field" = "test_flaky_serial.sh" ]; then
+        assert "T27c: ledger .test field names test_flaky_serial.sh" true
+    else
+        assert "T27c: ledger .test field names test_flaky_serial.sh (got: '$t27c_test_field')" false
+    fi
+elif [ -f "$RUN_ALL" ] && [ -f "$LOAD_TOLERANCE_LIB_T9" ]; then
+    echo "  SKIP: T27c (FLAKY ledger persistence for intra-run-serial member) - jq not on PATH; run_all.sh's ledger writer fails open without jq"
+else
+    assert "T27c: run_all.sh exits 0 when an intra-run-serial member passes on serial retry (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T27c: ledger file exists after a flaky-pass run (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T27c: ledger has exactly 1 line (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T27c: ledger line is valid JSON (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+    assert "T27c: ledger .test field names test_flaky_serial.sh (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
+fi
+
+# -- Test 28: REIFY_RUN_ALL_MEMBER_SUBSET member-subset knob (task #5288; PRD
 # docs/prds/verify-retry-failed-only.md task beta, Sec 4.2/8) ------------------
 # On a merge-gate retry, dark-factory names the FAILED members via
 # REIFY_RUN_ALL_MEMBER_SUBSET="<space-delimited test_*.sh basenames>" so
@@ -2534,124 +2934,124 @@ fi
 # no pool lock. Sentinel files (not just RESULT lines) prove a skipped
 # member was genuinely never invoked.
 echo ""
-echo "--- Test 26: REIFY_RUN_ALL_MEMBER_SUBSET member-subset knob ---"
+echo "--- Test 28: REIFY_RUN_ALL_MEMBER_SUBSET member-subset knob ---"
 
 if [ -f "$RUN_ALL" ]; then
     # -- 26a: subset="test_alpha.sh" -- alpha runs, beta reported skipped -------
-    TMPDIR_T26A="$(mktemp -d)"
-    _TMPDIRS+=("$TMPDIR_T26A")
-    printf '#!/usr/bin/env bash\ntouch "%s/ran_alpha"\nexit 0\n' "$TMPDIR_T26A" > "$TMPDIR_T26A/test_alpha.sh"
-    printf '#!/usr/bin/env bash\ntouch "%s/ran_beta"\nexit 1\n' "$TMPDIR_T26A" > "$TMPDIR_T26A/test_beta.sh"
-    chmod +x "$TMPDIR_T26A/test_alpha.sh" "$TMPDIR_T26A/test_beta.sh"
+    TMPDIR_T28A="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T28A")
+    printf '#!/usr/bin/env bash\ntouch "%s/ran_alpha"\nexit 0\n' "$TMPDIR_T28A" > "$TMPDIR_T28A/test_alpha.sh"
+    printf '#!/usr/bin/env bash\ntouch "%s/ran_beta"\nexit 1\n' "$TMPDIR_T28A" > "$TMPDIR_T28A/test_beta.sh"
+    chmod +x "$TMPDIR_T28A/test_alpha.sh" "$TMPDIR_T28A/test_beta.sh"
 
     t26a_rc=0
-    t26a_out="$(REIFY_RUN_ALL_MEMBER_SUBSET="test_alpha.sh" bash "$RUN_ALL" "$TMPDIR_T26A" 2>&1)" || t26a_rc=$?
+    t26a_out="$(REIFY_RUN_ALL_MEMBER_SUBSET="test_alpha.sh" bash "$RUN_ALL" "$TMPDIR_T28A" 2>&1)" || t26a_rc=$?
 
-    assert "T26a: alpha (named in subset) was actually invoked (sentinel exists)" \
-        test -f "$TMPDIR_T26A/ran_alpha"
+    assert "T28a: alpha (named in subset) was actually invoked (sentinel exists)" \
+        test -f "$TMPDIR_T28A/ran_alpha"
 
-    assert "T26a: beta (not named) was NOT invoked (sentinel absent)" \
-        test ! -f "$TMPDIR_T26A/ran_beta"
+    assert "T28a: beta (not named) was NOT invoked (sentinel absent)" \
+        test ! -f "$TMPDIR_T28A/ran_beta"
 
     if [[ "$t26a_out" == *"--- Running: test_alpha.sh ---"* ]]; then
-        assert "T26a: output has a Running header for alpha" true
+        assert "T28a: output has a Running header for alpha" true
     else
-        assert "T26a: output has a Running header for alpha (got: $t26a_out)" false
+        assert "T28a: output has a Running header for alpha (got: $t26a_out)" false
     fi
 
     if [[ "$t26a_out" == *"  RESULT: PASS (test_alpha.sh)"* ]]; then
-        assert "T26a: alpha reported PASS" true
+        assert "T28a: alpha reported PASS" true
     else
-        assert "T26a: alpha reported PASS (got: $t26a_out)" false
+        assert "T28a: alpha reported PASS (got: $t26a_out)" false
     fi
 
     if [[ "$t26a_out" == *"  RESULT: SKIP (test_beta.sh)"* ]]; then
-        assert "T26a: beta reported SKIP" true
+        assert "T28a: beta reported SKIP" true
     else
-        assert "T26a: beta reported SKIP (got: $t26a_out)" false
+        assert "T28a: beta reported SKIP (got: $t26a_out)" false
     fi
 
     if [[ "$t26a_out" != *"--- Running: test_beta.sh ---"* ]]; then
-        assert "T26a: output has NO Running header for beta (never invoked)" true
+        assert "T28a: output has NO Running header for beta (never invoked)" true
     else
-        assert "T26a: output has NO Running header for beta (never invoked) (got: $t26a_out)" false
+        assert "T28a: output has NO Running header for beta (never invoked) (got: $t26a_out)" false
     fi
 
-    assert "T26a: run_all.sh exits 0 (skipped failing beta does not sink the run)" \
+    assert "T28a: run_all.sh exits 0 (skipped failing beta does not sink the run)" \
         test "$t26a_rc" -eq 0
 
     if [[ "$t26a_out" == *"=== Summary: 2 discovered, 0 failed, 1 member-subset-skipped ==="* ]]; then
-        assert "T26a: Summary reports the member-subset-skipped count" true
+        assert "T28a: Summary reports the member-subset-skipped count" true
     else
-        assert "T26a: Summary reports the member-subset-skipped count (got: $t26a_out)" false
+        assert "T28a: Summary reports the member-subset-skipped count (got: $t26a_out)" false
     fi
 
     # -- 26b: unmatched subset member -- loud stderr WARNING, not a failure -----
-    TMPDIR_T26B="$(mktemp -d)"
-    _TMPDIRS+=("$TMPDIR_T26B")
-    printf '#!/usr/bin/env bash\ntouch "%s/ran_alpha"\nexit 0\n' "$TMPDIR_T26B" > "$TMPDIR_T26B/test_alpha.sh"
-    printf '#!/usr/bin/env bash\ntouch "%s/ran_beta"\nexit 1\n' "$TMPDIR_T26B" > "$TMPDIR_T26B/test_beta.sh"
-    chmod +x "$TMPDIR_T26B/test_alpha.sh" "$TMPDIR_T26B/test_beta.sh"
+    TMPDIR_T28B="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T28B")
+    printf '#!/usr/bin/env bash\ntouch "%s/ran_alpha"\nexit 0\n' "$TMPDIR_T28B" > "$TMPDIR_T28B/test_alpha.sh"
+    printf '#!/usr/bin/env bash\ntouch "%s/ran_beta"\nexit 1\n' "$TMPDIR_T28B" > "$TMPDIR_T28B/test_beta.sh"
+    chmod +x "$TMPDIR_T28B/test_alpha.sh" "$TMPDIR_T28B/test_beta.sh"
 
-    T26B_STDERR="$TMPDIR_T26B/stderr.txt"
+    T28B_STDERR="$TMPDIR_T28B/stderr.txt"
     t26b_rc=0
     REIFY_RUN_ALL_MEMBER_SUBSET="test_alpha.sh test_ghost.sh" \
-        bash "$RUN_ALL" "$TMPDIR_T26B" >/dev/null 2>"$T26B_STDERR" || t26b_rc=$?
+        bash "$RUN_ALL" "$TMPDIR_T28B" >/dev/null 2>"$T28B_STDERR" || t26b_rc=$?
 
-    if grep -q 'WARNING' "$T26B_STDERR" && grep -q 'test_ghost.sh' "$T26B_STDERR"; then
-        assert "T26b: unmatched subset member 'test_ghost.sh' emits a stderr WARNING" true
+    if grep -q 'WARNING' "$T28B_STDERR" && grep -q 'test_ghost.sh' "$T28B_STDERR"; then
+        assert "T28b: unmatched subset member 'test_ghost.sh' emits a stderr WARNING" true
     else
-        assert "T26b: unmatched subset member 'test_ghost.sh' emits a stderr WARNING (got stderr: $(cat "$T26B_STDERR"))" false
+        assert "T28b: unmatched subset member 'test_ghost.sh' emits a stderr WARNING (got stderr: $(cat "$T28B_STDERR"))" false
     fi
 
-    assert "T26b: unmatched subset member does not sink the run (exits 0)" \
+    assert "T28b: unmatched subset member does not sink the run (exits 0)" \
         test "$t26b_rc" -eq 0
 
     # -- 26c: knob UNSET -- additive-default guard: branch is inert -------------
-    TMPDIR_T26C="$(mktemp -d)"
-    _TMPDIRS+=("$TMPDIR_T26C")
-    printf '#!/usr/bin/env bash\ntouch "%s/ran_alpha"\nexit 0\n' "$TMPDIR_T26C" > "$TMPDIR_T26C/test_alpha.sh"
-    printf '#!/usr/bin/env bash\ntouch "%s/ran_beta"\nexit 1\n' "$TMPDIR_T26C" > "$TMPDIR_T26C/test_beta.sh"
-    chmod +x "$TMPDIR_T26C/test_alpha.sh" "$TMPDIR_T26C/test_beta.sh"
+    TMPDIR_T28C="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T28C")
+    printf '#!/usr/bin/env bash\ntouch "%s/ran_alpha"\nexit 0\n' "$TMPDIR_T28C" > "$TMPDIR_T28C/test_alpha.sh"
+    printf '#!/usr/bin/env bash\ntouch "%s/ran_beta"\nexit 1\n' "$TMPDIR_T28C" > "$TMPDIR_T28C/test_beta.sh"
+    chmod +x "$TMPDIR_T28C/test_alpha.sh" "$TMPDIR_T28C/test_beta.sh"
 
     t26c_rc=0
     t26c_out="$(env -u REIFY_RUN_ALL_MEMBER_SUBSET \
-        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T26C/pool.lock" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T28C/pool.lock" \
         REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
-        bash "$RUN_ALL" "$TMPDIR_T26C" 2>&1)" || t26c_rc=$?
+        bash "$RUN_ALL" "$TMPDIR_T28C" 2>&1)" || t26c_rc=$?
 
-    assert "T26c: knob unset -- alpha invoked (sentinel exists)" \
-        test -f "$TMPDIR_T26C/ran_alpha"
+    assert "T28c: knob unset -- alpha invoked (sentinel exists)" \
+        test -f "$TMPDIR_T28C/ran_alpha"
 
-    assert "T26c: knob unset -- beta invoked too (sentinel exists, branch inert)" \
-        test -f "$TMPDIR_T26C/ran_beta"
+    assert "T28c: knob unset -- beta invoked too (sentinel exists, branch inert)" \
+        test -f "$TMPDIR_T28C/ran_beta"
 
     if [[ "$t26c_out" != *"RESULT: SKIP"* ]]; then
-        assert "T26c: knob unset -- no SKIP line anywhere" true
+        assert "T28c: knob unset -- no SKIP line anywhere" true
     else
-        assert "T26c: knob unset -- no SKIP line anywhere (got: $t26c_out)" false
+        assert "T28c: knob unset -- no SKIP line anywhere (got: $t26c_out)" false
     fi
 
-    assert "T26c: knob unset -- exit reflects beta's failure (nonzero)" \
+    assert "T28c: knob unset -- exit reflects beta's failure (nonzero)" \
         test "$t26c_rc" -ne 0
 else
-    assert "T26a: alpha (named in subset) was actually invoked (sentinel exists) (skipped - run_all.sh missing)" false
-    assert "T26a: beta (not named) was NOT invoked (sentinel absent) (skipped - run_all.sh missing)" false
-    assert "T26a: output has a Running header for alpha (skipped - run_all.sh missing)" false
-    assert "T26a: alpha reported PASS (skipped - run_all.sh missing)" false
-    assert "T26a: beta reported SKIP (skipped - run_all.sh missing)" false
-    assert "T26a: output has NO Running header for beta (never invoked) (skipped - run_all.sh missing)" false
-    assert "T26a: run_all.sh exits 0 (skipped failing beta does not sink the run) (skipped - run_all.sh missing)" false
-    assert "T26a: Summary reports the member-subset-skipped count (skipped - run_all.sh missing)" false
-    assert "T26b: unmatched subset member 'test_ghost.sh' emits a stderr WARNING (skipped - run_all.sh missing)" false
-    assert "T26b: unmatched subset member does not sink the run (exits 0) (skipped - run_all.sh missing)" false
-    assert "T26c: knob unset -- alpha invoked (sentinel exists) (skipped - run_all.sh missing)" false
-    assert "T26c: knob unset -- beta invoked too (sentinel exists, branch inert) (skipped - run_all.sh missing)" false
-    assert "T26c: knob unset -- no SKIP line anywhere (skipped - run_all.sh missing)" false
-    assert "T26c: knob unset -- exit reflects beta's failure (nonzero) (skipped - run_all.sh missing)" false
+    assert "T28a: alpha (named in subset) was actually invoked (sentinel exists) (skipped - run_all.sh missing)" false
+    assert "T28a: beta (not named) was NOT invoked (sentinel absent) (skipped - run_all.sh missing)" false
+    assert "T28a: output has a Running header for alpha (skipped - run_all.sh missing)" false
+    assert "T28a: alpha reported PASS (skipped - run_all.sh missing)" false
+    assert "T28a: beta reported SKIP (skipped - run_all.sh missing)" false
+    assert "T28a: output has NO Running header for beta (never invoked) (skipped - run_all.sh missing)" false
+    assert "T28a: run_all.sh exits 0 (skipped failing beta does not sink the run) (skipped - run_all.sh missing)" false
+    assert "T28a: Summary reports the member-subset-skipped count (skipped - run_all.sh missing)" false
+    assert "T28b: unmatched subset member 'test_ghost.sh' emits a stderr WARNING (skipped - run_all.sh missing)" false
+    assert "T28b: unmatched subset member does not sink the run (exits 0) (skipped - run_all.sh missing)" false
+    assert "T28c: knob unset -- alpha invoked (sentinel exists) (skipped - run_all.sh missing)" false
+    assert "T28c: knob unset -- beta invoked too (sentinel exists, branch inert) (skipped - run_all.sh missing)" false
+    assert "T28c: knob unset -- no SKIP line anywhere (skipped - run_all.sh missing)" false
+    assert "T28c: knob unset -- exit reflects beta's failure (nonzero) (skipped - run_all.sh missing)" false
 fi
 
-# -- Test 27: subset branch clock-marker sanitization (task #5288 pair 2; task
+# -- Test 29: subset branch clock-marker sanitization (task #5288 pair 2; task
 # 4998 / esc-4791-52 class) -----------------------------------------------------
 # The REIFY_RUN_ALL_MEMBER_SUBSET branch runs ON dark-factory's clock-stop-
 # parsed verify stream (it IS a merge-gate retry), unlike --scope host-infra
@@ -2664,49 +3064,49 @@ fi
 # CP/QP idiom) so THIS file's own stdout never becomes a leak source when
 # the real outer run_all.sh re-emits test_run_all.sh's own captured output.
 echo ""
-echo "--- Test 27: subset branch clock-marker sanitization ---"
+echo "--- Test 29: subset branch clock-marker sanitization ---"
 
 if [ -f "$RUN_ALL" ]; then
-    T27_CP='@@REIFY_CLOCK_'
-    T27_QP='@@REIFY_QUOTED_CLOCK_'
+    T29_CP='@@REIFY_CLOCK_'
+    T29_QP='@@REIFY_QUOTED_CLOCK_'
 
-    TMPDIR_T27="$(mktemp -d)"
-    _TMPDIRS+=("$TMPDIR_T27")
-    cat > "$TMPDIR_T27/test_marker.sh" <<MARKEREOF
+    TMPDIR_T29="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T29")
+    cat > "$TMPDIR_T29/test_marker.sh" <<MARKEREOF
 #!/usr/bin/env bash
-echo "  PASS: fixture: stderr contains ${T27_CP}STOP@@ reason=fixture (hold entered)"
+echo "  PASS: fixture: stderr contains ${T29_CP}STOP@@ reason=fixture (hold entered)"
 exit 0
 MARKEREOF
-    chmod +x "$TMPDIR_T27/test_marker.sh"
+    chmod +x "$TMPDIR_T29/test_marker.sh"
 
     t27_rc=0
-    t27_out="$(REIFY_RUN_ALL_MEMBER_SUBSET="test_marker.sh" bash "$RUN_ALL" "$TMPDIR_T27" 2>&1)" || t27_rc=$?
+    t27_out="$(REIFY_RUN_ALL_MEMBER_SUBSET="test_marker.sh" bash "$RUN_ALL" "$TMPDIR_T29" 2>&1)" || t27_rc=$?
 
-    if [[ "$t27_out" == *"${T27_QP}STOP@@"* ]]; then
-        assert "T27a: subset branch output contains the sanitized QUOTED_CLOCK form" true
+    if [[ "$t27_out" == *"${T29_QP}STOP@@"* ]]; then
+        assert "T29a: subset branch output contains the sanitized QUOTED_CLOCK form" true
     else
-        assert "T27a: subset branch output contains the sanitized QUOTED_CLOCK form (got: $t27_out)" false
+        assert "T29a: subset branch output contains the sanitized QUOTED_CLOCK form (got: $t27_out)" false
     fi
 
-    if [[ "$t27_out" != *"${T27_CP}STOP@@"* ]]; then
-        assert "T27b: subset branch output contains NO live CLOCK_STOP token" true
+    if [[ "$t27_out" != *"${T29_CP}STOP@@"* ]]; then
+        assert "T29b: subset branch output contains NO live CLOCK_STOP token" true
     else
-        assert "T27b: subset branch output contains NO live CLOCK_STOP token (got: $t27_out)" false
+        assert "T29b: subset branch output contains NO live CLOCK_STOP token (got: $t27_out)" false
     fi
 
     if [[ "$t27_out" == *"  RESULT: PASS (test_marker.sh)"* ]]; then
-        assert "T27c: the member still ran and passed" true
+        assert "T29c: the member still ran and passed" true
     else
-        assert "T27c: the member still ran and passed (got: $t27_out)" false
+        assert "T29c: the member still ran and passed (got: $t27_out)" false
     fi
 
-    assert "T27c: run_all.sh exits 0" \
+    assert "T29c: run_all.sh exits 0" \
         test "$t27_rc" -eq 0
 else
-    assert "T27a: subset branch output contains the sanitized QUOTED_CLOCK form (skipped - run_all.sh missing)" false
-    assert "T27b: subset branch output contains NO live CLOCK_STOP token (skipped - run_all.sh missing)" false
-    assert "T27c: the member still ran and passed (skipped - run_all.sh missing)" false
-    assert "T27c: run_all.sh exits 0 (skipped - run_all.sh missing)" false
+    assert "T29a: subset branch output contains the sanitized QUOTED_CLOCK form (skipped - run_all.sh missing)" false
+    assert "T29b: subset branch output contains NO live CLOCK_STOP token (skipped - run_all.sh missing)" false
+    assert "T29c: the member still ran and passed (skipped - run_all.sh missing)" false
+    assert "T29c: run_all.sh exits 0 (skipped - run_all.sh missing)" false
 fi
 
 # -- Summary --------------------------------------------------------------------
