@@ -401,3 +401,92 @@ fn walk_recursive(label: &str, root: &Path, path: &Path, walk: &mut ContributorW
     // absolute paths that differ per developer or CI host) never enter the
     // hash input.
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Narrowed Cargo.lock contribution (task 5272)
+//
+// ENGINE_VERSION_HASH used to walk the WHOLE workspace Cargo.lock (category 5),
+// so any dep bump anywhere in the 716-package lockfile invalidated the
+// persistent FEA cache. The helpers below narrow that contribution to only the
+// resolved (name, version) pins of reify-eval's build+normal (exclude-dev)
+// transitive closure — the crate NAMES checked in at
+// `crates/reify-eval/engine_hash_closure.txt`. build.rs reads that static
+// manifest plus Cargo.lock and hashes just the matching pins; the drift guard
+// `tests/infra/test_engine_hash_closure.sh` keeps the manifest honest against
+// the live closure. PRD: docs/prds/merge-gate-compile-cost.md §3 W4 / §5 C4.
+//
+// These are pure, std-only functions (NO `toml` crate — this file is include!'d
+// into build.rs, which is constrained to std + xxhash per the module header).
+// Each is `pub` + `#[allow(dead_code)]`, mirroring CONTRIBUTORS_RELATIVE /
+// walk_contributor: reachable from build.rs (via include!) and from
+// persistent_cache.rs `#[cfg(test)]`, but not from the non-test library build.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Parse the `[[package]]` stanzas of a Cargo.lock file into `(name, version)`
+/// pairs, in file order.
+///
+/// Hand-rolled, std-only line scanner (deliberately NOT the `toml` crate — see
+/// the section header above). State machine: a `[[package]]` header opens a
+/// fresh stanza; the first `name = "..."` and first `version = "..."` lines
+/// within it are captured; the pair is emitted when the next `[`-prefixed table
+/// header is reached (or at EOF). Anything outside a `[[package]]` stanza — the
+/// top-level lockfile `version = N`, `[metadata]`, `[[patch.unused]]`, comments,
+/// blank lines — never yields a package. Inside a stanza, `source` / `checksum`
+/// / multi-line `dependencies = [...]` lines are ignored (only name+version are
+/// captured); array elements like `"memchr",` carry no `=` and are skipped.
+#[allow(dead_code)]
+pub fn parse_cargo_lock_packages(lock_text: &str) -> Vec<(String, String)> {
+    // Content of the first `"..."` in `s`, if any (values here never contain an
+    // embedded quote, so first-open .. next-close is sufficient and exact).
+    fn first_quoted(s: &str) -> Option<String> {
+        let start = s.find('"')?;
+        let rest = &s[start + 1..];
+        let end = rest.find('"')?;
+        Some(rest[..end].to_string())
+    }
+    // Emit the pending stanza iff BOTH name and version were captured. `take()`
+    // empties both Options regardless of the match, resetting for the next
+    // stanza; harmless to call when nothing is pending (both already None).
+    fn flush(
+        cur_name: &mut Option<String>,
+        cur_version: &mut Option<String>,
+        packages: &mut Vec<(String, String)>,
+    ) {
+        if let (Some(n), Some(v)) = (cur_name.take(), cur_version.take()) {
+            packages.push((n, v));
+        }
+    }
+
+    let mut packages: Vec<(String, String)> = Vec::new();
+    let mut in_package = false;
+    let mut cur_name: Option<String> = None;
+    let mut cur_version: Option<String> = None;
+
+    for line in lock_text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            // Any table header closes the current stanza; only `[[package]]`
+            // opens a new capturing one.
+            flush(&mut cur_name, &mut cur_version, &mut packages);
+            in_package = trimmed == "[[package]]";
+            continue;
+        }
+        if !in_package {
+            continue;
+        }
+        // Inside a [[package]] stanza: capture the first name/version. Split on
+        // the first `=`; array elements ("memchr",) and bare `]` carry no `=`.
+        if let Some(eq) = trimmed.find('=') {
+            let key = trimmed[..eq].trim();
+            let val = &trimmed[eq + 1..];
+            if key == "name" && cur_name.is_none() {
+                cur_name = first_quoted(val);
+            } else if key == "version" && cur_version.is_none() {
+                cur_version = first_quoted(val);
+            }
+        }
+    }
+    // EOF: flush a trailing package stanza (no closing header follows it).
+    flush(&mut cur_name, &mut cur_version, &mut packages);
+    packages
+}
