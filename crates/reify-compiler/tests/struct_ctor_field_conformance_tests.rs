@@ -22,7 +22,7 @@
 
 use reify_compiler::CompiledModule;
 use reify_core::diagnostics::DiagnosticCode;
-use reify_core::{Diagnostic, Severity};
+use reify_core::{Diagnostic, Severity, SourceSpan};
 use reify_test_support::{compile_source_with_stdlib, errors_only, warnings_only};
 
 /// True when `code` is one of the diagnostic codes emitted by the struct-ctor
@@ -654,6 +654,235 @@ fn param_default_valid_int_and_real_is_clean() {
     assert!(
         errors_only(&module).is_empty(),
         "fixture must not produce compile errors, got: {:?}",
+        errors_only(&module)
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Step-9 probes: per-context coverage (Q4/D10), span anchoring (Q1), and the
+// examples/fea_pressure_smoke.ri implicit-Some regression.
+//
+// (a) Per-context coverage: a `String`←`Int` ctor mismatch (`Widget(label: 42)`
+//     with `param label : String`) must warn `ArgTypeMismatch` in EVERY parsing
+//     context that routes through the two ctor-conformance entries — the fields
+//     `for_each_template_root_expr` enumerates plus the free-fn / assoc-fn body
+//     loops (entities_phase.rs). Syntax per context confirmed against the
+//     tree-sitter grammar and passing tests/examples (task 5302 syntax survey):
+//       - constraint keyword is `constraint` (there is NO `require`);
+//       - a "realization" is a geometry-op call bound in a value cell (there is
+//         NO `realize`/`realization` keyword) — the ctor rides an op argument;
+//       - guarded groups use `where <cond> { … }` (NOT `when`/`if`);
+//       - a forall body is `forall v in <coll>: constraint <expr>`.
+//     The "colon-form arg-bearing sub" (`sub p : Widget(label: 42)`) is
+//     deliberately ABSENT: no colon-form `sub` arm admits `(args)` in the
+//     grammar, so it does not parse — only the `=` instantiation form (row-4
+//     context) carries ctor args.
+//
+// (b) Span anchoring: the emitted diagnostic's label span must anchor at the
+//     offending ctor call-site, NOT `SourceSpan::empty`. The free-fn body is
+//     walked with a `SourceSpan::empty(0)` representative span today, so the
+//     label span is empty on this branch — RED until step-10 threads the
+//     StructureInstanceCtor node's own call-site span (task 4089 `.span`).
+//
+// (c) Real-stdlib regression: examples/fea_pressure_smoke.ri exercises
+//     `PressureLoad(face: face(body, "x_max"))` where `face : Option<FaceSelector>`
+//     and `face(...)` is `Selector(Face)` — the implicit-Some legality this task
+//     opens. It must compile with ZERO ctor-conformance diagnostics.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── (a) per-context coverage sources: `Widget(label: 42)` (String←Int) ──
+
+const SRC_CTX_VALUE_CELL: &str = r#"module test.ctx_value_cell
+structure def Widget { param label : String }
+structure def Root {
+    let x = Widget(label: 42)
+}
+"#;
+
+const SRC_CTX_SUB: &str = r#"module test.ctx_sub
+structure def Widget { param label : String }
+structure def Root {
+    sub p = Widget(label: 42)
+}
+"#;
+
+// A constraint expr is a full `_expression`; `==` makes it Bool-shaped. Two ctor
+// calls (one per operand) → this context legitimately hosts >1 diagnostic, hence
+// the `.any()` coverage predicate below rather than an exactly-one count.
+const SRC_CTX_CONSTRAINT: &str = r#"module test.ctx_constraint
+structure def Widget { param label : String }
+structure def Root {
+    constraint Widget(label: 42) == Widget(label: 42)
+}
+"#;
+
+// "Realization" = a geometry-op call bound in a value cell; the ctor rides a
+// positional op argument. `box` also rejects the non-Length arg, but that is a
+// distinct (non-ctor-conformance) diagnostic filtered out by the code predicate.
+const SRC_CTX_REALIZATION: &str = r#"module test.ctx_realization
+structure def Widget { param label : String }
+structure def Root {
+    let g = box(Widget(label: 42), 10mm, 10mm)
+}
+"#;
+
+const SRC_CTX_PORT_MEMBER_DEFAULT: &str = r#"module test.ctx_port
+structure def Widget { param label : String }
+trait P {}
+structure def Root {
+    port x : P {
+        param m : Widget = Widget(label: 42)
+    }
+}
+"#;
+
+const SRC_CTX_GUARDED_GROUP: &str = r#"module test.ctx_guard
+structure def Widget { param label : String }
+structure def Root {
+    where true {
+        let m = Widget(label: 42)
+    }
+}
+"#;
+
+const SRC_CTX_FORALL_BODY: &str = r#"module test.ctx_forall
+structure def Widget { param label : String }
+structure def Root {
+    forall v in [1, 2, 3]: constraint Widget(label: 42) == Widget(label: 42)
+}
+"#;
+
+const SRC_CTX_FREE_FN_BODY: &str = r#"module test.ctx_free_fn
+structure def Widget { param label : String }
+fn make() -> Widget { Widget(label: 42) }
+"#;
+
+// Associated-function body — DOCUMENTED as not-currently-routing (per step-9's
+// "documenting any form that does not parse/route"). A `Widget(label: 42)` ctor
+// placed in an assoc-fn body PARSES in all three forms — a trait DEFAULT fn body
+// realized on a conforming structure, a structure's own trait-fn override, and a
+// bare structure-body fn — but none emits a ctor-conformance diagnostic in this
+// task's α surface (empirically zero diagnostics in every form). The existing
+// `assoc_fn_body_bad_arg_emits_type_not_conforming_to_trait` fixture proves the
+// assoc-fn body IS walked for a `self`-dependent fn-CALL trait-conformance check
+// (`couple(self)`); a self-independent nested StructureInstanceCtor in that same
+// body is not re-checked by the ctor entry here. This is a coverage observation,
+// not a regression (nothing about assoc-fn bodies changed in α), and is left as a
+// documented gap rather than asserted, so the sweep below stays green and honest.
+// A `module test.ctx_assoc_fn` form: `trait Mk { fn make(self) -> Widget {
+// Widget(label: 42) } }  structure def Root : Mk { param seed : Int = 0 }`.
+
+/// True when `module` carries at least one ctor-conformance `ArgTypeMismatch`
+/// Warning whose message names `label` / `String` / `Int` — the signature of the
+/// `Widget(label: 42)` String←Int mismatch. `.any()` (not exactly-one) because a
+/// context may legitimately host more than one ctor call (`constraint A == B`) or
+/// draw an incidental non-ctor-conformance diagnostic (already filtered).
+fn has_string_int_arg_type_mismatch_warning(module: &CompiledModule) -> bool {
+    ctor_conformance_diags(module).iter().any(|d| {
+        d.severity == Severity::Warning
+            && d.code == Some(DiagnosticCode::ArgTypeMismatch)
+            && ["label", "String", "Int"].iter().all(|n| d.message.contains(n))
+    })
+}
+
+/// (a) D10 per-context coverage sweep. A String←Int ctor mismatch must warn
+/// `ArgTypeMismatch` wherever a `StructureInstanceCtor` can be routed through the
+/// two ctor-conformance entries. Collects ALL non-firing contexts before
+/// asserting so one run reports the full picture.
+#[test]
+fn per_context_string_int_ctor_mismatch_warns_everywhere() {
+    let cases: &[(&str, &str)] = &[
+        ("value-cell let", SRC_CTX_VALUE_CELL),
+        ("sub `=`", SRC_CTX_SUB),
+        ("constraint expr", SRC_CTX_CONSTRAINT),
+        ("realization arg", SRC_CTX_REALIZATION),
+        ("port member default", SRC_CTX_PORT_MEMBER_DEFAULT),
+        ("guarded-group member", SRC_CTX_GUARDED_GROUP),
+        ("forall body", SRC_CTX_FORALL_BODY),
+        ("free-fn body", SRC_CTX_FREE_FN_BODY),
+        // "assoc-fn body" is documented above as not-currently-routing (parses in
+        // three forms, emits zero ctor-conformance diagnostics), so it is a
+        // documented gap rather than an asserted row.
+    ];
+    let mut missing: Vec<(&str, String)> = Vec::new();
+    for &(label, source) in cases {
+        let module = compile_source_with_stdlib(source);
+        if !has_string_int_arg_type_mismatch_warning(&module) {
+            missing.push((label, format!("{:#?}", module.diagnostics)));
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "per-context coverage: these contexts did NOT emit the expected String←Int \
+         ArgTypeMismatch Warning:\n{}",
+        missing
+            .iter()
+            .map(|(l, d)| format!("  [{l}] diagnostics:\n{d}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
+
+// ── (b) span anchoring: free-fn body → empty representative span today ──
+
+const SRC_SPAN_FN_BODY: &str = r#"module test.span_fn
+structure def Widget { param label : String }
+fn make() -> Widget { Widget(label: 42) }
+"#;
+
+/// (b) Q1 span anchoring. The free-fn body routes through
+/// `check_expr_struct_ctor_args` with a `SourceSpan::empty(0)` representative
+/// span, so on this branch the emitted label span is EMPTY. Step-10 threads the
+/// `StructureInstanceCtor` node's own call-site span (task 4089 `.span`) so the
+/// label anchors at the offending `Widget(label: 42)` call — RED until then.
+#[test]
+fn ctor_conformance_label_span_anchors_at_ctor_call_site() {
+    let module = compile_source_with_stdlib(SRC_SPAN_FN_BODY);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "free-fn body String←Int must emit exactly one ctor-conformance diagnostic, got: {diags:#?}"
+    );
+    assert!(
+        !diags[0].labels.is_empty(),
+        "ctor-conformance diagnostic must carry a label span, got: {:?}",
+        diags[0]
+    );
+    let span: SourceSpan = diags[0].labels[0].span;
+    // RED until step-10: today the label span is `SourceSpan::empty(0)`.
+    assert!(
+        !span.is_empty(),
+        "label span must be NON-empty (anchored at the ctor call site) rather than \
+         SourceSpan::empty, got: {span:?}"
+    );
+    let sliced = &SRC_SPAN_FN_BODY[span.start as usize..span.end as usize];
+    assert!(
+        sliced.starts_with("Widget") && sliced.contains("label: 42"),
+        "label span must anchor at the offending `Widget(label: 42)` ctor call, got slice {sliced:?}"
+    );
+}
+
+// ── (c) real-stdlib implicit-Some regression ──
+
+/// (c) examples/fea_pressure_smoke.ri exercises the live implicit-Some legality
+/// this task opens: `PressureLoad(face: face(body, "x_max"))` where
+/// `face : Option<FaceSelector>` and `face(...)` yields `Selector(Face)`. It must
+/// compile with ZERO ctor-conformance diagnostics AND no compile errors.
+#[test]
+fn fea_pressure_smoke_example_has_no_ctor_conformance_diagnostics() {
+    const FEA_SMOKE: &str = include_str!("../../../examples/fea_pressure_smoke.ri");
+    let module = compile_source_with_stdlib(FEA_SMOKE);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "examples/fea_pressure_smoke.ri must compile with ZERO ctor-conformance diagnostics \
+         (real-stdlib implicit-Some legality: PressureLoad.face is Option<FaceSelector> given a \
+         FaceSelector via face(body, \"x_max\")), got: {diags:#?}"
+    );
+    assert!(
+        errors_only(&module).is_empty(),
+        "fea_pressure_smoke.ri must compile without errors, got: {:?}",
         errors_only(&module)
     );
 }
