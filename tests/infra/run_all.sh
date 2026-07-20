@@ -88,6 +88,33 @@
 #                                      empty/"0"/garbage) runs the full
 #                                      discovered set unchanged -- default 0,
 #                                      strictly additive on landing.
+#   REIFY_RUN_ALL_MEMBER_SUBSET        Space-delimited test_*.sh basenames
+#                                      (task #5288; PRD verify-retry-failed-
+#                                      only.md task beta, Sec 4.2/8). When
+#                                      non-empty, run_all.sh runs ONLY the
+#                                      named members -- a dedicated serial
+#                                      branch reusing the Phase-2.5 per-
+#                                      member serial-foreground-captured
+#                                      invoke shape, single attempt each (no
+#                                      internal deflake retry: the subset run
+#                                      IS dark-factory's retry). Every OTHER
+#                                      discovered member is reported skipped
+#                                      ("--- Skipped (member-subset): <n> ---"
+#                                      / "RESULT: SKIP (<n>)") -- acknowledged,
+#                                      never invoked, never counted as a
+#                                      failure; the skipped count surfaces on
+#                                      the Summary line as "N member-subset-
+#                                      skipped". A name in the knob not found
+#                                      in INFRA_DIR emits a loud stderr
+#                                      WARNING and is ignored (not a
+#                                      failure). Unset/empty/whitespace-only
+#                                      runs the FULL discovered set unchanged
+#                                      (additive default, mirrors
+#                                      EXCLUDE_HOST_INFRA's DA1 ethos) -- a
+#                                      malformed knob must never silently run
+#                                      zero tests. Set by dark-factory on a
+#                                      merge-gate retry (D2), never by
+#                                      default.
 #   REIFY_RUN_ALL_POOL_FORK_FAIL_MEMBER   fault-injection seam (task #5129):
 #                                      when set to a pool-bucket member's
 #                                      basename, that ONE member is degraded
@@ -531,6 +558,7 @@ failures=0
 discovered=0
 failed_names=()
 flaky_names=()
+member_subset_skipped=()
 
 # Install the TERM trap BEFORE any phase work (pool or legacy), so a
 # mid-run outer-timeout SIGTERM is reclassified regardless of which path is
@@ -616,6 +644,22 @@ if [ "${REIFY_RUN_ALL_EXCLUDE_HOST_INFRA:-}" = "1" ] && [ -f "$_H2_CLASSIFICATIO
     done < <(classification_bucket host-exclusive)
 fi
 
+# ---------------------------------------------------------------------------
+# REIFY_RUN_ALL_MEMBER_SUBSET tokenization (task #5288): computed ONCE here,
+# before the branch chain, mirroring _h3_exclude immediately above. Unquoted
+# expansion is deliberate -- it word-splits the space-delimited knob value;
+# empty tokens (leading/trailing/repeated whitespace) are skipped. An unset,
+# empty, or whitespace-only value yields an EMPTY set, so the branch below
+# (`elif [ "${#_ra_member_subset[@]}" -gt 0 ]`) never engages and the
+# UNCHANGED pool/legacy path runs the full discovered set -- a malformed
+# knob must never silently run zero tests (mirrors EXCLUDE_HOST_INFRA's
+# additive-default/DA1 ethos).
+# ---------------------------------------------------------------------------
+declare -A _ra_member_subset=()
+for _ra_subset_tok in ${REIFY_RUN_ALL_MEMBER_SUBSET:-}; do
+    [ -n "$_ra_subset_tok" ] && _ra_member_subset["$_ra_subset_tok"]=1
+done
+
 if [ "$SCOPE" = "host-infra" ]; then
     # -------------------------------------------------------------------------
     # H9 host-infra branch (docs/prds/run-all-host-infra-partition.md task H9):
@@ -686,6 +730,71 @@ if [ "$SCOPE" = "host-infra" ]; then
     done
 
     lane_x_flock_release
+elif [ "${#_ra_member_subset[@]}" -gt 0 ]; then
+    # -------------------------------------------------------------------------
+    # REIFY_RUN_ALL_MEMBER_SUBSET dedicated serial branch (task #5288; PRD
+    # docs/prds/verify-retry-failed-only.md task beta, Sec 4.2/8): on a
+    # merge-gate retry, dark-factory names the FAILED members from a prior
+    # attempt and this branch runs ONLY those -- reusing the Phase-2.5
+    # per-member serial-foreground-captured invoke shape -- reporting every
+    # OTHER discovered member as skipped (acknowledged, never invoked, never
+    # a failure). Mirrors the --scope host-infra branch's shape: a
+    # self-contained serial loop that sets discovered/failures/failed_names
+    # and falls through to the shared Summary/FAILED/exit tail below. Plain
+    # glob discovery (test_*.sh minus test_helpers.sh, matching the legacy
+    # branch's own predicate/order) -- no classification-substrate
+    # dependency, so this branch never consults _h3_exclude/
+    # REIFY_RUN_ALL_EXCLUDE_HOST_INFRA (subset mode is authoritative) nor the
+    # pool/slot_acquire/PSI machinery. SINGLE attempt per named member: the
+    # subset run IS dark-factory's retry, so an internal re-retry here would
+    # mask a real retry-time failure.
+    # -------------------------------------------------------------------------
+    _ra_subset_matched=()
+    for _ra_subset_file in "$INFRA_DIR"/test_*.sh; do
+        # If glob matches nothing, the literal pattern string is returned — skip it.
+        [ -f "$_ra_subset_file" ] || continue
+
+        _ra_subset_base="$(basename "$_ra_subset_file")"
+        [ "$_ra_subset_base" = "test_helpers.sh" ] && continue
+
+        discovered=$((discovered + 1))
+        if [ "${_ra_member_subset[$_ra_subset_base]:-0}" = "1" ]; then
+            _ra_subset_matched+=("$_ra_subset_base")
+            echo ""
+            echo "--- Running: $_ra_subset_base ---"
+            _ra_subset_rc=0
+            bash "$INFRA_DIR/$_ra_subset_base" || _ra_subset_rc=$?
+            if [ "$_ra_subset_rc" -eq 0 ]; then
+                echo "  RESULT: PASS ($_ra_subset_base)"
+            else
+                echo "  RESULT: FAIL ($_ra_subset_base)"
+                failures=$((failures + 1))
+                failed_names+=("$_ra_subset_base")
+            fi
+        else
+            echo ""
+            echo "--- Skipped (member-subset): $_ra_subset_base ---"
+            echo "  RESULT: SKIP ($_ra_subset_base)"
+            member_subset_skipped+=("$_ra_subset_base")
+        fi
+    done
+
+    # Unmatched subset entries: named in the knob but not present in
+    # INFRA_DIR (typo/stale retry name) -- a loud stderr WARNING, never a
+    # failure; the run must not be sunk by a construction bug in the
+    # allow-list itself.
+    for _ra_subset_name in "${!_ra_member_subset[@]}"; do
+        _ra_subset_found=0
+        for _ra_subset_m in "${_ra_subset_matched[@]+"${_ra_subset_matched[@]}"}"; do
+            if [ "$_ra_subset_m" = "$_ra_subset_name" ]; then
+                _ra_subset_found=1
+                break
+            fi
+        done
+        if [ "$_ra_subset_found" -eq 0 ]; then
+            echo "WARNING: run_all.sh: REIFY_RUN_ALL_MEMBER_SUBSET member '$_ra_subset_name' not found in $INFRA_DIR (ignored)" >&2
+        fi
+    done
 elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
     # -------------------------------------------------------------------------
     # Concurrent pool path.
@@ -1120,6 +1229,8 @@ fi
 echo ""
 if [ "${#flaky_names[@]}" -gt 0 ]; then
     echo "=== Summary: $discovered discovered, $failures failed, ${#flaky_names[@]} flaky-retried ==="
+elif [ "${#member_subset_skipped[@]}" -gt 0 ]; then
+    echo "=== Summary: $discovered discovered, $failures failed, ${#member_subset_skipped[@]} member-subset-skipped ==="
 else
     echo "=== Summary: $discovered discovered, $failures failed ==="
 fi
