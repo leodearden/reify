@@ -129,3 +129,10 @@ hooks/pre-merge-commit               tests/infra/test_hooks_call_verify.sh
 hooks/pre-commit                     tests/infra/test_hooks_call_verify.sh
 hooks/reference-transaction          tests/infra/test_reference_transaction_gate.sh
 hooks/main-gate-lib.sh               tests/infra/test_reference_transaction_gate.sh
+
+# Task 5259 (W4c): the ambient-isolation lib's hostile+baseline disambiguation
+# is guarded by BOTH the consumer (test_run_all_ambient_isolation.sh) and the
+# new lib unit test (test_run_all_ambient_isolation_lib.sh); the glob selects
+# both as fail-fast poles when the lib is edited on a task-scope verify.
+# Mirrors the run-all-classification-lib.sh rows above.
+tests/infra/run_all_ambient_isolation_lib.sh    tests/infra/test_run_all_ambient_isolation*.sh
