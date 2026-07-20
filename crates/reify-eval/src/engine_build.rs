@@ -6511,7 +6511,11 @@ impl Engine {
     ///    table on the second build"): loud in debug on a genuine contract
     ///    violation, permissive-by-absence in release (the assert compiles
     ///    out). INV-BUILD-3 and the engine-build share of INV-GEO-2 are
-    ///    `enforced(test)` via this assert plus the cold/warm parity test.
+    ///    `enforced(test)` via this assert plus the cold/warm parity test;
+    ///    the release-mode share of this empty-table sub-postcondition (the
+    ///    assert compiles out) leans on INV-BUILD-1, still `proposed` — see
+    ///    the call-site comment below and the INV-BUILD-3 note in
+    ///    `docs/invariants.md`.
     ///    Pinned by
     ///    `probe_realization_cache_debug_asserts_no_entry_at_cache_served_handle`
     ///    (fail-closed panic on a stale same-handle entry) and
