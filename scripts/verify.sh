@@ -1611,9 +1611,13 @@ build_plan() {
         # silent no-op and ships PRODUCTION-INERT. Fail-open by construction:
         # unmapped members, closure deltas, own-file changes, the
         # MAX_MERGES/MAX_AGE_HOURS backstop, and a corrupt/absent state file all
-        # force a full run (the last emits one loud line). It rides BOTH this
-        # merge line and the background line (below); background never skips
-        # (role gate), a second backstop. Contract: INV-5′,
+        # force a full run (the last emits one loud line). There is ONE shared
+        # run_all.sh plan line (the single add() below), emitted for BOTH the
+        # merge and background roles by the combined role branch at ~:1499 — not
+        # two separate lines — so the flag always rides it. The background role
+        # is neutralized inside run_all.sh by its inbound-role gate
+        # (_RA_INBOUND_ROLE != merge ⇒ never skips), a second backstop, rather
+        # than by a separate plan line here. Contract: INV-5′,
         # docs/prds/run-all-pool-contention-tiering-fix.md.
         # NB: this line must NOT export REIFY_INFRA_SUITE_ACTIVE (the re-entrancy
         # sentinel). run_all.sh runs ~103 tests; a broad ambient export leaks
