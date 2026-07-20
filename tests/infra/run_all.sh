@@ -565,6 +565,7 @@ declare -A _RA_STATE_MERGES=()   # member -> merges_at_last_exec
 declare -A _RA_SKIP_SKIPPED=()   # member -> 1 iff skipped this run
 declare -A _RA_SKIP_MAPPED=()    # member -> 1 iff it has a closure row (discovered this run)
 _RA_STATE_NAMES=()               # every member name present in the state ledger
+_RA_SKIP_EXEC_MAPPED=()          # members executed AND mapped this run (green advances in the post-run write)
 _RA_SKIP_ACTIVE=0                # 1 iff the two-key + state-path gate is satisfied
 _RA_SKIP_GLOBAL_MERGES=0         # global merge counter read from the ledger
 _RA_SKIP_STATE_MISSING=0         # 1 iff the state path is set but the file is absent
@@ -662,6 +663,7 @@ _ra_skip_engine() {
     _RA_SKIP_ACTIVE=0
     _RA_SKIP_SKIPPED=()
     _RA_SKIP_MAPPED=()
+    _RA_SKIP_EXEC_MAPPED=()
 
     # Two-key + state-path inert gate. Any miss ⇒ silent no-op (feature off).
     [ "${REIFY_RUN_ALL_CONTENT_SKIP:-}" = "1" ] || return 0
@@ -755,6 +757,13 @@ _ra_skip_engine() {
 
     for _name in "${!_skip_set[@]}"; do _RA_SKIP_SKIPPED["$_name"]=1; done
 
+    # Executed mapped members (mapped AND not skipped) — their green_sha
+    # advances in the post-run ledger write (_ra_skip_state_write, step-12)
+    # after an all-pass run. A skipped mapped member keeps its prior entry.
+    for _name in "${!_RA_SKIP_MAPPED[@]}"; do
+        [ "${_skip_set[$_name]:-0}" = "1" ] || _RA_SKIP_EXEC_MAPPED+=("$_name")
+    done
+
     # Rebuild _h2_discovered_list without skipped members (H3-analogous; same
     # portable empty-array guard as the H3 filter above).
     if [ "$_skipped_any" -eq 1 ]; then
@@ -765,6 +774,57 @@ _ra_skip_engine() {
         _h2_discovered_list=()
         [ "${#_kept[@]}" -gt 0 ] && _h2_discovered_list=("${_kept[@]}")
     fi
+    return 0
+}
+
+# _ra_skip_state_write — post-run ledger advance (task 5273, step-12). Called
+# once from the exit path, and writes ONLY when the engine was ACTIVE and every
+# executed member passed (failures==0) — green shas advance only on all-pass.
+# Executed mapped members (_RA_SKIP_EXEC_MAPPED) record green_sha=HEAD + a
+# refreshed timestamp + merges_at_last_exec=the bumped global counter; every
+# other prior ledger entry (skipped members, members not discovered this run)
+# is preserved verbatim; the global counter bumps by one. Crash-safe rewrite:
+# a temp file renamed into place under the flaky-ledger flock idiom (a `.lock`
+# sibling). Fail-open — any error (unwritable path, missing flock/git) leaves
+# the run's exit code untouched; this is an optimization side effect, never a
+# gate. Under the storm-escape path _RA_SKIP_EXEC_MAPPED is empty, so a missing
+# ledger self-heals to a valid empty ledger (skipping resumes on a later run).
+_ra_skip_state_write() {
+    [ "$_RA_SKIP_ACTIVE" = "1" ] || return 0
+    [ "$failures" -eq 0 ] || return 0
+    command -v flock >/dev/null 2>&1 || return 0
+    local _state="${REIFY_RUN_ALL_SKIP_STATE:-}"
+    [ -n "$_state" ] || return 0
+
+    local _head _now _new_global
+    _head="$(git -C "$_RA_SKIP_TOPLEVEL" rev-parse HEAD 2>/dev/null || true)"
+    [ -n "$_head" ] || return 0
+    _now="${EPOCHSECONDS:-$(date +%s)}"
+    _new_global=$(( _RA_SKIP_GLOBAL_MERGES + 1 ))
+
+    # Compose the new ledger body: executed mapped members advanced to HEAD,
+    # then every prior entry not already advanced preserved verbatim.
+    declare -A _written=()
+    local _m _body=""
+    for _m in "${_RA_SKIP_EXEC_MAPPED[@]+${_RA_SKIP_EXEC_MAPPED[@]}}"; do
+        [ "${_written[$_m]:-0}" = "1" ] && continue
+        _written["$_m"]=1
+        _body+="$_m $_head $_now $_new_global"$'\n'
+    done
+    for _m in "${_RA_STATE_NAMES[@]+${_RA_STATE_NAMES[@]}}"; do
+        [ "${_written[$_m]:-0}" = "1" ] && continue
+        _written["$_m"]=1
+        _body+="$_m ${_RA_STATE_GREEN[$_m]} ${_RA_STATE_AT[$_m]} ${_RA_STATE_MERGES[$_m]}"$'\n'
+    done
+
+    mkdir -p "$(dirname "$_state")" 2>/dev/null || true
+    local _tmp="${_state}.tmp.$$"
+    (
+        flock 9 || exit 0
+        { printf '__MERGES__ %s\n' "$_new_global"; printf '%s' "$_body"; } > "$_tmp" \
+            && mv -f "$_tmp" "$_state"
+    ) 9>>"${_state}.lock" 2>/dev/null || true
+    rm -f "$_tmp" 2>/dev/null || true
     return 0
 }
 
@@ -1379,6 +1439,10 @@ if [ "${#flaky_names[@]}" -gt 0 ]; then
         _ra_flaky_chronic_check "$_ra_flaky_name"
     done
 fi
+
+# Post-run content-skip ledger advance (task 5273, step-12): green shas advance
+# only on an all-pass ACTIVE run; a no-op for every inert/failed run.
+_ra_skip_state_write
 
 if [ "$failures" -eq 0 ]; then
     exit 0
