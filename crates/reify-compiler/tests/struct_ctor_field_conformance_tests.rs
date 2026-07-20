@@ -431,3 +431,144 @@ fn row9_value_cell_string_to_selector_param_warns_arg_type_mismatch() {
         diags[0].code
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Step-5 probes: pose-vs-set hint (D2, task 4833 consumer).
+//
+// PRD §4 D2: a selector-typed param given a coordinate-pose arg (`Frame` /
+// `Transform` / `Point`) keeps `DiagnosticCode::ArgTypeMismatch` but carries a
+// fixed hint substring — the deterministic string task 4833's fixtures assert
+// on. It is a *message variant*, not a new failure class or code.
+//
+// Fixture note — why a `param : Frame` ValueRef and NOT `frame3(...)`:
+// the plan's row-1 sketch used `frame3(...)`, but the Reify compiler does NOT
+// special-case `frame3`/`point3`/`orient_identity` in its function-call
+// return-type ladder (units.rs result_type tables / expr.rs NoUserFunctions),
+// so `frame3(point3(0mm,0mm,0mm), orient_identity())` infers via the first-arg
+// fallback to `Scalar[m]` (Length) — NOT a pose type — despite the LSP's
+// advertised `-> Frame` signature (verified empirically, 2026-07-20). A
+// `Scalar[m]` arg would exercise the generic concrete-leaf mismatch, never the
+// pose branch. To obtain a genuine pose-typed arg deterministically we declare
+// a param with an explicit resolvable pose type and pass it as a ValueRef:
+// `param p : Frame` → `Type::Frame(3)`, `param p : Transform3` →
+// `Type::Transform(3)` (type_resolution.rs:576/589). The plan explicitly grants
+// this latitude ("whichever concrete pose type it yields; the hint applies to
+// Frame/Transform/Point uniformly"). Frame AND Transform variants below force
+// the step-6 detection set to cover both pose kinds.
+//
+// RED on this branch: after step-4 the Option-unwrap arm already reaches the
+// selector leaf and `emit_selector_mismatch` emits `ArgTypeMismatch` at Warning,
+// but WITHOUT the pose hint substring — so the `contains(POSE_HINT)` assertion
+// is the RED one. Count / code / severity are already green.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The verbatim pose-vs-set hint substring (PRD §4 D2; task 4833's fixtures
+/// assert on exactly this string). Kept as one const so the RED test and the
+/// step-6 impl cannot drift.
+const POSE_HINT: &str = "a coordinate pose is not a region target; select a face/edge/vertex instead";
+
+// ── row 1: value-cell Option<FaceSelector> param given a Frame pose → hint ──
+const SOURCE_ROW1_OPTION_SELECTOR_POSE_FRAME: &str = r#"module test.row1
+structure def PressureLoad { param face : Option<FaceSelector> }
+structure def Root {
+    param pose : Frame
+    let pl = PressureLoad(face: pose)
+}
+"#;
+
+#[test]
+fn row1_value_cell_option_selector_given_pose_frame_warns_with_pose_hint() {
+    let module = compile_source_with_stdlib(SOURCE_ROW1_OPTION_SELECTOR_POSE_FRAME);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "pose→Option<FaceSelector> must emit exactly one ctor-conformance diagnostic, got: {diags:#?}"
+    );
+    assert_eq!(
+        diags[0].severity,
+        Severity::Warning,
+        "α: ctor field conformance is Warning-severity, got: {:?}",
+        diags[0]
+    );
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::ArgTypeMismatch),
+        "pose-vs-set stays ArgTypeMismatch (a message variant, not a new code), got: {:?}",
+        diags[0].code
+    );
+    // RED until step-6: the pose branch must append the fixed hint substring.
+    assert!(
+        diags[0].message.contains(POSE_HINT),
+        "pose arg at a selector field must carry the pose-vs-set hint {POSE_HINT:?}, got: {:?}",
+        diags[0].message
+    );
+}
+
+// ── bare selector param (FaceSelector) given a Frame pose → hint ──
+const SOURCE_BARE_SELECTOR_POSE_FRAME: &str = r#"module test.row1b
+structure def Holder { param loc : FaceSelector }
+structure def Root {
+    param pose : Frame
+    let h = Holder(loc: pose)
+}
+"#;
+
+#[test]
+fn bare_selector_param_given_pose_frame_warns_with_pose_hint() {
+    let module = compile_source_with_stdlib(SOURCE_BARE_SELECTOR_POSE_FRAME);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "pose→FaceSelector must emit exactly one ctor-conformance diagnostic, got: {diags:#?}"
+    );
+    assert_eq!(diags[0].severity, Severity::Warning);
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::ArgTypeMismatch),
+        "pose-vs-set stays ArgTypeMismatch, got: {:?}",
+        diags[0].code
+    );
+    // RED until step-6.
+    assert!(
+        diags[0].message.contains(POSE_HINT),
+        "pose arg at a bare selector field must carry the pose-vs-set hint {POSE_HINT:?}, got: {:?}",
+        diags[0].message
+    );
+}
+
+// ── bare selector param (FaceSelector) given a Transform3 pose → hint ──
+// Uniformity: the hint applies to every pose kind, so the step-6 detection set
+// must include Transform, not only Frame.
+const SOURCE_BARE_SELECTOR_POSE_TRANSFORM: &str = r#"module test.row1c
+structure def Holder { param loc : FaceSelector }
+structure def Root {
+    param pose : Transform3
+    let h = Holder(loc: pose)
+}
+"#;
+
+#[test]
+fn bare_selector_param_given_pose_transform_warns_with_pose_hint() {
+    let module = compile_source_with_stdlib(SOURCE_BARE_SELECTOR_POSE_TRANSFORM);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "Transform pose→FaceSelector must emit exactly one ctor-conformance diagnostic, got: {diags:#?}"
+    );
+    assert_eq!(diags[0].severity, Severity::Warning);
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::ArgTypeMismatch),
+        "pose-vs-set stays ArgTypeMismatch, got: {:?}",
+        diags[0].code
+    );
+    // RED until step-6 (and requires Transform in the detection set).
+    assert!(
+        diags[0].message.contains(POSE_HINT),
+        "Transform pose arg at a selector field must carry the pose-vs-set hint {POSE_HINT:?}, got: {:?}",
+        diags[0].message
+    );
+}
