@@ -5859,7 +5859,11 @@ mod tests {
             diagnostics.len(),
         );
         let d = &diagnostics[0];
-        assert_eq!(d.severity, Severity::Error);
+        // task 5302 α (Option-A uniform downgrade): check_trait_arg_conformance is a
+        // ctor-conformance entry, so its diagnostics are emitted at
+        // CTOR_FIELD_CONFORMANCE_SEVERITY (Warning) rather than Error. Code/count/message
+        // are unchanged; δ later flips the knob back to Error.
+        assert_eq!(d.severity, Severity::Warning);
         assert_eq!(
             d.code,
             Some(DiagnosticCode::TypeNotConformingToTrait),

@@ -319,7 +319,7 @@ fn sub_component_arg_for_trait_typed_param_rejects_non_conforming_struct() {
     let errors: Vec<_> = module
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Error)
+        .filter(|d| d.severity == Severity::Warning)
         .collect();
 
     assert!(
@@ -327,7 +327,7 @@ fn sub_component_arg_for_trait_typed_param_rejects_non_conforming_struct() {
             .iter()
             .any(|d| d.message.contains("does not conform to trait")
                 && d.message.contains("MaterialSpec")),
-        "expected a 'does not conform to trait MaterialSpec' error, got: {:?}",
+        "expected a 'does not conform to trait MaterialSpec' warning, got: {:?}",
         errors
     );
 }
@@ -470,7 +470,7 @@ fn sub_component_arg_real_literal_for_trait_typed_param_emits_conformance_error(
     let errors: Vec<_> = module
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Error)
+        .filter(|d| d.severity == Severity::Warning)
         .collect();
 
     assert!(
@@ -478,7 +478,7 @@ fn sub_component_arg_real_literal_for_trait_typed_param_emits_conformance_error(
             .iter()
             .any(|d| d.message.contains("does not conform to trait")
                 && d.message.contains("MaterialSpec")),
-        "expected a 'does not conform to trait MaterialSpec' error for Real literal arg, got: {:?}",
+        "expected a 'does not conform to trait MaterialSpec' warning for Real literal arg, got: {:?}",
         errors
     );
 }
@@ -542,7 +542,7 @@ fn option_trait_typed_param_rejects_some_with_non_conforming_struct() {
     let errors: Vec<_> = module
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Error)
+        .filter(|d| d.severity == Severity::Warning)
         .collect();
 
     assert!(
@@ -550,7 +550,7 @@ fn option_trait_typed_param_rejects_some_with_non_conforming_struct() {
             .iter()
             .any(|d| d.message.contains("does not conform to trait")
                 && d.message.contains("MaterialSpec")),
-        "expected a 'does not conform to trait MaterialSpec' error for some(NotAMaterial()) passed to Option<MaterialSpec> param, got: {:?}",
+        "expected a 'does not conform to trait MaterialSpec' warning for some(NotAMaterial()) passed to Option<MaterialSpec> param, got: {:?}",
         errors
     );
 }
@@ -629,7 +629,7 @@ fn list_trait_typed_param_rejects_non_conforming_element() {
     let errors: Vec<_> = module
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Error)
+        .filter(|d| d.severity == Severity::Warning)
         .collect();
 
     assert!(
@@ -637,7 +637,7 @@ fn list_trait_typed_param_rejects_non_conforming_element() {
             .iter()
             .any(|d| d.message.contains("does not conform to trait")
                 && d.message.contains("MaterialSpec")),
-        "expected a 'does not conform to trait MaterialSpec' error for [Steel(), NotAMaterial()] passed to List<MaterialSpec> param, got: {:?}",
+        "expected a 'does not conform to trait MaterialSpec' warning for [Steel(), NotAMaterial()] passed to List<MaterialSpec> param, got: {:?}",
         errors
     );
 }
@@ -716,7 +716,7 @@ fn set_trait_typed_param_rejects_non_conforming_element() {
     let errors: Vec<_> = module
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Error)
+        .filter(|d| d.severity == Severity::Warning)
         .collect();
 
     assert!(
@@ -724,7 +724,7 @@ fn set_trait_typed_param_rejects_non_conforming_element() {
             .iter()
             .any(|d| d.message.contains("does not conform to trait")
                 && d.message.contains("MaterialSpec")),
-        "expected a 'does not conform to trait MaterialSpec' error for set with NotAMaterial passed to Set<MaterialSpec> param, got: {:?}",
+        "expected a 'does not conform to trait MaterialSpec' warning for set with NotAMaterial passed to Set<MaterialSpec> param, got: {:?}",
         errors
     );
 }
@@ -778,7 +778,7 @@ fn map_trait_typed_param_rejects_non_conforming_value() {
     let errors: Vec<_> = module
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Error)
+        .filter(|d| d.severity == Severity::Warning)
         .collect();
 
     assert!(
@@ -786,7 +786,7 @@ fn map_trait_typed_param_rejects_non_conforming_value() {
             .iter()
             .any(|d| d.message.contains("does not conform to trait")
                 && d.message.contains("MaterialSpec")),
-        "expected a 'does not conform to trait MaterialSpec' error for map with NotAMaterial value passed to Map<String, MaterialSpec> param, got: {:?}",
+        "expected a 'does not conform to trait MaterialSpec' warning for map with NotAMaterial value passed to Map<String, MaterialSpec> param, got: {:?}",
         errors
     );
 }
@@ -1058,7 +1058,7 @@ fn option_trait_typed_param_rejects_valueref_of_non_conforming_trait() {
     let errors: Vec<_> = module
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Error)
+        .filter(|d| d.severity == Severity::Warning)
         .collect();
 
     assert!(
@@ -1066,7 +1066,7 @@ fn option_trait_typed_param_rejects_valueref_of_non_conforming_trait() {
             .iter()
             .any(|d| d.message.contains("does not conform to trait")
                 && d.message.contains("Material")),
-        "expected a 'does not conform to trait Material' error for Option<Other> ValueRef passed to Option<Material> param, got: {:?}",
+        "expected a 'does not conform to trait Material' warning for Option<Other> ValueRef passed to Option<Material> param, got: {:?}",
         errors
     );
 }
@@ -1105,7 +1105,7 @@ fn nested_wrapper_list_option_rejects_non_conforming_inner_element() {
     let errors: Vec<_> = module
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Error)
+        .filter(|d| d.severity == Severity::Warning)
         .collect();
 
     assert!(
@@ -1113,7 +1113,7 @@ fn nested_wrapper_list_option_rejects_non_conforming_inner_element() {
             .iter()
             .any(|d| d.message.contains("does not conform to trait")
                 && d.message.contains("MaterialSpec")),
-        "expected a 'does not conform to trait MaterialSpec' error for some(NotAMaterial()) inside List<Option<MaterialSpec>>, got: {:?}",
+        "expected a 'does not conform to trait MaterialSpec' warning for some(NotAMaterial()) inside List<Option<MaterialSpec>>, got: {:?}",
         errors
     );
 }
@@ -1185,7 +1185,7 @@ fn nested_wrapper_type_level_list_option_rejects_valueref_of_non_conforming_trai
     let errors: Vec<_> = module
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Error)
+        .filter(|d| d.severity == Severity::Warning)
         .collect();
 
     assert!(
@@ -1193,7 +1193,7 @@ fn nested_wrapper_type_level_list_option_rejects_valueref_of_non_conforming_trai
             .iter()
             .any(|d| d.message.contains("does not conform to trait")
                 && d.message.contains("Carrier")),
-        "expected a 'does not conform to trait Carrier' error for List<Option<Inert>> ValueRef passed to List<Option<Carrier>> param, got: {:?}",
+        "expected a 'does not conform to trait Carrier' warning for List<Option<Inert>> ValueRef passed to List<Option<Carrier>> param, got: {:?}",
         errors
     );
 }
@@ -1374,7 +1374,7 @@ fn map_literal_passed_to_list_trait_param_emits_shape_mismatch() {
     let errors: Vec<_> = module
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Error)
+        .filter(|d| d.severity == Severity::Warning)
         .collect();
 
     let matching: Vec<_> = errors
@@ -1463,7 +1463,7 @@ fn valueref_of_list_passed_to_set_trait_param_emits_shape_mismatch() {
     let errors: Vec<_> = module
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Error)
+        .filter(|d| d.severity == Severity::Warning)
         .collect();
 
     let matching: Vec<_> = errors
@@ -1508,7 +1508,7 @@ fn valueref_of_list_passed_to_map_trait_param_emits_shape_mismatch() {
     let errors: Vec<_> = module
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Error)
+        .filter(|d| d.severity == Severity::Warning)
         .collect();
 
     let matching: Vec<_> = errors
@@ -1561,7 +1561,7 @@ fn map_trait_typed_param_rejects_non_conforming_key() {
     let errors: Vec<_> = module
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Error)
+        .filter(|d| d.severity == Severity::Warning)
         .collect();
 
     assert!(
@@ -1571,7 +1571,7 @@ fn map_trait_typed_param_rejects_non_conforming_key() {
                 && d.message.contains("MaterialSpec")
                 && d.message.contains("param 'ms'")
         }),
-        "expected a TypeNotConformingToTrait error naming param 'ms' for NotAMaterial at the key position of Map<MaterialSpec, String>, got: {:?}",
+        "expected a TypeNotConformingToTrait warning naming param 'ms' for NotAMaterial at the key position of Map<MaterialSpec, String>, got: {:?}",
         errors
     );
 }
@@ -1604,7 +1604,7 @@ fn option_list_trait_typed_param_rejects_non_conforming_inner_element() {
     let errors: Vec<_> = module
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Error)
+        .filter(|d| d.severity == Severity::Warning)
         .collect();
 
     assert!(
@@ -1614,7 +1614,7 @@ fn option_list_trait_typed_param_rejects_non_conforming_inner_element() {
                 && d.message.contains("MaterialSpec")
                 && d.message.contains("param 'ms'")
         }),
-        "expected a TypeNotConformingToTrait error naming param 'ms' for NotAMaterial inside Option<List<MaterialSpec>>, got: {:?}",
+        "expected a TypeNotConformingToTrait warning naming param 'ms' for NotAMaterial inside Option<List<MaterialSpec>>, got: {:?}",
         errors
     );
 }
