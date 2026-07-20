@@ -128,4 +128,41 @@ assert "default: NO test(= retry fragment on any cargo line (byte-identical defa
     bash -c '! printf "%s\n" "$1" | grep -E "(^| )cargo " | grep -qF -- "test(="' \
     _ "$PLAN_DEFAULT"
 
+# ---------------------------------------------------------------------------
+# Test 2: LOUD tree-drift full-fallback. Under scope=failed_only, when the
+# subset is refused because the sidecar tree_oid does not match (or the sidecar
+# is absent), verify.sh must say so LOUDLY — never silently narrow-or-widen
+# (PRD §4.3 / INV-4 storm escape). The diagnostic is a build-time `echo >&2`,
+# so it appears in --print-plan STDERR and is host-independent (asserted
+# UNCONDITIONALLY — not NEXTEST-guarded). `2>&1 >/dev/null` captures STDERR
+# while dropping the (large) plan STDOUT.
+# RED after impl-subset-apply: the eligibility gate already blocks the subset
+# on a mismatch/absent sidecar, but emits no loud line.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Test 2: refused subset emits a LOUD 'retry refused: tree drift' line ---"
+
+STDERR_MISMATCH="$(REIFY_VERIFY_RETRY_SCOPE=failed_only \
+    REIFY_VERIFY_RETRY_TREE_OID=cafef00d \
+    REIFY_VERIFY_ATTEMPT_SIDECAR="$SIDECAR" \
+    REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE="$FILTER" \
+    bash "$VERIFY" test --scope all --print-plan 2>&1 >/dev/null)" || true
+
+assert "tree_oid mismatch (deadbeef sidecar vs cafef00d wanted): STDERR carries 'retry refused: tree drift'" \
+    bash -c 'printf "%s\n" "$1" | grep -qF -- "retry refused: tree drift"' \
+    _ "$STDERR_MISMATCH"
+
+# Absent sidecar (nonexistent path) under scope=failed_only — same refusal,
+# same loud line (the on-disk sidecar the retry tree-pins against is missing).
+MISSING_SIDECAR="$_TMP/nonexistent-sidecar.json"
+STDERR_ABSENT="$(REIFY_VERIFY_RETRY_SCOPE=failed_only \
+    REIFY_VERIFY_RETRY_TREE_OID=deadbeef \
+    REIFY_VERIFY_ATTEMPT_SIDECAR="$MISSING_SIDECAR" \
+    REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE="$FILTER" \
+    bash "$VERIFY" test --scope all --print-plan 2>&1 >/dev/null)" || true
+
+assert "absent sidecar under scope=failed_only: STDERR carries 'retry refused: tree drift'" \
+    bash -c 'printf "%s\n" "$1" | grep -qF -- "retry refused: tree drift"' \
+    _ "$STDERR_ABSENT"
+
 test_summary
