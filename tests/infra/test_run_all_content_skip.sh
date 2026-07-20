@@ -72,13 +72,18 @@ mk_member() {
 run_skip() {
     local state="$1" closures="$2" dir="$3" role="${4:-merge}"
     RUN_RC=0
+    # Route through `env` so RUN_SKIP_ENV tokens (which arrive via array
+    # expansion) are applied as assignments — a `KEY=VAL` word produced by
+    # expansion is NOT re-recognized as a shell assignment and would otherwise
+    # become the command word.
     RUN_OUT="$(
-        DF_VERIFY_ROLE="$role" \
-        REIFY_RUN_ALL_CONTENT_SKIP=1 \
-        REIFY_RUN_ALL_SKIP_STATE="$state" \
-        RUN_ALL_SKIP_CLOSURES_MANIFEST="$closures" \
-        "${RUN_SKIP_ENV[@]+${RUN_SKIP_ENV[@]}}" \
-        bash "$RUN_ALL" "$dir" 2>&1
+        env \
+            DF_VERIFY_ROLE="$role" \
+            REIFY_RUN_ALL_CONTENT_SKIP=1 \
+            REIFY_RUN_ALL_SKIP_STATE="$state" \
+            RUN_ALL_SKIP_CLOSURES_MANIFEST="$closures" \
+            "${RUN_SKIP_ENV[@]+${RUN_SKIP_ENV[@]}}" \
+            bash "$RUN_ALL" "$dir" 2>&1
     )" || RUN_RC=$?
 }
 RUN_OUT=""

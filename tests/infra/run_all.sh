@@ -674,7 +674,17 @@ _ra_skip_engine() {
     _ra_skip_read_closures
     _ra_skip_read_state
 
-    local _name _green _rc _wt _names _touch
+    # Backstop thresholds (PRD §4.2(5)): fail-open to the default on a
+    # malformed value (mirrors the _ra_chronic_n idiom). 0 is a legal value
+    # (forces a backstop every run — used to tune/deactivate skipping).
+    local _max_age _max_merges _now
+    _max_age="${REIFY_RUN_ALL_SKIP_MAX_AGE_HOURS:-24}"
+    case "$_max_age" in ''|*[!0-9]*) _max_age=24 ;; esac
+    _max_merges="${REIFY_RUN_ALL_SKIP_MAX_MERGES:-25}"
+    case "$_max_merges" in ''|*[!0-9]*) _max_merges=25 ;; esac
+    _now="${EPOCHSECONDS:-$(date +%s)}"
+
+    local _name _green _rc _wt _names _touch _at _merges_at _age _merges_since
     declare -A _skip_set=()
     local _skipped_any=0
     for _name in "${_h2_discovered_list[@]+${_h2_discovered_list[@]}}"; do
@@ -714,7 +724,18 @@ _ra_skip_engine() {
             echo "RUN (delta): $_name touched=$_touch"
             continue
         fi
-        # Content-clean ⇒ SKIP.
+        # Backstop: force a run at least once per MAX_AGE_HOURS / MAX_MERGES
+        # even when content-clean (PRD §4.2(5)). Only checked on the
+        # would-otherwise-SKIP path (delta/unmapped/no-baseline already run).
+        _at="${_RA_STATE_AT[$_name]:-0}"
+        _merges_at="${_RA_STATE_MERGES[$_name]:-0}"
+        _age=$(( _now - _at ))
+        _merges_since=$(( _RA_SKIP_GLOBAL_MERGES - _merges_at ))
+        if [ "$_age" -ge $(( _max_age * 3600 )) ] || [ "$_merges_since" -ge "$_max_merges" ]; then
+            echo "RUN (backstop-due): $_name"
+            continue
+        fi
+        # Content-clean AND within the backstop window ⇒ SKIP.
         echo "SKIP (content-clean): $_name green=$_green"
         _skip_set["$_name"]=1
         _skipped_any=1
