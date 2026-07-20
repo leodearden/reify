@@ -65,7 +65,7 @@ use xxhash_rust::xxh3::xxh3_128;
 /// hashes only the resolved `(name, version)` pins of reify-eval's build+normal
 /// (dev-EXCLUDED) transitive closure — the crate NAMES checked in at
 /// `crates/reify-eval/engine_hash_closure.txt` — via [`parse_closure_manifest`]
-/// + [`cargo_lock_closure_parts`].  So `../../Cargo.lock` is deliberately NOT in
+/// and [`cargo_lock_closure_parts`].  So `../../Cargo.lock` is deliberately NOT in
 /// `CONTRIBUTORS_RELATIVE`; `build.rs` reads it directly alongside the manifest.
 /// The drift guard `tests/infra/test_engine_hash_closure.sh` keeps the manifest
 /// a superset (⊇) of the freshly-recomputed closure.
