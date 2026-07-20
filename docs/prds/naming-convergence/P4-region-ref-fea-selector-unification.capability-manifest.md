@@ -28,3 +28,27 @@ hard `depends_on`) and the extent is **self-owned** by P4-π (verify-or-wire), w
 deferred to post-4370 dispatch (it is structurally impossible to observe pre-migration). The §3 live
 probe records today's **silent-accept** baseline so a dispatch-time architect (and any verifier) can
 diff intent against substrate rather than re-derive it. Queueing is not blocked.
+
+---
+
+# 2026-07-20 revision — reject mechanism re-pointed to the struct-ctor chokepoint
+
+Supersedes rows 2/4/5 above, tracking the PRD's in-place 2026-07-20 revision (§2/§3/§4 D3/§5 π). The
+original rows rested on two premises now known false against post-4370 main (both independently
+reproduced by 4833's dry-run investigation, 2026-07-20):
+
+1. **4370 landed narrowed** (esc-4370-24): only `PressureLoad.face → Option<FaceSelector>`. The other
+   five target fields are still `String` — now owned by v0.6 **Bmig2** (this session's decompose;
+   dep edge 4833→Bmig2 added for the kind-specific message).
+2. **`validate_selector_target` is a red herring**: unreachable from the `structure def` ctor fields
+   (callers are only `supports.rs:120,138` — DisplacementSupport/RollerSupport builtins), and its
+   `None→Value::Undef` has no diagnostic channel. There is no "wire" branch for P4-π.
+
+| Capability asserted (revised) | Binding | Evidence | Verdict |
+|---|---|---|---|
+| **Rejection fires:** a `Value::Frame` at an FEA region-target → structured pose-vs-set diagnostic | rejection-mechanism (branch 4) | delivered by `producer:5306` (struct-ctor chokepoint **δ** Warning→Error flip, wired dep) whose α (5302, in-progress) emits the C1-row-12 hint verbatim: `a coordinate pose is not a region target; select a face/edge/vertex instead` — 4833's fixtures assert it. Silent-accept baseline re-verified 2026-07-20 (probe run `wf_801582f3-59d`). **P4-π is fixture-only verifier** — it wires nothing. | PASS (upstream-wired; observation post-δ) |
+| Field kinds at fixture time | producer:5306 + producer:Bmig2 (both wired) | `face` selector-typed today (4370) → pose-vs-set message immediately post-δ; `point`/`target` become kind-specific once Bmig2 lands (pre-Bmig2 a Frame there is a String-mismatch — either way the silent accept dies) | PASS |
+| Migrated examples stay clean | producer:4370 (face) + producer:Bmig2 (rest) | Bmig2 migrates the remaining examples; 4833 asserts no-regression on whatever is migrated at its dispatch time | PASS |
+
+Task 4833's stored description was updated to this verifier framing in the same session
+(`metadata.files` dropped to `[]` — fixture home is the architect's call at edit time).
