@@ -847,29 +847,66 @@ fn emit_vector_mismatch(param_type: &Type, arg_type: &Type, ctx: &mut WalkCtx<'_
     );
 }
 
-/// Emit a single `Diagnostic::error` with [`DiagnosticCode::ArgTypeMismatch`] when an arg
-/// type does not match a `Type::Selector` or `Type::AnySelector` param (task-4598).
+/// Emit a single diagnostic when an arg type does not match a `Type::Selector` or
+/// `Type::AnySelector` param (task-4598), branching the code on the *nature* of the
+/// mismatch (task 5302 α, D2):
 ///
-/// Modelled on [`emit_structure_ref_mismatch`] / [`emit_vector_mismatch`]: one diagnostic,
-/// one label at `ctx.span`, message names the required selector type and the offending arg type.
-/// Uses `DiagnosticCode::ArgTypeMismatch` (rather than minting a new code) per design decision D0
-/// in plan.json: the task directs the existing `E_ARG_TYPE_MISMATCH` code, so no diagnostics.rs
-/// change is needed.
+/// - **Selector-kind mismatch** — a concrete `Selector(j)` arg with `j != k`, or a
+///   bare `AnySelector` arg, against a single-kind `Selector(k)` param — carries
+///   [`DiagnosticCode::SelectorKindMismatch`] and names the expected/found selector
+///   kinds (the `SelectorKind` Display strings, e.g. `FaceSelector`/`EdgeSelector`).
+///   This mirrors the fn-call param-binding path's `SelectorKindMismatch` tagging
+///   (task 4581 / 4371 BT1) so the same wrong-kind error is coded uniformly in both
+///   the ctor and fn-call surfaces.
+/// - **Every other selector-slot mismatch** — a non-selector arg (`String`, `Frame`,
+///   `Int`, …), or any arg against a bare `AnySelector` param — keeps
+///   [`DiagnosticCode::ArgTypeMismatch`] (the disallow-string / disallow-pose case,
+///   over-tag guard per 4581).
+///
+/// Modelled on [`emit_structure_ref_mismatch`] / [`emit_vector_mismatch`]: one
+/// diagnostic, one label at `ctx.span`. No new code minted (both already exist in
+/// diagnostics.rs). Severity is `ctx.severity` in BOTH branches (severity-invariant:
+/// the 5302 knob governs the whole selector surface uniformly — see design decision
+/// Q3/Option-A). The same-kind case (`Selector(k)` arg vs `Selector(k)` param) never
+/// reaches here — `reject_if_incompatible`'s `type_compatible` gate accepts it — so
+/// the `j != k` guard is defensive, not load-bearing.
 fn emit_selector_mismatch(param_type: &Type, arg_type: &Type, ctx: &mut WalkCtx<'_>) {
-    ctx.diagnostics.push(
-        diag_at(
-            ctx.severity,
-            format!(
-                "argument '{}' has type '{}' but param '{}' requires selector type '{}'",
-                ctx.arg_name, arg_type, ctx.arg_name, param_type,
-            ),
-        )
-        .with_code(DiagnosticCode::ArgTypeMismatch)
-        .with_label(DiagnosticLabel::new(
-            ctx.span,
-            format!("expected '{}', got '{}'", param_type, arg_type),
-        )),
-    );
+    let is_kind_mismatch = match (param_type, arg_type) {
+        (Type::Selector(k), Type::Selector(j)) => j != k,
+        (Type::Selector(_), Type::AnySelector) => true,
+        _ => false,
+    };
+    if is_kind_mismatch {
+        ctx.diagnostics.push(
+            diag_at(
+                ctx.severity,
+                format!(
+                    "argument '{}' has selector kind '{}' but param '{}' requires selector kind '{}'",
+                    ctx.arg_name, arg_type, ctx.arg_name, param_type,
+                ),
+            )
+            .with_code(DiagnosticCode::SelectorKindMismatch)
+            .with_label(DiagnosticLabel::new(
+                ctx.span,
+                format!("expected '{}', got '{}'", param_type, arg_type),
+            )),
+        );
+    } else {
+        ctx.diagnostics.push(
+            diag_at(
+                ctx.severity,
+                format!(
+                    "argument '{}' has type '{}' but param '{}' requires selector type '{}'",
+                    ctx.arg_name, arg_type, ctx.arg_name, param_type,
+                ),
+            )
+            .with_code(DiagnosticCode::ArgTypeMismatch)
+            .with_label(DiagnosticLabel::new(
+                ctx.span,
+                format!("expected '{}', got '{}'", param_type, arg_type),
+            )),
+        );
+    }
 }
 
 /// Skip-guard + `type_compatible` gate shared by the `StructureRef` and `Selector/AnySelector`
