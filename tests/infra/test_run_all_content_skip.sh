@@ -593,4 +593,95 @@ assert "S6b: green is NOT advanced on a failed run (stays the prior baseline)" \
 assert "S6b: the global merge counter is NOT bumped on a failed run (stays 7)" \
     test "$(ledger_merges "$S6B_STATE")" = "7"
 
+# ===========================================================================
+# Section 7 (step-13/14): under-declaration drift-guard (PRD §4.1, K3).
+#   The SKIP direction is unsound if a member's declared closure OMITS a
+#   tracked path the member actually depends on: a change to that path would
+#   leave the closure byte-identical and the member would be wrongly SKIPPED.
+#   This guard extracts every literal repo-relative path token from each
+#   manifested member's SOURCE and asserts it is covered by that member's
+#   declared closure ∪ the six implicit members (glob/dir-aware). It runs
+#   against the REAL manifest (must be CLEAN) and a synthetic under-declared
+#   fixture (must be REPORTED — non-vacuity).
+#
+#   RED at step-13: _udg_covered is a STUB (treats everything as covered), so
+#   the deliberately-omitted fixture path is NOT reported (7b fails). step-14
+#   finalizes _udg_covered; 7a stays clean because pre-1's seed rows are
+#   already complete.
+# ===========================================================================
+
+# _udg_tokens FILE — the repo-relative path tokens referenced in FILE, one per
+# line, trailing punctuation/slash stripped, de-duplicated. Anchored on known
+# top-level repo dirs + root manifests so shell vars ($SCRIPT_DIR/..),
+# absolute OS paths (/dev/null, /usr/bin/env, /tmp/..) and gitignore globs
+# (__pycache__/*) are never mistaken for tracked-file references.
+_udg_tokens() {
+    { grep -oE '(scripts|tests|crates|hooks|docs|gui|\.config|\.github)/[A-Za-z0-9_./*-]+|Cargo\.(toml|lock)|rust-toolchain(\.toml)?|\.gitignore' "$1" 2>/dev/null || true; } \
+        | sed -E 's#[./,:;)]+$##' | sort -u | sed '/^$/d'
+}
+
+# _udg_covered TOKEN CLOSURE... — STUB (step-13). Finalized in step-14 to a
+# glob/dir-aware coverage test. Until then it claims every token is covered,
+# so udg_uncovered reports nothing and Section 7b is RED.
+_udg_covered() { return 0; }
+
+# udg_uncovered MANIFEST INFRA_DIR — echo `<member> <token>` for every source
+# path token NOT covered by that member's declared closure ∪ the six implicit
+# members. INFRA_DIR must be inside a git repo (implicit prefix = show-prefix,
+# so the real merge (tests/infra/) and a hermetic fixture (its own root) both
+# resolve). Only members whose source is present are guarded.
+udg_uncovered() {
+    local manifest="$1" infra="$2"
+    local rel; rel="$(git -C "$infra" rev-parse --show-prefix 2>/dev/null || true)"
+    local _line _trim member _t
+    while IFS= read -r _line; do
+        _trim="${_line#"${_line%%[![:space:]]*}"}"
+        case "$_trim" in ''|'#'*) continue ;; esac
+        local -a _f
+        IFS=$' \t' read -ra _f <<< "$_line"
+        member="${_f[0]:-}"
+        [ -n "$member" ] || continue
+        [ -f "$infra/$member" ] || continue
+        local -a closure=("${_f[@]:1}")
+        closure+=(
+            "${rel}${member}" "${rel}test_helpers.sh" "${rel}run_all.sh"
+            "${rel}run-all-classification-lib.sh" "${rel}load_tolerance_lib.sh"
+            "${rel}run-all-classification.manifest" "${rel}run-all-ambient-vars.manifest"
+        )
+        while IFS= read -r _t; do
+            [ -n "$_t" ] || continue
+            _udg_covered "$_t" "${closure[@]}" || echo "$member $_t"
+        done < <(_udg_tokens "$infra/$member")
+    done < "$manifest"
+    return 0
+}
+
+# -- 7a: the REAL manifest is fully declared (every referenced path covered) ---
+echo ""
+echo "--- Section 7a (step-13/14): real run-all-skip-closures.manifest is complete ---"
+S7_REAL_UNCOVERED="$(udg_uncovered "$SCRIPT_DIR/run-all-skip-closures.manifest" "$SCRIPT_DIR")"
+[ -n "$S7_REAL_UNCOVERED" ] && printf 'UNDER-DECLARED (member token):\n%s\n' "$S7_REAL_UNCOVERED"
+assert "S7a: no manifested member under-declares a repo path it references" \
+    test -z "$S7_REAL_UNCOVERED"
+
+# -- 7b: non-vacuity — a deliberately under-declared fixture row is REPORTED ---
+echo ""
+echo "--- Section 7b (step-13/14): synthetic under-declared row is caught ---"
+S7B_DIR="$(mktemp -d)"; _TMPDIRS+=("$S7B_DIR")
+git_init_fixture "$S7B_DIR"
+# Mock member references scripts/under_dep.sh; its manifest row OMITS it.
+{
+    printf '#!/usr/bin/env bash\n'
+    printf '# member depends on scripts/under_dep.sh (a real tracked input)\n'
+    printf 'source "scripts/under_dep.sh"\n'
+    printf 'exit 0\n'
+} > "$S7B_DIR/test_under.sh"
+chmod +x "$S7B_DIR/test_under.sh"
+git -C "$S7B_DIR" add -A; git -C "$S7B_DIR" commit -q -m base
+S7B_MANIFEST="$S7B_DIR/_meta_closures.manifest"
+printf 'test_under.sh docs/unrelated.md\n' > "$S7B_MANIFEST"   # omits scripts/under_dep.sh
+S7B_UNCOVERED="$(udg_uncovered "$S7B_MANIFEST" "$S7B_DIR")"
+assert "S7b: the guard REPORTS the omitted scripts/under_dep.sh (non-vacuity)" \
+    out_has "$S7B_UNCOVERED" "test_under.sh scripts/under_dep.sh"
+
 test_summary
