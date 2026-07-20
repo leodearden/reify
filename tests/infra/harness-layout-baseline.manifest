@@ -236,6 +236,7 @@ crates/reify-compiler/tests/geometry_traits_user_asserted_tests.rs
 crates/reify-compiler/tests/ground_sugar_tests.rs
 crates/reify-compiler/tests/guard_compilation.rs
 crates/reify-compiler/tests/half_space_compile_tests.rs
+crates/reify-compiler/tests/hoist_nested_selector_ctors.rs
 crates/reify-compiler/tests/imperial_units_tests.rs
 crates/reify-compiler/tests/implicit_conversion_tests.rs
 crates/reify-compiler/tests/implies_type_check_tests.rs
@@ -530,6 +531,8 @@ crates/reify-eval/tests/gravity_self_weight_e2e.rs
 crates/reify-eval/tests/grounding_tests.rs
 crates/reify-eval/tests/guard_eval.rs
 crates/reify-eval/tests/half_space_e2e.rs
+crates/reify-eval/tests/hoist_selector_round_trip.rs
+crates/reify-eval/tests/hoist_selector_template_lets.rs
 crates/reify-eval/tests/implies_e2e.rs
 crates/reify-eval/tests/imported_field_e2e.rs
 crates/reify-eval/tests/imported_field_smoke_e2e.rs
