@@ -21,12 +21,9 @@
 //! No new diagnostic codes are minted in α; no reify-core change.
 
 use reify_compiler::CompiledModule;
-use reify_core::Diagnostic;
 use reify_core::diagnostics::DiagnosticCode;
-// `compile_source_with_stdlib` and `Severity` are consumed by the probe fns
-// added in step-1; kept out of the prerequisite commit's imports so it builds
-// clean under the `-D warnings` clippy gate.
-use reify_test_support::{errors_only, warnings_only};
+use reify_core::{Diagnostic, Severity};
+use reify_test_support::{compile_source_with_stdlib, errors_only, warnings_only};
 
 /// True when `code` is one of the diagnostic codes emitted by the struct-ctor
 /// field-conformance pass (task 5302 / 4584 / 4598 / 4622 / 4444).
@@ -35,9 +32,6 @@ use reify_test_support::{errors_only, warnings_only};
 /// from being polluted by unrelated diagnostics (an incidental `W_*` warning, a
 /// downstream note, etc.). All five codes already exist in `diagnostics.rs`; α
 /// mints none.
-// `#[allow(dead_code)]` covers the prerequisite commit (no probe fns yet); the
-// probe fns added in step-1 consume these helpers.
-#[allow(dead_code)]
 fn is_ctor_conformance_code(code: Option<DiagnosticCode>) -> bool {
     matches!(
         code,
@@ -55,7 +49,6 @@ fn is_ctor_conformance_code(code: Option<DiagnosticCode>) -> bool {
 ///
 /// Used by "exactly N diagnostics" / "zero diagnostics" assertions so an
 /// incidental unrelated diagnostic does not throw off the count.
-#[allow(dead_code)]
 fn ctor_conformance_diags(module: &CompiledModule) -> Vec<&Diagnostic> {
     module
         .diagnostics
@@ -90,4 +83,256 @@ fn ctor_conformance_errors(module: &CompiledModule) -> Vec<&Diagnostic> {
         .collect()
 }
 
-// Probe / boundary test functions are added by task 5302 steps 1, 3, 5, 7, 9.
+// ─────────────────────────────────────────────────────────────────────────────
+// Step-1 probes: core general-leaf + implicit-Some + allowlist-flip behaviors.
+//
+// RED on `main`: rows 2/4/8/13 are silent (or a wrong-code wrapper-shape Error for
+// rows 5/8) before the step-2 core mechanism lands. Rows 3/7 and boundary rows
+// 8/9 are legality guards that must stay clean before AND after.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── row 2: value-cell String param given Int → one ArgTypeMismatch Warning ──
+const SOURCE_ROW2_VALUE_CELL_STRING: &str = r#"module test.row2
+structure def Widget { param label : String }
+structure def Root {
+    let x = Widget(label: 42)
+}
+"#;
+
+#[test]
+fn row2_value_cell_string_param_given_int_warns_arg_type_mismatch() {
+    let module = compile_source_with_stdlib(SOURCE_ROW2_VALUE_CELL_STRING);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "value-cell String←Int must emit exactly one ctor-conformance diagnostic, got: {diags:#?}"
+    );
+    assert_eq!(
+        diags[0].severity,
+        Severity::Warning,
+        "α: ctor field conformance is Warning-severity, got: {:?}",
+        diags[0]
+    );
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::ArgTypeMismatch),
+        "expected ArgTypeMismatch, got: {:?}",
+        diags[0].code
+    );
+    for needle in ["label", "String", "Int"] {
+        assert!(
+            diags[0].message.contains(needle),
+            "message must name {needle:?}, got: {:?}",
+            diags[0].message
+        );
+    }
+}
+
+// ── row 4: sub `=` String param given Int → SAME code/msg, exactly one total ──
+// (context independence + C2(ii) double-emission pin: the sub `=` RHS is not a
+//  StructureInstanceCtor expr, so only the PendingBoundCheck path emits.)
+const SOURCE_ROW4_SUB_STRING: &str = r#"module test.row4
+structure def Widget { param label : String }
+structure def Root {
+    sub p = Widget(label: 42)
+}
+"#;
+
+#[test]
+fn row4_sub_string_param_given_int_warns_arg_type_mismatch_exactly_once() {
+    let module = compile_source_with_stdlib(SOURCE_ROW4_SUB_STRING);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "sub-path String←Int must emit EXACTLY ONE ctor-conformance diagnostic \
+         (C2(ii) double-emission pin), got: {diags:#?}"
+    );
+    assert_eq!(diags[0].severity, Severity::Warning);
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::ArgTypeMismatch),
+        "sub context must produce the same code as the value-cell context, got: {:?}",
+        diags[0].code
+    );
+    for needle in ["label", "String", "Int"] {
+        assert!(
+            diags[0].message.contains(needle),
+            "message must name {needle:?}, got: {:?}",
+            diags[0].message
+        );
+    }
+}
+
+// ── row 3: value-cell FaceSelector → Option<FaceSelector> (implicit-Some) → 0 ──
+const SOURCE_ROW3_VALUE_CELL_OPTION_SELECTOR: &str = r#"module test.row3
+structure def PressureLoad { param face : Option<FaceSelector> }
+structure def Root {
+    let b = box(10mm, 10mm, 10mm)
+    let pl = PressureLoad(face: faces_by_normal(b, [0, 0, 1], 1deg))
+}
+"#;
+
+#[test]
+fn row3_value_cell_option_selector_implicit_some_is_clean() {
+    let module = compile_source_with_stdlib(SOURCE_ROW3_VALUE_CELL_OPTION_SELECTOR);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "implicit-Some FaceSelector→Option<FaceSelector> must be clean, got: {diags:#?}"
+    );
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must not produce compile errors, got: {:?}",
+        errors_only(&module)
+    );
+}
+
+// ── row 5: sub FaceSelector → Option<FaceSelector> → 0 (wrapper-shape Error on main) ──
+const SOURCE_ROW5_SUB_OPTION_SELECTOR: &str = r#"module test.row5
+structure def PressureLoad { param face : Option<FaceSelector> }
+structure def Root {
+    let b = box(10mm, 10mm, 10mm)
+    sub p = PressureLoad(face: faces_by_normal(b, [0, 0, 1], 1deg))
+}
+"#;
+
+#[test]
+fn row5_sub_option_selector_implicit_some_is_clean() {
+    let module = compile_source_with_stdlib(SOURCE_ROW5_SUB_OPTION_SELECTOR);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "implicit-Some FaceSelector→Option<FaceSelector> (sub context) must be clean; \
+         this was a wrapper-shape Error on main (the live hole α closes), got: {diags:#?}"
+    );
+}
+
+// ── row 8: sub Int → Option<FaceSelector> → one ArgTypeMismatch Warning ──
+// (re-coded from the misleading wrapper-shape TypeNotConformingToTrait Error on main)
+const SOURCE_ROW8_SUB_OPTION_SELECTOR_INT: &str = r#"module test.row8
+structure def PressureLoad { param face : Option<FaceSelector> }
+structure def Root {
+    sub p = PressureLoad(face: 42)
+}
+"#;
+
+#[test]
+fn row8_sub_option_selector_given_int_warns_arg_type_mismatch() {
+    let module = compile_source_with_stdlib(SOURCE_ROW8_SUB_OPTION_SELECTOR_INT);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "Option<FaceSelector>←Int must emit exactly one ctor-conformance diagnostic, got: {diags:#?}"
+    );
+    assert_eq!(diags[0].severity, Severity::Warning);
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::ArgTypeMismatch),
+        "re-coded from the misleading wrapper-shape TypeNotConformingToTrait, got: {:?}",
+        diags[0].code
+    );
+}
+
+// ── §7 row 7: value-cell Int → Real (dimensionless) param → 0 (C1.2 Int→Real) ──
+const SOURCE_B7_REAL_PARAM_INT: &str = r#"module test.b7
+structure def Gadget { param mag : Real }
+structure def Root {
+    let x = Gadget(mag: 1)
+}
+"#;
+
+#[test]
+fn boundary7_real_param_given_int_is_clean() {
+    let module = compile_source_with_stdlib(SOURCE_B7_REAL_PARAM_INT);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "Int→dimensionless Real is compatible (C1.2); must be clean, got: {diags:#?}"
+    );
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must not produce compile errors, got: {:?}",
+        errors_only(&module)
+    );
+}
+
+// ── §7 row 8: value-cell empty list → List<Geometry> param → 0 (C1.10 TypeParam skip) ──
+const SOURCE_B8_EMPTY_LIST_GEOMETRY: &str = r#"module test.b8
+structure def Holder { param items : List<Geometry> }
+structure def Root {
+    let x = Holder(items: [])
+}
+"#;
+
+#[test]
+fn boundary8_empty_list_geometry_is_clean() {
+    let module = compile_source_with_stdlib(SOURCE_B8_EMPTY_LIST_GEOMETRY);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "empty-collection arg has TypeParam element type → skipped (C1.10); must be clean, got: {diags:#?}"
+    );
+    assert!(
+        errors_only(&module).is_empty(),
+        "fixture must not produce compile errors, got: {:?}",
+        errors_only(&module)
+    );
+}
+
+// ── §7 row 9: value-cell bare trait param → 0 (D6 bare-TraitObject exemption) ──
+// A NON-conforming arg is used deliberately: it proves the exemption (if bare
+// TraitObject were checked here, this would fire TypeNotConformingToTrait).
+const SOURCE_B9_BARE_TRAIT_EXEMPT: &str = r#"module test.b9
+structure def NotAMaterial { param density : Real = 1.0 }
+structure def Host { param m : MaterialSpec }
+structure def Root {
+    let x = Host(m: NotAMaterial())
+}
+"#;
+
+#[test]
+fn boundary9_bare_trait_param_value_cell_is_exempt() {
+    let module = compile_source_with_stdlib(SOURCE_B9_BARE_TRAIT_EXEMPT);
+    let diags = ctor_conformance_diags(&module);
+    assert!(
+        diags.is_empty(),
+        "D6: bare TraitObject params are exempt from value-cell ctor conformance and must \
+         stay clean even with a non-conforming arg, got: {diags:#?}"
+    );
+}
+
+// ── §7 row 13: value-cell Option<trait> non-conforming → one TypeNotConformingToTrait Warning ──
+const SOURCE_B13_OPTION_TRAIT_NONCONFORMING: &str = r#"module test.b13
+structure def NotAMaterial { param density : Real = 1.0 }
+structure def Holder { param mat : Option<MaterialSpec> }
+structure def Root {
+    let x = Holder(mat: NotAMaterial())
+}
+"#;
+
+#[test]
+fn boundary13_option_trait_param_nonconforming_warns_trait_conformance() {
+    let module = compile_source_with_stdlib(SOURCE_B13_OPTION_TRAIT_NONCONFORMING);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "Option<MaterialSpec>←non-conforming must emit exactly one ctor-conformance diagnostic, \
+         got: {diags:#?}"
+    );
+    assert_eq!(diags[0].severity, Severity::Warning);
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::TypeNotConformingToTrait),
+        "expected TypeNotConformingToTrait, got: {:?}",
+        diags[0].code
+    );
+    assert!(
+        diags[0].message.contains("MaterialSpec"),
+        "message must name the required trait, got: {:?}",
+        diags[0].message
+    );
+}
