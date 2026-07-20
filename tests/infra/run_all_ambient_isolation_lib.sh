@@ -78,9 +78,31 @@ ambient_isolation_check_one() {
         return 0
     fi
 
-    # NAIVE (step-2): treat ANY hostile-red as derivative and SKIP. This
-    # over-skips a genuine isolation bug (a target red ONLY under the hostile
-    # env); step-4 adds the clean-env baseline disambiguation to fix that.
-    echo "SKIP: baseline test_run_all.sh already red (not an isolation bug) [ambient $_key=$_val; hostile rc=$_amb_rc]"
-    return 0
+    # Hostile run is RED. Disambiguate against a CLEAN baseline: run the target
+    # AGAIN with every ledger var unset and NOTHING exported. Same subshell
+    # isolation as the hostile run (unset/nested-bash never leak out). This
+    # extra run is paid ONLY on the rare hostile-red path — the common
+    # all-green merge gate returned at the PASS branch above with a single run.
+    local _base_out _base_rc=0
+    _base_out="$(
+        while IFS= read -r _unset_key; do
+            [ -z "$_unset_key" ] && continue
+            unset "$_unset_key"
+        done <<< "$_manifest_keys"
+        bash "$_target" 2>&1
+    )" || _base_rc=$?
+
+    if [ "$_base_rc" -ne 0 ] || ! plan_match "$_base_out" '^Results: [0-9]+ passed, 0 failed$'; then
+        # Baseline is ALSO red => the target is red independent of the ambient
+        # env => DERIVATIVE failure. Emit the distinct SKIP marker and DO NOT
+        # count it (verdict 0), so run_all.sh's exit-code classifier names only
+        # test_run_all.sh, not this guard too (W4c: stop double-counting).
+        echo "SKIP: baseline test_run_all.sh already red (not an isolation bug) [ambient $_key=$_val; hostile rc=$_amb_rc; baseline rc=$_base_rc]"
+        return 0
+    fi
+
+    # Baseline is GREEN but the hostile run is RED => the hostile ambient env
+    # ALONE flipped the target red => a GENUINE ambient-isolation bug => FAIL.
+    echo "AMBIENT-ISOLATION FAIL: $_key flips test_run_all.sh red only under the hostile ambient env (genuine isolation bug) [hostile rc=$_amb_rc; hostile out: $_amb_out]"
+    return 1
 }
