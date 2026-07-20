@@ -53,4 +53,3 @@ reify-gui
 reify-mesh-morph
 reify-runtime
 reify-solver-elastic
-reify-stdlib
