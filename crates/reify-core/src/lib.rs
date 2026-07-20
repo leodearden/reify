@@ -52,8 +52,8 @@ pub use identity::{
     ScopeId, SnapshotId, SourceNodeId, ValueCellId, VersionId,
 };
 pub use primitives::{
-    DEPRECATED_ANNOTATION, OPTIMIZED_ANNOTATION, PortDirection, SHELL_ANNOTATION, SOLID_ANNOTATION,
-    SOLVER_HINT_ANNOTATION, TEST_ANNOTATION,
+    DEPRECATED_ANNOTATION, DISPLAY_ANNOTATION, OPTIMIZED_ANNOTATION, PortDirection,
+    SHELL_ANNOTATION, SOLID_ANNOTATION, SOLVER_HINT_ANNOTATION, TEST_ANNOTATION,
 };
 pub use source_location::{
     SourceLocationInfo, build_line_offsets, byte_offset_to_line_col,

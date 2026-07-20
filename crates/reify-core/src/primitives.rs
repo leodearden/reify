@@ -58,3 +58,14 @@ pub const SHELL_ANNOTATION: &str = "shell";
 /// Note: as of this commit only the parse/validate path is wired; the T18
 /// dispatcher consumer is wired separately (no runtime effect until the T18 dispatcher wiring lands).
 pub const SOLID_ANNOTATION: &str = "solid";
+
+/// Canonical lowercase spelling of the `@display` annotation name.
+///
+/// Marks a `param`/`let` binding with a preferred display unit label (e.g.
+/// `@display("L")`). The single required argument is a string-literal unit
+/// label; the compiler validates its shape (arg_check) and, in a separate
+/// pass, that the label is a rung in the binding dimension's unit ladder.
+///
+/// Note: as of this commit only the parse/validate path is wired; the runtime
+/// rendering effect is wired separately (no runtime effect yet).
+pub const DISPLAY_ANNOTATION: &str = "display";
