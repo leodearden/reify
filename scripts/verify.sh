@@ -487,10 +487,13 @@ esac
 # --profile/--scope invalid-value exit-64 convention. Guard on TEST_THREADS_SET
 # (not `[ -n ]`) so an explicit empty value ('--test-threads=') is rejected
 # while an UNSET flag stays valid and leaves the default plan byte-identical.
-# The '*[!0-9]*' arm rejects any non-digit (incl. '-' and '.'); the '' and '0'
-# arms reject empty and zero — net effect ^[1-9][0-9]*$.
+# The '*[!0-9]*' arm rejects any non-digit (incl. '-' and '.'); '' rejects the
+# empty value; '0*' rejects zero AND every leading-zero form ('0', '00', '007')
+# — a leading zero would otherwise reach cargo/nextest as e.g. '--test-threads=00',
+# which they parse as 0 and reject only at runtime, AFTER build work has started,
+# defeating this parse-time fail-fast. Net effect: exactly ^[1-9][0-9]*$.
 if [ "$TEST_THREADS_SET" -eq 1 ]; then
-    case "$TEST_THREADS" in ''|*[!0-9]*|0)
+    case "$TEST_THREADS" in ''|*[!0-9]*|0*)
         echo "verify.sh: ERROR — invalid --test-threads '$TEST_THREADS' (want positive integer)" >&2; exit 64 ;;
     esac
 fi
@@ -1192,8 +1195,16 @@ emit_nextest_pass() {
         fi
         cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel}${_GATE_HEAVY_EXCLUDE}${_OFFLINE_HEAVY_SELECT}${_tt_flag} --config-file ${_cfg_path}"
     else
-        # Fallback: single-threaded (OCCT serialization via the nextest occt group is
-        # unavailable without nextest; use --test-threads=1 as the whole-workspace guard).
+        # Fallback (no nextest): the nextest occt test-group that serializes
+        # OCCT's thread-unsafe tests is unavailable here, so the ONLY OCCT guard
+        # is process-wide single-threading. When --test-threads is UNSET we
+        # therefore default to 1 (${TEST_THREADS:-1}), preserving the historical
+        # whole-workspace serial guard byte-for-byte. When the caller passes an
+        # explicit --test-threads=N>1 it is honored verbatim, which BYPASSES the
+        # OCCT serialization the nextest path would provide: on a nextest-less
+        # host the caller must then guarantee no OCCT tests run concurrently.
+        # (The offline deep-test lane — the sole N-setting consumer — runs with
+        # nextest present and N=1, so this footgun is not reachable in practice.)
         cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo test ${selector}${rel} -- --test-threads=${TEST_THREADS:-1}"
     fi
     # FD 9 is the held semaphore slot; close it for each gated child so daemon

@@ -134,8 +134,10 @@ assert "run-offline-deep.sh --test-threads=2 plan carries --test-threads=2 on a 
     _ "$PLAN_E2E"
 
 # ---------------------------------------------------------------------------
-# Test 4: VALIDATION — N must be a positive integer. Reject zero, negative,
-# non-numeric, float, and the explicit empty-value form '--test-threads=' with
+# Test 4: VALIDATION — N must be a positive integer. Reject zero, leading-zero
+# forms ('00'/'007' — cargo/nextest parse '00' as 0 and reject it only at
+# runtime, so reject at parse time; net validated set is exactly ^[1-9][0-9]*$),
+# negative, non-numeric, float, and the explicit empty-value form '--test-threads=' with
 # exit 64 (the same invalid-value convention as --profile / --scope). The
 # explicit empty value ('--test-threads=') is an ERROR distinct from an UNSET
 # flag (no --test-threads at all, which stays exit 0 / default plan — asserted
@@ -148,7 +150,7 @@ assert "run-offline-deep.sh --test-threads=2 plan carries --test-threads=2 on a 
 echo ""
 echo "--- Test 4: invalid --test-threads values exit 64 (parse-time validation) ---"
 
-for _v in 0 -1 abc 2.5 ""; do
+for _v in 0 00 007 -1 abc 2.5 ""; do
     _rc=0
     bash "$VERIFY" test --scope all --print-plan --test-threads="$_v" >/dev/null 2>&1 || _rc=$?
     assert "invalid --test-threads='$_v' exits 64 (want positive integer)" \
