@@ -30,13 +30,15 @@ Probe matrix (scratchpad fixtures, `target/debug/reify check`, 2026-07-20):
 | 2 | value-cell let | `String` | `42` | **silent, exit 0** | error |
 | 3 | value-cell let | `Option<FaceSelector>` | `face(body,"x_max")` | clean | **stays clean** (implicit-Some) |
 | 4 | `sub p = Ctor(...)` | `String` | `42` | **silent, exit 0** | error |
-| 5 | `sub p = Ctor(...)` | `Option<FaceSelector>` | bare selector | clean | **stays clean** |
+| 5 | `sub p = Ctor(...)` | `Option<FaceSelector>` | bare selector | **error, exit 1** (wrapper-shape arm; post-4370 — see amendment) | **clean** (implicit-Some C1.6 — α fixes this live hole) |
 | 6 | value-cell let | bare `FaceSelector` | `edges(body)` | **error, exit 1** (4598 arm) | error (code refined, D2) |
 | 7 | value-cell let | `Option<FaceSelector>` | `"x_max"` (legacy string) | **silent, exit 0** | error (disallow-string) |
-| 8 | `sub p = Ctor(...)` | `Option<FaceSelector>` | `42` | **silent, exit 0** | error |
+| 8 | `sub p = Ctor(...)` | `Option<FaceSelector>` | `42` | **error, exit 1** (wrapper-shape arm, misleading `TypeNotConformingToTrait`; post-4370 — see amendment) | error (uniform `E_ARG_TYPE_MISMATCH`, context-independent with row 4) |
 | 9 | value-cell let | bare `FaceSelector` | `"x_max"` | **error, exit 1** (4598 arm) | error (unchanged) |
 
-Probes 6/9 prove the rejection **mechanism** (walker → `type_compatible` → structured diagnostic) is live and firing for allowlisted types; probes 1/2/4/7/8 prove the targets are silently accepted. The delta is exactly the allowlist + walker leaves (G6 branch-4 evidence for the RED signals in §8).
+Probes 6/9 prove the rejection **mechanism** (walker → `type_compatible` → structured diagnostic) is live and firing for allowlisted types; probes 1/2/4/7 prove the targets are silently accepted. The delta is exactly the allowlist + walker leaves (G6 branch-4 evidence for the RED signals in §8).
+
+**Decompose-time amendment (2026-07-20, fresh binary at `56380a8f8a`):** rows 5/8 above were originally recorded as pre-4370 behavior — the authoring session's probe binary (built 2026-07-19 21:38) predated task 4370's merge (`1d886f3f45`, 2026-07-20 05:31), which flipped `PressureLoad.face` to `Option<FaceSelector>` in the `include_str!`-embedded stdlib. Against current main, the sub `=` path (which routes named args through `PendingBoundCheck::TraitArgConformance` — disproving the original §10 Q4 claim that it takes the expression path) reaches the walker's final-arm wrapper-shape check, which rejects **any** non-wrapper arg to an `Option<T>` param (`TypeNotConformingToTrait`, "does not match wrapper shape"): row 8 already errors (wrong code/message; α re-codes it), and row 5 — legitimate implicit-Some — **errors today**, a live hole that α's Option-unwrap arm fixes. No design decision changes: D1's Option-unwrap arm + allowlist flip are exactly the fix; the value-cell rows (1/2/3/7) and row 4 (sub `String`←`Int`) re-verified as tabled.
 
 Consumers blocked on precisely this capability (G1, verified live 2026-07-20):
 - **Task 4833** (P4-π pose-vs-set guard) — blocked; its dry-run RCA concludes *"a real fix requires an all-structures compiler-level type-conformance chokepoint that doesn't exist yet"* and proposes splitting off exactly this prerequisite.
@@ -136,8 +138,8 @@ Producer side = the compiler chokepoint; consumer side = FEA/P4/v0.6 surfaces. R
 | 1 | `PressureLoad(face: frame3(...))` value-cell | silent on main | pose-vs-set hint + `E_ARG_TYPE_MISMATCH`; exit 1 at δ |
 | 2 | `Widget(label: 42)` Int→String | silent on main | `E_ARG_TYPE_MISMATCH` |
 | 3 | `PressureLoad(face: "x_max")` legacy string | silent on main | `E_ARG_TYPE_MISMATCH` (disallow-string) |
-| 4 | `sub p = PressureLoad(face: 42)` | silent on main | same diagnostic as value-cell context (context-independence) |
-| 5 | bare selector → `Option<FaceSelector>` (probe 3/5 + `examples/fea_pressure_smoke.ri`) | clean on main | **stays clean** (C1.6) |
+| 4 | `sub p = PressureLoad(face: 42)` | wrapper-shape error on main (post-4370; §2 amendment) | same diagnostic as value-cell context (context-independence, uniform `E_ARG_TYPE_MISMATCH`) |
+| 5 | bare selector → `Option<FaceSelector>` (probe 3/5 + `examples/fea_pressure_smoke.ri`) | value-cell: clean on main; sub `=`: wrapper-shape error on main (post-4370; §2 amendment) | **clean in both contexts** (C1.6) |
 | 6 | `Holder(loc: edges(b))` kind-vs-kind | `E_ARG_TYPE_MISMATCH` today | `E_SELECTOR_KIND_MISMATCH` naming Face expected / Edge found (4371 BT1 shape) |
 | 7 | `Int` literal → `Real` field (`magnitude: 1`) | clean | stays clean (C1.2) |
 | 8 | `[]` → `List<T>` field | clean | stays clean (C1.10; ownership: pushdown stub PRD) |
@@ -158,7 +160,7 @@ DAG: α → ε → β → γ → δ → ζ. If Leo strikes ε, β depends on α 
 - **β — Corpus survey artifact (mechanized).** Run the α(+ε) compiler over all tracked `.ri` (493 files) + the Rust test suite (inline fixtures/goldens); commit `docs/prds/struct-ctor-field-type-conformance.survey.md`: every warning site, classified per D9 (call-site bug / wrong declared type / FEA-deferred-to-v0.6), with the regeneration command. *Signal (intermediate → sizes γ):* committed artifact; site count stated; zero hand-derived entries.
 - **γ — Corpus fix-forward.** Apply D9 across every β site (split into γ1/γ2… by area at decompose time if β's count warrants; the split is mechanical once β lands). *Signal:* `reify check` across the corpus emits **zero** ctor-conformance warnings; full `--scope all` suite green.
 - **δ — Severity flip Warning→Error + negative fixtures.** One-const flip; committed negative fixtures assert exit-1 + diagnostic on rows 1/2/3 (and 11/12 if ε kept); positive corpus stays green. *Signal (leaf — the PRD headline, G2):* `reify check` on `PressureLoad(face: frame3(...))` / `Widget(label: 42)` / `PressureLoad(face: "x_max")` emits the structured diagnostic and exits non-zero, where pre-PRD main exits 0 silently.
-- **ζ — Language-spec + docs.** Spec section for ctor field-type conformance: the C1 legality table, the codes, the implicit-Some rule, the bare-TraitObject exemption; breadcrumbs at the knob + exemption sites naming deferred variants (eval-time checking, empty-coll typing, TraitObject revisit). *Signal (leaf):* the committed spec section; docs checks green.
+- **ζ — Language-spec + docs.** Spec section for ctor field-type conformance: the C1 legality table, the codes, the implicit-Some rule, the bare-TraitObject exemption; breadcrumbs at the knob + exemption sites naming deferred variants (eval-time checking, empty-coll typing, TraitObject revisit). *Signal (leaf):* the committed spec section; docs checks green. G7 waiver: no-lockstep-duplication — the spec section restates the C1 table as the living normative copy for `.ri` authors; agreement with the implementation is pinned by the committed boundary-test fixtures (rows 1–13), not hand-sync; render-from-source spec infra is out of scope.
 
 G6 bindings (drafted here so decompose only re-checks): every negative signal's rejection mechanism is **observed live** for allowlisted types (probes 6/9, exit 1) and its extension predicate verified in code (`type_compatible(String, Int) = false`, `(Selector(Face), Frame)` no rule → false, etc.); every "stays clean" signal is observed clean on main (probes 3/5, `fea_pressure_smoke.ri` in CI). No numeric bounds anywhere (G6 branches 1/2 N/A). All capabilities live in the task's own diff or upstream tasks — no downstream dependency delivers any asserted capability.
 
@@ -181,7 +183,7 @@ No contested-ownership pair from the audit's known set is touched; no new seam i
 1. **Per-arg span plumbing.** `check_expr_struct_ctor_args` passes the representative cell span; each compiled arg's own span should anchor the diagnostic when present. Decide the fallback shape in α.
 2. **Wrapper-shape mismatch code.** The landed wrapper-shape arm emits `TypeNotConformingToTrait` even for non-trait wrappers (misleading name, harmless behavior). Rename/re-code only if α touches that arm anyway; otherwise leave.
 3. **Severity-knob mechanics.** A `const` read at the two emit helpers vs a parameter on `WalkCtx`. Either satisfies C2(iv); decide in α.
-4. **Which surface syntaxes reach `PendingBoundCheck::TraitArgConformance`.** `sub x = Ctor(...)` provably routes through the expression path (probe 8); the colon-form's arg-bearing variant needs a parse-confirmed fixture (probe attempt `sub w : Widget2(label: 42)` did not parse). α enumerates the parsing forms and covers each.
+4. **Which surface syntaxes reach `PendingBoundCheck::TraitArgConformance`.** ~~`sub x = Ctor(...)` provably routes through the expression path (probe 8)~~ — corrected at decompose time (§2 amendment): the sub `=` form's named args DO reach the pending-bound-check walker path (the wrapper-shape rejections on probes 4/5 prove it); the colon-form's arg-bearing variant needs a parse-confirmed fixture (probe attempt `sub w : Widget2(label: 42)` did not parse). α enumerates the parsing forms, covers each, and pins which path(s) fire per form (double-emission risk: if both entries reach the walker for the same arg, C2(ii) at-most-one-diagnostic must still hold).
 5. **γ split.** Whether γ ships as one task or γ1/γ2… by corpus area — decided from β's site count at decompose time.
 6. **Survey artifact format.** Flat list vs grouped-by-def; regeneration command shape. Decide in β.
 

@@ -1,0 +1,105 @@
+# Machine-readable twin of struct-ctor-field-type-conformance.capability-manifest.md
+# Canonical CapabilityManifestDoc schema (shared/src/shared/capability_manifest.py, schema_version 1).
+# task_id fields stamped by commit_planning at batch flip (labels match metadata.prd_task_label).
+# Evidence re-verified on main 56380a8f8a, 2026-07-20; probe run wf_801582f3-59d.
+prd: docs/prds/struct-ctor-field-type-conformance.md
+schema_version: 1
+tasks:
+  - label: "alpha"
+    task_id: null
+    title: "struct-ctor-conformance α: generalize the 4584 chokepoint to all concrete field types at Warning severity"
+    capabilities:
+      - name: "chokepoint-entry-wired"
+        binding: "capability→producer — check_expr_struct_ctor_args invoked over every template root/fn/assoc-fn expr (entities_phase.rs:1344, fn :1575, allowlist :1598-1608); sub path via PendingBoundCheck::TraitArgConformance (entity.rs:2596) → executor (conformance/mod.rs:261)"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "fully general arg-shape pass is future work"
+          paths: ["crates/reify-compiler/src/conformance/mod.rs"]
+          expect: absent
+      - name: "walker-predicate-and-diag-infra-live"
+        binding: "capability→producer — walk_param_against_arg_type (conformance/mod.rs:864), reject_if_incompatible (:827), type_compatible (type_compat.rs:220, extension pairs pinned by unit tests :3091/:3174/:3669), SelectorKindMismatch/ArgTypeMismatch/Diagnostic::warning (diagnostics.rs:584/:617/:3836), check_param_default_conformance (conformance/mod.rs:368)"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: "new walker arms are behavioral — α's own committed probe fixtures (warnings fire on rows 1/2/4/7, probe5 becomes clean, probes 6/9 keep firing) are the mechanical check"
+      - name: "rejection-mechanism-fires-today"
+        binding: "rejection-check — probe6/probe9 exit 1 with 'requires selector type' on main (4598 arm; walker→type_compatible→diagnostic live); silent-accept baselines probes 1/2/4b/7 exit 0 'All constraints satisfied.'"
+        verdict: PASS
+      - name: "corrected-sub-path-baseline-rows-5-8"
+        binding: "rejection-check — probes 4/5 (sub `=` form vs Option<FaceSelector>) exit 1 'does not match wrapper shape' (TypeNotConformingToTrait, conformance/mod.rs:985-1005) on post-4370 main; row 5 is a live implicit-Some hole α's Option-unwrap arm fixes; PRD §2/§7/§10-Q4 amended"
+        verdict: PASS
+      - name: "gate-test-drift-guard-same-diff"
+        binding: "procedural — nextest-partition / run-all-classification registrations land in α's own diff (PRD §8; esc-4914-162 precedent)"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: "same-diff registration is enforced by tests/infra/test_run_all_classification.sh + test_nextest_slow_priority.sh at α's own merge gate"
+  - label: "epsilon"
+    task_id: null
+    title: "struct-ctor-conformance ε: unknown-field/over-arity tightening at Warning (severable)"
+    capabilities:
+      - name: "lenient-arg-site-exists"
+        binding: "capability→producer — unknown-named/over-arity __arg{i} append at expr.rs:2700-2786; baselines probes 11/12 exit 0 on main"
+        verdict: PASS
+      - name: "new-codes-minted-in-own-diff"
+        binding: "capability→producer — E_CTOR_UNKNOWN_FIELD / E_CTOR_ARITY minted in ε's diff (D2 minting discipline + strum-completeness --lib tests same diff)"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "CtorUnknownField"
+          paths: ["crates/reify-core/src/diagnostics.rs"]
+          expect: present
+  - label: "beta"
+    task_id: null
+    title: "struct-ctor-conformance β: corpus survey artifact (mechanized, warn-stage compiler over all tracked .ri)"
+    capabilities:
+      - name: "warn-emitting-compiler-upstream"
+        binding: "producer:task-alpha + producer:task-epsilon — hard add_dependency edges, upstream"
+        verdict: PASS
+      - name: "survey-artifact-committed"
+        binding: "corpus enumerable (493 tracked .ri on 56380a8f8a, matches PRD); artifact path free on main"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "[Rr]egenerat"
+          paths: ["docs/prds/struct-ctor-field-type-conformance.survey.md"]
+          expect: present
+  - label: "gamma"
+    task_id: null
+    title: "struct-ctor-conformance γ: corpus fix-forward to zero ctor-conformance warnings"
+    capabilities:
+      - name: "survey-upstream-and-gate"
+        binding: "producer:task-beta (hard dep edge); D9 fix rules normative in PRD; --scope all merge gate is the zero-warning verification instrument"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: "zero-warnings-corpus-wide is γ's own re-run of the compiler (INV-3 ground-truth recheck), gated by its merge verify"
+  - label: "delta"
+    task_id: null
+    title: "struct-ctor-conformance δ: severity flip Warning→Error + negative fixtures (PRD headline leaf)"
+    capabilities:
+      - name: "severity-knob-and-clean-corpus-upstream"
+        binding: "producer:task-alpha (knob const, D4; name is α's Q3 decision) + producer:task-gamma (warn-clean corpus) — both upstream hard deps"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: "knob const name is the α implementer's Q3 decision — no stable pattern to bind pre-α; δ's committed negative fixtures are the mechanical check"
+      - name: "headline-baselines-silent-today"
+        binding: "rejection-absent-today (intended baseline) — probes 1/2/7 exit 0 'All constraints satisfied.' on main; the RED premise δ turns green"
+        verdict: PASS
+      - name: "exit-code-channel-live"
+        binding: "rejection-check — probes 6/9 exit 1 today: Error-severity ctor diagnostics already drive non-zero exit; δ changes severity only"
+        verdict: PASS
+  - label: "zeta"
+    task_id: null
+    title: "struct-ctor-conformance ζ: language-spec section + breadcrumbs"
+    capabilities:
+      - name: "spec-file-and-final-semantics"
+        binding: "capability→producer — docs/reify-language-spec.md exists on main (cited by live W_MODULE_DECL_MISSING as 'spec §7.1'); producer:task-delta upstream (spec documents landed semantics); G7 no-lockstep-duplication waived (PRD §8 ζ row)"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "[Ii]mplicit[- ]Some"
+          paths: ["docs/reify-language-spec.md"]
+          expect: present
