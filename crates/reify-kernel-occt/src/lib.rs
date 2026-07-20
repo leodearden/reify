@@ -6457,18 +6457,23 @@ mod tests {
         );
     }
 
-    /// Defense-in-depth: each of the four OCCT geometry-query FFI entry points
-    /// must reject a null-topology shape with a catchable `Err` — never a
-    /// hardware SIGSEGV — even when called DIRECTLY, bypassing the `get_shape`
-    /// boundary guard. This pins the C++ IsNull guards independently of the
-    /// Rust chokepoint, so any future or direct-FFI path that skips `get_shape`
-    /// still fails safely.
+    /// Defense-in-depth: each OCCT geometry-query FFI entry point must reject a
+    /// null-topology shape with a catchable `Err` — never a hardware SIGSEGV —
+    /// even when called DIRECTLY, bypassing the `get_shape` boundary guard.
+    /// This pins the C++ IsNull guards independently of the Rust chokepoint, so
+    /// any future or direct-FFI path that skips `get_shape` still fails safely.
+    /// Covers the mass-property queries (volume/centroid/bbox/inertia) plus the
+    /// surface/linear-property queries (face_centroid/area/edge_length);
+    /// `query_face_centroid` is the one reached from the production `Centroid`
+    /// dispatch for Face-repr handles, so its direct-FFI guard closes the last
+    /// gap the get_shape chokepoint already covers.
     ///
     /// RED (pre-fix): `query_volume` dereferences `ShapeType()` on null
-    /// topology → SIGSEGV (the guaranteed crash vector), and `query_centroid`
-    /// returns `Ok(origin)` (so its `is_err()` assertion would fail). GREEN
-    /// (after the C++ guards): each throws `std::runtime_error`, mapped by cxx
-    /// to a catchable `Err`.
+    /// topology → SIGSEGV (the guaranteed crash vector); `query_centroid`,
+    /// `query_face_centroid`, `query_area`, and `query_edge_length` all return
+    /// `Ok` (origin / mass 0.0) on null topology (so their `is_err()`
+    /// assertions would fail). GREEN (after the C++ guards): each throws
+    /// `std::runtime_error`, mapped by cxx to a catchable `Err`.
     ///
     /// MUST run under `cargo nextest run` (process-per-test isolation) so the
     /// pre-fix crash is contained as one failing test, not a suite abort.
@@ -6493,6 +6498,22 @@ mod tests {
         assert!(
             ffi::ffi::query_inertia_tensor(&null_shape, 1000.0).is_err(),
             "query_inertia_tensor on null-topology shape must return Err"
+        );
+        // Surface/linear-property queries: pre-fix these return Ok (origin /
+        // mass 0.0) on null topology rather than crashing, but they are equally
+        // unguarded. query_face_centroid is reached from the production Centroid
+        // dispatch for Face-repr handles (see GeometryQuery::Centroid dispatch).
+        assert!(
+            ffi::ffi::query_face_centroid(&null_shape).is_err(),
+            "query_face_centroid on null-topology shape must return Err"
+        );
+        assert!(
+            ffi::ffi::query_area(&null_shape).is_err(),
+            "query_area on null-topology shape must return Err"
+        );
+        assert!(
+            ffi::ffi::query_edge_length(&null_shape).is_err(),
+            "query_edge_length on null-topology shape must return Err"
         );
     }
 

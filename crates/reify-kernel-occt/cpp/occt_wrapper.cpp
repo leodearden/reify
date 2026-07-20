@@ -3653,6 +3653,12 @@ double query_volume(const OcctShape& shape) {
 
 double query_area(const OcctShape& shape) {
     return wrap_occt_call("query_area", [&]() {
+        // DEFENSE-IN-DEPTH: reject null/empty topology before any deref (see
+        // query_volume). Primary guard is get_shape (Rust boundary); this
+        // covers any direct-FFI/future path that bypasses it.
+        if (shape.shape.IsNull()) {
+            throw std::runtime_error("query_area: shape has null/empty topology");
+        }
         GProp_GProps props;
         BRepGProp::SurfaceProperties(shape.shape, props);
         return props.Mass();
@@ -3661,6 +3667,12 @@ double query_area(const OcctShape& shape) {
 
 double query_edge_length(const OcctShape& shape) {
     return wrap_occt_call("query_edge_length", [&]() {
+        // DEFENSE-IN-DEPTH: reject null/empty topology before any deref (see
+        // query_volume). Primary guard is get_shape (Rust boundary); this
+        // covers any direct-FFI/future path that bypasses it.
+        if (shape.shape.IsNull()) {
+            throw std::runtime_error("query_edge_length: shape has null/empty topology");
+        }
         GProp_GProps props;
         BRepGProp::LinearProperties(shape.shape, props);
         return props.Mass();
@@ -4227,6 +4239,13 @@ Point3 query_centroid(const OcctShape& shape) {
 /// need the geometric centroid of the surface.
 Point3 query_face_centroid(const OcctShape& shape) {
     return wrap_occt_call("query_face_centroid", [&]() {
+        // DEFENSE-IN-DEPTH: reject null/empty topology before any deref (see
+        // query_volume). Reached from the Centroid dispatch for Face-repr
+        // handles, so pre-fix a null-topology face returns Ok(origin); refuse
+        // loudly instead. Primary guard is get_shape (Rust boundary).
+        if (shape.shape.IsNull()) {
+            throw std::runtime_error("query_face_centroid: shape has null/empty topology");
+        }
         GProp_GProps props;
         BRepGProp::SurfaceProperties(shape.shape, props);
         gp_Pnt c = props.CentreOfMass();
