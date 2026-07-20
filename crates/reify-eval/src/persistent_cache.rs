@@ -2392,6 +2392,46 @@ version = "9.9.9"
         );
     }
 
+    /// `parse_closure_manifest` returns the closure crate names in file order,
+    /// dropping `#`-comment lines (even indented) and blank/whitespace-only
+    /// lines, and trimming surrounding whitespace on each remaining name.
+    #[test]
+    fn parse_closure_manifest_returns_names_in_order_dropping_comments_and_blanks() {
+        let manifest = concat!(
+            "# engine_hash_closure.txt header\n",
+            "  # indented comment line\n",
+            "\n",
+            "aho-corasick\n",
+            "   anyhow   \n", // surrounding whitespace must be trimmed
+            "zstd\n",
+            "\n",
+            "# trailing comment\n",
+        );
+        let names = crate::engine_hash_algo::parse_closure_manifest(manifest);
+        assert_eq!(
+            names,
+            vec![
+                "aho-corasick".to_string(),
+                "anyhow".to_string(),
+                "zstd".to_string(),
+            ],
+            "must drop #-comments (incl. indented) and blank lines, trim each \
+             remaining line, and preserve file order"
+        );
+    }
+
+    /// A manifest containing only comments and blank/whitespace lines yields no
+    /// names.
+    #[test]
+    fn parse_closure_manifest_returns_empty_for_all_comments_and_blanks() {
+        let manifest = "# only a comment\n\n   \n  # indented\n";
+        let names = crate::engine_hash_algo::parse_closure_manifest(manifest);
+        assert!(
+            names.is_empty(),
+            "an all-comment/blank manifest must yield an empty Vec, got {names:?}"
+        );
+    }
+
     /// Behavioral regression guard: verifies that a one-byte mutation in the
     /// workspace `Cargo.lock` produces a different `compose_engine_version_hash`
     /// output when processed through the same `walk_contributor` path that
