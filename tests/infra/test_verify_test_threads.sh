@@ -155,4 +155,21 @@ for _v in 0 -1 abc 2.5 ""; do
         test "$_rc" -eq 64
 done
 
+# ---------------------------------------------------------------------------
+# Test 5: CLI-surface existence — the flag must be documented in usage().
+# Existence grep only (one token, not a prose pin), on STDOUT (the -h|--help
+# path prints usage to stdout and exits 0). RED (base usage() header does not
+# yet mention --test-threads).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Test 5: --help / -h document the --test-threads flag ---"
+
+assert "verify.sh --help stdout documents the --test-threads flag" \
+    bash -c 'bash "$1" --help 2>/dev/null | grep -qF -- "--test-threads"' \
+    _ "$VERIFY"
+
+assert "verify.sh -h stdout documents the --test-threads flag" \
+    bash -c 'bash "$1" -h 2>/dev/null | grep -qF -- "--test-threads"' \
+    _ "$VERIFY"
+
 test_summary
