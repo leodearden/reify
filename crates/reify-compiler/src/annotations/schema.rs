@@ -1191,6 +1191,86 @@ mod tests {
         }
     }
 
+    // ── @display registration + context tests (task 5233) ────────────────────
+
+    /// Small helper: `@display("<label>")` — one positional string-literal arg.
+    fn display_ann(label: &str) -> reify_ir::Annotation {
+        ann(
+            reify_core::DISPLAY_ANNOTATION,
+            vec![reify_ir::AnnotationArg::positional(
+                reify_ir::AnnotationArgValue::String(label.to_string()),
+            )],
+        )
+    }
+
+    /// `lookup_schema("display")` returns Some with valid_contexts exactly
+    /// `["param","let"]` — the param/let subset of @solver_hint's contexts.
+    #[test]
+    fn lookup_display_annotation() {
+        let schema = lookup_schema("display").expect("expected Some for 'display'");
+        let valid = schema.valid_contexts;
+        assert!(valid.contains(&"param"), "param missing");
+        assert!(valid.contains(&"let"), "let missing");
+        assert!(
+            !valid.contains(&"structure"),
+            "structure must not be a valid @display context"
+        );
+        assert!(
+            !valid.contains(&"occurrence"),
+            "occurrence must not be a valid @display context"
+        );
+        assert!(
+            !valid.contains(&"function"),
+            "function must not be a valid @display context"
+        );
+        assert_eq!(valid.len(), 2, "expected exactly 2 valid contexts");
+    }
+
+    /// @display("L") on the valid contexts (param, let) → 0 diagnostics.
+    #[test]
+    fn validate_display_on_valid_contexts_produces_no_diagnostics() {
+        for ctx in ["param", "let"] {
+            let a = display_ann("L");
+            let mut diags: Vec<reify_core::Diagnostic> = vec![];
+            validate_via_schema(std::slice::from_ref(&a), ctx, &mut diags);
+            assert!(
+                diags.is_empty(),
+                "context={ctx}: expected no diagnostics for @display(\"L\"), got: {:?}",
+                diags
+            );
+        }
+    }
+
+    /// @display("L") on an invalid context (function, structure) → exactly one
+    /// context-mismatch warning with the standard wording and label "@display".
+    #[test]
+    fn validate_display_on_invalid_context_emits_warning() {
+        for ctx in ["function", "structure"] {
+            let a = display_ann("L");
+            let mut diags: Vec<reify_core::Diagnostic> = vec![];
+            validate_via_schema(std::slice::from_ref(&a), ctx, &mut diags);
+            assert_eq!(
+                diags.len(),
+                1,
+                "context={ctx}: expected exactly 1 diagnostic, got: {:?}",
+                diags
+            );
+            assert_eq!(
+                diags[0].message,
+                format!("annotation @display is not valid on {ctx} declarations"),
+                "context={ctx}: unexpected message"
+            );
+            assert_eq!(
+                diags[0].labels[0].message, "@display",
+                "context={ctx}: unexpected label"
+            );
+            assert_eq!(
+                diags[0].labels[0].span, a.span,
+                "context={ctx}: label span must equal ann span"
+            );
+        }
+    }
+
     // ── label-name parity invariant ──────────────────────────────────────────
 
     /// Every SCHEMAS entry must satisfy `label == "@" + name`.
