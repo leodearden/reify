@@ -611,19 +611,26 @@ fn nested_guarded_solid_param_in_else_branch_compiles_as_realization() {
 
 /// REJECTION GUARD (task 4584 — intentional flip of the task-1878 pin-down).
 ///
-/// Documents that `param g : Solid = 42` produces exactly one Error-severity
+/// Documents that `param g : Solid = 42` produces exactly one
 /// `TypeNotConformingToStructureRef` diagnostic: `42` is an integer, not a
 /// geometry-producing expression, so it is rejected for a `Geometry`-typed param.
 ///
 /// Previously locked as `solid_param_with_non_geometry_default_silently_accepts`
-/// (task 1878) with an `errors.is_empty()` assertion; flipped intentionally per
-/// that test's own contract ("Any such change MUST update this test intentionally").
+/// (task 1878) with an `errors.is_empty()` assertion; flipped to a rejection by
+/// task 4584 per that test's own contract ("Any such change MUST update this test
+/// intentionally").
 ///
-/// RED until step-8 (impl): the Geometry branch of check_param_default_conformance
-/// does not yet exist. GREEN once step-8 adds the geometry-aware predicate.
+/// **task 5302 α (D8) downgrade:** the diagnostic is now **Warning**-severity, not
+/// Error. Param-default conformance is one of the ctor-conformance entries governed
+/// by the single `CTOR_FIELD_CONFORMANCE_SEVERITY` knob (Warning at α); the δ
+/// follow-up flips that const back to Error and promotes the whole surface
+/// uniformly. Code is unchanged (`TypeNotConformingToStructureRef`). The assertion
+/// filters by CODE (not severity) because the source omits a `module` decl, so a
+/// `W_MODULE_DECL_MISSING` warning is also present and a bare Warning-count filter
+/// would over-count.
 ///
 /// Structural assertions (b) no-realization, (c) ValueCellDecl shape are
-/// preserved — both still hold after the flip (42 is not geometry-producing).
+/// preserved — both still hold after the downgrade (42 is not geometry-producing).
 #[test]
 fn solid_param_with_non_geometry_default_rejected() {
     let source = r#"structure def W3 {
@@ -636,24 +643,40 @@ fn solid_param_with_non_geometry_default_rejected() {
         .find(|t| t.name == "W3")
         .expect("W3 template not found");
 
-    // (a) Exactly one Error-severity TypeNotConformingToStructureRef diagnostic.
-    let error_diags: Vec<_> = compiled
+    // (a) Exactly one TypeNotConformingToStructureRef diagnostic, now at Warning
+    //     severity (task 5302 α knob downgrade). Filter by CODE — the source has no
+    //     `module` decl so a W_MODULE_DECL_MISSING warning also fires.
+    let conformance_diags: Vec<_> = compiled
         .diagnostics
         .iter()
-        .filter(|d| d.severity == Severity::Error)
+        .filter(|d| d.code == Some(DiagnosticCode::TypeNotConformingToStructureRef))
         .collect();
     assert_eq!(
-        error_diags.len(),
+        conformance_diags.len(),
         1,
-        "expected exactly 1 Error-severity diagnostic for `param g : Solid = 42`, \
-         got: {:#?}",
-        error_diags
+        "expected exactly 1 TypeNotConformingToStructureRef diagnostic for \
+         `param g : Solid = 42`, got: {:#?}",
+        conformance_diags
     );
     assert_eq!(
-        error_diags[0].code,
-        Some(DiagnosticCode::TypeNotConformingToStructureRef),
-        "expected TypeNotConformingToStructureRef, got {:?}",
-        error_diags[0].code,
+        conformance_diags[0].severity,
+        Severity::Warning,
+        "task 5302 α: param-default conformance is Warning-severity (knob-governed), got: {:?}",
+        conformance_diags[0]
+    );
+    // The α downgrade means the module no longer hard-errors on this default.
+    assert!(
+        compiled
+            .diagnostics
+            .iter()
+            .all(|d| d.severity != Severity::Error),
+        "task 5302 α: `param g : Solid = 42` must no longer produce any Error-severity \
+         diagnostic (downgraded to Warning), got: {:#?}",
+        compiled
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .collect::<Vec<_>>()
     );
 
     // (b) No realization is emitted — `g` is not inserted into geometry_lets

@@ -471,11 +471,18 @@ pub(crate) fn check_param_default_conformance(
                         .map(is_geometry_function)
                         .unwrap_or(false);
                 if !is_geometry_default {
+                    // task 5302 α (D8): emit at the ctor-conformance knob severity
+                    // (Warning at α), not a hard error — so ALL param-default
+                    // diagnostics are governed by the single knob and the δ flip
+                    // promotes them uniformly. Previously `Diagnostic::error`.
                     diagnostics.push(
-                        Diagnostic::error(format!(
-                            "param '{}' has type 'Geometry' but its default expression has non-geometry type '{}'",
-                            vc.id.member, default.result_type
-                        ))
+                        diag_at(
+                            CTOR_FIELD_CONFORMANCE_SEVERITY,
+                            format!(
+                                "param '{}' has type 'Geometry' but its default expression has non-geometry type '{}'",
+                                vc.id.member, default.result_type
+                            ),
+                        )
                         .with_code(DiagnosticCode::TypeNotConformingToStructureRef)
                         .with_label(DiagnosticLabel::new(
                             vc.span,
@@ -487,7 +494,41 @@ pub(crate) fn check_param_default_conformance(
                     );
                 }
             }
-            _ => continue,
+            // General concrete-leaf param defaults (task 5302 α, D8): every param
+            // type beyond `StructureRef`/`Geometry` — `String`, `Int`, `Real`,
+            // `Bool`, `Selector`, `Vector`, `Option<…>`, `List<…>`, `TraitObject`,
+            // … — routes its compiled default through the SAME shared walker used
+            // by the call-site ctor entries, at the knob severity. This closes the
+            // param-default half of the "all concrete field types" generalization:
+            // a `param label : String = 42` default now diagnoses identically to a
+            // call-site `Widget(label: 42)` (same `ArgTypeMismatch`, same message).
+            //
+            // The old `_ => continue` silently accepted every non-StructureRef/
+            // non-Geometry default (the "future work" hole this task fills). The
+            // walker single-sources the anti-cascade skip list: its
+            // `reject_if_incompatible` skips `Error`/`TypeParam`/`Geometry`/
+            // `TraitObject` ARG types, and the general-leaf arm skips
+            // `Geometry`/`TypeParam` PARAM types — so no skip logic is duplicated
+            // here. Only the top-level `Error`-default guard is repeated, matching
+            // the `StructureRef`/`Geometry` arms above.
+            _ => {
+                // Anti-cascade: skip when the default expression itself had a
+                // compile error (its root-cause diagnostic was already emitted).
+                if matches!(default.result_type, Type::Error) {
+                    continue;
+                }
+                let mut ctx = WalkCtx {
+                    arg_name: vc.id.member.as_str(),
+                    span: vc.span,
+                    templates: template_registry,
+                    traits: trait_registry,
+                    diagnostics,
+                    // Param-default conformance is a ctor-conformance entry:
+                    // knob-governed (Warning at α). task 5302.
+                    severity: CTOR_FIELD_CONFORMANCE_SEVERITY,
+                };
+                walk_param_against_arg(&vc.cell_type, default, &mut ctx);
+            }
         }
     }
 }
