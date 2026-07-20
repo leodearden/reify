@@ -1583,11 +1583,23 @@ fn check_expr_struct_ctor_args(
         let CompiledExprKind::StructureInstanceCtor {
             type_name,
             ordered_args,
+            span: ctor_span,
             ..
         } = &node.kind
         else {
             return;
         };
+        // task 5302 (Q1 span anchoring): prefer the ctor call-site's own span
+        // (task 4089 `StructureInstanceCtor.span`, populated from the AST
+        // `FunctionCall` node) so the emitted label anchors at the offending
+        // `Foo(...)` call rather than the representative cell span — which is
+        // `SourceSpan::empty(0)` for fn / forall / guard / objective bodies, and
+        // the whole-declaration span for value cells. Falls back to
+        // `representative_span` for synthetic ctors with no source span. The sub
+        // `=` path keeps its own per-arg `arg_expr.span` via PendingBoundCheck
+        // (entity.rs), so this change only refines the StructureInstanceCtor
+        // (expression) path — no per-arg span is added to `ordered_args`.
+        let anchor_span = ctor_span.unwrap_or(representative_span);
         // Resolve the target template once; skip if not found.
         let Some(template) = template_registry.get(type_name.as_str()) else {
             return;
@@ -1618,7 +1630,7 @@ fn check_expr_struct_ctor_args(
                 type_name,
                 arg_name,
                 compiled_arg,
-                representative_span,
+                anchor_span,
                 template_registry,
                 trait_registry,
                 diagnostics,
