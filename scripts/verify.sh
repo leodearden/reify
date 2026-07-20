@@ -1396,6 +1396,15 @@ add_test_passes() {
         local _want_tree_oid="${REIFY_VERIFY_RETRY_TREE_OID:-}"
         if [ -n "$_want_tree_oid" ] && [ -n "$_sidecar_tree_oid" ] && [ "$_sidecar_tree_oid" = "$_want_tree_oid" ]; then
             _RETRY_SUBSET_ELIGIBLE=1
+        else
+            # LOUD tree-drift full-fallback (PRD §4.3 / INV-4 storm escape): the
+            # warm target/ cannot be proven to correspond to the tree DF wants
+            # to retry (sidecar absent, or its tree_oid != the wanted OID), so
+            # run FULL and say so — never silently. Emitted ONCE here (the
+            # decision is profile-independent), mirroring the build-time
+            # MERGE_HEAD / scope-branch `echo … >&2` diagnostics. Guarded inside
+            # the scope=failed_only branch so the default plan stays byte-identical.
+            echo "verify.sh: retry refused: tree drift — sidecar tree_oid ${_sidecar_tree_oid:-<absent>} != REIFY_VERIFY_RETRY_TREE_OID ${_want_tree_oid:-<unset>} (full verify)" >&2
         fi
     fi
 
