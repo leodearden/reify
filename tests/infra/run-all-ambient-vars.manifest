@@ -35,6 +35,16 @@
 # does.
 REIFY_AUDIT_NO_COLD_BUILD
 REIFY_RUN_ALL_EXCLUDE_HOST_INFRA
+# REIFY_RUN_ALL_CONTENT_SKIP (task 5273, merge-gate-riders γ): arms the
+# merge-tier content-addressed per-member skip engine in run_all.sh. Injected by
+# the SAME run_all.sh plan-line prefix in scripts/verify.sh (both live source and
+# ledger row co-land in γ, satisfying the set-equality guard). Its sibling
+# REIFY_RUN_ALL_SKIP_STATE is deliberately NOT listed here — that var's live
+# source is dark-factory-orchestrator.yaml's verify_env block, wired by the
+# activation task (δ / 5276), so its ledger row co-lands with THAT diff (the
+# set-equality guard mechanically forces the co-landing; adding it early would
+# fail the guard's "every ledger var is still live" direction).
+REIFY_RUN_ALL_CONTENT_SKIP
 
 # --- dark-factory-orchestrator.yaml verify_env block (dark-factory-orchestrator.yaml:148-152) ---------
 # REIFY_RUN_ALL_EXCLUDE_HOST_INFRA already declared above (both sources carry

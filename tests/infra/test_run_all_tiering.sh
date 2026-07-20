@@ -1,10 +1,22 @@
 #!/usr/bin/env bash
 # Infrastructure test for task 5125.
 #
-# Drift-guard (INV-5): the full tests/infra/run_all.sh pool suite must run at
-# the MERGE tier ONLY; every per-task verify must run the cheap selective-infra
-# subset instead. This encodes the "exactly-one" invariant — {full pool,
-# selective infra} — never both, never neither — keyed on DF_VERIFY_ROLE.
+# Drift-guard (INV-5 / INV-5′): the full tests/infra/run_all.sh pool suite must
+# run at the MERGE tier ONLY; every per-task verify must run the cheap
+# selective-infra subset instead. This encodes the "exactly-one" invariant —
+# {full pool, selective infra} — never both, never neither — keyed on
+# DF_VERIFY_ROLE.
+#
+# INV-5′ (task 5273, merge-gate-riders γ): the full pool stays merge-tier-
+# resident and this guard's tier assertions are unchanged, but the MERGE-tier
+# run_all.sh line now ALSO carries REIFY_RUN_ALL_CONTENT_SKIP=1, arming a
+# content-addressed per-member skip engine WITHIN the merge invocation (a member
+# whose declared closure is byte-identical to its last green sha is not re-run;
+# closure deltas / unmapped / own-file changes / the MAX_MERGES|MAX_AGE_HOURS
+# backstop still force a run; fail-open, role-gated, ships production-inert until
+# task δ wires the state path). The MERGE-tier scenario below asserts that flag
+# token on the run_all.sh line. Full contract:
+# docs/prds/run-all-pool-contention-tiering-fix.md INV-5′.
 #
 # Root cause this guards against (task 5125 analysis): the merge seam
 # (hooks/pre-merge-commit:39) runs `DF_VERIFY_ROLE=merge verify.sh all
@@ -111,6 +123,15 @@ assert "MERGE: run_all.sh line carries REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 (host-
 
 assert "MERGE: run_all.sh line carries REIFY_AUDIT_NO_COLD_BUILD=1 (budget-safe backstop, task #4624, RED until step-3)" \
     bash -c 'printf "%s\n" "$1" | grep "run_all\.sh" | grep -q "REIFY_AUDIT_NO_COLD_BUILD=1"' _ "$PLAN_OUT"
+
+# task 5273 (merge-gate-riders γ, INV-5'): the merge-tier run_all.sh line also
+# carries REIFY_RUN_ALL_CONTENT_SKIP=1 — the content-addressed per-member skip
+# engine's activation key. Within the merge invocation each member still runs
+# on a closure delta / when unmapped / at the MAX_MERGES|MAX_AGE_HOURS backstop;
+# the flag is fail-open and role-gated in run_all.sh. Purely additive token,
+# RED until step-16.
+assert "MERGE: run_all.sh line carries REIFY_RUN_ALL_CONTENT_SKIP=1 (merge-tier content-skip engine, task 5273, RED until step-16)" \
+    bash -c 'printf "%s\n" "$1" | grep "run_all\.sh" | grep -q "REIFY_RUN_ALL_CONTENT_SKIP=1"' _ "$PLAN_OUT"
 
 # Ambient-leak guard (task 5125): the run_all.sh line must NOT export
 # REIFY_INFRA_SUITE_ACTIVE. Broadcasting the re-entrancy sentinel onto this line

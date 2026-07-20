@@ -1,0 +1,84 @@
+# tests/infra/run-all-skip-closures.manifest — per-member tracked-file closure
+# for the content-addressed run_all.sh SKIP engine (task 5273, merge-gate-
+# riders PRD §4 rider γ). Read ONLY by run_all.sh's skip engine (via the
+# RUN_ALL_SKIP_CLOSURES_MANIFEST override) and by the under-declaration
+# drift-guard in tests/infra/test_run_all_content_skip.sh.
+#
+# ---------------------------------------------------------------------------
+# ROW FORMAT
+#   <test_basename> <path-or-glob> [<path-or-glob> ...]
+#
+# The listed paths are REPO-RELATIVE (scripts/foo.sh, tests/infra/bar.sh,
+# gui/dist, .gitignore, ...). A glob (`scripts/*`, `gui/dist/*`) is matched
+# by the skip engine as a git pathspec and by the drift-guard with `[[ ==  ]]`
+# (where `*` spans `/`). Comment lines (^\s*#) and blank lines are ignored.
+#
+# ---------------------------------------------------------------------------
+# THE COMPLETE closure (soundness INVERSION vs verify-pipeline-infra-tests.txt)
+#   Each row must declare the member's *COMPLETE* tracked-file closure: every
+#   tracked file whose content, if it changed, could change this member's
+#   PASS/FAIL verdict. This is the exact INVERSE of the soundness direction
+#   scripts/verify-pipeline-infra-tests.txt optimizes for: that manifest's
+#   per-test sets are intentionally INCOMPLETE (sound for INCLUSION — "run at
+#   least these" — but UNSOUND for SKIPPING, since a missing entry there just
+#   over-runs, while a missing entry HERE would wrongly SKIP a member whose
+#   real input changed). PRD §4.1. When unsure, DECLARE MORE (over-declaration
+#   is sound — it only forces extra runs; under-declaration is the only bug).
+#
+# ---------------------------------------------------------------------------
+# SIX IMPLICIT closure members (appended to EVERY row by the engine — never
+# list them here):
+#   1. the member's own file            (<infra_dir>/<basename>)
+#   2. tests/infra/test_helpers.sh      (shared assert/summary harness)
+#   3. tests/infra/run_all.sh           (the runner itself)
+#   4. tests/infra/run-all-classification-lib.sh
+#   5. tests/infra/load_tolerance_lib.sh
+#   6. the two harness manifests:
+#         tests/infra/run-all-classification.manifest
+#         tests/infra/run-all-ambient-vars.manifest
+#   (paths are resolved relative to the invocation's infra dir, so hermetic
+#   fixtures and the real merge both work — see run_all.sh's skip engine.)
+#
+# ---------------------------------------------------------------------------
+# FAIL-OPEN
+#   A member with NO row here is UNMAPPED and NEVER skips (the engine logs
+#   `RUN (unmapped): <m>` and runs it). A missing/empty manifest degrades to
+#   "every member unmapped" ⇒ the full pool runs, exactly as today. Adding or
+#   narrowing a row only ever ENABLES more skipping; it can never cause an
+#   unmapped member to be skipped.
+#
+# ---------------------------------------------------------------------------
+# CONSERVATIVE-FIRST, NARROW-LATER (PRD §4.1)
+#   Seed rows start broad (a closure equivalent to "everything" is always
+#   correct — it simply never skips on any real delta). Real merge-time
+#   savings come from later narrowing individual rows; an over-broad row is
+#   never wrong, only un-optimized. The under-declaration drift-guard
+#   (test_run_all_content_skip.sh) is RED if any declared closure omits a
+#   repo-relative path token that the member's own source text references.
+#
+# ---------------------------------------------------------------------------
+# THE DRIFT-GUARD IS BEST-EFFORT, NOT A COMPLETENESS PROOF (soundness caveat)
+#   The under-declaration drift-guard can only catch a closure that omits a
+#   tracked path referenced *literally* in the member's SOURCE TEXT and
+#   matching its anchor set (known top-level dirs + a fixed list of repo-root
+#   artifacts). It CANNOT prove a closure is complete. A dependency reached
+#   indirectly — invoked via a shell variable, read at runtime, produced by a
+#   build step, or living at an un-anchored repo-root path — is invisible to
+#   it, yet omitting such a path is exactly the under-declaration that causes a
+#   wrongly-SKIPPED member (a silent loss of test coverage — the one true bug
+#   of this file). THEREFORE treat a green guard as a net, not a proof:
+#   NARROWING a row (removing/tightening paths) REQUIRES human review of the
+#   member's ACTUAL runtime inputs, not merely a green guard run. Over-
+#   declaration is always sound; when in doubt keep the row broad (CONSERVATIVE-
+#   FIRST, above). Task 5273 ships the engine production-inert (activated by
+#   task 5276) and seeds only clearly-hermetic members, so no wrong skip can
+#   occur yet — but a future narrowing must not over-trust the guard.
+#
+# This file is a LOAD-BEARING verify-pipeline artifact (an edit routes the
+# task through the full --scope all gate; see scripts/verify-pipeline-guard.sh).
+
+# --- seed rows (clearly-hermetic pool members; complete closures) -----------
+test_portable_sha256.sh scripts/lib_portable.sh
+test_portable_mtime.sh scripts/lib_portable.sh tests/infra/test_portable_sha256.sh
+test_pycache_gitignored.sh .gitignore
+test_gui_dist_gitignored.sh gui/dist .gitignore
