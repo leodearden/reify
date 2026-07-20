@@ -1291,9 +1291,19 @@ emit_nextest_pass() {
         # size-ceiling full-fallbacks are layered on by later steps.
         local _retry_filter_frag=""
         if [ "$_RETRY_SUBSET_ELIGIBLE" -eq 1 ]; then
+            # Profile derived from arg2 `rel` (" --release" → release, else
+            # debug); emit_nextest_pass is called once per profile from
+            # add_test_passes. Used for the per-profile loud fallback message
+            # (and, in a later step, per-profile filter-file precedence).
+            local _retry_profile="debug"
+            case "$rel" in *release*) _retry_profile="release" ;; esac
+            # Base filter var only for now; per-profile _DEBUG/_RELEASE
+            # precedence is layered on by a later step at this same resolution
+            # point (the absent/empty/unreadable + ceiling guards operate on
+            # whatever RESOLVED path this yields, unchanged).
             local _retry_filter_file="${REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE:-}"
+            local _retry_expr="" _line
             if [ -n "$_retry_filter_file" ] && [ -r "$_retry_filter_file" ]; then
-                local _retry_expr="" _line
                 while IFS= read -r _line || [ -n "$_line" ]; do
                     [ -n "$_line" ] || continue
                     if [ -z "$_retry_expr" ]; then
@@ -1302,7 +1312,17 @@ emit_nextest_pass() {
                         _retry_expr="${_retry_expr} | test(=${_line})"
                     fi
                 done < "$_retry_filter_file"
-                [ -n "$_retry_expr" ] && _retry_filter_frag=" -E '${_retry_expr}'"
+            fi
+            if [ -n "$_retry_expr" ]; then
+                _retry_filter_frag=" -E '${_retry_expr}'"
+            else
+                # LOUD no-subset full-fallback (PRD §4.3): eligible, but the
+                # resolved filter file is absent / unreadable / empty (no
+                # non-blank lines) — run THIS profile FULL and say so. Per-profile
+                # (each profile resolves its own file), so emitted here rather
+                # than in the add_test_passes precompute. Guarded inside the
+                # eligible (⇒ scope=failed_only) branch → default byte-identical.
+                echo "verify.sh: retry refused: no subset — filter file ${_retry_filter_file:-<unset>} absent/empty/unreadable (profile=${_retry_profile}, full verify)" >&2
             fi
         fi
         cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel}${_GATE_HEAVY_EXCLUDE}${_OFFLINE_HEAVY_SELECT}${_tt_flag}${_retry_filter_frag} --config-file ${_cfg_path}"
