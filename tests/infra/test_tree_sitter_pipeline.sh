@@ -22,6 +22,14 @@ set -euo pipefail
 # --- Paths ---
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+# plan_capture_lib.sh — retrying, completeness-guarded --print-plan capture
+# (capture_print_plan / plan_capture_complete). Same fork-free, retry-on-truncation
+# pattern already used by test_verify_scope.sh, test_scope_boundary.sh,
+# test_run_all_tiering.sh, test_verify_throughput.sh.
+[ -f "$SCRIPT_DIR/plan_capture_lib.sh" ] || { echo "ERROR: plan_capture_lib.sh not found at $SCRIPT_DIR/plan_capture_lib.sh"; exit 1; }
+source "$SCRIPT_DIR/plan_capture_lib.sh"
+
 TS_DIR="$REPO_ROOT/tree-sitter-reify"
 
 # --- Counters ---
@@ -355,15 +363,22 @@ test_orchestrator_includes_generation() {
     for action in "test --profile both --scope all --include-infra" \
                   "lint --scope all --include-infra" \
                   "typecheck --scope all"; do
-        # shellcheck disable=SC2086 — $action intentionally word-splits into flags.
-        plan="$(bash "$verify" $action --print-plan 2>/dev/null | grep -v '^#')"
-        # Use bash-native substring matching rather than `printf '%s\n' "$plan" | grep -q`:
-        # the pipe-to-grep form forks a subshell and a grep reading from a pipe, and
-        # under heavy concurrent test load that grep can transiently fail (broken pipe /
-        # EINTR) and return non-zero EVEN WHEN the content matches — silently flipping
-        # the check to its else branch and producing a spurious FAIL (esc-4574-42 /
-        # esc-4707-64). Native matching does no fork and no pipe, so the assertion is
-        # purely a function of $plan.
+        # Retrying, completeness-guarded capture. A truncated/interrupted --print-plan
+        # capture under concurrent load would silently flip the tree-sitter-generate
+        # check below to a spurious FAIL; capture_print_plan retries to a structurally
+        # complete capture. $action word-splits into flags inside the inner bash -c
+        # (its unquoted $2), so no outer SC2086 exposure.
+        capture_print_plan plan "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+            bash -c 'exec bash "$1" $2 --print-plan 2>/dev/null' _ "$verify" "$action" || true
+        if ! plan_capture_complete "$plan"; then
+            echo ""
+            echo "  ASSERTION FAILED: verify.sh '$action' --print-plan capture truncated after retries"
+            return 1
+        fi
+        # Match the RAW completeness-guarded capture with fork-free bash-native
+        # substring matching (no pipe-to-grep EINTR surface — esc-4574-42 / esc-4707-64).
+        # tree-sitter-generate is emitted only as a command leaf (verify.sh:1283), never
+        # in a preamble comment, so the raw match cannot false-positive on a marker/env line.
         if [[ "$plan" != *"tree-sitter-generate"* ]]; then
             echo ""
             echo "  ASSERTION FAILED: verify.sh '$action' plan does not include tree-sitter-generate"
@@ -379,9 +394,18 @@ test_hooks_include_generation() {
     assert_file_exists "$verify" || return 1
 
     local plan
-    plan="$(bash "$verify" all --profile debug --scope all --include-infra --print-plan 2>/dev/null | grep -v '^#')"
-    # Use bash-native substring matching (same rationale as test_orchestrator_includes_generation
-    # above: esc-4574-42 / esc-4707-64 pipe-grep flake under concurrent load).
+    # Retrying, completeness-guarded capture (same rationale/pattern as
+    # test_orchestrator_includes_generation). The fixed action string word-splits
+    # into flags inside the inner bash -c (its unquoted $2).
+    capture_print_plan plan "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        bash -c 'exec bash "$1" $2 --print-plan 2>/dev/null' _ "$verify" "all --profile debug --scope all --include-infra" || true
+    if ! plan_capture_complete "$plan"; then
+        echo ""
+        echo "  ASSERTION FAILED: verify.sh 'all' --print-plan capture truncated after retries"
+        return 1
+    fi
+    # Fork-free bash-native match on the RAW completeness-guarded capture (esc-4574-42 /
+    # esc-4707-64); tree-sitter-generate is emitted only as a command leaf (verify.sh:1283).
     if [[ "$plan" != *"tree-sitter-generate"* ]]; then
         echo ""
         echo "  ASSERTION FAILED: verify.sh 'all' plan (the hook's gate) does not include tree-sitter-generate"
