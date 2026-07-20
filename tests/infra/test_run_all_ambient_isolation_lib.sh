@@ -71,4 +71,73 @@ assert "forced-red-both: emits the distinct SKIP marker (derivative failure, not
 assert "forced-red-both: verdict rc is 0 (derivative failure is not counted) [rc=$_rc]" \
     test "$_rc" -eq 0
 
+# ---------------------------------------------------------------------------
+# Sub-case B "isolation-bug": a fake test_run_all.sh that is GREEN under a
+# clean env but RED when REIFY_RUN_ALL_EXCLUDE_HOST_INFRA is set. Hostile red
+# + baseline GREEN => the hostile ambient env ALONE flipped it red => a
+# GENUINE ambient-isolation bug => the function must FAIL (return 1) and must
+# NOT emit the derivative SKIP marker (isolation coverage must be preserved,
+# not masked).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Sub-case B: isolation-bug (hostile-red only -> FAIL) ---"
+
+FAKE_ISO_BUG="$FAKE_DIR/fake_iso_bug.sh"
+cat > "$FAKE_ISO_BUG" <<'SH'
+#!/usr/bin/env bash
+# Red ONLY when the ambient var is present — a genuine isolation bug.
+if [ -n "${REIFY_RUN_ALL_EXCLUDE_HOST_INFRA:-}" ]; then
+    echo "Results: 2 passed, 1 failed"
+    exit 1
+fi
+echo "Results: 3 passed, 0 failed"
+exit 0
+SH
+chmod +x "$FAKE_ISO_BUG"
+
+_rc=0
+_out="$(ambient_isolation_check_one "$FAKE_ISO_BUG" REIFY_RUN_ALL_EXCLUDE_HOST_INFRA 1 "$MKEYS" 2>&1)" || _rc=$?
+
+assert "isolation-bug: verdict rc is 1 (genuine ambient-isolation bug fails the guard) [rc=$_rc]" \
+    test "$_rc" -eq 1
+
+if plan_match "$_out" 'SKIP: baseline test_run_all\.sh already red'; then
+    assert "isolation-bug: must NOT emit the derivative SKIP marker (got: $_out)" false
+else
+    assert "isolation-bug: does not emit the derivative SKIP marker (coverage preserved)" true
+fi
+
+# ---------------------------------------------------------------------------
+# Sub-case C "green happy-path": a fake test_run_all.sh that is GREEN
+# regardless of env. Hostile GREEN => PASS immediately (no baseline run) =>
+# return 0, no SKIP marker, PASS line present. Rides along as a regression
+# guard that the common all-green path is never mis-skipped.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Sub-case C: green happy-path (hostile green -> PASS) ---"
+
+FAKE_GREEN="$FAKE_DIR/fake_green.sh"
+cat > "$FAKE_GREEN" <<'SH'
+#!/usr/bin/env bash
+# Green regardless of ambient env.
+echo "Results: 4 passed, 0 failed"
+exit 0
+SH
+chmod +x "$FAKE_GREEN"
+
+_rc=0
+_out="$(ambient_isolation_check_one "$FAKE_GREEN" REIFY_RUN_ALL_EXCLUDE_HOST_INFRA 1 "$MKEYS" 2>&1)" || _rc=$?
+
+assert "green happy-path: verdict rc is 0 (no isolation bug) [rc=$_rc]" \
+    test "$_rc" -eq 0
+
+if plan_match "$_out" 'SKIP: baseline test_run_all\.sh already red'; then
+    assert "green happy-path: must NOT emit the SKIP marker (got: $_out)" false
+else
+    assert "green happy-path: does not emit the SKIP marker" true
+fi
+
+assert "green happy-path: emits the hostile-green PASS line" \
+    plan_match "$_out" 'AMBIENT-ISOLATION PASS:'
+
 test_summary
