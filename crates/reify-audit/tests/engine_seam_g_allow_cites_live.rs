@@ -187,10 +187,14 @@ fn scan_pins_blocks(ws_root: &Path) -> Vec<(String, usize, Vec<u32>, String)> {
 /// Post-graduation every engine-seam owner cite is provenance-exempt, so the
 /// live scan extracts ZERO owners and the "zero orphaned" assertion can no
 /// longer prove the scan actually ran over real markers. This structural check
-/// asserts that a STILL-ORPHAN marker is physically present on the `// G-allow:`
-/// line immediately above `pub fn <fn_name>(` in `rel_path`. A file
-/// move/rename/deletion that drops the marker fails here — the same event would
-/// also un-pin the orphan-producer audit in `engine_seam_orphans_g_allow.rs`.
+/// asserts that a STILL-ORPHAN marker is physically present within the leading
+/// comment/attribute block above `pub fn <fn_name>(` in `rel_path` — scanning
+/// upward over contiguous `//` and `#[…]` lines, so inserting an attribute
+/// (`#[inline]`, `#[cfg(…)]`, `#[allow(…)]`) or a doc line between the marker
+/// and the signature does not spuriously fail; the invariant is only that the
+/// marker is present somewhere in that block. A file move/rename/deletion that
+/// drops the marker fails here — the same event would also un-pin the
+/// orphan-producer audit in `engine_seam_orphans_g_allow.rs`.
 fn assert_g_allow_marker_above_fn(ws_root: &Path, rel_path: &str, fn_name: &str) {
     let full = ws_root.join(rel_path);
     let content = std::fs::read_to_string(&full)
@@ -207,14 +211,33 @@ fn assert_g_allow_marker_above_fn(ws_root: &Path, rel_path: &str, fn_name: &str)
                  changed, update SOURCE_FILES/PINS and this guard together"
             )
         });
-    let marker_ok = fn_idx >= 1 && g_allow_marker_body(lines[fn_idx - 1]).is_some();
+    // Scan upward over the fn's contiguous leading block — comment lines (`//`,
+    // `///`, `//!`) and attribute lines (`#[…]`) — for the `// G-allow:` marker.
+    // Requiring exact adjacency (`lines[fn_idx - 1]`) would spuriously fail if a
+    // future edit inserted an attribute or a doc line between the marker and the
+    // signature; the invariant is only that the marker sits somewhere in the
+    // leading block, not on the immediately-preceding line.
+    let mut marker_ok = false;
+    let mut idx = fn_idx;
+    while idx > 0 {
+        idx -= 1;
+        let trimmed = lines[idx].trim_start();
+        let in_leading_block =
+            trimmed.starts_with("//") || trimmed.starts_with("#[") || trimmed.starts_with("#![");
+        if !in_leading_block {
+            break; // left the fn's contiguous leading comment/attribute block
+        }
+        if g_allow_marker_body(lines[idx]).is_some() {
+            marker_ok = true;
+            break;
+        }
+    }
     assert!(
         marker_ok,
-        "expected a `// G-allow:` marker on the line immediately above \
-         `pub fn {fn_name}(` in {rel_path} (fn at line {}); the still-orphan marker \
-         must remain to suppress the orphan-producer audit. Line above was: {:?}",
+        "expected a `// G-allow:` marker within the leading comment/attribute \
+         block above `pub fn {fn_name}(` in {rel_path} (fn at line {}); the \
+         still-orphan marker must remain to suppress the orphan-producer audit.",
         fn_idx + 1,
-        fn_idx.checked_sub(1).and_then(|i| lines.get(i)),
     );
 }
 
