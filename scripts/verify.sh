@@ -426,6 +426,7 @@ SCOPE="all"
 NARROW=0             # --narrow: opt-in to affected-crate narrowing for --scope staged
 INCLUDE_INFRA=0
 PRINT_PLAN=0
+TEST_THREADS=""      # --test-threads=N: test-execution parallelism cap (offline lane, task 5264). Empty = unset → plan unchanged.
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -449,6 +450,10 @@ while [ "$#" -gt 0 ]; do
             INCLUDE_INFRA=1; shift ;;
         --print-plan)
             PRINT_PLAN=1; shift ;;
+        --test-threads)
+            TEST_THREADS="${2:?--test-threads requires an argument}"; shift 2 ;;
+        --test-threads=*)
+            TEST_THREADS="${1#*=}"; shift ;;
         -h|--help)
             usage; exit 0 ;;
         *)
