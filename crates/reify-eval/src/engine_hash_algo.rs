@@ -490,3 +490,18 @@ pub fn parse_cargo_lock_packages(lock_text: &str) -> Vec<(String, String)> {
     flush(&mut cur_name, &mut cur_version, &mut packages);
     packages
 }
+
+/// Parse a closure manifest (`crates/reify-eval/engine_hash_closure.txt`) into
+/// its crate names, in file order.
+///
+/// Skips blank / whitespace-only lines and `#`-comment lines — a line whose
+/// first non-whitespace character is `#`, so indented comments count too. Every
+/// other line is trimmed and returned as a name.
+#[allow(dead_code)]
+pub fn parse_closure_manifest(text: &str) -> Vec<String> {
+    text.lines()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(|line| line.to_string())
+        .collect()
+}
