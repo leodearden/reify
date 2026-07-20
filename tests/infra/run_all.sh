@@ -674,7 +674,7 @@ _ra_skip_engine() {
     _ra_skip_read_closures
     _ra_skip_read_state
 
-    local _name _green _rc _wt
+    local _name _green _rc _wt _names _touch
     declare -A _skip_set=()
     local _skipped_any=0
     for _name in "${_h2_discovered_list[@]+${_h2_discovered_list[@]}}"; do
@@ -686,13 +686,28 @@ _ra_skip_engine() {
         [ -n "$_green" ] || continue
         _ra_skip_closure_specs "$_name"
         # Committed delta over the closure (green..HEAD): non-zero rc (a diff,
-        # or a git error such as a bad sha) ⇒ run.
+        # or a git error such as a bad sha) ⇒ RUN (delta). Capture a
+        # representative touched path (first changed file) for the log line.
         _rc=0
         git -C "$_RA_SKIP_TOPLEVEL" diff --quiet "$_green" HEAD -- "${_RA_SKIP_SPECS[@]}" 2>/dev/null || _rc=$?
-        [ "$_rc" -eq 0 ] || continue
-        # Worktree delta over the closure (staged/unstaged/untracked) ⇒ run.
+        if [ "$_rc" -ne 0 ]; then
+            _names="$(git -C "$_RA_SKIP_TOPLEVEL" diff --name-only "$_green" HEAD -- "${_RA_SKIP_SPECS[@]}" 2>/dev/null)" || _names=""
+            _touch="${_names%%$'\n'*}"
+            [ -n "$_touch" ] || _touch="(unknown)"
+            echo "RUN (delta): $_name touched=$_touch"
+            continue
+        fi
+        # Worktree delta over the closure (staged/unstaged/untracked) ⇒ RUN
+        # (delta). The porcelain first line is `XY <path>`; strip the 3-char
+        # status prefix to name the touched path.
         _wt="$(git -C "$_RA_SKIP_TOPLEVEL" status --porcelain -- "${_RA_SKIP_SPECS[@]}" 2>/dev/null || true)"
-        [ -n "$_wt" ] && continue
+        if [ -n "$_wt" ]; then
+            _touch="${_wt%%$'\n'*}"
+            _touch="${_touch:3}"
+            [ -n "$_touch" ] || _touch="(worktree)"
+            echo "RUN (delta): $_name touched=$_touch"
+            continue
+        fi
         # Content-clean ⇒ SKIP.
         echo "SKIP (content-clean): $_name green=$_green"
         _skip_set["$_name"]=1
