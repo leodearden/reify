@@ -19,10 +19,11 @@
 //!   terminal statuses of the (now-graduated) seam owners. Real scanned cites
 //!   → ZERO g-allow-orphaned (post-graduation the scan is empty; a residual
 //!   bare terminal cite would resolve as orphaned and fail). Test-has-teeth is
-//!   carried by (1) a marker-line-presence guard over the two still-orphan
-//!   pinned functions (a file move/rename/deletion still fails — anti-vacuous-
-//!   green) and (2) a synthetic `done`-cite control that must yield exactly one
-//!   g-allow-orphaned.
+//!   carried by (1) a structural presence guard over EVERY scanned SOURCE_FILES
+//!   entry — the two still-orphan files at marker-line granularity, the three
+//!   now-wired files at `pub fn` granularity — so a file move/rename/deletion
+//!   still fails (anti-vacuous-green) and (2) a synthetic `done`-cite control
+//!   that must yield exactly one g-allow-orphaned.
 //! - **Test B** (live anti-drift guard): open the real .taskmaster/tasks/
 //!   tasks.db read-only; graceful-skip when absent (mirroring PTODO §6.7) OR
 //!   when the scan yields no cites (the graduated steady state); assert ZERO
@@ -241,6 +242,29 @@ fn assert_g_allow_marker_above_fn(ws_root: &Path, rel_path: &str, fn_name: &str)
     );
 }
 
+/// Anti-vacuous-green floor for the still-scanned SOURCE_FILES that no longer
+/// carry a `// G-allow:` marker (their case-B markers were deleted when task
+/// #5255 wired the consumers — boundary/laplacian, and quality whose cite is
+/// provenance-exempt). Post-graduation `scan_source_file` returns EMPTY for
+/// these files, so a silent move/rename/deletion would leave Test A vacuously
+/// green (assertion (a) trivially holds over an empty scan). Assert a
+/// representative pinned `pub fn` is still physically present so such drift
+/// fails locally here rather than only in the repo-wide gate.
+fn assert_pub_fn_present(ws_root: &Path, rel_path: &str, fn_name: &str) {
+    let full = ws_root.join(rel_path);
+    let content = std::fs::read_to_string(&full)
+        .unwrap_or_else(|e| panic!("read {rel_path} for pinned-fn presence guard: {e}"));
+    let sig = format!("pub fn {fn_name}(");
+    let present = content.lines().any(|l| l.trim_start().starts_with(&sig));
+    assert!(
+        present,
+        "expected `pub fn {fn_name}(` in {rel_path} (pinned-fn presence guard for \
+         the graduated seam); a move/rename/deletion silently empties this file's \
+         G-allow scan — if the seam legitimately changed, update SOURCE_FILES/PINS \
+         and this guard together"
+    );
+}
+
 // -----------------------------------------------------------------------
 // Test A: hermetic, always runs — real markers + synthetic done-cite control.
 // -----------------------------------------------------------------------
@@ -259,10 +283,15 @@ fn engine_seam_g_allow_owner_cites_resolve_live_hermetic() {
     // Anti-vacuous-green / anti-file-move guard. Post-graduation (task #5255)
     // every engine-seam owner cite is provenance-exempt, so `all_cites` is empty
     // in the steady state and the "zero orphaned" assertion below can no longer
-    // prove the scan ran. Instead assert the two STILL-ORPHAN markers are
-    // physically present on the line immediately above their `pub fn`: a file
-    // move/rename/deletion that drops these markers still fails (and would also
-    // un-pin the orphan-producer audit in engine_seam_orphans_g_allow.rs).
+    // prove the scan ran. Instead assert a representative pinned symbol is
+    // physically present in EVERY scanned SOURCE_FILES entry, so a file
+    // move/rename/deletion (which would silently empty that file's G-allow scan)
+    // fails here — and would also un-pin the orphan-producer audit in
+    // engine_seam_orphans_g_allow.rs. The two still-orphan files are checked at
+    // marker granularity (the `// G-allow:` marker must remain in the fn's
+    // leading block); the three now-wired files (markers deleted when #5255
+    // wired their consumers — quality's cite is provenance-exempt) are checked
+    // at `pub fn` granularity, since they carry no marker to key on.
     //
     // A live-owner-cite guard (formerly `all_owner_ids.contains(&4744)`) is no
     // longer possible: `extract_g_allow_owner_cites` skips exempt cites, so a
@@ -276,6 +305,23 @@ fn engine_seam_g_allow_owner_cites_resolve_live_hermetic() {
         "elasticity_morph_with_cg_opts",
     );
     assert_g_allow_marker_above_fn(&ws_root, "crates/reify-mesh-morph/src/lib.rs", "eligible");
+    // The remaining SOURCE_FILES no longer carry a marker; pin one `pub fn` each
+    // so a silent move/rename of boundary/laplacian/quality is caught locally.
+    assert_pub_fn_present(
+        &ws_root,
+        "crates/reify-mesh-morph/src/boundary.rs",
+        "compute_dirichlet_bcs",
+    );
+    assert_pub_fn_present(
+        &ws_root,
+        "crates/reify-mesh-morph/src/laplacian.rs",
+        "laplacian_smooth",
+    );
+    assert_pub_fn_present(
+        &ws_root,
+        "crates/reify-mesh-morph/src/quality.rs",
+        "quality_check",
+    );
 
     // Hermetic in-memory DB seeded with the REAL terminal statuses of the
     // now-graduated seam owners (task #5255): #4744 (β morph arm), #4743 (α),
