@@ -858,9 +858,14 @@ fn emit_vector_mismatch(param_type: &Type, arg_type: &Type, ctx: &mut WalkCtx<'_
 ///   This mirrors the fn-call param-binding path's `SelectorKindMismatch` tagging
 ///   (task 4581 / 4371 BT1) so the same wrong-kind error is coded uniformly in both
 ///   the ctor and fn-call surfaces.
-/// - **Every other selector-slot mismatch** — a non-selector arg (`String`, `Frame`,
-///   `Int`, …), or any arg against a bare `AnySelector` param — keeps
-///   [`DiagnosticCode::ArgTypeMismatch`] (the disallow-string / disallow-pose case,
+/// - **Pose-vs-set** — a coordinate-pose arg (`Frame`/`Transform`/`Point`) against
+///   a selector-typed param — keeps [`DiagnosticCode::ArgTypeMismatch`] but appends
+///   the fixed hint substring `a coordinate pose is not a region target; select a
+///   face/edge/vertex instead` (PRD §4 D2; task 4833's fixtures assert on it). A
+///   message variant, not a new failure class.
+/// - **Every other selector-slot mismatch** — a non-selector arg (`String`, `Int`,
+///   …), or any arg against a bare `AnySelector` param — keeps
+///   [`DiagnosticCode::ArgTypeMismatch`] with the plain message (the disallow-string
 ///   over-tag guard per 4581).
 ///
 /// Modelled on [`emit_structure_ref_mismatch`] / [`emit_vector_mismatch`]: one
@@ -892,19 +897,34 @@ fn emit_selector_mismatch(param_type: &Type, arg_type: &Type, ctx: &mut WalkCtx<
             )),
         );
     } else {
+        // Pose-vs-set (task 5302 α, PRD §4 D2): a coordinate pose — `Frame(n)`,
+        // `Transform(n)`, or `Point { .. }` — passed to a selector-typed field is
+        // a common authoring confusion (a pose locates a datum; a selector names a
+        // region target). It stays `ArgTypeMismatch` (a message variant, NOT a new
+        // failure class / code) but carries a fixed hint substring — the
+        // deterministic string task 4833's pose-vs-set fixtures assert on
+        // verbatim. Every non-pose non-selector arg (`String`, `Int`, …) keeps the
+        // plain message (disallow-string over-tag guard, 4581).
+        let is_pose = matches!(
+            arg_type,
+            Type::Frame(_) | Type::Transform(_) | Type::Point { .. }
+        );
+        let mut message = format!(
+            "argument '{}' has type '{}' but param '{}' requires selector type '{}'",
+            ctx.arg_name, arg_type, ctx.arg_name, param_type,
+        );
+        if is_pose {
+            message.push_str(
+                "; a coordinate pose is not a region target; select a face/edge/vertex instead",
+            );
+        }
         ctx.diagnostics.push(
-            diag_at(
-                ctx.severity,
-                format!(
-                    "argument '{}' has type '{}' but param '{}' requires selector type '{}'",
-                    ctx.arg_name, arg_type, ctx.arg_name, param_type,
-                ),
-            )
-            .with_code(DiagnosticCode::ArgTypeMismatch)
-            .with_label(DiagnosticLabel::new(
-                ctx.span,
-                format!("expected '{}', got '{}'", param_type, arg_type),
-            )),
+            diag_at(ctx.severity, message)
+                .with_code(DiagnosticCode::ArgTypeMismatch)
+                .with_label(DiagnosticLabel::new(
+                    ctx.span,
+                    format!("expected '{}', got '{}'", param_type, arg_type),
+                )),
         );
     }
 }
