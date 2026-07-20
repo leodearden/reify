@@ -195,6 +195,8 @@ assert "plain test plan: npm run typecheck present and before psi-gate" \
 # ===========================================================================
 # Test 6: task #4624 — reify-audit release pre-step ordered BEFORE run_all.sh
 #          and run_all.sh line carries REIFY_AUDIT_NO_COLD_BUILD=1
+#          (task 5273 γ: the same line also carries REIFY_RUN_ALL_CONTENT_SKIP=1,
+#          the merge-tier content-addressed skip engine's activation key)
 #
 # task 5125: the pre-step + run_all.sh pairing MOVED to the merge tier
 # (DF_VERIFY_ROLE=merge) — the wholesale pool suite no longer runs on the
@@ -240,6 +242,15 @@ assert "merge-all plan: reify-audit pre-step line does not contain '20m' (timeou
 # (d) run_all.sh plan line carries REIFY_AUDIT_NO_COLD_BUILD=1 (backstop armed)
 assert "merge-all plan: run_all.sh line carries REIFY_AUDIT_NO_COLD_BUILD=1" \
     bash -c 'printf "%s\n" "$1" | grep "run_all\.sh" | grep -q "REIFY_AUDIT_NO_COLD_BUILD=1"' _ "$MERGE_ALL_PLAN"
+
+# (d2) task 5273 (merge-gate-riders γ): the run_all.sh plan line ALSO carries
+#      REIFY_RUN_ALL_CONTENT_SKIP=1 — the merge-tier content-addressed per-member
+#      skip engine's activation key. Purely additive substring grep, parallel to
+#      (d); the pre-existing token asserts stay green when the line gains this
+#      one extra env token. RED until step-16 adds the flag to verify.sh's
+#      run_all plan-line env prefix.
+assert "merge-all plan: run_all.sh line carries REIFY_RUN_ALL_CONTENT_SKIP=1 (content-skip engine, task 5273)" \
+    bash -c 'printf "%s\n" "$1" | grep "run_all\.sh" | grep -q "REIFY_RUN_ALL_CONTENT_SKIP=1"' _ "$MERGE_ALL_PLAN"
 
 # (e) task 5125: role=task ALL_PLAN (--include-infra, no DF_VERIFY_ROLE) no
 #     longer carries the wholesale suite — it moved to the merge tier above.

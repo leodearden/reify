@@ -112,6 +112,15 @@ assert "MERGE: run_all.sh line carries REIFY_RUN_ALL_EXCLUDE_HOST_INFRA=1 (host-
 assert "MERGE: run_all.sh line carries REIFY_AUDIT_NO_COLD_BUILD=1 (budget-safe backstop, task #4624, RED until step-3)" \
     bash -c 'printf "%s\n" "$1" | grep "run_all\.sh" | grep -q "REIFY_AUDIT_NO_COLD_BUILD=1"' _ "$PLAN_OUT"
 
+# task 5273 (merge-gate-riders γ, INV-5'): the merge-tier run_all.sh line also
+# carries REIFY_RUN_ALL_CONTENT_SKIP=1 — the content-addressed per-member skip
+# engine's activation key. Within the merge invocation each member still runs
+# on a closure delta / when unmapped / at the MAX_MERGES|MAX_AGE_HOURS backstop;
+# the flag is fail-open and role-gated in run_all.sh. Purely additive token,
+# RED until step-16.
+assert "MERGE: run_all.sh line carries REIFY_RUN_ALL_CONTENT_SKIP=1 (merge-tier content-skip engine, task 5273, RED until step-16)" \
+    bash -c 'printf "%s\n" "$1" | grep "run_all\.sh" | grep -q "REIFY_RUN_ALL_CONTENT_SKIP=1"' _ "$PLAN_OUT"
+
 # Ambient-leak guard (task 5125): the run_all.sh line must NOT export
 # REIFY_INFRA_SUITE_ACTIVE. Broadcasting the re-entrancy sentinel onto this line
 # leaks it into all ~103 pool tests, suppressing run_all in the plans the

@@ -697,4 +697,39 @@ S7B_UNCOVERED="$(udg_uncovered "$S7B_MANIFEST" "$S7B_DIR")"
 assert "S7b: the guard REPORTS the omitted scripts/under_dep.sh (non-vacuity)" \
     out_has "$S7B_UNCOVERED" "test_under.sh scripts/under_dep.sh"
 
+# ===========================================================================
+# Section 8 (step-15): activation-surface contract — the ambient-vars ledger
+#   declares the engine's plan-line activation flag.
+#   tests/infra/run-all-ambient-vars.manifest is the acknowledged keys-only
+#   ledger of every env var injected onto the run_all.sh pool line;
+#   test_run_all_ambient_isolation.sh enforces SET-EQUALITY between it and the
+#   LIVE injected set (verify.sh run_all plan line ∪ yaml verify_env). The
+#   content-skip flag REIFY_RUN_ALL_CONTENT_SKIP is injected by verify.sh's
+#   run_all plan line (step-16), so its ledger row co-lands there — the
+#   set-equality guard forces that co-landing and needs no edit itself.
+#   REIFY_RUN_ALL_SKIP_STATE is deliberately NOT asserted here: its ledger row
+#   co-lands with task δ's yaml verify_env wiring (design decision), because its
+#   live source lands in δ, not γ. RED until step-16 adds the flag's ledger row.
+# ===========================================================================
+echo ""
+echo "--- Section 8 (step-15): REIFY_RUN_ALL_CONTENT_SKIP declared in run-all-ambient-vars.manifest ---"
+
+S8_MANIFEST="$SCRIPT_DIR/run-all-ambient-vars.manifest"
+assert "S8: run-all-ambient-vars.manifest exists" \
+    test -f "$S8_MANIFEST"
+
+# The ledger is keys-only (one bare var name per line; `#`-comment/blank lines
+# ignored). Match an exact key row (optional surrounding whitespace) via grep
+# -x so REIFY_RUN_ALL_CONTENT_SKIP_* (e.g. a longer sibling) can never satisfy
+# it. RED now (the row lands in step-16 alongside the verify.sh plan-line flag).
+assert "S8: REIFY_RUN_ALL_CONTENT_SKIP is a declared ambient-vars key row (task 5273)" \
+    bash -c 'grep -qxE "[[:space:]]*REIFY_RUN_ALL_CONTENT_SKIP[[:space:]]*" "$1"' _ "$S8_MANIFEST"
+
+# Contract co-landing guard: REIFY_RUN_ALL_SKIP_STATE must NOT appear in this
+# ledger in γ's diff — its live source (yaml verify_env) lands with task δ, and
+# the set-equality guard would go RED if the ledger row preceded its source.
+# This assertion is GREEN now and stays GREEN through step-16 (γ never adds it).
+assert "S8: REIFY_RUN_ALL_SKIP_STATE is NOT declared by γ (its row co-lands with task δ's yaml wiring)" \
+    bash -c '! grep -qxE "[[:space:]]*REIFY_RUN_ALL_SKIP_STATE[[:space:]]*" "$1"' _ "$S8_MANIFEST"
+
 test_summary
