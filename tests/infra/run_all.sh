@@ -748,7 +748,15 @@ elif [ "${#_ra_member_subset[@]}" -gt 0 ]; then
     # pool/slot_acquire/PSI machinery. SINGLE attempt per named member: the
     # subset run IS dark-factory's retry, so an internal re-retry here would
     # mask a real retry-time failure.
+    #
+    # Clock-marker sanitization (task #5288 pair 2; task 4998/esc-4791-52
+    # class): unlike --scope host-infra / legacy (off the DF-parsed verify
+    # stream), a subset retry runs ON it -- so each named member's output is
+    # captured to a reused temp file and re-emitted via _ra_emit_sanitized
+    # (:274), exactly the concurrent-pool Phase-3 replay shape, instead of
+    # streaming directly to stdout.
     # -------------------------------------------------------------------------
+    _ra_subset_tmp="$(mktemp "${TMPDIR:-/tmp}/reify-run-all-subset.XXXXXX")"
     _ra_subset_matched=()
     for _ra_subset_file in "$INFRA_DIR"/test_*.sh; do
         # If glob matches nothing, the literal pattern string is returned — skip it.
@@ -763,7 +771,22 @@ elif [ "${#_ra_member_subset[@]}" -gt 0 ]; then
             echo ""
             echo "--- Running: $_ra_subset_base ---"
             _ra_subset_rc=0
-            bash "$INFRA_DIR/$_ra_subset_base" || _ra_subset_rc=$?
+            # Hermetic-harness isolation, mirroring the DF_VERIFY_ROLE
+            # normalization above: a named member must run as a clean,
+            # normal, unfiltered run of ITSELF. Without `env -u`, a member
+            # that itself shells out to run_all.sh internally for its own
+            # fixture testing (e.g. this very file, or
+            # test_run_all_clock_marker_sanitize.sh) would inherit THIS
+            # invocation's REIFY_RUN_ALL_MEMBER_SUBSET value and misapply
+            # the SAME name filter to its own unrelated nested fixture
+            # dirs -- turning "run everything in my temp fixture" into
+            # "skip everything, nothing here is named test_x.sh" and
+            # corrupting that member's self-tests. The subset knob governs
+            # only the outer/top-level discovery, never a member's own
+            # nested invocations.
+            env -u REIFY_RUN_ALL_MEMBER_SUBSET \
+                bash "$INFRA_DIR/$_ra_subset_base" > "$_ra_subset_tmp" 2>&1 || _ra_subset_rc=$?
+            _ra_emit_sanitized "$_ra_subset_tmp"
             if [ "$_ra_subset_rc" -eq 0 ]; then
                 echo "  RESULT: PASS ($_ra_subset_base)"
             else
@@ -778,6 +801,7 @@ elif [ "${#_ra_member_subset[@]}" -gt 0 ]; then
             member_subset_skipped+=("$_ra_subset_base")
         fi
     done
+    rm -f "$_ra_subset_tmp"
 
     # Unmatched subset entries: named in the knob but not present in
     # INFRA_DIR (typo/stale retry name) -- a loud stderr WARNING, never a
