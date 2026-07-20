@@ -161,6 +161,7 @@ test_verify_pipeline_guard.sh pool
 test_verify_role_prio.sh pool
 test_verify_scope.sh pool
 test_verify_semaphore_wiring.sh pool
+test_verify_test_threads.sh pool
 test_verify_throughput.sh pool
 test_warm_base_coherence.sh pool
 test_warm_lane_audit.sh pool
