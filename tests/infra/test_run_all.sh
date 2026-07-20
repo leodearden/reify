@@ -2921,5 +2921,193 @@ else
     assert "T27c: ledger .test field names test_flaky_serial.sh (skipped - run_all.sh or load_tolerance_lib.sh missing)" false
 fi
 
+# -- Test 28: REIFY_RUN_ALL_MEMBER_SUBSET member-subset knob (task #5288; PRD
+# docs/prds/verify-retry-failed-only.md task beta, Sec 4.2/8) ------------------
+# On a merge-gate retry, dark-factory names the FAILED members via
+# REIFY_RUN_ALL_MEMBER_SUBSET="<space-delimited test_*.sh basenames>" so
+# run_all.sh runs ONLY those, reusing the Phase-2.5 per-member serial invoke
+# shape via a dedicated branch (mirrors --scope host-infra: sets counters,
+# falls through to the shared Summary/FAILED/exit tail). Every other
+# discovered member is reported skipped -- acknowledged, never dropped from
+# discovery, and never counted as a failure. No classification-substrate
+# dependency (plain glob discovery), so these fixtures need no manifest and
+# no pool lock. Sentinel files (not just RESULT lines) prove a skipped
+# member was genuinely never invoked.
+echo ""
+echo "--- Test 28: REIFY_RUN_ALL_MEMBER_SUBSET member-subset knob ---"
+
+if [ -f "$RUN_ALL" ]; then
+    # -- 26a: subset="test_alpha.sh" -- alpha runs, beta reported skipped -------
+    TMPDIR_T28A="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T28A")
+    printf '#!/usr/bin/env bash\ntouch "%s/ran_alpha"\nexit 0\n' "$TMPDIR_T28A" > "$TMPDIR_T28A/test_alpha.sh"
+    printf '#!/usr/bin/env bash\ntouch "%s/ran_beta"\nexit 1\n' "$TMPDIR_T28A" > "$TMPDIR_T28A/test_beta.sh"
+    chmod +x "$TMPDIR_T28A/test_alpha.sh" "$TMPDIR_T28A/test_beta.sh"
+
+    t26a_rc=0
+    t26a_out="$(REIFY_RUN_ALL_MEMBER_SUBSET="test_alpha.sh" bash "$RUN_ALL" "$TMPDIR_T28A" 2>&1)" || t26a_rc=$?
+
+    assert "T28a: alpha (named in subset) was actually invoked (sentinel exists)" \
+        test -f "$TMPDIR_T28A/ran_alpha"
+
+    assert "T28a: beta (not named) was NOT invoked (sentinel absent)" \
+        test ! -f "$TMPDIR_T28A/ran_beta"
+
+    if [[ "$t26a_out" == *"--- Running: test_alpha.sh ---"* ]]; then
+        assert "T28a: output has a Running header for alpha" true
+    else
+        assert "T28a: output has a Running header for alpha (got: $t26a_out)" false
+    fi
+
+    if [[ "$t26a_out" == *"  RESULT: PASS (test_alpha.sh)"* ]]; then
+        assert "T28a: alpha reported PASS" true
+    else
+        assert "T28a: alpha reported PASS (got: $t26a_out)" false
+    fi
+
+    if [[ "$t26a_out" == *"  RESULT: SKIP (test_beta.sh)"* ]]; then
+        assert "T28a: beta reported SKIP" true
+    else
+        assert "T28a: beta reported SKIP (got: $t26a_out)" false
+    fi
+
+    if [[ "$t26a_out" != *"--- Running: test_beta.sh ---"* ]]; then
+        assert "T28a: output has NO Running header for beta (never invoked)" true
+    else
+        assert "T28a: output has NO Running header for beta (never invoked) (got: $t26a_out)" false
+    fi
+
+    assert "T28a: run_all.sh exits 0 (skipped failing beta does not sink the run)" \
+        test "$t26a_rc" -eq 0
+
+    if [[ "$t26a_out" == *"=== Summary: 2 discovered, 0 failed, 1 member-subset-skipped ==="* ]]; then
+        assert "T28a: Summary reports the member-subset-skipped count" true
+    else
+        assert "T28a: Summary reports the member-subset-skipped count (got: $t26a_out)" false
+    fi
+
+    # -- 26b: unmatched subset member -- loud stderr WARNING, not a failure -----
+    TMPDIR_T28B="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T28B")
+    printf '#!/usr/bin/env bash\ntouch "%s/ran_alpha"\nexit 0\n' "$TMPDIR_T28B" > "$TMPDIR_T28B/test_alpha.sh"
+    printf '#!/usr/bin/env bash\ntouch "%s/ran_beta"\nexit 1\n' "$TMPDIR_T28B" > "$TMPDIR_T28B/test_beta.sh"
+    chmod +x "$TMPDIR_T28B/test_alpha.sh" "$TMPDIR_T28B/test_beta.sh"
+
+    T28B_STDERR="$TMPDIR_T28B/stderr.txt"
+    t26b_rc=0
+    REIFY_RUN_ALL_MEMBER_SUBSET="test_alpha.sh test_ghost.sh" \
+        bash "$RUN_ALL" "$TMPDIR_T28B" >/dev/null 2>"$T28B_STDERR" || t26b_rc=$?
+
+    if grep -q 'WARNING' "$T28B_STDERR" && grep -q 'test_ghost.sh' "$T28B_STDERR"; then
+        assert "T28b: unmatched subset member 'test_ghost.sh' emits a stderr WARNING" true
+    else
+        assert "T28b: unmatched subset member 'test_ghost.sh' emits a stderr WARNING (got stderr: $(cat "$T28B_STDERR"))" false
+    fi
+
+    assert "T28b: unmatched subset member does not sink the run (exits 0)" \
+        test "$t26b_rc" -eq 0
+
+    # -- 26c: knob UNSET -- additive-default guard: branch is inert -------------
+    TMPDIR_T28C="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T28C")
+    printf '#!/usr/bin/env bash\ntouch "%s/ran_alpha"\nexit 0\n' "$TMPDIR_T28C" > "$TMPDIR_T28C/test_alpha.sh"
+    printf '#!/usr/bin/env bash\ntouch "%s/ran_beta"\nexit 1\n' "$TMPDIR_T28C" > "$TMPDIR_T28C/test_beta.sh"
+    chmod +x "$TMPDIR_T28C/test_alpha.sh" "$TMPDIR_T28C/test_beta.sh"
+
+    t26c_rc=0
+    t26c_out="$(env -u REIFY_RUN_ALL_MEMBER_SUBSET \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T28C/pool.lock" \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        bash "$RUN_ALL" "$TMPDIR_T28C" 2>&1)" || t26c_rc=$?
+
+    assert "T28c: knob unset -- alpha invoked (sentinel exists)" \
+        test -f "$TMPDIR_T28C/ran_alpha"
+
+    assert "T28c: knob unset -- beta invoked too (sentinel exists, branch inert)" \
+        test -f "$TMPDIR_T28C/ran_beta"
+
+    if [[ "$t26c_out" != *"RESULT: SKIP"* ]]; then
+        assert "T28c: knob unset -- no SKIP line anywhere" true
+    else
+        assert "T28c: knob unset -- no SKIP line anywhere (got: $t26c_out)" false
+    fi
+
+    assert "T28c: knob unset -- exit reflects beta's failure (nonzero)" \
+        test "$t26c_rc" -ne 0
+else
+    assert "T28a: alpha (named in subset) was actually invoked (sentinel exists) (skipped - run_all.sh missing)" false
+    assert "T28a: beta (not named) was NOT invoked (sentinel absent) (skipped - run_all.sh missing)" false
+    assert "T28a: output has a Running header for alpha (skipped - run_all.sh missing)" false
+    assert "T28a: alpha reported PASS (skipped - run_all.sh missing)" false
+    assert "T28a: beta reported SKIP (skipped - run_all.sh missing)" false
+    assert "T28a: output has NO Running header for beta (never invoked) (skipped - run_all.sh missing)" false
+    assert "T28a: run_all.sh exits 0 (skipped failing beta does not sink the run) (skipped - run_all.sh missing)" false
+    assert "T28a: Summary reports the member-subset-skipped count (skipped - run_all.sh missing)" false
+    assert "T28b: unmatched subset member 'test_ghost.sh' emits a stderr WARNING (skipped - run_all.sh missing)" false
+    assert "T28b: unmatched subset member does not sink the run (exits 0) (skipped - run_all.sh missing)" false
+    assert "T28c: knob unset -- alpha invoked (sentinel exists) (skipped - run_all.sh missing)" false
+    assert "T28c: knob unset -- beta invoked too (sentinel exists, branch inert) (skipped - run_all.sh missing)" false
+    assert "T28c: knob unset -- no SKIP line anywhere (skipped - run_all.sh missing)" false
+    assert "T28c: knob unset -- exit reflects beta's failure (nonzero) (skipped - run_all.sh missing)" false
+fi
+
+# -- Test 29: subset branch clock-marker sanitization (task #5288 pair 2; task
+# 4998 / esc-4791-52 class) -----------------------------------------------------
+# The REIFY_RUN_ALL_MEMBER_SUBSET branch runs ON dark-factory's clock-stop-
+# parsed verify stream (it IS a merge-gate retry), unlike --scope host-infra
+# or the legacy fallback. A named member's re-emitted output must therefore
+# be neutralized through _ra_emit_sanitized exactly like the concurrent-pool
+# Phase-3 replay -- otherwise a quoted clock-marker token in a retried
+# member's own assertion text (e.g. a clock-stop test) could false-trigger a
+# STOP/START transition in dark-factory's parser. The marker prefix is
+# assembled at runtime (mirrors test_run_all_clock_marker_sanitize.sh's
+# CP/QP idiom) so THIS file's own stdout never becomes a leak source when
+# the real outer run_all.sh re-emits test_run_all.sh's own captured output.
+echo ""
+echo "--- Test 29: subset branch clock-marker sanitization ---"
+
+if [ -f "$RUN_ALL" ]; then
+    T29_CP='@@REIFY_CLOCK_'
+    T29_QP='@@REIFY_QUOTED_CLOCK_'
+
+    TMPDIR_T29="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T29")
+    cat > "$TMPDIR_T29/test_marker.sh" <<MARKEREOF
+#!/usr/bin/env bash
+echo "  PASS: fixture: stderr contains ${T29_CP}STOP@@ reason=fixture (hold entered)"
+exit 0
+MARKEREOF
+    chmod +x "$TMPDIR_T29/test_marker.sh"
+
+    t27_rc=0
+    t27_out="$(REIFY_RUN_ALL_MEMBER_SUBSET="test_marker.sh" bash "$RUN_ALL" "$TMPDIR_T29" 2>&1)" || t27_rc=$?
+
+    if [[ "$t27_out" == *"${T29_QP}STOP@@"* ]]; then
+        assert "T29a: subset branch output contains the sanitized QUOTED_CLOCK form" true
+    else
+        assert "T29a: subset branch output contains the sanitized QUOTED_CLOCK form (got: $t27_out)" false
+    fi
+
+    if [[ "$t27_out" != *"${T29_CP}STOP@@"* ]]; then
+        assert "T29b: subset branch output contains NO live CLOCK_STOP token" true
+    else
+        assert "T29b: subset branch output contains NO live CLOCK_STOP token (got: $t27_out)" false
+    fi
+
+    if [[ "$t27_out" == *"  RESULT: PASS (test_marker.sh)"* ]]; then
+        assert "T29c: the member still ran and passed" true
+    else
+        assert "T29c: the member still ran and passed (got: $t27_out)" false
+    fi
+
+    assert "T29c: run_all.sh exits 0" \
+        test "$t27_rc" -eq 0
+else
+    assert "T29a: subset branch output contains the sanitized QUOTED_CLOCK form (skipped - run_all.sh missing)" false
+    assert "T29b: subset branch output contains NO live CLOCK_STOP token (skipped - run_all.sh missing)" false
+    assert "T29c: the member still ran and passed (skipped - run_all.sh missing)" false
+    assert "T29c: run_all.sh exits 0 (skipped - run_all.sh missing)" false
+fi
+
 # -- Summary --------------------------------------------------------------------
 test_summary
