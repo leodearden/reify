@@ -220,4 +220,55 @@ PLAN_UF="$(env -u REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE \
     bash "$VERIFY" test --scope all --print-plan 2>"$_ERR")" || true
 _assert_no_subset_loud "filter env unset" "$PLAN_UF" "$(cat "$_ERR")"
 
+# ---------------------------------------------------------------------------
+# Test 4: SUBSET-SIZE CEILING (a construction-bug backstop: a subset ≈ the whole
+# suite means DF built a bad subset — INV-4 storm escape, PRD §4.3/§11). The
+# ceiling is a tunable heuristic, NOT a first-principles number, so this test
+# INJECTS a small ceiling (REIFY_VERIFY_RETRY_MAX_SUBSET=3) and asserts the
+# RELATION — n>ceiling ⇒ loud fallback, n<=ceiling ⇒ subset applies — never a
+# magic production value.
+# RED after impl-no-subset-loud: no ceiling exists, so 4 IDs still apply.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Test 4: subset larger than REIFY_VERIFY_RETRY_MAX_SUBSET falls back loudly ---"
+
+# (a) 4 IDs with ceiling=3 ⇒ 4 > 3 ⇒ refuse loudly, run FULL.
+FILTER4="$_TMP/filter4.txt"
+printf 'c1::m::t1\nc1::m::t2\nc1::m::t3\nc1::m::t4\n' > "$FILTER4"
+PLAN_BIG="$(REIFY_VERIFY_RETRY_SCOPE=failed_only REIFY_VERIFY_RETRY_TREE_OID=deadbeef \
+    REIFY_VERIFY_ATTEMPT_SIDECAR="$SIDECAR" \
+    REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE="$FILTER4" \
+    REIFY_VERIFY_RETRY_MAX_SUBSET=3 \
+    bash "$VERIFY" test --scope all --print-plan 2>"$_ERR")" || true
+ERR_BIG="$(cat "$_ERR")"
+
+if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+    assert "ceiling (4 IDs > 3): debug nextest line has NO test(= fragment (full pass)" \
+        bash -c '! printf "%s\n" "$1" | grep -E "(^| )cargo nextest run " | grep -qF -- "test(="' \
+        _ "$PLAN_BIG"
+fi
+assert "ceiling (4 IDs > 3): STDERR carries 'retry refused: subset too large'" \
+    bash -c 'printf "%s\n" "$1" | grep -qF -- "retry refused: subset too large"' \
+    _ "$ERR_BIG"
+
+# (b) 2 IDs with ceiling=3 ⇒ 2 <= 3 ⇒ subset applies, no 'too large' line.
+PLAN_SMALL="$(REIFY_VERIFY_RETRY_SCOPE=failed_only REIFY_VERIFY_RETRY_TREE_OID=deadbeef \
+    REIFY_VERIFY_ATTEMPT_SIDECAR="$SIDECAR" \
+    REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE="$FILTER" \
+    REIFY_VERIFY_RETRY_MAX_SUBSET=3 \
+    bash "$VERIFY" test --scope all --print-plan 2>"$_ERR")" || true
+ERR_SMALL="$(cat "$_ERR")"
+
+if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+    assert "ceiling (2 IDs <= 3): debug nextest line carries the subset test(=$ID1)" \
+        bash -c 'printf "%s\n" "$1" | grep -E "(^| )cargo nextest run " | grep -qF -- "test(=$2)"' \
+        _ "$PLAN_SMALL" "$ID1"
+    assert "ceiling (2 IDs <= 3): debug nextest line carries the subset test(=$ID2)" \
+        bash -c 'printf "%s\n" "$1" | grep -E "(^| )cargo nextest run " | grep -qF -- "test(=$2)"' \
+        _ "$PLAN_SMALL" "$ID2"
+fi
+assert "ceiling (2 IDs <= 3): STDERR has NO 'retry refused: subset too large' line" \
+    bash -c '! printf "%s\n" "$1" | grep -qF -- "retry refused: subset too large"' \
+    _ "$ERR_SMALL"
+
 test_summary
