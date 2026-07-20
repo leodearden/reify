@@ -1,0 +1,92 @@
+prd: docs/prds/v0_6/fea-load-support-selector-migration.md
+schema_version: 1
+# 2026-07-20 residual decompose (Bmig2 + Bmig2-consume). Earlier leaves A1/A2/Bmig
+# landed pre-sidecar-convention as 4368/4369/4370 and are not re-listed here.
+tasks:
+- label: Bmig2
+  task_id: 5312
+  title: 'FEA-selector-migration Bmig2: complete residual field migration + disallow
+    string (source-breaking, D8/D10)'
+  capabilities:
+  - name: residual-fields-flipped-to-selector-types
+    binding: 'capability→producer (this leaf) — flip targets verified on main: fea_multi_case.ri:316
+      point / :355 target / :380 target / :447 face / :477 body all `String = ""`;
+      :420 face already Option<FaceSelector> (4370, untouched); D10 RATIFIED (required,
+      no default)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '^\s*param (point|target|body|face)\s*:\s*String'
+      paths:
+      - crates/reify-compiler/stdlib/fea_multi_case.ri
+      expect: absent
+  - name: all-bare-string-call-sites-migrated
+    binding: 'capability→producer (this leaf) — extent measured at ef95c78bd4: 154
+      sites / 49 files (PointLoad×67, FixedSupport×83, Pinned/Traction/BodyForce×2
+      each) across examples/** + crates/**/tests'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: 'PointLoad\(point: "|FixedSupport\(target: "'
+      paths:
+      - examples
+      expect: absent
+  - name: wrong-kind-and-bare-string-rejected-at-error
+    binding: rejection-mechanism (G6 branch 4) — delivered by producer:5306 (chokepoint
+      δ Warning→Error flip; α=5302 provides SelectorKindMismatch at ctor fields);
+      hard dep edge Bmig2→5306; silent-accept baseline re-verified by probe run wf_801582f3-59d
+      2026-07-20; observation post-δ, asserted by consumers 4371/4833
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: the rejection fires only once chokepoint δ (5306) lands; asserting it
+        is 4371 BT1/BT4 + 4833's fixture job, not grep-able from this producer's diff
+  - name: string-transition-arms-removed-with-interim-shim
+    binding: 'capability→producer (this leaf) — arms verified present to remove: extract_pressure_face_name
+      Value::String arm elastic_static.rs:4118-4120; any_support_targets Value::String
+      match :345-353 adapted to a typed Named-name interim shim (breadcrumbed to Bmig2-consume),
+      never retained String acceptance'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: '"no String transition arm" is a semantic judgment (Value::String matches
+        remain legitimate for the direction: String mode field in the same file);
+        reviewed against the D8 rule, not pattern-anchored'
+- label: Bmig2-consume
+  task_id: 5313
+  title: 'FEA-selector-migration Bmig2-consume: truly consume selectors in the solver
+    (D9 — typed target → FE node/element set)'
+  capabilities:
+  - name: pointload-point-drives-vertex-node-set
+    binding: 'capability→producer (this leaf) — gap verified: zero "point" reads in
+      elastic_static.rs (extract_loads :4013 consumes force/direction only; target_node_set
+      :1689 reads only the literal "target" field so its kind="PointLoad" arm never
+      fires); substrate producer:4092 done (loads_supports_to_bc_node_sets :1666,
+      resolve_selector_faces bc_resolve.rs:72); vertex-handle→mesh-node mapping is
+      this leaf''s own extent (not producer-extent-short)'
+    verdict: PASS
+    delivered_check:
+      kind: grep
+      pattern: '"point"'
+      paths:
+      - crates/reify-eval/src/compute_targets/elastic_static.rs
+      expect: present
+  - name: support-target-selector-consumed-both-paths
+    binding: 'capability→producer (this leaf) — both paths verified: kernel-less any_support_targets
+      :345 (6-named-box-face trampoline :4173) + resolved-handle target_node_set path;
+      replaces Bmig2''s interim Named-name shim with real selector resolution, kind-uniform
+      per PRD §4.2'
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: consumption-path correctness is asserted by the extended e2e (face_selector_targets_drive_bc_node_sets-class
+        test + BT5 solve half), not a grep
+  - name: cantilever-tip-deflection-parity
+    binding: parity:no-new-bound — equality-to-pre-migration-result within the EXISTING
+      FEA tolerance; no new accuracy claim, no bending-lock-floor exposure (G6 branch
+      1 N/A)
+    verdict: PASS
+    delivered_check:
+      kind: manual
+      reason: numeric parity is asserted inside the e2e test itself; no repo-state
+        pattern exists to grep
