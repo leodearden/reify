@@ -42,6 +42,14 @@
 #                                  This is a faithful oracle of what a real run executes:
 #                                  the command list is built once and only the leaf
 #                                  step (print vs eval) branches on --print-plan.
+#   --test-threads=N               Cap test-execution parallelism at N (a positive
+#                                  integer). Threaded into `cargo nextest run
+#                                  --test-threads=N`, or the libtest
+#                                  `-- --test-threads=N` fallback when nextest is
+#                                  absent. Default: UNSET — the emitted plan stays
+#                                  byte-identical to today. Primarily the offline
+#                                  deep-test lane's parallelism knob (task 5264;
+#                                  docs/design/offline-deep-test-lane.md §6).
 #   -h|--help                      Show usage.
 #
 # Environment baked in (mirrors dark-factory-orchestrator.yaml verify_env + .cargo/run-with-occt.sh):
@@ -284,7 +292,7 @@ _VERIFY_CLIPPY_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_CLIPPY_TIMEOUT 45m)
 _VERIFY_CHECK_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_CHECK_TIMEOUT 30m)"
 
 usage() {
-    sed -n '2,51p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,59p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 # ---------------------------------------------------------------------------
