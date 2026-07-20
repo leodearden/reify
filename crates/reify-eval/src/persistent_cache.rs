@@ -296,8 +296,12 @@ impl CacheEntryHeader {
 /// Canonical engine-version hash for FEA persistent-cache keys. Baked at
 /// build time by `build.rs` over the contributor source files listed in
 /// `CONTRIBUTORS_RELATIVE` (reify-solver-elastic, reify-kernel-gmsh, stdlib
-/// FEA helpers, per-purpose tolerance impls in this crate, and the workspace
-/// `Cargo.lock` for transitive-dep version pinning).
+/// FEA helpers, per-purpose tolerance impls in this crate) plus the resolved
+/// `(name, version)` pins of reify-eval's build+normal (dev-excluded)
+/// dependency closure — the crate names in `engine_hash_closure.txt`
+/// intersected with the workspace `Cargo.lock` (task 5272; narrowed from the
+/// former whole-`Cargo.lock` walk so an unrelated dep bump no longer flushes
+/// the cache).
 ///
 /// **Distinct from `ELASTIC_RESULT_FORMAT_VERSION`**: `FORMAT_VERSION` tracks
 /// the wire format (encoding layout — bump when `bincode`/`zstd` encoding
