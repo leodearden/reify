@@ -349,4 +349,150 @@ assert "S4c: MAX_AGE_HOURS=0 forces RUN (backstop-due) on an otherwise-clean mem
 assert "S4c: the knob-forced backstop member IS executed" \
     out_has "$RUN_OUT" "--- Running: test_alpha.sh ---"
 
+# ===========================================================================
+# Section 5 (step-9): fail-open storm-escape + strict inert gating.
+#   ACTIVE engine (all three keys set) + a missing OR corrupt state file ⇒
+#   exactly ONE loud line + the FULL pool runs (no per-member decision lines,
+#   no skips) — the flaky-ledger amnesia lesson: degrade LOUDLY, never silently
+#   skip on unknown state. INERT engine (any one key missing) ⇒ strictly SILENT
+#   full run (no decision lines, no loud line) even on a fixture that WOULD skip
+#   under the active engine, proving each gate key is load-bearing (the two-key
+#   + state-path guarantee). RED until step-10: _RA_SKIP_STATE_MISSING /
+#   _RA_SKIP_STATE_BAD are computed by _ra_skip_read_state but not yet acted on,
+#   so a missing state currently emits per-member RUN lines and a corrupt state
+#   still SKIPs its valid entry.
+# ===========================================================================
+
+# count_substr HAYSTACK NEEDLE — number of lines of HAYSTACK containing the
+# fixed string NEEDLE (fork-once; only used for the "exactly ONE loud line"
+# cardinality check, which the bash-native substring predicates cannot count).
+count_substr() {
+    local _n
+    _n="$(printf '%s\n' "$1" | grep -Fc -- "$2")" || _n=0
+    printf '%s' "$_n"
+}
+
+# run_noflag STATE CLOSURES DIR — invoke run_all.sh with role=merge + a state
+# path + a closures manifest but WITHOUT REIFY_RUN_ALL_CONTENT_SKIP (the
+# feature flag unset). Proves the flag key is load-bearing: an otherwise
+# would-skip fixture must run silently.
+run_noflag() {
+    local state="$1" closures="$2" dir="$3"
+    RUN_RC=0
+    RUN_OUT="$(
+        env -u REIFY_RUN_ALL_CONTENT_SKIP \
+            DF_VERIFY_ROLE=merge \
+            REIFY_RUN_ALL_SKIP_STATE="$state" \
+            RUN_ALL_SKIP_CLOSURES_MANIFEST="$closures" \
+            bash "$RUN_ALL" "$dir" 2>&1
+    )" || RUN_RC=$?
+}
+
+# -- 5a: engine ACTIVE, state file ABSENT ⇒ one loud line + full pool ----------
+echo ""
+echo "--- Section 5a (step-9): storm-escape, state file absent ---"
+
+S5A_DIR="$(mktemp -d)"; _TMPDIRS+=("$S5A_DIR")
+git_init_fixture "$S5A_DIR"
+mk_member "$S5A_DIR" test_alpha.sh 0        # mapped
+printf 'stable\n' > "$S5A_DIR/alpha_dep.txt"
+mk_member "$S5A_DIR" test_gamma.sh 0        # unmapped
+git -C "$S5A_DIR" add -A
+git -C "$S5A_DIR" commit -q -m "base"
+S5A_CLOSURES="$S5A_DIR/_meta_closures.manifest"
+printf 'test_alpha.sh alpha_dep.txt\n' > "$S5A_CLOSURES"
+# State path is SET (⇒ engine active) but the file is never written ⇒ absent.
+S5A_STATE="$S5A_DIR/_meta_state.ledger"
+
+run_skip "$S5A_STATE" "$S5A_CLOSURES" "$S5A_DIR"
+
+S5A_LOUD="$(count_substr "$RUN_OUT" "content-skip: state")"
+assert "S5a: emits EXACTLY ONE loud storm-escape line for the absent state file" \
+    test "$S5A_LOUD" -eq 1
+assert "S5a: the loud line names the full-pool fallback" \
+    out_has "$RUN_OUT" "running full pool"
+assert "S5a: the mapped member still executes (full pool)" \
+    out_has "$RUN_OUT" "--- Running: test_alpha.sh ---"
+assert "S5a: the unmapped member still executes (full pool)" \
+    out_has "$RUN_OUT" "--- Running: test_gamma.sh ---"
+assert "S5a: nothing is skipped under storm-escape (no SKIP line)" \
+    out_lacks "$RUN_OUT" "SKIP (content-clean)"
+assert "S5a: no per-member RUN (unmapped) decision line under storm-escape" \
+    out_lacks "$RUN_OUT" "RUN (unmapped)"
+assert "S5a: no per-member RUN (no-baseline) decision line under storm-escape" \
+    out_lacks "$RUN_OUT" "RUN (no-baseline)"
+
+# -- 5b: engine ACTIVE, state file CORRUPT ⇒ one loud line + full pool ---------
+echo ""
+echo "--- Section 5b (step-9): storm-escape, state file corrupt ---"
+
+make_clean_backstop_fixture S5B   # clean mapped test_alpha (would skip)
+# A VALID entry that WOULD skip (green==HEAD, fresh, in-window) FOLLOWED by a
+# garbage line ⇒ the whole ledger is unparseable ⇒ the storm-escape must
+# suppress the otherwise-certain SKIP. Non-vacuity: WITHOUT the escape this run
+# skips the valid entry.
+{
+    printf '__MERGES__ 3\n'
+    printf 'test_alpha.sh %s %s 3\n' "$S5B_GREEN" "$(date +%s)"
+    printf '!!!this is not a valid ledger line!!!\n'
+} > "$S5B_STATE"
+
+run_skip "$S5B_STATE" "$S5B_CLOSURES" "$S5B_DIR"
+
+S5B_LOUD="$(count_substr "$RUN_OUT" "content-skip: state")"
+assert "S5b: emits EXACTLY ONE loud storm-escape line for the corrupt state file" \
+    test "$S5B_LOUD" -eq 1
+assert "S5b: the loud line names the full-pool fallback" \
+    out_has "$RUN_OUT" "running full pool"
+assert "S5b: the mapped member still executes (full pool)" \
+    out_has "$RUN_OUT" "--- Running: test_alpha.sh ---"
+assert "S5b: the valid entry is NOT skipped despite the corrupt ledger (non-vacuity)" \
+    out_lacks "$RUN_OUT" "SKIP (content-clean)"
+
+# -- 5c: strict inert gating — each missing key ⇒ SILENT full run -------------
+# Non-vacuity anchor: build ONE would-skip fixture, prove it SKIPs when fully
+# active (role=merge), then prove each single missing key turns it silent.
+echo ""
+echo "--- Section 5c (step-9): strict inert gating (each gate key is load-bearing) ---"
+
+make_clean_backstop_fixture S5C   # clean mapped test_alpha (would skip)
+{ printf '__MERGES__ 3\n'; printf 'test_alpha.sh %s %s 3\n' "$S5C_GREEN" "$(date +%s)"; } > "$S5C_STATE"
+
+# Anchor: fully active ⇒ this fixture SKIPs (proves the inert cases below are
+# non-vacuous — the member genuinely would otherwise have been skipped).
+run_skip "$S5C_STATE" "$S5C_CLOSURES" "$S5C_DIR"
+assert "S5c(anchor): the fixture SKIPs when the engine is fully active" \
+    out_has "$RUN_OUT" "SKIP (content-clean): test_alpha.sh"
+
+# c1: flag unset ⇒ silent full run.
+run_noflag "$S5C_STATE" "$S5C_CLOSURES" "$S5C_DIR"
+assert "S5c1: flag unset ⇒ the would-skip member is executed" \
+    out_has "$RUN_OUT" "--- Running: test_alpha.sh ---"
+assert "S5c1: flag unset ⇒ no SKIP line" \
+    out_lacks "$RUN_OUT" "SKIP (content-clean)"
+assert "S5c1: flag unset ⇒ no loud line" \
+    out_lacks "$RUN_OUT" "content-skip: state"
+assert "S5c1: flag unset ⇒ no per-member decision line" \
+    out_lacks "$RUN_OUT" "RUN (no-baseline)"
+
+# c2: role=task ⇒ silent full run (the role key is the merge-vs-task signal;
+# _RA_INBOUND_ROLE=task at run_all.sh:230 ⇒ the engine must never skip).
+run_skip "$S5C_STATE" "$S5C_CLOSURES" "$S5C_DIR" task
+assert "S5c2: role=task ⇒ the would-skip member is executed" \
+    out_has "$RUN_OUT" "--- Running: test_alpha.sh ---"
+assert "S5c2: role=task ⇒ no SKIP line (role gate is load-bearing)" \
+    out_lacks "$RUN_OUT" "SKIP (content-clean)"
+assert "S5c2: role=task ⇒ no loud line" \
+    out_lacks "$RUN_OUT" "content-skip: state"
+
+# c3: state path empty ⇒ silent full run (feature off, distinct from the
+# storm-escape which requires an explicitly-set state path).
+run_skip "" "$S5C_CLOSURES" "$S5C_DIR"
+assert "S5c3: empty state path ⇒ the would-skip member is executed" \
+    out_has "$RUN_OUT" "--- Running: test_alpha.sh ---"
+assert "S5c3: empty state path ⇒ no SKIP line" \
+    out_lacks "$RUN_OUT" "SKIP (content-clean)"
+assert "S5c3: empty state path ⇒ no loud line" \
+    out_lacks "$RUN_OUT" "content-skip: state"
+
 test_summary
