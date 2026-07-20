@@ -389,12 +389,18 @@ structure def PinnedSupport : Support {
 //   `magnitude`  — applied pressure. `Real` is a placeholder for
 //                  `Scalar<PRESSURE>` until the dimensional type aliases land;
 //                  mirrors the `magnitude` key in the retired builtin.
-//   `face`       — geometry selector. `String` is a placeholder for `FaceSelector`
-//                  (docs/prds/topology-selector-value-type.md — typed-selector
-//                  value-type design); actual String → FaceSelector migration is
-//                  owned by the FEA Load/Support follow-on PRD (depends on
-//                  topology-selector-value-type.md §10 + task 4092). Mirrors the
-//                  `face` key in the retired builtin.
+//   `face`       — geometry selector, now typed `Option<FaceSelector> = none`
+//                  (String → typed-selector migration completed in task 4370;
+//                  docs/prds/topology-selector-value-type.md — typed-selector
+//                  value-type design). Callers pass a nested named-leaf selector
+//                  ctor, e.g. `face(body, "x_max")`, which the compiler hoists to
+//                  a synthetic top-level cell and the named-leaf symbolic stand-in
+//                  mints to a `Value::Selector(Leaf { query: Named(name) })`;
+//                  `extract_loads` reads the `Named` name kernel-lessly via
+//                  `box_face_plane`. `none` (the `= none` default) leaves the
+//                  pressure faceless (no traction applied). The legacy
+//                  `face: "x_max"` String form is still accepted for transition
+//                  safety (extract_loads keeps its `Value::String` arm).
 //   `direction`  — outward-normal sentinel or explicit direction. `String` is
 //                  a placeholder; mirrors the `direction` key in the retired
 //                  builtin. The `"normal"` sentinel means "outward face normal";
@@ -411,7 +417,7 @@ structure def PinnedSupport : Support {
 //      selector→node-set mapping).
 structure def PressureLoad : Load {
     param magnitude : Real = 0.0
-    param face      : String = ""
+    param face      : Option<FaceSelector> = none
     param direction : String = "normal"
 }
 

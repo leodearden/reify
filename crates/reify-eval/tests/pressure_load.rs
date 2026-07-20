@@ -29,7 +29,7 @@ fn field<'a>(m: &'a PersistentMap<String, Value>, k: &str) -> Option<&'a Value> 
 /// task 3544 step-1: bare `PressureLoad()` constructor lowers to a
 /// `Value::StructureInstance` whose `type_name` is `"PressureLoad"` and whose
 /// fields carry the three declared defaults: `direction = "normal"`,
-/// `face = ""`, `magnitude = 0.0`.
+/// `face = none` (Option<FaceSelector> = none — task 4370), `magnitude = 0.0`.
 ///
 /// RED before step-2 declares `structure def PressureLoad : Load { ... }` in
 /// `crates/reify-compiler/stdlib/fea_multi_case.ri`; source-level `PressureLoad(...)`
@@ -67,11 +67,12 @@ structure def PressureLoadFixture {
                 "PressureLoad.direction default must be \"normal\"; fields: {:?}",
                 data.fields
             );
-            // face default = ""
+            // face default = none (Option<FaceSelector> = none — task 4370
+            // migrates PressureLoad.face from String to Option<FaceSelector>)
             assert_eq!(
                 field(&data.fields, "face"),
-                Some(&Value::String(String::new())),
-                "PressureLoad.face default must be \"\"; fields: {:?}",
+                Some(&Value::Option(None)),
+                "PressureLoad.face default must be none (Value::Option(None)); fields: {:?}",
                 data.fields
             );
             // magnitude default = 0.0

@@ -202,9 +202,10 @@ structure FEACantileverTest {
 fn solve_elastic_static_direct_pressure_load_compiles_clean() {
     let src = r#"
 structure FEAPressureTest {
+    let body = box(1000mm, 100mm, 100mm)
     let result = solve_elastic_static(
         Steel_AISI_1045(), 1000mm, 100mm, 100mm,
-        [PressureLoad(magnitude: 1000000.0, face: "x_max", direction: "normal")],
+        [PressureLoad(magnitude: 1000000.0, face: face(body, "x_max"), direction: "normal")],
         [FixedSupport(target: "root")],
         ElasticOptions()
     )
