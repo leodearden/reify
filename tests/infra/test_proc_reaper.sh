@@ -958,8 +958,11 @@ assert "reap-orphaned-test-binaries.sh reaps an orphaned test binary after paren
         _pid_file=$(mktemp)
         trap "rm -f \"$_pid_file\"" EXIT
 
-        # Pre-clean stale instances.
-        "$_abs_ps" -A -o pid,exe 2>/dev/null | "$_abs_grep" "reify_faketest_e2e" \
+        # Pre-clean stale instances of THIS run only. Scope the host-wide kill to
+        # the per-run suffixed marker (mirrors the Part 2a pre-clean at :331); the
+        # unsuffixed "reify_faketest_e2e" would collateral-kill a CONCURRENT
+        # run_all fixture reify_faketest_e2e_<other-pid> that is still live (task 5260).
+        "$_abs_ps" -A -o pid,exe 2>/dev/null | "$_abs_grep" "reify_faketest_e2e_${_SENT_FAKE}" \
             | awk "{print \$1}" \
             | while read -r _p; do "$_abs_kill" -9 "$_p" 2>/dev/null || true; done
         "$_abs_sleep" 0.3
