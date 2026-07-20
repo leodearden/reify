@@ -126,4 +126,95 @@ assert "S1: skipped member is NOT executed (no '--- Running: test_alpha.sh ---')
 assert "S1: suite still exits 0 when the only member is skipped" \
     test "$RUN_RC" -eq 0
 
+# ===========================================================================
+# Section 2 (step-3): RUN (delta) — content changed, member must run.
+#   A mapped member whose closure changed between green and the run must RUN,
+#   with a `RUN (delta): <m> touched=<path>` line and a `--- Running: <m> ---`.
+#   RED until step-4: step-2 keeps a non-clean member in the list (so it is
+#   already EXECUTED) but emits no RUN decision line yet.
+# ===========================================================================
+
+# -- 2a: committed delta (green sha < HEAD; a declared closure file changed) --
+echo ""
+echo "--- Section 2a (step-3): RUN (delta), committed change to a closure file ---"
+
+S2A_DIR="$(mktemp -d)"; _TMPDIRS+=("$S2A_DIR")
+git_init_fixture "$S2A_DIR"
+mk_member "$S2A_DIR" test_alpha.sh 0
+printf 'v1\n' > "$S2A_DIR/alpha_dep.txt"
+git -C "$S2A_DIR" add -A
+git -C "$S2A_DIR" commit -q -m "base"
+S2A_GREEN="$(git -C "$S2A_DIR" rev-parse HEAD)"
+printf 'v2 (changed)\n' > "$S2A_DIR/alpha_dep.txt"
+git -C "$S2A_DIR" add -A
+git -C "$S2A_DIR" commit -q -m "touch closure"
+S2A_CLOSURES="$S2A_DIR/_meta_closures.manifest"
+printf 'test_alpha.sh alpha_dep.txt\n' > "$S2A_CLOSURES"
+S2A_STATE="$S2A_DIR/_meta_state.ledger"
+{ printf '__MERGES__ 2\n'; printf 'test_alpha.sh %s %s 2\n' "$S2A_GREEN" "$(date +%s)"; } > "$S2A_STATE"
+
+run_skip "$S2A_STATE" "$S2A_CLOSURES" "$S2A_DIR"
+
+assert "S2a: emits RUN (delta) for the committed closure change" \
+    out_has "$RUN_OUT" "RUN (delta): test_alpha.sh"
+assert "S2a: RUN (delta) names the touched closure path" \
+    out_has "$RUN_OUT" "touched=alpha_dep.txt"
+assert "S2a: the delta member IS executed" \
+    out_has "$RUN_OUT" "--- Running: test_alpha.sh ---"
+
+# -- 2b: worktree-dirty delta (green..HEAD clean, uncommitted closure edit) ---
+echo ""
+echo "--- Section 2b (step-3): RUN (delta), uncommitted (worktree) change to a closure file ---"
+
+S2B_DIR="$(mktemp -d)"; _TMPDIRS+=("$S2B_DIR")
+git_init_fixture "$S2B_DIR"
+mk_member "$S2B_DIR" test_alpha.sh 0
+printf 'v1\n' > "$S2B_DIR/alpha_dep.txt"
+git -C "$S2B_DIR" add -A
+git -C "$S2B_DIR" commit -q -m "base"
+S2B_GREEN="$(git -C "$S2B_DIR" rev-parse HEAD)"   # green == HEAD (committed-clean)
+printf 'dirty (uncommitted)\n' >> "$S2B_DIR/alpha_dep.txt"   # leave uncommitted
+S2B_CLOSURES="$S2B_DIR/_meta_closures.manifest"
+printf 'test_alpha.sh alpha_dep.txt\n' > "$S2B_CLOSURES"
+S2B_STATE="$S2B_DIR/_meta_state.ledger"
+{ printf '__MERGES__ 2\n'; printf 'test_alpha.sh %s %s 2\n' "$S2B_GREEN" "$(date +%s)"; } > "$S2B_STATE"
+
+run_skip "$S2B_STATE" "$S2B_CLOSURES" "$S2B_DIR"
+
+assert "S2b: emits RUN (delta) for the uncommitted (worktree) closure change" \
+    out_has "$RUN_OUT" "RUN (delta): test_alpha.sh"
+assert "S2b: the worktree-dirty member IS executed (not skipped)" \
+    out_has "$RUN_OUT" "--- Running: test_alpha.sh ---"
+
+# -- 2c: own-file change (implicit closure member) always runs (contract K3) --
+echo ""
+echo "--- Section 2c (step-3): RUN (delta), the member's own file changed ---"
+
+S2C_DIR="$(mktemp -d)"; _TMPDIRS+=("$S2C_DIR")
+git_init_fixture "$S2C_DIR"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$S2C_DIR/test_alpha.sh"
+chmod +x "$S2C_DIR/test_alpha.sh"
+printf 'stable\n' > "$S2C_DIR/alpha_dep.txt"
+git -C "$S2C_DIR" add -A
+git -C "$S2C_DIR" commit -q -m "base"
+S2C_GREEN="$(git -C "$S2C_DIR" rev-parse HEAD)"
+# change ONLY the member's own file (declared closure alpha_dep.txt untouched);
+# the own file is an IMPLICIT closure member, so this must still force a run.
+printf '#!/usr/bin/env bash\n# revised body\nexit 0\n' > "$S2C_DIR/test_alpha.sh"
+git -C "$S2C_DIR" add -A
+git -C "$S2C_DIR" commit -q -m "touch own file"
+S2C_CLOSURES="$S2C_DIR/_meta_closures.manifest"
+printf 'test_alpha.sh alpha_dep.txt\n' > "$S2C_CLOSURES"
+S2C_STATE="$S2C_DIR/_meta_state.ledger"
+{ printf '__MERGES__ 2\n'; printf 'test_alpha.sh %s %s 2\n' "$S2C_GREEN" "$(date +%s)"; } > "$S2C_STATE"
+
+run_skip "$S2C_STATE" "$S2C_CLOSURES" "$S2C_DIR"
+
+assert "S2c: own-file change emits RUN (delta) (own file is an implicit closure member)" \
+    out_has "$RUN_OUT" "RUN (delta): test_alpha.sh"
+assert "S2c: RUN (delta) names the touched own file" \
+    out_has "$RUN_OUT" "touched=test_alpha.sh"
+assert "S2c: the own-file-changed member IS executed" \
+    out_has "$RUN_OUT" "--- Running: test_alpha.sh ---"
+
 test_summary
