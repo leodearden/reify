@@ -336,3 +336,98 @@ fn boundary13_option_trait_param_nonconforming_warns_trait_conformance() {
         diags[0].message
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Step-3 probes: selector diagnostic refinement (D2).
+//
+// After step-2 the whole selector surface fires as Warnings, but every selector
+// mismatch is still coded `ArgTypeMismatch` (the single `emit_selector_mismatch`
+// helper). Step-4 refines it: a `Selector(j)→Selector(k)` KIND mismatch must
+// carry `SelectorKindMismatch` (4371 BT1 uniformity), while a non-selector arg
+// (bare String) stays `ArgTypeMismatch` (disallow-string over-tag guard, 4581).
+//
+// RED on this branch: row 6's `SelectorKindMismatch` code assertion fails
+// (currently `ArgTypeMismatch`). Row 9 is the over-tag guard and is already green
+// after step-2.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── row 6: value-cell EdgeSelector → FaceSelector param → one SelectorKindMismatch ──
+// `edges(b)` is typed `Selector(Edge)`; `param loc : FaceSelector` is
+// `Selector(Face)`. A kind mismatch must be coded SelectorKindMismatch and name
+// BOTH the expected (FaceSelector) and found (EdgeSelector) kinds.
+const SOURCE_ROW6_VALUE_CELL_WRONG_SELECTOR_KIND: &str = r#"module test.row6
+structure def Holder { param loc : FaceSelector }
+structure def Root {
+    let b = box(10mm, 10mm, 10mm)
+    let h = Holder(loc: edges(b))
+}
+"#;
+
+#[test]
+fn row6_value_cell_wrong_selector_kind_warns_selector_kind_mismatch() {
+    let module = compile_source_with_stdlib(SOURCE_ROW6_VALUE_CELL_WRONG_SELECTOR_KIND);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "wrong-kind Selector→Selector param must emit exactly one ctor-conformance diagnostic, \
+         got: {diags:#?}"
+    );
+    assert_eq!(
+        diags[0].severity,
+        Severity::Warning,
+        "α: ctor field conformance is Warning-severity, got: {:?}",
+        diags[0]
+    );
+    // RED until step-4: `emit_selector_mismatch` currently tags every selector
+    // mismatch `ArgTypeMismatch`; a `Selector(j)→Selector(k)` KIND mismatch must
+    // carry `SelectorKindMismatch` (D2 / 4371 BT1 uniformity).
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::SelectorKindMismatch),
+        "wrong-kind selector must carry SelectorKindMismatch, got: {:?}",
+        diags[0].code
+    );
+    // Message names BOTH the expected (FaceSelector) and found (EdgeSelector)
+    // kinds — the Display strings for `SelectorKind::Face` / `SelectorKind::Edge`
+    // (reify-core/src/ty.rs). Already satisfied by the current wording; the code
+    // assertion above is the RED one.
+    for needle in ["FaceSelector", "EdgeSelector"] {
+        assert!(
+            diags[0].message.contains(needle),
+            "message must name {needle:?}, got: {:?}",
+            diags[0].message
+        );
+    }
+}
+
+// ── row 9: value-cell bare String literal → FaceSelector param → one ArgTypeMismatch ──
+// Over-tag guard (mirrors 4581): a bare String is NOT a selector, so this stays
+// ArgTypeMismatch even after step-4 re-codes the Selector(j)→Selector(k) case.
+const SOURCE_ROW9_VALUE_CELL_STRING_TO_SELECTOR: &str = r#"module test.row9
+structure def Holder { param loc : FaceSelector }
+structure def Root {
+    let h = Holder(loc: "x_max")
+}
+"#;
+
+#[test]
+fn row9_value_cell_string_to_selector_param_warns_arg_type_mismatch() {
+    let module = compile_source_with_stdlib(SOURCE_ROW9_VALUE_CELL_STRING_TO_SELECTOR);
+    let diags = ctor_conformance_diags(&module);
+    assert_eq!(
+        diags.len(),
+        1,
+        "bare String→FaceSelector must emit exactly one ctor-conformance diagnostic, got: {diags:#?}"
+    );
+    assert_eq!(diags[0].severity, Severity::Warning);
+    // A bare String literal is not a selector — disallow-string stays
+    // ArgTypeMismatch; only a Selector(j)→Selector(k) kind mismatch is re-coded to
+    // SelectorKindMismatch in step-4 (over-tag guard, 4581).
+    assert_eq!(
+        diags[0].code,
+        Some(DiagnosticCode::ArgTypeMismatch),
+        "String→Selector must stay ArgTypeMismatch (not SelectorKindMismatch), got: {:?}",
+        diags[0].code
+    );
+}
