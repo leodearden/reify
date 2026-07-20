@@ -1337,6 +1337,16 @@ emit_nextest_pass() {
         # default. Per-profile filter precedence and the loud absent/empty and
         # size-ceiling full-fallbacks are layered on by later steps.
         local _retry_filter_frag=""
+        # Effective (local) copies of the heavy-filter fragments. Default to the
+        # module-scope originals; when an eligible retry subset is folded into a
+        # single `-E` below, these are cleared/stripped so the heavy filterset is
+        # emitted exactly ONCE (inside the combined term) rather than as a second
+        # `-E` that nextest 0.9.136 would UNION (OR) with the subset — which would
+        # run (heavy-filter) OR (subset) = the whole (non-)heavy suite, silently
+        # defeating the "retry only the did-not-pass tests" contract. When retry
+        # is inactive/ineligible these stay byte-identical to the originals.
+        local _eff_gate_exclude="$_GATE_HEAVY_EXCLUDE"
+        local _eff_offline_select="$_OFFLINE_HEAVY_SELECT"
         if [ "$_RETRY_SUBSET_ELIGIBLE" -eq 1 ]; then
             # Profile derived from arg2 `rel` (" --release" → release, else
             # debug); emit_nextest_pass is called once per profile from
@@ -1393,10 +1403,41 @@ emit_nextest_pass() {
                         _retry_expr="${_retry_expr} | test(=${_id})"
                     fi
                 done
-                _retry_filter_frag=" -E '${_retry_expr}'"
+                # Compose the subset with any ACTIVE heavy filterset into a
+                # SINGLE `-E` term via the intersection operator ` & ` (valid
+                # filterset DSL — REIFY_HEAVY_NEXTEST_FILTER itself uses
+                # `package(..) & binary(..)`). nextest 0.9.136 UNIONs multiple
+                # `-E` expressions, so a second `-E` here would WIDEN, not
+                # narrow (the union bug). Derive the active gate expr and
+                # SUPPRESS its separate fragment (via the _eff_* copies):
+                #   - gate-exclude (task/merge + REIFY_GATE_EXCLUDE_HEAVY=1):
+                #     `not (<heavy>)`  → clear _eff_gate_exclude entirely.
+                #   - offline positive select: `(<heavy>)` → strip the
+                #     `-E "(…)"` filterset but PRESERVE the trailing
+                #     non-filterset flag(s) (` --run-ignored all`).
+                # Semantically sound: under heavy-exclude attempt-0 never ran a
+                # heavy test, so no did-not-pass id can be heavy — intersecting
+                # with `not (heavy)` drops nothing attempt-0 ran (and
+                # conservatively excludes any stray heavy id). Single-quote
+                # wrapping is eval-safe (the heavy value and the DF exact ids
+                # are single-quote-free). When NO gate expr is active the
+                # retry-only single-quoted form is unchanged (byte-identical).
+                local _gate_expr=""
+                if [ -n "$_eff_gate_exclude" ]; then
+                    _gate_expr="not (${REIFY_HEAVY_NEXTEST_FILTER})"
+                    _eff_gate_exclude=""
+                elif [ -n "$_eff_offline_select" ]; then
+                    _gate_expr="(${REIFY_HEAVY_NEXTEST_FILTER})"
+                    _eff_offline_select="${_eff_offline_select##* -E \"*\"}"
+                fi
+                if [ -n "$_gate_expr" ]; then
+                    _retry_filter_frag=" -E '(${_gate_expr}) & (${_retry_expr})'"
+                else
+                    _retry_filter_frag=" -E '${_retry_expr}'"
+                fi
             fi
         fi
-        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel}${_GATE_HEAVY_EXCLUDE}${_OFFLINE_HEAVY_SELECT}${_tt_flag}${_retry_filter_frag} --config-file ${_cfg_path}"
+        cmd="timeout --kill-after=60 ${outer_timeout} ${CARGO_PRIO}cargo nextest run ${selector}${rel}${_eff_gate_exclude}${_eff_offline_select}${_tt_flag}${_retry_filter_frag} --config-file ${_cfg_path}"
     else
         # Fallback (no nextest): the nextest occt test-group that serializes
         # OCCT's thread-unsafe tests is unavailable here, so the ONLY OCCT guard
