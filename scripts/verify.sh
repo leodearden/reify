@@ -1304,11 +1304,21 @@ emit_nextest_pass() {
             # (and, in a later step, per-profile filter-file precedence).
             local _retry_profile="debug"
             case "$rel" in *release*) _retry_profile="release" ;; esac
-            # Base filter var only for now; per-profile _DEBUG/_RELEASE
-            # precedence is layered on by a later step at this same resolution
-            # point (the absent/empty/unreadable + ceiling guards operate on
-            # whatever RESOLVED path this yields, unchanged).
+            # Per-profile filter precedence with base fallback: the profile's
+            # own REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE_DEBUG / _RELEASE var
+            # overrides the base REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE when
+            # non-empty, so a --profile both retry can carry a different subset
+            # per profile (each pass resolves its own). When the per-profile var
+            # is unset/empty it falls back to the base var; when all are unset the
+            # resolved path is empty → the loud no-subset fallback below. The
+            # absent/empty/unreadable and ceiling guards operate on this RESOLVED
+            # path unchanged.
             local _retry_filter_file="${REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE:-}"
+            if [ "$_retry_profile" = "release" ]; then
+                _retry_filter_file="${REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE_RELEASE:-$_retry_filter_file}"
+            else
+                _retry_filter_file="${REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE_DEBUG:-$_retry_filter_file}"
+            fi
             # Collect the non-blank exact test IDs so the size ceiling can be
             # applied BEFORE the expression is built.
             local -a _retry_ids=()
