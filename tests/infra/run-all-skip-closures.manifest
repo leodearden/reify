@@ -56,6 +56,24 @@
 #   (test_run_all_content_skip.sh) is RED if any declared closure omits a
 #   repo-relative path token that the member's own source text references.
 #
+# ---------------------------------------------------------------------------
+# THE DRIFT-GUARD IS BEST-EFFORT, NOT A COMPLETENESS PROOF (soundness caveat)
+#   The under-declaration drift-guard can only catch a closure that omits a
+#   tracked path referenced *literally* in the member's SOURCE TEXT and
+#   matching its anchor set (known top-level dirs + a fixed list of repo-root
+#   artifacts). It CANNOT prove a closure is complete. A dependency reached
+#   indirectly — invoked via a shell variable, read at runtime, produced by a
+#   build step, or living at an un-anchored repo-root path — is invisible to
+#   it, yet omitting such a path is exactly the under-declaration that causes a
+#   wrongly-SKIPPED member (a silent loss of test coverage — the one true bug
+#   of this file). THEREFORE treat a green guard as a net, not a proof:
+#   NARROWING a row (removing/tightening paths) REQUIRES human review of the
+#   member's ACTUAL runtime inputs, not merely a green guard run. Over-
+#   declaration is always sound; when in doubt keep the row broad (CONSERVATIVE-
+#   FIRST, above). Task 5273 ships the engine production-inert (activated by
+#   task 5276) and seeds only clearly-hermetic members, so no wrong skip can
+#   occur yet — but a future narrowing must not over-trust the guard.
+#
 # This file is a LOAD-BEARING verify-pipeline artifact (an edit routes the
 # task through the full --scope all gate; see scripts/verify-pipeline-guard.sh).
 

@@ -612,11 +612,17 @@ assert "S6b: the global merge counter is NOT bumped on a failed run (stays 7)" \
 
 # _udg_tokens FILE — the repo-relative path tokens referenced in FILE, one per
 # line, trailing punctuation/slash stripped, de-duplicated. Anchored on known
-# top-level repo dirs + root manifests so shell vars ($SCRIPT_DIR/..),
-# absolute OS paths (/dev/null, /usr/bin/env, /tmp/..) and gitignore globs
-# (__pycache__/*) are never mistaken for tracked-file references.
+# top-level repo dirs + a fixed set of repo-root artifacts (Cargo.toml/.lock,
+# rust-toolchain.toml, dark-factory-orchestrator.yaml, any root-level *.toml,
+# .gitignore) so shell vars ($SCRIPT_DIR/..), absolute OS paths (/dev/null,
+# /usr/bin/env, /tmp/..) and gitignore globs (__pycache__/*) are never mistaken
+# for tracked-file references. BEST-EFFORT ONLY: this catches LITERAL source
+# references under the anchor set — it cannot see deps reached via a variable,
+# at runtime, or produced by a build step, so a green guard is a net, not a
+# proof of closure completeness (see run-all-skip-closures.manifest: NARROWING
+# a row needs human review of the member's actual inputs, not just a green run).
 _udg_tokens() {
-    { grep -oE '(scripts|tests|crates|hooks|docs|gui|\.config|\.github)/[A-Za-z0-9_./*-]+|Cargo\.(toml|lock)|rust-toolchain(\.toml)?|\.gitignore' "$1" 2>/dev/null || true; } \
+    { grep -oE '(scripts|tests|crates|hooks|docs|gui|\.config|\.github)/[A-Za-z0-9_./*-]+|dark-factory-orchestrator\.yaml|Cargo\.(toml|lock)|rust-toolchain(\.toml)?|[A-Za-z0-9_.-]+\.toml|\.gitignore' "$1" 2>/dev/null || true; } \
         | sed -E 's#[./,:;)]+$##' | sort -u | sed '/^$/d'
 }
 
@@ -696,6 +702,31 @@ printf 'test_under.sh docs/unrelated.md\n' > "$S7B_MANIFEST"   # omits scripts/u
 S7B_UNCOVERED="$(udg_uncovered "$S7B_MANIFEST" "$S7B_DIR")"
 assert "S7b: the guard REPORTS the omitted scripts/under_dep.sh (non-vacuity)" \
     out_has "$S7B_UNCOVERED" "test_under.sh scripts/under_dep.sh"
+
+# -- 7c: non-vacuity for the BROADENED anchor set (task 5273 amendment) — a
+#        repo-ROOT artifact (dark-factory-orchestrator.yaml) that lives outside
+#        the anchored top-level dirs, referenced literally but omitted from the
+#        row, is REPORTED. Proves the widened _udg_tokens anchors are load-
+#        bearing, not a dead regex branch that could silently rot. ---------
+echo ""
+echo "--- Section 7c (task 5273 amend): broadened root-artifact anchor is caught ---"
+S7C_DIR="$(mktemp -d)"; _TMPDIRS+=("$S7C_DIR")
+git_init_fixture "$S7C_DIR"
+# Mock member reads a repo-ROOT artifact (not under scripts/tests/... etc.);
+# its manifest row OMITS it.
+{
+    printf '#!/usr/bin/env bash\n'
+    printf '# member reads the orchestrator config dark-factory-orchestrator.yaml\n'
+    printf 'grep verify_env dark-factory-orchestrator.yaml\n'
+    printf 'exit 0\n'
+} > "$S7C_DIR/test_root_art.sh"
+chmod +x "$S7C_DIR/test_root_art.sh"
+git -C "$S7C_DIR" add -A; git -C "$S7C_DIR" commit -q -m base
+S7C_MANIFEST="$S7C_DIR/_meta_closures.manifest"
+printf 'test_root_art.sh docs/unrelated.md\n' > "$S7C_MANIFEST"   # omits the root yaml
+S7C_UNCOVERED="$(udg_uncovered "$S7C_MANIFEST" "$S7C_DIR")"
+assert "S7c: the guard REPORTS the omitted dark-factory-orchestrator.yaml (broadened anchor)" \
+    out_has "$S7C_UNCOVERED" "test_root_art.sh dark-factory-orchestrator.yaml"
 
 # ===========================================================================
 # Section 8 (step-15): activation-surface contract — the ambient-vars ledger
