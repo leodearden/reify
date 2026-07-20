@@ -1338,15 +1338,6 @@ impl Engine {
             let has_dirty_guards = graph.structure_controlling.iter().any(|sc_id| {
                 dirty_cone.contains(&NodeId::Value(sc_id.clone())) || changed_set.contains(sc_id)
             });
-            if std::env::var("SCRATCH_DEBUG").is_ok() {
-                eprintln!(
-                    "DEBUG structure_controlling={:?} dirty_cone_has={:?} changed_set={:?} has_dirty_guards={}",
-                    graph.structure_controlling,
-                    graph.structure_controlling.iter().map(|sc| dirty_cone.contains(&NodeId::Value(sc.clone()))).collect::<Vec<_>>(),
-                    changed_set,
-                    has_dirty_guards
-                );
-            }
 
             if has_dirty_guards {
                 let mut set = HashMap::new();
@@ -1390,19 +1381,6 @@ impl Engine {
                     new_snapshot
                         .values
                         .insert(group.guard_cell.clone(), (guard_val.clone(), guard_det));
-                    if std::env::var("SCRATCH_DEBUG").is_ok() {
-                        eprintln!(
-                            "DEBUG group.guard_cell={:?} guard_val={:?} old_snapshot_val={:?} unchanged={}",
-                            group.guard_cell,
-                            guard_val,
-                            self.eval_state.as_ref().and_then(|s| s.snapshot.values.get(&group.guard_cell)),
-                            guard_value_unchanged(
-                                self.eval_state.as_ref().map(|s| &s.snapshot.values),
-                                &group.guard_cell,
-                                &guard_val,
-                            )
-                        );
-                    }
                     if guard_value_unchanged(
                         self.eval_state.as_ref().map(|s| &s.snapshot.values),
                         &group.guard_cell,
@@ -7003,37 +6981,5 @@ structure GrowColl {
             ),
             other => panic!("expected Started payload Custom({expected_slug:?}), got {other:?}"),
         }
-    }
-
-    #[test]
-    fn scratch_probe_case_a_double_eval() {
-        use reify_core::ValueCellId;
-        use reify_ir::Value;
-        use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
-
-        const SRC: &str = r#"
-field def f : Real -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(1.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [0.0, 1.0] } }
-
-structure GuardCaseA {
-    param x : Length = -1mm
-    where x > 0mm {
-        let oob = sample(f, 5.0m)
-    }
-}
-"#;
-
-        let compiled = parse_and_compile_with_stdlib(SRC);
-        let mut engine = make_simple_engine();
-        engine.eval(&compiled);
-
-        let x_id = ValueCellId::new("GuardCaseA", "x");
-        let result = engine
-            .edit_param(x_id, Value::length(0.01))
-            .expect("edit_param must succeed");
-
-        panic!(
-            "diagnostics after activating oob via edit_param(x, 10mm): {:#?}",
-            result.diagnostics
-        );
     }
 }
