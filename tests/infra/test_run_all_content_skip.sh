@@ -495,4 +495,102 @@ assert "S5c3: empty state path ⇒ no SKIP line" \
 assert "S5c3: empty state path ⇒ no loud line" \
     out_lacks "$RUN_OUT" "content-skip: state"
 
+# ===========================================================================
+# Section 6 (step-11): post-run state-ledger update.
+#   After an ACTIVE run where every EXECUTED member passed (failures==0), the
+#   ledger advances: each EXECUTED mapped member records green_sha=HEAD + a
+#   refreshed timestamp + merges_at_last_exec=the bumped global counter, while
+#   SKIPPED members keep their prior entries verbatim. On ANY executed failure
+#   the ledger is NOT written (green shas advance only on all-pass). RED until
+#   step-12: no post-run write exists yet, so green stays at the prior baseline
+#   and the global counter never bumps.
+# ===========================================================================
+
+# ledger_field FILE MEMBER N — field N (1=name,2=green,3=at,4=merges) of
+# MEMBER's row in the state ledger (empty if the row is absent).
+ledger_field() { awk -v m="$2" -v f="$3" '$1==m {print $f; exit}' "$1"; }
+# ledger_merges FILE — the global __MERGES__ counter (empty if absent).
+ledger_merges() { awk '$1=="__MERGES__" {print $2; exit}' "$1"; }
+
+# -- 6a: all-pass mix (one SKIP + one RUN) advances only the executed member ---
+echo ""
+echo "--- Section 6a (step-11): all-pass run advances executed members, preserves skipped ---"
+
+S6A_DIR="$(mktemp -d)"; _TMPDIRS+=("$S6A_DIR")
+git_init_fixture "$S6A_DIR"
+mk_member "$S6A_DIR" test_skip.sh 0
+printf 'skip stable\n' > "$S6A_DIR/skip_dep.txt"
+mk_member "$S6A_DIR" test_run.sh 0
+printf 'run v1\n' > "$S6A_DIR/run_dep.txt"
+git -C "$S6A_DIR" add -A
+git -C "$S6A_DIR" commit -q -m "base"
+S6A_RUN_GREEN="$(git -C "$S6A_DIR" rev-parse HEAD)"   # older baseline for test_run
+# Second commit touches ONLY run_dep.txt ⇒ test_run has a delta, test_skip clean.
+printf 'run v2 (changed)\n' > "$S6A_DIR/run_dep.txt"
+git -C "$S6A_DIR" add -A
+git -C "$S6A_DIR" commit -q -m "touch run closure"
+S6A_HEAD="$(git -C "$S6A_DIR" rev-parse HEAD)"
+S6A_CLOSURES="$S6A_DIR/_meta_closures.manifest"
+{ printf 'test_skip.sh skip_dep.txt\n'; printf 'test_run.sh run_dep.txt\n'; } > "$S6A_CLOSURES"
+S6A_STATE="$S6A_DIR/_meta_state.ledger"
+# test_skip: green==HEAD, FRESH ts ⇒ SKIP. test_run: green==older baseline ⇒ RUN (delta).
+{
+    printf '__MERGES__ 5\n'
+    printf 'test_skip.sh %s %s 5\n' "$S6A_HEAD" "$(date +%s)"
+    printf 'test_run.sh %s 1000 4\n' "$S6A_RUN_GREEN"
+} > "$S6A_STATE"
+
+run_skip "$S6A_STATE" "$S6A_CLOSURES" "$S6A_DIR"
+
+# Sanity: the fixture really is a SKIP+RUN mix, all-pass (stable across step-12).
+assert "S6a: test_skip.sh is skipped (content-clean)" \
+    out_has "$RUN_OUT" "SKIP (content-clean): test_skip.sh"
+assert "S6a: test_run.sh runs (delta)" \
+    out_has "$RUN_OUT" "RUN (delta): test_run.sh"
+assert "S6a: the all-pass run exits 0" \
+    test "$RUN_RC" -eq 0
+
+# The executed mapped member advances to HEAD, refreshed ts, bumped counter.
+assert "S6a: executed member green advances to HEAD" \
+    test "$(ledger_field "$S6A_STATE" test_run.sh 2)" = "$S6A_HEAD"
+assert "S6a: executed member timestamp is refreshed (not the old 1000)" \
+    test "$(ledger_field "$S6A_STATE" test_run.sh 3)" -gt 1000000000
+assert "S6a: executed member merges_at is the bumped global counter (6)" \
+    test "$(ledger_field "$S6A_STATE" test_run.sh 4)" = "6"
+assert "S6a: the global merge counter is bumped 5 -> 6" \
+    test "$(ledger_merges "$S6A_STATE")" = "6"
+# The skipped member keeps its prior entry verbatim.
+assert "S6a: skipped member green is preserved (still the HEAD baseline)" \
+    test "$(ledger_field "$S6A_STATE" test_skip.sh 2)" = "$S6A_HEAD"
+assert "S6a: skipped member merges_at is preserved (still 5, not bumped)" \
+    test "$(ledger_field "$S6A_STATE" test_skip.sh 4)" = "5"
+
+# -- 6b: a failing executed member ⇒ ledger NOT written (no green advance) -----
+echo ""
+echo "--- Section 6b (step-11): an executed failure leaves the ledger untouched ---"
+
+S6B_DIR="$(mktemp -d)"; _TMPDIRS+=("$S6B_DIR")
+git_init_fixture "$S6B_DIR"
+mk_member "$S6B_DIR" test_fail.sh 1      # mapped, delta ⇒ runs, then FAILS
+printf 'fail v1\n' > "$S6B_DIR/fail_dep.txt"
+git -C "$S6B_DIR" add -A
+git -C "$S6B_DIR" commit -q -m "base"
+S6B_GREEN="$(git -C "$S6B_DIR" rev-parse HEAD)"
+printf 'fail v2 (changed)\n' > "$S6B_DIR/fail_dep.txt"
+git -C "$S6B_DIR" add -A
+git -C "$S6B_DIR" commit -q -m "touch fail closure"
+S6B_CLOSURES="$S6B_DIR/_meta_closures.manifest"
+printf 'test_fail.sh fail_dep.txt\n' > "$S6B_CLOSURES"
+S6B_STATE="$S6B_DIR/_meta_state.ledger"
+{ printf '__MERGES__ 7\n'; printf 'test_fail.sh %s 1000 6\n' "$S6B_GREEN"; } > "$S6B_STATE"
+
+run_skip "$S6B_STATE" "$S6B_CLOSURES" "$S6B_DIR"
+
+assert "S6b: the failing member executed (suite exits non-zero) — non-vacuity" \
+    test "$RUN_RC" -ne 0
+assert "S6b: green is NOT advanced on a failed run (stays the prior baseline)" \
+    test "$(ledger_field "$S6B_STATE" test_fail.sh 2)" = "$S6B_GREEN"
+assert "S6b: the global merge counter is NOT bumped on a failed run (stays 7)" \
+    test "$(ledger_merges "$S6B_STATE")" = "7"
+
 test_summary
