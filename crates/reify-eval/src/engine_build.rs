@@ -8417,6 +8417,18 @@ impl Engine {
             // realization's scan, so a diagnostic is never missed; the cost
             // is occasionally scanning a realization whose own geometry no
             // selector actually touches.
+            //
+            // The result is module-global (identical for every realization),
+            // so this recomputes the same boolean once per realization instead
+            // of hoisting it to a single pre-loop pass. That redundancy is
+            // deliberate, not an oversight: design decision #4 weighed a
+            // once-per-build hoist and rejected it as threading churn across
+            // `RealizationOpsInput`'s four construction sites for negligible
+            // benefit (`values_contain_selector` short-circuits on the first
+            // selector and the top-level `values` map is small). The hoist
+            // target is the `compute_demanded_*` per-build pre-pass named in
+            // the plan's reuse notes, available if profiling ever flags this
+            // site — see the same design decision for the O(R·V) analysis.
             if values_contain_selector(values) {
             // v0.2 persistent-naming-v2 (PRD task 4 / #2654): construction-time
             // fragility detection for local_index reassignment. The
@@ -11696,16 +11708,27 @@ fn collect_centroids_with_failure_summary(
 /// about *selector-resolution* stability, so it is vacuous work on a build
 /// that bound no selector at all (e.g. the litter-tray multi-boolean model).
 ///
-/// Fail-open: recurses through every container `Value` variant that can
-/// carry a nested value — `List`, `Set`, `Map` (both keys and values),
-/// `Option`, and `Field`'s `lambda` (a `Restricted` field's lambda holds
-/// `Value::List[inner_field, region]`, where `region` can itself be a
-/// selector) — so a selector nested inside any of them is still found.
-/// Mirrors [`crate::invariants::value_is_or_contains_undef`]'s shape;
-/// deliberately does NOT recurse into single-composite variants
-/// (`StructureInstance`, `Tensor`, `Point`, `Frame`, …) for the same reason
-/// that helper doesn't: no corpus fixture forces it, and extending there
-/// would be speculative rather than evidence-driven.
+/// Fail-open *across the container variants a selector is known to reach*:
+/// recurses through every such `Value` variant — `List`, `Set`, `Map` (both
+/// keys and values), `Option`, and `Field`'s `lambda` (a `Restricted`
+/// field's lambda holds `Value::List[inner_field, region]`, where `region`
+/// can itself be a selector) — so a selector nested inside any of them is
+/// still found and any doubt there errs toward running the scan.
+///
+/// It is NOT total coverage, and the earlier bare "fail-open" framing
+/// overstated the guarantee. Mirroring
+/// [`crate::invariants::value_is_or_contains_undef`]'s shape, it deliberately
+/// does NOT recurse into the single-composite scalar-wrapper variants
+/// (`StructureInstance` / `Enum` payloads, `Tensor`, `Point`, `Frame`, …) for
+/// the same reason that helper doesn't: no corpus fixture forces it, and
+/// extending there would be speculative rather than evidence-driven. For
+/// those variants the check is therefore fail-CLOSED, not fail-open — a
+/// selector reachable *exclusively* through one of them (with no other
+/// selector anywhere in the module) is missed, so the gated tie-scan is
+/// skipped and its `TopologyAttributeLocalIndexReassigned` diagnostic is not
+/// emitted. Accepted as a bounded gap: that diagnostic is advisory
+/// `Severity::Info`. Add a recursion arm here the moment a fixture actually
+/// exercises a selector nested exclusively within one of those variants.
 fn value_contains_selector(value: &reify_ir::Value) -> bool {
     match value {
         reify_ir::Value::Selector(_) => true,
