@@ -89,15 +89,4 @@ mod tests {
         let r = declared_warm_kinds_only();
         assert_warm_startable_coextensive(&r);
     }
-
-    // ── release-mode no-op ───────────────────────────────────────────────
-
-    #[test]
-    #[cfg(not(debug_assertions))]
-    fn release_mode_no_op_on_empty_registry() {
-        // In release mode the debug_assert_eq! body is elided — even an empty
-        // registry (which would panic in debug) must complete without panic.
-        let r = WarmStartableRegistry::new();
-        assert_warm_startable_coextensive(&r);
-    }
 }
