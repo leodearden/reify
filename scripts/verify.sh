@@ -1740,9 +1740,26 @@ build_plan() {
     local _gui_cmd="" _sidecar_cmd="" _ts_cmd="" _node_lane=""
     if [ "$RUN_GUI" -eq 1 ] && { [ "$DO_TEST" -eq 1 ] || [ "$DO_LINT" -eq 1 ]; }; then
         # typecheck always (whenever the block runs, test OR lint); npm test only
-        # on the test side.
+        # on the test side. On a merge-gate narrowed retry, dark-factory sets
+        # REIFY_GUI_RETRY_SPECS to the space-separated, gui-root-relative vitest
+        # spec paths that failed (e.g. `src/__tests__/foo.test.ts`); forward them
+        # so the block runs ONLY those specs via `npm test -- <specs>` (== `vitest
+        # run <specs>`; the block cd's into gui/, so gui-relative positionals
+        # match). Unset OR empty => full `npm test`, byte-identical to the
+        # non-retry path (the §4.3 loud full-fallback for an empty gui subset).
+        # PRD docs/prds/verify-retry-failed-only.md §4.2 leaf γ. Spec paths are
+        # plain file paths (no single quotes — accepted v1 limitation)
+        # interpolated before wrap_subshell single-quotes the bash -c '…' string,
+        # mirroring the raw interpolation of _GATE_HEAVY_EXCLUDE.
         local gui_inner="npm ci && npm run typecheck"
-        [ "$DO_TEST" -eq 1 ] && gui_inner+=" && npm test"
+        if [ "$DO_TEST" -eq 1 ]; then
+            local _gui_retry_specs="${REIFY_GUI_RETRY_SPECS:-}"
+            if [ -n "$_gui_retry_specs" ]; then
+                gui_inner+=" && npm test -- $_gui_retry_specs"
+            else
+                gui_inner+=" && npm test"
+            fi
+        fi
         _gui_cmd="if test -d gui; then $(wrap_subshell gui 15 "$gui_inner"); fi"
 
         # sidecar has no vitest side; both typecheck passes run whenever the block does.
