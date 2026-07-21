@@ -26,6 +26,8 @@ use reify_core::{
     Diagnostic, DiagnosticCode, ModulePath, Severity, Type, ValueCellId, VersionId,
 };
 use reify_eval::Engine;
+use reify_eval::cache::NodeId;
+use reify_eval::journal::{EventKind, EventPayload};
 use reify_ir::{
     BestFoundReason, BinOp, CompiledExpr, CompiledExprKind, ConstraintSolver, DeterminacyState,
     ObjectiveCombination, ObjectiveSense, ObjectiveSet, ObjectiveTerm, OptimalityStatus,
@@ -2315,4 +2317,99 @@ fn merged_cluster_combination_divergence_warns_and_keeps_first_found() {
          the already-governing (WeightedSum) combination; got: {}",
         warnings[0].message,
     );
+}
+
+/// INV-EVAL-1/2 enforcement for the warm merged N-scope commit (task #5118
+/// steps 9-10; needed because #5053 γ landed on main, migrating `eval_cached`'s
+/// SIBLING per-template + wave-2 arms onto `commit_cell_result`). The co-solved
+/// cluster-member autos written by `dispatch_merged_cluster_solve_cached` must
+/// route through `commit_cell_result` -- the primitive that writes the
+/// `self.journal` leg (a `Started` event carrying an `EventPayload::Custom`
+/// trace-source slug) -- NOT the hand-rolled `self.cache.record_evaluation`,
+/// which writes ONLY the cache leg and emits no journal `Started`. Reuses THIS
+/// file's `two_cycle_cluster_module` + spy solver (no twin harness), mirroring
+/// #5053's own `eval_cached_let_miss_provenance_and_determinacy` pattern.
+///
+/// PRECONDITION (esc-5118-2): a prior cold `eval()` seeds `self.eval_state` +
+/// the engine snapshot, the same warm precondition every warm test in this
+/// file establishes -- see
+/// `eval_cached_merged_cluster_let_surfaces_co_solved_cross_scope_auto`'s doc
+/// for the LSP `is_engine_initialized()` rationale. Cold `eval()`'s OWN merged
+/// dispatch (`dispatch_merged_cluster_solve`) ALSO journals a `Started` event
+/// for A.k/B.m, but with `payload: None`; this test therefore discriminates on
+/// the `EventPayload::Custom` provenance slug that ONLY `commit_cell_result`
+/// emits, so cold's manual `Started` cannot spuriously satisfy assertion (a).
+///
+/// RED on the current branch: the Solved arm of
+/// `dispatch_merged_cluster_solve_cached` still hand-rolls
+/// `self.cache.record_evaluation(...)` (cache leg only, no journal `Started`).
+/// GREEN at step 10, once that arm routes through `commit_cell_result`.
+#[test]
+fn eval_cached_merged_cluster_co_solve_records_commit_provenance() {
+    let module = two_cycle_cluster_module();
+
+    let a_k = ValueCellId::new("A", "k");
+    let b_m = ValueCellId::new("B", "m");
+
+    let mut combined = HashMap::new();
+    combined.insert(a_k.clone(), mm(3.0));
+    combined.insert(b_m.clone(), mm(7.0));
+
+    let spy = MultiCallSpyConstraintSolver::new(vec![SolveResult::Solved {
+        values: combined,
+        unique: true,
+    }]);
+
+    let mut engine =
+        Engine::new(Box::new(MockConstraintChecker::new()), None).with_solver(Box::new(spy));
+
+    // Establish the warm precondition: a prior cold eval() seeds self.eval_state
+    // + the engine snapshot (see the step-5 test's doc for the LSP
+    // is_engine_initialized() rationale). This ALSO journals cold `Started`
+    // events for A.k/B.m with `payload: None` -- the assertions below
+    // discriminate on the `Custom` payload so those cannot mask the RED.
+    engine.eval(&module);
+    // The warm keystroke path under test: co-solves the {A, B} cluster and
+    // writes back A.k/B.m. VersionId(2) mirrors #5053's warm-provenance test.
+    engine.eval_cached(&module, VersionId(2));
+
+    let snapshot = engine
+        .snapshot()
+        .expect("engine must have a snapshot after eval()/eval_cached()");
+
+    for id in [&a_k, &b_m] {
+        // (a) A `Started` event carrying an `EventPayload::Custom` provenance
+        // slug is emitted ONLY by `commit_cell_result` (cell_commit.rs); cold
+        // eval()'s merged dispatch emits `Started { payload: None }`, and the
+        // current warm `record_evaluation` emits no `Started` at all -- so this
+        // is exactly the journal leg the INV-EVAL-1/2 migration (step 10) adds.
+        let events = engine.journal().events_for_node(&NodeId::Value(id.clone()));
+        assert!(
+            events.iter().any(|ev| matches!(ev.kind, EventKind::Started)
+                && matches!(ev.payload, Some(EventPayload::Custom(_)))),
+            "co-solved cluster-member auto {:?} must have a journal `Started` \
+             event with an `EventPayload::Custom` provenance slug -- proving the \
+             warm merged write-back routed through `commit_cell_result` \
+             (INV-EVAL-1/2), not the hand-rolled `cache.record_evaluation` \
+             (cache leg only, no journal `Started`); got {} event(s): {:?}",
+            id,
+            events.len(),
+            events
+                .iter()
+                .map(|ev| (&ev.kind, &ev.payload))
+                .collect::<Vec<_>>(),
+        );
+
+        // (b) The co-solved cell is committed `Determined`.
+        let (_val, det) = snapshot
+            .values
+            .get(id)
+            .unwrap_or_else(|| panic!("{:?} missing from the final snapshot", id));
+        assert_eq!(
+            *det,
+            DeterminacyState::Determined,
+            "co-solved cluster-member auto {:?} must be `Determined`",
+            id,
+        );
+    }
 }
