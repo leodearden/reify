@@ -692,6 +692,11 @@ impl Engine {
 
     /// Construct an Engine with the embedded stdlib as its prelude.
     ///
+    /// **No compute trampolines are registered.** Call
+    /// [`Self::register_production_compute_fns`] on the returned engine unless you
+    /// are deliberately building a trampoline-free engine (see `cmd_check`'s
+    /// posture doc, `reify-cli/src/main.rs:450-471`).
+    ///
     /// This is the standard constructor for production use. For tests that
     /// require an isolated or empty prelude, use `Engine::with_prelude`.
     pub fn new(
@@ -708,6 +713,11 @@ impl Engine {
     /// Construct an Engine using the inventory-driven multi-kernel registry
     /// (v0.2 entry point per `docs/prds/v0_2/multi-kernel.md` "Resolved
     /// design decisions").
+    ///
+    /// **No compute trampolines are registered.** Call
+    /// [`Self::register_production_compute_fns`] on the returned engine unless you
+    /// are deliberately building a trampoline-free engine (see `cmd_check`'s
+    /// posture doc, `reify-cli/src/main.rs:450-471`).
     ///
     /// Reads the static linker-collected set of [`reify_types::KernelRegistration`] records
     /// once at startup, picks the **BRep-preferring lex-smallest** entry (see
