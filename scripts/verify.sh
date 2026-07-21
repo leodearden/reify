@@ -1042,6 +1042,72 @@ while IFS= read -r _rc; do
 done <<<"$_RELEASE_DECLARED"
 _RELEASE_ALL_FLAGS="${_RELEASE_ALL_FLAGS# }"
 
+# ---------------------------------------------------------------------------
+# Delta-conditional release-pass skip (task 5279 / PRD docs/prds/merge-gate-riders.md
+# task ε, rider 3). SWEEP-GATED, default-OFF. When REIFY_RELEASE_DELTA_SKIP=1 AND
+# DF_VERIFY_ROLE=merge AND the merge delta is derivable-and-clean (its reverse-closed
+# affected crate set is disjoint from the release-sensitive set), the ~17-min release
+# nextest pass is replaced by a frozen marker in add_test_passes below, and release
+# re-execution is deferred to the main-tip background sweep (contract C2 profile-axis
+# carve-out; role=background re-runs the full release-sensitive set on cadence).
+#
+# _RELEASE_DELTA_SKIP defaults 0 => knob-off plan is byte-identical (K2 —
+# test_occt_flock_gate.sh Tests 17/17b stay green). Fail-open/fail-wide ladder
+# (§5.1): role=background NEVER skips (the sweep IS the backstop); an underivable
+# delta with no override never consults the predicate => stays 0 => RUN; the ALL
+# sentinel and an unreadable declared set resolve to REQUIRED inside the predicate.
+# The decision runs once here at plan-build time, consistent with the narrowing
+# block above (REIFY_AFFECTED_CRATES_OVERRIDE keeps --print-plan hermetic).
+
+# _derive_merge_delta — print the merge delta's changed files (one per line) for
+# the skip decision, or return non-zero (underivable => caller stays fail-open).
+#   hook path (merge in progress): MERGE_HEAD present => git diff HEAD MERGE_HEAD
+#   DF lane (speculative merge committed): HEAD has >=2 parents =>
+#       git diff HEAD^1 HEAD  (first-parent diff = what the merge introduces)
+#   anything else (unborn/linear/detached HEAD, any git failure) => non-zero.
+# All git stderr suppressed; any failure is underivable (fail-open RUN).
+_derive_merge_delta() {
+    local _mh
+    _mh="$(git -C "$REPO_ROOT" rev-parse --git-path MERGE_HEAD 2>/dev/null || echo '')"
+    if [ -n "$_mh" ] && [ -f "$_mh" ]; then
+        git -C "$REPO_ROOT" diff --name-only HEAD MERGE_HEAD 2>/dev/null || return 1
+        return 0
+    fi
+    local _parents _arr
+    _parents="$(git -C "$REPO_ROOT" rev-list --parents -n1 HEAD 2>/dev/null)" || return 1
+    # rev-list --parents -n1 prints "<sha> <parent1> <parent2> ..."; >=3 tokens
+    # means the commit plus at least two parents (a merge commit).
+    # shellcheck disable=SC2206
+    _arr=($_parents)
+    if [ "${#_arr[@]}" -ge 3 ]; then
+        git -C "$REPO_ROOT" diff --name-only HEAD^1 HEAD 2>/dev/null || return 1
+        return 0
+    fi
+    return 1
+}
+
+_RELEASE_DELTA_SKIP=0
+if [ "${REIFY_RELEASE_DELTA_SKIP:-0}" = "1" ] && [ "$DF_VERIFY_ROLE" = "merge" ]; then
+    if [ -n "${REIFY_AFFECTED_CRATES_OVERRIDE:-}" ]; then
+        # Hermetic/operator override: the predicate reads the affected set verbatim
+        # (no git, no cargo). Short-circuits derivation, as the narrowing block does.
+        release_delta_requires_pass || _RELEASE_DELTA_SKIP=1
+    elif _delta_raw="$(_derive_merge_delta)"; then
+        # Real merge: consult the predicate ONLY on a successful derivation.
+        # Underivable never reaches here => _RELEASE_DELTA_SKIP stays 0 => RUN.
+        _delta_files=()
+        while IFS= read -r _df; do
+            [ -n "$_df" ] && _delta_files+=("$_df")
+        done <<< "$_delta_raw"
+        if [ "${#_delta_files[@]}" -gt 0 ]; then
+            release_delta_requires_pass "${_delta_files[@]}" || _RELEASE_DELTA_SKIP=1
+        else
+            # Empty derivable delta (merge changed nothing) => delta-clean => skip.
+            release_delta_requires_pass || _RELEASE_DELTA_SKIP=1
+        fi
+    fi
+fi
+
 # Test runner: prefer cargo-nextest (one global pool over ~hundreds of test
 # binaries, OCCT concurrency bounded by the occt test-group) with a graceful
 # fallback to plain `cargo test -- --test-threads=1` when nextest is not installed.
@@ -1261,6 +1327,18 @@ add_test_passes() {
     local _outer_timeout="${_VERIFY_TEST_TIMEOUT}"  # identical for all profiles
     for _profile in "${PROFILES[@]}"; do
         if [ "$_profile" = "release" ]; then
+            # Delta-conditional release-pass skip (task 5279 / merge-gate-riders ε
+            # rider 3): on a delta-clean merge (_RELEASE_DELTA_SKIP=1, decided once at
+            # plan-build time above) emit the FROZEN machine-greppable marker in place
+            # of the release nextest pass and skip the pass — release re-execution is
+            # deferred to the main-tip background sweep (contract C2 profile-axis
+            # carve-out). The marker is a K5 frozen constant consumed by DF
+            # classification / runs.db mining / activation leaf ζ (task 5280); do NOT
+            # reword it. Default-off => this branch is never taken => plan byte-identical.
+            if [ "${_RELEASE_DELTA_SKIP:-0}" -eq 1 ]; then
+                add "echo 'RELEASE-PASS: skipped (delta-clean)'"
+                continue
+            fi
             _rel=" --release"
             # Release pass: ALL release-sensitive crates in one nextest pass (task 4451).
             # The nextest occt group (max-threads=24, env-driven) bounds concurrency for
