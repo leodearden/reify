@@ -9,6 +9,17 @@ Documentation=file:///home/leo/src/reify/docs/prds/warm-lane-pool-space-safety.m
 
 [Service]
 Type=oneshot
+# Warm-lane leak-status oracle (REIFY_LANE_LEAK_STATUS_CMD, task 5177 seam):
+# warm-lane-gc.sh's Tier-3 terminal-task reclaim consults this to reclaim a lane
+# whose backing task/NNNN is done/cancelled even when the lane is dirty/ahead
+# (the rebase-orphan leak _is_reclaimable would otherwise preserve forever).
+# warm-lane-gc-sweep.sh -> warm-lane-gc.sh reads it from THIS unit's env (falls
+# back from REIFY_WARM_LANE_GC_STATUS_CMD to REIFY_LANE_LEAK_STATUS_CMD). The
+# oracle reads the Taskmaster store READ-ONLY and fail-safes to empty output
+# (=> unknown => preserve), so a live lane is never mis-reclaimed. Mirrors the
+# orchestrator drop-in (orchestrator-reify.service.d/warm-lane.conf) so BOTH the
+# orchestrator's internal GC loop and this standalone timer sweep see the oracle.
+Environment=REIFY_LANE_LEAK_STATUS_CMD=/home/leo/src/reify/scripts/lane-task-status.sh
 # ExecStart uses the stable main-checkout absolute path — host convention matching
 # reify-warm-lane.service.  The installed copy will have --mount <worktrees_base>
 # pinned by install-warm-lane-units.sh.

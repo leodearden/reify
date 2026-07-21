@@ -756,11 +756,101 @@ assert "S8: run-all-ambient-vars.manifest exists" \
 assert "S8: REIFY_RUN_ALL_CONTENT_SKIP is a declared ambient-vars key row (task 5273)" \
     bash -c 'grep -qxE "[[:space:]]*REIFY_RUN_ALL_CONTENT_SKIP[[:space:]]*" "$1"' _ "$S8_MANIFEST"
 
-# Contract co-landing guard: REIFY_RUN_ALL_SKIP_STATE must NOT appear in this
-# ledger in γ's diff — its live source (yaml verify_env) lands with task δ, and
-# the set-equality guard would go RED if the ledger row preceded its source.
-# This assertion is GREEN now and stays GREEN through step-16 (γ never adds it).
-assert "S8: REIFY_RUN_ALL_SKIP_STATE is NOT declared by γ (its row co-lands with task δ's yaml wiring)" \
-    bash -c '! grep -qxE "[[:space:]]*REIFY_RUN_ALL_SKIP_STATE[[:space:]]*" "$1"' _ "$S8_MANIFEST"
+# Contract co-landing guard (task δ / 5276 supplies this row): REIFY_RUN_ALL_SKIP_STATE's
+# live source (dark-factory-orchestrator.yaml verify_env) AND this ledger row
+# co-land in δ's single diff, keeping test_run_all_ambient_isolation.sh's
+# set-equality guard balanced. This was the γ-era negative assertion (row must
+# be ABSENT); δ flips it to the S8a-shaped positive form (the declared bare-key
+# row is PRESENT). RED until step-2 adds the row to run-all-ambient-vars.manifest.
+assert "S8: REIFY_RUN_ALL_SKIP_STATE is a declared ambient-vars key row (task δ / 5276)" \
+    bash -c 'grep -qxE "[[:space:]]*REIFY_RUN_ALL_SKIP_STATE[[:space:]]*" "$1"' _ "$S8_MANIFEST"
+
+# ===========================================================================
+# Section 9 (task δ / 5276): REIFY_RUN_ALL_SKIP_STATE durable verify_env wiring.
+#   The content-skip engine stays inert until REIFY_RUN_ALL_SKIP_STATE names a
+#   state file (run_all.sh two-key + state-path gate). Task δ wires that path
+#   into dark-factory-orchestrator.yaml's verify_env block at a DURABLE
+#   main-checkout ABSOLUTE path under data/verify-logs/, so the keys-only
+#   ledger survives warm-lane reseeds and accumulates at the merge tier — the
+#   anti-amnesia contract of docs/prds/merge-gate-riders.md §4.3 (mirrors the
+#   REIFY_RUN_ALL_FLAKY_LEDGER durable-path precedent). The keys-only
+#   set-equality guard in test_run_all_ambient_isolation.sh proves the var is
+#   WIRED but never that its VALUE is the durable absolute path; this Section is
+#   the sole guard that a future edit cannot silently revert it to a relative /
+#   in-lane value. RED until step-2 adds the verify_env line.
+# ===========================================================================
+echo ""
+echo "--- Section 9 (task δ): REIFY_RUN_ALL_SKIP_STATE durable verify_env wiring ---"
+
+# verify_env_exports — parse KEY=VALUE from the yaml verify_env block. Mirrored
+# VERBATIM from test_run_all_ambient_isolation.sh:192-218 (itself a verbatim
+# mirror of test_verify_env_ambient_isolation.sh:59-85, task 4966's drift-guard)
+# as a reuse-note, NOT extracted to a shared lib, to avoid editing those live
+# merge-gate guard files (out of this task's declared scope). Refresh all copies
+# together if the awk logic ever changes.
+verify_env_exports() {
+    local yaml_file="$1"
+    awk '
+        /^verify_env:[[:space:]]*$/ { in_block = 1; next }
+        in_block && /^[^[:space:]#]/ { in_block = 0 }
+        !in_block { next }
+        /^[[:space:]]*#/ { next }
+        /^[[:space:]]*$/ { next }
+        /^[[:space:]]+[A-Za-z_][A-Za-z0-9_]*:/ {
+            line = $0
+            sub(/^[[:space:]]+/, "", line)
+            colon = index(line, ":")
+            key = substr(line, 1, colon - 1)
+            rest = substr(line, colon + 1)
+            sub(/^[[:space:]]+/, "", rest)
+            if (substr(rest, 1, 1) == "\"") {
+                tail = substr(rest, 2)
+                q = index(tail, "\"")
+                val = (q > 0) ? substr(tail, 1, q - 1) : tail
+            } else {
+                n = split(rest, toks, /[[:space:]]+/)
+                val = (n >= 1) ? toks[1] : ""
+            }
+            print key "=" val
+        }
+    ' "$yaml_file"
+}
+
+S9_YAML="$REPO_ROOT/dark-factory-orchestrator.yaml"
+assert "S9: dark-factory-orchestrator.yaml exists" \
+    test -f "$S9_YAML"
+
+S9_VERIFY_ENV_KV="$(verify_env_exports "$S9_YAML")"
+assert "S9: verify_env block parse is non-empty" \
+    test -n "$S9_VERIFY_ENV_KV"
+
+# Parser sanity: the durable-path SIBLING already wired by W5a must be visible
+# to this parser, so an S9 SKIP_STATE miss below is a real absence, not a
+# parser-shape regression.
+assert "S9: verify_env parse sees REIFY_RUN_ALL_FLAKY_LEDGER (durable-path sibling sanity)" \
+    bash -c 'grep -qE "^REIFY_RUN_ALL_FLAKY_LEDGER=" <<< "$1"' _ "$S9_VERIFY_ENV_KV"
+
+# (1) KEY presence — task δ wires REIFY_RUN_ALL_SKIP_STATE into verify_env.
+#     RED now (the yaml line lands in step-2).
+assert "S9: REIFY_RUN_ALL_SKIP_STATE is wired into the yaml verify_env block (task δ)" \
+    bash -c 'grep -qE "^REIFY_RUN_ALL_SKIP_STATE=" <<< "$1"' _ "$S9_VERIFY_ENV_KV"
+
+# (2) durable-path VALUE — must be the main-checkout ABSOLUTE path under
+#     /home/leo/src/reify/data/verify-logs/ (PRD §4.3 amnesia lesson: a
+#     relative / in-lane default is wiped on every warm-lane reseed and never
+#     accumulates). Prefix-only assertion: the basename/extension is cosmetic
+#     (design decision — the .json label is honored but opaque to the reader)
+#     and deliberately NOT asserted. Self-contained (grep + case inside the
+#     bash -c), so an absent key yields empty → exit 1 (clean RED), never a
+#     set -e abort of the outer suite.
+assert "S9: REIFY_RUN_ALL_SKIP_STATE value is the durable main-checkout path (/home/leo/src/reify/data/verify-logs/…)" \
+    bash -c '
+        val="$(grep -E "^REIFY_RUN_ALL_SKIP_STATE=" <<< "$1" | head -n1)"
+        val="${val#REIFY_RUN_ALL_SKIP_STATE=}"
+        case "$val" in
+            /home/leo/src/reify/data/verify-logs/*) exit 0 ;;
+            *) exit 1 ;;
+        esac
+    ' _ "$S9_VERIFY_ENV_KV"
 
 test_summary

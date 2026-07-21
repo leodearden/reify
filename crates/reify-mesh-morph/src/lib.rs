@@ -144,7 +144,7 @@ pub use reify_solver_elastic::CgSolverOptions;
 /// `false` otherwise. The structured rejection [`Reason`] is discarded;
 /// callers that need it for failure-mode visibility counters (PRD task #11)
 /// should call [`morph_eligible`] directly.
-// G-allow: mesh-morph public API — §3.2 realization-kind dispatch producer per engine-integration-norm §3.2; consumer pending task #4744 (volume-mesh-realization-and-morph-wiring §8 task β — morph arm in dispatch_volume_mesh); re-homed from cancelled #3429/#2947
+// G-allow: mesh-morph public API — §3.2 realization-kind dispatch producer per engine-integration-norm §3.2; consumer task #4744 (done) — the §8 task β morph arm landed via `morph_eligible` directly, not this bool-only `eligible` wrapper; remains an in-scope orphan BY DESIGN (convenience wrapper with no current caller — see PINS in engine_seam_orphans_g_allow.rs); re-homed from cancelled #3429/#2947
 pub fn eligible(old_brep: BRep, new_brep: BRep) -> bool {
     // `BRep` is `Copy` (alias for `MorphSnapshot<'a>`); pass by value matches
     // `morph_eligible`'s signature directly.
@@ -233,7 +233,6 @@ const LAPLACIAN_DISPLACEMENT_FRACTION: f64 = 0.05;
 /// The eligibility-reject and quality-reject failure arms return a structured
 /// [`MorphFailure`]; their diagnostic counters (`record_ineligible` /
 /// `record_quality_remesh`) are wired by task 4744 step-10.
-// G-allow: mesh-morph public API — §3.2 realization-kind dispatch producer; consumer is the morph arm at the VolumeMesh dispatch (task #4744 steps 16/18, engine_build.rs + register_morph_producer)
 pub fn compose_morph(
     source_mesh: &reify_ir::VolumeMesh,
     boundary: &BoundaryAssociation,
@@ -381,7 +380,6 @@ fn panic_detail(panic: &(dyn std::any::Any + Send)) -> String {
 ///
 /// Panics if a producer is already registered — the single-install discipline of
 /// [`reify_eval::Engine::register_morph_producer`] (mirrors `register_compute_fn`).
-// G-allow: mesh-morph engine-seam installer — §4.2/D3 producer registration (mirrors register_compute_fns); consumers: reify-cli production registration (task #4744 step-22) + the reify-eval morph-arm e2e (task #4744 step-19/20)
 pub fn register_morph_producer(engine: &mut reify_eval::Engine) {
     engine.register_morph_producer(Box::new(MeshMorphProducer));
 }

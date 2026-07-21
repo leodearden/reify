@@ -227,7 +227,7 @@ pub enum ElasticityFailure {
 /// ## Failure modes
 ///
 /// See [`ElasticityFailure`].
-// G-allow: mesh-morph public API — §3.2 realization-kind dispatch producer per engine-integration-norm §3.2; consumer pending task #4744 (volume-mesh-realization-and-morph-wiring §8 task β — morph arm in dispatch_volume_mesh); re-homed from cancelled #3429/#2947
+// G-allow: mesh-morph public API — §3.2 realization-kind dispatch producer per engine-integration-norm §3.2; consumer task #4744 (done) — the §8 task β morph arm landed via the default-options `elasticity_morph` wrapper below, not this cg_opts variant; remains an in-scope orphan BY DESIGN (advanced-options entry point with no current caller — see PINS in engine_seam_orphans_g_allow.rs); re-homed from cancelled #3429/#2947
 pub fn elasticity_morph_with_cg_opts(
     old_mesh: &VolumeMesh,
     prescribed_positions: &[(u32, [f64; 3])],
@@ -453,7 +453,6 @@ pub fn elasticity_morph_with_cg_opts(
 ///
 /// See [`elasticity_morph_with_cg_opts`] for full parameter, output-normal, and
 /// failure-mode documentation.
-// G-allow: mesh-morph public API — §3.2 realization-kind dispatch producer per engine-integration-norm §3.2; consumer pending task #4744 (volume-mesh-realization-and-morph-wiring §8 task β — morph arm in dispatch_volume_mesh); re-homed from cancelled #3429/#2947
 pub fn elasticity_morph(
     old_mesh: &VolumeMesh,
     prescribed_positions: &[(u32, [f64; 3])],

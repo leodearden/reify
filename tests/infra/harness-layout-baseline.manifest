@@ -633,6 +633,7 @@ crates/reify-eval/tests/optimized_registry_tests.rs
 crates/reify-eval/tests/option_recovery_map_or_e2e.rs
 crates/reify-eval/tests/param_default_sibling_let_order.rs
 crates/reify-eval/tests/parse_length_e2e.rs
+crates/reify-eval/tests/pattern_single_pass_e2e.rs
 crates/reify-eval/tests/persistent_cache_compute_round_trip.rs
 crates/reify-eval/tests/pinned_support.rs
 crates/reify-eval/tests/pointwise_field_combinators_e2e.rs
@@ -820,6 +821,7 @@ crates/reify-kernel-occt/tests/extrude_symmetric_integration.rs
 crates/reify-kernel-occt/tests/extrude_with_history_integration.rs
 crates/reify-kernel-occt/tests/face_differential_integration.rs
 crates/reify-kernel-occt/tests/fillet_with_history_integration.rs
+crates/reify-kernel-occt/tests/fuse_all_integration.rs
 crates/reify-kernel-occt/tests/geo_equiv.rs
 crates/reify-kernel-occt/tests/half_space_integration.rs
 crates/reify-kernel-occt/tests/interference_integration.rs
@@ -830,6 +832,8 @@ crates/reify-kernel-occt/tests/loft_with_history_integration.rs
 crates/reify-kernel-occt/tests/max_deviation_query.rs
 crates/reify-kernel-occt/tests/mesh_deviation.rs
 crates/reify-kernel-occt/tests/nurbs_surface_integration.rs
+crates/reify-kernel-occt/tests/pattern_differential_integration.rs
+crates/reify-kernel-occt/tests/pattern_single_pass_counter.rs
 crates/reify-kernel-occt/tests/per_edge_chamfer.rs
 crates/reify-kernel-occt/tests/per_edge_fillet.rs
 crates/reify-kernel-occt/tests/point_on_shape_integration.rs

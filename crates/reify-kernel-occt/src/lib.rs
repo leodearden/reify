@@ -30,6 +30,40 @@ pub use register::OCCT_KERNEL_VERSION;
 mod ffi;
 #[cfg(has_occt)]
 pub use ffi::ffi::TopologyCacheBuildCounts;
+
+/// Zero the process-global boolean-op-pass counter (task 5213).
+///
+/// Incremented once per completed OCCT boolean `Build()` (the binary
+/// fuse/cut/common ops and the single-pass `fuse_shape_list`).  Exposed so
+/// tests can assert that a K-instance pattern performs exactly ONE boolean
+/// pass rather than K−1 — a deterministic, non-flaky signal for the O(N²)→
+/// single-pass change (and a seed for future long-boolean progress reporting).
+///
+/// The counter is process-global; callers reading it must serialize their
+/// reset→operate→read windows (see `tests/pattern_single_pass_counter.rs`).
+#[cfg(has_occt)]
+pub fn reset_boolean_pass_count() {
+    ffi::ffi::reset_boolean_pass_count();
+}
+
+/// Read the process-global count of completed OCCT boolean passes.
+///
+/// See [`reset_boolean_pass_count`] for the increment contract and
+/// serialization requirement.
+#[cfg(has_occt)]
+pub fn boolean_pass_count() -> u64 {
+    ffi::ffi::boolean_pass_count()
+}
+
+/// Stub boolean-op-pass counter reset (OCCT not available) — no-op.
+#[cfg(not(has_occt))]
+pub fn reset_boolean_pass_count() {}
+
+/// Stub boolean-op-pass counter read (OCCT not available) — always 0.
+#[cfg(not(has_occt))]
+pub fn boolean_pass_count() -> u64 {
+    0
+}
 // Re-export the result type so callers using the test-fixture wrapper below
 // can name it without reaching into the private bridge module.
 #[cfg(has_occt)]
@@ -527,6 +561,29 @@ pub struct OcctKernel {
 // Use OcctKernelHandle for cross-thread usage — it communicates with a dedicated
 // OS thread that owns the kernel.
 
+/// Map a single-pass fuse result `OcctShape` to the [`BRepKind`] matching its
+/// actual top-level TopAbs type. `fuse_shape_list` yields a `SOLID` for an
+/// overlapping fuse and a `COMPSOLID` for a disjoint one; both `COMPSOLID` and
+/// `COMPOUND` are multi-body aggregates and classify as [`BRepKind::Compound`].
+/// Used by [`OcctKernel::fuse_all`] so the stored repr never claims a
+/// multi-body result is a single `Solid`. Any unrecognized type falls back to
+/// [`BRepKind::Solid`] (matches `store`'s implicit default).
+#[cfg(has_occt)]
+fn brep_kind_of_fused(shape: &ffi::ffi::OcctShape) -> Result<BRepKind, GeometryError> {
+    let name = ffi::ffi::shape_type_name(shape)
+        .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+    Ok(match name.as_str() {
+        "Solid" => BRepKind::Solid,
+        "CompSolid" | "Compound" => BRepKind::Compound,
+        "Shell" => BRepKind::Shell,
+        "Wire" => BRepKind::Wire,
+        "Face" => BRepKind::Face,
+        "Edge" => BRepKind::Edge,
+        "Vertex" => BRepKind::Vertex,
+        _ => BRepKind::Solid,
+    })
+}
+
 #[cfg(has_occt)]
 impl OcctKernel {
     pub fn new() -> Self {
@@ -905,6 +962,55 @@ impl OcctKernel {
         // Immutable borrow on self.shapes is released; now safe to call
         // store_with_repr (which takes &mut self).
         Ok(self.store_with_repr(compound_result, BRepKind::Compound))
+    }
+
+    /// Fuse N shapes into a single body in ONE OCCT boolean pass (task 5213,
+    /// Lever 1 — the single-pass n-ary fuse).
+    ///
+    /// Resolves each `GeometryHandleId` to its `OcctShape`, builds an
+    /// `OcctShapeVec`, and calls `ffi::ffi::fuse_all`, which fuses the whole
+    /// list in one `BRepAlgoAPI_Fuse` (SetArguments/SetTools) pass instead of
+    /// the O(N²) pairwise-accumulator loop.  Union semantics are preserved
+    /// exactly: overlapping inputs merge (no internal walls / double-counted
+    /// volume), disjoint inputs come back as a watertight multi-solid.  Source
+    /// handles remain valid after the call.
+    ///
+    /// Returns `Err(GeometryError::OperationFailed)` when:
+    /// - `handles` is empty, or
+    /// - any handle is unknown, or
+    /// - the underlying OCCT fuse fails.
+    pub fn fuse_all(
+        &mut self,
+        handles: &[GeometryHandleId],
+    ) -> Result<GeometryHandle, GeometryError> {
+        if handles.is_empty() {
+            return Err(GeometryError::OperationFailed(
+                "fuse_all: handles slice must not be empty".into(),
+            ));
+        }
+        // Gather the argument shapes into a fresh OcctShapeVec while holding the
+        // immutable borrow on self.shapes; the borrow ends before we store.
+        let fused = {
+            let mut vec = ffi::ffi::new_shape_vec();
+            for &id in handles {
+                let shape = self.get_shape(id)?;
+                ffi::ffi::shape_vec_push(vec.pin_mut(), shape);
+            }
+            ffi::ffi::fuse_all(&vec).map_err(|e| GeometryError::OperationFailed(e.to_string()))?
+        };
+        // Stamp the repr from the ACTUAL result type rather than assuming
+        // Solid: `fuse_shape_list` returns a SOLID for an overlapping fuse, a
+        // COMPSOLID for a disjoint one, and — in the single-element identity
+        // path — the sole input shape unchanged (any kind). A hardcoded Solid
+        // would mislead future `repr_of()` consumers that trust it to tell a
+        // single solid from a multi-body compound/compsolid.
+        let repr = if handles.len() == 1 {
+            // Identity passthrough: preserve the sole input's classification.
+            self.repr_of(handles[0]).unwrap_or(BRepKind::Solid)
+        } else {
+            brep_kind_of_fused(&fused)?
+        };
+        Ok(self.store_with_repr(fused, repr))
     }
 
     /// Test whether two shapes are intersecting (non-positive minimum distance).

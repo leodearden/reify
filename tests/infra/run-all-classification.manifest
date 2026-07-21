@@ -51,7 +51,7 @@ test_cpu_load_governance.sh host-exclusive
 test_cpu_load_governance_deflake.sh host-exclusive
 test_warm_lane_pool.sh host-exclusive
 
-# --- pool (121, the hermetic majority incl. this drift-guard itself) -------
+# --- pool (123, the hermetic majority incl. this drift-guard itself) -------
 test_affected_crates_lib.sh pool
 test_agent_cargo_shim.sh pool
 test_amendment_rounds_default_restored.sh pool
@@ -81,6 +81,7 @@ test_jobserver_canary.sh pool
 test_jobserver_role_fifo.sh pool
 test_jobserver_tuning_harness.sh pool
 test_land_script.sh pool
+test_lane_task_status.sh pool
 test_lane_x_flock.sh pool
 test_lean_debuginfo_profile.sh pool
 test_linker_config.sh pool
@@ -127,6 +128,7 @@ test_release_mode_in_test_command.sh pool
 test_release_scoped_scope.sh pool
 test_relocate_worktrees_to_warm_lane.sh pool
 test_run_all_ambient_isolation.sh pool
+test_run_all_ambient_isolation_lib.sh pool
 test_run_all_classification.sh pool
 test_run_all.sh pool
 test_run_all_clock_marker_sanitize.sh pool

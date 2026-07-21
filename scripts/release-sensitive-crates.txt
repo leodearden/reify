@@ -45,7 +45,6 @@
 #   Remove a crate when all such tests are removed.
 #   The infra test will fail (blocking CI) if this list drifts from the grep-derived set.
 
-reify-core
 reify-eval
 # hosts the migrated release-only modal/buckling e2e (task 4937, Lever P)
 reify-eval-fea-tests
@@ -54,4 +53,3 @@ reify-gui
 reify-mesh-morph
 reify-runtime
 reify-solver-elastic
-reify-stdlib
