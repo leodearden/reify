@@ -261,4 +261,158 @@ assert "S5 knob-on/merge/underivable: PLAN_S5 non-empty (verify.sh --print-plan 
 assert "S5 knob-on/merge/underivable: release nextest pass PRESENT (fail-open on underivable delta)" _has_release_pass "$PLAN_S5"
 assert "S5 knob-on/merge/underivable: delta-clean marker ABSENT" _lacks_skip_marker "$PLAN_S5"
 
+# ===========================================================================
+# DERIVE block: _derive_merge_delta git-derivation coverage (both branches).
+#
+# The SCENARIO block above drives the skip DECISION only through the hermetic
+# REIFY_AFFECTED_CRATES_OVERRIDE path (no git) and the underivable unborn-HEAD
+# fail-open path (S5). The actual git delta-derivation that feeds the decision
+# on a REAL merge — verify.sh's _derive_merge_delta — was untested, yet
+# UNDER-approximating that delta is the one dangerous failure mode (a
+# release-sensitive change silently skipping the gate). Both derivable branches
+# are pinned here directly:
+#   - merge commit (DF lane): first-parent diff `HEAD^1 HEAD` => the topic-
+#     introduced files ONLY (NOT files that merely advanced on main) — proves
+#     first-parent semantics, not a merge-base or second-parent diff.
+#   - MERGE_HEAD present (hook path): two-dot `HEAD MERGE_HEAD` => a fail-WIDE
+#     over-approximation (topic files PLUS files main changed). Over-approx is
+#     the SAFE direction; that safety property is asserted explicitly here.
+#
+# _derive_merge_delta lives inside scripts/verify.sh (which runs its pipeline at
+# top level and so cannot be sourced for one function), so its REAL definition
+# is extracted verbatim from verify.sh and eval'd. It depends only on git and
+# $REPO_ROOT — no other verify.sh helper — so extraction-in-isolation is
+# faithful; a rename/move or a new intra-verify.sh dependency fails this block
+# loudly rather than silently dropping coverage.
+# ===========================================================================
+echo ""
+echo "--- DERIVE: _derive_merge_delta first-parent & MERGE_HEAD branches ---"
+
+# Extract the real _derive_merge_delta from verify.sh (its header line through
+# the column-0 closing brace) and define it in this shell.
+_DERIVE_FN_SRC="$(awk '/^_derive_merge_delta\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$REPO_ROOT/scripts/verify.sh")"
+[ -n "$_DERIVE_FN_SRC" ] || { echo "ERROR: could not extract _derive_merge_delta from scripts/verify.sh"; exit 1; }
+eval "$_DERIVE_FN_SRC"
+
+assert "_derive_merge_delta extracted from verify.sh and defined" \
+    declare -F _derive_merge_delta
+
+# Paths introduced by the topic vs. by main, shared across the merge fixtures.
+_TOPIC_FILE="crates/reify-expr/src/rider3_probe.rs"   # a real release-sensitive crate path
+_BASE_FILE="rider3_main_only.txt"                      # only main advances this
+
+# make_merge_fixture VARNAME — a workspace-less git repo with: a base commit, a
+# `topic` branch that adds $_TOPIC_FILE, and an advanced base (adds $_BASE_FILE)
+# so a merge is a true non-fast-forward 2-parent commit. The caller completes or
+# stages the merge. No verify.sh source closure needed — _derive_merge_delta
+# only needs git + a REPO_ROOT override.
+make_merge_fixture() {
+    local _var="$1" dir base
+    dir="$(mktemp -d)"
+    _TMPDIRS+=("$dir")
+    git -C "$dir" init -q
+    git -C "$dir" config user.email "test@test.com"
+    git -C "$dir" config user.name "Test"
+    base="$(git -C "$dir" symbolic-ref --short HEAD)"
+    echo base > "$dir/base.txt"
+    git -C "$dir" add -A
+    git -C "$dir" commit -qm "A: base"
+    git -C "$dir" checkout -q -b topic
+    mkdir -p "$dir/$(dirname "$_TOPIC_FILE")"
+    echo 'pub fn probe() {}' > "$dir/$_TOPIC_FILE"
+    git -C "$dir" add -A
+    git -C "$dir" commit -qm "T: topic adds a reify-expr file"
+    git -C "$dir" checkout -q "$base"
+    echo main-only > "$dir/$_BASE_FILE"
+    git -C "$dir" add -A
+    git -C "$dir" commit -qm "A2: base advances (diverge)"
+    printf -v "$_var" '%s' "$dir"
+}
+
+# _derive_contains <fixture> <needle> — run the extracted _derive_merge_delta with
+# REPO_ROOT pointed at <fixture>, in a subshell that FIRST cd's into the fixture
+# (so the global REPO_ROOT/CWD are untouched). The cd mirrors verify.sh's real
+# invocation context — the decision block runs AFTER `cd "$REPO_ROOT"`
+# (verify.sh:650) — which is exactly what makes the hook-path MERGE_HEAD check
+# `[ -f "$_mh" ]` (a repo-root-relative `.git/MERGE_HEAD`) resolve. rc0 iff
+# derivation succeeds AND its output contains <needle> (exact substring,
+# fork-free — no pipe/grep EINTR surface).
+_derive_contains() {
+    local _fix="$1" _needle="$2" _out
+    _out="$( cd "$_fix" && REPO_ROOT="$_fix" _derive_merge_delta )" || return 1
+    [[ "$_out" == *"$_needle"* ]]
+}
+_derive_lacks() { ! _derive_contains "$@"; }
+
+# --- first-parent branch: a completed 2-parent merge commit ---
+DERIVE_FP=""
+make_merge_fixture DERIVE_FP
+git -C "$DERIVE_FP" merge -q --no-ff --no-edit topic     # HEAD gains a 2nd parent
+assert "DERIVE first-parent: yields the topic-introduced file ($_TOPIC_FILE)" \
+    _derive_contains "$DERIVE_FP" "$_TOPIC_FILE"
+assert "DERIVE first-parent: EXCLUDES files only main advanced ($_BASE_FILE) — proves HEAD^1 HEAD, not merge-base/2nd-parent" \
+    _derive_lacks "$DERIVE_FP" "$_BASE_FILE"
+
+# --- MERGE_HEAD branch: an in-progress (staged, uncommitted) merge ---
+DERIVE_MH=""
+make_merge_fixture DERIVE_MH
+git -C "$DERIVE_MH" merge -q --no-commit --no-ff topic >/dev/null 2>&1   # leaves MERGE_HEAD (disjoint files: no conflict)
+assert "DERIVE MERGE_HEAD: yields the topic-introduced file ($_TOPIC_FILE)" \
+    _derive_contains "$DERIVE_MH" "$_TOPIC_FILE"
+assert "DERIVE MERGE_HEAD: ALSO includes files main changed ($_BASE_FILE) — two-dot HEAD MERGE_HEAD is fail-WIDE (over-approx, safe)" \
+    _derive_contains "$DERIVE_MH" "$_BASE_FILE"
+
+# ===========================================================================
+# Scenario 6: knob ON + role=merge + NO override + a REAL 2-parent merge commit
+# => release nextest pass PRESENT, marker ABSENT. Exercises verify.sh's OWN
+# _derive_merge_delta -> release_delta_requires_pass wiring end-to-end with no
+# override (S1–S5 all short-circuit derivation via the override or an unborn
+# HEAD). The topic introduces both a release-sensitive crate file AND a C4
+# workspace-global file (Cargo.lock); affected_crates fails WIDE to ALL on the
+# C4 global BEFORE consulting cargo, so the outcome is deterministic and fully
+# hermetic (no cargo in the fixture) — REQUIRED, pass kept. The precise
+# file->crate->sensitive resolution is covered by the override-driven UNIT block
+# and by test_affected_crates_lib.sh (K8); the exact derived file set by the
+# DERIVE block above. Here the point is that a real, non-empty git-derived delta
+# reaches the predicate and keeps the pass with no override in play.
+# ===========================================================================
+echo ""
+echo "--- Scenario 6: knob on + role=merge + no override + real merge commit => release pass present (derivation->predicate) ---"
+
+# _scenario_plan_in <fixdir> <outvar> <env-and-flags...> — as _scenario_plan but
+# for an arbitrary fixture dir (the S1–S5 helper hardcodes the unborn-HEAD FIX;
+# Scenario 6 needs a fixture whose HEAD is a real merge commit).
+_scenario_plan_in() {
+    local _fix="$1" _outvar="$2"; shift 2
+    capture_print_plan "$_outvar" "${REIFY_PLAN_CAPTURE_RETRIES:-3}" \
+        "$@" bash -c 'cd "$1" && exec bash scripts/verify.sh test --profile both --scope all --print-plan 2>/dev/null' _ "$_fix" \
+        || true
+}
+
+FIX6=""
+make_fixture FIX6
+# Promote the unborn-HEAD source-closure fixture to a repo whose HEAD is a real
+# 2-parent merge commit, so verify.sh's own _derive_merge_delta takes the
+# first-parent branch (no MERGE_HEAD, no override).
+git -C "$FIX6" add -A
+git -C "$FIX6" commit -qm "base: verify.sh source closure"
+_BASE6="$(git -C "$FIX6" symbolic-ref --short HEAD)"
+git -C "$FIX6" checkout -q -b topic6
+mkdir -p "$FIX6/$(dirname "$_TOPIC_FILE")"
+echo 'pub fn probe() {}' > "$FIX6/$_TOPIC_FILE"
+: > "$FIX6/Cargo.lock"                                   # C4 workspace-global => affected_crates ALL (no cargo)
+git -C "$FIX6" add -A
+git -C "$FIX6" commit -qm "topic6: reify-expr file + C4 global"
+git -C "$FIX6" checkout -q "$_BASE6"
+echo advance > "$FIX6/rider3_base6_only.txt"
+git -C "$FIX6" add -A
+git -C "$FIX6" commit -qm "base6 advances (diverge)"
+git -C "$FIX6" merge -q --no-ff --no-edit topic6
+
+PLAN_S6=""
+_scenario_plan_in "$FIX6" PLAN_S6 env -u REIFY_INFRA_SUITE_ACTIVE -u REIFY_AFFECTED_CRATES_OVERRIDE REIFY_RELEASE_DELTA_SKIP=1 DF_VERIFY_ROLE=merge
+assert "S6 knob-on/merge/real-merge/no-override: PLAN_S6 non-empty (verify.sh --print-plan OK)" _nonempty "$PLAN_S6"
+assert "S6 knob-on/merge/real-merge/no-override: release nextest pass PRESENT (real derived delta => affected=ALL => fail-wide REQUIRED)" _has_release_pass "$PLAN_S6"
+assert "S6 knob-on/merge/real-merge/no-override: delta-clean marker ABSENT" _lacks_skip_marker "$PLAN_S6"
+
 test_summary
