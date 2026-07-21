@@ -390,6 +390,72 @@ pub fn register_compute_fns(engine: &mut crate::Engine) {
     );
 }
 
+/// How a caller supplies — or explicitly declines — the mesh-morph producer to
+/// [`Engine::register_production_compute_fns`][crate::Engine::register_production_compute_fns].
+///
+/// A closed two-variant enum with **no** `Default` and **no** `Option<fn>`:
+/// there is no silent "forgot" state. Every caller must make an explicit,
+/// reviewed choice — supply the producer fn, or state the reason it is
+/// structurally unavailable. That is what lets the drift guard (task A5) prove
+/// the canonical bundler is used everywhere, and it forecloses the GUI-drift bug
+/// class the PRD (Contract C1) targets: an `Option`-shaped or `Default`-carrying
+/// API lets a forgetful caller pass `None` (or rely on `Default`) and compile
+/// clean while the morph producer is silently never installed.
+pub enum MorphRegistration {
+    /// The caller (a normal build, with the optional `reify-mesh-morph` dep on
+    /// the graph — CLI / GUI) supplies the concrete `fn(&mut Engine)` that
+    /// installs the producer; in production this is
+    /// `reify_mesh_morph::register_morph_producer`. Passing the fn *pointer*
+    /// rather than naming the type keeps reify-eval from ever naming
+    /// `reify-mesh-morph`, avoiding the reify-mesh-morph → reify-eval →
+    /// reify-mesh-morph dependency cycle.
+    Enabled(fn(&mut crate::Engine)),
+    /// The caller structurally cannot link `reify-mesh-morph` in this build — e.g.
+    /// reify-eval's own `test_runner`, for which reify-mesh-morph is dev-dep-only
+    /// (task 4744) — so no producer is installed. The compute trampolines are
+    /// still registered; `reason` documents the omission for the debug log.
+    Unavailable {
+        /// Human-readable reason the morph producer is not installed (logged at
+        /// debug level; must be non-empty).
+        reason: &'static str,
+    },
+}
+
+impl crate::Engine {
+    /// The canonical compute-trampoline registration bundler required by
+    /// INV-FEA-1 — the single place that registers the full production set of
+    /// compute trampolines on an [`Engine`][crate::Engine].
+    ///
+    /// Replaces the three independently hand-rolled bundlers (CLI
+    /// `register_compute_trampolines`, `test_runner::build_test_engine`, and the
+    /// GUI engine setup); tasks A2/A3/A4 migrate those call sites to this one
+    /// method and A5 adds the drift guard that keeps them migrated. The bundle
+    /// is, in order: [`register_compute_fns`] (FEA / buckling / modal / form-find
+    /// / multi-case / dynamics / trajectory), then
+    /// [`register_shell_extract_compute_fns`][crate::register_shell_extract_compute_fns]
+    /// (shell mid-surface extraction), then the mesh-morph producer per `morph`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called twice on the same engine — the second call re-runs
+    /// [`register_compute_fns`], which re-registers `solver::elastic_static`
+    /// unconditionally and trips the duplicate-target guard in
+    /// [`register_compute_fn`][crate::Engine::register_compute_fn]. This inherits
+    /// the same single-install discipline the individual registrars enforce; the
+    /// bundler adds no new guard.
+    pub fn register_production_compute_fns(&mut self, morph: MorphRegistration) {
+        register_compute_fns(self);
+        crate::register_shell_extract_compute_fns(self);
+        match morph {
+            MorphRegistration::Enabled(f) => f(self),
+            MorphRegistration::Unavailable { reason } => {
+                debug_assert!(!reason.is_empty(), "Unavailable reason must be non-empty");
+                tracing::debug!(reason, "mesh-morph producer not registered on this Engine");
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::Engine;
