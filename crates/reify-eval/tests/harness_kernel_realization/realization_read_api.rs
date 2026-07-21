@@ -949,7 +949,7 @@ fn first_realization_id_and_hash(engine: &Engine) -> (RealizationNodeId, Content
 /// RED until step-16 adds `first_realization_id_and_hash`.
 #[test]
 fn ri_box_realizes_with_nonzero_hash_and_shell_extract_consumes_real_openvdb_sdf() {
-    let compiled = parse_and_compile_with_stdlib(include_str!("fixtures/realization_read_box.ri"));
+    let compiled = parse_and_compile_with_stdlib(include_str!("../fixtures/realization_read_box.ri"));
 
     let mut engine = make_simple_engine();
     engine.ensure_openvdb_kernel();
@@ -1039,7 +1039,7 @@ fn ri_box_realizes_with_nonzero_hash_and_shell_extract_consumes_real_openvdb_sdf
 /// that a geometry edit changes the `content_hash`, which the already-tested
 /// `compute_cache_key` folding turns into a new dispatch cache key.
 fn compiled_box_with_dimension(dim_mm: f64) -> reify_compiler::CompiledModule {
-    let base = include_str!("fixtures/realization_read_box.ri");
+    let base = include_str!("../fixtures/realization_read_box.ri");
     let source = base.replace("10mm", &format!("{dim_mm}mm"));
     parse_and_compile_with_stdlib(&source)
 }
@@ -1101,7 +1101,7 @@ fn dimension_param_cell_hashes(engine: &Engine) -> Vec<(String, ContentHash)> {
 #[test]
 fn param_edit_changes_realization_content_hash() {
     // Build 1: default dimensions (10mm × 10mm × 10mm) from the include_str! fixture.
-    let module1 = parse_and_compile_with_stdlib(include_str!("fixtures/realization_read_box.ri"));
+    let module1 = parse_and_compile_with_stdlib(include_str!("../fixtures/realization_read_box.ri"));
     let mut engine1 = make_simple_engine();
     let _ = engine1.eval(&module1);
     let (id1, hash1) = first_realization_id_and_hash(&engine1);
