@@ -704,10 +704,6 @@ crates/reify-eval/tests/structure_in_purpose_ambient_eval.rs
 crates/reify-eval/tests/structure_instance_e2e.rs
 crates/reify-eval/tests/sub_placement_assembly_gate.rs
 crates/reify-eval/tests/sub_placement_surfacing.rs
-crates/reify-eval/tests/sweep_api_smoke.rs
-crates/reify-eval/tests/sweep_e2e.rs
-crates/reify-eval/tests/sweep_guided_e2e.rs
-crates/reify-eval/tests/swept_kind_classifier_e2e.rs
 crates/reify-eval/tests/tensegrity_delta_combined_form_find_e2e.rs
 crates/reify-eval/tests/tensegrity_membrane_load.rs
 crates/reify-eval/tests/tensegrity_pavilion_e2e.rs
