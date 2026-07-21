@@ -1153,6 +1153,33 @@ fn gradient_of_field_with_non_numeric_lambda() {
 /// exercises the same graceful `as_f64() -> None -> Value::Undef` fallback
 /// (calculus.rs ~816) without ever tripping the debug guard, and now runs
 /// under plain `cargo test` as well as `cargo test --release`.
+///
+/// # Coverage note (code review)
+///
+/// This re-expression is a small, deliberate coverage trade. Before it, the
+/// **release**-mode sample of `build_string_codomain_grad_expr()`'s String
+/// CODOMAIN fixture was also separately pinned, via the
+/// `#[cfg(not(debug_assertions))]` gate this test used to carry: with
+/// `debug_assert!` elided, `compute_numerical_gradient_at_point`'s
+/// `result_dim` match falls through its catch-all `_` arm (calculus.rs:680-687)
+/// to `DimensionVector::DIMENSIONLESS`, and the String return still fails
+/// `as_f64()`, giving `Value::Undef`. That release-only assertion was
+/// deliberately NOT retained here or elsewhere: re-adding any
+/// `#[cfg(not(debug_assertions))]` (or runtime `cfg!(not(debug_assertions))`)
+/// site to this crate would put `reify-expr` back on
+/// `scripts/release-sensitive-crates.txt`, undoing this task's goal (PRD
+/// merge-gate-compile-cost.md §3 W3 task A4).
+///
+/// So, post re-expression, the release-mode path through that specific
+/// catch-all arm is no longer directly asserted by any test in any profile.
+/// It remains covered transitively, not vacuously: `debug_assert!` eliding to
+/// a no-op in release is a language guarantee, not something a test could
+/// regress, and this test pins the identical downstream
+/// `as_f64() -> None -> Value::Undef` fallback that the catch-all arm also
+/// bottoms out in — just reached via the safe `Type::Scalar { dimension }`
+/// arm (calculus.rs:679) instead of the catch-all. The debug-mode contract
+/// for the String-codomain fixture itself remains pinned unchanged by
+/// `gradient_of_field_with_non_numeric_lambda_sampling_panics_in_debug`.
 #[test]
 fn gradient_of_field_with_non_numeric_lambda_sampling_returns_undef() {
     let grad_expr = build_numeric_codomain_string_lambda_grad_expr();
