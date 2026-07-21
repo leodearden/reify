@@ -1349,7 +1349,18 @@ add_test_passes() {
             # by release-sensitivity (task/4390), not the affected-crate set (task/4060).
             # Over-running the full release-sensitive set on a rare --profile both
             # --scope branch is safe (fail-wide), and avoids entangling two orthogonal
-            # scoping axes — do not "fix" this by narrowing the release pass.
+            # scoping axes — do not "fix" this by narrowing the release pass along the
+            # affected-crate (crate-set) axis.
+            # The ONE sanctioned exception is orthogonal to that crate-set prohibition:
+            # the delta-conditional PROFILE-axis carve-out handled just above (task 5279
+            # / merge-gate-riders ε rider 3). When _RELEASE_DELTA_SKIP=1 the whole
+            # release pass is skipped for a delta-clean merge and 'RELEASE-PASS: skipped
+            # (delta-clean)' is emitted instead, deferring release re-execution to the
+            # main-tip background sweep — see the _RELEASE_DELTA_SKIP decision block and
+            # docs/prds/verify-scope-contract.md C2. That carve-out is knob-gated
+            # (REIFY_RELEASE_DELTA_SKIP, default OFF) and only activated once the
+            # background sweep is demonstrably healthy (ζ / task 5280, merge-gate-riders
+            # §5.3); it is a whole-pass profile-axis skip, NOT crate-set narrowing.
             # offline (task 4913/A2): the positive -E "(<heavy>)" filter (applied via
             # _OFFLINE_HEAVY_SELECT inside emit_nextest_pass) is the SOLE membership
             # determinant for the offline lane — use --workspace instead of the
