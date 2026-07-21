@@ -135,7 +135,9 @@ already claimed by the orchestrator).
 ## 14. Pattern-scale booleans: sieve floor is >10min even in release CLI (new)
 Top-deck sieve, Ø3mm holes on 5mm hex pitch = 4,602 holes via two
 linear_pattern_2d grids. Ladder: 33 holes ≈ 1s; 1,157 holes = 297s;
-4,602 > 600s (full run pending). GUI (debug build) = no iteration at all.
+4,602 > 600s (full run pending at the time; re-measured 2026-07-21 — see
+the addendum below: now completes in ~100s). GUI (debug build) = no
+iteration at all.
 Levers: single-pass BOPAlgo, manifold/OpenVDB kernel routing (already in
 workspace!), native perforate op, progress+cancel. Bonus defect: pattern
 direction/spacing args are BARE unitless numbers (mm implied) — violates
@@ -185,6 +187,48 @@ it previously never completed.
 99.92s CPU / 100.38s wall.** 5213's single-pass n-ary fuse (Lever 1)
 delivered the speedup finding #14 hoped for on the FUSE; see the
 go/no-go verdict below for what it did and didn't fix end-to-end.
+
+**Verdict.** Lever 1 (5213's single-pass n-ary fuse) fixed the pattern
+**fuse** to ~linear, but the end-to-end `difference(base,
+union_all(pattern))` **cut** stays **superlinear** in OCCT. This
+session's own data show it directly: CPU time between the two largest
+rungs (1,157→4,589 holes, 3.97× more holes) grew 9.59s→99.92s (10.4×
+more time) — a local exponent ln(10.4)/ln(3.97) ≈ 1.7, consistent with
+the ~O(N^1.8–2) characterization already on record (task 5317) and well
+above linear (which would predict ~4×, not ~10×, time for 4× the holes;
+the smaller rungs show a lower apparent exponent because fixed per-run
+overhead, ~0.3s of process/parse startup, dominates at low N and
+flattens the curve). ~100s (this session) / ~121.6s (prior run) at
+~4,600 holes, compounded by superlinear growth as designs get denser, is
+OUTSIDE interactive range for dense-pattern design work ⇒ **Lever 1
+alone is INSUFFICIENT.**
+
+**GO on the narrow Lever-2 slice** — route selector-free
+`difference(base, union_all(pattern…))` to Manifold's already-linked
+`batch_difference` (near-linear in tool count; bypasses both the
+superlinear OCCT cut and the incomplete Manifold attribute/selector-
+provenance substrate, since selector-free tool bodies hit Manifold's
+benign `Discarded` no-op rather than needing 4263/4636) — filed as
+→ **5317**.
+
+**Lever 3 (native perforate/replicate-faces): DEFERRED/no-go for now.**
+`batch_difference` is the lower-cost near-linear path for this workload;
+revisit Lever 3 only if Lever 2 proves insufficient.
+
+**Broad general-Manifold mesh-boolean production route: separate
+deferred bookmark**, unaffected by this verdict — → **5220** (gated on
+the narrow slice above plus the Manifold provenance substrate, 4263 /
+4636).
+
+**By-product correctness bug found during this re-measurement**
+(independent of the timing question): top_deck.ri's holes silently
+vanish via a nested `difference(difference(fillet…),
+union_all(pattern))` no-op — → **5318**.
+
+No new follow-up tasks were filed by this milestone — 5317, 5220 and
+5318 all already existed before this addendum was written; this
+addendum is the canonical doc record of the decision that authorized
+them.
 
 ---
 Split-joint design (agreed with Leo): shiplap-family → "pinwheel 45° scarf"
