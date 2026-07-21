@@ -51,7 +51,7 @@ test_cpu_load_governance.sh host-exclusive
 test_cpu_load_governance_deflake.sh host-exclusive
 test_warm_lane_pool.sh host-exclusive
 
-# --- pool (125, the hermetic majority incl. this drift-guard itself) -------
+# --- pool (126, the hermetic majority incl. this drift-guard itself) -------
 test_affected_crates_lib.sh pool
 test_agent_cargo_shim.sh pool
 test_amendment_rounds_default_restored.sh pool
@@ -161,6 +161,7 @@ test_verify_gui_feature_check.sh pool
 test_verify_nextest_probe.sh pool
 test_verify_offline_partition.sh pool
 test_verify_pipeline_guard.sh pool
+test_verify_release_delta_skip.sh pool
 test_verify_role_prio.sh pool
 test_verify_scope.sh pool
 test_verify_semaphore_wiring.sh pool

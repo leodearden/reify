@@ -84,6 +84,37 @@ while read -r _old _new _ref; do
         continue
     fi
 
+    # ── Always-on non-fast-forward (history-rewrite) guard ─────────────────
+    # A legitimate landing ALWAYS fast-forwards main: the new tip is a
+    # DESCENDANT of the old (a `git merge --no-ff` advances main to a merge
+    # commit whose first parent IS the old main; advance_main / land.sh both
+    # fast-forward). A `git commit --amend`, `git rebase`, or a backward
+    # `git reset` produces a NON-fast-forward move that REWRITES a commit which
+    # concurrent task branches in sibling worktrees (all share this one
+    # refs/heads/main) may already have rebased onto — stranding them on an
+    # orphaned ex-main commit. That is exactly esc-5279-3: an in-place amend of
+    # the landed "Merge task/5264" commit orphaned it and left task/5279
+    # sitting on it, 1 commit "beyond" the rewritten main, carrying another
+    # task's work. A history rewrite is NEVER a normal landing, so it is
+    # rejected regardless of the verify sentinel below (a verify-passing amend
+    # is still "sanctioned" by that check — the gap this closes) and regardless
+    # of the ENFORCE staging. Genuine break-glass rollbacks (e.g. a red-main
+    # revert) are non-ff by design and opt in via REIFY_MAIN_GATE_BYPASS, which
+    # is handled above BEFORE this guard.
+    #
+    # `git merge-base --is-ancestor <old> <new>`: rc 0 = old IS an ancestor of
+    # new (fast-forward → fall through to the sanction logic below, unchanged);
+    # rc 1 = old is definitively NOT an ancestor (non-ff → reject); rc >1 = an
+    # internal git error (e.g. an oid whose object is not present locally) →
+    # fail-OPEN (fall through), matching this tripwire's never-break-on-an-
+    # internal-error stance. Only an exact rc of 1 rejects.
+    git merge-base --is-ancestor "$_old" "$_new" 2>/dev/null
+    _ff_rc=$?
+    if [ "$_ff_rc" = "1" ]; then
+        main_gate_log "HISTORY-REWRITE (non-fast-forward) main move ${_old} -> ${_new} — REJECTED (rewriting a landed commit strands concurrent task branches that rebased onto it; use REIFY_MAIN_GATE_BYPASS=1 for a break-glass rollback)"
+        exit 1
+    fi
+
     sentinel="$(main_gate_sentinel)"
     if [ -e "$sentinel" ]; then
         rm -f "$sentinel" 2>/dev/null
