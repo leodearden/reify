@@ -179,6 +179,16 @@ fn eval_cached_guarded_module_matches_cold_eval_values_for_guard_false() {
     );
 
     // Cross-engine value parity for every guarded-specific cell.
+    //
+    // NOTE: the fix makes `eval_cached` delegate wholesale to `eval()` for
+    // any guarded module (see the fall-through at the top of
+    // engine_eval.rs's `eval_cached`), so `result_b` and `result_a` below
+    // execute the *identical* code path here — this loop cannot diverge
+    // while that fall-through is taken. It is a delegation-equivalence
+    // check (it would catch a future change that drops or rewrites values
+    // on the way out of the `CachedEvalResult` wrapper), not an
+    // independent cross-implementation verification. The real guarded-
+    // semantics lock is the concrete-value pins on `result_a` below.
     for (label, id) in [
         ("guard cell", &guard_id),
         ("member x", &x_id),
