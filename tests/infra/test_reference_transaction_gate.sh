@@ -214,4 +214,67 @@ assert "(n) durable bypass allows even with durable enforce (exit 0)" test "$DRI
 assert "(n) bypass logged" bash -c "grep -q 'bypass' '$LOG'"
 reset_durable
 
+# ===========================================================================
+# Non-fast-forward (history-rewrite) guard (esc-5279-3): main may only ever
+# fast-forward. A `git commit --amend` / rebase / backward reset produces a
+# NON-ff move that rewrites a landed commit which concurrent task branches (all
+# share this one refs/heads/main) may already have rebased onto — stranding
+# them on an orphaned ex-main commit. Rejected regardless of the verify sentinel
+# (a verify-passing amend is still "sanctioned" by the sentinel check — this
+# guard is exactly why that no longer suffices) and regardless of the ENFORCE
+# staging; a genuine break-glass rollback still wins via BYPASS.
+#
+# These scenarios need REAL commits (the fake oids above make merge-base error,
+# which fails OPEN by design and is covered by (a)-(n) staying green), so build
+# a tiny history in the fixture:
+#   C0 (base) -> C1 (child; a fast-forward target)
+#   C0 (base) -> C2 (sibling of C1: an amend/rewrite target — C1 is NOT an
+#                    ancestor of C2)
+# ===========================================================================
+echo ""
+echo "--- non-fast-forward (history-rewrite) guard (esc-5279-3) ---"
+reset_durable; rm -f "$SENTINEL" "$LOG"
+git -C "$FIX" commit -q --allow-empty -m "C0 base"
+C0="$(git -C "$FIX" rev-parse HEAD)"
+git -C "$FIX" commit -q --allow-empty -m "C1 child"
+C1="$(git -C "$FIX" rev-parse HEAD)"
+git -C "$FIX" checkout -q -b _nff_sib "$C0"
+git -C "$FIX" commit -q --allow-empty -m "C2 sibling (rewrite target)"
+C2="$(git -C "$FIX" rev-parse HEAD)"
+git -C "$FIX" checkout -q -
+
+# -- (o) fast-forward main move (C0->C1) is NOT rejected by the guard ----------
+# Sentinel present so it is sanctioned and exits 0 — proves a genuine ff landing
+# still passes (the guard falls through to the existing sanction logic on rc 0).
+rm -f "$LOG"; : > "$SENTINEL"
+drive prepared "$C0 $C1 refs/heads/main"
+assert "(o) fast-forward main move allowed (exit 0)" test "$DRIVE_RC" -eq 0
+assert "(o) fast-forward move sanctioned (not flagged as rewrite)" bash -c "grep -q 'sanctioned main move' '$LOG'"
+assert "(o) fast-forward move not logged as HISTORY-REWRITE" bash -c "! grep -q 'HISTORY-REWRITE' '$LOG'"
+
+# -- (p) non-ff move (C1->C2) REJECTED even WITH the sentinel present ----------
+# The core case: a verify-passing `git commit --amend` sets the sentinel
+# (pre-commit -> project-checks -> main_gate_mark), which today makes it
+# "sanctioned". The non-ff guard rejects it anyway, and BEFORE the sentinel is
+# consumed (it runs ahead of the sanction block), so the sentinel is left intact.
+rm -f "$LOG"; : > "$SENTINEL"
+drive prepared "$C1 $C2 refs/heads/main"
+assert "(p) non-ff move rejected even with sentinel present (exit 1)" test "$DRIVE_RC" -eq 1
+assert "(p) non-ff move logged HISTORY-REWRITE" bash -c "grep -q 'HISTORY-REWRITE (non-fast-forward)' '$LOG'"
+assert "(p) non-ff rejection did NOT consume the sentinel" bash -c "test -e '$SENTINEL'"
+
+# -- (q) non-ff move (C1->C2) with BYPASS -> allowed (break-glass rollback) ----
+rm -f "$SENTINEL" "$LOG"
+drive prepared "$C1 $C2 refs/heads/main" REIFY_MAIN_GATE_BYPASS=1
+assert "(q) non-ff move allowed under BYPASS (exit 0)" test "$DRIVE_RC" -eq 0
+assert "(q) non-ff BYPASS logged as bypass, not rewrite" bash -c "grep -q 'bypass' '$LOG' && ! grep -q 'HISTORY-REWRITE' '$LOG'"
+
+# -- (r) non-ff move (C1->C2) rejected with NO sentinel and ENFORCE off --------
+# Proves the guard is always-on (independent of the ENFORCE staging): a rewrite
+# aborts even in the default warn-only posture, unlike the sanction dimension.
+reset_durable; rm -f "$SENTINEL" "$LOG"
+drive prepared "$C1 $C2 refs/heads/main"
+assert "(r) non-ff rejected in default warn-only posture (exit 1)" test "$DRIVE_RC" -eq 1
+assert "(r) non-ff logged HISTORY-REWRITE (always-on)" bash -c "grep -q 'HISTORY-REWRITE (non-fast-forward)' '$LOG'"
+
 test_summary
