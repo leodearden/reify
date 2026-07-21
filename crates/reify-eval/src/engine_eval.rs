@@ -7580,6 +7580,15 @@ impl Engine {
             ));
             return CachedEvalResult {
                 eval_result: er,
+                // NOTE: all-zero stats here mean "the incremental cache was
+                // bypassed for this call", not "fully cached / nothing to
+                // evaluate" — eval_cached's own hit/miss/early-cutoff
+                // counters never ran, since the cold `eval()` above doesn't
+                // touch them. A caller that only inspects `stats` (without
+                // also checking `eval_result.diagnostics` for the Warning
+                // pushed above) could otherwise misread this as full cache
+                // reuse. The diagnostic is the authoritative bypass signal;
+                // treat default stats from this branch accordingly.
                 stats: CacheStats::default(),
             };
         }
