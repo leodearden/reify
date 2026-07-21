@@ -162,6 +162,33 @@ std::unique_ptr<OcctShape> make_half_space(double px, double py, double pz,
 /// `BRepBuilderAPI_Copy` fails.
 std::unique_ptr<OcctShape> make_compound(const OcctShapeVec& shapes);
 
+// --- Single-pass n-ary fuse (task 5213, Lever 1) ---
+
+/// Fuse every shape in `shapes` into a single result in ONE BRepAlgoAPI_Fuse
+/// pass (SetArguments/SetTools), replacing the O(N²) pairwise-accumulator loop
+/// the pattern realizers used.  Empty input throws; a single element is
+/// returned unchanged; a fully-disjoint result is rewrapped as a watertight
+/// TopoDS_CompSolid of the separate solids (preserving volume and component
+/// count).  Source shapes in the vec remain valid after the call.
+std::unique_ptr<OcctShape> fuse_all(const OcctShapeVec& shapes);
+
+// --- Boolean-op-pass counter (task 5213) ---
+
+/// Zero the process-global boolean-op-pass counter.
+void reset_boolean_pass_count();
+
+/// Read the process-global count of completed OCCT boolean passes.  Incremented
+/// once per successful Build() in boolean_fuse/boolean_cut/boolean_common and
+/// once per single-pass fuse_shape_list — so a K-instance pattern reads as
+/// exactly 1, not K−1.
+uint64_t boolean_pass_count();
+
+/// Classify `shape` by its top-level TopAbs_ShapeEnum, returning the canonical
+/// name ("Solid", "CompSolid", "Compound", "Shell", "Face", "Wire", "Edge",
+/// "Vertex", or "Shape").  Lets the Rust side stamp the BRepKind matching a
+/// fuse/pattern result's real type rather than assuming Solid (task 5213).
+rust::String shape_type_name(const OcctShape& shape);
+
 // --- Boolean operations ---
 
 std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& right);

@@ -1125,6 +1125,28 @@ pub mod ffi {
         /// `make_nonmanifold_compound_for_test`. Throws on empty input.
         fn make_compound(shapes: &OcctShapeVec) -> Result<UniquePtr<OcctShape>>;
 
+        /// Fuse all shapes in `shapes` into a single result in ONE
+        /// `BRepAlgoAPI_Fuse` (SetArguments/SetTools) pass — the single-pass
+        /// n-ary fuse that replaces the O(N²) pairwise pattern loop (task 5213).
+        /// Throws on empty input; a fully-disjoint result is a watertight
+        /// COMPSOLID of the separate solids.
+        fn fuse_all(shapes: &OcctShapeVec) -> Result<UniquePtr<OcctShape>>;
+
+        /// Zero the process-global boolean-op-pass counter (task 5213).
+        fn reset_boolean_pass_count();
+
+        /// Read the process-global count of completed OCCT boolean passes —
+        /// one per boolean_fuse/cut/common Build() and one per fuse_shape_list.
+        fn boolean_pass_count() -> u64;
+
+        /// Return the canonical name of `shape`'s top-level TopAbs shape type
+        /// ("Solid", "CompSolid", "Compound", "Shell", "Face", "Wire", "Edge",
+        /// "Vertex", or "Shape"). Lets `OcctKernel::fuse_all` classify a
+        /// single-pass fuse result — SOLID (overlapping), COMPSOLID (disjoint),
+        /// or the sole input's kind (identity) — into the right BRepKind
+        /// instead of assuming Solid (task 5213 amendment).
+        fn shape_type_name(shape: &OcctShape) -> Result<String>;
+
         fn get_edges(shape: &OcctShape) -> Result<UniquePtr<OcctShapeVec>>;
 
         /// Materialize the unique faces of `shape` into an OcctShapeVec

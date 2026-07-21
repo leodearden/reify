@@ -166,6 +166,7 @@
 #include <fstream>
 #include <cstdio>
 #include <cmath>
+#include <atomic>
 #include <mutex>
 #include <stdexcept>
 
@@ -433,6 +434,26 @@ std::unique_ptr<OcctShape> make_half_space(double px, double py, double pz,
     });
 }
 
+// --- Boolean-op-pass counter (task 5213) ---
+
+// Process-global count of completed OCCT boolean passes, incremented once per
+// successful Build() in boolean_fuse/boolean_cut/boolean_common and once in the
+// single-pass fuse_shape_list.  Deterministic (an exact integer, not a
+// tolerance) and non-flaky: it lets tests assert that a K-instance pattern
+// performs exactly ONE boolean pass rather than K−1.  Also a first
+// instrumentation seed for future long-boolean progress reporting (Lever 4).
+// memory_order_relaxed is sufficient: tests reset/read under a mutex, so there
+// is no cross-thread ordering dependency to establish.
+static std::atomic<uint64_t> g_boolean_pass_count{0};
+
+void reset_boolean_pass_count() {
+    g_boolean_pass_count.store(0, std::memory_order_relaxed);
+}
+
+uint64_t boolean_pass_count() {
+    return g_boolean_pass_count.load(std::memory_order_relaxed);
+}
+
 // --- Compound assembly ---
 
 std::unique_ptr<OcctShape> make_compound(const OcctShapeVec& shapes) {
@@ -465,6 +486,125 @@ std::unique_ptr<OcctShape> make_compound(const OcctShapeVec& shapes) {
     });
 }
 
+// --- Single-pass n-ary fuse (task 5213, Lever 1) ---
+
+// Fuse every member of `shapes` into a single result in ONE BOP pass.
+//
+// Mirrors the BRepAlgoAPI_Splitter SetArguments/SetTools idiom (see
+// `split_shape`): the first shape becomes the sole argument and the rest become
+// the tools, so `BRepAlgoAPI_Fuse::Build()` arranges all of them in a single
+// OCCT boolean pass (≈O(N log N) bbox interference + irreducible face work)
+// instead of the O(N²) pairwise-accumulator loop the pattern realizers used.
+//
+//   - empty list → std::runtime_error (nonsensical)
+//   - 1 element  → returned as-is (no BOP; identity)
+//   - N elements → single-pass fuse
+//
+// The general BOP path (SetArguments/SetTools) always wraps its output in a
+// TopoDS_COMPOUND, regardless of whether the inputs merged.  We normalize that
+// wrapper to the tightest topology-preserving type: a COMPOUND holding one
+// solid (overlapping inputs merged into a single body) is unwrapped to that
+// bare SOLID, while a COMPOUND holding multiple solids (fully-DISJOINT inputs)
+// is rewrapped as a TopoDS_COMPSOLID — a bare compound is not
+// watertight-queryable (`is_watertight` excludes COMPOUND), whereas a COMPSOLID
+// preserves total volume and per-solid component count while passing the
+// SOLID|COMPSOLID|SHELL type guard.  Defined here — ahead of the four pattern
+// realizers below — so they can share this one helper.
+TopoDS_Shape fuse_shape_list(const TopTools_ListOfShape& shapes) {
+    if (shapes.IsEmpty()) {
+        throw std::runtime_error("fuse_shape_list: input shape list must not be empty");
+    }
+    if (shapes.Extent() == 1) {
+        // Single instance: no boolean pass, return it unchanged.
+        return shapes.First();
+    }
+    TopTools_ListOfShape args, tools;
+    TopTools_ListIteratorOfListOfShape it(shapes);
+    args.Append(it.Value());
+    it.Next();
+    for (; it.More(); it.Next()) {
+        tools.Append(it.Value());
+    }
+    BRepAlgoAPI_Fuse fuse;
+    fuse.SetArguments(args);
+    fuse.SetTools(tools);
+    fuse.Build();
+    if (!fuse.IsDone()) {
+        throw std::runtime_error("fuse_shape_list: BRepAlgoAPI_Fuse failed (IsDone=false)");
+    }
+    // One completed boolean pass, regardless of instance count (task 5213).
+    g_boolean_pass_count.fetch_add(1, std::memory_order_relaxed);
+    TopoDS_Shape result = fuse.Shape();
+    // The general BOP path (SetArguments/SetTools) always wraps its output in a
+    // TopoDS_COMPOUND.  Normalize that wrapper to the tightest type that
+    // preserves the union's topology so downstream repr/query code sees the
+    // true kind:
+    //   - exactly one solid  → the bare SOLID (overlapping inputs merged into a
+    //     single body).  Returning a COMPSOLID here would misclassify one solid
+    //     as a multi-body aggregate (task 5213 repr-coherence amendment).
+    //   - two or more solids → a COMPSOLID (disjoint multi-body union) which,
+    //     unlike a bare COMPOUND, passes the is_watertight SOLID|COMPSOLID|SHELL
+    //     guard and reports the correct per-solid component count.
+    //   - no solids          → leave the compound untouched.
+    if (result.ShapeType() == TopAbs_COMPOUND) {
+        TopTools_ListOfShape solids;
+        for (TopExp_Explorer ex(result, TopAbs_SOLID); ex.More(); ex.Next()) {
+            solids.Append(ex.Current());
+        }
+        if (solids.Extent() == 1) {
+            return TopoDS::Solid(solids.First());
+        }
+        if (solids.Extent() > 1) {
+            TopoDS_CompSolid cs;
+            BRep_Builder builder;
+            builder.MakeCompSolid(cs);
+            for (TopTools_ListIteratorOfListOfShape sit(solids); sit.More(); sit.Next()) {
+                builder.Add(cs, TopoDS::Solid(sit.Value()));
+            }
+            return cs;
+        }
+    }
+    return result;
+}
+
+std::unique_ptr<OcctShape> fuse_all(const OcctShapeVec& shapes) {
+    return wrap_occt_call("fuse_all", [&]() {
+        if (shapes.shapes.empty()) {
+            throw std::runtime_error("fuse_all: input shape list must not be empty");
+        }
+        TopTools_ListOfShape list;
+        for (const auto& shape : shapes.shapes) {
+            list.Append(shape);
+        }
+        auto result = std::make_unique<OcctShape>();
+        result->shape = fuse_shape_list(list);
+        return result;
+    });
+}
+
+// Classify `shape` by its top-level TopAbs_ShapeEnum, returning the canonical
+// name ("Solid", "CompSolid", "Compound", "Shell", "Face", "Wire", "Edge",
+// "Vertex", or "Shape" for the abstract fallback).  Lets the Rust side stamp
+// the correct BRepKind on a fuse/pattern result instead of assuming Solid: a
+// single-pass fuse yields a SOLID (overlapping inputs), a COMPSOLID (disjoint
+// inputs, rewrapped by fuse_shape_list), or — in the 1-element identity path —
+// the sole input shape unchanged, which may be any kind (task 5213 amendment).
+rust::String shape_type_name(const OcctShape& shape) {
+    return wrap_occt_call("shape_type_name", [&]() -> rust::String {
+        switch (shape.shape.ShapeType()) {
+            case TopAbs_COMPOUND:  return rust::String("Compound");
+            case TopAbs_COMPSOLID: return rust::String("CompSolid");
+            case TopAbs_SOLID:     return rust::String("Solid");
+            case TopAbs_SHELL:     return rust::String("Shell");
+            case TopAbs_FACE:      return rust::String("Face");
+            case TopAbs_WIRE:      return rust::String("Wire");
+            case TopAbs_EDGE:      return rust::String("Edge");
+            case TopAbs_VERTEX:    return rust::String("Vertex");
+            default:               return rust::String("Shape");
+        }
+    });
+}
+
 // --- Boolean operations ---
 
 std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& right) {
@@ -474,6 +614,7 @@ std::unique_ptr<OcctShape> boolean_fuse(const OcctShape& left, const OcctShape& 
         if (!fuse.IsDone()) {
             throw std::runtime_error("BRepAlgoAPI_Fuse failed");
         }
+        g_boolean_pass_count.fetch_add(1, std::memory_order_relaxed);
         auto result = std::make_unique<OcctShape>();
         result->shape = fuse.Shape();
         return result;
@@ -487,6 +628,7 @@ std::unique_ptr<OcctShape> boolean_cut(const OcctShape& left, const OcctShape& r
         if (!cut.IsDone()) {
             throw std::runtime_error("BRepAlgoAPI_Cut failed");
         }
+        g_boolean_pass_count.fetch_add(1, std::memory_order_relaxed);
         auto result = std::make_unique<OcctShape>();
         result->shape = cut.Shape();
         return result;
@@ -500,6 +642,7 @@ std::unique_ptr<OcctShape> boolean_common(const OcctShape& left, const OcctShape
         if (!common.IsDone()) {
             throw std::runtime_error("BRepAlgoAPI_Common failed");
         }
+        g_boolean_pass_count.fetch_add(1, std::memory_order_relaxed);
         auto result = std::make_unique<OcctShape>();
         result->shape = common.Shape();
         return result;
@@ -2100,8 +2243,10 @@ std::unique_ptr<OcctShape> linear_pattern(const OcctShape& shape,
         }
         double ndx = dx / mag, ndy = dy / mag, ndz = dz / mag;
 
-        // Start with the original shape
-        TopoDS_Shape accumulated = shape.shape;
+        // Build every instance (original at index 0, then each translated copy)
+        // into one list and fuse them in a single pass (task 5213).
+        TopTools_ListOfShape instances;
+        instances.Append(shape.shape);
 
         for (uint32_t i = 1; i < count; ++i) {
             double dist = spacing * static_cast<double>(i);
@@ -2112,16 +2257,11 @@ std::unique_ptr<OcctShape> linear_pattern(const OcctShape& shape,
             if (!transform.IsDone()) {
                 throw std::runtime_error("linear_pattern: transform failed");
             }
-            BRepAlgoAPI_Fuse fuse(accumulated, transform.Shape());
-            fuse.Build();
-            if (!fuse.IsDone()) {
-                throw std::runtime_error("linear_pattern: fuse failed");
-            }
-            accumulated = fuse.Shape();
+            instances.Append(transform.Shape());
         }
 
         auto result = std::make_unique<OcctShape>();
-        result->shape = accumulated;
+        result->shape = fuse_shape_list(instances);
         return result;
     });
 }
@@ -2152,12 +2292,14 @@ std::unique_ptr<OcctShape> linear_pattern_2d(const OcctShape& shape,
         }
         double ndx2 = dx2 / mag2, ndy2 = dy2 / mag2, ndz2 = dz2 / mag2;
 
-        // Start with the original shape
-        TopoDS_Shape accumulated = shape.shape;
+        // Build every grid instance (original at index 0, then each translated
+        // copy) into one list and fuse them in a single pass (task 5213).
+        TopTools_ListOfShape instances;
+        instances.Append(shape.shape);
 
         for (uint32_t i = 0; i < count1; ++i) {
             for (uint32_t j = 0; j < count2; ++j) {
-                if (i == 0 && j == 0) continue; // skip the original
+                if (i == 0 && j == 0) continue; // original already appended
                 double tx = static_cast<double>(i) * spacing1 * ndx1
                           + static_cast<double>(j) * spacing2 * ndx2;
                 double ty = static_cast<double>(i) * spacing1 * ndy1
@@ -2171,17 +2313,12 @@ std::unique_ptr<OcctShape> linear_pattern_2d(const OcctShape& shape,
                 if (!transform.IsDone()) {
                     throw std::runtime_error("linear_pattern_2d: transform failed");
                 }
-                BRepAlgoAPI_Fuse fuse(accumulated, transform.Shape());
-                fuse.Build();
-                if (!fuse.IsDone()) {
-                    throw std::runtime_error("linear_pattern_2d: fuse failed");
-                }
-                accumulated = fuse.Shape();
+                instances.Append(transform.Shape());
             }
         }
 
         auto result = std::make_unique<OcctShape>();
-        result->shape = accumulated;
+        result->shape = fuse_shape_list(instances);
         return result;
     });
 }
@@ -2196,7 +2333,10 @@ std::unique_ptr<OcctShape> circular_pattern(const OcctShape& shape,
         }
         gp_Ax1 axis(gp_Pnt(ox, oy, oz), gp_Dir(ax, ay, az));
 
-        TopoDS_Shape accumulated = shape.shape;
+        // Build every instance (original at index 0, then each rotated copy)
+        // into one list and fuse them in a single pass (task 5213).
+        TopTools_ListOfShape instances;
+        instances.Append(shape.shape);
 
         for (uint32_t i = 1; i < count; ++i) {
             double angle_i = total_angle * static_cast<double>(i) / static_cast<double>(count);
@@ -2207,16 +2347,11 @@ std::unique_ptr<OcctShape> circular_pattern(const OcctShape& shape,
             if (!transform.IsDone()) {
                 throw std::runtime_error("circular_pattern: transform failed");
             }
-            BRepAlgoAPI_Fuse fuse(accumulated, transform.Shape());
-            fuse.Build();
-            if (!fuse.IsDone()) {
-                throw std::runtime_error("circular_pattern: fuse failed");
-            }
-            accumulated = fuse.Shape();
+            instances.Append(transform.Shape());
         }
 
         auto result = std::make_unique<OcctShape>();
-        result->shape = accumulated;
+        result->shape = fuse_shape_list(instances);
         return result;
     });
 }
@@ -2237,8 +2372,10 @@ std::unique_ptr<OcctShape> arbitrary_pattern(const OcctShape& shape,
             throw std::runtime_error("arbitrary_pattern: flat_transforms.size() != num_transforms * 7");
         }
 
-        // Start with the original shape
-        TopoDS_Shape accumulated = shape.shape;
+        // Build every instance (original at index 0, then each transformed
+        // copy) into one list and fuse them in a single pass (task 5213).
+        TopTools_ListOfShape instances;
+        instances.Append(shape.shape);
 
         for (uint32_t i = 0; i < num_transforms; ++i) {
             // Stride-7 per-instance rigid transform: [qw,qx,qy,qz,tx,ty,tz]
@@ -2258,16 +2395,11 @@ std::unique_ptr<OcctShape> arbitrary_pattern(const OcctShape& shape,
             if (!transform.IsDone()) {
                 throw std::runtime_error("arbitrary_pattern: transform failed");
             }
-            BRepAlgoAPI_Fuse fuse(accumulated, transform.Shape());
-            fuse.Build();
-            if (!fuse.IsDone()) {
-                throw std::runtime_error("arbitrary_pattern: fuse failed");
-            }
-            accumulated = fuse.Shape();
+            instances.Append(transform.Shape());
         }
 
         auto result = std::make_unique<OcctShape>();
-        result->shape = accumulated;
+        result->shape = fuse_shape_list(instances);
         return result;
     });
 }

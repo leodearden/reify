@@ -517,6 +517,8 @@ fn arbitrary_pattern<G: Transformable>(geometry: G, transforms: List<Transform<3
 
 Patterns return `List` for per-instance constraints; compose with `union_all` for merged solid.
 
+**Performance — single-pass fuse (task 5213):** when a multi-instance pattern is realized as a merged solid on the OCCT kernel (`linear_pattern`, `linear_pattern_2d`, `circular_pattern`, `arbitrary_pattern`), all instances are fused in ONE n-ary boolean pass rather than one pairwise fuse per instance — turning the former O(N²) accumulation into a single OCCT arrangement pass, with identical union semantics (overlapping instances still merge; disjoint instances stay separate). This makes dense replicated workloads — perforated plates, sieves, vent grids — practical. See `examples/perforated_plate.ri` for a worked `difference(plate, union_all(linear_pattern_2d, linear_pattern_2d))` sieve.
+
 **Implementation status (2026-07, `docs/prds/geometry-transforms-frames-projection.md`):** `mirror(geometry, plane: Plane)`, `circular_pattern(geometry, axis: Axis, ...)`, and `arbitrary_pattern(geometry, transforms: List<Transform<3>>)` are implemented by this PRD.
 
 **LSP completion scope:** none of `mirror`, `circular_pattern`, or `arbitrary_pattern` are enumerated as named completions in the editor's completion catalog, following the same convention noted in §3.7 — the catalog intentionally omits multi-argument geometry-operation verbs rather than listing every stdlib function by name.
