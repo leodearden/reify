@@ -23,6 +23,8 @@ use reify_ir::{
 };
 
 use crate::cache::{CachedResult, EvalOutcome, NodeId};
+use crate::cell_commit::{CacheLeg, CommitLegs, DeterminacyRule, TraceSource, commit_cell_result};
+use crate::cell_eval_ctx::cell_eval_ctx;
 use crate::demand::DemandRegistry;
 use crate::deps::{DependencyTrace, ReverseDependencyIndex, extract_dependency_trace, take_trace};
 use crate::dirty::topological_sort;
@@ -2121,14 +2123,28 @@ fn emit_param_override_rejection_warning(
 /// one place — the triple-copy divergence that produced the guarded-group
 /// override bug (task 2154) cannot recur.
 ///
-/// **Cache / journal**: every value-write path in this helper records a
-/// `Started` event before resolution and a `Completed { outcome }` event after
-/// calling `cache.record_evaluation`, mirroring the top-level Param branch in
-/// `Engine::eval`'s first pass — the symmetric S4 arm is tagged
-/// `REJECTED-OVERRIDE-NO-DEFAULT`, and both sites funnel through the shared
-/// `record_eval_completed` helper. Task-2195 added journal+cache recording
-/// here to make guarded-group Param evals fully visible to tooling that joins
-/// journal events against cache state.
+/// **Cache / journal**: every value-write path in this helper funnels through
+/// [`commit_cell_result`] (task γ #5053), which writes the values/snapshot/
+/// cache/journal legs atomically and tags the `Started` event with the
+/// `guarded-group` [`TraceSource`] slug. Task-2195 first added journal+cache
+/// recording here — mirroring the top-level Param branch in `Engine::eval`'s
+/// first pass, including the symmetric `REJECTED-OVERRIDE-NO-DEFAULT` arm — to
+/// make guarded-group Param evals visible to tooling that joins journal events
+/// against cache state; the γ migration preserves that visibility (identical
+/// values/snapshot/cache writes) while making the provenance slug explicit.
+///
+/// **Journal-timing delta (γ #5053, non-load-bearing).** The pre-migration
+/// contract emitted the `Started` event *before* resolution and computed the
+/// paired `Completed`'s `Duration` payload as `start.elapsed()`, so on the
+/// default-eval path (below) that `Duration` spanned the `default_expr`
+/// evaluation. `commit_cell_result` captures its own `start = Instant::now()`
+/// at the *top of the commit* — i.e. *after* that eval — so the `Started`
+/// timestamp is now post-eval and the `Completed` `Duration` measures only the
+/// four-leg commit, not the eval. This ordering/duration shift is an accepted
+/// consequence of routing through the α primitive: no journal-latency
+/// assertion consumes this `Duration`'s magnitude (every consumer matches
+/// `Duration(_)` for presence only), so it is observationally inert for
+/// current tooling.
 fn eval_guarded_group_param_cell(
     cell: &ValueCellDecl,
     param_overrides: &HashMap<ValueCellId, Value>,
@@ -2138,16 +2154,6 @@ fn eval_guarded_group_param_cell(
     diagnostics: &mut Vec<Diagnostic>,
     ctx: &mut GuardedParamCtx<'_>,
 ) {
-    let node_id = NodeId::Value(cell.id.clone());
-    let start = Instant::now();
-    ctx.journal.record(EvalEvent {
-        timestamp: start,
-        node_id: node_id.clone(),
-        kind: EventKind::Started,
-        version: ctx.version,
-        payload: None,
-    });
-
     let override_val = match param_overrides.get(&cell.id) {
         None => {
             // No override stored AND no default_expr: write (Undef, Undetermined)
@@ -2160,18 +2166,20 @@ fn eval_guarded_group_param_cell(
             // behaviour change). Guarded-group cells always write Undef so all
             // cells appear in EvalResult.values regardless of override presence.
             if cell.default_expr.is_none() {
-                values.insert(cell.id.clone(), Value::Undef);
-                snapshot.values.insert(
+                commit_cell_result(
+                    CommitLegs {
+                        values,
+                        snapshot_values: &mut snapshot.values,
+                        cache: ctx.cache,
+                        journal: ctx.journal,
+                    },
                     cell.id.clone(),
-                    (Value::Undef, DeterminacyState::Undetermined),
-                );
-                record_eval_completed(
-                    ctx.journal,
-                    ctx.cache,
-                    node_id,
-                    CachedResult::Value(Value::Undef, DeterminacyState::Undetermined),
+                    Value::Undef,
+                    DeterminacyRule::Undetermined,
+                    TraceSource::GuardedGroup,
+                    DependencyTrace::default(),
                     ctx.version,
-                    start,
+                    CacheLeg::Record,
                 );
                 return;
             }
@@ -2207,34 +2215,39 @@ fn eval_guarded_group_param_cell(
         // Write (Undef, Undetermined) into both maps so external readers of
         // EvalResult.values see a well-defined Undef instead of a missing key.
         // Record in cache + journal — mirrors the top-level S4 arm (task-2195).
-        values.insert(cell.id.clone(), Value::Undef);
-        snapshot.values.insert(
+        commit_cell_result(
+            CommitLegs {
+                values,
+                snapshot_values: &mut snapshot.values,
+                cache: ctx.cache,
+                journal: ctx.journal,
+            },
             cell.id.clone(),
-            (Value::Undef, DeterminacyState::Undetermined),
-        );
-        record_eval_completed(
-            ctx.journal,
-            ctx.cache,
-            node_id,
-            CachedResult::Value(Value::Undef, DeterminacyState::Undetermined),
+            Value::Undef,
+            DeterminacyRule::Undetermined,
+            TraceSource::GuardedGroup,
+            DependencyTrace::default(),
             ctx.version,
-            start,
+            CacheLeg::Record,
         );
         return;
     };
 
     // Override-accepted or default-eval path: write determined value.
-    values.insert(cell.id.clone(), val.clone());
-    snapshot
-        .values
-        .insert(cell.id.clone(), (val.clone(), DeterminacyState::Determined));
-    record_eval_completed(
-        ctx.journal,
-        ctx.cache,
-        node_id,
-        CachedResult::Value(val, DeterminacyState::Determined),
+    commit_cell_result(
+        CommitLegs {
+            values,
+            snapshot_values: &mut snapshot.values,
+            cache: ctx.cache,
+            journal: ctx.journal,
+        },
+        cell.id.clone(),
+        val,
+        DeterminacyRule::UnconditionalDetermined,
+        TraceSource::GuardedGroup,
+        DependencyTrace::default(),
         ctx.version,
-        start,
+        CacheLeg::Record,
     );
 }
 
@@ -3896,10 +3909,26 @@ impl Engine {
                     &eval_ctx_with_meta(&values, &functions, &self.meta_map)
                         .with_determinacy(&snapshot.values),
                 );
-                values.insert(cell.id.clone(), val.clone());
-                snapshot.values.insert(
+                // Commit-only migration (task γ #5053, impl-4): the overlay
+                // eval ctx above is left as-is (no sink/containment — adopting
+                // cell_eval_ctx here would be a B1/4356-class behaviour
+                // change, out of γ's scope). CacheLeg::Skip makes the
+                // pre-existing no-cache decision explicit + auditable instead
+                // of silently omitting the cache leg.
+                commit_cell_result(
+                    CommitLegs {
+                        values: &mut values,
+                        snapshot_values: &mut snapshot.values,
+                        cache: &mut self.cache,
+                        journal: &mut self.journal,
+                    },
                     cell.id.clone(),
-                    (val, DeterminacyState::Determined),
+                    val,
+                    DeterminacyRule::UnconditionalDetermined,
+                    TraceSource::PostPassOverwrite,
+                    DependencyTrace::default(),
+                    version,
+                    CacheLeg::Skip("structural-query post-pass overwrite"),
                 );
             }
         }
@@ -3986,10 +4015,24 @@ impl Engine {
                     &eval_ctx_with_meta(&values, &functions, &self.meta_map)
                         .with_determinacy(&snapshot.values),
                 );
-                values.insert(cell.id.clone(), val.clone());
-                snapshot.values.insert(
+                // Commit-only migration (task γ #5053, impl-5): the
+                // determinacy-only eval ctx above is left as-is. CacheLeg::Skip
+                // makes the pre-existing no-cache decision explicit + auditable
+                // instead of silently omitting the cache leg.
+                commit_cell_result(
+                    CommitLegs {
+                        values: &mut values,
+                        snapshot_values: &mut snapshot.values,
+                        cache: &mut self.cache,
+                        journal: &mut self.journal,
+                    },
                     cell.id.clone(),
-                    (val, DeterminacyState::Determined),
+                    val,
+                    DeterminacyRule::UnconditionalDetermined,
+                    TraceSource::PostPassOverwrite,
+                    DependencyTrace::default(),
+                    version,
+                    CacheLeg::Skip("self-datum projection overwrite"),
                 );
             }
         }
@@ -4894,6 +4937,10 @@ impl Engine {
                         // ctx dropped here — immutable borrow on `values` released.
                     }
 
+                    // Commit-only migration (task γ #5053, impl-6): both arms below
+                    // keep their existing pre-commit logic unchanged. CacheLeg::Skip
+                    // makes the pre-existing no-cache decision explicit + auditable
+                    // instead of silently omitting the cache leg.
                     if failure_diags.is_empty() {
                         // All args evaluated and type-checked successfully.
                         // Attach the overlay to the cloned instance data in a single
@@ -4901,20 +4948,42 @@ impl Engine {
                         // than K separate per-arg calls (which would be O(K²)).
                         data.set_materialized_annotations_batch(&collected);
                         let rebuilt = Value::StructureInstance(data);
-                        values.insert(id.clone(), rebuilt.clone());
-                        snapshot
-                            .values
-                            .insert(id, (rebuilt, DeterminacyState::Determined));
+                        commit_cell_result(
+                            CommitLegs {
+                                values: &mut values,
+                                snapshot_values: &mut snapshot.values,
+                                cache: &mut self.cache,
+                                journal: &mut self.journal,
+                            },
+                            id,
+                            rebuilt,
+                            DeterminacyRule::UnconditionalDetermined,
+                            TraceSource::PostPassOverwrite,
+                            DependencyTrace::default(),
+                            version,
+                            CacheLeg::Skip("annotation-args materialization overlay"),
+                        );
                     } else {
                         // Any arg failure → emit all per-arg diagnostics and replace
                         // the instance cell with Undef so downstream consumers never
                         // observe a partially-materialized annotation. Mirrors the
                         // MassProperties PSD hook's replace-on-failure pattern.
                         diagnostics.extend(failure_diags);
-                        values.insert(id.clone(), Value::Undef);
-                        snapshot
-                            .values
-                            .insert(id, (Value::Undef, DeterminacyState::Determined));
+                        commit_cell_result(
+                            CommitLegs {
+                                values: &mut values,
+                                snapshot_values: &mut snapshot.values,
+                                cache: &mut self.cache,
+                                journal: &mut self.journal,
+                            },
+                            id,
+                            Value::Undef,
+                            DeterminacyRule::UnconditionalDetermined,
+                            TraceSource::PostPassOverwrite,
+                            DependencyTrace::default(),
+                            version,
+                            CacheLeg::Skip("annotation-args materialization overlay"),
+                        );
                     }
                 }
             }
@@ -5303,6 +5372,24 @@ impl Engine {
     /// correct annotation.  A future reader should NOT change this to match the
     /// main-pass unconditional `Determined` rule.
     ///
+    /// # Journal events (task γ #5053)
+    ///
+    /// Since the `commit_cell_result` migration, every invocation now emits a
+    /// `Started`/`Completed` journal pair (`TraceSource::ConeReeval`) in
+    /// addition to the pre-existing cache write — previously this function
+    /// recorded ONLY to `self.cache` and emitted no journal event at all.
+    /// Because both call sites (the cold downstream-cone pass here and the
+    /// θ2 Option-B relaxed reseed in `engine_edit.rs`) may invoke this per
+    /// cell more than once per re-eval, this is an additive increase in
+    /// per-cell journal volume. Confirmed (task γ amendment pass) that no
+    /// journal-consuming code or test in this crate asserts on the prior
+    /// no-journal behaviour for cone / in-walk-mint cells — event-journal
+    /// tests either check totals unrelated to cone re-eval (`tests/journal.rs`,
+    /// `tests/concurrent.rs`) or inspect specific non-cone nodes; the full
+    /// branch-scope suite (`scripts/verify.sh test --scope branch
+    /// --include-infra`) is green with these events present. The new events
+    /// are intended, additive observability, not a regression.
+    ///
     /// # `version_id` — MUST be the owning snapshot's FINAL (post-solver) version
     ///
     /// Callers **must** pass `snapshot.version.0` (or `new_snapshot.version.0` in
@@ -5324,7 +5411,14 @@ impl Engine {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn reeval_cone_cell(
         &mut self,
-        node: &NodeId,
+        // Superseded by commit_cell_result's own NodeId::Value(vcid.clone())
+        // construction below — every call site passes node == &NodeId::Value(
+        // vcid.clone()) (the cold-eval cone driver and both in-walk-mint
+        // re-eval drivers all derive node/vcid from the same schedule entry),
+        // so threading it through separately is now redundant. Kept in the
+        // signature rather than touching call sites, per this migration's
+        // characterization-only scope.
+        _node: &NodeId,
         vcid: &ValueCellId,
         expr: &CompiledExpr,
         values: &mut ValueMap,
@@ -5332,24 +5426,47 @@ impl Engine {
         runtime_sink: &RefCell<Vec<Diagnostic>>,
         version_id: u64,
     ) {
+        // Ctx reverted to the pre-migration hand-built chain (task γ #5053
+        // amendment — review finding on containment scope-creep). impl-2
+        // originally switched this site onto the free `cell_eval_ctx`
+        // constructor; being a required-args builder, that necessarily also
+        // wires `.with_containment(self)`. Unlike the eval_cached Let-miss /
+        // wave-2 sites below (which already routed through the
+        // containment-wired `Engine::cell_eval_ctx` METHOD pre-migration, so
+        // adopting the free fn there is a like-for-like swap), this cell-eval
+        // site never carried containment before — so that was a genuine new
+        // capability, not a typing-only change: a cone cell whose expr uses a
+        // containment-dependent field op (`sample(restrict(field, region),
+        // pt)`) would newly resolve via the kernel instead of degrading to
+        // `Value::Undef`, silently flipping its recorded determinacy under
+        // `DeriveFromValue`. That is exactly the class of change
+        // (B1/4356-class) this task deliberately withholds at the
+        // guarded-group and post-pass COMMIT-ONLY sites (see their own
+        // "left as-is" comments) — withheld here too, to keep this site
+        // behaviour-preserving. Only the `commit_cell_result` migration
+        // (INV-EVAL-1) below applies; the ctx capability set (INV-EVAL-2) is
+        // unchanged from pre-migration.
         let val = reify_expr::eval_expr(
             expr,
             &eval_ctx_with_meta(values, &self.functions, &self.meta_map)
                 .with_determinacy(snapshot_values)
                 .with_runtime_diagnostics(runtime_sink),
         );
-        let det = match &val {
-            Value::Undef => DeterminacyState::Undetermined,
-            _ => DeterminacyState::Determined,
-        };
-        values.insert(vcid.clone(), val.clone());
-        snapshot_values.insert(vcid.clone(), (val.clone(), det));
         let trace = extract_dependency_trace(expr);
-        self.cache.record_evaluation(
-            node.clone(),
-            CachedResult::Value(val, det),
-            VersionId(version_id),
+        commit_cell_result(
+            CommitLegs {
+                values,
+                snapshot_values,
+                cache: &mut self.cache,
+                journal: &mut self.journal,
+            },
+            vcid.clone(),
+            val,
+            DeterminacyRule::DeriveFromValue,
+            TraceSource::ConeReeval,
             trace,
+            VersionId(version_id),
+            CacheLeg::Record,
         );
     }
 
@@ -5897,6 +6014,17 @@ impl Engine {
                     // Check cache reuse (not dirty, no override)
                     // Preserve existing freshness (Failed/Pending) — see the
                     // analogous let-cell block comment for rationale (arch §7.1/§9.2).
+                    //
+                    // task γ (#5053) deferral note: this commit (and its Param/Let
+                    // siblings below, at ~@6183/@6355) calls
+                    // `record_evaluation_with_freshness` directly rather than
+                    // `commit_cell_result` (task α, cell_commit.rs). `CacheLeg::Record`
+                    // always writes `Freshness::Final` and has no path to a preserved
+                    // (carried-over) freshness value — see cell_commit.rs's module doc,
+                    // "Known scope gaps" — so a genuinely preserve-freshness commit like
+                    // this one cannot be represented by `commit_cell_result` as currently
+                    // shaped. Left unmigrated pending a preserve/propagating `CacheLeg`
+                    // variant (PRD docs/prds/v0_6/eval-cell-commit-substrate.md §2.4).
                     if !self.param_overrides.contains_key(&cell.id)
                         && !self.cache.is_dirty(&node_id)
                         && let Some(entry) = self.cache.get(&node_id)
@@ -6099,6 +6227,11 @@ impl Engine {
 
                             // Cache-reuse: not dirty + entry exists (no override).
                             // Preserve existing freshness (Failed/Pending) — arch §7.1/§9.2.
+                            //
+                            // task γ (#5053) deferral note: unmigrated preserve-freshness
+                            // commit — see the Auto-cell pre-seed block's comment above
+                            // (~@5967) for the full rationale (cell_commit.rs "Known scope
+                            // gaps" + PRD §2.4); identical reasoning applies here.
                             if !self.param_overrides.contains_key(&cell.id)
                                 && !self.cache.is_dirty(&node_id)
                                 && let Some(entry) = self.cache.get(&node_id)
@@ -6272,6 +6405,11 @@ impl Engine {
                             // Cache-reuse: not dirty + entry exists.
                             // Preserve existing freshness (Failed/Pending) — arch §7.1/§9.2.
                             // See the detailed rationale in the old second-pass let-cell block.
+                            //
+                            // task γ (#5053) deferral note: unmigrated preserve-freshness
+                            // commit — see the Auto-cell pre-seed block's comment above
+                            // (~@5967) for the full rationale (cell_commit.rs "Known scope
+                            // gaps" + PRD §2.4); identical reasoning applies here.
                             if !self.cache.is_dirty(&node_id)
                                 && let Some(entry) = self.cache.get(&node_id)
                                 && let CachedResult::Value(ref val, det) = entry.result
@@ -6304,20 +6442,18 @@ impl Engine {
                             stats.cache_misses += 1;
                             self.cache.clear_dirty(&node_id);
 
-                            let start = Instant::now();
-                            self.journal.record(EvalEvent {
-                                timestamp: start,
-                                node_id: node_id.clone(),
-                                kind: EventKind::Started,
-                                version,
-                                payload: None,
-                            });
-
                             // Use cell_eval_ctx so DeterminacyPredicate cells (e.g.
                             // `let r = determined(x)`) see the determinacy map (task 4356).
                             let val = reify_expr::eval_expr(
                                 expr,
-                                &self.cell_eval_ctx(&values, &snapshot_values, &runtime_sink),
+                                &cell_eval_ctx(
+                                    &values,
+                                    &self.functions,
+                                    &self.meta_map,
+                                    &snapshot_values,
+                                    &runtime_sink,
+                                    self,
+                                ),
                             );
 
                             // R3d (#4900): if eval returned Undef, try in-walk symbolic mint
@@ -6360,33 +6496,48 @@ impl Engine {
                                 .cloned()
                                 .expect("sorted_combined ⊆ combined_traces.keys() by construction");
 
-                            let cached_result =
-                                CachedResult::Value(val.clone(), DeterminacyState::Determined);
-                            let outcome = self.cache.record_evaluation(
-                                node_id.clone(),
-                                cached_result,
-                                version,
+                            // Journal-timing delta (γ #5053, non-load-bearing): pre-migration
+                            // this miss arm emitted its `Started` event (payload `None`) BEFORE
+                            // the `eval_expr` above and set the paired `Completed`'s `Duration`
+                            // to `start.elapsed()`, spanning the eval. `commit_cell_result`
+                            // captures its own `start` at the top of the commit — after the eval
+                            // — so `Started` is now post-eval and the `Completed` `Duration`
+                            // covers only the four-leg commit. The added `cached-serve` slug is
+                            // additive; the `Duration` magnitude is unconsumed (all journal
+                            // consumers match `Duration(_)` for presence only).
+                            let commit_outcome = commit_cell_result(
+                                CommitLegs {
+                                    values: &mut values,
+                                    snapshot_values: &mut snapshot_values,
+                                    cache: &mut self.cache,
+                                    journal: &mut self.journal,
+                                },
+                                cell.id.clone(),
+                                val,
+                                DeterminacyRule::UnconditionalDetermined,
+                                // `CachedServe` denotes eval_cached-PASS provenance, not a cache
+                                // hit: this is the cache-MISS arm (`stats.cache_misses` above) —
+                                // a cold eval within the cached-serve pass. The genuine cache-hit
+                                // reuse arm (~@6399) does NOT route through commit_cell_result
+                                // (it is the deferred preserve-freshness path), so this slug has a
+                                // single emitter and never collides; a §2.6 divergence audit that
+                                // keys on it reads "produced by the eval_cached pass". Kept as
+                                // CachedServe (not ColdEval) per the frozen γ plan — the test that
+                                // pins the "cached-serve" slug lives in the sibling test module,
+                                // outside this amendment's edit scope.
+                                TraceSource::CachedServe,
                                 trace,
-                            );
-
-                            self.journal.record(EvalEvent {
-                                timestamp: Instant::now(),
-                                node_id,
-                                kind: EventKind::Completed { outcome },
                                 version,
-                                payload: Some(EventPayload::Duration(start.elapsed())),
-                            });
+                                CacheLeg::Record,
+                            );
+                            let outcome = commit_outcome
+                                .cache_outcome()
+                                .expect("CacheLeg::Record always yields Some(outcome)");
 
                             if outcome == EvalOutcome::Unchanged {
                                 stats.early_cutoffs += 1;
                                 self.cache.clear_dependents_dirty(&cell.id);
                             }
-
-                            snapshot_values.insert(
-                                cell.id.clone(),
-                                (val.clone(), DeterminacyState::Determined),
-                            );
-                            values.insert(cell.id.clone(), val);
                         }
 
                         _ => {}
@@ -6631,27 +6782,33 @@ impl Engine {
                                 for (node_id, expr) in nodes_to_reeval {
                                     let val = reify_expr::eval_expr(
                                         &expr,
-                                        &self.cell_eval_ctx(
+                                        &cell_eval_ctx(
                                             &values,
+                                            &self.functions,
+                                            &self.meta_map,
                                             &snapshot_values,
                                             &runtime_sink,
+                                            self,
                                         ),
                                     );
-                                    if let NodeId::Value(vcid) = &node_id {
-                                        values.insert(vcid.clone(), val.clone());
-                                        snapshot_values.insert(
-                                            vcid.clone(),
-                                            (val.clone(), DeterminacyState::Determined),
-                                        );
-                                    }
+                                    let NodeId::Value(vcid) = &node_id else {
+                                        continue;
+                                    };
                                     let trace = extract_dependency_trace(&expr);
-                                    let cached_result =
-                                        CachedResult::Value(val, DeterminacyState::Determined);
-                                    self.cache.record_evaluation(
-                                        node_id,
-                                        cached_result,
-                                        version,
+                                    commit_cell_result(
+                                        CommitLegs {
+                                            values: &mut values,
+                                            snapshot_values: &mut snapshot_values,
+                                            cache: &mut self.cache,
+                                            journal: &mut self.journal,
+                                        },
+                                        vcid.clone(),
+                                        val,
+                                        DeterminacyRule::UnconditionalDetermined,
+                                        TraceSource::ConeReeval,
                                         trace,
+                                        version,
+                                        CacheLeg::Record,
                                     );
                                 }
                             }
@@ -7102,6 +7259,20 @@ impl Engine {
     ///
     /// The subsequent passes (guarded groups, sub-component elaboration,
     /// post-solver evaluate_let_bindings) are UNCHANGED.
+    ///
+    /// task γ (#5053) deferral note: the Let arm's three
+    /// `record_evaluation_propagating_freshness` commits (compute-dispatch
+    /// Failed, panic-recovery, and the main success path) are NOT migrated
+    /// onto `commit_cell_result` (task α, cell_commit.rs). `CacheLeg::Record`
+    /// always writes `Freshness::Final` and has no path to the derived,
+    /// input-propagated freshness this function computes per arch §7.2 — see
+    /// cell_commit.rs's module doc, "Known scope gaps". Left unmigrated
+    /// pending a propagating `CacheLeg` variant (PRD
+    /// docs/prds/v0_6/eval-cell-commit-substrate.md §2.4). The Param arm
+    /// above is unaffected (it uses plain `record_evaluation`, Final-only,
+    /// already representable — though still unmigrated in this
+    /// characterization-only task, whose declared scope is the named site
+    /// inventory, not every Final-representable call site).
     #[allow(clippy::too_many_arguments)]
     fn evaluate_params_and_lets_unified(
         &mut self,
@@ -8060,6 +8231,17 @@ impl Engine {
     /// topologically sorts, and evaluates each in order — recording
     /// journal events and cache entries. Used by both the initial eval()
     /// pass and the post-resolution re-evaluation pass.
+    ///
+    /// task γ (#5053) deferral note: this function's three
+    /// `record_evaluation_propagating_freshness` commits (compute-dispatch
+    /// Failed, panic-recovery, and the main success path) are NOT migrated
+    /// onto `commit_cell_result` (task α, cell_commit.rs) — same reasoning as
+    /// `evaluate_params_and_lets_unified`'s Let arm: `CacheLeg::Record` always
+    /// writes `Freshness::Final` and cannot represent the derived,
+    /// input-propagated freshness this function computes per arch §7.2 (see
+    /// cell_commit.rs's module doc, "Known scope gaps"). Left unmigrated
+    /// pending a propagating `CacheLeg` variant (PRD
+    /// docs/prds/v0_6/eval-cell-commit-substrate.md §2.4).
     #[allow(clippy::too_many_arguments)]
     fn evaluate_let_bindings(
         &mut self,
@@ -9390,6 +9572,126 @@ mod combined_param_let_graph_geometry_let_tests {
             diagnostics.is_empty(),
             "expected no cycle diagnostics; got: {:?}",
             diagnostics
+        );
+    }
+}
+
+/// RED: `reeval_cone_cell` provenance + `DeriveFromValue` determinacy (task γ
+/// #5053, test-2).
+///
+/// Direct unit-level exercise of `reeval_cone_cell` per its own plan-sanctioned
+/// escape hatch: the cold-eval cone driver (~@4609) only fires downstream of a
+/// guarded-group's multi-phase re-elaboration (Phase 1/wave2/Phase 3), whose
+/// exact timing is not practically reproducible from a targeted black-box
+/// `.ri` fixture. `reeval_cone_cell` is `pub(crate)`, so an in-crate test can
+/// call it directly with crafted `values`/`snapshot_values`/`runtime_sink`,
+/// exactly as the impl-2 plan step's fallback describes.
+///
+/// RED today: `reeval_cone_cell` records ONLY to `self.cache` (@~5346),
+/// emitting NO journal event, so `started_payload` is `None` in both cases
+/// below. GREEN after impl-2 migrates the commit onto `commit_cell_result`
+/// with `TraceSource::ConeReeval`.
+///
+/// Also pins `DeriveFromValue` determinacy (characterization guard, must stay
+/// green across the migration boundary): a re-eval'd cell whose expression
+/// evaluates to `Value::Undef` records `Undetermined`; a non-`Undef` value
+/// records `Determined` — `reeval_cone_cell`'s own doc states a future reader
+/// must NOT collapse this into the main-pass unconditional `Determined` rule.
+#[cfg(test)]
+mod reeval_cone_cell_provenance_and_determinacy_tests {
+    use std::cell::RefCell;
+
+    use reify_core::{Type, ValueCellId};
+    use reify_ir::{CompiledExpr, DeterminacyState, PersistentMap, Value, ValueMap};
+
+    use crate::Engine;
+    use crate::cache::NodeId;
+    use crate::journal::{EventKind, EventPayload};
+    use reify_test_support::mocks::MockConstraintChecker;
+
+    /// Mirrors the integration test file's `started_payload` helper: the
+    /// first `Started` event's `EventPayload::Custom` slug for `id`, or
+    /// `None` if there is no such event or its payload isn't `Custom`.
+    fn started_payload(engine: &Engine, id: &ValueCellId) -> Option<String> {
+        let node_id = NodeId::Value(id.clone());
+        let events = engine.journal().events_for_node(&node_id);
+        let started = events
+            .iter()
+            .find(|event| matches!(event.kind, EventKind::Started))?;
+        match &started.payload {
+            Some(EventPayload::Custom(slug)) => Some(slug.clone()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn reeval_cone_cell_undef_records_undetermined_with_cone_reeval_provenance() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let vcid = ValueCellId::new("S", "cone_cell");
+        let node_id = NodeId::Value(vcid.clone());
+        let expr = CompiledExpr::literal(Value::Undef, Type::dimensionless_scalar());
+        let mut values = ValueMap::new();
+        let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::new();
+        let runtime_sink = RefCell::new(Vec::new());
+
+        engine.reeval_cone_cell(
+            &node_id,
+            &vcid,
+            &expr,
+            &mut values,
+            &mut snapshot_values,
+            &runtime_sink,
+            1,
+        );
+
+        assert_eq!(
+            started_payload(&engine, &vcid),
+            Some("cone-reeval".to_string()),
+            "reeval_cone_cell's Started event should carry the 'cone-reeval' \
+             TraceSource slug once migrated onto commit_cell_result"
+        );
+        assert_eq!(
+            snapshot_values.get(&vcid),
+            Some(&(Value::Undef, DeterminacyState::Undetermined)),
+            "a cone-reeval'd cell whose value is Value::Undef must record \
+             Undetermined (DeriveFromValue rule) — must NOT collapse to the \
+             main-pass UnconditionalDetermined rule"
+        );
+    }
+
+    #[test]
+    fn reeval_cone_cell_non_undef_records_determined_with_cone_reeval_provenance() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let vcid = ValueCellId::new("S", "cone_cell");
+        let node_id = NodeId::Value(vcid.clone());
+        let expr = CompiledExpr::literal(Value::Real(2.5), Type::dimensionless_scalar());
+        let mut values = ValueMap::new();
+        let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::new();
+        let runtime_sink = RefCell::new(Vec::new());
+
+        engine.reeval_cone_cell(
+            &node_id,
+            &vcid,
+            &expr,
+            &mut values,
+            &mut snapshot_values,
+            &runtime_sink,
+            1,
+        );
+
+        assert_eq!(
+            started_payload(&engine, &vcid),
+            Some("cone-reeval".to_string()),
+            "reeval_cone_cell's Started event should carry the 'cone-reeval' \
+             TraceSource slug once migrated onto commit_cell_result"
+        );
+        assert_eq!(
+            snapshot_values.get(&vcid),
+            Some(&(Value::Real(2.5), DeterminacyState::Determined)),
+            "a cone-reeval'd cell whose value is non-Undef must record \
+             Determined (DeriveFromValue rule)"
         );
     }
 }

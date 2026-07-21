@@ -474,6 +474,7 @@ crates/reify-eval/tests/dynamics_body_mass_props.rs
 crates/reify-eval/tests/e2e_bracket.rs
 crates/reify-eval/tests/e2e_meta.rs
 crates/reify-eval/tests/edit_source.rs
+crates/reify-eval/tests/engine_eval_commit_migration.rs
 crates/reify-eval/tests/ensure_openvdb_kernel.rs
 crates/reify-eval/tests/eval_cached_diagnostics.rs
 crates/reify-eval/tests/eval_instrumentation_counters.rs
