@@ -10393,6 +10393,107 @@ mod tests {
         );
     }
 
+    // ── resolve_display shared formatter tests (task #5234 step-1) ───────────
+    // PRD display-unit-preference §6.2: `resolve_display` is the new shared
+    // formatter the four L4 call sites (task #5235) will route onto. These
+    // lock its contract ahead of any caller: `preference: None` falls through
+    // §6.1 rungs 3-5 (curated registry default, dimensionless, composed
+    // fallback); `preference: Some` renders the already-resolved rung
+    // directly without re-running precedence.
+
+    #[test]
+    fn resolve_display_none_curated_scale_one_dims_render_raw_magnitude() {
+        assert_eq!(
+            resolve_display(101_325.0, &DimensionVector::PRESSURE, None),
+            ("101325".to_string(), "Pa".to_string()),
+            "Pressure's default rung has si_scale 1.0, so the raw SI magnitude is the display magnitude"
+        );
+        assert_eq!(
+            resolve_display(2.5, &DimensionVector::MASS, None),
+            ("2.5".to_string(), "kg".to_string())
+        );
+        assert_eq!(
+            resolve_display(1270.0, &DimensionVector::MASS_DENSITY, None),
+            ("1270".to_string(), "kg/m\u{00B3}".to_string())
+        );
+        assert_eq!(
+            resolve_display(250.0, &DimensionVector::FORCE, None),
+            ("250".to_string(), "N".to_string())
+        );
+        assert_eq!(
+            resolve_display(1500.0, &DimensionVector::ENERGY, None),
+            ("1500".to_string(), "J".to_string())
+        );
+        assert_eq!(
+            resolve_display(750.0, &DimensionVector::POWER, None),
+            ("750".to_string(), "W".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_display_none_scaled_default_rung_dims_scale_magnitude_and_label() {
+        assert_eq!(
+            resolve_display(0.08, &DimensionVector::LENGTH, None),
+            ("80".to_string(), "mm".to_string())
+        );
+        assert_eq!(
+            resolve_display(0.0045, &DimensionVector::AREA, None),
+            ("4500".to_string(), "mm\u{00B2}".to_string())
+        );
+        assert_eq!(
+            resolve_display(0.007, &DimensionVector::VOLUME, None),
+            ("7000000".to_string(), "mm\u{00B3}".to_string())
+        );
+        assert_eq!(
+            resolve_display(std::f64::consts::PI, &DimensionVector::ANGLE, None),
+            ("180".to_string(), "deg".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_display_none_dimensionless_renders_empty_label() {
+        assert_eq!(
+            resolve_display(3.0, &DimensionVector::DIMENSIONLESS, None),
+            ("3".to_string(), "".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_display_none_uncurated_dims_compose_base_unit_fallback() {
+        assert_eq!(
+            resolve_display(2.0, &DimensionVector::VELOCITY, None),
+            ("2".to_string(), "m\u{b7}s^-1".to_string()),
+            "Velocity has no registry ladder, so it falls through to the composed Display fallback"
+        );
+        assert_eq!(
+            resolve_display(25.0, &DimensionVector::MONEY, None),
+            ("25".to_string(), "USD".to_string()),
+            "Money is not a ladder dimension, so composed Display yields \"USD\" naturally"
+        );
+    }
+
+    #[test]
+    fn resolve_display_some_preference_renders_the_resolved_rung_directly() {
+        let liters = DisplayPreference::new("L", 1e-3);
+        assert_eq!(
+            resolve_display(0.007, &DimensionVector::VOLUME, Some(&liters)),
+            ("7".to_string(), "L".to_string()),
+            "explicit preference overrides the registry default rung (mm\u{00B3})"
+        );
+
+        let cm = DisplayPreference::new("cm", 1e-2);
+        assert_eq!(
+            resolve_display(0.08, &DimensionVector::LENGTH, Some(&cm)),
+            ("8".to_string(), "cm".to_string())
+        );
+
+        let kpa = DisplayPreference::new("kPa", 1e3);
+        assert_eq!(
+            resolve_display(101_325.0, &DimensionVector::PRESSURE, Some(&kpa)),
+            ("101.325".to_string(), "kPa".to_string())
+        );
+    }
+
     // --- Freshness::is_final tests (task #2356) ---
 
     #[test]
