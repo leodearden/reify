@@ -2231,8 +2231,7 @@ fn merged_cluster_left_unresolved_warning(cluster_scope_names: &[&str]) -> Diagn
 /// `dispatch_merged_cluster_solve_cached` (reviewer_comprehensive, task #5118
 /// amendment) so the warning text and the `ap.free` predicate cannot drift
 /// apart by hand between the two dispatchers -- the same extraction already
-/// done for `merged_cluster_left_unresolved_warning` above and
-/// `reeval_downstream_let_cones` below.
+/// done for `merged_cluster_left_unresolved_warning` above.
 fn push_merged_cluster_nonunique_warnings(
     diagnostics: &mut Vec<Diagnostic>,
     problem: &ResolutionProblem,
@@ -7614,88 +7613,6 @@ impl Engine {
         }
     }
 
-    /// Wave-2 downstream-`let`-cone re-evaluation, shared by every warm
-    /// write-back site that resolves auto cells outside the dirty-gated
-    /// per-cell walk: the per-template solver arm inside `eval_cached`
-    /// above, and `dispatch_merged_cluster_solve_cached` below. Extracted
-    /// (reviewer_comprehensive, task #5118 amendment) because the two sites
-    /// were a near-verbatim hand-copy of each other -- exactly the kind of
-    /// drift the "four warm-resolution sites must stay in sync" comment at
-    /// the per-template call site warns against.
-    ///
-    /// Given `resolved_ids` (the `ValueCellId`s a solver's `Solved` result
-    /// just wrote back), computes the downstream dirty cone via the
-    /// scope-agnostic `self.eval_state.reverse_index`, intersects it with
-    /// demand, re-evaluates each dirty `let` cell's `default_expr`, and
-    /// writes the result back to `values`/`snapshot_values` and
-    /// `self.cache` under `version` -- the same outcome cold `eval()`
-    /// reaches structurally differently, via its per-member
-    /// `evaluate_let_bindings` loop. No-ops when `resolved_ids` is empty.
-    ///
-    /// Known limitation (reviewer_comprehensive, task #5118 amendment):
-    /// `eval_cached` unconditionally rebuilds `self.eval_state` at the end
-    /// of every call with `reverse_index: ReverseDependencyIndex::default()`
-    /// (see that rebuild, near `eval_cached`'s end), so this method only
-    /// finds real dependents on the FIRST warm call following a cold
-    /// `eval()` -- a SECOND consecutive `eval_cached` call sees an empty
-    /// reverse index here and silently no-ops for any newly-resolved id,
-    /// even though the resolved cell ITSELF stays current (written by the
-    /// caller's own primary, non-wave-2 write-back loop, unconditionally,
-    /// every call). This is a pre-existing characteristic of the
-    /// per-template warm arm this helper was extracted from, not something
-    /// the #5118 merged-cluster dispatch introduced; broadening it (e.g. an
-    /// `eval_cached` that maintains a real incremental reverse index across
-    /// calls) is tracked as a follow-up, task #5224, not in scope here.
-    fn reeval_downstream_let_cones(
-        &mut self,
-        resolved_ids: &HashSet<ValueCellId>,
-        values: &mut ValueMap,
-        snapshot_values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
-        runtime_sink: &RefCell<Vec<Diagnostic>>,
-        version: VersionId,
-    ) {
-        if resolved_ids.is_empty() {
-            return;
-        }
-
-        let nodes_to_reeval: Vec<(NodeId, CompiledExpr)> = if let Some(es) =
-            self.eval_state.as_ref()
-        {
-            let wave2_dirty =
-                crate::dirty::compute_dirty_cone(resolved_ids, &es.reverse_index, &es.snapshot.graph);
-            let wave2_eval = crate::dirty::compute_eval_set(&wave2_dirty, &self.demand, &es.trace_map);
-            wave2_eval
-                .into_iter()
-                .filter_map(|node_id| {
-                    if let NodeId::Value(vcid) = &node_id
-                        && let Some(node) = es.snapshot.graph.value_cells.get(vcid)
-                        && let Some(ref expr) = node.default_expr
-                    {
-                        return Some((node_id, expr.clone()));
-                    }
-                    None
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-
-        for (node_id, expr) in nodes_to_reeval {
-            let val = reify_expr::eval_expr(
-                &expr,
-                &self.cell_eval_ctx(values, snapshot_values, runtime_sink),
-            );
-            if let NodeId::Value(vcid) = &node_id {
-                values.insert(vcid.clone(), val.clone());
-                snapshot_values.insert(vcid.clone(), (val.clone(), DeterminacyState::Determined));
-            }
-            let trace = extract_dependency_trace(&expr);
-            let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
-            self.cache
-                .record_evaluation(node_id, cached_result, version, trace);
-        }
-    }
-
     /// Warm counterpart to `dispatch_merged_cluster_solve` (see that
     /// function's doc comment, above, for the full cold write-back this
     /// mirrors structurally). Dispatched once per within-cap `MergedSolve`
@@ -7710,7 +7627,10 @@ impl Engine {
     /// Write-back shape matches the WARM per-template arm above (not
     /// cold's): entries are recorded under the CALLER-supplied `version`
     /// (not a freshly-allocated internal one) with `DependencyTrace::default()`
-    /// — no journal, no `resolved_params`, no `objective_provenance` (see the
+    /// — routed through `commit_cell_result` (task #5118 step 10, once #5053 γ
+    /// landed), so the merged N-scope commit writes the `self.journal` leg
+    /// (INV-EVAL-1/2) like its migrated per-template sibling, but still emits
+    /// no `resolved_params` and no `objective_provenance` (see the
     /// VERSION / TRACE NOTE at that arm's site for why warm stays in
     /// caller-version space) — and this dispatch calls plain `.solve()`
     /// unconditionally, never `solve_ranked`, matching that arm's shape.
@@ -7799,8 +7719,10 @@ impl Engine {
         // This mirrors a pre-existing characteristic of the warm per-template
         // arm this dispatch was built to match structurally (not a new gap
         // #5118 introduces), accepted per design decision #4 (task #5118
-        // plan.json) so #5053's mechanical per-arm migration onto
-        // `commit_cell_result` stays uniform. See
+        // plan.json). #5053 has since LANDED, and step 10 routed this
+        // dispatch's Solved-arm write-back + wave-2 onto `commit_cell_result`
+        // (above/below), keeping the merged N-scope commit uniform with the
+        // migrated per-template sibling. See
         // `eval_vs_eval_cached_merged_cluster_objective_cluster_may_diverge_by_solve_entrypoint`
         // (tests/merged_cluster_solve.rs) for a test pinning this divergence
         // explicitly with a solver whose two entry points disagree.
@@ -7832,19 +7754,35 @@ impl Engine {
                     .iter()
                     .filter(|(id, _)| auto_param_ids.contains(id))
                 {
-                    values.insert(id.clone(), val.clone());
                     resolved_ids.insert(id.clone());
-                    snapshot_values
-                        .insert(id.clone(), (val.clone(), DeterminacyState::Determined));
-
-                    let node_id = NodeId::Value(id.clone());
-                    let cached_result =
-                        CachedResult::Value(val.clone(), DeterminacyState::Determined);
-                    self.cache.record_evaluation(
-                        node_id,
-                        cached_result,
-                        version,
+                    // INV-EVAL-1/2 (task #5118, step 10): route the merged
+                    // N-scope solver write-back through `commit_cell_result`
+                    // -- the same primitive #5053 (γ, now LANDED) migrated
+                    // `eval_cached`'s sibling arms onto -- so every co-solved
+                    // cluster-member auto writes all four legs atomically:
+                    // values / snapshot / cache PLUS the `self.journal` leg's
+                    // `Started`/`Completed` pair. This supersedes the earlier
+                    // hand-rolled `self.cache.record_evaluation` (cache leg
+                    // only, no journal `Started`). The WARM shape is otherwise
+                    // preserved -- caller-supplied `version`,
+                    // `DependencyTrace::default()`, `CacheLeg::Record` -- and
+                    // `TraceSource::CachedServe` records the warm-serve
+                    // provenance slug (any `EventPayload::Custom` slug proves
+                    // the routing to the §2.6 divergence audit).
+                    commit_cell_result(
+                        CommitLegs {
+                            values: &mut *values,
+                            snapshot_values: &mut *snapshot_values,
+                            cache: &mut self.cache,
+                            journal: &mut self.journal,
+                        },
+                        id.clone(),
+                        val.clone(),
+                        DeterminacyRule::UnconditionalDetermined,
+                        TraceSource::CachedServe,
                         DependencyTrace::default(),
+                        version,
+                        CacheLeg::Record,
                     );
                 }
 
@@ -7860,17 +7798,81 @@ impl Engine {
                 // reverse index is scope-agnostic (keyed by `ValueCellId`),
                 // so one pass re-evals cross-member let cones (BT3) exactly
                 // as cold's per-member `evaluate_let_bindings` loop does.
-                // Shared with the warm per-template arm via
-                // `reeval_downstream_let_cones` (task #5118 amendment) --
-                // see that helper's doc for the full mechanism and its known
-                // first-warm-call-only limitation.
-                self.reeval_downstream_let_cones(
-                    &resolved_ids,
-                    values,
-                    snapshot_values,
-                    runtime_sink,
-                    version,
-                );
+                //
+                // Structurally identical to the warm per-template arm's
+                // wave-2 (above): collect the (node, expr) cone while holding
+                // the immutable `eval_state` borrow, then re-eval + commit
+                // each cell through `commit_cell_result`
+                // (`TraceSource::ConeReeval`). Task #5118 step 10 inlined this
+                // in place of the former private `reeval_downstream_let_cones`
+                // helper, which hand-rolled `record_evaluation` (cache leg
+                // only); #5053's migration made the per-template sibling
+                // inline this exact commit-backed shape, and this dispatch now
+                // matches it. `UnconditionalDetermined` preserves the helper's
+                // prior always-`Determined` write-back semantics while adding
+                // the `self.journal` leg (INV-EVAL-1/2).
+                //
+                // Known first-warm-call limitation (esc-5118-2, task #5224):
+                // an un-seeded `eval_state` yields an empty cone (the `else
+                // { Vec::new() }` arm), so the sole G1 consumer (the LSP)
+                // routes an uninitialized engine to cold `eval()` by
+                // construction (reify-lsp/src/diagnostics.rs).
+                if !resolved_ids.is_empty() {
+                    let nodes_to_reeval: Vec<(NodeId, CompiledExpr)> =
+                        if let Some(es) = self.eval_state.as_ref() {
+                            let wave2_dirty = crate::dirty::compute_dirty_cone(
+                                &resolved_ids,
+                                &es.reverse_index,
+                                &es.snapshot.graph,
+                            );
+                            let wave2_eval = crate::dirty::compute_eval_set(
+                                &wave2_dirty,
+                                &self.demand,
+                                &es.trace_map,
+                            );
+                            wave2_eval
+                                .into_iter()
+                                .filter_map(|node_id| {
+                                    if let NodeId::Value(vcid) = &node_id
+                                        && let Some(node) =
+                                            es.snapshot.graph.value_cells.get(vcid)
+                                        && let Some(ref expr) = node.default_expr
+                                    {
+                                        return Some((node_id, expr.clone()));
+                                    }
+                                    None
+                                })
+                                .collect()
+                        } else {
+                            Vec::new()
+                        };
+
+                    for (node_id, expr) in nodes_to_reeval {
+                        let val = reify_expr::eval_expr(
+                            &expr,
+                            &self.cell_eval_ctx(values, snapshot_values, runtime_sink),
+                        );
+                        let NodeId::Value(vcid) = &node_id else {
+                            continue;
+                        };
+                        let trace = extract_dependency_trace(&expr);
+                        commit_cell_result(
+                            CommitLegs {
+                                values: &mut *values,
+                                snapshot_values: &mut *snapshot_values,
+                                cache: &mut self.cache,
+                                journal: &mut self.journal,
+                            },
+                            vcid.clone(),
+                            val,
+                            DeterminacyRule::UnconditionalDetermined,
+                            TraceSource::ConeReeval,
+                            trace,
+                            version,
+                            CacheLeg::Record,
+                        );
+                    }
+                }
             }
             SolveResult::Infeasible {
                 diagnostics: solver_diags,

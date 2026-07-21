@@ -1561,8 +1561,8 @@ fn eval_cached_merges_within_cap_cluster_like_cold_eval() {
 /// warm call following the cold `eval()`, not a SECOND consecutive
 /// `eval_cached` call. `eval_cached` unconditionally rebuilds
 /// `self.eval_state` at the end of every call with an empty
-/// `reverse_index` (`ReverseDependencyIndex::default()`), so the shared
-/// `Engine::reeval_downstream_let_cones` helper this test exercises only
+/// `reverse_index` (`ReverseDependencyIndex::default()`), so the warm merged
+/// dispatch's inline wave-2 re-eval this test exercises only
 /// finds real dependents on the FIRST warm call after a cold `eval()` — a
 /// second consecutive `eval_cached` would see an empty reverse index and
 /// silently skip re-evaluating `B.out` against that call's newly co-solved
@@ -1613,7 +1613,7 @@ fn eval_cached_merged_cluster_let_surfaces_co_solved_cross_scope_auto() {
 }
 
 /// Pins the SECOND-consecutive-`eval_cached`-call staleness the SCOPE NOTE
-/// above (and `Engine::reeval_downstream_let_cones`'s doc, engine_eval.rs)
+/// above (and the warm merged dispatch's inline wave-2, engine_eval.rs)
 /// documents but did not test (reviewer_comprehensive, task #5118 amendment,
 /// suggestion 3): `eval_cached` unconditionally rebuilds `self.eval_state` at
 /// the end of EVERY call with an empty `ReverseDependencyIndex::default()`,
