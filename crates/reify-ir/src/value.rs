@@ -10403,30 +10403,37 @@ mod tests {
         );
     }
 
-    // ── dimension_unit_label / format_display_pair composed base-unit tests ──
-    // (task 5198 fix b) — MASS_DENSITY has no curated arm in either fallback,
-    // so both must compose from Display ("kg·m^-3") instead of leaking "SI".
+    // ── dimension_unit_label registry curation tests (task #5234) ────────────
+    // dimension_unit_label now sources curated names from L1's unit-ladder
+    // registry (reify_core::unit_ladders, via registry_display_default) for
+    // any dimension whose default rung has si_scale == 1.0 — Mass, Pressure,
+    // Density, Force, Energy, Power. format_display_pair's `to_display_units`
+    // is UNCHANGED by this task and still composes MASS_DENSITY's base-SI
+    // symbols ("kg·m^-3") — seeing "kg/m³" here (hover) and "kg·m^-3" there
+    // (GUI-cell / format_display_pair) for the same dimension is an
+    // expected, temporary divergence that L4/L6 (tasks #5235/#5237) unify.
 
     #[test]
-    fn dimension_unit_label_mass_density_composes_base_units() {
+    fn dimension_unit_label_mass_density_uses_curated_registry_name() {
         assert_eq!(
             dimension_unit_label(&DimensionVector::MASS_DENSITY),
-            "kg\u{b7}m^-3",
-            "dimension_unit_label(MASS_DENSITY) should compose the Display form, not fall through to \"SI\""
+            "kg/m\u{00B3}",
+            "dimension_unit_label(MASS_DENSITY) should adopt the registry's curated \"kg/m³\", not compose \"kg·m^-3\""
         );
     }
 
     #[test]
-    fn format_hover_mass_density_scalar_renders_composed_units() {
-        // body_density-style scalar must render composed base units, never "1270 SI".
+    fn format_hover_mass_density_scalar_uses_curated_registry_name() {
+        // body_density-style scalar must render the registry-curated unit,
+        // not the composed "kg·m^-3" (nor the old "1270 SI" leak).
         let v = Value::Scalar {
             si_value: 1270.0,
             dimension: DimensionVector::MASS_DENSITY,
         };
         assert_eq!(
             v.format_hover(),
-            "1270 kg\u{b7}m^-3",
-            "format_hover() on a MASS_DENSITY scalar should render composed base units, not \"1270 SI\""
+            "1270 kg/m\u{00B3}",
+            "format_hover() on a MASS_DENSITY scalar should render the registry-curated \"kg/m³\""
         );
     }
 
@@ -10439,8 +10446,57 @@ mod tests {
         assert_eq!(
             v.format_display_pair(),
             ("1270".to_string(), "kg\u{b7}m^-3".to_string()),
-            "format_display_pair() on a MASS_DENSITY scalar should return composed base units, not \"SI\""
+            "format_display_pair() on a MASS_DENSITY scalar should return composed base units, not \"SI\" — to_display_units is unchanged by task #5234"
         );
+    }
+
+    #[test]
+    fn dimension_unit_label_curates_scale_one_registry_dims() {
+        // Pressure/Force/Energy/Power all have a coherent-SI (si_scale ==
+        // 1.0) default rung in the registry, so dimension_unit_label should
+        // now adopt their curated names instead of composing base-SI symbols.
+        assert_eq!(dimension_unit_label(&DimensionVector::PRESSURE), "Pa");
+        assert_eq!(dimension_unit_label(&DimensionVector::FORCE), "N");
+        assert_eq!(dimension_unit_label(&DimensionVector::ENERGY), "J");
+        assert_eq!(dimension_unit_label(&DimensionVector::POWER), "W");
+    }
+
+    #[test]
+    fn format_hover_pressure_scalar_uses_curated_registry_name() {
+        let v = Value::Scalar {
+            si_value: 101_325.0,
+            dimension: DimensionVector::PRESSURE,
+        };
+        assert_eq!(v.format_hover(), "101325 Pa");
+    }
+
+    #[test]
+    fn dimension_unit_label_scaled_default_rung_dims_stay_on_raw_si_label() {
+        // Length/Angle's registry default rung is SCALED (mm @ 1e-3, deg @
+        // π/180), but dimension_unit_label's caller (format_hover) renders
+        // the RAW si_value — so these must NOT adopt the registry's scaled
+        // label (which would misrender the raw magnitude, e.g. "0.08 mm" for
+        // a raw 0.08 m) and must stay on their existing raw-SI arms.
+        assert_eq!(
+            dimension_unit_label(&DimensionVector::LENGTH),
+            "m",
+            "LENGTH must stay \"m\" (raw SI), not adopt the registry's scaled \"mm\" label"
+        );
+        assert_eq!(
+            dimension_unit_label(&DimensionVector::ANGLE),
+            "rad",
+            "ANGLE must stay \"rad\" (raw SI), not adopt the registry's scaled \"deg\" label"
+        );
+    }
+
+    #[test]
+    fn dimension_unit_label_unaffected_arms_unchanged() {
+        // Mass's registry default rung is already si_scale == 1.0 with label
+        // "kg", so curation is a no-op in output (even though it now flows
+        // through the registry lookup instead of a hardcoded arm).
+        // Dimensionless is untouched by the registry lookup entirely.
+        assert_eq!(dimension_unit_label(&DimensionVector::MASS), "kg");
+        assert_eq!(dimension_unit_label(&DimensionVector::DIMENSIONLESS), "");
     }
 
     // ── Value::Complex format_display_pair scaling (task 5198 amend) ─────────
