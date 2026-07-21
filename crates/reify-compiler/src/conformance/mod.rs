@@ -17,12 +17,18 @@ use std::cell::RefCell;
 /// α generalizes the 4584 struct-ctor conformance chokepoint from its original
 /// 4-family allowlist (`List<TraitObject>` / `StructureRef` / `Vector` /
 /// `Selector`) to ALL concrete field types, at **Warning** severity behind this
-/// single const. The whole ctor-conformance surface reads its severity from
+/// single const. The ctor field-conformance surface reads its severity from
 /// here (threaded through `WalkCtx.severity`), so the δ follow-up is a literal
-/// one-const flip to `Severity::Error` that promotes the entire surface
-/// uniformly. The fn-call conformance entry (`check_fn_arg_conformance`) is
-/// deliberately NOT governed by this knob — it hard-codes `Severity::Error`
-/// (out of scope; see the `WalkCtx.severity` field doc).
+/// one-const flip to `Severity::Error` that promotes that surface uniformly.
+///
+/// **Two emit sites are deliberately outside this knob** and will NOT flip with
+/// the const: (1) the fn-call conformance entry (`check_fn_arg_conformance`)
+/// hard-codes `Severity::Error` (out of scope; see the `WalkCtx.severity` field
+/// doc); (2) the geometry-trait leaf (`Bounded` / `Connected` / `Convex`, reached
+/// via [`emit_geometry_unbounded`] / [`emit_geometry_trait_violation`]) hard-codes
+/// `Severity::Error` because those codes (`GeometryUnbounded` and the geometry
+/// `TypeNotConformingToTrait`) belong to the geometry-primitive-constructors PRD,
+/// not to this ctor-field knob (see the `WalkCtx.severity` doc's carve-out note).
 const CTOR_FIELD_CONFORMANCE_SEVERITY: Severity = Severity::Warning;
 
 /// Build a `Diagnostic` at an explicit `severity`.
@@ -549,15 +555,32 @@ struct WalkCtx<'a> {
     templates: &'a HashMap<String, &'a TopologyTemplate>,
     traits: &'a HashMap<String, &'a CompiledTrait>,
     diagnostics: &'a mut Vec<Diagnostic>,
-    /// Severity at which every conformance diagnostic emitted through this walk
-    /// is built (task 5302). The two ctor-conformance entries
+    /// Severity at which conformance diagnostics emitted through this walk are
+    /// built (task 5302). The two ctor-conformance entries
     /// (`check_trait_arg_conformance`, `check_param_default_conformance`) set
     /// this to [`CTOR_FIELD_CONFORMANCE_SEVERITY`] (Warning at α); the fn-call
     /// entry (`check_fn_arg_conformance`) sets it to `Severity::Error` so the
     /// out-of-scope fn-call trait-conformance semantics stay hard errors. Every
-    /// emit site builds its `Diagnostic` via [`diag_at`]`(ctx.severity, …)`, so
-    /// severity is read from exactly one place per walk (C2(iv) severity-
-    /// invariance); the δ follow-up flips only the const.
+    /// *field-conformance* emit site (leaf-trait, StructureRef, Vector, selector,
+    /// wrapper-shape, and the general concrete-leaf `ArgTypeMismatch`) builds its
+    /// `Diagnostic` via [`diag_at`]`(ctx.severity, …)`, so severity is read from
+    /// exactly one place per walk (C2(iv) severity-invariance); the δ follow-up
+    /// flips only the const.
+    ///
+    /// **Carve-out — geometry-trait conformance stays always-Error.** The
+    /// `Bounded` / `Connected` / `Convex` geometry-trait leaf (reached inside
+    /// [`check_leaf_trait_conformance`] via [`emit_geometry_unbounded`] /
+    /// [`emit_geometry_trait_violation`]) intentionally does NOT read
+    /// `ctx.severity` — those two helpers hard-code `Severity::Error`. Their codes
+    /// (`GeometryUnbounded` and the geometry `TypeNotConformingToTrait`) belong to
+    /// the geometry-primitive-constructors PRD, not to this knob's ctor-field
+    /// surface, and are therefore excluded from α's Warning downgrade set
+    /// (Vector / Selector / StructureRef / wrapped-trait / wrapper-shape /
+    /// general-leaf). Consequence: the δ one-const flip will NOT promote the
+    /// geometry-trait ctor diagnostics; a δ author who wants them under the knob
+    /// must route those two emit sites through `ctx.severity` explicitly (and
+    /// update the `emit_geometry_*_helper_produces_error_*` unit tests +
+    /// `geometry_traits_inference_tests`, which currently pin Error).
     severity: Severity,
 }
 
@@ -670,6 +693,13 @@ fn walk_param_against_arg(param_type: &Type, compiled_arg: &CompiledExpr, ctx: &
 /// canonical message wording is documented on the variant declaration in
 /// `crates/reify-types/src/diagnostics.rs` — keep the two in sync.
 ///
+/// **Always Error — carve-out from the task 5302 ctor-field severity knob.**
+/// This helper is reached on the ctor walk path but intentionally hard-codes
+/// `Severity::Error` rather than reading `WalkCtx.severity`, so the δ one-const
+/// flip does NOT govern it (see the `CTOR_FIELD_CONFORMANCE_SEVERITY` /
+/// `WalkCtx.severity` carve-out docs). `emit_geometry_unbounded_helper_produces_error_*`
+/// pins this.
+///
 /// Reserved for the **Bounded** case only. `Connected`/`Convex` violations
 /// at the same call-site shape reuse [`DiagnosticCode::TypeNotConformingToTrait`]
 /// per the task's design decision §2 (the PRD only allocates
@@ -741,6 +771,12 @@ pub(crate) fn emit_geometry_profile_required(
 /// [`DiagnosticCode::TypeNotConformingToTrait`] and a single label at `span`. The PRD
 /// only allocates `E_GEOMETRY_UNBOUNDED` for missing `Bounded`; `Connected`/`Convex`
 /// reuse `TypeNotConformingToTrait`.
+///
+/// **Always Error — carve-out from the task 5302 ctor-field severity knob**, for the
+/// same reason as its sibling [`emit_geometry_unbounded`]: geometry-trait conformance
+/// is not part of α's Warning downgrade set, so this hard-codes `Severity::Error` and
+/// is not flipped by the δ const. `emit_geometry_trait_violation_helper_produces_error_*`
+/// pins this.
 ///
 /// The message intentionally does **not** include a separate param-name slot. Under
 /// reify's keyword-arg convention the arg name and param name are identical in practice,
@@ -1418,6 +1454,16 @@ fn check_leaf_trait_conformance(
             };
             let inferred = infer_traits_for_expr_in_env(compiled_arg, &env);
             if !inferred.has(trait_kind) {
+                // CARVE-OUT (task 5302 α): these two geometry-trait emit sites
+                // deliberately stay `Severity::Error` — they do NOT read
+                // `ctx.severity`. `GeometryUnbounded` and the geometry
+                // `TypeNotConformingToTrait` belong to the geometry-primitive-
+                // constructors PRD, not to this task's ctor-field knob, so they
+                // are excluded from α's Warning downgrade set and the δ one-const
+                // flip will NOT promote them. A future author who wants
+                // geometry-trait ctor diagnostics governed by the knob must thread
+                // `ctx.severity` through these helpers (see the
+                // `CTOR_FIELD_CONFORMANCE_SEVERITY` / `WalkCtx.severity` docs).
                 if matches!(trait_kind, GeometryTrait::Bounded) {
                     emit_geometry_unbounded(ctx.arg_name, ctx.span, ctx.diagnostics);
                 } else {
