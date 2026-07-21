@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 use reify_core::diagnostics::{DiagnosticCode, SourceSpan};
 use reify_core::dimension::DimensionVector;
@@ -2892,6 +2893,93 @@ fn dimension_unit_label(dim: &DimensionVector) -> Cow<'static, str> {
     } else {
         Cow::Owned(format!("{dim}"))
     }
+}
+
+/// A single resolved display rung: a unit label and its SI scale factor.
+///
+/// Represents a rung that has *already won* PRD display-unit-preference
+/// §6.1's precedence order (e.g. an explicit `@display` annotation or a
+/// user-picked GUI unit) — [`resolve_display`] renders `si_value /
+/// si_scale` under `label` directly and does **not** re-run that
+/// precedence itself.
+// G-allow: shared display formatter input type (PRD display-unit-preference §6.2); the four surfaces route onto it in L4 task #5235 (pending) — no non-test caller until then
+#[derive(Debug, Clone, PartialEq)]
+pub struct DisplayPreference {
+    /// User-facing unit label (e.g. `"mm"`, `"L"`, `"kPa"`).
+    pub label: String,
+    /// `display_magnitude = si_value / si_scale`.
+    pub si_scale: f64,
+}
+
+impl DisplayPreference {
+    /// Construct a resolved display preference from a label and SI scale factor.
+    pub fn new(label: impl Into<String>, si_scale: f64) -> Self {
+        Self {
+            label: label.into(),
+            si_scale,
+        }
+    }
+}
+
+/// Process-wide cache of [`reify_core::unit_ladders`]'s registry, populated
+/// once on first use.
+///
+/// Both [`resolve_display`] and [`dimension_unit_label`] consult this via
+/// [`registry_display_default`] rather than calling `unit_ladders()`
+/// directly, so the registry's ~30 `String`s are allocated once per
+/// process (not once per format call) and both callers can return
+/// borrowed `&'static str` labels.
+static LADDERS: OnceLock<Vec<reify_core::DimensionLadder>> = OnceLock::new();
+
+/// Look up `dim`'s curated default display rung in the cached unit-ladder
+/// registry (task #5232 / PRD display-unit-preference §4), keyed by
+/// [`DimensionVector::canonical_name`].
+///
+/// Returns `Some((si_scale, label))` for the ladder's `is_default` rung, or
+/// `None` when `dim` has no `canonical_name()` (e.g. dimensionless or a
+/// composite dimension) or is not present in the registry (e.g. `Money`,
+/// `Velocity`) — callers fall through to their own uncurated handling in
+/// that case.
+fn registry_display_default(dim: &DimensionVector) -> Option<(f64, &'static str)> {
+    let name = dim.canonical_name()?;
+    let ladders = LADDERS.get_or_init(reify_core::unit_ladders);
+    let ladder = ladders.iter().find(|l| l.dimension == name)?;
+    let default_rung = ladder.units.iter().find(|u| u.is_default)?;
+    Some((default_rung.si_scale, default_rung.label.as_str()))
+}
+
+/// Shared display formatter (PRD display-unit-preference §6.2): resolve an
+/// SI-stored scalar to a `(formatted_magnitude, unit_label)` pair.
+///
+/// `preference`, when `Some`, is a rung that has already won §6.1's
+/// precedence order — this renders `si_value / preference.si_scale` under
+/// `preference.label` directly and does not re-run precedence. When
+/// `None`, falls through §6.1 rungs 3-5: the dimension's curated registry
+/// default (rungs 3/4, via [`registry_display_default`]), then
+/// `is_dimensionless()` (empty label), then the composed base-SI
+/// [`Display`](std::fmt::Display) fallback (rung 5).
+///
+/// The magnitude is always formatted via [`format_display_number`], so
+/// this stays numerically consistent with [`Value::format_display_pair`].
+// G-allow: shared display formatter (PRD display-unit-preference §6.2); the four surfaces route onto it in L4 task #5235 (pending) — no non-test caller until then
+pub fn resolve_display(
+    si_value: f64,
+    dimension: &DimensionVector,
+    preference: Option<&DisplayPreference>,
+) -> (String, String) {
+    if let Some(pref) = preference {
+        return (
+            format_display_number(si_value / pref.si_scale),
+            pref.label.clone(),
+        );
+    }
+    if let Some((si_scale, label)) = registry_display_default(dimension) {
+        return (format_display_number(si_value / si_scale), label.to_string());
+    }
+    if dimension.is_dimensionless() {
+        return (format_display_number(si_value), String::new());
+    }
+    (format_display_number(si_value), format!("{dimension}"))
 }
 
 /// Bit-identity equality for `Value`.
