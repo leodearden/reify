@@ -523,4 +523,108 @@ mod tests {
              face-selector BCs are out of scope for 4870)"
         );
     }
+
+    // ── register_production_compute_fns / MorphRegistration (task 5072) ──────
+    //
+    // These three tests pin the canonical compute-trampoline bundler
+    // `Engine::register_production_compute_fns(MorphRegistration)` that INV-FEA-1
+    // requires (replacing the three hand-rolled bundlers migrated in A2/A3/A4).
+    // Observables: the existing `Engine::morph_producer()` accessor (did the
+    // `Enabled(f)` arm run f?) + `Engine::compute_dispatch(target)` (did the
+    // shared bundle body run?). No reify-mesh-morph link is needed — a trivial
+    // in-crate `NoopTestProducer` stands in for the production producer fn.
+
+    /// A trivial in-crate [`crate::MorphProducer`] so the `Enabled(f)` arm has a
+    /// concrete producer to install without linking reify-mesh-morph (dev-dep-
+    /// only per task 4744). It never actually morphs — `Ineligible` is the
+    /// common, expected edit class — which is irrelevant here: the test only
+    /// observes that a producer became *installed*.
+    struct NoopTestProducer;
+
+    impl crate::MorphProducer for NoopTestProducer {
+        fn try_morph(&self, _ctx: crate::MorphRequest<'_>) -> crate::MorphResult {
+            crate::MorphResult::Ineligible("test".into())
+        }
+    }
+
+    /// A non-capturing free `fn(&mut Engine)` — a valid value for the
+    /// `MorphRegistration::Enabled` variant, standing in for production's
+    /// `reify_mesh_morph::register_morph_producer`.
+    fn install_test_producer(e: &mut Engine) {
+        e.register_morph_producer(Box::new(NoopTestProducer));
+    }
+
+    /// RED (task 5072): the `Enabled(f)` arm must invoke `f` (installing the
+    /// morph producer) AND run the shared bundle body (registering the compute
+    /// trampolines). Asserts both observables: `morph_producer().is_some()`
+    /// (f ran) and `compute_dispatch("solver::elastic_static").is_some()`
+    /// (the `register_compute_fns` half ran).
+    ///
+    /// RED: `MorphRegistration` and `register_production_compute_fns` do not
+    /// exist yet — this `mod tests` fails to compile until step-2 defines them.
+    #[test]
+    fn register_production_compute_fns_enabled_invokes_f() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_production_compute_fns(super::MorphRegistration::Enabled(
+            install_test_producer,
+        ));
+
+        assert!(
+            engine.morph_producer().is_some(),
+            "Enabled(f) must invoke f, installing the morph producer"
+        );
+        assert!(
+            engine.compute_dispatch("solver::elastic_static").is_some(),
+            "register_production_compute_fns must run the register_compute_fns bundle half"
+        );
+    }
+
+    /// RED (task 5072): the `Unavailable { reason }` arm must NOT install a morph
+    /// producer (the `Enabled` arm is not taken) yet must STILL run the shared
+    /// bundle body — both `register_compute_fns` and
+    /// `register_shell_extract_compute_fns`. This is the `test_runner` shape
+    /// (reify-mesh-morph is dev-dep-only, so it cannot supply a producer fn).
+    ///
+    /// RED: `MorphRegistration` and `register_production_compute_fns` do not
+    /// exist yet.
+    #[test]
+    fn register_production_compute_fns_unavailable_does_not_install_morph() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_production_compute_fns(super::MorphRegistration::Unavailable {
+            reason: "test-runner: reify-mesh-morph is dev-dep-only",
+        });
+
+        assert!(
+            engine.morph_producer().is_none(),
+            "Unavailable must not install a morph producer (Enabled arm not taken)"
+        );
+        assert!(
+            engine.compute_dispatch("solver::elastic_static").is_some(),
+            "Unavailable must still run the register_compute_fns bundle half"
+        );
+        assert!(
+            engine.compute_dispatch("shell-extract::extract").is_some(),
+            "Unavailable must still run the register_shell_extract_compute_fns bundle half"
+        );
+    }
+
+    /// RED (task 5072): calling the bundler twice on one engine must panic — the
+    /// inherited duplicate-registration guard. The 2nd call re-runs
+    /// `register_compute_fns`, which re-registers `solver::elastic_static`
+    /// unconditionally, tripping `Engine::register_compute_fn`'s `Entry::Occupied`
+    /// panic (`"register_compute_fn: duplicate target ..."`). No new guard is
+    /// written by this task — the contract is structural.
+    ///
+    /// RED: `register_production_compute_fns` does not exist yet.
+    #[test]
+    #[should_panic(expected = "duplicate target")]
+    fn register_production_compute_fns_twice_panics() {
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        engine.register_production_compute_fns(super::MorphRegistration::Unavailable {
+            reason: "test",
+        });
+        engine.register_production_compute_fns(super::MorphRegistration::Unavailable {
+            reason: "test",
+        });
+    }
 }
