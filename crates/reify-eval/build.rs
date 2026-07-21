@@ -29,7 +29,12 @@
 //   3. Stdlib FEA helpers          — crates/reify-stdlib/src/{fea,loads,supports,analysis}.rs
 //   4. Per-purpose tolerance impl  — crates/reify-eval/src/tolerance_*.rs,
 //                                    engine_tolerance.rs, engine_purposes.rs
-//   5. Transitive-dep version pin  — workspace Cargo.lock (../../Cargo.lock)
+//   5. Transitive-dep version pin  — NARROWED (task 5272): only the resolved
+//                                    (name, version) pins of reify-eval's
+//                                    build+normal (dev-excluded) closure, read
+//                                    from ../../Cargo.lock + engine_hash_closure.txt
+//                                    (NOT a whole-lockfile walk). See the block
+//                                    after the CONTRIBUTORS_RELATIVE loop below.
 //
 // # Deferred contributor
 //   Materials database: PRD line 59 makes this conditional on materials living
@@ -104,6 +109,52 @@ fn main() {
         }
         all_parts.extend(walk.parts);
     }
+
+    // 5. Transitive-dep version pin — NARROWED to reify-eval's closure pins
+    //    (task 5272). Instead of walking the WHOLE workspace Cargo.lock (which
+    //    over-invalidated the persistent FEA cache on ANY dep bump anywhere in
+    //    the ~716-package lockfile), hash only the resolved (name, version) pins
+    //    of reify-eval's build+normal (dev-excluded) transitive closure — the
+    //    crate NAMES checked in at engine_hash_closure.txt. NO cargo metadata is
+    //    invoked at build time (fragile / offline-hostile / can deadlock on the
+    //    package-cache lock); build.rs only fs-reads the static manifest. The
+    //    drift guard tests/infra/test_engine_hash_closure.sh keeps the manifest
+    //    a superset (⊇) of the live closure. Rationale + narrowing details:
+    //    engine_hash_algo.rs::CONTRIBUTORS_RELATIVE doc-comment.
+    //
+    //    Panic-on-missing is preserved for BOTH inputs (same rename-panic safety
+    //    net as the contributor loop): a silent skip would shrink the hash input
+    //    and bake a stale ENGINE_VERSION_HASH unnoticed.
+    let lock_path = manifest_path.join("../../Cargo.lock");
+    let closure_path = manifest_path.join("engine_hash_closure.txt");
+    for (path, rel) in [
+        (&lock_path, "../../Cargo.lock"),
+        (&closure_path, "engine_hash_closure.txt"),
+    ] {
+        if !path.exists() {
+            panic!(
+                "ENGINE_VERSION_HASH closure-pin input not found: {} (resolved to {}). \
+                 If this file was renamed, moved, or deleted, update the closure-pin \
+                 wiring in crates/reify-eval/build.rs and \
+                 crates/reify-eval/src/engine_hash_algo.rs in the same commit.",
+                rel,
+                path.display()
+            );
+        }
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
+    let lock_text = std::fs::read_to_string(&lock_path).unwrap_or_else(|e| {
+        panic!("ENGINE_VERSION_HASH: cannot read {}: {e}", lock_path.display())
+    });
+    let manifest_text = std::fs::read_to_string(&closure_path).unwrap_or_else(|e| {
+        panic!(
+            "ENGINE_VERSION_HASH: cannot read {}: {e}",
+            closure_path.display()
+        )
+    });
+    let closure = parse_closure_manifest(&manifest_text);
+    let closure_refs: Vec<&str> = closure.iter().map(|s| s.as_str()).collect();
+    all_parts.extend(cargo_lock_closure_parts(&lock_text, &closure_refs));
 
     let all_refs: Vec<&[u8]> = all_parts.iter().map(|v| v.as_slice()).collect();
     let hash = compose_engine_version_hash(&all_refs);
