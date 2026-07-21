@@ -14,6 +14,19 @@
 //! no well-formed label and is skipped here.
 
 use reify_core::{Diagnostic, DiagnosticLabel};
+use std::sync::OnceLock;
+
+/// The unit-ladder table, built once and cached for the process lifetime.
+///
+/// `reify_core::unit_ladders()` allocates a fresh `Vec<DimensionLadder>` (with
+/// nested `Vec`s and `String`s) on every call, but the table is static. Since
+/// `validate_display_dimension` runs once per `param`/`let` binding at compile
+/// time, we build the table once here and hand out a shared `'static` slice to
+/// avoid rebuilding it for every annotated binding.
+fn ladders() -> &'static [reify_core::DimensionLadder] {
+    static LADDERS: OnceLock<Vec<reify_core::DimensionLadder>> = OnceLock::new();
+    LADDERS.get_or_init(reify_core::unit_ladders).as_slice()
+}
 
 /// Extract the well-formed single string-literal label from a `@display`
 /// annotation. Returns `Some(label)` ONLY for exactly one `String` argument;
@@ -68,7 +81,7 @@ pub(crate) fn validate_display_dimension(
             _ => continue,
         };
         // Valid iff the binding dimension's ladder exists AND lists the label.
-        let is_valid_rung = reify_core::unit_ladders()
+        let is_valid_rung = ladders()
             .iter()
             .find(|l| Some(l.dimension.as_str()) == dimension.canonical_name())
             .map(|l| l.units.iter().any(|u| u.label == label))
@@ -153,9 +166,12 @@ mod tests {
         );
         let errs = errors(&diags);
         assert_eq!(errs.len(), 1, "expected exactly 1 error, got: {:?}", diags);
+        // Assert on the QUOTED label token (`"L"`) so this is not satisfied by
+        // the 'L' inside the dimension name "Length" — the check must actually
+        // prove the label survives into the message.
         assert!(
-            errs[0].message.contains('L'),
-            "message should name the label L: {}",
+            errs[0].message.contains("\"L\""),
+            "message should name the label \"L\": {}",
             errs[0].message
         );
         assert!(

@@ -105,9 +105,12 @@ structure Rod {
             .map(|d| &d.message)
             .collect::<Vec<_>>()
     );
+    // The QUOTED label token (`"L"`) — not a bare 'L', which the dimension
+    // name "Length" would also satisfy — proves the label survives distinctly
+    // from the dimension name.
     assert!(
-        errs[0].message.contains('L') && errs[0].message.contains("Length"),
-        "error should name label L and dimension Length: {}",
+        errs[0].message.contains("\"L\"") && errs[0].message.contains("Length"),
+        "error should name label \"L\" and dimension Length: {}",
         errs[0].message
     );
 }
