@@ -2868,12 +2868,29 @@ pub fn format_display_number(v: f64) -> String {
 
 /// Map a DimensionVector to a human-readable SI unit label.
 ///
-/// Used by [`Value::format_hover`] for user-facing display.
+/// Used by [`Value::format_hover`] for user-facing display, which renders
+/// the RAW (unscaled) `si_value` — so a curated name is only safe to adopt
+/// here when it is valid *at that raw magnitude*.
 ///
-/// For dimensions without a curated arm, the fallback composes the base-SI
-/// unit label from [`Display`](std::fmt::Display) (e.g. `"kg·m^-3"` for mass
-/// density) rather than a bare placeholder — hence the `Cow` return: known
-/// arms borrow a `'static` string, the composed fallback owns a freshly
+/// `LENGTH`/`AREA`/`VOLUME`/`ANGLE` keep their own hardcoded raw-SI arms
+/// (`"m"`/`"m²"`/`"m³"`/`"rad"`) rather than the unit-ladder registry's
+/// curated name, because their registry default rung is *scaled*
+/// (mm/mm²/mm³/deg) — adopting it here would misrender the raw magnitude
+/// (e.g. a raw `0.08` m would read `"0.08 mm"`). `MONEY` and dimensionless
+/// keep their own arms too: Money is not a registry ladder dimension, and
+/// dimensionless has no unit at all.
+///
+/// For any other dimension, this consults [`registry_display_default`]
+/// (task #5232's unit-ladder registry, PRD display-unit-preference §4) and
+/// adopts its curated name ONLY when the default rung's `si_scale` is
+/// exactly `1.0` — i.e. the curated name is itself a raw-SI unit, valid at
+/// the raw magnitude `format_hover` renders. This curates Mass, Pressure,
+/// Density, Force, Energy, and Power (all coherent-SI by construction).
+/// Any dimension without a scale-1.0 registry entry falls back to
+/// composing the base-SI unit label from
+/// [`Display`](std::fmt::Display) (e.g. `"kg·m^-3"` for mass density)
+/// rather than a bare placeholder — hence the `Cow` return: known arms
+/// borrow a `'static` string, the composed fallback owns a freshly
 /// formatted one.
 fn dimension_unit_label(dim: &DimensionVector) -> Cow<'static, str> {
     if *dim == DimensionVector::LENGTH {
@@ -2882,14 +2899,18 @@ fn dimension_unit_label(dim: &DimensionVector) -> Cow<'static, str> {
         Cow::Borrowed("m\u{00B2}")
     } else if *dim == DimensionVector::VOLUME {
         Cow::Borrowed("m\u{00B3}")
-    } else if *dim == DimensionVector::MASS {
-        Cow::Borrowed("kg")
     } else if *dim == DimensionVector::ANGLE {
         Cow::Borrowed("rad")
     } else if *dim == DimensionVector::MONEY {
         Cow::Borrowed("USD")
     } else if dim.is_dimensionless() {
         Cow::Borrowed("")
+    } else if let Some((si_scale, label)) = registry_display_default(dim) {
+        if si_scale == 1.0 {
+            Cow::Borrowed(label)
+        } else {
+            Cow::Owned(format!("{dim}"))
+        }
     } else {
         Cow::Owned(format!("{dim}"))
     }
