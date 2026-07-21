@@ -18,6 +18,12 @@ pub(crate) mod cell_commit;
 pub(crate) mod detectors;
 pub mod compute_cache_key;
 pub mod compute_targets;
+/// The registration selector for
+/// [`Engine::register_production_compute_fns`][crate::Engine::register_production_compute_fns],
+/// re-exported at the crate root so downstream consumers (CLI / GUI /
+/// test_runner — tasks A2/A3/A4) name it as `reify_eval::MorphRegistration`
+/// (mirrors the `shell_extract_compute` re-export below).
+pub use compute_targets::MorphRegistration;
 pub use compute_cache_key::compute_cache_key;
 pub mod demand;
 pub mod observed_demand;
