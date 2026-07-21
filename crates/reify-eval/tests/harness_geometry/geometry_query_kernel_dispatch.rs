@@ -330,7 +330,7 @@ fn material_density_si(result: &reify_eval::BuildResult, structure: &str) -> f64
 /// inherits `mass = volume(geometry) * material.density` (a BinOp whose nested
 /// `volume()` leaf must fold) and `centroid = centroid(geometry)` (a direct
 /// call, GREEN since step-6).
-const SPEC_SHAPE_PHYSICAL: &str = include_str!("../../../examples/spec-shape-physical.ri");
+const SPEC_SHAPE_PHYSICAL: &str = include_str!("../../../../examples/spec-shape-physical.ri");
 
 /// End-to-end over `examples/spec-shape-physical.ri`: the `centroid` cell folds
 /// (direct call) and the `mass` cell folds its NESTED `volume(geometry)` leaf so

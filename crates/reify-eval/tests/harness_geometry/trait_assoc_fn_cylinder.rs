@@ -46,7 +46,7 @@ use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
 /// The shipped PRD §1 example (default-dispatch only — pedagogical, clean-compile).
 fn example_source() -> &'static str {
-    include_str!("../../../examples/trait_assoc_fn_cylinder.ri")
+    include_str!("../../../../examples/trait_assoc_fn_cylinder.ri")
 }
 
 /// Inline §9.2 undef-propagation variant. Kept out of the shipped example so the

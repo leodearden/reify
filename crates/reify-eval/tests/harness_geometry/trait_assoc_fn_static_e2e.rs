@@ -21,7 +21,7 @@ use reify_ir::Value;
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
 fn source() -> &'static str {
-    include_str!("../../../examples/trait_assoc_fn_static.ri")
+    include_str!("../../../../examples/trait_assoc_fn_static.ri")
 }
 
 #[test]

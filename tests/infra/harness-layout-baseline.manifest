@@ -518,15 +518,6 @@ crates/reify-eval/tests/gdt_legality.rs
 crates/reify-eval/tests/generate_eval.rs
 crates/reify-eval/tests/generic_enum_erasure_e2e.rs
 crates/reify-eval/tests/generic_stdlib_fn_e2e.rs
-crates/reify-eval/tests/geometry_conditional_e2e.rs
-crates/reify-eval/tests/geometry_dispatch_registry_guard.rs
-crates/reify-eval/tests/geometry_error_handling.rs
-crates/reify-eval/tests/geometry_handle_freshness.rs
-crates/reify-eval/tests/geometry_handle_persistent_cache_round_trip.rs
-crates/reify-eval/tests/geometry_handle_value_cell_e2e.rs
-crates/reify-eval/tests/geometry_let_value_cell_gamma.rs
-crates/reify-eval/tests/geometry_query_kernel_dispatch.rs
-crates/reify-eval/tests/geometry_sub_ref_e2e.rs
 crates/reify-eval/tests/gravity_load.rs
 crates/reify-eval/tests/gravity_self_weight_e2e.rs
 crates/reify-eval/tests/grounding_tests.rs
@@ -738,9 +729,6 @@ crates/reify-eval/tests/sweep_api_smoke.rs
 crates/reify-eval/tests/sweep_e2e.rs
 crates/reify-eval/tests/sweep_guided_e2e.rs
 crates/reify-eval/tests/swept_kind_classifier_e2e.rs
-crates/reify-eval/tests/symbolic_geometry_eval.rs
-crates/reify-eval/tests/symbolic_selector_composition_eval.rs
-crates/reify-eval/tests/symbolic_selector_eval.rs
 crates/reify-eval/tests/tensegrity_delta_combined_form_find_e2e.rs
 crates/reify-eval/tests/tensegrity_membrane_load.rs
 crates/reify-eval/tests/tensegrity_pavilion_e2e.rs
@@ -772,9 +760,6 @@ crates/reify-eval/tests/topology_filtered_selectors.rs
 crates/reify-eval/tests/topology_selector_runtime.rs
 crates/reify-eval/tests/topology_selector_smoke_tests.rs
 crates/reify-eval/tests/topology_selectors_tests.rs
-crates/reify-eval/tests/trait_assoc_fn_cylinder.rs
-crates/reify-eval/tests/trait_assoc_fn_static_e2e.rs
-crates/reify-eval/tests/trait_merge_eval.rs
 crates/reify-eval/tests/trajectory_gcode_dialect_eval.rs
 crates/reify-eval/tests/tube_pipe_e2e.rs
 crates/reify-eval/tests/type_hygiene_integration_gate.rs
