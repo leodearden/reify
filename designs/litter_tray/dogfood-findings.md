@@ -135,11 +135,100 @@ already claimed by the orchestrator).
 ## 14. Pattern-scale booleans: sieve floor is >10min even in release CLI (new)
 Top-deck sieve, Ø3mm holes on 5mm hex pitch = 4,602 holes via two
 linear_pattern_2d grids. Ladder: 33 holes ≈ 1s; 1,157 holes = 297s;
-4,602 > 600s (full run pending). GUI (debug build) = no iteration at all.
+4,602 > 600s (full run pending at the time; re-measured 2026-07-21 — see
+the addendum below: now completes in ~100s). GUI (debug build) = no
+iteration at all.
 Levers: single-pass BOPAlgo, manifold/OpenVDB kernel routing (already in
 workspace!), native perforate op, progress+cancel. Bonus defect: pattern
 direction/spacing args are BARE unitless numbers (mm implied) — violates
 the always-units principle. → **5213** (high).
+
+## Addendum — 4,602-hole sieve re-measurement after single-pass fuse (2026-07-21)
+
+**Method.** Re-measured on the **release** CLI (`cargo build --release -p
+reify-cli`) using the **flat single-grid perforating sieve**
+(`examples/perforated_plate.ri`, scaled — added by 5213), NOT
+`designs/litter_tray/top_deck.ri`: the latter's nested
+`difference(difference(fillet…), union_all(pattern))` silently no-ops the
+holes (byte-identical STEP output / mass across 33..4,602 holes) — a
+by-product correctness bug found during this re-measurement and filed
+separately as → **5318**. Each ladder rung is a scaled copy of the flat
+sieve (two interleaved `linear_pattern_2d` grids, same 10mm pitch / Ø4mm
+holes as the original, grid instance counts scaled to hit each rung);
+holes are STEP-verified per rung via `grep -c CYLINDRICAL_SURFACE
+out.step`, which lands EXACTLY on the hole count at every rung below —
+proof the cut actually perforated, unlike top_deck.ri's no-op.
+
+**Ladder (first-hand, this session).** `/usr/bin/time -v reify build
+sieve_N.ri -o out.step`; wall-clock and CPU (user+sys) time both shown —
+the host ran under heavy concurrent load during measurement (`uptime`
+load average ≈114 on a 32-core box), which inflates wall-clock at the
+smaller/faster rungs relative to CPU time:
+
+| holes | wall-clock | CPU (user+sys) | STEP CYLINDRICAL_SURFACE | prior single-pass run (task 5317) |
+|---|---|---|---|---|
+| 33    | 1.38s   | 0.32s  | 33 (verified)    | 0.5s |
+| 301   | 5.33s   | 2.07s  | 301 (verified)   | 1.8s (rung "300") |
+| 1,157 | 28.48s  | 9.59s  | 1,157 (verified) | 9.6s |
+| 4,589 | 100.38s | 99.92s | 4,589 (verified) | 121.6s (rung "4590") |
+
+CPU time reproduces the prior single-pass run's figures closely at every
+rung (0.32↔0.5, 2.07↔1.8, 9.59↔9.6, 99.92↔121.6) despite the wall-clock
+noise from host contention — the largest rung runs long enough to
+saturate a core and wall-clock converges to CPU time (100.38s vs 99.92s).
+This first-hand re-measurement confirms the prior run's headline: **the
+full ~4,600-hole sieve now completes in well under two minutes**, where
+it previously never completed.
+
+**vs. finding #14's pairwise baseline** (pre-5213, pairwise BOPAlgo):
+33 holes ≈ 1s (unchanged at this tiny scale — fixed overhead dominates);
+**1,157 holes: 297s → 9.59s CPU / 28.48s wall (≈31×/≈10× faster)**;
+**4,602 holes: >600s, never completed → completes at 4,589 holes in
+99.92s CPU / 100.38s wall.** 5213's single-pass n-ary fuse (Lever 1)
+delivered the speedup finding #14 hoped for on the FUSE; see the
+go/no-go verdict below for what it did and didn't fix end-to-end.
+
+**Verdict.** Lever 1 (5213's single-pass n-ary fuse) fixed the pattern
+**fuse** to ~linear, but the end-to-end `difference(base,
+union_all(pattern))` **cut** stays **superlinear** in OCCT. This
+session's own data show it directly: CPU time between the two largest
+rungs (1,157→4,589 holes, 3.97× more holes) grew 9.59s→99.92s (10.4×
+more time) — a local exponent ln(10.4)/ln(3.97) ≈ 1.7, consistent with
+the ~O(N^1.8–2) characterization already on record (task 5317) and well
+above linear (which would predict ~4×, not ~10×, time for 4× the holes;
+the smaller rungs show a lower apparent exponent because fixed per-run
+overhead, ~0.3s of process/parse startup, dominates at low N and
+flattens the curve). ~100s (this session) / ~121.6s (prior run) at
+~4,600 holes, compounded by superlinear growth as designs get denser, is
+OUTSIDE interactive range for dense-pattern design work ⇒ **Lever 1
+alone is INSUFFICIENT.**
+
+**GO on the narrow Lever-2 slice** — route selector-free
+`difference(base, union_all(pattern…))` to Manifold's already-linked
+`batch_difference` (near-linear in tool count; bypasses both the
+superlinear OCCT cut and the incomplete Manifold attribute/selector-
+provenance substrate, since selector-free tool bodies hit Manifold's
+benign `Discarded` no-op rather than needing 4263/4636) — filed as
+→ **5317**.
+
+**Lever 3 (native perforate/replicate-faces): DEFERRED/no-go for now.**
+`batch_difference` is the lower-cost near-linear path for this workload;
+revisit Lever 3 only if Lever 2 proves insufficient.
+
+**Broad general-Manifold mesh-boolean production route: separate
+deferred bookmark**, unaffected by this verdict — → **5220** (gated on
+the narrow slice above plus the Manifold provenance substrate, 4263 /
+4636).
+
+**By-product correctness bug found during this re-measurement**
+(independent of the timing question): top_deck.ri's holes silently
+vanish via a nested `difference(difference(fillet…),
+union_all(pattern))` no-op — → **5318**.
+
+No new follow-up tasks were filed by this milestone — 5317, 5220 and
+5318 all already existed before this addendum was written; this
+addendum is the canonical doc record of the decision that authorized
+them.
 
 ---
 Split-joint design (agreed with Leo): shiplap-family → "pinwheel 45° scarf"
