@@ -61,6 +61,7 @@ _SENTINEL_SLEEP_SECS="${_SENTINEL_SLEEP_SECS:-600}"
 _POLL_ATTEMPTS=$(load_tolerant_attempts 30)   # reaper_kill_pgroup poll budget
 _POLL_ATTEMPTS_5=$(load_tolerant_attempts 5)  # (legacy; kept for any future callers)
 _POLL_ATTEMPTS_ORPHAN=$(load_tolerant_attempts 20)  # post-SIGKILL orphan-reap budget
+_POLL_ATTEMPTS_PIDFILE=$(load_tolerant_attempts 20)  # pid-file handshake budget (base 20 = historical 6s window)
 
 # ---------------------------------------------------------------------------
 # Zombie-aware "effectively gone" helpers.
@@ -819,7 +820,8 @@ chmod +x "$_E2E_FAKE"
 assert "SIGKILL to parent does NOT reap the backgrounded test binary (survivor exists)" \
     env _E2E_FAKE="$_E2E_FAKE" _SENT_FAKE="$_SENT_FAKE" \
         _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" \
-        _POLL_ATTEMPTS_ORPHAN="$_POLL_ATTEMPTS_ORPHAN" bash -c '
+        _POLL_ATTEMPTS_ORPHAN="$_POLL_ATTEMPTS_ORPHAN" \
+        _POLL_ATTEMPTS_PIDFILE="$_POLL_ATTEMPTS_PIDFILE" bash -c '
         _abs_sleep=$(command -v sleep)
         _abs_kill=$(command -v kill)
         _abs_bash=$(command -v bash)
@@ -833,7 +835,7 @@ assert "SIGKILL to parent does NOT reap the backgrounded test binary (survivor e
         "$_abs_bash" -c "\"$_E2E_FAKE\" \"$_SENTINEL_SLEEP_SECS\" </dev/null >/dev/null 2>&1 & echo \$! > \"$_pid_file\"; wait" &
         _parent_pid=$!
         # Wait for the fake binary to start (poll for PID file).
-        for ((_t=1; _t<=20; _t++)); do
+        for ((_t=1; _t<=_POLL_ATTEMPTS_PIDFILE; _t++)); do
             [ -s "$_pid_file" ] && break
             "$_abs_sleep" 0.3
         done
@@ -894,6 +896,7 @@ assert "hermetic regression lock: condition-polled survivor check tolerates a tr
     env _E2E_FAKE="$_E2E_FAKE" _SENT_FAKE="$_SENT_FAKE" \
         _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" \
         _POLL_ATTEMPTS_ORPHAN="$_POLL_ATTEMPTS_ORPHAN" \
+        _POLL_ATTEMPTS_PIDFILE="$_POLL_ATTEMPTS_PIDFILE" \
         PATH="$_P5_STUB_DIR:$PATH" bash -c '
         _abs_sleep=$(command -v sleep)
         _abs_kill=$(command -v kill)
@@ -903,7 +906,7 @@ assert "hermetic regression lock: condition-polled survivor check tolerates a tr
 
         "$_abs_bash" -c "\"$_E2E_FAKE\" \"$_SENTINEL_SLEEP_SECS\" </dev/null >/dev/null 2>&1 & echo \$! > \"$_pid_file\"; wait" &
         _parent_pid=$!
-        for ((_t=1; _t<=20; _t++)); do
+        for ((_t=1; _t<=_POLL_ATTEMPTS_PIDFILE; _t++)); do
             [ -s "$_pid_file" ] && break
             "$_abs_sleep" 0.3
         done
@@ -928,10 +931,28 @@ assert "hermetic regression lock: condition-polled survivor check tolerates a tr
         exit "$_alive_rc"
     '
 
+# ITEM 2a fixture (task 5260): a FOREIGN-run e2e marker used to prove the Part-5
+# pre-clean below does NOT collateral-kill a concurrent run_all instance's
+# suffixed marker. The foreign sentinel is chosen so THIS run's own marker suffix
+# (_SENT_FAKE = $$*10+7) is NOT a substring of the foreign suffix ($$*10+1) —
+# otherwise the suffixed grep (step-4 GREEN) would still substring-match and kill
+# the foreign marker, making GREEN unreachable (see plan design decision).
+_SENT_FAKE_FOREIGN=$(($$ * 10 + 1))
+_FOREIGN_DIR="$(mktemp -d)"
+_TMPDIRS+=("$_FOREIGN_DIR")
+_FOREIGN_BIN="$_FOREIGN_DIR/reify_faketest_e2e_${_SENT_FAKE_FOREIGN}"
+cp "$(command -v sleep)" "$_FOREIGN_BIN"
+chmod +x "$_FOREIGN_BIN"
+"$_FOREIGN_BIN" "$_SENTINEL_SLEEP_SECS" </dev/null >/dev/null 2>&1 &
+_FOREIGN_PID=$!
+assert "foreign-run e2e marker launched alive (precondition, task 5260)" \
+    _poll_survivor_alive "$_FOREIGN_PID" 3
+
 assert "reap-orphaned-test-binaries.sh reaps an orphaned test binary after parent SIGKILL" \
     env _WRAPPER="$_WRAPPER" _E2E_FAKE="$_E2E_FAKE" _E2E_DIR="$_E2E_DIR" \
         _SENT_FAKE="$_SENT_FAKE" _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" \
-        _POLL_ATTEMPTS_ORPHAN="$_POLL_ATTEMPTS_ORPHAN" bash -c '
+        _POLL_ATTEMPTS_ORPHAN="$_POLL_ATTEMPTS_ORPHAN" \
+        _POLL_ATTEMPTS_PIDFILE="$_POLL_ATTEMPTS_PIDFILE" bash -c '
         [ -x "$_WRAPPER" ] || exit 1
         _abs_sleep=$(command -v sleep)
         _abs_ps=$(command -v ps)
@@ -941,8 +962,11 @@ assert "reap-orphaned-test-binaries.sh reaps an orphaned test binary after paren
         _pid_file=$(mktemp)
         trap "rm -f \"$_pid_file\"" EXIT
 
-        # Pre-clean stale instances.
-        "$_abs_ps" -A -o pid,exe 2>/dev/null | "$_abs_grep" "reify_faketest_e2e" \
+        # Pre-clean stale instances of THIS run only. Scope the host-wide kill to
+        # the per-run suffixed marker (mirrors the Part 2a pre-clean at :331); the
+        # unsuffixed "reify_faketest_e2e" would collateral-kill a CONCURRENT
+        # run_all fixture reify_faketest_e2e_<other-pid> that is still live (task 5260).
+        "$_abs_ps" -A -o pid,exe 2>/dev/null | "$_abs_grep" "reify_faketest_e2e_${_SENT_FAKE}" \
             | awk "{print \$1}" \
             | while read -r _p; do "$_abs_kill" -9 "$_p" 2>/dev/null || true; done
         "$_abs_sleep" 0.3
@@ -951,7 +975,7 @@ assert "reap-orphaned-test-binaries.sh reaps an orphaned test binary after paren
         # Self-expiring duration — see the sibling E2E assertion above.
         "$_abs_bash" -c "\"$_E2E_FAKE\" \"$_SENTINEL_SLEEP_SECS\" </dev/null >/dev/null 2>&1 & echo \$! > \"$_pid_file\"; wait" &
         _parent_pid=$!
-        for ((_t=1; _t<=20; _t++)); do
+        for ((_t=1; _t<=_POLL_ATTEMPTS_PIDFILE; _t++)); do
             [ -s "$_pid_file" ] && break
             "$_abs_sleep" 0.3
         done
@@ -979,6 +1003,17 @@ assert "reap-orphaned-test-binaries.sh reaps an orphaned test binary after paren
         # Poll until the fake binary is gone (zombie-aware; bumped budget base 20).
         _poll_pid_gone "$_fake_pid" "$_POLL_ATTEMPTS_ORPHAN"; exit $?
     '
+
+# ITEM 2a assertion (task 5260): the Part-5 pre-clean (:945) must scope its
+# host-wide `kill -9` to THIS run's suffixed marker (reify_faketest_e2e_${_SENT_FAKE}),
+# NOT the unsuffixed host-wide `reify_faketest_e2e` — otherwise a CONCURRENT
+# run_all instance's live fixture is collateral-killed. The foreign marker
+# launched before the Part-5 assertion above must have SURVIVED that assertion's
+# pre-clean. RED with the unsuffixed grep (foreign marker killed → poll exhausts);
+# GREEN once :945 is suffixed. Then reap the foreign marker.
+assert "e2e pre-clean spares a FOREIGN-suffixed marker — no cross-run collateral (task 5260)" \
+    _poll_survivor_alive "$_FOREIGN_PID" 3
+kill -9 "$_FOREIGN_PID" 2>/dev/null || true
 
 # ===========================================================================
 # Part 6 — zombie-aware orphan-reap poll helper
@@ -1354,7 +1389,7 @@ assert "reap-orphans kills the SAME run_all-topology child once ORPHAN_PPIDS mat
     env LIB_REAPER="$LIB_REAPER" _RUNALL_BIN="$_RUNALL_BIN" _SENT_RUNALL="$_SENT_RUNALL" \
         _P9_DIR="$_P9_DIR" _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" \
         _POLL_ATTEMPTS_ORPHAN="$_POLL_ATTEMPTS_ORPHAN" bash -c '
-        [ -f "$LIB_REAPER" ] || exit 1
+        [ -f "$LIB_REAPER" ] || { echo "FAIL: LIB_REAPER not found at $LIB_REAPER" >&2; exit 1; }
         _abs_sleep=$(command -v sleep)
         _abs_ps=$(command -v ps)
 
@@ -1386,7 +1421,7 @@ assert "reap-orphans kills the SAME run_all-topology child once ORPHAN_PPIDS mat
 assert "reap-orphans (non-dry-run) does not emit the spared/non-orphan diagnostic (esc-5020)" \
     env LIB_REAPER="$LIB_REAPER" _RUNALL_BIN="$_RUNALL_BIN" _SENT_RUNALL="$_SENT_RUNALL" \
         _P9_DIR="$_P9_DIR" _SENTINEL_SLEEP_SECS="$_SENTINEL_SLEEP_SECS" bash -c '
-        [ -f "$LIB_REAPER" ] || exit 1
+        [ -f "$LIB_REAPER" ] || { echo "FAIL: LIB_REAPER not found at $LIB_REAPER" >&2; exit 1; }
         _abs_sleep=$(command -v sleep)
         _abs_kill=$(command -v kill)
         _abs_grep=$(command -v grep)

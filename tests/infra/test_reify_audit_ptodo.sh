@@ -63,6 +63,42 @@ done
 echo "=== PTODO detector infra gate ==="
 
 # -----------------------------------------------------------------------
+# Pure ratchet-regression checker (task 5260, ITEM 3). When the live-minus-
+# baseline fingerprint set ($1) is non-empty, print the offending fingerprints
+# (one per line, with a count header) to stderr and return 1; when empty, stay
+# byte-for-byte silent and return 0. Passed directly to assert() so a real
+# ratchet regression lands the fingerprints in assert()'s on-FAIL captured-
+# output dump (test_helpers.sh:24, esc-4959-57) — co-located with the failing
+# assertion, exactly where the 4636 RCA found zero actionable output.
+# -----------------------------------------------------------------------
+_ratchet_check_subset() {
+    local _new="$1"
+    if [ -n "$_new" ]; then
+        printf 'RATCHET REGRESSION — %s live fingerprint(s) NOT in committed baseline:\n' \
+            "$(printf '%s\n' "$_new" | grep -c .)" >&2
+        printf '%s\n' "$_new" | sed 's/^/  + /' >&2
+        return 1
+    fi
+    return 0
+}
+
+# -----------------------------------------------------------------------
+# ITEM 3 meta-test (task 5260): _ratchet_check_subset must NAME the offending
+# live fingerprints on stderr so a ratchet regression lands actionable output in
+# assert()'s on-FAIL captured-output dump (the 4636 failure produced zero
+# fingerprints — esc-4959-57). Unconditional + hermetic: runs before binary
+# resolution and independent of RATCHET_SKIP, driven by a synthetic fingerprint
+# set (a command-substitution subshell inherits the shell function).
+# -----------------------------------------------------------------------
+_FAKE_FP=$'crates/foo/src/a.rs:42:PTODO-untracked\ncrates/foo/src/b.rs:7:PTODO-orphaned'
+_DIAG="$(_ratchet_check_subset "$_FAKE_FP" 2>&1 1>/dev/null || true)"
+assert "ratchet regression diagnostic names the offending fingerprints (4636 actionability)" \
+    bash -c 'case "$1" in *a.rs:42:PTODO-untracked*b.rs:7:PTODO-orphaned*) exit 0;; *) exit 1;; esac' -- "$_DIAG"
+_EMPTY="$(_ratchet_check_subset "" 2>&1 || true)"
+assert "ratchet check is silent + rc0 when live set is empty" \
+    bash -c '[ -z "$1" ]' -- "$_EMPTY"
+
+# -----------------------------------------------------------------------
 # Resolve ptodo-baseline-gen binary (ride freshness guard).
 # The freshness guard rebuilds target/release/reify-audit (and all crate
 # bins, incl. ptodo-baseline-gen) when the binary predates the last
@@ -249,7 +285,7 @@ if [ "${RATCHET_SKIP}" = "0" ] && [ -x "$GEN" ]; then
     NEW_IN_LIVE="$(comm -23 <(sort -u "$LIVE_TMP") <(sort -u "$BASELINE"))"
 
     assert "live fingerprints are a subset of committed baseline (no ratchet regression)" \
-        bash -c '[ -z "$1" ]' -- "$NEW_IN_LIVE"
+        _ratchet_check_subset "$NEW_IN_LIVE"
 
     # -----------------------------------------------------------------------
     # (b) SCENARIO 13 (hermetic): a fresh untracked marker in a temp git
