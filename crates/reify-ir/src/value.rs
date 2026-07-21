@@ -2974,9 +2974,13 @@ fn registry_display_default(dim: &DimensionVector) -> Option<(f64, &'static str)
 ///
 /// `preference`, when `Some`, is a rung that has already won §6.1's
 /// precedence order — this renders `si_value / preference.si_scale` under
-/// `preference.label` directly and does not re-run precedence. When
-/// `None`, falls through §6.1 rungs 3-5: the dimension's curated registry
-/// default (rungs 3/4, via [`registry_display_default`]), then
+/// `preference.label` directly and does not re-run precedence. A
+/// `preference` whose `si_scale` is zero or non-finite is treated as if it
+/// were absent (guards against a garbage `DisplayPreference` producing an
+/// `inf`/`NaN` display magnitude): this falls through to the `None`
+/// handling below instead. When `None` (or the preference was degenerate),
+/// falls through §6.1 rungs 3-5: the dimension's curated registry default
+/// (rungs 3/4, via [`registry_display_default`]), then
 /// `is_dimensionless()` (empty label), then the composed base-SI
 /// [`Display`](std::fmt::Display) fallback (rung 5).
 ///
@@ -2988,7 +2992,10 @@ pub fn resolve_display(
     dimension: &DimensionVector,
     preference: Option<&DisplayPreference>,
 ) -> (String, String) {
-    if let Some(pref) = preference {
+    if let Some(pref) = preference
+        && pref.si_scale.is_finite()
+        && pref.si_scale != 0.0
+    {
         return (
             format_display_number(si_value / pref.si_scale),
             pref.label.clone(),
@@ -10657,6 +10664,35 @@ mod tests {
             resolve_display(101_325.0, &DimensionVector::PRESSURE, Some(&kpa)),
             ("101.325".to_string(), "kPa".to_string())
         );
+    }
+
+    #[test]
+    fn resolve_display_some_degenerate_scale_falls_back_to_none_handling() {
+        // A `DisplayPreference` with a zero or non-finite `si_scale` must not
+        // reach `si_value / si_scale` (that would render `inf`/`NaN`).
+        // `resolve_display` treats it as if `preference` were absent, so the
+        // result matches the `None` path for the same `(si_value, dimension)`.
+        for degenerate_scale in [0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let broken = DisplayPreference::new("bogus", degenerate_scale);
+
+            assert_eq!(
+                resolve_display(101_325.0, &DimensionVector::PRESSURE, Some(&broken)),
+                resolve_display(101_325.0, &DimensionVector::PRESSURE, None),
+                "degenerate si_scale {degenerate_scale} must fall back to the curated registry default, not \"bogus\"/inf/NaN"
+            );
+            assert_eq!(
+                resolve_display(101_325.0, &DimensionVector::PRESSURE, Some(&broken)),
+                ("101325".to_string(), "Pa".to_string())
+            );
+
+            // Also lock the rung-5 (uncurated) fallback path for a dimension
+            // with no registry ladder, so the guard is verified independent
+            // of `registry_display_default` returning `Some`.
+            assert_eq!(
+                resolve_display(2.0, &DimensionVector::VELOCITY, Some(&broken)),
+                resolve_display(2.0, &DimensionVector::VELOCITY, None),
+            );
+        }
     }
 
     // --- Freshness::is_final tests (task #2356) ---
