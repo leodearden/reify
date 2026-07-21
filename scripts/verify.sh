@@ -1747,16 +1747,29 @@ build_plan() {
         # run <specs>`; the block cd's into gui/, so gui-relative positionals
         # match). Unset OR empty => full `npm test`, byte-identical to the
         # non-retry path (the §4.3 loud full-fallback for an empty gui subset).
-        # PRD docs/prds/verify-retry-failed-only.md §4.2 leaf γ. Spec paths are
-        # plain file paths (no single quotes — accepted v1 limitation)
-        # interpolated before wrap_subshell single-quotes the bash -c '…' string,
-        # mirroring the raw interpolation of _GATE_HEAVY_EXCLUDE.
+        # PRD docs/prds/verify-retry-failed-only.md §4.2 leaf γ.
+        #
+        # SHELL-SAFETY: the specs are interpolated RAW into gui_inner, which
+        # wrap_subshell then embeds into a `bash -c '…'` string, so at exec time
+        # the tokens are literal script text — subject to word-splitting AND
+        # pathname globbing AND command substitution / metacharacter evaluation,
+        # not merely the single-quote break-out. The trusted source (dark-factory
+        # verify_env) only ever emits plain vitest paths, but as defense-in-depth
+        # reject any value carrying a character outside [A-Za-z0-9._/ -] (a
+        # `$(…)`, backtick, `;`, `&`, glob, quote, …) so a future/untrusted caller
+        # cannot smuggle shell through this seam. A rejected (non-empty) value
+        # falls back to the full `npm test` with a stderr warning — the same §4.3
+        # loud full-fallback as the empty/unset case. The allowlisted value is
+        # still interpolated raw (mirroring _GATE_HEAVY_EXCLUDE), but now provably
+        # holds only path/separator characters.
         local gui_inner="npm ci && npm run typecheck"
         if [ "$DO_TEST" -eq 1 ]; then
             local _gui_retry_specs="${REIFY_GUI_RETRY_SPECS:-}"
-            if [ -n "$_gui_retry_specs" ]; then
+            # -z on the allowlist-stripped residue => every char is allowed.
+            if [ -n "$_gui_retry_specs" ] && [ -z "${_gui_retry_specs//[A-Za-z0-9._\/ -]/}" ]; then
                 gui_inner+=" && npm test -- $_gui_retry_specs"
             else
+                [ -n "$_gui_retry_specs" ] && echo "verify.sh: WARNING — REIFY_GUI_RETRY_SPECS contains characters outside [A-Za-z0-9._/ -]; ignoring the subset and running the full gui suite" >&2
                 gui_inner+=" && npm test"
             fi
         fi

@@ -12,7 +12,10 @@
 # empty, the block runs the full suite (`npm test`) byte-identically to today —
 # the §4.3 loud full-fallback for an empty gui subset (empty subset => run the
 # full suite), which also guarantees zero plan drift for every existing
-# non-retry invocation.
+# non-retry invocation. As defense-in-depth, a non-empty value carrying any
+# character outside the [A-Za-z0-9._/ -] allowlist (shell metacharacters — the
+# specs are interpolated raw into a `bash -c '…'` string) is likewise rejected
+# and falls back to the full suite with a stderr warning (Test 6).
 #
 # Oracle: verify.sh --print-plan (hermetic — never runs cargo/npm; the gui
 # block has no PRINT_PLAN special-casing, so it reads REIFY_GUI_RETRY_SPECS
@@ -98,5 +101,39 @@ echo "--- Test 5: retry touches only the gui line (nextest suite intact) ---"
 
 assert "retry plan: cargo nextest run --workspace still present (γ touches only gui)" \
     bash -c 'printf "%s\n" "$1" | grep -qF "cargo nextest run --workspace"' _ "$RETRY_PLAN"
+
+# ===========================================================================
+# Test 6: robustness — a REIFY_GUI_RETRY_SPECS value carrying shell
+# metacharacters is rejected by the allowlist and falls back to the full
+# `npm test` (defense-in-depth: the raw value is interpolated into a
+# `bash -c '…'` string, so an unfiltered `;`, `$(…)`, glob, etc. would be
+# evaluated at exec time). The rejected payload must never reach the plan.
+# See the SHELL-SAFETY note in scripts/verify.sh's gui block.
+# ===========================================================================
+echo ""
+echo "--- Test 6: hostile spec value rejected => full suite, nothing forwarded ---"
+
+# stderr carries the expected 'WARNING — …' loud-fallback line; drop it (2>/dev/null)
+# so the capture holds only the (stdout) plan. --print-plan never executes the
+# plan, and the allowlist rejects the value before it is forwarded, so the
+# payloads below are inert literals — nothing runs them.
+INJECT_PLAN="$(REIFY_GUI_RETRY_SPECS='src/__tests__/foo.test.ts; echo INJECTED' bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan 2>/dev/null | grep -v '^#')"
+SUBST_PLAN="$(REIFY_GUI_RETRY_SPECS='$(echo INJECTED)' bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan 2>/dev/null | grep -v '^#')"
+export INJECT_PLAN SUBST_PLAN
+
+assert "inject plan (';'): value not forwarded (no 'npm test --')" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "npm test --"' _ "$INJECT_PLAN"
+
+assert "inject plan (';'): falls back to full suite (npm ci && npm run typecheck && npm test)" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "npm ci && npm run typecheck && npm test"' _ "$INJECT_PLAN"
+
+assert "inject plan (';'): payload never reaches the plan (no 'INJECTED')" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "INJECTED"' _ "$INJECT_PLAN"
+
+assert "subst plan ('\$(…)'): value not forwarded (no 'npm test --')" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "npm test --"' _ "$SUBST_PLAN"
+
+assert "subst plan ('\$(…)'): payload never reaches the plan (no 'INJECTED')" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "INJECTED"' _ "$SUBST_PLAN"
 
 test_summary
