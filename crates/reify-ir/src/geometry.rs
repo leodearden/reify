@@ -5181,16 +5181,21 @@ impl TopologyAttributeTable {
 
     /// Remove the entry for `handle`, returning it if present.
     ///
-    /// Used by the cache-hit short-circuit in `Engine::execute_realization_ops`
-    /// to evict any colliding entry at `handle` before pushing the cached
-    /// handle — so a subsequent `lookup(handle)` correctly returns `None`
-    /// (the #3226 spec: a cache-served handle has no entries in the attribute
-    /// table on the second build). Keying by the full `KernelHandle` means
-    /// this eviction can no longer collaterally remove a different kernel's
-    /// entry that happens to share the same numeric id (#4351).
+    /// Retained for collection-API symmetry with [`Self::record`] /
+    /// [`Self::lookup`], not because a production path calls it today: its
+    /// last production caller was the task-4349 defensive cache-hit
+    /// short-circuit eviction in `Engine::probe_realization_cache`, which
+    /// task θ (#5064) retired in favor of a fail-closed `debug_assert!` once
+    /// #4351's `KernelHandle` re-key made that eviction's target collision
+    /// impossible by construction (the #3226 spec — a cache-served handle
+    /// has no entries in the attribute table on the second build — is now
+    /// directly assertable instead of needing defensive removal). See PRD
+    /// `docs/prds/v0_6/engine-build-hardening.md` §4 D6 / §9 OQ-3 for the
+    /// keep-vs-delete decision (KEEP, for API symmetry). Exercised only by
+    /// its unit tests, `topology_attribute_table_remove_returns_some_and_empties_entry`
+    /// and `topology_attribute_table_remove_absent_returns_none`.
     ///
-    /// Returns `None` silently when `handle` is absent (no-op in the common
-    /// single-kernel case where the per-build reset already cleared the table).
+    /// Returns `None` silently when `handle` is absent.
     pub fn remove(&mut self, handle: KernelHandle) -> Option<TopologyAttribute> {
         self.entries.remove(&handle)
     }

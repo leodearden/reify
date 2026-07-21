@@ -8759,7 +8759,8 @@ structure Assembly {
             assert!(
                 topology_attribute_table.lookup(seeded).is_some(),
                 "guard case [{label}] must NOT evict the pre-seeded \
-                 topology_attribute_table entry (eviction only runs on a hit)"
+                 topology_attribute_table entry (the hit body — the \
+                 fail-closed debug_assert — only runs on a hit)"
             );
         }
     }
@@ -9082,28 +9083,81 @@ structure Assembly {
         state
     }
 
-    /// Regression test for cross-kernel `GeometryHandleId` collision at the
-    /// cache-hit short-circuit — `topology_attribute_table` path (task 4349).
+    /// step-1 (RED, task θ / #5064): the fail-closed `debug_assert!` that
+    /// replaces the task-4349 defensive eviction on `probe_realization_cache`
+    /// must PANIC when a stale `topology_attribute_table` entry is present at
+    /// the EXACT cache-served handle on a cache hit — the #3226 spec's
+    /// precondition ("a cache-served handle has no entries in the table on
+    /// the second build") does not hold, so the fail-closed assert must say
+    /// so loudly instead of silently papering over it via eviction.
+    ///
+    /// This is a same-handle stale leftover, NOT a cross-kernel collision —
+    /// contrast with the re-shaped
+    /// `cache_hit_short_circuit_tolerates_cross_kernel_topology_attribute_id_collision`
+    /// below, which pins the genuine cross-kernel-sibling case (preserved,
+    /// not evicted).
+    ///
+    /// RED against current main: the task-4349 eviction at
+    /// `outputs.topology_attribute_table.remove(cached_handle)` silently
+    /// removes this entry before any assert can observe it, so no panic
+    /// occurs and this `#[should_panic]` test fails until task θ's impl step
+    /// installs the fail-closed assert.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "must have no topology_attribute_table entry on the second build")]
+    fn probe_realization_cache_debug_asserts_no_entry_at_cache_served_handle() {
+        use reify_ir::{FeatureId, Role};
+
+        run_cross_kernel_cache_hit_short_circuit("StaleHandleEntity", |state, realization_id| {
+            // Record a stale entry at the SAME handle the helper pre-seeds
+            // into `realization_cache` as the cached terminal
+            // (`{Occt, GeometryHandleId(1)}`) — simulating a leftover the
+            // per-build reset / op-loop population failed to clear before
+            // this cache hit.
+            state.topology_attribute_table.record(
+                KernelHandle {
+                    kernel: KernelId::Occt,
+                    id: GeometryHandleId(1),
+                },
+                TopologyAttribute {
+                    feature_id: FeatureId::from(realization_id),
+                    role: Role::Side,
+                    local_index: 0,
+                    user_label: None,
+                    mod_history: Vec::new(),
+                },
+            );
+        });
+    }
+
+    /// Regression guard for cross-kernel `GeometryHandleId` collision at the
+    /// cache-hit short-circuit — `topology_attribute_table` path (task 4349,
+    /// re-shaped by task θ / #5064 now that #4351 has made the collision
+    /// impossible by construction).
     ///
     /// # Background
     ///
     /// OCCT and Manifold both mint `GeometryHandleId(1)` for their first
-    /// geometry handle (each kernel's counter starts at 1). Within a single
-    /// build a Manifold op can record
-    /// `topology_attribute_table.record(GeometryHandleId(1), attr)` while a
-    /// later cache-hit short-circuit returns the cached
-    /// `{Occt, GeometryHandleId(1)}` from a prior build. The former
-    /// `debug_assert!(topology_attribute_table.lookup(cached_handle.id).is_none())`
-    /// fires because key `GeometryHandleId(1)` is occupied by the Manifold
-    /// entry — two distinct `KernelHandle`s collapsing onto one kernel-blind key.
+    /// geometry handle (each kernel's counter starts at 1). Before #4351's
+    /// `KernelHandle` re-key, `TopologyAttributeTable` was keyed by the bare
+    /// `GeometryHandleId`, so a Manifold sibling's entry at id `1` collided
+    /// with an OCCT cache-served handle that also happened to be id `1` —
+    /// two distinct kernel handles collapsing onto one kernel-blind key.
+    /// Task 4349's defensive eviction papered over this; task θ retired that
+    /// eviction (see the fail-closed
+    /// `probe_realization_cache_debug_asserts_no_entry_at_cache_served_handle`
+    /// test above) once #4351 made the collision structurally impossible.
     ///
-    /// # Invariant (build-mode independent)
+    /// # Invariant (post-#4351 / post-θ)
     ///
-    /// After the cache-hit short-circuit, `topology_attribute_table.lookup(id)`
-    /// for the cached handle must return `None` — regardless of debug vs release
-    /// build mode.  The `None` post-condition is the meaningful guarantee; in
-    /// debug builds the former `debug_assert!` also fired before the fix, but
-    /// the test's value is not limited to that panic path.
+    /// After the cache-hit short-circuit: the cache-served
+    /// `{Occt, GeometryHandleId(1)}` slot reads `None` (the #3226 spec — a
+    /// cache-served handle has no entries in the table on the second build;
+    /// naturally true here since nothing ever wrote to that key), AND a
+    /// `{Manifold, GeometryHandleId(1)}` sibling entry recorded earlier in
+    /// the SAME build is PRESERVED — proving the `KernelHandle` key keeps
+    /// the two kernels' id-1 handles independently addressable rather than
+    /// collapsing them, so there is no collateral eviction left to perform.
     #[test]
     fn cache_hit_short_circuit_tolerates_cross_kernel_topology_attribute_id_collision() {
         use reify_ir::{FeatureId, Role};
@@ -9111,12 +9165,14 @@ structure Assembly {
         let state = run_cross_kernel_cache_hit_short_circuit(
             "CrossKernelEntity2",
             |state, realization_id| {
-                // Pre-seed topology_attribute_table at GeometryHandleId(1),
-                // simulating a cross-kernel sibling Mesh op that recorded its
-                // first handle's attribute earlier in this same build.
+                // Pre-seed topology_attribute_table at a Manifold sibling
+                // sharing the numeric id 1 with the Occt cache-served
+                // handle — a genuine cross-kernel sibling now that
+                // KernelHandle keys the table (#4351), not a same-handle
+                // stale-entry case (that's the should_panic test above).
                 state.topology_attribute_table.record(
                     KernelHandle {
-                        kernel: KernelId::Occt,
+                        kernel: KernelId::Manifold,
                         id: GeometryHandleId(1),
                     },
                     TopologyAttribute {
@@ -9130,7 +9186,7 @@ structure Assembly {
             },
         );
 
-        // Post-condition: the cached handle must read None from topology_attribute_table.
+        // The cache-served Occt handle has no entry (#3226 spec).
         assert!(
             state
                 .topology_attribute_table
@@ -9139,9 +9195,23 @@ structure Assembly {
                     id: GeometryHandleId(1),
                 })
                 .is_none(),
-            "topology_attribute_table must have no entry for the cached handle id \
-             after cache-hit short-circuit: cross-kernel sibling's colliding entry \
-             must be removed (not left behind as a foreign kernel's attribute)"
+            "topology_attribute_table must have no entry for the cache-served \
+             handle after the cache-hit short-circuit"
+        );
+        // The Manifold sibling — a distinct KernelHandle that merely shares
+        // the numeric id — must survive untouched: no collateral eviction.
+        assert!(
+            state
+                .topology_attribute_table
+                .lookup(KernelHandle {
+                    kernel: KernelId::Manifold,
+                    id: GeometryHandleId(1),
+                })
+                .is_some(),
+            "a cross-kernel sibling entry sharing the numeric id must be \
+             preserved, not collaterally evicted — the KernelHandle key \
+             keeps it independently addressable from the Occt cache-served \
+             handle"
         );
     }
 

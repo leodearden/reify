@@ -6482,8 +6482,9 @@ impl Engine {
     /// 1. **Probes ONLY when `is_terminal_realization && demanded_tol.is_some()
     ///    && realization_name.is_some()`.** A guard-fail (or a plain cache
     ///    miss) returns `false` with zero side effects on `outputs` — no
-    ///    push/insert on any output view, no `topology_attribute_table`
-    ///    eviction. Pinned by
+    ///    push/insert on any output view, and the fail-closed
+    ///    `topology_attribute_table` debug_assert (invariant #4) never runs.
+    ///    Pinned by
     ///    `probe_realization_cache_guard_requires_terminal_named_and_tol`.
     /// 2. **Primary lookup at `demanded_repr`; `BRep` fallback on a
     ///    non-`BRep` miss.** A `demanded_repr == BRep` demand never falls
@@ -6500,13 +6501,27 @@ impl Engine {
     ///    `probe_realization_cache_primary_hit_applies_full_side_effect_set`
     ///    (single hit) and, cold-vs-warm,
     ///    `probe_realization_cache_cold_warm_side_effect_set_parity`.
-    /// 4. **The 4349 cross-kernel eviction is a documented interim
-    ///    trade-off, not a fix** — see the `Cross-kernel collision guard
-    ///    (task 4349)` comment at the `topology_attribute_table.remove(...)`
-    ///    call site below for the mechanism and trade-off. Retiring it is
-    ///    follow-up task θ's job, gated on #4351 — this task lands the
-    ///    mechanism only, so INV-BUILD-3 stays `proposed`. Pinned by
-    ///    `cache_hit_short_circuit_tolerates_cross_kernel_topology_attribute_id_collision`.
+    /// 4. **On a hit, the cache-served handle has NO `topology_attribute_table`
+    ///    entry — enforced fail-closed.** After #4351's `KernelHandle`
+    ///    re-key, cross-kernel collision at this table is impossible by
+    ///    construction, so task 4349's defensive eviction (retired by task
+    ///    θ / #5064) is replaced with a direct
+    ///    `debug_assert!(outputs.topology_attribute_table.lookup(cached_handle).is_none(), ...)`
+    ///    of the #3226 spec ("a cache-served handle has no entries in the
+    ///    table on the second build"): loud in debug on a genuine contract
+    ///    violation, permissive-by-absence in release (the assert compiles
+    ///    out). INV-BUILD-3 and the engine-build share of INV-GEO-2 are
+    ///    `enforced(test)` via this assert plus the cold/warm parity test;
+    ///    the release-mode share of this empty-table sub-postcondition (the
+    ///    assert compiles out) leans on INV-BUILD-1, still `proposed` — see
+    ///    the call-site comment below and the INV-BUILD-3 note in
+    ///    `docs/invariants.md`.
+    ///    Pinned by
+    ///    `probe_realization_cache_debug_asserts_no_entry_at_cache_served_handle`
+    ///    (fail-closed panic on a stale same-handle entry) and
+    ///    `cache_hit_short_circuit_tolerates_cross_kernel_topology_attribute_id_collision`
+    ///    (a cross-kernel sibling entry is preserved, not collaterally
+    ///    evicted).
     #[allow(clippy::too_many_arguments)]
     fn probe_realization_cache(
         realization_cache: &RealizationCache<KernelHandle>,
@@ -6600,27 +6615,45 @@ impl Engine {
                     }
                 });
             if let Some((cached_handle, resolved_repr)) = cache_probe {
-                // Cross-kernel collision guard (task 4349), re-keyed by task
-                // #4351: `TopologyAttributeTable` is now keyed by the full
-                // `KernelHandle` (kernel + kernel-local id) rather than a bare
-                // `GeometryHandleId`, so this eviction removes exactly the
-                // cached handle's own entry and no longer collaterally evicts
-                // a different kernel's sibling entry that happens to share the
-                // same numeric id.
+                // Fail-closed cross-kernel collision assert (task 4349,
+                // retired to this form by task θ / #5064): `TopologyAttributeTable`
+                // is keyed by the full `KernelHandle` (kernel + kernel-local
+                // id) rather than a bare `GeometryHandleId` (#4351), so a
+                // different kernel's sibling entry that happens to share the
+                // same numeric id can no longer collide with `cached_handle`
+                // here — collision at this table is impossible by
+                // construction.
                 //
-                // We defensively remove any entry at `cached_handle` from the
-                // table rather than asserting it is already absent. This is a
-                // no-op in the common case (the per-build reset already
-                // cleared the table) and enforces the #3226 spec ("a
-                // cache-served handle has no entries in those tables on the
-                // second build") when a stale entry from a prior build
-                // happens to still be present at this exact handle.
+                // That makes the #3226 spec ("a cache-served handle has no
+                // entries in those tables on the second build") directly
+                // assertable rather than needing a defensive eviction to
+                // enforce it: any stale entry surviving to this point at the
+                // exact cache-served handle is a genuine contract violation
+                // (a per-build reset or op-loop population bug), not a
+                // false-positive cross-kernel collision — so it should panic
+                // loudly in debug rather than being silently swept away.
+                // Release stays permissive-by-absence: the assert compiles
+                // out, matching the tautological `debug_assert_eq!` below.
                 //
-                // DO NOT retire this eviction — downstream task #5064 removes
-                // it and installs a fail-closed assert once the surrounding
-                // invariants are strong enough to guarantee the table is
-                // already empty at this point.
-                outputs.topology_attribute_table.remove(cached_handle);
+                // Release-mode reliance (reviewer_comprehensive #1, θ amend
+                // pass): with the assert compiled out, a stale same-kernel/
+                // same-id entry surviving ACROSS builds (e.g. a per-build-
+                // reset regression, or a kernel-local id counter re-minting
+                // id 1 on a later build) would be served silently in
+                // release. That failure mode is guarded only by INV-BUILD-1
+                // ("per-build engine state resets exactly once per
+                // build/tessellate entry point" — docs/invariants.md),
+                // which is status `proposed` (type-level enforcement via a
+                // `reset_per_build_state` exhaustive destructure is future
+                // work, not yet test-enforced) — this assert is a debug-mode
+                // detector, not a release backstop.
+                debug_assert!(
+                    outputs.topology_attribute_table.lookup(cached_handle).is_none(),
+                    "INV-BUILD-3 / INV-GEO-2 (PRD engine-build-hardening §4 D6, \
+                     #3226 spec): cache-served handle {cached_handle:?} must \
+                     have no topology_attribute_table entry on the second \
+                     build",
+                );
                 outputs.step_handles.push(cached_handle);
                 outputs.named_steps.insert(name.to_string(), cached_handle);
                 // Task 5033 Gap #2 Gap A: by-name repr sibling write. Mirrors
@@ -6725,11 +6758,11 @@ impl Engine {
     /// helper delegates to [`Self::probe_realization_cache`], which — on a
     /// hit — applies the realization's cold-path success side effects
     /// (`step_handles` push, `named_steps` + `named_step_reprs` insert,
-    /// `produced_repr_out` write, and the task-4349 cross-kernel
-    /// `topology_attribute_table` eviction) and returns early, before this
-    /// helper's `RealizationOutputs` destructure ever runs. See that
+    /// `produced_repr_out` write, and the fail-closed
+    /// `topology_attribute_table` debug_assert) and returns early, before
+    /// this helper's `RealizationOutputs` destructure ever runs. See that
     /// method's `# Invariants` doc (INV-BUILD-3) for the full
-    /// guard/fallback/side-effect/eviction contract and its pinning tests.
+    /// guard/fallback/side-effect/assert contract and its pinning tests.
     ///
     /// **Known limitation** (recorded as a design decision): a cache-hit
     /// short-circuit skips per-op `topology_attribute_table` population,
@@ -6742,8 +6775,8 @@ impl Engine {
     /// queries today, so this is documented (not regressed) in scope; a
     /// follow-up task can either cache the table entries alongside the
     /// handle or skip the table reset for engines with non-empty cache.
-    /// (The task-4349 cross-kernel `GeometryHandleId` collision guard that
-    /// partially compensates for this on a cache-hit now lives on
+    /// (The fail-closed `topology_attribute_table` debug_assert that
+    /// verifies this on a cache-hit now lives on
     /// [`Self::probe_realization_cache`] — see that method's doc.)
     fn execute_realization_ops(
         input: RealizationOpsInput<'_>,
