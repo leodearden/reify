@@ -571,10 +571,6 @@ crates/reify-eval/tests/manifold_ingest_attribute_forwarding_e2e.rs
 crates/reify-eval/tests/match_block_decls_e2e.rs
 crates/reify-eval/tests/material_field_cancellation.rs
 crates/reify-eval/tests/materials_starter_library.rs
-crates/reify-eval/tests/mechanism_builder_smoke.rs
-crates/reify-eval/tests/mechanism_duplicate_solid_diag_e2e.rs
-crates/reify-eval/tests/mechanism_interference_smoke.rs
-crates/reify-eval/tests/mechanism_nondriving_joint_diag_e2e.rs
 crates/reify-eval/tests/merged_cluster_solve.rs
 crates/reify-eval/tests/mesh_contract_handoff_diagnostic.rs
 crates/reify-eval/tests/meta_eval_integration.rs
