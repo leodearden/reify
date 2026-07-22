@@ -3175,6 +3175,58 @@
         }
     }
 
+    /// A BARE (dimensionless) `spacing1` must be REJECTED — reading it via
+    /// `Value::as_f64` would silently treat `0.02` as 0.02 SI **metres**, the
+    /// exact silent-SI-metres hazard this task closes. The op is dropped
+    /// (Err) with a diagnostic naming the arg and the Length requirement.
+    #[test]
+    fn compile_geometry_op_linear_pattern_2d_bare_spacing_rejected() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Linear2D,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("dx1".into(), literal_f64(1.0)),
+                ("dy1".into(), literal_f64(0.0)),
+                ("dz1".into(), literal_f64(0.0)),
+                ("count1".into(), literal_f64(3.0)),
+                // BARE dimensionless spacing1 — must be rejected.
+                ("spacing1".into(), literal_f64(0.02)),
+                ("dx2".into(), literal_f64(0.0)),
+                ("dy2".into(), literal_f64(1.0)),
+                ("dz2".into(), literal_f64(0.0)),
+                ("count2".into(), literal_f64(4.0)),
+                ("spacing2".into(), literal_length(0.03)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(
+            result.is_err(),
+            "bare (dimensionless) spacing1 must drop the op, got: {:?}",
+            result
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("spacing1") && d.message.contains("Length")),
+            "a diagnostic must name the spacing1 arg and the Length units \
+             requirement; got: {:?}",
+            diagnostics
+        );
+    }
+
     #[test]
     fn compile_geometry_op_arbitrary_pattern_valid_3_transforms() {
         let step_handles = vec![GeometryHandleId(42)];
