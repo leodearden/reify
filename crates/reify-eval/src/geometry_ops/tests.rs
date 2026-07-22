@@ -3163,6 +3163,111 @@
         }
     }
 
+    /// A BARE (dimensionless) mirror-plane origin component `ox` must be
+    /// REJECTED — a plane ORIGIN is length-semantic, so a bare `0.0` would be
+    /// silently read as 0 SI metres (and any non-zero bare value 1000× off).
+    /// The op is dropped (Err) with a diagnostic naming `ox` and Length.
+    #[test]
+    fn compile_geometry_op_mirror_bare_origin_rejected() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Mirror,
+            target: GeomRef::Step(0),
+            args: vec![
+                // BARE dimensionless ox — must be rejected.
+                ("ox".into(), literal_f64(0.0)),
+                ("oy".into(), literal_length(0.0)),
+                ("oz".into(), literal_length(0.0)),
+                ("nx".into(), literal_f64(1.0)),
+                ("ny".into(), literal_f64(0.0)),
+                ("nz".into(), literal_f64(0.0)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(
+            result.is_err(),
+            "bare (dimensionless) mirror origin ox must drop the op, got: {:?}",
+            result
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("ox") && d.message.contains("Length")),
+            "a diagnostic must name the ox arg and the Length units requirement; \
+             got: {:?}",
+            diagnostics
+        );
+    }
+
+    /// Locks the split: the mirror-plane ORIGIN must be a Length, but the plane
+    /// NORMAL is a dimensionless unit vector — so a `Length` origin with BARE
+    /// (dimensionless) normal components is accepted, no error.
+    #[test]
+    fn compile_geometry_op_mirror_length_origin_bare_normal_accepted() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Mirror,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("ox".into(), literal_length(0.0)),
+                ("oy".into(), literal_length(0.0)),
+                ("oz".into(), literal_length(0.0)),
+                // Normal stays a bare dimensionless unit vector.
+                ("nx".into(), literal_f64(1.0)),
+                ("ny".into(), literal_f64(0.0)),
+                ("nz".into(), literal_f64(0.0)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        match result {
+            Ok(reify_ir::GeometryOp::Mirror {
+                target,
+                plane_origin,
+                plane_normal,
+            }) => {
+                assert_eq!(target, GeometryHandleId(42));
+                assert_eq!(plane_origin, [0.0, 0.0, 0.0]);
+                assert_eq!(plane_normal, [1.0, 0.0, 0.0]);
+            }
+            other => panic!(
+                "expected Ok(Mirror) for Length origin + bare normal, got {:?}",
+                other
+            ),
+        }
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.severity == reify_core::Severity::Error),
+            "Length origin + dimensionless normal must not produce an Error \
+             diagnostic; got: {:?}",
+            diagnostics
+        );
+    }
+
     #[test]
     fn compile_geometry_op_linear_pattern_2d_valid_args() {
         let step_handles = vec![GeometryHandleId(42)];
