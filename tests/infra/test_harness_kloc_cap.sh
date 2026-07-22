@@ -454,6 +454,22 @@ _live_rc=0
 _live_out="$(run_harness_layout_scan "$BASELINE" "$CAP_LINES" "${_live_args[@]}")" || _live_rc=$?
 
 _live_summary="$(printf '%s\n' "$_live_out" | grep -E '^HARNESS_KLOC_CAP SUMMARY ' || true)"
+
+# On a non-clean live scan, print the captured structured HARNESS_KLOC_CAP
+# lines verbatim to stdout BEFORE the asserts below, so the archived
+# merge-verify log carries the exact offending crate=/file=/reason= lines —
+# not just the assert PASS/FAIL verdicts. Without this, `assert` only dumps
+# the stdout/stderr of the `test ...` checker it invokes (which is always
+# empty), so a failing live scan's own offender lines never reached the
+# archived log (the 2026-07-20 incident: 4 live violations, zero offender
+# lines captured, four investigations blocked). Gated on failure so a clean
+# run's output is byte-for-byte unchanged.
+if [ "$_live_rc" -ne 0 ] || [ "$_live_summary" != "HARNESS_KLOC_CAP SUMMARY crates=5 violations=0" ]; then
+    echo "  ---- Section 5: live scan output (captured, printed on failure) ----"
+    printf '%s\n' "$_live_out"
+    echo "  ---- Section 5: end live scan output ----"
+fi
+
 assert "5: live scan is green on the current tree (rc 0, zero violations)" \
     test "$_live_rc" -eq 0
 assert "5: live SUMMARY line reads exactly crates=5 violations=0" \
