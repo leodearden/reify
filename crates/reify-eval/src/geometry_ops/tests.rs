@@ -3389,16 +3389,17 @@
         let op = CompiledGeometryOp::Pattern {
             kind: PatternKind::Arbitrary,
             target: GeomRef::Step(0),
+            // Offsets are translations (length-semantic) → dimensioned Length.
             args: vec![
-                ("t0_dx".into(), literal_f64(0.01)),
-                ("t0_dy".into(), literal_f64(0.0)),
-                ("t0_dz".into(), literal_f64(0.0)),
-                ("t1_dx".into(), literal_f64(0.0)),
-                ("t1_dy".into(), literal_f64(0.02)),
-                ("t1_dz".into(), literal_f64(0.0)),
-                ("t2_dx".into(), literal_f64(0.01)),
-                ("t2_dy".into(), literal_f64(0.02)),
-                ("t2_dz".into(), literal_f64(0.0)),
+                ("t0_dx".into(), literal_length(0.01)),
+                ("t0_dy".into(), literal_length(0.0)),
+                ("t0_dz".into(), literal_length(0.0)),
+                ("t1_dx".into(), literal_length(0.0)),
+                ("t1_dy".into(), literal_length(0.02)),
+                ("t1_dz".into(), literal_length(0.0)),
+                ("t2_dx".into(), literal_length(0.01)),
+                ("t2_dy".into(), literal_length(0.02)),
+                ("t2_dz".into(), literal_length(0.0)),
             ],
         };
 

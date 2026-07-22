@@ -2735,8 +2735,11 @@ fn pattern_arbitrary(
         if !args.iter().any(|(name, _)| name == &dx_name) {
             break;
         }
-        let mut f64_arg = |name: &str| -> Result<f64, String> {
-            eval_named_arg_f64(
+        // Offsets are translations (length-semantic): require a finite LENGTH
+        // Scalar per component. A bare/dimensionless offset is rejected (op
+        // dropped) rather than silently read as SI metres by `Value::as_f64`.
+        let mut length_arg = |name: &str| -> Result<f64, String> {
+            eval_named_arg_length(
                 name,
                 kind,
                 args,
@@ -2746,12 +2749,12 @@ fn pattern_arbitrary(
                 diagnostics,
             )
             .ok_or_else(|| {
-                format!("missing or non-finite argument '{}' for {}", name, kind)
+                format!("missing or non-Length argument '{}' for {}", name, kind)
             })
         };
-        let dx = f64_arg(&format!("t{}_dx", idx))?;
-        let dy = f64_arg(&format!("t{}_dy", idx))?;
-        let dz = f64_arg(&format!("t{}_dz", idx))?;
+        let dx = length_arg(&format!("t{}_dx", idx))?;
+        let dy = length_arg(&format!("t{}_dy", idx))?;
+        let dz = length_arg(&format!("t{}_dz", idx))?;
         // Scalar-triple form: translation-only, so the rotation quaternion is
         // identity. Mirrors `ApplyTransform`'s scalar-first `[qw,qx,qy,qz]`.
         transforms.push(([1.0, 0.0, 0.0, 0.0], [dx, dy, dz]));
