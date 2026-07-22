@@ -4296,6 +4296,26 @@ pub trait GeometryKernel: Send + Sync {
         Ok((handle, AttributeHistory::None))
     }
 
+    /// Free all resident kernel state built for the previous whole-file
+    /// design, returning the kernel to an empty-but-reusable state, so a
+    /// long-lived kernel reused across GUI whole-file reloads does not
+    /// accumulate the prior design's native geometry unbounded (task 5212).
+    ///
+    /// The **default** is a no-op: kernels that hold no per-design native
+    /// resources across reloads (Manifold and OpenVDB rebuild from scratch;
+    /// mocks and stubs keep no growing shape table) need no teardown and stay
+    /// compiling unchanged. Only the OCCT handle — whose `OcctKernel` owns a
+    /// growing `HashMap<u64, UniquePtr<OcctShape>>` of native B-rep shapes —
+    /// overrides it, routing an eviction over its actor channel. Mirrors the
+    /// default-forwarding convention of
+    /// [`execute_with_history`](GeometryKernel::execute_with_history) and
+    /// [`query_many`](GeometryKernel::query_many).
+    ///
+    /// Callers must invoke this exactly once per whole-file reload (see
+    /// `reify_eval::Engine::reset_geometry_for_reload`), never on a parameter
+    /// (slider) edit — a reset on every tick would needlessly wipe warm shapes.
+    fn reset(&mut self) {}
+
     /// Run a query against a handle.
     fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError>;
 

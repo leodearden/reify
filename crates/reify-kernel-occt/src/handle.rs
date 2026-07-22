@@ -68,6 +68,13 @@ enum OcctRequest {
         state: OpaqueState,
         reply: oneshot::Sender<()>,
     },
+    /// Task 5212: evict every resident native shape (+ derived caches) on the
+    /// kernel thread while keeping `next_id` monotonic, bounding OCCT native
+    /// memory across GUI whole-file reloads. Routed here because `OcctKernel`
+    /// is `!Send`. Reply is `()` (fire-and-confirm), mirroring `WithWarmState`.
+    Reset {
+        reply: oneshot::Sender<()>,
+    },
     /// T7: assemble N placed product solids into a TopoDS_Compound.
     MakeCompound {
         handles: Vec<GeometryHandleId>,
@@ -1242,6 +1249,10 @@ impl OcctKernelHandle {
                         kernel.with_warm_state(state);
                         let _ = reply.send(());
                     }
+                    OcctRequest::Reset { reply } => {
+                        kernel.reset();
+                        let _ = reply.send(());
+                    }
                     OcctRequest::MakeCompound { handles, reply } => {
                         let result = kernel.make_compound(&handles);
                         let _ = reply.send(result);
@@ -1714,6 +1725,23 @@ impl OcctKernelHandle {
         }
     }
 
+    /// Reset the kernel thread's `OcctKernel`: evict every resident native
+    /// shape and clear the derived caches while keeping `next_id` monotonic
+    /// (see `OcctKernel::reset`), bounding OCCT native memory across GUI
+    /// whole-file reloads.
+    ///
+    /// Routed over the actor channel because `OcctKernel` is `!Send` and lives
+    /// on the dedicated OS thread. Blocks until the kernel thread confirms;
+    /// safe from both sync and async contexts (via `send_recv`). A dead kernel
+    /// thread is a silent no-op — there is nothing left to reset. Mirrors the
+    /// `with_warm_state` channel wiring (`&self` because the actor channel
+    /// sender only needs a shared borrow; the `GeometryKernel::reset` override
+    /// takes `&mut self` and delegates here).
+    pub fn reset(&self) {
+        let (reply_tx, reply_rx) = oneshot::channel::<()>();
+        send_recv(&self.tx, OcctRequest::Reset { reply: reply_tx }, reply_rx);
+    }
+
     /// Explicitly shut down the kernel thread from an async context.
     ///
     /// Drops the channel sender (closing the channel so the kernel thread exits
@@ -1815,6 +1843,14 @@ impl GeometryKernel for OcctKernelHandle {
     fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
         // Delegate to inherent method (which only needs &self).
         OcctKernelHandle::execute(self, op)
+    }
+
+    /// Override the trait no-op default: `OcctKernel` owns a growing table of
+    /// native B-rep shapes that must be freed on whole-file reload. Delegates
+    /// to the channel-routed inherent `OcctKernelHandle::reset` (which only
+    /// needs `&self`).
+    fn reset(&mut self) {
+        OcctKernelHandle::reset(self)
     }
 
     fn query(&self, query: &GeometryQuery) -> Result<Value, QueryError> {
