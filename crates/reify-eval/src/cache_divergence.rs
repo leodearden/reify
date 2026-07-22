@@ -25,7 +25,7 @@ use reify_core::ValueCellId;
 use reify_ir::{DeterminacyState, PersistentMap, Value};
 
 use crate::cache::{CacheStore, CachedResult, NodeId};
-use crate::journal::EventJournal;
+use crate::journal::{EventJournal, EventKind, EventPayload};
 
 /// A single snapshot↔cache content-hash divergence: `cell`'s snapshot value
 /// disagrees, by content-hash, with its PRESENT (and non-Skip-exempt) cache
@@ -52,8 +52,9 @@ pub struct SnapshotCacheDivergence {
 ///   `check_no_stale_undef`'s "err toward exempt, enumerate residuals" policy.
 /// - `Some(entry)` whose stored `entry.result_hash` differs from the snapshot
 ///   side's recomputed `CachedResult::Value(val.clone(), *det).content_hash()`
-///   ⇒ a divergence, UNLESS the cell is Skip-exempt (step-4 adds that guard;
-///   this step has no exemption). `result_hash` is the authoritative content
+///   ⇒ a divergence, UNLESS the cell is Skip-exempt — its latest `Started`
+///   journal event carries a `cache-skip=` marker (see
+///   [`cell_latest_commit_was_skip`]). `result_hash` is the authoritative content
 ///   identity the CacheStore keyed the entry on; the snapshot side is
 ///   recomputed because `DeterminacyState` is `Copy` (so `*det` is cheap) and
 ///   the `CachedResult::Value` domain-separation tag makes a non-`Value` cache
@@ -64,12 +65,6 @@ pub fn check_snapshot_cache_divergence(
     cache: &CacheStore,
     journal: &EventJournal,
 ) -> Vec<SnapshotCacheDivergence> {
-    // The `journal` param is threaded through now but only consulted by
-    // step-4's Skip-exemption (a cell whose latest `Started` event carries a
-    // `cache-skip=` marker is exempt). Bind-and-discard keeps the signature
-    // stable across steps without an unused-parameter warning.
-    let _ = journal;
-
     let mut divergences = Vec::new();
     for (cell, (val, det)) in snapshot_values.iter() {
         let node = NodeId::Value(cell.clone());
@@ -79,6 +74,15 @@ pub fn check_snapshot_cache_divergence(
         };
         let expected = CachedResult::Value(val.clone(), *det).content_hash();
         if entry.result_hash != expected {
+            // Skip-exemption: a `CacheLeg::Skip` commit (the self-datum /
+            // structural-query / annotation-args post-pass overwrites task γ
+            // migrated) deliberately leaves the cache entry un-updated relative
+            // to the snapshot value it just wrote, flagging the divergence as
+            // intentional via a `cache-skip=` marker on the cell's latest
+            // `Started` event. Such a cell is exempt by construction.
+            if cell_latest_commit_was_skip(journal, &node) {
+                continue;
+            }
             divergences.push(SnapshotCacheDivergence {
                 cell: cell.clone(),
                 detail: format!(
@@ -90,6 +94,33 @@ pub fn check_snapshot_cache_divergence(
         }
     }
     divergences
+}
+
+/// `true` iff `node`'s LATEST `EventKind::Started` journal event carries a
+/// `cache-skip=` marker in its `EventPayload::Custom` payload — the exact
+/// `<trace-slug>|cache-skip=<reason>` shape `commit_cell_result` writes onto
+/// the `Started` event for every `CacheLeg::Skip` commit (`cell_commit.rs`).
+///
+/// LATEST-`Started` (not ANY-`Started`) is the faithful predicate: the three
+/// post-pass overwrites task γ migrated (self-datum, structural-query,
+/// annotation-args) are Record-then-Skip, so the cell's most-recent `Started`
+/// event carries the marker and the current snapshot value reflects that Skip.
+/// An earlier Record `Started` (no marker) must not mask a later Skip, nor a
+/// later plain Record mask an earlier Skip.
+///
+/// The journal is consulted ONLY for this exemption — it is NOT a complete
+/// authority on cache writes (some `engine_eval.rs` cache writes emit no
+/// journal event at all — `engine_eval.rs:5380`), so absence-of-marker never
+/// implies anything about the cache itself; it just means "not Skip-exempt".
+fn cell_latest_commit_was_skip(journal: &EventJournal, node: &NodeId) -> bool {
+    journal
+        .events_for_node(node)
+        .iter()
+        .rev()
+        .find(|event| matches!(event.kind, EventKind::Started))
+        .is_some_and(|event| {
+            matches!(&event.payload, Some(EventPayload::Custom(s)) if s.contains("cache-skip="))
+        })
 }
 
 #[cfg(test)]
