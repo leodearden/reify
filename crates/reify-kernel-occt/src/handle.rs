@@ -2012,6 +2012,67 @@ mod tests {
         }
     }
 
+    /// Channel-routed `reset()` on `OcctKernelHandle`: evicts the underlying
+    /// shape on the dedicated kernel thread (old handle → error via the #5211
+    /// `get_shape` guard, never a panic or stale value) and a subsequent
+    /// execute mints a strictly-greater (monotonic) id. Also exercises the
+    /// polymorphic trait path (`&mut dyn GeometryKernel`) so the engine's
+    /// `Box<dyn GeometryKernel>` reset call is covered.
+    #[test]
+    fn reset_evicts_shape_and_keeps_next_id_monotonic() {
+        let mut handle = super::OcctKernelHandle::spawn();
+        let box_h = handle
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+        assert!(
+            handle.query(&GeometryQuery::Volume(box_h.id)).is_ok(),
+            "box should be queryable before reset"
+        );
+
+        // Reset over the actor channel — evicts the resident shape.
+        handle.reset();
+
+        // The old handle is now absent from the shape table, so `get_shape`
+        // surfaces InvalidHandle (a clean error, not a crash or a stale read).
+        let after = handle.query(&GeometryQuery::Volume(box_h.id));
+        assert!(
+            matches!(after, Err(reify_ir::QueryError::InvalidHandle(_))),
+            "old handle must surface as InvalidHandle after reset (shape \
+             evicted from the table), got {after:?}"
+        );
+
+        // A fresh execute gets a strictly-greater id — reset kept next_id
+        // monotonic on the kernel thread, so ids are never reused.
+        let box_h2 = handle
+            .execute(&GeometryOp::Box {
+                width: Value::Real(1.0),
+                height: Value::Real(1.0),
+                depth: Value::Real(1.0),
+            })
+            .unwrap();
+        assert!(
+            box_h2.id.0 > box_h.id.0,
+            "next_id must stay monotonic across channel-routed reset: {} !> {}",
+            box_h2.id.0,
+            box_h.id.0
+        );
+
+        // Polymorphic path: reset() through &mut dyn GeometryKernel (the shape
+        // the engine's Box<dyn GeometryKernel> reset call takes) must evict too.
+        let dyn_kernel: &mut dyn reify_ir::GeometryKernel = &mut handle;
+        dyn_kernel.reset();
+        let after2 = handle.query(&GeometryQuery::Volume(box_h2.id));
+        assert!(
+            matches!(after2, Err(reify_ir::QueryError::InvalidHandle(_))),
+            "polymorphic reset() through &mut dyn GeometryKernel must also \
+             evict the shape, got {after2:?}"
+        );
+    }
+
     #[test]
     fn query_many_returns_ordered_values_for_heterogeneous_batch() {
         let handle = super::OcctKernelHandle::spawn();
