@@ -2543,6 +2543,24 @@ fn pattern_mirror(
             plane_normal,
         })
     } else {
+        // The mirror-plane ORIGIN is length-semantic: require a finite LENGTH
+        // Scalar (reject a bare/dimensionless component, which `Value::as_f64`
+        // would silently read as SI metres). Read ox/oy/oz directly here — NOT
+        // via the `f64_arg` closure below — so their `&mut diagnostics` borrows
+        // don't overlap with the closure's capture.
+        let ox = eval_named_arg_length(
+            "ox", kind, args, values, functions, meta_map, diagnostics,
+        )
+        .ok_or_else(|| format!("missing or non-Length argument 'ox' for {}", kind))?;
+        let oy = eval_named_arg_length(
+            "oy", kind, args, values, functions, meta_map, diagnostics,
+        )
+        .ok_or_else(|| format!("missing or non-Length argument 'oy' for {}", kind))?;
+        let oz = eval_named_arg_length(
+            "oz", kind, args, values, functions, meta_map, diagnostics,
+        )
+        .ok_or_else(|| format!("missing or non-Length argument 'oz' for {}", kind))?;
+        // The plane NORMAL is a dimensionless unit vector — stays bare f64.
         let mut f64_arg = |name: &str| -> Result<f64, String> {
             eval_named_arg_f64(
                 name,
@@ -2559,7 +2577,7 @@ fn pattern_mirror(
         };
         Ok(reify_ir::GeometryOp::Mirror {
             target: target_id,
-            plane_origin: [f64_arg("ox")?, f64_arg("oy")?, f64_arg("oz")?],
+            plane_origin: [ox, oy, oz],
             plane_normal: [f64_arg("nx")?, f64_arg("ny")?, f64_arg("nz")?],
         })
     }

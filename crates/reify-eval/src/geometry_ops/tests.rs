@@ -3131,9 +3131,11 @@
             kind: PatternKind::Mirror,
             target: GeomRef::Step(0),
             args: vec![
-                ("ox".into(), literal_f64(0.0)),
-                ("oy".into(), literal_f64(0.0)),
-                ("oz".into(), literal_f64(0.0)),
+                // Plane ORIGIN is length-semantic → must be dimensioned Length.
+                ("ox".into(), literal_length(0.0)),
+                ("oy".into(), literal_length(0.0)),
+                ("oz".into(), literal_length(0.0)),
+                // Plane NORMAL is a dimensionless unit vector → stays bare f64.
                 ("nx".into(), literal_f64(1.0)),
                 ("ny".into(), literal_f64(0.0)),
                 ("nz".into(), literal_f64(0.0)),
