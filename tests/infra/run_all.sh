@@ -367,7 +367,7 @@ _ra_collect_fail_detail() {
     [ -f "$_file" ] || return 0
 
     local _matched
-    _matched="$(grep -aE '(^[[:space:]]*FAIL:|^[A-Za-z][A-Za-z0-9_]*[[:space:]]+FAIL([[:space:]]|$))' "$_file" 2>/dev/null || true)"
+    _matched="$(grep -aE '(^[[:space:]]*FAIL:|^[A-Za-z][A-Za-z0-9_]*[[:space:]]+FAIL([[:space:]]|$))' "$_file" 2>/dev/null | sed "$_RA_CLOCK_SANITIZE" || true)"
     [ -n "$_matched" ] || return 0
 
     local _count
