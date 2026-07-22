@@ -1830,6 +1830,16 @@ impl Drop for OcctKernelHandle {
                 // naturally when its recv loop sees the closed channel.
                 // OCCT resources are freed when the thread exits (just
                 // asynchronously). For deterministic cleanup, use shutdown().
+                //
+                // FORWARD-LOOKING HAZARD (task 5212, harmless today): skipping
+                // thread.join() here is safe ONLY because the OcctKernelHandle
+                // session is never dropped-and-rebuilt inside the tokio runtime
+                // today. If an 'open file' / session-swap flow is ever wired to
+                // recreate this handle inside the async runtime, the old kernel
+                // thread could still be draining while a new one spawns — two
+                // OS threads mutating OCCT's process-global state concurrently
+                // (UB). Such a flow must route teardown through shutdown()
+                // (which joins via spawn_blocking) rather than relying on Drop.
             } else {
                 // Outside async context: safe to block on join for
                 // deterministic cleanup.

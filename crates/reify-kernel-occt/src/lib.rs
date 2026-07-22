@@ -4685,6 +4685,18 @@ impl WarmStartable for OcctKernel {
             *shapes = staged;
             *reprs = new_reprs;
             *next_id = warm.next_id;
+            // FORWARD-LOOKING HAZARD (task 5212, no production caller today):
+            // this wholesale `*shapes = staged` swap paired with
+            // `*next_id = warm.next_id` can LOWER next_id to a value at or
+            // below ids already handed out this session. If OCCT geometry
+            // warm-start is ever wired into the GUI whole-file reload path, a
+            // later `store_with_repr` could then re-mint an id that a stale
+            // handle (e.g. a lingering realization-cache entry) still names,
+            // aliasing it onto a freshly-minted shape — silent data corruption
+            // / UAF — instead of failing cleanly. This is exactly why
+            // `OcctKernel::reset()` deliberately keeps next_id MONOTONIC (see
+            // its doc comment and INV-BUILD-1): a warm-start reload wiring must
+            // reconcile next_id (take the max, never lower it), not overwrite.
             // CLEAR-on-restore: derived provenance/idempotency caches keyed to
             // the pre-restore shape table. Cached child ids may not correspond
             // to any face/edge/vertex of the freshly-restored shapes, and
