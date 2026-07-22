@@ -24,7 +24,8 @@
 #         invocation (engaging the 5167 rm-outright mechanism); above the
 #         floor or on a df failure, plain reclaim runs unchanged (fail-to-α);
 #         end-to-end proof via the real gc.sh that target/ is deleted
-#         outright, with inv.preserve (dirty/live-consumer) still honored.
+#         outright, with the live-consumer flock still honored (a dirty POOL
+#         LANE is now reclaimed under always-reclaim, task 5326).
 #         Also covers the --critical-free-gib integer-format guard (exit 2
 #         on a non-numeric value, via flag or env) and the df-succeeds-but
 #         -unparseable-output fallback (a code path distinct from a df exit
@@ -583,7 +584,10 @@ assert "G4: _lane-1/target deleted outright end-to-end (emergency trigger engage
 assert "G4: seed stub NOT invoked (--disk-pressure skips the α reseed)" \
     bash -c '[ ! -s "$1" ]' _ "$G4_SEED_LOG"
 
-# ── G5: inv.preserve inherited (dirty + live-consumer lanes stay intact) ──────
+# ── G5: always-reclaim under --disk-pressure — dirty POOL LANE reclaimed, ─────
+# live-consumer lane preserved (task 5326). The dirty pool lane's target/ is
+# deleted outright (the flock is free), while the live-consumer lane's flock
+# preserves it — proving the flock is the sole remaining Pass-1 preserve gate.
 G5_ROOT="$(mktemp -d /tmp/test-gc-sweep-g5-XXXXXX)"
 _TMPDIRS+=("$G5_ROOT")
 
@@ -596,9 +600,9 @@ mkdir -p "$G5_BASE/target.gen.1"
 touch "$G5_BASE/target.gen.1.lock"
 ln -sfn "$G5_BASE/target.gen.1" "$G5_BASE/target"
 
-# _lane-dirty: uncommitted tracked change. Must be preserved regardless of
-# --disk-pressure — inv.preserve is enforced by _is_reclaimable, upstream of
-# the disk-pressure/α branch.
+# _lane-dirty: uncommitted tracked change POOL LANE. Under always-reclaim
+# (task 5326) its flock is free, so it is RECLAIMED — target/ deleted outright
+# under --disk-pressure. Dirty tracked changes no longer preserve a pool lane.
 git -C "$G5_REPO" worktree add -q "$G5_WORKTREES/_lane-dirty"
 echo "dirty" >> "$G5_WORKTREES/_lane-dirty/README.md"
 mkdir -p "$G5_WORKTREES/_lane-dirty/target"
@@ -630,9 +634,9 @@ SEED_LOG="$G5_SEED_LOG" \
     run_sweep --mount "$G5_WORKTREES" --gc-script "$GC_REAL" --critical-free-gib 2
 
 assert "G5: exit 0" test "$RC" -eq 0
-assert "G5: dirty lane target/ marker intact (inv.preserve inherited under --disk-pressure)" \
-    test -f "$G5_WORKTREES/_lane-dirty/target/DIVERGENT_MARKER"
-assert "G5: live-consumer lane target/ marker intact (inv.preserve inherited under --disk-pressure)" \
+assert "G5: dirty pool lane target/ deleted outright (always-reclaim under --disk-pressure)" \
+    bash -c '[ ! -d "$1" ]' _ "$G5_WORKTREES/_lane-dirty/target"
+assert "G5: live-consumer lane target/ marker intact (flock is the sole preserve gate)" \
     test -f "$G5_WORKTREES/_lane-locked/target/DIVERGENT_MARKER"
 
 # Release the background lock holder.

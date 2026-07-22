@@ -14,27 +14,34 @@
 #
 # Blocks:
 #   A — CLI guard: --help, unknown flag, bare invocation, unknown subcommand,
-#       reclaim missing --worktrees-dir or --base-target
+#       reclaim missing --worktrees-dir or --base-target; --status-cmd is now
+#       an unknown flag (A8) — the Tier-3 machinery was removed (task 5326)
 #   B — reset a divergent FREE lane (seed-script invoked with resolved gen path)
 #   C — remove an orphaned-landed clean worktree
-#   D — preserve dirty WIP (dirty tracked changes)
-#   E — preserve unlanded ahead-of-main commits
-#   F — preserve a lane with a live-consumer lock
-#   G — combined PRD δ signal: all five fixtures + protect-glob + summary line
-#   I — Tier-3 terminal-task reclaim: attached task/NNNN branch, status-oracle
-#       seam (--status-cmd / REIFY_LANE_LEAK_STATUS_CMD fallback) (task 5167)
-#   J — Tier-3 backing-task resolution for a detached HEAD lane (task 5167)
-#   K — disk-pressure fast-path: rm -rf target/ instead of an alpha reseed
-#       clone (--disk-pressure / REIFY_WARM_LANE_GC_DISK_PRESSURE) (task 5167)
-#   L — Tier-3 Pass-2 boundary: an orphan worktree (non-lane-glob name) on a
-#       terminal, ahead-of-main task/NNNN branch is still governed solely by
-#       _is_reclaimable — _backing_task_terminal never runs in Pass 2 (task 5167)
+#   D — always-reclaim (task 5326): a DIRTY POOL LANE is now RECLAIMED (reset),
+#       while a DIRTY ORPHAN stays preserved by Pass-2 _is_reclaimable
+#   E — always-reclaim (task 5326): an AHEAD-OF-MAIN POOL LANE is now RECLAIMED
+#       (no --status-cmd wired — terminality- AND ahead-independent), while an
+#       AHEAD-OF-MAIN ORPHAN stays preserved by Pass-2 _is_reclaimable
+#   F — preserve a lane with a live-consumer lock — the SOLE remaining Pass-1
+#       preserve gate, holding even for a lane that is ALSO dirty+ahead (5326)
+#   G — combined PRD δ signal: pool lanes (clean + dirty) reset, orphan removed,
+#       ahead orphan + live-consumer lane + protect-glob preserved + summary line
+#   K — disk-pressure fast-path: rm -rf target/ instead of an alpha reseed clone
+#       (--disk-pressure / REIFY_WARM_LANE_GC_DISK_PRESSURE); lanes reclaim via
+#       always-reclaim, no --status-cmd needed (task 5167, 5326)
 #   M — ephemeral verify/sweep worktrees (_mainsweep-*/_mainprobe-*) protected
 #       by the DEFAULT protect-glob, DF-faithful (--mount only, no
 #       --protect-glob) (task 5221)
 #   N — full managed-worktree protect set (_solo-*/_substrate-gate-*/
 #       _offline-deep (exact name)/_iact-*) protected by default, plus an
 #       explicit --protect-glob override still re-narrows the set (task 5221)
+#
+# The former Tier-3 blocks I/J/L (terminal-task reclaim + Pass-2 boundary,
+# task 5167) were deleted when task 5326 collapsed the Pass-1 gate to the
+# live-consumer flock alone (always-reclaim): their essential coverage —
+# live-consumer preserves a reclaimable lane, ahead-of-main orphan preserved —
+# migrated into the rewritten Blocks F and E.
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -94,66 +101,14 @@ make_repo() {
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Shared scaffolding: status-oracle stubs + task-lane factory (Blocks I/J/K)
+# Shared scaffolding: task-lane factory + causal live-consumer-lock handshake
 # ──────────────────────────────────────────────────────────────────────────────
-# Status-oracle contract mirrors tests/infra/test_warm_lane_preflight.sh Block D
-# (leak-oracle.sh / leak-oracle-fail.sh) and warm-lane-preflight.sh Check 6 /
-# warm-lane-degenerate-ref-check.sh _ref_status byte-for-byte: `<cmd> <task_id>`
-# prints a status on stdout (or empty for unknown ids), exits 0. Threaded via
-# ORACLE_MAP (one "<id> <status>" pair per line, exported before run_helper).
-
-STUB_DIR="$(mktemp -d /tmp/test-warm-lane-gc-stub-XXXXXX)"
-_TMPDIRS+=("$STUB_DIR")
-
-# gc-status-oracle.sh: given task-id $1, looks up status in ORACLE_MAP file
-# (one "id status" pair per line). Exits 0 with empty output for unknown ids.
-cat > "$STUB_DIR/gc-status-oracle.sh" << 'STUB_EOF'
-#!/usr/bin/env bash
-_qid="$1"
-if [ -f "${ORACLE_MAP:-}" ]; then
-    while IFS=' ' read -r _mid _mst; do
-        if [ "$_mid" = "$_qid" ]; then
-            printf '%s\n' "$_mst"
-            exit 0
-        fi
-    done < "$ORACLE_MAP"
-fi
-exit 0
-STUB_EOF
-chmod +x "$STUB_DIR/gc-status-oracle.sh"
-
-# gc-status-oracle-fail.sh: always exits non-zero — drives the set -e/pipefail
-# hardening test (oracle failure must NOT abort the sweep; unknown = non-terminal).
-cat > "$STUB_DIR/gc-status-oracle-fail.sh" << 'STUB_EOF'
-#!/usr/bin/env bash
-exit 1
-STUB_EOF
-chmod +x "$STUB_DIR/gc-status-oracle-fail.sh"
-
-# gc-status-oracle-counting.sh: same ORACLE_MAP lookup as gc-status-oracle.sh,
-# but first appends the queried task-id to ORACLE_CALL_LOG (when set). Used to
-# prove the Tier-3 oracle subprocess is SKIPPED entirely (not merely
-# outcome-neutral) for a lane the cheap local _is_reclaimable predicate
-# already reclaims (warm-lane-gc.sh:502-507 ordering) — asserting on the
-# reclaim outcome alone can't distinguish "oracle wasn't asked" from "oracle
-# was asked and agreed".
-cat > "$STUB_DIR/gc-status-oracle-counting.sh" << 'STUB_EOF'
-#!/usr/bin/env bash
-_qid="$1"
-if [ -n "${ORACLE_CALL_LOG:-}" ]; then
-    printf '%s\n' "$_qid" >> "$ORACLE_CALL_LOG"
-fi
-if [ -f "${ORACLE_MAP:-}" ]; then
-    while IFS=' ' read -r _mid _mst; do
-        if [ "$_mid" = "$_qid" ]; then
-            printf '%s\n' "$_mst"
-            exit 0
-        fi
-    done < "$ORACLE_MAP"
-fi
-exit 0
-STUB_EOF
-chmod +x "$STUB_DIR/gc-status-oracle-counting.sh"
+# The Tier-3 status-oracle stubs (gc-status-oracle{,-fail,-counting}.sh) were
+# removed with the Tier-3 machinery in task 5326 (always-reclaim collapses the
+# Pass-1 gate to the live-consumer flock alone). make_task_lane is retained: it
+# still builds the ahead-of-main / dirty pool-lane fixtures that Blocks E/K now
+# reclaim via always-reclaim, and the ahead-of-main ORPHAN fixtures Pass 2 still
+# preserves.
 
 # make_task_lane REPO WORKTREES NAME BRANCH [ahead]
 # Creates a lane at WORKTREES/NAME as a git worktree checked out on BRANCH
@@ -172,6 +127,20 @@ make_task_lane() {
     fi
     mkdir -p "$worktrees/$name/target"
     touch "$worktrees/$name/target/DIVERGENT_MARKER"
+}
+
+# _seed_stub_body — printed to stdout; redirect into a seed-script stub file.
+# Logs its argv to $SEED_LOG and removes the lane's divergent marker (simulates
+# the α reflink-reseed's thinning effect). Shared by the make_task_lane-based
+# fixtures (Block K).
+_seed_stub_body() {
+    cat << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$SEED_LOG"
+LANE_DIR="$2"
+rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
+exit 0
+STUB_EOF
 }
 
 # _wait_for_reader_lock <ready-marker> <deadline-seconds>
@@ -241,6 +210,16 @@ touch "$A7_BASE/target.gen.1.lock"
 ln -sfn "$A7_BASE/target.gen.1" "$A7_BASE/target"
 run_helper reclaim --worktrees-dir "$A7_WORKTREES" --base-target "$A7_BASE/target"
 assert "A7: empty worktrees-dir exits 0" test "$RC" -eq 0
+
+# A8: --status-cmd is now an UNKNOWN flag (Tier-3 machinery removed, task 5326).
+# Locks the flag removal: reclaim --worktrees-dir … --base-target … --status-cmd X
+# must exit 2 (usage error, unknown flag), not accept it. RED against the current
+# gc.sh, which still parses --status-cmd; GREEN once step-2 deletes the flag.
+run_helper reclaim \
+    --worktrees-dir "$A7_WORKTREES" \
+    --base-target "$A7_BASE/target" \
+    --status-cmd /bin/true
+assert "A8: --status-cmd rejected as unknown flag (exit 2)" test "$RC" -eq 2
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block B — reset a divergent FREE lane
@@ -362,10 +341,15 @@ assert "C5: _merge-verify protected marker intact" \
     test -f "$C_WORKTREES/_merge-verify/PROTECTED_MARKER"
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Block D — preserve dirty WIP
+# Block D — always-reclaim: dirty POOL LANE reclaimed, dirty ORPHAN preserved
+# Under the task-5326 always-reclaim policy, a FREE pool lane whose live-consumer
+# flock is free is reclaimed UNCONDITIONALLY — dirty tracked changes no longer
+# preserve it (acquire_lane always re-seeds; committed work lives on the branch
+# ref; reset touches only target/). A dirty ORPHAN cold worktree (Pass 2) is
+# STILL preserved by the unchanged _is_reclaimable predicate.
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""
-echo "--- Block D: preserve dirty WIP ---"
+echo "--- Block D: always-reclaim (dirty pool lane reset, dirty orphan preserved) ---"
 
 D_ROOT="$(mktemp -d /tmp/test-gc-d-XXXXXX)"
 _TMPDIRS+=("$D_ROOT")
@@ -381,21 +365,25 @@ mkdir -p "$D_BASE/target.gen.1"
 touch "$D_BASE/target.gen.1.lock"
 ln -sfn "$D_BASE/target.gen.1" "$D_BASE/target"
 
-# _lane-2: dirty tracked change (file modified but not committed)
+# _lane-2: dirty POOL LANE (tracked file modified but not committed) — now RECLAIMED.
 git -C "$D_REPO" worktree add -q "$D_WORKTREES/_lane-2"
 echo "dirty" >> "$D_WORKTREES/_lane-2/README.md"
 mkdir -p "$D_WORKTREES/_lane-2/target"
 touch "$D_WORKTREES/_lane-2/target/DIVERGENT_MARKER"
 
-# task-8888: dirty orphan (modified tracked file)
+# task-8888: dirty ORPHAN (modified tracked file) — STILL preserved (Pass 2).
 git -C "$D_REPO" worktree add -q "$D_WORKTREES/task-8888"
 echo "dirty" >> "$D_WORKTREES/task-8888/README.md"
 
+# Thinning seed stub: logs argv AND removes the lane's DIVERGENT_MARKER, so a
+# reset is observable both by the seed log and by the marker's disappearance.
 D_SEED_LOG="$D_ROOT/seed_calls.log"
 D_SEED_STUB="$D_ROOT/seed_stub.sh"
 cat > "$D_SEED_STUB" << 'STUB_EOF'
 #!/usr/bin/env bash
 echo "$*" >> "$SEED_LOG"
+LANE_DIR="$2"
+rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
 exit 0
 STUB_EOF
 chmod +x "$D_SEED_STUB"
@@ -407,24 +395,28 @@ run_helper reclaim \
     --seed-script "$D_SEED_STUB"
 
 assert "D1: exit 0" test "$RC" -eq 0
-# Dirty lane NOT reset: seed-script must NOT be invoked for it
-assert "D2: dirty lane seed-script NOT invoked" \
-    bash -c '[ ! -f "$1" ] || ! grep -q "_lane-2" "$1"' _ "$D_SEED_LOG"
-# Dirty lane marker still present (not thinned)
-assert "D3: dirty lane divergent marker intact" \
-    test -f "$D_WORKTREES/_lane-2/target/DIVERGENT_MARKER"
-# Dirty orphan NOT removed
-assert "D4: dirty orphan task-8888 still present" \
+# Dirty POOL LANE IS reset: seed-script invoked for it (always-reclaim).
+assert "D2: dirty pool lane _lane-2 seed-script invoked (reclaimed)" \
+    bash -c 'test -f "$1" && grep -q "_lane-2" "$1"' _ "$D_SEED_LOG"
+# Dirty POOL LANE marker removed (thinned by the reset).
+assert "D3: dirty pool lane divergent marker removed (reclaimed)" \
+    bash -c '[ ! -f "$1" ]' _ "$D_WORKTREES/_lane-2/target/DIVERGENT_MARKER"
+# Dirty ORPHAN NOT removed (Pass-2 _is_reclaimable unchanged).
+assert "D4: dirty orphan task-8888 still present (preserved by Pass 2)" \
     test -d "$D_WORKTREES/task-8888"
-# Stderr should mention preserving dirty WIP
-assert "D5: stderr mentions dirty WIP preservation" \
+# Stderr should still mention preserving dirty WIP (for the orphan).
+assert "D5: stderr mentions dirty WIP preservation (orphan)" \
     bash -c 'printf "%s\n" "$1" | grep -qiE "dirty|preserving|wip|tracked"' _ "$ERR_OUT"
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Block E — preserve unlanded ahead-of-main commits
+# Block E — always-reclaim: ahead-of-main POOL LANE reclaimed, ahead ORPHAN preserved
+# The ahead-of-main pool lane is reclaimed with NO --status-cmd wired, proving
+# the always-reclaim policy is independent of BOTH the ahead-of-main tip AND any
+# backing-task terminality (Tier-3 is gone). The ahead-of-main ORPHAN cold
+# worktree (Pass 2) is STILL preserved by the unchanged _is_reclaimable predicate.
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""
-echo "--- Block E: preserve unlanded ahead-of-main commits ---"
+echo "--- Block E: always-reclaim (ahead pool lane reset, ahead orphan preserved) ---"
 
 E_ROOT="$(mktemp -d /tmp/test-gc-e-XXXXXX)"
 _TMPDIRS+=("$E_ROOT")
@@ -440,7 +432,8 @@ mkdir -p "$E_BASE/target.gen.1"
 touch "$E_BASE/target.gen.1.lock"
 ln -sfn "$E_BASE/target.gen.1" "$E_BASE/target"
 
-# _lane-3: clean but has a committed change NOT in main (ahead-of-main)
+# _lane-3: clean POOL LANE with a committed change NOT in main (ahead-of-main) —
+# now RECLAIMED via always-reclaim (no --status-cmd wired).
 git -C "$E_REPO" worktree add -q "$E_WORKTREES/_lane-3"
 echo "ahead" >> "$E_WORKTREES/_lane-3/README.md"
 git -C "$E_WORKTREES/_lane-3" add README.md
@@ -448,17 +441,20 @@ git -C "$E_WORKTREES/_lane-3" commit -q -m "ahead-of-main commit"
 mkdir -p "$E_WORKTREES/_lane-3/target"
 touch "$E_WORKTREES/_lane-3/target/DIVERGENT_MARKER"
 
-# task-7777: clean but has a committed change NOT in main
+# task-7777: ahead-of-main ORPHAN — STILL preserved (Pass 2 _is_reclaimable).
 git -C "$E_REPO" worktree add -q "$E_WORKTREES/task-7777"
 echo "ahead" >> "$E_WORKTREES/task-7777/README.md"
 git -C "$E_WORKTREES/task-7777" add README.md
 git -C "$E_WORKTREES/task-7777" commit -q -m "ahead-of-main commit"
 
+# Thinning seed stub: logs argv AND removes the lane's DIVERGENT_MARKER.
 E_SEED_LOG="$E_ROOT/seed_calls.log"
 E_SEED_STUB="$E_ROOT/seed_stub.sh"
 cat > "$E_SEED_STUB" << 'STUB_EOF'
 #!/usr/bin/env bash
 echo "$*" >> "$SEED_LOG"
+LANE_DIR="$2"
+rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
 exit 0
 STUB_EOF
 chmod +x "$E_SEED_STUB"
@@ -471,23 +467,28 @@ run_helper reclaim \
     --main-ref "main"
 
 assert "E1: exit 0" test "$RC" -eq 0
-# Ahead lane NOT reset
-assert "E2: ahead-of-main lane seed-script NOT invoked" \
-    bash -c '[ ! -f "$1" ] || ! grep -q "_lane-3" "$1"' _ "$E_SEED_LOG"
-assert "E3: ahead-of-main lane divergent marker intact" \
-    test -f "$E_WORKTREES/_lane-3/target/DIVERGENT_MARKER"
-# Ahead orphan NOT removed
-assert "E4: ahead-of-main orphan task-7777 still present" \
+# Ahead-of-main POOL LANE IS reset: seed-script invoked (always-reclaim).
+assert "E2: ahead pool lane _lane-3 seed-script invoked (reclaimed)" \
+    bash -c 'test -f "$1" && grep -q "_lane-3" "$1"' _ "$E_SEED_LOG"
+assert "E3: ahead pool lane divergent marker removed (reclaimed)" \
+    bash -c '[ ! -f "$1" ]' _ "$E_WORKTREES/_lane-3/target/DIVERGENT_MARKER"
+# Ahead-of-main ORPHAN NOT removed (Pass-2 _is_reclaimable unchanged).
+assert "E4: ahead-of-main orphan task-7777 still present (preserved by Pass 2)" \
     test -d "$E_WORKTREES/task-7777"
-# Stderr should mention unlanded
-assert "E5: stderr mentions unlanded/ahead-of-main preservation" \
+# Stderr should still mention unlanded/ahead-of-main preservation (for the orphan).
+assert "E5: stderr mentions unlanded/ahead-of-main preservation (orphan)" \
     bash -c 'printf "%s\n" "$1" | grep -qiE "unlanded|ahead|preserving"' _ "$ERR_OUT"
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Block F — preserve a lane with a live-consumer lock
+# Block F — live-consumer flock is the SOLE remaining Pass-1 preserve gate
+# _lane-4: clean+landed, but a live consumer holds its flock — preserved.
+# _lane-5: dirty AND ahead-of-main AND a live consumer holds its flock — STILL
+# preserved. Under always-reclaim (task 5326) a dirty+ahead lane WOULD be
+# reclaimed if its flock were free (Blocks D/E); the flock alone keeps _lane-5,
+# isolating the live-consumer flock as the only Pass-1 preserve gate that survives.
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""
-echo "--- Block F: preserve live-consumer-locked lane ---"
+echo "--- Block F: live-consumer flock is the sole Pass-1 preserve gate ---"
 
 F_ROOT="$(mktemp -d /tmp/test-gc-f-XXXXXX)"
 _TMPDIRS+=("$F_ROOT")
@@ -503,25 +504,44 @@ mkdir -p "$F_BASE/target.gen.1"
 touch "$F_BASE/target.gen.1.lock"
 ln -sfn "$F_BASE/target.gen.1" "$F_BASE/target"
 
-# _lane-4: clean, landed, but has a live consumer holding the exclusive lock
+# _lane-4: clean, landed, with a live consumer holding the exclusive lock.
 git -C "$F_REPO" worktree add -q "$F_WORKTREES/_lane-4"
 mkdir -p "$F_WORKTREES/_lane-4/target"
 touch "$F_WORKTREES/_lane-4/target/DIVERGENT_MARKER"
-
-# Create the lock file and hold it with a background process
 touch "$F_WORKTREES/_lane-4.lock"
-# Use a background flock to hold the exclusive lock
-( flock -x 9 && sleep 300 ) 9>"$F_WORKTREES/_lane-4.lock" &
-F_LOCK_PID=$!
-_BGPIDS+=("$F_LOCK_PID")
-# Give the background process a moment to acquire the lock
-sleep 0.1
+F4_READY="$F_WORKTREES/_lane-4.lock.ready-marker"
+( flock -x 9 && touch "$F4_READY" && sleep 300 ) 9>"$F_WORKTREES/_lane-4.lock" &
+F4_LOCK_PID=$!
+_BGPIDS+=("$F4_LOCK_PID")
+
+# _lane-5: dirty (uncommitted tracked change) AND ahead-of-main, with a live
+# consumer holding the exclusive lock. Both dirty and ahead are now
+# non-preserving on their own (Blocks D/E), so only the flock keeps this lane.
+git -C "$F_REPO" worktree add -q "$F_WORKTREES/_lane-5"
+echo "ahead" >> "$F_WORKTREES/_lane-5/README.md"
+git -C "$F_WORKTREES/_lane-5" add README.md
+git -C "$F_WORKTREES/_lane-5" commit -q -m "ahead-of-main commit"
+echo "dirty uncommitted change" >> "$F_WORKTREES/_lane-5/README.md"
+mkdir -p "$F_WORKTREES/_lane-5/target"
+touch "$F_WORKTREES/_lane-5/target/DIVERGENT_MARKER"
+touch "$F_WORKTREES/_lane-5.lock"
+F5_READY="$F_WORKTREES/_lane-5.lock.ready-marker"
+( flock -x 9 && touch "$F5_READY" && sleep 300 ) 9>"$F_WORKTREES/_lane-5.lock" &
+F5_LOCK_PID=$!
+_BGPIDS+=("$F5_LOCK_PID")
+
+# Causal handshake (technique R, #4847): proceed only once BOTH flocks are
+# provably held, so the GC sweep under test cannot race in and win either lock.
+_wait_for_reader_lock "$F4_READY" 30
+_wait_for_reader_lock "$F5_READY" 30
 
 F_SEED_LOG="$F_ROOT/seed_calls.log"
 F_SEED_STUB="$F_ROOT/seed_stub.sh"
 cat > "$F_SEED_STUB" << 'STUB_EOF'
 #!/usr/bin/env bash
 echo "$*" >> "$SEED_LOG"
+LANE_DIR="$2"
+rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
 exit 0
 STUB_EOF
 chmod +x "$F_SEED_STUB"
@@ -530,28 +550,36 @@ export SEED_LOG="$F_SEED_LOG"
 run_helper reclaim \
     --worktrees-dir "$F_WORKTREES" \
     --base-target "$F_BASE/target" \
-    --seed-script "$F_SEED_STUB"
+    --seed-script "$F_SEED_STUB" \
+    --main-ref "main"
 
 assert "F1: exit 0" test "$RC" -eq 0
-# Lane with live consumer must NOT be reset
-assert "F2: live-consumer lane seed-script NOT invoked" \
+# _lane-4 (clean, locked) NOT reset.
+assert "F2: live-consumer lane _lane-4 seed-script NOT invoked" \
     bash -c '[ ! -f "$1" ] || ! grep -q "_lane-4" "$1"' _ "$F_SEED_LOG"
-# Divergent marker still present (not thinned)
-assert "F3: live-consumer lane divergent marker intact" \
+assert "F3: live-consumer lane _lane-4 divergent marker intact" \
     test -f "$F_WORKTREES/_lane-4/target/DIVERGENT_MARKER"
-# Stderr should mention live consumer
 assert "F4: stderr mentions live consumer preservation" \
     bash -c 'printf "%s\n" "$1" | grep -qiE "live.consumer|locked|preserving|consumer"' _ "$ERR_OUT"
+# _lane-5 (dirty+ahead, locked) STILL NOT reset — the flock is the sole gate.
+assert "F5: dirty+ahead live-consumer lane _lane-5 seed-script NOT invoked (flock wins)" \
+    bash -c '[ ! -f "$1" ] || ! grep -q "_lane-5" "$1"' _ "$F_SEED_LOG"
+assert "F6: dirty+ahead live-consumer lane _lane-5 divergent marker intact" \
+    test -f "$F_WORKTREES/_lane-5/target/DIVERGENT_MARKER"
 
-# Release the lock
-kill "$F_LOCK_PID" 2>/dev/null || true
+# Release the locks
+kill "$F4_LOCK_PID" "$F5_LOCK_PID" 2>/dev/null || true
 _BGPIDS=()  # clear so cleanup doesn't double-kill
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Block G — combined PRD δ signal: all five fixtures + protect-glob + summary
+# Block G — combined PRD δ signal under always-reclaim (task 5326)
+# Pool lanes (clean _lane-free + dirty _lane-dirty) are RESET; the clean orphan
+# task-free is REMOVED; the ahead-of-main orphan task-ahead, the live-consumer
+# lane _lane-locked, and the protected _merge-verify are PRESERVED. Summary:
+# reset=2 removed=1 preserved=3.
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""
-echo "--- Block G: combined PRD delta signal ---"
+echo "--- Block G: combined PRD delta signal (always-reclaim) ---"
 
 G_ROOT="$(mktemp -d /tmp/test-gc-g-XXXXXX)"
 _TMPDIRS+=("$G_ROOT")
@@ -575,7 +603,7 @@ touch "$G_WORKTREES/_lane-free/target/DIVERGENT_MARKER"
 # Fixture 2: reclaimable orphan worktree (task-free)
 git -C "$G_REPO" worktree add -q "$G_WORKTREES/task-free"
 
-# Fixture 3: dirty-WIP lane (_lane-dirty)
+# Fixture 3: dirty-WIP POOL LANE (_lane-dirty) — now RECLAIMED (always-reclaim)
 git -C "$G_REPO" worktree add -q "$G_WORKTREES/_lane-dirty"
 echo "dirty" >> "$G_WORKTREES/_lane-dirty/README.md"
 mkdir -p "$G_WORKTREES/_lane-dirty/target"
@@ -621,7 +649,7 @@ run_helper reclaim \
 
 assert "G1: exit 0" test "$RC" -eq 0
 
-# Reclaimable lane was reset
+# Reclaimable clean pool lane was reset
 assert "G2: reclaimable lane _lane-free was reset (seed-script invoked)" \
     bash -c 'grep -q "_lane-free" "$1"' _ "$G_SEED_LOG"
 assert "G3: reclaimable lane divergent marker removed" \
@@ -631,9 +659,11 @@ assert "G3: reclaimable lane divergent marker removed" \
 assert "G4: reclaimable orphan task-free was removed" \
     bash -c '[ ! -d "$1" ]' _ "$G_WORKTREES/task-free"
 
-# Three protected fixtures preserved
-assert "G5: dirty lane _lane-dirty marker intact" \
-    test -f "$G_WORKTREES/_lane-dirty/target/DIVERGENT_MARKER"
+# Dirty POOL LANE now reclaimed too (always-reclaim, task 5326)
+assert "G5: dirty pool lane _lane-dirty divergent marker removed (reclaimed)" \
+    bash -c '[ ! -f "$1" ]' _ "$G_WORKTREES/_lane-dirty/target/DIVERGENT_MARKER"
+
+# Preserved fixtures: ahead ORPHAN (Pass 2), live-consumer lane, protected glob
 assert "G6: ahead orphan task-ahead still present" \
     test -d "$G_WORKTREES/task-ahead"
 assert "G7: locked lane _lane-locked marker intact" \
@@ -646,12 +676,12 @@ assert "G8: _merge-verify protected marker intact" \
 # Summary line on stdout with reset/removed/preserved counts
 assert "G9: stdout contains machine-readable summary" \
     bash -c 'printf "%s\n" "$1" | grep -qE "reclaim:.*reset=.*removed=.*preserved="' _ "$OUT"
-assert "G10: summary shows reset=1" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "reset=1"' _ "$OUT"
+assert "G10: summary shows reset=2 (_lane-free + _lane-dirty)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "reset=2"' _ "$OUT"
 assert "G11: summary shows removed=1" \
     bash -c 'printf "%s\n" "$1" | grep -qE "removed=1"' _ "$OUT"
-assert "G12: summary shows preserved=4" \
-    bash -c 'printf "%s\n" "$1" | grep -qE "preserved=4"' _ "$OUT"
+assert "G12: summary shows preserved=3 (task-ahead + _lane-locked + _merge-verify)" \
+    bash -c 'printf "%s\n" "$1" | grep -qE "preserved=3"' _ "$OUT"
 
 # Release lock
 kill "$G_LOCK_PID" 2>/dev/null || true
@@ -753,490 +783,6 @@ assert "H6: explicit --base-target overrides --mount derived base (uses alt gen.
     bash -c 'grep -q "target.gen.99" "$1"' _ "$H6_SEED_LOG"
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Block I — Tier-3 terminal-task reclaim (attached task/NNNN branch)
-# A FREE lane whose backing task/NNNN is terminal (done|cancelled) is
-# reclaimable REGARDLESS of ahead-of-main (rebase-orphan tip) — closing the
-# 2026-07-10 ENOSPC leak (task 5167). Each sub-case gets its own repo/
-# worktrees/base under a shared I_ROOT.
-# ──────────────────────────────────────────────────────────────────────────────
-echo ""
-echo "--- Block I: Tier-3 terminal-task reclaim (attached branch) ---"
-
-I_ROOT="$(mktemp -d /tmp/test-gc-i-XXXXXX)"
-_TMPDIRS+=("$I_ROOT")
-
-_seed_stub_body() {
-    cat << 'STUB_EOF'
-#!/usr/bin/env bash
-echo "$*" >> "$SEED_LOG"
-LANE_DIR="$2"
-rm -rf "$LANE_DIR/target/DIVERGENT_MARKER" 2>/dev/null || true
-exit 0
-STUB_EOF
-}
-
-# ── I1: done-task, ahead-of-main (rebase-orphan) lane IS reclaimed ─────────────
-I1_REPO="$I_ROOT/i1-repo"
-I1_WORKTREES="$I_ROOT/i1-worktrees"
-I1_BASE="$I_ROOT/i1-base"
-mkdir -p "$I1_WORKTREES" "$I1_BASE"
-make_repo "$I1_REPO"
-mkdir -p "$I1_BASE/target.gen.1"
-touch "$I1_BASE/target.gen.1.lock"
-ln -sfn "$I1_BASE/target.gen.1" "$I1_BASE/target"
-
-make_task_lane "$I1_REPO" "$I1_WORKTREES" "_lane-1" "task/4827" "ahead"
-
-I1_MAP="$(mktemp /tmp/test-gc-oracle-map-XXXXXX)"
-_TMPDIRS+=("$I1_MAP")
-printf '4827 done\n' > "$I1_MAP"
-
-I1_SEED_LOG="$I_ROOT/i1-seed-calls.log"
-I1_SEED_STUB="$I_ROOT/i1-seed-stub.sh"
-_seed_stub_body > "$I1_SEED_STUB"
-chmod +x "$I1_SEED_STUB"
-export SEED_LOG="$I1_SEED_LOG"
-export ORACLE_MAP="$I1_MAP"
-
-run_helper reclaim \
-    --worktrees-dir "$I1_WORKTREES" \
-    --base-target "$I1_BASE/target" \
-    --seed-script "$I1_SEED_STUB" \
-    --status-cmd "$STUB_DIR/gc-status-oracle.sh"
-
-assert "I1: exit 0" test "$RC" -eq 0
-assert "I1: done-task ahead-of-main lane seed-script invoked (reclaimed)" \
-    bash -c 'test -f "$1" && grep -q "_lane-1" "$1"' _ "$I1_SEED_LOG"
-assert "I1: divergent target marker removed" \
-    bash -c '[ ! -f "$1" ]' _ "$I1_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
-
-# ── I2: cancelled-task, ahead-of-main lane IS reclaimed ────────────────────────
-I2_REPO="$I_ROOT/i2-repo"
-I2_WORKTREES="$I_ROOT/i2-worktrees"
-I2_BASE="$I_ROOT/i2-base"
-mkdir -p "$I2_WORKTREES" "$I2_BASE"
-make_repo "$I2_REPO"
-mkdir -p "$I2_BASE/target.gen.1"
-touch "$I2_BASE/target.gen.1.lock"
-ln -sfn "$I2_BASE/target.gen.1" "$I2_BASE/target"
-
-make_task_lane "$I2_REPO" "$I2_WORKTREES" "_lane-1" "task/5033" "ahead"
-
-I2_MAP="$(mktemp /tmp/test-gc-oracle-map-XXXXXX)"
-_TMPDIRS+=("$I2_MAP")
-printf '5033 cancelled\n' > "$I2_MAP"
-
-I2_SEED_LOG="$I_ROOT/i2-seed-calls.log"
-I2_SEED_STUB="$I_ROOT/i2-seed-stub.sh"
-_seed_stub_body > "$I2_SEED_STUB"
-chmod +x "$I2_SEED_STUB"
-export SEED_LOG="$I2_SEED_LOG"
-export ORACLE_MAP="$I2_MAP"
-
-run_helper reclaim \
-    --worktrees-dir "$I2_WORKTREES" \
-    --base-target "$I2_BASE/target" \
-    --seed-script "$I2_SEED_STUB" \
-    --status-cmd "$STUB_DIR/gc-status-oracle.sh"
-
-assert "I2: exit 0" test "$RC" -eq 0
-assert "I2: cancelled-task ahead-of-main lane seed-script invoked (reclaimed)" \
-    bash -c 'test -f "$1" && grep -q "_lane-1" "$1"' _ "$I2_SEED_LOG"
-assert "I2: divergent target marker removed" \
-    bash -c '[ ! -f "$1" ]' _ "$I2_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
-
-# ── I3: non-terminal (pending), ahead-of-main lane is PRESERVED ────────────────
-I3_REPO="$I_ROOT/i3-repo"
-I3_WORKTREES="$I_ROOT/i3-worktrees"
-I3_BASE="$I_ROOT/i3-base"
-mkdir -p "$I3_WORKTREES" "$I3_BASE"
-make_repo "$I3_REPO"
-mkdir -p "$I3_BASE/target.gen.1"
-touch "$I3_BASE/target.gen.1.lock"
-ln -sfn "$I3_BASE/target.gen.1" "$I3_BASE/target"
-
-make_task_lane "$I3_REPO" "$I3_WORKTREES" "_lane-1" "task/9001" "ahead"
-
-I3_MAP="$(mktemp /tmp/test-gc-oracle-map-XXXXXX)"
-_TMPDIRS+=("$I3_MAP")
-printf '9001 pending\n' > "$I3_MAP"
-
-I3_SEED_LOG="$I_ROOT/i3-seed-calls.log"
-I3_SEED_STUB="$I_ROOT/i3-seed-stub.sh"
-_seed_stub_body > "$I3_SEED_STUB"
-chmod +x "$I3_SEED_STUB"
-export SEED_LOG="$I3_SEED_LOG"
-export ORACLE_MAP="$I3_MAP"
-
-run_helper reclaim \
-    --worktrees-dir "$I3_WORKTREES" \
-    --base-target "$I3_BASE/target" \
-    --seed-script "$I3_SEED_STUB" \
-    --status-cmd "$STUB_DIR/gc-status-oracle.sh"
-
-assert "I3: exit 0" test "$RC" -eq 0
-assert "I3: non-terminal ahead-of-main lane seed-script NOT invoked (preserved)" \
-    bash -c '[ ! -f "$1" ] || ! grep -q "_lane-1" "$1"' _ "$I3_SEED_LOG"
-assert "I3: non-terminal lane divergent marker intact" \
-    test -f "$I3_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
-assert "I3: stderr names ahead-of-main preservation" \
-    bash -c 'printf "%s\n" "$1" | grep -qiE "unlanded|ahead|preserving"' _ "$ERR_OUT"
-
-# ── I4: oracle-failure lane is PRESERVED; script still exits 0 ─────────────────
-I4_REPO="$I_ROOT/i4-repo"
-I4_WORKTREES="$I_ROOT/i4-worktrees"
-I4_BASE="$I_ROOT/i4-base"
-mkdir -p "$I4_WORKTREES" "$I4_BASE"
-make_repo "$I4_REPO"
-mkdir -p "$I4_BASE/target.gen.1"
-touch "$I4_BASE/target.gen.1.lock"
-ln -sfn "$I4_BASE/target.gen.1" "$I4_BASE/target"
-
-make_task_lane "$I4_REPO" "$I4_WORKTREES" "_lane-1" "task/6000" "ahead"
-
-I4_SEED_LOG="$I_ROOT/i4-seed-calls.log"
-I4_SEED_STUB="$I_ROOT/i4-seed-stub.sh"
-_seed_stub_body > "$I4_SEED_STUB"
-chmod +x "$I4_SEED_STUB"
-export SEED_LOG="$I4_SEED_LOG"
-
-run_helper reclaim \
-    --worktrees-dir "$I4_WORKTREES" \
-    --base-target "$I4_BASE/target" \
-    --seed-script "$I4_SEED_STUB" \
-    --status-cmd "$STUB_DIR/gc-status-oracle-fail.sh"
-
-assert "I4: exit 0 (fail-oracle does not abort the sweep)" test "$RC" -eq 0
-assert "I4: fail-oracle lane seed-script NOT invoked (unknown=non-terminal, preserved)" \
-    bash -c '[ ! -f "$1" ] || ! grep -q "_lane-1" "$1"' _ "$I4_SEED_LOG"
-assert "I4: fail-oracle lane divergent marker intact" \
-    test -f "$I4_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
-
-# ── I5: env fallback — REIFY_LANE_LEAK_STATUS_CMD with NO --status-cmd flag ────
-I5_REPO="$I_ROOT/i5-repo"
-I5_WORKTREES="$I_ROOT/i5-worktrees"
-I5_BASE="$I_ROOT/i5-base"
-mkdir -p "$I5_WORKTREES" "$I5_BASE"
-make_repo "$I5_REPO"
-mkdir -p "$I5_BASE/target.gen.1"
-touch "$I5_BASE/target.gen.1.lock"
-ln -sfn "$I5_BASE/target.gen.1" "$I5_BASE/target"
-
-make_task_lane "$I5_REPO" "$I5_WORKTREES" "_lane-1" "task/4827" "ahead"
-
-I5_MAP="$(mktemp /tmp/test-gc-oracle-map-XXXXXX)"
-_TMPDIRS+=("$I5_MAP")
-printf '4827 done\n' > "$I5_MAP"
-
-I5_SEED_LOG="$I_ROOT/i5-seed-calls.log"
-I5_SEED_STUB="$I_ROOT/i5-seed-stub.sh"
-_seed_stub_body > "$I5_SEED_STUB"
-chmod +x "$I5_SEED_STUB"
-export SEED_LOG="$I5_SEED_LOG"
-
-ORACLE_MAP="$I5_MAP" REIFY_LANE_LEAK_STATUS_CMD="$STUB_DIR/gc-status-oracle.sh" \
-    run_helper reclaim \
-        --worktrees-dir "$I5_WORKTREES" \
-        --base-target "$I5_BASE/target" \
-        --seed-script "$I5_SEED_STUB"
-
-assert "I5: exit 0" test "$RC" -eq 0
-assert "I5: env-fallback done-task lane seed-script invoked (reclaimed)" \
-    bash -c 'test -f "$1" && grep -q "_lane-1" "$1"' _ "$I5_SEED_LOG"
-assert "I5: env-fallback divergent target marker removed" \
-    bash -c '[ ! -f "$1" ]' _ "$I5_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
-
-# ── I6: live-consumer flock on a done-task lane is STILL preserved ─────────────
-I6_REPO="$I_ROOT/i6-repo"
-I6_WORKTREES="$I_ROOT/i6-worktrees"
-I6_BASE="$I_ROOT/i6-base"
-mkdir -p "$I6_WORKTREES" "$I6_BASE"
-make_repo "$I6_REPO"
-mkdir -p "$I6_BASE/target.gen.1"
-touch "$I6_BASE/target.gen.1.lock"
-ln -sfn "$I6_BASE/target.gen.1" "$I6_BASE/target"
-
-make_task_lane "$I6_REPO" "$I6_WORKTREES" "_lane-1" "task/4827" "ahead"
-
-I6_MAP="$(mktemp /tmp/test-gc-oracle-map-XXXXXX)"
-_TMPDIRS+=("$I6_MAP")
-printf '4827 done\n' > "$I6_MAP"
-
-# Hold the lane's exclusive flock in the background (live consumer).
-# Causal handshake (technique R, #4847) instead of a fixed sleep: the
-# subshell touches a READY marker AFTER acquiring flock -x, and we poll for
-# it, so the assertions below only run once the flock is provably held —
-# a fixed `sleep 0.1` races the backgrounded acquisition under CPU/IO load,
-# in which case the GC sweep could win the lock first and reclaim the lane,
-# spuriously failing I6.
-touch "$I6_WORKTREES/_lane-1.lock"
-I6_READY="$I6_WORKTREES/_lane-1.lock.ready-marker"
-( flock -x 9 && touch "$I6_READY" && sleep 300 ) 9>"$I6_WORKTREES/_lane-1.lock" &
-I6_LOCK_PID=$!
-_BGPIDS+=("$I6_LOCK_PID")
-_wait_for_reader_lock "$I6_READY" 30
-
-I6_SEED_LOG="$I_ROOT/i6-seed-calls.log"
-I6_SEED_STUB="$I_ROOT/i6-seed-stub.sh"
-_seed_stub_body > "$I6_SEED_STUB"
-chmod +x "$I6_SEED_STUB"
-export SEED_LOG="$I6_SEED_LOG"
-export ORACLE_MAP="$I6_MAP"
-
-run_helper reclaim \
-    --worktrees-dir "$I6_WORKTREES" \
-    --base-target "$I6_BASE/target" \
-    --seed-script "$I6_SEED_STUB" \
-    --status-cmd "$STUB_DIR/gc-status-oracle.sh"
-
-assert "I6: exit 0" test "$RC" -eq 0
-assert "I6: live-consumer done-task lane seed-script NOT invoked (flock wins)" \
-    bash -c '[ ! -f "$1" ] || ! grep -q "_lane-1" "$1"' _ "$I6_SEED_LOG"
-assert "I6: live-consumer lane divergent marker intact" \
-    test -f "$I6_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
-assert "I6: stderr mentions live consumer preservation" \
-    bash -c 'printf "%s\n" "$1" | grep -qiE "live.consumer|locked|preserving|consumer"' _ "$ERR_OUT"
-
-# Release the lock
-kill "$I6_LOCK_PID" 2>/dev/null || true
-_BGPIDS=()  # clear so cleanup doesn't double-kill
-
-# ── I7: done-task lane with DIRTY tracked changes (uncommitted) IS reclaimed ───
-# The PRD claim is "regardless of ahead-of-main AND dirty tracked changes"
-# (warm-lane-gc.sh Tier-3 docstring); I1/I2/I5/I6 only ever exercise the
-# ahead-of-main dimension. This proves Tier-3 also overrides
-# _is_reclaimable's dirty-WIP check, not only its ahead-of-main check — a
-# lane that's on its task/NNNN branch tip (not ahead) but has an uncommitted
-# tracked-file edit.
-I7_REPO="$I_ROOT/i7-repo"
-I7_WORKTREES="$I_ROOT/i7-worktrees"
-I7_BASE="$I_ROOT/i7-base"
-mkdir -p "$I7_WORKTREES" "$I7_BASE"
-make_repo "$I7_REPO"
-mkdir -p "$I7_BASE/target.gen.1"
-touch "$I7_BASE/target.gen.1.lock"
-ln -sfn "$I7_BASE/target.gen.1" "$I7_BASE/target"
-
-make_task_lane "$I7_REPO" "$I7_WORKTREES" "_lane-1" "task/4827"
-# Dirty tracked change: modify README.md WITHOUT committing, so
-# `git status --porcelain --untracked-files=no` is non-empty.
-echo "dirty uncommitted change" >> "$I7_WORKTREES/_lane-1/README.md"
-
-I7_MAP="$(mktemp /tmp/test-gc-oracle-map-XXXXXX)"
-_TMPDIRS+=("$I7_MAP")
-printf '4827 done\n' > "$I7_MAP"
-
-I7_SEED_LOG="$I_ROOT/i7-seed-calls.log"
-I7_SEED_STUB="$I_ROOT/i7-seed-stub.sh"
-_seed_stub_body > "$I7_SEED_STUB"
-chmod +x "$I7_SEED_STUB"
-export SEED_LOG="$I7_SEED_LOG"
-export ORACLE_MAP="$I7_MAP"
-
-run_helper reclaim \
-    --worktrees-dir "$I7_WORKTREES" \
-    --base-target "$I7_BASE/target" \
-    --seed-script "$I7_SEED_STUB" \
-    --status-cmd "$STUB_DIR/gc-status-oracle.sh"
-
-assert "I7: exit 0" test "$RC" -eq 0
-assert "I7: dirty done-task lane seed-script invoked (reclaimed despite dirty tracked changes)" \
-    bash -c 'test -f "$1" && grep -q "_lane-1" "$1"' _ "$I7_SEED_LOG"
-assert "I7: divergent target marker removed" \
-    bash -c '[ ! -f "$1" ]' _ "$I7_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
-
-# ── I8: landed/clean lane reclaimed via _is_reclaimable does NOT spawn the ─────
-# Tier-3 status oracle (efficiency ordering, warm-lane-gc.sh:502-507)
-# A landed (not ahead-of-main), clean task/NNNN-branch lane is reclaimable via
-# the cheap local _is_reclaimable predicate alone. Wiring a call-logging
-# oracle stub (whose ORACLE_MAP entry WOULD report the backing task as done,
-# if ever asked) and asserting its call-log stays empty proves the
-# --status-cmd subprocess is skipped entirely — not merely that the reclaim
-# outcome happens to match. A regression that invoked the oracle
-# unconditionally would still reclaim this lane (same outcome, same I1-I7
-# assertions) but would silently spawn an oracle subprocess for every
-# already-reclaimable lane in the pool.
-I8_REPO="$I_ROOT/i8-repo"
-I8_WORKTREES="$I_ROOT/i8-worktrees"
-I8_BASE="$I_ROOT/i8-base"
-mkdir -p "$I8_WORKTREES" "$I8_BASE"
-make_repo "$I8_REPO"
-mkdir -p "$I8_BASE/target.gen.1"
-touch "$I8_BASE/target.gen.1.lock"
-ln -sfn "$I8_BASE/target.gen.1" "$I8_BASE/target"
-
-# Landed (no "ahead" arg), clean task/NNNN-branch lane — reclaimable via
-# _is_reclaimable alone; a backing task id CAN still be resolved (task/4827),
-# so the test would be meaningless if the ordering were reversed.
-make_task_lane "$I8_REPO" "$I8_WORKTREES" "_lane-1" "task/4827"
-
-I8_MAP="$(mktemp /tmp/test-gc-oracle-map-XXXXXX)"
-_TMPDIRS+=("$I8_MAP")
-printf '4827 done\n' > "$I8_MAP"
-
-I8_CALL_LOG="$I_ROOT/i8-oracle-calls.log"
-
-I8_SEED_LOG="$I_ROOT/i8-seed-calls.log"
-I8_SEED_STUB="$I_ROOT/i8-seed-stub.sh"
-_seed_stub_body > "$I8_SEED_STUB"
-chmod +x "$I8_SEED_STUB"
-export SEED_LOG="$I8_SEED_LOG"
-export ORACLE_MAP="$I8_MAP"
-export ORACLE_CALL_LOG="$I8_CALL_LOG"
-
-run_helper reclaim \
-    --worktrees-dir "$I8_WORKTREES" \
-    --base-target "$I8_BASE/target" \
-    --seed-script "$I8_SEED_STUB" \
-    --status-cmd "$STUB_DIR/gc-status-oracle-counting.sh"
-
-assert "I8: exit 0" test "$RC" -eq 0
-assert "I8: landed/clean lane seed-script invoked (reclaimed via _is_reclaimable)" \
-    bash -c 'test -f "$1" && grep -q "_lane-1" "$1"' _ "$I8_SEED_LOG"
-assert "I8: divergent target marker removed" \
-    bash -c '[ ! -f "$1" ]' _ "$I8_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
-assert "I8: status oracle NOT invoked (skipped for already-reclaimable lane)" \
-    bash -c '[ ! -f "$1" ] || [ ! -s "$1" ]' _ "$I8_CALL_LOG"
-
-unset ORACLE_CALL_LOG
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Block J — Tier-3 backing-task resolution for a detached HEAD lane
-# Proves the resolver both (J1) resolves a detached HEAD to its containing
-# task/NNNN branch when exactly one such branch exists, and (J2) does NOT
-# over-match when no task/* branch is reachable from HEAD at all — that
-# fixture must fall through to the existing (unchanged) tiers.
-# ──────────────────────────────────────────────────────────────────────────────
-echo ""
-echo "--- Block J: Tier-3 backing-task resolution (detached HEAD) ---"
-
-J_ROOT="$(mktemp -d /tmp/test-gc-j-XXXXXX)"
-_TMPDIRS+=("$J_ROOT")
-
-# ── J1: detached HEAD at the tip of task/7777 (ahead-of-main), oracle done ──────
-# Proves detached HEAD resolves to its (sole) containing task branch.
-J1_REPO="$J_ROOT/j1-repo"
-J1_WORKTREES="$J_ROOT/j1-worktrees"
-J1_BASE="$J_ROOT/j1-base"
-mkdir -p "$J1_WORKTREES" "$J1_BASE"
-make_repo "$J1_REPO"
-mkdir -p "$J1_BASE/target.gen.1"
-touch "$J1_BASE/target.gen.1.lock"
-ln -sfn "$J1_BASE/target.gen.1" "$J1_BASE/target"
-
-make_task_lane "$J1_REPO" "$J1_WORKTREES" "_lane-1" "task/7777" "ahead"
-# Detach HEAD at the (still-ahead-of-main) tip of task/7777; the branch ref
-# itself is left in place, only the worktree's HEAD becomes detached.
-git -C "$J1_WORKTREES/_lane-1" checkout -q --detach
-
-J1_MAP="$(mktemp /tmp/test-gc-oracle-map-XXXXXX)"
-_TMPDIRS+=("$J1_MAP")
-printf '7777 done\n' > "$J1_MAP"
-
-J1_SEED_LOG="$J_ROOT/j1-seed-calls.log"
-J1_SEED_STUB="$J_ROOT/j1-seed-stub.sh"
-_seed_stub_body > "$J1_SEED_STUB"
-chmod +x "$J1_SEED_STUB"
-export SEED_LOG="$J1_SEED_LOG"
-export ORACLE_MAP="$J1_MAP"
-
-run_helper reclaim \
-    --worktrees-dir "$J1_WORKTREES" \
-    --base-target "$J1_BASE/target" \
-    --seed-script "$J1_SEED_STUB" \
-    --status-cmd "$STUB_DIR/gc-status-oracle.sh"
-
-assert "J1: exit 0" test "$RC" -eq 0
-assert "J1: detached-HEAD done-task lane seed-script invoked (reclaimed)" \
-    bash -c 'test -f "$1" && grep -q "_lane-1" "$1"' _ "$J1_SEED_LOG"
-assert "J1: divergent target marker removed" \
-    bash -c '[ ! -f "$1" ]' _ "$J1_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
-
-# ── J2: detached HEAD reachable from NO task/* branch — no over-match ──────────
-# Separate repo with zero task/* branches ever created: HEAD == main tip
-# (landed, clean), so the resolver must find no containing task branch and
-# fall through to the existing tiers, which already reclaim a landed/clean lane.
-J2_REPO="$J_ROOT/j2-repo"
-J2_WORKTREES="$J_ROOT/j2-worktrees"
-J2_BASE="$J_ROOT/j2-base"
-mkdir -p "$J2_WORKTREES" "$J2_BASE"
-make_repo "$J2_REPO"
-mkdir -p "$J2_BASE/target.gen.1"
-touch "$J2_BASE/target.gen.1.lock"
-ln -sfn "$J2_BASE/target.gen.1" "$J2_BASE/target"
-
-git -C "$J2_REPO" worktree add -q --detach "$J2_WORKTREES/_lane-1"
-mkdir -p "$J2_WORKTREES/_lane-1/target"
-touch "$J2_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
-
-J2_SEED_LOG="$J_ROOT/j2-seed-calls.log"
-J2_SEED_STUB="$J_ROOT/j2-seed-stub.sh"
-_seed_stub_body > "$J2_SEED_STUB"
-chmod +x "$J2_SEED_STUB"
-export SEED_LOG="$J2_SEED_LOG"
-# No ORACLE_MAP entry can match (no task id resolves) — the fixture's outcome
-# must be driven purely by the pre-existing tiers, not the status oracle.
-
-run_helper reclaim \
-    --worktrees-dir "$J2_WORKTREES" \
-    --base-target "$J2_BASE/target" \
-    --seed-script "$J2_SEED_STUB" \
-    --status-cmd "$STUB_DIR/gc-status-oracle.sh"
-
-assert "J2: exit 0" test "$RC" -eq 0
-assert "J2: no-task-branch detached lane seed-script invoked (reclaimed via existing landed/clean tier)" \
-    bash -c 'test -f "$1" && grep -q "_lane-1" "$1"' _ "$J2_SEED_LOG"
-assert "J2: divergent target marker removed" \
-    bash -c '[ ! -f "$1" ]' _ "$J2_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
-
-# ── J3: detached HEAD reachable from TWO task/* branches — ambiguous, no over-match ─
-# Proves the exactly-one-match guard in _backing_task_id (ids array length
-# check): when two task/* branches both contain HEAD, the resolver must
-# yield NO id — not silently pick one — even though one of the two
-# candidate ids maps to a terminal status in the oracle. The lane must fall
-# through to the existing ahead-of-main tier and be PRESERVED, proving the
-# ambiguous match never drives a Tier-3 reclaim.
-J3_REPO="$J_ROOT/j3-repo"
-J3_WORKTREES="$J_ROOT/j3-worktrees"
-J3_BASE="$J_ROOT/j3-base"
-mkdir -p "$J3_WORKTREES" "$J3_BASE"
-make_repo "$J3_REPO"
-mkdir -p "$J3_BASE/target.gen.1"
-touch "$J3_BASE/target.gen.1.lock"
-ln -sfn "$J3_BASE/target.gen.1" "$J3_BASE/target"
-
-make_task_lane "$J3_REPO" "$J3_WORKTREES" "_lane-1" "task/8881" "ahead"
-# Second branch pointing at the SAME (ahead-of-main) commit as task/8881's
-# tip, so it ALSO "contains" the detached HEAD below — the ambiguous case.
-git -C "$J3_WORKTREES/_lane-1" branch -q task/8882 HEAD
-git -C "$J3_WORKTREES/_lane-1" checkout -q --detach
-
-J3_MAP="$(mktemp /tmp/test-gc-oracle-map-XXXXXX)"
-_TMPDIRS+=("$J3_MAP")
-printf '8881 done\n' > "$J3_MAP"
-
-J3_SEED_LOG="$J_ROOT/j3-seed-calls.log"
-J3_SEED_STUB="$J_ROOT/j3-seed-stub.sh"
-_seed_stub_body > "$J3_SEED_STUB"
-chmod +x "$J3_SEED_STUB"
-export SEED_LOG="$J3_SEED_LOG"
-export ORACLE_MAP="$J3_MAP"
-
-run_helper reclaim \
-    --worktrees-dir "$J3_WORKTREES" \
-    --base-target "$J3_BASE/target" \
-    --seed-script "$J3_SEED_STUB" \
-    --status-cmd "$STUB_DIR/gc-status-oracle.sh"
-
-assert "J3: exit 0" test "$RC" -eq 0
-assert "J3: ambiguous-branch lane seed-script NOT invoked (no Tier-3 over-match)" \
-    bash -c '[ ! -f "$1" ] || ! grep -q "_lane-1" "$1"' _ "$J3_SEED_LOG"
-assert "J3: ambiguous-branch lane divergent marker intact (preserved via ahead-of-main tier)" \
-    test -f "$J3_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
-assert "J3: stderr names ahead-of-main preservation (fell through Tier-3)" \
-    bash -c 'printf "%s\n" "$1" | grep -qiE "unlanded|ahead|preserving"' _ "$ERR_OUT"
-
-# ──────────────────────────────────────────────────────────────────────────────
 # Block K — disk-pressure fast-path
 # Under --disk-pressure, a reclaimable lane's target/ is deleted outright
 # (rm -rf) instead of going through the alpha reflink-reseed clone — valid
@@ -1261,22 +807,16 @@ ln -sfn "$K1_BASE/target.gen.1" "$K1_BASE/target"
 
 make_task_lane "$K1_REPO" "$K1_WORKTREES" "_lane-1" "task/4827" "ahead"
 
-K1_MAP="$(mktemp /tmp/test-gc-oracle-map-XXXXXX)"
-_TMPDIRS+=("$K1_MAP")
-printf '4827 done\n' > "$K1_MAP"
-
 K1_SEED_LOG="$K_ROOT/k1-seed-calls.log"
 K1_SEED_STUB="$K_ROOT/k1-seed-stub.sh"
 _seed_stub_body > "$K1_SEED_STUB"
 chmod +x "$K1_SEED_STUB"
 export SEED_LOG="$K1_SEED_LOG"
-export ORACLE_MAP="$K1_MAP"
 
 run_helper reclaim \
     --worktrees-dir "$K1_WORKTREES" \
     --base-target "$K1_BASE/target" \
     --seed-script "$K1_SEED_STUB" \
-    --status-cmd "$STUB_DIR/gc-status-oracle.sh" \
     --disk-pressure
 
 assert "K1: exit 0" test "$RC" -eq 0
@@ -1301,22 +841,16 @@ ln -sfn "$K2_BASE/target.gen.1" "$K2_BASE/target"
 
 make_task_lane "$K2_REPO" "$K2_WORKTREES" "_lane-1" "task/4827" "ahead"
 
-K2_MAP="$(mktemp /tmp/test-gc-oracle-map-XXXXXX)"
-_TMPDIRS+=("$K2_MAP")
-printf '4827 done\n' > "$K2_MAP"
-
 K2_SEED_LOG="$K_ROOT/k2-seed-calls.log"
 K2_SEED_STUB="$K_ROOT/k2-seed-stub.sh"
 _seed_stub_body > "$K2_SEED_STUB"
 chmod +x "$K2_SEED_STUB"
 export SEED_LOG="$K2_SEED_LOG"
-export ORACLE_MAP="$K2_MAP"
 
 run_helper reclaim \
     --worktrees-dir "$K2_WORKTREES" \
     --base-target "$K2_BASE/target" \
-    --seed-script "$K2_SEED_STUB" \
-    --status-cmd "$STUB_DIR/gc-status-oracle.sh"
+    --seed-script "$K2_SEED_STUB"
 
 assert "K2: exit 0" test "$RC" -eq 0
 assert "K2: seed-script invoked (normal alpha reset path, no disk-pressure)" \
@@ -1328,10 +862,9 @@ assert "K2: summary shows reset=1" \
 
 # ── K3: landed-clean NON-task-branch lane under --disk-pressure ────────────────
 # --disk-pressure is documented (usage()/header) as applying to EVERY
-# reclaimable Pass-1 lane, not only Tier-3-reclaimed leaked lanes. This locks
-# that pool-wide scope: an ordinary landed/clean lane (no task/NNNN branch,
-# no --status-cmd wired, reclaimed purely via _is_reclaimable) also gets its
-# target/ deleted outright under --disk-pressure rather than alpha-reseeded.
+# reclaimable Pass-1 lane. This locks that pool-wide scope: an ordinary
+# landed/clean lane (no task/NNNN branch) also gets its target/ deleted
+# outright under --disk-pressure rather than alpha-reseeded.
 K3_REPO="$K_ROOT/k3-repo"
 K3_WORKTREES="$K_ROOT/k3-worktrees"
 K3_BASE="$K_ROOT/k3-base"
@@ -1385,16 +918,11 @@ ln -sfn "$K4_BASE/target.gen.1" "$K4_BASE/target"
 
 make_task_lane "$K4_REPO" "$K4_WORKTREES" "_lane-1" "task/4827" "ahead"
 
-K4_MAP="$(mktemp /tmp/test-gc-oracle-map-XXXXXX)"
-_TMPDIRS+=("$K4_MAP")
-printf '4827 done\n' > "$K4_MAP"
-
 K4_SEED_LOG="$K_ROOT/k4-seed-calls.log"
 K4_SEED_STUB="$K_ROOT/k4-seed-stub.sh"
 _seed_stub_body > "$K4_SEED_STUB"
 chmod +x "$K4_SEED_STUB"
 export SEED_LOG="$K4_SEED_LOG"
-export ORACLE_MAP="$K4_MAP"
 
 # rm stub: always fails — simulates rm -rf hitting EACCES / a busy mount /
 # an immutable file under real disk pressure. Prepended to PATH only for
@@ -1414,7 +942,6 @@ PATH="$K4_RMSTUB_DIR:$PATH" run_helper reclaim \
     --worktrees-dir "$K4_WORKTREES" \
     --base-target "$K4_BASE/target" \
     --seed-script "$K4_SEED_STUB" \
-    --status-cmd "$STUB_DIR/gc-status-oracle.sh" \
     --disk-pressure
 
 assert "K4: exit 0 (rm failure does not abort the sweep)" test "$RC" -eq 0
@@ -1428,75 +955,6 @@ assert "K4: summary counts the failed reset as preserved, not reset" \
     bash -c 'printf "%s\n" "$1" | grep -qE "reset=0 removed=0 preserved=1"' _ "$OUT"
 assert "K4: stderr captures the rm failure detail (not swallowed)" \
     bash -c 'printf "%s\n" "$1" | grep -qi "simulated failure"' _ "$ERR_OUT"
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Block L — Tier-3 Pass-2 boundary: orphan worktrees are never Tier-3-reclaimed
-# The Tier-3 terminal-task short-circuit (_backing_task_terminal) is wired
-# into Pass 1 (pool lanes) ONLY — Pass 2 (destructive orphan cold-worktree
-# removal) must stay governed solely by the existing clean+landed
-# _is_reclaimable predicate. This proves the boundary holds even for an
-# orphan that WOULD be Tier-3-reclaimable under Pass-1 rules (ahead-of-main
-# tip + terminal oracle status) — the higher-consequence direction, since an
-# accidental future wiring here would destroy a worktree outright rather than
-# merely reset a lane's target/.
-# ──────────────────────────────────────────────────────────────────────────────
-echo ""
-echo "--- Block L: Tier-3 Pass-2 boundary (orphan worktrees) ---"
-
-L_ROOT="$(mktemp -d /tmp/test-gc-l-XXXXXX)"
-_TMPDIRS+=("$L_ROOT")
-
-# ── L1: orphan (non-lane-glob dir name) on an ahead-of-main task/NNNN branch,
-# oracle maps the task to "done" — must be PRESERVED (not removed), and the
-# status oracle must never even be invoked for it.
-L1_REPO="$L_ROOT/l1-repo"
-L1_WORKTREES="$L_ROOT/l1-worktrees"
-L1_BASE="$L_ROOT/l1-base"
-mkdir -p "$L1_WORKTREES" "$L1_BASE"
-make_repo "$L1_REPO"
-mkdir -p "$L1_BASE/target.gen.1"
-touch "$L1_BASE/target.gen.1.lock"
-ln -sfn "$L1_BASE/target.gen.1" "$L1_BASE/target"
-
-# Directory name "orphan-4827" does not match the default --lane-glob
-# (_lane-*,_spec-*) or --protect-glob (_merge-*), so it is routed to Pass 2
-# (orphan_candidates) even though its checked-out branch is task/4827 — the
-# same shape _backing_task_id resolves for Pass-1 lanes in Block I.
-make_task_lane "$L1_REPO" "$L1_WORKTREES" "orphan-4827" "task/4827" "ahead"
-
-L1_MAP="$(mktemp /tmp/test-gc-oracle-map-XXXXXX)"
-_TMPDIRS+=("$L1_MAP")
-printf '4827 done\n' > "$L1_MAP"
-
-L1_CALL_LOG="$L_ROOT/l1-oracle-calls.log"
-
-L1_SEED_LOG="$L_ROOT/l1-seed-calls.log"
-L1_SEED_STUB="$L_ROOT/l1-seed-stub.sh"
-_seed_stub_body > "$L1_SEED_STUB"
-chmod +x "$L1_SEED_STUB"
-export SEED_LOG="$L1_SEED_LOG"
-export ORACLE_MAP="$L1_MAP"
-export ORACLE_CALL_LOG="$L1_CALL_LOG"
-
-run_helper reclaim \
-    --worktrees-dir "$L1_WORKTREES" \
-    --base-target "$L1_BASE/target" \
-    --seed-script "$L1_SEED_STUB" \
-    --status-cmd "$STUB_DIR/gc-status-oracle-counting.sh"
-
-assert "L1: exit 0" test "$RC" -eq 0
-assert "L1: orphan on ahead-of-main done-task branch is NOT removed (dir still present)" \
-    test -d "$L1_WORKTREES/orphan-4827"
-assert "L1: orphan still appears in git worktree list" \
-    bash -c 'git -C "$1" worktree list | grep -q "orphan-4827"' _ "$L1_REPO"
-assert "L1: orphan divergent target marker intact (untouched, not reset)" \
-    test -f "$L1_WORKTREES/orphan-4827/target/DIVERGENT_MARKER"
-assert "L1: stderr names ahead-of-main preservation (governed by _is_reclaimable, not Tier-3)" \
-    bash -c 'printf "%s\n" "$1" | grep -qiE "unlanded|ahead|preserving"' _ "$ERR_OUT"
-assert "L1: status oracle NOT invoked (_backing_task_terminal never runs in Pass 2)" \
-    bash -c '[ ! -f "$1" ] || [ ! -s "$1" ]' _ "$L1_CALL_LOG"
-
-unset ORACLE_CALL_LOG
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block M — ephemeral verify/sweep worktrees protected by default
