@@ -1080,3 +1080,146 @@ fn eval_cached_let_reserve_preserves_freshness_and_commits() {
         "determined(y) must stay true across the re-serve (determinacy preserved)"
     );
 }
+
+/// A plain defaulted `Length` param (`w`) with a sibling `determined(..)` probe
+/// (`w_det`) — drives the `eval_cached` Param preserve-freshness re-serve
+/// (engine_eval.rs, ~@6665). The Param-dimension analogue of `PLAIN_LET_SRC`:
+/// `w` survives a version bump not-dirty (no override ever set, entry present),
+/// so a second warm pass re-serves it through the preserve-freshness path
+/// rather than re-evaluating.
+const PLAIN_PARAM_SRC: &str = r#"
+    structure S {
+        param w : Length = 5mm
+        let w_det = determined(w)
+    }
+"#;
+
+/// RED: `eval_cached`'s Param preserve-freshness re-serve routes through
+/// `commit_cell_result` (an atomic 4-leg commit) instead of emitting a bare
+/// `CacheHit`, AND preserves the cache entry's non-`Final` freshness across the
+/// re-serve.
+///
+/// The Param analogue of `eval_cached_let_reserve_preserves_freshness_and_commits`
+/// (test-4), extending the file's parity fixture into the FRESHNESS dimension
+/// on the Param path: a `Pending` freshness is injected onto a cached, defaulted
+/// param after a first warm pass, and a second warm pass (version bump; the cell
+/// is not overridden, not dirty, and basis(1) != version(2) so it is NOT the
+/// fast-path) must re-serve it through the migrated commit while carrying that
+/// injected freshness forward verbatim.
+///
+/// RED signal (journal shape): today the un-migrated Param re-serve
+/// (engine_eval.rs, ~@6665) writes `values`/`snapshot` + a direct
+/// `record_evaluation_with_freshness` and records a single `EventKind::CacheHit`,
+/// so the LAST journal event recorded for `w` after v2 is `CacheHit`. GREEN after
+/// impl-5 routes the re-serve onto `commit_cell_result`
+/// (`CacheLeg::RecordWithFreshness(preserved)`), which emits a `Started`/
+/// `Completed` pair — so the LAST event becomes `Completed`.
+///
+/// `last_started_payload` cannot distinguish RED from GREEN here: BOTH the v1
+/// Param cache-miss and the migrated re-serve stamp the same
+/// `TraceSource::CachedServe` slug on their `Started` event, so the journal KIND
+/// of the last event — not its provenance slug — is the RED signal (mirrors
+/// test-4).
+///
+/// Parity/characterization guards (green BEFORE and after the migration — the
+/// re-serve is behaviour-preserving in the value/determinacy/freshness
+/// dimensions): `w`'s cache freshness stays the injected `Freshness::Pending`
+/// (the re-serve carries `entry.freshness` forward, it does not clobber it to
+/// `Final`), and `w`'s stored `(value, Determined)` determinacy is preserved so
+/// `determined(w)` stays `Bool(true)`.
+///
+/// Freshness is injected via `CacheStore::mark_pending` — NOT `set_freshness`,
+/// which asserts against `Pending`/`Failed` and directs callers to
+/// `mark_pending`/`mark_failed` (the same constraint test-4 hit with `Failed`).
+/// `mark_pending` flips only the entry's freshness to `Pending { last_substantive:
+/// ResultRef::of_hash(result_hash) }` (leaving its cached value and dirty state
+/// untouched), so the v2 re-serve still fires; the exact injected `Pending` value
+/// is captured by reading it back rather than constructed, since its
+/// `last_substantive` is derived internally.
+#[test]
+fn eval_cached_param_reserve_commits_and_preserves() {
+    let module = parse_and_compile(PLAIN_PARAM_SRC);
+    let mut engine = make_engine();
+
+    let w_id = ValueCellId::new("S", "w");
+    let w_det_id = ValueCellId::new("S", "w_det");
+    let w_node = NodeId::Value(w_id.clone());
+
+    // (v1) Populate w's cache entry via a first warm pass.
+    let v1 = engine.eval_cached(&module, VersionId(1));
+    let v1_w_value = v1.eval_result.values.get(&w_id).cloned();
+    assert!(
+        v1_w_value.is_some(),
+        "w should have a committed value after the v1 warm pass"
+    );
+    assert_eq!(
+        v1.eval_result.values.get(&w_det_id),
+        Some(&Value::Bool(true)),
+        "determined(w) should be true after the v1 warm pass (baseline)"
+    );
+
+    // Inject a non-Final (Pending) freshness onto w's cache entry. mark_pending
+    // (NOT set_freshness, which panics on Pending/Failed) sets freshness =
+    // Pending { last_substantive: ResultRef::of_hash(result_hash) } without
+    // touching the cached value or the dirty state, so the v2 re-serve still
+    // fires and must carry this freshness forward. The exact Pending value is
+    // read back (its last_substantive is derived internally), not constructed.
+    assert!(
+        engine.cache_store_mut().mark_pending(&w_node),
+        "mark_pending should find w's cache entry and flip its freshness"
+    );
+    let injected = engine.cache_store().freshness(&w_node);
+    assert!(
+        matches!(injected, Freshness::Pending { .. }),
+        "sanity: the injected Pending freshness is in place before v2, got {injected:?}"
+    );
+
+    // (v2) Version bump; w is not overridden, not dirty, and basis(1) !=
+    // version(2) so it is not the fast-path → the Param preserve-freshness
+    // re-serve (~@6665) fires.
+    let v2 = engine.eval_cached(&module, VersionId(2));
+
+    // (1) RED signal — the re-serve's LAST journal event for w is `Completed`
+    // (today it is a single `CacheHit`). Scoped so the journal borrow is
+    // released before the cache_store() reads below.
+    let (last_is_completed, last_kind_dbg) = {
+        let events = engine.journal().events_for_node(&w_node);
+        let last = events
+            .last()
+            .expect("w should have at least one journal event after v2");
+        (
+            matches!(last.kind, EventKind::Completed { .. }),
+            format!("{:?}", last.kind),
+        )
+    };
+    eprintln!("w last journal event after v2 = {last_kind_dbg}");
+    assert!(
+        last_is_completed,
+        "the Param preserve-freshness re-serve's LAST journal event for w should \
+         be Completed once migrated onto commit_cell_result's atomic 4-leg \
+         commit (today it is a single CacheHit), got {last_kind_dbg}"
+    );
+
+    // (2) Freshness preserved (characterization guard — green throughout): the
+    // re-serve carries the injected Pending freshness forward, not clobbered to
+    // Final. This is the freshness-dimension acceptance signal.
+    assert_eq!(
+        engine.cache_store().freshness(&w_node),
+        injected,
+        "the Param re-serve must preserve w's injected Pending freshness across v2 \
+         (not reset it to Final)"
+    );
+
+    // (3) Value + determinacy identical warm-vs-warm (characterization guards —
+    // the re-serve preserves the committed value and Determined determinacy).
+    assert_eq!(
+        v2.eval_result.values.get(&w_id),
+        v1_w_value.as_ref(),
+        "w's committed value must be unchanged from the v1 warm pass"
+    );
+    assert_eq!(
+        v2.eval_result.values.get(&w_det_id),
+        Some(&Value::Bool(true)),
+        "determined(w) must stay true across the re-serve (determinacy preserved)"
+    );
+}
