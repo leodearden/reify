@@ -15,7 +15,11 @@
 # non-retry invocation. As defense-in-depth, a non-empty value carrying any
 # character outside the [A-Za-z0-9._/ -] allowlist (shell metacharacters — the
 # specs are interpolated raw into a `bash -c '…'` string) is likewise rejected
-# and falls back to the full suite with a stderr warning (Test 6).
+# and falls back to the full suite with a stderr warning (Test 6). A value
+# where every character is individually allowlisted but some space-delimited
+# token still begins with '-' (e.g. `--run`) is also rejected, since that
+# would forward cleanly to `npm test -- --run` and be parsed by vitest as an
+# option rather than a spec path (Test 7).
 #
 # Oracle: verify.sh --print-plan (hermetic — never runs cargo/npm; the gui
 # block has no PRINT_PLAN special-casing, so it reads REIFY_GUI_RETRY_SPECS
@@ -135,5 +139,32 @@ assert "subst plan ('\$(…)'): value not forwarded (no 'npm test --')" \
 
 assert "subst plan ('\$(…)'): payload never reaches the plan (no 'INJECTED')" \
     bash -c '! printf "%s\n" "$1" | grep -qF "INJECTED"' _ "$SUBST_PLAN"
+
+# ===========================================================================
+# Test 7: robustness — a token beginning with '-' is rejected even though
+# every character is individually allowlisted (e.g. `--run`, `-x`): forwarded
+# raw, it would land as `npm test -- --run`, which vitest parses as an option
+# rather than a spec path. Same §4.3 loud full-fallback as Test 6. A mixed
+# value (one real spec + one flag-like token) must be rejected wholesale, not
+# silently filtered down to the real spec.
+# ===========================================================================
+echo ""
+echo "--- Test 7: token beginning with '-' rejected => full suite, nothing forwarded ---"
+
+FLAG_PLAN="$(REIFY_GUI_RETRY_SPECS='--run' bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan 2>/dev/null | grep -v '^#')"
+MIXED_FLAG_PLAN="$(REIFY_GUI_RETRY_SPECS='src/__tests__/foo.test.ts --coverage' bash "$REPO_ROOT/scripts/verify.sh" test --scope all --print-plan 2>/dev/null | grep -v '^#')"
+export FLAG_PLAN MIXED_FLAG_PLAN
+
+assert "flag plan ('--run'): value not forwarded (no 'npm test --')" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "npm test --"' _ "$FLAG_PLAN"
+
+assert "flag plan ('--run'): falls back to full suite (npm ci && npm run typecheck && npm test)" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "npm ci && npm run typecheck && npm test"' _ "$FLAG_PLAN"
+
+assert "mixed flag plan (spec + '--coverage'): rejected wholesale, not forwarded (no 'npm test --')" \
+    bash -c '! printf "%s\n" "$1" | grep -qF "npm test --"' _ "$MIXED_FLAG_PLAN"
+
+assert "mixed flag plan (spec + '--coverage'): falls back to full suite" \
+    bash -c 'printf "%s\n" "$1" | grep -qF "npm ci && npm run typecheck && npm test"' _ "$MIXED_FLAG_PLAN"
 
 test_summary

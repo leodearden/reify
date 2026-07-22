@@ -1761,15 +1761,34 @@ build_plan() {
         # falls back to the full `npm test` with a stderr warning — the same §4.3
         # loud full-fallback as the empty/unset case. The allowlisted value is
         # still interpolated raw (mirroring _GATE_HEAVY_EXCLUDE), but now provably
-        # holds only path/separator characters.
+        # holds only path/separator characters. A further check (below) rejects
+        # any token beginning with '-', since the character allowlist alone
+        # would still pass an option-like token (e.g. `--run`) straight through
+        # to vitest's argument parser.
         local gui_inner="npm ci && npm run typecheck"
         if [ "$DO_TEST" -eq 1 ]; then
             local _gui_retry_specs="${REIFY_GUI_RETRY_SPECS:-}"
+            local _gui_retry_ok=0
             # -z on the allowlist-stripped residue => every char is allowed.
             if [ -n "$_gui_retry_specs" ] && [ -z "${_gui_retry_specs//[A-Za-z0-9._\/ -]/}" ]; then
+                _gui_retry_ok=1
+                # The character allowlist alone still permits a leading '-'
+                # (e.g. `--run`, `-x`), which would forward cleanly as
+                # `npm test -- --run` and be parsed by vitest as an option,
+                # not a spec path. Reject the whole value (same loud
+                # full-fallback below) if ANY space-delimited token starts
+                # with '-'. Unquoted word-splitting here is safe: the
+                # allowlist above already excludes glob/metacharacters, so
+                # this can only split on spaces, never glob or expand.
+                local _gui_retry_tok
+                for _gui_retry_tok in $_gui_retry_specs; do
+                    case "$_gui_retry_tok" in -*) _gui_retry_ok=0; break ;; esac
+                done
+            fi
+            if [ "$_gui_retry_ok" -eq 1 ]; then
                 gui_inner+=" && npm test -- $_gui_retry_specs"
             else
-                [ -n "$_gui_retry_specs" ] && echo "verify.sh: WARNING — REIFY_GUI_RETRY_SPECS contains characters outside [A-Za-z0-9._/ -]; ignoring the subset and running the full gui suite" >&2
+                [ -n "$_gui_retry_specs" ] && echo "verify.sh: WARNING — REIFY_GUI_RETRY_SPECS contains characters outside [A-Za-z0-9._/ -] or a token beginning with '-'; ignoring the subset and running the full gui suite" >&2
                 gui_inner+=" && npm test"
             fi
         fi
