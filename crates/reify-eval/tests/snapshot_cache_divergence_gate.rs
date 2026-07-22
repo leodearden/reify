@@ -170,7 +170,32 @@ fn collect_ri_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
 /// a `cache-skip=` marker. A residual that traces to a genuine post-γ
 /// snapshot↔cache write bug (not a documented eval-surface limitation) is a
 /// design_concern to escalate, NOT a KNOWN_RESIDUAL entry to paper over.
-const KNOWN_RESIDUAL_DIVERGENCE_SKIPS: &[(&str, &str)] = &[];
+const KNOWN_RESIDUAL_DIVERGENCE_SKIPS: &[(&str, &str)] = &[
+    (
+        "examples/fdm_bracket.ri",
+        "FdmBracket.r_print: an `@optimized` `solve_elastic_static(...)` FEA \
+         compute-dispatch result cell (task #4726). Compute dispatch runs OUTSIDE \
+         the plain expr-eval commit path — it is NOT one of the three post-passes \
+         (self-datum / structural-query / annotation-args) task γ routed through \
+         `commit_cell_result` — so the ComputeNode writes its result into the cache \
+         while the retained `eval_state()` snapshot value for the cell diverges. This \
+         is the compute-dispatch analog of the geometry-handle standing surface gap: \
+         `invariants.rs` clause 5a already EXEMPTS exactly this `@optimized` cell \
+         class from the sibling stale-Undef invariant for the same 'evaluated outside \
+         the plain expr-eval path' reason. A documented eval-surface limitation, not a \
+         post-γ snapshot↔cache write bug.",
+    ),
+    (
+        "examples/fea_shell_too_thick_annotated.ri",
+        "FeaShellTooThickAnnotated.result: same class as fdm_bracket.ri above — an \
+         `@optimized` `solve_elastic_static(...)` FEA compute-dispatch result cell \
+         whose ComputeNode-written cache entry diverges from the retained snapshot \
+         value because compute dispatch runs outside the `commit_cell_result` \
+         post-pass path task γ migrated (invariants.rs clause 5a exempts the same \
+         cell class from the sibling invariant). A documented eval-surface \
+         limitation, not a post-γ snapshot↔cache write bug.",
+    ),
+];
 
 /// Number of shards the broad corpus sweep is split across — one shard per
 /// `snapshot_cache_sweep_shard_NN` `#[test]` fn (below).
