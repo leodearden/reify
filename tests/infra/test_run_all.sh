@@ -3109,5 +3109,242 @@ else
     assert "T29c: run_all.sh exits 0 (skipped - run_all.sh missing)" false
 fi
 
+# -- Test 30: failed sub-test structured FAIL-detail re-emission in the --------
+# Summary block (task #5329, esc-5056-11 / esc-5053-13) -------------------------
+# verify.sh/dark-factory carry the Summary block's tail as the merge-gate block
+# reason; today it names only the failing test files, dropping their own
+# structured/assertion FAIL lines, so DF's disposition classifier has no cause
+# to key off and falls back to commit-overlap heuristics, mislabeling the
+# branch's own failure as integration_skew. Proves each failed member's
+# bounded structured/assertion FAIL lines are re-emitted inside a
+# `--- FAILED-DETAIL: <name> ---` block in the Summary FAILED region, from
+# BOTH pool Phase-3 FAIL sites (non-retried `.out` and retried `.retry.out`),
+# strictly additively (existing FAILED/classifier lines untouched), bounded
+# with a loud truncation indicator, and gracefully absent for a signal-less
+# failing test. The verbatim-content assertions below are scoped to the
+# Summary TAIL (from `=== Summary:` onward) rather than the whole captured
+# output, because Phase 3 already re-emits each member's full captured output
+# verbatim in the earlier mid-stream `--- Running: ... ---` section -- an
+# unscoped substring check would pass vacuously on that pre-existing replay
+# without ever exercising this task's new Summary-tail emission.
+echo ""
+echo "--- Test 30: failed sub-test structured FAIL-detail re-emission ---"
+
+if [ -f "$RUN_ALL" ]; then
+    # -- 30a: non-retried `.out` site -- unclassified fail-safe-serial member,
+    # canonical HARNESS_KLOC_CAP structured verdict + assert FAIL: lines ------
+    TMPDIR_T30A="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T30A")
+    cat > "$TMPDIR_T30A/test_kloc.sh" <<'MOCKEOF'
+#!/usr/bin/env bash
+echo "HARNESS_KLOC_CAP FAIL crate=synth file=crates/foo/tests/stray.rs reason=unsanctioned-standalone"
+echo "  FAIL: harness kLOC assertion 1"
+echo "  FAIL: harness kLOC assertion 2"
+exit 1
+MOCKEOF
+    chmod +x "$TMPDIR_T30A/test_kloc.sh"
+
+    t30a_rc=0
+    t30a_out="$(bash "$RUN_ALL" "$TMPDIR_T30A" 2>&1)" || t30a_rc=$?
+
+    if [[ "$t30a_out" == *"INFO: run_all.sh pool: N="* ]]; then
+        assert "T30a: pool path was actually taken (INFO: run_all.sh pool: N= present)" true
+    else
+        assert "T30a: pool path was actually taken (INFO: run_all.sh pool: N= present) (got: $t30a_out)" false
+    fi
+
+    if [[ "$t30a_out" == *"--- FAILED-DETAIL: test_kloc.sh ---"* ]]; then
+        assert "T30a: FAILED-DETAIL delimiter present for test_kloc.sh" true
+    else
+        assert "T30a: FAILED-DETAIL delimiter present for test_kloc.sh (got: $t30a_out)" false
+    fi
+
+    t30a_tail="$(sed -n '/^=== Summary:/,$p' <<<"$t30a_out")"
+    if [[ "$t30a_tail" == *"HARNESS_KLOC_CAP FAIL crate=synth file=crates/foo/tests/stray.rs reason=unsanctioned-standalone"* ]]; then
+        assert "T30a: structured HARNESS_KLOC_CAP FAIL line present verbatim in the Summary tail" true
+    else
+        assert "T30a: structured HARNESS_KLOC_CAP FAIL line present verbatim in the Summary tail (got: $t30a_out)" false
+    fi
+
+    t30a_failed_line="$(grep -n '^=== FAILED:' <<<"$t30a_out" | head -1 | cut -d: -f1)" || true
+    t30a_detail_line="$(grep -n '^--- FAILED-DETAIL: test_kloc\.sh ---' <<<"$t30a_out" | head -1 | cut -d: -f1)" || true
+    [ -n "$t30a_failed_line" ] || t30a_failed_line=0
+    [ -n "$t30a_detail_line" ] || t30a_detail_line=-1
+    if [ "$t30a_detail_line" -gt "$t30a_failed_line" ]; then
+        assert "T30a: FAILED-DETAIL block appears after the === FAILED: line" true
+    else
+        assert "T30a: FAILED-DETAIL block appears after the === FAILED: line (got: $t30a_out)" false
+    fi
+
+    # -- 30f: retried `.retry.out` site -- `pool`-classified solo member that
+    # fails deterministically on both the pool attempt and the serial retry --
+    TMPDIR_T30F="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T30F")
+
+    MANIFEST_T30F="$TMPDIR_T30F/classification.manifest"
+    printf 'test_pool_kloc.sh pool\n' > "$MANIFEST_T30F"
+
+    cat > "$TMPDIR_T30F/test_pool_kloc.sh" <<'MOCKEOF'
+#!/usr/bin/env bash
+echo "HARNESS_KLOC_CAP FAIL crate=synth file=crates/foo/src/harness_big.rs reason=exceeds-cap lines=21000 cap=20000"
+exit 1
+MOCKEOF
+    chmod +x "$TMPDIR_T30F/test_pool_kloc.sh"
+
+    t30f_rc=0
+    t30f_out="$(RUN_ALL_CLASSIFICATION_MANIFEST="$MANIFEST_T30F" \
+        REIFY_RUN_ALL_POOL_LOCK="$TMPDIR_T30F/pool-30f.lock" \
+        REIFY_RUN_ALL_POOL_PSI_DISABLE=1 \
+        bash "$RUN_ALL" "$TMPDIR_T30F" 2>&1)" || t30f_rc=$?
+
+    if [[ "$t30f_out" == *"INFO: run_all.sh pool: N="* ]]; then
+        assert "T30f: pool path was actually taken (INFO: run_all.sh pool: N= present)" true
+    else
+        assert "T30f: pool path was actually taken (INFO: run_all.sh pool: N= present) (got: $t30f_out)" false
+    fi
+
+    if [[ "$t30f_out" == *"--- attempt 2 (serial retry) ---"* ]]; then
+        assert "T30f: member was actually retried (attempt-2 archived, proves the .retry.out site is exercised)" true
+    else
+        assert "T30f: member was actually retried (attempt-2 archived, proves the .retry.out site is exercised) (got: $t30f_out)" false
+    fi
+
+    if [[ "$t30f_out" == *"--- FAILED-DETAIL: test_pool_kloc.sh ---"* ]]; then
+        assert "T30f: FAILED-DETAIL delimiter present for test_pool_kloc.sh" true
+    else
+        assert "T30f: FAILED-DETAIL delimiter present for test_pool_kloc.sh (got: $t30f_out)" false
+    fi
+
+    t30f_tail="$(sed -n '/^=== Summary:/,$p' <<<"$t30f_out")"
+    if [[ "$t30f_tail" == *"HARNESS_KLOC_CAP FAIL crate=synth file=crates/foo/src/harness_big.rs reason=exceeds-cap lines=21000 cap=20000"* ]]; then
+        assert "T30f: structured HARNESS_KLOC_CAP FAIL (exceeds-cap) line present verbatim in the Summary tail" true
+    else
+        assert "T30f: structured HARNESS_KLOC_CAP FAIL (exceeds-cap) line present verbatim in the Summary tail (got: $t30f_out)" false
+    fi
+
+    assert "T30f: run_all.sh exits 1 (deterministic fail-twice)" \
+        test "$t30f_rc" -eq 1
+
+    # -- 30b: bound -- 12 assert FAIL: lines truncate to <=10 with a loud
+    # truncation indicator (no silent cap) ------------------------------------
+    TMPDIR_T30B="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T30B")
+    {
+        echo '#!/usr/bin/env bash'
+        for _t30b_i in $(seq 1 12); do
+            echo "echo \"  FAIL: assertion ${_t30b_i}\""
+        done
+        echo 'exit 1'
+    } > "$TMPDIR_T30B/test_many_fails.sh"
+    chmod +x "$TMPDIR_T30B/test_many_fails.sh"
+
+    t30b_rc=0
+    t30b_out="$(bash "$RUN_ALL" "$TMPDIR_T30B" 2>&1)" || t30b_rc=$?
+
+    if [[ "$t30b_out" == *"INFO: run_all.sh pool: N="* ]]; then
+        assert "T30b: pool path was actually taken (INFO: run_all.sh pool: N= present)" true
+    else
+        assert "T30b: pool path was actually taken (INFO: run_all.sh pool: N= present) (got: $t30b_out)" false
+    fi
+
+    t30b_detail="$(sed -n '/^--- FAILED-DETAIL: test_many_fails\.sh ---$/,/^--- END FAILED-DETAIL: test_many_fails\.sh ---$/p' <<<"$t30b_out")"
+    t30b_fail_count="$(grep -cE '^[[:space:]]*FAIL: assertion' <<<"$t30b_detail")" || true
+    [ -n "$t30b_fail_count" ] || t30b_fail_count=0
+
+    if [ "$t30b_fail_count" -eq 10 ]; then
+        assert "T30b: FAILED-DETAIL block contains <=10 extracted FAIL lines (bounded; 12 truncated to 10, got: $t30b_fail_count)" true
+    else
+        assert "T30b: FAILED-DETAIL block contains <=10 extracted FAIL lines (bounded; 12 truncated to 10, got: $t30b_fail_count)" false
+    fi
+
+    if [[ "$t30b_detail" == *"omitted"* ]]; then
+        assert "T30b: FAILED-DETAIL block contains a truncation indicator (omitted)" true
+    else
+        assert "T30b: FAILED-DETAIL block contains a truncation indicator (omitted) (got: $t30b_out)" false
+    fi
+
+    # -- 30c: all-pass regression -- no FAILED-DETAIL block on an all-pass run --
+    TMPDIR_T30C="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T30C")
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T30C/test_ok1.sh"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T30C/test_ok2.sh"
+    chmod +x "$TMPDIR_T30C/test_ok1.sh" "$TMPDIR_T30C/test_ok2.sh"
+
+    t30c_out="$(bash "$RUN_ALL" "$TMPDIR_T30C" 2>&1)" || true
+
+    if [[ "$t30c_out" == *"INFO: run_all.sh pool: N="* ]]; then
+        assert "T30c: pool path was actually taken (INFO: run_all.sh pool: N= present)" true
+    else
+        assert "T30c: pool path was actually taken (INFO: run_all.sh pool: N= present) (got: $t30c_out)" false
+    fi
+
+    if [[ "$t30c_out" != *"--- FAILED-DETAIL:"* ]]; then
+        assert "T30c: no FAILED-DETAIL block emitted on all-pass" true
+    else
+        assert "T30c: no FAILED-DETAIL block emitted on all-pass (got: $t30c_out)" false
+    fi
+
+    # -- 30d: signal-less failing mock -- graceful no-op (no empty block) ----
+    TMPDIR_T30D="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T30D")
+    printf '#!/usr/bin/env bash\nexit 1\n' > "$TMPDIR_T30D/test_silent_fail.sh"
+    chmod +x "$TMPDIR_T30D/test_silent_fail.sh"
+
+    t30d_rc=0
+    t30d_out="$(bash "$RUN_ALL" "$TMPDIR_T30D" 2>&1)" || t30d_rc=$?
+
+    if [[ "$t30d_out" == *"INFO: run_all.sh pool: N="* ]]; then
+        assert "T30d: pool path was actually taken (INFO: run_all.sh pool: N= present)" true
+    else
+        assert "T30d: pool path was actually taken (INFO: run_all.sh pool: N= present) (got: $t30d_out)" false
+    fi
+
+    if [[ "$t30d_out" == *"=== FAILED:"*"test_silent_fail.sh"* ]]; then
+        assert "T30d: === FAILED: line still present for a signal-less failing mock" true
+    else
+        assert "T30d: === FAILED: line still present for a signal-less failing mock (got: $t30d_out)" false
+    fi
+
+    if [[ "$t30d_out" != *"--- FAILED-DETAIL:"* ]]; then
+        assert "T30d: no FAILED-DETAIL block emitted for a signal-less failing mock (graceful no-op)" true
+    else
+        assert "T30d: no FAILED-DETAIL block emitted for a signal-less failing mock (graceful no-op) (got: $t30d_out)" false
+    fi
+
+    # -- 30g: additive regression -- 30a's pre-existing FAILED/classifier lines
+    # are BOTH still present alongside the new FAILED-DETAIL block -----------
+    if [[ "$t30a_out" == *"=== FAILED:"*"test_kloc.sh"* ]]; then
+        assert "T30g: pre-existing === FAILED: human line still present (additive regression)" true
+    else
+        assert "T30g: pre-existing === FAILED: human line still present (additive regression) (got: $t30a_out)" false
+    fi
+
+    if grep -qE '^FAILED .*test_kloc\.sh' <<<"$t30a_out"; then
+        assert "T30g: pre-existing ^FAILED classifier marker still present (additive regression)" true
+    else
+        assert "T30g: pre-existing ^FAILED classifier marker still present (additive regression) (got: $t30a_out)" false
+    fi
+else
+    assert "T30a: pool path was actually taken (INFO: run_all.sh pool: N= present) (skipped - run_all.sh missing)" false
+    assert "T30a: FAILED-DETAIL delimiter present for test_kloc.sh (skipped - run_all.sh missing)" false
+    assert "T30a: structured HARNESS_KLOC_CAP FAIL line present verbatim in the Summary tail (skipped - run_all.sh missing)" false
+    assert "T30a: FAILED-DETAIL block appears after the === FAILED: line (skipped - run_all.sh missing)" false
+    assert "T30f: pool path was actually taken (INFO: run_all.sh pool: N= present) (skipped - run_all.sh missing)" false
+    assert "T30f: member was actually retried (attempt-2 archived, proves the .retry.out site is exercised) (skipped - run_all.sh missing)" false
+    assert "T30f: FAILED-DETAIL delimiter present for test_pool_kloc.sh (skipped - run_all.sh missing)" false
+    assert "T30f: structured HARNESS_KLOC_CAP FAIL (exceeds-cap) line present verbatim in the Summary tail (skipped - run_all.sh missing)" false
+    assert "T30f: run_all.sh exits 1 (deterministic fail-twice) (skipped - run_all.sh missing)" false
+    assert "T30b: pool path was actually taken (INFO: run_all.sh pool: N= present) (skipped - run_all.sh missing)" false
+    assert "T30b: FAILED-DETAIL block contains <=10 extracted FAIL lines (bounded; 12 truncated to 10, got: skipped) (skipped - run_all.sh missing)" false
+    assert "T30b: FAILED-DETAIL block contains a truncation indicator (omitted) (skipped - run_all.sh missing)" false
+    assert "T30c: pool path was actually taken (INFO: run_all.sh pool: N= present) (skipped - run_all.sh missing)" false
+    assert "T30c: no FAILED-DETAIL block emitted on all-pass (skipped - run_all.sh missing)" false
+    assert "T30d: pool path was actually taken (INFO: run_all.sh pool: N= present) (skipped - run_all.sh missing)" false
+    assert "T30d: === FAILED: line still present for a signal-less failing mock (skipped - run_all.sh missing)" false
+    assert "T30d: no FAILED-DETAIL block emitted for a signal-less failing mock (graceful no-op) (skipped - run_all.sh missing)" false
+    assert "T30g: pre-existing === FAILED: human line still present (additive regression) (skipped - run_all.sh missing)" false
+    assert "T30g: pre-existing ^FAILED classifier marker still present (additive regression) (skipped - run_all.sh missing)" false
+fi
+
 # -- Summary --------------------------------------------------------------------
 test_summary
