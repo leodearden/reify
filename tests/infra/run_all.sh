@@ -338,6 +338,67 @@ _ra_emit_sanitized() {
 }
 
 # ---------------------------------------------------------------------------
+# _ra_collect_fail_detail <name> <captured-file>  (task #5329, esc-5056-11 /
+# esc-5053-13)
+#
+# Extracts a failed pool-path member's structured/assertion FAIL lines from
+# its captured output file and stashes them (keyed by member name) so the
+# Summary block's FAILED region can re-emit them, letting verify.sh/dark-
+# factory's merge-gate block reason name the offending file/reason verbatim
+# instead of falling back to commit-overlap heuristics.
+#
+# Matches two line-anchored shapes:
+#   branch 1: test_helpers.sh assert() failure lines, `  FAIL: <desc>`
+#   branch 2: machine-parseable structured verdicts, `<TOKEN> FAIL <fields>`,
+#             e.g. `HARNESS_KLOC_CAP FAIL crate=... reason=...`
+# Branch 2 is anchored at the absolute start of the line (no leading
+# whitespace permitted), so it never matches this script's own indented
+# "  RESULT: FAIL (name)" lines.
+#
+# Fail-open: a missing/unreadable captured file, or zero matches, is a
+# silent no-op -- this is pure observability layered on the failure path and
+# must never itself become a new failure source or change any exit code
+# (INV-4). Keeps only the LAST _RA_FAIL_DETAIL_MAX matches, with a loud
+# (non-silent) truncation-indicator line prepended when the match count
+# exceeds the cap -- the repo's no-silent-caps convention.
+# ---------------------------------------------------------------------------
+_ra_collect_fail_detail() {
+    local _name="$1" _file="$2"
+    [ -f "$_file" ] || return 0
+
+    local _matched
+    _matched="$(grep -aE '(^[[:space:]]*FAIL:|^[A-Za-z][A-Za-z0-9_]*[[:space:]]+FAIL([[:space:]]|$))' "$_file" 2>/dev/null || true)"
+    [ -n "$_matched" ] || return 0
+
+    local _count
+    _count="$(printf '%s\n' "$_matched" | wc -l | tr -d ' ')"
+
+    local _bounded
+    _bounded="$(printf '%s\n' "$_matched" | tail -n "$_RA_FAIL_DETAIL_MAX")"
+
+    if [ "$_count" -gt "$_RA_FAIL_DETAIL_MAX" ]; then
+        local _omitted=$((_count - _RA_FAIL_DETAIL_MAX))
+        _bounded="$(printf '... (%s earlier FAIL line(s) omitted; see per-test output above) ...\n%s' "$_omitted" "$_bounded")"
+    fi
+
+    _ra_fail_detail["$_name"]="$_bounded"
+}
+
+# _ra_emit_fail_detail <name>
+#   Emits the collected FAIL-detail block for a failed member into the
+#   Summary FAILED region, delimited so it structurally cannot collide with
+#   any existing output-contract anchor (^--- Running: , ^=== Summary:,
+#   ^=== FAILED:, ^FAILED ). No-op when nothing was collected for $name (no
+#   bare/empty block for a signal-less failing test).
+_ra_emit_fail_detail() {
+    local _name="$1"
+    [ -n "${_ra_fail_detail[$_name]:-}" ] || return 0
+    echo "--- FAILED-DETAIL: $_name ---"
+    printf '%s\n' "${_ra_fail_detail[$_name]}"
+    echo "--- END FAILED-DETAIL: $_name ---"
+}
+
+# ---------------------------------------------------------------------------
 # _ra_discovery_diag <rc> <lineno> <bash_command>  (task #5123, esc-5080-9)
 #
 # ERR-trap handler scoped around the H2 pool discovery/partition/pool-workdir
@@ -624,6 +685,7 @@ _ra_interrupt_if_worktree_gone() {
 failures=0
 discovered=0
 failed_names=()
+declare -A _ra_fail_detail=()   # failed member name -> bounded FAIL-detail lines (task #5329)
 flaky_names=()
 member_subset_skipped=()
 
@@ -958,6 +1020,16 @@ case "$_ra_chronic_m" in
     ''|*[!0-9]*) _ra_chronic_m=20 ;;
 esac
 [ "$_ra_chronic_m" -ge 1 ] || _ra_chronic_m=20
+
+# Bound on how many extracted FAIL-detail lines _ra_collect_fail_detail keeps
+# per failed member (task #5329). Pure observability / strictly additive
+# (INV-4): a malformed value fails OPEN to 10 rather than exiting, mirroring
+# _ra_chronic_n/_ra_chronic_m above.
+_RA_FAIL_DETAIL_MAX="${REIFY_RUN_ALL_FAIL_DETAIL_MAX:-10}"
+case "$_RA_FAIL_DETAIL_MAX" in
+    ''|*[!0-9]*) _RA_FAIL_DETAIL_MAX=10 ;;
+esac
+[ "$_RA_FAIL_DETAIL_MAX" -ge 1 ] || _RA_FAIL_DETAIL_MAX=10
 
 _H2_POOL_ACTIVE=1
 if [ "${REIFY_RUN_ALL_POOL_DISABLE:-}" = "1" ]; then
@@ -1611,6 +1683,7 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
                 echo "  RESULT: FAIL ($_h2_name)"
                 failures=$((failures + 1))
                 failed_names+=("$_h2_name")
+                _ra_collect_fail_detail "$_h2_name" "$_H2_WORKDIR/${_h2_i}.retry.out"
             fi
         else
             _ra_emit_sanitized "$_H2_WORKDIR/${_h2_i}.out"
@@ -1621,6 +1694,7 @@ elif [ "$_H2_POOL_ACTIVE" -eq 1 ]; then
                 echo "  RESULT: FAIL ($_h2_name)"
                 failures=$((failures + 1))
                 failed_names+=("$_h2_name")
+                _ra_collect_fail_detail "$_h2_name" "$_H2_WORKDIR/${_h2_i}.out"
             fi
         fi
     done
@@ -1685,6 +1759,14 @@ fi
 if [ "${#failed_names[@]}" -gt 0 ]; then
     echo "=== FAILED: ${failed_names[*]} ==="
     printf 'FAILED %s\n' "${failed_names[*]}"
+    # Re-emit each failed member's bounded structured/assertion FAIL-detail
+    # (task #5329) so the merge-gate block reason names the offending
+    # file/reason verbatim -- see _ra_collect_fail_detail/_ra_emit_fail_detail
+    # above. No-op per-name when nothing was collected (e.g. legacy/H9 paths,
+    # or a signal-less failing test).
+    for _ra_fn in "${failed_names[@]}"; do
+        _ra_emit_fail_detail "$_ra_fn"
+    done
 fi
 if [ "${#flaky_names[@]}" -gt 0 ]; then
     echo "=== FLAKY (passed on serial retry): ${flaky_names[*]} ==="
