@@ -102,10 +102,6 @@ crates/reify-compiler/tests/ds_sentinel_l1_poison_tests.rs
 crates/reify-compiler/tests/ds_sentinel_l5_boundary_tests.rs
 crates/reify-compiler/tests/dynamics_stdlib_compile.rs
 crates/reify-compiler/tests/entity_overload_tests.rs
-crates/reify-compiler/tests/enum_generic_construction_inference_tests.rs
-crates/reify-compiler/tests/enum_generic_ir_lowering_tests.rs
-crates/reify-compiler/tests/enum_pattern_field_check_tests.rs
-crates/reify-compiler/tests/enum_unknown_type_param_tests.rs
 crates/reify-compiler/tests/examples_smoke.rs
 crates/reify-compiler/tests/expected_type_arg_pushdown_tests.rs
 crates/reify-compiler/tests/expected_type_pushdown_integration.rs
@@ -151,10 +147,6 @@ crates/reify-compiler/tests/lambda_compile_tests.rs
 crates/reify-compiler/tests/list_helper_selector_coercion_tests.rs
 crates/reify-compiler/tests/m11_annotations_solver_hint_tests.rs
 crates/reify-compiler/tests/m9_error_cases.rs
-crates/reify-compiler/tests/match_arm_decl_group_compile_tests.rs
-crates/reify-compiler/tests/match_arm_decl_group_typing_tests.rs
-crates/reify-compiler/tests/match_block_decl_lowering_tests.rs
-crates/reify-compiler/tests/match_compile_tests.rs
 crates/reify-compiler/tests/materials_chemical_tests.rs
 crates/reify-compiler/tests/materials_electrical_optionality_tests.rs
 crates/reify-compiler/tests/materials_electrical_tests.rs
