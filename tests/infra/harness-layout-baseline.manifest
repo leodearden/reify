@@ -148,9 +148,6 @@ crates/reify-compiler/tests/keyed_forall_lower_tests.rs
 crates/reify-compiler/tests/keyed_sub_resolution_tests.rs
 crates/reify-compiler/tests/kinematic_stdlib_compile.rs
 crates/reify-compiler/tests/lambda_compile_tests.rs
-crates/reify-compiler/tests/let_annotation_type_mismatch_tests.rs
-crates/reify-compiler/tests/let_scope_tests.rs
-crates/reify-compiler/tests/let_type_disambiguation_tests.rs
 crates/reify-compiler/tests/list_helper_selector_coercion_tests.rs
 crates/reify-compiler/tests/m11_annotations_solver_hint_tests.rs
 crates/reify-compiler/tests/m9_error_cases.rs
@@ -196,10 +193,6 @@ crates/reify-compiler/tests/option_compile_tests.rs
 crates/reify-compiler/tests/option_recovery_resolution_tests.rs
 crates/reify-compiler/tests/param_binding_selector_coercion_tests.rs
 crates/reify-compiler/tests/param_default_type_mismatch_tests.rs
-crates/reify-compiler/tests/parametric_alias_def_site_validation_tests.rs
-crates/reify-compiler/tests/parametric_field_resolution_tests.rs
-crates/reify-compiler/tests/parametric_tensor_resolution_tests.rs
-crates/reify-compiler/tests/parametric_vector_point_resolution_tests.rs
 crates/reify-compiler/tests/parse_length_signatures.rs
 crates/reify-compiler/tests/parse_with_stdlib_tests.rs
 crates/reify-compiler/tests/physical_constants_tests.rs
@@ -211,9 +204,6 @@ crates/reify-compiler/tests/pragma_compile_tests.rs
 crates/reify-compiler/tests/prelude_context_tests.rs
 crates/reify-compiler/tests/prepass_consolidation_tests.rs
 crates/reify-compiler/tests/printer_print_envelope_example_tests.rs
-crates/reify-compiler/tests/priv_import_boundary_tests.rs
-crates/reify-compiler/tests/priv_member_visibility_tests.rs
-crates/reify-compiler/tests/priv_redundant_tests.rs
 crates/reify-compiler/tests/process_stdlib_compile.rs
 crates/reify-compiler/tests/purpose_compile_tests.rs
 crates/reify-compiler/tests/qualified_access_compile_tests.rs
@@ -244,10 +234,6 @@ crates/reify-compiler/tests/solver_elastic_static_stdlib_compile.rs
 crates/reify-compiler/tests/solver_elastic_tests.rs
 crates/reify-compiler/tests/solver_hint_payload_tests.rs
 crates/reify-compiler/tests/solver_hint_tests.rs
-crates/reify-compiler/tests/specialization_scope_e2e_tests.rs
-crates/reify-compiler/tests/specialization_scope_lowering_tests.rs
-crates/reify-compiler/tests/specialization_scope_validation_tests.rs
-crates/reify-compiler/tests/spec_param_override_compile_tests.rs
 crates/reify-compiler/tests/stackup_stdlib_tests.rs
 crates/reify-compiler/tests/standard_gravity_tests.rs
 crates/reify-compiler/tests/standard_joint_library_tests.rs
@@ -272,11 +258,6 @@ crates/reify-compiler/tests/test_marker_compile_tests.rs
 crates/reify-compiler/tests/tolerancing_tests.rs
 crates/reify-compiler/tests/tots_optimal_ptp_example_tests.rs
 crates/reify-compiler/tests/trajectory_stdlib_compile.rs
-crates/reify-compiler/tests/type_alias_compile_tests.rs
-crates/reify-compiler/tests/type_arg_applied_resolution_tests.rs
-crates/reify-compiler/tests/type_error_propagation_tests.rs
-crates/reify-compiler/tests/type_expr_kind_dispatch_tests.rs
-crates/reify-compiler/tests/type_hygiene_integration_gate.rs
 crates/reify-compiler/tests/undef_literal_compile_tests.rs
 crates/reify-compiler/tests/unit_declaration_tests.rs
 crates/reify-compiler/tests/unit_registry_tests.rs

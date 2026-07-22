@@ -13,9 +13,9 @@ use reify_core::{ModulePath, Severity, SourceSpan};
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
-const REJECT_FIXTURE: &str = include_str!("fixtures/parametric_alias_def_site_reject.ri");
+const REJECT_FIXTURE: &str = include_str!("../fixtures/parametric_alias_def_site_reject.ri");
 
-const OK_FIXTURE: &str = include_str!("fixtures/parametric_alias_def_site_ok.ri");
+const OK_FIXTURE: &str = include_str!("../fixtures/parametric_alias_def_site_ok.ri");
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

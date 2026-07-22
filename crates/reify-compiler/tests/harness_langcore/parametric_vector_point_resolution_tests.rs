@@ -9,6 +9,7 @@
 //! with `param`s exercises the same surface→IR resolution path with no
 //! body-type-checking distraction.
 
+#[path = "../common/mod.rs"]
 mod common;
 
 use common::compile_with_stdlib_helper;

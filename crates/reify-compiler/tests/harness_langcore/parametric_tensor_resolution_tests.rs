@@ -13,6 +13,7 @@
 //! [IntegerLiteral, IntegerLiteral, Named] }` shape regardless of whether the
 //! type is anchored to a fn signature or a param annotation.
 
+#[path = "../common/mod.rs"]
 mod common;
 
 use common::compile_with_stdlib_helper;
