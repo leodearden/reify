@@ -732,6 +732,58 @@ impl OcctKernel {
         self.shapes.len()
     }
 
+    /// Free every resident native shape and clear all derived provenance/
+    /// idempotency caches, returning the kernel to an empty-but-reusable
+    /// state — WITHOUT rewinding the `next_id` handle counter.
+    ///
+    /// This is the reload native-memory bound for task 5212. The reify-eval
+    /// `Engine` and the `OcctKernel` it owns are long-lived and reused across
+    /// GUI whole-file reloads; without this, every reload re-executes the
+    /// design's geometry and mints fresh `shapes` while prior-design shapes
+    /// stay resident, growing OCCT native memory unbounded over a long
+    /// session. Calling `reset()` once per reload (see
+    /// `Engine::reset_geometry_for_reload`) evicts the previous build's
+    /// shapes so the resident count stays bounded.
+    ///
+    /// `next_id` is deliberately KEPT monotonic (not reset to 1): the leak is
+    /// the `shapes` map, not the 8-byte counter. Keeping handle ids strictly
+    /// increasing means any handle that outlives a reload (e.g. a lingering
+    /// realization-cache entry) can never alias a freshly-minted shape — it
+    /// resolves to a clean `InvalidReference` via the #5211 `get_shape`
+    /// IsNull/InvalidReference guard instead of silently reading a different
+    /// shape. INV-BUILD-1 (`engine_build.rs`) warns that "re-minting id 1 on
+    /// a later build would be served silently in release"; this is the
+    /// read-side counterpart. (It is also why `with_warm_state`'s
+    /// `*next_id = warm.next_id` swap, which CAN lower the counter, is a
+    /// dormant aliasing hazard — see its guard comment.)
+    pub fn reset(&mut self) {
+        // INV-GEO-3 state-inventory guard: this exhaustive destructure (no
+        // `..` spread) forces every OcctKernel field to be classified here as
+        // CLEAR (freed on reload) or KEEP (deliberately preserved). Adding a
+        // new field to OcctKernel without extending this pattern is a hard
+        // compile error (E0027), so the reload clear/keep decision can't be
+        // silently skipped. Mirrors the warm_state()/with_warm_state()
+        // destructures.
+        let Self {
+            shapes,
+            reprs,
+            extracted_edges,
+            extracted_faces,
+            extracted_vertices,
+            parent_handle,
+            next_id: _,                  // KEEP: monotonic — see doc comment above.
+            last_warm_start_failures: _, // KEEP: last-restore diagnostic, not a resident shape.
+        } = self;
+        // CLEAR: free the resident native shapes (the reload memory bound)
+        // and every derived provenance/idempotency cache keyed to them.
+        shapes.clear();
+        reprs.clear();
+        extracted_edges.clear();
+        extracted_faces.clear();
+        extracted_vertices.clear();
+        parent_handle.clear();
+    }
+
     /// Store a shape and return the next handle (defaults to `BRepKind::Solid`).
     fn store(&mut self, shape: cxx::UniquePtr<ffi::ffi::OcctShape>) -> GeometryHandle {
         self.store_with_repr(shape, BRepKind::Solid)
