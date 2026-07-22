@@ -126,40 +126,56 @@ EOF
 # references, and rm -rf is idempotent versus seed-warm-lane.sh's own per-lane
 # orphan-sweep. Synchronous rm; fail-open (a failed rm warns and never aborts
 # the sweep).
-
-# _trash_referenced_by_live_proc PATH — return 0 if any live process references
-# PATH (or a descendant) via its cwd symlink, an open fd symlink, or a mmap'd
-# region in /proc/<pid>/maps; return 1 otherwise.
 #
-# Single-pass scans (one find, one grep) — NOT a readlink fork per fd, which
-# cost ~84s on a ~1300-process host. The verdict is read from captured OUTPUT,
-# never a pipeline exit status: find/grep over /proc return non-zero on the
-# unavoidable permission-denied entries of other users' processes (and SIGPIPE
-# on an early awk exit), so under `set -o pipefail` the exit status is an
-# unreliable signal. A vanishing /proc entry only produces suppressed stderr;
-# every substitution is `|| true`-guarded so it never aborts under set -e.
-_trash_referenced_by_live_proc() {
-    local path="$1"
-    local rp hit
-    rp="$(readlink -f "$path" 2>/dev/null)" || rp=""
-    [ -n "$rp" ] || return 1
+# The live-reference guard runs ONCE for the whole batch of dead-PID candidates
+# (a single /proc walk + a single /proc/*/maps grep matched against every
+# candidate), not once per entry, so a large strand costs O(/proc) rather than
+# O(entries × /proc). See _live_referenced_trash_paths.
+
+# _live_referenced_trash_paths RP... — given one or more resolved trash
+# realpaths, print (one per line, deduplicated) the subset that ANY live
+# process references via its cwd symlink, an open fd symlink, or a mmap'd
+# region in /proc/<pid>/maps. Performs exactly ONE /proc symlink walk and ONE
+# /proc/*/maps grep for the WHOLE candidate set — O(/proc) once, NOT once per
+# entry: with N stranded entries the older per-entry scan was O(N × /proc)
+# (a single /proc walk already cost ~84s on a ~1300-process host, and the
+# ENOSPC strand that motivates this reaper can leave many entries at once).
+#
+# The verdict is read from captured OUTPUT, never a pipeline exit status:
+# find/grep over /proc return non-zero on the unavoidable permission-denied
+# entries of other users' processes (and SIGPIPE on an early awk exit), so
+# under `set -o pipefail` the exit status is an unreliable signal. A vanishing
+# /proc entry only produces suppressed stderr; every scan is `|| true`-guarded
+# so it never aborts under set -e.
+_live_referenced_trash_paths() {
+    [ $# -gt 0 ] || return 0
 
     # cwd + open-fd references: one find pass prints every process's cwd and
     # open-fd symlink TARGETS (%l = the kernel-canonical target — no per-fd
-    # fork); awk matches rp exactly or as a "$rp/" prefix (string compare, so
-    # arbitrary path characters are safe). /proc/<pid>/task is pruned to skip
-    # the per-thread symlink duplicates.
-    hit="$(find /proc -maxdepth 3 -path '*/task' -prune -o -type l \
+    # fork). awk loads the candidate realpaths as input records (the NR==FNR
+    # two-file trick — avoids `-v`'s backslash-escape processing on data), then
+    # for each target prints any candidate it equals or is a "$cand/" descendant
+    # of (string compare, so arbitrary path characters are safe), each candidate
+    # at most once, exiting early once every candidate is accounted for.
+    # /proc/<pid>/task is pruned to skip the per-thread symlink duplicates.
+    find /proc -maxdepth 3 -path '*/task' -prune -o -type l \
             \( -name cwd -o -path '*/fd/*' \) -printf '%l\n' 2>/dev/null \
-        | awk -v rp="$rp" '$0 == rp || index($0, rp "/") == 1 { print "HIT"; exit }')" || true
-    if [ -n "$hit" ]; then return 0; fi
+        | awk '
+            NR==FNR { if ($0 != "") cand[++n] = $0; next }
+            {
+                for (i = 1; i <= n; i++)
+                    if (!(i in seen) && ($0 == cand[i] || index($0, cand[i] "/") == 1)) {
+                        print cand[i]; seen[i] = 1; nfound++
+                    }
+                if (n > 0 && nfound >= n) exit
+            }
+        ' <(printf '%s\n' "$@") - 2>/dev/null || true
 
-    # mmap'd regions: a single grep over every process's maps for a file mapped
-    # from inside the trash dir.
-    hit="$(grep -lF "$rp" /proc/[0-9]*/maps 2>/dev/null | head -n1)" || true
-    if [ -n "$hit" ]; then return 0; fi
-
-    return 1
+    # mmap'd regions: a single grep over every process's maps for a path mapped
+    # from inside any candidate trash dir; -o prints the matched candidate
+    # string (fixed-string substring match, mirroring the original
+    # single-candidate grep).
+    grep -hoFf <(printf '%s\n' "$@") /proc/[0-9]*/maps 2>/dev/null || true
 }
 
 # _reap_stale_trash MOUNT — reap stranded MOUNT/.reseed-trash/<lane>.<pid> dirs.
@@ -167,21 +183,57 @@ _reap_stale_trash() {
     local mount="$1"
     local trash_dir="$mount/.reseed-trash"
     [ -d "$trash_dir" ] || return 0
-    local entry name pid
+
+    # Pass A — collect dead-encoded-PID candidates. An entry whose suffix is
+    # malformed (no numeric PID) or whose encoded PID is still alive (a seed/rm
+    # may be in flight) is skipped here and never reaped; only dead-PID
+    # candidates advance to the single live-reference scan below.
+    local entry name pid rp
+    local -a cand_entries=() cand_pids=() cand_rps=()
     for entry in "$trash_dir"/*; do
         [ -e "$entry" ] || continue          # glob-nomatch guard (empty dir)
         name="${entry##*/}"
         pid="${name##*.}"
-        # Ambiguous / malformed suffix (no numeric PID) → never reap.
         case "$pid" in
-            ''|*[!0-9]*) continue ;;
+            ''|*[!0-9]*) continue ;;         # ambiguous/malformed suffix → never reap
         esac
-        # Encoded PID still alive → a seed/rm may still be in flight; preserve.
-        if kill -0 "$pid" 2>/dev/null; then continue; fi
-        # A live process still references the dir (cwd/fd/mmap) → preserve
-        # (PID-reuse or in-flight rm/seed guard).
-        if _trash_referenced_by_live_proc "$entry"; then continue; fi
-        # Dead PID, no live reference → reap synchronously; fail-open on error.
+        if kill -0 "$pid" 2>/dev/null; then continue; fi   # encoded PID alive → preserve
+        rp="$(readlink -f "$entry" 2>/dev/null)" || rp=""
+        [ -n "$rp" ] || continue             # unresolvable path → cannot verify refs; preserve
+        cand_entries+=("$entry")
+        cand_pids+=("$pid")
+        cand_rps+=("$rp")
+    done
+    [ "${#cand_entries[@]}" -gt 0 ] || return 0
+
+    # Observability: a large candidate count means a lot of trash accreted at
+    # once (e.g. the 224 GB 2026-07-21 strand); log it so a pathological count
+    # is visible even though the scan below is single-pass.
+    if [ "${#cand_entries[@]}" -ge 16 ]; then
+        _info "stale reseed-trash reaper: ${#cand_entries[@]} dead-PID candidate entries this sweep"
+    fi
+
+    # Single live-reference scan for the WHOLE candidate batch (one /proc walk,
+    # one maps grep — not one per entry). Build a set of referenced realpaths; a
+    # candidate in the set is preserved (PID-reuse / in-flight rm-or-seed guard),
+    # all others are reaped.
+    local -A referenced=()
+    local referenced_raw hitrp
+    referenced_raw="$(_live_referenced_trash_paths "${cand_rps[@]}")" || referenced_raw=""
+    if [ -n "$referenced_raw" ]; then
+        while IFS= read -r hitrp; do
+            [ -n "$hitrp" ] && referenced["$hitrp"]=1
+        done <<< "$referenced_raw"
+    fi
+
+    # Pass B — reap every dead-PID candidate with no live reference; fail-open on
+    # an rm error (warn and continue, never abort the sweep).
+    local i
+    for i in "${!cand_entries[@]}"; do
+        entry="${cand_entries[$i]}"
+        pid="${cand_pids[$i]}"
+        rp="${cand_rps[$i]}"
+        if [ -n "${referenced[$rp]:-}" ]; then continue; fi   # live cwd/fd/mmap reference → preserve
         if rm -rf "$entry"; then
             _info "reaped stale reseed-trash entry: $entry (encoded PID $pid dead, no live reference)"
         else

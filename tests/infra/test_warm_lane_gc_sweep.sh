@@ -37,7 +37,11 @@
 #         numeric) suffix preserves it; a missing .reseed-trash/ dir is a
 #         no-op; and an rm failure is fail-open (warn, exit 0, entry intact).
 #         The reaper runs every sweep, after the mount-exists fail-open check
-#         and before the reclaim exec, independent of --disk-pressure.
+#         and before the reclaim exec, independent of --disk-pressure. T7
+#         covers the batched single-/proc-scan path: several dead-PID
+#         candidates in ONE sweep, exactly the live-cwd-referenced one
+#         preserved while the rest are reaped (discrimination within a single
+#         scan, not all-or-nothing).
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -952,5 +956,71 @@ assert "T6: entry left intact when the reaper's rm fails" \
     bash -c '[ -d "$1" ]' _ "$T6_ENTRY"
 assert "T6: stderr carries the reaper's own trash-reap warning" \
     bash -c 'printf "%s\n" "$1" | grep -qiE "reap|trash|reseed"' _ "$ERR_OUT"
+
+# ── T7: batch scan — several dead-PID candidates in ONE sweep; exactly the ────
+# live-cwd-referenced entry is preserved, the rest reaped ─────────────────────
+# Exercises the batched single-/proc-scan path: the reaper collects all dead-PID
+# candidates, does ONE /proc walk for the whole set, and must discriminate the
+# referenced entry from the unreferenced ones (not all-or-nothing). Once the
+# live reference drops, a second sweep reaps the last entry.
+T7_ROOT="$(mktemp -d /tmp/test-gc-sweep-t7-XXXXXX)"
+_TMPDIRS+=("$T7_ROOT")
+T7_MOUNT="$T7_ROOT/worktrees"
+mkdir -p "$T7_MOUNT/.reseed-trash"
+
+T7_GC_LOG="$T7_ROOT/gc_calls.log"
+T7_GC_STUB="$T7_ROOT/gc_stub.sh"
+_t_gc_stub "$T7_GC_STUB"
+
+# Live helper started FIRST — so the kernel cannot reuse its PID for any of the
+# dead PIDs forked afterwards. Its cwd is a staging dir renamed into the
+# referenced trash entry once its dead-PID suffix is known, so the helper holds
+# that entry dir's inode as cwd while the entry's ENCODED PID is guaranteed dead
+# (isolating the cwd/fd/maps guard, exactly as in T3). READY lives outside the
+# staging dir so the rename does not move the handshake marker.
+T7_STAGE="$T7_ROOT/stage"
+mkdir -p "$T7_STAGE"
+T7_READY="$T7_ROOT/helper.ready"
+( cd "$T7_STAGE" && touch "$T7_READY" && exec sleep 300 ) &
+T7_HELPER_PID=$!
+_BGPIDS+=("$T7_HELPER_PID")
+_wait_for_reader_lock "$T7_READY" 30
+
+# Three DEAD encoded PIDs (forked while the helper is alive → all distinct from
+# it), one per candidate entry.
+true & T7_DEAD_A=$!; wait "$T7_DEAD_A" 2>/dev/null || true
+true & T7_DEAD_B=$!; wait "$T7_DEAD_B" 2>/dev/null || true
+true & T7_DEAD_C=$!; wait "$T7_DEAD_C" 2>/dev/null || true
+
+T7_ENTRY_A="$T7_MOUNT/.reseed-trash/_lane-a.$T7_DEAD_A"   # unreferenced → reaped
+T7_ENTRY_B="$T7_MOUNT/.reseed-trash/_lane-b.$T7_DEAD_B"   # live cwd ref → preserved
+T7_ENTRY_C="$T7_MOUNT/.reseed-trash/_lane-c.$T7_DEAD_C"   # unreferenced → reaped
+mkdir -p "$T7_ENTRY_A" "$T7_ENTRY_C"
+touch "$T7_ENTRY_A/stranded" "$T7_ENTRY_C/stranded"
+# Rename the helper's live cwd into ENTRY_B: /proc/<helper>/cwd now resolves to
+# ENTRY_B, so the batch scan must catch it even though _lane-b's encoded PID is
+# dead — while A and C (no live reference) must be reaped in the same sweep.
+mv "$T7_STAGE" "$T7_ENTRY_B"
+
+GC_LOG="$T7_GC_LOG" run_sweep --mount "$T7_MOUNT" --gc-script "$T7_GC_STUB"
+
+assert "T7: exit 0 (first sweep)" test "$RC" -eq 0
+assert "T7: unreferenced dead-PID entry A reaped in the batch sweep" \
+    bash -c '[ ! -d "$1" ]' _ "$T7_ENTRY_A"
+assert "T7: unreferenced dead-PID entry C reaped in the batch sweep" \
+    bash -c '[ ! -d "$1" ]' _ "$T7_ENTRY_C"
+assert "T7: live-cwd-referenced entry B preserved despite dead encoded PID" \
+    bash -c '[ -d "$1" ]' _ "$T7_ENTRY_B"
+
+# Drop the live cwd reference; a second sweep now reaps the last entry.
+kill "$T7_HELPER_PID" 2>/dev/null || true
+wait "$T7_HELPER_PID" 2>/dev/null || true
+_BGPIDS=()  # clear so EXIT cleanup does not re-kill a possibly-reused PID
+
+GC_LOG="$T7_GC_LOG" run_sweep --mount "$T7_MOUNT" --gc-script "$T7_GC_STUB"
+
+assert "T7: exit 0 (second sweep)" test "$RC" -eq 0
+assert "T7: entry B reaped once its live cwd reference is gone (second sweep)" \
+    bash -c '[ ! -d "$1" ]' _ "$T7_ENTRY_B"
 
 test_summary
