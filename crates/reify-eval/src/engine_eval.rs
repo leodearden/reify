@@ -13264,3 +13264,174 @@ mod dependent_cells_admissibility_tests {
         );
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// task #5238 test-3: evaluate_let_bindings main let commit provenance + freshness
+//
+// In-crate direct-call escape hatch — the plan-sanctioned pattern for a private
+// Engine evaluator, mirroring `reeval_cone_cell_provenance_and_determinacy_tests`
+// above. Reaching `evaluate_let_bindings` through a full cold `engine.eval()`
+// requires a module WITH a sub-component (engine_eval.rs ~@4210, gated on
+// `!template.sub_components.is_empty()`), and even then the now-migrated
+// `evaluate_params_and_lets_unified` (#5238 impl-2) emits its OWN first
+// `Started(Custom "cold-eval")` event for the same let cell, so
+// `started_payload`'s first-match semantics could not isolate
+// `evaluate_let_bindings`' own commit. Calling `evaluate_let_bindings` directly
+// on a pre-seeded two-cell module (param `a` + let `b = a * 2.0`) makes its
+// `Started` event the SOLE one recorded for `b`, giving a clean RED signal.
+// ─────────────────────────────────────────────────────────────────────────
+#[cfg(test)]
+mod evaluate_let_bindings_provenance_and_freshness_tests {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+
+    use reify_core::{Diagnostic, ModulePath, Type, ValueCellId};
+    use reify_ir::{BinOp, DeterminacyState, Freshness, Value, ValueMap};
+
+    use crate::Engine;
+    use crate::cache::NodeId;
+    use crate::journal::{EventKind, EventPayload};
+    use crate::snapshot::Snapshot;
+    use reify_test_support::builders::{binop, literal, value_ref_typed};
+    use reify_test_support::mocks::MockConstraintChecker;
+    use reify_test_support::{CompiledModuleBuilder, TopologyTemplateBuilder};
+
+    /// First `Started`-event `Custom` slug for `id` (mirrors the integration
+    /// file's `started_payload` helper): `None` if there is no `Started` event
+    /// for `id` or if its payload isn't `Custom` — today's un-migrated
+    /// `payload: None` baseline.
+    fn started_payload(engine: &Engine, id: &ValueCellId) -> Option<String> {
+        let node_id = NodeId::Value(id.clone());
+        let events = engine.journal().events_for_node(&node_id);
+        let started = events
+            .iter()
+            .find(|event| matches!(event.kind, EventKind::Started))?;
+        match &started.payload {
+            Some(EventPayload::Custom(slug)) => Some(slug.clone()),
+            _ => None,
+        }
+    }
+
+    /// The 2-cell synthetic module — param `a` = `Real(5.0)`, let `b = a * 2.0`
+    /// — mirroring `freshness_propagation.rs`'s `two_cell_module`.
+    fn two_cell_module() -> reify_compiler::CompiledModule {
+        let e = "T";
+        CompiledModuleBuilder::new(ModulePath::single("test"))
+            .template(
+                TopologyTemplateBuilder::new(e)
+                    .param(
+                        e,
+                        "a",
+                        Type::dimensionless_scalar(),
+                        Some(literal(Value::Real(5.0))),
+                    )
+                    .let_binding(
+                        e,
+                        "b",
+                        Type::dimensionless_scalar(),
+                        binop(
+                            BinOp::Mul,
+                            value_ref_typed(e, "a", Type::dimensionless_scalar()),
+                            literal(Value::Real(2.0)),
+                        ),
+                    )
+                    .build(),
+            )
+            .build()
+    }
+
+    /// RED: `evaluate_let_bindings`' main let commit provenance + freshness
+    /// preserved.
+    ///
+    /// RED today: the main let commit (engine_eval.rs ~@9308-9338) emits its
+    /// `Started` journal event with `payload: None` (@~8746) and writes the
+    /// cache leg via a direct
+    /// `record_evaluation_propagating_freshness(val, Determined, false)` call,
+    /// so `started_payload(&engine, &b)` is `None`, not `Some("cold-eval")`.
+    /// GREEN after impl-3 migrates the commit onto `commit_cell_result` with
+    /// `TraceSource::ColdEval` + `CacheLeg::RecordPropagating { still_refining:
+    /// false }` (removing the superseded manual `Started(None)`/`Completed` pair
+    /// so `commit_cell_result`'s `Started` is the sole one observed).
+    ///
+    /// Characterization guards (must stay green BEFORE and after — the migration
+    /// is behaviour-preserving in the value/determinacy/freshness dimensions):
+    /// `b` = `(Real(10.0), Determined)` (`a`=`Real(5.0)` × `2.0`;
+    /// `UnconditionalDetermined` hard-codes `Determined`) and `b`'s cache
+    /// freshness stays `Freshness::Final` (all-`Final` inputs — an absent `a`
+    /// reads as `Final` per `freshness()`'s default-Final-on-absent contract —
+    /// with `still_refining: false` derive `Final`).
+    #[test]
+    fn evaluate_let_bindings_main_let_provenance_and_freshness() {
+        let module = two_cell_module();
+        let template = &module.templates[0];
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+        let mut snapshot = Snapshot::from_compiled_module(&module);
+
+        let e = "T";
+        let a_id = ValueCellId::new(e, "a");
+        let b_id = ValueCellId::new(e, "b");
+
+        // Pre-seed param `a` (Final) into BOTH maps: `evaluate_let_bindings`
+        // reads `a`'s value from `values` (`eval_ctx_with_meta`) and its
+        // determinacy from `snapshot.values` (`with_determinacy`).
+        // `detect_let_cycle` only collects Let cells, so `a` (a Param) is never
+        // evaluated in this pass — it must already be present. `a`'s cache
+        // freshness is left absent (reads as `Final` by default), so `b`'s
+        // derived output freshness is `Final`.
+        let mut values = ValueMap::new();
+        values.insert(a_id.clone(), Value::Real(5.0));
+        snapshot
+            .values
+            .insert(a_id.clone(), (Value::Real(5.0), DeterminacyState::Determined));
+
+        let meta_map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let mut structured_detail: Vec<crate::engine_compute::StructuredComputeDetail> = Vec::new();
+        let runtime_sink = RefCell::new(Vec::new());
+
+        engine.evaluate_let_bindings(
+            template,
+            &mut values,
+            &mut snapshot,
+            1,
+            &[],
+            &meta_map,
+            &mut diagnostics,
+            &mut structured_detail,
+            &runtime_sink,
+        );
+
+        eprintln!("b started_payload = {:?}", started_payload(&engine, &b_id));
+        eprintln!("b snapshot value = {:?}", snapshot.values.get(&b_id));
+        eprintln!(
+            "b freshness = {:?}",
+            engine.cache_store().freshness(&NodeId::Value(b_id.clone()))
+        );
+        eprintln!("diagnostics = {:?}", diagnostics);
+
+        // (1) Provenance — RED today (the main let path's Started payload is None).
+        assert_eq!(
+            started_payload(&engine, &b_id),
+            Some("cold-eval".to_string()),
+            "evaluate_let_bindings' main let commit should carry the 'cold-eval' \
+             TraceSource slug once migrated onto commit_cell_result"
+        );
+
+        // (2) Value + determinacy preserved (characterization guard — green throughout).
+        assert_eq!(
+            snapshot.values.get(&b_id),
+            Some(&(Value::Real(10.0), DeterminacyState::Determined)),
+            "b = a * 2.0 = Real(10.0), Determined (UnconditionalDetermined) — \
+             preserved across the RecordPropagating migration"
+        );
+
+        // (3) Freshness preserved (characterization guard — green throughout).
+        assert_eq!(
+            engine.cache_store().freshness(&NodeId::Value(b_id.clone())),
+            Freshness::Final,
+            "b's cache freshness must stay Final (all-Final inputs, \
+             still_refining=false derive Final) — preserved across the \
+             RecordPropagating migration"
+        );
+    }
+}
