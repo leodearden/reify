@@ -7653,14 +7653,29 @@ impl Engine {
     ) {
         // Same shared, free-fn `build_merged_solver_problem` that cold
         // `dispatch_merged_cluster_solve` calls, with IDENTICAL arguments
-        // (cluster, templates, governance, values, functions, diagnostics)
-        // -- so warm and cold feed the solver byte-identical
-        // `ResolutionProblem`s (including the objective, via `governance`)
-        // for a within-cap `MergedSolve` cluster. This is what keeps
+        // (cluster, templates, governance, values, functions, diagnostics,
+        // plus the task #5188 expansion trio max_unfold_depth /
+        // max_unfold_nodes / trait_registry) -- so warm and cold feed the
+        // solver byte-identical `ResolutionProblem`s (including the objective,
+        // via `governance`) for a within-cap `MergedSolve` cluster. This is
+        // what keeps
         // `eval_and_eval_cached_emit_byte_identical_solver_no_progress_warning`
         // (tests/eval_cached_diagnostics.rs) and the capstone
         // `eval_vs_eval_cached_merged_cluster_values_equal`
         // (tests/merged_cluster_solve.rs, task #5118 step 7) green.
+        //
+        // α (task #5188): trait registry for objective/constraint-position
+        // structural-query expansion inside `build_merged_solver_problem`,
+        // built EXACTLY as cold `dispatch_merged_cluster_solve` builds it.
+        // `self.prelude` is `&'a [CompiledModule]` and `module` is a param, so
+        // this borrows neither `self` nor conflicts with the `&mut self`
+        // write-back below.
+        let expansion_trait_registry = crate::structural_query::build_trait_registry(
+            self.prelude
+                .iter()
+                .flat_map(|m| m.trait_defs.iter())
+                .chain(module.trait_defs.iter()),
+        );
         let problem = build_merged_solver_problem(
             cluster,
             &module.templates,
@@ -7668,6 +7683,9 @@ impl Engine {
             values,
             Arc::clone(&self.functions),
             diagnostics,
+            self.max_unfold_depth,
+            self.max_unfold_nodes,
+            &expansion_trait_registry,
         );
 
         // Mirrors cold `dispatch_merged_cluster_solve`'s empty-auto_params
