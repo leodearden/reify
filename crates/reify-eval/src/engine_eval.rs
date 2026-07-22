@@ -1450,6 +1450,263 @@ fn build_auto_param_list(cells: &[&ValueCellDecl]) -> Vec<AutoParam> {
 /// child template (task #4710): these are excluded from `auto_params` (and hence
 /// from strict-uniqueness verification) and must be written as `Determined` by the
 /// caller alongside the solver-resolved autos.
+/// Run the SAME three structural-query passes as the Let-cell expansion loop
+/// (`expand_structural_query` → `apply_trait_filters` → `apply_cost_aggregation`)
+/// over an objective-term or constraint expression IN PLACE, against its OWNING
+/// `template`, before it enters a [`ResolutionProblem`] (task #5188 α, PRD
+/// `docs/prds/v0_6/whole-model-joint-drive-seam.md` §4/§5).
+///
+/// Without this, `minimize cost(self.descendants)` /
+/// `constraint _ > cost(self.descendants)` reach the solver as a raw `cost`
+/// `FunctionCall` → `eval_objective_set` returns `None` →
+/// `UNDEF_OBJECTIVE_PENALTY` (a flat, zero-gradient objective). Mirrors the
+/// Let-cell loop's contract exactly (engine_eval.rs), INCLUDING the
+/// `contains_structural_query` fast-path that preserves empty-case identity: an
+/// expression with no `self.children`/`.members`/`.descendants` placeholder is
+/// left byte-identical, so a plain `minimize x` objective / non-structural
+/// constraint is untouched (`dependent_cells`-empty ⇒ legacy behaviour).
+#[allow(clippy::too_many_arguments)]
+fn expand_solver_position_expr(
+    expr: &mut CompiledExpr,
+    template: &TopologyTemplate,
+    all_templates: &[TopologyTemplate],
+    values: &ValueMap,
+    max_unfold_depth: usize,
+    max_unfold_nodes: usize,
+    trait_registry: &HashMap<String, &reify_compiler::CompiledTrait>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if !crate::structural_query::contains_structural_query(expr) {
+        return;
+    }
+    let mut node_budget = max_unfold_nodes;
+    crate::structural_query::expand_structural_query(
+        expr,
+        template,
+        all_templates,
+        values,
+        max_unfold_depth,
+        &mut node_budget,
+        diagnostics,
+    );
+    // δ: rewrite filter(list_literal, TraitObject) nodes to filtered subsets.
+    crate::structural_query::apply_trait_filters(expr, all_templates, trait_registry);
+    // γ (task 5015): rewrite cost(list_literal) → [ValueRef(line_cost) ...].sum.
+    // MUST run after apply_trait_filters so self.descendants / any explicit
+    // filter(...) is already a list_literal of entity-refs.
+    crate::structural_query::apply_cost_aggregation(expr, all_templates, trait_registry);
+}
+
+/// True iff `expr` is an `@optimized` `UserFunctionCall` — it resolves via
+/// `find_matching_compiled_function` to a `CompiledFunction` whose
+/// `optimized_target` is `Some(_)`. The compute-dispatch-bypass predicate (same
+/// shape as the reeval-cone `@optimized` exclusion elsewhere in this file):
+/// such a cell's value comes from the compute-dispatch registry, so it must NOT
+/// be re-folded through plain `reify_expr::eval_expr` (which carries no registry)
+/// in the post-solve write-back or β's per-trial fold — doing so would clobber
+/// the dispatched result with the inline-fallback/Undef.
+fn is_optimized_userfn_cell(expr: &CompiledExpr, functions: &[CompiledFunction]) -> bool {
+    matches!(
+        &expr.kind,
+        CompiledExprKind::UserFunctionCall { function_name, args }
+            if reify_expr::find_matching_compiled_function(functions, function_name, args)
+                .and_then(|f| f.optimized_target.as_ref())
+                .is_some()
+    )
+}
+
+/// Build the authoritative, topologically-ordered list of coupled non-auto
+/// value cells to re-materialize after a solve — the single cross-scope
+/// authority both the post-solve write-back (task #5188 step-8) and β's
+/// per-trial fold consume, so the two cannot diverge (PRD
+/// `docs/prds/v0_6/whole-model-joint-drive-seam.md` §6.1/§6.3).
+///
+/// Reuses the primitives the engine already trusts for ordering
+/// (`extract_value_deps` for transitive-closure edges; `extract_dependency_trace`
+/// plus `topological_sort` for the induced sub-DAG) rather than extending
+/// `detect_let_cycle`, whose single-template contract must stay intact while the
+/// joint-drive order is inherently cross-template (PRD §12 open-Q1).
+///
+/// * `seed_exprs` — the ALREADY-EXPANDED objective term exprs + constraint exprs
+///   (so `cost(self.descendants)` is already `[ValueRef(line_cost) ...].sum`).
+/// * `all_templates` — supplies every non-auto cell's `default_expr`, cross-scope.
+/// * `auto_ids` — the problem's `auto_param` ids (this scope's regular autos for
+///   the single-scope builder; the cluster-wide union for the merged builder);
+///   the reachability target for membership rule (b).
+/// * `functions` — the problem's `CompiledFunction` table; used to resolve
+///   `@optimized` `UserFunctionCall` cells (via `is_optimized_userfn_cell`) so
+///   they can be excluded from the surviving set.
+///
+/// Membership: a cell survives iff it (a) transitively feeds the objective/
+/// constraints (is in the seed closure) AND (b) transitively reads ≥1 `auto_id`
+/// AND is non-auto AND carries a plain foldable `default_expr` AND is NOT an
+/// `@optimized` cell. ComputeNode-produced cells (no plain `default_expr`) are
+/// excluded by construction (the map only holds cells with a `default_expr`);
+/// `@optimized` `UserFunctionCall` cells are excluded by `is_optimized_userfn_cell`
+/// in step (e) — they must stay FROZEN (their value came from the compute-dispatch
+/// registry; re-folding them through plain `eval_expr` would clobber it). PRD
+/// design-decision 5's known limitation: an `@optimized` coupled cell is not
+/// joint-driven; it is re-materialized only by its own dispatch. Such cells
+/// REMAIN in the closure/reachability computation (so their transitive
+/// auto-reachability still propagates to genuine downstream coupled cells); only
+/// the FINAL surviving node set drops them.
+fn build_dependent_cells(
+    seed_exprs: &[&CompiledExpr],
+    all_templates: &[TopologyTemplate],
+    auto_ids: &HashSet<ValueCellId>,
+    functions: &[CompiledFunction],
+) -> Vec<(ValueCellId, CompiledExpr)> {
+    // (a) Cross-template map: every non-auto cell that carries a plain
+    //     default_expr, keyed by id. Autos have no default_expr and are skipped;
+    //     ComputeNode-produced cells without a foldable default_expr never enter.
+    let mut cell_map: HashMap<ValueCellId, &CompiledExpr> = HashMap::new();
+    for template in all_templates {
+        for cell in &template.value_cells {
+            if cell.kind.is_auto() {
+                continue;
+            }
+            if let Some(expr) = cell.default_expr.as_ref() {
+                cell_map.entry(cell.id.clone()).or_insert(expr);
+            }
+        }
+    }
+
+    // (b) Seed the closure with the DIRECT reads of every expanded objective
+    //     term / constraint expr, then (c) take the transitive closure by
+    //     following each in-map cell's default_expr reads.
+    let mut closure: HashSet<ValueCellId> = HashSet::new();
+    let mut frontier: Vec<ValueCellId> = Vec::new();
+    for expr in seed_exprs {
+        for id in crate::deps::extract_value_deps(expr) {
+            if closure.insert(id.clone()) {
+                frontier.push(id);
+            }
+        }
+    }
+    while let Some(id) = frontier.pop() {
+        if let Some(expr) = cell_map.get(&id) {
+            for dep in crate::deps::extract_value_deps(expr) {
+                if closure.insert(dep.clone()) {
+                    frontier.push(dep);
+                }
+            }
+        }
+    }
+
+    // (d) Auto-reachability over the closure: reverse-propagate "transitively
+    //     reads an auto" from `auto_ids` up through reader edges.
+    //     `reverse[d]` = cells whose default_expr reads `d`.
+    let mut reverse: HashMap<ValueCellId, Vec<ValueCellId>> = HashMap::new();
+    for id in &closure {
+        if let Some(expr) = cell_map.get(id) {
+            for dep in crate::deps::extract_value_deps(expr) {
+                reverse.entry(dep).or_default().push(id.clone());
+            }
+        }
+    }
+    let mut reaches_auto: HashSet<ValueCellId> = HashSet::new();
+    let mut ra_frontier: Vec<ValueCellId> = Vec::new();
+    for id in &closure {
+        if auto_ids.contains(id) && reaches_auto.insert(id.clone()) {
+            ra_frontier.push(id.clone());
+        }
+    }
+    while let Some(id) = ra_frontier.pop() {
+        if let Some(readers) = reverse.get(&id) {
+            for reader in readers {
+                if reaches_auto.insert(reader.clone()) {
+                    ra_frontier.push(reader.clone());
+                }
+            }
+        }
+    }
+
+    // (e) Restrict to surviving cells (non-auto, in-map, transitively reads an
+    //     auto) and topologically sort the induced sub-DAG via the same
+    //     primitive `detect_let_cycle` uses (in-set edges only; deps precede
+    //     readers). Cells dropped by a cycle are simply absent — cycle
+    //     diagnostics remain `detect_let_cycle`'s single-template job.
+    let mut nodes: HashSet<NodeId> = HashSet::new();
+    let mut traces: HashMap<NodeId, DependencyTrace> = HashMap::new();
+    for id in &closure {
+        if auto_ids.contains(id) || !reaches_auto.contains(id) {
+            continue;
+        }
+        if let Some(expr) = cell_map.get(id) {
+            // @optimized exclusion (task #5188 step-6): drop a cell whose
+            // default_expr is an @optimized UserFunctionCall from the SURVIVING
+            // set. It stayed in `cell_map`/closure/`reaches_auto` above so its
+            // transitive auto-reachability still propagates to genuine downstream
+            // coupled cells, but it must NOT itself be re-folded in the write-back
+            // / β's per-trial fold — its value comes from the compute-dispatch
+            // registry (PRD design-decision 5's known limitation).
+            if is_optimized_userfn_cell(expr, functions) {
+                continue;
+            }
+            let node = NodeId::Value(id.clone());
+            traces.insert(node.clone(), extract_dependency_trace(expr));
+            nodes.insert(node);
+        }
+    }
+
+    // (f) Pair each surviving id with a clone of its default_expr, in topo order.
+    topological_sort(&nodes, &traces)
+        .into_iter()
+        .filter_map(|node| match node {
+            NodeId::Value(id) => cell_map.get(&id).map(|expr| (id.clone(), (*expr).clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Post-solve write-back of the coupled non-auto value-cells in the SINGLE
+/// authoritative cross-scope order `problem.dependent_cells` carries (task #5188
+/// step-8, PRD `docs/prds/v0_6/whole-model-joint-drive-seam.md` §6.3 PRIMARY
+/// INVARIANT). Folds `dependent_cells` IN STORED ORDER, evaluating each cell's
+/// `default_expr` against the running `values` and recording the result as
+/// `Determined` in both `values` and `snapshot_values`.
+///
+/// `dependent_cells` is the one list `build_dependent_cells` produced — the same
+/// authority β's per-trial fold consumes — so materializing the coupled cells
+/// here (rather than re-deriving a per-member order) makes the write-back and
+/// β's fold structurally incapable of diverging. A cross-scope Let coupling
+/// (`A.total = A.line_cost + B.total`) resolves correctly because the
+/// topological order places every producer before its reader ACROSS scopes,
+/// which the per-member `evaluate_let_bindings` loop (`detect_let_cycle`,
+/// single-template) cannot honour when it visits the reader's scope first.
+///
+/// Membership already excludes auto params and `@optimized` cells
+/// (`build_dependent_cells`), so this never overwrites a solver-resolved auto
+/// nor re-folds a compute-dispatched cell through plain `eval_expr`. An empty
+/// `dependent_cells` makes this a no-op ⇒ byte-identical to the pre-joint-drive
+/// write-back. Mirrors `reeval_cone_cell`'s eval-context shape
+/// (`eval_ctx_with_meta` + `with_determinacy` + `with_runtime_diagnostics`).
+fn materialize_dependent_cells(
+    dependent_cells: &[(ValueCellId, CompiledExpr)],
+    values: &mut ValueMap,
+    snapshot_values: &mut PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    runtime_sink: &RefCell<Vec<Diagnostic>>,
+) {
+    for (id, expr) in dependent_cells {
+        // The context is rebuilt per cell so each fold step reads the values
+        // (and determinacy) the PRIOR steps just wrote — the running fold that
+        // makes producer-before-reader ordering meaningful. The immutable
+        // borrows of `values`/`snapshot_values` end at the `;` (the temporary
+        // ctx is dropped), so the inserts below are unconflicted.
+        let value = reify_expr::eval_expr(
+            expr,
+            &eval_ctx_with_meta(values, functions, meta_map)
+                .with_determinacy(snapshot_values)
+                .with_runtime_diagnostics(runtime_sink),
+        );
+        values.insert(id.clone(), value.clone());
+        snapshot_values.insert(id.clone(), (value, DeterminacyState::Determined));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn build_solver_problem(
     template: &reify_compiler::TopologyTemplate,
     objective: Option<&ObjectiveSet>,
@@ -1457,6 +1714,10 @@ fn build_solver_problem(
     functions: Arc<[CompiledFunction]>,
     all_templates: &[reify_compiler::TopologyTemplate],
     snap_values: &PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+    max_unfold_depth: usize,
+    max_unfold_nodes: usize,
+    trait_registry: &HashMap<String, &reify_compiler::CompiledTrait>,
+    diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<(ResolutionProblem, Vec<(ValueCellId, Value)>)> {
     // Collect auto cells once; derive both the id-set (for constraint
     // filtering) and the AutoParam list from the same filtered slice to
@@ -1525,8 +1786,61 @@ fn build_solver_problem(
     let auto_ids: HashSet<&ValueCellId> =
         regular_auto_cells.iter().map(|cell| &cell.id).collect();
 
-    let filtered_constraints = filter_constraints_reading_autos(&template.constraints, &auto_ids);
+    let mut filtered_constraints =
+        filter_constraints_reading_autos(&template.constraints, &auto_ids);
     let auto_param_list = build_auto_param_list(&regular_auto_cells);
+
+    // α (task #5188): expand objective/constraint-position structural queries
+    // (`cost(self.descendants)`, `self.members`, …) against the OWNING
+    // `template` BEFORE the exprs enter the ResolutionProblem, so the solver
+    // sees `[ValueRef(line_cost) ...].sum` instead of a raw `cost` FunctionCall
+    // (which `eval_objective_set` can't read → UNDEF_OBJECTIVE_PENALTY, a flat
+    // zero-gradient objective). The ε constraint pass rewrites
+    // `snapshot.graph.constraints`, NOT `template.constraints`, so the exprs
+    // filtered here are still unexpanded. The `contains_structural_query`
+    // fast-path inside the helper keeps structural-query-free exprs
+    // byte-identical (empty-case identity).
+    for (_id, cexpr) in &mut filtered_constraints {
+        expand_solver_position_expr(
+            cexpr,
+            template,
+            all_templates,
+            values,
+            max_unfold_depth,
+            max_unfold_nodes,
+            trait_registry,
+            diagnostics,
+        );
+    }
+    let objective = objective.cloned().map(|mut obj| {
+        for term in &mut obj.terms {
+            expand_solver_position_expr(
+                &mut term.expr,
+                template,
+                all_templates,
+                values,
+                max_unfold_depth,
+                max_unfold_nodes,
+                trait_registry,
+                diagnostics,
+            );
+        }
+        obj
+    });
+
+    // α (task #5188 step-4): build the authoritative dependent-cell order from
+    // the EXPANDED objective/constraint exprs (seeds), over this scope's regular
+    // autos. Inert until the step-8 write-back consumes it; empty ⇒ legacy.
+    let dependent_cells = {
+        let mut seed_exprs: Vec<&CompiledExpr> =
+            filtered_constraints.iter().map(|(_, e)| e).collect();
+        if let Some(obj) = objective.as_ref() {
+            seed_exprs.extend(obj.terms.iter().map(|t| &t.expr));
+        }
+        let dep_auto_ids: HashSet<ValueCellId> =
+            regular_auto_cells.iter().map(|c| c.id.clone()).collect();
+        build_dependent_cells(&seed_exprs, all_templates, &dep_auto_ids, &functions)
+    };
 
     // Pre-populate current_values with pinned connector values so any remaining
     // constraint that transitively reads a pinned cell sees the correct value.
@@ -1537,10 +1851,11 @@ fn build_solver_problem(
 
     Some((
         ResolutionProblem {
+            dependent_cells,
             auto_params: auto_param_list,
             constraints: filtered_constraints,
             current_values,
-            objective: objective.cloned(),
+            objective,
             // Moved in by value — callers pass Arc::clone, so this is O(1).
             // The merged table is shared with Engine.functions (tasks #1997, #2286).
             functions,
@@ -1613,6 +1928,7 @@ fn build_solver_problem(
 /// no memoization. This mirrors the existing per-template cost, and cluster
 /// size is capped at `WHOLE_MODEL_CLUSTER_DIM_CAP` (12), so the constant
 /// factor stays small; memoize the trace if profiling ever shows otherwise.
+#[allow(clippy::too_many_arguments)]
 fn build_merged_solver_problem(
     cluster: &crate::resolve_order::Cluster,
     templates: &[TopologyTemplate],
@@ -1620,6 +1936,9 @@ fn build_merged_solver_problem(
     values: &ValueMap,
     functions: Arc<[CompiledFunction]>,
     diagnostics: &mut Vec<Diagnostic>,
+    max_unfold_depth: usize,
+    max_unfold_nodes: usize,
+    trait_registry: &HashMap<String, &reify_compiler::CompiledTrait>,
 ) -> ResolutionProblem {
     // Union each member's auto cells, in cluster.scopes (ascending source
     // index) × value_cells declaration order — a pure function of stable Vec
@@ -1669,8 +1988,26 @@ fn build_merged_solver_problem(
     // constraint reading a co-solved sibling member's auto is still picked up.
     let mut filtered_constraints = Vec::new();
     for &idx in &cluster.scopes {
-        filtered_constraints
-            .extend(filter_constraints_reading_autos(&templates[idx].constraints, &auto_ids));
+        let mut member_constraints =
+            filter_constraints_reading_autos(&templates[idx].constraints, &auto_ids);
+        // α (task #5188): expand each member's constraint-position structural
+        // queries against its OWN template (`self.descendants`/`.members` is
+        // relative to the member's own scope), BEFORE they enter the merged
+        // problem — mirrors `build_solver_problem`. The fast-path keeps
+        // structural-query-free constraints byte-identical.
+        for (_id, cexpr) in &mut member_constraints {
+            expand_solver_position_expr(
+                cexpr,
+                &templates[idx],
+                templates,
+                values,
+                max_unfold_depth,
+                max_unfold_nodes,
+                trait_registry,
+                diagnostics,
+            );
+        }
+        filtered_constraints.extend(member_constraints);
     }
 
     let auto_param_list = build_auto_param_list(&auto_cells);
@@ -1727,7 +2064,34 @@ fn build_merged_solver_problem(
                 // earlier sibling that inherits the same objective.
                 continue;
             }
-            spanning_terms.extend(obj.terms.iter().cloned());
+            // α (task #5188): expand each contributing term's structural query
+            // against its OWNING template BEFORE folding into `spanning_terms`.
+            // `self.descendants`/`.members` is relative to the objective's
+            // DECLARING scope, so owner = the member's own template, or the
+            // inherited container template when this objective was inherited
+            // (§6.1). The opaque per-owner fold below erases per-term ownership,
+            // so expansion MUST happen here while the owner is still in scope
+            // (else `self` would resolve against the wrong template).
+            let owner_template = match governance[idx].inherited_from.as_deref() {
+                Some(container_name) => templates
+                    .iter()
+                    .find(|t| t.name == container_name)
+                    .unwrap_or(&templates[idx]),
+                None => &templates[idx],
+            };
+            for mut term in obj.terms.iter().cloned() {
+                expand_solver_position_expr(
+                    &mut term.expr,
+                    owner_template,
+                    templates,
+                    values,
+                    max_unfold_depth,
+                    max_unfold_nodes,
+                    trait_registry,
+                    diagnostics,
+                );
+                spanning_terms.push(term);
+            }
             // `combination` carries through from the first distinct
             // contributing member (amendment, task #5014) instead of being
             // hardcoded to `WeightedSum`: the common single-objective-owner
@@ -1801,7 +2165,22 @@ fn build_merged_solver_problem(
         })
     };
 
+    // α (task #5188 step-4): authoritative CROSS-SCOPE dependent-cell order from
+    // the EXPANDED spanning objective + merged constraint exprs (seeds), over the
+    // cluster-wide auto union. Inert until the step-8 write-back; empty ⇒ legacy.
+    let dependent_cells = {
+        let mut seed_exprs: Vec<&CompiledExpr> =
+            filtered_constraints.iter().map(|(_, e)| e).collect();
+        if let Some(obj) = objective.as_ref() {
+            seed_exprs.extend(obj.terms.iter().map(|t| &t.expr));
+        }
+        let dep_auto_ids: HashSet<ValueCellId> =
+            auto_cells.iter().map(|c| c.id.clone()).collect();
+        build_dependent_cells(&seed_exprs, templates, &dep_auto_ids, &functions)
+    };
+
     ResolutionProblem {
+        dependent_cells,
         auto_params: auto_param_list,
         constraints: filtered_constraints,
         current_values: values.clone(),
@@ -4194,6 +4573,14 @@ impl Engine {
                     Arc::clone(&functions),
                     &module.templates,
                     &snapshot.values,
+                    // α (task #5188): objective/constraint-position expansion
+                    // context. `sq_trait_registry` (built above for the Let-cell
+                    // pass) borrows only &'static prelude + &module — never self
+                    // — so reusing it here is free of a &mut self borrow clash.
+                    self.max_unfold_depth,
+                    self.max_unfold_nodes,
+                    &sq_trait_registry,
+                    &mut diagnostics,
                 ) else {
                     continue;
                 };
@@ -4400,6 +4787,20 @@ impl Engine {
                             &meta_map,
                             &mut diagnostics,
                             &mut structured_detail,
+                            &runtime_sink,
+                        );
+
+                        // α (task #5188 step-8): materialize the coupled cells in
+                        // the SINGLE authoritative cross-scope order
+                        // `problem.dependent_cells` carries (PRD §6.3), after the
+                        // per-template Let re-eval. Empty ⇒ no-op ⇒ byte-identical
+                        // to the pre-joint-drive write-back.
+                        materialize_dependent_cells(
+                            &problem.dependent_cells,
+                            &mut values,
+                            &mut snapshot.values,
+                            &problem.functions,
+                            &meta_map,
                             &runtime_sink,
                         );
                     }
@@ -5525,6 +5926,16 @@ impl Engine {
         structured_detail: &mut Vec<crate::engine_compute::StructuredComputeDetail>,
         runtime_sink: &RefCell<Vec<Diagnostic>>,
     ) {
+        // α (task #5188): trait registry for objective/constraint-position
+        // structural-query expansion inside build_merged_solver_problem.
+        // `self.prelude` is &'static and `module` is a param, so this borrows
+        // neither self nor conflicts with the &mut self write-back below.
+        let expansion_trait_registry = crate::structural_query::build_trait_registry(
+            self.prelude
+                .iter()
+                .flat_map(|m| m.trait_defs.iter())
+                .chain(module.trait_defs.iter()),
+        );
         let problem = build_merged_solver_problem(
             cluster,
             &module.templates,
@@ -5532,6 +5943,9 @@ impl Engine {
             values,
             Arc::clone(&functions),
             diagnostics,
+            self.max_unfold_depth,
+            self.max_unfold_nodes,
+            &expansion_trait_registry,
         );
 
         // Amendment, task #5014: mirror `build_solver_problem`'s `None`-means-
@@ -5868,6 +6282,22 @@ impl Engine {
                         runtime_sink,
                     );
                 }
+
+                // α (task #5188 step-8): after the per-member Let re-eval,
+                // materialize the coupled cells in the SINGLE authoritative
+                // CROSS-SCOPE order `problem.dependent_cells` carries (PRD §6.3),
+                // so a cross-scope Let coupling (e.g. `A.total` reading `B.total`)
+                // resolves producer-before-reader regardless of `cluster.scopes`
+                // iteration order — the per-member `detect_let_cycle` loop above
+                // orders only WITHIN a template. Empty ⇒ no-op ⇒ byte-identical.
+                materialize_dependent_cells(
+                    &problem.dependent_cells,
+                    values,
+                    &mut snapshot.values,
+                    &problem.functions,
+                    &meta_map,
+                    runtime_sink,
+                );
             }
             SolveResult::Infeasible {
                 diagnostics: solver_diags,
@@ -6613,6 +7043,18 @@ impl Engine {
             let containment =
                 crate::scope_containment::ContainmentIndex::new(&module.templates);
             let governance = governing_objective(&module.templates, &containment);
+            // α (task #5188): objective/constraint-position structural-query
+            // expansion registry — built identically to eval()'s
+            // `sq_trait_registry` (prelude first so module traits shadow) so
+            // both paths hand the solver byte-identical expanded exprs. Borrows
+            // only &'static prelude + &module, never self, so it lives across
+            // the &mut self resolution loop below without a borrow clash.
+            let expansion_trait_registry = crate::structural_query::build_trait_registry(
+                self.prelude
+                    .iter()
+                    .flat_map(|m| m.trait_defs.iter())
+                    .chain(module.trait_defs.iter()),
+            );
 
             for &idx in &ro.order {
                 let template = &module.templates[idx];
@@ -6632,6 +7074,10 @@ impl Engine {
                     Arc::clone(&self.functions),
                     &module.templates,
                     &snapshot_values,
+                    self.max_unfold_depth,
+                    self.max_unfold_nodes,
+                    &expansion_trait_registry,
+                    &mut diagnostics,
                 ) {
                     // Per-iteration cost of `lookup_solver_for_module`: one
                     // `solver_pragma.as_ref()` match plus at most one

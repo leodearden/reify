@@ -436,6 +436,7 @@ impl Engine {
                 let objective = self.objectives.get(scope_name).cloned();
 
                 let problem = ResolutionProblem {
+                    dependent_cells: Vec::new(),
                     auto_params: auto_param_list.clone(),
                     constraints: filtered_constraints,
                     current_values: snapshot_values.clone(),

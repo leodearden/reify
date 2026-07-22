@@ -2291,6 +2291,7 @@ mod tests {
         let param_x = ValueCellId::new("Part", "x");
         let param_y = ValueCellId::new("Part", "y");
         let problem = ResolutionProblem {
+            dependent_cells: Vec::new(),
             auto_params: vec![
                 AutoParam {
                     id: param_x.clone(),
@@ -2351,6 +2352,7 @@ mod tests {
 
         let param_id = ValueCellId::new("Part", "x");
         let problem = ResolutionProblem {
+            dependent_cells: Vec::new(),
             auto_params: vec![AutoParam {
                 id: param_id.clone(),
                 param_type: Type::length(),
@@ -2426,6 +2428,7 @@ mod tests {
 
         let param_id = ValueCellId::new("Part", "x");
         let problem = ResolutionProblem {
+            dependent_cells: Vec::new(),
             auto_params: vec![AutoParam {
                 id: param_id.clone(),
                 param_type: Type::length(),
@@ -2811,6 +2814,7 @@ mod tests {
 
         let solver = DimensionalSolver;
         let problem = ResolutionProblem {
+            dependent_cells: Vec::new(),
             auto_params: vec![],
             constraints: vec![],
             current_values: ValueMap::new(),
@@ -3105,6 +3109,7 @@ mod tests {
         let lt_expr = CompiledExpr::binop(BinOp::Lt, thickness_ref, twenty_mm, Type::Bool);
 
         let problem = ResolutionProblem {
+            dependent_cells: Vec::new(),
             auto_params: vec![AutoParam {
                 id: thickness_id.clone(),
                 param_type: Type::length(),
@@ -3168,6 +3173,7 @@ mod tests {
         let lt_expr = CompiledExpr::binop(BinOp::Lt, x_ref, five_mm, Type::Bool);
 
         let problem = ResolutionProblem {
+            dependent_cells: Vec::new(),
             auto_params: vec![AutoParam {
                 id: x_id.clone(),
                 param_type: Type::length(),
@@ -3230,6 +3236,7 @@ mod tests {
         let objective = ObjectiveSet::single(ObjectiveSense::Minimize, thickness_ref);
 
         let problem = ResolutionProblem {
+            dependent_cells: Vec::new(),
             auto_params: vec![AutoParam {
                 id: thickness_id.clone(),
                 param_type: Type::length(),
@@ -3371,6 +3378,7 @@ mod tests {
         let lt_sum = CompiledExpr::binop(BinOp::Lt, sum, two_hundred_mm, Type::Bool);
 
         let problem = ResolutionProblem {
+            dependent_cells: Vec::new(),
             auto_params: vec![
                 AutoParam {
                     id: width_id.clone(),
@@ -3442,6 +3450,7 @@ mod tests {
         let gt_expr = CompiledExpr::binop(BinOp::Gt, x_ref, five_mm, Type::Bool);
 
         let problem = ResolutionProblem {
+            dependent_cells: Vec::new(),
             auto_params: vec![AutoParam {
                 id: x_id.clone(),
                 param_type: Type::length(),
@@ -3500,6 +3509,7 @@ mod tests {
         let lt_expr = CompiledExpr::binop(BinOp::Lt, x_ref, fifty_mm, Type::Bool);
 
         let problem = ResolutionProblem {
+            dependent_cells: Vec::new(),
             auto_params: vec![AutoParam {
                 id: x_id.clone(),
                 param_type: Type::length(),
@@ -4079,6 +4089,7 @@ mod tests {
         );
 
         let problem = ResolutionProblem {
+            dependent_cells: Vec::new(),
             auto_params: vec![AutoParam {
                 id: x_id.clone(),
                 param_type: Type::length(),
@@ -4202,6 +4213,7 @@ mod tests {
         current.insert(y_id.clone(), mm(40.0)); // 0.040 m — off the [2mm,50mm] midpoint (26mm)
 
         ResolutionProblem {
+            dependent_cells: Vec::new(),
             auto_params: vec![
                 AutoParam {
                     id: x_id,
@@ -4360,6 +4372,7 @@ mod tests {
         current.insert(x_id.clone(), mm(10.0)); // 10mm — already feasible
 
         let problem = ResolutionProblem {
+            dependent_cells: Vec::new(),
             auto_params: vec![AutoParam {
                 id: x_id.clone(),
                 param_type: Type::length(),
@@ -4414,6 +4427,7 @@ mod tests {
         let lt_expr = lt(x_ref, fifty_mm);
 
         let problem = ResolutionProblem {
+            dependent_cells: Vec::new(),
             auto_params: vec![AutoParam {
                 id: x_id.clone(),
                 param_type: Type::length(),
@@ -4624,6 +4638,7 @@ mod tests {
         );
 
         let problem = ResolutionProblem {
+            dependent_cells: Vec::new(),
             auto_params: vec![AutoParam {
                 id: x_id.clone(),
                 param_type: Type::length(),
@@ -4742,6 +4757,7 @@ mod tests {
         );
 
         let problem = ResolutionProblem {
+            dependent_cells: Vec::new(),
             auto_params: vec![AutoParam {
                 id: x_id.clone(),
                 param_type: Type::length(),
@@ -4854,6 +4870,7 @@ mod tests {
         );
 
         let problem = ResolutionProblem {
+            dependent_cells: Vec::new(),
             auto_params: vec![AutoParam {
                 id: x_id.clone(),
                 param_type: Type::length(),
@@ -4921,6 +4938,7 @@ mod tests {
         let le_expr = CompiledExpr::binop(BinOp::Le, x_ref, eight_mm, Type::Bool);
 
         let problem = ResolutionProblem {
+            dependent_cells: Vec::new(),
             auto_params: vec![AutoParam {
                 id: x_id.clone(),
                 param_type: Type::length(),
@@ -5079,6 +5097,7 @@ mod tests {
         );
 
         let problem = ResolutionProblem {
+            dependent_cells: Vec::new(),
             auto_params: vec![AutoParam {
                 id: x_id.clone(),
                 param_type: Type::length(),
@@ -5167,6 +5186,7 @@ mod tests {
         );
 
         let problem = ResolutionProblem {
+            dependent_cells: Vec::new(),
             auto_params: vec![
                 AutoParam {
                     id: x_id.clone(),

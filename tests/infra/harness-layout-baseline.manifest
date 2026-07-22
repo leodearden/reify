@@ -538,6 +538,7 @@ crates/reify-eval/tests/integration_full_v01.rs
 crates/reify-eval/tests/interactive_edit_loop.rs
 crates/reify-eval/tests/isosurface_iso_option_e2e.rs
 crates/reify-eval/tests/isosurface_wiring_e2e.rs
+crates/reify-eval/tests/joint_drive_expansion_boundary.rs
 crates/reify-eval/tests/joint_origin_offset_e2e.rs
 crates/reify-eval/tests/journal.rs
 crates/reify-eval/tests/keyed_forall_eval.rs
