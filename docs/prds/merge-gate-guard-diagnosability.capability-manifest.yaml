@@ -1,0 +1,27 @@
+# Machine-readable twin of merge-gate-guard-diagnosability.capability-manifest.md
+# task_id stamped by commit_planning.
+prd: docs/prds/merge-gate-guard-diagnosability.md
+schema_version: 1
+tasks:
+  - label: "R1"
+    task_id: 5327
+    title: "kLOC guard Section 5: emit rule-(c) offender FAIL lines on live-scan failure"
+    capabilities:
+      - name: "offender-lines-in-merge-log"
+        binding: "capability→producer — Section-5 failure prints captured HARNESS_KLOC_CAP FAIL lines verbatim"
+        verdict: PASS
+        delivered_check:
+          kind: manual
+          reason: "output-on-failure behavior has no stable greppable token; acceptance = the leaf's fixture-forced failure test; guard self-run stays green on main"
+  - label: "R2"
+    task_id: 5328
+    title: "branch-scope verify triggers kLOC guard when diff adds top-level standalone crate test files"
+    capabilities:
+      - name: "at-source-guard-trigger"
+        binding: "capability→producer — branch verify names the offending added file pre-merge-queue"
+        verdict: PASS
+        delivered_check:
+          kind: grep
+          pattern: "test_harness_kloc_cap"
+          paths: ["scripts/verify.sh"]
+          expect: present
