@@ -775,6 +775,37 @@ impl Engine {
         self.realization_cache.clear();
     }
 
+    /// Reset all geometry kernels and drop the realization cache for a GUI
+    /// whole-file reload (task 5212).
+    ///
+    /// Must be called **exactly once per whole-file reload** — the GUI wires
+    /// it at the top of `EngineSession::check_with_solve_slot`, the single
+    /// funnel for `load_file`/`update_source`/`load_from_source`, and never on
+    /// a slider (parameter) edit. It does two coupled things, BOTH required:
+    ///
+    /// 1. Resets every registered geometry kernel (`GeometryKernel::reset`),
+    ///    freeing the previous design's resident native shapes. The reify-eval
+    ///    `Engine` and the kernels it owns are long-lived and reused across
+    ///    reloads, so without this the OCCT kernel's native `shapes` table
+    ///    grows unbounded over a long session.
+    /// 2. Clears the realization cache (via
+    ///    [`clear_realization_cache`](Self::clear_realization_cache)). GUI
+    ///    reloads preserve prior module identity, so build-2 entities collide
+    ///    on `entity_id` with build-1 and would cache-hit a build-1
+    ///    `KernelHandle` whose shape step 1 just evicted → `InvalidReference`
+    ///    → broken render. Clearing forces a cache-miss → fresh re-execution
+    ///    against the reset kernel.
+    ///
+    /// Reset alone frees the native shapes but leaves stale cache handles that
+    /// now resolve to `InvalidReference` (broken render); a cache-clear alone
+    /// keeps the render correct but frees no native memory. Together they
+    /// bound native memory AND keep the reload correct. Idempotent on a cold
+    /// engine (no kernel holds state; the cache is already empty).
+    pub fn reset_geometry_for_reload(&mut self) {
+        self.geometry_kernels.values_mut().for_each(|k| k.reset());
+        self.clear_realization_cache();
+    }
+
     /// Construct an Engine with the embedded stdlib as its prelude.
     ///
     /// **No compute trampolines are registered.** Call
