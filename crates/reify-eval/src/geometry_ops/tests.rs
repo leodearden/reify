@@ -3424,6 +3424,52 @@
         }
     }
 
+    /// A BARE (dimensionless) `t0_dx` offset in the scalar-triple
+    /// arbitrary_pattern form must be REJECTED — the offsets are translations
+    /// (length-semantic), so a bare value would be silently read as SI metres.
+    /// The op is dropped (Err) with a diagnostic naming `t0_dx` and Length.
+    #[test]
+    fn compile_geometry_op_arbitrary_pattern_bare_offset_rejected() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Arbitrary,
+            target: GeomRef::Step(0),
+            args: vec![
+                // BARE dimensionless t0_dx — must be rejected.
+                ("t0_dx".into(), literal_f64(0.01)),
+                ("t0_dy".into(), literal_f64(0.0)),
+                ("t0_dz".into(), literal_f64(0.0)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(
+            result.is_err(),
+            "bare (dimensionless) arbitrary_pattern offset t0_dx must drop the \
+             op, got: {:?}",
+            result
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("t0_dx") && d.message.contains("Length")),
+            "a diagnostic must name the t0_dx arg and the Length units \
+             requirement; got: {:?}",
+            diagnostics
+        );
+    }
+
     #[test]
     fn compile_geometry_op_linear_pattern_2d_missing_spacing2_returns_none() {
         let step_handles = vec![GeometryHandleId(42)];
