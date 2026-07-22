@@ -21,7 +21,7 @@ use reify_core::VersionId;
 use reify_eval::Engine;
 use reify_eval::cache::{CachedResult, NodeId};
 use reify_eval::journal::{EventKind, EventPayload};
-use reify_ir::Value;
+use reify_ir::{Freshness, Value};
 use reify_test_support::{make_engine, mm, parse_and_compile};
 
 /// Returns the payload of the FIRST `EventKind::Started` event recorded for
@@ -877,4 +877,79 @@ fn acceptance_parity_fixture_and_consolidated_cache_skip_audit() {
             },
         }
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// task #5238 — dominant main let/param + preserve-freshness re-serve migrations
+//
+// These tests EXTEND the γ (#5053) migration into the freshness dimension:
+// the two main let evaluators (`evaluate_params_and_lets_unified`,
+// `evaluate_let_bindings`) and the `eval_cached` preserve-freshness re-serves
+// route their per-cell commit through `commit_cell_result` via the new
+// freshness-carrying `CacheLeg` variants (`RecordPropagating` /
+// `RecordWithFreshness`, cell_commit.rs). See
+// `docs/prds/v0_6/eval-cell-commit-substrate.md` §2.4/§7.2 and esc-5053-3.
+// ─────────────────────────────────────────────────────────────────────────
+
+/// RED: `evaluate_params_and_lets_unified`'s main let commit provenance +
+/// freshness preserved.
+///
+/// RED today: the cold main-pass let evaluator (`evaluate_params_and_lets_unified`,
+/// engine_eval.rs — reached by `engine.eval()`, NOT `eval_cached`) emits its
+/// `Started` journal event with `payload: None` and writes the cache leg via a
+/// direct `record_evaluation_propagating_freshness(val, Determined, false)`
+/// call, so `started_payload(&engine, &y_id)` is `None`, not `Some("cold-eval")`.
+/// GREEN after impl-2 migrates the commit onto `commit_cell_result` with
+/// `TraceSource::ColdEval` + `CacheLeg::RecordPropagating { still_refining:
+/// false }` (removing the superseded manual `Started(None)`/`Completed` pair so
+/// `commit_cell_result`'s `Started` is the first — and only — one observed).
+///
+/// Characterization guards (must stay green BEFORE and after the migration —
+/// it is behaviour-preserving in the value/determinacy/freshness dimensions):
+/// `y`'s cache freshness stays `Freshness::Final` (all-`Final` inputs +
+/// `still_refining: false` derive `Final`, both pre-migration via
+/// `record_evaluation_propagating_freshness(val, Determined, false)` and after
+/// via `CacheLeg::RecordPropagating { still_refining: false }`), and
+/// `determined(y)` stays `Bool(true)` (`UnconditionalDetermined` preserved).
+#[test]
+fn params_and_lets_main_let_provenance_and_freshness() {
+    let module = parse_and_compile(PLAIN_LET_SRC);
+    let mut engine = make_engine();
+
+    // Cold eval reaches evaluate_params_and_lets_unified (NOT eval_cached).
+    let result = engine.eval(&module);
+
+    let y_id = ValueCellId::new("S", "y");
+    let y_det_id = ValueCellId::new("S", "y_det");
+
+    eprintln!("y started_payload = {:?}", started_payload(&engine, &y_id));
+    eprintln!(
+        "y freshness = {:?}",
+        engine.cache_store().freshness(&NodeId::Value(y_id.clone()))
+    );
+    eprintln!("y_det = {:?}", result.values.get(&y_det_id));
+
+    // (1) Provenance — RED today (the main let path's Started payload is None).
+    assert_eq!(
+        started_payload(&engine, &y_id),
+        Some("cold-eval".to_string()),
+        "evaluate_params_and_lets_unified's main let commit should carry the \
+         'cold-eval' TraceSource slug once migrated onto commit_cell_result"
+    );
+
+    // (2) Freshness preserved (characterization guard — green throughout).
+    assert_eq!(
+        engine.cache_store().freshness(&NodeId::Value(y_id.clone())),
+        Freshness::Final,
+        "y's cache freshness must stay Final (all-Final inputs, still_refining=false \
+         derive Final) — preserved across the RecordPropagating migration"
+    );
+
+    // (3) Determinacy preserved (characterization guard — green throughout).
+    assert_eq!(
+        result.values.get(&y_det_id),
+        Some(&Value::Bool(true)),
+        "y should be Determined -> determined(y) = true (UnconditionalDetermined \
+         rule, preserved across the migration boundary)"
+    );
 }
