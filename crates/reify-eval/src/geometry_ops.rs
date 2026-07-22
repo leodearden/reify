@@ -229,6 +229,69 @@ pub(crate) fn eval_named_arg_f64(
     }
 }
 
+/// Look up a named LENGTH-semantic argument, evaluate it with full context,
+/// and require a finite LENGTH-dimensioned `Value::Scalar`, returning its SI
+/// value (metres).
+///
+/// This is the units chokepoint for the pattern/mirror length-semantic args
+/// (spacing, mirror-plane origin, arbitrary-pattern offsets). Unlike
+/// [`eval_named_arg_f64`] — whose `Value::as_f64` silently reads a BARE
+/// `Value::Real(10.0)` as **10 SI metres** and a `10mm` Scalar as `0.01` m —
+/// this helper REJECTS a bare `Real`/`Int` or a wrong-dimension `Scalar`
+/// (one `Severity::Warning` via `ArgRejection::message`, then `None`), so a
+/// dimensionless spacing can never scatter instances 1000× too far. Same
+/// hazard and discipline as `joints::read_length3` (the canonical "reject bare
+/// Real to avoid silent 40 m vs 40 mm" precedent), `point3_components`, and
+/// `resolve_length_scalar_arg`; the dimension classification + diagnostic
+/// wording are delegated to `arg_acceptance::{accept_arg, length_spec}`.
+///
+/// Outcomes:
+/// - missing arg → `None` (+ the missing-arg Warning from [`eval_named_arg`])
+/// - `Value::Undef` → `None` (quiet degradation)
+/// - finite LENGTH Scalar → `Some(si_metres)`
+/// - non-finite LENGTH Scalar → `None` (+ Warning)
+/// - anything else (bare `Real`/`Int`, wrong dimension) → `None` (+ Warning)
+///
+/// The caller propagates `None` via `.ok_or_else(...)?` so `compile_geometry_op`
+/// short-circuits with a single Error and drops the op (fail-closed), matching
+/// the `validate_pattern_count` rejection shape.
+pub(crate) fn eval_named_arg_length(
+    name: &str,
+    kind_label: impl std::fmt::Display + Copy,
+    args: &[(String, reify_ir::CompiledExpr)],
+    values: &ValueMap,
+    functions: &[CompiledFunction],
+    meta_map: &HashMap<String, HashMap<String, String>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<f64> {
+    use crate::arg_acceptance::{Acceptance, accept_arg, length_spec};
+
+    let value = eval_named_arg(
+        name,
+        kind_label,
+        args,
+        values,
+        functions,
+        meta_map,
+        diagnostics,
+    )?;
+    match accept_arg(&value, &length_spec()) {
+        Acceptance::Accepted(si) if si.is_finite() => Some(si),
+        Acceptance::Accepted(_) => {
+            diagnostics.push(Diagnostic::warning(format!(
+                "argument '{}' for {} evaluated to a non-finite Length",
+                name, kind_label
+            )));
+            None
+        }
+        Acceptance::Undefined => None,
+        Acceptance::Rejected(rej) => {
+            diagnostics.push(Diagnostic::warning(rej.message(&kind_label.to_string(), name)));
+            None
+        }
+    }
+}
+
 /// Evaluate all args in a variadic curve constructor to f64 values.
 ///
 /// Returns `None` if any arg evaluates to a non-finite value, pushing a
@@ -2523,16 +2586,21 @@ fn pattern_linear2d(
     let direction1 = [f64_arg("dx1")?, f64_arg("dy1")?, f64_arg("dz1")?];
     let count1_raw = f64_arg("count1")?;
     let count1 = validate_pattern_count(count1_raw, "count1", kind, diagnostics)?;
-    let spacing1 = eval_named_arg(
-        "spacing1",
-        kind,
-        args,
-        values,
-        functions,
-        meta_map,
-        diagnostics,
-    )
-    .ok_or_else(|| format!("missing required argument 'spacing1' for {}", kind))?;
+    // LENGTH-required: a bare/dimensionless spacing1 is rejected (op dropped)
+    // instead of silently read as SI metres. Re-wrap the validated SI value as
+    // a LENGTH Scalar so the IR/kernel spacing representation is unchanged.
+    let spacing1 = reify_ir::Value::length(
+        eval_named_arg_length(
+            "spacing1",
+            kind,
+            args,
+            values,
+            functions,
+            meta_map,
+            diagnostics,
+        )
+        .ok_or_else(|| format!("missing or non-Length argument 'spacing1' for {}", kind))?,
+    );
     let mut f64_arg = |name: &str| -> Result<f64, String> {
         eval_named_arg_f64(
             name,
@@ -2550,16 +2618,18 @@ fn pattern_linear2d(
     let direction2 = [f64_arg("dx2")?, f64_arg("dy2")?, f64_arg("dz2")?];
     let count2_raw = f64_arg("count2")?;
     let count2 = validate_pattern_count(count2_raw, "count2", kind, diagnostics)?;
-    let spacing2 = eval_named_arg(
-        "spacing2",
-        kind,
-        args,
-        values,
-        functions,
-        meta_map,
-        diagnostics,
-    )
-    .ok_or_else(|| format!("missing required argument 'spacing2' for {}", kind))?;
+    let spacing2 = reify_ir::Value::length(
+        eval_named_arg_length(
+            "spacing2",
+            kind,
+            args,
+            values,
+            functions,
+            meta_map,
+            diagnostics,
+        )
+        .ok_or_else(|| format!("missing or non-Length argument 'spacing2' for {}", kind))?,
+    );
     Ok(reify_ir::GeometryOp::LinearPattern2D {
         target: target_id,
         direction1,

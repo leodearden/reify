@@ -77,6 +77,21 @@ pub fn density_spec() -> ArgSpec {
     }
 }
 
+/// Returns the [`ArgSpec`] for a LENGTH-semantic builtin argument — pattern
+/// spacing, mirror-plane origin, or arbitrary-pattern offset: a `Value::Scalar`
+/// with `DimensionVector::LENGTH` (metres). Mirrors [`density_spec`].
+///
+/// A bare `Value::Real`/`Int` in one of these positions is silently read as SI
+/// **metres** by `Value::as_f64` (the `10` vs `10mm` = 1000× hazard); this spec
+/// drives the eval-layer rejection that closes that hole (task 5214).
+pub fn length_spec() -> ArgSpec {
+    ArgSpec {
+        type_name: "Length",
+        dimension: reify_core::DimensionVector::LENGTH,
+        migration_hint: Some("pass a dimensioned length such as `5mm`"),
+    }
+}
+
 /// Classify `value` against `spec`.
 ///
 /// - `Value::Undef` → [`Acceptance::Undefined`] (quiet, no diagnostic needed).
