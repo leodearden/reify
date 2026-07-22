@@ -96,12 +96,14 @@ pub fn check_snapshot_cache_divergence(
 mod tests {
     use super::*;
 
+    use std::time::Instant;
+
     use reify_core::{ValueCellId, VersionId};
     use reify_ir::{DeterminacyState, PersistentMap, Value};
 
     use crate::cache::{CacheStore, CachedResult, NodeId};
     use crate::deps::DependencyTrace;
-    use crate::journal::EventJournal;
+    use crate::journal::{EvalEvent, EventJournal, EventKind, EventPayload};
 
     /// Anti-silent-accept RED self-test (step-1): seeds a present-but-mismatched
     /// cache entry and asserts the checker fires. The snapshot holds
@@ -147,6 +149,84 @@ mod tests {
             divergences.iter().any(|d| d.cell == cell),
             "expected a divergence naming cell {cell:?}, got {:?}",
             divergences.iter().map(|d| &d.cell).collect::<Vec<_>>()
+        );
+    }
+
+    /// RED before step-4: a cell whose snapshot↔cache hashes DIVERGE but whose
+    /// latest `Started` journal event carries a `cache-skip=` marker (the exact
+    /// `<trace-slug>|cache-skip=<reason>` shape `commit_cell_result` writes for
+    /// every `CacheLeg::Skip` commit) must be EXEMPT. Step-2's checker has no
+    /// exemption, so it still reports this cell — this test fails until step-4
+    /// adds the Skip guard.
+    #[test]
+    fn skip_committed_cell_is_exempt() {
+        let cell = ValueCellId::new("SnapCacheSkip", "diverged_but_skipped");
+
+        // Identical mismatched state to the step-1 fire test: snapshot Int(2),
+        // cache Int(1) — the hashes diverge.
+        let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::new();
+        snapshot_values.insert(cell.clone(), (Value::Int(2), DeterminacyState::Determined));
+
+        let mut cache = CacheStore::new();
+        cache.record_evaluation(
+            NodeId::Value(cell.clone()),
+            CachedResult::Value(Value::Int(1), DeterminacyState::Determined),
+            VersionId(1),
+            DependencyTrace::default(),
+        );
+
+        // The distinguishing input: a `cache-skip=` marker on the cell's latest
+        // Started event — as commit_cell_result writes for a CacheLeg::Skip.
+        let mut journal = EventJournal::new();
+        journal.record(EvalEvent {
+            timestamp: Instant::now(),
+            node_id: NodeId::Value(cell.clone()),
+            kind: EventKind::Started,
+            version: VersionId(1),
+            payload: Some(EventPayload::Custom(
+                "post-pass-overwrite|cache-skip=seeded".to_string(),
+            )),
+        });
+
+        let divergences = check_snapshot_cache_divergence(&snapshot_values, &cache, &journal);
+
+        assert!(
+            divergences.is_empty(),
+            "a cell whose latest Started event carries a `cache-skip=` marker must \
+             be exempt even though its snapshot↔cache hashes diverge, got {divergences:?}"
+        );
+    }
+
+    /// A cell whose cache entry was recorded with the SAME `(val, det)` as the
+    /// snapshot holds — so the stored `result_hash` equals the snapshot side's
+    /// recomputed hash — is NOT a divergence. GREEN under step-2 already (the
+    /// core checker only fires on a hash MISMATCH); pins that matching state is
+    /// never reported, independent of the journal.
+    #[test]
+    fn matching_hash_is_not_a_divergence() {
+        let cell = ValueCellId::new("SnapCacheMatch", "agrees");
+
+        let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::new();
+        snapshot_values.insert(cell.clone(), (Value::Int(7), DeterminacyState::Determined));
+
+        let mut cache = CacheStore::new();
+        cache.record_evaluation(
+            NodeId::Value(cell.clone()),
+            CachedResult::Value(Value::Int(7), DeterminacyState::Determined),
+            VersionId(1),
+            DependencyTrace::default(),
+        );
+
+        let journal = EventJournal::new();
+
+        let divergences = check_snapshot_cache_divergence(&snapshot_values, &cache, &journal);
+
+        assert!(
+            divergences.is_empty(),
+            "a cell whose snapshot value hashes equal to its cache entry's \
+             result_hash is NOT a divergence, got {divergences:?}"
         );
     }
 }
