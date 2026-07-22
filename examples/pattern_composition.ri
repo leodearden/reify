@@ -9,6 +9,10 @@
 //   - 10×10 large grid pattern (PatternGrid10x10)
 //   - Composed linear + arbitrary patterns (PatternComposed)
 //   - Boolean fold via union_all over multiple boxes (BooleanFold)
+//
+// Length-semantic pattern args (spacings, arbitrary_pattern offsets) MUST be
+// dimensioned lengths (e.g. `20mm`) — a bare number is rejected at eval as a
+// silent-SI-metres hazard (task 5214).
 
 // ── 1. BaseElement ────────────────────────────────────────────────────────────
 // Simple box geometry. Not used as a pattern target (geometry lets are not valid
@@ -29,7 +33,7 @@ structure def BaseElement {
 structure def PatternRow {
     param w : Length = 10mm
 
-    let row = linear_pattern_2d(w, 1, 0, 0, 5, 20, 0, 1, 0, 1, 0)
+    let row = linear_pattern_2d(w, 1, 0, 0, 5, 20mm, 0, 1, 0, 1, 0mm)
 }
 
 // ── 3. PatternCountZero ───────────────────────────────────────────────────────
@@ -39,7 +43,7 @@ structure def PatternRow {
 structure def PatternCountZero {
     param w : Length = 10mm
 
-    let empty_pattern = linear_pattern_2d(w, 1, 0, 0, 0, 20, 0, 1, 0, 0, 20)
+    let empty_pattern = linear_pattern_2d(w, 1, 0, 0, 0, 20mm, 0, 1, 0, 0, 20mm)
 }
 
 // ── 4. PatternCountOne ────────────────────────────────────────────────────────
@@ -49,7 +53,7 @@ structure def PatternCountZero {
 structure def PatternCountOne {
     param w : Length = 10mm
 
-    let single_pattern = linear_pattern_2d(w, 1, 0, 0, 1, 20, 0, 1, 0, 1, 20)
+    let single_pattern = linear_pattern_2d(w, 1, 0, 0, 1, 20mm, 0, 1, 0, 1, 20mm)
 }
 
 // ── 5. PatternGrid10x10 ───────────────────────────────────────────────────────
@@ -58,7 +62,7 @@ structure def PatternCountOne {
 structure def PatternGrid10x10 {
     param w : Length = 10mm
 
-    let grid = linear_pattern_2d(w, 1, 0, 0, 10, 20, 0, 1, 0, 10, 20)
+    let grid = linear_pattern_2d(w, 1, 0, 0, 10, 20mm, 0, 1, 0, 10, 20mm)
 }
 
 // ── 6. PatternComposed ────────────────────────────────────────────────────────
@@ -70,8 +74,8 @@ structure def PatternGrid10x10 {
 structure def PatternComposed {
     param w : Length = 10mm
 
-    let linear  = linear_pattern_2d(w, 1, 0, 0, 3, 20, 0, 1, 0, 3, 20)
-    let shifted = arbitrary_pattern(w, 10, 0, 0, 0, 20, 0)
+    let linear  = linear_pattern_2d(w, 1, 0, 0, 3, 20mm, 0, 1, 0, 3, 20mm)
+    let shifted = arbitrary_pattern(w, 10mm, 0mm, 0mm, 0mm, 20mm, 0mm)
 }
 
 // ── 7. BooleanFold ────────────────────────────────────────────────────────────

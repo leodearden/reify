@@ -130,8 +130,8 @@ structure def TopDeck : Rigid {
             ),
             // sieve field: two interleaved grids = hex packing
             union_all(
-                linear_pattern_2d(translate(cylinder(hole_d / 2, floor_t + 2mm), x0a, y0a, -1mm), 1, 0, 0, 89, 5, 0, 1, 0, 26, 8.66),
-                linear_pattern_2d(translate(cylinder(hole_d / 2, floor_t + 2mm), x0b, y0b, -1mm), 1, 0, 0, 88, 5, 0, 1, 0, 26, 8.66)
+                linear_pattern_2d(translate(cylinder(hole_d / 2, floor_t + 2mm), x0a, y0a, -1mm), 1, 0, 0, 89, 5mm, 0, 1, 0, 26, 8.66mm),
+                linear_pattern_2d(translate(cylinder(hole_d / 2, floor_t + 2mm), x0b, y0b, -1mm), 1, 0, 0, 88, 5mm, 0, 1, 0, 26, 8.66mm)
             )
         ),
         // solid pedestal/wear pads (re-plug the punched holes)

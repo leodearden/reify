@@ -78,6 +78,16 @@ fn lit(v: f64) -> CompiledExpr {
     CompiledExpr::literal(Value::Real(v), reify_core::Type::dimensionless_scalar())
 }
 
+/// Build a `CompiledExpr` literal from a LENGTH-dimensioned scalar (SI metres).
+///
+/// Mirrors the in-module `literal_length` helper at `geometry_ops.rs`. The
+/// length-semantic pattern args (spacing, mirror-plane origin, arbitrary-pattern
+/// offsets) require a dimensioned Length after task 5214 — a bare `lit(..)` in
+/// those positions is now rejected at eval.
+fn lit_len(v: f64) -> CompiledExpr {
+    CompiledExpr::literal(Value::length(v), reify_core::Type::length())
+}
+
 /// Build a `CompiledExpr` literal wrapping a `Value::Transform` (quaternion
 /// `[w,x,y,z]` rotation + SI-metre `[tx,ty,tz]` translation).
 ///
@@ -998,7 +1008,8 @@ fn pattern_case(k: PatternKind) -> CompiledGeometryOp {
             ("dy".to_string(), lit(0.0)),
             ("dz".to_string(), lit(0.0)),
             ("count".to_string(), lit(3.0)),
-            ("spacing".to_string(), lit(0.01)),
+            // spacing is length-semantic → dimensioned Length (task 5214).
+            ("spacing".to_string(), lit_len(0.01)),
         ],
         PatternKind::Circular => vec![
             ("ox".to_string(), lit(0.0)),
@@ -1011,9 +1022,11 @@ fn pattern_case(k: PatternKind) -> CompiledGeometryOp {
             ("angle".to_string(), lit(90.0)),
         ],
         PatternKind::Mirror => vec![
-            ("ox".to_string(), lit(0.0)),
-            ("oy".to_string(), lit(0.0)),
-            ("oz".to_string(), lit(0.0)),
+            // Plane ORIGIN is length-semantic → dimensioned Length (task 5214);
+            // plane NORMAL stays a bare dimensionless unit vector.
+            ("ox".to_string(), lit_len(0.0)),
+            ("oy".to_string(), lit_len(0.0)),
+            ("oz".to_string(), lit_len(0.0)),
             ("nx".to_string(), lit(0.0)),
             ("ny".to_string(), lit(0.0)),
             ("nz".to_string(), lit(1.0)),
@@ -1023,17 +1036,19 @@ fn pattern_case(k: PatternKind) -> CompiledGeometryOp {
             ("dy1".to_string(), lit(0.0)),
             ("dz1".to_string(), lit(0.0)),
             ("count1".to_string(), lit(2.0)),
-            ("spacing1".to_string(), lit(0.01)),
+            // spacings are length-semantic → dimensioned Length (task 5214).
+            ("spacing1".to_string(), lit_len(0.01)),
             ("dx2".to_string(), lit(0.0)),
             ("dy2".to_string(), lit(1.0)),
             ("dz2".to_string(), lit(0.0)),
             ("count2".to_string(), lit(3.0)),
-            ("spacing2".to_string(), lit(0.02)),
+            ("spacing2".to_string(), lit_len(0.02)),
         ],
         PatternKind::Arbitrary => vec![
-            ("t0_dx".to_string(), lit(0.01)),
-            ("t0_dy".to_string(), lit(0.02)),
-            ("t0_dz".to_string(), lit(0.03)),
+            // Offsets are translations (length-semantic) → dimensioned Length.
+            ("t0_dx".to_string(), lit_len(0.01)),
+            ("t0_dy".to_string(), lit_len(0.02)),
+            ("t0_dz".to_string(), lit_len(0.03)),
         ],
     };
     CompiledGeometryOp::Pattern {
@@ -1081,9 +1096,53 @@ fn pattern_golden(k: PatternKind) -> &'static str {
             0.0,
         ],
         count: 3,
-        spacing: Real(
-            0.01,
-        ),
+        spacing: Scalar {
+            si_value: 0.01,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
     },
 )"#,
         PatternKind::Circular => include_str!("golden/pattern_circular_base.txt"),
@@ -1115,18 +1174,106 @@ fn pattern_golden(k: PatternKind) -> &'static str {
             0.0,
         ],
         count1: 2,
-        spacing1: Real(
-            0.01,
-        ),
+        spacing1: Scalar {
+            si_value: 0.01,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
         direction2: [
             0.0,
             1.0,
             0.0,
         ],
         count2: 3,
-        spacing2: Real(
-            0.02,
-        ),
+        spacing2: Scalar {
+            si_value: 0.02,
+            dimension: DimensionVector(
+                [
+                    Rational {
+                        num: 1,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                    Rational {
+                        num: 0,
+                        den: 1,
+                    },
+                ],
+            ),
+        },
     },
 )"#,
         PatternKind::Arbitrary => r#"Ok(
