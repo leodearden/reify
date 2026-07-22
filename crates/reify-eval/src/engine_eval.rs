@@ -9536,19 +9536,23 @@ impl Engine {
     /// The subsequent passes (guarded groups, sub-component elaboration,
     /// post-solver evaluate_let_bindings) are UNCHANGED.
     ///
-    /// task γ (#5053) deferral note: the Let arm's three
-    /// `record_evaluation_propagating_freshness` commits (compute-dispatch
-    /// Failed, panic-recovery, and the main success path) are NOT migrated
-    /// onto `commit_cell_result` (task α, cell_commit.rs). `CacheLeg::Record`
-    /// always writes `Freshness::Final` and has no path to the derived,
-    /// input-propagated freshness this function computes per arch §7.2 — see
-    /// cell_commit.rs's module doc, "Known scope gaps". Left unmigrated
-    /// pending a propagating `CacheLeg` variant (PRD
-    /// docs/prds/v0_6/eval-cell-commit-substrate.md §2.4). The Param arm
-    /// above is unaffected (it uses plain `record_evaluation`, Final-only,
-    /// already representable — though still unmigrated in this
-    /// characterization-only task, whose declared scope is the named site
-    /// inventory, not every Final-representable call site).
+    /// task #5238: the Let arm's MAIN success-path commit is now migrated onto
+    /// `commit_cell_result` (task α, cell_commit.rs) via the freshness-carrying
+    /// `CacheLeg::RecordPropagating { still_refining: false }` variant, which
+    /// routes to `record_evaluation_propagating_freshness` (deriving the arch
+    /// §7.2 input-propagated freshness) — closing the γ (#5053) freshness scope
+    /// gap for this evaluator. The two remaining
+    /// `record_evaluation_propagating_freshness` commits — the compute-dispatch
+    /// Failed path and the panic-recovery path — stay unmigrated: they journal
+    /// `EventKind::Failed` (not the Started/Completed pair commit_cell_result
+    /// emits), skip the values/snapshot legs, and call `mark_failed` (which
+    /// immediately overwrites the just-propagated freshness with
+    /// `Failed{error}`, so no freshness fidelity is lost), a commit shape
+    /// commit_cell_result structurally cannot represent — see the per-site
+    /// notes at those failure paths (impl-6) and cell_commit.rs's module doc,
+    /// "Known scope gaps". The Param arm above uses plain `record_evaluation`
+    /// (Final-only) and is likewise unmigrated (out of this task's
+    /// named-site scope).
     #[allow(clippy::too_many_arguments)]
     fn evaluate_params_and_lets_unified(
         &mut self,
@@ -9782,14 +9786,18 @@ impl Engine {
                         None => continue, // Should not happen (excluded above).
                     };
 
+                    // task #5238: the main success-path commit below is now
+                    // routed through `commit_cell_result`, which emits its OWN
+                    // Started(Custom slug)+Completed pair. No manual
+                    // Started(payload:None) is emitted here — it would be the
+                    // FIRST Started observed for the cell and would mask the
+                    // migrated commit's `cold-eval` provenance slug (§2.6). The
+                    // sibling sub-paths in this arm (pre-eval Pending gate,
+                    // @optimized dispatch, and the two failure paths) still time
+                    // against `start`; they emit Completed/Failed directly and
+                    // are deliberately left unmigrated (see the deferral note on
+                    // this fn and impl-6).
                     let start = Instant::now();
-                    self.journal.record(EvalEvent {
-                        timestamp: start,
-                        node_id: node_id.clone(),
-                        kind: EventKind::Started,
-                        version: VersionId(version_id),
-                        payload: None,
-                    });
 
                     // Snapshot test-instrumentation panic-injection state
                     #[cfg(any(test, feature = "test-instrumentation"))]
@@ -10179,35 +10187,44 @@ impl Engine {
                     if was_undef && !matches!(val, Value::Undef) {
                         minted_in_walk.insert(cell_id.clone());
                     }
-                    values.insert(cell_id.clone(), val.clone());
-                    snapshot
-                        .values
-                        .insert(cell_id.clone(), (val.clone(), DeterminacyState::Determined));
-
-                    let trace = take_trace(
+                    let dep_trace = take_trace(
                         &mut combined_traces,
                         &node_id,
                         "sorted_combined",
                         "combined_traces",
                     );
-                    let cached_result = CachedResult::Value(val, DeterminacyState::Determined);
-                    let outcome = self.cache.record_evaluation_propagating_freshness(
-                        node_id.clone(),
-                        cached_result,
+                    // task #5238: migrated onto commit_cell_result — writes the
+                    // values/snapshot/cache/journal legs atomically (INV-EVAL-1)
+                    // and routes the cache leg through
+                    // `record_evaluation_propagating_freshness` (arch §7.2 derived
+                    // freshness) via `CacheLeg::RecordPropagating`. `still_refining:
+                    // false` + `UnconditionalDetermined` byte-match the pre-migration
+                    // `record_evaluation_propagating_freshness(val, Determined, false)`,
+                    // so value/determinacy/freshness are all preserved; the added
+                    // `cold-eval` Started slug is the only observable delta.
+                    // `&mut *values` reborrows the &mut param (this commit is inside
+                    // the topo loop; `values` is reused by later iterations and by
+                    // `re_eval_consumers_of_in_walk_mints` after the loop).
+                    commit_cell_result(
+                        CommitLegs {
+                            values: &mut *values,
+                            snapshot_values: &mut snapshot.values,
+                            cache: &mut self.cache,
+                            journal: &mut self.journal,
+                        },
+                        cell_id.clone(),
+                        val,
+                        DeterminacyRule::UnconditionalDetermined,
+                        TraceSource::ColdEval,
+                        dep_trace,
                         VersionId(version_id),
-                        trace,
-                        false,
+                        CacheLeg::RecordPropagating {
+                            still_refining: false,
+                        },
                     );
                     // μ (#5062): store this cell's eval-time diagnostics delta
                     // for replay on future cache-hit clean serves (empty clears).
                     self.store_cell_replay_diagnostics(&node_id, runtime_sink, diag_mark);
-                    self.journal.record(EvalEvent {
-                        timestamp: Instant::now(),
-                        node_id,
-                        kind: EventKind::Completed { outcome },
-                        version: VersionId(version_id),
-                        payload: Some(EventPayload::Duration(start.elapsed())),
-                    });
                 }
 
                 _ => {} // Auto cells pre-seeded above; no other kinds expected.
