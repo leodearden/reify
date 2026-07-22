@@ -105,19 +105,22 @@ assert "declared release-sensitive set equals grep-derived set (no missing or ex
     test -z "$_DIFF_OUT"
 
 # ---------------------------------------------------------------------------
-# Test 3a: Mechanism C regression guard — runtime cfg!(debug_assertions) branching
+# Test 3a: A5 release-scope EXIT guard — reify-mesh-morph has left the sensitive set
 # ---------------------------------------------------------------------------
 echo ""
-echo "--- Test 3a: grep-derived set includes reify-mesh-morph (Mechanism C regression guard) ---"
-# crates/reify-mesh-morph/src/diagnostics.rs:511 uses cfg!(debug_assertions) at
-# RUNTIME (not as a compile-time attribute), so Mechanisms A and B miss it.  The test
-# record_quality_remesh_pass_never_touches_a_counter asserts different outcomes in debug
-# vs release, meaning the release pass is required to cover the release-only no-op path.
-# This assertion is RED against the current two-mechanism detector; step-7's Mechanism C
-# (anchored '^[^/]*cfg!(debug_assertions)' grep) turns it GREEN.
-_MESH_MORPH_IN_DERIVED="$(printf '%s\n' "$ACTUAL_SENSITIVE" | grep -cxF 'reify-mesh-morph' || echo 0)"
-assert "grep-derived release_sensitive_set includes reify-mesh-morph (Mechanism C runtime cfg! branch)" \
-    test "${_MESH_MORPH_IN_DERIVED:-0}" -gt 0
+echo "--- Test 3a: grep-derived set EXCLUDES reify-mesh-morph (A5 release-scope exit guard) ---"
+# Task 5270 (PRD docs/prds/merge-gate-compile-cost.md §3 W3 / A5): reify-mesh-morph's
+# sole release-sensitivity was two RUNTIME cfg!(debug_assertions) branches in
+# crates/reify-mesh-morph/src/diagnostics.rs (the record_quality_remesh Pass/Unsupported
+# "never touches a counter" tests). Those branches were removed by re-expressing the
+# tests profile-invariantly, so the Mechanism C grep no longer matches this crate and it
+# has exited scripts/release-sensitive-crates.txt.  This guard asserts the crate is ABSENT
+# from the grep-derived set (the symmetric inverse of the old presence canary).
+# Mechanism C itself stays live: reify-solver-elastic still exercises runtime
+# cfg!(debug_assertions), so the detector is not dead code.
+_MESH_MORPH_IN_DERIVED="$(printf '%s\n' "$ACTUAL_SENSITIVE" | grep -cxF 'reify-mesh-morph' || true)"
+assert "grep-derived release_sensitive_set EXCLUDES reify-mesh-morph (A5 exit guard; Mechanism C removed for this crate)" \
+    test "${_MESH_MORPH_IN_DERIVED:-0}" -eq 0
 
 # ---------------------------------------------------------------------------
 # Plan-shape assertions (Tests 4-7) — task 4451 folded contract
@@ -173,13 +176,6 @@ assert "nextest release does NOT contain --workspace" \
     bash -c "! printf '%s' \"\$NEXTEST_RELEASE\" | grep -qF ' --workspace'"
 assert "nextest release does NOT contain --exclude" \
     bash -c "! printf '%s' \"\$NEXTEST_RELEASE\" | grep -qF ' --exclude'"
-
-echo ""
-echo "--- Test 5a: reify-mesh-morph in nextest release pass (Mechanism C regression guard, task 4451) ---"
-# reify-mesh-morph is release-sensitive (Mechanism C) and non-OCCT; it goes
-# into the single nextest release pass (no gated/ungated split after the fold).
-assert "nextest release has '-p reify-mesh-morph' (Mechanism C regression guard, task 4451)" \
-    bash -c "printf '%s' \"\$NEXTEST_RELEASE\" | grep -qF ' -p reify-mesh-morph'"
 
 echo ""
 echo "--- Test 6: debug pass is 'cargo nextest run --workspace' with NO --exclude (OCCT folded in, task 4451) ---"
