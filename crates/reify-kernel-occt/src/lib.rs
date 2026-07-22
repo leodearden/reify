@@ -5856,6 +5856,42 @@ mod tests {
         );
     }
 
+    /// `shape_count()` reports the number of resident native shapes in the
+    /// kernel's `shapes` table. A fresh kernel holds zero; after executing two
+    /// primitives it holds exactly two. This accessor is the observability
+    /// primitive for the reload native-memory-bound signal (task 5212) — it
+    /// mirrors the existing `warm_start_failures()` diagnostic accessor — and
+    /// is the hook the `reset()` boundedness test below reads.
+    #[test]
+    fn shape_count_reports_resident_shape_table_size() {
+        let mut kernel = OcctKernel::new();
+        assert_eq!(
+            kernel.shape_count(),
+            0,
+            "a fresh kernel holds no resident shapes"
+        );
+
+        kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+        kernel
+            .execute(&GeometryOp::Cylinder {
+                radius: Value::Real(5.0),
+                height: Value::Real(20.0),
+            })
+            .unwrap();
+
+        assert_eq!(
+            kernel.shape_count(),
+            2,
+            "executing two primitives leaves exactly two resident shapes"
+        );
+    }
+
     /// Shared body for the three `warm_state_completeness_debug_assert_fires_
     /// on_orphaned_extracted_*_entry` tests below: corrupt one `extracted_*`
     /// cache via `corrupt` with an id that has no matching `parent_handle`
