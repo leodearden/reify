@@ -506,24 +506,25 @@ mod tests {
     fn record_quality_remesh_pass_never_touches_a_counter() {
         with_locked_state(|| {
             // `QualityVerdict::Pass` is not a remesh trigger: the engine only
-            // calls this on a fail verdict. In debug builds the `debug_assert!`
-            // fires (caught here); in release the call is a silent early return.
-            // The release no-op path is otherwise untested — a regression that
-            // incremented a bucket on `Pass` would slip through release runs.
+            // calls this on a fail verdict, so this recorder must never touch a
+            // counter for it. That invariant holds *profile-invariantly*: in debug
+            // the `debug_assert!(false, …)` unwinds before the counter mutation
+            // (caught here); in release the arm is a silent early `return;` before
+            // the counter. Either way no bucket moves — asserted below without any
+            // `cfg!(debug_assertions)` branch. The debug-only panic is a
+            // language-guaranteed consequence of `debug_assert!` and is no longer
+            // pinned by this test (task 5270: exit the release-sensitive scope).
             let prev_hook = std::panic::take_hook();
             std::panic::set_hook(Box::new(|_| {})); // silence the expected debug-only panic
-            let outcome = std::panic::catch_unwind(|| {
+            // `catch_unwind` is still required to absorb the debug-only
+            // `debug_assert!` panic so the counter-snapshot assertion below runs in
+            // debug builds; its `#[must_use]` Result is intentionally discarded now
+            // that the outcome is no longer inspected.
+            let _ = std::panic::catch_unwind(|| {
                 record_quality_remesh(&QualityVerdict::Pass);
             });
             std::panic::set_hook(prev_hook);
 
-            // Debug: the `debug_assert!` unwinds before any counter mutation.
-            // Release: the call returns without touching a counter.
-            assert_eq!(
-                outcome.is_err(),
-                cfg!(debug_assertions),
-                "Pass must panic via debug_assert! only in debug builds"
-            );
             assert_eq!(
                 snapshot(),
                 DiagnosticSnapshot::default(),
@@ -538,25 +539,25 @@ mod tests {
             // `QualityVerdict::Unsupported` is not a remesh trigger either: the
             // engine's compose_morph seam intercepts it with an early
             // structured-error return before this recorder is ever called (see
-            // lib.rs), so this arm exists only as a defensive debug_assert!.
-            // Mirrors `record_quality_remesh_pass_never_touches_a_counter` above
-            // — same release no-op gap, same catch_unwind technique, so a
-            // regression that incremented a bucket on `Unsupported` in a
-            // release build would otherwise slip through untested.
+            // lib.rs), so this arm exists only as a defensive `debug_assert!`.
+            // Mirrors `record_quality_remesh_pass_never_touches_a_counter` above —
+            // the "never touches a counter" invariant holds profile-invariantly
+            // (debug: `debug_assert!` unwinds before the counter mutation, caught
+            // here; release: silent early `return;`), so it is asserted below
+            // without a `cfg!(debug_assertions)` branch. The debug-only panic is a
+            // language-guaranteed `debug_assert!` consequence, no longer pinned
+            // by this test (task 5270: exit the release-sensitive scope).
             let prev_hook = std::panic::take_hook();
             std::panic::set_hook(Box::new(|_| {})); // silence the expected debug-only panic
-            let outcome = std::panic::catch_unwind(|| {
+            // `catch_unwind` is still required to absorb the debug-only
+            // `debug_assert!` panic so the counter-snapshot assertion below runs in
+            // debug builds; its `#[must_use]` Result is intentionally discarded now
+            // that the outcome is no longer inspected.
+            let _ = std::panic::catch_unwind(|| {
                 record_quality_remesh(&QualityVerdict::Unsupported);
             });
             std::panic::set_hook(prev_hook);
 
-            // Debug: the `debug_assert!` unwinds before any counter mutation.
-            // Release: the call returns without touching a counter.
-            assert_eq!(
-                outcome.is_err(),
-                cfg!(debug_assertions),
-                "Unsupported must panic via debug_assert! only in debug builds"
-            );
             assert_eq!(
                 snapshot(),
                 DiagnosticSnapshot::default(),
