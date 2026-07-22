@@ -1221,6 +1221,12 @@ elif [ "${#_ra_member_subset[@]}" -gt 0 ]; then
                 echo "  RESULT: FAIL ($_ra_subset_base)"
                 failures=$((failures + 1))
                 failed_names+=("$_ra_subset_base")
+                # A subset retry runs ON dark-factory's clock-stop-parsed
+                # verify stream (see the Clock-marker sanitization note
+                # above), so its block reason should also carry the
+                # structured/assertion FAIL cause, same as the
+                # concurrent-pool Phase-3 sites (task #5331).
+                _ra_collect_fail_detail "$_ra_subset_base" "$_ra_subset_tmp"
             fi
         else
             echo ""
