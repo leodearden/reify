@@ -5907,6 +5907,180 @@ mod tests {
         );
     }
 
+    /// `reset()` part (a): frees every resident native shape and clears all
+    /// derived provenance/idempotency caches, so a reused kernel carries no
+    /// build-N state into a whole-file reload. All three `extract_*` caches
+    /// (+ `parent_handle`) are populated first so each emptiness assertion is
+    /// non-vacuous. Direct private-field access is valid here — `tests` is a
+    /// descendant module of the crate root where `OcctKernel` is defined
+    /// (same pattern as the warm-state tests below, e.g. `kernel.next_id`).
+    #[test]
+    fn reset_clears_shape_table_and_derived_caches() {
+        let mut kernel = OcctKernel::new();
+        let box_handle = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+        let box_id = box_handle.id;
+        kernel
+            .extract_faces(box_id)
+            .expect("extract_faces on the box should succeed");
+        kernel
+            .extract_edges(box_id)
+            .expect("extract_edges on the box should succeed");
+        kernel
+            .extract_vertices(box_id)
+            .expect("extract_vertices on the box should succeed");
+
+        // Precondition: shapes + reprs + every derived cache are populated.
+        assert!(
+            kernel.shape_count() > 0,
+            "box + extracted sub-shapes should be resident before reset"
+        );
+        assert!(!kernel.reprs.is_empty(), "reprs populated before reset");
+        assert!(
+            !kernel.extracted_faces.is_empty(),
+            "extracted_faces populated before reset"
+        );
+        assert!(
+            !kernel.extracted_edges.is_empty(),
+            "extracted_edges populated before reset"
+        );
+        assert!(
+            !kernel.extracted_vertices.is_empty(),
+            "extracted_vertices populated before reset"
+        );
+        assert!(
+            !kernel.parent_handle.is_empty(),
+            "parent_handle populated before reset"
+        );
+
+        kernel.reset();
+
+        assert_eq!(
+            kernel.shape_count(),
+            0,
+            "reset must free every resident native shape"
+        );
+        assert!(kernel.reprs.is_empty(), "reset must clear reprs");
+        assert!(
+            kernel.extracted_faces.is_empty(),
+            "reset must clear extracted_faces"
+        );
+        assert!(
+            kernel.extracted_edges.is_empty(),
+            "reset must clear extracted_edges"
+        );
+        assert!(
+            kernel.extracted_vertices.is_empty(),
+            "reset must clear extracted_vertices"
+        );
+        assert!(
+            kernel.parent_handle.is_empty(),
+            "reset must clear parent_handle"
+        );
+    }
+
+    /// `reset()` part (b): `next_id` stays MONOTONIC across a reset — it is
+    /// deliberately NOT rewound to 1. A stale handle that outlives a reload
+    /// (e.g. a lingering realization-cache entry) must resolve to a clean
+    /// InvalidReference via the 5211 `get_shape` guard, never alias a
+    /// freshly-minted shape. See `reset()`'s doc comment and INV-BUILD-1.
+    #[test]
+    fn reset_keeps_next_id_monotonic() {
+        let mut kernel = OcctKernel::new();
+        let pre = kernel
+            .execute(&GeometryOp::Box {
+                width: Value::Real(10.0),
+                height: Value::Real(20.0),
+                depth: Value::Real(30.0),
+            })
+            .unwrap();
+        let pre_id = pre.id.0;
+
+        kernel.reset();
+        assert_eq!(
+            kernel.shape_count(),
+            0,
+            "reset must free the resident shape"
+        );
+
+        let post = kernel
+            .execute(&GeometryOp::Cylinder {
+                radius: Value::Real(5.0),
+                height: Value::Real(20.0),
+            })
+            .unwrap();
+        assert!(
+            post.id.0 > pre_id,
+            "next_id must stay monotonic across reset: post-reset id {} must \
+             strictly exceed pre-reset id {} (never rewound to 1)",
+            post.id.0,
+            pre_id
+        );
+    }
+
+    /// `reset()` part (c): the reload native-memory bound. Across N
+    /// execute-batch→reset cycles the resident shape count stays CONSTANT
+    /// (bounded, not monotonic) while `next_id` strictly increases — proving
+    /// reset frees native memory every cycle without ever reusing a handle
+    /// id. Direct analog of
+    /// `warm_state_persisted_shape_count_stays_bounded_across_cycles`.
+    #[test]
+    fn reset_bounds_shape_count_across_execute_reset_cycles() {
+        let mut kernel = OcctKernel::new();
+        let mut counts = Vec::new();
+        let mut first_ids = Vec::new();
+        const CYCLES: usize = 5;
+        for _ in 0..CYCLES {
+            let box_h = kernel
+                .execute(&GeometryOp::Box {
+                    width: Value::Real(10.0),
+                    height: Value::Real(20.0),
+                    depth: Value::Real(30.0),
+                })
+                .unwrap();
+            first_ids.push(box_h.id.0);
+            let cyl_h = kernel
+                .execute(&GeometryOp::Cylinder {
+                    radius: Value::Real(5.0),
+                    height: Value::Real(20.0),
+                })
+                .unwrap();
+            kernel
+                .execute(&GeometryOp::Union {
+                    left: box_h.id,
+                    right: cyl_h.id,
+                })
+                .unwrap();
+            counts.push(kernel.shape_count());
+            kernel.reset();
+        }
+
+        // The core bound: every batch leaves the same resident count. Without
+        // reset this would climb monotonically (3, 6, 9, ...).
+        assert!(
+            counts.iter().all(|&c| c == counts[0]),
+            "resident shape count must stay bounded (constant) across \
+             execute→reset cycles: {counts:?}"
+        );
+        assert!(
+            counts[0] > 0,
+            "each batch must leave resident shapes so the bound is \
+             non-vacuous: {counts:?}"
+        );
+        // next_id is monotonic: each cycle's first (box) id strictly exceeds
+        // the previous cycle's, so reset never rewinds the counter.
+        assert!(
+            first_ids.windows(2).all(|w| w[1] > w[0]),
+            "next_id must strictly increase across reset cycles (handle ids \
+             never reused): {first_ids:?}"
+        );
+    }
+
     /// Shared body for the three `warm_state_completeness_debug_assert_fires_
     /// on_orphaned_extracted_*_entry` tests below: corrupt one `extracted_*`
     /// cache via `corrupt` with an id that has no matching `parent_handle`
