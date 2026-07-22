@@ -1,3 +1,5 @@
+module dev_capstan
+
 // dev_capstan.ri — ISOLATED design sketch for the CoreXY drive capstan + fairlead.
 //
 // Standalone scratch file (NOT imported by printer.ri) for designing the two new
@@ -25,9 +27,14 @@
 // tension) is reacted by its own shaft bearings — benign.
 //
 // MODELLING CAVEATS:
-//  - The HELICAL GROOVE itself is not modelled (no helical-sweep / thread feature;
-//    same gap class as the missing `torus` seat). The drum renders as a smooth core
-//    at root-Ø with `lead` annotated; the wrap band is the grooved axial region.
+//  - The HELICAL GROOVE itself is not modelled YET. The route exists on paper —
+//    difference(drum, sweep(posed circle profile, helix(pitch_r, lead, band))) —
+//    but helix() wires currently carry no 3D curve representation, so every
+//    sweep/pipe consumer rejects them (#5342; the ergonomic pipe() route is
+//    additionally +Z-start-tangent-only, #5343). Until #5342 lands the drum
+//    renders as a smooth core at root-Ø with `lead` annotated; the wrap band is
+//    the grooved axial region. (The `torus` half of this gap class landed as
+//    #4157 — the IdlerPulley round seat below uses it.)
 //  - Override drop (task 4147): the 4 shuttle idlers are identical IdlerPulley
 //    DEFAULTS placed by pose only (`at` works), so 4147 never bites here. The
 //    ShuttlePlate size is hand-matched to the idler corner spacing for the same
@@ -36,23 +43,23 @@
 #version(0.1)
 
 // ── Idler routing pulley (copied verbatim from printer.ri) ──────────────────
-/// 608ZZ ball bearing (8mm bore, 22mm OD, 7mm wide) with a flanged grooved sheave
-/// pressed on its OD; modelled along local +Z (spin axis), centred. Rectangular
-/// (flat-bottomed) groove — a round seat wants `torus` (unimplemented). One inlined
+/// 608ZZ ball bearing (8mm bore, 22mm OD, 7mm wide) with a grooved sheave pressed
+/// on its OD; modelled along local +Z (spin axis), centred. SEMICIRCULAR seat: a
+/// torus (tube radius = groove_width/2) cut at the mid-plane with its tube centre
+/// ON the rim surface — rope pitch circle at sheave_r (#4157 landed). One inlined
 /// union/difference tree so only `body` surfaces.
 pub structure IdlerPulley {
     param brg_od    : Length = 22mm
     param brg_bore  : Length = 8mm
     param brg_width : Length = 7mm
     param sheave_od    : Length = 36mm
-    param groove_depth : Length = 3mm
     param groove_width : Length = 6mm
     param flange_width : Length = 2mm
 
     let brg_r       = brg_od / 2
     let sheave_r    = sheave_od / 2
-    let groove_r    = sheave_r - groove_depth
     let groove_half = groove_width / 2
+    let sheave_w    = groove_width + flange_width * 2
     let bore_len    = groove_width + flange_width * 3
 
     let body = union(
@@ -61,19 +68,16 @@ pub structure IdlerPulley {
             translate(cylinder(brg_bore / 2, brg_width * 1.2), 0mm, 0mm, 0mm - brg_width * 0.6)
         ),
         difference(
-            union(
-                union(
-                    translate(cylinder(sheave_r, flange_width), 0mm, 0mm, groove_half),
-                    translate(cylinder(sheave_r, flange_width), 0mm, 0mm, 0mm - groove_half - flange_width)
-                ),
-                translate(cylinder(groove_r, groove_width), 0mm, 0mm, 0mm - groove_half)
+            difference(
+                translate(cylinder(sheave_r, sheave_w), 0mm, 0mm, 0mm - sheave_w / 2),
+                torus(sheave_r, groove_half)
             ),
             translate(cylinder(brg_r, bore_len), 0mm, 0mm, 0mm - bore_len / 2)
         )
     )
 
     constraint sheave_od > brg_od
-    constraint groove_r > brg_r
+    constraint sheave_r - groove_half > brg_r
     constraint brg_od > brg_bore
 }
 
@@ -81,8 +85,8 @@ pub structure IdlerPulley {
 /// Helically-grooved winch drum, axis = local +Z, centred. Both belt ends anchor
 /// to it; rotation reels one end in / pays the other out. Carries BOTH windings of
 /// the belt's ±z moment pair (axially adjacent on the one drum). Smooth core at
-/// root-Ø + two retaining flanges + axial shaft bore. Groove helix not modelled —
-/// `lead` is the (clearance) pitch.
+/// root-Ø + two retaining flanges + axial shaft bore. Groove helix not modelled
+/// until #5342 (helix wires unsweepable) lands — `lead` is the (clearance) pitch.
 ///
 /// Sizing (D/d = 8 start): drum Ø = d_ratio·rope_dia = 48mm; pitch circ ≈ 151mm;
 /// max per-belt feed = X+Y travel = 500+800 = 1.3m → ≈ 8.6 → 9 active turns;

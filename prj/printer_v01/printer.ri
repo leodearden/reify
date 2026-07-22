@@ -1,3 +1,5 @@
+module printer
+
 // printer_v01 — single-file integration.
 //
 // Multi-material CoreXY toolchanger build. See docs/projects/printer_v01.md
@@ -49,15 +51,10 @@
 //    live x_head/y_head tracking (a future live-input feature).
 //
 // VISIBILITY: reference geometry (build-volume box, bed travel centreline) is
-// `aux` — realised + inspectable but default_visible=false (GUI auto-hide is
-// task 3904/T6; the Outline eye-icon tri-state full/semi/hidden works today).
+// `aux` — realised + inspectable but hidden by default (aux auto-hide, task
+// 3904/T6 — landed; the Outline eye-icon tri-state full/semi/hidden toggles it).
 
 #version(0.1)
-
-// ── Derived dimensions ──────────────────────────────────────────────────────
-
-/// Linear acceleration (m/s²).
-type Acceleration = Length / Time / Time
 
 // ── Construction primitives (centred; rods/tendons along local +Z) ──────────
 
@@ -125,12 +122,13 @@ pub structure CarriageBlock {
 /// composing site stands it on the axis it should turn about. Axle bolt + bearing
 /// shields are not modelled.
 ///
-/// GROOVE SHAPE: the groove is RECTANGULAR (flat-bottomed: two retaining flanges
-/// either side of a recessed core). A true semicircular seat MATCHING the round
-/// tendon profile wants `torus` (fn torus(major,minor)->Solid is spec'd) — but
-/// torus is NOT a runtime geometry builtin yet (the dispatch has cylinder/sphere/
-/// revolve/union/… but no torus/cone), so the round seat is deferred to that fix
-/// (or a revolve-of-profile). Filed as a dogfood gap.
+/// GROOVE SHAPE: a SEMICIRCULAR seat matching the round tendon profile — a
+/// `torus` (tube radius = groove_width/2 = the tendon radius) subtracted from
+/// the solid rim at the mid-plane, its tube CENTRE on the rim surface, so the
+/// seat is exactly the half-round channel the rope beds into: seat bottom at
+/// sheave_r − groove_width/2, rope centre (pitch circle) at sheave_r ==
+/// sheave_od/2 == the r_pitch every composing site uses. (Was a rectangular
+/// flat-bottomed groove while `torus` was missing — that gap landed as #4157.)
 ///
 /// Body is ONE inlined union/difference tree so the boolean operands do NOT
 /// auto-surface as stray meshes — only `body` surfaces (scalar `let`s are
@@ -140,16 +138,15 @@ pub structure IdlerPulley {
     param brg_od    : Length = 22mm
     param brg_bore  : Length = 8mm
     param brg_width : Length = 7mm
-    // Sheave (flanged grooved wheel pressed on the bearing OD).
-    param sheave_od    : Length = 36mm   // flange (outer) diameter
-    param groove_depth : Length = 3mm    // radial depth, rim → groove bottom
-    param groove_width : Length = 6mm    // == tendon diameter (the seat width)
-    param flange_width : Length = 2mm    // each retaining flange
+    // Sheave (grooved wheel pressed on the bearing OD).
+    param sheave_od    : Length = 36mm   // rim (outer) diameter == rope pitch circle
+    param groove_width : Length = 6mm    // == tendon diameter (seat width; depth = half)
+    param flange_width : Length = 2mm    // rim shoulder either side of the seat
 
     let brg_r       = brg_od / 2
     let sheave_r    = sheave_od / 2
-    let groove_r    = sheave_r - groove_depth          // recessed groove-bottom radius
     let groove_half = groove_width / 2
+    let sheave_w    = groove_width + flange_width * 2   // full rim width
     let bore_len    = groove_width + flange_width * 3   // through-bore length (> sheave width)
 
     let body = union(
@@ -158,22 +155,20 @@ pub structure IdlerPulley {
             translate(cylinder(brg_r, brg_width), 0mm, 0mm, 0mm - brg_width / 2),
             translate(cylinder(brg_bore / 2, brg_width * 1.2), 0mm, 0mm, 0mm - brg_width * 0.6)
         ),
-        // Sheave: two retaining flanges (full radius) + a recessed grooved core,
-        // bored to the bearing OD (press fit).
+        // Sheave: solid rim with the semicircular seat cut at the mid-plane
+        // (torus tube centred ON the rim surface), bored to the bearing OD
+        // (press fit).
         difference(
-            union(
-                union(
-                    translate(cylinder(sheave_r, flange_width), 0mm, 0mm, groove_half),
-                    translate(cylinder(sheave_r, flange_width), 0mm, 0mm, 0mm - groove_half - flange_width)
-                ),
-                translate(cylinder(groove_r, groove_width), 0mm, 0mm, 0mm - groove_half)
+            difference(
+                translate(cylinder(sheave_r, sheave_w), 0mm, 0mm, 0mm - sheave_w / 2),
+                torus(sheave_r, groove_half)
             ),
             translate(cylinder(brg_r, bore_len), 0mm, 0mm, 0mm - bore_len / 2)
         )
     )
 
     constraint sheave_od > brg_od
-    constraint groove_r > brg_r
+    constraint sheave_r - groove_half > brg_r
     constraint brg_od > brg_bore
 }
 
