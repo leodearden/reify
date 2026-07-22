@@ -185,6 +185,7 @@ crates/reify-compiler/tests/deep_dot_chain_tests.rs
 crates/reify-compiler/tests/deprecated_use_tests.rs
 crates/reify-compiler/tests/determinacy_compile_tests.rs
 crates/reify-compiler/tests/diagnostic_coverage_checkpoint.rs
+crates/reify-compiler/tests/display_annotation_tests.rs
 crates/reify-compiler/tests/display_style_appearance_tests.rs
 crates/reify-compiler/tests/doc_propagation_tests.rs
 crates/reify-compiler/tests/ds_sentinel_l0_poison_tests.rs

@@ -2077,6 +2077,11 @@ pub(crate) fn compile_entity(
                 // Lower and validate annotations on this param
                 let lowered_annotations = lower_annotations(&param.annotations, diagnostics);
                 validate_annotations(&lowered_annotations, "param", diagnostics);
+                crate::annotations::display::validate_display_dimension(
+                    &lowered_annotations,
+                    &cell_type,
+                    diagnostics,
+                );
                 let solver_hints = extract_solver_hints(&lowered_annotations, diagnostics);
                 validate_solver_hint_collections(&solver_hints, &scope, functions, diagnostics);
 
@@ -2260,6 +2265,11 @@ pub(crate) fn compile_entity(
 
                     let lowered_annotations = lower_annotations(&let_decl.annotations, diagnostics);
                     validate_annotations(&lowered_annotations, "let", diagnostics);
+                    crate::annotations::display::validate_display_dimension(
+                        &lowered_annotations,
+                        &cell_type,
+                        diagnostics,
+                    );
                     let solver_hints = extract_solver_hints(&lowered_annotations, diagnostics);
                     validate_solver_hint_collections(&solver_hints, &scope, functions, diagnostics);
 
@@ -2358,6 +2368,11 @@ pub(crate) fn compile_entity(
                 // Lower and validate annotations on this let
                 let lowered_annotations = lower_annotations(&let_decl.annotations, diagnostics);
                 validate_annotations(&lowered_annotations, "let", diagnostics);
+                crate::annotations::display::validate_display_dimension(
+                    &lowered_annotations,
+                    &cell_type,
+                    diagnostics,
+                );
                 let solver_hints = extract_solver_hints(&lowered_annotations, diagnostics);
                 validate_solver_hint_collections(&solver_hints, &scope, functions, diagnostics);
 
