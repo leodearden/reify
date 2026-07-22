@@ -12,6 +12,7 @@
 //! * **(E)** Reserved-identifier non-regression — scanner must not over-reserve
 //!   `source`, `frame`, `direction`, `in` (used as field/param/unit names in stdlib).
 
+#[path = "../common/mod.rs"]
 mod common;
 use common::{find_cst_node, make_ts_parser};
 

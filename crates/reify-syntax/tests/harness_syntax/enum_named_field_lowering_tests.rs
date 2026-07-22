@@ -15,7 +15,7 @@ use reify_core::ModulePath;
 // The source-of-truth fixture shared with the grammar tests.  Using include_str!
 // ensures this test exercises the actual file rather than a potentially stale copy.
 const FIXTURE_SOURCE: &str =
-    include_str!("../../../tree-sitter-reify/test/fixtures/dce-2-nameddecl.ri");
+    include_str!("../../../../tree-sitter-reify/test/fixtures/dce-2-nameddecl.ri");
 
 fn parse_shape_enum() -> reify_ast::EnumDecl {
     let module = reify_syntax::parse(FIXTURE_SOURCE, ModulePath::single("test_dce"));

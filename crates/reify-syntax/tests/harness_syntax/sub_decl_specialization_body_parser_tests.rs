@@ -12,6 +12,7 @@
 
 use reify_core::ModulePath;
 
+#[path = "../common/mod.rs"]
 mod common;
 use common::{find_cst_node, make_ts_parser};
 
