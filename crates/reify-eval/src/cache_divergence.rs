@@ -21,6 +21,77 @@
 //! reads the private `self.cache` / `self.journal` fields directly — exactly
 //! as `invariants::check_no_stale_undef` reads the private `self.functions`.
 
+use reify_core::ValueCellId;
+use reify_ir::{DeterminacyState, PersistentMap, Value};
+
+use crate::cache::{CacheStore, CachedResult, NodeId};
+use crate::journal::EventJournal;
+
+/// A single snapshot↔cache content-hash divergence: `cell`'s snapshot value
+/// disagrees, by content-hash, with its PRESENT (and non-Skip-exempt) cache
+/// entry. Mirrors `invariants::StaleUndefViolation`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnapshotCacheDivergence {
+    pub cell: ValueCellId,
+    pub detail: String,
+}
+
+/// INV-EVAL-4 (§2.6): report every value cell whose snapshot value diverges,
+/// by content-hash, from its present cache entry.
+///
+/// FORWARD (snapshot→cache) audit. For each `(cell, (val, det))` in
+/// `snapshot_values`:
+/// - `cache.get(NodeId::Value(cell))` is `None` ⇒ NOT a divergence — a MISSING
+///   cache entry is legitimate, never a disagreement. Cells that never
+///   evaluated, build-only `Type::Geometry` cells (which sit at `(Undef, _)`
+///   in `eval_state()` by construction — see `invariants.rs` clause 7),
+///   guard-inactive members, and Skip-cold cells all legitimately have no
+///   cache entry. A `CacheLeg::Record`-committed non-Undef cell ALWAYS has a
+///   cache entry (the `commit_cell_result` primitive writes it atomically), so
+///   absence never hides a real Record/snapshot mismatch. This mirrors
+///   `check_no_stale_undef`'s "err toward exempt, enumerate residuals" policy.
+/// - `Some(entry)` whose stored `entry.result_hash` differs from the snapshot
+///   side's recomputed `CachedResult::Value(val.clone(), *det).content_hash()`
+///   ⇒ a divergence, UNLESS the cell is Skip-exempt (step-4 adds that guard;
+///   this step has no exemption). `result_hash` is the authoritative content
+///   identity the CacheStore keyed the entry on; the snapshot side is
+///   recomputed because `DeterminacyState` is `Copy` (so `*det` is cheap) and
+///   the `CachedResult::Value` domain-separation tag makes a non-`Value` cache
+///   entry (should never occur for a `NodeId::Value` key) also mismatch — which
+///   is correct.
+pub fn check_snapshot_cache_divergence(
+    snapshot_values: &PersistentMap<ValueCellId, (Value, DeterminacyState)>,
+    cache: &CacheStore,
+    journal: &EventJournal,
+) -> Vec<SnapshotCacheDivergence> {
+    // The `journal` param is threaded through now but only consulted by
+    // step-4's Skip-exemption (a cell whose latest `Started` event carries a
+    // `cache-skip=` marker is exempt). Bind-and-discard keeps the signature
+    // stable across steps without an unused-parameter warning.
+    let _ = journal;
+
+    let mut divergences = Vec::new();
+    for (cell, (val, det)) in snapshot_values.iter() {
+        let node = NodeId::Value(cell.clone());
+        // Cache-absence is NOT a divergence (see the fn doc).
+        let Some(entry) = cache.get(&node) else {
+            continue;
+        };
+        let expected = CachedResult::Value(val.clone(), *det).content_hash();
+        if entry.result_hash != expected {
+            divergences.push(SnapshotCacheDivergence {
+                cell: cell.clone(),
+                detail: format!(
+                    "value cell {cell:?}: snapshot value content-hash {expected:?} \
+                     ≠ cache entry result_hash {:?}",
+                    entry.result_hash
+                ),
+            });
+        }
+    }
+    divergences
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
