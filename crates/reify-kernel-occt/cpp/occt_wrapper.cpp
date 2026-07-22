@@ -3631,6 +3631,14 @@ static double mesh_based_volume(const TopoDS_Shape& shape, double deflection) {
 
 double query_volume(const OcctShape& shape) {
     return wrap_occt_call("query_volume", [&]() {
+        // DEFENSE-IN-DEPTH: reject null/empty topology before any deref. The
+        // ShapeType() fallback below dereferences the TShape handle and would
+        // SIGSEGV on a null shape (wrap_occt_call catches C++ exceptions, not
+        // the hardware signal). Primary guard is get_shape (Rust boundary);
+        // this covers any direct-FFI/future path that bypasses it.
+        if (shape.shape.IsNull()) {
+            throw std::runtime_error("query_volume: shape has null/empty topology");
+        }
         GProp_GProps props;
         BRepGProp::VolumeProperties(shape.shape, props);
         double vol = props.Mass();
@@ -3645,6 +3653,12 @@ double query_volume(const OcctShape& shape) {
 
 double query_area(const OcctShape& shape) {
     return wrap_occt_call("query_area", [&]() {
+        // DEFENSE-IN-DEPTH: reject null/empty topology before any deref (see
+        // query_volume). Primary guard is get_shape (Rust boundary); this
+        // covers any direct-FFI/future path that bypasses it.
+        if (shape.shape.IsNull()) {
+            throw std::runtime_error("query_area: shape has null/empty topology");
+        }
         GProp_GProps props;
         BRepGProp::SurfaceProperties(shape.shape, props);
         return props.Mass();
@@ -3653,6 +3667,12 @@ double query_area(const OcctShape& shape) {
 
 double query_edge_length(const OcctShape& shape) {
     return wrap_occt_call("query_edge_length", [&]() {
+        // DEFENSE-IN-DEPTH: reject null/empty topology before any deref (see
+        // query_volume). Primary guard is get_shape (Rust boundary); this
+        // covers any direct-FFI/future path that bypasses it.
+        if (shape.shape.IsNull()) {
+            throw std::runtime_error("query_edge_length: shape has null/empty topology");
+        }
         GProp_GProps props;
         BRepGProp::LinearProperties(shape.shape, props);
         return props.Mass();
@@ -4197,6 +4217,12 @@ double curve_curvature_at(const OcctShape& shape, double px, double py, double p
 
 Point3 query_centroid(const OcctShape& shape) {
     return wrap_occt_call("query_centroid", [&]() {
+        // DEFENSE-IN-DEPTH: reject null/empty topology before any deref (see
+        // query_volume). Pre-fix this returns Ok(origin) for a null shape;
+        // refuse loudly instead. Primary guard is get_shape (Rust boundary).
+        if (shape.shape.IsNull()) {
+            throw std::runtime_error("query_centroid: shape has null/empty topology");
+        }
         GProp_GProps props;
         BRepGProp::VolumeProperties(shape.shape, props);
         gp_Pnt c = props.CentreOfMass();
@@ -4213,6 +4239,13 @@ Point3 query_centroid(const OcctShape& shape) {
 /// need the geometric centroid of the surface.
 Point3 query_face_centroid(const OcctShape& shape) {
     return wrap_occt_call("query_face_centroid", [&]() {
+        // DEFENSE-IN-DEPTH: reject null/empty topology before any deref (see
+        // query_volume). Reached from the Centroid dispatch for Face-repr
+        // handles, so pre-fix a null-topology face returns Ok(origin); refuse
+        // loudly instead. Primary guard is get_shape (Rust boundary).
+        if (shape.shape.IsNull()) {
+            throw std::runtime_error("query_face_centroid: shape has null/empty topology");
+        }
         GProp_GProps props;
         BRepGProp::SurfaceProperties(shape.shape, props);
         gp_Pnt c = props.CentreOfMass();
@@ -4222,6 +4255,11 @@ Point3 query_face_centroid(const OcctShape& shape) {
 
 BBox query_bbox(const OcctShape& shape) {
     return wrap_occt_call("query_bbox", [&]() {
+        // DEFENSE-IN-DEPTH: reject null/empty topology before any deref (see
+        // query_volume). Primary guard is get_shape (Rust boundary).
+        if (shape.shape.IsNull()) {
+            throw std::runtime_error("query_bbox: shape has null/empty topology");
+        }
         Bnd_Box box;
         BRepBndLib::Add(shape.shape, box);
         double xmin, ymin, zmin, xmax, ymax, zmax;
@@ -4595,6 +4633,14 @@ InertiaTensor3x3 query_inertia_tensor(const OcctShape& shape, double density) {
     // guard to avoid re-wrapping the intentional symmetry-check diagnostic.
     GProp_GProps props;
     wrap_occt_call("query_inertia_tensor", [&]() {
+        // DEFENSE-IN-DEPTH: reject null/empty topology before VolumeProperties
+        // (see query_volume). Guard lives inside the wrap_occt_call lambda so
+        // the throw is caught and mapped to a catchable Err; the MatrixOfInertia
+        // math below stays outside the lambda by design. Primary guard is
+        // get_shape (Rust boundary).
+        if (shape.shape.IsNull()) {
+            throw std::runtime_error("query_inertia_tensor: shape has null/empty topology");
+        }
         BRepGProp::VolumeProperties(shape.shape, props);
     });
     gp_Mat m = props.MatrixOfInertia();
@@ -4764,6 +4810,15 @@ static void collect_compound_leaves(
             parts.push_back(child);
         }
     }
+}
+
+bool shape_is_null(const OcctShape& shape) {
+    // Trivial inline null-handle check: TopoDS_Shape::IsNull() reads the TShape
+    // handle and cannot throw, so no wrap_occt_call/Result is needed. Used by
+    // the Rust get_shape boundary to reject a non-null OcctShape wrapping null
+    // topology before it reaches the geometry-query FFI, where dereferencing
+    // the null TShape (e.g. query_volume's ShapeType() fallback) would SIGSEGV.
+    return shape.shape.IsNull();
 }
 
 bool is_connected(const OcctShape& shape) {
@@ -5147,6 +5202,21 @@ std::unique_ptr<OcctShape> make_vertex_at_for_test(double x, double y, double z)
         result->shape = vertex_maker.Vertex();
         return result;
     });
+}
+
+std::unique_ptr<OcctShape> make_null_shape_for_test() {
+    // A default-constructed OcctShape whose `.shape` member is a null
+    // (IsNull()==true) TopoDS_Shape — a NON-null unique_ptr wrapping null
+    // topology. This is the exact crash input for the geometry-query FFI: it
+    // passes get_shape's null-UniquePtr check (the pointer is non-null) yet
+    // dereferences to a null TShape, so e.g. query_volume's ShapeType()
+    // fallback would SIGSEGV without the null/empty-topology guards. Such a
+    // shape cannot be constructed from Rust (OcctShape is opaque); the sibling
+    // insert_null_shape only injects a null UniquePtr, which get_shape already
+    // rejects via ptr.as_ref(). Default construction of TopoDS_Shape cannot
+    // throw, so no wrap_occt_call is needed and the bridge fn returns a plain
+    // UniquePtr (no Result).
+    return std::make_unique<OcctShape>();
 }
 
 std::unique_ptr<OcctShape> make_edge_for_test() {

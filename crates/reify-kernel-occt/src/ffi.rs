@@ -1207,6 +1207,14 @@ pub mod ffi {
         /// !IsVoid && !IsOpenX/Y/Z{min,max}.
         fn is_bounded(shape: &OcctShape) -> Result<bool>;
 
+        /// True iff `shape` wraps a null (`IsNull() == true`) `TopoDS_Shape`.
+        /// A trivial inline null-handle check that cannot throw, so this returns
+        /// a plain `bool` (no `Result`/wrap_occt_call). Used by `get_shape` to
+        /// reject a non-null wrapper around null topology before it reaches the
+        /// geometry-query FFI, where dereferencing the null TShape (e.g.
+        /// `query_volume`'s `ShapeType()` fallback) would SIGSEGV.
+        fn shape_is_null(shape: &OcctShape) -> bool;
+
         // --- Test fixture helpers ---
         // Exposed (not gated on cfg(test)) so integration-test crates can call them
         // via OcctKernel::store_*_for_test helpers in lib.rs.
@@ -1247,6 +1255,18 @@ pub mod ffi {
 
         /// CompSolid wrapping one 10×10×10 mm box → TopAbs_COMPSOLID; type-guard passes.
         fn make_compsolid_for_test() -> Result<UniquePtr<OcctShape>>;
+
+        /// Default-constructed `OcctShape` whose `.shape` member is a null
+        /// (`IsNull() == true`) `TopoDS_Shape` — i.e. a NON-null `UniquePtr`
+        /// wrapping null topology. Supplies the exact crash input for the
+        /// geometry-query FFI hardening (get_shape boundary +
+        /// query_volume/centroid/bbox/inertia_tensor): such a shape passes
+        /// `get_shape`'s null-`UniquePtr` check yet dereferences to a null
+        /// TShape. It cannot be built from Rust because `OcctShape` is opaque,
+        /// and the sibling `insert_null_shape` only injects a null `UniquePtr`
+        /// (already caught by `get_shape`). Default construction cannot throw,
+        /// so this returns a plain `UniquePtr` (no `Result`).
+        fn make_null_shape_for_test() -> UniquePtr<OcctShape>;
 
         /// Apply rotation+translation using `BRepBuilderAPI_Transform(..., Copy=false)`,
         /// encoding the transform into `TopLoc_Location` rather than baking it into

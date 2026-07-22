@@ -685,8 +685,24 @@ impl OcctKernel {
             .shapes
             .get(&id.0)
             .ok_or(GeometryError::InvalidReference(id))?;
-        ptr.as_ref()
-            .ok_or_else(|| GeometryError::OperationFailed("shape handle is null".into()))
+        let shape = ptr
+            .as_ref()
+            .ok_or_else(|| GeometryError::OperationFailed("shape handle is null".into()))?;
+        // Reject a NON-null wrapper around null (IsNull) topology. Such a shape
+        // passes the null-UniquePtr check above yet dereferences to a null
+        // TShape, which crashes the unguarded OCCT geometry-query FFI (e.g.
+        // query_volume's ShapeType() fallback -> hardware SIGSEGV). This single
+        // chokepoint covers all four mass-property queries plus every other
+        // shape.shape deref reached via get_shape (query_area,
+        // query_edge_length, ...). Refuse loudly — no silent zero/origin
+        // fallback (aligns with sibling 5197's mass-properties policy).
+        if ffi::ffi::shape_is_null(shape) {
+            return Err(GeometryError::OperationFailed(format!(
+                "shape handle {:?} wraps null/empty topology (IsNull)",
+                id
+            )));
+        }
+        Ok(shape)
     }
 
     /// Return the topology-map cache build counts for the shape identified by
@@ -6378,6 +6394,127 @@ mod tests {
             Err(other) => panic!("expected InvalidReference, got {:?}", other),
             Ok(_) => panic!("expected error for missing shape, got Ok"),
         }
+    }
+
+    /// Structural boundary guard: a NON-null `OcctShape` wrapping null (IsNull)
+    /// topology must be rejected at `get_shape`, and every production query
+    /// path that flows through `get_shape` must therefore return `Err` — never
+    /// a hardware SIGSEGV.
+    ///
+    /// The input is `make_null_shape_for_test()` — a default-constructed
+    /// `OcctShape` whose `.shape` is a null `TopoDS_Shape`. It passes
+    /// `get_shape`'s existing null-`UniquePtr` check (the pointer is non-null)
+    /// but, pre-fix, dereferences to null topology: `query_volume`'s
+    /// `ShapeType()` fallback then SIGSEGVs.
+    ///
+    /// RED (pre-fix): `get_shape` returns `Ok(&null_shape)`, so the assertion
+    /// below fails on the `Ok(_)` arm. GREEN (after the get_shape IsNull
+    /// guard): `get_shape` returns `Err(OperationFailed)` and all four queries
+    /// return `Err`.
+    ///
+    /// MUST run under `cargo nextest run` (process-per-test isolation) so any
+    /// pre-fix crash is contained as a single failing test, not a suite abort.
+    #[test]
+    fn get_shape_rejects_null_topology_and_queries_return_err() {
+        let mut kernel = OcctKernel::new();
+        let h = kernel.store_raw(ffi::ffi::make_null_shape_for_test());
+
+        // Structural chokepoint: get_shape refuses null/empty topology loudly.
+        match kernel.get_shape(h) {
+            Err(GeometryError::OperationFailed(msg)) => {
+                let low = msg.to_lowercase();
+                assert!(
+                    low.contains("null") || low.contains("empty"),
+                    "error should mention null/empty topology, got: {msg}"
+                );
+            }
+            Err(other) => panic!("expected OperationFailed, got {:?}", other),
+            Ok(_) => panic!("expected error for null-topology shape, got Ok"),
+        }
+
+        // Every production query path routes through get_shape, so each must
+        // now return Err (never SIGSEGV). Volume is the guaranteed crash vector.
+        assert!(
+            kernel.query(&GeometryQuery::Volume(h)).is_err(),
+            "Volume query on null-topology shape must return Err, not crash/Ok"
+        );
+        assert!(
+            kernel.query(&GeometryQuery::Centroid(h)).is_err(),
+            "Centroid query on null-topology shape must return Err"
+        );
+        assert!(
+            kernel.query(&GeometryQuery::BoundingBox(h)).is_err(),
+            "BoundingBox query on null-topology shape must return Err"
+        );
+        assert!(
+            kernel
+                .query(&GeometryQuery::InertiaTensor {
+                    handle: h,
+                    density: 1000.0,
+                })
+                .is_err(),
+            "InertiaTensor query on null-topology shape must return Err"
+        );
+    }
+
+    /// Defense-in-depth: each OCCT geometry-query FFI entry point must reject a
+    /// null-topology shape with a catchable `Err` — never a hardware SIGSEGV —
+    /// even when called DIRECTLY, bypassing the `get_shape` boundary guard.
+    /// This pins the C++ IsNull guards independently of the Rust chokepoint, so
+    /// any future or direct-FFI path that skips `get_shape` still fails safely.
+    /// Covers the mass-property queries (volume/centroid/bbox/inertia) plus the
+    /// surface/linear-property queries (face_centroid/area/edge_length);
+    /// `query_face_centroid` is the one reached from the production `Centroid`
+    /// dispatch for Face-repr handles, so its direct-FFI guard closes the last
+    /// gap the get_shape chokepoint already covers.
+    ///
+    /// RED (pre-fix): `query_volume` dereferences `ShapeType()` on null
+    /// topology → SIGSEGV (the guaranteed crash vector); `query_centroid`,
+    /// `query_face_centroid`, `query_area`, and `query_edge_length` all return
+    /// `Ok` (origin / mass 0.0) on null topology (so their `is_err()`
+    /// assertions would fail). GREEN (after the C++ guards): each throws
+    /// `std::runtime_error`, mapped by cxx to a catchable `Err`.
+    ///
+    /// MUST run under `cargo nextest run` (process-per-test isolation) so the
+    /// pre-fix crash is contained as one failing test, not a suite abort.
+    #[test]
+    fn occt_query_ffi_rejects_null_topology_shape() {
+        let null_shape = ffi::ffi::make_null_shape_for_test();
+
+        // query_volume is the guaranteed crash vector pre-fix (ShapeType()
+        // fallback over null topology).
+        assert!(
+            ffi::ffi::query_volume(&null_shape).is_err(),
+            "query_volume on null-topology shape must return Err, not crash"
+        );
+        assert!(
+            ffi::ffi::query_centroid(&null_shape).is_err(),
+            "query_centroid on null-topology shape must return Err"
+        );
+        assert!(
+            ffi::ffi::query_bbox(&null_shape).is_err(),
+            "query_bbox on null-topology shape must return Err"
+        );
+        assert!(
+            ffi::ffi::query_inertia_tensor(&null_shape, 1000.0).is_err(),
+            "query_inertia_tensor on null-topology shape must return Err"
+        );
+        // Surface/linear-property queries: pre-fix these return Ok (origin /
+        // mass 0.0) on null topology rather than crashing, but they are equally
+        // unguarded. query_face_centroid is reached from the production Centroid
+        // dispatch for Face-repr handles (see GeometryQuery::Centroid dispatch).
+        assert!(
+            ffi::ffi::query_face_centroid(&null_shape).is_err(),
+            "query_face_centroid on null-topology shape must return Err"
+        );
+        assert!(
+            ffi::ffi::query_area(&null_shape).is_err(),
+            "query_area on null-topology shape must return Err"
+        );
+        assert!(
+            ffi::ffi::query_edge_length(&null_shape).is_err(),
+            "query_edge_length on null-topology shape must return Err"
+        );
     }
 
     #[test]
