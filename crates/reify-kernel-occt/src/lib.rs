@@ -717,6 +717,21 @@ impl OcctKernel {
         self.last_warm_start_failures
     }
 
+    /// Number of shapes currently resident in this kernel's native `shapes`
+    /// table.
+    ///
+    /// This is the observability primitive for task 5212's reload
+    /// native-memory-bound signal: `shapes` holds one `cxx::UniquePtr<OcctShape>`
+    /// per minted handle and is the map that grows unbounded across GUI
+    /// whole-file reloads until [`Self::reset`] evicts it. Exposing the count
+    /// lets callers (and the boundedness regression test) verify that a
+    /// reset genuinely frees the resident shapes and that repeated
+    /// execute-batch→reset cycles stay bounded rather than accumulating.
+    /// Mirrors the [`Self::warm_start_failures`] diagnostic accessor above.
+    pub fn shape_count(&self) -> usize {
+        self.shapes.len()
+    }
+
     /// Store a shape and return the next handle (defaults to `BRepKind::Solid`).
     fn store(&mut self, shape: cxx::UniquePtr<ffi::ffi::OcctShape>) -> GeometryHandle {
         self.store_with_repr(shape, BRepKind::Solid)
