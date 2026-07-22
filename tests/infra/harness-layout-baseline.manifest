@@ -672,6 +672,7 @@ crates/reify-eval/tests/shell_extract_persistent_cache_round_trip.rs
 crates/reify-eval/tests/shell_mixed_region_validation.rs
 crates/reify-eval/tests/shell_too_thick_at_auto_falls_back.rs
 crates/reify-eval/tests/shell_too_thick_at_shell_annotation_errors.rs
+crates/reify-eval/tests/snapshot_cache_divergence_gate.rs
 crates/reify-eval/tests/snapshot_graph.rs
 crates/reify-eval/tests/solve_elastic_static_body_e2e.rs
 crates/reify-eval/tests/solver_optimality_unproven.rs
