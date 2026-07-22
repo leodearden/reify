@@ -2822,6 +2822,53 @@
         }
     }
 
+    /// A BARE (dimensionless) `spacing` on a 1D `linear_pattern` must be
+    /// REJECTED — same silent-SI-metres hazard as the 2D case. The op is
+    /// dropped (Err) with a diagnostic naming the arg and the Length
+    /// requirement.
+    #[test]
+    fn compile_geometry_op_linear_pattern_bare_spacing_rejected() {
+        let step_handles = vec![GeometryHandleId(42)];
+        let values = ValueMap::new();
+
+        let op = CompiledGeometryOp::Pattern {
+            kind: PatternKind::Linear,
+            target: GeomRef::Step(0),
+            args: vec![
+                ("dx".into(), literal_f64(10.0)),
+                ("dy".into(), literal_f64(0.0)),
+                ("dz".into(), literal_f64(0.0)),
+                ("count".into(), literal_f64(3.0)),
+                // BARE dimensionless spacing — must be rejected.
+                ("spacing".into(), literal_f64(0.02)),
+            ],
+        };
+
+        let mut diagnostics: Vec<Diagnostic> = Vec::new();
+        let result = compile_geometry_op(
+            &op,
+            &values,
+            &step_handles,
+            &[],
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut diagnostics,
+        );
+        assert!(
+            result.is_err(),
+            "bare (dimensionless) spacing must drop the op, got: {:?}",
+            result
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("spacing") && d.message.contains("Length")),
+            "a diagnostic must name the spacing arg and the Length units \
+             requirement; got: {:?}",
+            diagnostics
+        );
+    }
+
     #[test]
     fn compile_geometry_op_circular_pattern_valid_args() {
         let step_handles = vec![GeometryHandleId(42)];
