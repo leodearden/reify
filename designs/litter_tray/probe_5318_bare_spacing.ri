@@ -1,0 +1,19 @@
+module probe_5318_bare_spacing
+
+// 5318 probe P7: full minimal replica of top_deck's trigger —
+// difference(difference(fillet(outer), fillet(cavity)), union_all(patA, patB)).
+// 13 holes if it perforates (3x3 + offset 2x2 grid, all within the floor).
+structure def Probe : Rigid {
+    param material : Material = Material(name: "PETG", density: 1270kg/m^3, youngs_modulus: 2.1GPa)
+    param geometry : Solid = difference(
+        difference(
+            fillet(translate(box(40mm, 40mm, 10mm), 0mm, 0mm, 5mm), 1mm),
+            fillet(translate(box(30mm, 30mm, 10mm), 0mm, 0mm, 10mm), 1mm)
+        ),
+        union_all(
+            linear_pattern_2d(translate(cylinder(2mm, 7mm), -10mm, -10mm, -1mm), 1, 0, 0, 3, 10, 0, 1, 0, 3, 10),
+            linear_pattern_2d(translate(cylinder(2mm, 7mm), -5mm, -5mm, -1mm), 1, 0, 0, 2, 10, 0, 1, 0, 2, 10)
+        )
+    )
+    sub display = DisplayOutput(subject: geometry)
+}

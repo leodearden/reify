@@ -239,3 +239,98 @@ lower wall; PU/epoxy + interior sealant bead. Constraint system caught a
 real error during authoring (insert pocket vs 6.4mm wall → widened ledge to
 5mm, shortened insert to 4mm). Halves: 258×263mm footprint (fits U1 bed),
 0.761 kg each, CLI-verified.
+
+---
+
+# Retest session, 2026-07-22 (dogfood round 2)
+
+Fresh release CLI + dev GUI built at main 0408733da2 (all round-1 fix
+commits ancestors, verified per-task). Retest of every landed fix from
+the 07-14 session, plus an 11-probe boundary battery that overturned
+5318's premise. New fix tasks filed this session: **5337, 5338, 5339**;
+premise corrections pushed into **5214** (in-progress) and **5318**.
+
+## Retest verdicts (round-1 fixes)
+
+| Task | Verdict | Evidence |
+|---|---|---|
+| 5193/5209 watcher + identity | **PASS** | non-atomic `printf >`+`cat >>` write on the watched file: engine ends holding full content, no diagnostics, no stuck partial |
+| 5194 GUI mass props | **PASS at its seam; two sibling seams broken** | via `open_file`: mass 1.40705 kg, centroid z 21.508 mm, MoI positive ✓. But argv-launch load AND watcher-reload leave mass/centroid/moi_principal Undef (capacity computes) → **5338** |
+| 5198 display fixes | **PASS (GUI channel)** | `lower_wall 6.4`, `1270 kg·m^-3`, constraint pretty-print `material.density > 0 kg·m^-3` ✓. CLI eval channel deliberately untouched: still raw SI + full float noise (`0.0063999999999999994 m`) — scope decision, noted not re-filed. Near-zero values escape rounding (centroid x = `0.000000000000386564423998`) → **5339** |
+| 5201 rounded_box | **LANDED** | `examples/litter_tray.ri` (the fix's own example adopts this design's footprint); not yet exercised in the tray rewrite — deferred until 5208 lands so corner+edge strategy can be chosen once |
+| 5211 GUI segfault | **FAIL — phantom observable** | kernel IsNull guards ARE in the binary (106fe26c ancestor), yet `open_file bottom_deck_split.ri` still kills the GUI in ~6s, exit 139, 3/3 repro. gdb: **stack overflow in recursive `compile_expr`** (fault at entry of `compile_expr_guarded_with_expected`, expr.rs:1332, on `tokio-rt-worker`) — the file's 9-level inline geometry expression blows the 2MB tokio worker stack in the debug build; CLI is clean because it compiles on the 8MB main thread. 5211's OCCT hardening fixed an adjacent hazard; its stated observable was never verified e2e → **5337** (high) |
+| 5213 single-pass fuse | **LANDED but see #17** | prior "timing ladder" measurements below were fusing *scattered* tools (units bug) — the flat-sieve 07-21 addendum (unit-ful spacings) remains the only valid pre-existing perf data |
+| 5208 curated fillets | **still broken, unchanged** | same 6 errors, same stale message citing 4360/4358; retest note + repro-file fix appended to the task |
+| 5195/5196/5197/5206 | still open as expected | 57-warning topology noise still present on healthy models; STEP chatter still pollutes eval stdout |
+
+## 17. Bare pattern spacings are read as SI METRES — 5318's premise was wrong (probe battery)
+
+An 11-probe matrix (base ∈ {flat, filleted, nested-diff, nested-diff+fillet,
+let-bound, reassociated} × tool ∈ {single cylinder, pattern, union of 2
+patterns} × spacing ∈ {bare, unit-ful}), each verified by exact mass
+arithmetic AND per-hole `CYLINDRICAL_SURFACE` census in STEP:
+
+- **Every** bare-spacing probe cuts exactly ONE hole per pattern
+  (instances land 10 m apart; only instance[0,0] intersects). The flat
+  "control" 5318 believed works fails identically.
+- **Every** unit-ful probe cuts ALL holes — including the exact
+  `difference(difference(fillet,fillet), union_all(patA,patB))` shape
+  5318 blamed (13/13 holes, mass exact to ~1e-7 g).
+- Committed as the two-file discriminator pair
+  `probe_5318_bare_spacing.ri` / `probe_5318_unit_spacing.ri`
+  (identical geometry, only spacings differ).
+
+Mechanism (all three seams verified in source): compiler passes spacing
+untyped (geometry.rs:1768) → eval wraps raw Value, no dimension check
+(geometry_ops.rs:2526) → kernel `extract_f64` = `as_f64()`
+(reify-kernel-occt lib.rs:3369): `Real(10.0)` → **10 metres**;
+`10mm` → 0.01. Silent at every layer — the canonical silent-default.
+
+Consequences: **5214** premise corrected (was "interpreted as mm",
+cosmetic; actually metres, correctness) and bumped to high — updated
+mid-flight for its live claimant. **5318** rescoped: nested composition
+innocent; residual scope = the boolean pipeline silently dropping
+non-intersecting tools (partial cut at 9-tool scale, TOTAL silent no-op
+at 4,602-tool scale — a "sieve" that builds hole-free with zero
+diagnostics) + a build-path perforation regression test; now depends
+on 5214. Old timing "ladders" measured fusing scattered tools, not
+cutting holes.
+
+## top_deck.ri fixed and verified (first true perforation)
+
+Pattern calls now pass `nx_a/ny_a` + `hole_pitch`/`2*row_step`
+(unit-ful lets, also exercising expression-valued pattern args — no
+example covered that). Result: **mass 0.7929944333280107 kg**, matching
+0.99724 (solid) − 0.20655 (4,602 Ø3×5mm holes) + 0.00215 (~48 holes
+re-plugged by the two Ø26 pads) = 0.7928 kg — the design's pad logic
+verified by arithmetic. Eval of the true 4,602-hole nested cut runs
+**tens of minutes** (vs 100s for the flat sieve of the same hole count,
+vs 12s for the bare no-op) — strengthens 5317's GO (Manifold
+batch_difference); exact timing in the build log addendum when it
+completes.
+
+## 15. (→5338) Mass-props Undef on argv-launch and watcher-reload GUI load paths — see table row 5194.
+
+## 16. (→5337) GUI SIGSEGV = compiler stack overflow on deep geometry exprs — see table row 5211.
+
+## 18. Module-path enforcement vs design-variant workflow (intended behavior, real friction)
+
+`E_MODULE_PATH_MISMATCH` (task 3977, spec §7.1/§7.2, recently extended
+to the CLI entry path) now rejects `bottom_deck_v2_selectors.ri`
+declaring `module bottom_deck` — the committed 5208 repro wouldn't even
+reach its own bug. Fixed the declaration in-repo. Workflow note: keeping
+side-by-side variants of one module (v1/v2/v2_selectors) now requires
+renaming the module per variant — fine, but the v1↔v2 diff is noisier.
+Also still present: `orient_identity()` in sub placement warns "cannot
+infer return type of zero-arg function, defaulting to Real" on every
+eval (finding #12's inference half; 5204 covered only the docs half).
+
+## Session tooling notes
+
+- GUI driven end-to-end over the debug MCP (health/open_file/
+  engine_state/wait_for_idle/demand_dispatch) — this workflow held up
+  well; `wait_for_idle` returning 28ms for a file that then crashes the
+  process 6s later means idle ≠ settled for async tessellation/query
+  passes (worth remembering when scripting retests).
+- gdb -batch over the debug binary + MCP trigger = clean crash-stack
+  capture recipe for GUI-native crashes.
