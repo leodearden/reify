@@ -3369,6 +3369,62 @@ MOCKEOF
     else
         assert "T30e: FAILED-DETAIL block contains NO live CLOCK_STOP token (got: $t30e_out)" false
     fi
+
+    # -- 30h: REIFY_RUN_ALL_MEMBER_SUBSET dedicated serial branch (task #5331) --
+    # a named failing subset member's structured/assert FAIL-detail is
+    # collected too, since the subset retry runs ON dark-factory's
+    # clock-stop-parsed verify stream just like the concurrent-pool path.
+    # A two-member fixture (named-failing + un-named sibling) proves the
+    # subset branch was actually taken via the sibling's RESULT: SKIP line
+    # (mirrors Test 28a's SKIP-sentinel shape), guarding against a vacuous
+    # pass through the pool/legacy path. -------------------------------------
+    TMPDIR_T30H="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T30H")
+    cat > "$TMPDIR_T30H/test_subset_kloc.sh" <<'MOCKEOF'
+#!/usr/bin/env bash
+echo "HARNESS_KLOC_CAP FAIL crate=synth file=crates/foo/tests/stray.rs reason=unsanctioned-standalone"
+echo "  FAIL: harness kLOC assertion 1"
+echo "  FAIL: harness kLOC assertion 2"
+exit 1
+MOCKEOF
+    chmod +x "$TMPDIR_T30H/test_subset_kloc.sh"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$TMPDIR_T30H/test_other.sh"
+    chmod +x "$TMPDIR_T30H/test_other.sh"
+
+    t30h_rc=0
+    t30h_out="$(REIFY_RUN_ALL_MEMBER_SUBSET="test_subset_kloc.sh" bash "$RUN_ALL" "$TMPDIR_T30H" 2>&1)" || t30h_rc=$?
+
+    if [[ "$t30h_out" == *"  RESULT: SKIP (test_other.sh)"* ]]; then
+        assert "T30h: subset branch was actually taken (sibling reported SKIP)" true
+    else
+        assert "T30h: subset branch was actually taken (sibling reported SKIP) (got: $t30h_out)" false
+    fi
+
+    if [[ "$t30h_out" == *"--- FAILED-DETAIL: test_subset_kloc.sh ---"* ]]; then
+        assert "T30h: FAILED-DETAIL delimiter present for test_subset_kloc.sh" true
+    else
+        assert "T30h: FAILED-DETAIL delimiter present for test_subset_kloc.sh (got: $t30h_out)" false
+    fi
+
+    t30h_tail="$(sed -n '/^=== Summary:/,$p' <<<"$t30h_out")"
+    if [[ "$t30h_tail" == *"HARNESS_KLOC_CAP FAIL crate=synth file=crates/foo/tests/stray.rs reason=unsanctioned-standalone"* ]]; then
+        assert "T30h: structured HARNESS_KLOC_CAP FAIL line present verbatim in the Summary tail" true
+    else
+        assert "T30h: structured HARNESS_KLOC_CAP FAIL line present verbatim in the Summary tail (got: $t30h_out)" false
+    fi
+
+    t30h_failed_line="$(grep -n '^=== FAILED:' <<<"$t30h_out" | head -1 | cut -d: -f1)" || true
+    t30h_detail_line="$(grep -n '^--- FAILED-DETAIL: test_subset_kloc\.sh ---' <<<"$t30h_out" | head -1 | cut -d: -f1)" || true
+    [ -n "$t30h_failed_line" ] || t30h_failed_line=0
+    [ -n "$t30h_detail_line" ] || t30h_detail_line=-1
+    if [ "$t30h_detail_line" -gt "$t30h_failed_line" ]; then
+        assert "T30h: FAILED-DETAIL block appears after the === FAILED: line" true
+    else
+        assert "T30h: FAILED-DETAIL block appears after the === FAILED: line (got: $t30h_out)" false
+    fi
+
+    assert "T30h: run_all.sh exits 1 (named failing subset member sinks the run)" \
+        test "$t30h_rc" -eq 1
 else
     assert "T30a: pool path was actually taken (INFO: run_all.sh pool: N= present) (skipped - run_all.sh missing)" false
     assert "T30a: FAILED-DETAIL delimiter present for test_kloc.sh (skipped - run_all.sh missing)" false
@@ -3392,6 +3448,11 @@ else
     assert "T30e: pool path was actually taken (INFO: run_all.sh pool: N= present) (skipped - run_all.sh missing)" false
     assert "T30e: FAILED-DETAIL block contains the sanitized QUOTED_CLOCK form (skipped - run_all.sh missing)" false
     assert "T30e: FAILED-DETAIL block contains NO live CLOCK_STOP token (skipped - run_all.sh missing)" false
+    assert "T30h: subset branch was actually taken (sibling reported SKIP) (skipped - run_all.sh missing)" false
+    assert "T30h: FAILED-DETAIL delimiter present for test_subset_kloc.sh (skipped - run_all.sh missing)" false
+    assert "T30h: structured HARNESS_KLOC_CAP FAIL line present verbatim in the Summary tail (skipped - run_all.sh missing)" false
+    assert "T30h: FAILED-DETAIL block appears after the === FAILED: line (skipped - run_all.sh missing)" false
+    assert "T30h: run_all.sh exits 1 (named failing subset member sinks the run) (skipped - run_all.sh missing)" false
 fi
 
 # -- Summary --------------------------------------------------------------------
