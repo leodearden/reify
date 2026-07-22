@@ -14,22 +14,23 @@
 //!
 //! ## Known scope gaps for migration leaves (γ/δ/ε/ι)
 //!
-//! Both gaps below are deliberately left as documented limitations rather
-//! than closed by extending an enum now, since closing them would deviate
-//! from the two-variant `CacheLeg` shape the PRD's §2.4 contract sketch
-//! fixes for this task. A migration leaf that hits either gap must address
-//! it explicitly (extend the enum, or document why the site is left
-//! unmigrated) — not silently paper over it by routing through the existing
-//! variants as-is.
+//! The freshness gap below is now **CLOSED** (task #5238); the remaining
+//! `Skip`-outcome gap is deliberately left as a documented limitation rather
+//! than closed by changing `journal.rs`'s `EventKind` shape here. A migration
+//! leaf that hits the remaining gap must address it explicitly (extend the
+//! enum, or document why the site is left unmigrated) — not silently paper
+//! over it by routing through the existing variants as-is.
 //!
-//! - **No freshness dimension.** [`CacheLeg::Record`] always writes
-//!   `Freshness::Final` (see its doc comment) — there is no path to
-//!   `CacheStore::record_evaluation_propagating_freshness` (arch §7.2). The
-//!   dominant let/param commit sites in `engine_eval.rs`
-//!   (`evaluate_params_and_lets_unified`, `evaluate_let_bindings`) use the
-//!   propagating variant to derive freshness, so a migration leaf touching
-//!   them cannot represent that commit through `commit_cell_result` as
-//!   currently shaped.
+//! - **Freshness dimension — CLOSED (task #5238).** [`CacheLeg::Record`]
+//!   still writes `Freshness::Final`, but [`CacheLeg::RecordPropagating`] now
+//!   routes to `CacheStore::record_evaluation_propagating_freshness` (deriving
+//!   the output freshness from the just-computed trace, arch §7.2) and
+//!   [`CacheLeg::RecordWithFreshness`] routes to
+//!   `CacheStore::record_evaluation_with_freshness` (writing an explicit
+//!   caller-supplied freshness). The dominant let/param commit sites in
+//!   `engine_eval.rs` (`evaluate_params_and_lets_unified`,
+//!   `evaluate_let_bindings`) and the `eval_cached` preserve-freshness
+//!   re-serves are migrated onto these variants.
 //! - **`CacheLeg::Skip`'s journal `Completed.outcome` is an unspecified
 //!   placeholder**, not a meaningful `EvalOutcome` — see the doc comment at
 //!   the `Completed` event construction inside [`commit_cell_result`], and
@@ -130,27 +131,47 @@ impl TraceSource {
     }
 }
 
-/// Whether a commit writes the cache leg, and if not, why.
+/// Whether a commit writes the cache leg, how, and if not, why.
 ///
-/// `Record` is a unit variant (not value-carrying) — the cache leg's
-/// `DependencyTrace` rides as a separate `commit_cell_result` parameter,
-/// used only on that arm.
+/// The cache-writing variants (`Record`, `RecordPropagating`) do not carry
+/// the `DependencyTrace` — it rides as a separate `commit_cell_result`
+/// parameter, consumed by whichever cache-writing arm runs.
 ///
-/// **Freshness scope gap:** `Record` always writes `Freshness::Final` (see
-/// its doc below) — there is no variant routing to
-/// `CacheStore::record_evaluation_propagating_freshness` (arch §7.2). See
-/// the module doc's "Known scope gaps" section before wiring a migration
-/// site that needs freshness propagation.
+/// **Freshness routing:** `Record` writes `Freshness::Final`;
+/// [`CacheLeg::RecordPropagating`] DERIVES freshness from the just-computed
+/// trace (arch §7.2); [`CacheLeg::RecordWithFreshness`] writes an EXPLICIT
+/// caller-supplied freshness. Because `reify_ir::Freshness` is not `Copy`,
+/// this enum is `Clone` but deliberately NOT `Copy` — `commit_cell_result`
+/// borrows the leg for the `Started`-payload match and consumes it for the
+/// cache-write match.
 #[allow(dead_code)] // constructed by migration call sites from leaves γ/δ/ε/ι; tests only until then
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CacheLeg {
     /// Write the cache leg via [`CacheStore::record_evaluation`], which is a
     /// thin wrapper that hard-codes `Freshness::Final` (see its own doc
-    /// comment in `cache.rs`). Does NOT call
-    /// `record_evaluation_propagating_freshness` — a commit site that needs
-    /// derived freshness per arch §7.2 cannot be represented by this variant
-    /// as currently shaped.
+    /// comment in `cache.rs`). For a commit site that needs a non-Final
+    /// freshness, use [`CacheLeg::RecordPropagating`] (derive from trace) or
+    /// [`CacheLeg::RecordWithFreshness`] (explicit) instead.
     Record,
+    /// Write the cache leg via
+    /// [`CacheStore::record_evaluation_propagating_freshness`], which DERIVES
+    /// the output freshness from the just-computed `dependency_trace` (arch
+    /// §7.2): `still_refining: true` short-circuits to `Freshness::Intermediate`,
+    /// otherwise freshness is propagated from the reads (an all-`Final` trace
+    /// yields `Final`). Used by the main let/param evaluators in
+    /// `engine_eval.rs` (`evaluate_params_and_lets_unified`,
+    /// `evaluate_let_bindings`).
+    RecordPropagating {
+        /// Forwarded to `record_evaluation_propagating_freshness`: `true`
+        /// marks the just-computed result as still-refining (→ `Intermediate`).
+        still_refining: bool,
+    },
+    /// Write the cache leg via
+    /// [`CacheStore::record_evaluation_with_freshness`], writing the supplied
+    /// [`reify_ir::Freshness`] verbatim. Used by the `eval_cached`
+    /// preserve-freshness re-serves, which carry the cached entry's own
+    /// freshness forward unchanged.
+    RecordWithFreshness(reify_ir::Freshness),
     /// Omit the cache leg. Carries the reason, surfaced on
     /// [`CommitOutcome::skip_reason`] for later divergence-audit exemptions.
     Skip(&'static str),
@@ -265,8 +286,10 @@ pub(crate) fn commit_cell_result(
     // `CommitOutcome` — discover that the cache leg was omitted, and why; the
     // `Completed` event constructed below is NOT such a signal on the Skip
     // path (see its `outcome` field's doc comment).
-    let started_payload = match cache_leg {
-        CacheLeg::Record => trace.as_str().to_string(),
+    let started_payload = match &cache_leg {
+        CacheLeg::Record
+        | CacheLeg::RecordPropagating { .. }
+        | CacheLeg::RecordWithFreshness(_) => trace.as_str().to_string(),
         CacheLeg::Skip(reason) => format!("{}|cache-skip={reason}", trace.as_str()),
     };
 
@@ -299,6 +322,26 @@ pub(crate) fn commit_cell_result(
                 CachedResult::Value(value.clone(), det),
                 version,
                 dependency_trace,
+            );
+            (Some(outcome), None)
+        }
+        CacheLeg::RecordPropagating { still_refining } => {
+            let outcome = cache.record_evaluation_propagating_freshness(
+                node_id.clone(),
+                CachedResult::Value(value.clone(), det),
+                version,
+                dependency_trace,
+                still_refining,
+            );
+            (Some(outcome), None)
+        }
+        CacheLeg::RecordWithFreshness(freshness) => {
+            let outcome = cache.record_evaluation_with_freshness(
+                node_id.clone(),
+                CachedResult::Value(value.clone(), det),
+                version,
+                dependency_trace,
+                freshness,
             );
             (Some(outcome), None)
         }
