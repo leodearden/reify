@@ -7706,16 +7706,19 @@ impl Engine {
                     // Preserve existing freshness (Failed/Pending) — see the
                     // analogous let-cell block comment for rationale (arch §7.1/§9.2).
                     //
-                    // task γ (#5053) deferral note: this commit (and its Param/Let
-                    // siblings below, at ~@6183/@6355) calls
-                    // `record_evaluation_with_freshness` directly rather than
-                    // `commit_cell_result` (task α, cell_commit.rs). `CacheLeg::Record`
-                    // always writes `Freshness::Final` and has no path to a preserved
-                    // (carried-over) freshness value — see cell_commit.rs's module doc,
-                    // "Known scope gaps" — so a genuinely preserve-freshness commit like
-                    // this one cannot be represented by `commit_cell_result` as currently
-                    // shaped. Left unmigrated pending a preserve/propagating `CacheLeg`
-                    // variant (PRD docs/prds/v0_6/eval-cell-commit-substrate.md §2.4).
+                    // task #5238: this Auto-cell pre-seed re-serve stays UNMIGRATED.
+                    // Its sibling Param (~@6665) and Let (~@6836) preserve-freshness
+                    // re-serves ARE now migrated onto commit_cell_result via
+                    // CacheLeg::RecordWithFreshness (which routes to
+                    // record_evaluation_with_freshness, carrying the entry's freshness
+                    // forward). This one cannot be: it can preserve a stored
+                    // DeterminacyState::Auto (the Auto pre-seed writes (Undef, Auto)), and
+                    // DeterminacyRule — from which commit_cell_result derives determinacy —
+                    // resolves only to Determined or Undetermined, never Auto (nor
+                    // Provisional). Migrating it would require extending DeterminacyRule
+                    // with an Auto-preserving variant, a determinacy-dimension change
+                    // orthogonal to this task's freshness scope. See cell_commit.rs "Known
+                    // scope gaps" + PRD docs/prds/v0_6/eval-cell-commit-substrate.md §2.4/§7.2.
                     if !self.param_overrides.contains_key(&cell.id)
                         && !self.cache.is_dirty(&node_id)
                         && let Some(entry) = self.cache.get(&node_id)
@@ -10123,6 +10126,14 @@ impl Engine {
                                             "sorted_combined",
                                             "combined_traces",
                                         );
+                                        // task #5238: NOT migrated onto commit_cell_result — this
+                                        // failure path journals EventKind::Failed (not the
+                                        // Started/Completed pair the primitive emits), writes no
+                                        // values/snapshot leg, and calls mark_failed, a shape
+                                        // commit_cell_result cannot represent. The freshness
+                                        // propagated here is immediately overwritten by the following
+                                        // mark_failed (-> Failed { error }), so this direct call loses
+                                        // no fidelity.
                                         self.cache.record_evaluation_propagating_freshness(
                                             node_id.clone(),
                                             CachedResult::Value(
@@ -10187,6 +10198,13 @@ impl Engine {
                                 "sorted_combined",
                                 "combined_traces",
                             );
+                            // task #5238: NOT migrated onto commit_cell_result — this failure
+                            // path journals EventKind::Failed (not the Started/Completed pair the
+                            // primitive emits), writes no values/snapshot leg, and calls
+                            // mark_failed, a shape commit_cell_result cannot represent. The
+                            // freshness propagated here is immediately overwritten by the
+                            // following mark_failed (-> Failed { error }), so this direct call
+                            // loses no fidelity.
                             self.cache.record_evaluation_propagating_freshness(
                                 node_id.clone(),
                                 CachedResult::Value(Value::Undef, DeterminacyState::Determined),
@@ -11153,6 +11171,13 @@ impl Engine {
                                     "sorted_lets",
                                     "let_traces",
                                 );
+                                // task #5238: NOT migrated onto commit_cell_result — this failure
+                                // path journals EventKind::Failed (not the Started/Completed pair
+                                // the primitive emits), writes no values/snapshot leg, and calls
+                                // mark_failed, a shape commit_cell_result cannot represent. The
+                                // freshness propagated here is immediately overwritten by the
+                                // following mark_failed (-> Failed { error }), so this direct call
+                                // loses no fidelity.
                                 self.cache.record_evaluation_propagating_freshness(
                                     node_id.clone(),
                                     CachedResult::Value(Value::Undef, DeterminacyState::Determined),
@@ -11231,6 +11256,12 @@ impl Engine {
                     // the entry exists; mark_failed then overrides freshness
                     // to Failed { error }.
                     let trace = take_trace(&mut let_traces, &node_id, "sorted_lets", "let_traces");
+                    // task #5238: NOT migrated onto commit_cell_result — this failure path
+                    // journals EventKind::Failed (not the Started/Completed pair the
+                    // primitive emits), writes no values/snapshot leg, and calls mark_failed
+                    // (see the stub-Undef note just above), a shape commit_cell_result cannot
+                    // represent. The freshness propagated here is immediately overwritten by
+                    // the following mark_failed (-> Failed { error }), so no fidelity is lost.
                     self.cache.record_evaluation_propagating_freshness(
                         node_id.clone(),
                         CachedResult::Value(Value::Undef, DeterminacyState::Determined),

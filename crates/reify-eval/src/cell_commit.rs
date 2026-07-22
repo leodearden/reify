@@ -55,7 +55,6 @@ use crate::journal::{EvalEvent, EventJournal, EventKind, EventPayload};
 /// evaluated [`Value`]. Encodes today's three implicit determinacy rules as
 /// explicit, typed variants so a future edit cannot silently erase the
 /// intentional divergence between them (INV-EVAL-1).
-#[allow(dead_code)] // constructed by migration call sites from leaves γ/δ/ε/ι; tests only until then
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeterminacyRule {
     /// Main-pass let/param binds: stamps `Determined` unconditionally,
@@ -95,7 +94,6 @@ impl DeterminacyRule {
 /// call-path produced this value. Makes the journal self-describing so the
 /// §2.6 divergence audit (a later leaf) can attribute a mismatch to its
 /// producing path.
-#[allow(dead_code)] // variants other than ColdEval used from step-7 onwards
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TraceSource {
     /// First-time (cold) evaluation of a node with no prior cache entry.
@@ -144,7 +142,6 @@ impl TraceSource {
 /// this enum is `Clone` but deliberately NOT `Copy` — `commit_cell_result`
 /// borrows the leg for the `Started`-payload match and consumes it for the
 /// cache-write match.
-#[allow(dead_code)] // constructed by migration call sites from leaves γ/δ/ε/ι; tests only until then
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CacheLeg {
     /// Write the cache leg via [`CacheStore::record_evaluation`], which is a
@@ -184,7 +181,11 @@ pub enum CacheLeg {
 /// metadata the four-leg commit produced. Fields are private — migration
 /// call sites in other modules (leaves γ/δ/ε/ι) read them via the
 /// `pub(crate)` accessor methods below, not by reaching into the struct.
-#[allow(dead_code)] // fields read by tests/accessors only until migration leaves γ/δ/ε/ι land
+// #5238: migration call sites discard the returned CommitOutcome, so `value`,
+// `determinacy`, `skip_reason` and `trace_source` are read only by the accessors
+// below + tests until the §2.6 divergence-audit consumer (a future leaf) reads
+// them from non-test code. (`cache_outcome` is already read by non-test code.)
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CommitOutcome {
     value: Value,
@@ -203,7 +204,10 @@ pub struct CommitOutcome {
 /// Read-only accessors for [`CommitOutcome`] — the shape migration call
 /// sites in other modules (leaves γ/δ/ε/ι) use to consume a commit's result,
 /// since the struct's fields are private to this module.
-#[allow(dead_code)] // called by migration call sites from leaves γ/δ/ε/ι; a test exercises them until then
+// #5238: migration call sites discard the returned CommitOutcome, so these
+// accessors are exercised only by tests until the §2.6 divergence-audit consumer
+// (a future leaf) consumes a commit's result from non-test code.
+#[allow(dead_code)]
 impl CommitOutcome {
     /// The committed value — mirrors what was written to the values and
     /// snapshot legs.
@@ -256,7 +260,6 @@ pub(crate) struct CommitLegs<'a> {
 /// additionally carries a `cache-skip=<reason>` marker (see body), so the
 /// journal alone — with no access to the in-memory [`CommitOutcome`] — is
 /// sufficient to tell a genuine cache write apart from a skip.
-#[allow(dead_code)] // wired in by migration leaves γ/δ/ε/ι; exercised by tests until then
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn commit_cell_result(
     legs: CommitLegs<'_>,
