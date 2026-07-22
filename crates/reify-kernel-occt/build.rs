@@ -62,7 +62,26 @@ fn main() {
         .include(&out_dir)
         .std("c++17")
         .flag_if_supported("-Wno-unused-parameter")
-        .flag_if_supported("-Wno-deprecated-declarations");
+        .flag_if_supported("-Wno-deprecated-declarations")
+        // Force unfused float/double arithmetic in occt_wrapper.cpp so
+        // tessellate_shape's INV-GEO-1 degeneracy-gate cross products
+        // (occt_wrapper.cpp's `twice_area_sq` fallback) bit-match
+        // reify_ir::Mesh::check_contract's unfused Rust regardless of
+        // target FMA codegen (e.g. -Ctarget-cpu=native). Unconditional
+        // `.flag` (not `.flag_if_supported`) is deliberate: this build is
+        // scoped to x86_64-unknown-linux-gnu with GCC/Clang, both of which
+        // universally support -ffp-contract=off, so a silent
+        // `flag_if_supported` drop would quietly reopen the divergence
+        // risk this pin exists to close. Task #5241, follow-up to #5164.
+        //
+        // This pins contraction off for the whole ~6000-line TU, but that's
+        // currently free: occt_wrapper.cpp is FFI marshalling glue and the
+        // heavy numeric work lives in the linked OCCT libraries, which this
+        // flag doesn't touch. If a hot numeric loop is ever added directly
+        // to this TU and FMA loss there matters, prefer narrowing the pin
+        // to just that block with `#pragma STDC FP_CONTRACT OFF` instead of
+        // relying on this TU-wide flag.
+        .flag("-ffp-contract=off");
 
     build.compile("reify_occt_wrapper");
 

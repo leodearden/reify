@@ -6185,13 +6185,13 @@ TessResult tessellate_shape(const OcctShape& shape, double tolerance) {
                     (ax == cx && ay == cy && az == cz) ||
                     (bx == cx && by == cy && bz == cz);
 
-                // Fallback for non-coincident degenerates. Unlike the
-                // equality check above this is NOT proven FMA-immune (this
-                // TU's default -ffp-contract=fast vs check_contract's
-                // unfused Rust), but only a thin non-coincident sliver —
-                // which no current fixture emits — could diverge. Pinning
-                // -ffp-contract=off (build.rs, outside this task's locked
-                // scope) is tracked as follow-up #5241.
+                // Fallback for non-coincident degenerates. This TU is
+                // compiled with -ffp-contract=off (build.rs), so this
+                // float (b-a)×(c-a) cross product is unfused and
+                // bit-matches check_contract's unfused Rust arithmetic
+                // regardless of whether target FMA codegen is enabled —
+                // closing the residual divergence risk (task #5241,
+                // follow-up to #5164) by construction.
                 float abx = bx - ax, aby = by - ay, abz = bz - az;
                 float acx = cx - ax, acy = cy - ay, acz = cz - az;
                 float cross_x = aby * acz - abz * acy;
