@@ -3219,6 +3219,68 @@ mod tests {
         );
     }
 
+    // ── reset_geometry_for_reload (task 5212 — GUI whole-file reload) ──
+
+    /// `reset_geometry_for_reload()` frees per-design native kernel memory and
+    /// drops the realization cache in one call, so a GUI whole-file reload
+    /// neither leaks prior-design shapes nor re-serves a stale build-N handle
+    /// (module identity is preserved across reloads, so build-2 entities
+    /// collide on entity_id with build-1 and would otherwise cache-hit a
+    /// build-1 handle whose shape was just evicted). A reset-counting mock
+    /// kernel confirms every registered kernel is reset exactly once, and the
+    /// realization cache is emptied.
+    #[test]
+    fn reset_geometry_for_reload_resets_kernels_and_clears_realization_cache() {
+        use reify_core::ContentHash;
+        use reify_ir::{GeometryHandleId, KernelHandle, KernelId, ReprKind};
+        use reify_test_support::mocks::{MockConstraintChecker, MockGeometryKernel};
+
+        let mut engine = Engine::new(Box::new(MockConstraintChecker::new()), None);
+
+        // Register a reset-counting mock kernel; keep a shared handle to its
+        // reset counter before the mock is boxed into the engine.
+        let mock = MockGeometryKernel::new();
+        let reset_calls = mock.reset_calls_ref();
+        engine
+            .geometry_kernels
+            .insert("occt".to_string(), Box::new(mock));
+
+        // Seed one realization-cache entry — the stale build-N handle a reload
+        // must drop (else it would be re-served against an evicted shape).
+        engine.realization_cache.insert(
+            "Bracket",
+            ReprKind::BRep,
+            0.01,
+            ContentHash(0),
+            KernelHandle {
+                kernel: KernelId::Occt,
+                id: GeometryHandleId(1),
+            },
+        );
+        assert!(
+            !engine.realization_cache().is_empty(),
+            "precondition: realization cache seeded with one entry",
+        );
+        assert_eq!(
+            *reset_calls.lock().unwrap(),
+            0,
+            "precondition: no reset before the reload call",
+        );
+
+        engine.reset_geometry_for_reload();
+
+        assert_eq!(
+            *reset_calls.lock().unwrap(),
+            1,
+            "reset_geometry_for_reload must reset every registered kernel exactly once",
+        );
+        assert!(
+            engine.realization_cache().is_empty(),
+            "reset_geometry_for_reload must clear the realization cache so no \
+             stale build-N handle is re-served after reload",
+        );
+    }
+
     // ── allocate_snapshot_version pair-allocator (task 5040, INV-BUILD-2 α) ──
 
     /// `allocate_snapshot_version` mints a fresh `(SnapshotId, VersionId)`

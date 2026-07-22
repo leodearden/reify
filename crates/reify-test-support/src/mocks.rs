@@ -914,6 +914,11 @@ pub struct MockGeometryKernel {
     /// default-Err (drives the honest-degradation projection path). Mirrors
     /// the configurable-output pattern of the query-result builders above.
     volume_mesh_output: Option<VolumeMesh>,
+    /// Number of `GeometryKernel::reset()` calls received (task 5212). Held
+    /// behind an `Arc<Mutex<…>>` — like the `operations` recorder — so a test
+    /// can observe the count across the engine ownership boundary after the
+    /// mock is moved into `Engine::geometry_kernels`. Read via `reset_count()`.
+    reset_calls: Arc<Mutex<usize>>,
 }
 
 impl MockGeometryKernel {
@@ -928,7 +933,27 @@ impl MockGeometryKernel {
             extracted_faces: HashMap::new(),
             extracted_vertices: HashMap::new(),
             volume_mesh_output: None,
+            reset_calls: Arc::new(Mutex::new(0)),
         }
+    }
+
+    /// Number of `GeometryKernel::reset()` calls this mock has received
+    /// (task 5212). Reads through the shared `Arc<Mutex<…>>`, so it stays
+    /// observable after the mock is moved into `Engine::geometry_kernels` —
+    /// letting reload-wiring tests assert reset fires exactly once per
+    /// whole-file reload and never on a slider edit. Mirrors `op_count()`.
+    pub fn reset_count(&self) -> usize {
+        *self.reset_calls.lock().unwrap()
+    }
+
+    /// Shared handle to the `reset()` call counter (task 5212). Clone this
+    /// BEFORE the mock is boxed into `Engine::geometry_kernels` /
+    /// `EngineSession::new`, then read `*handle.lock().unwrap()` afterward to
+    /// observe reset calls across the ownership boundary — `reset_count()`
+    /// itself needs `&MockGeometryKernel`, which the boxed `dyn GeometryKernel`
+    /// no longer exposes. Mirrors `operations_ref()`.
+    pub fn reset_calls_ref(&self) -> Arc<Mutex<usize>> {
+        self.reset_calls.clone()
     }
 
     /// Configure a generic query response for a specific handle (fallback for all query types).
@@ -1675,6 +1700,14 @@ impl Default for MockGeometryKernel {
 }
 
 impl GeometryKernel for MockGeometryKernel {
+    /// Record a `reset()` call (task 5212). Overrides the trait no-op default
+    /// so reload-wiring tests can assert the engine invokes `reset()` on every
+    /// registered kernel exactly once per whole-file reload. Increments the
+    /// shared counter read by `reset_count()`.
+    fn reset(&mut self) {
+        *self.reset_calls.lock().unwrap() += 1;
+    }
+
     fn execute(&mut self, op: &GeometryOp) -> Result<GeometryHandle, GeometryError> {
         let id = GeometryHandleId(self.next_id);
         self.next_id += 1;
