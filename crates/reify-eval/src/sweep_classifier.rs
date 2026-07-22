@@ -411,6 +411,51 @@ mod tests {
         );
     }
 
+    // ── Task 5218 step-1: classify captures the profile handle ─────────────
+    // The producer (swept_kind_to_profile_boundary) resolves the profile op
+    // from the handle carried on the SweptKind, so the classifier must capture
+    // the source op's `profile` handle on the Extrude and Revolve arms (the
+    // SweepLinear arm already carries it). These pin that capture.
+
+    #[test]
+    fn classify_swept_body_extrude_captures_profile_handle() {
+        let ops = vec![GeometryOp::Extrude {
+            profile: GeometryHandleId(7),
+            distance: Value::length(0.01),
+        }];
+        let handles = vec![GeometryHandleId(8)];
+        assert_eq!(
+            classify_swept_body(&ops, &handles),
+            Some(SweptKind::Extrude {
+                axis: [0.0, 0.0, 1.0],
+                length: Value::length(0.01),
+                profile: GeometryHandleId(7),
+            }),
+            "Extrude must capture its source op's profile handle for the producer"
+        );
+    }
+
+    #[test]
+    fn classify_swept_body_revolve_captures_profile_handle() {
+        let ops = vec![GeometryOp::Revolve {
+            profile: GeometryHandleId(7),
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [0.0, 0.0, 1.0],
+            angle_rad: std::f64::consts::FRAC_PI_2,
+        }];
+        let handles = vec![GeometryHandleId(8)];
+        assert_eq!(
+            classify_swept_body(&ops, &handles),
+            Some(SweptKind::Revolve {
+                axis_origin: [0.0, 0.0, 0.0],
+                axis_dir: [0.0, 0.0, 1.0],
+                angle_rad: std::f64::consts::FRAC_PI_2,
+                profile: GeometryHandleId(7),
+            }),
+            "Revolve must capture its source op's profile handle for the producer"
+        );
+    }
+
     // ── Step-3: Revolve happy paths and degenerate-axis/angle rejection ────
 
     #[test]
