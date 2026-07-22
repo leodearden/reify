@@ -2399,16 +2399,21 @@ fn pattern_linear(
     let direction = [f64_arg("dx")?, f64_arg("dy")?, f64_arg("dz")?];
     let count_raw = f64_arg("count")?;
     let count = validate_pattern_count(count_raw, "count", kind, diagnostics)?;
-    let spacing = eval_named_arg(
-        "spacing",
-        kind,
-        args,
-        values,
-        functions,
-        meta_map,
-        diagnostics,
-    )
-    .ok_or_else(|| format!("missing required argument 'spacing' for {}", kind))?;
+    // LENGTH-required: reject a bare/dimensionless spacing (op dropped) rather
+    // than silently reading it as SI metres; re-wrap as a LENGTH Scalar so the
+    // IR/kernel spacing representation is unchanged.
+    let spacing = reify_ir::Value::length(
+        eval_named_arg_length(
+            "spacing",
+            kind,
+            args,
+            values,
+            functions,
+            meta_map,
+            diagnostics,
+        )
+        .ok_or_else(|| format!("missing or non-Length argument 'spacing' for {}", kind))?,
+    );
     Ok(reify_ir::GeometryOp::LinearPattern {
         target: target_id,
         direction,
