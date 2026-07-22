@@ -21,7 +21,7 @@ use reify_core::VersionId;
 use reify_eval::Engine;
 use reify_eval::cache::{CachedResult, NodeId};
 use reify_eval::journal::{EventKind, EventPayload};
-use reify_ir::{Freshness, Value};
+use reify_ir::{ErrorRef, Freshness, Value};
 use reify_test_support::{make_engine, mm, parse_and_compile};
 
 /// Returns the payload of the FIRST `EventKind::Started` event recorded for
@@ -951,5 +951,132 @@ fn params_and_lets_main_let_provenance_and_freshness() {
         Some(&Value::Bool(true)),
         "y should be Determined -> determined(y) = true (UnconditionalDetermined \
          rule, preserved across the migration boundary)"
+    );
+}
+
+/// RED: `eval_cached`'s Let preserve-freshness re-serve routes through
+/// `commit_cell_result` (an atomic 4-leg commit) instead of emitting a bare
+/// `CacheHit`, AND preserves the cache entry's non-`Final` freshness across the
+/// re-serve.
+///
+/// This EXTENDS the file's acceptance parity fixture (test-7,
+/// `acceptance_parity_fixture_and_consolidated_cache_skip_audit`) into the
+/// FRESHNESS dimension: the task's named acceptance signal is "freshness
+/// identical cold-vs-warm for a freshness-propagated let". Here a `Failed`
+/// freshness is injected onto a cached let after a first warm pass, and a
+/// second warm pass (version bump; the cell is not dirty and basis(1) !=
+/// version(2) so it is NOT the fast-path) must re-serve it through the migrated
+/// commit while carrying that injected freshness forward verbatim.
+///
+/// RED signal (journal shape): today the un-migrated Let re-serve
+/// (engine_eval.rs, ~@6853) writes `values`/`snapshot` + a direct
+/// `record_evaluation_with_freshness` and records a single
+/// `EventKind::CacheHit`, so the LAST journal event recorded for `y` after v2
+/// is `CacheHit`. GREEN after impl-4 routes the re-serve onto
+/// `commit_cell_result` (`CacheLeg::RecordWithFreshness(preserved)`), which
+/// emits a `Started`/`Completed` pair — so the LAST event becomes `Completed`.
+///
+/// `last_started_payload` cannot distinguish RED from GREEN here: BOTH the v1
+/// Let cache-miss (already γ-migrated, `eval_cached_let_miss_provenance_and_determinacy`)
+/// and the migrated re-serve stamp the same `TraceSource::CachedServe` slug on
+/// their `Started` event, so the journal KIND of the last event — not its
+/// provenance slug — is the RED signal.
+///
+/// Parity/characterization guards (green BEFORE and after the migration — the
+/// re-serve is behaviour-preserving in the value/determinacy/freshness
+/// dimensions): `y`'s cache freshness stays the injected `Freshness::Failed`
+/// (the re-serve carries `entry.freshness` forward, it does not clobber it to
+/// `Final`), and `y`'s committed value + determinacy are identical to the v1
+/// warm pass (`determined(y)` stays `Bool(true)`).
+///
+/// Freshness is injected via `CacheStore::mark_failed` — NOT `set_freshness`,
+/// which asserts against `Failed`/`Pending` and directs callers to
+/// `mark_failed`/`mark_pending`. `mark_failed` flips only the entry's freshness
+/// (leaving its cached value and dirty state untouched), so the v2 re-serve
+/// still fires.
+#[test]
+fn eval_cached_let_reserve_preserves_freshness_and_commits() {
+    let module = parse_and_compile(PLAIN_LET_SRC);
+    let mut engine = make_engine();
+
+    let y_id = ValueCellId::new("S", "y");
+    let y_det_id = ValueCellId::new("S", "y_det");
+    let y_node = NodeId::Value(y_id.clone());
+
+    // (v1) Populate y's cache entry via a first warm pass.
+    let v1 = engine.eval_cached(&module, VersionId(1));
+    let v1_y_value = v1.eval_result.values.get(&y_id).cloned();
+    assert!(
+        v1_y_value.is_some(),
+        "y should have a committed value after the v1 warm pass"
+    );
+    assert_eq!(
+        v1.eval_result.values.get(&y_det_id),
+        Some(&Value::Bool(true)),
+        "determined(y) should be true after the v1 warm pass (baseline)"
+    );
+
+    // Inject a non-Final freshness onto y's cache entry. mark_failed (NOT
+    // set_freshness, which panics on Failed/Pending) sets freshness = Failed
+    // without touching the cached value or the dirty state, so the v2 re-serve
+    // still fires and must carry this freshness forward.
+    let err = ErrorRef::new("injected");
+    let injected = Freshness::Failed { error: err.clone() };
+    assert!(
+        engine.cache_store_mut().mark_failed(&y_node, err),
+        "mark_failed should find y's cache entry and flip its freshness"
+    );
+    assert_eq!(
+        engine.cache_store().freshness(&y_node),
+        injected,
+        "sanity: the injected Failed freshness is in place before v2"
+    );
+
+    // (v2) Version bump; y is not dirty and basis(1) != version(2) so it is not
+    // the fast-path → the Let preserve-freshness re-serve (~@6853) fires.
+    let v2 = engine.eval_cached(&module, VersionId(2));
+
+    // (1) RED signal — the re-serve's LAST journal event for y is `Completed`
+    // (today it is a single `CacheHit`). Captured in a scoped block so the
+    // journal borrow is released before the cache_store() reads below.
+    let (last_is_completed, last_kind_dbg) = {
+        let events = engine.journal().events_for_node(&y_node);
+        let last = events
+            .last()
+            .expect("y should have at least one journal event after v2");
+        (
+            matches!(last.kind, EventKind::Completed { .. }),
+            format!("{:?}", last.kind),
+        )
+    };
+    eprintln!("y last journal event after v2 = {last_kind_dbg}");
+    assert!(
+        last_is_completed,
+        "the Let preserve-freshness re-serve's LAST journal event for y should \
+         be Completed once migrated onto commit_cell_result's atomic 4-leg \
+         commit (today it is a single CacheHit), got {last_kind_dbg}"
+    );
+
+    // (2) Freshness preserved (characterization guard — green throughout): the
+    // re-serve carries the injected Failed freshness forward, not clobbered to
+    // Final. This is the freshness-dimension acceptance signal.
+    assert_eq!(
+        engine.cache_store().freshness(&y_node),
+        injected,
+        "the Let re-serve must preserve y's injected Failed freshness across v2 \
+         (not reset it to Final)"
+    );
+
+    // (3) Value + determinacy identical warm-vs-warm (characterization guards —
+    // the re-serve preserves the committed value and Determined determinacy).
+    assert_eq!(
+        v2.eval_result.values.get(&y_id),
+        v1_y_value.as_ref(),
+        "y's committed value must be unchanged from the v1 warm pass"
+    );
+    assert_eq!(
+        v2.eval_result.values.get(&y_det_id),
+        Some(&Value::Bool(true)),
+        "determined(y) must stay true across the re-serve (determinacy preserved)"
     );
 }
