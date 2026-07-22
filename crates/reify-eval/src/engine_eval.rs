@@ -7926,39 +7926,71 @@ impl Engine {
                             // Cache-reuse: not dirty + entry exists (no override).
                             // Preserve existing freshness (Failed/Pending) — arch §7.1/§9.2.
                             //
-                            // task γ (#5053) deferral note: unmigrated preserve-freshness
-                            // commit — see the Auto-cell pre-seed block's comment above
-                            // (~@5967) for the full rationale (cell_commit.rs "Known scope
-                            // gaps" + PRD §2.4); identical reasoning applies here.
+                            // task #5238: migrated onto commit_cell_result. The preserve-
+                            // freshness re-serve now routes its four-leg commit through the
+                            // primitive via CacheLeg::RecordWithFreshness(preserved), carrying
+                            // the entry's own freshness forward verbatim (still
+                            // record_evaluation_with_freshness under the hood) and emitting a
+                            // typed Started/Completed pair carrying the `cached-serve`
+                            // provenance slug in place of the prior bare CacheHit — the sole
+                            // observable delta, since value/determinacy/cache-content/freshness
+                            // are all preserved. See cell_commit.rs "Known scope gaps"
+                            // (Freshness dimension — CLOSED) + PRD §2.4/§7.2. (The Auto-cell
+                            // pre-seed re-serve above stays unmigrated — see its note ~@6448.)
                             if !self.param_overrides.contains_key(&cell.id)
                                 && !self.cache.is_dirty(&node_id)
                                 && let Some(entry) = self.cache.get(&node_id)
                                 && let CachedResult::Value(ref val, det) = entry.result
                             {
+                                // Param re-serve stored determinacy is Determined or
+                                // Undetermined (Param cells are never Auto), so pick the rule
+                                // that reproduces the stored `det` EXACTLY — both
+                                // UnconditionalDetermined and Undetermined resolve value-
+                                // independently, so the committed `(val, det)` — hence
+                                // entry.result — matches, keeping record_evaluation_with_-
+                                // freshness on its content-hash early-cutoff path so the
+                                // preserved freshness is carried, not reset.
+                                let rule = match det {
+                                    DeterminacyState::Determined => {
+                                        DeterminacyRule::UnconditionalDetermined
+                                    }
+                                    DeterminacyState::Undetermined => DeterminacyRule::Undetermined,
+                                    // Auto and Provisional are solver-variable determinacy states
+                                    // (see the Auto|Provisional classification ~@3424). This
+                                    // eval_cached Param default-eval arm only ever stores
+                                    // Determined/Undetermined (Auto cells are a distinct
+                                    // ValueCellKind, pre-seeded + re-served separately ~@6448),
+                                    // and neither Auto nor Provisional is expressible by
+                                    // DeterminacyRule — so neither can reach a plain Param cache
+                                    // entry at this re-serve.
+                                    DeterminacyState::Auto | DeterminacyState::Provisional => {
+                                        unreachable!(
+                                            "param re-serve determinacy is never Auto/Provisional"
+                                        )
+                                    }
+                                };
                                 let val = val.clone();
                                 let preserved_freshness = entry.freshness.clone();
-                                snapshot_values.insert(cell.id.clone(), (val.clone(), det));
-                                values.insert(cell.id.clone(), val);
                                 let trace = entry.dependency_trace.clone();
-                                let result = entry.result.clone();
                                 // μ (#5062): replay this clean-served cell's
                                 // stored per-cell diagnostics (last use of
                                 // `entry` before the &mut record below).
                                 diagnostics.extend(entry.diagnostics.iter().cloned());
-                                self.cache.record_evaluation_with_freshness(
-                                    node_id.clone(),
-                                    result,
-                                    version,
+                                commit_cell_result(
+                                    CommitLegs {
+                                        values: &mut values,
+                                        snapshot_values: &mut snapshot_values,
+                                        cache: &mut self.cache,
+                                        journal: &mut self.journal,
+                                    },
+                                    cell.id.clone(),
+                                    val,
+                                    rule,
+                                    TraceSource::CachedServe,
                                     trace,
-                                    preserved_freshness,
-                                );
-                                self.journal.record(EvalEvent {
-                                    timestamp: Instant::now(),
-                                    node_id,
-                                    kind: EventKind::CacheHit,
                                     version,
-                                    payload: None,
-                                });
+                                    CacheLeg::RecordWithFreshness(preserved_freshness),
+                                );
                                 stats.cache_hits += 1;
                                 continue;
                             }
