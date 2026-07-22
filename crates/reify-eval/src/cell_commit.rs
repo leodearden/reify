@@ -341,7 +341,7 @@ pub(crate) fn commit_cell_result(
 mod tests {
     use super::*;
     use reify_core::{ValueCellId, VersionId};
-    use reify_ir::{DeterminacyState, PersistentMap, Value, ValueMap};
+    use reify_ir::{DeterminacyState, ErrorRef, Freshness, PersistentMap, Value, ValueMap};
 
     use crate::cache::{CacheStore, CachedResult, EvalOutcome, NodeId};
     use crate::deps::DependencyTrace;
@@ -749,5 +749,187 @@ mod tests {
             slugs.len(),
             "TraceSource slugs must be distinct: {slugs:?}"
         );
+    }
+
+    /// Freshness analogue of `commit_record_writes_all_four_legs` for the new
+    /// `CacheLeg::RecordPropagating` variant: it routes the cache leg through
+    /// `CacheStore::record_evaluation_propagating_freshness`, which DERIVES the
+    /// output freshness from the just-computed trace. With `still_refining:
+    /// true` the derivation short-circuits to `Intermediate { generation }`
+    /// (generation = `version.0`) regardless of the trace; with `still_refining:
+    /// false` over an empty (all-Final) trace it yields `Final`. All four legs
+    /// must still be written atomically (INV-EVAL-1) — this is the propagating
+    /// counterpart to the four-leg Record test.
+    #[test]
+    fn commit_record_propagating_derives_intermediate_freshness() {
+        let mut values = ValueMap::new();
+        let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::new();
+        let mut cache = CacheStore::new();
+        let mut journal = EventJournal::new();
+        let node = ValueCellId::new("Body", "w");
+
+        // still_refining: true → Intermediate { generation: version.0 }.
+        let outcome = commit_cell_result(
+            CommitLegs {
+                values: &mut values,
+                snapshot_values: &mut snapshot_values,
+                cache: &mut cache,
+                journal: &mut journal,
+            },
+            node.clone(),
+            Value::Int(42),
+            DeterminacyRule::UnconditionalDetermined,
+            TraceSource::ColdEval,
+            DependencyTrace::default(),
+            VersionId(5),
+            CacheLeg::RecordPropagating {
+                still_refining: true,
+            },
+        );
+
+        // values leg
+        assert_eq!(values.get(&node), Some(&Value::Int(42)));
+
+        // snapshot leg
+        assert_eq!(
+            snapshot_values.get(&node),
+            Some(&(Value::Int(42), DeterminacyState::Determined))
+        );
+
+        // cache leg present, carrying the DERIVED Intermediate freshness.
+        let node_id = NodeId::Value(node.clone());
+        let entry = cache
+            .get(&node_id)
+            .expect("CacheLeg::RecordPropagating must write a cache entry");
+        match &entry.result {
+            CachedResult::Value(v, d) => {
+                assert_eq!(*v, Value::Int(42));
+                assert_eq!(*d, DeterminacyState::Determined);
+            }
+            other => panic!("expected CachedResult::Value, got {other:?}"),
+        }
+        assert_eq!(
+            entry.freshness,
+            Freshness::Intermediate { generation: 5 },
+            "still_refining=true derives Intermediate at generation=version.0"
+        );
+
+        // journal leg: Started then Completed recorded for this node.
+        let events = journal.events_for_node(&node_id);
+        assert_eq!(
+            events.len(),
+            2,
+            "expected exactly Started + Completed, got {events:?}"
+        );
+        assert!(matches!(events[0].kind, EventKind::Started));
+        assert!(matches!(events[1].kind, EventKind::Completed { .. }));
+
+        assert_eq!(outcome.cache_outcome(), Some(EvalOutcome::Changed));
+        assert_eq!(outcome.skip_reason(), None);
+
+        // Companion: still_refining: false over an empty (all-Final) trace
+        // derives Final. A distinct node avoids the early-cutoff freshness
+        // overwrite that a repeat commit on `node` would trigger.
+        let node2 = ValueCellId::new("Body", "h");
+        commit_cell_result(
+            CommitLegs {
+                values: &mut values,
+                snapshot_values: &mut snapshot_values,
+                cache: &mut cache,
+                journal: &mut journal,
+            },
+            node2.clone(),
+            Value::Int(7),
+            DeterminacyRule::UnconditionalDetermined,
+            TraceSource::ColdEval,
+            DependencyTrace::default(),
+            VersionId(5),
+            CacheLeg::RecordPropagating {
+                still_refining: false,
+            },
+        );
+        let entry2 = cache
+            .get(&NodeId::Value(node2))
+            .expect("CacheLeg::RecordPropagating must write a cache entry");
+        assert_eq!(
+            entry2.freshness,
+            Freshness::Final,
+            "still_refining=false over an empty (all-Final) trace derives Final"
+        );
+    }
+
+    /// Freshness analogue for the new `CacheLeg::RecordWithFreshness` variant:
+    /// it routes the cache leg through
+    /// `CacheStore::record_evaluation_with_freshness`, which writes the
+    /// EXPLICIT caller-supplied freshness verbatim (used by the `eval_cached`
+    /// preserve-freshness re-serves, which carry the entry's own freshness
+    /// forward). All four legs must be written; a cold write reports
+    /// `EvalOutcome::Changed`.
+    #[test]
+    fn commit_record_with_freshness_writes_supplied_freshness() {
+        let mut values = ValueMap::new();
+        let mut snapshot_values: PersistentMap<ValueCellId, (Value, DeterminacyState)> =
+            PersistentMap::new();
+        let mut cache = CacheStore::new();
+        let mut journal = EventJournal::new();
+        let node = ValueCellId::new("Body", "w");
+
+        let supplied = Freshness::Failed {
+            error: ErrorRef::new("x"),
+        };
+        let outcome = commit_cell_result(
+            CommitLegs {
+                values: &mut values,
+                snapshot_values: &mut snapshot_values,
+                cache: &mut cache,
+                journal: &mut journal,
+            },
+            node.clone(),
+            Value::Bool(true),
+            DeterminacyRule::UnconditionalDetermined,
+            TraceSource::CachedServe,
+            DependencyTrace::default(),
+            VersionId(1),
+            CacheLeg::RecordWithFreshness(supplied.clone()),
+        );
+
+        // values + snapshot legs.
+        assert_eq!(values.get(&node), Some(&Value::Bool(true)));
+        assert_eq!(
+            snapshot_values.get(&node),
+            Some(&(Value::Bool(true), DeterminacyState::Determined))
+        );
+
+        // cache leg: the SUPPLIED freshness is written verbatim.
+        let node_id = NodeId::Value(node.clone());
+        let entry = cache
+            .get(&node_id)
+            .expect("CacheLeg::RecordWithFreshness must write a cache entry");
+        match &entry.result {
+            CachedResult::Value(v, d) => {
+                assert_eq!(*v, Value::Bool(true));
+                assert_eq!(*d, DeterminacyState::Determined);
+            }
+            other => panic!("expected CachedResult::Value, got {other:?}"),
+        }
+        assert_eq!(
+            entry.freshness, supplied,
+            "RecordWithFreshness must write the caller-supplied freshness verbatim"
+        );
+
+        // journal leg: Started + Completed.
+        let events = journal.events_for_node(&node_id);
+        assert_eq!(
+            events.len(),
+            2,
+            "expected exactly Started + Completed, got {events:?}"
+        );
+        assert!(matches!(events[0].kind, EventKind::Started));
+        assert!(matches!(events[1].kind, EventKind::Completed { .. }));
+
+        // cold write → Changed.
+        assert_eq!(outcome.cache_outcome(), Some(EvalOutcome::Changed));
+        assert_eq!(outcome.skip_reason(), None);
     }
 }
