@@ -39,7 +39,7 @@ scripts/warm-lane-audit.sh [--mount DIR] [--format table|json] [--status-cmd CMD
 |---|---|---|---|
 | `--mount DIR` | `REIFY_WARM_LANE_MOUNT` | (unset) | Warm-lane worktrees dir (shared with `warm-lane-preflight.sh` / `warm-lane-gc.sh`). A nonexistent/empty mount reports `resident=0` — **not an error** (advisory-only). |
 | `--format table\|json` | — | `table` | Output format. |
-| `--status-cmd CMD` | `REIFY_LANE_LEAK_STATUS_CMD` | (unset → `unknown`) | Backing-task status oracle, invoked as `<cmd> <task_id>`; expected to print a status (`done`/`cancelled`/`pending`/…) to stdout. Non-zero exit or empty output = `unknown`. Same oracle `warm-lane-preflight.sh` Check 6 and `warm-lane-gc.sh` consume (D6 — no new status-lookup plumbing). |
+| `--status-cmd CMD` | `REIFY_LANE_LEAK_STATUS_CMD` | (unset → `unknown`) | Backing-task status oracle, invoked as `<cmd> <task_id>`; expected to print a status (`done`/`cancelled`/`pending`/…) to stdout. Non-zero exit or empty output = `unknown`. Same oracle `warm-lane-preflight.sh` Check 6 and `warm-lane-degenerate-ref-check.sh` consume (D6 — no new status-lookup plumbing; `warm-lane-gc.sh` dropped this consumer in task 5326). |
 | `--stale-age-min N` | `REIFY_WARM_LANE_AUDIT_STALE_AGE_MIN` | `60` | Minutes; a LEAKED candidate must have `age_min >= N`. |
 | `--main-ref REF` | `REIFY_WARM_LANE_AUDIT_MAIN_REF` | `main` | Git ref treated as "main" for the LANDED recoverability check. |
 | `--safety N` | `REIFY_WARM_LANE_AUDIT_SAFETY` | `1.5` | Dimensionless divisor (must be `> 0`) for `budget_gib = floor(free_gib / N)`; mirrors the illustrative safety factor in the sizing-lifecycle PRD §9.2 worked example. |

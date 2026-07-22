@@ -3,7 +3,8 @@
 # warm-lane leak machinery (the REIFY_LANE_LEAK_STATUS_CMD contract).
 #
 # Contract (warm-lane-preflight.sh Check 6 / warm-lane-audit.sh --status-cmd /
-# warm-lane-gc.sh --status-cmd, all byte-for-byte identical):
+# warm-lane-degenerate-ref-check.sh --status-cmd, all byte-for-byte identical;
+# warm-lane-gc.sh dropped this consumer in task 5326 — Tier-3 subsumed):
 #   Invoked as `<cmd> <task_id>`. Prints that task's Taskmaster status
 #   (e.g. done, cancelled, pending, in-progress, blocked, deferred) to stdout
 #   and exits 0. A non-zero exit OR empty output is treated by every consumer
@@ -12,12 +13,14 @@
 #
 # FAIL-SAFE BY CONSTRUCTION: every error path degrades to empty output. The one
 # genuinely dangerous outcome would be reporting `done`/`cancelled` for a task
-# that is actually live (causing warm-lane-gc.sh Tier-3 to reclaim an in-use
-# lane). That can only ever happen if the canonical task store itself records
-# the task terminal — this script never fabricates a terminal status, and a
-# not-found id / read error / missing DB all yield empty output (=> unknown =>
-# preserve). Live tasks (pending/in-progress/blocked/deferred/infra-hold) print
-# their own non-terminal status, so their lanes are never reclaimed.
+# that is actually live (causing a leak detector — warm-lane-preflight.sh
+# Check 6 / warm-lane-audit.sh — to mis-classify an in-use lane as a
+# terminal-backed leak). That can only ever happen if the canonical task store
+# itself records the task terminal — this script never fabricates a terminal
+# status, and a not-found id / read error / missing DB all yield empty output
+# (=> unknown => preserve). Live tasks (pending/in-progress/blocked/deferred/
+# infra-hold) print their own non-terminal status, so their lanes are never
+# mis-classified as leaked.
 #
 # Source of truth: the Taskmaster SQLite store at
 #   $REIFY_LANE_TASK_DB (default: /home/leo/src/reify/.taskmaster/tasks/tasks.db)
