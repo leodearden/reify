@@ -3324,6 +3324,51 @@ MOCKEOF
     else
         assert "T30g: pre-existing ^FAILED classifier marker still present (additive regression) (got: $t30a_out)" false
     fi
+
+    # -- 30e: clock-marker sanitization of re-emitted FAIL-detail (task #5329
+    # pair 2; esc-4791-52 class) -- a failing assertion that legitimately
+    # QUOTES a live-looking clock marker in its own text must be rewritten
+    # exactly like Phase 3's existing per-member replay
+    # (_ra_emit_sanitized/_RA_CLOCK_SANITIZE), or the Summary-tail FAILED-
+    # DETAIL block re-opens the false-timeout-kill hole for this new
+    # re-emission site. The marker prefix is assembled at runtime (mirrors
+    # Test 29's CP/QP idiom) so THIS file's own stdout never becomes a leak
+    # source when the real outer run_all.sh re-emits test_run_all.sh's own
+    # captured output. -------------------------------------------------------
+    T30E_CP='@@REIFY_CLOCK_'
+    T30E_QP='@@REIFY_QUOTED_CLOCK_'
+
+    TMPDIR_T30E="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T30E")
+    cat > "$TMPDIR_T30E/test_clockmark.sh" <<MOCKEOF
+#!/usr/bin/env bash
+echo "  FAIL: expected stderr to contain ${T30E_CP}STOP@@"
+exit 1
+MOCKEOF
+    chmod +x "$TMPDIR_T30E/test_clockmark.sh"
+
+    t30e_rc=0
+    t30e_out="$(bash "$RUN_ALL" "$TMPDIR_T30E" 2>&1)" || t30e_rc=$?
+
+    if [[ "$t30e_out" == *"INFO: run_all.sh pool: N="* ]]; then
+        assert "T30e: pool path was actually taken (INFO: run_all.sh pool: N= present)" true
+    else
+        assert "T30e: pool path was actually taken (INFO: run_all.sh pool: N= present) (got: $t30e_out)" false
+    fi
+
+    t30e_detail="$(sed -n '/^--- FAILED-DETAIL: test_clockmark\.sh ---$/,/^--- END FAILED-DETAIL: test_clockmark\.sh ---$/p' <<<"$t30e_out")"
+
+    if [[ "$t30e_detail" == *"${T30E_QP}STOP@@"* ]]; then
+        assert "T30e: FAILED-DETAIL block contains the sanitized QUOTED_CLOCK form" true
+    else
+        assert "T30e: FAILED-DETAIL block contains the sanitized QUOTED_CLOCK form (got: $t30e_out)" false
+    fi
+
+    if [[ "$t30e_detail" != *"${T30E_CP}STOP@@"* ]]; then
+        assert "T30e: FAILED-DETAIL block contains NO live CLOCK_STOP token" true
+    else
+        assert "T30e: FAILED-DETAIL block contains NO live CLOCK_STOP token (got: $t30e_out)" false
+    fi
 else
     assert "T30a: pool path was actually taken (INFO: run_all.sh pool: N= present) (skipped - run_all.sh missing)" false
     assert "T30a: FAILED-DETAIL delimiter present for test_kloc.sh (skipped - run_all.sh missing)" false
@@ -3344,6 +3389,9 @@ else
     assert "T30d: no FAILED-DETAIL block emitted for a signal-less failing mock (graceful no-op) (skipped - run_all.sh missing)" false
     assert "T30g: pre-existing === FAILED: human line still present (additive regression) (skipped - run_all.sh missing)" false
     assert "T30g: pre-existing ^FAILED classifier marker still present (additive regression) (skipped - run_all.sh missing)" false
+    assert "T30e: pool path was actually taken (INFO: run_all.sh pool: N= present) (skipped - run_all.sh missing)" false
+    assert "T30e: FAILED-DETAIL block contains the sanitized QUOTED_CLOCK form (skipped - run_all.sh missing)" false
+    assert "T30e: FAILED-DETAIL block contains NO live CLOCK_STOP token (skipped - run_all.sh missing)" false
 fi
 
 # -- Summary --------------------------------------------------------------------
