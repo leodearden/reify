@@ -334,3 +334,22 @@ eval (finding #12's inference half; 5204 covered only the docs half).
   passes (worth remembering when scripting retests).
 - gdb -batch over the debug binary + MCP trigger = clean crash-stack
   capture recipe for GUI-native crashes.
+
+## Round-2 completion numbers (post-addendum)
+
+- Fixed top_deck STEP build: **4,616 CYLINDRICAL_SURFACE** (full hole
+  field; pad-edge partials account for the delta vs 4,602), geometry+
+  export **6:45 wall** (load ~150), peak RSS 674 MB. The ~30-min eval
+  wall for the same file is dominated by the Rigid mass-prop kernel
+  queries over the 4,616-face solid — mass-props on dense-perforated
+  bodies are their own cost center (relevant to 5197/5317 framing).
+- Bottom deck grew its mid-span pedestals (Ø20 at ±120, floor→ledge,
+  matching the top deck's Ø26 pads): mass 1.45573 kg and capacity
+  7.0067 L both match hand arithmetic exactly; constraints all green.
+  Base-seam fillet deferred to curated selection (#5208 breadcrumb at
+  the impl site).
+- Next design steps: port pedestals + hand-slot interface into
+  bottom_deck_split.ri (each half gets one pedestal, |x|=120 clears the
+  x=0 seam), author the top-deck split (solid seam strip through the
+  sieve field), then the fit-test print (one bottom half + sieve coupon
+  to tune fit_clearance and hole size).
