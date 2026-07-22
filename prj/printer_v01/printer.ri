@@ -172,6 +172,63 @@ pub structure IdlerPulley {
     constraint brg_od > brg_bore
 }
 
+/// Drive capstan (copied verbatim from dev_capstan.ri — single-file, no
+/// cross-file import in v0.1): dual-anchor winch drum, axis = local +Z, centred.
+/// Both ends of each belt loop anchor to it; rotation reels one end in / pays the
+/// other out. Carries BOTH windings of the belt's ±z moment pair (axially
+/// adjacent on the one drum). Smooth core at root-Ø + two retaining flanges +
+/// axial shaft bore. Groove helix not modelled until #5342 (helix wires
+/// unsweepable) lands — `lead` is the (clearance) pitch.
+///
+/// Sizing (D/d = 8 start): drum Ø = d_ratio·rope_dia = 48mm; pitch circ ≈ 151mm;
+/// max per-belt feed = X+Y travel = 500+800 = 1.3m → ≈ 8.6 → 9 active turns;
+/// band = active_turns·lead ≈ 63mm (= the shuttle stroke); helix angle ≈ 2.7°.
+pub structure Capstan {
+    param rope_dia    : Length = 6mm
+    /// D/d ratio
+    ///  Tendon-life lever. Larger ratio -> shallower bends -> longer life.
+    ///    8 ≈ Vectran-friendly.
+    ///  Sets mechanical advantage for drive. Larger -> Higher top speed, lower Acceleration.
+    param d_ratio     : Real   = 8.0
+    let drum_d : Length = rope_dia * d_ratio
+    /// Helical pitch. CLEARANCE lead (> rope_dia) so adjacent wraps don't rub/wedge
+    /// (wedging would drift the effective Ø → transmission-ratio error).
+    param lead        : Length = 7mm
+    /// Max per-belt rope feed = X-travel + Y-travel (documentation; drives turns).
+    param feed        : Length = 1300mm
+    /// Active wrap turns ≈ feed / (π·drum_Ø).
+    let active_turns : Real  = feed / (pi * drum_d)
+    /// Dead (anchored) turns total, both ends — keep tension off the anchors.
+    param dead_total  : Real   = 4.0
+    /// Windings per drum = the belt's ±z moment pair (documentation; one drum band).
+    param windings    : Int    = 2
+    param bore_dia    : Length = 19mm     // motor shaft
+
+    let drum_r     = drum_d / 2
+    let flange_r   = drum_r + rope_dia * 1.5      // stands proud of the rope crest
+    let flange_w   = 6mm
+    let groove_len : Length = lead * (active_turns + dead_total)   // axial wrap-band extent
+    let bore_r     = bore_dia / 2
+
+    // One inlined tree: core + two flanges, bored through. (No intermediate geometry
+    // lets — they would auto-surface as stray meshes.)
+    let body = difference(
+        union(
+            union(
+                translate(cylinder(drum_r, groove_len), 0mm, 0mm, 0mm - groove_len / 2),
+                translate(cylinder(flange_r, flange_w), 0mm, 0mm, groove_len / 2)
+            ),
+            translate(cylinder(flange_r, flange_w), 0mm, 0mm, 0mm - groove_len / 2 - flange_w)
+        ),
+        translate(cylinder(bore_r, groove_len + flange_w * 4), 0mm, 0mm, 0mm - groove_len / 2 - flange_w * 2)
+    )
+
+    constraint drum_r > bore_r
+    constraint flange_r > drum_r
+    constraint lead > rope_dia        // clearance lead
+    constraint d_ratio > 0.0
+}
+
 // ── Tendon routing (γ: doubled belts A/B on both rails + gantry crosses) ─────
 
 /// Four FULL-LENGTH tendon spans sharing one axis, in the vertical plane through
@@ -293,10 +350,13 @@ pub structure CarriageIdlers {
 /// back idler, carrying the front strand to the rear so both ends of every belt
 /// land at the back, where a back-cross tendon joins them — CLOSING each belt
 /// into a full CoreXY loop (each Z layer a complete belt; the ±z pair is the
-/// moment-balanced double). PROVISIONAL beyond this point: the capstans (each taps
-/// a back-cross) are the next step. Deferred: the gantry-cross fore/aft split
-/// (crosses still run on y = 0) and live x_head/y_head tracking (a future
-/// live-input feature).
+/// moment-balanced double). The 2 CAPSTANS (one per belt, vertical axis — agreed
+/// 2026-07-22) are roughed in behind the rear rail-end plane, each plan-view
+/// tangent to its belt's back-cross. PROVISIONAL beyond this point: the
+/// translating fairlead shuttles + the lead segments that dive from the fixed
+/// ±z levels to the migrating wrap band (sketched in dev_capstan.ri) are the
+/// next step. Deferred: the gantry-cross fore/aft split (crosses still run on
+/// y = 0) and live x_head/y_head tracking (a future live-input feature).
 pub structure DriveTendons {
     /// Transverse position of each rail == the Y-rail axis. CoreXY overrides this
     /// with y_rail_offset so the tendons sit in the rail's vertical plane (single
@@ -416,7 +476,30 @@ pub structure DriveTendons {
     sub backcross_b_u = LinearTendon() at transform3(rot_to_x, vec3(neg_r_pit, backcross_y, z_b))
     sub backcross_b_l = LinearTendon() at transform3(rot_to_x, vec3(neg_r_pit, backcross_y, neg_z_b))
 
+    // ── Capstans (rough-in; VERTICAL axis, agreed 2026-07-22) ───────────────
+    // One dual-anchor winch capstan per belt, behind the rear rail-end plane on
+    // a vertical (+Z) axis: the rear feeds head inboard ALONG X, and a rope can
+    // only wrap a drum whose axis is perpendicular to its approach — which the
+    // vertical drum satisfies for both feeds (the along-X alternative could not
+    // be wrapped without re-routing; ruled out). Belt A's drum sits right of
+    // centre (+cap_x), belt B's left (−cap_x), each with its pitch circle
+    // plan-view TANGENT to its belt's back-cross line (drum centre one pitch
+    // radius behind it, y = backcross_y − cap_pitch_r), drum centred z = 0 so
+    // the ±~44mm wrap band straddles the machine mid-plane. The band sits
+    // BELOW the fixed ±z_a/±z_b levels by design: each lead leaves its fixed
+    // level and dives to the migrating band via the translating fairlead
+    // shuttle (4 idlers, first 90° corner per lead) — still being sized in
+    // dev_capstan.ri; shuttles + lead segments are the next integration step.
+    let cap_pitch_r = 27mm   // == Capstan drum_r (24mm) + rope radius (3mm) — hand-
+                             // kept in step with Capstan defaults (same style as r_pitch)
+    let cap_x       = 100mm  // drums 200mm apart: clears flange Ø66 + future shuttles
+    let neg_cap_x   = 0mm - cap_x
+    let cap_y       = backcross_y - cap_pitch_r
+    sub capstan_a = Capstan() at transform3(orient_identity(), vec3(cap_x,     cap_y, 0mm))  // belt A (outer ±z_a)
+    sub capstan_b = Capstan() at transform3(orient_identity(), vec3(neg_cap_x, cap_y, 0mm))  // belt B (inner ±z_b)
+
     constraint rail_x > 0mm
+    constraint cap_x > 0mm
 }
 
 // ── CoreXY motion system (directly composed) ─────────────────────────────────
