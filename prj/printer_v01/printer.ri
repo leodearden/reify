@@ -229,6 +229,93 @@ pub structure Capstan {
     constraint d_ratio > 0.0
 }
 
+/// Fairlead-equipped drive unit — ONE capstan + its FOUR fairlead guide
+/// pulleys (guide pulleys first; the shuttle frame/carrier is designed once
+/// these positions settle — agreed 2026-07-22).
+///
+/// Local frame: capstan axis = +Z at the origin; +y faces the machine (the
+/// feed side). The pulleys take each lead's LAST corner: they turn the
+/// vertical descents (fed by drive-plane routing idlers, not yet modelled)
+/// into horizontal runs that enter the drum windings tangentially.
+///
+/// GEOMETRY (agreed 2026-07-22): every fairlead pulley's centre (groove)
+/// plane is TANGENTIAL to the capstan pitch cylinder, and every spin axis
+/// lies in XY, parallel to Y. The two planes satisfying both are the
+/// XZ-parallel tangent planes at y = ±cap_pitch_r; they carry all four
+/// pulleys — the LOWER winding's pair on the machine side (+y), the UPPER
+/// winding's pair outboard (−y), one winding per plane so leads never share
+/// a plane (dev_capstan.ri sketch convention). In each plane the pair sits
+/// left/right of the drum (±pulley_x): the rope descends on the pulley's
+/// outboard side, wraps its lower quarter, and leaves horizontally toward
+/// the tangent line x = 0, entering the wrap at its winding's band height.
+/// The pair is split ±lead_split in Z — a winding's two rope ends exit at
+/// different band heights (which end is higher depends on wrap sense;
+/// nominal assignment here). DEFERRED DETAIL: band-migration tracking (the
+/// translating-shuttle function) and the exact end heights vs travel.
+pub structure CapstanUnit {
+    /// Drum pitch radius == Capstan drum_r (24mm) + rope radius (3mm) —
+    /// hand-kept in step with Capstan defaults (r_pitch style).
+    param cap_pitch_r : Length = 27mm
+    /// Fairlead pulley pitch radius == IdlerPulley sheave_od/2 (r_pitch).
+    param r_pitch     : Length = 18mm
+    /// Drum flange radius == Capstan flange_r — hand-kept in step; sets the
+    /// pulley stand-off clearance below.
+    param flange_r    : Length = 33mm
+    /// Upper/lower winding-band centres at ±this (quarter of the ~88mm
+    /// groove band — hand-kept in step with Capstan groove_len).
+    param winding_z   : Length = 22mm
+    /// Pulley lateral stand-off from the drum axis (groove-plane distance
+    /// from drum centre to pulley centre, along X).
+    param pulley_x    : Length = 45mm
+    /// Nominal Z split of a winding's two rope-end exits (quarter band).
+    param lead_split  : Length = 11mm
+
+    let rot_spin_y = orient_axis_angle(vec3(1m, 0mm, 0mm), 90deg)  // leaf +Z (spin) → Y
+    let neg_x     = 0mm - pulley_x
+    let y_front   = cap_pitch_r          // machine-side tangent plane
+    let y_rear    = 0mm - cap_pitch_r    // outboard tangent plane
+    // Pulley centres sit r_pitch ABOVE their lead's horizontal drum-entry
+    // height (descent wraps the lower quarter → exits at centre − r_pitch).
+    let upper_l   = winding_z + lead_split + r_pitch
+    let upper_r   = winding_z - lead_split + r_pitch
+    let lower_l   = 0mm - winding_z + lead_split + r_pitch
+    let lower_r   = 0mm - winding_z - lead_split + r_pitch
+
+    sub capstan = Capstan() at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
+
+    // UPPER winding — outboard (−y) tangent plane.
+    sub fl_upper_l = IdlerPulley() at transform3(rot_spin_y, vec3(neg_x,    y_rear,  upper_l))
+    sub fl_upper_r = IdlerPulley() at transform3(rot_spin_y, vec3(pulley_x, y_rear,  upper_r))
+    // LOWER winding — machine-side (+y) tangent plane.
+    sub fl_lower_l = IdlerPulley() at transform3(rot_spin_y, vec3(neg_x,    y_front, lower_l))
+    sub fl_lower_r = IdlerPulley() at transform3(rot_spin_y, vec3(pulley_x, y_front, lower_r))
+
+    // The flanges pierce the tangent planes for |x| < sqrt(flange_r² −
+    // cap_pitch_r²) (≈19mm at the defaults): keep the pulley's inner edge
+    // clear of that crossing.
+    constraint pulley_x - r_pitch > sqrt(flange_r * flange_r - cap_pitch_r * cap_pitch_r)
+    constraint winding_z > lead_split
+    constraint cap_pitch_r > 0mm
+    constraint flange_r > cap_pitch_r
+}
+
+/// Rear drive block — BOTH fairlead-equipped drive units (one per belt),
+/// for placement dropped below the drive plane (capstans-down layout,
+/// agreed 2026-07-22: the drive-plane feeds get routed DOWN to the fairleads
+/// by additional routing idlers — not yet modelled). Local frame: origin on
+/// the machine centreline at drum-axis height; +y faces the machine.
+pub structure RearDrive {
+    /// Unit lateral offsets: belt A right (+), belt B left (−).
+    param cap_x : Length = 100mm
+
+    let neg_cap_x = 0mm - cap_x
+
+    sub unit_a = CapstanUnit() at transform3(orient_identity(), vec3(cap_x,     0mm, 0mm))  // belt A (outer ±z_a)
+    sub unit_b = CapstanUnit() at transform3(orient_identity(), vec3(neg_cap_x, 0mm, 0mm))  // belt B (inner ±z_b)
+
+    constraint cap_x > 0mm
+}
+
 // ── Tendon routing (γ: doubled belts A/B on both rails + gantry crosses) ─────
 
 /// Four FULL-LENGTH tendon spans sharing one axis, in the vertical plane through
@@ -476,30 +563,30 @@ pub structure DriveTendons {
     sub backcross_b_u = LinearTendon() at transform3(rot_to_x, vec3(neg_r_pit, backcross_y, z_b))
     sub backcross_b_l = LinearTendon() at transform3(rot_to_x, vec3(neg_r_pit, backcross_y, neg_z_b))
 
-    // ── Capstans (rough-in; VERTICAL axis, agreed 2026-07-22) ───────────────
-    // One dual-anchor winch capstan per belt, behind the rear rail-end plane on
-    // a vertical (+Z) axis: the rear feeds head inboard ALONG X, and a rope can
-    // only wrap a drum whose axis is perpendicular to its approach — which the
-    // vertical drum satisfies for both feeds (the along-X alternative could not
-    // be wrapped without re-routing; ruled out). Belt A's drum sits right of
-    // centre (+cap_x), belt B's left (−cap_x), each with its pitch circle
-    // plan-view TANGENT to its belt's back-cross line (drum centre one pitch
-    // radius behind it, y = backcross_y − cap_pitch_r), drum centred z = 0 so
-    // the ±~44mm wrap band straddles the machine mid-plane. The band sits
-    // BELOW the fixed ±z_a/±z_b levels by design: each lead leaves its fixed
-    // level and dives to the migrating band via the translating fairlead
-    // shuttle (4 idlers, first 90° corner per lead) — still being sized in
-    // dev_capstan.ri; shuttles + lead segments are the next integration step.
+    // ── Rear drive (rough-in v2: capstans DOWN + fairlead guide pulleys) ────
+    // Both belts' drive units live in ONE RearDrive block behind the rear
+    // rail-end plane, VERTICAL drum axes (agreed 2026-07-22: the rear feeds
+    // head inboard ALONG X, and a rope can only wrap a drum whose axis is
+    // perpendicular to its approach — the along-X alternative could not be
+    // wrapped without re-routing; ruled out). The block sits with each drum's
+    // pitch cylinder plan-view TANGENT to the y = backcross_y feed plane
+    // (centres one pitch radius behind it) and is DROPPED cap_drop below the
+    // drive plane (agreed 2026-07-22, capstans-down layout): each unit's four
+    // fairlead guide pulleys turn vertical descents into tangential drum
+    // entries. STILL TO MODEL: the drive-plane routing idlers that turn the
+    // ±z_a/±z_b feeds downward (and jog the upper-winding pair out to the
+    // outboard tangent plane), the lead tendon segments, and the fairlead
+    // frame. The back-cross spans above remain as the drive-plane stand-ins
+    // the routing idlers will tap.
     let cap_pitch_r = 27mm   // == Capstan drum_r (24mm) + rope radius (3mm) — hand-
                              // kept in step with Capstan defaults (same style as r_pitch)
-    let cap_x       = 100mm  // drums 200mm apart: clears flange Ø66 + future shuttles
-    let neg_cap_x   = 0mm - cap_x
     let cap_y       = backcross_y - cap_pitch_r
-    sub capstan_a = Capstan() at transform3(orient_identity(), vec3(cap_x,     cap_y, 0mm))  // belt A (outer ±z_a)
-    sub capstan_b = Capstan() at transform3(orient_identity(), vec3(neg_cap_x, cap_y, 0mm))  // belt B (inner ±z_b)
+    let cap_drop    = 220mm  // drum-axis depth below the drive plane's z = 0
+    let neg_drop    = 0mm - cap_drop
+    sub rear_drive = RearDrive() at transform3(orient_identity(), vec3(0mm, cap_y, neg_drop))
 
     constraint rail_x > 0mm
-    constraint cap_x > 0mm
+    constraint cap_drop > 0mm
 }
 
 // ── CoreXY motion system (directly composed) ─────────────────────────────────
