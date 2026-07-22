@@ -1474,6 +1474,26 @@ impl EngineSession {
     /// Delegates to [`Self::with_solve_slot`]; see there for lifecycle details
     /// and the no-interruption limitation.
     fn check_with_solve_slot(&mut self, compiled: &CompiledModule) -> CheckResult {
+        // Task 5212 (bound OCCT native-shape memory across reloads): every
+        // whole-file reload entry (load_file / update_source / load_from_source)
+        // funnels through here exactly once, so this is the single place to
+        // reset the geometry kernels — freeing the previous design's resident
+        // native shapes — AND clear the realization cache. Both are required:
+        // reloads preserve prior module identity, so build-2 entities collide on
+        // entity_id with build-1 and would otherwise cache-hit a build-1
+        // KernelHandle whose shape this reset just evicted → InvalidReference →
+        // broken render; clearing the cache forces a fresh re-execution against
+        // the reset kernel. Idempotent no-op on a cold engine (first load).
+        //
+        // Placement: the reset must live on THIS funnel, not deeper in the
+        // pipeline. tessellate_snapshot / execute_realization_ops also run on
+        // every slider tick, so a reset there would wipe warm shapes on each
+        // parameter change; reify-eval Engine::check()/build() are also reached
+        // by CLI build() and relate_solve sub-builds. The slider path
+        // (set_parameter → edit_check) deliberately BYPASSES check_with_solve_slot,
+        // so a parameter drag never triggers a reset — exactly the behaviour the
+        // reload-wiring regression test pins.
+        self.core.engine_mut().reset_geometry_for_reload();
         self.with_solve_slot(|s| s.core.engine_mut().check(compiled))
     }
 
