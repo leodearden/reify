@@ -20,9 +20,7 @@
 //! See also: `tree-sitter-reify/test/corpus/numeric_separators.txt` for the
 //! corpus-level CST documentation, runnable via `tree-sitter test`.
 
-#[path = "../common/mod.rs"]
-mod common;
-use common::{find_cst_node, make_ts_parser};
+use crate::common::{find_cst_node, make_ts_parser};
 
 // ── Assertion helpers ────────────────────────────────────────────────────────
 

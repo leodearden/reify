@@ -9,9 +9,7 @@
 
 use reify_core::ModulePath;
 
-#[path = "../common/mod.rs"]
-mod common;
-use common::{find_cst_node, find_outermost_cst_nodes, make_ts_parser};
+use crate::common::{find_cst_node, find_outermost_cst_nodes, make_ts_parser};
 
 // ── High-level parse tests (user-observable signal) ─────────────────────────
 

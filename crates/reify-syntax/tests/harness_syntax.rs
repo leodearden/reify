@@ -8,6 +8,18 @@
 //! Explicit `#[path]` is required: this harness root is an integration-test crate root,
 //! where a bare `mod <file>;` would resolve to the sibling `tests/<file>.rs`, not the
 //! `harness_syntax/` subdir — mirroring crates/reify-eval/tests/harness_geometry.rs.
+//!
+//! `common` (the shared tree-sitter CST helper module under `tests/common/`) is declared
+//! exactly once here, at the crate root, rather than once per dependent submodule. Ten of
+//! the modules below previously each carried their own `#[path = "../common/mod.rs"] mod
+//! common;` (correct when each was its own standalone binary/crate root); folded together
+//! as sibling submodules of one crate, those ten declarations all loaded the same physical
+//! file, which `clippy::duplicate_mod` (denied via `-D warnings`) rejects. Declaring it once
+//! here and having dependents `use crate::common::{...}` preserves the single shared
+//! implementation without a duplicate load; `common` carries no `#[test]` fns, so this does
+//! not affect any `<file>::<test>` module path.
+#[path = "common/mod.rs"]
+mod common;
 #[path = "harness_syntax/ad_hoc_selector_tests.rs"]
 mod ad_hoc_selector_tests;
 #[path = "harness_syntax/affine_map_spec_example_parses.rs"]
