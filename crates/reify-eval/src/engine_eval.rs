@@ -8120,38 +8120,53 @@ impl Engine {
                             // Preserve existing freshness (Failed/Pending) — arch §7.1/§9.2.
                             // See the detailed rationale in the old second-pass let-cell block.
                             //
-                            // task γ (#5053) deferral note: unmigrated preserve-freshness
-                            // commit — see the Auto-cell pre-seed block's comment above
-                            // (~@5967) for the full rationale (cell_commit.rs "Known scope
-                            // gaps" + PRD §2.4); identical reasoning applies here.
+                            // task #5238: migrated onto commit_cell_result. The preserve-
+                            // freshness re-serve now routes its four-leg commit through the
+                            // primitive via CacheLeg::RecordWithFreshness(preserved), carrying
+                            // the entry's own freshness forward verbatim (still
+                            // record_evaluation_with_freshness under the hood) and emitting a
+                            // typed Started/Completed pair carrying the `cached-serve`
+                            // provenance slug in place of the prior bare CacheHit — the sole
+                            // observable delta, since value/determinacy/cache-content/freshness
+                            // are all preserved. See cell_commit.rs "Known scope gaps"
+                            // (Freshness dimension — CLOSED) + PRD §2.4/§7.2.
                             if !self.cache.is_dirty(&node_id)
                                 && let Some(entry) = self.cache.get(&node_id)
                                 && let CachedResult::Value(ref val, det) = entry.result
                             {
+                                // Let re-serve stored determinacy is always Determined (every
+                                // Let commit path stamps UnconditionalDetermined), so the
+                                // DeterminacyRule::UnconditionalDetermined below reproduces the
+                                // stored `(val, det)` — hence entry.result — exactly, keeping
+                                // record_evaluation_with_freshness on its content-hash early-
+                                // cutoff path so the preserved freshness is carried, not reset.
+                                debug_assert_eq!(
+                                    det,
+                                    DeterminacyState::Determined,
+                                    "Let re-serve entry determinacy must be Determined"
+                                );
                                 let val = val.clone();
                                 let preserved_freshness = entry.freshness.clone();
-                                snapshot_values.insert(cell.id.clone(), (val.clone(), det));
-                                values.insert(cell.id.clone(), val);
                                 let trace = entry.dependency_trace.clone();
-                                let result = entry.result.clone();
                                 // μ (#5062): replay this clean-served cell's
                                 // stored per-cell diagnostics (last use of
                                 // `entry` before the &mut record below).
                                 diagnostics.extend(entry.diagnostics.iter().cloned());
-                                self.cache.record_evaluation_with_freshness(
-                                    node_id.clone(),
-                                    result,
-                                    version,
+                                commit_cell_result(
+                                    CommitLegs {
+                                        values: &mut values,
+                                        snapshot_values: &mut snapshot_values,
+                                        cache: &mut self.cache,
+                                        journal: &mut self.journal,
+                                    },
+                                    cell.id.clone(),
+                                    val,
+                                    DeterminacyRule::UnconditionalDetermined,
+                                    TraceSource::CachedServe,
                                     trace,
-                                    preserved_freshness,
-                                );
-                                self.journal.record(EvalEvent {
-                                    timestamp: Instant::now(),
-                                    node_id,
-                                    kind: EventKind::CacheHit,
                                     version,
-                                    payload: None,
-                                });
+                                    CacheLeg::RecordWithFreshness(preserved_freshness),
+                                );
                                 stats.cache_hits += 1;
                                 continue;
                             }
