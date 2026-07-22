@@ -1028,6 +1028,69 @@ select_infra_tests() {
 select_infra_tests
 
 # ---------------------------------------------------------------------------
+# Branch-scope at-source trigger for the harness-kLOC guard (task #5328, PRD
+# docs/prds/merge-gate-guard-diagnosability.md leaf R2).
+#
+# tests/infra/test_harness_kloc_cap.sh (the C2 anti-re-accretion guard) has no
+# row in verify-pipeline-infra-tests.txt: its trigger isn't a single artifact
+# path, it's *adding* a new top-level standalone crates/<c>/tests/*.rs file in
+# one of the 5 consolidatable crates. This selector runs the guard ONLY under
+# --scope branch (hermetic static reads, no cargo — seconds), so an
+# introducer sees the violation on their own branch instead of first at the
+# merge gate 40+ min in (tasks 5213, 5053). --diff-filter=A (adds only): a NEW
+# standalone binary is exactly the re-accretion the guard catches; modifying
+# or renaming an already-grandfathered file is a no-op here and stays covered
+# by the wholesale merge gate (no correctness regression, only earlier
+# coverage for the common add case).
+#
+# Appends into the SAME SELECTED_INFRA_GLOBS the selective-infra block above
+# populates, so it inherits for free: (a) merge/background suppression — the
+# selective emission block is suppressed when DF_VERIFY_ROLE=merge|background
+# (run_all.sh already runs this guard wholesale there — exactly-once, INV-5);
+# scope=branch is structurally impossible under merge|background role (forced
+# to scope=all at :644), so this selector can never double-fire against the
+# merge-tier wholesale run; (b) the REIFY_INFRA_SUITE_ACTIVE re-entrancy
+# guard; (c) fail-fast ordering before the cargo poles.
+#
+# Keep the 5-crate list below in sync with CONSOLIDATABLE_CRATES in
+# tests/infra/test_harness_kloc_cap.sh (that guard is the source of truth).
+# Drift is non-catastrophic in either direction: the merge gate remains the
+# wholesale authority, so an omitted/stale crate here still gets caught at
+# merge (latency, not a coverage hole).
+# ---------------------------------------------------------------------------
+select_harness_kloc_guard() {
+    [ "$SCOPE" = "branch" ] || return 0
+    [ -n "$_MERGE_BASE" ] || return 0
+    local _added _path _rest _crate _tail
+    _added="$(git -C "$REPO_ROOT" diff --name-only --diff-filter=A "$_MERGE_BASE" 2>/dev/null)" || return 0
+    [ -n "$_added" ] || return 0
+    while IFS= read -r _path; do
+        [ -n "$_path" ] || continue
+        case "$_path" in
+            crates/*/tests/*.rs) : ;;
+            *) continue ;;
+        esac
+        _rest="${_path#crates/}"
+        _crate="${_rest%%/*}"
+        _tail="${_path#crates/$_crate/tests/}"
+        case "$_tail" in
+            */*) continue ;;  # nested harness-module file — not top-level
+        esac
+        case " reify-cli reify-syntax reify-kernel-occt reify-eval reify-compiler " in
+            *" $_crate "*)
+                # Whole-token dedup via space sentinels (mirrors select_infra_tests).
+                case " $SELECTED_INFRA_GLOBS " in
+                    *" tests/infra/test_harness_kloc_cap.sh "*) : ;;
+                    *) SELECTED_INFRA_GLOBS="${SELECTED_INFRA_GLOBS:+$SELECTED_INFRA_GLOBS }tests/infra/test_harness_kloc_cap.sh" ;;
+                esac
+                return 0
+                ;;
+        esac
+    done <<< "$_added"
+}
+select_harness_kloc_guard
+
+# ---------------------------------------------------------------------------
 # Phase-2 narrowing: map changed files → affected crate set → -p flag strings.
 #
 # Eligible when: (scope=branch OR (scope=staged AND --narrow)) AND RUN_RUST=1.
