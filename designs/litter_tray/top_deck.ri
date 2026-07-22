@@ -66,8 +66,7 @@ structure def TopDeck : Rigid {
     let field_y = inner_width  - 2 * margin                // ~225.6
     let row_step = hole_pitch * 0.866                      // hex row spacing
 
-    // Hole counts (kept as literals in the pattern calls below; these lets
-    // document the packing and feed the fit constraints).
+    // Hole counts (feed both the pattern calls and the fit constraints).
     let nx_a = 89
     let ny_a = 26
     let nx_b = 88
@@ -128,10 +127,13 @@ structure def TopDeck : Rigid {
                     translate(cylinder(cav_r, deck_height), cx, -cy, floor_t)
                 ), floor_fillet)
             ),
-            // sieve field: two interleaved grids = hex packing
+            // sieve field: two interleaved grids = hex packing.
+            // Spacings MUST carry units (hole_pitch / 2*row_step): a bare
+            // number here is read as SI metres, silently scattering every
+            // instance after the first ~5m apart — see task #5318.
             union_all(
-                linear_pattern_2d(translate(cylinder(hole_d / 2, floor_t + 2mm), x0a, y0a, -1mm), 1, 0, 0, 89, 5, 0, 1, 0, 26, 8.66),
-                linear_pattern_2d(translate(cylinder(hole_d / 2, floor_t + 2mm), x0b, y0b, -1mm), 1, 0, 0, 88, 5, 0, 1, 0, 26, 8.66)
+                linear_pattern_2d(translate(cylinder(hole_d / 2, floor_t + 2mm), x0a, y0a, -1mm), 1, 0, 0, nx_a, hole_pitch, 0, 1, 0, ny_a, 2 * row_step),
+                linear_pattern_2d(translate(cylinder(hole_d / 2, floor_t + 2mm), x0b, y0b, -1mm), 1, 0, 0, nx_b, hole_pitch, 0, 1, 0, ny_b, 2 * row_step)
             )
         ),
         // solid pedestal/wear pads (re-plug the punched holes)
