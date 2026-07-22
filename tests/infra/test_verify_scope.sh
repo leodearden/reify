@@ -414,6 +414,50 @@ assert "C5/no-main: scope=all in plan header (fail-wide, contract C5)" \
 assert "C5/no-main: full scope forced (RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1)" \
     bash -c 'printf "%s\n" "$1" | grep -q "RUN_RUST=1 RUN_GUI=1 RUN_OCCT_GATE=1"' _ "$PLAN_C5"
 
+# ---------------------------------------------------------------------------
+# Scenario B-KLOC: new top-level standalone crate test file on a branch
+# triggers the harness-kLOC guard (task 5328).
+#
+# tests/infra/test_harness_kloc_cap.sh (the C2 anti-re-accretion guard) has no
+# row in scripts/verify-pipeline-infra-tests.txt (its trigger is not a single
+# artifact path — it is *adding* a new top-level standalone
+# crates/<c>/tests/*.rs file in one of the 5 consolidatable crates). This
+# exercises select_harness_kloc_guard()'s own added-file scan (git diff
+# --diff-filter=A against the merge-base), wired into SELECTED_INFRA_GLOBS
+# alongside select_infra_tests(). Positive cases pin two of the 5
+# consolidatable crates; boundary cases guard against over-firing on a source
+# file, a nested harness-module file, and a non-consolidatable crate's test.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario B-KLOC: new crates/reify-eval/tests/*.rs branch -> harness-kLOC guard selected (RED until step-2) ---"
+plan_for_branch crates/reify-eval/tests/zz_prd_probe.rs
+assert "B-KLOC/reify-eval: plan contains test_harness_kloc_cap.sh (guard wired as selective pole)" \
+    plan_has 'tests/infra/test_harness_kloc_cap\.sh'
+
+echo ""
+echo "--- Scenario B-KLOC-2: new crates/reify-compiler/tests/*.rs branch -> harness-kLOC guard selected (pins >1 of the 5 crates, RED until step-2) ---"
+plan_for_branch crates/reify-compiler/tests/zz_probe.rs
+assert "B-KLOC-2/reify-compiler: plan contains test_harness_kloc_cap.sh" \
+    plan_has 'tests/infra/test_harness_kloc_cap\.sh'
+
+echo ""
+echo "--- Scenario B-KLOC-src: crates/reify-eval/src/lib.rs branch (source file, not a test) -> guard NOT selected (no-op boundary) ---"
+plan_for_branch crates/reify-eval/src/lib.rs
+assert "B-KLOC-src: plan LACKS test_harness_kloc_cap.sh (src file, not a top-level test)" \
+    plan_lacks 'tests/infra/test_harness_kloc_cap\.sh'
+
+echo ""
+echo "--- Scenario B-KLOC-nested: crates/reify-eval/tests/harness_probe/nested.rs branch (nested harness-module file) -> guard NOT selected (no-op boundary) ---"
+plan_for_branch crates/reify-eval/tests/harness_probe/nested.rs
+assert "B-KLOC-nested: plan LACKS test_harness_kloc_cap.sh (nested, not top-level tests/*.rs)" \
+    plan_lacks 'tests/infra/test_harness_kloc_cap\.sh'
+
+echo ""
+echo "--- Scenario B-KLOC-noncons: crates/reify-doc/tests/probe.rs branch (crate NOT one of the 5 consolidatable) -> guard NOT selected (no-op boundary) ---"
+plan_for_branch crates/reify-doc/tests/probe.rs
+assert "B-KLOC-noncons: plan LACKS test_harness_kloc_cap.sh (reify-doc is not consolidatable)" \
+    plan_lacks 'tests/infra/test_harness_kloc_cap\.sh'
+
 # ===========================================================================
 # DEL-* scenarios (task 5140): scope classification must be deletion-aware.
 # verify.sh derives its changed-file list with `git diff --diff-filter=ACMR`
