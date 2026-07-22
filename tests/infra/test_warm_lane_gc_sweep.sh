@@ -24,11 +24,24 @@
 #         invocation (engaging the 5167 rm-outright mechanism); above the
 #         floor or on a df failure, plain reclaim runs unchanged (fail-to-α);
 #         end-to-end proof via the real gc.sh that target/ is deleted
-#         outright, with inv.preserve (dirty/live-consumer) still honored.
+#         outright, with the live-consumer flock still honored (a dirty POOL
+#         LANE is now reclaimed under always-reclaim, task 5326).
 #         Also covers the --critical-free-gib integer-format guard (exit 2
 #         on a non-numeric value, via flag or env) and the df-succeeds-but
 #         -unparseable-output fallback (a code path distinct from a df exit
 #         failure).
+#   T — stale .reseed-trash reaper (task 5326): the sweep reaps a stranded
+#         $MOUNT/.reseed-trash/<lane>.<pid> entry iff its encoded PID is dead
+#         AND no live process references the dir via cwd/fd/maps; a live
+#         encoded PID, a live cwd/fd/maps reference, or a malformed (non-
+#         numeric) suffix preserves it; a missing .reseed-trash/ dir is a
+#         no-op; and an rm failure is fail-open (warn, exit 0, entry intact).
+#         The reaper runs every sweep, after the mount-exists fail-open check
+#         and before the reclaim exec, independent of --disk-pressure. T7
+#         covers the batched single-/proc-scan path: several dead-PID
+#         candidates in ONE sweep, exactly the live-cwd-referenced one
+#         preserved while the rest are reaped (discrimination within a single
+#         scan, not all-or-nothing).
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -583,7 +596,10 @@ assert "G4: _lane-1/target deleted outright end-to-end (emergency trigger engage
 assert "G4: seed stub NOT invoked (--disk-pressure skips the α reseed)" \
     bash -c '[ ! -s "$1" ]' _ "$G4_SEED_LOG"
 
-# ── G5: inv.preserve inherited (dirty + live-consumer lanes stay intact) ──────
+# ── G5: always-reclaim under --disk-pressure — dirty POOL LANE reclaimed, ─────
+# live-consumer lane preserved (task 5326). The dirty pool lane's target/ is
+# deleted outright (the flock is free), while the live-consumer lane's flock
+# preserves it — proving the flock is the sole remaining Pass-1 preserve gate.
 G5_ROOT="$(mktemp -d /tmp/test-gc-sweep-g5-XXXXXX)"
 _TMPDIRS+=("$G5_ROOT")
 
@@ -596,9 +612,9 @@ mkdir -p "$G5_BASE/target.gen.1"
 touch "$G5_BASE/target.gen.1.lock"
 ln -sfn "$G5_BASE/target.gen.1" "$G5_BASE/target"
 
-# _lane-dirty: uncommitted tracked change. Must be preserved regardless of
-# --disk-pressure — inv.preserve is enforced by _is_reclaimable, upstream of
-# the disk-pressure/α branch.
+# _lane-dirty: uncommitted tracked change POOL LANE. Under always-reclaim
+# (task 5326) its flock is free, so it is RECLAIMED — target/ deleted outright
+# under --disk-pressure. Dirty tracked changes no longer preserve a pool lane.
 git -C "$G5_REPO" worktree add -q "$G5_WORKTREES/_lane-dirty"
 echo "dirty" >> "$G5_WORKTREES/_lane-dirty/README.md"
 mkdir -p "$G5_WORKTREES/_lane-dirty/target"
@@ -630,9 +646,9 @@ SEED_LOG="$G5_SEED_LOG" \
     run_sweep --mount "$G5_WORKTREES" --gc-script "$GC_REAL" --critical-free-gib 2
 
 assert "G5: exit 0" test "$RC" -eq 0
-assert "G5: dirty lane target/ marker intact (inv.preserve inherited under --disk-pressure)" \
-    test -f "$G5_WORKTREES/_lane-dirty/target/DIVERGENT_MARKER"
-assert "G5: live-consumer lane target/ marker intact (inv.preserve inherited under --disk-pressure)" \
+assert "G5: dirty pool lane target/ deleted outright (always-reclaim under --disk-pressure)" \
+    bash -c '[ ! -d "$1" ]' _ "$G5_WORKTREES/_lane-dirty/target"
+assert "G5: live-consumer lane target/ marker intact (flock is the sole preserve gate)" \
     test -f "$G5_WORKTREES/_lane-locked/target/DIVERGENT_MARKER"
 
 # Release the background lock holder.
@@ -726,5 +742,285 @@ assert "G7: --disk-pressure NOT appended (unparseable avail → fail-to-α)" \
     bash -c '! grep -q -- "--disk-pressure" "$1"' _ "$G7_GC_LOG"
 assert "G7: stderr warns about unparseable avail bytes" \
     bash -c 'printf "%s\n" "$1" | grep -qi "unparseable"' _ "$ERR_OUT"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block T — stale .reseed-trash reaper (task 5326)
+# ──────────────────────────────────────────────────────────────────────────────
+# seed-warm-lane.sh --fresh-checkout renames a non-empty target/ to
+# $MOUNT/.reseed-trash/<lane>.<pid> then background-rm's it; a SIGKILL between
+# the rename and the rm strands the trash until THAT lane is re-acquired (a lane
+# never re-acquired strands it forever). The sweep reaps a stranded entry ONLY
+# when its encoded PID is dead AND no live process still references the dir via
+# cwd/fd/maps (a PID-reuse / in-flight-rm-or-seed guard). The reaper runs every
+# sweep, after the mount-exists fail-open check and before the reclaim exec,
+# independent of --disk-pressure. Uses a gc-script STUB (Block C pattern) so the
+# post-reaper exec is harmless (no real base-target). RED against current
+# gc-sweep.sh (no reaper exists).
+echo ""
+echo "--- Block T: stale .reseed-trash reaper (task 5326) ---"
+
+# Block-T gc-script stub: logs argv to $GC_LOG, exits 0 (Block C pattern). A
+# populated $GC_LOG after a sweep proves the reaper ran BEFORE the exec and did
+# not abort the sweep.
+_t_gc_stub() {
+    cat > "$1" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$GC_LOG"
+exit 0
+STUB_EOF
+    chmod +x "$1"
+}
+
+# ── T1: dead-PID entry IS reaped; gc-script still runs (reaper precedes exec) ──
+T1_ROOT="$(mktemp -d /tmp/test-gc-sweep-t1-XXXXXX)"
+_TMPDIRS+=("$T1_ROOT")
+T1_MOUNT="$T1_ROOT/worktrees"
+mkdir -p "$T1_MOUNT/.reseed-trash"
+
+T1_GC_LOG="$T1_ROOT/gc_calls.log"
+T1_GC_STUB="$T1_ROOT/gc_stub.sh"
+_t_gc_stub "$T1_GC_STUB"
+
+# DEAD_PID: a backgrounded proc captured then waited → reaped, no longer live.
+true &
+T1_DEAD_PID=$!
+wait "$T1_DEAD_PID" 2>/dev/null || true
+
+T1_ENTRY="$T1_MOUNT/.reseed-trash/_lane-1.$T1_DEAD_PID"
+mkdir -p "$T1_ENTRY"
+touch "$T1_ENTRY/stranded-file"
+
+GC_LOG="$T1_GC_LOG" run_sweep --mount "$T1_MOUNT" --gc-script "$T1_GC_STUB"
+
+assert "T1: exit 0" test "$RC" -eq 0
+assert "T1: dead-PID trash entry reaped (dir gone)" \
+    bash -c '[ ! -d "$1" ]' _ "$T1_ENTRY"
+assert "T1: gc-script still invoked (reaper precedes the reclaim exec)" \
+    bash -c '[ -s "$1" ]' _ "$T1_GC_LOG"
+
+# ── T2: live-PID entry is PRESERVED (encoded PID still alive) ──────────────────
+T2_ROOT="$(mktemp -d /tmp/test-gc-sweep-t2-XXXXXX)"
+_TMPDIRS+=("$T2_ROOT")
+T2_MOUNT="$T2_ROOT/worktrees"
+mkdir -p "$T2_MOUNT/.reseed-trash"
+
+T2_GC_LOG="$T2_ROOT/gc_calls.log"
+T2_GC_STUB="$T2_ROOT/gc_stub.sh"
+_t_gc_stub "$T2_GC_STUB"
+
+# LIVE_PID: a live backgrounded sleep; its PID is the entry's suffix.
+sleep 300 &
+T2_LIVE_PID=$!
+_BGPIDS+=("$T2_LIVE_PID")
+
+T2_ENTRY="$T2_MOUNT/.reseed-trash/_lane-2.$T2_LIVE_PID"
+mkdir -p "$T2_ENTRY"
+touch "$T2_ENTRY/stranded-file"
+
+GC_LOG="$T2_GC_LOG" run_sweep --mount "$T2_MOUNT" --gc-script "$T2_GC_STUB"
+
+assert "T2: exit 0" test "$RC" -eq 0
+assert "T2: live-PID trash entry preserved (encoded PID still alive)" \
+    bash -c '[ -d "$1" ]' _ "$T2_ENTRY"
+
+kill "$T2_LIVE_PID" 2>/dev/null || true
+_BGPIDS=()  # clear so EXIT cleanup does not re-kill a possibly-reused PID
+
+# ── T3: cwd guard — dead encoded PID but a LIVE proc's cwd is the entry dir ───
+# The entry's suffix PID is dead (kill -0 fails), so preservation can only come
+# from the cwd/fd/maps guard catching the live helper whose cwd is the entry.
+# After the helper dies, a second sweep reaps it — isolating the guard.
+T3_ROOT="$(mktemp -d /tmp/test-gc-sweep-t3-XXXXXX)"
+_TMPDIRS+=("$T3_ROOT")
+T3_MOUNT="$T3_ROOT/worktrees"
+mkdir -p "$T3_MOUNT/.reseed-trash"
+
+T3_GC_LOG="$T3_ROOT/gc_calls.log"
+T3_GC_STUB="$T3_ROOT/gc_stub.sh"
+_t_gc_stub "$T3_GC_STUB"
+
+# DEAD encoded PID (so the kill -0 guard falls through to the cwd/fd/maps scan).
+true &
+T3_DEAD_PID=$!
+wait "$T3_DEAD_PID" 2>/dev/null || true
+
+T3_ENTRY="$T3_MOUNT/.reseed-trash/_lane-3.$T3_DEAD_PID"
+mkdir -p "$T3_ENTRY"
+
+# Live helper whose CWD is the entry dir. It touches the READY marker AFTER
+# cd'ing in, so _wait_for_reader_lock proves the cwd is established before the
+# sweep runs (causal ordering — no wall-clock race). exec replaces the subshell
+# with sleep so the tracked PID itself holds the cwd.
+T3_READY="$T3_ROOT/helper.ready"
+( cd "$T3_ENTRY" && touch "$T3_READY" && exec sleep 300 ) &
+T3_HELPER_PID=$!
+_BGPIDS+=("$T3_HELPER_PID")
+_wait_for_reader_lock "$T3_READY" 30
+
+GC_LOG="$T3_GC_LOG" run_sweep --mount "$T3_MOUNT" --gc-script "$T3_GC_STUB"
+
+assert "T3: exit 0 (first sweep)" test "$RC" -eq 0
+assert "T3: entry preserved despite dead encoded PID (live cwd reference guards it)" \
+    bash -c '[ -d "$1" ]' _ "$T3_ENTRY"
+
+# Kill the helper and wait for it to be reaped, dropping the cwd reference.
+kill "$T3_HELPER_PID" 2>/dev/null || true
+wait "$T3_HELPER_PID" 2>/dev/null || true
+_BGPIDS=()  # clear so EXIT cleanup does not re-kill a possibly-reused PID
+
+GC_LOG="$T3_GC_LOG" run_sweep --mount "$T3_MOUNT" --gc-script "$T3_GC_STUB"
+
+assert "T3: exit 0 (second sweep)" test "$RC" -eq 0
+assert "T3: entry reaped once the live cwd reference is gone (second sweep)" \
+    bash -c '[ ! -d "$1" ]' _ "$T3_ENTRY"
+
+# ── T4: malformed entries (no numeric .pid suffix) are SKIPPED (never reaped) ──
+T4_ROOT="$(mktemp -d /tmp/test-gc-sweep-t4-XXXXXX)"
+_TMPDIRS+=("$T4_ROOT")
+T4_MOUNT="$T4_ROOT/worktrees"
+mkdir -p "$T4_MOUNT/.reseed-trash"
+
+T4_GC_LOG="$T4_ROOT/gc_calls.log"
+T4_GC_STUB="$T4_ROOT/gc_stub.sh"
+_t_gc_stub "$T4_GC_STUB"
+
+# Non-numeric suffix and a name with no dot at all → ambiguous PID → skip.
+T4_ENTRY_ALPHA="$T4_MOUNT/.reseed-trash/_lane-4.abc"
+T4_ENTRY_NODOT="$T4_MOUNT/.reseed-trash/no-suffix"
+mkdir -p "$T4_ENTRY_ALPHA" "$T4_ENTRY_NODOT"
+
+GC_LOG="$T4_GC_LOG" run_sweep --mount "$T4_MOUNT" --gc-script "$T4_GC_STUB"
+
+assert "T4: exit 0" test "$RC" -eq 0
+assert "T4: non-numeric-suffix entry preserved (ambiguous PID → never reaped)" \
+    bash -c '[ -d "$1" ]' _ "$T4_ENTRY_ALPHA"
+assert "T4: no-dot entry preserved (ambiguous PID → never reaped)" \
+    bash -c '[ -d "$1" ]' _ "$T4_ENTRY_NODOT"
+
+# ── T5: no .reseed-trash/ dir → reaper is a no-op; sweep still runs gc ─────────
+T5_ROOT="$(mktemp -d /tmp/test-gc-sweep-t5-XXXXXX)"
+_TMPDIRS+=("$T5_ROOT")
+T5_MOUNT="$T5_ROOT/worktrees"
+mkdir -p "$T5_MOUNT"  # deliberately NO .reseed-trash/ subdir
+
+T5_GC_LOG="$T5_ROOT/gc_calls.log"
+T5_GC_STUB="$T5_ROOT/gc_stub.sh"
+_t_gc_stub "$T5_GC_STUB"
+
+GC_LOG="$T5_GC_LOG" run_sweep --mount "$T5_MOUNT" --gc-script "$T5_GC_STUB"
+
+assert "T5: exit 0 (missing .reseed-trash dir → reaper no-op)" test "$RC" -eq 0
+assert "T5: gc-script still invoked (no-trash reaper does not abort the sweep)" \
+    bash -c '[ -s "$1" ]' _ "$T5_GC_LOG"
+
+# ── T6: fail-open — the reaper's rm fails, yet the sweep warns and exits 0 ─────
+# PATH-scoped failing rm stub (Block K4 technique, root-safe). The reaper must
+# warn and continue (fail-open), never abort under set -euo pipefail, and must
+# leave the entry intact when its own rm fails.
+T6_ROOT="$(mktemp -d /tmp/test-gc-sweep-t6-XXXXXX)"
+_TMPDIRS+=("$T6_ROOT")
+T6_MOUNT="$T6_ROOT/worktrees"
+mkdir -p "$T6_MOUNT/.reseed-trash"
+
+T6_GC_LOG="$T6_ROOT/gc_calls.log"
+T6_GC_STUB="$T6_ROOT/gc_stub.sh"
+_t_gc_stub "$T6_GC_STUB"
+
+# Failing rm stub — its message deliberately avoids the words the reaper's own
+# warn uses (trash/reap/reseed) so the T6 stderr assertion pins the REAPER's
+# warning, not the stub's echo. Prepended to PATH only for the run_sweep call
+# below (bash reverts a prefix assignment on a function call immediately after
+# — same idiom as gc Block K4).
+T6_STUB_DIR="$T6_ROOT/binstub"
+mkdir -p "$T6_STUB_DIR"
+cat > "$T6_STUB_DIR/rm" << 'STUB_EOF'
+#!/usr/bin/env bash
+echo "rm: simulated failure (test stub)" >&2
+exit 1
+STUB_EOF
+chmod +x "$T6_STUB_DIR/rm"
+
+# DEAD-PID entry so the reaper reaches the rm action.
+true &
+T6_DEAD_PID=$!
+wait "$T6_DEAD_PID" 2>/dev/null || true
+
+T6_ENTRY="$T6_MOUNT/.reseed-trash/_lane-6.$T6_DEAD_PID"
+mkdir -p "$T6_ENTRY"
+
+PATH="$T6_STUB_DIR:$PATH" GC_LOG="$T6_GC_LOG" \
+    run_sweep --mount "$T6_MOUNT" --gc-script "$T6_GC_STUB"
+
+assert "T6: exit 0 (reaper rm failure is fail-open)" test "$RC" -eq 0
+assert "T6: entry left intact when the reaper's rm fails" \
+    bash -c '[ -d "$1" ]' _ "$T6_ENTRY"
+assert "T6: stderr carries the reaper's own trash-reap warning" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "reap|trash|reseed"' _ "$ERR_OUT"
+
+# ── T7: batch scan — several dead-PID candidates in ONE sweep; exactly the ────
+# live-cwd-referenced entry is preserved, the rest reaped ─────────────────────
+# Exercises the batched single-/proc-scan path: the reaper collects all dead-PID
+# candidates, does ONE /proc walk for the whole set, and must discriminate the
+# referenced entry from the unreferenced ones (not all-or-nothing). Once the
+# live reference drops, a second sweep reaps the last entry.
+T7_ROOT="$(mktemp -d /tmp/test-gc-sweep-t7-XXXXXX)"
+_TMPDIRS+=("$T7_ROOT")
+T7_MOUNT="$T7_ROOT/worktrees"
+mkdir -p "$T7_MOUNT/.reseed-trash"
+
+T7_GC_LOG="$T7_ROOT/gc_calls.log"
+T7_GC_STUB="$T7_ROOT/gc_stub.sh"
+_t_gc_stub "$T7_GC_STUB"
+
+# Live helper started FIRST — so the kernel cannot reuse its PID for any of the
+# dead PIDs forked afterwards. Its cwd is a staging dir renamed into the
+# referenced trash entry once its dead-PID suffix is known, so the helper holds
+# that entry dir's inode as cwd while the entry's ENCODED PID is guaranteed dead
+# (isolating the cwd/fd/maps guard, exactly as in T3). READY lives outside the
+# staging dir so the rename does not move the handshake marker.
+T7_STAGE="$T7_ROOT/stage"
+mkdir -p "$T7_STAGE"
+T7_READY="$T7_ROOT/helper.ready"
+( cd "$T7_STAGE" && touch "$T7_READY" && exec sleep 300 ) &
+T7_HELPER_PID=$!
+_BGPIDS+=("$T7_HELPER_PID")
+_wait_for_reader_lock "$T7_READY" 30
+
+# Three DEAD encoded PIDs (forked while the helper is alive → all distinct from
+# it), one per candidate entry.
+true & T7_DEAD_A=$!; wait "$T7_DEAD_A" 2>/dev/null || true
+true & T7_DEAD_B=$!; wait "$T7_DEAD_B" 2>/dev/null || true
+true & T7_DEAD_C=$!; wait "$T7_DEAD_C" 2>/dev/null || true
+
+T7_ENTRY_A="$T7_MOUNT/.reseed-trash/_lane-a.$T7_DEAD_A"   # unreferenced → reaped
+T7_ENTRY_B="$T7_MOUNT/.reseed-trash/_lane-b.$T7_DEAD_B"   # live cwd ref → preserved
+T7_ENTRY_C="$T7_MOUNT/.reseed-trash/_lane-c.$T7_DEAD_C"   # unreferenced → reaped
+mkdir -p "$T7_ENTRY_A" "$T7_ENTRY_C"
+touch "$T7_ENTRY_A/stranded" "$T7_ENTRY_C/stranded"
+# Rename the helper's live cwd into ENTRY_B: /proc/<helper>/cwd now resolves to
+# ENTRY_B, so the batch scan must catch it even though _lane-b's encoded PID is
+# dead — while A and C (no live reference) must be reaped in the same sweep.
+mv "$T7_STAGE" "$T7_ENTRY_B"
+
+GC_LOG="$T7_GC_LOG" run_sweep --mount "$T7_MOUNT" --gc-script "$T7_GC_STUB"
+
+assert "T7: exit 0 (first sweep)" test "$RC" -eq 0
+assert "T7: unreferenced dead-PID entry A reaped in the batch sweep" \
+    bash -c '[ ! -d "$1" ]' _ "$T7_ENTRY_A"
+assert "T7: unreferenced dead-PID entry C reaped in the batch sweep" \
+    bash -c '[ ! -d "$1" ]' _ "$T7_ENTRY_C"
+assert "T7: live-cwd-referenced entry B preserved despite dead encoded PID" \
+    bash -c '[ -d "$1" ]' _ "$T7_ENTRY_B"
+
+# Drop the live cwd reference; a second sweep now reaps the last entry.
+kill "$T7_HELPER_PID" 2>/dev/null || true
+wait "$T7_HELPER_PID" 2>/dev/null || true
+_BGPIDS=()  # clear so EXIT cleanup does not re-kill a possibly-reused PID
+
+GC_LOG="$T7_GC_LOG" run_sweep --mount "$T7_MOUNT" --gc-script "$T7_GC_STUB"
+
+assert "T7: exit 0 (second sweep)" test "$RC" -eq 0
+assert "T7: entry B reaped once its live cwd reference is gone (second sweep)" \
+    bash -c '[ ! -d "$1" ]' _ "$T7_ENTRY_B"
 
 test_summary

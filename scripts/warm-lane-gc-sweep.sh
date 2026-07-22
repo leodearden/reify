@@ -13,6 +13,14 @@
 # warn on stderr and exit 0 — the timer must degrade quietly on a cold host or
 # before the loopback mount is provisioned (inv.6 cold-fallback philosophy).
 #
+# Stale-trash reaper (task 5326): on every run this sweep also reaps stranded
+# $MOUNT/.reseed-trash/<lane>.<pid> dirs — trash that seed-warm-lane.sh's
+# rename-then-background-rm leaves behind when SIGKILL'd mid-reseed. An entry is
+# removed only when its encoded PID is dead AND no live process still references
+# it (cwd / open fd / mmap). This lives in the periodic δ sweep, not gc.sh's
+# per-acquire ε reclaim, because the live-reference /proc scan is too costly for
+# the hot path. See _reap_stale_trash below.
+#
 # Part of PRD docs/prds/warm-lane-pool-space-safety.md §12 (δ GC trigger backstop).
 #
 # Usage:
@@ -98,6 +106,143 @@ Usage: $(basename "$0") [--mount DIR] [--gc-script PATH] [--df CMD] [--critical-
 EOF
 }
 
+# ── stale .reseed-trash reaper (task 5326) ────────────────────────────────────
+# seed-warm-lane.sh --fresh-checkout renames a non-empty target/ to
+# $MOUNT/.reseed-trash/<basename LANE_DIR>.<pid> then background-rm's it. A
+# SIGKILL between the rename and the rm strands that trash; the seed's own
+# orphan-sweep only recovers it on the NEXT acquire of THAT lane, so a lane
+# never re-acquired strands it forever (observed 224 GB on 2026-07-21). This
+# reaper generalizes the seed's single-lane, next-acquire-only sweep into a
+# pool-wide dead-PID sweep over the whole .reseed-trash/ dir.
+#
+# It lives in this periodic δ backstop (systemd timer + hand-run), NOT in
+# warm-lane-gc.sh's per-acquire ε reclaim hot path, because the live-reference
+# guard is an O(processes × fds) /proc scan too costly for the hot path.
+#
+# An entry is reaped ONLY when its encoded PID is dead AND no live process still
+# references the dir via cwd / open fd / mmap — defending against PID reuse and
+# against removing trash an in-flight rm or seed still touches. No per-lane
+# flock: trash is PID-keyed crash-orphan state, the guard covers live
+# references, and rm -rf is idempotent versus seed-warm-lane.sh's own per-lane
+# orphan-sweep. Synchronous rm; fail-open (a failed rm warns and never aborts
+# the sweep).
+#
+# The live-reference guard runs ONCE for the whole batch of dead-PID candidates
+# (a single /proc walk + a single /proc/*/maps grep matched against every
+# candidate), not once per entry, so a large strand costs O(/proc) rather than
+# O(entries × /proc). See _live_referenced_trash_paths.
+
+# _live_referenced_trash_paths RP... — given one or more resolved trash
+# realpaths, print (one per line, deduplicated) the subset that ANY live
+# process references via its cwd symlink, an open fd symlink, or a mmap'd
+# region in /proc/<pid>/maps. Performs exactly ONE /proc symlink walk and ONE
+# /proc/*/maps grep for the WHOLE candidate set — O(/proc) once, NOT once per
+# entry: with N stranded entries the older per-entry scan was O(N × /proc)
+# (a single /proc walk already cost ~84s on a ~1300-process host, and the
+# ENOSPC strand that motivates this reaper can leave many entries at once).
+#
+# The verdict is read from captured OUTPUT, never a pipeline exit status:
+# find/grep over /proc return non-zero on the unavoidable permission-denied
+# entries of other users' processes (and SIGPIPE on an early awk exit), so
+# under `set -o pipefail` the exit status is an unreliable signal. A vanishing
+# /proc entry only produces suppressed stderr; every scan is `|| true`-guarded
+# so it never aborts under set -e.
+_live_referenced_trash_paths() {
+    [ $# -gt 0 ] || return 0
+
+    # cwd + open-fd references: one find pass prints every process's cwd and
+    # open-fd symlink TARGETS (%l = the kernel-canonical target — no per-fd
+    # fork). awk loads the candidate realpaths as input records (the NR==FNR
+    # two-file trick — avoids `-v`'s backslash-escape processing on data), then
+    # for each target prints any candidate it equals or is a "$cand/" descendant
+    # of (string compare, so arbitrary path characters are safe), each candidate
+    # at most once, exiting early once every candidate is accounted for.
+    # /proc/<pid>/task is pruned to skip the per-thread symlink duplicates.
+    find /proc -maxdepth 3 -path '*/task' -prune -o -type l \
+            \( -name cwd -o -path '*/fd/*' \) -printf '%l\n' 2>/dev/null \
+        | awk '
+            NR==FNR { if ($0 != "") cand[++n] = $0; next }
+            {
+                for (i = 1; i <= n; i++)
+                    if (!(i in seen) && ($0 == cand[i] || index($0, cand[i] "/") == 1)) {
+                        print cand[i]; seen[i] = 1; nfound++
+                    }
+                if (n > 0 && nfound >= n) exit
+            }
+        ' <(printf '%s\n' "$@") - 2>/dev/null || true
+
+    # mmap'd regions: a single grep over every process's maps for a path mapped
+    # from inside any candidate trash dir; -o prints the matched candidate
+    # string (fixed-string substring match, mirroring the original
+    # single-candidate grep).
+    grep -hoFf <(printf '%s\n' "$@") /proc/[0-9]*/maps 2>/dev/null || true
+}
+
+# _reap_stale_trash MOUNT — reap stranded MOUNT/.reseed-trash/<lane>.<pid> dirs.
+_reap_stale_trash() {
+    local mount="$1"
+    local trash_dir="$mount/.reseed-trash"
+    [ -d "$trash_dir" ] || return 0
+
+    # Pass A — collect dead-encoded-PID candidates. An entry whose suffix is
+    # malformed (no numeric PID) or whose encoded PID is still alive (a seed/rm
+    # may be in flight) is skipped here and never reaped; only dead-PID
+    # candidates advance to the single live-reference scan below.
+    local entry name pid rp
+    local -a cand_entries=() cand_pids=() cand_rps=()
+    for entry in "$trash_dir"/*; do
+        [ -e "$entry" ] || continue          # glob-nomatch guard (empty dir)
+        name="${entry##*/}"
+        pid="${name##*.}"
+        case "$pid" in
+            ''|*[!0-9]*) continue ;;         # ambiguous/malformed suffix → never reap
+        esac
+        if kill -0 "$pid" 2>/dev/null; then continue; fi   # encoded PID alive → preserve
+        rp="$(readlink -f "$entry" 2>/dev/null)" || rp=""
+        [ -n "$rp" ] || continue             # unresolvable path → cannot verify refs; preserve
+        cand_entries+=("$entry")
+        cand_pids+=("$pid")
+        cand_rps+=("$rp")
+    done
+    [ "${#cand_entries[@]}" -gt 0 ] || return 0
+
+    # Observability: a large candidate count means a lot of trash accreted at
+    # once (e.g. the 224 GB 2026-07-21 strand); log it so a pathological count
+    # is visible even though the scan below is single-pass.
+    if [ "${#cand_entries[@]}" -ge 16 ]; then
+        _info "stale reseed-trash reaper: ${#cand_entries[@]} dead-PID candidate entries this sweep"
+    fi
+
+    # Single live-reference scan for the WHOLE candidate batch (one /proc walk,
+    # one maps grep — not one per entry). Build a set of referenced realpaths; a
+    # candidate in the set is preserved (PID-reuse / in-flight rm-or-seed guard),
+    # all others are reaped.
+    local -A referenced=()
+    local referenced_raw hitrp
+    referenced_raw="$(_live_referenced_trash_paths "${cand_rps[@]}")" || referenced_raw=""
+    if [ -n "$referenced_raw" ]; then
+        while IFS= read -r hitrp; do
+            [ -n "$hitrp" ] && referenced["$hitrp"]=1
+        done <<< "$referenced_raw"
+    fi
+
+    # Pass B — reap every dead-PID candidate with no live reference; fail-open on
+    # an rm error (warn and continue, never abort the sweep).
+    local i
+    for i in "${!cand_entries[@]}"; do
+        entry="${cand_entries[$i]}"
+        pid="${cand_pids[$i]}"
+        rp="${cand_rps[$i]}"
+        if [ -n "${referenced[$rp]:-}" ]; then continue; fi   # live cwd/fd/mmap reference → preserve
+        if rm -rf "$entry"; then
+            _info "reaped stale reseed-trash entry: $entry (encoded PID $pid dead, no live reference)"
+        else
+            _warn "failed to reap stale reseed-trash entry: $entry (rm -rf failed); leaving intact"
+        fi
+    done
+    return 0
+}
+
 # ── defaults ───────────────────────────────────────────────────────────────────
 MOUNT="${REIFY_WARM_LANE_GC_SWEEP_MOUNT:-/home/leo/src/warm-lanes/worktrees}"
 GC_SCRIPT="${REIFY_WARM_LANE_GC_SWEEP_GC_SCRIPT:-$SCRIPT_DIR/warm-lane-gc.sh}"
@@ -147,6 +292,12 @@ if [ ! -d "$MOUNT" ]; then
     _warn "warm-lane mount dir does not exist: $MOUNT — skipping GC sweep (fail-open)"
     exit 0
 fi
+
+# ── reap stranded .reseed-trash/<lane>.<pid> dirs (task 5326) ─────────────────
+# Runs on every sweep (independent of --disk-pressure): a periodic backstop for
+# trash stranded by a SIGKILL between seed-warm-lane.sh's rename-to-trash and
+# its background rm. Fail-open — never aborts the sweep.
+_reap_stale_trash "$MOUNT"
 
 # ── build reclaim args; measure disk pressure once, right before exec ─────────
 # γ disk-guard df idiom (scripts/warm-lane-disk-guard.sh): a single snapshot,
