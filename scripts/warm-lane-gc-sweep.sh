@@ -13,6 +13,14 @@
 # warn on stderr and exit 0 — the timer must degrade quietly on a cold host or
 # before the loopback mount is provisioned (inv.6 cold-fallback philosophy).
 #
+# Stale-trash reaper (task 5326): on every run this sweep also reaps stranded
+# $MOUNT/.reseed-trash/<lane>.<pid> dirs — trash that seed-warm-lane.sh's
+# rename-then-background-rm leaves behind when SIGKILL'd mid-reseed. An entry is
+# removed only when its encoded PID is dead AND no live process still references
+# it (cwd / open fd / mmap). This lives in the periodic δ sweep, not gc.sh's
+# per-acquire ε reclaim, because the live-reference /proc scan is too costly for
+# the hot path. See _reap_stale_trash below.
+#
 # Part of PRD docs/prds/warm-lane-pool-space-safety.md §12 (δ GC trigger backstop).
 #
 # Usage:
@@ -98,6 +106,91 @@ Usage: $(basename "$0") [--mount DIR] [--gc-script PATH] [--df CMD] [--critical-
 EOF
 }
 
+# ── stale .reseed-trash reaper (task 5326) ────────────────────────────────────
+# seed-warm-lane.sh --fresh-checkout renames a non-empty target/ to
+# $MOUNT/.reseed-trash/<basename LANE_DIR>.<pid> then background-rm's it. A
+# SIGKILL between the rename and the rm strands that trash; the seed's own
+# orphan-sweep only recovers it on the NEXT acquire of THAT lane, so a lane
+# never re-acquired strands it forever (observed 224 GB on 2026-07-21). This
+# reaper generalizes the seed's single-lane, next-acquire-only sweep into a
+# pool-wide dead-PID sweep over the whole .reseed-trash/ dir.
+#
+# It lives in this periodic δ backstop (systemd timer + hand-run), NOT in
+# warm-lane-gc.sh's per-acquire ε reclaim hot path, because the live-reference
+# guard is an O(processes × fds) /proc scan too costly for the hot path.
+#
+# An entry is reaped ONLY when its encoded PID is dead AND no live process still
+# references the dir via cwd / open fd / mmap — defending against PID reuse and
+# against removing trash an in-flight rm or seed still touches. No per-lane
+# flock: trash is PID-keyed crash-orphan state, the guard covers live
+# references, and rm -rf is idempotent versus seed-warm-lane.sh's own per-lane
+# orphan-sweep. Synchronous rm; fail-open (a failed rm warns and never aborts
+# the sweep).
+
+# _trash_referenced_by_live_proc PATH — return 0 if any live process references
+# PATH (or a descendant) via its cwd symlink, an open fd symlink, or a mmap'd
+# region in /proc/<pid>/maps; return 1 otherwise.
+#
+# Single-pass scans (one find, one grep) — NOT a readlink fork per fd, which
+# cost ~84s on a ~1300-process host. The verdict is read from captured OUTPUT,
+# never a pipeline exit status: find/grep over /proc return non-zero on the
+# unavoidable permission-denied entries of other users' processes (and SIGPIPE
+# on an early awk exit), so under `set -o pipefail` the exit status is an
+# unreliable signal. A vanishing /proc entry only produces suppressed stderr;
+# every substitution is `|| true`-guarded so it never aborts under set -e.
+_trash_referenced_by_live_proc() {
+    local path="$1"
+    local rp hit
+    rp="$(readlink -f "$path" 2>/dev/null)" || rp=""
+    [ -n "$rp" ] || return 1
+
+    # cwd + open-fd references: one find pass prints every process's cwd and
+    # open-fd symlink TARGETS (%l = the kernel-canonical target — no per-fd
+    # fork); awk matches rp exactly or as a "$rp/" prefix (string compare, so
+    # arbitrary path characters are safe). /proc/<pid>/task is pruned to skip
+    # the per-thread symlink duplicates.
+    hit="$(find /proc -maxdepth 3 -path '*/task' -prune -o -type l \
+            \( -name cwd -o -path '*/fd/*' \) -printf '%l\n' 2>/dev/null \
+        | awk -v rp="$rp" '$0 == rp || index($0, rp "/") == 1 { print "HIT"; exit }')" || true
+    if [ -n "$hit" ]; then return 0; fi
+
+    # mmap'd regions: a single grep over every process's maps for a file mapped
+    # from inside the trash dir.
+    hit="$(grep -lF "$rp" /proc/[0-9]*/maps 2>/dev/null | head -n1)" || true
+    if [ -n "$hit" ]; then return 0; fi
+
+    return 1
+}
+
+# _reap_stale_trash MOUNT — reap stranded MOUNT/.reseed-trash/<lane>.<pid> dirs.
+_reap_stale_trash() {
+    local mount="$1"
+    local trash_dir="$mount/.reseed-trash"
+    [ -d "$trash_dir" ] || return 0
+    local entry name pid
+    for entry in "$trash_dir"/*; do
+        [ -e "$entry" ] || continue          # glob-nomatch guard (empty dir)
+        name="${entry##*/}"
+        pid="${name##*.}"
+        # Ambiguous / malformed suffix (no numeric PID) → never reap.
+        case "$pid" in
+            ''|*[!0-9]*) continue ;;
+        esac
+        # Encoded PID still alive → a seed/rm may still be in flight; preserve.
+        if kill -0 "$pid" 2>/dev/null; then continue; fi
+        # A live process still references the dir (cwd/fd/mmap) → preserve
+        # (PID-reuse or in-flight rm/seed guard).
+        if _trash_referenced_by_live_proc "$entry"; then continue; fi
+        # Dead PID, no live reference → reap synchronously; fail-open on error.
+        if rm -rf "$entry"; then
+            _info "reaped stale reseed-trash entry: $entry (encoded PID $pid dead, no live reference)"
+        else
+            _warn "failed to reap stale reseed-trash entry: $entry (rm -rf failed); leaving intact"
+        fi
+    done
+    return 0
+}
+
 # ── defaults ───────────────────────────────────────────────────────────────────
 MOUNT="${REIFY_WARM_LANE_GC_SWEEP_MOUNT:-/home/leo/src/warm-lanes/worktrees}"
 GC_SCRIPT="${REIFY_WARM_LANE_GC_SWEEP_GC_SCRIPT:-$SCRIPT_DIR/warm-lane-gc.sh}"
@@ -147,6 +240,12 @@ if [ ! -d "$MOUNT" ]; then
     _warn "warm-lane mount dir does not exist: $MOUNT — skipping GC sweep (fail-open)"
     exit 0
 fi
+
+# ── reap stranded .reseed-trash/<lane>.<pid> dirs (task 5326) ─────────────────
+# Runs on every sweep (independent of --disk-pressure): a periodic backstop for
+# trash stranded by a SIGKILL between seed-warm-lane.sh's rename-to-trash and
+# its background rm. Fail-open — never aborts the sweep.
+_reap_stale_trash "$MOUNT"
 
 # ── build reclaim args; measure disk pressure once, right before exec ─────────
 # γ disk-guard df idiom (scripts/warm-lane-disk-guard.sh): a single snapshot,
