@@ -96,6 +96,26 @@ pub fn check_snapshot_cache_divergence(
     divergences
 }
 
+impl crate::Engine {
+    /// Debug-gate corpus-harness wrapper: threads this Engine's own retained
+    /// post-eval state into the free-function [`check_snapshot_cache_divergence`]
+    /// — reading `eval_state().snapshot.values` against the Engine's own private
+    /// `cache` and `journal` fields. Returns an empty `Vec` when no eval has run
+    /// yet (`eval_state()` is `None`): there is no retained state to check.
+    ///
+    /// Mirrors `invariants`'s `Engine::check_no_stale_undef`: it always inspects
+    /// exactly the snapshot the calling entry point just produced, since every
+    /// state-producing entry point (`eval`, `eval_cached`, `edit_param`,
+    /// `edit_source`) installs its post-run snapshot into `self.eval_state`
+    /// immediately before returning.
+    pub fn check_snapshot_cache_divergence(&self) -> Vec<SnapshotCacheDivergence> {
+        let Some(state) = self.eval_state() else {
+            return Vec::new();
+        };
+        check_snapshot_cache_divergence(&state.snapshot.values, &self.cache, &self.journal)
+    }
+}
+
 /// `true` iff `node`'s LATEST `EventKind::Started` journal event carries a
 /// `cache-skip=` marker in its `EventPayload::Custom` payload — the exact
 /// `<trace-slug>|cache-skip=<reason>` shape `commit_cell_result` writes onto
