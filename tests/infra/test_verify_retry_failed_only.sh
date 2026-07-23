@@ -122,5 +122,69 @@ if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
         _ "$PLAN_MARK" "$MARKER"
 fi
 
+# ---------------------------------------------------------------------------
+# B6 per-suite COUNTS (+ the B4/B5 count integration). The marker is a single
+# line carrying the APPLIED subset size for each suite, sourced from the SAME
+# construction sites the suites narrow at (INV-5 no re-derivation):
+#   (a) nextest — a 2-id filter ⇒ nextest_debug=2 (default profile=debug, so
+#       nextest_release=0). NEXTEST-guarded (the count is the applied subset).
+#   (b) run_all — REIFY_RUN_ALL_MEMBER_SUBSET with 2 members ⇒ run_all=2
+#       (verify.sh COUNTS only; run_all.sh owns the member-skip). Host-indep.
+#   (c) gui     — REIFY_GUI_RETRY_SPECS with 2 validated specs ⇒ gui=2. Host-indep.
+# Each case layers its suite subset on top of an otherwise-eligible nextest
+# retry (matching sidecar + 2-id filter) so the marker fires (step-2 gate) and
+# the four keys are all present on the ONE marker line.
+# RED until step-4 computes + prints the counts (step-2 emits the bare token).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- B6 counts: marker carries per-suite applied subset sizes (nextest / run_all / gui) ---"
+
+# (a) nextest-only narrowed retry.
+PLAN_CA="$PLAN_MARK"   # identical config to the B6-presence capture above
+
+# (b) + a 2-member run_all subset.
+PLAN_CB="$(REIFY_VERIFY_RETRY_SCOPE=failed_only \
+    REIFY_VERIFY_RETRY_TREE_OID=deadbeef \
+    REIFY_VERIFY_ATTEMPT_SIDECAR="$SIDECAR" \
+    REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE="$FILTER" \
+    REIFY_RUN_ALL_MEMBER_SUBSET="$RAMEMBER1 $RAMEMBER2" \
+    bash "$VERIFY" test --scope all --print-plan 2>/dev/null)" || true
+
+# (c) + a 2-spec gui subset.
+PLAN_CC="$(REIFY_VERIFY_RETRY_SCOPE=failed_only \
+    REIFY_VERIFY_RETRY_TREE_OID=deadbeef \
+    REIFY_VERIFY_ATTEMPT_SIDECAR="$SIDECAR" \
+    REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE="$FILTER" \
+    REIFY_GUI_RETRY_SPECS="$GSPEC1 $GSPEC2" \
+    bash "$VERIFY" test --scope all --print-plan 2>/dev/null)" || true
+
+if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+    assert "count (a): marker carries nextest_debug=2 (the applied 2-id subset)" \
+        bash -c 'printf "%s\n" "$1" | grep -F -- "$2" | grep -qF -- "nextest_debug=2"' \
+        _ "$PLAN_CA" "$MARKER"
+    assert "count (a): marker carries nextest_release=0 (no release pass on profile=debug)" \
+        bash -c 'printf "%s\n" "$1" | grep -F -- "$2" | grep -qF -- "nextest_release=0"' \
+        _ "$PLAN_CA" "$MARKER"
+fi
+
+assert "count (b): REIFY_RUN_ALL_MEMBER_SUBSET (2 members) ⇒ marker carries run_all=2" \
+    bash -c 'printf "%s\n" "$1" | grep -F -- "$2" | grep -qF -- "run_all=2"' \
+    _ "$PLAN_CB" "$MARKER"
+
+assert "count (c): REIFY_GUI_RETRY_SPECS (2 specs) ⇒ marker carries gui=2" \
+    bash -c 'printf "%s\n" "$1" | grep -F -- "$2" | grep -qF -- "gui=2"' \
+    _ "$PLAN_CC" "$MARKER"
+
+# All four keys present on the single marker line (asserted host-independently
+# on the run_all arm, whose marker fires regardless of nextest availability).
+assert "count: all four keys (nextest_debug/nextest_release/run_all/gui) present on the marker line" \
+    bash -c '
+        L=$(printf "%s\n" "$1" | grep -F -- "$2")
+        printf "%s\n" "$L" | grep -qF -- "nextest_debug=" && \
+        printf "%s\n" "$L" | grep -qF -- "nextest_release=" && \
+        printf "%s\n" "$L" | grep -qF -- "run_all=" && \
+        printf "%s\n" "$L" | grep -qF -- "gui="
+    ' _ "$PLAN_CB" "$MARKER"
+
 # --- assertion sections are appended above this line by steps 1/3/5/7 ---
 test_summary
