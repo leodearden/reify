@@ -375,8 +375,17 @@ merge_train_max_members: 3  # already the default; explicit per GO-N3
 # skips the safe depth-1 item, so this trades throughput for curve data. Green-tier
 # hot-reloadable (RELOADABLE_FIELDS) — live via reload_config, no restart;
 # probe_fraction=0.0 reverts byte-identically.
+# DEACTIVATED 2026-07-23 (operator decision): the probe CANNOT produce genuine
+# depth≥2 records under K=2 — build-ahead is capped at speculation_depth, so
+# probe_depths 3/5/8 never pass select_probe_depth's availability guard, and a
+# firing d=2 probe is attribution-only (ProbePlacement Phase-1 limitation) with
+# an off-by-one label: it relabels an ordinary 2-item adjacent verify as depth=2,
+# corrupting analyze_speculation_depth.py's depth calibration. Its 5 collected
+# events (all 2026-07-22) are 2-item trees, not the 3-item trees the depth=2
+# label implies — exclude label≥2 events from calibration. Deep P(pass|d) is
+# being measured instead by the offline replay study (reify-replay-study unit).
 speculation_probe:
-  probe_fraction: 0.5
+  probe_fraction: 0.0
   suppress_flake_rate: 0.40
 
 # Per-role turn budgets. Raising the architect budget is a direct response to
