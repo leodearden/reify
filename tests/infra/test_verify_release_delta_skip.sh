@@ -415,4 +415,83 @@ assert "S6 knob-on/merge/real-merge/no-override: PLAN_S6 non-empty (verify.sh --
 assert "S6 knob-on/merge/real-merge/no-override: release nextest pass PRESENT (real derived delta => affected=ALL => fail-wide REQUIRED)" _has_release_pass "$PLAN_S6"
 assert "S6 knob-on/merge/real-merge/no-override: delta-clean marker ABSENT" _lacks_skip_marker "$PLAN_S6"
 
+# ===========================================================================
+# ACTIVATION block (task ζ / 5280): REIFY_RELEASE_DELTA_SKIP durable verify_env
+# wiring.
+#   The delta-conditional release-pass skip stays inert until
+#   REIFY_RELEASE_DELTA_SKIP=1 is genuinely exported into the merge-gate
+#   verify.sh process tree (the role=merge guard at verify.sh:1161 gates on
+#   it). Task ζ wires the flag into dark-factory-orchestrator.yaml's
+#   verify_env block ONLY once the sweep backstop (PRD §5.3 (a)+(b)) is
+#   demonstrably healthy — see task 5280's pre-1 prerequisite for the live
+#   re-verification record. This block proves the KEY is wired AND valued
+#   exactly "1" (not merely present as a comment mention elsewhere in the
+#   yaml), mirroring sibling δ/5276's Section 9 in
+#   test_run_all_content_skip.sh. RED until step-2 adds the verify_env line.
+# ===========================================================================
+echo ""
+echo "--- ACTIVATION (task ζ): REIFY_RELEASE_DELTA_SKIP durable verify_env wiring ---"
+
+# verify_env_exports — parse KEY=VALUE from the yaml verify_env block. Mirrored
+# VERBATIM from tests/infra/test_verify_env_ambient_isolation.sh:59-85 (task
+# 4966's drift-guard; the established 3-copy convention — no shared lib
+# exists) as a reuse-note, NOT extracted to a shared lib, to avoid editing
+# that live merge-gate guard file (out of this task's declared scope).
+# Refresh all copies together if the awk logic ever changes.
+verify_env_exports() {
+    local yaml_file="$1"
+    awk '
+        /^verify_env:[[:space:]]*$/ { in_block = 1; next }
+        in_block && /^[^[:space:]#]/ { in_block = 0 }
+        !in_block { next }
+        /^[[:space:]]*#/ { next }
+        /^[[:space:]]*$/ { next }
+        /^[[:space:]]+[A-Za-z_][A-Za-z0-9_]*:/ {
+            line = $0
+            sub(/^[[:space:]]+/, "", line)
+            colon = index(line, ":")
+            key = substr(line, 1, colon - 1)
+            rest = substr(line, colon + 1)
+            sub(/^[[:space:]]+/, "", rest)
+            if (substr(rest, 1, 1) == "\"") {
+                tail = substr(rest, 2)
+                q = index(tail, "\"")
+                val = (q > 0) ? substr(tail, 1, q - 1) : tail
+            } else {
+                n = split(rest, toks, /[[:space:]]+/)
+                val = (n >= 1) ? toks[1] : ""
+            }
+            print key "=" val
+        }
+    ' "$yaml_file"
+}
+
+ACT_YAML="$REPO_ROOT/dark-factory-orchestrator.yaml"
+assert "ACTIVATION: dark-factory-orchestrator.yaml exists" \
+    test -f "$ACT_YAML"
+
+ACT_VERIFY_ENV_KV="$(verify_env_exports "$ACT_YAML")"
+assert "ACTIVATION: verify_env block parse is non-empty" \
+    test -n "$ACT_VERIFY_ENV_KV"
+
+# Parser sanity: a known-wired sibling must be visible to this parser, so an
+# ACTIVATION miss below is a real absence, not a parser-shape regression.
+assert "ACTIVATION: verify_env parse sees REIFY_RUN_ALL_SKIP_STATE (sibling wiring sanity)" \
+    bash -c 'grep -qE "^REIFY_RUN_ALL_SKIP_STATE=" <<< "$1"' _ "$ACT_VERIFY_ENV_KV"
+
+# (1) KEY presence — task ζ wires REIFY_RELEASE_DELTA_SKIP into verify_env.
+#     RED now (the yaml line lands in step-2).
+assert "ACTIVATION: REIFY_RELEASE_DELTA_SKIP is wired into the yaml verify_env block (task zeta)" \
+    bash -c 'grep -qE "^REIFY_RELEASE_DELTA_SKIP=" <<< "$1"' _ "$ACT_VERIFY_ENV_KV"
+
+# (2) exact VALUE "1" — proves a genuinely ACTIVE knob, not a stray "0"/empty
+#     placeholder that would satisfy (1) alone but leave the skip permanently
+#     inert (verify.sh:1161 requires the literal string "1").
+assert "ACTIVATION: REIFY_RELEASE_DELTA_SKIP value is exactly \"1\" (genuinely active, not a placeholder)" \
+    bash -c '
+        val="$(grep -E "^REIFY_RELEASE_DELTA_SKIP=" <<< "$1" | head -n1)"
+        val="${val#REIFY_RELEASE_DELTA_SKIP=}"
+        [ "$val" = "1" ]
+    ' _ "$ACT_VERIFY_ENV_KV"
+
 test_summary
