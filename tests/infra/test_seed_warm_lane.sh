@@ -1923,6 +1923,11 @@ assert "P3c: build/cxx-AAAA/output WAS relocated in this same run (guards non-va
 # skip the default acquire without self-refusing: H7 = the opt-out is honored
 # (seed reseeds instead of refusing), H8 = --assume-lane-lock-held + --lane-lock
 # is a contradiction (usage error, exit 2).
+# H10 (task 5354, NEW) pins the complementary SCOPING property: the fail-safe
+# default acquire is gated on --fresh-checkout || --lane-lock and does NOT extend
+# to the bare --reset-in-place control arm — a held lock is ignored there (exit 0,
+# not 75), the property H6a/H6b (reset-in-place WITH --lane-lock) and E1/H3a
+# (reset-in-place, no held lock) leave unpinned.
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block Q: acquisition-time lane-lock exclusivity (--lane-lock) ---"
@@ -2400,5 +2405,52 @@ assert "H9: sentinel GONE (target replaced from base after unblocking, queued-th
     bash -c '[ ! -e "'"$Q_LANE11/target/SENTINEL.txt"'" ]'
 assert "H9: base_artifact.a present in <lane>/target (clone from base succeeded)" \
     test -f "$Q_LANE11/target/debug/base_artifact.a"
+
+# ── H10: scoping guard — the fail-safe default acquire is SCOPED to
+# --fresh-checkout (|| explicit --lane-lock) and DOES NOT extend to the bare
+# --reset-in-place control arm (seed-warm-lane.sh:510 gates on
+# `[ -n "$FRESH_CHECKOUT" ] || [ -n "$LANE_LOCK_OPT" ]`, deliberately NOT
+# $RESET_IN_PLACE; the PRD keeps --lane-lock the explicit opt-in for the
+# reset-in-place arm). H6a/H6b exercise reset-in-place WITH --lane-lock, and
+# E1/H3a exercise reset-in-place with NO held lock — so a leak of the default-on
+# acquire into reset-in-place would silently pass every case above. H10 pins it
+# directly: a live consumer HOLDS ${LANE}.lock (H7's backgrounded flock -x holder
+# fixture) and seed runs --reset-in-place WITHOUT --lane-lock/--assume-lane-lock-held
+# on an EMPTY lane (H6b's success-path fixture — reset-in-place refuses a
+# non-empty target). Because reset-in-place does NOT default-acquire, the held
+# lock is simply ignored and seed proceeds (RC 0, cp ran); if the default acquire
+# leaked into reset-in-place this would instead refuse with exit 75. ───────────
+Q_LANE14="$(mktemp -d /tmp/test-seed-Q-lane14-XXXXXX)"
+_TMPDIRS+=("$Q_LANE14")
+
+Q_LOCK14="${Q_LANE14}.lock"
+_TMPDIRS+=("$Q_LOCK14")
+Q_READY14="${Q_LOCK14}.ready-marker"
+_TMPDIRS+=("$Q_READY14")
+touch "$Q_LOCK14"
+# Same causal handshake as H1/H7: the holder touches Q_READY14 only AFTER
+# acquiring flock -x, so the run below fires with the lock provably held.
+( flock -x 9 && touch "$Q_READY14" && sleep 300 ) 9>"$Q_LOCK14" &
+Q_LOCK14_PID=$!
+_BGPIDS+=("$Q_LOCK14_PID")
+_wait_for_reader_lock "$Q_READY14" 30
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$Q_BASE" "$Q_LANE14" --reset-in-place
+# NOTE: no --lane-lock and no --assume-lane-lock-held -- the bare reset-in-place
+# control arm must NOT default-acquire, so the held lock above is ignored.
+
+assert "H10: reset-in-place + lock HELD + no --lane-lock → exit 0 (default acquire is NOT scoped to reset-in-place; not 75)" \
+    test "$RC" -eq 0
+assert "H10: STDOUT is exactly <lane_dir>/target" \
+    bash -c '[ "$1" = "'"$Q_LANE14/target"'" ]' _ "$OUT"
+assert "H10: base_artifact.a present in <lane>/target (reset-in-place clone from base ran despite the held lock)" \
+    test -f "$Q_LANE14/target/debug/base_artifact.a"
+assert "H10: cp invoked with --reflink=always (reset-in-place proceeded, not refused)" \
+    bash -c 'grep "^cp" "$1" | grep -q -- "--reflink=always"' _ "$CALLS_FILE"
+
+kill "$Q_LOCK14_PID" 2>/dev/null || true
+wait "$Q_LOCK14_PID" 2>/dev/null || true
 
 test_summary
