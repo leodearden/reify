@@ -65,9 +65,30 @@ export function reifyPrimarySelectionGuard(): Extension {
         view.contentDOM.ownerDocument?.getSelection?.()?.removeAllRanges();
         return false; // do not consume — let CM see the blur too
       },
-      // Native-selection rebuild is added in a follow-up step; no-op for now.
-      focus(): boolean {
-        return false;
+      focus(_event: FocusEvent, view: EditorView): boolean {
+        if (!hasNonEmptySelection(view.state)) return false;
+        const od = view.contentDOM.ownerDocument;
+        if (!od) return false;
+        const sel = od.getSelection?.();
+        if (!sel) return false;
+        // Rebuild the native selection from the main range's from/to (already
+        // min/max). PRIMARY only conveys the selected TEXT, so a forward Range
+        // suffices — view.state keeps the true anchor/head for CM. Best-effort:
+        // positions can be transiently stale, so never let a throw escape.
+        const { from, to } = view.state.selection.main;
+        try {
+          const a = view.domAtPos(from);
+          const b = view.domAtPos(to);
+          const range = od.createRange();
+          range.setStart(a.node, a.offset);
+          range.setEnd(b.node, b.offset);
+          sel.removeAllRanges();
+          sel.addRange(range);
+        } catch {
+          // Restoration is a best-effort convenience; a stale position or a
+          // rejected Range must not throw out of the focus handler.
+        }
+        return false; // do not consume — let CM see the focus too
       },
     }),
   ];
