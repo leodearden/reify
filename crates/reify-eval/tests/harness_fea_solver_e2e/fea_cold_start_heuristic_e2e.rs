@@ -11,8 +11,7 @@ use reify_eval::compute_targets::elastic_static::solve_elastic_static_trampoline
 use reify_eval::{CancellationHandle, ComputeOutcome};
 use reify_ir::{OpaqueState, Value};
 
-mod common;
-use common::as_printed::{
+use crate::common::as_printed::{
     FEA_H, FEA_L, FEA_W, elastic_options, isotropic_material, length, point_load_list, support_list,
 };
 

@@ -58,7 +58,7 @@ use reify_test_support::{collect_errors, compile_source_with_stdlib, make_simple
 /// the step-3 RED signal: the test binary refuses to compile until step-4
 /// creates `examples/tensegrity_pavilion.ri`.
 fn pavilion_source() -> &'static str {
-    include_str!("../../../examples/tensegrity_pavilion.ri")
+    include_str!("../../../../examples/tensegrity_pavilion.ri")
 }
 
 // ── value-construction helpers ────────────────────────────────────────────────

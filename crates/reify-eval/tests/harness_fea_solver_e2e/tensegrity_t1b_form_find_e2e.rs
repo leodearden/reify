@@ -469,7 +469,7 @@ fn trampoline_out_of_range_group_id_is_dimension_mismatch() {
 /// `include_str!` makes a compile error if the file is missing, but the e2e
 /// tests below will fail RED until step-6 extends the example.
 fn t_prism_source() -> &'static str {
-    include_str!("../../../examples/tensegrity_t_prism.ri")
+    include_str!("../../../../examples/tensegrity_t_prism.ri")
 }
 
 /// Crack a `FormFindResult` StructureInstance into its typed components.
