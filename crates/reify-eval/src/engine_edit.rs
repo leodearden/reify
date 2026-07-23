@@ -1071,6 +1071,11 @@ impl Engine {
                 && let Some(node) = new_snapshot.graph.value_cells.get(vcid)
                 && let Some(ref expr) = node.default_expr
             {
+                // μ (#5062): mark runtime_sink length before eval_expr so this
+                // re-evaluated cell's diagnostics delta can be stored after the
+                // commit below — keeps NodeCache.diagnostics fresh so a later
+                // warm eval_cached clean serve does not replay stale content.
+                let diag_mark = runtime_sink.borrow().len();
                 let val = reify_expr::eval_expr(
                     expr,
                     &cell_eval_ctx(
@@ -1170,6 +1175,14 @@ impl Engine {
                 let outcome = commit_outcome
                     .cache_outcome()
                     .expect("CacheLeg::Record always yields Some(cache_outcome)");
+
+                // μ (#5062): store this re-evaluated cell's diagnostics delta
+                // for replay on future cache-hit serves (empty delta clears
+                // stale content — e.g. an edit that moved a sample back in
+                // bounds must drop the prior W_FIELD_OUT_OF_BOUNDS). Covers the
+                // dominant EditReeval Record path; reads runtime_sink only, so
+                // post-pass detector diagnostics stay disjoint.
+                self.store_cell_replay_diagnostics(node_id, &runtime_sink, diag_mark);
 
                 // Early cutoff with mixed fan-in protection:
                 // - Changed: propagate has_changed_parent to dependents,

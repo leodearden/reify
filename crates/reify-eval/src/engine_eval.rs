@@ -6432,6 +6432,9 @@ impl Engine {
                     if let Some(CachedResult::Value(val, det)) =
                         self.cache.try_fast_path(&node_id, version)
                     {
+                        // μ (#5062): replay this clean-served cell's stored
+                        // per-cell diagnostics (else swallowed on the fast path).
+                        self.replay_cell_diagnostics(&node_id, &mut diagnostics);
                         self.journal.record(EvalEvent {
                             timestamp: Instant::now(),
                             node_id,
@@ -6470,6 +6473,10 @@ impl Engine {
                         values.insert(cell.id.clone(), val);
                         let trace = entry.dependency_trace.clone();
                         let result = entry.result.clone();
+                        // μ (#5062): replay this clean-served cell's stored
+                        // per-cell diagnostics (last use of `entry` before the
+                        // &mut record below).
+                        diagnostics.extend(entry.diagnostics.iter().cloned());
                         self.cache.record_evaluation_with_freshness(
                             node_id.clone(),
                             result,
@@ -6646,6 +6653,9 @@ impl Engine {
                             if let Some(CachedResult::Value(val, det)) =
                                 self.cache.try_fast_path(&node_id, version)
                             {
+                                // μ (#5062): replay this clean-served cell's
+                                // stored per-cell diagnostics (else swallowed).
+                                self.replay_cell_diagnostics(&node_id, &mut diagnostics);
                                 self.journal.record(EvalEvent {
                                     timestamp: Instant::now(),
                                     node_id,
@@ -6677,6 +6687,10 @@ impl Engine {
                                 values.insert(cell.id.clone(), val);
                                 let trace = entry.dependency_trace.clone();
                                 let result = entry.result.clone();
+                                // μ (#5062): replay this clean-served cell's
+                                // stored per-cell diagnostics (last use of
+                                // `entry` before the &mut record below).
+                                diagnostics.extend(entry.diagnostics.iter().cloned());
                                 self.cache.record_evaluation_with_freshness(
                                     node_id.clone(),
                                     result,
@@ -6731,6 +6745,10 @@ impl Engine {
                                         (reify_ir::Value::Undef, no_default_state)
                                     }
                                 };
+                            // μ (#5062): mark runtime_sink length before the
+                            // default-expr eval so this cell's diagnostics delta
+                            // can be stored after the record below.
+                            let diag_mark = runtime_sink.borrow().len();
                             let (val, det) = match override_entry {
                                 Some((override_val, Ok(()))) => {
                                     (override_val.clone(), DeterminacyState::Determined)
@@ -6796,6 +6814,11 @@ impl Engine {
                                 trace,
                             );
 
+                            // μ (#5062): store this freshly-evaluated cell's
+                            // diagnostics delta for replay on future cache-hit
+                            // serves (empty delta clears stale content).
+                            self.store_cell_replay_diagnostics(&node_id, &runtime_sink, diag_mark);
+
                             self.journal.record(EvalEvent {
                                 timestamp: Instant::now(),
                                 node_id,
@@ -6823,6 +6846,9 @@ impl Engine {
                             if let Some(CachedResult::Value(val, det)) =
                                 self.cache.try_fast_path(&node_id, version)
                             {
+                                // μ (#5062): replay this clean-served cell's
+                                // stored per-cell diagnostics (else swallowed).
+                                self.replay_cell_diagnostics(&node_id, &mut diagnostics);
                                 self.journal.record(EvalEvent {
                                     timestamp: Instant::now(),
                                     node_id,
@@ -6854,6 +6880,10 @@ impl Engine {
                                 values.insert(cell.id.clone(), val);
                                 let trace = entry.dependency_trace.clone();
                                 let result = entry.result.clone();
+                                // μ (#5062): replay this clean-served cell's
+                                // stored per-cell diagnostics (last use of
+                                // `entry` before the &mut record below).
+                                diagnostics.extend(entry.diagnostics.iter().cloned());
                                 self.cache.record_evaluation_with_freshness(
                                     node_id.clone(),
                                     result,
@@ -6875,6 +6905,10 @@ impl Engine {
                             // Cache miss: evaluate and record.
                             stats.cache_misses += 1;
                             self.cache.clear_dirty(&node_id);
+
+                            // μ (#5062): mark runtime_sink length before eval_expr
+                            // so this cell's diagnostics delta can be stored below.
+                            let diag_mark = runtime_sink.borrow().len();
 
                             // Use cell_eval_ctx so DeterminacyPredicate cells (e.g.
                             // `let r = determined(x)`) see the determinacy map (task 4356).
@@ -6967,6 +7001,11 @@ impl Engine {
                             let outcome = commit_outcome
                                 .cache_outcome()
                                 .expect("CacheLeg::Record always yields Some(outcome)");
+
+                            // μ (#5062): store this freshly-evaluated cell's
+                            // diagnostics delta for replay on future cache-hit
+                            // serves (empty delta clears stale content).
+                            self.store_cell_replay_diagnostics(&node_id, &runtime_sink, diag_mark);
 
                             if outcome == EvalOutcome::Unchanged {
                                 stats.early_cutoffs += 1;
@@ -8275,6 +8314,9 @@ impl Engine {
                         }
                     }
 
+                    // μ (#5062): snapshot runtime_sink length before eval_expr
+                    // (per-cell diagnostics capture — see store_cell_replay_diagnostics).
+                    let diag_mark = runtime_sink.borrow().len();
                     // Normal eval: panic boundary (arch §9.1 / evaluate_let_bindings:4056).
                     let eval_ctx = eval_ctx_with_meta(values, functions, meta_map)
                         .with_determinacy(&snapshot.values)
@@ -8369,6 +8411,9 @@ impl Engine {
                         trace,
                         false,
                     );
+                    // μ (#5062): store this cell's eval-time diagnostics delta
+                    // for replay on future cache-hit clean serves (empty clears).
+                    self.store_cell_replay_diagnostics(&node_id, runtime_sink, diag_mark);
                     self.journal.record(EvalEvent {
                         timestamp: Instant::now(),
                         node_id,
@@ -8673,6 +8718,54 @@ impl Engine {
         // re-eval loop above (parity with each caller's own drain, which
         // only captured its main walk's diagnostics, predating this pass).
         diagnostics.append(&mut runtime_sink.borrow_mut());
+    }
+
+    /// μ (#5062): capture the per-cell runtime diagnostics a cell's
+    /// `eval_expr` just pushed — the `runtime_sink` slice `[mark..]` — into
+    /// `NodeCache.diagnostics` (κ #5042), so a later cache-hit clean serve can
+    /// REPLAY them via [`Engine::replay_cell_diagnostics`]. Without this a
+    /// per-cell-branch warning (`W_FIELD_OUT_OF_BOUNDS`,
+    /// `W_FIELD_SAMPLED_INVALID_CONFIG`) is silently dropped on a warm serve
+    /// (the 2259/2267 "fast-path-swallow" class, PRD §2.7 / INV-EVAL-3).
+    ///
+    /// `mark` is `runtime_sink.borrow().len()` captured IMMEDIATELY before the
+    /// cell's `eval_expr`. The store ALWAYS overwrites (via
+    /// [`CacheStore::set_node_diagnostics`]) — an empty delta clears stale
+    /// replay content left by a prior eval that has since stopped warning.
+    ///
+    /// Load-bearing invariant (keeps the two diagnostic classes disjoint):
+    /// this reads ONLY `runtime_sink` (the `eval_expr` output channel). Post-
+    /// pass detector diagnostics (MassProperties PSD, annotation-args) push to
+    /// the OUTPUT `diagnostics` vec, never `runtime_sink`, so they are never
+    /// captured here — they stay always-fresh, never per-cell-stored.
+    ///
+    /// `pub(crate)` so the edit path (`engine_edit::edit_param`) can call it too.
+    pub(crate) fn store_cell_replay_diagnostics(
+        &mut self,
+        node_id: &NodeId,
+        runtime_sink: &RefCell<Vec<Diagnostic>>,
+        mark: usize,
+    ) {
+        let delta = runtime_sink.borrow()[mark..].to_vec();
+        self.cache.set_node_diagnostics(node_id, delta);
+    }
+
+    /// μ (#5062): replay a clean-served cell's stored per-cell diagnostics
+    /// (`NodeCache.diagnostics`, κ #5042) into the output `diagnostics` vec.
+    ///
+    /// Called from `eval_cached`'s clean-serve arms (try_fast_path /
+    /// cache-reuse) where the cell is served from cache WITHOUT re-running
+    /// `eval_expr`, so its eval-time diagnostics never re-fire and would
+    /// otherwise be swallowed. This is the "replayed" leg of the replayed-XOR-
+    /// fresh owner rule (INV-EVAL-3): a cell is either re-evaluated (fresh, via
+    /// the flat `runtime_sink` drain) or clean-served (replayed) — never both
+    /// in one serve. No-op when the entry is absent or carries no diagnostics.
+    fn replay_cell_diagnostics(&self, node_id: &NodeId, diagnostics: &mut Vec<Diagnostic>) {
+        if let Some(entry) = self.cache.get(node_id)
+            && !entry.diagnostics.is_empty()
+        {
+            diagnostics.extend(entry.diagnostics.iter().cloned());
+        }
     }
 
     /// Evaluate let bindings from a template in topological order.
@@ -9245,6 +9338,11 @@ impl Engine {
             // `if force_panic { panic!(…) }` branch are both
             // `#[cfg(any(test, feature = "test-instrumentation"))]`-gated and
             // are absent in production builds.
+            //
+            // μ (#5062): snapshot the runtime_sink length before eval_expr so
+            // this cell's diagnostics delta can be captured + stored for replay
+            // on future cache-hit serves (see store_cell_replay_diagnostics).
+            let diag_mark = runtime_sink.borrow().len();
             let eval_ctx = eval_ctx_with_meta(values, functions, meta_map)
                 .with_determinacy(&snapshot.values)
                 .with_runtime_diagnostics(runtime_sink);
@@ -9315,6 +9413,12 @@ impl Engine {
                 trace,
                 false,
             );
+
+            // μ (#5062): store this cell's eval-time diagnostics delta for
+            // replay on future cache-hit clean serves (empty delta clears any
+            // stale replay content). Read from runtime_sink only — post-pass
+            // detector diagnostics never land here, keeping the classes disjoint.
+            self.store_cell_replay_diagnostics(&node_id, runtime_sink, diag_mark);
 
             self.journal.record(EvalEvent {
                 timestamp: Instant::now(),
