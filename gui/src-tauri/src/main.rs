@@ -377,7 +377,13 @@ fn update_source(
 ) -> Result<reify_gui::types::GuiState, String> {
     emit_status(&app, "evaluating");
     let _idle = IdleGuard(app.clone());
-    let result = reify_gui::commands::reload_for_watch_impl(&state.engine, &path, &content);
+    // Defense-in-depth (task 5357): run the full recompile on a dedicated
+    // large-stack thread so deeply-nested geometry cannot overflow the ~2 MiB
+    // tokio worker stack. The scoped helper borrows &state.engine/&path/&content
+    // directly (no Arc clone); surrounding logic stays on the command thread.
+    let result = reify_gui::large_stack::run_on_large_stack(|| {
+        reify_gui::commands::reload_for_watch_impl(&state.engine, &path, &content)
+    });
     if let Ok(ref gui_state) = result {
         let delta = compute_delta(&state.last_state, gui_state);
         emit_delta(&app, &delta);
@@ -403,7 +409,13 @@ fn open_file_engine(
 ) -> Result<reify_gui::types::GuiState, String> {
     emit_status(&app, "evaluating");
     let _idle = IdleGuard(app.clone());
-    let result = reify_gui::commands::open_file_engine_impl(&state.engine, &path);
+    // Defense-in-depth (task 5357): run the compile on a dedicated large-stack
+    // thread so deeply-nested geometry cannot overflow the ~2 MiB tokio worker
+    // stack. The scoped helper borrows &state.engine/&path directly (no Arc
+    // clone); the watcher re-target and delta emission stay on the command thread.
+    let result = reify_gui::large_stack::run_on_large_stack(|| {
+        reify_gui::commands::open_file_engine_impl(&state.engine, &path)
+    });
     if let Ok(ref gui_state) = result {
         let delta = compute_delta(&state.last_state, gui_state);
         emit_delta(&app, &delta);
