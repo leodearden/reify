@@ -10228,90 +10228,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn kernel_pipe_non_z_start_tangent_returns_error() {
-        // This test locks in the explicit-error contract for non-+Z paths
-        // defined in the orientation-constraint section of GeometryOp::Pipe.
-        // Prior to task-2095, these cases silently returned a degenerate
-        // (zero-volume) solid; they now return
-        // GeometryError::OperationFailed with "start-tangent" in the message.
-        //
-        // The four cases cover:
-        //   - +X line segment (start-tangent = +X)
-        //   - +Y line segment (start-tangent = +Y)
-        //   - Arc in the XY plane, start_angle=0 (start-tangent = +Y)
-        //   - -Z line segment (start-tangent = -Z)
-        //
-        // The -Z case guards against future refactors that might accidentally
-        // compare t.z.abs() instead of t.z — such a change would still reject
-        // +X and +Y but would incorrectly accept -Z.
-        //
-        // See `kernel_pipe_straight_path_volume_matches_pi_r2_l` for the
-        // accepted +Z case.
-        if !crate::OCCT_AVAILABLE {
-            eprintln!("skipping: OCCT not available");
-            return;
-        }
-
-        let cases: &[(&str, GeometryOp)] = &[
-            (
-                "+X line segment",
-                GeometryOp::LineSegment {
-                    x1: 0.0,
-                    y1: 0.0,
-                    z1: 0.0,
-                    x2: 0.020,
-                    y2: 0.0,
-                    z2: 0.0,
-                },
-            ),
-            (
-                "+Y line segment",
-                GeometryOp::LineSegment {
-                    x1: 0.0,
-                    y1: 0.0,
-                    z1: 0.0,
-                    x2: 0.0,
-                    y2: 0.020,
-                    z2: 0.0,
-                },
-            ),
-            (
-                "arc in XY plane",
-                GeometryOp::Arc {
-                    center: [0.0, 0.0, 0.0],
-                    radius: 0.010,
-                    start_angle: 0.0,
-                    end_angle: std::f64::consts::FRAC_PI_2,
-                    axis: [0.0, 0.0, 1.0],
-                },
-            ),
-            (
-                "-Z line segment",
-                GeometryOp::LineSegment {
-                    x1: 0.0,
-                    y1: 0.0,
-                    z1: 0.0,
-                    x2: 0.0,
-                    y2: 0.0,
-                    z2: -0.020,
-                },
-            ),
-        ];
-
-        for (label, path_op) in cases {
-            let mut kernel = OcctKernel::new();
-            let wire_handle = kernel
-                .execute(path_op)
-                .unwrap_or_else(|e| panic!("{label}: path execute should succeed, got {e:?}"));
-            let result = kernel.execute(&GeometryOp::Pipe {
-                path: wire_handle.id,
-                radius: Value::Real(0.002),
-            });
-            assert_operation_fails_with(result, "start-tangent");
-        }
-    }
-
     // --- validate_pipe_start_tangent helper unit tests ---
 
     #[test]
@@ -10355,31 +10271,54 @@ mod tests {
     }
 
     #[test]
-    fn validate_pipe_start_tangent_rejects_negative_z() {
-        // Exercises the pure helper with a -Z unit tangent directly.
-        // Guards against a future refactor that compares t.z.abs() instead of
-        // t.z — such a change would still reject +X and +Y but would
-        // incorrectly accept -Z. Asserts both the "start-tangent" substring
-        // (correct branch) and negative-z evidence in the reported coordinates
-        // so that a wrong-branch rejection would surface immediately.
-        let t = ffi::ffi::Point3 {
-            x: 0.0,
-            y: 0.0,
-            z: -1.0,
-        };
-        match super::validate_pipe_start_tangent(t) {
-            Err(GeometryError::OperationFailed(msg)) => {
-                assert!(
-                    msg.contains("start-tangent"),
-                    "expected error containing 'start-tangent' for -Z tangent, got: {msg}"
-                );
-                assert!(
-                    msg.contains("-1"),
-                    "expected error to include negative-Z coordinate evidence ('-1'), got: {msg}"
-                );
-            }
-            Ok(()) => panic!("expected Err for -Z tangent (z=-1.0), got Ok"),
-            Err(other) => panic!("expected OperationFailed for -Z tangent, got {:?}", other),
+    fn validate_pipe_start_tangent_accepts_finite_non_z_tangents() {
+        // Once the +Z-only restriction is lifted, the narrowed guard accepts
+        // ANY finite tangent (the vector still feeds gp_Dir, so only the
+        // finite/NaN check remains). Exercises +X, +Y, -Z, and a normalized
+        // diagonal — all finite unit vectors — asserting each returns Ok(()).
+        // Fails against the pre-task +Z guard, which rejects every non-+Z case.
+        let inv_sqrt3 = 1.0 / 3.0_f64.sqrt();
+        let cases = [
+            (
+                "+X",
+                ffi::ffi::Point3 {
+                    x: 1.0,
+                    y: 0.0,
+                    z: 0.0,
+                },
+            ),
+            (
+                "+Y",
+                ffi::ffi::Point3 {
+                    x: 0.0,
+                    y: 1.0,
+                    z: 0.0,
+                },
+            ),
+            (
+                "-Z",
+                ffi::ffi::Point3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: -1.0,
+                },
+            ),
+            (
+                "normalized diagonal",
+                ffi::ffi::Point3 {
+                    x: inv_sqrt3,
+                    y: inv_sqrt3,
+                    z: inv_sqrt3,
+                },
+            ),
+        ];
+        for (label, t) in cases {
+            let coords = (t.x, t.y, t.z);
+            let result = super::validate_pipe_start_tangent(t);
+            assert!(
+                result.is_ok(),
+                "expected Ok(()) for finite {label} tangent {coords:?}, got {result:?}"
+            );
         }
     }
 
@@ -10417,26 +10356,6 @@ mod tests {
                     other
                 ),
             }
-        }
-    }
-
-    #[test]
-    fn validate_pipe_start_tangent_rejects_oversize_z() {
-        // Guards the upper-bound: a finite t.z far above 1.0 (e.g. 1e100) is not
-        // a unit vector. The two-sided comparator rejects t.z outside
-        // [1 - PIPE_START_TANGENT_Z_EPSILON, 1 + PIPE_START_TANGENT_Z_EPSILON].
-        let t = ffi::ffi::Point3 {
-            x: 0.0,
-            y: 0.0,
-            z: 1e100,
-        };
-        match super::validate_pipe_start_tangent(t) {
-            Err(GeometryError::OperationFailed(_)) => {}
-            Ok(()) => panic!("expected Err for oversize-z tangent (z=1e100), got Ok"),
-            Err(other) => panic!(
-                "expected OperationFailed for oversize-z tangent, got {:?}",
-                other
-            ),
         }
     }
 
