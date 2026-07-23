@@ -393,8 +393,8 @@ const BUILTIN_FUNCTIONS: &[BuiltinFunctionInfo] = &[
     },
     BuiltinFunctionInfo {
         name: "polygon",
-        signature: "polygon(vertices: List<Point2<Length>>) -> Surface",
-        doc: "Creates a polygonal 2D profile from a list of vertices.",
+        signature: "polygon(x1, y1, x2, y2, ...) -> Surface",
+        doc: "Creates a polygonal 2D profile from variadic flat coordinate pairs — at least 3 vertices (6 args), and an even number of args.",
         sort_group: "01-geometry",
     },
     BuiltinFunctionInfo {
