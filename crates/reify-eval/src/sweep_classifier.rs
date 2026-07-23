@@ -60,6 +60,17 @@ use reify_ir::{GeometryHandleId, GeometryOp, Value};
 /// one component nominally exceeds the tolerance.
 const REVOLVE_DEGENERATE_TOLERANCE: f64 = 1e-12;
 
+/// Number of polyline segments used to discretise a curved profile
+/// ([`GeometryOp::CircleProfile`] / [`GeometryOp::EllipseProfile`]) into a
+/// [`reify_solver_elastic::ProfileBoundary`] outer ring.
+///
+/// A fixed count is a deterministic fidelity default for cross-section meshing;
+/// `auto_mesh_size_from_boundary` derives the Gmsh target edge length from the
+/// shortest emitted segment. Curvature-adaptive / caller-tunable sampling is a
+/// future refinement. 64 segments keeps the chord error well under typical mesh
+/// sizes while staying allocation-light.
+const PROFILE_CIRCLE_SEGMENTS: usize = 64;
+
 // ── Public types ──────────────────────────────────────────────────────────────
 
 /// Recognised swept-body kinds produced by [`classify_swept_body`].
@@ -374,6 +385,21 @@ pub fn swept_kind_to_sweep_params(
     }
 }
 
+/// Sample a closed CCW ellipse ring (a circle when `a == b`) of
+/// [`PROFILE_CIRCLE_SEGMENTS`] points: point `i` is `[a·cos θ, b·sin θ]` with
+/// `θ = τ·i / N`. The `i = 0` sample is exactly `[a, 0]` (`cos 0 == 1`,
+/// `sin 0 == 0`), and every circle sample lies on radius `a` up to f64 trig
+/// rounding (~1e-16). CCW because `θ` increases from 0 (upper half has
+/// `sin θ > 0`), matching the rectangle sampler's orientation convention.
+fn sample_ellipse_ring(a: f64, b: f64) -> Vec<[f64; 2]> {
+    (0..PROFILE_CIRCLE_SEGMENTS)
+        .map(|i| {
+            let theta = std::f64::consts::TAU * (i as f64) / (PROFILE_CIRCLE_SEGMENTS as f64);
+            [a * theta.cos(), b * theta.sin()]
+        })
+        .collect()
+}
+
 /// Sample a 2-D profile op's outer boundary ring as a list of `[x, y]` points
 /// in the profile's local XY plane (`z = 0`).
 ///
@@ -403,6 +429,20 @@ fn profile_sample_2d(op: &GeometryOp) -> Option<Vec<[f64; 2]>> {
         // Closed planar polygon: the caller-supplied vertices ARE the outer
         // ring, in order.
         GeometryOp::PolygonProfile { points } => Some(points.clone()),
+        // Circle: PROFILE_CIRCLE_SEGMENTS points, each exactly r·[cos θ, sin θ].
+        GeometryOp::CircleProfile { radius } => {
+            let r = radius.as_f64()?;
+            Some(sample_ellipse_ring(r, r))
+        }
+        // Ellipse: PROFILE_CIRCLE_SEGMENTS points at [a·cos θ, b·sin θ].
+        GeometryOp::EllipseProfile {
+            semi_major,
+            semi_minor,
+        } => {
+            let a = semi_major.as_f64()?;
+            let b = semi_minor.as_f64()?;
+            Some(sample_ellipse_ring(a, b))
+        }
         _ => None,
     }
 }
