@@ -108,6 +108,16 @@ _check_candidates() {
 # merge delta, one per line, or return NON-ZERO when the base is underivable (the
 # caller then fails open). Mirrors verify.sh _derive_merge_delta, plus a
 # merge-base fallback for the linear task-branch tier:
+#
+# RENAMES: --no-renames is passed on every diff so a file RENAMED into an
+# in-scope slot (e.g. git mv crates/<other>/tests/x.rs into
+# crates/<consolidatable>/tests/x.rs) surfaces as an ADD of the destination
+# (rename -> add+delete decomposition; the delete is then dropped by
+# --diff-filter=A) instead of a rename (R). Git's default detection
+# (diff.renames=true) would otherwise classify it R and hide it from this
+# added-only gate, letting a rename-in introduce an unregistered standalone that
+# only the whole-tree backstop catches post-merge. --no-renames closes that
+# path at the source too, deterministically (independent of ambient diff.renames).
 #   MERGE_HEAD present (hook, merge in progress)  -> git diff HEAD MERGE_HEAD
 #   HEAD has >=2 parents (speculative merge landed) -> git diff HEAD^1 HEAD
 #   else (linear task branch)                     -> git diff merge-base(main,HEAD) HEAD
@@ -121,7 +131,7 @@ _derive_added_from_git() {
     local mh
     mh="$(git rev-parse --git-path MERGE_HEAD 2>/dev/null || echo '')"
     if [ -n "$mh" ] && [ -f "$mh" ]; then
-        git diff --diff-filter=A --name-only HEAD MERGE_HEAD 2>/dev/null || return 1
+        git diff --no-renames --diff-filter=A --name-only HEAD MERGE_HEAD 2>/dev/null || return 1
         return 0
     fi
     local parents arr
@@ -130,13 +140,13 @@ _derive_added_from_git() {
     # shellcheck disable=SC2206
     arr=($parents)
     if [ "${#arr[@]}" -ge 3 ]; then
-        git diff --diff-filter=A --name-only HEAD^1 HEAD 2>/dev/null || return 1
+        git diff --no-renames --diff-filter=A --name-only HEAD^1 HEAD 2>/dev/null || return 1
         return 0
     fi
     local base
     base="$(git merge-base main HEAD 2>/dev/null)" || return 1
     [ -n "$base" ] || return 1
-    git diff --diff-filter=A --name-only "$base" HEAD 2>/dev/null || return 1
+    git diff --no-renames --diff-filter=A --name-only "$base" HEAD 2>/dev/null || return 1
     return 0
 }
 
