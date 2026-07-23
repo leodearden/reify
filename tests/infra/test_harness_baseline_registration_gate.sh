@@ -150,4 +150,112 @@ assert "E: an unlisted path is NOT a member (rc non-zero)" \
 assert "E: a path present only as a comment is NOT a member" \
     bash -c '! { source "$1"; harness_layout_baseline_contains "a comment line — must be ignored" "$2"; }' _ "$LIB" "$_E_BASELINE"
 
+# ===========================================================================
+# Section F: the gate script exists and is executable.
+# ===========================================================================
+echo ""
+echo "--- Section F: check-harness-baseline-registration.sh exists + executable ---"
+
+assert "F: scripts/check-harness-baseline-registration.sh exists" \
+    test -f "$GATE"
+assert "F: scripts/check-harness-baseline-registration.sh is executable" \
+    test -x "$GATE"
+
+# ---------------------------------------------------------------------------
+# Shared input-mode fixture tree: a tmpdir whose repo-relative layout lets the
+# gate's on-disk existence check resolve candidate paths (run with CWD=tree).
+# ---------------------------------------------------------------------------
+_G_ROOT="$(mktemp -d)"; _TMPDIRS+=("$_G_ROOT")
+mkdir -p "$_G_ROOT/crates/reify-eval/tests"
+mkdir -p "$_G_ROOT/crates/reify-solver-elastic/tests"
+: > "$_G_ROOT/crates/reify-eval/tests/newthing.rs"          # in-scope, added
+: > "$_G_ROOT/crates/reify-eval/tests/harness_foo.rs"       # harness_* -> ignored
+: > "$_G_ROOT/crates/reify-eval/tests/tensegrity_t0a.rs"    # override   -> ignored
+: > "$_G_ROOT/crates/reify-solver-elastic/tests/foo.rs"     # non-consolidatable -> ignored
+# crates/reify-eval/tests/ghost.rs is deliberately NEVER created -> ignored (non-existent).
+
+# Baseline WITHOUT newthing (unregistered -> the gate must FIRE on it).
+_G_BASELINE_MISSING="$(mktemp)"; _TMPDIRS+=("$_G_BASELINE_MISSING")
+printf 'crates/reify-eval/tests/some_existing_other.rs\n' > "$_G_BASELINE_MISSING"
+# Baseline WITH newthing (registered in the same diff -> the gate must PASS).
+_G_BASELINE_PRESENT="$(mktemp)"; _TMPDIRS+=("$_G_BASELINE_PRESENT")
+printf 'crates/reify-eval/tests/newthing.rs\n' > "$_G_BASELINE_PRESENT"
+
+# ===========================================================================
+# Section G: an ADDED in-scope standalone NOT in the baseline FIRES (rc 1),
+# naming it; the harness_*/override/non-consolidatable/non-existent candidates
+# in the same run are each IGNORED (no FAIL).
+# ===========================================================================
+echo ""
+echo "--- Section G: unregistered in-scope standalone fires; others ignored ---"
+
+_G_OUT="$(mktemp)"; _TMPDIRS+=("$_G_OUT")
+_G_RC=0
+( cd "$_G_ROOT" && REIFY_HARNESS_LAYOUT_BASELINE="$_G_BASELINE_MISSING" bash "$GATE" \
+    crates/reify-eval/tests/newthing.rs \
+    crates/reify-eval/tests/harness_foo.rs \
+    crates/reify-eval/tests/tensegrity_t0a.rs \
+    crates/reify-solver-elastic/tests/foo.rs \
+    crates/reify-eval/tests/ghost.rs </dev/null ) > "$_G_OUT" 2>/dev/null || _G_RC=$?
+
+assert "G: gate exits 1 when an unregistered in-scope standalone is added" \
+    test "$_G_RC" -eq 1
+assert "G: FAIL line names the offending crate/file with reason=unregistered-standalone" \
+    grep -Eq '^HARNESS_BASELINE_REG FAIL crate=reify-eval file=.*newthing\.rs reason=unregistered-standalone' "$_G_OUT"
+assert "G: EXACTLY one FAIL line (harness_*/override/non-consolidatable/non-existent are ignored)" \
+    bash -c '[ "$(grep -cE "^HARNESS_BASELINE_REG FAIL " "$1")" -eq 1 ]' _ "$_G_OUT"
+assert "G: no ignored candidate leaks into a FAIL line" \
+    bash -c '! grep -E "^HARNESS_BASELINE_REG FAIL " "$1" | grep -qE "harness_foo|tensegrity_t0a|reify-solver-elastic|ghost"' _ "$_G_OUT"
+
+# ===========================================================================
+# Section H: the SAME added path WITH a matching baseline row PASSES (rc 0).
+# ===========================================================================
+echo ""
+echo "--- Section H: same standalone WITH its baseline row passes (rc 0) ---"
+
+_H_OUT="$(mktemp)"; _TMPDIRS+=("$_H_OUT")
+_H_RC=0
+( cd "$_G_ROOT" && REIFY_HARNESS_LAYOUT_BASELINE="$_G_BASELINE_PRESENT" bash "$GATE" \
+    crates/reify-eval/tests/newthing.rs </dev/null ) > "$_H_OUT" 2>/dev/null || _H_RC=$?
+
+assert "H: gate exits 0 when the added standalone is registered in the baseline" \
+    test "$_H_RC" -eq 0
+assert "H: a clean run emits a structured PASS line" \
+    grep -Eq '^HARNESS_BASELINE_REG PASS' "$_H_OUT"
+assert "H: a clean run emits no FAIL line" \
+    bash -c '! grep -qE "^HARNESS_BASELINE_REG FAIL" "$1"' _ "$_H_OUT"
+
+# ===========================================================================
+# Section I: rule-(c)-style structured verdict grammar — a machine-parseable
+# SUMMARY line, and EVERY emitted non-blank line matches the canonical grammar.
+# ===========================================================================
+echo ""
+echo "--- Section I: structured SUMMARY + canonical grammar (all lines) ---"
+
+assert "I: Section G emits a structured SUMMARY added=5 violations=1 line" \
+    grep -Eq '^HARNESS_BASELINE_REG SUMMARY added=5 violations=1$' "$_G_OUT"
+assert "I: Section H emits a structured SUMMARY added=1 violations=0 line" \
+    grep -Eq '^HARNESS_BASELINE_REG SUMMARY added=1 violations=0$' "$_H_OUT"
+
+# Every non-blank emitted line (from BOTH captures) matches the grammar.
+_I_BAD="$( { cat "$_G_OUT" "$_H_OUT"; } | grep -vE '^[[:space:]]*$' | grep -vE '^HARNESS_BASELINE_REG (FAIL|PASS|SUMMARY) ' || true)"
+assert "I: every emitted non-empty line matches the canonical HARNESS_BASELINE_REG grammar" \
+    test -z "$_I_BAD"
+
+# ===========================================================================
+# Section J: green-on-truth — an empty candidate list exits 0 (added=0).
+# ===========================================================================
+echo ""
+echo "--- Section J: empty candidate list is green (rc 0, added=0) ---"
+
+_J_OUT="$(mktemp)"; _TMPDIRS+=("$_J_OUT")
+_J_RC=0
+( cd "$_G_ROOT" && REIFY_HARNESS_LAYOUT_BASELINE="$_G_BASELINE_MISSING" bash "$GATE" </dev/null ) \
+    > "$_J_OUT" 2>/dev/null || _J_RC=$?
+
+assert "J: gate exits 0 on an empty candidate list" \
+    test "$_J_RC" -eq 0
+assert "J: empty run emits SUMMARY added=0 violations=0" \
+    grep -Eq '^HARNESS_BASELINE_REG SUMMARY added=0 violations=0$' "$_J_OUT"
+
 test_summary
