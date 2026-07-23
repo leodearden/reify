@@ -149,6 +149,8 @@ describe('reifyPrimarySelectionGuard — blur', () => {
 function makeFocusView(opts: {
   from: number;
   to: number;
+  anchor?: number;
+  head?: number;
   getSelection?: () => { removeAllRanges: ReturnType<typeof vi.fn>; addRange: ReturnType<typeof vi.fn> } | null;
 }) {
   const removeAllRanges = vi.fn();
@@ -161,11 +163,16 @@ function makeFocusView(opts: {
   const getSelection = opts.getSelection ?? (() => sel);
   const domAtPos = vi.fn((pos: number) => ({ node: 'n@' + pos, offset: pos }));
   const empty = opts.from === opts.to;
+  // In real CM, main.from/to are min/max while anchor/head retain the selection
+  // DIRECTION. Default a forward selection (anchor=from, head=to); a reversed
+  // (leftward) selection passes anchor > head with the same from/to.
+  const anchor = opts.anchor ?? opts.from;
+  const head = opts.head ?? opts.to;
   const view = {
     state: {
       selection: {
-        main: { from: opts.from, to: opts.to, empty },
-        ranges: [{ from: opts.from, to: opts.to, empty }],
+        main: { from: opts.from, to: opts.to, anchor, head, empty },
+        ranges: [{ from: opts.from, to: opts.to, anchor, head, empty }],
       },
     },
     contentDOM: { ownerDocument: { getSelection, createRange } },
@@ -215,5 +222,33 @@ describe('reifyPrimarySelectionGuard — focus', () => {
     expect(() => handlers.focus({} as FocusEvent, view)).not.toThrow();
     // Bails before building a range when there is no native selection to rebuild.
     expect(createRange).not.toHaveBeenCalled();
+  });
+
+  it('rebuilds a FORWARD native range for a reversed (leftward) logical selection, leaving anchor/head untouched', () => {
+    // A reversed selection: anchor=8 > head=3 (selected leftward). CM still
+    // normalizes main.from/to to min/max (from=3, to=8), and the focus handler
+    // rebuilds the native selection from from/to — so the native DOM Range is
+    // always FORWARD (setStart at `from`, setEnd at `to`) regardless of the
+    // logical direction. This is INTENTIONAL and acceptable: X11 PRIMARY carries
+    // only the selected TEXT, not a direction, and view.state (which retains the
+    // true anchor/head) is never mutated — so CM's own direction is preserved.
+    const { handlers } = extractGuard();
+    const { view, setStart, setEnd, createRange, removeAllRanges, addRange, range, domAtPos } =
+      makeFocusView({ from: 3, to: 8, anchor: 8, head: 3 });
+
+    handlers.focus({} as FocusEvent, view);
+
+    // Endpoints come from from/to (min/max), NOT from anchor→head direction.
+    expect(domAtPos).toHaveBeenCalledWith(3);
+    expect(domAtPos).toHaveBeenCalledWith(8);
+    expect(createRange).toHaveBeenCalledTimes(1);
+    expect(setStart).toHaveBeenCalledWith('n@3', 3); // `from` (min), not the head
+    expect(setEnd).toHaveBeenCalledWith('n@8', 8); //   `to` (max), not the anchor
+    expect(removeAllRanges).toHaveBeenCalledTimes(1);
+    expect(addRange).toHaveBeenCalledWith(range);
+    // state — including its reversed anchor/head — must NEVER be mutated.
+    expect(view.dispatch).not.toHaveBeenCalled();
+    expect(view.state.selection.main.anchor).toBe(8);
+    expect(view.state.selection.main.head).toBe(3);
   });
 });
