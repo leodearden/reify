@@ -393,6 +393,59 @@ describe('Editor active file switching', () => {
   });
 });
 
+// task-5359: switching back to a file whose store content was refreshed while it
+// was inactive (debug open_file / reload of an already-open path) must show the
+// fresh content — not the stale per-URI cached EditorState — while still
+// preserving a dirty buffer's unsaved edits.
+describe('switching back to an already-open file refreshed while inactive (task-5359)', () => {
+  it('Case 1 (clean refresh): switch-back shows the refreshed store content, not the stale cached buffer', () => {
+    const fileA: FileData = { path: '/project/src/refresh_a.ri', content: 'A0' };
+    const fileB: FileData = { path: '/project/src/refresh_b.ri', content: 'B0' };
+    // Both files already open (switch via the tab bar) so the switch-away does not
+    // append a tab — isolating this test to the file-switch cache-vs-refresh policy.
+    const store = setupStore([fileA, fileB]);
+    store.setActiveFile(fileA.path);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    expect(getEditorView(container).state.doc.toString()).toBe('A0');
+
+    // Switch away — the file-switch effect caches fileA's EditorState (doc 'A0').
+    store.setActiveFile(fileB.path);
+    expect(getEditorView(container).state.doc.toString()).toBe('B0');
+
+    // Disk changed under the inactive CLEAN tab (e.g. debug open_file / reload).
+    store.updateFileContent(fileA.path, 'A1');
+
+    // Switch back to fileA — the CM view must show the refreshed content, not the
+    // stale cached 'A0' buffer.
+    store.setActiveFile(fileA.path);
+    expect(getEditorView(container).state.doc.toString()).toBe('A1');
+  });
+
+  it('Case 2 (dirty preservation): switch-back keeps the unsaved edited buffer, not the store content', () => {
+    const fileA: FileData = { path: '/project/src/dirty_a.ri', content: 'A0' };
+    const fileB: FileData = { path: '/project/src/dirty_b.ri', content: 'B0' };
+    const store = setupStore([fileA, fileB]);
+    store.setActiveFile(fileA.path);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // User edits fileA (marks it dirty); the store's fileA.content stays 'A0'.
+    view.dispatch({ changes: { from: 0, insert: 'X' } });
+    expect(getEditorView(container).state.doc.toString()).toBe('XA0');
+    expect(store.state.dirtyFiles).toContain(fileA.path);
+
+    // Switch away and back via the tab bar (both files already open).
+    store.setActiveFile(fileB.path);
+    store.setActiveFile(fileA.path);
+
+    // The dirty buffer (with the unsaved 'X') must be preserved — NOT rebuilt from
+    // the store's clean 'A0' content.
+    expect(getEditorView(container).state.doc.toString()).toBe('XA0');
+  });
+});
+
 describe('Editor scrollToLocation', () => {
   const BASELINE_HEAD = 9; // file2 'structure Mount {}': end_column 10 -> 0-indexed offset 9
 
