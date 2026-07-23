@@ -1342,4 +1342,138 @@ mod tests {
             "second record must overwrite the first (last-write-wins)"
         );
     }
+
+    // ── Task 5218 step-3: Rectangle/Polygon cross-section producer ──────────
+    // `swept_kind_to_profile_boundary` resolves the SweptKind's `profile`
+    // handle to its source profile op (via the parallel handles slice, exactly
+    // as `swept_kind_to_sweep_params` resolves a SweepLinear path) and samples
+    // the 2-D outer ring. Rectangle → 4 CCW corners; Polygon → points verbatim;
+    // unresolvable handle or a non-profile source op → None. `holes` is always
+    // empty (single-ring profiles; multiply-connected sections are Phase B).
+
+    #[test]
+    fn swept_kind_to_profile_boundary_rectangle_samples_four_ccw_corners() {
+        let w = 0.04;
+        let h = 0.02;
+        let profile_handle = GeometryHandleId(10);
+        let ops = vec![
+            GeometryOp::RectangleProfile {
+                width: Value::length(w),
+                height: Value::length(h),
+            },
+            GeometryOp::Extrude {
+                profile: profile_handle,
+                distance: Value::length(0.01),
+            },
+        ];
+        // handles[0] is the RectangleProfile's result handle == the Extrude's
+        // profile handle; handles[1] is the Extrude's own result handle.
+        let handles = vec![profile_handle, GeometryHandleId(11)];
+        let kind = SweptKind::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: Value::length(0.01),
+            profile: profile_handle,
+        };
+        let boundary = swept_kind_to_profile_boundary(&kind, &ops, &handles)
+            .expect("a RectangleProfile-backed extrude must produce a ProfileBoundary");
+        assert_eq!(
+            boundary.outer,
+            vec![
+                [-w / 2.0, -h / 2.0],
+                [w / 2.0, -h / 2.0],
+                [w / 2.0, h / 2.0],
+                [-w / 2.0, h / 2.0],
+            ],
+            "rectangle outer ring must be the 4 CCW corners derived from width/height"
+        );
+        assert!(
+            boundary.holes.is_empty(),
+            "single-ring profile must produce no holes"
+        );
+    }
+
+    #[test]
+    fn swept_kind_to_profile_boundary_polygon_returns_points_verbatim() {
+        let points = vec![[0.0, 0.0], [0.03, 0.0], [0.03, 0.05], [0.0, 0.05]];
+        let profile_handle = GeometryHandleId(10);
+        let ops = vec![
+            GeometryOp::PolygonProfile {
+                points: points.clone(),
+            },
+            GeometryOp::Extrude {
+                profile: profile_handle,
+                distance: Value::length(0.01),
+            },
+        ];
+        let handles = vec![profile_handle, GeometryHandleId(11)];
+        let kind = SweptKind::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: Value::length(0.01),
+            profile: profile_handle,
+        };
+        let boundary = swept_kind_to_profile_boundary(&kind, &ops, &handles)
+            .expect("a PolygonProfile-backed extrude must produce a ProfileBoundary");
+        assert_eq!(
+            boundary.outer, points,
+            "polygon outer ring must be the profile's points verbatim"
+        );
+        assert!(
+            boundary.holes.is_empty(),
+            "single-ring profile must produce no holes"
+        );
+    }
+
+    #[test]
+    fn swept_kind_to_profile_boundary_unresolvable_handle_returns_none() {
+        // The SweptKind's profile handle (99) is absent from `handles`, so the
+        // producer cannot resolve a source op → None.
+        let ops = vec![
+            GeometryOp::RectangleProfile {
+                width: Value::length(0.04),
+                height: Value::length(0.02),
+            },
+            GeometryOp::Extrude {
+                profile: GeometryHandleId(10),
+                distance: Value::length(0.01),
+            },
+        ];
+        let handles = vec![GeometryHandleId(10), GeometryHandleId(11)];
+        let kind = SweptKind::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: Value::length(0.01),
+            profile: GeometryHandleId(99), // absent from `handles`
+        };
+        assert!(
+            swept_kind_to_profile_boundary(&kind, &ops, &handles).is_none(),
+            "an unresolvable profile handle must produce None"
+        );
+    }
+
+    #[test]
+    fn swept_kind_to_profile_boundary_non_profile_op_returns_none() {
+        // The profile handle resolves to a Box (a solid primitive, not a 2-D
+        // profile op) → the sampler rejects it → None.
+        let profile_handle = GeometryHandleId(10);
+        let ops = vec![
+            GeometryOp::Box {
+                width: Value::length(0.04),
+                height: Value::length(0.02),
+                depth: Value::length(0.03),
+            },
+            GeometryOp::Extrude {
+                profile: profile_handle,
+                distance: Value::length(0.01),
+            },
+        ];
+        let handles = vec![profile_handle, GeometryHandleId(11)];
+        let kind = SweptKind::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: Value::length(0.01),
+            profile: profile_handle,
+        };
+        assert!(
+            swept_kind_to_profile_boundary(&kind, &ops, &handles).is_none(),
+            "a profile handle resolving to a non-profile op must produce None"
+        );
+    }
 }
