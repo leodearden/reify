@@ -21,6 +21,9 @@
 #   I — SCHEDULE-MODE --require-commit ANCESTOR GATE: refuses a non-ancestor or
 #       invalid sha (no systemd-run), threads --setenv=ORCH_REQUIRE_COMMIT
 #       through when set, byte-identical systemd-run invocation when unset
+#   J — EXEC-MODE --require-commit RE-CHECK: re-checks the precondition at
+#       fire time; neither stop nor start (leaves orchestrator running,
+#       exits 0) when it no longer holds
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -449,5 +452,67 @@ reset_calls
 ORCH_PROJECT_ROOT="$CLEAN_REPO_I" \
     run_helper "--require-commit="
 assert "I12: --require-commit= (empty value) -> exits non-zero" test "$RC" -ne 0
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block J — EXEC-MODE --require-commit RE-CHECK
+# ORCH_REQUIRE_COMMIT (threaded from schedule mode via --setenv, or set
+# directly) is re-checked at fire time against ORCH_MAIN_BRANCH. If it no
+# longer holds, exec mode leaves the orchestrator RUNNING (no stop/start,
+# exit 0) rather than restarting into stale config.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block J: exec-mode --require-commit re-check ---"
+
+CLEAN_REPO_J=""
+make_clean_repo CLEAN_REPO_J
+ON_MAIN_SHA_J="$(git -C "$CLEAN_REPO_J" rev-parse HEAD)"
+
+# J-pass: required commit IS an ancestor of main -> stop then start, exits 0
+reset_calls
+ORCH_PROJECT_ROOT="$CLEAN_REPO_J" \
+ORCH_UNIT="exec-unit.service" \
+ORCH_REQUIRE_COMMIT="$ON_MAIN_SHA_J" \
+    run_helper --exec-restart
+assert "J1: --require-commit=<on-main-sha> at fire time -> exits 0" test "$RC" -eq 0
+assert "J2: --require-commit=<on-main-sha> records systemctl --user stop exec-unit.service" \
+    bash -c 'grep -q "^systemctl --user stop exec-unit.service$" "$1"' _ "$CALLS_FILE"
+assert "J3: --require-commit=<on-main-sha> records systemctl --user start exec-unit.service" \
+    bash -c 'grep -q "^systemctl --user start exec-unit.service$" "$1"' _ "$CALLS_FILE"
+assert "J4: stop precedes start (ordering guarantee holds with require-commit set)" \
+    bash -c '
+        stop_ln=$(grep -n "^systemctl --user stop exec-unit.service$" "$1" | head -1 | cut -d: -f1)
+        start_ln=$(grep -n "^systemctl --user start exec-unit.service$" "$1" | head -1 | cut -d: -f1)
+        [ -n "$stop_ln" ] && [ -n "$start_ln" ] && [ "$stop_ln" -lt "$start_ln" ]
+    ' _ "$CALLS_FILE"
+
+# J-refuse-side: required commit is NOT an ancestor of main -> neither stop
+# nor start, exits 0 (leave orchestrator running), warns
+SIDE_SHA_J=""
+make_side_branch_commit "$CLEAN_REPO_J" SIDE_SHA_J
+reset_calls
+ORCH_PROJECT_ROOT="$CLEAN_REPO_J" \
+ORCH_UNIT="exec-unit.service" \
+ORCH_REQUIRE_COMMIT="$SIDE_SHA_J" \
+    run_helper --exec-restart
+assert "J5: --require-commit=<side-branch-sha> at fire time -> exits 0 (leave running)" test "$RC" -eq 0
+assert "J6: --require-commit=<side-branch-sha> records NO systemctl stop" \
+    bash -c '! grep -q "^systemctl.*stop exec-unit.service" "$1"' _ "$CALLS_FILE"
+assert "J7: --require-commit=<side-branch-sha> records NO systemctl start" \
+    bash -c '! grep -q "^systemctl.*start exec-unit.service" "$1"' _ "$CALLS_FILE"
+assert "J8: --require-commit=<side-branch-sha> logs a warning (main|ancestor|not on)" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "main|ancestor|not on"' _ "$OUT"
+
+# J-refuse-bogus: required commit is not a valid object -> neither stop nor
+# start (fail-closed), exits 0
+reset_calls
+ORCH_PROJECT_ROOT="$CLEAN_REPO_J" \
+ORCH_UNIT="exec-unit.service" \
+ORCH_REQUIRE_COMMIT="$BOGUS_SHA" \
+    run_helper --exec-restart
+assert "J9: --require-commit=<bogus sha> at fire time -> exits 0 (leave running)" test "$RC" -eq 0
+assert "J10: --require-commit=<bogus sha> records NO systemctl stop (fail-closed)" \
+    bash -c '! grep -q "^systemctl.*stop exec-unit.service" "$1"' _ "$CALLS_FILE"
+assert "J11: --require-commit=<bogus sha> records NO systemctl start (fail-closed)" \
+    bash -c '! grep -q "^systemctl.*start exec-unit.service" "$1"' _ "$CALLS_FILE"
 
 test_summary
