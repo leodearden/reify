@@ -1549,4 +1549,112 @@ mod tests {
             "a profile handle resolving to a non-profile op must produce None"
         );
     }
+
+    // ── Task 5218 step-5: Circle/Ellipse cross-section producer ─────────────
+    // Curved profiles are pre-sampled into PROFILE_CIRCLE_SEGMENTS polyline
+    // points. Circle: every point lies exactly on radius r (only f64 trig
+    // rounding, ~1e-16). Ellipse: the θ=0 sample is [a, 0]. Both rings are
+    // non-degenerate (|shoelace signed area| > 0).
+
+    /// Signed area of a closed polygon ring via the shoelace formula (test
+    /// helper). Non-zero magnitude ⇒ the ring is a non-degenerate surface.
+    fn shoelace_area(ring: &[[f64; 2]]) -> f64 {
+        let n = ring.len();
+        let mut acc = 0.0;
+        for i in 0..n {
+            let [x0, y0] = ring[i];
+            let [x1, y1] = ring[(i + 1) % n];
+            acc += x0 * y1 - x1 * y0;
+        }
+        acc / 2.0
+    }
+
+    #[test]
+    fn swept_kind_to_profile_boundary_circle_samples_on_radius() {
+        let r = 0.03;
+        let profile_handle = GeometryHandleId(10);
+        let ops = vec![
+            GeometryOp::CircleProfile {
+                radius: Value::length(r),
+            },
+            GeometryOp::Extrude {
+                profile: profile_handle,
+                distance: Value::length(0.01),
+            },
+        ];
+        let handles = vec![profile_handle, GeometryHandleId(11)];
+        let kind = SweptKind::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: Value::length(0.01),
+            profile: profile_handle,
+        };
+        let boundary = swept_kind_to_profile_boundary(&kind, &ops, &handles)
+            .expect("a CircleProfile-backed extrude must produce a ProfileBoundary");
+        assert_eq!(
+            boundary.outer.len(),
+            PROFILE_CIRCLE_SEGMENTS,
+            "circle must be discretised into PROFILE_CIRCLE_SEGMENTS points"
+        );
+        // Every sampled point lies on the radius-r circle (points are exactly
+        // r·[cos θ, sin θ]; only error is f64 trig rounding ~1e-16 ≪ 1e-9).
+        for p in &boundary.outer {
+            let dist = (p[0] * p[0] + p[1] * p[1]).sqrt();
+            assert!(
+                (dist - r).abs() < 1e-9,
+                "sampled point {p:?} must lie at distance r={r} from the origin; got {dist}"
+            );
+        }
+        assert!(
+            shoelace_area(&boundary.outer).abs() > 0.0,
+            "circle cross-section must be non-degenerate (|signed area| > 0)"
+        );
+        assert!(
+            boundary.holes.is_empty(),
+            "single-ring profile must produce no holes"
+        );
+    }
+
+    #[test]
+    fn swept_kind_to_profile_boundary_ellipse_samples_theta_zero_at_semi_major() {
+        let a = 0.05;
+        let b = 0.02;
+        let profile_handle = GeometryHandleId(10);
+        let ops = vec![
+            GeometryOp::EllipseProfile {
+                semi_major: Value::length(a),
+                semi_minor: Value::length(b),
+            },
+            GeometryOp::Extrude {
+                profile: profile_handle,
+                distance: Value::length(0.01),
+            },
+        ];
+        let handles = vec![profile_handle, GeometryHandleId(11)];
+        let kind = SweptKind::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: Value::length(0.01),
+            profile: profile_handle,
+        };
+        let boundary = swept_kind_to_profile_boundary(&kind, &ops, &handles)
+            .expect("an EllipseProfile-backed extrude must produce a ProfileBoundary");
+        assert_eq!(
+            boundary.outer.len(),
+            PROFILE_CIRCLE_SEGMENTS,
+            "ellipse must be discretised into PROFILE_CIRCLE_SEGMENTS points"
+        );
+        // The θ=0 sample (index 0) is [a·cos 0, b·sin 0] = [a, 0].
+        let first = boundary.outer[0];
+        assert!(
+            (first[0] - a).abs() < 1e-9 && first[1].abs() < 1e-9,
+            "θ=0 ellipse sample must be [a, 0] = [{a}, 0]; got {first:?}"
+        );
+        assert!(
+            shoelace_area(&boundary.outer).abs() > 0.0,
+            "ellipse cross-section must be non-degenerate (|signed area| > 0)"
+        );
+        assert!(
+            boundary.holes.is_empty(),
+            "single-ring profile must produce no holes"
+        );
+    }
 }
