@@ -1117,7 +1117,49 @@ pub(crate) fn compile_geometry_call(
         diagnostics.push(crate::recursion_guard::recursion_too_deep_diagnostic(expr.span));
         return None;
     }
+    // Task #5337 (step-10): grow the stack on demand before descending into the
+    // (recursive) body so realistic-but-deep nested boolean geometry reaches the
+    // depth cap above on a small embedder stack — notably the GUI's 2 MB tokio
+    // worker — instead of overflowing the guard page (an uncatchable SIGSEGV).
+    // The depth-guard/cap ran first on the original frame; `_depth_guard` stays
+    // live (it is not captured) so its RAII decrement still fires when this call
+    // returns. The `move` closure takes the `&mut`/ref params and returns the
+    // body's `Option<Vec<CompiledGeometryOp>>`, which we return directly.
+    stacker::maybe_grow(
+        crate::recursion_guard::RECURSION_RED_ZONE,
+        crate::recursion_guard::RECURSION_STACK_GROWTH,
+        move || {
+            compile_geometry_call_inner(
+                expr,
+                scope,
+                enum_defs,
+                functions,
+                diagnostics,
+                step_offset,
+                geometry_lets,
+                visiting,
+            )
+        },
+    )
+}
 
+/// Inner body of [`compile_geometry_call`]. All recursion-depth bounding — the
+/// [`RecursionDepthGuard`](crate::recursion_guard::RecursionDepthGuard) cap and
+/// the `stacker::maybe_grow` on-demand stack growth — lives in that wrapper and
+/// is re-applied at every level because this body's recursive calls (directly,
+/// and via `compile_boolean_op`/`resolve_boolean_arg` and `compile_expr`) go
+/// back through the wrapper, never here.
+#[allow(clippy::too_many_arguments)]
+fn compile_geometry_call_inner(
+    expr: &reify_ast::Expr,
+    scope: &CompilationScope,
+    enum_defs: &[reify_ir::EnumDef],
+    functions: &[CompiledFunction],
+    diagnostics: &mut Vec<Diagnostic>,
+    step_offset: usize,
+    geometry_lets: &HashMap<&str, &reify_ast::Expr>,
+    visiting: &mut HashSet<String>,
+) -> Option<Vec<CompiledGeometryOp>> {
     // Resolve let-bound geometry variable references: when the expression is an
     // Ident that names a geometry let, recursively compile the initializer.
     // Guard against cycles (e.g. `let a = difference(b, x); let b = difference(a, y);`)

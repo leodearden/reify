@@ -1353,6 +1353,48 @@ pub(crate) fn compile_expr_guarded_with_expected(
             crate::recursion_guard::recursion_too_deep_diagnostic(expr.span),
         );
     }
+    // Task #5337 (step-10): grow the stack on demand before descending into the
+    // (recursive) body so realistic-but-deep expressions reach the depth cap
+    // above on a small embedder stack — notably the GUI's 2 MB tokio worker —
+    // instead of overflowing the guard page (an uncatchable SIGSEGV). The
+    // depth-guard/cap ran first on the original frame; `_depth_guard` stays live
+    // (it is not captured) so its RAII decrement still fires when this call
+    // returns. The `move` closure takes the `&mut`/ref params and returns the
+    // body's `CompiledExpr`, which we return directly.
+    stacker::maybe_grow(
+        crate::recursion_guard::RECURSION_RED_ZONE,
+        crate::recursion_guard::RECURSION_STACK_GROWTH,
+        move || {
+            compile_expr_guarded_with_expected_inner(
+                expr,
+                scope,
+                enum_defs,
+                functions,
+                diagnostics,
+                current_guard,
+                lambda_counter,
+                expected_type,
+            )
+        },
+    )
+}
+
+/// Inner body of [`compile_expr_guarded_with_expected`]. All recursion-depth
+/// bounding — the [`RecursionDepthGuard`](crate::recursion_guard::RecursionDepthGuard)
+/// cap and the `stacker::maybe_grow` on-demand stack growth — lives in that
+/// wrapper and is re-applied at every level because this body's recursive calls
+/// go back through it (via `compile_expr_guarded[_with_expected]`), never here.
+#[allow(clippy::too_many_arguments)]
+fn compile_expr_guarded_with_expected_inner(
+    expr: &reify_ast::Expr,
+    scope: &CompilationScope,
+    enum_defs: &[reify_ir::EnumDef],
+    functions: &[CompiledFunction],
+    diagnostics: &mut Vec<Diagnostic>,
+    current_guard: Option<&ValueCellId>,
+    lambda_counter: &mut u32,
+    expected_type: Option<&Type>,
+) -> CompiledExpr {
     match &expr.kind {
         reify_ast::ExprKind::NumberLiteral { value, is_real } => {
             // Int/Real classification (incl. integer-form overflow fallback) is
