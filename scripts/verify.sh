@@ -2165,7 +2165,9 @@ build_plan() {
     # within-ceiling subset (0 when that profile fell back / is not in the plan);
     # gui recorded by the gui block from its validated REIFY_GUI_RETRY_SPECS;
     # run_all a build-time word-count of REIFY_RUN_ALL_MEMBER_SUBSET here
-    # (verify.sh COUNTS only — run_all.sh still owns the actual member-skip).
+    # (verify.sh COUNTS only — run_all.sh still owns the actual member-skip;
+    # this is a best-effort upper bound, not a post-validation count — see the
+    # detailed caveat at the counting site below).
     # Fire IFF scope=failed_only AND ≥1 suite ACTUALLY narrowed — the honest-
     # events gate (INV-6): a within-ceiling nextest subset applied for ≥1
     # profile (_RETRY_NEXTEST_*_APPLIED>0 ⇒ eligible AND usable), OR a non-empty
@@ -2180,10 +2182,25 @@ build_plan() {
     # plan-shape tests stay green.
     if [ "${REIFY_VERIFY_RETRY_SCOPE:-}" = "failed_only" ]; then
         # run_all subset size: a word-count of the DF-supplied member list
-        # (verify.sh COUNTS only — run_all.sh owns the member-skip). set -f
-        # around the split so a stray glob in a member name cannot pathname-
-        # expand (members are .sh basenames; belt-and-suspenders), then RESTORE
-        # the caller's prior noglob state rather than unconditionally clearing it
+        # (verify.sh COUNTS only — run_all.sh owns the member-skip). This is a
+        # BEST-EFFORT count, not a post-validation one: if a supplied member
+        # basename doesn't exist under run_all's INFRA_DIR (e.g. renamed or
+        # deleted between DF's attempt-0 failure-set discovery and this
+        # retry's dispatch), run_all.sh WARNs and silently ignores it
+        # ("member '...' not found in $INFRA_DIR (ignored)") while this
+        # word-count still includes it — inflating run_all=N and the marker
+        # relative to what actually ran. Accepted (code-review amend, task
+        # 5290): DF constructs the subset from {failed members} that already
+        # passed attempt-0 discovery (PRD verify-retry-failed-only.md §4.2),
+        # so a dropped member is a rare edge, not the common case; fully
+        # closing it needs run_all.sh to report its post-validation member
+        # count back to verify.sh, a cross-file protocol change touching
+        # tests/infra/run_all.sh, which this task does not hold a lock on
+        # (locks: scripts/verify.sh + tests/infra/test_verify_retry_failed_only.sh
+        # only — filed as a follow-up rather than done here). set -f around
+        # the split so a stray glob in a member name cannot pathname-expand
+        # (members are .sh basenames; belt-and-suspenders), then RESTORE the
+        # caller's prior noglob state rather than unconditionally clearing it
         # — verify.sh does not run under -f today, but a bare `set +f` would
         # silently clobber a noglob caller for any code after build_plan.
         local _mk_run_all=0
