@@ -233,40 +233,27 @@ fn validate_uv_finite(u: f64, v: f64) -> Result<(), QueryError> {
 }
 
 #[cfg(has_occt)]
-/// Tolerance for the pipe start-tangent +Z check.
+/// Validate that a pipe start-tangent is all-finite (defense-in-depth for `gp_Dir`).
 ///
-/// The guard is symmetric: `|t.z - 1| < PIPE_START_TANGENT_Z_EPSILON`.
-/// For a true unit vector the per-axis residual satisfies x²+y² < 2ε,
-/// so |x|,|y| < √(2ε).
-const PIPE_START_TANGENT_Z_EPSILON: f64 = 1e-6;
-
-#[cfg(has_occt)]
-/// Validate that a pipe start-tangent is approximately +Z and all-finite.
-///
-/// Returns `OperationFailed` if any component is non-finite (NaN or ±Infinity) or if
-/// `t.z` is outside `[1 - PIPE_START_TANGENT_Z_EPSILON, 1 + PIPE_START_TANGENT_Z_EPSILON]`
-/// (tangent not close enough to the unit +Z vector).
+/// Returns `OperationFailed` if any component is non-finite (NaN or ±Infinity).
 ///
 /// # Rationale
 ///
-/// The circular profile face is built in the XY plane (normal = +Z).
-/// `BRepOffsetAPI_MakePipe` requires the profile plane to align with the path's
-/// start-tangent. For non-+Z paths the swept solid is degenerate (zero volume);
-/// this helper detects that upfront and returns an explicit error rather than
-/// silently producing unusable geometry. General orientation support is deferred
-/// future work (option (a) from task-2095 review).
+/// The tangent is fed into OCCT's `gp_Dir` (via the oriented-circle profile
+/// construction) to align the circular profile with the path's start frame, and
+/// `gp_Dir` requires a finite, non-degenerate vector. `BRepAdaptor_CompCurve::D1`
+/// already yields a normalized tangent, so a non-finite component here signals a
+/// malformed wire or an FFI contract violation; this Rust-side guard rejects it
+/// explicitly rather than passing NaN/∞ across the FFI boundary.
+///
+/// Any finite orientation is accepted: `gp_Ax2(point, dir)` builds a valid
+/// orthonormal frame for ANY unit normal (including −Z), so pipes are no longer
+/// restricted to a +Z start-tangent.
 fn validate_pipe_start_tangent(t: ffi::ffi::Point3) -> Result<(), GeometryError> {
     if !t.x.is_finite() || !t.y.is_finite() || !t.z.is_finite() {
         return Err(GeometryError::OperationFailed(format!(
             "pipe start-tangent has non-finite component (got ({:.3}, {:.3}, {:.3}))",
             t.x, t.y, t.z
-        )));
-    }
-    if t.z < 1.0 - PIPE_START_TANGENT_Z_EPSILON || t.z > 1.0 + PIPE_START_TANGENT_Z_EPSILON {
-        return Err(GeometryError::OperationFailed(format!(
-            "pipe currently only supports paths whose start-tangent is +Z \
-             (tolerance {:e}) (got tangent ({:.3}, {:.3}, {:.3}))",
-            PIPE_START_TANGENT_Z_EPSILON, t.x, t.y, t.z
         )));
     }
     Ok(())
