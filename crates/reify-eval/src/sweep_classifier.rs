@@ -470,11 +470,12 @@ pub fn swept_kind_to_profile_boundary(
 ) -> Option<reify_solver_elastic::ProfileBoundary> {
     // Every recognised swept kind carries the handle of the 2-D profile op it
     // sweeps; the cross-section is that op's own geometry regardless of the
-    // sweep motion. The Revolve / SweepLinear arms are wired in a later step
-    // (they reuse the shared resolve → sample → wrap path below).
+    // sweep motion (extrude axis / revolve axis / linear path), so all three
+    // arms share the same resolve → sample → wrap path below.
     let profile = match kind {
-        SweptKind::Extrude { profile, .. } => profile,
-        SweptKind::Revolve { .. } | SweptKind::SweepLinear { .. } => return None,
+        SweptKind::Extrude { profile, .. }
+        | SweptKind::Revolve { profile, .. }
+        | SweptKind::SweepLinear { profile, .. } => profile,
     };
     let source_op = handles
         .iter()
