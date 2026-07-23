@@ -1339,6 +1339,20 @@ pub(crate) fn compile_expr_guarded_with_expected(
     lambda_counter: &mut u32,
     expected_type: Option<&Type>,
 ) -> CompiledExpr {
+    // Bound compiler expression-recursion depth (task #5337): enter the shared
+    // thread-local depth guard (RAII — decremented on every return path,
+    // including this poison bail and panic-unwind). Past the cap, refuse loudly
+    // with an E_EXPR_NESTING_TOO_DEEP diagnostic + Type::Error poison rather
+    // than recursing further and overflowing the stack (an uncatchable SIGSEGV
+    // on small-stack embedder threads). On-demand stack growth is added in
+    // step-10 so realistic-but-deep input reaches the cap instead of crashing.
+    let _depth_guard = crate::recursion_guard::RecursionDepthGuard::enter();
+    if _depth_guard.depth() > crate::recursion_guard::MAX_COMPILE_RECURSION_DEPTH {
+        return make_poison_literal(
+            diagnostics,
+            crate::recursion_guard::recursion_too_deep_diagnostic(expr.span),
+        );
+    }
     match &expr.kind {
         reify_ast::ExprKind::NumberLiteral { value, is_real } => {
             // Int/Real classification (incl. integer-form overflow fallback) is
