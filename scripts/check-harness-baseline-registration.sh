@@ -104,8 +104,64 @@ _check_candidates() {
     [ "$violations" -eq 0 ]
 }
 
-# Input dispatch: positional args, else newline-separated stdin. (--from-git
-# self-derivation is added in step-6.)
+# _derive_added_from_git — print the ADDED files (--diff-filter=A) of the current
+# merge delta, one per line, or return NON-ZERO when the base is underivable (the
+# caller then fails open). Mirrors verify.sh _derive_merge_delta, plus a
+# merge-base fallback for the linear task-branch tier:
+#   MERGE_HEAD present (hook, merge in progress)  -> git diff HEAD MERGE_HEAD
+#   HEAD has >=2 parents (speculative merge landed) -> git diff HEAD^1 HEAD
+#   else (linear task branch)                     -> git diff merge-base(main,HEAD) HEAD
+# Uses CWD-relative git (NOT -C REPO_ROOT) so it inspects the repo it is run in
+# (REPO_ROOT in the verify plan; the fixture repo under test). All git stderr
+# suppressed; any failure / unresolvable base / detached-or-unborn HEAD => the
+# base is underivable => fail open (never a false RED). AUTHORITATIVE at the
+# merge tier (HEAD is always a 2-parent merge / MERGE_HEAD present there — the
+# tier that decides landing); best-effort at the linear branch tier.
+_derive_added_from_git() {
+    local mh
+    mh="$(git rev-parse --git-path MERGE_HEAD 2>/dev/null || echo '')"
+    if [ -n "$mh" ] && [ -f "$mh" ]; then
+        git diff --diff-filter=A --name-only HEAD MERGE_HEAD 2>/dev/null || return 1
+        return 0
+    fi
+    local parents arr
+    parents="$(git rev-list --parents -n1 HEAD 2>/dev/null)" || return 1
+    # "<sha> <parent1> <parent2> ..."; >=3 tokens => a merge commit (>=2 parents).
+    # shellcheck disable=SC2206
+    arr=($parents)
+    if [ "${#arr[@]}" -ge 3 ]; then
+        git diff --diff-filter=A --name-only HEAD^1 HEAD 2>/dev/null || return 1
+        return 0
+    fi
+    local base
+    base="$(git merge-base main HEAD 2>/dev/null)" || return 1
+    [ -n "$base" ] || return 1
+    git diff --diff-filter=A --name-only "$base" HEAD 2>/dev/null || return 1
+    return 0
+}
+
+# --from-git: self-derive the ADDED-file set from git and feed it into the pure
+# core. An underivable base derives nothing and exits 0 (fail open).
+if [ "${1:-}" = "--from-git" ]; then
+    _added_raw=""
+    _rc=0
+    if _added_raw="$(_derive_added_from_git)"; then
+        _paths=()
+        while IFS= read -r _line; do
+            [ -n "$_line" ] && _paths+=("$_line")
+        done <<< "$_added_raw"
+        if [ "${#_paths[@]}" -gt 0 ]; then
+            _check_candidates "${_paths[@]}" || _rc=$?
+        else
+            _check_candidates || _rc=$?
+        fi
+    else
+        _check_candidates || _rc=$?
+    fi
+    exit "$_rc"
+fi
+
+# Input dispatch: positional args, else newline-separated stdin.
 if [ "$#" -gt 0 ]; then
     _check_candidates "$@"
 else
