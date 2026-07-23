@@ -182,6 +182,17 @@ pub fn update_source_impl(
 /// * New staleness keys: `compile_diagnostics`, `tessellation_diagnostics`,
 ///   `stale` (bool), `reload_error` (string or null).
 ///
+/// # Full realized scene (task 5348)
+///
+/// The `meshes` projection reflects the FULL realized scene — every realization
+/// that produces geometry — via [`EngineSession::build_gui_state_full_scene`], NOT
+/// the frontend's selective-demand incremental delta. Once the frontend has flipped
+/// production demand selective (`sync_demand`), the plain `build_gui_state` returns
+/// only the delta subset (the DELTA CONTRACT); this tool forces a full-scope
+/// snapshot so `engine_state` (and the `mesh_stats` tool, which shares the same
+/// builder) stays consistent with `viewport_state.meshCount` — the complete scene
+/// the frontend accumulates — regardless of the live selective-demand scope.
+///
 /// # One-snapshot invariant (task 4258)
 ///
 /// `files[].content` and `compile_diagnostics` are computed from the **same**
@@ -213,9 +224,11 @@ pub fn update_source_impl(
 /// `files[].content` will produce incorrect positions.  Use `get_source_location`
 /// spans only when `stale == false`.
 pub fn engine_state_json(session: &mut EngineSession) -> Result<serde_json::Value, String> {
+    // Full-scene snapshot (task 5348): report every realized body, not the
+    // frontend's selective-demand incremental delta. See the doc-comment above.
     let gui_state = session
-        .build_gui_state()
-        .map_err(|e| format!("build_gui_state failed: {e}"))?;
+        .build_gui_state_full_scene()
+        .map_err(|e| format!("build_gui_state_full_scene failed: {e}"))?;
 
     let meshes: Vec<serde_json::Value> = gui_state
         .meshes
