@@ -118,7 +118,7 @@ anchor convention changes (e.g. a future `wedge_centered` variant):
 | `rounded_rect` (2D profile) | planar in the **XY plane at z=0**, **centred at origin** | same anchor as `rectangle`; all 4 corners rounded to `corner_r` |
 | `polygon` (2D profile) | planar in the **XY plane at z=0**; position set by its **explicit vertices** — not auto-centred | same consumers as above; a caller-supplied vertex set can sit off-origin, unlike the other 2D profiles |
 | `extrude(profile, distance)` | extrudes along the profile plane's normal, starting at the profile's own z=0 plane | inherits the profile's XY centring |
-| `revolve(profile, axis, angle)` | sweeps the profile about a caller-supplied `axis` | anchor is whatever the profile + axis define — no implicit centring |
+| `revolve(profile, ox, oy, oz, ax, ay, az, angle)` | sweeps the profile about a caller-supplied origin + axis direction (6 scalars) | anchor is whatever the profile + axis define — no implicit centring |
 
 **Rule of thumb:** `box`-family and `sphere`/`torus` are centred; `cylinder`-family (`cylinder`,
 `cone`, `tube`) sits base-first on the origin along +Z; `wedge` sits corner-first in the +octant.

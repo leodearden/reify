@@ -145,17 +145,15 @@ fn vec3_compiles() {
     assert_compiles("vec3", "vec3(0.0, 0.0, 1.0)");
 }
 
-// --- Anchoring-table phantom: revolve(profile, axis, angle) [3-arg] ---
+// --- Anchoring table: revolve(profile, ox, oy, oz, ax, ay, az, angle) ---
 
 #[test]
-fn revolve_anchoring_table_phantom_is_rejected_pending_doc_fix() {
-    // geometry.md line 121 currently documents a 3-arg
-    // `revolve(profile, axis, angle)`, but the only compiler arm is the
-    // 8-arg `revolve(profile, ox,oy,oz, ax,ay,az, angle)` (geometry.rs:1969).
-    // RED until step-2 corrects geometry.md's anchoring-table row and this
-    // fixture to the real 8-arg form.
+fn revolve_compiles() {
+    // geometry.md line 121 documents the 8-arg
+    // `revolve(profile, ox, oy, oz, ax, ay, az, angle)` form (geometry.rs:1969):
+    // profile + origin (0,0,0) + axis direction (0,0,1) + angle.
     assert_compiles(
-        "revolve_anchoring_table_phantom",
-        "revolve(circle(5mm), vec3(0,0,1), 90deg)",
+        "revolve",
+        "revolve(circle(5mm), 0mm, 0mm, 0mm, 0mm, 0mm, 1mm, 90deg)",
     );
 }
