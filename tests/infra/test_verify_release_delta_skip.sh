@@ -494,4 +494,45 @@ assert "ACTIVATION: REIFY_RELEASE_DELTA_SKIP value is exactly \"1\" (genuinely a
         [ "$val" = "1" ]
     ' _ "$ACT_VERIFY_ENV_KV"
 
+# ===========================================================================
+# CONTAINMENT block (task ζ / 5280; esc-5280-6 design ruling): the pool
+# chokepoint strip.
+#   The ACTIVATION above exports REIFY_RELEASE_DELTA_SKIP=1 into the WHOLE
+#   merge-gate verify.sh process tree via the orchestrator verify_env. The
+#   knob is meant to be consulted ONCE by the top-level merge verify at
+#   plan-build time (verify.sh:1160-1178); its decision is frozen into the
+#   PLAN before any plan line runs. Without containment the ambient knob
+#   leaks into run_all.sh's pool, where members that re-assert
+#   DF_VERIFY_ROLE=merge inline (test_verify_scope.sh MG-B5,
+#   test_verify_role_prio.sh C1, the occt/release/semaphore plan-shape
+#   meta-tests) would inherit knob=1 and see the release pass wrongly
+#   suppressed on a delta-clean fixture — merge gate RED on every
+#   delta-clean merge (esc-5280-6). run_all.sh neutralizes the knob for all
+#   members with `export REIFY_RELEASE_DELTA_SKIP=0`, mirroring its existing
+#   DF_VERIFY_ROLE=task normalization (merge-gate-riders K4: "never ambient
+#   in the pool"). This asserts that chokepoint is present so it cannot be
+#   silently dropped. Direct end-to-end proof (the victim member re-runs
+#   GREEN under an ambient knob=1) is captured by the pool run itself; here
+#   we pin the seam against regression.
+# ===========================================================================
+echo ""
+echo "--- CONTAINMENT (task ζ): run_all.sh chokepoint strips the ambient knob ---"
+
+ACT_RUN_ALL="$REPO_ROOT/tests/infra/run_all.sh"
+assert "CONTAINMENT: tests/infra/run_all.sh exists" \
+    test -f "$ACT_RUN_ALL"
+
+# The chokepoint: run_all.sh must export REIFY_RELEASE_DELTA_SKIP=0 so no pool
+# member (even one that re-asserts DF_VERIFY_ROLE=merge inline) ever inherits
+# the ambient activation knob. Matches `export REIFY_RELEASE_DELTA_SKIP=0`
+# with optional leading indentation; the value must be exactly 0.
+assert "CONTAINMENT: run_all.sh neutralizes REIFY_RELEASE_DELTA_SKIP for pool members (=0)" \
+    grep -qE '^[[:space:]]*export REIFY_RELEASE_DELTA_SKIP=0([[:space:]]|$)' "$ACT_RUN_ALL"
+
+# Placement sanity: the strip must sit beside the sibling DF_VERIFY_ROLE=task
+# normalization (both neutralize ambient merge-gate state for the pool), so a
+# future refactor that moves one is prompted to move the other.
+assert "CONTAINMENT: run_all.sh still normalizes DF_VERIFY_ROLE=task (sibling seam intact)" \
+    grep -qE '^[[:space:]]*export DF_VERIFY_ROLE=task([[:space:]]|$)' "$ACT_RUN_ALL"
+
 test_summary
