@@ -980,6 +980,73 @@ fn engine_state_json_reports_full_scene_under_selective_demand() {
     );
 }
 
+/// step-5 (task 5348): the PRIMARY acceptance regression test — the debug-MCP
+/// `mesh_stats` tool (via the extracted `commands::mesh_stats_json`) must report a
+/// mesh-stats entry per rendered body == the scene's body count, on a composed
+/// fixture with nested subs at 3+ levels, even under selective demand.
+///
+/// Mirrors step-3 but through `mesh_stats_json`, and additionally pins the
+/// per-entry shape parity with the current `handle_mesh_stats` output.
+///
+/// RED until step-6 extracts `commands::mesh_stats_json` (compile-error RED).
+#[test]
+fn mesh_stats_json_reports_full_scene_under_selective_demand() {
+    use crate::commands::mesh_stats_json;
+
+    let mut session = make_nested_composed_session();
+
+    // Cold full-scope projection = the complete scene.
+    let cold = mesh_stats_json(&mut session).expect("cold mesh_stats_json should succeed");
+    let cold_meshes = cold["meshes"].as_array().expect("meshes must be an array");
+    let n = cold_meshes.len();
+    assert!(
+        n >= 4,
+        "nested-composed fixture must project the 4 leaf bodies; got {n}"
+    );
+    let all_paths: Vec<String> = cold_meshes
+        .iter()
+        .map(|m| {
+            m["entity_path"]
+                .as_str()
+                .expect("each mesh must carry an entity_path string")
+                .to_string()
+        })
+        .collect();
+
+    // Hide one leaf branch → flip production demand SELECTIVE.
+    let hidden = all_paths
+        .last()
+        .expect("cold scene must have at least one mesh")
+        .clone();
+    let visible: Vec<String> = all_paths.iter().filter(|p| **p != hidden).cloned().collect();
+    session.sync_demand(&visible);
+
+    // mesh_stats must report the FULL scene (n entries), not the selective delta.
+    let after = mesh_stats_json(&mut session).expect("post-sync mesh_stats_json should succeed");
+    let after_meshes = after["meshes"].as_array().expect("meshes must be an array");
+    assert_eq!(
+        after_meshes.len(),
+        n,
+        "mesh_stats entry count must equal the scene's rendered body count under selective demand"
+    );
+
+    // Per-entry shape parity with handle_mesh_stats.
+    for entry in after_meshes {
+        for key in [
+            "entity_path",
+            "vertex_count",
+            "face_count",
+            "bounding_box",
+            "element_kind_count",
+        ] {
+            assert!(
+                entry.get(key).is_some(),
+                "each mesh_stats entry must carry '{key}'; got {entry:?}"
+            );
+        }
+    }
+}
+
 /// Two-body, constraint-free, param-driven fixture (mirrors the engine-side
 /// `SELECTIVE_MULTIBODY_SRC` at engine_tests.rs:13210 and the δ
 /// `SELECTIVE_DEMAND_MULTIBODY_SRC`): `w → sa → box a (R0)` and
