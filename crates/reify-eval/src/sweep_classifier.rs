@@ -88,6 +88,13 @@ pub enum SweptKind {
         /// Total swept length, dimension-tagged as `Type::length()`. Cloned
         /// directly from the source op's `distance` field.
         length: Value,
+        /// Handle of the 2-D profile op the sweep extrudes. Captured from the
+        /// source [`GeometryOp::Extrude`] / [`GeometryOp::ExtrudeSymmetric`]
+        /// `profile` field so the cross-section producer
+        /// (`swept_kind_to_profile_boundary`) can resolve the profile op from
+        /// the parallel handles slice — mirrors
+        /// [`SweptKind::SweepLinear::profile`].
+        profile: GeometryHandleId,
     },
     /// Revolution around an axis by an angle.
     ///
@@ -111,6 +118,12 @@ pub enum SweptKind {
         /// `GeometryOp::Revolve.angle_rad`. The classifier rejects
         /// `|angle_rad| < REVOLVE_DEGENERATE_TOLERANCE`.
         angle_rad: f64,
+        /// Handle of the 2-D profile op the sweep revolves. Captured from the
+        /// source [`GeometryOp::Revolve`] `profile` field so the cross-section
+        /// producer (`swept_kind_to_profile_boundary`) can resolve the profile
+        /// op from the parallel handles slice — mirrors
+        /// [`SweptKind::SweepLinear::profile`].
+        profile: GeometryHandleId,
     },
     /// Single-profile sweep along a *non-twisted* path.
     ///
@@ -209,17 +222,17 @@ pub fn classify_swept_body(ops: &[GeometryOp], handles: &[GeometryHandleId]) -> 
         "classify_swept_body: ops and handles must be parallel arrays of equal length"
     );
     match ops.last()? {
-        GeometryOp::Extrude { distance, .. } | GeometryOp::ExtrudeSymmetric { distance, .. } => {
-            Some(SweptKind::Extrude {
-                axis: [0.0, 0.0, 1.0],
-                length: distance.clone(),
-            })
-        }
+        GeometryOp::Extrude { profile, distance }
+        | GeometryOp::ExtrudeSymmetric { profile, distance } => Some(SweptKind::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: distance.clone(),
+            profile: *profile,
+        }),
         GeometryOp::Revolve {
+            profile,
             axis_origin,
             axis_dir,
             angle_rad,
-            ..
         } => {
             // Reject zero-length axis vector and zero-angle revolves; any
             // other angle (including the full 2π case) qualifies. Use the
@@ -248,6 +261,7 @@ pub fn classify_swept_body(ops: &[GeometryOp], handles: &[GeometryHandleId]) -> 
                         axis_dir[2] / axis_norm,
                     ],
                     angle_rad: *angle_rad,
+                    profile: *profile,
                 })
             }
         }
@@ -307,7 +321,7 @@ pub fn swept_kind_to_sweep_params(
     use reify_solver_elastic::SweepParams;
     match kind {
         // Step-16: Extrude — forward axis verbatim, extract length as f64.
-        SweptKind::Extrude { axis, length } => length.as_f64().map(|len| SweepParams::Extrude {
+        SweptKind::Extrude { axis, length, .. } => length.as_f64().map(|len| SweepParams::Extrude {
             axis: *axis,
             length: len,
         }),
@@ -322,6 +336,7 @@ pub fn swept_kind_to_sweep_params(
             axis_origin,
             axis_dir,
             angle_rad,
+            ..
         } => {
             let (axis_dir_out, angle_out) = if *angle_rad < 0.0 {
                 ([-axis_dir[0], -axis_dir[1], -axis_dir[2]], -*angle_rad)
@@ -389,6 +404,7 @@ mod tests {
             Some(SweptKind::Extrude {
                 axis: [0.0, 0.0, 1.0],
                 length: Value::length(0.01),
+                profile: GeometryHandleId(0),
             }),
             "single Extrude op must classify as SweptKind::Extrude with axis=+Z"
         );
@@ -406,6 +422,7 @@ mod tests {
             Some(SweptKind::Extrude {
                 axis: [0.0, 0.0, 1.0],
                 length: Value::length(0.01),
+                profile: GeometryHandleId(0),
             }),
             "single ExtrudeSymmetric op must classify as SweptKind::Extrude with axis=+Z"
         );
@@ -473,6 +490,7 @@ mod tests {
                 axis_origin: [0.0, 0.0, 0.0],
                 axis_dir: [0.0, 0.0, 1.0],
                 angle_rad: std::f64::consts::FRAC_PI_2,
+                profile: GeometryHandleId(0),
             }),
             "partial-angle revolve with non-degenerate axis must classify as SweptKind::Revolve"
         );
@@ -493,6 +511,7 @@ mod tests {
                 axis_origin: [1.0, 2.0, 3.0],
                 axis_dir: [0.0, 1.0, 0.0],
                 angle_rad: 2.0 * std::f64::consts::PI,
+                profile: GeometryHandleId(0),
             }),
             "full 2π revolve must still classify as SweptKind::Revolve (kernel handles full-revolution edge cases downstream)"
         );
@@ -565,6 +584,7 @@ mod tests {
                 axis_origin,
                 axis_dir,
                 angle_rad,
+                ..
             }) => {
                 // axis_origin and angle_rad must be propagated verbatim.
                 assert_eq!(
@@ -627,6 +647,7 @@ mod tests {
                 axis_origin,
                 axis_dir,
                 angle_rad,
+                ..
             }) => {
                 assert_eq!(
                     axis_origin,
@@ -687,6 +708,7 @@ mod tests {
                 axis_origin,
                 axis_dir,
                 angle_rad,
+                ..
             }) => {
                 assert_eq!(
                     axis_origin,
@@ -742,6 +764,7 @@ mod tests {
                 axis_origin,
                 axis_dir,
                 angle_rad,
+                ..
             }) => {
                 assert_eq!(
                     axis_origin,
@@ -1038,6 +1061,7 @@ mod tests {
         let kind = SweptKind::Extrude {
             axis: [0.0, 0.0, 1.0],
             length: Value::length(0.01),
+            profile: GeometryHandleId(0),
         };
         let result = swept_kind_to_sweep_params(&kind, &[], &[]);
         match result {
@@ -1058,6 +1082,7 @@ mod tests {
             axis_origin: [1.0, 2.0, 3.0],
             axis_dir: [0.0, 1.0, 0.0],
             angle_rad: std::f64::consts::FRAC_PI_2,
+            profile: GeometryHandleId(0),
         };
         let result = swept_kind_to_sweep_params(&kind, &[], &[]);
         match result {
@@ -1150,6 +1175,7 @@ mod tests {
             axis_origin: [0.0, 0.0, 0.0],
             axis_dir: [0.0, 0.0, 1.0],
             angle_rad: -std::f64::consts::FRAC_PI_2,
+            profile: GeometryHandleId(0),
         };
         let result = swept_kind_to_sweep_params(&kind, &[], &[]);
         match result {
@@ -1243,6 +1269,7 @@ mod tests {
         let kind = SweptKind::Extrude {
             axis: [0.0, 0.0, 1.0],
             length: Value::length(0.01),
+            profile: GeometryHandleId(0),
         };
         table.record(GeometryHandleId(7), kind.clone());
         assert_eq!(
@@ -1277,6 +1304,7 @@ mod tests {
             SweptKind::Extrude {
                 axis: [0.0, 0.0, 1.0],
                 length: Value::length(0.005),
+                profile: GeometryHandleId(0),
             },
         );
         assert_eq!(
@@ -1293,11 +1321,13 @@ mod tests {
         let first = SweptKind::Extrude {
             axis: [0.0, 0.0, 1.0],
             length: Value::length(0.005),
+            profile: GeometryHandleId(0),
         };
         let second = SweptKind::Revolve {
             axis_origin: [0.0, 0.0, 0.0],
             axis_dir: [0.0, 0.0, 1.0],
             angle_rad: std::f64::consts::FRAC_PI_2,
+            profile: GeometryHandleId(0),
         };
         table.record(id, first);
         table.record(id, second.clone());

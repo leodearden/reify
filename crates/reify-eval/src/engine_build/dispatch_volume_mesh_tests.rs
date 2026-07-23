@@ -41,6 +41,7 @@
         crate::sweep_classifier::SweptKind::Extrude {
             axis: [0.0, 0.0, 1.0],
             length: Value::length(0.01),
+            profile: GeometryHandleId(0),
         }
     }
 
