@@ -3856,6 +3856,79 @@ mod tests {
         }
     }
 
+    /// The geometry-call recursion cap fires at `MAX_COMPILE_RECURSION_DEPTH`:
+    /// pre-seeding the shared thread-local with that many live guards makes a
+    /// trivial `box(1,1,1)` return `None` + the `ExpressionNestingTooDeep`
+    /// diagnostic, while without the pre-seed it compiles to `Some(ops)`.
+    /// Exercises the cap without real deep recursion (parallels the cegwe cap
+    /// test in expr.rs; the two share the thread-local counter).
+    #[test]
+    fn compile_geometry_call_recursion_cap_fires_past_max_depth() {
+        use crate::recursion_guard::{MAX_COMPILE_RECURSION_DEPTH, RecursionDepthGuard};
+
+        let box_expr = make_call_with_arity("box", 3);
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+        let geometry_lets: HashMap<&str, &reify_ast::Expr> = HashMap::new();
+
+        // Baseline: box(1,1,1) compiles to Some(ops) with no too-deep diagnostic
+        // (proves the cap only fires past MAX, not on ordinary input).
+        {
+            let mut diagnostics: Vec<Diagnostic> = vec![];
+            let result = compile_geometry_call(
+                &box_expr,
+                &scope,
+                &enum_defs,
+                &functions,
+                &mut diagnostics,
+                0,
+                &geometry_lets,
+                &mut HashSet::new(),
+            );
+            assert!(
+                result.is_some(),
+                "box(1,1,1) should compile without the cap engaged; diags: {:?}",
+                diagnostics
+            );
+            assert!(
+                !diagnostics.iter().any(|d| d.code
+                    == Some(reify_core::DiagnosticCode::ExpressionNestingTooDeep)),
+                "no too-deep diagnostic without pre-seeded depth, got: {:?}",
+                diagnostics
+            );
+        }
+
+        // Cap: pre-seed MAX live guards so the compile_geometry_call entry pushes
+        // the depth to MAX+1 and the cap fires — None + the too-deep diagnostic.
+        let guards: Vec<RecursionDepthGuard> = (0..MAX_COMPILE_RECURSION_DEPTH)
+            .map(|_| RecursionDepthGuard::enter())
+            .collect();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let result = compile_geometry_call(
+            &box_expr,
+            &scope,
+            &enum_defs,
+            &functions,
+            &mut diagnostics,
+            0,
+            &geometry_lets,
+            &mut HashSet::new(),
+        );
+        assert!(
+            result.is_none(),
+            "cap should make compile_geometry_call return None once depth exceeds MAX"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == Some(reify_core::DiagnosticCode::ExpressionNestingTooDeep)),
+            "expected the ExpressionNestingTooDeep diagnostic, got: {:?}",
+            diagnostics
+        );
+        drop(guards);
+    }
+
     /// `is_geometry_let` must classify the 2-arg CSG `sweep(profile, path)` as
     /// a geometry let (docs §3) and the 4-arg kinematic
     /// `sweep(mechanism, joint, range, steps)` as NOT a geometry let
