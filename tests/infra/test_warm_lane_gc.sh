@@ -275,6 +275,13 @@ assert "B3: seed-script received resolved gen path (not symlink)" \
     bash -c 'grep -q "target.gen.1" "$1"' _ "$B_SEED_LOG"
 assert "B4: seed-script received --fresh-checkout" \
     bash -c 'grep -q -- "--fresh-checkout" "$1"' _ "$B_SEED_LOG"
+# gc holds the lane flock on FD 8 (line 417) AND the gen lock (flock -s) on
+# FD 9 (line 461) itself across the seed call, so the seed must NOT re-acquire
+# the lane lock on FD 9 — that would both self-refuse against gc's FD-8 lane
+# lock and clobber gc's FD-9 gen lock. gc therefore passes --assume-lane-lock-held
+# so the seed skips its own (now default-on) acquire (esc-5214/task 5354).
+assert "B4b: seed-script received --assume-lane-lock-held (gc already holds the lane+gen locks; task 5354)" \
+    bash -c 'grep -q -- "--assume-lane-lock-held" "$1"' _ "$B_SEED_LOG"
 assert "B5: divergent target marker removed (thinned)" \
     bash -c '[ ! -f "$1" ]' _ "$B_WORKTREES/_lane-1/target/DIVERGENT_MARKER"
 
