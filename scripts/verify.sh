@@ -1657,6 +1657,22 @@ build_plan() {
         add "./scripts/check-infra-classification-manifest.sh"
     fi
 
+    # harness-layout baseline-registration drift gate (task 5300): fail fast —
+    # naming the offending crate/file — when THIS diff ADDS a standalone
+    # crates/<c>/tests/<f>.rs to one of the 5 consolidatable crates WITHOUT a
+    # matching harness-layout-baseline.manifest row (the task 4370 drift). Unlike
+    # test_harness_kloc_cap.sh's whole-tree live scan (which re-fires on every
+    # innocent downstream rebaser once such drift is on main — the 5260/5266/5288
+    # thrash), this gate is DIFF-SCOPED (--from-git derives the added-file set),
+    # so it fires only on the offending diff and leaves rebasers green. Cheap
+    # (pure bash + git, no cargo) and fail-open on any underivable base, so it
+    # sits among the early fail-fast poles, before check-manifold-deps.sh /
+    # psi-gate / run_all.sh. RUN_RUST=1 keeps docs-only / gui-src-only plans at
+    # zero command leaves.
+    if [ "$RUN_RUST" -eq 1 ]; then
+        add "./scripts/check-harness-baseline-registration.sh --from-git"
+    fi
+
     # manifold prebuilt guard: fail fast (with a clear "run the deps script"
     # message) if the prebuilt manifold libs that .cargo/config.toml's
     # [target.*.manifold] override links are missing or version-drifted —
