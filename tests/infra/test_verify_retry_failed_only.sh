@@ -186,5 +186,78 @@ assert "count: all four keys (nextest_debug/nextest_release/run_all/gui) present
         printf "%s\n" "$L" | grep -qF -- "gui="
     ' _ "$PLAN_CB" "$MARKER"
 
+# ---------------------------------------------------------------------------
+# B2/B3 honesty-SUPPRESSION (PRD §4.4 INV-6). When a failed_only retry actually
+# falls back to a FULL re-verify, STDOUT must carry NO marker — otherwise DF's
+# runtime mining would miscount a full re-verify as a failed_only green gate.
+# All three cases carry NO run_all/gui subset (env -u), so the ONLY suite that
+# could narrow is nextest — and it does not, so the marker must be absent:
+#   (a) B2 tree-drift — mismatched sidecar tree_oid ⇒ ineligible ⇒ full; the
+#       loud α 'retry refused: tree drift' line is on STDERR.
+#   (b) B3 no-subset — matching sidecar (eligible) but an absent filter file ⇒
+#       nothing narrowed ⇒ full; the loud α 'retry refused: no subset' line is
+#       on STDERR. This is the case the ≥1-suite-narrowed gate exists for.
+#   (c) byte-identical DEFAULT — no REIFY_VERIFY_RETRY_* envs at all ⇒ no marker.
+# RED until step-6: the step-4 emitter fires on mere tree-OID eligibility, so
+# (b) — eligible but not narrowed — wrongly emits the marker. (a) and (c) are
+# green-on-arrival permanent locks (ineligible / non-retry never set the gate).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- B2/B3: marker SUPPRESSED on every full-fallback / refusal path (INV-6) ---"
+
+# (a) B2 tree-drift: mismatched sidecar tree_oid, no run_all/gui subset.
+DRIFT_OUT="$(env -u REIFY_RUN_ALL_MEMBER_SUBSET -u REIFY_GUI_RETRY_SPECS \
+    REIFY_VERIFY_RETRY_SCOPE=failed_only \
+    REIFY_VERIFY_RETRY_TREE_OID=cafef00d \
+    REIFY_VERIFY_ATTEMPT_SIDECAR="$SIDECAR" \
+    REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE="$FILTER" \
+    bash "$VERIFY" test --scope all --print-plan 2>/dev/null)" || true
+DRIFT_ERR="$(env -u REIFY_RUN_ALL_MEMBER_SUBSET -u REIFY_GUI_RETRY_SPECS \
+    REIFY_VERIFY_RETRY_SCOPE=failed_only \
+    REIFY_VERIFY_RETRY_TREE_OID=cafef00d \
+    REIFY_VERIFY_ATTEMPT_SIDECAR="$SIDECAR" \
+    REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE="$FILTER" \
+    bash "$VERIFY" test --scope all --print-plan 2>&1 >/dev/null)" || true
+
+assert "B2 tree-drift: STDOUT carries NO $MARKER marker (full fallback, INV-6)" \
+    bash -c '! printf "%s\n" "$1" | grep -qF -- "$2"' \
+    _ "$DRIFT_OUT" "$MARKER"
+assert "B2 tree-drift: STDERR carries the loud 'retry refused: tree drift' line (α)" \
+    bash -c 'printf "%s\n" "$1" | grep -qF -- "retry refused: tree drift"' \
+    _ "$DRIFT_ERR"
+
+# (b) B3 no-subset: matching sidecar (eligible) but an absent filter file, no
+# run_all/gui subset. The per-profile filter vars are cleared too so the base
+# path fully resolves to the nonexistent file.
+NOSUB_OUT="$(env -u REIFY_RUN_ALL_MEMBER_SUBSET -u REIFY_GUI_RETRY_SPECS \
+    -u REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE_DEBUG \
+    -u REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE_RELEASE \
+    REIFY_VERIFY_RETRY_SCOPE=failed_only \
+    REIFY_VERIFY_RETRY_TREE_OID=deadbeef \
+    REIFY_VERIFY_ATTEMPT_SIDECAR="$SIDECAR" \
+    REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE="$_TMP/nonexistent-filter.txt" \
+    bash "$VERIFY" test --scope all --print-plan 2>/dev/null)" || true
+NOSUB_ERR="$(env -u REIFY_RUN_ALL_MEMBER_SUBSET -u REIFY_GUI_RETRY_SPECS \
+    -u REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE_DEBUG \
+    -u REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE_RELEASE \
+    REIFY_VERIFY_RETRY_SCOPE=failed_only \
+    REIFY_VERIFY_RETRY_TREE_OID=deadbeef \
+    REIFY_VERIFY_ATTEMPT_SIDECAR="$SIDECAR" \
+    REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE="$_TMP/nonexistent-filter.txt" \
+    bash "$VERIFY" test --scope all --print-plan 2>&1 >/dev/null)" || true
+
+assert "B3 no-subset: STDOUT carries NO $MARKER marker (eligible but nothing narrowed, INV-6)" \
+    bash -c '! printf "%s\n" "$1" | grep -qF -- "$2"' \
+    _ "$NOSUB_OUT" "$MARKER"
+assert "B3 no-subset: STDERR carries the loud 'retry refused: no subset' line (α)" \
+    bash -c 'printf "%s\n" "$1" | grep -qF -- "retry refused: no subset"' \
+    _ "$NOSUB_ERR"
+
+# (c) byte-identical DEFAULT (no REIFY_VERIFY_RETRY_* envs) — captured off the
+# nextest-probe plan above — carries no marker (permanent non-retry lock).
+assert "default: byte-identical plan carries NO $MARKER marker (non-retry)" \
+    bash -c '! printf "%s\n" "$1" | grep -qF -- "$2"' \
+    _ "$PLAN_DEFAULT" "$MARKER"
+
 # --- assertion sections are appended above this line by steps 1/3/5/7 ---
 test_summary
