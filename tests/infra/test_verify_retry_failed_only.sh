@@ -259,5 +259,48 @@ assert "default: byte-identical plan carries NO $MARKER marker (non-retry)" \
     bash -c '! printf "%s\n" "$1" | grep -qF -- "$2"' \
     _ "$PLAN_DEFAULT" "$MARKER"
 
+# ---------------------------------------------------------------------------
+# B1/B4/B5 cross-suite INTEGRATION regression locks (green-on-arrival — they
+# pin the already-landed α/β/γ per-suite behavior cohering with δ's marker on
+# the MERGED contract, the raison d'être of an INTEGRATION-GATE; NO paired
+# impl). δ asserts only that, under the unified narrowed config, each suite's
+# emitted COMMAND LINE is present alongside the marker — it does NOT re-derive
+# α's fragment grammar (exact-match soundness / single-`-E` fold / per-profile
+# precedence / ceiling all live in α's own plan-shape unit test), avoiding G7
+# lock-step duplication. These check the actual cargo/gui command lines, which
+# the marker-only count section above does not.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- B1/B4/B5: α/β/γ command-line shapes cohere with the δ marker (integration locks) ---"
+
+# B1 (locks α): under the narrowed nextest retry (PLAN_MARK) the debug
+# `cargo nextest run` line carries the exact-match subset for BOTH filter ids —
+# the α primitive the marker's nextest_debug count is derived from. The debug
+# pass is the nextest line WITHOUT ` --release`. NEXTEST-guarded (command shape).
+if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+    assert "B1: debug nextest line carries the exact-match subset test(=$ID1) AND test(=$ID2) (locks α)" \
+        bash -c '
+            L=$(printf "%s\n" "$1" | grep -E "(^| )cargo nextest run " | grep -v -- " --release" | head -1)
+            printf "%s\n" "$L" | grep -qF -- "test(=$2)" && \
+            printf "%s\n" "$L" | grep -qF -- "test(=$3)"
+        ' _ "$PLAN_MARK" "$ID1" "$ID2"
+fi
+
+# B5 (locks γ): with REIFY_GUI_RETRY_SPECS set (PLAN_CC) the gui plan line
+# forwards `npm test -- <specs>` (== vitest run <specs>) rather than a bare
+# `npm test` — visible in --print-plan, host-independent.
+assert "B5: gui plan line forwards 'npm test -- $GSPEC1 $GSPEC2' (locks γ, not a bare npm test)" \
+    bash -c 'printf "%s\n" "$1" | grep -qF -- "npm test -- $2 $3"' \
+    _ "$PLAN_CC" "$GSPEC1" "$GSPEC2"
+
+# B4 (locks β): the marker's run_all count (PLAN_CB) equals the
+# REIFY_RUN_ALL_MEMBER_SUBSET member count — verify.sh's reify-side signal that
+# it saw β's member subset. Member count computed from the fixture so the lock
+# tracks it (word-split is safe: the members are plain .sh basenames).
+_B4_toks=($RAMEMBER1 $RAMEMBER2); _B4_N=${#_B4_toks[@]}
+assert "B4: marker run_all=$_B4_N equals the REIFY_RUN_ALL_MEMBER_SUBSET member count (β signal)" \
+    bash -c 'printf "%s\n" "$1" | grep -F -- "$2" | grep -qF -- "run_all=$3"' \
+    _ "$PLAN_CB" "$MARKER" "$_B4_N"
+
 # --- assertion sections are appended above this line by steps 1/3/5/7 ---
 test_summary
