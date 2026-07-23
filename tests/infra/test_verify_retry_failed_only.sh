@@ -237,21 +237,30 @@ NOSUB_OUT="$(env -u REIFY_RUN_ALL_MEMBER_SUBSET -u REIFY_GUI_RETRY_SPECS \
     REIFY_VERIFY_ATTEMPT_SIDECAR="$SIDECAR" \
     REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE="$_TMP/nonexistent-filter.txt" \
     bash "$VERIFY" test --scope all --print-plan 2>/dev/null)" || true
-NOSUB_ERR="$(env -u REIFY_RUN_ALL_MEMBER_SUBSET -u REIFY_GUI_RETRY_SPECS \
-    -u REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE_DEBUG \
-    -u REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE_RELEASE \
-    REIFY_VERIFY_RETRY_SCOPE=failed_only \
-    REIFY_VERIFY_RETRY_TREE_OID=deadbeef \
-    REIFY_VERIFY_ATTEMPT_SIDECAR="$SIDECAR" \
-    REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE="$_TMP/nonexistent-filter.txt" \
-    bash "$VERIFY" test --scope all --print-plan 2>&1 >/dev/null)" || true
-
 assert "B3 no-subset: STDOUT carries NO $MARKER marker (eligible but nothing narrowed, INV-6)" \
     bash -c '! printf "%s\n" "$1" | grep -qF -- "$2"' \
     _ "$NOSUB_OUT" "$MARKER"
-assert "B3 no-subset: STDERR carries the loud 'retry refused: no subset' line (α)" \
-    bash -c 'printf "%s\n" "$1" | grep -qF -- "retry refused: no subset"' \
-    _ "$NOSUB_ERR"
+# The loud STDERR refusal line is nextest-dependent: on a nextest host the
+# eligible-but-no-subset path emits 'retry refused: no subset' (verify.sh's
+# NEXTEST=1 block, verify.sh:1411); on a host WITHOUT cargo-nextest the same
+# eligible path instead emits 'retry refused: no nextest' (verify.sh:1486), so
+# this exact-line assertion — and its NOSUB_ERR capture — is NEXTEST-guarded to
+# keep the pool suite host-independent (matches the B6/count/B1 guarding). The
+# STDOUT marker-suppression assertion above stays UNGUARDED: the marker is
+# correctly absent on BOTH host states.
+if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+    NOSUB_ERR="$(env -u REIFY_RUN_ALL_MEMBER_SUBSET -u REIFY_GUI_RETRY_SPECS \
+        -u REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE_DEBUG \
+        -u REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE_RELEASE \
+        REIFY_VERIFY_RETRY_SCOPE=failed_only \
+        REIFY_VERIFY_RETRY_TREE_OID=deadbeef \
+        REIFY_VERIFY_ATTEMPT_SIDECAR="$SIDECAR" \
+        REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE="$_TMP/nonexistent-filter.txt" \
+        bash "$VERIFY" test --scope all --print-plan 2>&1 >/dev/null)" || true
+    assert "B3 no-subset: STDERR carries the loud 'retry refused: no subset' line (α)" \
+        bash -c 'printf "%s\n" "$1" | grep -qF -- "retry refused: no subset"' \
+        _ "$NOSUB_ERR"
+fi
 
 # (c) byte-identical DEFAULT (no REIFY_VERIFY_RETRY_* envs) — captured off the
 # nextest-probe plan above — carries no marker (permanent non-retry lock).
