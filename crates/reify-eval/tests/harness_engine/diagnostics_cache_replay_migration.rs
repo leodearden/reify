@@ -361,3 +361,88 @@ fn mass_properties_psd_registry_parity() {
         checked.diagnostics
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// Annotation-args materialization post-pass — cold-only asymmetry dissolved
+// so the failure diagnostic surfaces on the warm serve too (step-7; wired by
+// step-8 via a shared Engine helper called from eval + eval_cached).
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Count `E_AnnotationEvalFailed` diagnostics — the annotation-args
+/// materialization post-pass's failure code — in a diagnostics slice.
+fn count_annotation_eval_failed(diagnostics: &[Diagnostic]) -> usize {
+    diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::AnnotationEvalFailed))
+        .count()
+}
+
+/// (step-7) The annotation-args materialization FAILURE diagnostic
+/// (`AnnotationEvalFailed`) + the failing cell's `Value::Undef` replacement
+/// must surface on a warm `eval_cached()` serve too, not just cold `eval()` —
+/// dissolving the eval-only asymmetry the (now-updated) `engine_eval.rs`
+/// "eval_cached does NOT run this pass" note described. Exactly once per serve:
+/// never doubled, never swallowed.
+///
+/// This is the representative `.ri`-authorable "cold-only post-pass now runs on
+/// the warm serve" parity signal for μ. (Note: contrary to the plan's
+/// design-decision 5 premise, a directly-constructed non-PSD `MassProperties`
+/// IS `.ri`-authorable — see `structure_instance_e2e.rs::
+/// mass_properties_non_psd_inertia_emits_diagnostic_and_undef` — so a positive
+/// cross-path PSD test is also authorable; the step-9 sweep adds one. The
+/// annotation-args fixture is retained as step-7 specifies because step-8 wires
+/// the annotation-args helper into eval + eval_cached.)
+///
+/// `@test_eval(1.0 > 0.0)` yields a `Bool` against the schema's expected `Real`,
+/// so the materialization post-pass replaces `BadS.it` with `Value::Undef` and
+/// emits one `AnnotationEvalFailed`. `@test_eval` is a globally-registered
+/// test-only annotation schema requiring the non-stdlib `parse_and_compile` +
+/// `make_engine` helpers.
+///
+/// RED on base: the annotation-args driver is eval-only, so `eval_cached()`
+/// swallows the diagnostic (count 0) and leaves `BadS.it` as its cached
+/// (non-`Undef`) `StructureInstance`. GREEN after step-8's shared helper.
+///
+/// edit_check parity is intentionally NOT asserted here: step-8 wires the
+/// annotation-args helper into `eval` + `eval_cached` only (the PRD §10 Q2
+/// scope), so an edit_check leg would never go green under this plan.
+#[test]
+fn annotation_args_materialization_failure_surfaces_on_warm_serve() {
+    let compiled = parse_and_compile(ANNOTATION_ARGS_FAILURE_SRC);
+    let mut engine = make_engine();
+    let it_id = ValueCellId::new("BadS", "it");
+
+    // ── cold eval() baseline: diagnostic emitted + cell Undef-replaced ──
+    let cold = engine.eval(&compiled);
+    assert_eq!(
+        count_annotation_eval_failed(&cold.diagnostics),
+        1,
+        "cold eval(): exactly one AnnotationEvalFailed diagnostic (baseline); \
+         got {:?}",
+        cold.diagnostics
+    );
+    assert_eq!(
+        cold.values.get(&it_id),
+        Some(&Value::Undef),
+        "cold eval(): BadS.it must be Value::Undef after the materialization \
+         failure"
+    );
+
+    // ── warm eval_cached() serve (same engine): the post-pass must ALSO run ──
+    // RED on base (eval_cached is annotation-pass-free → 0). GREEN after step-8.
+    let warm = engine.eval_cached(&compiled, VersionId(1));
+    assert_eq!(
+        count_annotation_eval_failed(&warm.eval_result.diagnostics),
+        1,
+        "warm eval_cached(): the AnnotationEvalFailed diagnostic must surface \
+         exactly once (RED on base: swallowed → 0; must not be doubled either); \
+         got {:?}",
+        warm.eval_result.diagnostics
+    );
+    assert_eq!(
+        warm.eval_result.values.get(&it_id),
+        Some(&Value::Undef),
+        "warm eval_cached(): BadS.it must be Value::Undef after the \
+         materialization failure, same as cold eval()"
+    );
+}
