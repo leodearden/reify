@@ -488,6 +488,32 @@ pub fn swept_kind_to_profile_boundary(
     })
 }
 
+/// Build the 2-D cross-section mesh for a recognised swept body — the
+/// production caller path that makes the [`reify_solver_elastic`] 2-D mesher
+/// reachable from a [`SweptKind`].
+///
+/// Produces the [`reify_solver_elastic::ProfileBoundary`] via
+/// [`swept_kind_to_profile_boundary`] and forwards it to
+/// [`reify_solver_elastic::mesh_swept_profile_2d`]. A profile that fails to
+/// resolve — an unresolvable handle or a non-profile source op — collapses to
+/// [`reify_solver_elastic::Mesh2dError::EmptyBoundary`], short-circuiting before
+/// any Gmsh call.
+///
+/// This is the producer the swept `gmsh_2d` dispatch edge invokes (see the
+/// `dispatch_volume_mesh` call in `execute_realization_ops`, `engine_build.rs`).
+pub fn build_swept_2d_mesh(
+    kind: &SweptKind,
+    ops: &[GeometryOp],
+    handles: &[GeometryHandleId],
+    target: reify_solver_elastic::SweepElementTarget,
+    options: &reify_solver_elastic::Mesh2dOptions,
+) -> Result<reify_solver_elastic::Mesh2dReport, reify_solver_elastic::Mesh2dError> {
+    match swept_kind_to_profile_boundary(kind, ops, handles) {
+        Some(boundary) => reify_solver_elastic::mesh_swept_profile_2d(&boundary, target, options),
+        None => Err(reify_solver_elastic::Mesh2dError::EmptyBoundary),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
