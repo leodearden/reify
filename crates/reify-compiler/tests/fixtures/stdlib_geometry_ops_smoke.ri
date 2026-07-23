@@ -1,0 +1,56 @@
+// Executable transcription of the "Key Geometry Operations" table in
+// crates/reify-mcp/src/tools/chunks/stdlib.md (topic="stdlib"), concretized
+// over real primitives/profiles so it can be fed to compile_with_stdlib.
+//
+// SYNC CONTRACT: every call form below must mirror a signature documented in
+// that chunk's "Key Geometry Operations" (+ "Curves") section, and vice-versa.
+// The companion test crates/reify-compiler/tests/stdlib_chunk_geometry_ops_smoke.rs
+// asserts this file compiles with ZERO Error-severity diagnostics. Keep the two
+// files in lockstep; if you edit one, edit the other.
+//
+// RED STATE (task 5347 step-1): the forms below deliberately transcribe the
+// CURRENTLY-DOCUMENTED signatures, several of which DO NOT match the compiler's
+// real geometry-op arms (phantom `offset_surface`, 3-arg `rotate`/`extrude`/
+// `revolve`, 2-arg `translate`, 4-arg `linear_pattern`, 3-arg `circular_pattern`,
+// single-list `loft`). This file therefore fails to compile until step-2
+// rewrites both it and the chunk to the real compiler-verified forms.
+
+structure def StdlibGeometryOpsSmoke {
+    // ── Inputs (real constructors) ──────────────────────────────────────────
+    let a       = box(20mm, 20mm, 20mm)
+    let b       = box(10mm, 10mm, 30mm)
+    let solid   = box(20mm, 20mm, 20mm)
+    let prof    = rectangle(20mm, 10mm)
+    let prof2   = circle(8mm)
+    let path    = line_segment(0mm, 0mm, 0mm, 0mm, 0mm, 40mm)
+    let dir     = vec3(1.0, 0.0, 0.0)
+    let surf    = plane_xy(0mm)
+
+    // ── Booleans (as documented) ────────────────────────────────────────────
+    let u  = union(a, b)
+    let d  = difference(a, b)
+    let i  = intersection(a, b)
+    let sp = split(solid, surf)                    // split(solid, surface)
+
+    // ── Modify (as documented) ──────────────────────────────────────────────
+    let f  = fillet(solid, edges(solid), 1mm)      // fillet(solid, edges, radius)
+    let c  = chamfer(solid, edges(solid), 1mm)     // chamfer(solid, edges, distance)
+    let sh = shell(solid, faces(solid), 1mm)       // shell(solid, faces, thickness)
+    let os = offset_surface(surf, 1mm)             // offset_surface(surface, distance)  ← PHANTOM
+
+    // ── Sweep (as documented) ───────────────────────────────────────────────
+    let ex = extrude(prof, dir, 5mm)               // extrude(profile, direction, distance)  ← 3-arg
+    let rv = revolve(prof, dir, 90deg)             // revolve(profile, axis, angle)          ← 3-arg
+    let sw = sweep(prof2, path)                     // sweep(profile, path)
+    let lf = loft([prof, prof2])                    // loft(profiles)                         ← single list
+
+    // ── Transform (as documented) ───────────────────────────────────────────
+    let tr = translate(solid, dir)                  // translate(geo, vector)                 ← 2-arg
+    let ro = rotate(solid, dir, 30deg)              // rotate(geo, axis, angle)               ← 3-arg
+    let mi = mirror(solid, surf)                    // mirror(geo, plane)
+    let sc = scale(solid, 2.0)                      // scale(geo, factor)
+
+    // ── Pattern (as documented) ─────────────────────────────────────────────
+    let lp = linear_pattern(solid, dir, 3, 5mm)     // linear_pattern(geo, direction, count, spacing) ← 4-arg
+    let cp = circular_pattern(solid, dir, 6)        // circular_pattern(geo, axis, count)             ← 3-arg
+}
