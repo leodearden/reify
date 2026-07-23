@@ -580,8 +580,12 @@ pub structure DriveTendons {
     // outboard tangent plane), the lead tendon segments, and the fairlead
     // frame. The back-cross spans above remain as the drive-plane stand-ins
     // the routing idlers will tap.
-    let cap_pitch_r = 27mm   // == Capstan drum_r (24mm) + rope radius (3mm) — hand-
-                             // kept in step with Capstan defaults (same style as r_pitch)
+    let cap_pitch_r = 27mm   // == Capstan drum_r (24mm) + rope radius (3mm). Hand-kept:
+                             // the derived form `self.rear_drive.unit_a.cap_pitch_r`
+                             // silently undefs today — instance reads chained through
+                             // TWO sub levels are broken (#5360; one-level reads and
+                             // even self-referential placement DO work, probe-verified
+                             // 2026-07-23). Derive this once #5360 lands.
     let cap_y       = backcross_y - cap_pitch_r
     let cap_drop    = 220mm  // drum-axis depth below the drive plane's z = 0
     let neg_drop    = 0mm - cap_drop
