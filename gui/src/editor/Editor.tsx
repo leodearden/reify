@@ -15,6 +15,7 @@ import { createDiagnosticsListener, lspDiagnosticToCodeMirror, diagnosticInfoToC
 import { reifyHoverTooltip } from './hover';
 import { reifyGotoDefinition, gotoDefinitionCommand } from './gotoDefinition';
 import { occurrenceHighlightExtension } from './occurrenceHighlight';
+import { reifyPrimarySelectionGuard } from './primarySelectionGuard';
 import {
   renameCommand,
   applyWorkspaceEdit,
@@ -371,6 +372,11 @@ export function Editor(props: EditorProps) {
       bracketMatching(),
       closeBrackets(),
       reifyEditorTheme,
+      // PRIMARY-selection guard (task #5361): drawSelection() keeps the
+      // selection visible while blur collapses the native DOM selection, so the
+      // WebKitGTK webview stops re-asserting X11 PRIMARY ownership. Placed with
+      // the theme so drawSelection's layer participates from first paint.
+      reifyPrimarySelectionGuard(),
       reifyHighlighting,
       history(),
       // LSP-powered completions — dynamic URI getter resolves on each request

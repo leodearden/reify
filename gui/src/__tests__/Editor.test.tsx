@@ -2017,3 +2017,59 @@ describe('Editor F2 inline rename', () => {
     expect(updateSpy).not.toHaveBeenCalled();
   });
 });
+
+describe('PRIMARY-selection guard integration (task #5361)', () => {
+  it('mounts drawSelection (.cm-selectionLayer present) and blur preserves the logical selection', () => {
+    const store = setupStore();
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // drawSelection — wired via reifyPrimarySelectionGuard — renders its own
+    // selection layer. This is absent until the guard is added to the
+    // extensions array (step-10), so this assertion is the RED signal.
+    expect(container.querySelector('.cm-selectionLayer')).not.toBeNull();
+
+    // Give the editor a non-empty selection, then blur the content DOM. The
+    // guard collapses ONLY the native DOM selection; it must never throw and
+    // must never mutate view.state.selection (the logical selection is the
+    // source of truth). We deliberately do NOT assert on jsdom's native
+    // getSelection contents — jsdom has no real Selection semantics.
+    view.dispatch({ selection: { anchor: 0, head: 5 } });
+    expect(() => view.contentDOM.dispatchEvent(new Event('blur'))).not.toThrow();
+    expect(view.state.selection.main.empty).toBe(false);
+  });
+
+  it('blur→focus round-trip leaves view.state.selection.main {from,to,anchor,head} byte-for-byte unchanged', () => {
+    const store = setupStore();
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // Establish a REVERSED (leftward) non-empty selection: anchor=6 > head=1,
+    // so main.from=1, main.to=6 while anchor/head keep the direction. This
+    // exercises two invariants at once against a real CM mount:
+    //   (1) neither handler ever dispatches, so a future CM DOMObserver syncing
+    //       the transiently-collapsed native selection back into state on blur
+    //       cannot corrupt the logical selection (the guard's core promise);
+    //   (2) the focus handler rebuilds a FORWARD native range from from/to, but
+    //       because view.state is never mutated the reversed anchor/head survive.
+    view.dispatch({ selection: { anchor: 6, head: 1 } });
+    const before = view.state.selection.main;
+    const snapshot = { from: before.from, to: before.to, anchor: before.anchor, head: before.head };
+    // Sanity: this really is a reversed selection (head < anchor).
+    expect(snapshot).toEqual({ from: 1, to: 6, anchor: 6, head: 1 });
+
+    // Full round-trip: blur (collapses only the native selection) then focus
+    // (rebuilds it). Must never throw and must never touch view.state.
+    expect(() => {
+      view.contentDOM.dispatchEvent(new Event('blur'));
+      view.contentDOM.dispatchEvent(new Event('focus'));
+    }).not.toThrow();
+
+    const after = view.state.selection.main;
+    expect({ from: after.from, to: after.to, anchor: after.anchor, head: after.head }).toEqual(
+      snapshot,
+    );
+  });
+});

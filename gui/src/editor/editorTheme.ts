@@ -38,8 +38,12 @@ export const editorThemeSpec: Record<string, Record<string, string>> = {
   '&.cm-focused .cm-selectionBackground': {
     backgroundColor: THEME_TOKENS.accent + '40',
   },
+  // task #5361: hide the native text caret so it never doubles up with the
+  // cursor that drawSelection draws (.cm-cursor, styled above). The PRIMARY
+  // guard (reifyPrimarySelectionGuard) activates drawSelection and collapses the
+  // native selection on blur, so CM's own layer is the only visible cursor.
   '.cm-content': {
-    caretColor: THEME_TOKENS.text,
+    caretColor: 'transparent',
   },
 };
 
