@@ -2017,3 +2017,26 @@ describe('Editor F2 inline rename', () => {
     expect(updateSpy).not.toHaveBeenCalled();
   });
 });
+
+describe('PRIMARY-selection guard integration (task #5361)', () => {
+  it('mounts drawSelection (.cm-selectionLayer present) and blur preserves the logical selection', () => {
+    const store = setupStore();
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // drawSelection — wired via reifyPrimarySelectionGuard — renders its own
+    // selection layer. This is absent until the guard is added to the
+    // extensions array (step-10), so this assertion is the RED signal.
+    expect(container.querySelector('.cm-selectionLayer')).not.toBeNull();
+
+    // Give the editor a non-empty selection, then blur the content DOM. The
+    // guard collapses ONLY the native DOM selection; it must never throw and
+    // must never mutate view.state.selection (the logical selection is the
+    // source of truth). We deliberately do NOT assert on jsdom's native
+    // getSelection contents — jsdom has no real Selection semantics.
+    view.dispatch({ selection: { anchor: 0, head: 5 } });
+    expect(() => view.contentDOM.dispatchEvent(new Event('blur'))).not.toThrow();
+    expect(view.state.selection.main.empty).toBe(false);
+  });
+});
