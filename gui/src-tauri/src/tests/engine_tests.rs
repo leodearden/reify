@@ -13623,6 +13623,84 @@ fn sync_demand_populates_production_demand_selectively() {
     }
 }
 
+/// step-1 (task 5348): `build_gui_state_full_scene` returns the COMPLETE realized
+/// scene even after the frontend has flipped PRODUCTION demand to selective — the
+/// fix for the debug-MCP `mesh_stats`/`engine_state` under-report.
+///
+/// On the 3-level nested-composed fixture (`Top` → `Mid` → `Leaf`, 4 leaf
+/// realizations), the cold full-scope `build_gui_state` is the complete scene the
+/// frontend receives. Hiding one leaf branch via `sync_demand` (mirrors the
+/// frontend post-render selective flip) makes the NEXT `build_gui_state` return an
+/// incremental DELTA that under-reports the scene (DELTA CONTRACT,
+/// engine_build.rs:5440-5465). `build_gui_state_full_scene` must instead force the
+/// cold full-scope override and return every realization's mesh, then RESTORE the
+/// selective scope so subsequent warm edits stay incremental.
+///
+/// RED until step-2 adds `EngineSession::build_gui_state_full_scene` (compile-error
+/// RED, consistent with the sync_demand "RED until step-10" house pattern above).
+#[test]
+fn build_gui_state_full_scene_returns_complete_scene_under_selective_demand() {
+    let mut session = make_nested_composed_session();
+
+    // (1) Cold-build ground truth: production demand is full_scope right after
+    //     load, so this is the COMPLETE scene the frontend receives.
+    let cold = session
+        .build_gui_state()
+        .expect("cold build_gui_state should succeed");
+    let n = cold.meshes.len();
+    assert!(
+        n >= 4,
+        "nested-composed fixture must realize the 4 leaf bodies (Top.a.p/a.q/b.p/b.q); got {n}"
+    );
+    let all_paths: Vec<String> = cold.meshes.iter().map(|m| m.entity_path.clone()).collect();
+
+    // (2) Hide exactly one leaf branch: sync all OTHER entity_paths as the visible
+    //     set → flips PRODUCTION demand SELECTIVE (mirrors the frontend sync).
+    let hidden_path = all_paths
+        .last()
+        .expect("cold scene must have at least one mesh")
+        .clone();
+    let visible: Vec<String> = all_paths
+        .iter()
+        .filter(|p| **p != hidden_path)
+        .cloned()
+        .collect();
+    session.sync_demand(&visible);
+
+    // (3) The selective `build_gui_state` under-reports: absent HIDDEN + HASH-EXEMPT
+    //     realizations mean the delta carries strictly fewer meshes than the scene.
+    let selective = session
+        .build_gui_state()
+        .expect("selective build_gui_state should succeed");
+    assert!(
+        selective.meshes.len() < n,
+        "selective build_gui_state must under-report the scene (delta); got {} vs cold {n}",
+        selective.meshes.len()
+    );
+
+    // (4) The fix: `build_gui_state_full_scene` returns the COMPLETE scene (== n)
+    //     and the hidden body's entity_path is present.
+    let full = session
+        .build_gui_state_full_scene()
+        .expect("build_gui_state_full_scene should succeed");
+    assert_eq!(
+        full.meshes.len(),
+        n,
+        "full-scene read must return every realized body (the complete cold scene)"
+    );
+    assert!(
+        full.meshes.iter().any(|m| m.entity_path == hidden_path),
+        "full-scene read must include the hidden body's entity_path {hidden_path:?}"
+    );
+
+    // (5) The full-scene read is READ-ONLY: it restores the frontend's selective
+    //     scope (full_scope OFF) so subsequent warm edits stay incremental.
+    assert!(
+        !session.core_state_for_test().engine().demand_is_full_scope(),
+        "build_gui_state_full_scene must restore the selective (non-full-scope) demand state"
+    );
+}
+
 // --- ValueData::last_substantive_value population (demand-prune prior value, §8 γ #4739) ---
 
 /// step-13 (RED until step-14): after a warm selective build hides body_b, the
