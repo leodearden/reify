@@ -3105,6 +3105,15 @@ std::unique_ptr<OcctShape> make_helix_wire(
         if (!edgeBuilder.IsDone()) {
             throw std::runtime_error("make_helix_wire: MakeEdge failed");
         }
+        // The edge above is built from a Geom2d_Line pcurve on a cylindrical
+        // surface and carries only that curve-on-surface, with no Geom_Curve
+        // 3D representation. Downstream sweep consumers
+        // (BRepOffsetAPI_MakePipe behind GeometryOp::Sweep) require the 3D
+        // curve and otherwise throw an empty-message Standard_Failure, so
+        // derive it from the existing pcurve+surface. Without this a helix()
+        // wire cannot be used as a sweep spine (#5342). BRepLib.hxx is already
+        // included above for OrientClosedSolid.
+        BRepLib::BuildCurves3d(edgeBuilder.Edge());
         BRepBuilderAPI_MakeWire wireBuilder(edgeBuilder.Edge());
         if (!wireBuilder.IsDone()) {
             throw std::runtime_error("make_helix_wire: MakeWire failed");
