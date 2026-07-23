@@ -229,9 +229,45 @@ pub structure Capstan {
     constraint d_ratio > 0.0
 }
 
+/// Fairlead carrier frame — a light rectangular COLLAR around the drum: two
+/// XZ side plates outboard of the pulley planes, joined by two YZ end webs
+/// outboard of the vertical tendon runs; open top/bottom so the drum and all
+/// four verticals pass straight through. The collar translates along Z with
+/// the wrap band (stroke ≈ the Capstan band extent). Pulley axles/bosses
+/// span the plate-to-pulley gap (not modelled — same idealization as the
+/// IdlerPulley axle bolts); the light guide rail that takes the ΔT-scale
+/// dynamic residuals is not modelled yet.
+pub structure FairleadFrame {
+    param half_x  : Length = 80mm   // collar half-width across X
+    param half_z  : Length = 72mm   // collar half-height (covers the pulley extremes)
+    param side_y  : Length = 40mm   // side-plate mid-plane |y|
+    param plate_t : Length = 8mm
+    param web_t   : Length = 8mm
+
+    let neg_side = 0mm - side_y
+
+    let body = union(
+        union(
+            translate(box(half_x * 2, plate_t, half_z * 2), 0mm, side_y,   0mm),
+            translate(box(half_x * 2, plate_t, half_z * 2), 0mm, neg_side, 0mm)
+        ),
+        union(
+            translate(box(web_t, side_y * 2, half_z * 2), half_x - web_t / 2,       0mm, 0mm),
+            translate(box(web_t, side_y * 2, half_z * 2), 0mm - half_x + web_t / 2, 0mm, 0mm)
+        )
+    )
+
+    constraint half_x > 0mm
+    constraint half_z > 0mm
+    constraint side_y > plate_t / 2
+}
+
 /// Fairlead-equipped drive unit — ONE capstan + its FOUR fairlead guide
-/// pulleys (guide pulleys first; the shuttle frame/carrier is designed once
-/// these positions settle — agreed 2026-07-22).
+/// pulleys + the carrier collar (FairleadFrame) + provisional lead segments.
+///
+/// DEFERRED VARIANT (Leo, 2026-07-23): DOUBLING the tendon count (4 windings
+/// per capstan) could cancel the dynamic F_z and M_y residuals too — and
+/// possibly M_z. Parked until this two-tendon version is fully designed.
 ///
 /// Local frame: capstan axis = +Z at the origin; +y faces the machine (the
 /// feed side). The pulleys take each lead's LAST corner: they turn the
@@ -314,6 +350,35 @@ pub structure CapstanUnit {
     sub fl_w2_in  = IdlerPulley(sheave_od: r_pitch * 2) at transform3(rot_spin_y, vec3(pulley_x, y_front, w2_in))
     sub fl_w2_out = IdlerPulley(sheave_od: r_pitch * 2) at transform3(rot_spin_y, vec3(neg_x,    y_front, w2_out))
 
+    // Carrier collar, centred on the drum (translates with the band).
+    sub frame = FairleadFrame() at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
+
+    // ── Lead segments (PROVISIONAL) ─────────────────────────────────────────
+    // Drum-side horizontals are EXACT: pulley tangent → drum tangent line
+    // (x = 0) at the winding's entry height (pulley centre ∓ r_pitch for
+    // above/below entry). Frame-side verticals are STUBS (lead_stub long)
+    // showing direction only — ins rise toward the drive plane, outs drop
+    // below the drive block; both continue into routing that is not yet
+    // modelled. Verticals stand outboard at ±(pulley_x + r_pitch).
+    param lead_stub : Length = 100mm
+
+    let rot_to_x   = orient_axis_angle(vec3(0mm, 1m, 0mm), 90deg)  // leaf +Z → +X
+    let px_half    = pulley_x / 2
+    let neg_pxh    = 0mm - px_half
+    let vert_x     = pulley_x + r_pitch
+    let neg_vert_x = 0mm - vert_x
+    let stub_half  = lead_stub / 2
+
+    sub lead_w1_in_h  = LinearTendon(length: pulley_x) at transform3(rot_to_x, vec3(neg_pxh, y_rear,  w1_in - r_pitch))
+    sub lead_w1_out_h = LinearTendon(length: pulley_x) at transform3(rot_to_x, vec3(px_half, y_rear,  w1_out + r_pitch))
+    sub lead_w2_in_h  = LinearTendon(length: pulley_x) at transform3(rot_to_x, vec3(px_half, y_front, w2_in - r_pitch))
+    sub lead_w2_out_h = LinearTendon(length: pulley_x) at transform3(rot_to_x, vec3(neg_pxh, y_front, w2_out + r_pitch))
+
+    sub lead_w1_in_v  = LinearTendon(length: lead_stub) at transform3(orient_identity(), vec3(neg_vert_x, y_rear,  w1_in + stub_half))
+    sub lead_w1_out_v = LinearTendon(length: lead_stub) at transform3(orient_identity(), vec3(vert_x,     y_rear,  w1_out - stub_half))
+    sub lead_w2_in_v  = LinearTendon(length: lead_stub) at transform3(orient_identity(), vec3(vert_x,     y_front, w2_in + stub_half))
+    sub lead_w2_out_v = LinearTendon(length: lead_stub) at transform3(orient_identity(), vec3(neg_vert_x, y_front, w2_out - stub_half))
+
     // The flanges pierce the tangent planes for |x| < sqrt(flange_r² −
     // cap_pitch_r²) (≈19mm at the defaults): keep the pulley's inner edge
     // clear of that crossing.
@@ -321,6 +386,10 @@ pub structure CapstanUnit {
     constraint winding_z > lead_split
     constraint cap_pitch_r > 0mm
     constraint flange_r > cap_pitch_r
+    // Collar clearances (one-level sub reads — probe-verified):
+    constraint self.frame.side_y - self.frame.plate_t / 2 > flange_r          // plates clear the drum flanges
+    constraint self.frame.half_x - self.frame.web_t > vert_x + 6mm            // webs clear the vertical runs (tendon Ø)
+    constraint self.frame.half_z > w1_in + r_pitch                            // collar covers the top pulley rim
 }
 
 /// Rear drive block — BOTH fairlead-equipped drive units (one per belt),
