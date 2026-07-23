@@ -3944,6 +3944,93 @@ mod tests {
         drop(guards);
     }
 
+    /// Regression for the reported SIGSEGV (task #5337): compiling a deeply-
+    /// nested boolean-geometry expression on a small-stack embedder thread (the
+    /// GUI's 2 MB tokio worker) must NOT overflow the stack and abort the
+    /// process — it must bottom out at the depth cap and return `None` + an
+    /// `ExpressionNestingTooDeep` diagnostic instead.
+    ///
+    /// The nested AST is built PROGRAMMATICALLY in a loop (`difference(prev,
+    /// box(1,1,1))` ~1500 deep) rather than parsed from a source string — a deep
+    /// source would overflow the recursive-descent parser first, which is a
+    /// separate concern. 1500 ≫ `MAX_COMPILE_RECURSION_DEPTH` (256) and is deep
+    /// enough that the fat `compile_geometry_call` debug frames overflow a 2 MB
+    /// stack well before the cap fires *without* on-demand stack growth.
+    ///
+    /// PRE-FIX (before `stacker::maybe_grow` in step-10) this SIGSEGVs on the
+    /// 2 MB thread and aborts the test binary (the reproduced bug). POST-FIX the
+    /// stack grows on demand so the descent reaches the cap, which converts the
+    /// overflow into the clean diagnostic and the thread joins with
+    /// `(true, true)`.
+    #[test]
+    fn deeply_nested_boolean_geometry_does_not_overflow_2mb_stack() {
+        use crate::recursion_guard::MAX_COMPILE_RECURSION_DEPTH;
+
+        // Depth well past the cap AND deep enough to overflow a 2 MB stack
+        // pre-fix (each level consumes fat compile_geometry_call debug frames).
+        const NEST_DEPTH: usize = 1500;
+        assert!(NEST_DEPTH > MAX_COMPILE_RECURSION_DEPTH);
+
+        let handle = std::thread::Builder::new()
+            // Simulate the GUI's default 2 MB tokio-worker stack (main.rs:398).
+            .stack_size(2 * 1024 * 1024)
+            .spawn(move || {
+                // Build difference(difference(… box(1,1,1) …), box(1,1,1)) nested
+                // NEST_DEPTH deep. Construction is ITERATIVE (a loop), so it does
+                // not itself recurse — only *compilation* of the result recurses.
+                let mut nested = make_call_with_arity("box", 3);
+                for _ in 0..NEST_DEPTH {
+                    nested = reify_ast::Expr {
+                        kind: reify_ast::ExprKind::FunctionCall {
+                            name: "difference".to_string(),
+                            arg_names: vec![None, None],
+                            args: vec![nested, make_call_with_arity("box", 3)],
+                        },
+                        span: reify_core::SourceSpan::new(0, 1),
+                    };
+                }
+
+                let scope = CompilationScope::new("test");
+                let mut diags: Vec<Diagnostic> = vec![];
+                let result = compile_geometry_call(
+                    &nested,
+                    &scope,
+                    &[],
+                    &[],
+                    &mut diags,
+                    0,
+                    &HashMap::new(),
+                    &mut HashSet::new(),
+                );
+                let outcome = (
+                    result.is_none(),
+                    diags.iter().any(|d| {
+                        d.code == Some(reify_core::DiagnosticCode::ExpressionNestingTooDeep)
+                    }),
+                );
+
+                // The nested AST's `Drop` recurses NEST_DEPTH deep through the
+                // `Vec<Expr>` chain; leak it so a drop-time overflow cannot
+                // contaminate the result on this small stack. The thread is about
+                // to exit and the process reclaims the memory regardless.
+                std::mem::forget(nested);
+                outcome
+            })
+            .expect("spawn 2 MB compile thread");
+
+        match handle.join() {
+            Ok(outcome) => assert_eq!(
+                outcome,
+                (true, true),
+                "deeply-nested geometry must return None + an \
+                 ExpressionNestingTooDeep diagnostic on a 2 MB stack (post-fix)"
+            ),
+            Err(_) => panic!(
+                "the 2 MB compile thread panicked instead of returning cleanly"
+            ),
+        }
+    }
+
     /// `is_geometry_let` must classify the 2-arg CSG `sweep(profile, path)` as
     /// a geometry let (docs §3) and the 4-arg kinematic
     /// `sweep(mechanism, joint, range, steps)` as NOT a geometry let
