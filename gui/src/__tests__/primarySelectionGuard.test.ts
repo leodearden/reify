@@ -139,3 +139,81 @@ describe('reifyPrimarySelectionGuard — blur', () => {
     expect(() => handlers.blur({} as FocusEvent, view)).not.toThrow();
   });
 });
+
+/**
+ * Build a fake EditorView for the focus handler with every native-selection
+ * collaborator spied: getSelection()/createRange() on ownerDocument, plus
+ * domAtPos() on the view. The handler must rebuild the native selection from
+ * state.main.{from,to} and NEVER dispatch.
+ */
+function makeFocusView(opts: {
+  from: number;
+  to: number;
+  getSelection?: () => { removeAllRanges: ReturnType<typeof vi.fn>; addRange: ReturnType<typeof vi.fn> } | null;
+}) {
+  const removeAllRanges = vi.fn();
+  const addRange = vi.fn();
+  const setStart = vi.fn();
+  const setEnd = vi.fn();
+  const range = { setStart, setEnd };
+  const createRange = vi.fn(() => range);
+  const sel = { removeAllRanges, addRange };
+  const getSelection = opts.getSelection ?? (() => sel);
+  const domAtPos = vi.fn((pos: number) => ({ node: 'n@' + pos, offset: pos }));
+  const empty = opts.from === opts.to;
+  const view = {
+    state: {
+      selection: {
+        main: { from: opts.from, to: opts.to, empty },
+        ranges: [{ from: opts.from, to: opts.to, empty }],
+      },
+    },
+    contentDOM: { ownerDocument: { getSelection, createRange } },
+    domAtPos,
+    dispatch: vi.fn(),
+  };
+  return { view, removeAllRanges, addRange, setStart, setEnd, createRange, range, domAtPos };
+}
+
+describe('reifyPrimarySelectionGuard — focus', () => {
+  it('rebuilds the native selection from state.main.{from,to} via domAtPos, without dispatching', () => {
+    const { handlers } = extractGuard();
+    const { view, removeAllRanges, addRange, setStart, setEnd, createRange, range, domAtPos } =
+      makeFocusView({ from: 3, to: 8 });
+
+    handlers.focus({} as FocusEvent, view);
+
+    // Endpoints resolved through domAtPos(from) / domAtPos(to).
+    expect(domAtPos).toHaveBeenCalledWith(3);
+    expect(domAtPos).toHaveBeenCalledWith(8);
+    expect(createRange).toHaveBeenCalledTimes(1);
+    expect(setStart).toHaveBeenCalledWith('n@3', 3);
+    expect(setEnd).toHaveBeenCalledWith('n@8', 8);
+    // The native selection is replaced, not appended: removeAllRanges THEN addRange.
+    expect(removeAllRanges).toHaveBeenCalledTimes(1);
+    expect(addRange).toHaveBeenCalledWith(range);
+    expect(removeAllRanges.mock.invocationCallOrder[0]).toBeLessThan(
+      addRange.mock.invocationCallOrder[0],
+    );
+    // state must NEVER be mutated.
+    expect(view.dispatch).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op on focus when the selection is a caret (empty)', () => {
+    const { handlers } = extractGuard();
+    const { view, removeAllRanges, addRange, createRange } = makeFocusView({ from: 5, to: 5 });
+    handlers.focus({} as FocusEvent, view);
+    expect(createRange).not.toHaveBeenCalled();
+    expect(removeAllRanges).not.toHaveBeenCalled();
+    expect(addRange).not.toHaveBeenCalled();
+    expect(view.dispatch).not.toHaveBeenCalled();
+  });
+
+  it('does not throw on focus when getSelection() returns null (no Selection API)', () => {
+    const { handlers } = extractGuard();
+    const { view, createRange } = makeFocusView({ from: 3, to: 8, getSelection: () => null });
+    expect(() => handlers.focus({} as FocusEvent, view)).not.toThrow();
+    // Bails before building a range when there is no native selection to rebuild.
+    expect(createRange).not.toHaveBeenCalled();
+  });
+});
