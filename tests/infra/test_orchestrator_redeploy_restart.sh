@@ -18,6 +18,9 @@
 #   F — NON-GIT PROJECT ROOT: git error is NOT treated as clean; aborts non-zero
 #   G — SCHEDULE-MODE SYSTEMD-RUN FAILURE: exits non-zero, no false confirmation
 #   H — EXEC-MODE START FAILURE: stop attempted, exits non-zero, no false success
+#   I — SCHEDULE-MODE --require-commit ANCESTOR GATE: refuses a non-ancestor or
+#       invalid sha (no systemd-run), threads --setenv=ORCH_REQUIRE_COMMIT
+#       through when set, byte-identical systemd-run invocation when unset
 #
 # Auto-discovered by tests/infra/run_all.sh via the test_*.sh glob.
 
@@ -109,6 +112,21 @@ make_dirty_repo() {
     make_clean_repo "$_var"
     eval "local _dir=\$$_var"
     echo "dirty modification" >> "$_dir/tracked.txt"
+}
+
+# make_side_branch_commit REPO_DIR OUTVAR
+#   Given a clean repo (currently checked out on main), create a commit on a
+#   side branch that is NOT merged to main, then check back out main so the
+#   repo is clean again. Sets OUTVAR to the side commit's sha.
+make_side_branch_commit() {
+    local repo="$1" _var="$2" sha
+    git -C "$repo" checkout -q -b side
+    echo "side change" >> "$repo/tracked.txt"
+    git -C "$repo" add tracked.txt
+    git -C "$repo" commit -q -m "side commit not on main"
+    sha="$(git -C "$repo" rev-parse HEAD)"
+    git -C "$repo" checkout -q main
+    printf -v "$_var" '%s' "$sha"
 }
 
 # Reset calls file
@@ -364,5 +382,72 @@ assert "H4: exec-mode start was attempted (stop failure does not short-circuit i
     bash -c 'grep -q "^systemctl --user start fail-start-unit.service$" "$1"' _ "$CALLS_FILE"
 assert "H5: no false 'restarted successfully' confirmation on start failure" \
     bash -c '! printf "%s\n" "$1" | grep -qi "restarted successfully"' _ "$OUT"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Block I — SCHEDULE-MODE --require-commit ANCESTOR GATE
+# --require-commit=<sha> (and ORCH_REQUIRE_COMMIT) gate schedule mode on <sha>
+# being an ancestor of ORCH_MAIN_BRANCH (default main): refuse (exit non-zero,
+# schedule nothing) if not an ancestor or not a valid object; thread
+# --setenv=ORCH_REQUIRE_COMMIT through to the transient unit when set; leave
+# the systemd-run invocation byte-identical to today when unset.
+# ──────────────────────────────────────────────────────────────────────────────
+echo ""
+echo "--- Block I: schedule-mode --require-commit ancestor gate ---"
+
+BOGUS_SHA="0000000000000000000000000000000000000000"
+
+CLEAN_REPO_I=""
+make_clean_repo CLEAN_REPO_I
+ON_MAIN_SHA_I="$(git -C "$CLEAN_REPO_I" rev-parse HEAD)"
+
+# I-pass: --require-commit=<on-main-sha> on a clean repo -> exits 0, exactly
+# one systemd-run call, and that call threads --setenv=ORCH_REQUIRE_COMMIT=<sha>
+reset_calls
+ORCH_PROJECT_ROOT="$CLEAN_REPO_I" \
+    run_helper "--require-commit=$ON_MAIN_SHA_I"
+assert "I1: --require-commit=<on-main-sha> on clean repo -> exits 0" test "$RC" -eq 0
+assert "I2: --require-commit=<on-main-sha> emits exactly one systemd-run call" \
+    bash -c '[ "$(grep -c "^systemd-run" "$1" 2>/dev/null || echo 0)" -eq 1 ]' _ "$CALLS_FILE"
+assert "I3: systemd-run call threads --setenv=ORCH_REQUIRE_COMMIT=<sha>" \
+    bash -c "grep \"^systemd-run\" \"\$1\" | grep -q -- \"--setenv=ORCH_REQUIRE_COMMIT=$ON_MAIN_SHA_I\"" _ "$CALLS_FILE"
+
+# I-refuse-side: --require-commit=<side-branch-sha> -> exits non-zero, no
+# systemd-run scheduled, actionable message
+SIDE_SHA_I=""
+make_side_branch_commit "$CLEAN_REPO_I" SIDE_SHA_I
+reset_calls
+ORCH_PROJECT_ROOT="$CLEAN_REPO_I" \
+    run_helper "--require-commit=$SIDE_SHA_I"
+assert "I4: --require-commit=<side-branch-sha> -> exits non-zero" test "$RC" -ne 0
+assert "I5: --require-commit=<side-branch-sha> schedules NO systemd-run" \
+    bash -c '! grep -q "^systemd-run" "$1"' _ "$CALLS_FILE"
+assert "I6: --require-commit=<side-branch-sha> prints actionable message (main|ancestor|land)" \
+    bash -c 'printf "%s\n" "$1" | grep -qiE "main|ancestor|land"' _ "$OUT"
+
+# I-refuse-bogus: --require-commit=<bogus 40-hex non-existent object> -> exits
+# non-zero, no systemd-run (fail-closed on bad object)
+reset_calls
+ORCH_PROJECT_ROOT="$CLEAN_REPO_I" \
+    run_helper "--require-commit=$BOGUS_SHA"
+assert "I7: --require-commit=<bogus sha> -> exits non-zero" test "$RC" -ne 0
+assert "I8: --require-commit=<bogus sha> schedules NO systemd-run (fail-closed)" \
+    bash -c '! grep -q "^systemd-run" "$1"' _ "$CALLS_FILE"
+
+# I-noop: no flag on the same clean repo -> exits 0, systemd-run emitted, and
+# that call contains NO --setenv=ORCH_REQUIRE_COMMIT (default byte-unchanged)
+reset_calls
+ORCH_PROJECT_ROOT="$CLEAN_REPO_I" \
+    run_helper
+assert "I9: no --require-commit flag -> exits 0" test "$RC" -eq 0
+assert "I10: no --require-commit flag emits systemd-run" \
+    bash -c 'grep -q "^systemd-run" "$1"' _ "$CALLS_FILE"
+assert "I11: no --require-commit flag -> systemd-run call has NO --setenv=ORCH_REQUIRE_COMMIT" \
+    bash -c '! grep "^systemd-run" "$1" | grep -q -- "--setenv=ORCH_REQUIRE_COMMIT"' _ "$CALLS_FILE"
+
+# I-empty: --require-commit= (empty value) -> exits non-zero (arg-parse error)
+reset_calls
+ORCH_PROJECT_ROOT="$CLEAN_REPO_I" \
+    run_helper "--require-commit="
+assert "I12: --require-commit= (empty value) -> exits non-zero" test "$RC" -ne 0
 
 test_summary
