@@ -2166,15 +2166,23 @@ build_plan() {
     # gui recorded by the gui block from its validated REIFY_GUI_RETRY_SPECS;
     # run_all a build-time word-count of REIFY_RUN_ALL_MEMBER_SUBSET here
     # (verify.sh COUNTS only — run_all.sh still owns the actual member-skip).
-    # [step-4: gated on scope=failed_only + nextest tree-OID eligibility, now
-    # prints the four counts; step-6 broadens the gate to "≥1 suite ACTUALLY
-    # narrowed" so a full-fallback/refusal never emits it (INV-6 honesty).]
-    # Default byte-identical: no REIFY_VERIFY_RETRY_SCOPE=failed_only ⇒ no echo,
-    # so the ~30 existing plan-shape tests stay green.
-    if [ "${REIFY_VERIFY_RETRY_SCOPE:-}" = "failed_only" ] && [ "$_RETRY_SUBSET_ELIGIBLE" -eq 1 ]; then
-        # run_all subset size: a word-count of the DF-supplied member list.
-        # set -f around the split so a stray glob in a member name cannot
-        # pathname-expand (members are .sh basenames; belt-and-suspenders).
+    # Fire IFF scope=failed_only AND ≥1 suite ACTUALLY narrowed — the honest-
+    # events gate (INV-6): a within-ceiling nextest subset applied for ≥1
+    # profile (_RETRY_NEXTEST_*_APPLIED>0 ⇒ eligible AND usable), OR a non-empty
+    # REIFY_RUN_ALL_MEMBER_SUBSET, OR ≥1 validated REIFY_GUI_RETRY_SPECS. The
+    # three arms are an OR, each independent of the nextest tree-OID gate
+    # (run_all/gui narrow on their own env), so the marker is SUPPRESSED on
+    # every nextest full-fallback/refusal path (tree drift / no subset / subset
+    # too large / no nextest) UNLESS run_all/gui narrowed — and never emitted on
+    # a non-retry. This is what stops DF's runtime mining from miscounting a
+    # full re-verify as a failed_only green gate. Default byte-identical: no
+    # REIFY_VERIFY_RETRY_SCOPE=failed_only ⇒ no echo, so the ~30 existing
+    # plan-shape tests stay green.
+    if [ "${REIFY_VERIFY_RETRY_SCOPE:-}" = "failed_only" ]; then
+        # run_all subset size: a word-count of the DF-supplied member list
+        # (verify.sh COUNTS only — run_all.sh owns the member-skip). set -f
+        # around the split so a stray glob in a member name cannot pathname-
+        # expand (members are .sh basenames; belt-and-suspenders).
         local _mk_run_all=0
         if [ -n "${REIFY_RUN_ALL_MEMBER_SUBSET:-}" ]; then
             local -a _mk_ra_toks
@@ -2183,7 +2191,12 @@ build_plan() {
             set +f
             _mk_run_all=${#_mk_ra_toks[@]}
         fi
-        echo "@@REIFY_RETRY_SCOPE=failed_only@@ nextest_debug=${_RETRY_NEXTEST_DEBUG_APPLIED} nextest_release=${_RETRY_NEXTEST_RELEASE_APPLIED} run_all=${_mk_run_all} gui=${_RETRY_GUI_SUBSET_APPLIED}"
+        if [ "$_RETRY_NEXTEST_DEBUG_APPLIED" -gt 0 ] \
+            || [ "$_RETRY_NEXTEST_RELEASE_APPLIED" -gt 0 ] \
+            || [ "$_mk_run_all" -gt 0 ] \
+            || [ "$_RETRY_GUI_SUBSET_APPLIED" -gt 0 ]; then
+            echo "@@REIFY_RETRY_SCOPE=failed_only@@ nextest_debug=${_RETRY_NEXTEST_DEBUG_APPLIED} nextest_release=${_RETRY_NEXTEST_RELEASE_APPLIED} run_all=${_mk_run_all} gui=${_RETRY_GUI_SUBSET_APPLIED}"
+        fi
     fi
 }
 build_plan
