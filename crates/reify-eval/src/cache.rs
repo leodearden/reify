@@ -464,6 +464,40 @@ impl CacheStore {
         self.caches.insert(node, cache);
     }
 
+    /// Overwrite the stored per-cell runtime diagnostics for `node` (task μ,
+    /// #5062).
+    ///
+    /// This is μ's storage seam for the `NodeCache.diagnostics` field κ (#5042)
+    /// added: the eval / eval_cached / edit_param capture sites call it AFTER
+    /// recording the node, passing the runtime-sink length-delta captured
+    /// around the cell's `eval_expr`. The `eval_cached` clean-serve arms then
+    /// replay `NodeCache.diagnostics` so a per-cell-branch warning
+    /// (`W_FIELD_OUT_OF_BOUNDS`, `W_FIELD_SAMPLED_INVALID_CONFIG`) is not
+    /// silently dropped on a cache hit (the 2259/2267 "fast-path-swallow"
+    /// class).
+    ///
+    /// A single post-record setter is used — rather than threading a
+    /// diagnostics arg through `record_evaluation` /
+    /// `record_evaluation_with_freshness` /
+    /// `record_evaluation_propagating_freshness` / `commit_cell_result` —
+    /// because the dominant let/param commit sites use
+    /// `record_evaluation_propagating_freshness`, which α's
+    /// `commit_cell_result` cannot represent (its `Freshness::Final`-only
+    /// scope gap). One setter is uniform across all three record paths.
+    ///
+    /// Semantics: UNCONDITIONAL overwrite when the entry exists — an empty vec
+    /// CLEARS, so a cell re-evaluated to no-longer-warning drops its stale
+    /// replay content. Safe no-op when `node` is absent (there is no cache
+    /// entry to attach metadata to). NOT reflected in `result_hash` —
+    /// diagnostics are metadata, not result content (see the
+    /// `NodeCache.diagnostics` field doc), so this never perturbs early-cutoff
+    /// comparison.
+    pub fn set_node_diagnostics(&mut self, node: &NodeId, diagnostics: Vec<Diagnostic>) {
+        if let Some(entry) = self.caches.get_mut(node) {
+            entry.diagnostics = diagnostics;
+        }
+    }
+
     /// Remove a cached entry and its dirty state.
     ///
     /// Note: the `node_traits` per-instance override for `node` (if any) is
