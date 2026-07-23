@@ -258,4 +258,123 @@ assert "J: gate exits 0 on an empty candidate list" \
 assert "J: empty run emits SUMMARY added=0 violations=0" \
     grep -Eq '^HARNESS_BASELINE_REG SUMMARY added=0 violations=0$' "$_J_OUT"
 
+# ===========================================================================
+# --from-git self-derivation (hermetic `git init` temp-repo fixtures).
+#
+# Fully isolated from user/system git config (GIT_CONFIG_GLOBAL/SYSTEM=/dev/null)
+# so no ambient hooksPath / signing / template can perturb the fixtures. The
+# baseline the gate reads is pointed at the fixture repo's own working-tree
+# manifest via REIFY_HARNESS_LAYOUT_BASELINE (after a completed merge the working
+# tree equals HEAD, so it reflects exactly what the merge registered).
+# ===========================================================================
+_gitf() { GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null git "$@"; }
+
+# _build_merge_fixture <dir> <register:0|1> — a repo whose HEAD is a real
+# 2-parent merge that ADDS crates/reify-eval/tests/newthing.rs. register=1 also
+# appends newthing's baseline row on the SAME topic branch (so the merged
+# working tree registers it).
+_build_merge_fixture() {
+    local dir="$1" register="$2"
+    _gitf init -q -b main "$dir"
+    _gitf -C "$dir" config user.email t@e.x
+    _gitf -C "$dir" config user.name t
+    mkdir -p "$dir/tests/infra" "$dir/crates/reify-eval/tests"
+    printf 'crates/reify-eval/tests/pre_existing.rs\n' > "$dir/tests/infra/harness-layout-baseline.manifest"
+    : > "$dir/crates/reify-eval/tests/pre_existing.rs"
+    _gitf -C "$dir" add -A
+    _gitf -C "$dir" commit -q -m base
+    _gitf -C "$dir" checkout -q -b topic
+    : > "$dir/crates/reify-eval/tests/newthing.rs"
+    if [ "$register" -eq 1 ]; then
+        printf 'crates/reify-eval/tests/newthing.rs\n' >> "$dir/tests/infra/harness-layout-baseline.manifest"
+    fi
+    _gitf -C "$dir" add -A
+    _gitf -C "$dir" commit -q -m topic
+    _gitf -C "$dir" checkout -q main
+    _gitf -C "$dir" merge -q --no-ff --no-edit topic
+}
+
+# _run_from_git <dir> — run the gate in --from-git mode with CWD=<dir>, its
+# baseline pointed at the fixture's own working-tree manifest. Echoes the exit
+# code; writes structured output to the file named by $2.
+_run_from_git() {
+    local dir="$1" out="$2" rc=0
+    ( cd "$dir" \
+        && REIFY_HARNESS_LAYOUT_BASELINE="$dir/tests/infra/harness-layout-baseline.manifest" \
+           bash "$GATE" --from-git </dev/null ) > "$out" 2>/dev/null || rc=$?
+    echo "$rc"
+}
+
+# ---------------------------------------------------------------------------
+# Section K: a 2-parent merge that ADDS an unregistered standalone -> --from-git
+# fires (rc 1) and names the file.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Section K: --from-git fires on a merge adding an unregistered standalone ---"
+
+_K_DIR="$(mktemp -d)"; _TMPDIRS+=("$_K_DIR")
+_build_merge_fixture "$_K_DIR" 0
+_K_OUT="$(mktemp)"; _TMPDIRS+=("$_K_OUT")
+_K_RC="$(_run_from_git "$_K_DIR" "$_K_OUT")"
+
+assert "K: --from-git exits 1 on a merge that adds an unregistered standalone" \
+    test "$_K_RC" -eq 1
+assert "K: --from-git names the offending added file (newthing.rs)" \
+    grep -Eq '^HARNESS_BASELINE_REG FAIL crate=reify-eval file=.*newthing\.rs reason=unregistered-standalone' "$_K_OUT"
+
+# ---------------------------------------------------------------------------
+# Section L: a sibling merge that adds the file AND its baseline row -> green.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Section L: --from-git green when the same merge also registers the row ---"
+
+_L_DIR="$(mktemp -d)"; _TMPDIRS+=("$_L_DIR")
+_build_merge_fixture "$_L_DIR" 1
+_L_OUT="$(mktemp)"; _TMPDIRS+=("$_L_OUT")
+_L_RC="$(_run_from_git "$_L_DIR" "$_L_OUT")"
+
+assert "L: --from-git exits 0 when the merge adds the file AND its baseline row" \
+    test "$_L_RC" -eq 0
+assert "L: the registered run emits no FAIL line" \
+    bash -c '! grep -qE "^HARNESS_BASELINE_REG FAIL" "$1"' _ "$_L_OUT"
+
+# ---------------------------------------------------------------------------
+# Section M: fail-open — a LINEAR repo with no `main` (unresolvable base, no
+# MERGE_HEAD) exits 0 even though it contains an unregistered added file.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Section M: --from-git fail-open on a linear/unresolvable-base repo ---"
+
+_M_DIR="$(mktemp -d)"; _TMPDIRS+=("$_M_DIR")
+_gitf init -q -b feature "$_M_DIR"
+_gitf -C "$_M_DIR" config user.email t@e.x
+_gitf -C "$_M_DIR" config user.name t
+mkdir -p "$_M_DIR/tests/infra" "$_M_DIR/crates/reify-eval/tests"
+printf 'crates/reify-eval/tests/pre_existing.rs\n' > "$_M_DIR/tests/infra/harness-layout-baseline.manifest"
+: > "$_M_DIR/crates/reify-eval/tests/pre_existing.rs"
+_gitf -C "$_M_DIR" add -A; _gitf -C "$_M_DIR" commit -q -m base
+: > "$_M_DIR/crates/reify-eval/tests/newthing.rs"   # unregistered, but base is unresolvable (no main)
+_gitf -C "$_M_DIR" add -A; _gitf -C "$_M_DIR" commit -q -m add-newthing
+_M_OUT="$(mktemp)"; _TMPDIRS+=("$_M_OUT")
+_M_RC="$(_run_from_git "$_M_DIR" "$_M_OUT")"
+
+assert "M: --from-git exits 0 (fail-open) when the merge base is unresolvable" \
+    test "$_M_RC" -eq 0
+assert "M: fail-open run emits no FAIL line (never a false RED)" \
+    bash -c '! grep -qE "^HARNESS_BASELINE_REG FAIL" "$1"' _ "$_M_OUT"
+
+# ---------------------------------------------------------------------------
+# Section N: --from-git in the REAL repo root exits 0 (the current tree adds no
+# unregistered standalone — green on truth).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Section N: --from-git in the real repo root is green ---"
+
+_N_OUT="$(mktemp)"; _TMPDIRS+=("$_N_OUT")
+_N_RC=0
+( cd "$REPO_ROOT" && bash "$GATE" --from-git </dev/null ) > "$_N_OUT" 2>/dev/null || _N_RC=$?
+
+assert "N: --from-git exits 0 in the real repo (no unregistered added standalone)" \
+    test "$_N_RC" -eq 0
+
 test_summary
