@@ -43,7 +43,13 @@ export function createEditorStore() {
     if (!exists) {
       setState('openFiles', (files) => [...files, canonical]);
     } else {
+      // Reopen of an already-open path (debug bridge open_file, File→Open, launch).
       updateFileContent(key, file.content);
+      if (!state.dirtyFiles.includes(key)) {
+        // Clean reopen: the buffer now matches fresh disk content, so reconcile
+        // the tab by clearing any stale disk-diverged flag.
+        clearExternallyChanged(key);
+      }
     }
     setState('activeFile', key);
   }
