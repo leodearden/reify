@@ -668,6 +668,16 @@ _ATTEMPT_SIDECAR_PATH="${REIFY_VERIFY_ATTEMPT_SIDECAR:-target/reify-verify-attem
 # where it is independently needed (the sidecar-stamp guard at the tail of
 # add_test_passes), so no separate "retry active" flag is carried.
 _RETRY_SUBSET_ELIGIBLE=0
+# Per-suite APPLIED subset sizes for the δ honest marker (task 5290). Recorded
+# at each suite's SINGLE narrowing site (INV-5 no re-derivation): the nextest
+# counts by emit_nextest_pass as it applies a within-ceiling subset per profile;
+# the gui count by the gui block from its validated REIFY_GUI_RETRY_SPECS. Each
+# stays 0 on any fallback / when the suite did not narrow, so the marker gate
+# and its printed counts are honest (0 ⇒ that suite ran FULL). Initialized here
+# so the end-of-build_plan emitter stays nounset-safe (set -u) on any path.
+_RETRY_NEXTEST_DEBUG_APPLIED=0
+_RETRY_NEXTEST_RELEASE_APPLIED=0
+_RETRY_GUI_SUBSET_APPLIED=0
 # Subset-size ceiling (INV-4 retry-storm escape / PRD §4.3): a subset that
 # approaches the whole ~20,280-test suite means DF built a bad subset (a
 # construction bug), so refuse it and run FULL rather than dressing a full run
@@ -1405,6 +1415,17 @@ emit_nextest_pass() {
                 # THIS profile FULL rather than dress a full run up as a subset.
                 echo "verify.sh: retry refused: subset too large — ${_retry_n} > ceiling ${_RETRY_MAX_SUBSET} (profile=${_retry_profile}, full verify)" >&2
             else
+                # δ honest marker (task 5290): record the APPLIED subset size at
+                # this SINGLE per-profile construction site (INV-5 no
+                # re-derivation) — the count of exact ids that actually narrowed
+                # THIS pass. Every fallback above (no subset / too large) returns
+                # without reaching here, so the recorded count stays 0 for a
+                # profile that ran FULL, keeping the end-of-build_plan marker honest.
+                if [ "$_retry_profile" = "release" ]; then
+                    _RETRY_NEXTEST_RELEASE_APPLIED="$_retry_n"
+                else
+                    _RETRY_NEXTEST_DEBUG_APPLIED="$_retry_n"
+                fi
                 # Build ONE exact-match filterset from the collected IDs.
                 local _retry_expr="" _id
                 for _id in "${_retry_ids[@]}"; do
@@ -1787,6 +1808,14 @@ build_plan() {
             fi
             if [ "$_gui_retry_ok" -eq 1 ]; then
                 gui_inner+=" && npm test -- $_gui_retry_specs"
+                # δ honest marker (task 5290): count the VALIDATED specs at this
+                # SINGLE narrowing site (INV-5 — reuse the allowlist result, so
+                # an ignored/invalid REIFY_GUI_RETRY_SPECS reports gui=0, matching
+                # the loud full-fallback below). Unquoted split is safe: the
+                # allowlist above already excludes glob/metacharacters, so this
+                # word-splits only on spaces (never globs or expands).
+                local -a _gui_retry_toks=($_gui_retry_specs)
+                _RETRY_GUI_SUBSET_APPLIED=${#_gui_retry_toks[@]}
             else
                 [ -n "$_gui_retry_specs" ] && echo "verify.sh: WARNING — REIFY_GUI_RETRY_SPECS contains characters outside [A-Za-z0-9._/ -] or a token beginning with '-'; ignoring the subset and running the full gui suite" >&2
                 gui_inner+=" && npm test"
@@ -2117,6 +2146,79 @@ build_plan() {
     # (task #4448 fail-fast reorder)
     if [ "$DO_TEST" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
         add_test_passes
+    fi
+
+    # retry_failed_only HONEST MARKER (task 5290 / PRD verify-retry-failed-only
+    # δ §4.4, INV-6). At plan-BUILD time, announce to STDOUT that this run is a
+    # genuinely-narrowed failed_only retry, so dark-factory runtime mining can
+    # distinguish a real subset gate from a full re-verify. Emitted via a direct
+    # `echo` — NOT via `add` — so it is a one-time build-time announcement, never
+    # an executed plan command. build_plan runs in BOTH --print-plan and execute
+    # modes, so the marker lands on stdout in a real DF retry (D5 captures it)
+    # AND is a faithful hermetic oracle under --print-plan. Mirrors the
+    # lib_clock_stop.sh `@@TOKEN@@` marker grammar, but inline and to STDOUT
+    # (only verify.sh emits it, so no sourced lib — PRD §4.4), distinct from α's
+    # `retry refused:` refusal lines (STDERR) and the clock markers (STDERR).
+    # The single line carries the per-suite APPLIED subset size — sourced from
+    # the SAME single narrowing sites (INV-5 no re-derivation): nextest_debug /
+    # nextest_release recorded by emit_nextest_pass as it applied each profile's
+    # within-ceiling subset (0 when that profile fell back / is not in the plan);
+    # gui recorded by the gui block from its validated REIFY_GUI_RETRY_SPECS;
+    # run_all a build-time word-count of REIFY_RUN_ALL_MEMBER_SUBSET here
+    # (verify.sh COUNTS only — run_all.sh still owns the actual member-skip;
+    # this is a best-effort upper bound, not a post-validation count — see the
+    # detailed caveat at the counting site below).
+    # Fire IFF scope=failed_only AND ≥1 suite ACTUALLY narrowed — the honest-
+    # events gate (INV-6): a within-ceiling nextest subset applied for ≥1
+    # profile (_RETRY_NEXTEST_*_APPLIED>0 ⇒ eligible AND usable), OR a non-empty
+    # REIFY_RUN_ALL_MEMBER_SUBSET, OR ≥1 validated REIFY_GUI_RETRY_SPECS. The
+    # three arms are an OR, each independent of the nextest tree-OID gate
+    # (run_all/gui narrow on their own env), so the marker is SUPPRESSED on
+    # every nextest full-fallback/refusal path (tree drift / no subset / subset
+    # too large / no nextest) UNLESS run_all/gui narrowed — and never emitted on
+    # a non-retry. This is what stops DF's runtime mining from miscounting a
+    # full re-verify as a failed_only green gate. Default byte-identical: no
+    # REIFY_VERIFY_RETRY_SCOPE=failed_only ⇒ no echo, so the ~30 existing
+    # plan-shape tests stay green.
+    if [ "${REIFY_VERIFY_RETRY_SCOPE:-}" = "failed_only" ]; then
+        # run_all subset size: a word-count of the DF-supplied member list
+        # (verify.sh COUNTS only — run_all.sh owns the member-skip). This is a
+        # BEST-EFFORT count, not a post-validation one: if a supplied member
+        # basename doesn't exist under run_all's INFRA_DIR (e.g. renamed or
+        # deleted between DF's attempt-0 failure-set discovery and this
+        # retry's dispatch), run_all.sh WARNs and silently ignores it
+        # ("member '...' not found in $INFRA_DIR (ignored)") while this
+        # word-count still includes it — inflating run_all=N and the marker
+        # relative to what actually ran. Accepted (code-review amend, task
+        # 5290): DF constructs the subset from {failed members} that already
+        # passed attempt-0 discovery (PRD verify-retry-failed-only.md §4.2),
+        # so a dropped member is a rare edge, not the common case; fully
+        # closing it needs run_all.sh to report its post-validation member
+        # count back to verify.sh, a cross-file protocol change touching
+        # tests/infra/run_all.sh, which this task does not hold a lock on
+        # (locks: scripts/verify.sh + tests/infra/test_verify_retry_failed_only.sh
+        # only — filed as a follow-up rather than done here). set -f around
+        # the split so a stray glob in a member name cannot pathname-expand
+        # (members are .sh basenames; belt-and-suspenders), then RESTORE the
+        # caller's prior noglob state rather than unconditionally clearing it
+        # — verify.sh does not run under -f today, but a bare `set +f` would
+        # silently clobber a noglob caller for any code after build_plan.
+        local _mk_run_all=0
+        if [ -n "${REIFY_RUN_ALL_MEMBER_SUBSET:-}" ]; then
+            local -a _mk_ra_toks
+            local _mk_had_f=0
+            case $- in *f*) _mk_had_f=1 ;; esac
+            set -f
+            _mk_ra_toks=(${REIFY_RUN_ALL_MEMBER_SUBSET})
+            [ "$_mk_had_f" -eq 1 ] || set +f
+            _mk_run_all=${#_mk_ra_toks[@]}
+        fi
+        if [ "$_RETRY_NEXTEST_DEBUG_APPLIED" -gt 0 ] \
+            || [ "$_RETRY_NEXTEST_RELEASE_APPLIED" -gt 0 ] \
+            || [ "$_mk_run_all" -gt 0 ] \
+            || [ "$_RETRY_GUI_SUBSET_APPLIED" -gt 0 ]; then
+            echo "@@REIFY_RETRY_SCOPE=failed_only@@ nextest_debug=${_RETRY_NEXTEST_DEBUG_APPLIED} nextest_release=${_RETRY_NEXTEST_RELEASE_APPLIED} run_all=${_mk_run_all} gui=${_RETRY_GUI_SUBSET_APPLIED}"
+        fi
     fi
 }
 build_plan
