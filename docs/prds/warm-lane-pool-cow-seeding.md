@@ -148,13 +148,18 @@ provision-warm-lane-fs.sh [--size-gib <N>] [--img <path>] [--mount <dir>]
 ### 9.2 Clone + warmth-transfer primitive — `scripts/seed-warm-lane.sh`
 
 ```
-seed-warm-lane.sh <base_target_dir> <lane_dir> (--fresh-checkout | --reset-in-place) [--lane-lock]
+seed-warm-lane.sh <base_target_dir> <lane_dir> (--fresh-checkout | --reset-in-place) [--lane-lock] [--assume-lane-lock-held]
   1. ASSERT env RUSTFLAGS == the base's recorded RUSTFLAGS (default "") → else exit non-zero (D4, fail-closed).
-  2. --lane-lock (opt-in, default OFF; §9.5 inv.11): flock -x <lane_dir>.lock BEFORE any target
-     mutation, held across the whole run — refuses (EX_TEMPFAIL 75) if a live consumer already
-     holds it. REIFY_WARM_LANE_LANE_LOCK_WAIT (env, only with --lane-lock): 0 (default) =
-     non-blocking refuse (flock -n); N>0 = bounded queue (flock -w N), refuse on timeout;
-     "unlimited" = block until acquired, never refuses. Anything else → exit 64 (usage).
+  2. Lane-lock exclusivity (§9.5 inv.11; esc-5214/task 5354 fail-safe): flock -x <lane_dir>.lock BEFORE any
+     target mutation, held across the whole run — refuses (EX_TEMPFAIL 75) if a live consumer already
+     holds it. Acquired BY DEFAULT under --fresh-checkout (the #5223 --lane-lock opt-in was bypassable by
+     an acquire-path caller that simply omitted it — the esc-5214 clobber). --lane-lock stays accepted
+     (implied under --fresh-checkout; explicit opt-in for --reset-in-place). --assume-lane-lock-held:
+     opt-out for a caller already holding the lock itself (thin --reseed FD 9, gc reclaim FD 8) so seed
+     skips its own acquire (flock is not re-entrant across a process tree); contradicts --lane-lock → exit 2.
+     REIFY_WARM_LANE_LANE_LOCK_WAIT (env, whenever the lock is acquired): 0 (default) = non-blocking refuse
+     (flock -n); N>0 = bounded queue (flock -w N), refuse on timeout; "unlimited" = block until acquired,
+     never refuses. Anything else → exit 64 (usage).
   3. cp -a --reflink=always <base_target_dir> <lane_dir>/target   (deltas-only; ~seconds).
   4. --fresh-checkout: find <lane_dir> -path target -prune -o -path .git -prune -o -exec touch -d 2020-01-01 (D5);
      --reset-in-place: no global stamp (git clean -xfd -e target already moved only changed-file mtimes).
@@ -241,12 +246,14 @@ A lane is `FREE` or `ASSIGNED`. The DF wiring implements:
 ```
 acquire_lane(role ∈ {task, merge-spec}) -> lane_dir
     pick a FREE lane of the role's pool.
-    ALWAYS re-seed from the CURRENT base via seed-warm-lane.sh --fresh-checkout --lane-lock:
+    ALWAYS re-seed from the CURRENT base via seed-warm-lane.sh --fresh-checkout (the lane lock
+    is acquired BY DEFAULT — no longer depends on the caller remembering --lane-lock; esc-5214/task
+    5354 fail-safe):
       resolve <base>/target symlink to its concrete .gen.N path;
       hold  flock -s <base>.gen.<N>.lock  during the cp -a walk (reader-refcount GC defers);
-      seed-warm-lane.sh --fresh-checkout <base>.gen.<N>/target <lane_dir> --lane-lock
-        [--lane-lock refuses (75) or queues on <lane_dir>.lock if a live consumer still
-         holds it — inv.11. The role's pool determines the wait policy: merge-spec (the
+      seed-warm-lane.sh --fresh-checkout <base>.gen.<N>/target <lane_dir>
+        [the default-acquired lane lock refuses (75) or queues on <lane_dir>.lock if a live
+         consumer still holds it — inv.11. The role's pool determines the wait policy: merge-spec (the
          SINGLETON _merge-verify lane, no alternate FREE lane to fall back to) should pass
          REIFY_WARM_LANE_LANE_LOCK_WAIT=unlimited (or a generous bounded N) to QUEUE; task
          lanes can stay at the WAIT=0 default (non-blocking refuse) and pick a different
@@ -275,7 +282,7 @@ release_lane(lane_dir)
    **Links-metadata/OUT_DIR path relocation (task 5126, esc-5052):** the third member of the same non-relocatable-baked-path family — alongside task 4712's tauri `OUT_DIR`/permission-path build-dir deletion and task 4983's env!() test/bench relink above — this one covers sys-crate build scripts (`cxx`, `reify-kernel-occt`, `reify-kernel-openvdb`, `libsqlite3-sys`, `zstd-sys`, tree-sitter, `link-cplusplus`, …) whose foreign build-worktree root is baked into two cargo-replayed files under `build/<pkg>-<hash>/`: `output` (`links`-metadata cargo re-emits on a Fresh build script, e.g. cxx's `cargo:CXXBRIDGE_DIR0=<foreign>/target/.../out/cxxbridge/include`) and `root-output` (the build script's OUT_DIR, replayed so a dependent's `include!(concat!(env!("OUT_DIR"), ...))` opens the right dir). These crates are NOT on task 4712's tauri/reify-gui deletion allow-list — deleting their build dirs would force a multi-minute native/C++ rebuild, destroying the warmth the CoW seed exists to preserve. Instead, seed reuses the SAME `<base>.gen.<N>.buildroot` stamp (§9.3 step 2b) to REWRITE the foreign prefix to the lane's own root in place (fixed-string `sed -E`, both search and replacement escaped against ERE metacharacters): the CoW copy already holds identical `out/` content at the lane-relative path, so relocation makes the replayed metadata resolve inside the lane while every compiled `rlib`/`.o`/`.a` stays Fresh (path-independent fingerprint) instead of forcing a rebuild. Gate semantics deliberately DIFFER from the env!() relink's fail-safe-on-absent above: because this is a content REWRITE rather than a cheap idempotent `touch`, an ABSENT stamp skips relocation with an actionable stderr warn instead of guessing — an empty search prefix would match every byte of every candidate file and corrupt it. An EXACT match (buildroot equals the lane) is a genuine no-op. Scope is deliberately narrow, matching the `_NONRELOCATABLE_BUILD_GLOBS` allow-list's philosophy of an explicit surface over a broad one: only files NAMED `output`/`root-output` are rewritten (a filename filter, not a content scan) — `.d` depfiles (advisory; a stale entry forces at most a localized recompile, never ENOENT) and compiled binaries (`.o`/`.a`/`.rlib`; already Fresh and path-independent, so rewriting their bytes is a pure corruption risk with no upside) are an accepted, documented residual.
 9. **Promote provenance** — only the `_merge-verify` lane's clean landed-commit `target/` may be promoted to base; a task lane's WIP MUST NEVER advance the base. Enforced by `refresh-warm-base.sh --landed-commit <sha>` + dirty-worktree guard (see §9.3). The EXACT landed commit is recorded as `<base>.gen.<N>.basecommit` at promote time so seed can derive a correct, drift-free delta-touch base. (D10, esc-3468-75)
 10. **Release-thin safety** *(added 2026-07-12 — task 5177, `warm-lane-pool-sizing-lifecycle.md` §9.5 inv.10)* — `release_lane`'s eager free-first thin removes only `target/`; the lane's branch and any uncommitted source WIP are untouched and recoverable. A lane is never thinned while `ASSIGNED` (mirrors inv.2 one-consumer-per-lane; `thin-warm-lane.sh` itself refuses if it cannot acquire the lane's `flock -x`).
-11. **Acquire-time lane-lock exclusivity** *(added 2026-07-15 — task 5223, closing the deferred acquisition-time half of task 5221's GC reclaim-ordering fix)* — `acquire_lane`'s reseed holds `flock -x <lane_dir>.lock` (via `seed-warm-lane.sh --fresh-checkout --lane-lock`) across the destructive replace+clone, refusing (`EX_TEMPFAIL` 75) or bounded-queuing (`REIFY_WARM_LANE_LANE_LOCK_WAIT`) if a live consumer already holds it — enforcing inv.2 (one-consumer-per-lane) at ACQUIRE time, mirroring how `thin-warm-lane.sh` and `warm-lane-gc.sh` already enforce it at RECLAIM time on the SAME `${LANE_DIR}.lock` sibling-path convention. This `${LANE_DIR}.lock` rendezvous point SUPERSEDES dark-factory's divergent `.merge_verify.lock` (which seed/thin/gc never inspected — the confirmed root cause of the task-5209/5199 mid-verify tree-clobber signature): the merge-verify consumer MUST hold the same `${LANE_DIR}.lock` across its run so reseed, thin, gc, and the live consumer all rendezvous on ONE lock. `--lane-lock` is opt-in (default off) so `thin-warm-lane.sh --reseed` — which already holds this lock before invoking seed — is never double-locked.
+11. **Acquire-time lane-lock exclusivity** *(added 2026-07-15 — task 5223, closing the deferred acquisition-time half of task 5221's GC reclaim-ordering fix)* — `acquire_lane`'s reseed holds `flock -x <lane_dir>.lock` (via `seed-warm-lane.sh --fresh-checkout --lane-lock`) across the destructive replace+clone, refusing (`EX_TEMPFAIL` 75) or bounded-queuing (`REIFY_WARM_LANE_LANE_LOCK_WAIT`) if a live consumer already holds it — enforcing inv.2 (one-consumer-per-lane) at ACQUIRE time, mirroring how `thin-warm-lane.sh` and `warm-lane-gc.sh` already enforce it at RECLAIM time on the SAME `${LANE_DIR}.lock` sibling-path convention. This `${LANE_DIR}.lock` rendezvous point SUPERSEDES dark-factory's divergent `.merge_verify.lock` (which seed/thin/gc never inspected — the confirmed root cause of the task-5209/5199 mid-verify tree-clobber signature): the merge-verify consumer MUST hold the same `${LANE_DIR}.lock` across its run so reseed, thin, gc, and the live consumer all rendezvous on ONE lock. Fail-safe follow-up (esc-5214/task 5354): the lane lock is now acquired **BY DEFAULT** under `--fresh-checkout` — the `--lane-lock` opt-in was bypassable by a forgetful acquire-path caller (dark-factory ζ), the confirmed esc-5214 acquire-time clobber of a live consumer's in-flight build — so the guard can no longer be skipped by omission (dark-factory needs no change; it already handles the exit-75/queue per #5223, it just never triggered it). `--lane-lock` stays accepted (implied under `--fresh-checkout`; still the explicit opt-in for `--reset-in-place`). A caller that ALREADY holds `${LANE_DIR}.lock` itself — `thin-warm-lane.sh --reseed` (FD 9) and `warm-lane-gc.sh` reclaim (FD 8) — passes `--assume-lane-lock-held` so seed skips its own (now default-on) acquire rather than self-refusing against the caller's held lock (flock is not re-entrant across a process tree); `--assume-lane-lock-held` + `--lane-lock` is a contradiction (exit 2).
 
 ## 10. Boundary-test sketch (two-way; the B+H §, closes G2 for δ/ζ/η)
 
