@@ -52,8 +52,14 @@ fn compile_and_build_occt(source: &str) -> Option<reify_eval::BuildResult> {
 }
 
 /// Assert `value` is a `Value::Scalar` of dimension `dim` whose `si_value` is
-/// within 1e-6 relative of `expected` (which must be non-zero).
-fn assert_scalar_rel(value: Option<&Value>, dim: DimensionVector, expected: f64, what: &str) {
+/// within `tol` relative of `expected` (which must be non-zero).
+fn assert_scalar_rel_tol(
+    value: Option<&Value>,
+    dim: DimensionVector,
+    expected: f64,
+    tol: f64,
+    what: &str,
+) {
     match value {
         Some(Value::Scalar {
             si_value,
@@ -65,13 +71,20 @@ fn assert_scalar_rel(value: Option<&Value>, dim: DimensionVector, expected: f64,
             );
             let rel = (si_value - expected).abs() / expected.abs();
             assert!(
-                rel < 1e-6,
-                "{what}: si_value {si_value:.12} not within 1e-6 relative of \
+                rel < tol,
+                "{what}: si_value {si_value:.12} not within {tol:.1e} relative of \
                  {expected:.12} (rel={rel:.3e})"
             );
         }
         other => panic!("{what}: expected Value::Scalar{{{dim:?}}}, got {other:?}"),
     }
+}
+
+/// Assert `value` is a `Value::Scalar` of dimension `dim` whose `si_value` is
+/// within 1e-6 relative of `expected` (which must be non-zero). Thin wrapper
+/// over [`assert_scalar_rel_tol`] at the default 1e-6 tolerance.
+fn assert_scalar_rel(value: Option<&Value>, dim: DimensionVector, expected: f64, what: &str) {
+    assert_scalar_rel_tol(value, dim, expected, 1e-6, what);
 }
 
 /// Assert `value` is a `Value::Point` of exactly 3 length-dimensioned scalar
@@ -192,6 +205,58 @@ fn volume_dispatch_box_sphere_cylinder() {
         DimensionVector::VOLUME,
         cyl_v,
         "volume(cylinder(10mm,20mm))",
+    );
+}
+
+// ── volume() with an INLINE geometry-call argument (task 5345) ────────────────
+
+/// Whole-handle query over an INLINE geometry call, with NO intermediate
+/// geometry `let`: `volume(torus(...))` / `volume(box(...))`. On base these
+/// value cells resolve to `Value::Undef` because `resolve_geometry_handle_arg`
+/// cannot map an inline `FunctionCall` arg to a `named_steps` handle. The
+/// compile-time hoist (task 5345) desugars the inline call into a synthetic
+/// geometry let so the query routes through the identical OCCT dispatch as the
+/// let-bound form. `VolInlineTorus` also pins the "structure whose ONLY
+/// geometry lives inside a query arg" case (no product geometry of its own).
+const VOLUME_INLINE_SOURCE: &str = r#"
+structure def VolInlineTorus {
+    let v = volume(torus(20mm, 5mm))
+}
+structure def VolInlineBox {
+    let v = volume(box(10mm, 20mm, 30mm))
+}
+"#;
+
+/// `volume(torus(20mm,5mm))` inline dispatches to OCCT and yields
+/// `Scalar<Volume>` = 2·π²·R·r² = 2·π²·0.02·0.005² ≈ 9.8696e-6 m³ (asserted at
+/// 2% relative — comfortable slack over the identical-handle let-bound path,
+/// which already yields this exactly). The `volume(box(10,20,30)mm)` inline
+/// sanity case pins a non-torus primitive at the analytic 6.0e-6 m³.
+///
+/// RED on base: both inline-arg cells resolve to `Value::Undef` (the inline
+/// `torus(...)` / `box(...)` arg never gets realized to a kernel handle), so
+/// the numeric assertions fail.
+#[test]
+fn volume_inline_arg_dispatch_torus() {
+    let Some(result) = compile_and_build_occt(VOLUME_INLINE_SOURCE) else {
+        return;
+    };
+
+    let torus_v = 2.0 * std::f64::consts::PI.powi(2) * 0.020 * 0.005_f64.powi(2);
+    assert_scalar_rel_tol(
+        result.values.get(&ValueCellId::new("VolInlineTorus", "v")),
+        DimensionVector::VOLUME,
+        torus_v,
+        2e-2,
+        "volume(torus(20mm,5mm)) inline",
+    );
+
+    // Non-torus primitive sanity: box volume is analytically exact.
+    assert_scalar_rel(
+        result.values.get(&ValueCellId::new("VolInlineBox", "v")),
+        DimensionVector::VOLUME,
+        0.010 * 0.020 * 0.030,
+        "volume(box(10,20,30)mm) inline",
     );
 }
 
