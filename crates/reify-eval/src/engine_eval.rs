@@ -5726,6 +5726,10 @@ impl Engine {
     ///
     /// Declared `pub(crate)` so `engine_edit.rs` and `concurrent.rs` (which live
     /// in separate modules in the same crate) can call it.
+    // Retained for the INV-EVAL-2 parity cross-check (cell_eval_ctx.rs) per the
+    // duplication + deferred-hoist decision recorded in 313bbe3f8c; the last
+    // production caller was removed in eb6e7f8c57, so the lib target sees it as dead.
+    #[cfg_attr(not(test), expect(dead_code))]
     pub(crate) fn cell_eval_ctx<'a>(
         &'a self,
         values: &'a ValueMap,
