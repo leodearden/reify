@@ -1697,4 +1697,98 @@ mod tests {
             "single-ring profile must produce no holes"
         );
     }
+
+    // ── Task 5218 step-7: Revolve/SweepLinear producer arms ─────────────────
+    // The cross-section is the profile op's 2-D geometry for ALL swept kinds,
+    // so Revolve and SweepLinear reuse the same sampler as Extrude. These pin
+    // that both arms resolve their `profile` handle and produce the outer ring.
+
+    #[test]
+    fn swept_kind_to_profile_boundary_revolve_samples_rectangle() {
+        let w = 0.04;
+        let h = 0.02;
+        let profile_handle = GeometryHandleId(10);
+        let ops = vec![
+            GeometryOp::RectangleProfile {
+                width: Value::length(w),
+                height: Value::length(h),
+            },
+            GeometryOp::Revolve {
+                profile: profile_handle,
+                axis_origin: [0.0, 0.0, 0.0],
+                axis_dir: [0.0, 0.0, 1.0],
+                angle_rad: std::f64::consts::FRAC_PI_2,
+            },
+        ];
+        let handles = vec![profile_handle, GeometryHandleId(11)];
+        let kind = SweptKind::Revolve {
+            axis_origin: [0.0, 0.0, 0.0],
+            axis_dir: [0.0, 0.0, 1.0],
+            angle_rad: std::f64::consts::FRAC_PI_2,
+            profile: profile_handle,
+        };
+        let boundary = swept_kind_to_profile_boundary(&kind, &ops, &handles)
+            .expect("a RectangleProfile-backed revolve must produce a ProfileBoundary");
+        assert_eq!(
+            boundary.outer,
+            vec![
+                [-w / 2.0, -h / 2.0],
+                [w / 2.0, -h / 2.0],
+                [w / 2.0, h / 2.0],
+                [-w / 2.0, h / 2.0],
+            ],
+            "revolve cross-section must be the profile op's outer ring (same sampler as Extrude)"
+        );
+        assert!(
+            boundary.holes.is_empty(),
+            "single-ring profile must produce no holes"
+        );
+    }
+
+    #[test]
+    fn swept_kind_to_profile_boundary_sweep_linear_samples_rectangle() {
+        let w = 0.04;
+        let h = 0.02;
+        let profile_handle = GeometryHandleId(10);
+        let path_handle = GeometryHandleId(11);
+        let ops = vec![
+            GeometryOp::RectangleProfile {
+                width: Value::length(w),
+                height: Value::length(h),
+            },
+            GeometryOp::LineSegment {
+                x1: 0.0,
+                y1: 0.0,
+                z1: 0.0,
+                x2: 0.0,
+                y2: 0.0,
+                z2: 0.05,
+            },
+            GeometryOp::Sweep {
+                profile: profile_handle,
+                path: path_handle,
+            },
+        ];
+        let handles = vec![profile_handle, path_handle, GeometryHandleId(12)];
+        let kind = SweptKind::SweepLinear {
+            profile: profile_handle,
+            path: path_handle,
+        };
+        let boundary = swept_kind_to_profile_boundary(&kind, &ops, &handles)
+            .expect("a RectangleProfile-backed linear sweep must produce a ProfileBoundary");
+        assert_eq!(
+            boundary.outer,
+            vec![
+                [-w / 2.0, -h / 2.0],
+                [w / 2.0, -h / 2.0],
+                [w / 2.0, h / 2.0],
+                [-w / 2.0, h / 2.0],
+            ],
+            "sweep-linear cross-section must be the profile op's outer ring (same sampler as Extrude)"
+        );
+        assert!(
+            boundary.holes.is_empty(),
+            "single-ring profile must produce no holes"
+        );
+    }
 }
