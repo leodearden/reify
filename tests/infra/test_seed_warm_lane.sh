@@ -1918,6 +1918,11 @@ assert "P3c: build/cxx-AAAA/output WAS relocated in this same run (guards non-va
 # with the lock HELD and --fresh-checkout but NO --lane-lock, seed REFUSES
 # (H3, WAIT=0 → exit 75) or QUEUEs (H9, WAIT=unlimited → blocks then reseeds)
 # rather than clobbering the live consumer (the esc-5214 acquire-path regression).
+# H7/H8 (task 5354, NEW) pin the --assume-lane-lock-held opt-out that a caller
+# already holding ${LANE_DIR}.lock (thin --reseed FD 9, gc reclaim FD 8) uses to
+# skip the default acquire without self-refusing: H7 = the opt-out is honored
+# (seed reseeds instead of refusing), H8 = --assume-lane-lock-held + --lane-lock
+# is a contradiction (usage error, exit 2).
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
 echo "--- Block Q: acquisition-time lane-lock exclusivity (--lane-lock) ---"
@@ -2262,6 +2267,71 @@ assert "H6b: base_artifact.a IS present in <lane>/target (clone from base succee
     test -f "$Q_LANE10/target/debug/base_artifact.a"
 assert "H6b: cp invoked with --reflink=always" \
     bash -c 'grep "^cp" "$1" | grep -q -- "--reflink=always"' _ "$CALLS_FILE"
+
+# ── H7: --assume-lane-lock-held opt-out is HONORED — a caller that already holds
+# ${LANE_DIR}.lock passes --assume-lane-lock-held so seed SKIPS its own default
+# acquisition and does NOT self-refuse. The held-lock fixture (H1's backgrounded
+# flock -x holder) simulates the caller's own hold; with the opt-out seed reseeds
+# normally (RC 0, target replaced) instead of refusing (75). This is the
+# mechanism thin --reseed (FD 9) and gc reclaim (FD 8) rely on to avoid the
+# flock-non-reentrancy self-refuse under the fail-safe default. ───────────────
+Q_LANE12="$(mktemp -d /tmp/test-seed-Q-lane12-XXXXXX)"
+_TMPDIRS+=("$Q_LANE12")
+mkdir -p "$Q_LANE12/target"
+echo "sentinel content" > "$Q_LANE12/target/SENTINEL.txt"
+
+Q_LOCK12="${Q_LANE12}.lock"
+_TMPDIRS+=("$Q_LOCK12")
+Q_READY12="${Q_LOCK12}.ready-marker"
+_TMPDIRS+=("$Q_READY12")
+touch "$Q_LOCK12"
+( flock -x 9 && touch "$Q_READY12" && sleep 300 ) 9>"$Q_LOCK12" &
+Q_LOCK12_PID=$!
+_BGPIDS+=("$Q_LOCK12_PID")
+_wait_for_reader_lock "$Q_READY12" 30
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$Q_BASE" "$Q_LANE12" --fresh-checkout --assume-lane-lock-held
+
+assert "H7: --assume-lane-lock-held + lock held → exit 0 (seed skipped its own acquire, no self-refuse)" \
+    test "$RC" -eq 0
+assert "H7: STDOUT is exactly <lane_dir>/target" \
+    bash -c '[ "$1" = "'"$Q_LANE12/target"'" ]' _ "$OUT"
+assert "H7: sentinel GONE (target replaced from base — the reseed actually ran)" \
+    bash -c '[ ! -e "'"$Q_LANE12/target/SENTINEL.txt"'" ]'
+assert "H7: base_artifact.a present in <lane>/target (clone from base succeeded)" \
+    test -f "$Q_LANE12/target/debug/base_artifact.a"
+assert "H7: cp invoked with --reflink=always" \
+    bash -c 'grep "^cp" "$1" | grep -q -- "--reflink=always"' _ "$CALLS_FILE"
+
+kill "$Q_LOCK12_PID" 2>/dev/null || true
+wait "$Q_LOCK12_PID" 2>/dev/null || true
+
+# ── H8: --assume-lane-lock-held + --lane-lock is a CONTRADICTION → usage error
+# (exit 2). --lane-lock says "acquire the lane lock yourself"; --assume-lane-lock-held
+# says "the caller already holds it, do NOT acquire" — passing both is caller
+# confusion, rejected loudly (naming BOTH flags) rather than silently picking a
+# precedence. No held lock needed; rejected before any target mutation. ───────
+Q_LANE13="$(mktemp -d /tmp/test-seed-Q-lane13-XXXXXX)"
+_TMPDIRS+=("$Q_LANE13")
+mkdir -p "$Q_LANE13/target"
+echo "sentinel content" > "$Q_LANE13/target/SENTINEL.txt"
+
+reset_calls
+RUSTFLAGS="" REIFY_TEST_REFLINK_OK=1 \
+    run_helper_real "$Q_BASE" "$Q_LANE13" --fresh-checkout --lane-lock --assume-lane-lock-held
+
+assert "H8: --lane-lock + --assume-lane-lock-held → exit 2 (usage error)" \
+    test "$RC" -eq 2
+assert "H8: stderr names --lane-lock (the contradiction names both flags)" \
+    bash -c 'printf "%s\n" "$1" | grep -q -- "--lane-lock"' _ "$ERR_OUT"
+assert "H8: stderr names --assume-lane-lock-held (the contradiction names both flags)" \
+    bash -c 'printf "%s\n" "$1" | grep -q -- "--assume-lane-lock-held"' _ "$ERR_OUT"
+assert "H8: sentinel file in <lane>/target still present (no target mutation)" \
+    test -f "$Q_LANE13/target/SENTINEL.txt"
+assert "H8: cp NEVER invoked (rejected before any mutation)" \
+    bash -c '! grep -q "^cp" "$1"' _ "$CALLS_FILE"
 
 # ── H9: fail-safe DEFAULT queues under WAIT=unlimited — lock HELD,
 # --fresh-checkout but NO --lane-lock + REIFY_WARM_LANE_LANE_LOCK_WAIT=unlimited
