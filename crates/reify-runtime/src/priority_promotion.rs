@@ -116,7 +116,6 @@ impl Default for PriorityPromoter {
 ///
 /// Uses `Mutex` (not `RwLock`) because priority operations are extremely fast
 /// (HashMap lookups) and the Mutex avoids reader-writer distinction overhead.
-/// This matches the `SkipState` pattern in `ConcurrentEvalAdapter`.
 pub struct SharedPriorityPromoter {
     inner: Mutex<PriorityPromoter>,
 }
