@@ -3455,5 +3455,107 @@ else
     assert "T30h: run_all.sh exits 1 (named failing subset member sinks the run) (skipped - run_all.sh missing)" false
 fi
 
+# -- Test 31: REIFY_RUN_ALL_SUBSET_COUNT_ONLY hermetic count-only probe (task
+# #5373) -----------------------------------------------------------------------
+# verify.sh's honest `@@REIFY_RETRY_SCOPE=failed_only@@ ... run_all=<n>` marker
+# must report the POST-VALIDATION matched member count, not a raw word-count of
+# REIFY_RUN_ALL_MEMBER_SUBSET -- a stale/renamed basename that run_all.sh would
+# silently drop (loud stderr WARNING, never run) inflates a raw word-count.
+# run_all.sh exposes its OWN matched count via a hermetic count-only probe:
+# REIFY_RUN_ALL_SUBSET_COUNT_ONLY=1 makes run_all.sh apply ONLY its
+# discovery-glob + subset-match predicate, print a single machine token
+# `@@REIFY_RUN_ALL_SUBSET_MATCHED=<n>@@`, and exit 0 BEFORE running any member.
+# Asserts: (a) the token carries the matched (subset-intersect-present) count --
+# 1 present-and-named + 1 present-not-named + 1 named-but-absent => 1 -- and
+# (b) NO member was executed (no "--- Running:" line, no stub body marker,
+# sentinels absent) -- the hermetic no-execution property that keeps verify.sh's
+# --print-plan oracle valid when it forks this probe at plan-build time.
+echo ""
+echo "--- Test 31: REIFY_RUN_ALL_SUBSET_COUNT_ONLY count-only probe ---"
+
+if [ -f "$RUN_ALL" ]; then
+    # -- 31a: one present-and-named + one present-not-named + one named-but-
+    #         absent => matched=1, and NO member is executed -------------------
+    TMPDIR_T31A="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T31A")
+    # test_ra_co_present.sh: present AND named in the subset -> counted.
+    printf '#!/usr/bin/env bash\ntouch "%s/ran_present"\necho RA_CO_PRESENT_BODY\nexit 0\n' \
+        "$TMPDIR_T31A" > "$TMPDIR_T31A/test_ra_co_present.sh"
+    # test_ra_co_other.sh: present but NOT named -> proves the count is the
+    # subset-intersect-present count, not the raw discovered count.
+    printf '#!/usr/bin/env bash\ntouch "%s/ran_other"\necho RA_CO_OTHER_BODY\nexit 0\n' \
+        "$TMPDIR_T31A" > "$TMPDIR_T31A/test_ra_co_other.sh"
+    chmod +x "$TMPDIR_T31A/test_ra_co_present.sh" "$TMPDIR_T31A/test_ra_co_other.sh"
+    # test_ra_co_bogus.sh: named in the subset but NO file present -> dropped
+    # (the honesty case: a stale/renamed basename must not inflate the count).
+
+    t31a_rc=0
+    t31a_out="$(REIFY_RUN_ALL_SUBSET_COUNT_ONLY=1 \
+        REIFY_RUN_ALL_MEMBER_SUBSET="test_ra_co_present.sh test_ra_co_bogus.sh" \
+        bash "$RUN_ALL" "$TMPDIR_T31A" 2>&1)" || t31a_rc=$?
+
+    if [[ "$t31a_out" == *"@@REIFY_RUN_ALL_SUBSET_MATCHED=1@@"* ]]; then
+        assert "T31a: count-only token reports matched=1 (present-and-named counted, bogus dropped)" true
+    else
+        assert "T31a: count-only token reports matched=1 (present-and-named counted, bogus dropped) (got: $t31a_out)" false
+    fi
+
+    assert "T31a: count-only probe exits 0" \
+        test "$t31a_rc" -eq 0
+
+    # No member executed: sentinels absent (stronger than an output grep alone).
+    assert "T31a: named member was NOT executed (sentinel absent -- hermetic probe)" \
+        test ! -f "$TMPDIR_T31A/ran_present"
+
+    assert "T31a: unnamed member was NOT executed (sentinel absent)" \
+        test ! -f "$TMPDIR_T31A/ran_other"
+
+    if [[ "$t31a_out" != *"--- Running:"* ]]; then
+        assert "T31a: no '--- Running:' line (no member invoked)" true
+    else
+        assert "T31a: no '--- Running:' line (no member invoked) (got: $t31a_out)" false
+    fi
+
+    if [[ "$t31a_out" != *"RA_CO_PRESENT_BODY"* && "$t31a_out" != *"RA_CO_OTHER_BODY"* ]]; then
+        assert "T31a: no stub body marker in output (no member body ran)" true
+    else
+        assert "T31a: no stub body marker in output (no member body ran) (got: $t31a_out)" false
+    fi
+
+    # -- 31b: empty subset under count-only => matched=0 (still hermetic) -------
+    TMPDIR_T31B="$(mktemp -d)"
+    _TMPDIRS+=("$TMPDIR_T31B")
+    printf '#!/usr/bin/env bash\ntouch "%s/ran_present"\nexit 0\n' \
+        "$TMPDIR_T31B" > "$TMPDIR_T31B/test_ra_co_present.sh"
+    chmod +x "$TMPDIR_T31B/test_ra_co_present.sh"
+
+    t31b_rc=0
+    t31b_out="$(env -u REIFY_RUN_ALL_MEMBER_SUBSET \
+        REIFY_RUN_ALL_SUBSET_COUNT_ONLY=1 \
+        bash "$RUN_ALL" "$TMPDIR_T31B" 2>&1)" || t31b_rc=$?
+
+    if [[ "$t31b_out" == *"@@REIFY_RUN_ALL_SUBSET_MATCHED=0@@"* ]]; then
+        assert "T31b: empty subset under count-only reports matched=0" true
+    else
+        assert "T31b: empty subset under count-only reports matched=0 (got: $t31b_out)" false
+    fi
+
+    assert "T31b: empty-subset count-only probe exits 0" \
+        test "$t31b_rc" -eq 0
+
+    assert "T31b: present member NOT executed under empty-subset count-only (sentinel absent)" \
+        test ! -f "$TMPDIR_T31B/ran_present"
+else
+    assert "T31a: count-only token reports matched=1 (present-and-named counted, bogus dropped) (skipped - run_all.sh missing)" false
+    assert "T31a: count-only probe exits 0 (skipped - run_all.sh missing)" false
+    assert "T31a: named member was NOT executed (sentinel absent -- hermetic probe) (skipped - run_all.sh missing)" false
+    assert "T31a: unnamed member was NOT executed (sentinel absent) (skipped - run_all.sh missing)" false
+    assert "T31a: no '--- Running:' line (no member invoked) (skipped - run_all.sh missing)" false
+    assert "T31a: no stub body marker in output (no member body ran) (skipped - run_all.sh missing)" false
+    assert "T31b: empty subset under count-only reports matched=0 (skipped - run_all.sh missing)" false
+    assert "T31b: empty-subset count-only probe exits 0 (skipped - run_all.sh missing)" false
+    assert "T31b: present member NOT executed under empty-subset count-only (sentinel absent) (skipped - run_all.sh missing)" false
+fi
+
 # -- Summary --------------------------------------------------------------------
 test_summary
