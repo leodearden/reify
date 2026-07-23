@@ -102,6 +102,23 @@ structure BadS {
 }
 "#;
 
+/// (step-9) MIXED dirty/clean `eval_cached` serve source. An independent
+/// `param p` (dirtied via `set_param_and_invalidate` before the warm serve, so
+/// `p` + its `indep` cone re-evaluate FRESH) plus an OOB-producing `let oob`
+/// that does NOT depend on `p` (so it is served CLEAN from the cache-reuse arm
+/// and its `W_FIELD_OUT_OF_BOUNDS` warning is REPLAYED). This is the exact
+/// fresh-leg + replay-leg mix in one serve where a broken XOR would surface as a
+/// doubled warning — the step-9 double-emission regression guard.
+const MIXED_SERVE_SRC: &str = r#"
+field def f : Real -> Real { source = sampled { grid = "RegularGrid1" bounds = bbox(point3(0.0m, 0.0m, 0.0m), point3(1.0m, 0.0m, 0.0m)) spacing = 1.0m interpolation = "Linear" data = [0.0, 1.0] } }
+
+structure S {
+    param p : Real = 1.0
+    let indep = p
+    let oob = sample(f, 5.0m)
+}
+"#;
+
 // ─────────────────────────────────────────────────────────────────────────
 // B1 / B5 — per-cell runtime diagnostics replayed on cache-hit serves (step-3).
 // ─────────────────────────────────────────────────────────────────────────
@@ -445,4 +462,71 @@ fn annotation_args_materialization_failure_surfaces_on_warm_serve() {
         "warm eval_cached(): BadS.it must be Value::Undef after the \
          materialization failure, same as cold eval()"
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Double-emission guard on a MIXED dirty/clean eval_cached serve (step-9).
+// ─────────────────────────────────────────────────────────────────────────
+
+/// (step-9) Regression guard for the INV-EVAL-3 double-emission invariant
+/// ("each diagnostic has exactly one owner per serve — replayed XOR
+/// freshly-pushed, never both") on the hardest case: a MIXED `eval_cached` serve
+/// where a subset of cells is dirtied (re-evaluated FRESH) while the rest are
+/// served CLEAN (REPLAYED). A fresh-then-replay overlap — the failure mode μ's
+/// two-disjoint-classes design rules out by construction — would surface here as
+/// a DOUBLED `W_FIELD_OUT_OF_BOUNDS`.
+///
+/// Setup: dirty ONLY the independent `param p` (+ its `indep` cone) via
+/// `set_param_and_invalidate`, then `eval_cached`. `p`/`indep` re-evaluate fresh
+/// (and emit nothing); the OOB-producing `oob` cell does not depend on `p`, so it
+/// is served clean and its warning is replayed from `NodeCache.diagnostics`.
+/// The warning must appear EXACTLY ONCE: not 0 (swallowed) and not 2 (doubled).
+#[test]
+fn field_oob_warning_appears_exactly_once_on_mixed_dirty_clean_serve() {
+    let compiled = parse_and_compile_with_stdlib(MIXED_SERVE_SRC);
+    let mut engine = make_simple_engine();
+
+    // Cold eval populates the cache and fires the OOB warning once (fresh leg).
+    let cold = engine.eval(&compiled);
+    assert_eq!(
+        count_field_oob_warnings(&cold.diagnostics),
+        1,
+        "cold eval() baseline: exactly one OOB warning; got {:?}",
+        cold.diagnostics
+    );
+
+    // Dirty ONLY the independent `p` param (+ its `indep` cone). `oob` does not
+    // depend on `p`, so it stays CLEAN → served from the cache-reuse arm.
+    let p_id = ValueCellId::new("S", "p");
+    engine.set_param_and_invalidate(&p_id, Value::Real(3.0));
+
+    // Warm MIXED serve: `p`/`indep` re-evaluate FRESH; `oob` is REPLAYED.
+    let warm = engine.eval_cached(&compiled, VersionId(1));
+    assert_eq!(
+        count_field_oob_warnings(&warm.eval_result.diagnostics),
+        1,
+        "mixed dirty/clean eval_cached serve: the OOB warning must appear \
+         EXACTLY ONCE (replayed from the clean `oob` cell; the dirtied `p` cone \
+         re-evaluates but emits none) — not 0 (swallowed) and not 2 (a \
+         fresh-then-replay double-emission); got {:?}",
+        warm.eval_result.diagnostics
+    );
+
+    // Stronger no-double-emission check across ALL diagnostics (not just OOB):
+    // no (message, code) pair may appear more than once on the mixed serve.
+    for (i, d) in warm.eval_result.diagnostics.iter().enumerate() {
+        let dupes = warm
+            .eval_result
+            .diagnostics
+            .iter()
+            .filter(|other| other.message == d.message && other.code == d.code)
+            .count();
+        assert_eq!(
+            dupes, 1,
+            "diagnostic #{i} ({:?}) appears {dupes}× on the mixed serve — \
+             INV-EVAL-3 requires exactly one owner per diagnostic per serve; \
+             all diagnostics: {:?}",
+            d.message, warm.eval_result.diagnostics
+        );
+    }
 }
