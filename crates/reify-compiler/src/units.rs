@@ -882,6 +882,35 @@ pub(crate) fn is_geometry_query(name: &str) -> bool {
     GEOMETRY_QUERY_NAMES.contains(&name)
 }
 
+/// The **whole-handle** geometry-query names: the subset of
+/// [`GEOMETRY_QUERY_NAMES`] whose eval-time dispatch resolves arg[0] against a
+/// realized kernel handle in `named_steps`
+/// (`reify_eval::geometry_ops::resolve_geometry_handle_arg` +
+/// `dispatch_geometry_query_call`, gated by the eval `is_geometry_query_call`
+/// family — `volume`/`area`/`centroid`/`bounding_box` with exactly one arg).
+///
+/// This is the exact name-set targeted by the compile-time inline-arg hoist
+/// (task 5345): a 1-arg query `Q(<inline geometry call>)` sitting in a value
+/// cell is desugared into a synthetic geometry let so the query routes through
+/// the identical handle-dispatch path as the hand-written let-bound form.
+///
+/// **Deliberately excluded** (out of scope for the 1-arg inline-arg hoist):
+/// - the multi-arg queries `distance` / `contains` / `intersects` /
+///   `geo_equiv` / `angle` / `max_deviation` (two geometry/vector operands), and
+/// - the non-whole-handle 1-arg queries `length` / `perimeter` / `curvature` /
+///   `normal` / `feature` (topology-selector / at-point / projection queries
+///   that eval does NOT resolve via `resolve_geometry_handle_arg`).
+///
+/// **Parity contract**: this slice MUST equal the eval `is_geometry_query_call`
+/// name-set and remain a subset of [`GEOMETRY_QUERY_NAMES`]. Both directions
+/// are pinned by `tests/geometry_query_inline_arg_tests.rs`.
+pub const WHOLE_HANDLE_GEOMETRY_QUERY_NAMES: &[&str] =
+    &["volume", "area", "centroid", "bounding_box"];
+
+pub(crate) fn is_whole_handle_geometry_query(name: &str) -> bool {
+    WHOLE_HANDLE_GEOMETRY_QUERY_NAMES.contains(&name)
+}
+
 /// The complete set of stdlib **dynamics-query** helper names recognised by
 /// the compiler (RBD-β, task 3829). Sixth name family, structurally parallel
 /// to the five geometry families above ([`GEOMETRY_FUNCTION_NAMES`],

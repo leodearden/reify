@@ -294,6 +294,415 @@ pub(crate) fn substitute_expr(
     }
 }
 
+// ── task 5345: inline geometry-query-argument hoist ──────────────────────────
+//
+// A whole-handle geometry query (`volume`/`area`/`centroid`/`bounding_box`)
+// whose arg[0] is an INLINE geometry call — `let v = volume(torus(20mm,5mm))`,
+// with no intermediate geometry let — evaluates to `Value::Undef`: eval's
+// `resolve_geometry_handle_arg` only maps a `ValueRef` (a named geometry
+// let/param) to a `named_steps` kernel handle, never an inline `FunctionCall`
+// arg. This desugar rewrites the entity member list ONCE, upstream of every
+// `structure.members` walk (pass-1 registration, realization emission,
+// value-cell compilation), lifting each such inline arg into a synthetic
+// geometry let `__geoq_<N>` so the query routes through the identical
+// let-bound path (the workaround users are told to write by hand). Eval is
+// untouched. Mirrors the nested-target hoist precedents (task 5009
+// `linear_pattern_2d(box(..))`, task 4168 `arbitrary_pattern`).
+
+/// Reserved prefix for synthetic geometry-let members minted by the inline
+/// geometry-query-argument hoist. Mirrors the `__count_` / `__auto_` /
+/// `__guard_` / `__connector_` synthetic-member naming conventions.
+const GEOMETRY_QUERY_HOIST_PREFIX: &str = "__geoq_";
+
+/// `true` iff a call `name(args…)` is a whole-handle geometry query whose
+/// arg[0] is an inline geometry-producing call and therefore should be hoisted:
+///   - `name` ∈ {volume, area, centroid, bounding_box}
+///     ([`crate::units::is_whole_handle_geometry_query`]),
+///   - exactly one argument (mirrors eval's `is_geometry_query_call`
+///     `args.len() == 1` gate), and
+///   - arg[0] is a geometry-producing `FunctionCall` — a primitive / boolean /
+///     transform ctor accepted by [`is_geometry_let`]. Empty known-let sets are
+///     passed: an arg[0] `FunctionCall`'s geometry-ness is decided by its own
+///     function name, never a sibling let. A bare `Ident` /
+///     `self.<sub>.<member>` / index-access arg is deliberately excluded — it
+///     already resolves to a handle via `named_steps`, so hoisting it would
+///     double-realize a named geometry.
+fn is_hoistable_query_call(
+    name: &str,
+    args: &[reify_ast::Expr],
+    functions: &[CompiledFunction],
+) -> bool {
+    crate::units::is_whole_handle_geometry_query(name)
+        && args.len() == 1
+        && matches!(args[0].kind, reify_ast::ExprKind::FunctionCall { .. })
+        && is_geometry_let(&args[0], functions, &HashSet::new(), &HashSet::new())
+}
+
+/// Apply `f` to each DIRECT child expression of `expr` (read-only). Structural
+/// enumeration; the mutable mirror is [`for_each_child_mut`] — keep the two arms
+/// in lockstep. Modelled on `compile_builder::dot_chain_lint::walk_expr_depth`
+/// (the authoritative current AST-child enumeration).
+fn for_each_child<'e>(expr: &'e reify_ast::Expr, f: &mut dyn FnMut(&'e reify_ast::Expr)) {
+    use reify_ast::{ExprKind, StringPart};
+    match &expr.kind {
+        ExprKind::MemberAccess { object, .. } => f(object),
+        ExprKind::BinOp { left, right, .. } => {
+            f(left);
+            f(right);
+        }
+        ExprKind::UnOp { operand, .. } => f(operand),
+        ExprKind::FunctionCall { args, .. } => {
+            for a in args {
+                f(a);
+            }
+        }
+        ExprKind::Conditional {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            f(condition);
+            f(then_branch);
+            f(else_branch);
+        }
+        ExprKind::ListLiteral(elems) | ExprKind::SetLiteral(elems) => {
+            for e in elems {
+                f(e);
+            }
+        }
+        ExprKind::MapLiteral(entries) => {
+            for (k, v) in entries {
+                f(k);
+                f(v);
+            }
+        }
+        ExprKind::IndexAccess { object, index } => {
+            f(object);
+            f(index);
+        }
+        ExprKind::Match { discriminant, arms } => {
+            f(discriminant);
+            for arm in arms {
+                f(&arm.body);
+            }
+        }
+        ExprKind::Lambda { body, .. } => f(body),
+        ExprKind::Quantifier {
+            collection,
+            predicate,
+            ..
+        } => {
+            f(collection);
+            f(predicate);
+        }
+        ExprKind::AdHocSelector { base, args, .. } => {
+            f(base);
+            for a in args {
+                f(a);
+            }
+        }
+        ExprKind::QualifiedAccess { qualifier, .. } => f(qualifier),
+        ExprKind::InstanceQualifiedAccess { object, qualified } => {
+            f(object);
+            f(qualified);
+        }
+        ExprKind::Range { lower, upper, .. } => {
+            if let Some(l) = lower {
+                f(l);
+            }
+            if let Some(u) = upper {
+                f(u);
+            }
+        }
+        ExprKind::TraitMethodCall { object, args, .. } => {
+            f(object);
+            for a in args {
+                f(a);
+            }
+        }
+        ExprKind::TraitStaticCall { args, .. } => {
+            for a in args {
+                f(a);
+            }
+        }
+        ExprKind::VariantConstruct { fields, .. } => {
+            for (_, v) in fields {
+                f(v);
+            }
+        }
+        ExprKind::InterpolatedString(parts) => {
+            for part in parts {
+                if let StringPart::Hole(e) = part {
+                    f(e);
+                }
+            }
+        }
+        ExprKind::Auto { params, .. } => {
+            for (_, v) in params {
+                f(v);
+            }
+        }
+        ExprKind::NumberLiteral { .. }
+        | ExprKind::QuantityLiteral { .. }
+        | ExprKind::StringLiteral(_)
+        | ExprKind::BoolLiteral(_)
+        | ExprKind::Undef
+        | ExprKind::EnumAccess { .. }
+        | ExprKind::Ident(_) => {}
+    }
+}
+
+/// Apply `f` to each DIRECT child expression of `expr` (mutable). Structural
+/// enumeration mirror of [`for_each_child`] — keep the two arms in lockstep.
+fn for_each_child_mut(expr: &mut reify_ast::Expr, f: &mut dyn FnMut(&mut reify_ast::Expr)) {
+    use reify_ast::{ExprKind, StringPart};
+    match &mut expr.kind {
+        ExprKind::MemberAccess { object, .. } => f(object),
+        ExprKind::BinOp { left, right, .. } => {
+            f(left);
+            f(right);
+        }
+        ExprKind::UnOp { operand, .. } => f(operand),
+        ExprKind::FunctionCall { args, .. } => {
+            for a in args {
+                f(a);
+            }
+        }
+        ExprKind::Conditional {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            f(condition);
+            f(then_branch);
+            f(else_branch);
+        }
+        ExprKind::ListLiteral(elems) | ExprKind::SetLiteral(elems) => {
+            for e in elems {
+                f(e);
+            }
+        }
+        ExprKind::MapLiteral(entries) => {
+            for (k, v) in entries {
+                f(k);
+                f(v);
+            }
+        }
+        ExprKind::IndexAccess { object, index } => {
+            f(object);
+            f(index);
+        }
+        ExprKind::Match { discriminant, arms } => {
+            f(discriminant);
+            for arm in arms {
+                f(&mut arm.body);
+            }
+        }
+        ExprKind::Lambda { body, .. } => f(body),
+        ExprKind::Quantifier {
+            collection,
+            predicate,
+            ..
+        } => {
+            f(collection);
+            f(predicate);
+        }
+        ExprKind::AdHocSelector { base, args, .. } => {
+            f(base);
+            for a in args {
+                f(a);
+            }
+        }
+        ExprKind::QualifiedAccess { qualifier, .. } => f(qualifier),
+        ExprKind::InstanceQualifiedAccess { object, qualified } => {
+            f(object);
+            f(qualified);
+        }
+        ExprKind::Range { lower, upper, .. } => {
+            if let Some(l) = lower {
+                f(l);
+            }
+            if let Some(u) = upper {
+                f(u);
+            }
+        }
+        ExprKind::TraitMethodCall { object, args, .. } => {
+            f(object);
+            for a in args {
+                f(a);
+            }
+        }
+        ExprKind::TraitStaticCall { args, .. } => {
+            for a in args {
+                f(a);
+            }
+        }
+        ExprKind::VariantConstruct { fields, .. } => {
+            for (_, v) in fields {
+                f(v);
+            }
+        }
+        ExprKind::InterpolatedString(parts) => {
+            for part in parts {
+                if let StringPart::Hole(e) = part {
+                    f(e);
+                }
+            }
+        }
+        ExprKind::Auto { params, .. } => {
+            for (_, v) in params {
+                f(v);
+            }
+        }
+        ExprKind::NumberLiteral { .. }
+        | ExprKind::QuantityLiteral { .. }
+        | ExprKind::StringLiteral(_)
+        | ExprKind::BoolLiteral(_)
+        | ExprKind::Undef
+        | ExprKind::EnumAccess { .. }
+        | ExprKind::Ident(_) => {}
+    }
+}
+
+/// Read-only: does any sub-expression of `expr` contain a hoistable inline
+/// geometry-query call (per [`is_hoistable_query_call`])? Drives the cheap
+/// pre-scan so the common path (no inline query) clones nothing.
+fn expr_has_hoistable_query(expr: &reify_ast::Expr, functions: &[CompiledFunction]) -> bool {
+    if let reify_ast::ExprKind::FunctionCall { name, args, .. } = &expr.kind
+        && is_hoistable_query_call(name, args, functions)
+    {
+        return true;
+    }
+    let mut found = false;
+    for_each_child(expr, &mut |child| {
+        found = found || expr_has_hoistable_query(child, functions);
+    });
+    found
+}
+
+/// Post-order in-place rewrite: hoist every hoistable whole-handle geometry
+/// query in `expr` into a synthetic geometry let appended to `out` (a
+/// `__geoq_<*counter>` let carrying arg[0] verbatim), replacing arg[0] with an
+/// `Ident` to it. Children are visited first so both leaves of e.g.
+/// `volume(a) + area(b)` are hoisted. In-place mutation: an `ExprKind` not
+/// enumerated by [`for_each_child_mut`] is left untouched — a missed nested
+/// query would remain `Undef`, never silent corruption.
+fn hoist_queries_in_expr(
+    expr: &mut reify_ast::Expr,
+    counter: &mut usize,
+    functions: &[CompiledFunction],
+    out: &mut Vec<reify_ast::MemberDecl>,
+) {
+    for_each_child_mut(expr, &mut |child| {
+        hoist_queries_in_expr(child, counter, functions, out);
+    });
+    if let reify_ast::ExprKind::FunctionCall { name, args, .. } = &mut expr.kind
+        && is_hoistable_query_call(name, args, functions)
+    {
+        let syn_name = format!("{GEOMETRY_QUERY_HOIST_PREFIX}{}", *counter);
+        *counter += 1;
+        let arg0_span = args[0].span;
+        let hoisted = std::mem::replace(
+            &mut args[0],
+            reify_ast::Expr {
+                kind: reify_ast::ExprKind::Ident(syn_name.clone()),
+                span: arg0_span,
+            },
+        );
+        out.push(make_synthetic_geometry_let(syn_name, hoisted, arg0_span));
+    }
+}
+
+/// Mint a synthetic geometry `let __geoq_N = <value>`. Non-aux (product)
+/// geometry, faithfully mirroring the hand-written `let g = torus(..); let v =
+/// volume(g)` workaround — marking it `aux` would diverge from that semantics
+/// AND risk the eval "all realized bodies are aux; no product geometry to
+/// export" error for a structure whose only geometry lives inside a query arg.
+/// The AST `content_hash` is not load-bearing (the template hash is rebuilt
+/// from compiled exprs), but a name-derived hash keeps it deterministic.
+fn make_synthetic_geometry_let(
+    name: String,
+    value: reify_ast::Expr,
+    span: SourceSpan,
+) -> reify_ast::MemberDecl {
+    reify_ast::MemberDecl::Let(reify_ast::LetDecl {
+        content_hash: ContentHash::of_str(&name),
+        name,
+        doc: None,
+        is_pub: false,
+        is_priv: false,
+        is_aux: false,
+        type_expr: None,
+        value,
+        where_clause: None,
+        annotations: Vec::new(),
+        span,
+    })
+}
+
+/// The value/default expression of a value-cell member (`Let` value / `Param`
+/// default), or `None` for non-value members.
+fn member_value_expr(member: &reify_ast::MemberDecl) -> Option<&reify_ast::Expr> {
+    match member {
+        reify_ast::MemberDecl::Let(l) => Some(&l.value),
+        reify_ast::MemberDecl::Param(p) => p.default.as_ref(),
+        _ => None,
+    }
+}
+
+/// Desugar inline geometry-query arguments into synthetic geometry lets
+/// (task 5345). For each top-level value-cell member (`Let` value / `Param`
+/// default) whose expression contains a hoistable whole-handle query, mint the
+/// `__geoq_<N>` geometry let(s) immediately BEFORE the consuming member and
+/// rewrite the query arg[0] to reference them. Synthetic names are minted from
+/// a single structure-scoped counter in source+post-order.
+///
+/// Returns `None` — and allocates nothing — when no member carries an inline
+/// geometry-query arg (the common path). Otherwise returns the rewritten member
+/// list, which becomes the single source consumed by all downstream
+/// `structure.members` walks in [`compile_entity`]. Only top-level `Let`/`Param`
+/// members are descended (guarded-group / match-cluster members are out of
+/// scope, consistent with the whole-handle-query acceptance surface).
+fn desugar_inline_geometry_query_args(
+    members: &[reify_ast::MemberDecl],
+    functions: &[CompiledFunction],
+) -> Option<Vec<reify_ast::MemberDecl>> {
+    let has_any = members
+        .iter()
+        .any(|m| member_value_expr(m).is_some_and(|e| expr_has_hoistable_query(e, functions)));
+    if !has_any {
+        return None;
+    }
+
+    let mut out: Vec<reify_ast::MemberDecl> = Vec::with_capacity(members.len());
+    let mut counter: usize = 0;
+    for member in members {
+        match member {
+            reify_ast::MemberDecl::Let(let_decl)
+                if expr_has_hoistable_query(&let_decl.value, functions) =>
+            {
+                let mut new_let = let_decl.clone();
+                hoist_queries_in_expr(&mut new_let.value, &mut counter, functions, &mut out);
+                out.push(reify_ast::MemberDecl::Let(new_let));
+            }
+            reify_ast::MemberDecl::Param(param)
+                if param
+                    .default
+                    .as_ref()
+                    .is_some_and(|e| expr_has_hoistable_query(e, functions)) =>
+            {
+                let mut new_param = param.clone();
+                if let Some(def) = new_param.default.as_mut() {
+                    hoist_queries_in_expr(def, &mut counter, functions, &mut out);
+                }
+                out.push(reify_ast::MemberDecl::Param(new_param));
+            }
+            other => out.push(other.clone()),
+        }
+    }
+    Some(out)
+}
+
 /// Compile a single entity definition (structure or occurrence) into a topology template.
 ///
 /// # Two-pass compilation
@@ -907,6 +1316,30 @@ pub(crate) fn compile_entity(
     compiled_templates: &[TopologyTemplate],
     prelude_template_registry: &HashMap<String, &TopologyTemplate>,
 ) -> TopologyTemplate {
+    // task 5345: desugar inline geometry-query arguments into synthetic geometry
+    // lets BEFORE any `structure.members` walk (pass-1 registration, realization
+    // emission, value-cell compilation all read the shadowed list). Needs
+    // `functions` for `is_geometry_let`'s user-defined-geometry-fn guard, so it
+    // runs here — not the borrow-only `EntityDefRef` `From` impls. The common
+    // path (no inline geometry-query arg) clones nothing: `desugar_…` returns
+    // `None`, the `map` is skipped, and `structure` is left borrowing the caller.
+    let desugared_members = desugar_inline_geometry_query_args(structure.members, functions);
+    let desugared_entity = desugared_members.as_ref().map(|members| EntityDefRef {
+        name: structure.name,
+        doc: structure.doc.clone(),
+        is_pub: structure.is_pub,
+        type_params: structure.type_params,
+        trait_bounds: structure.trait_bounds,
+        members: members.as_slice(),
+        annotations: structure.annotations,
+        pragmas: structure.pragmas,
+        span: structure.span,
+    });
+    let structure: &EntityDefRef = match desugared_entity.as_ref() {
+        Some(e) => e,
+        None => structure,
+    };
+
     let entity_name = structure.name;
     // task 3540 (SIR-α): make `structure def` templates reachable at the
     // expression-lowering site so `Foo()` can lower to a
