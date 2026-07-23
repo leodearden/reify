@@ -46,6 +46,8 @@ ORCH_UNIT="${ORCH_UNIT:-orchestrator-reify.service}"
 ORCH_PROJECT_ROOT="${ORCH_PROJECT_ROOT:-/home/leo/src/reify}"
 ORCH_RESTART_DELAY="${ORCH_RESTART_DELAY:-60s}"
 ORCH_TRANSIENT_UNIT="${ORCH_TRANSIENT_UNIT:-orch-redeploy-restart}"
+ORCH_REQUIRE_COMMIT="${ORCH_REQUIRE_COMMIT:-}"
+ORCH_MAIN_BRANCH="${ORCH_MAIN_BRANCH:-main}"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 usage() {
@@ -96,6 +98,18 @@ is_clean() {
     [ -z "$status_out" ]
 }
 
+# require_commit_on_main ROOT SHA BRANCH
+#   Returns 0 if SHA is an ancestor of BRANCH in the repo at ROOT — i.e. a
+#   restart against ROOT would load config that already includes SHA.
+#   Returns non-zero if SHA is NOT an ancestor, OR SHA/BRANCH is not a valid
+#   object/ref, OR any other git error — all fail-closed to "refuse the
+#   restart" (esc-5271-11: is_clean() alone cannot tell a stale-but-clean
+#   project_root from one that actually has the expected commit).
+require_commit_on_main() {
+    local root="$1" sha="$2" branch="$3"
+    git -C "$root" merge-base --is-ancestor "$sha" "$branch" 2>/dev/null
+}
+
 # ── Arg parsing ───────────────────────────────────────────────────────────────
 MODE="schedule"
 for arg in "$@"; do
@@ -106,6 +120,14 @@ for arg in "$@"; do
             ;;
         --exec-restart)
             MODE="exec"
+            ;;
+        --require-commit=*)
+            ORCH_REQUIRE_COMMIT="${arg#--require-commit=}"
+            if [ -z "$ORCH_REQUIRE_COMMIT" ]; then
+                echo "orchestrator-redeploy-restart.sh: ERROR — --require-commit requires a non-empty <sha>" >&2
+                usage
+                exit 1
+            fi
             ;;
         *)
             echo "orchestrator-redeploy-restart.sh: ERROR — unknown argument: $arg" >&2
@@ -139,6 +161,21 @@ if [ "$MODE" = "schedule" ]; then
         exit 1
     fi
 
+    # Preflight: if a specific commit is required, refuse unless it is
+    # provably an ancestor of ORCH_MAIN_BRANCH (esc-5271-11) — is_clean()
+    # alone cannot detect a stale-but-clean project_root. Schedules NOTHING.
+    if [ -n "$ORCH_REQUIRE_COMMIT" ] && ! require_commit_on_main "$ORCH_PROJECT_ROOT" "$ORCH_REQUIRE_COMMIT" "$ORCH_MAIN_BRANCH"; then
+        echo "orchestrator-redeploy-restart.sh: ERROR — required commit is not an ancestor of '$ORCH_MAIN_BRANCH'." >&2
+        echo "  sha:          $ORCH_REQUIRE_COMMIT" >&2
+        echo "  project_root: $ORCH_PROJECT_ROOT" >&2
+        echo "  branch:       $ORCH_MAIN_BRANCH" >&2
+        echo "" >&2
+        echo "  A restart right now would reload config that does not yet include this" >&2
+        echo "  commit. FIX: land/merge the commit onto '$ORCH_MAIN_BRANCH' first, then" >&2
+        echo "  re-run this script. Schedules NOTHING." >&2
+        exit 1
+    fi
+
     # Resolve self as absolute path so the transient unit can re-invoke us
     SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 
@@ -147,6 +184,15 @@ if [ "$MODE" = "schedule" ]; then
     systemctl --user stop "${ORCH_TRANSIENT_UNIT}.timer"   2>/dev/null || true
     systemctl --user reset-failed "${ORCH_TRANSIENT_UNIT}.service" 2>/dev/null || true
     systemctl --user reset-failed "${ORCH_TRANSIENT_UNIT}.timer"   2>/dev/null || true
+
+    # Thread the require-commit precondition through to the transient unit
+    # ONLY when set, so the systemd-run invocation stays byte-identical to
+    # today when the precondition is unused. Guarded-array expansion avoids
+    # an unbound-variable error under `set -u` when extra_setenv is empty.
+    extra_setenv=()
+    if [ -n "$ORCH_REQUIRE_COMMIT" ]; then
+        extra_setenv+=(--setenv="ORCH_REQUIRE_COMMIT=$ORCH_REQUIRE_COMMIT" --setenv="ORCH_MAIN_BRANCH=$ORCH_MAIN_BRANCH")
+    fi
 
     # Schedule the detached restart as a transient user unit.
     # Check systemd-run's exit code: if scheduling fails (e.g. a stale unit the
@@ -159,6 +205,7 @@ if [ "$MODE" = "schedule" ]; then
             --collect \
             --setenv="ORCH_UNIT=$ORCH_UNIT" \
             --setenv="ORCH_PROJECT_ROOT=$ORCH_PROJECT_ROOT" \
+            "${extra_setenv[@]+${extra_setenv[@]}}" \
             "$SELF" --exec-restart; then
         echo "orchestrator-redeploy-restart.sh: ERROR — systemd-run failed to schedule restart of '$ORCH_UNIT'." >&2
         echo "  Check that systemd --user is available and the transient unit is not already active:" >&2
