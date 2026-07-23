@@ -1719,6 +1719,59 @@ fn open_file_engine_impl_files_path_is_canonical_absolute() {
     );
 }
 
+// ── Task 5357 step-5: run_on_large_stack composition guard ───────────────────
+
+/// `open_file_engine_impl` invoked THROUGH `run_on_large_stack` returns the same
+/// `Ok(GuiState)` as a direct (un-wrapped) call.
+///
+/// This proves the large-stack helper composes safely with the real engine /
+/// `with_engine_lock` / compile path when the compile runs on a plain `std`
+/// thread (no tokio-context `blocking_send` issue; identical result). It is the
+/// headless proxy for the un-headless-testable `open_file_engine` / `update_source`
+/// Tauri command wiring (step-6): those commands cannot be built headlessly, so
+/// this exercises the exact `run_on_large_stack(|| open_file_engine_impl(..))`
+/// composition they perform.
+#[test]
+fn open_file_engine_impl_runs_correctly_through_large_stack() {
+    use crate::commands::open_file_engine_impl;
+
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("bracket.ri");
+    std::fs::write(&file, bracket_source()).unwrap();
+    // Absolute path → canonicalization needs no cwd change (unlike the relative
+    // sibling test above), so no `cwd_lock` is required.
+    let path = file.to_str().unwrap();
+
+    // Direct (un-wrapped) call on a fresh engine.
+    let engine_direct = Mutex::new(EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    ));
+    let direct = open_file_engine_impl(&engine_direct, path)
+        .expect("direct open_file_engine_impl should succeed");
+
+    // The same call routed through the large-stack helper on an identically
+    // initialized fresh engine. The scoped closure borrows `&engine_wrapped` /
+    // `path` directly — no `Arc` clone, no `'static` bound.
+    let engine_wrapped = Mutex::new(EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    ));
+    let wrapped = crate::large_stack::run_on_large_stack(|| {
+        open_file_engine_impl(&engine_wrapped, path)
+    })
+    .expect("open_file_engine_impl through run_on_large_stack should succeed");
+
+    assert!(
+        !wrapped.files.is_empty(),
+        "GuiState.files should be non-empty after loading a file on the large stack"
+    );
+    assert_eq!(
+        wrapped, direct,
+        "open_file_engine_impl through run_on_large_stack must return the same GuiState as a direct call"
+    );
+}
+
 // ── Task 3543 step-9: cancel_solve_impl command tests (GR-016 ζ) ─────────────
 
 /// `cancel_solve_impl` calls `.cancel()` on the published handle, clears the
