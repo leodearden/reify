@@ -253,22 +253,26 @@ pub structure Capstan {
 /// nominal assignment here). DEFERRED DETAIL: band-migration tracking (the
 /// translating-shuttle function) and the exact end heights vs travel.
 pub structure CapstanUnit {
-    /// Drum pitch radius == Capstan drum_r (24mm) + rope radius (3mm) —
-    /// hand-kept in step with Capstan defaults (r_pitch style).
-    param cap_pitch_r : Length = 27mm
-    /// Fairlead pulley pitch radius == IdlerPulley sheave_od/2 (r_pitch).
-    param r_pitch     : Length = 18mm
-    /// Drum flange radius == Capstan flange_r — hand-kept in step; sets the
-    /// pulley stand-off clearance below.
-    param flange_r    : Length = 33mm
-    /// Upper/lower winding-band centres at ±this (quarter of the ~88mm
-    /// groove band — hand-kept in step with Capstan groove_len).
-    param winding_z   : Length = 22mm
+    /// Fairlead pulley pitch radius — threaded INTO the pulley subs as
+    /// sheave_od = 2*this, so it is the single source (not hand-matched).
+    param r_pitch  : Length = 18mm
     /// Pulley lateral stand-off from the drum axis (groove-plane distance
     /// from drum centre to pulley centre, along X).
-    param pulley_x    : Length = 45mm
-    /// Nominal Z split of a winding's two rope-end exits (quarter band).
-    param lead_split  : Length = 11mm
+    param pulley_x : Length = 45mm
+
+    sub capstan = Capstan() at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
+
+    // All drum-coupled dimensions DERIVE from the capstan sub's own cells
+    // (parent-reads-child-let verified 2026-07-23; no hand-kept literals —
+    // resize the Capstan and the fairlead follows).
+    let cap_pitch_r = self.capstan.drum_r + self.capstan.rope_dia / 2
+    let flange_r    = self.capstan.flange_r
+    /// Upper/lower winding-band centres: the two windings split the groove
+    /// band in half, so their centres sit at ± a quarter of it.
+    let winding_z   = self.capstan.groove_len / 4
+    /// Nominal Z split of a winding's two rope-end exits (an eighth of the
+    /// band = half the winding: mid-migration positions of the two ends).
+    let lead_split  = self.capstan.groove_len / 8
 
     let rot_spin_y = orient_axis_angle(vec3(1m, 0mm, 0mm), 90deg)  // leaf +Z (spin) → Y
     let neg_x     = 0mm - pulley_x
@@ -281,14 +285,12 @@ pub structure CapstanUnit {
     let lower_l   = 0mm - winding_z + lead_split + r_pitch
     let lower_r   = 0mm - winding_z - lead_split + r_pitch
 
-    sub capstan = Capstan() at transform3(orient_identity(), vec3(0mm, 0mm, 0mm))
-
     // UPPER winding — outboard (−y) tangent plane.
-    sub fl_upper_l = IdlerPulley() at transform3(rot_spin_y, vec3(neg_x,    y_rear,  upper_l))
-    sub fl_upper_r = IdlerPulley() at transform3(rot_spin_y, vec3(pulley_x, y_rear,  upper_r))
+    sub fl_upper_l = IdlerPulley(sheave_od: r_pitch * 2) at transform3(rot_spin_y, vec3(neg_x,    y_rear,  upper_l))
+    sub fl_upper_r = IdlerPulley(sheave_od: r_pitch * 2) at transform3(rot_spin_y, vec3(pulley_x, y_rear,  upper_r))
     // LOWER winding — machine-side (+y) tangent plane.
-    sub fl_lower_l = IdlerPulley() at transform3(rot_spin_y, vec3(neg_x,    y_front, lower_l))
-    sub fl_lower_r = IdlerPulley() at transform3(rot_spin_y, vec3(pulley_x, y_front, lower_r))
+    sub fl_lower_l = IdlerPulley(sheave_od: r_pitch * 2) at transform3(rot_spin_y, vec3(neg_x,    y_front, lower_l))
+    sub fl_lower_r = IdlerPulley(sheave_od: r_pitch * 2) at transform3(rot_spin_y, vec3(pulley_x, y_front, lower_r))
 
     // The flanges pierce the tangent planes for |x| < sqrt(flange_r² −
     // cap_pitch_r²) (≈19mm at the defaults): keep the pulley's inner edge
