@@ -150,6 +150,20 @@ type_check_command: "true"
 # concurrent cargo subcommands serialize anyway — parallelism just wastes CPU.
 concurrent_verify: false
 
+# Merge-role lint-first ordering (rider 1, docs/prds/merge-gate-riders.md task β / §3,
+# §6 K1; DF module-config knob shipped by task α, dark_factory:2832). Precondition
+# (K1): takes effect only when concurrent_verify: false (above) ∧ role=merge — under
+# that precondition DF's verify.py reorders the sequential verify to lint → test →
+# type and short-circuits the test+type legs as CheckRun.skipped when lint fails.
+# Survey attribution (docs/notes/merge-verify-cpu-survey-2026-07.md): lint p/c=60 vs
+# release nextest p/c=21 — this catches the lint-red failure class (~4.8% of merge
+# failures) after ~4 min instead of after the ~50-min test phase. Task-role and
+# background-role verifies are unaffected (DF scopes the reorder to role=merge only);
+# the ordering/short-circuit mechanism itself is entirely DF-side. Peer module-config
+# bool of concurrent_verify above, NOT a verify_env entry. Reify-side seam guard:
+# tests/infra/test_merge_role_lint_first_seam.sh.
+sequential_lint_first: true
+
 # Env injected into verify subprocesses (merged on top of os.environ).
 # sccache caches rustc output across worktrees; CARGO_INCREMENTAL=0 is required
 # because incremental and sccache are mutually exclusive.
