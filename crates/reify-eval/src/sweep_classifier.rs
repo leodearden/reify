@@ -1792,4 +1792,122 @@ mod tests {
             "single-ring profile must produce no holes"
         );
     }
+
+    // ── Task 5218 step-9: build_swept_2d_mesh error/forward contract ────────
+    // build_swept_2d_mesh = producer → mesh_swept_profile_2d. When the producer
+    // yields None (unresolvable handle / non-profile op) it short-circuits to
+    // Err(EmptyBoundary) before any Gmsh call; a valid boundary validates and
+    // is forwarded (Ok in a libgmsh build, Err(GmshUnavailable) in a stub
+    // build). Mesh2dError has no PartialEq → assert via matches!(&result, …).
+
+    #[test]
+    fn build_swept_2d_mesh_unresolvable_profile_is_empty_boundary() {
+        // Profile handle 99 is absent from `handles` → producer None →
+        // Err(EmptyBoundary), deterministic in libgmsh and stub builds alike.
+        let ops = vec![
+            GeometryOp::RectangleProfile {
+                width: Value::length(0.04),
+                height: Value::length(0.02),
+            },
+            GeometryOp::Extrude {
+                profile: GeometryHandleId(10),
+                distance: Value::length(0.01),
+            },
+        ];
+        let handles = vec![GeometryHandleId(10), GeometryHandleId(11)];
+        let kind = SweptKind::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: Value::length(0.01),
+            profile: GeometryHandleId(99),
+        };
+        let result = build_swept_2d_mesh(
+            &kind,
+            &ops,
+            &handles,
+            reify_solver_elastic::SweepElementTarget::HexPreferred,
+            &reify_solver_elastic::Mesh2dOptions::default(),
+        );
+        assert!(
+            matches!(&result, Err(reify_solver_elastic::Mesh2dError::EmptyBoundary)),
+            "an unresolvable profile handle must short-circuit to Err(EmptyBoundary); got {result:?}"
+        );
+    }
+
+    #[test]
+    fn build_swept_2d_mesh_non_profile_op_is_empty_boundary() {
+        // Profile handle resolves to a Box (non-profile op) → producer None →
+        // Err(EmptyBoundary), before any Gmsh call.
+        let profile_handle = GeometryHandleId(10);
+        let ops = vec![
+            GeometryOp::Box {
+                width: Value::length(0.04),
+                height: Value::length(0.02),
+                depth: Value::length(0.03),
+            },
+            GeometryOp::Extrude {
+                profile: profile_handle,
+                distance: Value::length(0.01),
+            },
+        ];
+        let handles = vec![profile_handle, GeometryHandleId(11)];
+        let kind = SweptKind::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: Value::length(0.01),
+            profile: profile_handle,
+        };
+        let result = build_swept_2d_mesh(
+            &kind,
+            &ops,
+            &handles,
+            reify_solver_elastic::SweepElementTarget::HexPreferred,
+            &reify_solver_elastic::Mesh2dOptions::default(),
+        );
+        assert!(
+            matches!(&result, Err(reify_solver_elastic::Mesh2dError::EmptyBoundary)),
+            "a non-profile source op must short-circuit to Err(EmptyBoundary); got {result:?}"
+        );
+    }
+
+    #[test]
+    fn build_swept_2d_mesh_valid_rectangle_forwards_past_validation() {
+        // A valid RectangleProfile extrude: the producer builds a
+        // non-degenerate boundary that validates and is forwarded to
+        // mesh_swept_profile_2d. The outcome is Ok in a libgmsh build and
+        // Err(GmshUnavailable) in a stub build — but NEVER
+        // EmptyBoundary/DegenerateBoundary. Asserted gmsh-agnostically so it is
+        // deterministic in both build configs.
+        let profile_handle = GeometryHandleId(10);
+        let ops = vec![
+            GeometryOp::RectangleProfile {
+                width: Value::length(0.04),
+                height: Value::length(0.02),
+            },
+            GeometryOp::Extrude {
+                profile: profile_handle,
+                distance: Value::length(0.01),
+            },
+        ];
+        let handles = vec![profile_handle, GeometryHandleId(11)];
+        let kind = SweptKind::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: Value::length(0.01),
+            profile: profile_handle,
+        };
+        let result = build_swept_2d_mesh(
+            &kind,
+            &ops,
+            &handles,
+            reify_solver_elastic::SweepElementTarget::HexPreferred,
+            &reify_solver_elastic::Mesh2dOptions::default(),
+        );
+        assert!(
+            !matches!(
+                &result,
+                Err(reify_solver_elastic::Mesh2dError::EmptyBoundary)
+                    | Err(reify_solver_elastic::Mesh2dError::DegenerateBoundary)
+            ),
+            "a valid rectangle extrude must validate and forward to mesh_swept_profile_2d \
+             (Ok in libgmsh, Err(GmshUnavailable) in stub) — never EmptyBoundary/DegenerateBoundary; got {result:?}"
+        );
+    }
 }
