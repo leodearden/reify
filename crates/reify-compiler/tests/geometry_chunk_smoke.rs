@@ -158,86 +158,52 @@ fn revolve_compiles() {
     );
 }
 
-// --- Prelude/2D-profile phantoms: line, arc, circle, polygon ---
+// --- Prelude/2D-profile constructors: line_segment, arc, polygon ---
 //
-// geometry.md's "Geometry Constructors (Prelude)" block (lines 56-62) and
-// "2D profiles" block (line 87) document four phantom call forms with no
-// matching compiler arm. Three of the four (arc/circle/polygon) ARE
-// registered geometry builtins (GEOMETRY_FUNCTION_NAMES, units.rs:88)
-// called with the wrong arg count, so each one's own arg-count-exact check
-// emits a Severity::Error — RED below.
+// geometry.md's "Geometry Constructors (Prelude)" block (lines 56-61) and
+// "2D profiles" block (line 87) documented four phantom call forms with no
+// matching compiler arm: `line(start, end)`, `arc(center, radius,
+// start_angle, end_angle)` [4-arg], `circle(center, radius)` [2-arg], and
+// `polygon(points)`/`polygon(vertices)` [1-arg collection]. All four are now
+// corrected to their authoritative flat-coordinate forms below.
 //
-// `line` is different: no `line` builtin is registered anywhere (absent
-// from GEOMETRY_FUNCTION_NAMES and from
-// reify_ir::geometry::GEOMETRY_OP_DESCRIPTORS), so the call falls all the
-// way through expr.rs's unresolved-function handling to its final,
-// permissive fallback (expr.rs ~3540-3556): for any call with >= 1
-// argument, that fallback types the result from the *first argument's*
-// result_type and emits NO diagnostic at all (only the *zero*-arg case
-// emits a Severity::Warning). So `line(point3(..), point3(..))` "compiles"
-// with zero Error diagnostics today even though `line` is a phantom name —
-// this fixture is intentionally NOT red pre-fix; see
-// `line_prelude_phantom_compiles_via_permissive_fallback` below. The
-// broader compiler gap this reveals (no diagnostic for a call to a
-// genuinely undefined function name once arg-count >= 1) is out of scope
-// for this doc-audit task and is tracked separately as a follow-up, not
-// fixed here.
+// (`line` was never a registered builtin at all — absent from
+// GEOMETRY_FUNCTION_NAMES and reify_ir::geometry::GEOMETRY_OP_DESCRIPTORS —
+// so pre-fix it silently "compiled" via expr.rs's permissive
+// unresolved-function fallback (types an >= 1-arg call from its first
+// argument's result_type, no diagnostic) rather than erroring; arc/circle/
+// polygon are registered builtins and pre-fix failed their own
+// arg-count-exact / coordinate-pair checks. See this task's escalation
+// resolution for the verification detail. The phantom `circle(center,
+// radius)` prelude form is simply removed, not replaced — there is only
+// ever the one 1-arg `circle(radius)`, already pinned by
+// `circle_profile_compiles` above.)
 
 #[test]
-fn line_prelude_phantom_compiles_via_permissive_fallback() {
-    // geometry.md line 59 documents a 2-arg `line(start, end)`, but no
-    // `line` builtin exists in the compiler at all. Unlike its
-    // arc/circle/polygon siblings below, this call is not rejected: it
-    // resolves through expr.rs's final unresolved-function fallback (see
-    // block comment above), which types any >= 1-arg call from its first
-    // argument's result_type with no diagnostic. Kept passing (not forced
-    // red by some other mechanism) per house ruling on this task's
-    // escalation — the RED state for this suite is genuinely 3-of-4, not
-    // 4-of-4.
+fn line_segment_compiles() {
+    // geometry.md line 59 documents the 6-arg
+    // `line_segment(x1, y1, z1, x2, y2, z2)` form (geometry_curve.rs:22).
     assert_compiles(
-        "line_prelude_phantom",
-        "line(point3(0mm, 0mm, 0mm), point3(10mm, 0mm, 0mm))",
+        "line_segment",
+        "line_segment(0mm, 0mm, 0mm, 10mm, 0mm, 0mm)",
     );
 }
 
 #[test]
-fn arc_prelude_phantom_is_rejected_pending_doc_fix() {
-    // geometry.md line 59 documents a 4-arg
-    // `arc(center, radius, start_angle, end_angle)`, but the only compiler
-    // arm is the 9-arg
-    // `arc(cx, cy, cz, radius, start_angle, end_angle, ax, ay, az)`
-    // (geometry_curve.rs:47). RED until step-4 corrects geometry.md's
-    // prelude block and this fixture to the real 9-arg form.
+fn arc_compiles() {
+    // geometry.md line 60 documents the 9-arg
+    // `arc(cx, cy, cz, radius, start_angle, end_angle, ax, ay, az)` form
+    // (geometry_curve.rs:47): center + radius + angle range + axis direction.
     assert_compiles(
-        "arc_prelude_phantom",
-        "arc(point3(0mm, 0mm, 0mm), 5mm, 0deg, 90deg)",
+        "arc",
+        "arc(0mm, 0mm, 0mm, 5mm, 0deg, 90deg, 0mm, 0mm, 1mm)",
     );
 }
 
 #[test]
-fn circle_prelude_phantom_is_rejected_pending_doc_fix() {
-    // geometry.md lines 59-60 document a prelude 2-arg
-    // `circle(center, radius)`, distinct from the 1-arg profile
-    // `circle(radius)` already pinned by `circle_profile_compiles` above.
-    // No 2-arg arm exists (geometry.rs:1556 is 1-arg only). RED until
-    // step-4 removes this phantom prelude form from geometry.md — there is
-    // only ever one `circle`.
-    assert_compiles(
-        "circle_prelude_phantom",
-        "circle(point3(0mm, 0mm, 0mm), 5mm)",
-    );
-}
-
-#[test]
-fn polygon_prelude_phantom_is_rejected_pending_doc_fix() {
+fn polygon_compiles() {
     // geometry.md line 61 (prelude block) and line 87 (2D-profiles block)
-    // document a 1-arg `polygon(points)`/`polygon(vertices)` taking a
-    // point collection, but the only compiler arm is variadic flat
-    // coordinate pairs (>= 6 args, even count) (geometry.rs:1570). RED
-    // until step-4 corrects both geometry.md blocks and this fixture to
-    // the real variadic coordinate-pair form.
-    assert_compiles(
-        "polygon_prelude_phantom",
-        "polygon([point2(0mm, 0mm), point2(10mm, 0mm), point2(5mm, 10mm)])",
-    );
+    // document the variadic flat coordinate-pairs form
+    // `polygon(x1, y1, x2, y2, ...)` (>= 6 args, even count; geometry.rs:1570).
+    assert_compiles("polygon", "polygon(0mm, 0mm, 10mm, 0mm, 5mm, 10mm)");
 }
