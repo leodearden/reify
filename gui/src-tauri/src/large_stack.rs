@@ -51,3 +51,25 @@ where
             .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
     })
 }
+
+/// Spawn `f` on a dedicated OS thread with a [`COMPILE_STACK_SIZE`] stack WITHOUT
+/// blocking the caller, returning the [`std::thread::JoinHandle`].
+///
+/// This is the fire-and-forget variant for async callers that must NOT block
+/// their runtime worker on a join — notably `debug_server::run_on_engine`, which
+/// delivers its result out-of-band via a `tokio::sync::oneshot` channel. Because
+/// `f` outlives this call, it is `'static` (no borrowing of caller-stack data);
+/// deliver any result through a channel captured by `f`.
+///
+/// Unlike [`run_on_large_stack`], the returned `io::Result` surfaces OS
+/// thread-creation failure to the caller instead of panicking (`Builder::spawn`
+/// returns a `Result`, whereas `thread::spawn` panics), so an async caller can
+/// map it to a structured error.
+pub fn spawn_on_large_stack<F>(f: F) -> std::io::Result<std::thread::JoinHandle<()>>
+where
+    F: FnOnce() + Send + 'static,
+{
+    std::thread::Builder::new()
+        .stack_size(COMPILE_STACK_SIZE)
+        .spawn(f)
+}
