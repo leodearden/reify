@@ -131,6 +131,27 @@
 #                                      zero tests. Set by dark-factory on a
 #                                      merge-gate retry (D2), never by
 #                                      default.
+#   REIFY_RUN_ALL_SUBSET_COUNT_ONLY   set to EXACTLY "1" for a hermetic,
+#                                      NO-EXECUTION count-only probe (task
+#                                      5373): apply ONLY the member-subset
+#                                      match predicate (glob test_*.sh, skip
+#                                      test_helpers.sh, [ -f ] guard,
+#                                      REIFY_RUN_ALL_MEMBER_SUBSET membership),
+#                                      print a single machine token
+#                                      "@@REIFY_RUN_ALL_SUBSET_MATCHED=<n>@@"
+#                                      to stdout, and exit 0 BEFORE running any
+#                                      member. Forked by verify.sh at plan-
+#                                      build time so its honest failed_only
+#                                      retry marker reports the POST-validation
+#                                      matched count -- a stale/renamed
+#                                      basename that would be dropped (see
+#                                      MEMBER_SUBSET's not-found WARNING above)
+#                                      never inflates it -- while staying
+#                                      hermetic enough to keep the
+#                                      --print-plan oracle valid (NO tests
+#                                      run). Any other value (unset/empty/"0"/
+#                                      garbage) leaves the normal run paths
+#                                      unchanged (default off).
 #   REIFY_RUN_ALL_POOL_FORK_FAIL_MEMBER   fault-injection seam (task #5129):
 #                                      when set to a pool-bucket member's
 #                                      basename, that ONE member is degraded
@@ -1105,6 +1126,41 @@ declare -A _ra_member_subset=()
 for _ra_subset_tok in ${REIFY_RUN_ALL_MEMBER_SUBSET:-}; do
     [ -n "$_ra_subset_tok" ] && _ra_member_subset["$_ra_subset_tok"]=1
 done
+
+# ---------------------------------------------------------------------------
+# Count-only probe (task 5373): REIFY_RUN_ALL_SUBSET_COUNT_ONLY=1 is a
+# hermetic, NO-EXECUTION probe consumed by verify.sh's honest retry marker
+# (@@REIFY_RETRY_SCOPE=failed_only@@ ... run_all=<n>). verify.sh forks this at
+# plan-BUILD time to learn how many named REIFY_RUN_ALL_MEMBER_SUBSET members
+# run_all.sh would ACTUALLY run, so the marker reports the post-validation
+# matched count instead of a raw word-count that a stale/renamed basename --
+# the very case the member-subset branch below drops with a loud stderr
+# WARNING (search "not found in $INFRA_DIR") -- would silently inflate.
+# This block applies run_all.sh's OWN member-subset match predicate (glob
+# "$INFRA_DIR"/test_*.sh, [ -f ] guard, skip test_helpers.sh, membership in
+# _ra_member_subset), MIRRORING the member-subset run loop's predicate below
+# (search "REIFY_RUN_ALL_MEMBER_SUBSET dedicated serial branch", ~the
+# _ra_subset_file loop): the two predicates MUST stay in sync -- pinned by
+# test_run_all.sh Test 31 (matched=1 for one-valid-one-bogus) and the
+# end-to-end honesty assertion in test_verify_retry_failed_only.sh, both of
+# which fail if they ever disagree. It prints a single machine token and
+# exits 0 BEFORE the branch chain runs any member, so the fork stays hermetic
+# and keeps verify.sh's --print-plan oracle valid (count-only runs NO tests).
+# Gated ONLY on the knob = exactly "1"; any other value (unset/empty/"0"/
+# garbage) leaves the normal run paths below wholly untouched.
+# ---------------------------------------------------------------------------
+if [ "${REIFY_RUN_ALL_SUBSET_COUNT_ONLY:-}" = "1" ]; then
+    _ra_co_matched=0
+    for _ra_co_file in "$INFRA_DIR"/test_*.sh; do
+        # If the glob matches nothing, the literal pattern string is returned — skip it.
+        [ -f "$_ra_co_file" ] || continue
+        _ra_co_base="$(basename "$_ra_co_file")"
+        [ "$_ra_co_base" = "test_helpers.sh" ] && continue
+        [ "${_ra_member_subset[$_ra_co_base]:-0}" = "1" ] && _ra_co_matched=$((_ra_co_matched + 1))
+    done
+    echo "@@REIFY_RUN_ALL_SUBSET_MATCHED=${_ra_co_matched}@@"
+    exit 0
+fi
 
 if [ "$SCOPE" = "host-infra" ]; then
     # -------------------------------------------------------------------------
