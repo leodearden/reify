@@ -247,6 +247,92 @@
         }
     }
 
+    // ── Task 5218 step-11: build_swept_2d_mesh as the real gmsh_2d closure ──
+    // Integration proof: dispatch a Some(Extrude) referencing a RectangleProfile
+    // with the REAL producer wired as gmsh_2d. The producer must build a valid
+    // boundary and reach mesh_swept_profile_2d (never fall back to tet via an
+    // EmptyBoundary/DegenerateBoundary short-circuit). With Gmsh available the
+    // realization is Swept; in a stub build Gmsh is unavailable and the swept
+    // path deterministically falls back to Tet — the strict-Swept assertion is
+    // gated on that so the test is deterministic in both build configs.
+
+    #[test]
+    fn dispatch_swept_kind_with_real_producer_reaches_mesher_and_realizes_swept() {
+        use std::cell::Cell;
+
+        let profile_handle = GeometryHandleId(10);
+        let ops = vec![
+            reify_ir::GeometryOp::RectangleProfile {
+                width: reify_ir::Value::length(0.04),
+                height: reify_ir::Value::length(0.02),
+            },
+            reify_ir::GeometryOp::Extrude {
+                profile: profile_handle,
+                distance: reify_ir::Value::length(0.01),
+            },
+        ];
+        let handles = vec![profile_handle, GeometryHandleId(11)];
+        let kind = crate::sweep_classifier::SweptKind::Extrude {
+            axis: [0.0, 0.0, 1.0],
+            length: reify_ir::Value::length(0.01),
+            profile: profile_handle,
+        };
+
+        // Recorded inside the gmsh_2d closure: whether the producer validated a
+        // boundary (anything but EmptyBoundary/DegenerateBoundary) and whether
+        // Gmsh was actually available (Ok) in this build.
+        let reached_mesher = Cell::new(false);
+        let gmsh_available = Cell::new(false);
+
+        let result = dispatch_volume_mesh(
+            Some(&kind),
+            false, // force_tet — exercise the real swept path
+            false, // require_hex_wedge
+            &ops,
+            &handles,
+            |swept| {
+                let r = crate::sweep_classifier::build_swept_2d_mesh(
+                    swept,
+                    &ops,
+                    &handles,
+                    reify_solver_elastic::SweepElementTarget::HexPreferred,
+                    &reify_solver_elastic::Mesh2dOptions::default(),
+                );
+                reached_mesher.set(!matches!(
+                    &r,
+                    Err(Mesh2dError::EmptyBoundary) | Err(Mesh2dError::DegenerateBoundary)
+                ));
+                gmsh_available.set(matches!(&r, Ok(_)));
+                r
+            },
+            |_params, _mesh| Ok(make_swept_mesh(2)),
+            || Ok(make_empty_volume_mesh()),
+        );
+
+        assert!(
+            reached_mesher.get(),
+            "the real producer must build a valid boundary and forward to \
+             mesh_swept_profile_2d — never fall back via EmptyBoundary/DegenerateBoundary"
+        );
+        if gmsh_available.get() {
+            match result {
+                Ok(VolumeMeshOutcome::Swept(mesh3d)) => {
+                    assert_eq!(
+                        mesh3d.layers, 2,
+                        "swept realization must carry the sweep_step mock's layers"
+                    );
+                }
+                other => panic!("with gmsh available, expected Ok(Swept(_)); got {other:?}"),
+            }
+        } else {
+            assert!(
+                matches!(result, Ok(VolumeMeshOutcome::Tet(_))),
+                "with gmsh unavailable (stub build), the swept path falls back to Tet \
+                 (not via EmptyBoundary); got {result:?}"
+            );
+        }
+    }
+
     #[allow(dead_code, unreachable_code)]
     fn _surface_pin() {
         // Name both variants — a rename or variant removal breaks compilation.
