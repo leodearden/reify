@@ -3111,13 +3111,19 @@ impl OcctKernel {
             GeometryOp::Pipe { path, radius } => {
                 let r = extract_f64(radius)?;
                 validate_positive_finite(r, "pipe radius")?;
-                // Reject paths whose start-tangent is not approximately +Z; see validate_pipe_start_tangent.
                 let path_shape = self.get_shape(*path)?;
+                // Orient the circular profile onto the path's start frame: build
+                // the circle at the wire's start point with its plane normal
+                // aligned to the start-tangent, then sweep. This supports paths
+                // with ANY finite start-tangent (not just +Z).
                 let t = ffi::ffi::wire_start_tangent(path_shape)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
                 validate_pipe_start_tangent(t)?;
-                let circle_shape = ffi::ffi::make_circle_face(r, 0.0)
+                let p = ffi::ffi::wire_start_point(path_shape)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
+                let circle_shape =
+                    ffi::ffi::make_oriented_circle_face(r, p.x, p.y, p.z, t.x, t.y, t.z)
+                        .map_err(|e| GeometryError::OperationFailed(e.to_string()))?;
                 ffi::ffi::make_pipe(&circle_shape, path_shape)
                     .map_err(|e| GeometryError::OperationFailed(e.to_string()))?
             }
