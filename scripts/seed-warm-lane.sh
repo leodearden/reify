@@ -17,7 +17,8 @@
 # Usage (seed mode):
 #   lane_target=$(scripts/seed-warm-lane.sh <base_target_dir> <lane_dir> \
 #                    (--fresh-checkout|--reset-in-place) \
-#                    [--base-commit <sha>] [--touch <path>]... [--lane-lock])
+#                    [--base-commit <sha>] [--touch <path>]... \
+#                    [--lane-lock] [--assume-lane-lock-held])
 #
 #   Lane-lock exclusivity (PRD §9.5 inv.11; esc-5214/task 5354 fail-safe flip):
 #     an EXCLUSIVE flock on the sibling-path ${LANE_DIR}.lock -- the same
@@ -40,6 +41,13 @@
 #     FD 9 (fixed, matching thin-warm-lane.sh's T3 convention): a caller that
 #     lets seed acquire the lock MUST NOT itself hold a load-bearing FD 9 open
 #     across this invocation -- `exec 9>"$LANE_LOCK"` would silently reassign it.
+#   --assume-lane-lock-held: opt OUT of the default acquire for a caller that
+#     ALREADY holds ${LANE_DIR}.lock itself (thin-warm-lane.sh --reseed on FD 9,
+#     warm-lane-gc.sh reclaim on FD 8). flock is not re-entrant across a process
+#     tree, so having seed re-open+flock the same file would self-refuse against
+#     the caller's own held lock; this flag makes seed skip its own acquire, so
+#     the caller's lock provides the inv.2 exclusivity. Mutually exclusive with
+#     --lane-lock (passing both is a usage error, exit 2).
 #
 # Usage (record-base mode):
 #   sidecar=$(scripts/seed-warm-lane.sh --record-base <base_target_dir>)
@@ -85,7 +93,7 @@ _usage() {
     cat >&2 <<'EOF'
 Usage:
   seed-warm-lane.sh <base_target_dir> <lane_dir> (--fresh-checkout|--reset-in-place) \
-      [--base-commit <sha>] [--touch <path>]... [--lane-lock]
+      [--base-commit <sha>] [--touch <path>]... [--lane-lock] [--assume-lane-lock-held]
   seed-warm-lane.sh --record-base <base_target_dir>
 
 Seed mode: CoW-clone a warm base target/ into a pool lane.
@@ -112,6 +120,13 @@ Seed mode: CoW-clone a warm base target/ into a pool lane.
                       Uses a fixed FD 9 (matching thin-warm-lane.sh's T3): a caller
                       that lets seed acquire the lock must not itself hold a
                       load-bearing FD 9 open across this invocation.
+  --assume-lane-lock-held
+                      Opt OUT of the default acquire for a caller that ALREADY holds
+                      ${LANE_DIR}.lock itself (thin --reseed on FD 9, gc reclaim on
+                      FD 8). flock is not re-entrant across a process tree, so having
+                      seed re-acquire the same file would self-refuse; this makes seed
+                      skip its own acquire. Mutually exclusive with --lane-lock (usage
+                      error, exit 2).
 
 Record-base mode: stamp provenance beside the base target dir.
   --record-base dir   Write sidecar at $(dirname dir)/.warm-base-meta; print path on stdout.
@@ -145,6 +160,7 @@ BASE_COMMIT=""
 TOUCH_PATHS=()
 RECORD_BASE_DIR=""
 LANE_LOCK_OPT=""
+ASSUME_LANE_LOCK_HELD=""
 _POSITIONALS=()
 
 while [ $# -gt 0 ]; do
@@ -163,6 +179,10 @@ while [ $# -gt 0 ]; do
             ;;
         --lane-lock)
             LANE_LOCK_OPT=1
+            shift
+            ;;
+        --assume-lane-lock-held)
+            ASSUME_LANE_LOCK_HELD=1
             shift
             ;;
         --base-commit)
@@ -222,6 +242,17 @@ else
     fi
     if [ -z "$FRESH_CHECKOUT" ] && [ -z "$RESET_IN_PLACE" ]; then
         err "Specify exactly one of --fresh-checkout or --reset-in-place."
+        err "Run '$(basename "$0") --help' for usage."
+        exit 2
+    fi
+    # --assume-lane-lock-held (opt-out for callers that already hold the lane
+    # lock) and --lane-lock (tell seed to acquire it) are contradictory: one
+    # asserts the caller already holds ${LANE_DIR}.lock so seed must NOT acquire,
+    # the other tells seed to acquire it. Reject loudly (naming BOTH flags)
+    # rather than silently pick a precedence — a both-passed argv is caller
+    # confusion, exactly what this guard exists to surface (esc-5214/task 5354).
+    if [ -n "$ASSUME_LANE_LOCK_HELD" ] && [ -n "$LANE_LOCK_OPT" ]; then
+        err "--assume-lane-lock-held and --lane-lock are mutually exclusive: --assume-lane-lock-held asserts the caller already holds \${LANE_DIR}.lock (seed must NOT acquire), while --lane-lock tells seed to acquire it. Pass at most one."
         err "Run '$(basename "$0") --help' for usage."
         exit 2
     fi
@@ -478,6 +509,14 @@ fi
 _should_acquire_lane_lock=""
 if [ -n "$FRESH_CHECKOUT" ] || [ -n "$LANE_LOCK_OPT" ]; then
     _should_acquire_lane_lock=1
+fi
+# --assume-lane-lock-held (opt-out): the caller asserts it ALREADY holds
+# ${LANE_DIR}.lock (thin --reseed on FD 9, gc reclaim on FD 8). flock is not
+# re-entrant across a process tree, so seed re-opening+flocking the same file
+# would self-refuse against the caller's own held lock. Skip our own acquire
+# entirely; the caller's held lock already provides the inv.2 exclusivity.
+if [ -n "$ASSUME_LANE_LOCK_HELD" ]; then
+    _should_acquire_lane_lock=""
 fi
 if [ -n "$_should_acquire_lane_lock" ]; then
     LANE_LOCK="${LANE_DIR}.lock"
