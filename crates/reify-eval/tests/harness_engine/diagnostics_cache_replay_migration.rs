@@ -101,3 +101,129 @@ structure BadS {
     let it = BadAnnoItem()
 }
 "#;
+
+// ─────────────────────────────────────────────────────────────────────────
+// B1 / B5 — per-cell runtime diagnostics replayed on cache-hit serves (step-3).
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Count the `W_FIELD_OUT_OF_BOUNDS` warnings in a diagnostics slice (the μ
+/// done-criteria filter: `Severity::Warning && code == FieldOutOfBounds`).
+fn count_field_oob_warnings(diagnostics: &[Diagnostic]) -> usize {
+    diagnostics
+        .iter()
+        .filter(|d| {
+            d.severity == Severity::Warning && d.code == Some(DiagnosticCode::FieldOutOfBounds)
+        })
+        .count()
+}
+
+/// B1 (PRD §7 B1): a `W_FIELD_OUT_OF_BOUNDS` warning surfaced by a cold
+/// `eval()` must RESURFACE on a subsequent warm `eval_cached()` cache-hit serve
+/// of the SAME engine — replayed from `NodeCache.diagnostics`, not swallowed.
+///
+/// The swallow is structural: the warning fires at most once per field per
+/// session (AtomicBool on the `SampledField` value), and on the warm serve the
+/// consuming `let` cell is served CLEAN (fast-path / cache-reuse arm, no
+/// re-`eval_expr`), so the sample never re-runs and even a re-sample would be
+/// AtomicBool-suppressed. Replay from `NodeCache.diagnostics` is the ONLY way
+/// to resurface it.
+///
+/// RED on base: `eval_cached` swallows the warning (count 0 on the warm serve).
+/// GREEN after step-4 wires per-cell capture+store + clean-serve replay.
+#[test]
+fn field_oob_warning_resurfaces_on_repeated_reify_check() {
+    let compiled = parse_and_compile_with_stdlib(OOB_SRC);
+    let mut engine = make_simple_engine();
+
+    // Cold eval — baseline: exactly one OOB warning fires.
+    let cold = engine.eval(&compiled);
+    assert_eq!(
+        count_field_oob_warnings(&cold.diagnostics),
+        1,
+        "cold eval() must emit exactly one W_FIELD_OUT_OF_BOUNDS warning \
+         (baseline); got: {:?}",
+        cold.diagnostics
+    );
+
+    // Warm serve — the let cell(s) are served CLEAN via the fast-path /
+    // cache-reuse arm (basis_version == VersionId(0), the version the first
+    // eval() recorded entries at — the codebase's established warm-serve idiom,
+    // cf. solver_pragma_dispatch.rs).
+    let warm = engine.eval_cached(&compiled, VersionId(0));
+    assert_eq!(
+        count_field_oob_warnings(&warm.eval_result.diagnostics),
+        1,
+        "warm eval_cached() must REPLAY the W_FIELD_OUT_OF_BOUNDS warning from \
+         NodeCache.diagnostics exactly once (RED on base: swallowed → 0); \
+         got: {:?}",
+        warm.eval_result.diagnostics
+    );
+}
+
+/// B5 (PRD §7 B5): the same `W_FIELD_OUT_OF_BOUNDS` warning is emitted EXACTLY
+/// ONCE in each of `eval`, `eval_cached`, AND `edit_check` — proving the
+/// replayed-XOR-fresh double-emission guard holds across every serve mode.
+///
+/// - `eval` / `eval_cached` legs (unguarded OOB source, one engine): cold
+///   `eval()` fires it fresh (1); warm `eval_cached()` REPLAYS it (1) — never
+///   both on one serve, never doubled.
+/// - `edit_check` leg (guarded OOB source, SEPARATE engine — the once-per-
+///   session AtomicBool is per-`SampledField`-value, so a fresh emission needs
+///   a fresh field value, i.e. a separate engine): cold `eval()` leaves the
+///   guarded member inactive (0), then `edit_check(cond, true)` activates +
+///   FRESHLY evaluates the sampling cell (1). Mirrors δ Fixture B.
+///
+/// RED on base: the `eval_cached` leg swallows the warning (0). GREEN after
+/// step-4. The `edit_check` leg is already GREEN (δ) — B5 pins that it stays a
+/// single, non-doubled emission alongside the newly-replayed warm serve.
+#[test]
+fn field_oob_warning_emitted_exactly_once_across_serve_modes() {
+    // ── eval + eval_cached legs (unguarded, shared engine) ──
+    let compiled = parse_and_compile_with_stdlib(OOB_SRC);
+    let mut engine = make_simple_engine();
+
+    let eval_result = engine.eval(&compiled);
+    assert_eq!(
+        count_field_oob_warnings(&eval_result.diagnostics),
+        1,
+        "eval() serve mode: exactly one OOB warning; got: {:?}",
+        eval_result.diagnostics
+    );
+
+    let cached = engine.eval_cached(&compiled, VersionId(0));
+    assert_eq!(
+        count_field_oob_warnings(&cached.eval_result.diagnostics),
+        1,
+        "eval_cached() serve mode: exactly one OOB warning (replayed — not \
+         swallowed, not doubled); got: {:?}",
+        cached.eval_result.diagnostics
+    );
+
+    // ── edit_check leg (guarded, separate engine) ──
+    let guard_compiled = parse_and_compile_with_stdlib(OOB_GUARD_SRC);
+    let mut guard_engine = make_simple_engine();
+
+    // Cold eval: cond=false → the guarded member is inactive, so no warning.
+    let cold_guard = guard_engine.eval(&guard_compiled);
+    assert_eq!(
+        count_field_oob_warnings(&cold_guard.diagnostics),
+        0,
+        "cold eval() of the guarded source: inactive member emits no warning; \
+         got: {:?}",
+        cold_guard.diagnostics
+    );
+
+    // edit_check activates cond → the sampling cell is freshly evaluated and
+    // the warning surfaces exactly once (fresh, via the drain).
+    let cond_id = ValueCellId::new("S", "cond");
+    let checked = guard_engine
+        .edit_check(cond_id, Value::Bool(true))
+        .expect("edit_check(cond, true) must succeed");
+    assert_eq!(
+        count_field_oob_warnings(&checked.diagnostics),
+        1,
+        "edit_check() serve mode: exactly one OOB warning (fresh, activated \
+         member); got: {:?}",
+        checked.diagnostics
+    );
+}
