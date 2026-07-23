@@ -315,6 +315,7 @@ fn mass_props_cell_intact(values: &reify_ir::ValueMap, cell: &ValueCellId) -> bo
 ///     `site_eval_cached` / `site_edit_check` states in
 ///     `same_post_pass_state_yields_same_diagnostic_set` (detectors.rs:417-423)
 ///     — as the registry-runs-identically-per-path guarantee.
+///
 /// The representative `.ri`-authorable "cold-only post-pass now runs on the
 /// warm / edit serve" RED signal is the annotation-args fixture in step-7.
 #[test]
