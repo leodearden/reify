@@ -136,6 +136,7 @@ echo "--- Section E: baseline-membership predicate ---"
 _E_BASELINE="$(mktemp)"; _TMPDIRS+=("$_E_BASELINE")
 {
     echo "# a comment line — must be ignored"
+    echo "#crates/reify-eval/tests/commented.rs"   # a commented-OUT registration row
     echo ""
     echo "crates/reify-eval/tests/listed.rs"
     echo "crates/reify-cli/tests/other.rs"
@@ -145,10 +146,22 @@ assert "E: a listed path is a member (rc 0)" \
     bash -c 'source "$1"; harness_layout_baseline_contains "crates/reify-eval/tests/listed.rs" "$2"' _ "$LIB" "$_E_BASELINE"
 assert "E: an unlisted path is NOT a member (rc non-zero)" \
     bash -c '! { source "$1"; harness_layout_baseline_contains "crates/reify-eval/tests/missing.rs" "$2"; }' _ "$LIB" "$_E_BASELINE"
-# A path that appears ONLY inside a comment line must NOT count as a member
-# (proves comment stripping, not a raw substring/grep-anywhere match).
-assert "E: a path present only as a comment is NOT a member" \
-    bash -c '! { source "$1"; harness_layout_baseline_contains "a comment line — must be ignored" "$2"; }' _ "$LIB" "$_E_BASELINE"
+# Comment stripping (grep -vE '^[[:space:]]*#') must be PROVEN, not assumed.
+# Because membership is an exact full-line match (grep -xF), an UNPREFIXED query
+# can never equal a '# …'-prefixed line whether or not stripping runs — so a
+# query like "a comment line …" would pass even if the stripping stage were
+# deleted, testing nothing. To actually exercise stripping, query the FULL
+# comment line INCLUDING its leading '# ': stripping ON removes that line, so the
+# exact-line match finds nothing -> non-member (this assertion PASSES); stripping
+# OFF would leave the line for grep -xF to match verbatim -> member (this
+# assertion would then FAIL, catching the regression).
+assert "E: a full comment line (including its leading #) is NOT a member — proves comment stripping" \
+    bash -c '! { source "$1"; harness_layout_baseline_contains "# a comment line — must be ignored" "$2"; }' _ "$LIB" "$_E_BASELINE"
+# A commented-OUT registration row (a real footgun: a row is disabled with a
+# leading '#' but expected to still count) must NOT register its path as a
+# member — the '#'-prefixed line is stripped before the exact-line match.
+assert "E: a commented-out registration row does NOT make its path a member" \
+    bash -c '! { source "$1"; harness_layout_baseline_contains "crates/reify-eval/tests/commented.rs" "$2"; }' _ "$LIB" "$_E_BASELINE"
 
 # ===========================================================================
 # Section F: the gate script exists and is executable.
@@ -294,6 +307,49 @@ _build_merge_fixture() {
     _gitf -C "$dir" merge -q --no-ff --no-edit topic
 }
 
+# _build_rename_fixture <dir> <register:0|1> — a repo whose HEAD is a real
+# 2-parent merge that RENAMES a pre-existing out-of-scope file (in a
+# NON-consolidatable crate) INTO an in-scope standalone slot
+# (crates/reify-eval/tests/renamed_in.rs) via `git mv`. The source keeps
+# identical content so git's default rename detection (forced on via
+# `diff.renames=true` in the fixture's own config, which the gate's bare CWD git
+# reads) classifies it as R, not A — the exact edge that a plain --diff-filter=A
+# would miss and the gate's --no-renames decomposition must still catch.
+# register=1 also appends the destination's baseline row on the same branch.
+_build_rename_fixture() {
+    local dir="$1" register="$2"
+    _gitf init -q -b main "$dir"
+    _gitf -C "$dir" config user.email t@e.x
+    _gitf -C "$dir" config user.name t
+    # Force rename detection ON locally so this fixture reproduces the
+    # diff.renames=true default regardless of the ambient environment; the gate
+    # runs bare `git` with CWD=<dir>, so it reads THIS repo-local config.
+    _gitf -C "$dir" config diff.renames true
+    mkdir -p "$dir/tests/infra" "$dir/crates/reify-eval/tests" \
+             "$dir/crates/reify-solver-elastic/tests"
+    printf 'crates/reify-eval/tests/pre_existing.rs\n' > "$dir/tests/infra/harness-layout-baseline.manifest"
+    : > "$dir/crates/reify-eval/tests/pre_existing.rs"
+    # A standalone in a NON-consolidatable crate (out of the gate's scope, hence
+    # legitimately unregistered). Distinctive non-empty content so `git mv`
+    # yields a 100%-similar rename that default detection reports as R.
+    printf '// movable integration test body — do not consolidate\nfn t() {}\n' \
+        > "$dir/crates/reify-solver-elastic/tests/movable.rs"
+    _gitf -C "$dir" add -A
+    _gitf -C "$dir" commit -q -m base
+    _gitf -C "$dir" checkout -q -b topic
+    # Rename INTO a consolidatable crate's top-level tests/ — now an in-scope
+    # standalone whose canonical path is unregistered unless the row is added.
+    _gitf -C "$dir" mv crates/reify-solver-elastic/tests/movable.rs \
+                       crates/reify-eval/tests/renamed_in.rs
+    if [ "$register" -eq 1 ]; then
+        printf 'crates/reify-eval/tests/renamed_in.rs\n' >> "$dir/tests/infra/harness-layout-baseline.manifest"
+    fi
+    _gitf -C "$dir" add -A
+    _gitf -C "$dir" commit -q -m topic
+    _gitf -C "$dir" checkout -q main
+    _gitf -C "$dir" merge -q --no-ff --no-edit topic
+}
+
 # _run_from_git <dir> — run the gate in --from-git mode with CWD=<dir>, its
 # baseline pointed at the fixture's own working-tree manifest. Echoes the exit
 # code; writes structured output to the file named by $2.
@@ -376,6 +432,36 @@ _N_RC=0
 
 assert "N: --from-git exits 0 in the real repo (no unregistered added standalone)" \
     test "$_N_RC" -eq 0
+
+# ---------------------------------------------------------------------------
+# Section N2: a RENAME into an in-scope standalone slot. Git's default rename
+# detection reports it as R (not A), so a plain --diff-filter=A would miss it;
+# the gate's --no-renames decomposition (add+delete, delete dropped by
+# --diff-filter=A) must still surface the destination as an add and FIRE.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Section N2: --from-git fires on a rename INTO an in-scope standalone slot ---"
+
+_P_DIR="$(mktemp -d)"; _TMPDIRS+=("$_P_DIR")
+_build_rename_fixture "$_P_DIR" 0
+_P_OUT="$(mktemp)"; _TMPDIRS+=("$_P_OUT")
+_P_RC="$(_run_from_git "$_P_DIR" "$_P_OUT")"
+
+assert "N2: --from-git exits 1 on a rename into an unregistered in-scope standalone" \
+    test "$_P_RC" -eq 1
+assert "N2: --from-git names the rename destination (renamed_in.rs)" \
+    grep -Eq '^HARNESS_BASELINE_REG FAIL crate=reify-eval file=.*renamed_in\.rs reason=unregistered-standalone' "$_P_OUT"
+
+# The sibling merge that ALSO registers the destination row in the same diff -> green.
+_P2_DIR="$(mktemp -d)"; _TMPDIRS+=("$_P2_DIR")
+_build_rename_fixture "$_P2_DIR" 1
+_P2_OUT="$(mktemp)"; _TMPDIRS+=("$_P2_OUT")
+_P2_RC="$(_run_from_git "$_P2_DIR" "$_P2_OUT")"
+
+assert "N2: --from-git exits 0 when the rename destination is registered in the same merge" \
+    test "$_P2_RC" -eq 0
+assert "N2: the registered-rename run emits no FAIL line" \
+    bash -c '! grep -qE "^HARNESS_BASELINE_REG FAIL" "$1"' _ "$_P2_OUT"
 
 # ===========================================================================
 # Section O: plan-shape — verify.sh emits the gate EARLY under RUN_RUST=1, among
