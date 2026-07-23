@@ -374,6 +374,79 @@ pub fn swept_kind_to_sweep_params(
     }
 }
 
+/// Sample a 2-D profile op's outer boundary ring as a list of `[x, y]` points
+/// in the profile's local XY plane (`z = 0`).
+///
+/// Returns `Some(outer_ring)` for the recognised single-ring profile ops
+/// ([`GeometryOp::RectangleProfile`], [`GeometryOp::PolygonProfile`], and —
+/// added in a later step — [`GeometryOp::CircleProfile`] /
+/// [`GeometryOp::EllipseProfile`]) and `None` for any other op, so
+/// [`swept_kind_to_profile_boundary`] can reject a profile handle that resolves
+/// to a non-profile op (e.g. a solid primitive). The rings are single-ring:
+/// multiply-connected cross-sections (holes parallel to the sweep axis) are
+/// Phase B (PRD task #14).
+fn profile_sample_2d(op: &GeometryOp) -> Option<Vec<[f64; 2]>> {
+    match op {
+        // Axis-aligned rectangle centred at the origin. The op's contract
+        // (geometry.rs) places corners at (±width/2, ±height/2, 0); emit them
+        // as the 4 CCW corners starting bottom-left.
+        GeometryOp::RectangleProfile { width, height } => {
+            let w = width.as_f64()?;
+            let h = height.as_f64()?;
+            Some(vec![
+                [-w / 2.0, -h / 2.0],
+                [w / 2.0, -h / 2.0],
+                [w / 2.0, h / 2.0],
+                [-w / 2.0, h / 2.0],
+            ])
+        }
+        // Closed planar polygon: the caller-supplied vertices ARE the outer
+        // ring, in order.
+        GeometryOp::PolygonProfile { points } => Some(points.clone()),
+        _ => None,
+    }
+}
+
+/// Produce the 2-D cross-section [`reify_solver_elastic::ProfileBoundary`] for a
+/// recognised swept body — the "producer" half of the swept hex/wedge meshing
+/// pipeline (PRD-2987 step 1).
+///
+/// Resolves the [`SweptKind`]'s `profile` handle to its source profile op via
+/// the parallel `handles`/`ops` slices (exactly as [`swept_kind_to_sweep_params`]
+/// resolves a `SweepLinear` path handle), samples the op's outer ring with
+/// [`profile_sample_2d`], and wraps it as a single-ring `ProfileBoundary`.
+/// `holes` is always empty — every recognised profile op is single-ring, and
+/// multiply-connected cross-sections are Phase B (PRD task #14).
+///
+/// # Returns
+///
+/// `None` when the profile handle cannot be resolved in `handles` (a
+/// cross-realization handle or a malformed ops/handles pair), or when the
+/// resolved source op is not a recognised profile op.
+pub fn swept_kind_to_profile_boundary(
+    kind: &SweptKind,
+    ops: &[GeometryOp],
+    handles: &[GeometryHandleId],
+) -> Option<reify_solver_elastic::ProfileBoundary> {
+    // Every recognised swept kind carries the handle of the 2-D profile op it
+    // sweeps; the cross-section is that op's own geometry regardless of the
+    // sweep motion. The Revolve / SweepLinear arms are wired in a later step
+    // (they reuse the shared resolve → sample → wrap path below).
+    let profile = match kind {
+        SweptKind::Extrude { profile, .. } => profile,
+        SweptKind::Revolve { .. } | SweptKind::SweepLinear { .. } => return None,
+    };
+    let source_op = handles
+        .iter()
+        .position(|h| h == profile)
+        .and_then(|i| ops.get(i))?;
+    let outer = profile_sample_2d(source_op)?;
+    Some(reify_solver_elastic::ProfileBoundary {
+        outer,
+        holes: vec![],
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
