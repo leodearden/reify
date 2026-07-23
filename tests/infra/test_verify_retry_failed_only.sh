@@ -96,5 +96,31 @@ echo "(nextest available on this host: $NEXTEST_AVAILABLE)"
 # the exact stdout substring without over-constraining the surrounding prose.
 MARKER="@@REIFY_RETRY_SCOPE=failed_only@@"
 
+# ---------------------------------------------------------------------------
+# B6 (marker PRESENCE). A genuinely-narrowed failed_only nextest retry — the
+# eligible config (matching sidecar tree_oid + a within-ceiling 2-id filter) —
+# must emit the @@REIFY_RETRY_SCOPE=failed_only@@ honest marker on STDOUT at
+# plan-BUILD time, so a real DF retry (which runs build_plan in execute mode)
+# and this --print-plan oracle both surface it. NEXTEST-guarded: the narrowing
+# here is the nextest subset, which only applies when cargo-nextest is on PATH
+# (else the marker legitimately suppresses — asserted host-independently via the
+# run_all/gui arms in the count section below).
+# RED at base: verify.sh emits no marker yet (greened by step-2).
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- B6: a narrowed nextest failed_only retry emits the honest marker on STDOUT ---"
+
+PLAN_MARK="$(REIFY_VERIFY_RETRY_SCOPE=failed_only \
+    REIFY_VERIFY_RETRY_TREE_OID=deadbeef \
+    REIFY_VERIFY_ATTEMPT_SIDECAR="$SIDECAR" \
+    REIFY_VERIFY_RETRY_NEXTEST_FILTER_FILE="$FILTER" \
+    bash "$VERIFY" test --scope all --print-plan 2>/dev/null)" || true
+
+if [ "$NEXTEST_AVAILABLE" -eq 1 ]; then
+    assert "narrowed nextest retry: STDOUT carries the $MARKER honest marker" \
+        bash -c 'printf "%s\n" "$1" | grep -qF -- "$2"' \
+        _ "$PLAN_MARK" "$MARKER"
+fi
+
 # --- assertion sections are appended above this line by steps 1/3/5/7 ---
 test_summary
