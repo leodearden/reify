@@ -199,6 +199,42 @@ fn make_session() -> EngineSession {
     EngineSession::new(Box::new(checker), Some(Box::new(kernel)))
 }
 
+/// Shared 3-level nested-composed fixture (task 5348). `Top` composes two `Mid`
+/// subs; each `Mid` composes two `Leaf` subs; each `Leaf` owns a self-contained
+/// box. This yields 4 independent leaf realizations at the composed dotted paths
+/// `Top.a.p` / `Top.a.q` / `Top.b.p` / `Top.b.q` — 3 nesting levels, matching the
+/// repro's `Printer.motion.head_block` depth.
+///
+/// Leaf geometry is self-contained (a plain `box`, no cross-sub `GeomRef`), so no
+/// realization references `self.inner.body`; that would trip the documented v0.1
+/// nested sub-of-sub override scope boundary (cross_sub_geometry_e2e.rs:1583-1672).
+const NESTED_COMPOSED_SRC: &str = r#"pub structure Leaf {
+    let g = box(10mm, 10mm, 10mm)
+}
+pub structure Mid {
+    sub p = Leaf()
+    sub q = Leaf()
+}
+pub structure Top {
+    sub a = Mid()
+    sub b = Mid()
+}"#;
+
+/// Build an `EngineSession` (MockGeometryKernel + SimpleConstraintChecker) with
+/// [`NESTED_COMPOSED_SRC`] loaded — the shared nested-composed fixture for the
+/// full-scene debug-read tests (task 5348). Mirrors the `EngineSession::new`
+/// usage at the `sync_demand` harness below.
+fn make_nested_composed_session() -> EngineSession {
+    let mut session = EngineSession::new(
+        Box::new(SimpleConstraintChecker),
+        Some(Box::new(MockGeometryKernel::new())),
+    );
+    session
+        .load_from_source(NESTED_COMPOSED_SRC, "nested_composed")
+        .expect("load_from_source of NESTED_COMPOSED_SRC should succeed");
+    session
+}
+
 #[test]
 fn get_mechanism_descriptors_extracts_prismatic_and_revolute_joints() {
     // Step-5 RED: load a 2-body open-chain mechanism and assert the descriptor
