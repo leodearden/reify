@@ -2182,13 +2182,18 @@ build_plan() {
         # run_all subset size: a word-count of the DF-supplied member list
         # (verify.sh COUNTS only — run_all.sh owns the member-skip). set -f
         # around the split so a stray glob in a member name cannot pathname-
-        # expand (members are .sh basenames; belt-and-suspenders).
+        # expand (members are .sh basenames; belt-and-suspenders), then RESTORE
+        # the caller's prior noglob state rather than unconditionally clearing it
+        # — verify.sh does not run under -f today, but a bare `set +f` would
+        # silently clobber a noglob caller for any code after build_plan.
         local _mk_run_all=0
         if [ -n "${REIFY_RUN_ALL_MEMBER_SUBSET:-}" ]; then
             local -a _mk_ra_toks
+            local _mk_had_f=0
+            case $- in *f*) _mk_had_f=1 ;; esac
             set -f
             _mk_ra_toks=(${REIFY_RUN_ALL_MEMBER_SUBSET})
-            set +f
+            [ "$_mk_had_f" -eq 1 ] || set +f
             _mk_run_all=${#_mk_ra_toks[@]}
         fi
         if [ "$_RETRY_NEXTEST_DEBUG_APPLIED" -gt 0 ] \
