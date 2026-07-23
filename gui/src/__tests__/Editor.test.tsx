@@ -444,6 +444,42 @@ describe('switching back to an already-open file refreshed while inactive (task-
     // the store's clean 'A0' content.
     expect(getEditorView(container).state.doc.toString()).toBe('XA0');
   });
+
+  it('Case 3 (dirty + disk diverged while inactive): switch-back keeps the unsaved buffer; the conflict flag surfaces the divergence instead of clobbering', () => {
+    const fileA: FileData = { path: '/project/src/conflict_a.ri', content: 'A0' };
+    const fileB: FileData = { path: '/project/src/conflict_b.ri', content: 'B0' };
+    const store = setupStore([fileA, fileB]);
+    store.setActiveFile(fileA.path);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    const view = getEditorView(container);
+
+    // User edits fileA → buffer 'XA0' (dirty); the store snapshot stays 'A0'.
+    view.dispatch({ changes: { from: 0, insert: 'X' } });
+    expect(getEditorView(container).state.doc.toString()).toBe('XA0');
+    expect(store.state.dirtyFiles).toContain(fileA.path);
+
+    // Switch away — fileA's EditorState (doc 'XA0') is cached while it is inactive.
+    store.setActiveFile(fileB.path);
+
+    // A concurrent disk refresh lands 'A1' under the inactive DIRTY tab. markExternallyChanged
+    // is exactly what App.onFileChanged / openFile's dirty branch raise for a dirty external
+    // change, routing a later save to the conflict prompt; updateFileContent forces the store
+    // to the fresh disk content 'A1' so the switch-back must choose between the dirty buffer
+    // ('XA0') and diverged store/disk content ('A1') — a genuine three-way divergence.
+    store.updateFileContent(fileA.path, 'A1');
+    store.markExternallyChanged(fileA.path);
+    expect(store.state.externallyChanged).toContain(fileA.path);
+
+    // Switch back — the isDirty guard (Editor.tsx:666) must restore the cached dirty buffer
+    // 'XA0' rather than rebuilding from the store's 'A1'. Unsaved edits win over the concurrent
+    // disk refresh; the conflict is surfaced by the still-set externallyChanged flag (which the
+    // switch-back must not clear), not by silently clobbering the edit.
+    store.setActiveFile(fileA.path);
+    expect(getEditorView(container).state.doc.toString()).toBe('XA0');
+    expect(store.state.externallyChanged).toContain(fileA.path);
+    expect(store.state.dirtyFiles).toContain(fileA.path);
+  });
 });
 
 // task-5359 capstone: faithfully mirror the dogfood repro (printer_v01, 2026-07-22/23).
