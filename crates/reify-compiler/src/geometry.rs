@@ -1103,6 +1103,21 @@ pub(crate) fn compile_geometry_call(
     geometry_lets: &HashMap<&str, &reify_ast::Expr>,
     visiting: &mut HashSet<String>,
 ) -> Option<Vec<CompiledGeometryOp>> {
+    // Bound compiler expression-recursion depth (task #5337): enter the SAME
+    // shared thread-local depth guard used by compile_expr_guarded_with_expected
+    // (RAII — decremented on every return path, including this None bail and
+    // panic-unwind), so the combined cross-function on-stack depth is bounded
+    // uniformly. Past the cap, refuse loudly with an E_EXPR_NESTING_TOO_DEEP
+    // diagnostic and return None (the established geometry failure signal)
+    // rather than recursing further and overflowing the stack (an uncatchable
+    // SIGSEGV on small-stack embedder threads). On-demand stack growth is added
+    // in step-10 so realistic-but-deep input reaches the cap instead of crashing.
+    let _depth_guard = crate::recursion_guard::RecursionDepthGuard::enter();
+    if _depth_guard.depth() > crate::recursion_guard::MAX_COMPILE_RECURSION_DEPTH {
+        diagnostics.push(crate::recursion_guard::recursion_too_deep_diagnostic(expr.span));
+        return None;
+    }
+
     // Resolve let-bound geometry variable references: when the expression is an
     // Ident that names a geometry let, recursively compile the initializer.
     // Guard against cycles (e.g. `let a = difference(b, x); let b = difference(a, y);`)
