@@ -377,4 +377,54 @@ _N_RC=0
 assert "N: --from-git exits 0 in the real repo (no unregistered added standalone)" \
     test "$_N_RC" -eq 0
 
+# ===========================================================================
+# Section O: plan-shape — verify.sh emits the gate EARLY under RUN_RUST=1, among
+# the cheap fail-fast poles before check-manifold-deps.sh / psi-gate / run_all.sh.
+# Hermetic --print-plan oracle + `grep -n` relative-index technique (mirrors
+# test_infra_classification_manifest_gate.sh section (e); never runs cargo/npm).
+#
+# Two plan captures: the role=task `all --scope all` plan carries the psi-gate
+# and check-manifold-deps.sh poles but NOT run_all.sh (the wholesale pool suite
+# moved to the merge tier), while the merge-tier plan carries run_all.sh. Both
+# tiers run at RUN_RUST=1, where the gate is emitted. The RUN_RUST=0 negative
+# (docs-only / gui-src-only plans must NOT emit the line) is delegated to
+# test_verify_scope.sh's existing zero-command-leaf assertions, preserved by the
+# RUN_RUST=1 gating.
+# ===========================================================================
+echo ""
+echo "--- Section O: verify.sh emits the gate early under RUN_RUST=1 (plan-shape) ---"
+
+O_GATE_LINE='./scripts/check-harness-baseline-registration.sh --from-git'
+O_TASK_ALL_PLAN="$(bash "$REPO_ROOT/scripts/verify.sh" all --scope all --print-plan | grep -v '^#')"
+O_MERGE_ALL_PLAN="$(DF_VERIFY_ROLE=merge bash "$REPO_ROOT/scripts/verify.sh" all --scope all --print-plan | grep -v '^#')"
+
+assert "O: task all plan contains the gate line ($O_GATE_LINE)" \
+    bash -c 'printf "%s\n" "$2" | grep -qF -- "$1"' _ "$O_GATE_LINE" "$O_TASK_ALL_PLAN"
+assert "O: merge all plan contains the gate line ($O_GATE_LINE)" \
+    bash -c 'printf "%s\n" "$2" | grep -qF -- "$1"' _ "$O_GATE_LINE" "$O_MERGE_ALL_PLAN"
+
+# task all plan: gate index < check-manifold-deps.sh index (before the deps preflight).
+assert "O: task all plan — gate index < check-manifold-deps.sh index (emitted early)" \
+    bash -c '
+        G=$(printf "%s\n" "$2" | grep -nF -- "$1" | head -1 | cut -d: -f1)
+        M=$(printf "%s\n" "$2" | grep -n "check-manifold-deps\.sh" | head -1 | cut -d: -f1)
+        [ -n "$G" ] && [ -n "$M" ] && [ "$G" -lt "$M" ]
+    ' _ "$O_GATE_LINE" "$O_TASK_ALL_PLAN"
+
+# task all plan: gate index < psi-gate index (before the expensive rust pole).
+assert "O: task all plan — gate index < psi-gate index (before the expensive pole)" \
+    bash -c '
+        G=$(printf "%s\n" "$2" | grep -nF -- "$1" | head -1 | cut -d: -f1)
+        P=$(printf "%s\n" "$2" | grep -n "\./scripts/verify\.sh psi-gate" | head -1 | cut -d: -f1)
+        [ -n "$G" ] && [ -n "$P" ] && [ "$G" -lt "$P" ]
+    ' _ "$O_GATE_LINE" "$O_TASK_ALL_PLAN"
+
+# merge all plan: gate index < run_all.sh index (before the wholesale pool suite).
+assert "O: merge all plan — gate index < run_all.sh index (before the pool suite)" \
+    bash -c '
+        G=$(printf "%s\n" "$2" | grep -nF -- "$1" | head -1 | cut -d: -f1)
+        R=$(printf "%s\n" "$2" | grep -n "run_all\.sh" | head -1 | cut -d: -f1)
+        [ -n "$G" ] && [ -n "$R" ] && [ "$G" -lt "$R" ]
+    ' _ "$O_GATE_LINE" "$O_MERGE_ALL_PLAN"
+
 test_summary
