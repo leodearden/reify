@@ -11,7 +11,7 @@
 
 #![cfg(has_occt)]
 
-mod common;
+use crate::common;
 
 use reify_kernel_occt::{HistoryRecord, LocalFeatureOpHistoryRecords, OcctKernelHandle};
 use reify_ir::GeometryHandleId;
