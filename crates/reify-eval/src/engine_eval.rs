@@ -5103,107 +5103,27 @@ impl Engine {
                 .set_realization_reads(&NodeId::Value(cell), reads);
         }
 
-        // ── RBD-α (task 3822): MassProperties PSD inertia validation ─────────────
-        // Post-eval pass: for every cell whose value is a StructureInstance with
-        // type_name == "MassProperties", extract the `inertia` field, compute the
-        // symmetric-3×3 eigenvalues analytically, and replace the cell with
-        // Value::Undef (Determined) when the matrix is non-PSD or malformed.
-        //
-        // Design rationale: `reify-expr::eval_structure_instance_ctor` is
-        // intentionally registry-free and diagnostic-free (SIR-α design decision
-        // 2), so the diagnostic-emitting + value-replacing hook belongs here in
-        // reify-eval, where the diagnostics sink and value maps are both accessible.
-        //
-        // The immutable `values` borrow is released before any mutable insert by
-        // collecting target pairs first.
-        //
-        // Performance: the scan is guarded by a fast any() check so designs that
-        // never instantiate MassProperties skip the extraction pass entirely.
-        {
-            // Fast early-out: skip the O(n) extraction pass when no MassProperties
-            // cell exists (the common case when std.dynamics is unused).
-            let has_mass_props = values.iter().any(|(_, v)| {
-                matches!(v, Value::StructureInstance(d) if d.type_name == "MassProperties")
-            });
-
-            if has_mass_props {
-                // Classify each MassProperties cell's inertia field.
-                enum InertiaResult {
-                    /// Field is absent or already Undef — leave untouched (no false positives).
-                    Skip,
-                    /// Field is present but could not be parsed as a 3×3 numeric matrix.
-                    Malformed,
-                    /// Field parsed successfully — run PSD check.
-                    Valid([[f64; 3]; 3]),
-                }
-
-                let mass_props_cells: Vec<(ValueCellId, InertiaResult)> = values
-                    .iter()
-                    .filter_map(|(id, val)| {
-                        if let Value::StructureInstance(data) = val
-                            && data.type_name == "MassProperties"
-                        {
-                            let result = match data.fields.get("inertia") {
-                                None | Some(Value::Undef) => InertiaResult::Skip,
-                                Some(v) => match crate::dynamics_psd::inertia_3x3_from_value(v) {
-                                    Some(m) => InertiaResult::Valid(m),
-                                    None => InertiaResult::Malformed,
-                                },
-                            };
-                            // Only collect cells that need attention.
-                            match result {
-                                InertiaResult::Skip => None,
-                                other => Some((id.clone(), other)),
-                            }
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-
-                for (id, result) in mass_props_cells {
-                    match result {
-                        InertiaResult::Skip => unreachable!("Skip filtered above"),
-                        InertiaResult::Malformed => {
-                            // A present-but-unparseable inertia field (wrong shape, non-numeric
-                            // cell) is surfaced as E_DynamicsInertiaNotPSD so malformed tensors
-                            // never silently flow to dynamics consumers.
-                            diagnostics.push(
-                                Diagnostic::error(format!(
-                                    "MassProperties '{}': inertia field cannot be parsed as \
-                                     a 3×3 numeric matrix",
-                                    id,
-                                ))
-                                .with_code(DiagnosticCode::DynamicsInertiaNotPSD),
-                            );
-                            values.insert(id.clone(), Value::Undef);
-                            snapshot
-                                .values
-                                .insert(id.clone(), (Value::Undef, DeterminacyState::Determined));
-                        }
-                        InertiaResult::Valid(m) => {
-                            let tol = crate::dynamics_psd::psd_tol(&m);
-                            if !crate::dynamics_psd::is_symmetric_psd(&m, tol) {
-                                let min_eig = crate::dynamics_psd::min_eigenvalue(&m);
-                                diagnostics.push(
-                                    Diagnostic::error(format!(
-                                        "MassProperties '{}': inertia tensor is not positive \
-                                         semi-definite (min eigenvalue ≈ {:.3e})",
-                                        id, min_eig,
-                                    ))
-                                    .with_code(DiagnosticCode::DynamicsInertiaNotPSD),
-                                );
-                                values.insert(id.clone(), Value::Undef);
-                                snapshot.values.insert(
-                                    id.clone(),
-                                    (Value::Undef, DeterminacyState::Determined),
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        // ── MassProperties PSD post-pass via λ's shared DetectorRegistry ─────────
+        // (task μ #5062) Replaces the former inline RBD-α (task 3822) PSD block
+        // with λ's registry so eval / eval_cached / edit_check run the SAME
+        // detector — INV-EVAL-3, one owner across all serve paths.
+        // `MassPropertiesPsdDetector` is a verbatim port of the deleted inline
+        // block (same classification rules, wording, and Undef-replacement), so
+        // this is behavior-preserving on the cold path. It mutates only the
+        // output `values` / `snapshot.values` / `diagnostics` (never the cache),
+        // so it is always FRESHLY produced on every serve mode — disjoint from
+        // the per-cell runtime-diagnostic replay class (the INV-EVAL-3
+        // double-emission guard). Registration order is run order; the
+        // annotation-args post-pass below still runs AFTER this (the
+        // PSD-then-annotation ordering the scattered "must run before" comments
+        // encoded is now owned by the registry + this call ordering).
+        crate::detectors::DetectorRegistry::with_builtins().run_all(
+            &mut crate::detectors::PostPassState {
+                values: &mut values,
+                snapshot_values: &mut snapshot.values,
+                diagnostics: &mut diagnostics,
+            },
+        );
 
         // ── annotation-args ε (#3556): materialization-time eval driver ──────────────
         // Post-eval pass: for every `Value::StructureInstance` cell whose template
@@ -7433,6 +7353,25 @@ impl Engine {
             &values,
             self.default_query_kernel().is_none(),
         ));
+
+        // ── MassProperties PSD post-pass via λ's shared DetectorRegistry ─────────
+        // (task μ #5062) Mirrors the eval() registry call so the warm /
+        // incremental serve runs the SAME MassProperties PSD inertia check —
+        // INV-EVAL-3, one owner across all serve paths (the cold-only asymmetry
+        // this fixes). The detector re-detects+re-emits idempotently off each
+        // cell's ORIGINAL (cache-served) value, mutating only the OUTPUT
+        // `values` / `snapshot_values` / `diagnostics` — never the cache — so it
+        // is always FRESHLY produced here, never replayed, keeping it disjoint
+        // from the per-cell runtime-diagnostic replay class. `snapshot_values`
+        // is still an owned local here (the snapshot is built + installed just
+        // below), the eval_cached analogue of eval()'s `snapshot.values`.
+        crate::detectors::DetectorRegistry::with_builtins().run_all(
+            &mut crate::detectors::PostPassState {
+                values: &mut values,
+                snapshot_values: &mut snapshot_values,
+                diagnostics: &mut diagnostics,
+            },
+        );
 
         // Build and store a snapshot so that engine.snapshot() returns Some after
         // eval_cached() — preserving cross-path parity with eval() (spec §8.2,

@@ -4234,12 +4234,42 @@ impl Engine {
         cell: ValueCellId,
         new_value: reify_ir::Value,
     ) -> Result<CheckResult, EngineError> {
-        let eval_result = self.edit_param(cell, new_value)?;
+        let mut eval_result = self.edit_param(cell, new_value)?;
         let (constraint_results, constraint_diagnostics) =
             self.check_constraints_with_values(&eval_result.values)?;
 
         let mut diagnostics = eval_result.diagnostics;
         diagnostics.extend(constraint_diagnostics);
+
+        // ── MassProperties PSD post-pass via λ's shared DetectorRegistry ─────────
+        // (task μ #5062, PRD §10 open-question 2 hand-off point) Run the SAME
+        // registry the eval / eval_cached paths run, so the EDIT serve mode
+        // surfaces MassProperties PSD diagnostics too — INV-EVAL-3, one owner
+        // across all paths (no post-pass detector ran on the edit path before
+        // μ). This is the correct hand-off point: `eval_result.values`, the
+        // freshly-installed `self.eval_state.snapshot.values`, and the local
+        // `diagnostics` are all live and mutably disjoint here. It is
+        // deliberately NOT edit_param's tail: edit_param has already moved the
+        // new snapshot into `self.eval_state`, so we mutate the INSTALLED
+        // snapshot in place (parity with eval(), whose PSD pass mutates
+        // `snapshot.values` before install). Freshly produced every serve —
+        // never replayed — so disjoint from the per-cell runtime-diagnostic
+        // replay class.
+        {
+            let snapshot_values = &mut self
+                .eval_state
+                .as_mut()
+                .expect("edit_check requires a prior eval()/check() baseline")
+                .snapshot
+                .values;
+            crate::detectors::DetectorRegistry::with_builtins().run_all(
+                &mut crate::detectors::PostPassState {
+                    values: &mut eval_result.values,
+                    snapshot_values,
+                    diagnostics: &mut diagnostics,
+                },
+            );
+        }
 
         Ok(CheckResult {
             values: eval_result.values,
