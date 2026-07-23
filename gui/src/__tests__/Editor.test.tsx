@@ -446,6 +446,40 @@ describe('switching back to an already-open file refreshed while inactive (task-
   });
 });
 
+// task-5359 capstone: faithfully mirror the dogfood repro (printer_v01, 2026-07-22/23).
+// Reopening an already-open file via the debug bridge (open printer, open a second
+// file, reopen printer, disk changes, reopen printer) must keep exactly one printer
+// tab AND show the fresh disk content in the active CM view — not a stale first-load
+// buffer.  Passes only with BOTH fix A (clean-refresh in the store) and fix B (rebuild
+// the EditorState from fresh store content on a clean diverged switch-back).
+describe('reopen of an already-open file via the debug bridge shows fresh content in one tab (task-5359 capstone)', () => {
+  it('one printer tab and the active view reflects disk after a reopen with new content', () => {
+    const printer: FileData = { path: '/project/src/printer_v01.ri', content: 'V0' };
+    const devCapstan: FileData = { path: '/project/src/dev_capstan.ri', content: 'D' };
+    const store = setupStore([printer]);
+    render(() => <Editor store={store} />);
+    const container = screen.getByTestId('editor-container');
+    expect(getEditorView(container).state.doc.toString()).toBe('V0');
+
+    // Open a second file, then reopen the printer (still V0 on disk) — back to printer.
+    store.openFile({ path: devCapstan.path, content: 'D' });
+    store.openFile({ path: printer.path, content: 'V0' });
+    expect(getEditorView(container).state.doc.toString()).toBe('V0');
+
+    // Disk edit to the printer → 'V1' happens while it is inactive: switch to the
+    // second file, then reopen the printer with the fresh disk content.
+    store.openFile({ path: devCapstan.path, content: 'D' });
+    store.openFile({ path: printer.path, content: 'V1' });
+
+    // Exactly one printer tab (dedup), two tabs total — no duplicate spawned.
+    expect(store.state.openFiles.filter((f) => f.path === printer.path)).toHaveLength(1);
+    expect(store.state.openFiles).toHaveLength(2);
+    // Printer is focused and the CM view shows disk == what the engine evaluates.
+    expect(store.state.activeFile).toBe(printer.path);
+    expect(getEditorView(container).state.doc.toString()).toBe('V1');
+  });
+});
+
 describe('Editor scrollToLocation', () => {
   const BASELINE_HEAD = 9; // file2 'structure Mount {}': end_column 10 -> 0-indexed offset 9
 
