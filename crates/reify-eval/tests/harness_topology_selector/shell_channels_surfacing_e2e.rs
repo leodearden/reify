@@ -20,7 +20,7 @@ use reify_ir::Value;
 use reify_test_support::{make_simple_engine, parse_and_compile_with_stdlib};
 
 fn shell_channels_source() -> &'static str {
-    include_str!("../../../examples/fea_shell_channels.ri")
+    include_str!("../../../../examples/fea_shell_channels.ri")
 }
 
 /// Extract a named field from a StructureInstance (one level).

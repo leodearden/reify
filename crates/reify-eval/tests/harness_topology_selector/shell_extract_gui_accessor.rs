@@ -25,7 +25,7 @@ use reify_core::Severity;
 // ── fixture helpers (mirrors shell_solve_e2e.rs) ──────────────────────────────
 
 fn shell_source() -> &'static str {
-    include_str!("../../../examples/fea_shell_flexure.ri")
+    include_str!("../../../../examples/fea_shell_flexure.ri")
 }
 
 /// Build an engine with both trampolines registered (same as shell_solve_e2e.rs).
@@ -223,7 +223,7 @@ fn shell_gui_mesh_data_returns_one_entry_with_valid_fields() {
 #[test]
 fn shell_gui_mesh_data_returns_empty_for_non_shell_fixture() {
     // Use any non-shell fixture; the cantilever is a tet-only solve.
-    let source = include_str!("../../../examples/fea_cantilever_smoke.ri");
+    let source = include_str!("../../../../examples/fea_cantilever_smoke.ri");
     let compiled = reify_test_support::parse_and_compile_with_stdlib(source);
     let mut engine = shell_engine();
     engine.eval(&compiled);

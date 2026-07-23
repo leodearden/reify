@@ -21,7 +21,7 @@ use reify_ir::Value;
 /// The `Auto` too-thick fixture, compile-time baked via `include_str!`
 /// (single source of truth — stays in sync with the user-facing example file).
 fn auto_source() -> &'static str {
-    include_str!("../../../examples/fea_shell_too_thick_auto.ri")
+    include_str!("../../../../examples/fea_shell_too_thick_auto.ri")
 }
 
 /// Build an engine with BOTH the elastic-static trampoline and the shell-extract
