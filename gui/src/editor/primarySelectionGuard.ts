@@ -27,7 +27,8 @@
  * Mirrors occurrenceHighlight.ts: a pure helper plus a factory returning an
  * Extension, with all DOM/view API calls kept inside the factory closure.
  */
-import type { EditorState } from '@codemirror/state';
+import type { EditorState, Extension } from '@codemirror/state';
+import { drawSelection, EditorView } from '@codemirror/view';
 
 /**
  * True iff the editor has an active NON-EMPTY selection — any selection range
@@ -37,4 +38,37 @@ import type { EditorState } from '@codemirror/state';
  */
 export function hasNonEmptySelection(state: EditorState): boolean {
   return state.selection.ranges.some((r) => r.from !== r.to);
+}
+
+/**
+ * The PRIMARY-selection guard extension: `drawSelection()` (so the selection
+ * stays visible via CM's own layer) plus blur/focus DOM handlers that manage
+ * only the NATIVE selection.
+ *
+ * `drawSelection()` / `EditorView.domEventHandlers()` are invoked INSIDE this
+ * factory (never at module top level) so the module imports cleanly under a
+ * mocked `@codemirror/view` in unit tests.
+ *
+ * blur: if the editor holds a non-empty selection, drop the native DOM
+ * selection so WebKitGTK stops re-announcing X11 PRIMARY ownership. focus:
+ * rebuilt in a later step. Neither handler ever dispatches — `view.state`
+ * is the source of truth and must stay intact.
+ */
+export function reifyPrimarySelectionGuard(): Extension {
+  return [
+    drawSelection(),
+    EditorView.domEventHandlers({
+      blur(_event: FocusEvent, view: EditorView): boolean {
+        if (!hasNonEmptySelection(view.state)) return false;
+        // Collapse ONLY the native selection; never dispatch. Every DOM access
+        // is optional-chained so a missing Selection API (jsdom) can't throw.
+        view.contentDOM.ownerDocument?.getSelection?.()?.removeAllRanges();
+        return false; // do not consume — let CM see the blur too
+      },
+      // Native-selection rebuild is added in a follow-up step; no-op for now.
+      focus(): boolean {
+        return false;
+      },
+    }),
+  ];
 }
