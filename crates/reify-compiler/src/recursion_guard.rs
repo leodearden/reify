@@ -153,4 +153,41 @@ mod tests {
             MAX_COMPILE_RECURSION_DEPTH
         );
     }
+
+    /// `recursion_too_deep_diagnostic(span)` builds the canonical
+    /// `E_EXPR_NESTING_TOO_DEEP` error: `Severity::Error`, code
+    /// `ExpressionNestingTooDeep`, a message carrying the mnemonic + the
+    /// "nests too deeply" phrasing + the `let` remediation hint, and exactly
+    /// one label anchored at the passed span.
+    #[test]
+    fn recursion_too_deep_diagnostic_has_code_message_and_label() {
+        let span = reify_core::SourceSpan::new(7, 42);
+        let diag = recursion_too_deep_diagnostic(span);
+
+        assert_eq!(diag.severity, reify_core::Severity::Error);
+        assert_eq!(
+            diag.code,
+            Some(reify_core::DiagnosticCode::ExpressionNestingTooDeep)
+        );
+        assert!(
+            diag.message.contains("E_EXPR_NESTING_TOO_DEEP"),
+            "message should carry the mnemonic, got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("nests too deeply"),
+            "message should describe the failure, got: {}",
+            diag.message
+        );
+        assert!(
+            diag.message.contains("let"),
+            "message should hint the `let` remediation, got: {}",
+            diag.message
+        );
+        assert_eq!(diag.labels.len(), 1, "expected exactly one label");
+        assert_eq!(
+            diag.labels[0].span, span,
+            "label should be anchored at the passed span"
+        );
+    }
 }
