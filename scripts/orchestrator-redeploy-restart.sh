@@ -239,6 +239,18 @@ if [ "$MODE" = "exec" ]; then
         exit 0
     fi
 
+    # Re-check the require-commit precondition at fire time (rare: main could
+    # have moved since schedule time). Fail-closed toward leaving the
+    # known-good orchestrator running rather than restarting into stale
+    # config — mirrors the dirty-at-fire-time guard above.
+    if [ -n "$ORCH_REQUIRE_COMMIT" ] && ! require_commit_on_main "$ORCH_PROJECT_ROOT" "$ORCH_REQUIRE_COMMIT" "$ORCH_MAIN_BRANCH"; then
+        echo "orchestrator-redeploy-restart.sh: WARNING — required commit is no longer an ancestor of '$ORCH_MAIN_BRANCH' at fire time." >&2
+        echo "  sha:          $ORCH_REQUIRE_COMMIT" >&2
+        echo "  project_root: $ORCH_PROJECT_ROOT" >&2
+        echo "  Leaving orchestrator '$ORCH_UNIT' RUNNING, not restarting." >&2
+        exit 0
+    fi
+
     echo "orchestrator-redeploy-restart.sh: stopping '$ORCH_UNIT' ..." >&2
     # Stop failure (e.g. unit already stopped after a crash) is non-fatal: warn
     # and continue so we still attempt the start.
