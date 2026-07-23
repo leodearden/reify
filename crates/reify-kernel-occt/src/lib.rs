@@ -10215,6 +10215,113 @@ mod tests {
         }
     }
 
+    #[test]
+    fn kernel_pipe_arbitrary_orientation_volume_matches_pi_r2_l() {
+        // General path-orientation acceptance: a straight LineSegment in ANY
+        // direction, piped with radius r, must yield a RIGHT circular cylinder
+        // whose analytic BRep volume equals π·r²·L exactly (rel_err < 1e-6),
+        // mirroring the +Z case kernel_pipe_straight_path_volume_matches_pi_r2_l.
+        //
+        // Covers +X, +Y, -Z, a (1,1,1) diagonal, and a NON-origin +X segment.
+        // Before the oriented-profile rewire the profile is an XY circle at the
+        // origin, so every in-plane (non-perpendicular) case sweeps a
+        // degenerate/offset solid and fails this assertion (RED).
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let r = 0.002_f64;
+        // (label, [x1, y1, z1, x2, y2, z2])
+        let cases: &[(&str, [f64; 6])] = &[
+            ("+X", [0.0, 0.0, 0.0, 0.020, 0.0, 0.0]),
+            ("+Y", [0.0, 0.0, 0.0, 0.0, 0.020, 0.0]),
+            ("-Z", [0.0, 0.0, 0.0, 0.0, 0.0, -0.020]),
+            ("diagonal (1,1,1)", [0.0, 0.0, 0.0, 0.010, 0.010, 0.010]),
+            ("non-origin +X", [0.005, 0.0, 0.0, 0.025, 0.0, 0.0]),
+        ];
+        for (label, c) in cases {
+            let [x1, y1, z1, x2, y2, z2] = *c;
+            let length = ((x2 - x1).powi(2) + (y2 - y1).powi(2) + (z2 - z1).powi(2)).sqrt();
+            let mut kernel = OcctKernel::new();
+            let wire_handle = kernel
+                .execute(&GeometryOp::LineSegment {
+                    x1,
+                    y1,
+                    z1,
+                    x2,
+                    y2,
+                    z2,
+                })
+                .unwrap_or_else(|e| {
+                    panic!("{label}: LineSegment execute should succeed, got {e:?}")
+                });
+            let pipe_handle = kernel
+                .execute(&GeometryOp::Pipe {
+                    path: wire_handle.id,
+                    radius: Value::Real(r),
+                })
+                .unwrap_or_else(|e| panic!("{label}: Pipe execute should succeed, got {e:?}"));
+            let vol = kernel
+                .query(&GeometryQuery::Volume(pipe_handle.id))
+                .unwrap_or_else(|e| panic!("{label}: Volume query should succeed, got {e:?}"));
+            let v = vol.as_f64().expect("Volume should be numeric");
+            assert!(v > 0.0, "{label}: pipe volume must be positive, got {v}");
+            let expected = std::f64::consts::PI * r.powi(2) * length;
+            let rel_err = (v - expected).abs() / expected;
+            assert!(
+                rel_err < 1e-6,
+                "{label}: pipe volume should be ≈ {expected:.3e} m³, got {v:.3e} (rel_err={rel_err:.4e})"
+            );
+        }
+    }
+
+    #[test]
+    fn kernel_pipe_xy_arc_quarter_torus_volume() {
+        // A quarter-circle spine in the XY plane (bend radius R=0.010, start at
+        // (0.010,0,0), start-tangent +Y) piped with tube radius r=0.002 sweeps
+        // an exact torus segment: a planar circular spine has constant binormal
+        // (no Frenet twist), so by Pappus's theorem V = π·r²·R·θ exactly
+        // (R>r ⇒ no self-intersection) ≈ 1.9739e-7 m³.
+        //
+        // This case also guards the wire_start_point plumbing: the arc does NOT
+        // start at the origin, so a start-point-ignoring profile would sweep
+        // from the wrong location. RED until the oriented-profile rewire lands.
+        if !crate::OCCT_AVAILABLE {
+            eprintln!("skipping: OCCT not available");
+            return;
+        }
+        let r = 0.002_f64;
+        let bend_r = 0.010_f64;
+        let theta = std::f64::consts::FRAC_PI_2;
+        let mut kernel = OcctKernel::new();
+        let wire_handle = kernel
+            .execute(&GeometryOp::Arc {
+                center: [0.0, 0.0, 0.0],
+                radius: bend_r,
+                start_angle: 0.0,
+                end_angle: theta,
+                axis: [0.0, 0.0, 1.0],
+            })
+            .expect("Arc execute should succeed");
+        let pipe_handle = kernel
+            .execute(&GeometryOp::Pipe {
+                path: wire_handle.id,
+                radius: Value::Real(r),
+            })
+            .expect("Pipe execute should succeed for XY arc");
+        let vol = kernel
+            .query(&GeometryQuery::Volume(pipe_handle.id))
+            .expect("Volume query should succeed");
+        let v = vol.as_f64().expect("Volume should be numeric");
+        assert!(v > 0.0, "arc pipe volume must be positive, got {v}");
+        let expected = std::f64::consts::PI * r.powi(2) * bend_r * theta;
+        let rel_err = (v - expected).abs() / expected;
+        assert!(
+            rel_err < 0.01,
+            "quarter-torus pipe volume should be ≈ {expected:.4e} m³ (π·r²·R·θ), got {v:.4e} (rel_err={rel_err:.4e})"
+        );
+    }
+
     // --- validate_pipe_start_tangent helper unit tests ---
 
     #[test]
