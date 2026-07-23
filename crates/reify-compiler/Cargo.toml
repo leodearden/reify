@@ -20,6 +20,11 @@ reify-syntax.workspace = true
 reify-config.workspace = true
 indexmap.workspace = true
 tracing.workspace = true
+# On-demand stack growth to bound compiler expression recursion (see
+# src/recursion_guard.rs). Converts deeply-nested-geometry stack overflow into
+# a clean E_EXPR_NESTING_TOO_DEEP diagnostic on small-stack embedder threads
+# (e.g. the GUI's 2 MB tokio worker).
+stacker.workspace = true
 
 [dev-dependencies]
 reify-ast.workspace = true
