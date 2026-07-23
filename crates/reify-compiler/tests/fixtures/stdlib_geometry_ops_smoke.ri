@@ -1,56 +1,73 @@
-// Executable transcription of the "Key Geometry Operations" table in
-// crates/reify-mcp/src/tools/chunks/stdlib.md (topic="stdlib"), concretized
+// Executable transcription of the "Key Geometry Operations" (+ "Curves") table
+// in crates/reify-mcp/src/tools/chunks/stdlib.md (topic="stdlib"), concretized
 // over real primitives/profiles so it can be fed to compile_with_stdlib.
 //
-// SYNC CONTRACT: every call form below must mirror a signature documented in
-// that chunk's "Key Geometry Operations" (+ "Curves") section, and vice-versa.
-// The companion test crates/reify-compiler/tests/stdlib_chunk_geometry_ops_smoke.rs
-// asserts this file compiles with ZERO Error-severity diagnostics. Keep the two
-// files in lockstep; if you edit one, edit the other.
+// SYNC CONTRACT: every call form below mirrors a signature documented in that
+// chunk's "Key Geometry Operations" / "Curves" section, and vice-versa. The
+// companion test crates/reify-compiler/tests/stdlib_chunk_geometry_ops_smoke.rs
+// asserts this file compiles with ZERO Error-severity diagnostics — i.e. every
+// documented form actually compiles against the real geometry-op arms. Keep the
+// two files in lockstep: if you edit a signature in one, edit it in the other.
 //
-// RED STATE (task 5347 step-1): the forms below deliberately transcribe the
-// CURRENTLY-DOCUMENTED signatures, several of which DO NOT match the compiler's
-// real geometry-op arms (phantom `offset_surface`, 3-arg `rotate`/`extrude`/
-// `revolve`, 2-arg `translate`, 4-arg `linear_pattern`, 3-arg `circular_pattern`,
-// single-list `loft`). This file therefore fails to compile until step-2
-// rewrites both it and the chunk to the real compiler-verified forms.
+// Each form is the exact arity/overload the compiler accepts (verified against
+// the match arms in reify-compiler/src/geometry{,_transform,_boolean,_modify,
+// _curve}.rs). Where an ergonomic value-form overload exists (mirror/plane,
+// circular_pattern/axis, rotate/orientation) it is exercised alongside the
+// all-scalar form.
 
 structure def StdlibGeometryOpsSmoke {
     // ── Inputs (real constructors) ──────────────────────────────────────────
-    let a       = box(20mm, 20mm, 20mm)
-    let b       = box(10mm, 10mm, 30mm)
-    let solid   = box(20mm, 20mm, 20mm)
-    let prof    = rectangle(20mm, 10mm)
-    let prof2   = circle(8mm)
-    let path    = line_segment(0mm, 0mm, 0mm, 0mm, 0mm, 40mm)
-    let dir     = vec3(1.0, 0.0, 0.0)
-    let surf    = plane_xy(0mm)
+    let a     = box(20mm, 20mm, 20mm)
+    let b     = box(10mm, 10mm, 30mm)
+    let solid = box(30mm, 20mm, 10mm)
+    let prof  = rectangle(20mm, 10mm)
+    let prof2 = circle(8mm)
+    let path  = line_segment(0mm, 0mm, 0mm, 0mm, 0mm, 40mm)
+    let curve = line_segment(0mm, 0mm, 0mm, 20mm, 0mm, 0mm)
 
-    // ── Booleans (as documented) ────────────────────────────────────────────
+    // ── Booleans: union/difference/intersection(a, b) [2]; *_all variadic ───
     let u  = union(a, b)
     let d  = difference(a, b)
     let i  = intersection(a, b)
-    let sp = split(solid, surf)                    // split(solid, surface)
+    let ua = union_all(a, b, solid)
+    let ia = intersection_all(a, b, solid)
 
-    // ── Modify (as documented) ──────────────────────────────────────────────
-    let f  = fillet(solid, edges(solid), 1mm)      // fillet(solid, edges, radius)
-    let c  = chamfer(solid, edges(solid), 1mm)     // chamfer(solid, edges, distance)
-    let sh = shell(solid, faces(solid), 1mm)       // shell(solid, faces, thickness)
-    let os = offset_surface(surf, 1mm)             // offset_surface(surface, distance)  ← PHANTOM
+    // ── Modify ──────────────────────────────────────────────────────────────
+    let fil2 = fillet(solid, 1mm)                  // fillet(solid, radius)          [2, all edges]
+    let fil3 = fillet(solid, edges(solid), 1mm)    // fillet(solid, edges, radius)   [3, curated]
+    let cha2 = chamfer(solid, 1mm)                 // chamfer(solid, distance)       [2, all edges]
+    let cha3 = chamfer(solid, edges(solid), 1mm)   // chamfer(solid, edges, distance)[3, curated]
+    let sh1  = shell(solid, 1mm)                   // shell(solid, thickness)        [all faces]
+    let sh2  = shell(solid, 1mm, 0)                // shell(solid, thickness, face…) [remove face 0]
+    let ofs  = offset_solid(solid, 1mm)            // offset_solid(solid, distance)
+    let thk  = thicken(solid, 1mm)                 // thicken(solid, offset)
+    let ofc  = offset_curve(curve, 1mm)            // offset_curve(curve, distance)
 
-    // ── Sweep (as documented) ───────────────────────────────────────────────
-    let ex = extrude(prof, dir, 5mm)               // extrude(profile, direction, distance)  ← 3-arg
-    let rv = revolve(prof, dir, 90deg)             // revolve(profile, axis, angle)          ← 3-arg
-    let sw = sweep(prof2, path)                     // sweep(profile, path)
-    let lf = loft([prof, prof2])                    // loft(profiles)                         ← single list
+    // ── Sweep ────────────────────────────────────────────────────────────────
+    let ex = extrude(prof, 5mm)                                  // extrude(profile, distance)
+    let rv = revolve(prof, 0mm, 0mm, 0mm, 0, 1, 0, 360deg)      // revolve(profile, ox,oy,oz, ax,ay,az, angle)
+    let sw = sweep(prof2, path)                                  // sweep(profile, path)
+    let lf = loft(prof, prof2)                                   // loft(profile1, profile2, …)
 
-    // ── Transform (as documented) ───────────────────────────────────────────
-    let tr = translate(solid, dir)                  // translate(geo, vector)                 ← 2-arg
-    let ro = rotate(solid, dir, 30deg)              // rotate(geo, axis, angle)               ← 3-arg
-    let mi = mirror(solid, surf)                    // mirror(geo, plane)
-    let sc = scale(solid, 2.0)                      // scale(geo, factor)
+    // ── Transform ─────────────────────────────────────────────────────────────
+    let tr  = translate(solid, 1mm, 2mm, 3mm)      // translate(geo, dx, dy, dz)
+    let ro5 = rotate(solid, 0, 0, 1, 90deg)        // rotate(geo, ax, ay, az, angle)  [5, scalar]
+    let ro2 = rotate(solid, orient_identity())     // rotate(geo, orientation)        [2, value]
+    let mi2 = mirror(solid, plane_xy(0mm))         // mirror(geo, plane)              [2, value]
+    let mi7 = mirror(solid, 0, 0, 0, 1, 0, 0)      // mirror(geo, ox,oy,oz, nx,ny,nz) [7, scalar]
+    let sc  = scale(solid, 2.0)                    // scale(geo, factor)
 
-    // ── Pattern (as documented) ─────────────────────────────────────────────
-    let lp = linear_pattern(solid, dir, 3, 5mm)     // linear_pattern(geo, direction, count, spacing) ← 4-arg
-    let cp = circular_pattern(solid, dir, 6)        // circular_pattern(geo, axis, count)             ← 3-arg
+    // ── Pattern ───────────────────────────────────────────────────────────────
+    let lp  = linear_pattern(solid, 1, 0, 0, 3, 5mm)                   // linear_pattern(geo, dx,dy,dz, count, spacing)
+    let cp4 = circular_pattern(solid, axis_z(point3(0mm, 0mm, 0mm)), 6, 360deg)   // (geo, axis, count, angle) [4, value]
+    let cp9 = circular_pattern(solid, 0mm, 0mm, 0mm, 0, 0, 1, 6, 360deg)          // (geo, ox,oy,oz, ax,ay,az, count, angle) [9]
+    let spl = split(solid, plane_xy(0mm))          // split(solid, plane) → List<Geometry> (topology selector)
+
+    // ── Curves ────────────────────────────────────────────────────────────────
+    let ls = line_segment(0mm, 0mm, 0mm, 10mm, 0mm, 0mm)                 // line_segment(x1,y1,z1, x2,y2,z2)
+    let ar = arc(0mm, 0mm, 0mm, 5mm, 0deg, 90deg, 0, 0, 1)              // arc(cx,cy,cz, radius, start,end, ax,ay,az)
+    let hx = helix(5mm, 2mm, 20mm)                                       // helix(radius, pitch, height)
+    let ip = interp(0mm, 0mm, 0mm, 5mm, 5mm, 0mm, 10mm, 0mm, 0mm)       // interp(x1,y1,z1, …) coord triples
+    let bz = bezier(0mm, 0mm, 0mm, 5mm, 10mm, 0mm, 10mm, 0mm, 0mm)      // bezier(x1,y1,z1, …) coord triples
+    let nb = nurbs(1, 2, 0mm, 0mm, 0mm, 10mm, 0mm, 0mm, 1.0, 1.0)       // nurbs(degree, n_pts, coords…, weights…)
 }
