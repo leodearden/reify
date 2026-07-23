@@ -7086,6 +7086,70 @@ fn push_down_expected_for_empty_coll(
 mod tests {
     use super::*;
 
+    /// The compiler expression-recursion cap fires at
+    /// `MAX_COMPILE_RECURSION_DEPTH`: pre-seeding the thread-local with that
+    /// many live `RecursionDepthGuard`s (pure counter bumps, no real frames)
+    /// makes even a trivial `NumberLiteral` compile to a `Type::Error` poison
+    /// carrying the `ExpressionNestingTooDeep` diagnostic — while without the
+    /// pre-seed the same expr compiles cleanly. Mirrors the
+    /// `trait_requirements.rs` "invoke at MAX+1 directly" test strategy, and
+    /// exercises the cap without real deep recursion.
+    #[test]
+    fn compile_expr_recursion_cap_fires_past_max_depth() {
+        use crate::recursion_guard::{MAX_COMPILE_RECURSION_DEPTH, RecursionDepthGuard};
+
+        let trivial = reify_ast::Expr {
+            kind: reify_ast::ExprKind::NumberLiteral {
+                value: 1.0,
+                is_real: false,
+            },
+            span: reify_core::SourceSpan::new(0, 1),
+        };
+        let scope = CompilationScope::new("test");
+        let enum_defs: Vec<reify_ir::EnumDef> = vec![];
+        let functions: Vec<CompiledFunction> = vec![];
+
+        // Baseline: with no pre-seeded depth, the trivial expr compiles cleanly
+        // (proves the cap only fires past MAX, not on ordinary input).
+        {
+            let mut diagnostics: Vec<Diagnostic> = vec![];
+            let compiled =
+                compile_expr(&trivial, &scope, &enum_defs, &functions, &mut diagnostics);
+            assert_ne!(
+                compiled.result_type,
+                Type::Error,
+                "trivial expr should compile without the cap engaged"
+            );
+            assert!(
+                !diagnostics.iter().any(|d| d.code
+                    == Some(reify_core::DiagnosticCode::ExpressionNestingTooDeep)),
+                "no too-deep diagnostic without pre-seeded depth, got: {:?}",
+                diagnostics
+            );
+        }
+
+        // Cap: pre-seed MAX live guards so the real cegwe entry pushes the depth
+        // to MAX+1 and the cap fires — poison result + the too-deep diagnostic.
+        let guards: Vec<RecursionDepthGuard> = (0..MAX_COMPILE_RECURSION_DEPTH)
+            .map(|_| RecursionDepthGuard::enter())
+            .collect();
+        let mut diagnostics: Vec<Diagnostic> = vec![];
+        let compiled = compile_expr(&trivial, &scope, &enum_defs, &functions, &mut diagnostics);
+        assert_eq!(
+            compiled.result_type,
+            Type::Error,
+            "cap should poison the result once depth exceeds MAX"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == Some(reify_core::DiagnosticCode::ExpressionNestingTooDeep)),
+            "expected the ExpressionNestingTooDeep diagnostic, got: {:?}",
+            diagnostics
+        );
+        drop(guards);
+    }
+
     /// Verify the `unwrap_or_else` safety fallback in `resolve_collection_sub_to_list`:
     /// when `sub_component_types` has no entry for the sub name (as in a manually-constructed
     /// CompilationScope used in unit tests), the field name is used as the StructureRef name.
