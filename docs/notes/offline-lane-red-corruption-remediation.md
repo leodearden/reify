@@ -143,9 +143,116 @@ already remediated — no un-corrected victims remain.**
 | Task | Signature 1 — help-text-as-failing-tests | Signature 2 — misattributed files/commit |
 |---|---|---|
 | **#5264** — "offline-lane red: verify.sh: ERROR — unknown argument '--test-threads=1'…" | **Present, corrected.** Title/description/`metadata.failing_tests` originally listed ~48 fabricated entries (verify.sh `--help` usage lines mis-ingested by the auto-filer parser bug). Corrected 2026-07-21 to the single real triggering line, `"verify.sh: ERROR — unknown argument '--test-threads=1'"` — the task's current description states this explicitly ("CORRECTED 2026-07-21 (esc-5315-1): the ONLY real failure was…") and `metadata.record_correction` records the same. `done_provenance.commit=56380a8f8adcc74886bd46459e0d6115a1d388bc`, verified via `git show --stat` to be the "Merge task/5264 into main" merge touching exactly `scripts/verify.sh`, `tests/infra/run-all-classification.manifest`, `tests/infra/test_verify_test_threads.sh`. Human-gate: **esc-5315-1**, tracked by task **#5315** ("Human gate: confirm real failure for task 5264…"), now `cancelled` — closed once the correction was verified landed, mirroring #5309's closure. Root-cause parser fix: LIVE task **#5308**. | Not present. `metadata.files=["scripts/verify.sh","tests/infra/test_verify_test_threads.sh"]` is consistent with both the title and the `done_provenance.commit`'s actual diff — no misattribution. |
-| **#5295** — "offline-lane: fix 1 failing test(s) (test_cpu_load_governance_deflake.sh)" | Not present. Task #5308's own investigation names 5295 as the clean comparison sample showing the parser working correctly on a normal per-test-failure report: `metadata.failing_tests=["tests/infra/test_cpu_load_governance_deflake.sh"]` is a real test path, not a `--help` dump. | **Present, corrected.** `metadata.files` originally read `["tests/infra/test_run_all_content_skip.sh"]` with `done_provenance.commit=264ee8cd202393a1bb6bad5b68d00016c7b7ddad` — both misattributed from task #5273's unrelated commit ("amend(5273): document drift-guard is best-effort + broaden its anchor set", which indeed touches `tests/infra/run-all-skip-closures.manifest` and `tests/infra/test_run_all_content_skip.sh`, confirmed via `git show --stat`). Corrected 2026-07-20 to `metadata.files=["tests/infra/test_cpu_load_governance_deflake.sh"]`, `done_provenance.commit=b470abbbad7965a4b3ebb736d744f130100a4527` — verified an ancestor of `main` and the last commit to touch that test file (`git show --stat` confirms the message "fix(5295): GREEN — restore SUT hermeticity via REIFY_CPU_GOVERN_DISABLE=1"; this is the rebased/landed form of pre-rebase branch commit `b29f086`, which is itself not on `main`). Human-gate: **esc-5309-1**, tracked by task **#5309**, now `cancelled`/terminal — the precedent this note's Remediation Recipe generalizes. |
+| **#5295** — "offline-lane: fix 1 failing test(s) (test_cpu_load_governance_deflake.sh)" | Not present. Task #5308's own investigation names 5295 as the clean comparison sample showing the parser working correctly on a normal per-test-failure report: `metadata.failing_tests=["test_cpu_load_governance_deflake.sh"]` is a real test name, not a `--help` dump. | **Present, corrected.** `metadata.files` originally read `["tests/infra/test_run_all_content_skip.sh"]` with `done_provenance.commit=264ee8cd202393a1bb6bad5b68d00016c7b7ddad` — both misattributed from task #5273's unrelated commit ("amend(5273): document drift-guard is best-effort + broaden its anchor set", which indeed touches `tests/infra/run-all-skip-closures.manifest` and `tests/infra/test_run_all_content_skip.sh`, confirmed via `git show --stat`). Corrected 2026-07-20 to `metadata.files=["tests/infra/test_cpu_load_governance_deflake.sh"]`, `done_provenance.commit=b470abbbad7965a4b3ebb736d744f130100a4527` — verified an ancestor of `main` and the last commit to touch that test file (`git show --stat` confirms the message "fix(5295): GREEN — restore SUT hermeticity via REIFY_CPU_GOVERN_DISABLE=1"; this is the rebased/landed form of pre-rebase branch commit `b29f086`, which is itself not on `main`). Human-gate: **esc-5309-1**, tracked by task **#5309**, now `cancelled`/terminal — the precedent this note's Remediation Recipe generalizes. |
 
 **Conclusion:** the systematic sweep confirms both known offline-lane
 auto-filer corruption classes are corrected on `main` as of 2026-07-23, and no
 additional `offline_lane_red` victims exist. See the Remediation Recipe's
 re-run trigger for when to repeat this sweep.
+
+## Remediation Recipe (part b)
+
+The reusable end-to-end correction workflow for a confirmed corruption on a
+`done`/`cancelled` task, generalized from task #5309's precedent (the
+`metadata.files`/`done_provenance.commit` correction on task #5295).
+
+### 1. Confirm and classify
+
+Run the Detection Procedure above against the candidate task. Determine which
+signature (or both, or neither) applies before touching anything — do not
+"fix" a task whose `metadata.files` merely looks unusual without confirming
+it against `done_provenance.commit`'s actual diff and the task's own
+title/description.
+
+### 2. The terminal-write constraint
+
+A plain `update_task` call issued **from the automated recon-stage
+reconciliation pass** against a `done`/`cancelled` task is rejected outright.
+Task #5309 hit this directly: "Stage 2 re-verified the divergence still
+present and attempted the suggested correction via `update_task`, which was
+REJECTED: `error_type=ReconTerminalWriteRejected` — 'Terminal tasks (done,
+cancelled) are frozen against recon-stage `update_task` writes.'" So a
+terminal victim's corrupted fields **cannot** be edited via the ordinary
+automated path — this is a deliberate guard against the automated
+reconciliation loop silently rewriting historical terminal-task records, not
+a blanket "terminal tasks are immutable" rule (see path (b) below).
+
+### 3. Two correction paths, keyed by field
+
+**(a) `done_provenance.commit`.** `update_task` itself refuses to write
+`metadata.done_provenance` at all (backend guard `done_provenance_via_update_task`),
+regardless of caller. The sanctioned repair path is
+`set_task_status(id=<id>, status="done", done_provenance={...})` called
+against the already-`done` task. It returns
+`{"success": true, "no_op": true, "done_provenance_repaired": true}`: the
+status is left untouched (no re-transition, no reconciliation storm), and the
+new provenance is schema-validated and ancestor-checked against `main` before
+being stamped. This is the path task #5309 identified and the one used to
+land task #5295's corrected `done_provenance.commit=b470abbbad7965a4b3ebb736d744f130100a4527`.
+
+**(b) `metadata.files` / `metadata.failing_tests` / title / description.**
+These are **not** covered by the `set_task_status` corrective path (it only
+repairs `done_provenance`) and — per §2 — cannot be corrected by the
+automated recon-stage calling `update_task` directly. The mechanism actually
+used to land both #5295's `metadata.files` fix and #5264's
+title/description/`metadata.failing_tests` fix was: file a dedicated
+**human-gate task** (see §5) and have the correction applied via a
+non-recon-stage `update_task` call once a human (or the escalation-resolution
+handler acting on their behalf) has reviewed and authorized it — the guard in
+§2 is scoped to the automated recon-stage caller, not to `update_task` as
+such. When performing that write: read the task first and preserve every
+unrelated metadata key — `update_task`'s `append` semantics are asymmetric:
+`append=true` only *adds new keys* (existing keys untouched), while
+`append=false` *replaces the entire metadata object*, silently dropping any
+key you didn't resend.
+
+### 4. Human git-history verification (mandatory before any commit-attribution rewrite)
+
+Before rewriting a misattributed `done_provenance.commit`, run `git show
+--stat <recorded_sha>` and `git show --stat <candidate_sha>` and read both
+commit messages to confirm which one actually shipped the task's own fix —
+do not assume the candidate is correct just because it touches a
+plausible-looking file. This is exactly the two-SHA adjudication task #5309
+performed and this audit re-verified (see Audit Findings): `264ee8cd` is
+task #5273's "amend(5273): document drift-guard is best-effort…" commit
+(touches `run-all-skip-closures.manifest` + `test_run_all_content_skip.sh`),
+while `b470abbbad` is task #5295's own "fix(5295): GREEN — restore SUT
+hermeticity via `REIFY_CPU_GOVERN_DISABLE=1`" fix, confirmed an ancestor of
+`main` and the last commit to touch `test_cpu_load_governance_deflake.sh`.
+
+### 5. Human-gate / escalation entry point
+
+Because §2 blocks the direct automated path, file the correction as a
+dedicated **human-gate task**: `task_kind=deterministic`,
+`always_escalates=true`, describing the confirmed corruption (from §1), the
+exact current (wrong) field values, and the proposed corrected values — this
+is the shape of both precedent tasks #5309 and #5315. That task immediately
+raises a gating escalation (the `esc-<task_id>-<n>` id, e.g. `esc-5309-1`,
+`esc-5315-1`); a human or the escalation-resolution handler then performs the
+authorized write per §3. **Close the loop:** once the correction is verified
+landed (re-`get_task` the victim and confirm the field values), transition
+the human-gate task itself to `cancelled` — do not leave it `blocked`. Task
+#5315 initially missed this closure step (left `blocked` after its gated
+correction had already landed) until task #5321 flagged the gap and it was
+cancelled to match; #5321 is now building a standing sweep for exactly this
+closure-staleness pattern (see Cross-references).
+
+## Cross-references
+
+| Task | Role |
+|---|---|
+| **#5308** | Root-cause parser fix for Signature 1 (auto-filer `--help`-usage-text ingestion). LIVE as of this audit. Once landed, Signature 1 cannot recur. |
+| **#5264** | Signature-1 victim; corrected. Human-gate: **#5315** (cancelled). |
+| **#5295** | Signature-2 victim; corrected. Human-gate: **#5309** (cancelled) — the precedent this recipe generalizes. |
+| **#5321** | Standing recon capability generalizing the human-gate closure-staleness check (§5's "close the loop" step) beyond `offline_lane_red`; depends on this note. |
+
+## Re-run trigger
+
+Re-run the Detection Procedure's Step 1 enumeration whenever a new task
+appears with `metadata.spawn_context=offline_lane_red`, and in particular:
+
+- **Before task #5308's parser fix lands** — Signature 1 can still occur.
+- **Whenever a `done`/`cancelled` offline-lane task's `metadata.files` looks
+  inconsistent with its own title/description** — Signature 2 is a
+  filer/attribution bug independent of #5308's fix and can recur from a
+  different root cause even after #5308 lands.
