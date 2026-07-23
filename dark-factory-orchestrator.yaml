@@ -30,14 +30,6 @@
 # 20:06-22:00, main froze 2h at full CPU burn; 24 left the merge verify ~half the
 # box). Re-cut toward 24 if the merge-latency livelock recurs.
 max_concurrent_tasks: 48
-# spare_warm_lanes (added 2026-06-29, /deb): effective warm task-lane pool
-# N = max_concurrent_tasks + spare_warm_lanes (dark-factory OrchestratorConfig field
-# `spare_warm_lanes`, config.py; read ONCE at startup → requires a restart to take effect).
-# 8 spare gives acquire headroom so a transient stuck-ASSIGNED / non-dispatched-pinned lane
-# does not exhaust the pool and force the inv.6 cold-fallback under light load. INTERIM
-# margin until the lazy reclaim-on-exhaustion safety valve (dark-factory task 1933) lands.
-# This is a TOP-LEVEL key (sibling of max_concurrent_tasks), NOT nested under warm_lane_pool.
-spare_warm_lanes: 8
 max_per_module: 1
 # lock_depth 4→10 (Leo 2026-06-18): make module locks effectively file-granular. At
 # depth 4 a file path DEEPER than 4 components (e.g. crates/reify-eval/src/compute_targets/
@@ -591,6 +583,25 @@ git:
   # first-verify is confirmed (the base self-seeds via refresh_warm_base over the first merge cycle).
   warm_lane_base_target_dir: "/home/leo/src/warm-lanes/base/target"
   warm_lane_pool: true   # #4665: enable the warm-lane CoW pool (task-dispatch lanes on XFS reflink)
+  # spare_warm_lanes (moved here 2026-07-22, reify task 5358): effective warm task-lane pool
+  # N = max_concurrent_tasks + spare_warm_lanes. This field lives on GitConfig
+  # (dark-factory config.py GitConfig.spare_warm_lanes; harness reads
+  # config.git.spare_warm_lanes) — the previous TOP-LEVEL placement was silently
+  # dropped by OrchestratorConfig(extra='ignore'), so the +8 spare was phantom
+  # since 2026-06-29 (pool was 48, not 56). Sized per the warm-lane pool sizing PRD
+  # (docs/prds/warm-lane-pool-sizing-lifecycle.md). Read once at startup.
+  spare_warm_lanes: 8
+  # DF-1933 reclaim-on-exhaustion safety valve: on pool exhaustion, steals the
+  # oldest non-dispatched non-terminal lane (with WIP-commit preservation) instead
+  # of hard-faulting to the inv.6 cold-fallback. Enabled after the 2026-07-22
+  # warm_lane_pool_exhausted cap-out storm (reify task 5358 / esc-5277-12).
+  warm_lane_reclaim_on_exhaustion: true
+  # DF-2879 prewarm knob: Harness.run() eagerly materializes the full effective_N
+  # pool on disk at startup (worktree add + CoW seed per missing lane), so the
+  # spare_warm_lanes headroom above actually exists on disk instead of being a
+  # phantom that lazy lowest-numbered-first acquire never demands. Fail-open,
+  # idempotent, consulted once at startup.
+  warm_lane_prewarm: true
 
 # Project root (absolute path)
 project_root: "/home/leo/src/reify"
