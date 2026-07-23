@@ -123,3 +123,29 @@ Signature-2 detector could be built as a new reify-audit pattern with no new
 data-modeling work. Signature 1 is **not** currently modeled — `TaskMetadata`
 has no `failing_tests` or `spawn_context` field today — so a permanent
 Signature-1 detector would need those fields added to `TaskMetadata` first.
+
+## Audit Findings (part a)
+
+**Sweep date:** 2026-07-23 (this task, re-running the Step 1 enumeration
+query above against the live `tasks.db` immediately before recording these
+findings). Result:
+
+| id | status |
+|----|--------|
+| 5264 | done |
+| 5295 | done |
+
+No other task has ever carried `spawn_context=offline_lane_red`. **Both are
+already remediated — no un-corrected victims remain.**
+
+### Per-task findings
+
+| Task | Signature 1 — help-text-as-failing-tests | Signature 2 — misattributed files/commit |
+|---|---|---|
+| **#5264** — "offline-lane red: verify.sh: ERROR — unknown argument '--test-threads=1'…" | **Present, corrected.** Title/description/`metadata.failing_tests` originally listed ~48 fabricated entries (verify.sh `--help` usage lines mis-ingested by the auto-filer parser bug). Corrected 2026-07-21 to the single real triggering line, `"verify.sh: ERROR — unknown argument '--test-threads=1'"` — the task's current description states this explicitly ("CORRECTED 2026-07-21 (esc-5315-1): the ONLY real failure was…") and `metadata.record_correction` records the same. `done_provenance.commit=56380a8f8adcc74886bd46459e0d6115a1d388bc`, verified via `git show --stat` to be the "Merge task/5264 into main" merge touching exactly `scripts/verify.sh`, `tests/infra/run-all-classification.manifest`, `tests/infra/test_verify_test_threads.sh`. Human-gate: **esc-5315-1**, tracked by task **#5315** ("Human gate: confirm real failure for task 5264…"), now `cancelled` — closed once the correction was verified landed, mirroring #5309's closure. Root-cause parser fix: LIVE task **#5308**. | Not present. `metadata.files=["scripts/verify.sh","tests/infra/test_verify_test_threads.sh"]` is consistent with both the title and the `done_provenance.commit`'s actual diff — no misattribution. |
+| **#5295** — "offline-lane: fix 1 failing test(s) (test_cpu_load_governance_deflake.sh)" | Not present. Task #5308's own investigation names 5295 as the clean comparison sample showing the parser working correctly on a normal per-test-failure report: `metadata.failing_tests=["tests/infra/test_cpu_load_governance_deflake.sh"]` is a real test path, not a `--help` dump. | **Present, corrected.** `metadata.files` originally read `["tests/infra/test_run_all_content_skip.sh"]` with `done_provenance.commit=264ee8cd202393a1bb6bad5b68d00016c7b7ddad` — both misattributed from task #5273's unrelated commit ("amend(5273): document drift-guard is best-effort + broaden its anchor set", which indeed touches `tests/infra/run-all-skip-closures.manifest` and `tests/infra/test_run_all_content_skip.sh`, confirmed via `git show --stat`). Corrected 2026-07-20 to `metadata.files=["tests/infra/test_cpu_load_governance_deflake.sh"]`, `done_provenance.commit=b470abbbad7965a4b3ebb736d744f130100a4527` — verified an ancestor of `main` and the last commit to touch that test file (`git show --stat` confirms the message "fix(5295): GREEN — restore SUT hermeticity via REIFY_CPU_GOVERN_DISABLE=1"; this is the rebased/landed form of pre-rebase branch commit `b29f086`, which is itself not on `main`). Human-gate: **esc-5309-1**, tracked by task **#5309**, now `cancelled`/terminal — the precedent this note's Remediation Recipe generalizes. |
+
+**Conclusion:** the systematic sweep confirms both known offline-lane
+auto-filer corruption classes are corrected on `main` as of 2026-07-23, and no
+additional `offline_lane_red` victims exist. See the Remediation Recipe's
+re-run trigger for when to repeat this sweep.
