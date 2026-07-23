@@ -278,19 +278,41 @@ pub structure CapstanUnit {
     let neg_x     = 0mm - pulley_x
     let y_front   = cap_pitch_r          // machine-side tangent plane
     let y_rear    = 0mm - cap_pitch_r    // outboard tangent plane
-    // Pulley centres sit r_pitch ABOVE their lead's horizontal drum-entry
-    // height (descent wraps the lower quarter → exits at centre − r_pitch).
-    let upper_l   = winding_z + lead_split + r_pitch
-    let upper_r   = winding_z - lead_split + r_pitch
-    let lower_l   = 0mm - winding_z + lead_split + r_pitch
-    let lower_r   = 0mm - winding_z - lead_split + r_pitch
 
-    // UPPER winding — outboard (−y) tangent plane.
-    sub fl_upper_l = IdlerPulley(sheave_od: r_pitch * 2) at transform3(rot_spin_y, vec3(neg_x,    y_rear,  upper_l))
-    sub fl_upper_r = IdlerPulley(sheave_od: r_pitch * 2) at transform3(rot_spin_y, vec3(pulley_x, y_rear,  upper_r))
-    // LOWER winding — machine-side (+y) tangent plane.
-    sub fl_lower_l = IdlerPulley(sheave_od: r_pitch * 2) at transform3(rot_spin_y, vec3(neg_x,    y_front, lower_l))
-    sub fl_lower_r = IdlerPulley(sheave_od: r_pitch * 2) at transform3(rot_spin_y, vec3(pulley_x, y_front, lower_r))
+    // ── STATIC-BALANCED pulley configuration (agreed 2026-07-23) ────────────
+    // Exhaustive force/moment enumeration (64 configs): exactly 4 mirror-image
+    // configurations zero ALL static force+moment components on the rigid
+    // fairlead; this is the chosen one. Conditions (Leo's constraint set,
+    // confirmed + sharpened): opposite sides take each winding's band-top
+    // exit (upper winding top LEFT, lower winding top RIGHT — the M_y couple
+    // flip); IN-leads (band-top under forward drive) both enter from ABOVE,
+    // OUT-leads (band-bottom) both from BELOW — one per tangent plane, same
+    // vertical sense per role, which cancels frame forces (2 up / 2 down)
+    // AND M_x (equal-and-opposite y per role). M_z cancels via the L/R
+    // horizontal pairs. Same-handed windings migrate together, and a uniform
+    // z-shift adds zero net load, so balance holds across the whole stroke.
+    // Residual DYNAMIC loads under drive torque (tension T0±ΔT) are the
+    // irreducible 4ΔT vertical + 2·(band-sep)·2ΔT about Y + 4·pitch_r·ΔT
+    // about Z — carried by the light fairlead guide; they scale with ΔT
+    // only, never the pre-tension. The resulting pulley centres are
+    // CENTROSYMMETRIC about the drum centre (a visible balance check).
+    //
+    // ABOVE-entry pulleys: vertical run rises to the frame; wrap = lower
+    // quarter → centre sits r_pitch ABOVE the drum-entry height. BELOW-entry
+    // pulleys: vertical run drops below the drive block (below-routing to be
+    // modelled); wrap = upper quarter → centre r_pitch BELOW the entry.
+    // Verticals sit outboard at ±(pulley_x + r_pitch) in both styles.
+    let w1_in  = winding_z + lead_split + r_pitch            // upper winding, band-top, LEFT, from above
+    let w1_out = winding_z - lead_split - r_pitch            // upper winding, band-bottom, RIGHT, from below
+    let w2_in  = 0mm - winding_z + lead_split + r_pitch      // lower winding, band-top, RIGHT, from above
+    let w2_out = 0mm - winding_z - lead_split - r_pitch      // lower winding, band-bottom, LEFT, from below
+
+    // UPPER winding (w1) — outboard (−y) tangent plane.
+    sub fl_w1_in  = IdlerPulley(sheave_od: r_pitch * 2) at transform3(rot_spin_y, vec3(neg_x,    y_rear,  w1_in))
+    sub fl_w1_out = IdlerPulley(sheave_od: r_pitch * 2) at transform3(rot_spin_y, vec3(pulley_x, y_rear,  w1_out))
+    // LOWER winding (w2) — machine-side (+y) tangent plane.
+    sub fl_w2_in  = IdlerPulley(sheave_od: r_pitch * 2) at transform3(rot_spin_y, vec3(pulley_x, y_front, w2_in))
+    sub fl_w2_out = IdlerPulley(sheave_od: r_pitch * 2) at transform3(rot_spin_y, vec3(neg_x,    y_front, w2_out))
 
     // The flanges pierce the tangent planes for |x| < sqrt(flange_r² −
     // cap_pitch_r²) (≈19mm at the defaults): keep the pulley's inner edge
