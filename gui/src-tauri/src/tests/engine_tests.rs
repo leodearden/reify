@@ -11279,9 +11279,9 @@ fn apply_shell_channels_leaves_non_matching_mesh_untouched() {
 
 /// element_kind_count histograms the per-face bytes; None → empty map.
 ///
-/// `debug_server` is gated behind the `gui` feature, so this test compiles and
-/// runs only under `--features gui` (the OCCT/Tauri build).
-#[cfg(feature = "gui")]
+/// `element_kind_count` was moved to the ungated `commands` module (task 5348) so
+/// the headless `mesh_stats_json` can reuse it, so this test no longer needs the
+/// `gui` feature.
 #[test]
 fn element_kind_count_histograms_element_kind_bytes() {
     let make = |element_kind: Option<Vec<u8>>| crate::types::MeshData {
@@ -11298,21 +11298,21 @@ fn element_kind_count_histograms_element_kind_bytes() {
         appearance: None,
     };
 
-    let all_shell = crate::debug_server::element_kind_count(&make(Some(vec![1, 1, 1])));
+    let all_shell = crate::commands::element_kind_count(&make(Some(vec![1, 1, 1])));
     assert_eq!(
         all_shell,
         std::collections::BTreeMap::from([(1u8, 3usize)]),
         "three shell faces → {{1: 3}}"
     );
 
-    let mixed = crate::debug_server::element_kind_count(&make(Some(vec![0, 1, 1])));
+    let mixed = crate::commands::element_kind_count(&make(Some(vec![0, 1, 1])));
     assert_eq!(
         mixed,
         std::collections::BTreeMap::from([(0u8, 1usize), (1u8, 2usize)]),
         "mixed faces → {{0: 1, 1: 2}}"
     );
 
-    let none = crate::debug_server::element_kind_count(&make(None));
+    let none = crate::commands::element_kind_count(&make(None));
     assert!(none.is_empty(), "None element_kind → empty histogram");
 }
 

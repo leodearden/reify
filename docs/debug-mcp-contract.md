@@ -45,6 +45,13 @@ a drift surface.  The invariant is enforced at test time (see below).
 | Tree | `expand_tree_node`, `collapse_tree_node` |
 | Diagnostics / wait / state | `get_diagnostics`, `inject_diagnostics`, `reset_app_state`, `list_console_errors`, `store_state`, `wait_for`, `wait_for_idle`, `wait_for_selector` |
 
+> **Full realized scene (task 5348):** `engine_state` and `mesh_stats` report the
+> FULL realized scene — one mesh entry per rendered body, a full-scope snapshot via
+> `EngineSession::build_gui_state_full_scene` — so their mesh list stays consistent
+> with `viewport_state.meshCount` even while the frontend's delta path runs
+> selective demand (where the plain `build_gui_state` returns only the incremental
+> delta subset, per the engine_build.rs DELTA CONTRACT).
+
 ### REST-only handlers (not advertised in tools/list)
 
 `clear_selection` and `toggle_select` are reachable via the REST endpoint and

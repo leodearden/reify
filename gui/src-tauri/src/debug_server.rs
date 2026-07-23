@@ -1121,69 +1121,16 @@ async fn handle_demand_dispatch(state: &DebugServerState) -> Result<Value, Strin
     demand_dispatch_on_engine(&state.engine).await
 }
 
-/// Histogram of a mesh's per-face `element_kind` bytes.
-///
-/// Returns an empty map when `element_kind` is `None` (tet-only / non-shell
-/// meshes carry no per-face classification). `BTreeMap` keeps the byte keys in
-/// deterministic ascending order so the serialized JSON object
-/// (`{"1": <n>}`) is stable across runs — the PRD §9 θ observable signal.
-pub(crate) fn element_kind_count(
-    mesh: &crate::types::MeshData,
-) -> std::collections::BTreeMap<u8, usize> {
-    let mut counts = std::collections::BTreeMap::new();
-    if let Some(element_kind) = &mesh.element_kind {
-        for &kind in element_kind {
-            *counts.entry(kind).or_insert(0) += 1;
-        }
-    }
-    counts
-}
-
 async fn handle_mesh_stats(state: &DebugServerState) -> Result<Value, String> {
+    // Delegate to the headless-testable extraction (task 5348). It routes through
+    // `build_gui_state_full_scene`, so `mesh_stats` reports the FULL realized scene
+    // (not the frontend's selective-demand incremental delta) and shares the exact
+    // per-mesh mapping — including `commands::element_kind_count` — with
+    // `engine_state_json`, so the two debug reads can never drift apart. The
+    // element-kind histogram helper was moved to the ungated `commands` module so
+    // this delegation and its headless unit test do not need the `gui` feature.
     run_on_engine(&state.engine, |session| {
-        let gui_state = session
-            .build_gui_state()
-            .map_err(|e| format!("build_gui_state failed: {e}"))?;
-
-        let stats: Vec<Value> = gui_state
-            .meshes
-            .iter()
-            .map(|m| {
-                let vertex_count = m.vertices.len() / 3;
-                let face_count = m.indices.len() / 3;
-
-                let mut min = [f32::INFINITY; 3];
-                let mut max = [f32::NEG_INFINITY; 3];
-                for chunk in m.vertices.chunks_exact(3) {
-                    for i in 0..3 {
-                        min[i] = min[i].min(chunk[i]);
-                        max[i] = max[i].max(chunk[i]);
-                    }
-                }
-
-                // Per-face element-kind histogram, byte→count as a JSON object
-                // with string keys (e.g. {"1": <n>}) — the PRD §9 θ signal.
-                let element_kind_hist: serde_json::Map<String, Value> =
-                    element_kind_count(m)
-                        .into_iter()
-                        .map(|(kind, count)| (kind.to_string(), json!(count)))
-                        .collect();
-
-                json!({
-                    "entity_path": m.entity_path,
-                    "vertex_count": vertex_count,
-                    "face_count": face_count,
-                    "element_kind_count": element_kind_hist,
-                    "bounding_box": if vertex_count > 0 {
-                        json!({"min": min, "max": max})
-                    } else {
-                        json!(null)
-                    }
-                })
-            })
-            .collect();
-
-        Ok(json!({"meshes": stats}))
+        crate::commands::mesh_stats_json(session)
     })
     .await
 }
