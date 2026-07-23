@@ -108,3 +108,54 @@ fn run_on_large_stack_survives_deep_recursion_over_default_stack() {
         "deep recursion must run to completion on the large stack (deep_recurse(n) == n + 1)"
     );
 }
+
+// ── spawn_on_large_stack: fire-and-forget variant (step-3/step-4) ────────────
+
+/// (d) `spawn_on_large_stack` runs the fire-and-forget closure (which delivers
+/// its side effect out-of-band via a channel, since the closure returns `()`),
+/// and the returned `JoinHandle` joins cleanly.
+#[test]
+fn spawn_on_large_stack_runs_closure_and_handle_joins() {
+    use crate::large_stack::spawn_on_large_stack;
+    use std::sync::mpsc;
+
+    let (tx, rx) = mpsc::channel::<u64>();
+    let handle = spawn_on_large_stack(move || {
+        // Fire-and-forget: communicate the result out-of-band via the channel.
+        tx.send(42).expect("receiver must still be alive");
+    })
+    .expect("spawn_on_large_stack should create the thread");
+
+    // The closure ran and delivered its side effect.
+    let received = rx.recv().expect("closure must send its value before exiting");
+    assert_eq!(received, 42, "fire-and-forget closure must execute its side effect");
+
+    // The returned handle joins without panicking.
+    handle.join().expect("large-stack thread must join cleanly");
+}
+
+/// (e) Deep recursion (~16 MiB) driven through the fire-and-forget
+/// `spawn_on_large_stack` runs to completion (result observed via a channel).
+/// The recursion runs ONLY on the helper's large-stack thread, so at RED
+/// (helper absent) this is a compile error, never a SIGSEGV.
+#[test]
+fn spawn_on_large_stack_survives_deep_recursion_over_default_stack() {
+    use crate::large_stack::spawn_on_large_stack;
+    use std::sync::mpsc;
+
+    let (tx, rx) = mpsc::channel::<u64>();
+    let handle = spawn_on_large_stack(move || {
+        let result = deep_recurse(DEEP_RECURSION_DEPTH);
+        tx.send(result).expect("receiver must still be alive");
+    })
+    .expect("spawn_on_large_stack should create the thread");
+
+    let result = rx.recv().expect("deep-recursion closure must send its result");
+    handle.join().expect("large-stack thread must join cleanly");
+
+    assert_eq!(
+        result,
+        u64::from(DEEP_RECURSION_DEPTH) + 1,
+        "deep recursion must run to completion on the fire-and-forget large stack"
+    );
+}
