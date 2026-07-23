@@ -8,9 +8,15 @@
 //! file is included as a stem-named module so its `<file>::<test>` module path (and thus
 //! every `test(/^<file>::/)` filterset) resolves unchanged. Explicit `#[path]` is required:
 //! this harness root is an integration-test crate root, where a bare `mod <file>;` would
-//! resolve to the sibling `tests/<file>.rs`, not the `harness_langcore/` subdir. The three
-//! `mod common;`-using files load the shared helper via `#[path = "../common/mod.rs"]`, and
-//! the two `include_str!` fixture consumers climb to `../fixtures/` from this subdir.
+//! resolve to the sibling `tests/<file>.rs`, not the `harness_langcore/` subdir. The shared
+//! `common` helper module is declared ONCE here at the harness root (via
+//! `#[path = "common/mod.rs"]`); the three former `mod common;`-using parametric files now
+//! import it as `use crate::common::…` (declaring it per-file would load the same source
+//! multiple times in this one compile unit, which `clippy::duplicate_mod` rejects). The two
+//! `include_str!` fixture consumers climb to `../fixtures/` from the subdir.
+#[path = "common/mod.rs"]
+mod common;
+
 #[path = "harness_langcore/let_annotation_type_mismatch_tests.rs"]
 mod let_annotation_type_mismatch_tests;
 #[path = "harness_langcore/let_scope_tests.rs"]

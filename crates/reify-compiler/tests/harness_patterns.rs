@@ -8,8 +8,14 @@
 //! so its `<file>::<test>` module path (and thus every `test(/^<file>::/)` filterset)
 //! resolves unchanged. Explicit `#[path]` is required: this harness root is an
 //! integration-test crate root, where a bare `mod <file>;` would resolve to the sibling
-//! `tests/<file>.rs`, not the `harness_patterns/` subdir. The three `mod common;`-using enum
-//! files load the shared helper via `#[path = "../common/mod.rs"]`.
+//! `tests/<file>.rs`, not the `harness_patterns/` subdir. The shared `common` helper module
+//! is declared ONCE here at the harness root (via `#[path = "common/mod.rs"]`); the three
+//! former `mod common;`-using enum files now import it as `use crate::common::…`. Declaring it
+//! per-file would load the same source file multiple times in this one compile unit, which
+//! `clippy::duplicate_mod` rejects.
+#[path = "common/mod.rs"]
+mod common;
+
 #[path = "harness_patterns/enum_generic_construction_inference_tests.rs"]
 mod enum_generic_construction_inference_tests;
 #[path = "harness_patterns/enum_generic_ir_lowering_tests.rs"]

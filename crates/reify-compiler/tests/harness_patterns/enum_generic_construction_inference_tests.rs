@@ -17,10 +17,7 @@
 //! rather than message substrings, per the codebase convention
 //! (reify-core/src/diagnostics.rs) — mirrors `variant_construction_check_tests.rs`.
 
-#[path = "../common/mod.rs"]
-mod common;
-
-use common::compile_with_stdlib_helper;
+use crate::common::compile_with_stdlib_helper;
 use reify_compiler::CompiledModule;
 use reify_core::{DiagnosticCode, Severity};
 use reify_ir::{CompiledExpr, CompiledExprKind, Value};
