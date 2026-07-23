@@ -3084,6 +3084,39 @@ impl EngineSession {
         })
     }
 
+    /// READ-ONLY full-scene snapshot for the debug-MCP `mesh_stats` / `engine_state`
+    /// tools (task 5348).
+    ///
+    /// [`Self::build_gui_state`] returns whatever
+    /// [`reify_eval::Engine::tessellate_snapshot`] produces under the CURRENT
+    /// production demand. Once the frontend has flipped production demand to
+    /// SELECTIVE (via [`Self::sync_demand`]), that result is an incremental DELTA
+    /// (the DELTA CONTRACT, engine_build.rs:5440-5465): HIDDEN or HASH-EXEMPT
+    /// realizations are ABSENT, so a debug read that treats the delta as a full
+    /// snapshot under-reports the realized scene.
+    ///
+    /// This method forces the cold-path full-scope override
+    /// ([`reify_eval::Engine::set_demand_full_scope`], engine_demand.rs:90) for the
+    /// duration of ONE `build_gui_state`, so `tessellate_snapshot` takes the
+    /// full-schedule branch (engine_build.rs:5415-5424) and returns EVERY
+    /// realization's mesh — the complete realized scene, the same set the
+    /// frontend/scene holds — then RESTORES the prior scope so the frontend's
+    /// selective demand survives the read.
+    ///
+    /// The override is bracketed with a plain save/restore (NO `?` between the set
+    /// and the restore) so the flag is restored on the `Err` path too. Re-running
+    /// tessellate is cheap (~0 kernel dispatch: every realization is already cached
+    /// from the cold build). On the rare panic-inside-`build_gui_state` path the
+    /// leaked `full_scope = true` is perf-only (not a correctness bug) and self-heals
+    /// on the next `sync_demand` (`DemandRegistry::new` resets it).
+    pub fn build_gui_state_full_scene(&mut self) -> Result<GuiState, String> {
+        let prev = self.core.engine().demand_is_full_scope();
+        self.core.engine_mut().set_demand_full_scope(true);
+        let result = self.build_gui_state();
+        self.core.engine_mut().set_demand_full_scope(prev);
+        result
+    }
+
     /// Return one `MechanismDescriptor` per mechanism cell in the loaded module.
     ///
     /// A cell is included when its post-eval value is a `Value::Map` with
