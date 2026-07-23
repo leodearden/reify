@@ -2118,6 +2118,26 @@ build_plan() {
     if [ "$DO_TEST" -eq 1 ] && [ "$RUN_RUST" -eq 1 ]; then
         add_test_passes
     fi
+
+    # retry_failed_only HONEST MARKER (task 5290 / PRD verify-retry-failed-only
+    # δ §4.4, INV-6). At plan-BUILD time, announce to STDOUT that this run is a
+    # genuinely-narrowed failed_only retry, so dark-factory runtime mining can
+    # distinguish a real subset gate from a full re-verify. Emitted via a direct
+    # `echo` — NOT via `add` — so it is a one-time build-time announcement, never
+    # an executed plan command. build_plan runs in BOTH --print-plan and execute
+    # modes, so the marker lands on stdout in a real DF retry (D5 captures it)
+    # AND is a faithful hermetic oracle under --print-plan. Mirrors the
+    # lib_clock_stop.sh `@@TOKEN@@` marker grammar, but inline and to STDOUT
+    # (only verify.sh emits it, so no sourced lib — PRD §4.4), distinct from α's
+    # `retry refused:` refusal lines (STDERR) and the clock markers (STDERR).
+    # [step-2: gated on scope=failed_only + nextest tree-OID eligibility, bare
+    # token; step-4 adds per-suite APPLIED counts; step-6 broadens the gate to
+    # "≥1 suite ACTUALLY narrowed" so a full-fallback/refusal never emits it
+    # (INV-6 honesty).] Default byte-identical: no REIFY_VERIFY_RETRY_SCOPE=
+    # failed_only ⇒ no echo, so the ~30 existing plan-shape tests stay green.
+    if [ "${REIFY_VERIFY_RETRY_SCOPE:-}" = "failed_only" ] && [ "$_RETRY_SUBSET_ELIGIBLE" -eq 1 ]; then
+        echo "@@REIFY_RETRY_SCOPE=failed_only@@"
+    fi
 }
 build_plan
 
