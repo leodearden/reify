@@ -19,22 +19,27 @@
 #                    (--fresh-checkout|--reset-in-place) \
 #                    [--base-commit <sha>] [--touch <path>]... [--lane-lock])
 #
-#   --lane-lock (opt-in, default OFF; PRD §9.5 inv.11): acquire an EXCLUSIVE
-#     flock on the sibling-path ${LANE_DIR}.lock -- the same convention
-#     thin-warm-lane.sh (T3) and warm-lane-gc.sh (live-consumer probe) use --
-#     BEFORE any target mutation, held across the whole run. Non-blocking:
-#     refuses with EX_TEMPFAIL (75) when a live consumer already holds it.
-#     Existing callers that omit this flag are unaffected -- see
-#     thin-warm-lane.sh --reseed, which already holds this same lock before
-#     invoking this script.
-#     REIFY_WARM_LANE_LANE_LOCK_WAIT (env, only with --lane-lock): 0 (default)
-#     = non-blocking refuse; N>0 = queue up to N seconds (flock -w N) before
-#     refusing; "unlimited" = block until acquired, never refuses. A
+#   Lane-lock exclusivity (PRD §9.5 inv.11; esc-5214/task 5354 fail-safe flip):
+#     an EXCLUSIVE flock on the sibling-path ${LANE_DIR}.lock -- the same
+#     convention thin-warm-lane.sh (T3) and warm-lane-gc.sh (live-consumer probe)
+#     use -- acquired BEFORE any target mutation and held across the whole run,
+#     so a destructive reseed never races a live consumer (inv.2). Under
+#     --fresh-checkout it is acquired BY DEFAULT: the #5223 guard was opt-in via
+#     --lane-lock and thus bypassable by an acquire-path caller that simply
+#     omitted the flag (exactly esc-5214, where a reseed clobbered a live
+#     consumer's in-flight build). Non-blocking by default: refuses with
+#     EX_TEMPFAIL (75) when a live consumer already holds it.
+#   --lane-lock: still accepted (now implied under --fresh-checkout; still the
+#     explicit opt-in for the --reset-in-place control arm, which does not lock
+#     by default).
+#     REIFY_WARM_LANE_LANE_LOCK_WAIT (env, whenever the lock is acquired): 0
+#     (default) = non-blocking refuse; N>0 = queue up to N seconds (flock -w N)
+#     before refusing; "unlimited" = block until acquired, never refuses. A
 #     refused acquirer of a task lane can just try a different FREE lane, but
 #     the SINGLETON _merge-verify lane has no alternate -- it QUEUEs instead.
-#     FD 9 (fixed, matching thin-warm-lane.sh's T3 convention): callers that
-#     pass --lane-lock MUST NOT themselves hold a load-bearing FD 9 open across
-#     this invocation -- `exec 9>"$LANE_LOCK"` would silently reassign it.
+#     FD 9 (fixed, matching thin-warm-lane.sh's T3 convention): a caller that
+#     lets seed acquire the lock MUST NOT itself hold a load-bearing FD 9 open
+#     across this invocation -- `exec 9>"$LANE_LOCK"` would silently reassign it.
 #
 # Usage (record-base mode):
 #   sidecar=$(scripts/seed-warm-lane.sh --record-base <base_target_dir>)
@@ -93,17 +98,19 @@ Seed mode: CoW-clone a warm base target/ into a pool lane.
                       production acquires always use --fresh-checkout).  No bulk stamp.
   --base-commit sha   Git commit the base was built from; drives git diff --name-only.
   --touch path        Additional path to touch to now after bulk stamp (repeatable).
-  --lane-lock         Opt-in (default OFF; PRD §9.5 inv.11): hold an exclusive flock
-                      on the sibling ${LANE_DIR}.lock across the whole run, BEFORE any
-                      target mutation. Refuses (EX_TEMPFAIL 75) if a live consumer
-                      already holds it (inv.2 one-consumer-per-lane-at-a-time).
-                      REIFY_WARM_LANE_LANE_LOCK_WAIT (env, only with --lane-lock):
-                      0 (default) = non-blocking refuse (flock -n); N>0 = queue up
-                      to N seconds before refusing (flock -w N); "unlimited"
+  --lane-lock         Accepted; IMPLIED under --fresh-checkout, where the lane lock
+                      is acquired BY DEFAULT (esc-5214/task 5354 fail-safe). Still the
+                      explicit opt-in for the --reset-in-place control arm. Holds an
+                      exclusive flock on the sibling ${LANE_DIR}.lock across the whole
+                      run, BEFORE any target mutation; refuses (EX_TEMPFAIL 75) if a
+                      live consumer already holds it (inv.2 one-consumer-per-lane).
+                      REIFY_WARM_LANE_LANE_LOCK_WAIT (env, whenever the lock is
+                      acquired): 0 (default) = non-blocking refuse (flock -n); N>0 =
+                      queue up to N seconds before refusing (flock -w N); "unlimited"
                       (case-insensitive) = block until acquired, never refuses
                       (flock). Anything else is a usage error (exit 64).
-                      Uses a fixed FD 9 (matching thin-warm-lane.sh's T3):
-                      callers passing --lane-lock must not themselves hold a
+                      Uses a fixed FD 9 (matching thin-warm-lane.sh's T3): a caller
+                      that lets seed acquire the lock must not itself hold a
                       load-bearing FD 9 open across this invocation.
 
 Record-base mode: stamp provenance beside the base target dir.
@@ -444,21 +451,35 @@ if [ "$ENV_INVOCATION" != "$RECORDED_INVOCATION" ]; then
     exit 1
 fi
 
-# ── --lane-lock (opt-in, default OFF): acquire-time lane-lock exclusivity ────
-# PRD §9.5 inv.11. Acquires an EXCLUSIVE flock on the sibling-path
-# ${LANE_DIR}.lock -- the SAME convention thin-warm-lane.sh's T3 (FD 9) and
-# warm-lane-gc.sh's live-consumer probe (FD 8) already use -- BEFORE any
-# target mutation (i.e. before the mode-split below / the fresh-checkout mv),
-# and holds it across the whole run so the destructive replace+clone never
-# races a live consumer (inv.2: one consumer per lane at a time). Runs before
-# the mode-split so it guards BOTH --fresh-checkout and --reset-in-place.
+# ── acquire-time lane-lock exclusivity (PRD §9.5 inv.11; esc-5214/task 5354) ──
+# Acquire an EXCLUSIVE flock on the sibling-path ${LANE_DIR}.lock -- the SAME
+# convention thin-warm-lane.sh's T3 (FD 9) and warm-lane-gc.sh's live-consumer
+# probe (FD 8) already use -- BEFORE any target mutation (i.e. before the
+# mode-split below / the fresh-checkout mv), and hold it across the whole run so
+# the destructive replace+clone never races a live consumer (inv.2: one consumer
+# per lane at a time). Runs before the mode-split so it guards BOTH
+# --fresh-checkout and --reset-in-place.
 #
-# OPT-IN and default OFF: thin-warm-lane.sh --reseed ALREADY holds
-# ${LANE_DIR}.lock on FD 9 before invoking this script, so an unconditional
-# acquire here would self-refuse that caller. Every existing caller (thin
-# --reseed, dark-factory acquire_lane pre-DF-wiring, tests) that does not pass
-# --lane-lock is byte-for-byte unchanged.
-if [ -n "$LANE_LOCK_OPT" ]; then
+# FAIL-SAFE DEFAULT (esc-5214/task 5354): acquire whenever --fresh-checkout is in
+# effect, OR when --lane-lock is explicitly passed (the latter preserves the
+# --reset-in-place opt-in). The #5223 guard was opt-in via --lane-lock and thus
+# BYPASSABLE by any acquire-path caller (dark-factory ζ) that simply omitted the
+# flag -- exactly esc-5214, where a --fresh-checkout reseed clobbered a live
+# consumer's in-flight build (zero-byte rmeta, ENOENT). A fail-safe default
+# cannot be bypassed by omission. Per the "reify ships the primitive,
+# dark-factory wires the invocation" seam, the durable fix belongs here in the
+# primitive; dark-factory needs no change (it already handles exit-75/queue per
+# #5223, it just never triggered it because the flag was never passed).
+#
+# flock is NOT re-entrant across a process tree, so a caller that ALREADY holds
+# ${LANE_DIR}.lock itself (thin --reseed on FD 9, gc reclaim on FD 8) must opt
+# OUT via --assume-lane-lock-held rather than have seed re-open+flock the same
+# file (which would self-refuse against the caller's own held lock).
+_should_acquire_lane_lock=""
+if [ -n "$FRESH_CHECKOUT" ] || [ -n "$LANE_LOCK_OPT" ]; then
+    _should_acquire_lane_lock=1
+fi
+if [ -n "$_should_acquire_lane_lock" ]; then
     LANE_LOCK="${LANE_DIR}.lock"
     # Mirrors thin-warm-lane.sh's breadcrumb: the pool's acquire/release
     # convention (inv.2) guarantees this lock file already exists for any
