@@ -924,6 +924,62 @@ fn engine_state_json_surfaces_demand_prune_measurement_and_last_dispatch_count_p
     );
 }
 
+/// step-3 (task 5348): the debug-MCP `engine_state` tool (via `engine_state_json`)
+/// must report the FULL realized scene, not the selective incremental delta, once
+/// the frontend has flipped production demand to selective.
+///
+/// On the nested-composed fixture, `engine_state_json` before any selective sync
+/// projects the complete cold full-scope scene (n meshes). After `sync_demand`
+/// hides one leaf branch (flipping production demand selective), `engine_state_json`
+/// must STILL report n meshes — it routes through `build_gui_state_full_scene`.
+///
+/// RED until step-4 switches `engine_state_json` to `build_gui_state_full_scene`:
+/// today it calls the selective `build_gui_state`, so the post-sync projection is
+/// the under-reporting delta (< n) — assertion-failure RED.
+#[test]
+fn engine_state_json_reports_full_scene_under_selective_demand() {
+    use crate::commands::engine_state_json;
+
+    let mut session = make_nested_composed_session();
+
+    // Cold full-scope projection = the complete scene.
+    let cold = engine_state_json(&mut session).expect("cold engine_state_json should succeed");
+    let cold_meshes = cold["meshes"].as_array().expect("meshes must be an array");
+    let n = cold_meshes.len();
+    assert!(
+        n >= 4,
+        "nested-composed fixture must project the 4 leaf bodies; got {n}"
+    );
+    let all_paths: Vec<String> = cold_meshes
+        .iter()
+        .map(|m| {
+            m["entity_path"]
+                .as_str()
+                .expect("each mesh must carry an entity_path string")
+                .to_string()
+        })
+        .collect();
+
+    // Hide one leaf branch → flip production demand SELECTIVE.
+    let hidden = all_paths
+        .last()
+        .expect("cold scene must have at least one mesh")
+        .clone();
+    let visible: Vec<String> = all_paths.iter().filter(|p| **p != hidden).cloned().collect();
+    session.sync_demand(&visible);
+
+    // The engine_state tool must report the FULL scene, not the selective delta.
+    let after = engine_state_json(&mut session).expect("post-sync engine_state_json should succeed");
+    assert_eq!(
+        after["meshes"]
+            .as_array()
+            .expect("meshes must be an array")
+            .len(),
+        n,
+        "engine_state must report the full realized scene under selective demand, not the delta"
+    );
+}
+
 /// Two-body, constraint-free, param-driven fixture (mirrors the engine-side
 /// `SELECTIVE_MULTIBODY_SRC` at engine_tests.rs:13210 and the δ
 /// `SELECTIVE_DEMAND_MULTIBODY_SRC`): `w → sa → box a (R0)` and
