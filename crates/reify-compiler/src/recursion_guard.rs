@@ -30,6 +30,8 @@
 
 use std::cell::Cell;
 
+use reify_core::{Diagnostic, DiagnosticCode, DiagnosticLabel, SourceSpan};
+
 /// Maximum combined recursion depth across the two compiler expression
 /// recursion entry points before the cap fires.
 ///
@@ -104,6 +106,23 @@ impl Drop for RecursionDepthGuard {
         // broken.
         COMPILE_RECURSION_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
     }
+}
+
+/// Build the `E_EXPR_NESTING_TOO_DEEP` diagnostic emitted when compiler
+/// expression recursion exceeds [`MAX_COMPILE_RECURSION_DEPTH`].
+///
+/// Mirrors the `TraitRefinementChainTooDeep` too-deep pattern
+/// (`trait_requirements.rs`): `Diagnostic::error(...)` + `.with_code(...)` +
+/// one `.with_label(...)` anchored at the offending expression's span. The
+/// message names the cap, the failure, and the `let`-binding remediation.
+pub(crate) fn recursion_too_deep_diagnostic(span: SourceSpan) -> Diagnostic {
+    Diagnostic::error(format!(
+        "E_EXPR_NESTING_TOO_DEEP: expression nests too deeply (exceeded {} levels); \
+         bind intermediate results with `let` to reduce nesting depth",
+        MAX_COMPILE_RECURSION_DEPTH
+    ))
+    .with_code(DiagnosticCode::ExpressionNestingTooDeep)
+    .with_label(DiagnosticLabel::new(span, "expression too deeply nested"))
 }
 
 #[cfg(test)]
