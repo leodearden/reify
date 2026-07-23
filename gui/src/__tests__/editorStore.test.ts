@@ -734,4 +734,36 @@ describe('openFile reopen of an already-open file', () => {
       dispose();
     });
   });
+
+  it('B: dirty reopen must NOT clobber the buffer and surfaces a conflict', () => {
+    createRoot((dispose) => {
+      const { state, openFile, markDirty } = createEditorStore();
+      openFile({ path: '/p/a.ri', content: 'V0' });
+      markDirty('/p/a.ri'); // user has unsaved edits in the buffer
+      // Disk changed to V1 under the dirty buffer (reopen with fresh disk content).
+      openFile({ path: '/p/a.ri', content: 'V1' });
+
+      expect(state.openFiles).toHaveLength(1); // dedup — one tab
+      expect(state.openFiles[0].content).toBe('V0'); // unsaved edits preserved (NOT clobbered)
+      expect(state.externallyChanged).toContain('/p/a.ri'); // conflict surfaced → save blocked
+      expect(state.dirtyFiles).toContain('/p/a.ri'); // still dirty
+      expect(state.activeFile).toBe('/p/a.ri'); // focused
+      dispose();
+    });
+  });
+
+  it('B (guard): dirty reopen with identical content does NOT mark externallyChanged', () => {
+    createRoot((dispose) => {
+      const { state, openFile, markDirty } = createEditorStore();
+      openFile({ path: '/p/a.ri', content: 'V0' });
+      markDirty('/p/a.ri');
+      // Reopen with the SAME content — no real divergence, so no conflict is raised.
+      openFile({ path: '/p/a.ri', content: 'V0' });
+
+      expect(state.openFiles[0].content).toBe('V0');
+      expect(state.externallyChanged).not.toContain('/p/a.ri');
+      expect(state.dirtyFiles).toContain('/p/a.ri');
+      dispose();
+    });
+  });
 });
