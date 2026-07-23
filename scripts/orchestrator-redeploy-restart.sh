@@ -12,29 +12,38 @@
 #   SCHEDULE MODE (default):
 #     Checks project_root is clean. If dirty, exits non-zero with an
 #     actionable "commit/land first" message — schedules NOTHING.
-#     If clean, best-effort pre-cleans any stale transient unit, then
-#     schedules the restart as a DETACHED transient unit via:
+#     If ORCH_REQUIRE_COMMIT is set, ALSO refuses (exit non-zero, schedules
+#     NOTHING) unless that commit is an ancestor of ORCH_MAIN_BRANCH.
+#     If clean (and the optional commit precondition holds), best-effort
+#     pre-cleans any stale transient unit, then schedules the restart as a
+#     DETACHED transient unit via:
 #       systemd-run --user --on-active=<delay> --unit=<tu> --collect \
 #         --setenv=ORCH_UNIT=… --setenv=ORCH_PROJECT_ROOT=… \
+#         [--setenv=ORCH_REQUIRE_COMMIT=… --setenv=ORCH_MAIN_BRANCH=…] \
 #         <abs-path-to-self> --exec-restart
 #     The transient unit is a child of the USER systemd manager (not the
 #     orchestrator), so it fires AFTER the triggering agent has exited.
 #
 #   EXEC MODE (--exec-restart):
 #     Run by the transient unit at fire time. Re-checks project_root.
-#     If clean → blocking `systemctl --user stop <unit>` THEN
+#     If clean AND (ORCH_REQUIRE_COMMIT is unset OR still an ancestor of
+#     ORCH_MAIN_BRANCH) → blocking `systemctl --user stop <unit>` THEN
 #       `systemctl --user start <unit>` (NEVER `systemctl restart` —
 #       the 90s graceful-stop window cancels restart's start-half).
-#     If dirty → leave the old orchestrator RUNNING, log loudly, exit 0.
+#     If dirty, OR ORCH_REQUIRE_COMMIT no longer holds → leave the old
+#     orchestrator RUNNING, log loudly, exit 0.
 #
 # Config (env vars with defaults):
 #   ORCH_UNIT            — systemd unit name (default: orchestrator-reify.service)
 #   ORCH_PROJECT_ROOT    — main checkout to guard (default: /home/leo/src/reify)
 #   ORCH_RESTART_DELAY   — on-active delay for systemd-run (default: 60s)
 #   ORCH_TRANSIENT_UNIT  — transient unit name (default: orch-redeploy-restart)
+#   ORCH_REQUIRE_COMMIT  — optional <sha> precondition, gates BOTH modes on
+#                          being an ancestor of ORCH_MAIN_BRANCH (default: unset)
+#   ORCH_MAIN_BRANCH     — branch ORCH_REQUIRE_COMMIT is checked against (default: main)
 #
 # Usage:
-#   scripts/orchestrator-redeploy-restart.sh [--help]
+#   scripts/orchestrator-redeploy-restart.sh [--help] [--require-commit=<sha>]
 #   scripts/orchestrator-redeploy-restart.sh --exec-restart
 #
 # See also: docs in CLAUDE.md §"Deploying the orchestrator (config/code changes)"
@@ -52,7 +61,7 @@ ORCH_MAIN_BRANCH="${ORCH_MAIN_BRANCH:-main}"
 # ── Helpers ───────────────────────────────────────────────────────────────────
 usage() {
     cat >&2 <<'USAGE'
-Usage: scripts/orchestrator-redeploy-restart.sh [--help | --exec-restart]
+Usage: scripts/orchestrator-redeploy-restart.sh [--help | --exec-restart] [--require-commit=<sha>]
 
 Modes:
   (default)      Schedule mode: check project_root is clean, then schedule a
@@ -61,6 +70,13 @@ Modes:
   --exec-restart Exec mode (run by the transient unit at fire time): re-check
                  clean, then blocking stop then start. If dirty, leave the
                  orchestrator running and exit 0.
+  --require-commit=<sha>
+                 Optional precondition (either mode): refuse unless <sha> is
+                 an ancestor of ORCH_MAIN_BRANCH. Schedule mode exits non-zero
+                 and schedules NOTHING if it isn't. Exec mode leaves the
+                 orchestrator RUNNING and exits 0 if it no longer holds at
+                 fire time. Overrides ORCH_REQUIRE_COMMIT if both are given.
+                 Omit entirely for today's behavior (no precondition).
   --help         Show this usage and exit 0.
 
 Environment knobs (all have defaults):
@@ -68,9 +84,13 @@ Environment knobs (all have defaults):
   ORCH_PROJECT_ROOT     Main checkout to guard   (default: /home/leo/src/reify)
   ORCH_RESTART_DELAY    on-active delay           (default: 60s)
   ORCH_TRANSIENT_UNIT   Transient unit name       (default: orch-redeploy-restart)
+  ORCH_REQUIRE_COMMIT   Optional <sha> precondition (default: unset — no precondition)
+  ORCH_MAIN_BRANCH      Branch ORCH_REQUIRE_COMMIT is checked against (default: main)
 
 IMPORTANT: project_root must be clean (no uncommitted tracked changes) before
-scheduling. If it is dirty, commit/land your changes first, then re-run.
+scheduling. If it is dirty, commit/land your changes first, then re-run. If
+--require-commit/ORCH_REQUIRE_COMMIT is set, that commit must also be an
+ancestor of ORCH_MAIN_BRANCH, or scheduling is refused the same way.
 USAGE
 }
 
