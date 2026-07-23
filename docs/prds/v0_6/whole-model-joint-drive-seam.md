@@ -20,6 +20,8 @@ Both gaps were verified by direct code inspection (three independent passes, 202
 
 - **Gap B — dependent Let cells stay frozen per trial** (the *deeper* blocker). `build_trial_values` (`crates/reify-constraints/src/solver.rs:138-150`) clones the base `ValueMap` and inserts **only** the trial auto-param scalars. The objective `minimize total` compiles to a bare `ValueRef(total)` (not inlined); `cost(self.descendants)` expands (once A is fixed) to a sum of `ValueRef(line_cost)` — and `line_cost`/`total` are **child Let cells** `build_trial_values` never touches. The topological Let recompute (`evaluate_let_bindings`, invoked at `engine_eval.rs:4351`) runs **post-solve only**. So even with Gap A fixed, the objective is constant w.r.t. the autos the solver varies. **Both A and B are required.**
 
+- **Gap C — cluster formation never fires for the leaf shape** (found 2026-07-22, **Amendment A1**, esc-5189-2; verified on main `a2864ad5` by four independent passes — architect trace, dry-run investigator, and two re-reads). Gaps A and B govern behaviour *inside* an already-merged `ResolutionProblem`; whether the merged problem forms at all is decided upstream by `compute_clusters` (`crates/reify-eval/src/resolve_order.rs:596-666`), which has exactly two union seeds: (a) a genuine mutual auto-read SCC, and (b) an objective read resolving **directly** to another scope's auto via `auto_owner.get(r)`. For the leaf shape (parent `minimize cost(self.descendants)`, child `auto(free)`), neither fires: cluster-time reads come from the syntactic read-DAG built on **unexpanded** objectives (`build_read_dag`; `resolve_order` invoked at `engine_eval.rs:4441`, before any `cost()`-expansion — Gap A's fix lives in the solver builders, *post*-clustering), and even expanded, the read lands on `line_cost` — a derived Let cell, never an auto — which seed (b) does not follow transitively to its auto owner. The §2 SCC framing above is real, but no *static* cluster detector can see that SCC: its only cyclic edge is the solver feedback edge, which exists in no read-DAG; the acyclic remainder crosses scopes only through the derived Let cell. Fix and tests: §13. **A, B, and C are all required.**
+
 **The framing (why B, not objective-flattening).** Reify keeps its value-dependency graph acyclic via the freeze-as-you-go discipline: each solve is condensed to one opaque node (freeze inputs → solve → write outputs). But with joint optimisation there is a genuine **strongly-connected component**: `auto params → line_cost → total → objective → (solver re-picks) auto params`; the only cyclic edge is the solver's feedback edge. The fix is to **condense that SCC into a first-class optimisation node and unroll its interior as a topologically-ordered sub-DAG re-evaluated per trial.** This gives a *principled* definition of "which cells recompute per trial" — exactly the induced sub-DAG on every value-dependency path from an optimisation's auto params to its objective/constraints (the SCC minus the auto params) — and reuses the same topological recompute the engine already trusts post-solve. The considered alternative, objective **flattening/substitution** (inline each `ValueRef(line_cost)` down to auto params so no per-trial recompute is needed), was rejected: it re-introduces the diamond-duplication / `O(2ⁿ)` blow-up the codebase already fights (`solver.rs:731`), must separately flatten every constraint, and produces a *different* expression shape than the post-solve write-back recomputes — a drift hazard.
 
 ## 3. Relationship to M-WHOLE
@@ -44,7 +46,8 @@ The **authoritative cross-scope topological order** is built once, engine-side, 
 4. **Constraint-position `cost()` is expanded in the same pass as objective-position.** Constraints have the identical frozen-Let bug (`compute_total_violation` reads the same trial map), and B's fold fixes them for free — so A must cover both to keep them consistent.
 5. **`@optimized` / ComputeNode-dispatch cells are excluded from the per-trial fold** and left at their frozen value (re-running them through plain `eval_expr` would bypass the compute-dispatch registry — the load-bearing exclusion at `engine_eval.rs:7878-7884/7966-7972`). A Costed child whose `line_cost` is `@optimized` therefore does not couple; this is a documented limitation, surfaced in §11.
 6. **SCC-admissibility guardrail.** A value-dependency SCC is admissible **only** when its sole back-edge is a solver feedback edge (an auto param chosen to optimise an objective that transitively depends on it). Any other cycle (`a → b → a` with no optimisation closing it) keeps failing as the existing cycle / `W_SCOPE_COUPLING` diagnostic. This prevents the SCC-unroll from silently admitting illegal data cycles.
-7. **Scope = one optimisation cycle.** A single parent objective over child autos across a merged cluster. The condensation-DAG framing generalises to nested/sibling optimisation cycles (each optimisation SCC condenses to a node; nested optimisations are nodes-within-nodes), but building/testing that generality is a future leaf (§11).
+7. **(A1) Cluster formation follows expanded objective reads transitively to auto owners — at cluster time only.** Gap C's fix (§13) makes `compute_clusters`'s seed (b) expansion-aware and transitive: expanded objective reads are walked through derived Let cells (via `extract_value_deps` closure) down to auto owners, stopping at `@optimized` cells (decision 5 — such children deliberately do not couple). Constraint reads stay **non-unioned** (scope_coupling A–G keep forming zero clusters; INV-2 intact); dim cap/disposition logic unchanged.
+8. **Scope = one optimisation cycle.** A single parent objective over child autos across a merged cluster. The condensation-DAG framing generalises to nested/sibling optimisation cycles (each optimisation SCC condenses to a node; nested optimisations are nodes-within-nodes), but building/testing that generality is a future leaf (§11).
 
 ## 6. Contract (H)
 
@@ -94,8 +97,11 @@ One helper produces the ordered `dependent_cells` from the expanded objective/co
 | BT-5 (e2e, **leaf**) | Joint drive | `examples/whole_model_joint_drive.ri` (2 scopes, parent `minimize cost(self.descendants)`, child `auto`) | child `auto` resolves to the whole-model cost-min value, **≠** its bottom-up frozen freeze; merged cost **strictly <** frozen-cascade baseline |
 | BT-6 (guardrail, negative) | Illegal data cycle still errors | a non-optimisation `a→b→a` value cycle | `reify eval` emits the existing cycle / `W_SCOPE_COUPLING` diagnostic (rejection **observed** to fire) |
 | BT-7 (guardrail) | `@optimized` cell excluded | Costed child with `@optimized` `line_cost` | that cell is absent from `dependent_cells`; no compute-dispatch bypass |
+| BT-8 (cluster, δ) | Cluster forms for derived-cost coupling | parent `minimize cost(self.descendants)` + Costed child owning `auto(free)`, coupled only through derived `line_cost` | `compute_clusters` yields exactly one `MergedSolve` cluster `{parent, child}` |
+| BT-9 (cluster, δ, negative) | `@optimized` stops the transitive walk | same shape, child `line_cost` is `@optimized` | **no** cluster forms (decision 5 / §11 limitation preserved) |
+| BT-10 (cluster, δ, negative) | Constraint reads still never union | constraint-position transitive read of another scope's auto | **no** cluster forms (scope_coupling A–G / INV-2 preserved) |
 
-BT-5 is the vertical-slice leaf's user-observable signal (closing G2). BT-1/-3/-4 face the producer (engine) side; BT-2/-6/-7 are the safety backstops.
+BT-5 is the vertical-slice leaf's user-observable signal (closing G2) — it **presupposes δ landed** (Amendment A1): without Gap C's seed, no cluster forms and BT-5 is structurally unreachable. BT-1/-3/-4 face the producer (engine) side; BT-2/-6/-7 are the safety backstops; BT-8/-9/-10 face the cluster-formation seam (δ).
 
 ## 8. Pre-conditions for activating
 
@@ -121,13 +127,21 @@ No new contested-ownership pair (not among the three known seams in `phase-3-bre
   - Observable: **intermediate** — no standalone user signal; unlocks β.
   - Prereq: β=5014, γ=5015, δ=5016 (landed).
 
+**Phase 1.5 — cluster-formation coupling (intermediate; Amendment A1):**
+
+- **δ — Gap C: expansion-aware objective reads + transitive auto-reaching union seed in `compute_clusters`.** `producer:task-5334`.
+  - Modules: `crates/reify-eval/src/resolve_order.rs`, `crates/reify-eval/src/engine_eval.rs` (read-DAG assembly/call-site), `crates/reify-eval` tests.
+  - Does: (C1) make the objective reads feeding `compute_clusters` reflect the **expanded** objective (`apply_cost_aggregation` + `expand_structural_query` + `apply_trait_filters` over throwaway copies — templates not mutated pre-solve); (C2) extend seed (b) to follow derived-cell read closures (`extract_value_deps`, transitive, cross-scope) down to auto owners, stopping at `@optimized` cells. Boundary tests BT-8, BT-9, BT-10; existing resolve_order + scope_coupling A–G suites green unchanged.
+  - Observable: **intermediate** — no standalone user signal; unlocks β (which owns the e2e leaf signal).
+  - Prereq: α (landed).
+
 **Phase 2 — vertical slice (LEAF, integration gate):**
 
 - **β — Per-trial SCC recompute in the solver + joint-drive example + gate.**
   - Modules: `crates/reify-constraints/src/solver.rs`, `examples/whole_model_joint_drive.ri`, `crates/reify-constraints/tests/` (or `crates/reify-eval/tests/`).
   - Does: fold `dependent_cells` into `build_trial_values` (`:138`) after the autos; add the SCC-admissibility guardrail; commit the minimal 2-scope example + eval test + boundary tests BT-1, BT-2, BT-5, BT-6, BT-7.
   - Observable (**user-observable leaf**): `reify eval examples/whole_model_joint_drive.ri` resolves a child `auto` to the whole-model cost-min value (≠ its frozen freeze) and merged cost strictly < the frozen-cascade baseline — CLI output difference + CI eval test.
-  - Prereq: α.
+  - Prereq: α, **δ (5334, Amendment A1)** — BT-5's merged cluster forms via δ's seed; β does **not** modify `resolve_order.rs`.
 
 **Phase 3 — companion correction (cross-PRD prose):**
 
@@ -150,3 +164,15 @@ No new contested-ownership pair (not among the three known seams in `phase-3-bre
 1. **Where the induced-sub-DAG helper lives** — a new fn in `engine_eval.rs` vs extending `detect_let_cycle`/`build_combined_param_let_graph` to a cross-template combined graph. Suggested: a new helper reusing `extract_value_deps` + `topological_sort`, so `detect_let_cycle`'s single-template contract is untouched. Decide in α.
 2. **Multistart interaction (δ).** Per-trial recompute lives inside each Nelder-Mead run, so best-of-K multistart should compose transparently; confirm no start-set caching assumes a frozen objective. Decide in β.
 3. **Gate-resident test registration.** If β's eval test lands as a `tests/infra/test_*.sh` or a heavy/wall-clock-bounded crate test, its drift-guard registration (`run-all-classification.manifest` / `test_no_new_wallclock_upper_bounds.sh` / `.config/nextest.toml`) must ride the **same diff** (overlay rule). A plain non-heavy crate eval test needs none. Decide in β.
+
+## 13. Amendment log
+
+### A1 (2026-07-22) — Gap C: cluster formation (esc-5189-2; human-approved)
+
+**What happened.** β (task 5189)'s architect self-blocked with a code-verified false-premise report: BT-5 requires the parent objective and the child auto to enter one merged `ResolutionProblem`, but `compute_clusters` never unions them for the leaf shape. The claim was independently confirmed by the dry-run investigator and twice more during `/unblock` (all on main `a2864ad5`). The original three-pass verification of Gaps A/B (§2, 2026-07-13) audited the solver builders and trial evaluation — *downstream* of cluster formation — and took formation itself as given from M-WHOLE α (5013); nobody re-checked the union seeds against the leaf's *derived-cost* coupling shape.
+
+**Root cause, precisely.** Two sub-gaps compose (full trace in the §2 Gap C bullet): (C1) `resolve_order` runs on the syntactic read-DAG of **unexpanded** objectives, so `cost(self.descendants)` surfaces no `line_cost` reads at cluster time; (C2) seed (b) resolves reads via direct `auto_owner.get(r)` only — a read landing on a derived Let cell is never followed transitively to the auto that feeds it.
+
+**Resolution (design decision 7, tests BT-8/-9/-10, task δ = 5334).** Extend cluster formation, not the fixture: reshaping the example so the objective reads the auto directly (the achievable-today single-scope workaround) was **rejected** — it hollows the leaf; the PRD's point is a *child-owned* auto co-solved through the real Costed/`line_cost` path. The "Design resolved — do NOT re-open" note on β is superseded **only** as amended here (β's per-trial-recompute design is untouched); β's prereq becomes α + δ, and β keeps the e2e leaf signal.
+
+**Task-tree effect.** δ filed as 5334; `add_dependency(5189 → 5334)`; 5189's description premise-corrected and returned to `pending` (dep-held); the `5017 → 5189` edge is unchanged.
