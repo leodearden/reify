@@ -19,8 +19,9 @@
 #   G — SCHEDULE-MODE SYSTEMD-RUN FAILURE: exits non-zero, no false confirmation
 #   H — EXEC-MODE START FAILURE: stop attempted, exits non-zero, no false success
 #   I — SCHEDULE-MODE --require-commit ANCESTOR GATE: refuses a non-ancestor or
-#       invalid sha (no systemd-run), threads --setenv=ORCH_REQUIRE_COMMIT
-#       through when set, byte-identical systemd-run invocation when unset
+#       invalid sha (no systemd-run), threads --setenv=ORCH_REQUIRE_COMMIT and
+#       --setenv=ORCH_MAIN_BRANCH through when set (including a non-default
+#       branch value), byte-identical systemd-run invocation when unset
 #   J — EXEC-MODE --require-commit RE-CHECK: re-checks the precondition at
 #       fire time; neither stop nor start (leaves orchestrator running,
 #       exits 0) when it no longer holds
@@ -391,7 +392,8 @@ assert "H5: no false 'restarted successfully' confirmation on start failure" \
 # --require-commit=<sha> (and ORCH_REQUIRE_COMMIT) gate schedule mode on <sha>
 # being an ancestor of ORCH_MAIN_BRANCH (default main): refuse (exit non-zero,
 # schedule nothing) if not an ancestor or not a valid object; thread
-# --setenv=ORCH_REQUIRE_COMMIT through to the transient unit when set; leave
+# --setenv=ORCH_REQUIRE_COMMIT and --setenv=ORCH_MAIN_BRANCH (including a
+# non-default branch value) through to the transient unit when set; leave
 # the systemd-run invocation byte-identical to today when unset.
 # ──────────────────────────────────────────────────────────────────────────────
 echo ""
@@ -452,6 +454,25 @@ reset_calls
 ORCH_PROJECT_ROOT="$CLEAN_REPO_I" \
     run_helper "--require-commit="
 assert "I12: --require-commit= (empty value) -> exits non-zero" test "$RC" -ne 0
+
+# I-custom-branch: same side-branch-sha as I-refuse-side, but with a
+# NON-DEFAULT ORCH_MAIN_BRANCH="side" (the side-branch-sha IS an ancestor of
+# "side" itself, trivially). This must now PASS, distinguishing "custom
+# ORCH_MAIN_BRANCH was actually threaded/honored" from "silently defaulted to
+# main" (which would have refused this exact sha — see I4-I6 above). Also
+# mirrors I3, asserting --setenv=ORCH_MAIN_BRANCH=side threads alongside
+# --setenv=ORCH_REQUIRE_COMMIT.
+reset_calls
+ORCH_PROJECT_ROOT="$CLEAN_REPO_I" \
+ORCH_MAIN_BRANCH="side" \
+    run_helper "--require-commit=$SIDE_SHA_I"
+assert "I13: --require-commit=<side-sha> WITH ORCH_MAIN_BRANCH=side -> exits 0" test "$RC" -eq 0
+assert "I14: ORCH_MAIN_BRANCH=side emits exactly one systemd-run call" \
+    bash -c '[ "$(grep -c "^systemd-run" "$1" 2>/dev/null || echo 0)" -eq 1 ]' _ "$CALLS_FILE"
+assert "I15: systemd-run call threads --setenv=ORCH_MAIN_BRANCH=side" \
+    bash -c 'grep "^systemd-run" "$1" | grep -q -- "--setenv=ORCH_MAIN_BRANCH=side"' _ "$CALLS_FILE"
+assert "I16: systemd-run call ALSO threads --setenv=ORCH_REQUIRE_COMMIT=<side-sha>" \
+    bash -c "grep \"^systemd-run\" \"\$1\" | grep -q -- \"--setenv=ORCH_REQUIRE_COMMIT=$SIDE_SHA_I\"" _ "$CALLS_FILE"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Block J — EXEC-MODE --require-commit RE-CHECK
@@ -514,5 +535,23 @@ assert "J10: --require-commit=<bogus sha> records NO systemctl stop (fail-closed
     bash -c '! grep -q "^systemctl.*stop exec-unit.service" "$1"' _ "$CALLS_FILE"
 assert "J11: --require-commit=<bogus sha> records NO systemctl start (fail-closed)" \
     bash -c '! grep -q "^systemctl.*start exec-unit.service" "$1"' _ "$CALLS_FILE"
+
+# J-custom-branch: same side-branch-sha as J-refuse-side, but with a
+# NON-DEFAULT ORCH_MAIN_BRANCH="side" set at fire time -> exec mode must now
+# proceed (stop then start), even though the SAME sha with the default
+# ORCH_MAIN_BRANCH (main) was refused in J-refuse-side above. Locks in that a
+# custom ORCH_MAIN_BRANCH is genuinely honored end-to-end in exec mode, not
+# silently defaulted to "main".
+reset_calls
+ORCH_PROJECT_ROOT="$CLEAN_REPO_J" \
+ORCH_UNIT="exec-unit.service" \
+ORCH_REQUIRE_COMMIT="$SIDE_SHA_J" \
+ORCH_MAIN_BRANCH="side" \
+    run_helper --exec-restart
+assert "J12: --require-commit=<side-sha> WITH ORCH_MAIN_BRANCH=side at fire time -> exits 0" test "$RC" -eq 0
+assert "J13: ORCH_MAIN_BRANCH=side records systemctl --user stop exec-unit.service" \
+    bash -c 'grep -q "^systemctl --user stop exec-unit.service$" "$1"' _ "$CALLS_FILE"
+assert "J14: ORCH_MAIN_BRANCH=side records systemctl --user start exec-unit.service" \
+    bash -c 'grep -q "^systemctl --user start exec-unit.service$" "$1"' _ "$CALLS_FILE"
 
 test_summary
