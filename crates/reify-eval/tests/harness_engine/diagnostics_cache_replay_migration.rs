@@ -227,3 +227,137 @@ fn field_oob_warning_emitted_exactly_once_across_serve_modes() {
         checked.diagnostics
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// Shared-registry parity — the MassProperties PSD post-pass (λ's
+// `MassPropertiesPsdDetector`, wired via `DetectorRegistry`) runs IDENTICALLY
+// across eval / eval_cached / edit_check (step-5; wired by step-6).
+// ─────────────────────────────────────────────────────────────────────────
+
+/// A valid, kernel-free `MassProperties` model. `mp`'s inertia is the strictly
+/// positive-definite diagonal `diag(0.10, 0.10, 0.10)` (all eigenvalues > 0 ⇒
+/// PSD), so the MassProperties PSD post-pass leaves the cell intact and emits
+/// no `DynamicsInertiaNotPSD` diagnostic on EVERY serve mode.
+/// `MassProperties` / `point3` / `vec3` / `Frame3` resolve through the growing
+/// prelude (cf. `examples/dynamics/closed_4bar_idyn.ri`), so no OCCT kernel is
+/// needed — this exercises the detector's classification path directly, unlike
+/// the OCCT-gated `body_mass_props(...)` fixtures in
+/// `dynamics_body_mass_props.rs`.
+///
+/// A `touched : Bool` param (consumed by `flag`, so it is not an unused param)
+/// gives the `edit_check` leg an editable cell. `mp` does NOT depend on
+/// `touched`, so on the edit serve `mp` is carried forward from the baseline
+/// snapshot (engine_edit.rs rebuilds the full `ValueMap` from
+/// `new_snapshot.values`), yet the post-pass registry still re-scans it fresh —
+/// exactly the cross-path invocation this fixture pins.
+const VALID_MASS_PROPS_SRC: &str = r#"
+structure MpModel {
+    param touched : Bool = false
+    let flag = touched
+    let mp = MassProperties(mass: 1kg, com: point3(0mm, 0mm, 0mm), inertia: [[0.10, 0.0, 0.0], [0.0, 0.10, 0.0], [0.0, 0.0, 0.10]], origin: Frame3(origin: vec3(0mm, 0mm, 0mm), x_axis: vec3(0mm, 0mm, 0mm), y_axis: vec3(0mm, 0mm, 0mm), z_axis: vec3(0mm, 0mm, 0mm)))
+}
+"#;
+
+/// Count `E_DynamicsInertiaNotPSD` diagnostics — the MassProperties PSD
+/// post-pass's sole output code — in a diagnostics slice.
+fn count_inertia_not_psd(diagnostics: &[Diagnostic]) -> usize {
+    diagnostics
+        .iter()
+        .filter(|d| d.code == Some(DiagnosticCode::DynamicsInertiaNotPSD))
+        .count()
+}
+
+/// True iff `cell` holds an INTACT `MassProperties` `StructureInstance` — i.e.
+/// the PSD post-pass did NOT replace it with `Value::Undef`.
+fn mass_props_cell_intact(values: &reify_ir::ValueMap, cell: &ValueCellId) -> bool {
+    matches!(
+        values.get(cell),
+        Some(Value::StructureInstance(d)) if d.type_name == "MassProperties"
+    )
+}
+
+/// (step-5) The MassProperties PSD post-pass produces the SAME
+/// MassProperties-cell result — intact cell + identical `DynamicsInertiaNotPSD`
+/// diagnostic set — across `eval`, `eval_cached`, AND `edit_check`, proving no
+/// path-divergence once λ's `DetectorRegistry` is wired into all three
+/// (step-6).
+///
+/// **Characterization / no-path-divergence guard, green by construction.** On a
+/// VALID (PSD) model every serve mode yields ZERO PSD diagnostics and an intact
+/// cell, so this test cannot go RED on the registry wiring alone: a natural
+/// non-PSD / malformed `MassProperties` inertia tensor is NOT producible via
+/// `.ri` (physical inertia tensors are PSD by construction — plan
+/// design-decision 5), so a POSITIVE end-to-end PSD-detection parity assertion
+/// is not authorable in the harness. Positive non-PSD detection parity instead
+/// rides on:
+///   - step-6's inline-block deletion making λ's `MassPropertiesPsdDetector`
+///     the SOLE PSD path on `eval` (pinned by the existing MassProperties PSD
+///     eval tests `dynamics_body_mass_props.rs` / `structure_instance_e2e.rs`
+///     staying green), and
+///   - `detectors.rs`'s own cross-site unit coverage — the `site_eval` /
+///     `site_eval_cached` / `site_edit_check` states in
+///     `same_post_pass_state_yields_same_diagnostic_set` (detectors.rs:417-423)
+///     — as the registry-runs-identically-per-path guarantee.
+/// The representative `.ri`-authorable "cold-only post-pass now runs on the
+/// warm / edit serve" RED signal is the annotation-args fixture in step-7.
+#[test]
+fn mass_properties_psd_registry_parity() {
+    let mp_cell = ValueCellId::new("MpModel", "mp");
+
+    // ── eval() baseline: intact MassProperties cell, zero PSD diagnostics ──
+    let compiled = parse_and_compile_with_stdlib(VALID_MASS_PROPS_SRC);
+    let mut engine = make_simple_engine();
+    let cold = engine.eval(&compiled);
+    assert!(
+        mass_props_cell_intact(&cold.values, &mp_cell),
+        "cold eval(): MpModel.mp must be an intact MassProperties instance; got \
+         {:?} (diagnostics: {:?})",
+        cold.values.get(&mp_cell),
+        cold.diagnostics
+    );
+    let cold_psd = count_inertia_not_psd(&cold.diagnostics);
+    assert_eq!(
+        cold_psd, 0,
+        "cold eval(): a PSD inertia tensor must emit no DynamicsInertiaNotPSD \
+         diagnostic; got {:?}",
+        cold.diagnostics
+    );
+
+    // ── eval_cached() parity (warm serve, SAME engine → real cache hit) ──
+    let warm = engine.eval_cached(&compiled, VersionId(0));
+    assert!(
+        mass_props_cell_intact(&warm.eval_result.values, &mp_cell),
+        "warm eval_cached(): MpModel.mp must stay an intact MassProperties \
+         instance through the registry path; got {:?}",
+        warm.eval_result.values.get(&mp_cell)
+    );
+    assert_eq!(
+        count_inertia_not_psd(&warm.eval_result.diagnostics),
+        cold_psd,
+        "eval_cached() must produce the SAME MassProperties-cell PSD diagnostic \
+         set as eval() (no path-divergence); got {:?}",
+        warm.eval_result.diagnostics
+    );
+
+    // ── edit_check() parity (SEPARATE engine, prior eval() baseline) ──
+    let edit_compiled = parse_and_compile_with_stdlib(VALID_MASS_PROPS_SRC);
+    let mut edit_engine = make_simple_engine();
+    let _ = edit_engine.eval(&edit_compiled); // establish the edit baseline
+    let touched_id = ValueCellId::new("MpModel", "touched");
+    let checked = edit_engine
+        .edit_check(touched_id, Value::Bool(true))
+        .expect("edit_check(touched, true) must succeed after a cold eval");
+    assert!(
+        mass_props_cell_intact(&checked.values, &mp_cell),
+        "edit_check(): MpModel.mp must stay an intact MassProperties instance \
+         through the registry path; got {:?}",
+        checked.values.get(&mp_cell)
+    );
+    assert_eq!(
+        count_inertia_not_psd(&checked.diagnostics),
+        cold_psd,
+        "edit_check() must produce the SAME MassProperties-cell PSD diagnostic \
+         set as eval() (no path-divergence); got {:?}",
+        checked.diagnostics
+    );
+}
