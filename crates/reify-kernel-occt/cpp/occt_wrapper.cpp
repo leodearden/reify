@@ -3113,7 +3113,18 @@ std::unique_ptr<OcctShape> make_helix_wire(
         // derive it from the existing pcurve+surface. Without this a helix()
         // wire cannot be used as a sweep spine (#5342). BRepLib.hxx is already
         // included above for OrientClosedSolid.
-        BRepLib::BuildCurves3d(edgeBuilder.Edge());
+        //
+        // BuildCurves3d returns false if the 3D-curve derivation fails. If it
+        // did, MakeWire below would still succeed (it only needs the topology,
+        // not the 3D curve) and the wire would look valid, but the missing
+        // curve would re-surface downstream as exactly the same opaque
+        // empty-message Standard_Failure inside BRepOffsetAPI_MakePipe that
+        // this call is meant to eliminate. Surface it as a clear named error
+        // here at wire-construction time instead.
+        if (!BRepLib::BuildCurves3d(edgeBuilder.Edge())) {
+            throw std::runtime_error(
+                "make_helix_wire: BuildCurves3d failed to derive 3D curve");
+        }
         BRepBuilderAPI_MakeWire wireBuilder(edgeBuilder.Edge());
         if (!wireBuilder.IsDone()) {
             throw std::runtime_error("make_helix_wire: MakeWire failed");
