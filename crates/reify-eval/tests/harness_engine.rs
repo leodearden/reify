@@ -14,3 +14,10 @@
 mod edit_param_cell_commit_migration;
 #[path = "harness_engine/diagnostics_cache_replay_migration.rs"]
 mod diagnostics_cache_replay_migration;
+// Task #5196's capstone acceptance e2e lands here for the same reason #5056's
+// did: a NEW top-level `tests/*.rs` in a consolidatable crate would be an
+// anti-re-accretion violation (scripts/check-harness-baseline-registration.sh,
+// task #5300) unless grandfathered into the shrinking baseline ratchet, and
+// growing that ratchet works against the C1 consolidation direction.
+#[path = "harness_engine/topology_diagnostic_denoise_e2e.rs"]
+mod topology_diagnostic_denoise_e2e;
