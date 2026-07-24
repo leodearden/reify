@@ -145,6 +145,18 @@
 #                                  debug budget (task 5382, esc-5370-2); the merge OUTER
 #                                  wall (merge_verify_cold_command_timeout_secs=10800,
 #                                  task 5383) covers debug 60m + release 90m.
+#   REIFY_VERIFY_PREBUILD_TIMEOUT — outer timeout for the merge-path RELEASE
+#                                  pre-builds (`cargo build --release -p reify-audit`
+#                                  and `-p reify-cli`). Default 25m. These run ONLY on
+#                                  the merge/background path and are the step that
+#                                  actually COLD-BUILDS the release native-kernel cone
+#                                  (manifold-csg-sys/manifold3d/OCCT) — the release
+#                                  nextest pass afterwards inherits a warm cone, so this
+#                                  budget is transferred FROM the release nextest budget,
+#                                  not added to it. The former fixed 10m ceiling SIGTERM'd
+#                                  reify-cli mid-`Compiling reify-runtime` on a cold
+#                                  merge lane with zero failing assertions (esc-5382-1,
+#                                  same class as esc-5370-2).
 #   REIFY_VERIFY_CLIPPY_TIMEOUT — outer timeout for `cargo clippy` and the
 #                                  gui-feature `cargo check -p reify-gui` pass.
 #                                  Default 45m.
@@ -341,6 +353,7 @@ _resolve_timeout_knob() {
 # REIFY_VERIFY_TEST_TIMEOUT_RELEASE (90m) — see add_test_passes for the derivation.
 _VERIFY_TEST_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT 60m)"
 _VERIFY_TEST_TIMEOUT_RELEASE="$(_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT_RELEASE 90m)"
+_VERIFY_PREBUILD_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_PREBUILD_TIMEOUT 25m)"
 _VERIFY_CLIPPY_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_CLIPPY_TIMEOUT 45m)"
 _VERIFY_CHECK_TIMEOUT="$(_resolve_timeout_knob REIFY_VERIFY_CHECK_TIMEOUT 30m)"
 
@@ -2116,7 +2129,11 @@ build_plan() {
         # archives verify.sh's stdout stream only (same premise as the
         # run_all.sh fix below). 2>&1 routes cargo's diagnostics into the
         # captured stream.
-        add "if test -f crates/reify-audit/Cargo.toml; then timeout --kill-after=60 10m ${CARGO_PRIO}cargo build --release -p reify-audit 2>&1; fi"
+        # task 5382 (esc-5382-1): budget via _VERIFY_PREBUILD_TIMEOUT (25m), not a
+        # fixed 10m. These two pre-builds are the merge path's COLD release
+        # native-kernel build; 10m SIGTERM'd reify-cli mid-compile with zero failing
+        # assertions. See the knob-doc block in the header for the derivation.
+        add "if test -f crates/reify-audit/Cargo.toml; then timeout --kill-after=60 ${_VERIFY_PREBUILD_TIMEOUT} ${CARGO_PRIO}cargo build --release -p reify-audit 2>&1; fi"
         # Positive assertion: if the Cargo.toml exists but the pre-build did not
         # produce the binary, abort loudly rather than silently degrading to SKIP.
         # Guards against the pre-step being removed or reordered without updating
@@ -2150,7 +2167,7 @@ build_plan() {
         # never stamps a false HEAD onto a missing binary.
         # task 5139: dropped -q and merged stderr into stdout via 2>&1 (same
         # rationale as the reify-audit pre-step above).
-        add "if test -f crates/reify-cli/Cargo.toml; then timeout --kill-after=60 10m ${CARGO_PRIO}cargo build --release -p reify-cli 2>&1; fi"
+        add "if test -f crates/reify-cli/Cargo.toml; then timeout --kill-after=60 ${_VERIFY_PREBUILD_TIMEOUT} ${CARGO_PRIO}cargo build --release -p reify-cli 2>&1; fi"
         add "if test -f target/release/reify; then git rev-parse HEAD > target/.reify-bin-sha 2>/dev/null || true; fi"
         # Arm the budget-safe backstop: REIFY_AUDIT_NO_COLD_BUILD=1 tells the
         # freshness guard to skip rather than cold-build if somehow the pre-step

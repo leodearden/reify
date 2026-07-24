@@ -466,6 +466,10 @@ _T10_ORCH_YAML="$REPO_ROOT/dark-factory-orchestrator.yaml"
 _debug_inner_min="$(grep -oE '_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT [0-9]+m' "$_T10_VERIFY_SH" | grep -oE '[0-9]+' | head -n1 || true)"
 # Extract the release inner default (minutes) from the release-knob resolution line.
 _release_inner_min="$(grep -oE '_resolve_timeout_knob REIFY_VERIFY_TEST_TIMEOUT_RELEASE [0-9]+m' "$_T10_VERIFY_SH" | grep -oE '[0-9]+' | head -n1 || true)"
+# Extract the merge-path RELEASE pre-build default (minutes) — esc-5382-1. The pre-builds
+# run BEFORE both nextest passes on the merge path, so they are part of the same sequential
+# budget the outer wall must cover.
+_prebuild_min="$(grep -oE '_resolve_timeout_knob REIFY_VERIFY_PREBUILD_TIMEOUT [0-9]+m' "$_T10_VERIFY_SH" | grep -oE '[0-9]+' | head -n1 || true)"
 # Extract the merge outer wall (seconds) from the yaml key.
 _outer_budget="$(grep -oE '^merge_verify_cold_command_timeout_secs:[[:space:]]*[0-9]+' "$_T10_ORCH_YAML" | grep -oE '[0-9]+' | head -n1 || true)"
 
@@ -473,17 +477,71 @@ assert "T10: debug inner default extracted from verify.sh (non-empty minutes)" \
     test -n "$_debug_inner_min"
 assert "T10: release inner default extracted from verify.sh (non-empty minutes)" \
     test -n "$_release_inner_min"
+assert "T10: release pre-build default extracted from verify.sh (non-empty minutes)" \
+    test -n "$_prebuild_min"
 assert "T10: merge outer wall extracted from dark-factory-orchestrator.yaml (non-empty seconds)" \
     test -n "$_outer_budget"
 
 # Default any absent extraction to 0 so the arithmetic below cannot abort the suite under
 # set -e during the RED window (the release knob is absent until the step-2 impl lands).
 # Non-emptiness is asserted above; this is purely an anti-abort backstop.
-_inner_budget_total=$(( ${_debug_inner_min:-0} * 60 + ${_release_inner_min:-0} * 60 ))
+# esc-5382-1: the pre-build budget is folded into the sequential sum. Only ONE pre-build
+# term is counted, not two: reify-audit and reify-cli share the release cone, so the second
+# runs warm — the cold cost is paid once.
+_inner_budget_total=$(( ${_debug_inner_min:-0} * 60 + ${_release_inner_min:-0} * 60 + ${_prebuild_min:-0} * 60 ))
 _outer_budget="${_outer_budget:-0}"
 
-assert "T10: merge outer wall (${_outer_budget}s) >= debug_inner + release_inner (${_inner_budget_total}s from ${_debug_inner_min:-?}m + ${_release_inner_min:-?}m) so the outer wall covers both inner nextest budgets" \
+assert "T10: merge outer wall (${_outer_budget}s) >= prebuild + debug_inner + release_inner (${_inner_budget_total}s from ${_prebuild_min:-?}m + ${_debug_inner_min:-?}m + ${_release_inner_min:-?}m) so the outer wall covers the pre-build and both inner nextest budgets" \
     test "$_outer_budget" -ge "$_inner_budget_total"
+
+# -- Tests T11–T13 (task 5382, esc-5382-1): merge-path RELEASE pre-build budget -----
+# The two `cargo build --release -p {reify-audit,reify-cli}` pre-builds render ONLY on the
+# merge/background path and only when not already inside an infra suite, so the plan oracle
+# needs DF_VERIFY_ROLE=merge AND `env -u REIFY_INFRA_SUITE_ACTIVE` (this suite itself sets
+# that variable, which would otherwise suppress the whole block and make T11–T13 vacuous).
+# esc-5382-1: reify-cli was SIGTERM'd mid-`Compiling reify-runtime` by the former fixed 10m
+# ceiling on a cold merge lane, with zero failing assertions — same class as esc-5370-2.
+echo ""
+echo "--- Tests T11–T13 (task 5382): merge-path release pre-build cold-aware timeout ---"
+
+# T11: default → both release pre-builds render the 25m pre-build budget (was a fixed 10m).
+_T11_ERR="$(mktemp)"
+_T11_PLAN="$(env -u REIFY_INFRA_SUITE_ACTIVE -u REIFY_VERIFY_PREBUILD_TIMEOUT DF_VERIFY_ROLE=merge \
+    bash "$REPO_ROOT/scripts/verify.sh" test \
+    --profile both --scope all --print-plan 2>"$_T11_ERR" | grep -v '^#')"
+export _T11_PLAN
+assert "T11: default: reify-cli release pre-build uses the 25m pre-build budget (not the former fixed 10m)" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 25m .*cargo build --release -p reify-cli' "$_T11_PLAN" "$_T11_ERR"
+assert "T11: default: reify-audit release pre-build uses the same 25m pre-build budget" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 25m .*cargo build --release -p reify-audit' "$_T11_PLAN" "$_T11_ERR"
+rm -f "$_T11_ERR"
+
+# T12: REIFY_VERIFY_PREBUILD_TIMEOUT=40m drives the pre-builds ONLY — the two nextest passes
+#      keep their own 60m/90m defaults. Proves the pre-build knob is pre-build-scoped.
+_T12_ERR="$(mktemp)"
+_T12_PLAN="$(env -u REIFY_INFRA_SUITE_ACTIVE -u REIFY_VERIFY_TEST_TIMEOUT -u REIFY_VERIFY_TEST_TIMEOUT_RELEASE \
+    DF_VERIFY_ROLE=merge REIFY_VERIFY_PREBUILD_TIMEOUT=40m \
+    bash "$REPO_ROOT/scripts/verify.sh" test \
+    --profile both --scope all --print-plan 2>"$_T12_ERR" | grep -v '^#')"
+export _T12_PLAN
+assert "T12: REIFY_VERIFY_PREBUILD_TIMEOUT=40m: reify-cli pre-build uses 40m" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 40m .*cargo build --release -p reify-cli' "$_T12_PLAN" "$_T12_ERR"
+assert "T12: REIFY_VERIFY_PREBUILD_TIMEOUT=40m: debug nextest pass stays default 60m (pre-build knob is pre-build-only)" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 60m .*cargo nextest run --workspace' "$_T12_PLAN" "$_T12_ERR"
+assert "T12: REIFY_VERIFY_PREBUILD_TIMEOUT=40m: release nextest pass stays default 90m (pre-build knob is pre-build-only)" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 90m .*cargo nextest run .*--release' "$_T12_PLAN" "$_T12_ERR"
+rm -f "$_T12_ERR"
+
+# T13: malformed REIFY_VERIFY_PREBUILD_TIMEOUT=banana → falls back to the 25m default via the
+#      shared _resolve_timeout_knob validator (mirrors T3/T9's malformed-fallback guard).
+_T13_ERR="$(mktemp)"
+_T13_PLAN="$(env -u REIFY_INFRA_SUITE_ACTIVE DF_VERIFY_ROLE=merge REIFY_VERIFY_PREBUILD_TIMEOUT=banana \
+    bash "$REPO_ROOT/scripts/verify.sh" test \
+    --profile both --scope all --print-plan 2>"$_T13_ERR" | grep -v '^#')"
+export _T13_PLAN
+assert "T13: REIFY_VERIFY_PREBUILD_TIMEOUT=banana (malformed): pre-builds fall back to the 25m default" \
+    occt_plan_grep_or_dump 'timeout --kill-after=60 25m .*cargo build --release -p reify-cli' "$_T13_PLAN" "$_T13_ERR"
+rm -f "$_T13_ERR"
 
 # -- Test 18: wrapper does not leak the lock fd into background daemons --------
 # Regression test for the 2026-04-20 merge-queue wedge: sccache (spawned as a

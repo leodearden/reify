@@ -69,8 +69,18 @@ verify_command_timeout_secs: 7200
 # branch), overriding dark-factory defaults.yaml's 7200s default. 180m (10800s)
 # covers the cold OCCT/OpenVDB/gmsh/manifold native-kernel compile that
 # precedes nextest on a cold cache, plus the debug(60m=3600s)+release(90m=5400s)
-# = 9000s inner nextest budget, with ~1800s margin. Only ever widens the wall
-# versus the 7200s default it overrides.
+# = 9000s inner nextest budget. Only ever widens the wall versus the 7200s
+# default it overrides.
+# esc-5382-1 amendment: that cold native-kernel compile is now explicitly
+# budgeted as REIFY_VERIFY_PREBUILD_TIMEOUT (25m=1500s), the merge-path
+# `cargo build --release -p {reify-audit,reify-cli}` pre-builds that run BEFORE
+# both nextest passes (the former fixed 10m ceiling SIGTERM'd reify-cli
+# mid-compile with zero failing assertions). Sequential worst case is therefore
+# 1500 + 3600 + 5400 = 10500s, still within this 10800s wall with 300s margin —
+# and the pre-build cost is transferred FROM the release nextest budget (which
+# then runs against a warm release cone), not added to it. The pre-build term is
+# counted ONCE: reify-audit and reify-cli share the release cone, so the second
+# pre-build runs warm. tests/infra/test_occt_flock_gate.sh T10 guards this sum.
 merge_verify_cold_command_timeout_secs: 10800
 # Verify kill-tree hardening (merge-gate-health W1b, 2026-07-19 survey): run each verify
 # in a systemd df-verify-*.scope so the whole subtree is enumerable/killable — eliminates
