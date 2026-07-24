@@ -450,6 +450,12 @@ impl crate::Engine {
             MorphRegistration::Enabled(f) => f(self),
             MorphRegistration::Unavailable { reason } => {
                 debug_assert!(!reason.is_empty(), "Unavailable reason must be non-empty");
+                // The debug_assert above is compiled out in release, so guard the
+                // log too: never emit a reasonless line if an empty `reason` slips
+                // through in a release build. A fallback, not a panic — this is a
+                // debug-only log path and every real caller passes a &'static str
+                // literal, so this branch is defense-in-depth, never hot.
+                let reason = if reason.is_empty() { "(unspecified)" } else { reason };
                 tracing::debug!(reason, "mesh-morph producer not registered on this Engine");
             }
         }
