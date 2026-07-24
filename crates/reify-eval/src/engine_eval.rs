@@ -7868,7 +7868,25 @@ impl Engine {
                     for (node_id, expr) in nodes_to_reeval {
                         let val = reify_expr::eval_expr(
                             &expr,
-                            &self.cell_eval_ctx(values, snapshot_values, runtime_sink),
+                            // Free-fn `cell_eval_ctx` (not the `Engine::cell_eval_ctx`
+                            // METHOD) so the method stays genuinely dead in the lib
+                            // target and #5362's `expect(dead_code)` shim on it stays
+                            // fulfilled (task #5118 step 12). Byte-identical capability
+                            // set to the method per the cell_eval_ctx.rs
+                            // `via_method`==`via_free_fn` parity cross-check, and the
+                            // exact shape the #5053-migrated per-template sibling wave-2
+                            // uses above. `values`/`snapshot_values` are `&mut` params
+                            // here, so reborrow immutably (`&*`) for the ctx; both mut
+                            // reborrows resume in the `commit_cell_result` call below,
+                            // after this temporary ctx is dropped.
+                            &cell_eval_ctx(
+                                &*values,
+                                &self.functions,
+                                &self.meta_map,
+                                &*snapshot_values,
+                                runtime_sink,
+                                self,
+                            ),
                         );
                         let NodeId::Value(vcid) = &node_id else {
                             continue;
